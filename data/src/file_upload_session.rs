@@ -6,11 +6,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use cas_client::Client;
+use cas_client::{Client, ProgressCallback};
 use cas_object::SerializedCasObject;
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
-use lazy_static::lazy_static;
 use mdb_shard::Sha256;
 use mdb_shard::file_structs::MDBFileInfo;
 use more_asserts::*;
@@ -23,7 +22,7 @@ use tokio::sync::Mutex;
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{Instrument, Span, info_span, instrument};
 use ulid::Ulid;
-use xet_runtime::{GlobalSemaphoreHandle, XetRuntime, global_semaphore_handle, xet_config};
+use xet_runtime::{XetRuntime, xet_config};
 
 use crate::configurations::*;
 use crate::errors::*;
@@ -31,11 +30,6 @@ use crate::file_cleaner::SingleFileCleaner;
 use crate::remote_client_interface::create_remote_client;
 use crate::shard_interface::SessionShardInterface;
 use crate::{XetFileInfo, prometheus_metrics};
-
-lazy_static! {
-    pub static ref CONCURRENT_FILE_INGESTION_LIMITER: GlobalSemaphoreHandle =
-        global_semaphore_handle!(xet_config().data.max_concurrent_file_ingestion);
-}
 
 /// Manages the translation of files between the
 /// MerkleDB / pointer file format and the materialized version.
@@ -160,13 +154,15 @@ impl FileUploadSession {
             // repo size at the beginning.
             let file_size = std::fs::metadata(&file_path)?.len();
 
-            // Get a new file id for the completion tracking.  This also registers the size against the total bytes
-            // of the file.
-            let file_id = self.completion_tracker.register_new_file(file_name.clone(), file_size).await;
+            // Get a new file id for the completion tracking.  The size is not passed here;
+            // it will be discovered incrementally via increment_file_size in add_data_impl.
+            let file_id = self
+                .completion_tracker
+                .register_new_file(file_name.clone(), Some(file_size))
+                .await;
 
             // Now, spawn a task
-            let ingestion_concurrency_limiter =
-                XetRuntime::current().global_semaphore(*CONCURRENT_FILE_INGESTION_LIMITER);
+            let ingestion_concurrency_limiter = XetRuntime::current().common().file_ingestion_semaphore.clone();
             let session = self.clone();
 
             cleaning_tasks.push(tokio::spawn(async move {
@@ -266,7 +262,7 @@ impl FileUploadSession {
         // Get a new file id for the completion tracking
         let file_id = self
             .completion_tracker
-            .register_new_file(file_name.clone().unwrap_or_default(), size)
+            .register_new_file(file_name.clone().unwrap_or_default(), Some(size))
             .await;
 
         SingleFileCleaner::new(file_name, file_id, sha256, self.clone())
@@ -321,8 +317,6 @@ impl FileUploadSession {
         let xorb_cas_info = Arc::new(xorb.cas_info.clone());
         self.shard_interface.add_cas_block(xorb_cas_info.clone()).await?;
 
-        let xorb_hash = xorb.hash();
-
         // Serialize the object; this can be relatively expensive, so run it on a compute thread.
         // XORBs are sent without footer - the server/client reconstructs it from chunk data.
         let compression_scheme = self.config.data_config.compression;
@@ -334,12 +328,22 @@ impl FileUploadSession {
         let upload_permit = self.client.acquire_upload_permit().await?;
         let cas_prefix = session.config.data_config.prefix.clone();
         let completion_tracker = self.completion_tracker.clone();
+        let xorb_hash = cas_object.hash;
+        let raw_num_bytes = cas_object.raw_num_bytes;
+        let progress_callback: ProgressCallback = Arc::new(move |delta, _completed, total| {
+            let raw_delta = (delta * raw_num_bytes).checked_div(total).unwrap_or(0);
+            if raw_delta > 0 {
+                completion_tracker
+                    .clone()
+                    .register_xorb_upload_progress_background(xorb_hash, raw_delta);
+            }
+        });
 
         self.xorb_upload_tasks.lock().await.spawn(
             async move {
                 let n_bytes_transmitted = session
                     .client
-                    .upload_xorb(&cas_prefix, cas_object, Some(completion_tracker), upload_permit)
+                    .upload_xorb(&cas_prefix, cas_object, Some(progress_callback), upload_permit)
                     .await?;
 
                 // Register that the xorb has been uploaded.
@@ -540,7 +544,7 @@ mod tests {
 
     use xet_runtime::XetRuntime;
 
-    use crate::{FileDownloader, FileUploadSession, XetFileInfo};
+    use crate::{FileDownloadSession, FileUploadSession, XetFileInfo};
 
     /// Return a shared threadpool to be reused as needed.
     fn get_threadpool() -> Arc<XetRuntime> {
@@ -590,8 +594,6 @@ mod tests {
     /// * `pointer_path`: path to the pointer file
     /// * `output_path`: path to write the hydrated/original file
     async fn test_smudge_file(cas_path: &Path, pointer_path: &Path, output_path: &Path) {
-        use file_reconstruction::DataOutput;
-
         let mut reader = File::open(pointer_path).unwrap();
 
         let mut input = String::new();
@@ -600,20 +602,9 @@ mod tests {
         let xet_file = serde_json::from_str::<XetFileInfo>(&input).unwrap();
 
         let config = TranslatorConfig::local_config(cas_path).unwrap();
-        let translator = FileDownloader::new(config.into()).await.unwrap();
+        let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
-        let output = DataOutput::write_in_file(output_path);
-
-        translator
-            .smudge_file_from_hash(
-                &xet_file.merkle_hash().expect("File hash is not a valid file hash"),
-                output_path.to_string_lossy().into(),
-                output,
-                None,
-                None,
-            )
-            .await
-            .unwrap();
+        session.download_file(&xet_file, output_path, None).await.unwrap();
     }
 
     use std::fs::{read, write};

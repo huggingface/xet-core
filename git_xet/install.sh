@@ -4,10 +4,10 @@
 # unzips it, and moves it to the user's local bin directory.
 
 # --- Configuration ---
-XET_LINUX_AMD64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.2.0/git-xet-linux-x86_64.zip"
-XET_LINUX_ARM64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.2.0/git-xet-linux-aarch64.zip"
-XET_MACOS_AMD64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.2.0/git-xet-macos-x86_64.zip"
-XET_MACOS_ARM64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.2.0/git-xet-macos-aarch64.zip"
+XET_LINUX_AMD64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.2.1/git-xet-linux-x86_64.zip"
+XET_LINUX_ARM64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.2.1/git-xet-linux-aarch64.zip"
+XET_MACOS_AMD64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.2.1/git-xet-macos-x86_64.zip"
+XET_MACOS_ARM64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.2.1/git-xet-macos-aarch64.zip"
 
 LFS_LINUX_AMD64="https://github.com/git-lfs/git-lfs/releases/download/v3.7.1/git-lfs-linux-amd64-v3.7.1.tar.gz"
 LFS_LINUX_ARM64="https://github.com/git-lfs/git-lfs/releases/download/v3.7.1/git-lfs-linux-arm64-v3.7.1.tar.gz"

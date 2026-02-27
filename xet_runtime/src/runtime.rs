@@ -6,15 +6,14 @@ use std::sync::{Arc, OnceLock};
 
 use reqwest::Client;
 use tokio::runtime::{Builder as TokioRuntimeBuilder, Handle as TokioRuntimeHandle, Runtime as TokioRuntime};
-use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tracing::{debug, info};
 #[cfg(not(target_family = "wasm"))]
 use utils::SystemMonitor;
 use xet_config::XetConfig;
 
+use crate::common::XetCommon;
 use crate::errors::MultithreadedRuntimeError;
-use crate::global_semaphores::{GlobalSemaphoreHandle, GlobalSemaphoreLookup};
 
 const THREADPOOL_THREAD_ID_PREFIX: &str = "hf-xet"; // thread names will be hf-xet-0, hf-xet-1, etc.
 const THREADPOOL_STACK_SIZE: usize = 8_000_000; // 8MB stack size
@@ -131,12 +130,8 @@ pub struct XetRuntime {
     // Are we in the middle of a sigint shutdown?
     sigint_shutdown: AtomicBool,
 
-    // Semaphores.  We use an initialization function as the handle here.
-    global_semaphore_table: GlobalSemaphoreLookup,
-
-    // A cached reqwest Client to be shared by all high-level clients.
-    // The String tag identifies the client type (e.g., "tcp" for regular, socket path for UDS).
-    global_reqwest_client: std::sync::Mutex<Option<(String, Client)>>,
+    // Shared state that is common across the entire runtime.
+    common: XetCommon,
 
     // Primary configuration struct
     config: Arc<XetConfig>,
@@ -200,7 +195,7 @@ impl XetRuntime {
             handle_ref: OnceLock::new(),
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
-            global_semaphore_table: GlobalSemaphoreLookup::default(),
+            common: XetCommon::new(&config),
             #[cfg(not(target_family = "wasm"))]
             system_monitor: config
                 .system_monitor
@@ -213,7 +208,6 @@ impl XetRuntime {
                     .ok()
                 })
                 .flatten(),
-            global_reqwest_client: std::sync::Mutex::new(None),
             config: Arc::new(config),
         });
 
@@ -270,13 +264,13 @@ impl XetRuntime {
     }
 
     pub fn from_external(rt_handle: TokioRuntimeHandle) -> Arc<Self> {
-        let config = Arc::new(XetConfig::new());
+        let config = XetConfig::new();
         Arc::new(Self {
             runtime: std::sync::RwLock::new(None),
             handle_ref: rt_handle.into(),
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
-            global_semaphore_table: GlobalSemaphoreLookup::default(),
+            common: XetCommon::new(&config),
             #[cfg(not(target_family = "wasm"))]
             system_monitor: config
                 .system_monitor
@@ -289,8 +283,7 @@ impl XetRuntime {
                     .ok()
                 })
                 .flatten(),
-            config,
-            global_reqwest_client: std::sync::Mutex::new(None),
+            config: Arc::new(config),
         })
     }
 
@@ -299,36 +292,10 @@ impl XetRuntime {
         self.handle_ref.get().expect("Not initialized with handle set.").clone()
     }
 
-    /// Gets or creates a reqwest client in the runtime, using a tag to identify the client type.
-    ///
-    /// # Arguments
-    /// * `tag` - A string identifier for the client (e.g., "tcp" for regular, socket path for UDS)
-    /// * `f` - A function that creates the client if needed
-    ///
-    /// # Returns
-    /// Returns a clone of the cached client if the tag matches, or creates a new client if the tag differs.
-    pub fn get_or_create_reqwest_client_in_runtime<F>(
-        &self,
-        tag: String,
-        create_client_fn: F,
-    ) -> std::result::Result<Client, reqwest::Error>
-    where
-        F: FnOnce() -> std::result::Result<Client, reqwest::Error>,
-    {
-        let mut guard = self.global_reqwest_client.lock().unwrap();
-
-        match guard.as_ref() {
-            Some((cached_tag, cached_client)) if cached_tag == &tag => {
-                // Tag matches, return a clone of the existing client
-                Ok(cached_client.clone())
-            },
-            _ => {
-                // Tag doesn't match or no client exists, create a new one
-                let new_client = create_client_fn()?;
-                *guard = Some((tag, new_client.clone()));
-                Ok(new_client)
-            },
-        }
+    /// Returns a reference to the shared `XetCommon` state.
+    #[inline]
+    pub fn common(&self) -> &XetCommon {
+        &self.common
     }
 
     /// Gets or creates a reqwest client, using a tag to identify the client type.
@@ -349,7 +316,7 @@ impl XetRuntime {
         // create a new one. This allows creating high-level clients outside a
         // runtime, like in tests.
         if let Some(rt) = Self::current_if_exists() {
-            rt.get_or_create_reqwest_client_in_runtime(tag, f)
+            rt.common().get_or_create_reqwest_client(tag, f)
         } else {
             f()
         }
@@ -473,14 +440,6 @@ impl XetRuntime {
         })
     }
 
-    /// Allows a user to access a global semaphore that is associated with the runtime.
-    ///
-    /// The key here is a function handle that, when called, returns the number of permits
-    /// to use in the semaphore.  It's reset on new runtimes.
-    pub fn global_semaphore(&self, handle: impl Into<GlobalSemaphoreHandle>) -> Arc<Semaphore> {
-        self.global_semaphore_table.get(handle)
-    }
-
     /// Returns a reference to the primary configuration struct.
     #[inline]
     pub fn config(&self) -> &Arc<XetConfig> {
@@ -513,93 +472,13 @@ impl Display for XetRuntime {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
     use super::*;
-
-    #[test]
-    fn test_get_or_create_reqwest_client_caches_by_tag() {
-        let call_count = AtomicUsize::new(0);
-        let rt = XetRuntime::new().expect("Failed to create runtime");
-
-        let _client1 = rt
-            .get_or_create_reqwest_client_in_runtime("test-tag".to_string(), || {
-                call_count.fetch_add(1, Ordering::SeqCst);
-                reqwest::Client::builder().build()
-            })
-            .unwrap();
-
-        let _client2 = rt
-            .get_or_create_reqwest_client_in_runtime("test-tag".to_string(), || {
-                call_count.fetch_add(1, Ordering::SeqCst);
-                reqwest::Client::builder().build()
-            })
-            .unwrap();
-
-        assert_eq!(call_count.load(Ordering::SeqCst), 1, "Client should only be created once for same tag");
-    }
-
-    #[test]
-    fn test_get_or_create_reqwest_client_creates_new_for_different_tag() {
-        let call_count = AtomicUsize::new(0);
-        let rt = XetRuntime::new().expect("Failed to create runtime");
-
-        let _client1 = rt
-            .get_or_create_reqwest_client_in_runtime("tag1".to_string(), || {
-                call_count.fetch_add(1, Ordering::SeqCst);
-                reqwest::Client::builder().user_agent("client1").build()
-            })
-            .unwrap();
-
-        let _client2 = rt
-            .get_or_create_reqwest_client_in_runtime("tag2".to_string(), || {
-                call_count.fetch_add(1, Ordering::SeqCst);
-                reqwest::Client::builder().user_agent("client2").build()
-            })
-            .unwrap();
-
-        assert_eq!(call_count.load(Ordering::SeqCst), 2, "Different tags should create different clients");
-    }
 
     #[test]
     fn test_get_or_create_reqwest_client_returns_client() {
         let result =
             XetRuntime::get_or_create_reqwest_client("test".to_string(), || reqwest::Client::builder().build());
         assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_runtime_initializes_with_empty_client_cache() {
-        let rt = XetRuntime::new().expect("Failed to create runtime");
-
-        let guard = rt.global_reqwest_client.lock().unwrap();
-        assert!(guard.is_none(), "Client cache should be empty initially");
-    }
-
-    #[test]
-    fn test_runtime_replaces_client_when_tag_changes() {
-        let rt = XetRuntime::new().expect("Failed to create runtime");
-
-        let _client1 = rt
-            .get_or_create_reqwest_client_in_runtime("tcp".to_string(), || {
-                reqwest::Client::builder().user_agent("tcp-client").build()
-            })
-            .unwrap();
-
-        let guard1 = rt.global_reqwest_client.lock().unwrap();
-        let (tag1, _) = guard1.as_ref().unwrap();
-        assert_eq!(tag1, "tcp");
-        drop(guard1);
-
-        let _client2 = rt
-            .get_or_create_reqwest_client_in_runtime("/tmp/socket.sock".to_string(), || {
-                reqwest::Client::builder().user_agent("uds-client").build()
-            })
-            .unwrap();
-
-        let guard2 = rt.global_reqwest_client.lock().unwrap();
-        let (tag2, _) = guard2.as_ref().unwrap();
-        assert_eq!(tag2, "/tmp/socket.sock", "Client should be replaced when tag changes");
     }
 
     #[test]

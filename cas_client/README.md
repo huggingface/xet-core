@@ -41,4 +41,4 @@ Logging & Tracing is done through the tracing crate, with `info!`, `warn!`, and 
 
 ### Progress tracking
 
-To enable progress updates, pass `Some(Arc<SingleItemProgressUpdater>)` to `Client::get_file(...)` when downloading and `Some(Arc<CompletionTracker>)` to `Client::upload_xorb(...)` when uploading.
+To enable progress updates, pass `Some(Arc<DownloadTaskUpdater>)` to `Client::get_file(...)` when downloading and `Some(Arc<CompletionTracker>)` to `Client::upload_xorb(...)` when uploading.

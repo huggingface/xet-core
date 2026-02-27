@@ -26,7 +26,6 @@ lazy_static = { workspace = true }
 pin-project = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-shellexpand = { workspace = true, features = ["path"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = [
     "time",
@@ -36,11 +35,13 @@ tokio = { workspace = true, features = [
     "test-util",
 ] }
 tracing = { workspace = true }
+more-asserts = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 sysinfo = { workspace = true }
 bincode = { workspace = true }
 rand = { workspace = true }
+shellexpand = { workspace = true, features = ["path"] }
 tokio-util = { workspace = true, features = ["io"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]

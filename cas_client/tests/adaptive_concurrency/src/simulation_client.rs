@@ -7,11 +7,10 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use cas_client::adaptive_concurrency::AdaptiveConcurrencyController;
 use cas_client::http_client::build_http_client;
+use cas_client::progress_tracked_streams::{StreamProgressReporter, UploadProgressStream};
 use cas_client::retry_wrapper::RetryWrapper;
-use cas_client::upload_progress_stream::UploadProgressStream;
 use clap::Parser;
-use http::HeaderValue;
-use http::header::CONTENT_LENGTH;
+use http::header::{self, CONTENT_LENGTH, HeaderMap, HeaderValue};
 use rand::Rng;
 use reqwest::Body;
 use reqwest_middleware::ClientWithMiddleware;
@@ -102,7 +101,10 @@ async fn run_client(min_data_kb: u64, max_data_kb: u64, repeat_duration_seconds:
     eprintln!("Connecting to server at {}", server_addr);
 
     // Create HTTP client
-    let http_client = build_http_client("test_session", "test_user_agent", None).expect("Failed to create HTTP client");
+    let mut headers = HeaderMap::new();
+    headers.insert(header::USER_AGENT, HeaderValue::from_static("test_user_agent"));
+    let http_client =
+        build_http_client("test_session", None, Some(Arc::new(headers))).expect("Failed to create HTTP client");
 
     // Wait for server to be ready before starting
     wait_for_server_ready(&http_client, server_addr)
@@ -295,6 +297,9 @@ async fn run_client(min_data_kb: u64, max_data_kb: u64, repeat_duration_seconds:
                 let request_start = Instant::now();
                 total_retry_wrapper_calls.fetch_add(1, Ordering::Relaxed);
 
+                let upload_reporter = StreamProgressReporter::new(payload_size as u64)
+                    .with_adaptive_concurrency_reporter(permit.get_partial_completion_reporting_function());
+
                 let result: Result<serde_json::Value, _> = RetryWrapper::new(api_tag)
                     .with_connection_permit(permit, Some(payload_size as u64))
                     .run_and_extract_json({
@@ -302,30 +307,18 @@ async fn run_client(min_data_kb: u64, max_data_kb: u64, repeat_duration_seconds:
                         let server_addr = server_addr.clone();
                         let payload_data = payload_data.clone();
                         let total_http_calls = total_http_calls.clone();
-                        move |partial_report_fn| {
+                        let upload_reporter = upload_reporter;
+                        move || {
                             let http_client = http_client.clone();
                             let server_addr = server_addr.clone();
                             let payload_data = payload_data.clone();
                             let total_http_calls = total_http_calls.clone();
-                            let partial_report_fn = partial_report_fn.clone();
-                            let total_size = payload_size as u64;
 
-                            let progress_callback = move |_delta: u64, total_bytes: u64| {
-                                // Report partial progress to concurrency controller
-                                if let Some(ref partial_report_fn) = partial_report_fn
-                                    && total_size > 0
-                                {
-                                    let portion = (total_bytes as f64 / total_size as f64).min(1.0);
-                                    partial_report_fn(portion, total_bytes);
-                                }
-                            };
-
-                            let upload_stream = UploadProgressStream::new_with_progress_callback(
+                            let upload_stream = UploadProgressStream::wrap_bytes_as_stream(
                                 payload_data.clone(),
                                 xet_config().client.upload_reporting_block_size,
-                                progress_callback,
-                            )
-                            .clone_with_reset();
+                                upload_reporter.clone(),
+                            );
 
                             async move {
                                 // Send the upload request as HTTP POST

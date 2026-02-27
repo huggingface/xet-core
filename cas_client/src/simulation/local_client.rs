@@ -27,7 +27,6 @@ use mdb_shard::utils::shard_file_name;
 use mdb_shard::{MDBShardFile, ShardFileManager};
 use merklehash::MerkleHash;
 use more_asserts::*;
-use progress_tracking::upload_tracking::CompletionTracker;
 use rand::Rng;
 use tempfile::TempDir;
 use tokio::time::{Duration, Instant};
@@ -38,6 +37,7 @@ use super::direct_access_client::DirectAccessClient;
 use crate::Client;
 use crate::adaptive_concurrency::AdaptiveConcurrencyController;
 use crate::error::{CasClientError, Result};
+use crate::progress_tracked_streams::ProgressCallback;
 
 lazy_static! {
     /// Reference instant for URL timestamps. Initialized far in the past to allow
@@ -104,8 +104,36 @@ impl LocalClient {
         }
 
         // Open / set up the global dedup lookup.
-        let global_dedup_db_env = unsafe { heed::EnvOpenOptions::new().open(&global_dedup_dir) }
-            .map_err(|e| CasClientError::Other(format!("Error opening db at {global_dedup_dir:?}: {e}")))?;
+        // Retry with backoff: on Windows, a prior env.prepare_for_closing() may not have
+        // fully released LMDB's process-global env slot by the time we re-open the same path.
+        let global_dedup_db_env = {
+            let mut last_err = None;
+            let mut result = None;
+            for attempt in 0..5 {
+                match unsafe { heed::EnvOpenOptions::new().open(&global_dedup_dir) } {
+                    Ok(env) => {
+                        result = Some(env);
+                        break;
+                    },
+                    Err(e) => {
+                        warn!(
+                            "Attempt {}/{} to open db at {:?} failed: {e}; retrying...",
+                            attempt + 1,
+                            5,
+                            global_dedup_dir
+                        );
+                        last_err = Some(e);
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                    },
+                }
+            }
+            result.ok_or_else(|| {
+                CasClientError::Other(format!(
+                    "Error opening db at {global_dedup_dir:?} after 5 attempts: {}",
+                    last_err.unwrap()
+                ))
+            })?
+        };
 
         let mut write_txn = global_dedup_db_env
             .write_txn()
@@ -526,12 +554,11 @@ impl Client for LocalClient {
         &self,
         _prefix: &str,
         serialized_cas_object: SerializedCasObject,
-        upload_tracker: Option<Arc<CompletionTracker>>,
+        progress_callback: Option<ProgressCallback>,
         _permit: crate::adaptive_concurrency::ConnectionPermit,
     ) -> Result<u64> {
         self.apply_api_delay().await;
         let hash = serialized_cas_object.hash;
-        let raw_num_bytes = serialized_cas_object.raw_num_bytes;
         let footer_start = serialized_cas_object.footer_start;
         let serialized_data = serialized_cas_object.serialized_data;
         if self.xorb_exists(&hash).await? {
@@ -558,22 +585,20 @@ impl Client for LocalClient {
         let file_path = self.get_path_for_entry(&hash);
         info!("Writing XORB {hash:?} to local path {file_path:?}");
 
+        let total = data_to_write.len() as u64;
         let mut file = SafeFileCreator::new(&file_path)?;
 
         for i in 0..10 {
             let start = (i * data_to_write.len()) / 10;
             let end = ((i + 1) * data_to_write.len()) / 10;
+            let chunk_len = end - start;
 
             file.write_all(&data_to_write[start..end])?;
 
-            if let Some(upload_tracker) = &upload_tracker {
-                let adjusted_byte_start = (i * raw_num_bytes as usize) / 10;
-                let adjusted_byte_end = ((i + 1) * raw_num_bytes as usize) / 10;
-                let adjusted_progress = adjusted_byte_end - adjusted_byte_start;
-
-                upload_tracker
-                    .register_xorb_upload_progress(hash, adjusted_progress as u64)
-                    .await;
+            if let Some(ref cb) = progress_callback {
+                let completed = end as u64;
+                let delta = chunk_len as u64;
+                cb(delta, completed, total);
             }
         }
 
@@ -816,6 +841,8 @@ impl Client for LocalClient {
         &self,
         url_info: Box<dyn crate::URLProvider>,
         _download_permit: crate::adaptive_concurrency::ConnectionPermit,
+        progress_callback: Option<ProgressCallback>,
+        uncompressed_size_if_known: Option<usize>,
     ) -> Result<(Bytes, Vec<u32>)> {
         // Retry loop: try to fetch, and if URL expired, refresh and retry once.
         for attempt in 0..2 {
@@ -847,6 +874,20 @@ impl Client for LocalClient {
             // Deserialize the chunks from the raw CAS data
             let (decompressed_data, chunk_byte_indices) = cas_object::deserialize_chunks(&mut Cursor::new(&data))?;
 
+            if let Some(expected) = uncompressed_size_if_known {
+                debug_assert_eq!(
+                    decompressed_data.len(),
+                    expected,
+                    "get_file_term_data: expected {} bytes, got {}",
+                    expected,
+                    decompressed_data.len()
+                );
+            }
+
+            let transfer_len = len as u64;
+            if let Some(ref cb) = progress_callback {
+                cb(transfer_len, transfer_len, transfer_len);
+            }
             return Ok((Bytes::from(decompressed_data), chunk_byte_indices));
         }
 

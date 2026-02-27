@@ -475,7 +475,6 @@ dependencies = [
  "mdb_shard",
  "merklehash",
  "more-asserts",
- "progress_tracking",
  "rand 0.9.1",
  "rand_distr 0.5.1",
  "reqwest",
@@ -1016,6 +1015,7 @@ dependencies = [
  "dirs",
  "error_printer",
  "file_reconstruction",
+ "http",
  "hub_client",
  "lazy_static",
  "mdb_shard",
@@ -1370,7 +1370,6 @@ dependencies = [
  "bytes",
  "cas_client",
  "cas_types",
- "lazy_static",
  "merklehash",
  "more-asserts",
  "progress_tracking",
@@ -1695,7 +1694,7 @@ dependencies = [
 
 [[package]]
 name = "git_xet"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1704,6 +1703,7 @@ dependencies = [
  "data",
  "git-url-parse",
  "git2",
+ "http",
  "hub_client",
  "progress_tracking",
  "rand_core 0.6.4",
@@ -2039,6 +2039,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "cas_client",
+ "http",
  "reqwest",
  "reqwest-middleware",
  "serde",
@@ -5328,6 +5329,7 @@ dependencies = [
  "futures-util",
  "lazy_static",
  "merklehash",
+ "more-asserts",
  "pin-project",
  "rand 0.9.1",
  "serde",

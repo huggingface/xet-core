@@ -3,6 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cas_client::retry_wrapper::RetryWrapper;
 use cas_client::{Api, build_http_client};
+use http::header::HeaderMap;
 use hub_client::{CasJWTInfo, CredentialHelper, Operation};
 use reqwest_middleware::ClientWithMiddleware;
 use utils::auth::{TokenInfo, TokenRefresher};
@@ -26,7 +27,7 @@ impl DirectRefreshRouteTokenRefresher {
         refresh_route: &str,
         operation: Operation,
         session_id: &str,
-        user_agent: &str,
+        custom_headers: Option<Arc<HeaderMap>>,
     ) -> Result<Self> {
         let remote_url = match remote_url {
             Some(r) => r,
@@ -37,7 +38,7 @@ impl DirectRefreshRouteTokenRefresher {
 
         Ok(Self {
             refresh_route: refresh_route.to_owned(),
-            client: build_http_client(session_id, user_agent, None)?,
+            client: build_http_client(session_id, None, custom_headers)?,
             cred_helper,
         })
     }
@@ -51,7 +52,7 @@ impl TokenRefresher for DirectRefreshRouteTokenRefresher {
         let cred_helper = self.cred_helper.clone();
 
         let jwt_info: CasJWTInfo = RetryWrapper::new("xet-token")
-            .run_and_extract_json(move |_| {
+            .run_and_extract_json(move || {
                 let refresh_route = refresh_route.clone();
                 let client = client.clone();
                 let cred_helper = cred_helper.clone();

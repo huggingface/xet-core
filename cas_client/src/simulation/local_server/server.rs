@@ -36,6 +36,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use axum::Router;
 use axum::routing::{get, head, post};
+use http::header::{self, HeaderMap, HeaderValue};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tower_http::cors::CorsLayer;
@@ -303,6 +304,8 @@ impl LocalTestServer {
 
         tokio::time::sleep(Duration::from_millis(50)).await;
 
+        let mut headers = HeaderMap::new();
+        headers.insert(header::USER_AGENT, HeaderValue::from_static("test-agent"));
         let (remote_client, socket_proxy) = {
             #[cfg(unix)]
             {
@@ -323,20 +326,21 @@ impl LocalTestServer {
                         &None,
                         "test-session",
                         false,
-                        "test-agent",
                         Some(&socket_path_str),
+                        Some(Arc::new(headers)),
                     );
 
                     (client, Some(proxy))
                 } else {
-                    let client = RemoteClient::new(&tcp_endpoint, &None, "test-session", false, "test-agent");
+                    let client =
+                        RemoteClient::new(&tcp_endpoint, &None, "test-session", false, Some(Arc::new(headers)));
                     (client, None)
                 }
             }
 
             #[cfg(not(unix))]
             {
-                let client = RemoteClient::new(&tcp_endpoint, &None, "test-session", false, "test-agent");
+                let client = RemoteClient::new(&tcp_endpoint, &None, "test-session", false, None);
                 (client, Option::<()>::None)
             }
         };
@@ -403,8 +407,12 @@ impl Client for LocalTestServer {
         &self,
         url_info: Box<dyn crate::interface::URLProvider>,
         download_permit: crate::adaptive_concurrency::ConnectionPermit,
+        progress_callback: Option<crate::ProgressCallback>,
+        uncompressed_size_if_known: Option<usize>,
     ) -> Result<(bytes::Bytes, Vec<u32>)> {
-        self.remote_client.get_file_term_data(url_info, download_permit).await
+        self.remote_client
+            .get_file_term_data(url_info, download_permit, progress_callback, uncompressed_size_if_known)
+            .await
     }
 
     async fn query_for_global_dedup_shard(
@@ -431,11 +439,11 @@ impl Client for LocalTestServer {
         &self,
         prefix: &str,
         serialized_cas_object: cas_object::SerializedCasObject,
-        upload_tracker: Option<std::sync::Arc<progress_tracking::upload_tracking::CompletionTracker>>,
+        progress_callback: Option<crate::ProgressCallback>,
         upload_permit: crate::adaptive_concurrency::ConnectionPermit,
     ) -> Result<u64> {
         self.remote_client
-            .upload_xorb(prefix, serialized_cas_object, upload_tracker, upload_permit)
+            .upload_xorb(prefix, serialized_cas_object, progress_callback, upload_permit)
             .await
     }
 }
