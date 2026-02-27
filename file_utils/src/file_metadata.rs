@@ -1,6 +1,6 @@
-use std::fs::Metadata;
 #[cfg(unix)]
 use std::ffi::CString;
+use std::fs::Metadata;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
