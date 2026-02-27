@@ -104,8 +104,36 @@ impl LocalClient {
         }
 
         // Open / set up the global dedup lookup.
-        let global_dedup_db_env = unsafe { heed::EnvOpenOptions::new().open(&global_dedup_dir) }
-            .map_err(|e| CasClientError::Other(format!("Error opening db at {global_dedup_dir:?}: {e}")))?;
+        // Retry with backoff: on Windows, a prior env.prepare_for_closing() may not have
+        // fully released LMDB's process-global env slot by the time we re-open the same path.
+        let global_dedup_db_env = {
+            let mut last_err = None;
+            let mut result = None;
+            for attempt in 0..5 {
+                match unsafe { heed::EnvOpenOptions::new().open(&global_dedup_dir) } {
+                    Ok(env) => {
+                        result = Some(env);
+                        break;
+                    },
+                    Err(e) => {
+                        warn!(
+                            "Attempt {}/{} to open db at {:?} failed: {e}; retrying...",
+                            attempt + 1,
+                            5,
+                            global_dedup_dir
+                        );
+                        last_err = Some(e);
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                    },
+                }
+            }
+            result.ok_or_else(|| {
+                CasClientError::Other(format!(
+                    "Error opening db at {global_dedup_dir:?} after 5 attempts: {}",
+                    last_err.unwrap()
+                ))
+            })?
+        };
 
         let mut write_txn = global_dedup_db_env
             .write_txn()
