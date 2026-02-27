@@ -148,10 +148,13 @@ fn test_active_window_protection() {
     let temp_dir = TempDir::new().expect("Failed to create temp directory");
     let log_dir = temp_dir.path();
 
-    // Set up environment variables for small size limit to trigger cleanup
+    // Set up environment variables for small size limit to trigger cleanup.
+    // Use a large min_deletion_age (30s) so files from the initial 3 runs are never
+    // eligible for deletion — even on slow Windows CI runners where process creation
+    // and sysinfo's process-table scan can push total elapsed time past a few seconds.
     let env_vars = [
         ("HF_XET_LOG_DIR_MAX_SIZE", "1kb"),
-        ("HF_XET_LOG_DIR_MIN_DELETION_AGE", "2s"),
+        ("HF_XET_LOG_DIR_MIN_DELETION_AGE", "30s"),
         ("HF_XET_LOG_DIR_MAX_RETENTION_AGE", "1h"),
         ("HF_XET_LOG_DIR_DISABLE_CLEANUP", "false"),
     ];
@@ -173,11 +176,19 @@ fn test_active_window_protection() {
     let log_dir_size = get_directory_size(log_dir);
     assert!(log_dir_size > 1 * 1024);
 
-    // Wait a bit longer than the minimum deletion age and run again to create another log -- and clean the rest up.
+    // Now switch to a short min_deletion_age, wait for it to elapse, then run again
+    // to trigger cleanup of the older files.
+    let cleanup_env_vars = [
+        ("HF_XET_LOG_DIR_MAX_SIZE", "1kb"),
+        ("HF_XET_LOG_DIR_MIN_DELETION_AGE", "2s"),
+        ("HF_XET_LOG_DIR_MAX_RETENTION_AGE", "1h"),
+        ("HF_XET_LOG_DIR_DISABLE_CLEANUP", "false"),
+    ];
+
     std::thread::sleep(Duration::from_secs(3));
 
     for _ in 0..2 {
-        run_test_executable(log_dir, 100, &env_vars);
+        run_test_executable(log_dir, 100, &cleanup_env_vars);
     }
 
     // Wait for disk to be synchronized.

@@ -1,3 +1,5 @@
+#[cfg(unix)]
+use std::ffi::CString;
 use std::fs::Metadata;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
@@ -30,18 +32,19 @@ pub fn set_file_metadata<P: AsRef<Path>>(path: P, metadata: &Metadata, match_own
         },
     ];
 
-    if let Some(path_s) = path.to_str() {
+    if let Some(path_s) = path.to_str()
+        && let Ok(c_path) = CString::new(path_s)
+    {
         if match_owner {
-            // Set ownership
             let uid = metadata.uid();
             let gid = metadata.gid();
             unsafe {
-                libc::chown(path_s.as_bytes().as_ptr() as *const libc::c_char, uid, gid);
+                libc::chown(c_path.as_ptr(), uid, gid);
             }
         }
 
         unsafe {
-            libc::utimensat(libc::AT_FDCWD, path_s.as_bytes().as_ptr() as *const libc::c_char, times.as_ptr(), 0);
+            libc::utimensat(libc::AT_FDCWD, c_path.as_ptr(), times.as_ptr(), 0);
         }
     }
     Ok(())
