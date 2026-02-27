@@ -8,10 +8,11 @@ use cas_client::Client;
 use cas_types::FileRange;
 use file_reconstruction::{DataOutput, FileReconstructor};
 use progress_tracking::TrackingProgressUpdater;
+use progress_tracking::aggregator::AggregatingProgressUpdater;
 use progress_tracking::download_tracking::{DownloadProgressTracker, DownloadTaskUpdater};
 use tracing::instrument;
 use ulid::Ulid;
-use xet_runtime::XetRuntime;
+use xet_runtime::{XetRuntime, xet_config};
 
 use crate::configurations::TranslatorConfig;
 use crate::errors::*;
@@ -125,14 +126,39 @@ impl FileDownloadSession {
         let output = DataOutput::write_in_file(write_path);
         let tracking_name = self.tracker_name(None, Some(write_path), None);
 
-        let per_file_tracker = progress_updater.map(|updater| {
+        // Wrap the progress updater in an aggregator to batch updates and reduce
+        // callback overhead. Without this, each XORB chunk triggers a Rust→Python
+        // callback that acquires the GIL, causing severe contention with many
+        // concurrent file downloads.
+        let (updater_for_tracker, aggregator) = match progress_updater {
+            Some(updater) => {
+                let flush_interval = xet_config().data.progress_update_interval;
+                let sampling_window = xet_config().data.progress_update_speed_sampling_window;
+                if !flush_interval.is_zero() {
+                    let agg = AggregatingProgressUpdater::new(updater, flush_interval, sampling_window);
+                    (Some(agg.clone() as Arc<dyn TrackingProgressUpdater>), Some(agg))
+                } else {
+                    (Some(updater), None)
+                }
+            },
+            None => (None, None),
+        };
+
+        let per_file_tracker = updater_for_tracker.map(|updater| {
             let tracker = DownloadProgressTracker::new(updater);
             let task = tracker.new_download_task(tracking_name);
             task.update_item_size(file_info.file_size(), true);
             task
         });
 
-        self.run_download(file_info, output, None, per_file_tracker).await
+        let result = self.run_download(file_info, output, None, per_file_tracker).await;
+
+        // Finalize the aggregator to flush remaining updates and stop the background task.
+        if let Some(agg) = aggregator {
+            agg.finalize().await;
+        }
+
+        result
     }
 
     fn tracker_name(
