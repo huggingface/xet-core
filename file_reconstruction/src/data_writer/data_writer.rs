@@ -3,7 +3,7 @@ use std::pin::Pin;
 
 use bytes::Bytes;
 use cas_types::FileRange;
-use tokio::sync::OwnedSemaphorePermit;
+use utils::adjustable_semaphore::AdjustableSemaphorePermit;
 
 use crate::Result;
 
@@ -25,7 +25,7 @@ pub trait DataWriter: Send + Sync + 'static {
     async fn set_next_term_data_source(
         &self,
         byte_range: FileRange,
-        permit: Option<OwnedSemaphorePermit>,
+        permit: Option<AdjustableSemaphorePermit>,
         data_future: DataFuture,
     ) -> Result<()>;
 

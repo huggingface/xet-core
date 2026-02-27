@@ -9,18 +9,21 @@ pub mod errors;
 #[cfg(not(target_family = "wasm"))]
 pub mod limited_joinset;
 mod output_bytes;
+pub use output_bytes::output_bytes;
 pub mod serialization_utils;
 #[cfg(not(target_family = "wasm"))]
 pub mod singleflight;
 
-pub use output_bytes::output_bytes;
+#[cfg(not(target_family = "wasm"))]
+pub mod system_monitor;
+
+#[cfg(not(target_family = "wasm"))]
+pub use system_monitor::SystemMonitor;
 
 pub mod rw_task_lock;
 pub use rw_task_lock::{RwTaskLock, RwTaskLockError, RwTaskLockReadGuard};
 
 pub mod adjustable_semaphore;
-pub mod resource_semaphore;
-pub use resource_semaphore::ResourceSemaphore;
 
 mod exp_weighted_moving_avg;
 pub use exp_weighted_moving_avg::ExpWeightedMovingAvg;
@@ -28,7 +31,7 @@ pub use exp_weighted_moving_avg::ExpWeightedMovingAvg;
 mod guards;
 
 #[cfg(not(target_family = "wasm"))]
-pub use guards::{CwdGuard, EnvVarGuard};
+pub use guards::{ClosureGuard, CwdGuard, EnvVarGuard};
 
 #[cfg(not(target_family = "wasm"))]
 mod file_paths;
