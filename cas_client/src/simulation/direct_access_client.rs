@@ -28,7 +28,7 @@ use crate::interface::Client;
 /// local server to work with either backend.
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
-pub trait DirectAccessClient: Client + Send + Sync + 'static {
+pub trait DirectAccessClient: Client + Send + Sync {
     /// Sets the expiration duration for fetch term URLs.
     fn set_fetch_term_url_expiration(&self, expiration: Duration);
 

@@ -131,6 +131,7 @@ fn parse_duration(s: &str) -> ScenarioResult<Duration> {
 
 fn setup_logging(out_dir: &Path) {
     let log_dest = format!("{}/", out_dir.display());
+    // SAFETY: Called from main() before any threads are spawned.
     unsafe { std::env::set_var("HF_XET_LOG_DEST", &log_dest) };
     init_logging(LoggingConfig::default_to_directory("run_upload_scenario".to_string(), out_dir));
 }

@@ -43,12 +43,6 @@ pub struct ServerState {
     pub latency_simulation: Arc<LatencySimulation>,
 }
 
-// ServerState is Send + Sync because:
-// - Arc<dyn DirectAccessClient> is Send + Sync (DirectAccessClient requires Send + Sync)
-// - Arc<LatencySimulation> is Send + Sync (LatencySimulation contains only Send + Sync types)
-unsafe impl Send for ServerState {}
-unsafe impl Sync for ServerState {}
-
 /// Represents the different forms a Range header can take.
 pub enum FileRangeVariant {
     /// Standard byte range: bytes=start-end (inclusive end, converted to exclusive)
@@ -558,7 +552,7 @@ fn parse_duration_range(value: &str) -> Result<std::ops::Range<std::time::Durati
 
 pub async fn set_config(State(state): State<ServerState>, uri: axum::http::Uri, body: Body) -> Response {
     // Try to parse as JSON body first
-    let body_bytes = match axum::body::to_bytes(body, usize::MAX).await {
+    let body_bytes = match axum::body::to_bytes(body, 1_048_576).await {
         Ok(bytes) => bytes,
         Err(_) => Bytes::new(),
     };

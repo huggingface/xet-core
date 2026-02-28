@@ -210,7 +210,11 @@ impl LocalTestServerBuilder {
             Arc::clone(&proxy).run_refill_loop();
             tokio::spawn({
                 let proxy = Arc::clone(&proxy);
-                async move { proxy.run_accept_loop().await }
+                async move {
+                    if let Err(e) = proxy.run_accept_loop().await {
+                        tracing::error!(error = %e, "bandwidth proxy accept loop failed");
+                    }
+                }
             });
             (Some(proxy), format!("http://{}", listen_addr))
         } else {

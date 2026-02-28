@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
+use bytes::Bytes;
 use rand::Rng;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -32,18 +33,18 @@ const LATENCY_PIPE_DEPTH: usize = 16;
 
 /// Single struct for the network simulation proxy. Methods take `Arc<Self>` for use in async tasks.
 pub struct NetworkSimulationProxy {
-    pub(crate) current_network_profile: Mutex<NetworkConfig>,
-    pub(crate) total_upload_possible: Arc<AtomicU64>,
-    pub(crate) total_download_possible: Arc<AtomicU64>,
-    pub(crate) shutdown_flag: AtomicBool,
-    pub(crate) network_profile_provider: NetworkProfile,
-    pub(crate) start_instant: Instant,
-    pub(crate) last_refill_instant: Mutex<Instant>,
-    pub(crate) active_connections: AtomicU64,
-    pub(crate) upload_limiter: Arc<Semaphore>,
-    pub(crate) download_limiter: Arc<Semaphore>,
-    pub(crate) upstream: String,
-    pub(crate) listener: Mutex<Option<TcpListener>>,
+    current_network_profile: Mutex<NetworkConfig>,
+    total_upload_possible: Arc<AtomicU64>,
+    total_download_possible: Arc<AtomicU64>,
+    shutdown_flag: AtomicBool,
+    network_profile_provider: NetworkProfile,
+    start_instant: Instant,
+    last_refill_instant: Mutex<Instant>,
+    active_connections: AtomicU64,
+    upload_limiter: Arc<Semaphore>,
+    download_limiter: Arc<Semaphore>,
+    upstream: String,
+    listener: Mutex<Option<TcpListener>>,
 }
 
 impl fmt::Debug for NetworkSimulationProxy {
@@ -136,14 +137,16 @@ impl NetworkSimulationProxy {
     }
 
     /// Call from a spawned task. Accepts connections and spawns a handler for each; exits when shutdown_flag is set.
-    pub async fn run_accept_loop(self: Arc<Self>) {
+    pub async fn run_accept_loop(self: Arc<Self>) -> Result<()> {
         let listener = {
             let mut guard = self.listener.lock().await;
-            guard.take().expect("accept loop already started or listener taken")
+            guard
+                .take()
+                .ok_or_else(|| CasClientError::Other("accept loop already started or listener taken".into()))?
         };
         loop {
             if self.shutdown_flag.load(Ordering::Relaxed) {
-                break;
+                return Ok(());
             }
             tokio::select! {
                 _ = sleep(Duration::from_millis(ACCEPT_POLL_MS)) => {}
@@ -247,7 +250,7 @@ where
     }
 
     // Pipeline: reader task enqueues (delivery_time, data), current task dequeues and delivers.
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<(Instant, Vec<u8>)>(LATENCY_PIPE_DEPTH);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<(Instant, Bytes)>(LATENCY_PIPE_DEPTH);
 
     let base_latency = latency.0;
     let jitter = latency.1;
@@ -272,7 +275,7 @@ where
             }
             let delay_secs = base_secs + rand::rng().random_range(-jitter_secs..=jitter_secs);
             let delivery_time = Instant::now() + Duration::from_secs_f64(delay_secs.max(0.0));
-            if tx.send((delivery_time, buf[..n].to_vec())).await.is_err() {
+            if tx.send((delivery_time, Bytes::copy_from_slice(&buf[..n]))).await.is_err() {
                 break;
             }
         }
@@ -344,7 +347,11 @@ mod tests {
         let provider = NetworkProfileOptions::new().with_bandwidth_bytes_per_sec(10_000).build();
         let (proxy, listen_str) = NetworkSimulationProxy::new(server_addr_str, provider).await.expect("new proxy");
         Arc::clone(&proxy).run_refill_loop();
-        tokio::spawn(async move { proxy.run_accept_loop().await });
+        tokio::spawn(async move {
+            if let Err(e) = proxy.run_accept_loop().await {
+                tracing::error!(error = %e, "bandwidth proxy accept loop failed");
+            }
+        });
         let proxy_addr = listen_str;
 
         const PAYLOAD: usize = 5000;

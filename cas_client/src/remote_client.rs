@@ -114,7 +114,7 @@ impl RemoteClient {
         &self.endpoint
     }
 
-    pub fn http_client(&self) -> Arc<ClientWithMiddleware> {
+    pub(crate) fn http_client(&self) -> Arc<ClientWithMiddleware> {
         self.http_client.clone()
     }
 

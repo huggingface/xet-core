@@ -55,7 +55,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(0);
         rng.fill(&mut data[..]);
 
-        let server = LocalTestServerBuilder::new().with_ephemeral_disk().start().await;
+        let server = LocalTestServerBuilder::new().start().await;
         let shard_base = TempDir::new().unwrap();
         let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), shard_base.path()).unwrap());
 
@@ -126,7 +126,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(0);
         rng.fill(&mut data[..]);
 
-        let server = LocalTestServerBuilder::new().with_ephemeral_disk().start().await;
+        let server = LocalTestServerBuilder::new().start().await;
         let shard_base = TempDir::new().unwrap();
         let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), shard_base.path()).unwrap());
 
