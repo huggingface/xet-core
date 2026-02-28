@@ -13,6 +13,7 @@ data = { path = "../data" }
 progress_tracking = { path = "../progress_tracking" }
 utils = { path = "../utils" }
 hub_client = { path = "../hub_client" }
+xet_config = { path = "../xet_config" }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }

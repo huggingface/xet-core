@@ -44,8 +44,8 @@ impl FileUploadSession {
                 let mut headers = http::HeaderMap::new();
                 headers.insert(header::USER_AGENT, value);
                 Some(Arc::new(headers))
-            }
-            Err(_) => None
+            },
+            Err(_) => None,
         };
 
         let client = RemoteClient::new(

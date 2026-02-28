@@ -234,7 +234,10 @@ pub async fn download_async(
         tasks.push(tokio::spawn(
             async move {
                 let path = PathBuf::from(&file_path);
-                session.download_file_with_updater(&file_info, &path, updater).await?;
+                match updater {
+                    Some(u) => session.download_file_with_updater(&file_info, &path, u).await?,
+                    None => session.download_file(&file_info, &path, None).await?,
+                };
                 errors::Result::Ok(file_path)
             }
             .instrument(info_span!("download_file")),

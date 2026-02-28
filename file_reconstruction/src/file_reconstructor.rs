@@ -1,17 +1,24 @@
+use std::fs::OpenOptions;
+use std::io::{Seek, SeekFrom, Write};
+use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use cas_client::Client;
 use cas_types::FileRange;
 use merklehash::MerkleHash;
 use progress_tracking::download_tracking::DownloadTaskUpdater;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
-use utils::ResourceSemaphore;
+use utils::ClosureGuard;
+use utils::adjustable_semaphore::AdjustableSemaphore;
 use xet_config::ReconstructionConfig;
 use xet_runtime::{XetRuntime, xet_config};
 
-use crate::data_writer::{DataOutput, new_data_writer};
+use crate::data_writer::{DataWriter, DownloadStream, SequentialWriter};
 use crate::error::{FileReconstructionError, Result};
 use crate::reconstruction_terms::ReconstructionTermManager;
+use crate::run_state::{RunError, RunState};
 
 /// Reconstructs a file from its content-addressed chunks by downloading xorb blocks
 /// and writing the reassembled data to an output. Supports byte range requests and
@@ -20,33 +27,28 @@ pub struct FileReconstructor {
     client: Arc<dyn Client>,
     file_hash: MerkleHash,
     byte_range: Option<FileRange>,
-    output: DataOutput,
     progress_updater: Option<Arc<DownloadTaskUpdater>>,
     config: Arc<ReconstructionConfig>,
 
     /// Custom buffer semaphore for testing or specialized use cases.
-    custom_buffer_semaphore: Option<ResourceSemaphore>,
+    custom_buffer_semaphore: Option<Arc<AdjustableSemaphore>>,
+
+    /// Cancellation token checked at each major step of the reconstruction loop.
+    /// When cancelled, reconstruction stops at its next check point. Long waits
+    /// (such as semaphore acquisition) use `tokio::select!` so they abort promptly.
+    cancellation_token: CancellationToken,
 }
 
 impl FileReconstructor {
-    pub fn new(client: &Arc<dyn Client>, file_hash: MerkleHash, output: DataOutput) -> Self {
+    pub fn new(client: &Arc<dyn Client>, file_hash: MerkleHash) -> Self {
         Self {
             client: client.clone(),
             file_hash,
             byte_range: None,
-            output,
-            progress_updater: {
-                #[cfg(debug_assertions)]
-                {
-                    Some(DownloadTaskUpdater::correctness_verification_tracker())
-                }
-                #[cfg(not(debug_assertions))]
-                {
-                    None
-                }
-            },
+            progress_updater: default_progress_updater(),
             config: Arc::new(xet_config().reconstruction.clone()),
             custom_buffer_semaphore: None,
+            cancellation_token: CancellationToken::new(),
         }
     }
 
@@ -74,32 +76,128 @@ impl FileReconstructor {
     /// Sets a custom buffer semaphore for controlling download buffer memory usage.
     /// This is primarily useful for testing scenarios where you want to control
     /// the timing of term fetches by limiting buffer capacity.
-    pub fn with_buffer_semaphore(self, semaphore: ResourceSemaphore) -> Self {
+    pub fn with_buffer_semaphore(self, semaphore: Arc<AdjustableSemaphore>) -> Self {
         Self {
             custom_buffer_semaphore: Some(semaphore),
             ..self
         }
     }
 
-    /// Runs the file reconstruction.
-    /// Returns the number of bytes written.
-    pub async fn run(self) -> Result<u64> {
+    /// Replaces the default cancellation token with the given one. This is used
+    /// when external code needs to share the same token for coordinated
+    /// cancellation.
+    pub fn with_cancellation_token(self, token: CancellationToken) -> Self {
+        Self {
+            cancellation_token: token,
+            ..self
+        }
+    }
+
+    /// Reconstructs the file and writes it to the given path.
+    ///
+    /// The file is opened with read/write access without truncation, allowing
+    /// multiple concurrent reconstructions to write to different regions of the
+    /// same file.
+    ///
+    /// When `write_offset` is `Some(offset)`, writing begins at that byte
+    /// position regardless of the byte range. When `None`, writing begins at
+    /// the byte range start (or 0 for a full-file reconstruction).
+    pub async fn reconstruct_to_file(self, path: &Path, write_offset: Option<u64>) -> Result<u64> {
         info!(
             file_hash = %self.file_hash,
             byte_range = ?self.byte_range,
-            "Starting file reconstruction"
+            path = %path.display(),
+            write_offset = ?write_offset,
+            "Reconstructing file to disk"
         );
 
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let mut file = OpenOptions::new().write(true).create(true).truncate(false).open(path)?;
+
+        let default_write_position = self.byte_range.map_or(0, |r| r.start);
+        let seek_position = write_offset.unwrap_or(default_write_position);
+        if seek_position > 0 {
+            file.seek(SeekFrom::Start(seek_position))?;
+        }
+
+        let run_state = RunState::new(self.cancellation_token.clone(), self.file_hash, self.progress_updater.clone());
+        let data_writer = SequentialWriter::new(file, self.config.use_vectored_write, run_state.clone());
+        self.run(data_writer, run_state, false).await
+    }
+
+    /// Reconstructs the file and writes it to the given writer.
+    ///
+    /// The writer receives data starting from its current position (position 0
+    /// for a fresh writer), regardless of the byte range being reconstructed.
+    pub async fn reconstruct_to_writer<W: Write + Send + 'static>(self, writer: W) -> Result<u64> {
+        info!(
+            file_hash = %self.file_hash,
+            byte_range = ?self.byte_range,
+            "Reconstructing file to writer"
+        );
+
+        let run_state = RunState::new(self.cancellation_token.clone(), self.file_hash, self.progress_updater.clone());
+        let data_writer = SequentialWriter::new(writer, self.config.use_vectored_write, run_state.clone());
+        self.run(data_writer, run_state, false).await
+    }
+
+    /// Reconstructs the file as a stream, returning a [`DownloadStream`] that
+    /// yields data chunks as they become available.
+    ///
+    /// The reconstruction task is **not** started immediately. It begins when
+    /// [`DownloadStream::start`] is called, or automatically on the first call
+    /// to [`DownloadStream::next`] / [`DownloadStream::blocking_next`].
+    pub fn reconstruct_to_stream(self) -> DownloadStream {
+        let run_state = RunState::new(self.cancellation_token.clone(), self.file_hash, self.progress_updater.clone());
+
+        DownloadStream::new(self, run_state)
+    }
+
+    /// Runs the file reconstruction with error handling and cancellation support.
+    /// Returns the number of bytes written.
+    ///
+    /// When `is_streaming` is true, the progress completion assertions at the end
+    /// of reconstruction are skipped because the stream consumer reports bytes
+    /// asynchronously after this method returns.
+    pub(crate) async fn run(
+        self,
+        data_writer: Arc<dyn DataWriter>,
+        run_state: Arc<RunState>,
+        is_streaming: bool,
+    ) -> Result<u64> {
+        match self.run_impl(data_writer, &run_state, is_streaming).await {
+            Ok(v) => Ok(v),
+            Err(RunError::Cancelled) => {
+                run_state.check_error()?;
+                Ok(0)
+            },
+            Err(RunError::Error(e)) => {
+                run_state.set_error(e.clone());
+                Err(e)
+            },
+        }
+    }
+
+    async fn run_impl(
+        self,
+        data_writer: Arc<dyn DataWriter>,
+        run_state: &RunState,
+        _is_streaming: bool,
+    ) -> std::result::Result<u64, RunError> {
         let Self {
             client,
-            file_hash,
             byte_range,
-            output,
-            progress_updater,
             config,
             custom_buffer_semaphore,
+            ..
         } = self;
 
+        run_state.check_run_state()?;
+
+        let file_hash = *run_state.file_hash();
         let requested_range = byte_range.unwrap_or_else(FileRange::full);
 
         let mut term_manager = ReconstructionTermManager::new(
@@ -107,62 +205,109 @@ impl FileReconstructor {
             client.clone(),
             file_hash,
             requested_range,
-            progress_updater.clone(),
+            run_state.progress_updater().cloned(),
         )
         .await?;
 
-        let data_writer = new_data_writer(output, requested_range.start, &config, progress_updater.clone())?;
+        let using_global_memory_limit = custom_buffer_semaphore.is_none();
+        let download_buffer_semaphore = custom_buffer_semaphore
+            .unwrap_or_else(|| XetRuntime::current().common().reconstruction_download_buffer.clone());
 
-        // Determine buffer semaphore based on whether a custom one is provided.
-        let download_buffer_semaphore = custom_buffer_semaphore.unwrap_or_else(|| {
-            let rt = XetRuntime::current();
-            rt.common().reconstruction_download_buffer.clone()
-        });
+        // Dynamic buffer scaling: the target buffer size grows with the number of active
+        // downloads: target = (base + n * perfile).min(limit). On start we increment to
+        // the new target, possibly getting back a virtual permit that lets this download begin
+        // immediately without queuing behind existing acquires. On exit, the ClosureGuard
+        // recomputes the target for the reduced download count and shrinks back if needed.
+        let mut seed_buffer_permit;
+        let _download_count_decrement_guard;
+
+        if using_global_memory_limit {
+            let active_downloads = XetRuntime::current().common().active_downloads.clone();
+            let n = active_downloads.fetch_add(1, Ordering::Relaxed) + 1;
+
+            let base = config.download_buffer_size.as_u64();
+            let perfile = config.download_buffer_perfile_size.as_u64();
+            let limit = config.download_buffer_limit.as_u64();
+
+            let target = base.saturating_add(n.saturating_mul(perfile)).min(limit);
+            seed_buffer_permit = download_buffer_semaphore.increment_permits_to_target(target);
+
+            let buffer_sem = download_buffer_semaphore.clone();
+            _download_count_decrement_guard = Some(ClosureGuard::new(move || {
+                let n = active_downloads.fetch_sub(1, Ordering::Relaxed).saturating_sub(1);
+                let target = base.saturating_add(n.saturating_mul(perfile)).min(limit);
+                buffer_sem.decrement_permits_to_target(target);
+            }));
+        } else {
+            seed_buffer_permit = None;
+            _download_count_decrement_guard = None;
+        }
 
         // The range start offset - we need to adjust byte ranges to be relative to this.
         let range_start_offset = requested_range.start;
 
-        // Tracking for summary stats.
-        let mut total_terms_processed: u64 = 0;
-        let mut total_bytes_scheduled: u64 = 0;
-        let mut block_count: u64 = 0;
-
         // Outer loop: retrieve blocks of file terms.
-        while let Some(file_terms) = term_manager.next_file_terms().await? {
-            let block_term_count = file_terms.len();
-            let block_start = file_terms.first().map(|t| t.byte_range.start).unwrap_or(0);
-            let block_end = file_terms.last().map(|t| t.byte_range.end).unwrap_or(0);
-            let block_bytes = block_end.saturating_sub(block_start);
+        // Use select! so a background error (which cancels the token) wakes this
+        // up immediately rather than waiting for the network round-trip to finish.
+        loop {
+            let maybe_file_terms = tokio::select! {
+                biased;
+                _ = run_state.cancelled() => {
+                    return run_state.check_run_state().map(|_| 0);
+                }
+                result = term_manager.next_file_terms() => result?
+            };
 
-            block_count += 1;
-            info!(
-                block_number = block_count,
-                term_count = block_term_count,
-                block_byte_range = ?(block_start, block_end),
-                block_bytes,
-                "Begin processing on block of file terms."
-            );
+            let Some(file_terms) = maybe_file_terms else {
+                break;
+            };
+
+            run_state.check_run_state()?;
+
+            run_state.record_new_block();
 
             // Inner loop: process each file term in the block.
             for file_term in file_terms {
-                // Calculate the number of bytes this term will use.
+                run_state.check_run_state()?;
+
                 let term_size = file_term.byte_range.end - file_term.byte_range.start;
 
                 debug!(
+                    file_hash = %file_hash,
                     xorb_hash = %file_term.xorb_block.xorb_hash,
                     term_byte_range = ?(file_term.byte_range.start, file_term.byte_range.end),
                     term_size,
                     "Processing file term"
                 );
 
-                // Acquire a permit from the memory limiter for the memory needed for
-                // the next term. The ResourceSemaphore handles scaling and clamping.
-                let buffer_permit = download_buffer_semaphore.acquire_owned(term_size).await.map_err(|e| {
-                    FileReconstructionError::InternalError(format!("Error acquiring download buffer permit: {e}"))
-                })?;
+                // Try to split from the reserved (virtual) permit first, giving this
+                // download immediate access without waiting in the FIFO queue.
+                // Fall back to the shared semaphore if the seed permit has been exhausted.
+                let buffer_permit = match seed_buffer_permit.as_mut().and_then(|rp| rp.split(term_size)) {
+                    Some(split) => split,
+                    None => {
+                        seed_buffer_permit = None;
 
-                // Get the data future that will retrieve the term's data.
-                let data_future = file_term.get_data_task(client.clone(), progress_updater.clone()).await?;
+                        // Use tokio::select! to abort promptly if the run state fires.
+                        tokio::select! {
+                            biased;
+                            _ = run_state.cancelled() => {
+                                return run_state.check_run_state().map(|_| 0);
+                            }
+                            result = download_buffer_semaphore.acquire_many(term_size) => {
+                                result.map_err(|e| {
+                                    FileReconstructionError::InternalError(format!(
+                                        "Error acquiring download buffer permit: {e}"
+                                    ))
+                                })?
+                            }
+                        }
+                    },
+                };
+
+                let data_future = file_term
+                    .get_data_task(client.clone(), run_state.progress_updater().cloned())
+                    .await?;
 
                 #[cfg(debug_assertions)]
                 {
@@ -176,46 +321,47 @@ impl FileReconstructor {
                     file_term.byte_range.end - range_start_offset,
                 );
 
-                // Set the data source for this term, passing the buffer permit
-                // so it gets released after the data is written.
                 data_writer
                     .set_next_term_data_source(relative_byte_range, Some(buffer_permit), data_future)
                     .await?;
 
-                total_terms_processed += 1;
-                total_bytes_scheduled += term_size;
+                run_state.record_new_term(term_size);
             }
         }
 
-        info!(
-            block_count,
-            total_terms_processed, total_bytes_scheduled, "All term blocks received and scheduled for writing"
-        );
+        run_state.log_progress("All term blocks received and scheduled for writing");
 
         // Finish the data writer and wait for all data to be written.
         let bytes_written = data_writer.finish().await?;
+        let total_bytes_scheduled = run_state.total_bytes_scheduled();
 
         debug_assert_eq!(
             bytes_written, total_bytes_scheduled,
             "Bytes written ({bytes_written}) should match total bytes scheduled ({total_bytes_scheduled})"
         );
 
-        info!(bytes_written, "File reconstruction completed successfully");
+        run_state.log_progress("File reconstruction completed successfully");
 
         #[cfg(debug_assertions)]
-        {
-            // This verifies that when the user asked us for a byte range, we actually downloaded and
-            // recorded the correct byte range for that part.
-            if let Some(ref updater) = progress_updater {
-                updater.assert_complete();
-                if let Some(byte_range) = byte_range {
-                    assert_eq!(updater.total_bytes_completed(), byte_range.end - byte_range.start);
-                }
+        if !_is_streaming && let Some(updater) = run_state.progress_updater() {
+            updater.assert_complete();
+            if let Some(byte_range) = byte_range {
+                assert_eq!(updater.total_bytes_completed(), byte_range.end - byte_range.start);
             }
         }
 
-        Ok(bytes_written)
+        Ok(total_bytes_scheduled)
     }
+}
+
+#[cfg(debug_assertions)]
+fn default_progress_updater() -> Option<Arc<DownloadTaskUpdater>> {
+    Some(DownloadTaskUpdater::correctness_verification_tracker())
+}
+
+#[cfg(not(debug_assertions))]
+fn default_progress_updater() -> Option<Arc<DownloadTaskUpdater>> {
+    None
 }
 
 #[cfg(test)]
@@ -229,6 +375,7 @@ mod tests {
     use cas_types::FileRange;
     use progress_tracking::NoOpProgressUpdater;
     use progress_tracking::download_tracking::DownloadProgressTracker;
+    use tokio_util::sync::CancellationToken;
 
     use super::*;
 
@@ -262,20 +409,19 @@ mod tests {
         let writer = StaticCursorWriter(buffer.clone());
 
         let mut reconstructor =
-            FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_hash, DataOutput::writer(writer))
-                .with_config(config);
+            FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_hash).with_config(config);
 
         if let Some(range) = byte_range {
             reconstructor = reconstructor.with_byte_range(range);
         }
 
-        reconstructor.run().await?;
+        reconstructor.reconstruct_to_writer(writer).await?;
 
         let data = buffer.lock().unwrap().get_ref().clone();
         Ok(data)
     }
 
-    /// Reconstructs to a file (using DataOutput::file) and returns the reconstructed data.
+    /// Reconstructs to a file and returns the reconstructed data.
     /// Creates a temp file, reconstructs to it, then reads the relevant portion back.
     async fn reconstruct_to_file(
         client: &Arc<LocalClient>,
@@ -286,18 +432,14 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("output.bin");
 
-        let mut reconstructor = FileReconstructor::new(
-            &(client.clone() as Arc<dyn Client>),
-            file_hash,
-            DataOutput::write_in_file(&file_path),
-        )
-        .with_config(config);
+        let mut reconstructor =
+            FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_hash).with_config(config);
 
         if let Some(range) = byte_range {
             reconstructor = reconstructor.with_byte_range(range);
         }
 
-        reconstructor.run().await?;
+        reconstructor.reconstruct_to_file(&file_path, None).await?;
 
         // Read back the data from the file at the expected location.
         let file_data = std::fs::read(&file_path)?;
@@ -305,38 +447,33 @@ mod tests {
         Ok(file_data[start..].to_vec())
     }
 
-    /// Reconstructs to a file at offset 0 (using DataOutput::file_at_offset) and returns the data.
-    /// This tests writing to the beginning of a file regardless of the byte range.
+    /// Reconstructs to a file at a specific offset and returns the data.
     async fn reconstruct_to_file_at_specific_offset(
         client: &Arc<LocalClient>,
         file_hash: MerkleHash,
         byte_range: Option<FileRange>,
         config: &ReconstructionConfig,
     ) -> Result<Vec<u8>> {
-        let offset = 9;
+        let offset = 9u64;
 
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("output.bin");
 
-        let mut reconstructor = FileReconstructor::new(
-            &(client.clone() as Arc<dyn Client>),
-            file_hash,
-            DataOutput::write_file_at_offset(&file_path, offset as u64), // Write at offset 9.
-        )
-        .with_config(config);
+        let mut reconstructor =
+            FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_hash).with_config(config);
 
         if let Some(range) = byte_range {
             reconstructor = reconstructor.with_byte_range(range);
         }
 
-        reconstructor.run().await?;
+        reconstructor.reconstruct_to_file(&file_path, Some(offset)).await?;
 
-        // Read back all file data (it starts at offset 0).
+        // Read back all file data.
         let file_data = std::fs::read(&file_path)?;
-        Ok(file_data[offset..].to_vec())
+        Ok(file_data[offset as usize..].to_vec())
     }
 
-    /// Reconstructs to a file at offset 0 (using DataOutput::file_at_offset) and returns the data.
+    /// Reconstructs to a file at offset 0 and returns the data.
     /// This tests writing to the beginning of a file regardless of the byte range.
     async fn reconstruct_to_file_at_offset_zero(
         client: &Arc<LocalClient>,
@@ -347,18 +484,14 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("output.bin");
 
-        let mut reconstructor = FileReconstructor::new(
-            &(client.clone() as Arc<dyn Client>),
-            file_hash,
-            DataOutput::write_file_at_offset(&file_path, 0), // Write at offset 9.
-        )
-        .with_config(config);
+        let mut reconstructor =
+            FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_hash).with_config(config);
 
         if let Some(range) = byte_range {
             reconstructor = reconstructor.with_byte_range(range);
         }
 
-        reconstructor.run().await?;
+        reconstructor.reconstruct_to_file(&file_path, Some(0)).await?;
 
         // Read back all file data (it starts at offset 0).
         let file_data = std::fs::read(&file_path)?;
@@ -393,19 +526,19 @@ mod tests {
             let mut config = base_config.clone();
             config.use_vectored_write = use_vectored;
 
-            // Test 1: reconstruct_to_vec (DataOutput::writer)
+            // Test 1: reconstruct_to_writer
             let vec_result = reconstruct_to_vec(client, h, None, &config).await.unwrap();
             assert_eq!(vec_result, *expected, "vec failed (vectored={use_vectored})");
 
-            // Test 2: reconstruct_to_file (DataOutput::file)
+            // Test 2: reconstruct_to_file
             let file_result = reconstruct_to_file(client, h, None, &config).await.unwrap();
             assert_eq!(file_result, *expected, "file failed (vectored={use_vectored})");
 
-            // Test 3: reconstruct_to_file_at_offset_zero (DataOutput::file_at_offset)
+            // Test 3: reconstruct_to_file with offset 0
             let file_offset_result = reconstruct_to_file_at_offset_zero(client, h, None, &config).await.unwrap();
             assert_eq!(file_offset_result, *expected, "file_at_offset_zero failed (vectored={use_vectored})");
 
-            // Test 4: reconstruct_to_file_at_specific_offset
+            // Test 4: reconstruct_to_file with specific offset
             let file_specific_result = reconstruct_to_file_at_specific_offset(client, h, None, &config).await.unwrap();
             assert_eq!(file_specific_result, *expected, "file_at_specific_offset failed (vectored={use_vectored})");
         }
@@ -425,19 +558,19 @@ mod tests {
             let mut config = base_config.clone();
             config.use_vectored_write = use_vectored;
 
-            // Test 1: reconstruct_to_vec (DataOutput::writer)
+            // Test 1: reconstruct_to_writer
             let vec_result = reconstruct_to_vec(client, file_contents.file_hash, Some(range), &config)
                 .await
                 .expect("reconstruct_to_vec should succeed");
             assert_eq!(vec_result, expected, "vec failed (vectored={use_vectored})");
 
-            // Test 2: reconstruct_to_file (DataOutput::file)
+            // Test 2: reconstruct_to_file
             let file_result = reconstruct_to_file(client, file_contents.file_hash, Some(range), &config)
                 .await
                 .expect("reconstruct_to_file should succeed");
             assert_eq!(file_result, expected, "file failed (vectored={use_vectored})");
 
-            // Test 3: reconstruct_to_file_at_offset_zero (DataOutput::file_at_offset)
+            // Test 3: reconstruct_to_file with offset 0
             let file_offset_result =
                 reconstruct_to_file_at_offset_zero(client, file_contents.file_hash, Some(range), &config)
                     .await
@@ -504,16 +637,12 @@ mod tests {
 
         let progress_updater =
             DownloadProgressTracker::new(NoOpProgressUpdater::new()).new_download_task(Arc::from("file"));
-        let bytes_written = FileReconstructor::new(
-            &(client.clone() as Arc<dyn Client>),
-            file_contents.file_hash,
-            DataOutput::writer(writer),
-        )
-        .with_config(&config)
-        .with_progress_updater(progress_updater.clone())
-        .run()
-        .await
-        .unwrap();
+        let bytes_written = FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_config(&config)
+            .with_progress_updater(progress_updater.clone())
+            .reconstruct_to_writer(writer)
+            .await
+            .unwrap();
 
         assert_eq!(bytes_written, file_contents.data.len() as u64);
     }
@@ -531,17 +660,13 @@ mod tests {
 
         let progress_updater =
             DownloadProgressTracker::new(NoOpProgressUpdater::new()).new_download_task(Arc::from("file"));
-        let bytes_written = FileReconstructor::new(
-            &(client.clone() as Arc<dyn Client>),
-            file_contents.file_hash,
-            DataOutput::writer(writer),
-        )
-        .with_config(&config)
-        .with_byte_range(range)
-        .with_progress_updater(progress_updater.clone())
-        .run()
-        .await
-        .unwrap();
+        let bytes_written = FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_config(&config)
+            .with_byte_range(range)
+            .with_progress_updater(progress_updater.clone())
+            .reconstruct_to_writer(writer)
+            .await
+            .unwrap();
 
         assert_eq!(bytes_written, expected_bytes);
     }
@@ -560,16 +685,12 @@ mod tests {
         let buffer = Arc::new(std::sync::Mutex::new(Cursor::new(Vec::new())));
         let writer = StaticCursorWriter(buffer.clone());
 
-        let bytes_written = FileReconstructor::new(
-            &(client.clone() as Arc<dyn Client>),
-            file_contents.file_hash,
-            DataOutput::writer(writer),
-        )
-        .with_config(&config)
-        .with_progress_updater(task.clone())
-        .run()
-        .await
-        .unwrap();
+        let bytes_written = FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_config(&config)
+            .with_progress_updater(task.clone())
+            .reconstruct_to_writer(writer)
+            .await
+            .unwrap();
 
         assert_eq!(bytes_written, file_contents.data.len() as u64);
 
@@ -598,16 +719,12 @@ mod tests {
         let buffer = Arc::new(std::sync::Mutex::new(Cursor::new(Vec::new())));
         let writer = StaticCursorWriter(buffer.clone());
 
-        let bytes_written = FileReconstructor::new(
-            &(client.clone() as Arc<dyn Client>),
-            file_contents.file_hash,
-            DataOutput::writer(writer),
-        )
-        .with_config(&config)
-        .with_progress_updater(task.clone())
-        .run()
-        .await
-        .unwrap();
+        let bytes_written = FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_config(&config)
+            .with_progress_updater(task.clone())
+            .reconstruct_to_writer(writer)
+            .await
+            .unwrap();
 
         assert_eq!(bytes_written, file_size);
 
@@ -890,19 +1007,12 @@ mod tests {
 
         // Create a tiny semaphore (1 permit) to force sequential processing
         // This ensures each term is fully written before the next is fetched
-        let tiny_semaphore = ResourceSemaphore::new(1);
+        let tiny_semaphore = AdjustableSemaphore::new(1, (1, 1));
 
-        let reconstructor = FileReconstructor::new(
-            &(client.clone() as Arc<dyn Client>),
-            file_contents.file_hash,
-            DataOutput::SequentialWriter(Box::new(writer)),
-        )
-        .with_config(url_refresh_test_config())
-        .with_buffer_semaphore(tiny_semaphore);
-
-        // Run reconstruction - this should trigger URL refreshes
-        reconstructor
-            .run()
+        FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_config(url_refresh_test_config())
+            .with_buffer_semaphore(tiny_semaphore)
+            .reconstruct_to_writer(writer)
             .await
             .expect("Reconstruction should succeed with URL refresh");
 
@@ -931,17 +1041,14 @@ mod tests {
         let writer = TimeAdvancingWriter::new(Duration::from_secs(2));
         let writer_buffer = writer.buffer.clone();
 
-        let tiny_semaphore = ResourceSemaphore::new(1);
+        let tiny_semaphore = AdjustableSemaphore::new(1, (1, 1));
 
-        let reconstructor = FileReconstructor::new(
-            &(client.clone() as Arc<dyn Client>),
-            file_contents.file_hash,
-            DataOutput::SequentialWriter(Box::new(writer)),
-        )
-        .with_config(url_refresh_test_config())
-        .with_buffer_semaphore(tiny_semaphore);
-
-        reconstructor.run().await.expect("Reconstruction should succeed");
+        FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_config(url_refresh_test_config())
+            .with_buffer_semaphore(tiny_semaphore)
+            .reconstruct_to_writer(writer)
+            .await
+            .expect("Reconstruction should succeed");
 
         let reconstructed = writer_buffer.lock().unwrap().clone();
         assert_eq!(reconstructed, file_contents.data);
@@ -960,17 +1067,14 @@ mod tests {
         let writer = TimeAdvancingWriter::new(Duration::from_secs(2));
         let writer_buffer = writer.buffer.clone();
 
-        let tiny_semaphore = ResourceSemaphore::new(1);
+        let tiny_semaphore = AdjustableSemaphore::new(1, (1, 1));
 
-        let reconstructor = FileReconstructor::new(
-            &(client.clone() as Arc<dyn Client>),
-            file_contents.file_hash,
-            DataOutput::SequentialWriter(Box::new(writer)),
-        )
-        .with_config(url_refresh_test_config())
-        .with_buffer_semaphore(tiny_semaphore);
-
-        reconstructor.run().await.expect("Reconstruction should succeed");
+        FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_config(url_refresh_test_config())
+            .with_buffer_semaphore(tiny_semaphore)
+            .reconstruct_to_writer(writer)
+            .await
+            .expect("Reconstruction should succeed");
 
         let reconstructed = writer_buffer.lock().unwrap().clone();
         assert_eq!(reconstructed, file_contents.data);
@@ -989,17 +1093,14 @@ mod tests {
         let writer = TimeAdvancingWriter::new(Duration::from_millis(100));
         let writer_buffer = writer.buffer.clone();
 
-        let tiny_semaphore = ResourceSemaphore::new(1);
+        let tiny_semaphore = AdjustableSemaphore::new(1, (1, 1));
 
-        let reconstructor = FileReconstructor::new(
-            &(client.clone() as Arc<dyn Client>),
-            file_contents.file_hash,
-            DataOutput::SequentialWriter(Box::new(writer)),
-        )
-        .with_config(url_refresh_test_config())
-        .with_buffer_semaphore(tiny_semaphore);
-
-        reconstructor.run().await.expect("Reconstruction should succeed");
+        FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_config(url_refresh_test_config())
+            .with_buffer_semaphore(tiny_semaphore)
+            .reconstruct_to_writer(writer)
+            .await
+            .expect("Reconstruction should succeed");
 
         let reconstructed = writer_buffer.lock().unwrap().clone();
         assert_eq!(reconstructed, file_contents.data);
@@ -1017,24 +1118,53 @@ mod tests {
         let writer = TimeAdvancingWriter::new(Duration::from_secs(2));
         let writer_buffer = writer.buffer.clone();
 
-        let tiny_semaphore = ResourceSemaphore::new(1);
+        let tiny_semaphore = AdjustableSemaphore::new(1, (0, 1));
 
         let range = FileRange::new(file_len / 4, file_len * 3 / 4);
 
-        let reconstructor = FileReconstructor::new(
-            &(client.clone() as Arc<dyn Client>),
-            file_contents.file_hash,
-            DataOutput::SequentialWriter(Box::new(writer)),
-        )
-        .with_byte_range(range)
-        .with_config(url_refresh_test_config())
-        .with_buffer_semaphore(tiny_semaphore);
-
-        reconstructor.run().await.expect("Reconstruction should succeed");
+        FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_byte_range(range)
+            .with_config(url_refresh_test_config())
+            .with_buffer_semaphore(tiny_semaphore)
+            .reconstruct_to_writer(writer)
+            .await
+            .expect("Reconstruction should succeed");
 
         let reconstructed = writer_buffer.lock().unwrap().clone();
         let expected = &file_contents.data[range.start as usize..range.end as usize];
         assert_eq!(reconstructed, expected);
+    }
+
+    #[test]
+    fn test_dynamic_buffer_scaling_noop_increment_preserves_total_permits() {
+        let mut runtime_config = xet_config::XetConfig::new();
+        runtime_config.reconstruction.download_buffer_size = utils::ByteSize::from("1kb");
+        runtime_config.reconstruction.download_buffer_limit = utils::ByteSize::from("4kb");
+        let expected_total = runtime_config.reconstruction.download_buffer_limit.as_u64();
+
+        let rt = XetRuntime::new_with_config(runtime_config).unwrap();
+
+        rt.external_run_async_task(async move {
+            let (client, file_contents) = setup_test_file(&[(1, (0, 2)), (2, (0, 2)), (3, (0, 2))]).await;
+            let sem = XetRuntime::current().common().reconstruction_download_buffer.clone();
+
+            // Pre-grow to max so the run's increment request is a no-op.
+            let p = sem.increment_total_permits(u64::MAX).unwrap();
+            drop(p);
+            assert_eq!(sem.total_permits(), expected_total);
+
+            let mut config = test_config();
+            config.download_buffer_perfile_size = utils::ByteSize::from("8kb");
+
+            let reconstructed = reconstruct_to_vec(&client, file_contents.file_hash, None, &config)
+                .await
+                .unwrap();
+            assert_eq!(reconstructed, file_contents.data);
+
+            assert_eq!(sem.total_permits(), expected_total);
+            assert_eq!(XetRuntime::current().common().active_downloads.load(Ordering::Relaxed), 0);
+        })
+        .unwrap();
     }
 
     // ==================== File Output Specific Tests ====================
@@ -1049,10 +1179,10 @@ mod tests {
         range: FileRange,
         config: ReconstructionConfig,
     ) -> Result<u64> {
-        FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_hash, DataOutput::write_in_file(file_path))
+        FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_hash)
             .with_byte_range(range)
             .with_config(config)
-            .run()
+            .reconstruct_to_file(file_path, None)
             .await
     }
 
@@ -1105,10 +1235,10 @@ mod tests {
             let config = config.clone();
 
             join_set.spawn(async move {
-                FileReconstructor::new(&(client as Arc<dyn Client>), file_hash, DataOutput::write_in_file(&file_path))
+                FileReconstructor::new(&(client as Arc<dyn Client>), file_hash)
                     .with_byte_range(range)
                     .with_config(config)
-                    .run()
+                    .reconstruct_to_file(&file_path, None)
                     .await
             });
         }
@@ -1154,5 +1284,104 @@ mod tests {
 
         // Middle third should have reconstructed data.
         assert_eq!(&result[start as usize..end as usize], &file_contents.data[start as usize..end as usize]);
+    }
+
+    // ==================== Cancellation Flag Tests ====================
+
+    #[tokio::test]
+    async fn test_cancellation_token_before_start() {
+        let (client, file_contents) = setup_test_file(&[(1, (0, 3))]).await;
+        let config = test_config();
+
+        let token = CancellationToken::new();
+        token.cancel();
+        let buffer = Arc::new(std::sync::Mutex::new(Cursor::new(Vec::new())));
+        let writer = StaticCursorWriter(buffer.clone());
+
+        let bytes_written = FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_config(&config)
+            .with_cancellation_token(token)
+            .reconstruct_to_writer(writer)
+            .await
+            .unwrap();
+
+        assert_eq!(bytes_written, 0);
+    }
+
+    /// A writer that cancels a token after a certain number of writes,
+    /// used to deterministically test mid-reconstruction cancellation.
+    struct CancellingWriter {
+        buffer: Arc<std::sync::Mutex<Vec<u8>>>,
+        cancel_token: CancellationToken,
+        write_count: AtomicUsize,
+        cancel_after_writes: usize,
+    }
+
+    impl Write for CancellingWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let n = self.buffer.lock().unwrap().write(buf)?;
+            let count = self.write_count.fetch_add(1, Ordering::Relaxed) + 1;
+            if count >= self.cancel_after_writes {
+                self.cancel_token.cancel();
+            }
+            Ok(n)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_cancellation_token_during_reconstruction() {
+        let term_spec: Vec<(u64, (u64, u64))> = (1..=10).map(|i| (i, (0, 5))).collect();
+        let (client, file_contents) = setup_test_file(&term_spec).await;
+        let config = test_config();
+
+        let token = CancellationToken::new();
+        let buffer = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let writer = CancellingWriter {
+            buffer: buffer.clone(),
+            cancel_token: token.clone(),
+            write_count: AtomicUsize::new(0),
+            cancel_after_writes: 1,
+        };
+
+        // Use a tiny semaphore to force sequential term processing.
+        let tiny_semaphore = AdjustableSemaphore::new(1, (1, 1));
+
+        let bytes_written = FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_config(&config)
+            .with_cancellation_token(token)
+            .with_buffer_semaphore(tiny_semaphore)
+            .reconstruct_to_writer(writer)
+            .await
+            .unwrap();
+
+        // Verify cancellation returned Ok(0) and only partial data was written.
+        assert_eq!(bytes_written, 0);
+        let written = buffer.lock().unwrap().len();
+        assert!(written < file_contents.data.len());
+    }
+
+    #[tokio::test]
+    async fn test_cancellation_token_not_set_completes_normally() {
+        let (client, file_contents) = setup_test_file(&[(1, (0, 3)), (2, (0, 2))]).await;
+        let config = test_config();
+
+        let token = CancellationToken::new();
+        let buffer = Arc::new(std::sync::Mutex::new(Cursor::new(Vec::new())));
+        let writer = StaticCursorWriter(buffer.clone());
+
+        let bytes_written = FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_config(&config)
+            .with_cancellation_token(token)
+            .reconstruct_to_writer(writer)
+            .await
+            .unwrap();
+
+        assert_eq!(bytes_written, file_contents.data.len() as u64);
+        assert_eq!(buffer.lock().unwrap().get_ref().clone(), file_contents.data);
     }
 }
