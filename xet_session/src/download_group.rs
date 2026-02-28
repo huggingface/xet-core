@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
 use data::{FileDownloadSession, XetFileInfo};
-use tokio::sync::{Mutex as TokioMutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use ulid::Ulid;
 
@@ -48,39 +47,21 @@ impl DownloadGroup {
     pub(crate) fn new(session: XetSession) -> Result<Self, SessionError> {
         let group_id = Ulid::new();
 
-        let (command_tx, mut command_rx) = mpsc::unbounded_channel::<GroupCommand>();
+        let progress = Arc::new(GroupProgress::new());
+        let progress_clone = progress.clone();
+        let config = create_translator_config(&session)?;
+        let download_session = session.runtime.external_run_async_task(async move {
+            let progress_updater = progress_clone as Arc<dyn progress_tracking::TrackingProgressUpdater>;
+            FileDownloadSession::new(Arc::new(config), Some(progress_updater)).await
+        })??;
 
         let inner = Arc::new(DownloadGroupInner {
             group_id,
             session,
             active_tasks: RwLock::new(HashMap::new()),
-            progress: Arc::new(GroupProgress::new()),
-            download_session: TokioMutex::new(None),
+            progress,
+            download_session: Mutex::new(Some(download_session)),
             state: Mutex::new(GroupState::Alive),
-            command_tx,
-        });
-
-        // Spawn background worker task on the runtime directly
-        let inner_clone = inner.clone();
-        inner.session.runtime.spawn(async move {
-            while let Some(command) = command_rx.recv().await {
-                match command {
-                    GroupCommand::DownloadFile {
-                        file_info,
-                        dest_path,
-                        response_tx,
-                    } => {
-                        let result = inner_clone.handle_download_file(file_info, dest_path).await;
-                        let _ = response_tx.send(result);
-                    },
-                    GroupCommand::Finish { response_tx } => {
-                        let result = inner_clone.handle_finish().await;
-                        let _ = response_tx.send(result);
-                        // After finish, stop processing commands
-                        break;
-                    },
-                }
-            }
         });
 
         Ok(Self { inner })
@@ -119,19 +100,7 @@ impl DownloadGroup {
     /// been called.
     pub fn download_file(&self, file_info: XetFileInfo, dest_path: PathBuf) -> Result<TaskHandle, SessionError> {
         self.session.check_alive()?;
-        let (response_tx, response_rx) = oneshot::channel();
-
-        self.command_tx
-            .send(GroupCommand::DownloadFile {
-                file_info,
-                dest_path,
-                response_tx,
-            })
-            .map_err(|_| SessionError::other("Failed to send download command"))?;
-
-        response_rx
-            .blocking_recv()
-            .map_err(|_| SessionError::other("Failed to receive download response"))?
+        self.inner.start_download_file_to_path(file_info, dest_path)
     }
 
     pub fn download_stream(&self, _file_hash: String, _file_size: u64) -> Result<(), SessionError> {
@@ -167,28 +136,11 @@ impl DownloadGroup {
     /// [`SessionError::AlreadyFinished`] (or a channel-closed error if the
     /// background worker has already exited).
     pub fn finish(self) -> Result<Vec<DownloadResult>, SessionError> {
-        let (response_tx, response_rx) = oneshot::channel();
-
-        self.command_tx
-            .send(GroupCommand::Finish { response_tx })
-            .map_err(|_| SessionError::other("Failed to send finish command"))?;
-
-        response_rx
-            .blocking_recv()
-            .map_err(|_| SessionError::other("Failed to receive finish response"))?
+        let inner = self.inner.clone();
+        self.session
+            .runtime
+            .external_run_async_task(async move { inner.handle_finish().await })?
     }
-}
-
-/// Commands sent to the background worker thread
-pub(crate) enum GroupCommand {
-    DownloadFile {
-        file_info: XetFileInfo,
-        dest_path: PathBuf,
-        response_tx: oneshot::Sender<Result<TaskHandle, SessionError>>,
-    },
-    Finish {
-        response_tx: oneshot::Sender<Result<Vec<DownloadResult>, SessionError>>,
-    },
 }
 
 /// Handle for a single download task tracked internally by DownloadGroup.
@@ -211,14 +163,10 @@ pub struct DownloadGroupInner {
     progress: Arc<GroupProgress>,
 
     // Shared download session (FileDownloadSession from data crate)
-    // Uses tokio::Mutex because it's held across await in get_or_create_download_session
-    download_session: TokioMutex<Option<Arc<FileDownloadSession>>>,
+    download_session: Mutex<Option<Arc<FileDownloadSession>>>,
 
     // State
     state: Mutex<GroupState>,
-
-    // Command channel to background worker task
-    command_tx: mpsc::UnboundedSender<GroupCommand>,
 }
 
 impl DownloadGroupInner {
@@ -231,23 +179,6 @@ impl DownloadGroupInner {
             GroupState::Aborted => Err(SessionError::Aborted),
             GroupState::Alive => Ok(()),
         }
-    }
-
-    // ===== Async handlers (called by the background worker thread) =====
-
-    /// Get or create the shared `FileDownloadSession`.
-    async fn get_or_create_download_session(&self) -> Result<Arc<FileDownloadSession>, SessionError> {
-        let mut session_lock = self.download_session.lock().await;
-        if session_lock.is_none() {
-            let config = create_translator_config(&self.session)?;
-            let progress_updater = self.progress.clone() as Arc<dyn progress_tracking::TrackingProgressUpdater>;
-            let new_session = FileDownloadSession::new(Arc::new(config), Some(progress_updater)).await?;
-            *session_lock = Some(new_session);
-        }
-        Ok(session_lock
-            .as_ref()
-            .ok_or_else(|| SessionError::other("Download session not initialized"))?
-            .clone())
     }
 
     /// Spawn a runtime task that performs the actual file download.
@@ -281,8 +212,7 @@ impl DownloadGroupInner {
         })
     }
 
-    /// Handle a `DownloadFile` command from the public API.
-    pub(crate) async fn handle_download_file(
+    fn start_download_file_to_path(
         self: &Arc<Self>,
         file_info: XetFileInfo,
         dest_path: PathBuf,
@@ -298,10 +228,12 @@ impl DownloadGroupInner {
             tracking_id,
         };
 
-        let download_session_arc = self.get_or_create_download_session().await?;
+        let Some(download_session) = self.download_session.lock()?.clone() else {
+            return Err(SessionError::other("Download session not initialized"));
+        };
 
         let join_handle =
-            self.spawn_download_task(download_session_arc, file_info.clone(), dest_path.clone(), status, tracking_id);
+            self.spawn_download_task(download_session, file_info.clone(), dest_path.clone(), status, tracking_id);
 
         let handle = InnerDownloadTaskHandle { dest_path, join_handle };
 

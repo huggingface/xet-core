@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
 use data::{FileUploadSession, SingleFileCleaner, XetFileInfo};
-use tokio::sync::{Mutex as TokioMutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use ulid::Ulid;
 
@@ -25,7 +24,7 @@ use crate::session::XetSession;
 /// # Cloning
 ///
 /// Cloning is cheap — it simply increments an atomic reference count.
-/// All clones share the same background worker and task state.
+/// All clones share the same upload session and task state.
 ///
 /// # Errors
 ///
@@ -49,47 +48,21 @@ impl UploadCommit {
     pub(crate) fn new(session: XetSession) -> Result<Self, SessionError> {
         let commit_id = Ulid::new();
 
-        let (command_tx, mut command_rx) = mpsc::unbounded_channel::<CommitCommand>();
+        let progress = Arc::new(GroupProgress::new());
+        let progress_clone = progress.clone();
+        let config = create_translator_config(&session)?;
+        let upload_session = session.runtime.external_run_async_task(async move {
+            let progress_updater = progress_clone as Arc<dyn progress_tracking::TrackingProgressUpdater>;
+            FileUploadSession::new(Arc::new(config), Some(progress_updater)).await
+        })??;
 
         let inner = Arc::new(UploadCommitInner {
             commit_id,
             session,
             active_tasks: RwLock::new(HashMap::new()),
-            progress: Arc::new(GroupProgress::new()),
-            upload_session: TokioMutex::new(None),
+            progress,
+            upload_session: Mutex::new(Some(upload_session)),
             state: Mutex::new(GroupState::Alive),
-            command_tx,
-        });
-
-        // Spawn background worker task on the runtime directly
-        let inner_clone = inner.clone();
-        inner.session.runtime.spawn(async move {
-            while let Some(command) = command_rx.recv().await {
-                match command {
-                    CommitCommand::UploadFromPath { file_path, response_tx } => {
-                        let result = inner_clone.start_upload_file_from_path(file_path).await;
-                        let _ = response_tx.send(result);
-                    },
-                    CommitCommand::UploadBytes { bytes, response_tx } => {
-                        let result = inner_clone.start_upload_bytes(bytes).await;
-                        let _ = response_tx.send(result);
-                    },
-                    CommitCommand::UploadFile {
-                        file_name,
-                        file_size,
-                        response_tx,
-                    } => {
-                        let result = inner_clone.start_upload_file(file_name, file_size).await;
-                        let _ = response_tx.send(result);
-                    },
-                    CommitCommand::Commit { response_tx } => {
-                        let result = inner_clone.handle_commit().await;
-                        let _ = response_tx.send(result);
-                        // After commit, stop processing commands
-                        break;
-                    },
-                }
-            }
         });
 
         Ok(Self { inner })
@@ -120,15 +93,7 @@ impl UploadCommit {
     /// already been called.
     pub fn upload_from_path(&self, file_path: PathBuf) -> Result<TaskHandle, SessionError> {
         self.session.check_alive()?;
-        let (response_tx, response_rx) = oneshot::channel();
-
-        self.command_tx
-            .send(CommitCommand::UploadFromPath { file_path, response_tx })
-            .map_err(|_| SessionError::other("Failed to send upload command"))?;
-
-        response_rx
-            .blocking_recv()
-            .map_err(|_| SessionError::other("Failed to receive upload response"))?
+        self.inner.start_upload_file_from_path(file_path)
     }
 
     /// Begin an incremental file upload, returning a [`SingleFileCleaner`] that the
@@ -166,19 +131,11 @@ impl UploadCommit {
         file_size: u64,
     ) -> Result<(TaskHandle, SingleFileCleaner), SessionError> {
         self.session.check_alive()?;
-        let (response_tx, response_rx) = oneshot::channel();
 
-        self.command_tx
-            .send(CommitCommand::UploadFile {
-                file_name,
-                file_size,
-                response_tx,
-            })
-            .map_err(|_| SessionError::other("Failed to send start_clean command"))?;
-
-        response_rx
-            .blocking_recv()
-            .map_err(|_| SessionError::other("Failed to receive start_clean response"))?
+        let inner = self.inner.clone();
+        self.session
+            .runtime
+            .external_run_async_task(async move { inner.start_upload_file(file_name, file_size).await })?
     }
 
     /// Queue raw bytes for upload, starting the transfer immediately.
@@ -186,15 +143,10 @@ impl UploadCommit {
     /// Returns the task ID. See [`upload_file`](Self::upload_file) for details.
     pub fn upload_bytes(&self, bytes: Vec<u8>) -> Result<TaskHandle, SessionError> {
         self.session.check_alive()?;
-        let (response_tx, response_rx) = oneshot::channel();
-
-        self.command_tx
-            .send(CommitCommand::UploadBytes { bytes, response_tx })
-            .map_err(|_| SessionError::other("Failed to send upload_bytes command"))?;
-
-        response_rx
-            .blocking_recv()
-            .map_err(|_| SessionError::other("Failed to receive upload_bytes response"))?
+        let inner = self.inner.clone();
+        self.session
+            .runtime
+            .external_run_async_task(async move { inner.start_upload_bytes(bytes).await })?
     }
 
     /// Returns `true` if [`commit`](Self::commit) has been called and completed.
@@ -218,39 +170,13 @@ impl UploadCommit {
     /// file in the order they were registered.
     ///
     /// Consumes `self` — subsequent calls on any clone will return
-    /// [`SessionError::AlreadyCommitted`] (or a channel-closed error if the
-    /// background worker has already exited).
+    /// [`SessionError::AlreadyCommitted`].
     pub fn commit(self) -> Result<Vec<FileMetadata>, SessionError> {
-        let (response_tx, response_rx) = oneshot::channel();
-
-        self.command_tx
-            .send(CommitCommand::Commit { response_tx })
-            .map_err(|_| SessionError::other("Failed to send commit command"))?;
-
-        response_rx
-            .blocking_recv()
-            .map_err(|_| SessionError::other("Failed to receive commit response"))?
+        let inner = self.inner.clone();
+        self.session
+            .runtime
+            .external_run_async_task(async move { inner.handle_commit().await })?
     }
-}
-
-/// Commands sent to the background worker thread
-pub(crate) enum CommitCommand {
-    UploadFromPath {
-        file_path: PathBuf,
-        response_tx: oneshot::Sender<Result<TaskHandle, SessionError>>,
-    },
-    UploadBytes {
-        bytes: Vec<u8>,
-        response_tx: oneshot::Sender<Result<TaskHandle, SessionError>>,
-    },
-    UploadFile {
-        file_name: Option<String>,
-        file_size: u64,
-        response_tx: oneshot::Sender<Result<(TaskHandle, SingleFileCleaner), SessionError>>,
-    },
-    Commit {
-        response_tx: oneshot::Sender<Result<Vec<FileMetadata>, SessionError>>,
-    },
 }
 
 /// Handle for a single upload task tracked internally by UploadCommit.
@@ -273,14 +199,10 @@ pub struct UploadCommitInner {
     progress: Arc<GroupProgress>,
 
     // Shared upload session (FileUploadSession from data crate)
-    // Uses tokio::Mutex because it's held across await in get_or_create_upload_session
-    upload_session: TokioMutex<Option<Arc<FileUploadSession>>>,
+    upload_session: Mutex<Option<Arc<FileUploadSession>>>,
 
     // State
     state: Mutex<GroupState>,
-
-    // Command channel to background worker task
-    command_tx: mpsc::UnboundedSender<CommitCommand>,
 }
 
 impl UploadCommitInner {
@@ -293,23 +215,6 @@ impl UploadCommitInner {
             GroupState::Aborted => Err(SessionError::Aborted),
             GroupState::Alive => Ok(()),
         }
-    }
-
-    // ===== Async handlers (called by the background worker thread) =====
-
-    /// Get or create the shared `FileUploadSession`.
-    async fn get_or_create_upload_session(&self) -> Result<Arc<FileUploadSession>, SessionError> {
-        let mut session_lock = self.upload_session.lock().await;
-        if session_lock.is_none() {
-            let config = create_translator_config(&self.session)?;
-            let progress_updater = self.progress.clone() as Arc<dyn progress_tracking::TrackingProgressUpdater>;
-            let new_session = FileUploadSession::new(Arc::new(config), Some(progress_updater)).await?;
-            *session_lock = Some(new_session);
-        }
-        Ok(session_lock
-            .as_ref()
-            .ok_or_else(|| SessionError::other("Upload session not initialized"))?
-            .clone())
     }
 
     /// Spawn a runtime task that performs the actual file upload.
@@ -342,8 +247,7 @@ impl UploadCommitInner {
         })
     }
 
-    /// Handle an `UploadFile` command from the public API.
-    async fn start_upload_file_from_path(&self, file_path: PathBuf) -> Result<TaskHandle, SessionError> {
+    fn start_upload_file_from_path(&self, file_path: PathBuf) -> Result<TaskHandle, SessionError> {
         self.check_accepting_tasks()?;
 
         let tracking_id = Ulid::new();
@@ -354,9 +258,11 @@ impl UploadCommitInner {
             tracking_id,
         };
 
-        let upload_session_arc = self.get_or_create_upload_session().await?;
+        let Some(upload_session) = self.upload_session.lock()?.clone() else {
+            return Err(SessionError::other("Upload session not initialized"));
+        };
 
-        let join_handle = self.spawn_upload_task(upload_session_arc, file_path.clone(), status.clone(), tracking_id);
+        let join_handle = self.spawn_upload_task(upload_session, file_path.clone(), status.clone(), tracking_id);
 
         let handle = InnerUploadTaskHandle {
             file_name: file_path.file_name().and_then(|n| n.to_str()).map(|s| s.to_string()),
@@ -384,7 +290,11 @@ impl UploadCommitInner {
             group_progress: self.progress.clone(),
             tracking_id,
         };
-        let upload_session = self.get_or_create_upload_session().await?;
+
+        let Some(upload_session) = self.upload_session.lock()?.clone() else {
+            return Err(SessionError::other("Upload session not initialized"));
+        };
+
         let file_name_arc: Option<std::sync::Arc<str>> = file_name.as_deref().map(std::sync::Arc::from);
         let cleaner = upload_session.start_clean(file_name_arc, file_size, None, tracking_id).await;
 
@@ -426,8 +336,9 @@ impl UploadCommitInner {
         }
 
         // Finalize upload session
-        if let Some(session_arc) = self.upload_session.lock().await.take() {
-            session_arc.finalize().await?;
+        let session = self.upload_session.lock()?.take();
+        if let Some(session) = session {
+            session.finalize().await?;
         }
 
         // Mark as committed
