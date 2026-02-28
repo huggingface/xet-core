@@ -2,21 +2,21 @@ use std::collections::HashMap;
 use std::io::{BufReader, Cursor};
 use std::ops::Range;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use cas_object::{CasObject, SerializedCasObject};
 use cas_types::{
-    BatchQueryReconstructionResponse, CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange, FileRange,
-    HexMerkleHash, HttpRange, QueryReconstructionResponse,
+    BatchQueryReconstructionResponse, CASReconstructionFetchInfo, FileRange, HexMerkleHash, HttpRange,
+    QueryReconstructionResponse, QueryReconstructionResponseV2, XorbFetchDescriptor, XorbMultiRangeFetch,
+    XorbRangeDescriptor,
 };
 use mdb_shard::cas_structs::MDBCASInfo;
 use mdb_shard::file_structs::MDBFileInfo;
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
 use mdb_shard::streaming_shard::MDBMinimalShard;
 use merklehash::MerkleHash;
-use more_asserts::{assert_ge, assert_gt, debug_assert_lt};
 use rand::Rng;
 use tokio::sync::RwLock;
 use tokio::time::{Duration, Instant};
@@ -26,20 +26,11 @@ use utils::MerkleHashMap;
 use super::client_testing_utils::{FileTermReference, RandomFileContents};
 use super::direct_access_client::DirectAccessClient;
 use super::random_xorb::RandomXorb;
+use super::xorb_utils::{self, REFERENCE_INSTANT};
 use crate::Client;
 use crate::adaptive_concurrency::AdaptiveConcurrencyController;
 use crate::error::{CasClientError, Result};
 use crate::progress_tracked_streams::ProgressCallback;
-
-lazy_static::lazy_static! {
-    /// Reference instant for URL timestamps. Initialized far in the past to allow
-    /// testing timestamps that are earlier in the current process lifetime.
-    static ref REFERENCE_INSTANT: Instant = {
-        let now = Instant::now();
-        now.checked_sub(Duration::from_secs(365 * 24 * 60 * 60))
-            .unwrap_or(now)
-    };
-}
 
 /// Stored XORB data: the serialized data and the deserialized CasObject (header/footer).
 struct MaterializedXorb {
@@ -69,6 +60,10 @@ pub struct MemoryClient {
     url_expiration_ms: AtomicU64,
     /// API delay range in milliseconds as (min_ms, max_ms). (0, 0) means disabled.
     random_ms_delay_window: (AtomicU64, AtomicU64),
+    /// Max ranges per XorbMultiRangeFetch entry. usize::MAX means no splitting.
+    max_ranges_per_fetch: AtomicUsize,
+    /// Whether V2 reconstruction is disabled (forces V1 fallback).
+    v2_disabled: AtomicBool,
 }
 
 impl MemoryClient {
@@ -81,6 +76,8 @@ impl MemoryClient {
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("memory_uploads"),
             url_expiration_ms: AtomicU64::new(u64::MAX),
             random_ms_delay_window: (AtomicU64::new(0), AtomicU64::new(0)),
+            max_ranges_per_fetch: AtomicUsize::new(usize::MAX),
+            v2_disabled: AtomicBool::new(false),
         })
     }
 
@@ -239,6 +236,8 @@ impl Default for MemoryClient {
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("memory_uploads"),
             url_expiration_ms: AtomicU64::new(u64::MAX),
             random_ms_delay_window: (AtomicU64::new(0), AtomicU64::new(0)),
+            max_ranges_per_fetch: AtomicUsize::new(usize::MAX),
+            v2_disabled: AtomicBool::new(false),
         }
     }
 }
@@ -248,6 +247,34 @@ impl Default for MemoryClient {
 impl DirectAccessClient for MemoryClient {
     fn set_fetch_term_url_expiration(&self, expiration: Duration) {
         self.url_expiration_ms.store(expiration.as_millis() as u64, Ordering::Relaxed);
+    }
+
+    fn set_max_ranges_per_fetch(&self, max_ranges: usize) {
+        self.max_ranges_per_fetch.store(max_ranges, Ordering::Relaxed);
+    }
+
+    fn disable_v2_reconstruction(&self) {
+        self.v2_disabled.store(true, Ordering::Relaxed);
+    }
+
+    fn is_v2_reconstruction_disabled(&self) -> bool {
+        self.v2_disabled.load(Ordering::Relaxed)
+    }
+
+    async fn get_reconstruction_v1(
+        &self,
+        file_id: &MerkleHash,
+        bytes_range: Option<FileRange>,
+    ) -> Result<Option<QueryReconstructionResponse>> {
+        MemoryClient::get_reconstruction_v1(self, file_id, bytes_range).await
+    }
+
+    async fn get_reconstruction_v2(
+        &self,
+        file_id: &MerkleHash,
+        bytes_range: Option<FileRange>,
+    ) -> Result<Option<QueryReconstructionResponseV2>> {
+        MemoryClient::get_reconstruction_v2(self, file_id, bytes_range).await
     }
 
     fn set_api_delay_range(&self, delay_range: Option<Range<Duration>>) {
@@ -510,6 +537,130 @@ impl DirectAccessClient for MemoryClient {
     }
 }
 
+impl MemoryClient {
+    async fn compute_reconstruction_ranges(
+        &self,
+        file_id: &MerkleHash,
+        bytes_range: Option<FileRange>,
+    ) -> Result<xorb_utils::ReconstructionRangesResult> {
+        let file_info = {
+            let shard = self.shard.read().await;
+            match shard.get_file_reconstruction_info(file_id) {
+                Some(fi) => fi,
+                None => return Ok(None),
+            }
+        };
+
+        let xorbs = self.xorbs.read().await;
+        xorb_utils::compute_reconstruction_ranges(&file_info, bytes_range, &mut |hash| {
+            let storage = xorbs.get(hash).ok_or_else(|| {
+                error!("Unable to find xorb in memory CAS {:?}", hash);
+                CasClientError::XORBNotFound(*hash)
+            })?;
+            Ok(match storage {
+                XorbStorage::Materialized(entry) => entry.cas_object.clone(),
+                XorbStorage::Random(xorb) => xorb.get_cas_object(),
+            })
+        })
+    }
+
+    /// V1 reconstruction: returns per-range presigned URLs.
+    pub async fn get_reconstruction_v1(
+        &self,
+        file_id: &MerkleHash,
+        bytes_range: Option<FileRange>,
+    ) -> Result<Option<QueryReconstructionResponse>> {
+        self.apply_api_delay().await;
+
+        let result = self.compute_reconstruction_ranges(file_id, bytes_range).await?;
+        let Some((offset_into_first_range, terms, merged_ranges)) = result else {
+            return Ok(None);
+        };
+
+        if terms.is_empty() {
+            return Ok(Some(QueryReconstructionResponse {
+                offset_into_first_range,
+                terms,
+                fetch_info: HashMap::new(),
+            }));
+        }
+
+        let timestamp = Instant::now();
+        let mut fetch_info: HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>> = HashMap::new();
+        for (hash, ranges) in merged_ranges {
+            let entries = ranges
+                .into_iter()
+                .map(|r| CASReconstructionFetchInfo {
+                    range: r.chunk_range,
+                    url: generate_fetch_url(&hash, &r.byte_range, timestamp),
+                    url_range: HttpRange::from(r.byte_range),
+                })
+                .collect();
+            fetch_info.insert(hash.into(), entries);
+        }
+
+        Ok(Some(QueryReconstructionResponse {
+            offset_into_first_range,
+            terms,
+            fetch_info,
+        }))
+    }
+
+    /// V2 reconstruction: returns per-xorb multi-range fetch descriptors.
+    pub async fn get_reconstruction_v2(
+        &self,
+        file_id: &MerkleHash,
+        bytes_range: Option<FileRange>,
+    ) -> Result<Option<QueryReconstructionResponseV2>> {
+        self.apply_api_delay().await;
+
+        let result = self.compute_reconstruction_ranges(file_id, bytes_range).await?;
+        let Some((offset_into_first_range, terms, merged_ranges)) = result else {
+            return Ok(None);
+        };
+
+        if terms.is_empty() {
+            return Ok(Some(QueryReconstructionResponseV2 {
+                offset_into_first_range,
+                terms,
+                xorbs: HashMap::new(),
+            }));
+        }
+
+        let timestamp = Instant::now();
+        let max_ranges = self.max_ranges_per_fetch.load(Ordering::Relaxed);
+
+        let mut xorbs: HashMap<HexMerkleHash, XorbFetchDescriptor> = HashMap::new();
+        for (hash, ranges) in merged_ranges {
+            let mut fetch_entries = Vec::new();
+
+            for chunk in ranges.chunks(max_ranges) {
+                let range_descriptors: Vec<XorbRangeDescriptor> = chunk
+                    .iter()
+                    .map(|r| XorbRangeDescriptor {
+                        chunks: r.chunk_range,
+                        bytes: HttpRange::from(r.byte_range),
+                    })
+                    .collect();
+
+                let url = generate_v2_fetch_url(&hash, &range_descriptors, timestamp);
+                fetch_entries.push(XorbMultiRangeFetch {
+                    url,
+                    ranges: range_descriptors,
+                });
+            }
+
+            xorbs.insert(hash.into(), XorbFetchDescriptor { fetch: fetch_entries });
+        }
+
+        Ok(Some(QueryReconstructionResponseV2 {
+            offset_into_first_range,
+            terms,
+            xorbs,
+        }))
+    }
+}
+
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl Client for MemoryClient {
@@ -645,194 +796,8 @@ impl Client for MemoryClient {
         &self,
         file_id: &MerkleHash,
         bytes_range: Option<FileRange>,
-    ) -> Result<Option<QueryReconstructionResponse>> {
-        self.apply_api_delay().await;
-        let file_info = {
-            let shard = self.shard.read().await;
-            match shard.get_file_reconstruction_info(file_id) {
-                Some(fi) => fi,
-                None => return Ok(None),
-            }
-        };
-
-        let total_file_size: u64 = file_info.file_size();
-
-        // Handle range validation and truncation
-        let file_range = if let Some(range) = bytes_range {
-            // If the entire range is out of bounds, return None (like RemoteClient does for 416)
-            if range.start >= total_file_size {
-                // For empty files (size 0), only the first query (start == 0) should return the empty reconstruction
-                // All subsequent queries should return None to prevent infinite remainder loops
-                if total_file_size == 0 && range.start == 0 {
-                    // Empty file - return valid but empty reconstruction
-                    return Ok(Some(QueryReconstructionResponse {
-                        offset_into_first_range: 0,
-                        terms: vec![],
-                        fetch_info: HashMap::new(),
-                    }));
-                }
-                return Ok(None);
-            }
-            FileRange::new(range.start, range.end.min(total_file_size))
-        } else {
-            // No range specified - handle empty files
-            if total_file_size == 0 {
-                return Ok(Some(QueryReconstructionResponse {
-                    offset_into_first_range: 0,
-                    terms: vec![],
-                    fetch_info: HashMap::new(),
-                }));
-            }
-            FileRange::full()
-        };
-
-        // Find the first segment that contains bytes in our range
-        let mut s_idx = 0;
-        let mut cumulative_bytes = 0u64;
-        let mut first_chunk_byte_start;
-
-        loop {
-            if s_idx >= file_info.segments.len() {
-                return Err(CasClientError::InvalidRange);
-            }
-
-            let n = file_info.segments[s_idx].unpacked_segment_bytes as u64;
-            if cumulative_bytes + n > file_range.start {
-                assert_ge!(file_range.start, cumulative_bytes);
-                first_chunk_byte_start = cumulative_bytes;
-                break;
-            } else {
-                cumulative_bytes += n;
-                s_idx += 1;
-            }
-        }
-
-        let mut terms = Vec::new();
-
-        #[derive(Clone)]
-        struct FetchInfoIntermediate {
-            chunk_range: ChunkRange,
-            byte_range: FileRange,
-        }
-
-        let mut fetch_info_map: MerkleHashMap<Vec<FetchInfoIntermediate>> = MerkleHashMap::new();
-
-        let xorbs = self.xorbs.read().await;
-
-        while s_idx < file_info.segments.len() && cumulative_bytes < file_range.end {
-            let mut segment = file_info.segments[s_idx].clone();
-            let mut chunk_range = ChunkRange::new(segment.chunk_index_start, segment.chunk_index_end);
-
-            let storage = xorbs.get(&segment.cas_hash).ok_or_else(|| {
-                error!("Unable to find xorb in memory CAS {:?}", segment.cas_hash);
-                CasClientError::XORBNotFound(segment.cas_hash)
-            })?;
-            let xorb_footer = match storage {
-                XorbStorage::Materialized(entry) => entry.cas_object.clone(),
-                XorbStorage::Random(xorb) => xorb.get_cas_object(),
-            };
-
-            // Prune first segment on chunk boundaries
-            if cumulative_bytes < file_range.start {
-                while chunk_range.start < chunk_range.end {
-                    let next_chunk_size = xorb_footer.uncompressed_chunk_length(chunk_range.start)? as u64;
-
-                    if cumulative_bytes + next_chunk_size <= file_range.start {
-                        cumulative_bytes += next_chunk_size;
-                        first_chunk_byte_start += next_chunk_size;
-                        segment.unpacked_segment_bytes -= next_chunk_size as u32;
-                        chunk_range.start += 1;
-                        debug_assert_lt!(chunk_range.start, chunk_range.end);
-                    } else {
-                        break;
-                    }
-                }
-            }
-
-            // Prune last segment on chunk boundaries
-            if cumulative_bytes + segment.unpacked_segment_bytes as u64 > file_range.end {
-                while chunk_range.end > chunk_range.start {
-                    let last_chunk_size = xorb_footer.uncompressed_chunk_length(chunk_range.end - 1)?;
-
-                    if cumulative_bytes + (segment.unpacked_segment_bytes - last_chunk_size) as u64 >= file_range.end {
-                        chunk_range.end -= 1;
-                        segment.unpacked_segment_bytes -= last_chunk_size;
-                        debug_assert_lt!(chunk_range.start, chunk_range.end);
-                        assert_gt!(segment.unpacked_segment_bytes, 0);
-                    } else {
-                        break;
-                    }
-                }
-            }
-
-            let (byte_start, byte_end) = xorb_footer.get_byte_offset(chunk_range.start, chunk_range.end)?;
-            let byte_range = FileRange::new(byte_start as u64, byte_end as u64);
-
-            let cas_reconstruction_term = CASReconstructionTerm {
-                hash: segment.cas_hash.into(),
-                unpacked_length: segment.unpacked_segment_bytes,
-                range: chunk_range,
-            };
-
-            terms.push(cas_reconstruction_term);
-
-            let fetch_info_intermediate = FetchInfoIntermediate {
-                chunk_range,
-                byte_range,
-            };
-
-            fetch_info_map
-                .entry(segment.cas_hash)
-                .or_default()
-                .push(fetch_info_intermediate);
-
-            cumulative_bytes += segment.unpacked_segment_bytes as u64;
-            s_idx += 1;
-        }
-
-        assert!(!terms.is_empty());
-
-        let timestamp = Instant::now();
-
-        // Sort and merge adjacent/overlapping ranges in each fetch_info Vec
-        let mut merged_fetch_info_map: HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>> = HashMap::new();
-        for (hash, mut fi_vec) in fetch_info_map {
-            fi_vec.sort_by_key(|fi| fi.chunk_range.start);
-
-            let mut merged: Vec<CASReconstructionFetchInfo> = Vec::new();
-            let mut idx = 0;
-
-            while idx < fi_vec.len() {
-                let mut new_fi = fi_vec[idx].clone();
-
-                while idx + 1 < fi_vec.len() {
-                    let next_fi = &fi_vec[idx + 1];
-                    if next_fi.chunk_range.start <= new_fi.chunk_range.end {
-                        new_fi.chunk_range.end = next_fi.chunk_range.end.max(new_fi.chunk_range.end);
-                        new_fi.byte_range.end = next_fi.byte_range.end.max(new_fi.byte_range.end);
-                        idx += 1;
-                    } else {
-                        break;
-                    }
-                }
-
-                merged.push(CASReconstructionFetchInfo {
-                    range: new_fi.chunk_range,
-                    url: generate_fetch_url(&hash, &new_fi.byte_range, timestamp),
-                    url_range: HttpRange::from(new_fi.byte_range),
-                });
-
-                idx += 1;
-            }
-
-            merged_fetch_info_map.insert(hash.into(), merged);
-        }
-
-        Ok(Some(QueryReconstructionResponse {
-            offset_into_first_range: file_range.start - first_chunk_byte_start,
-            terms,
-            fetch_info: merged_fetch_info_map,
-        }))
+    ) -> Result<Option<QueryReconstructionResponseV2>> {
+        self.get_reconstruction_v2(file_id, bytes_range).await
     }
 
     async fn batch_get_reconstruction(&self, file_ids: &[MerkleHash]) -> Result<BatchQueryReconstructionResponse> {
@@ -841,7 +806,7 @@ impl Client for MemoryClient {
         let mut fetch_info_map: HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>> = HashMap::new();
 
         for file_id in file_ids {
-            if let Some(response) = self.get_reconstruction(file_id, None).await? {
+            if let Some(response) = self.get_reconstruction_v1(file_id, None).await? {
                 let hex_hash: HexMerkleHash = (*file_id).into();
                 files.insert(hex_hash, response.terms);
 
@@ -870,8 +835,8 @@ impl Client for MemoryClient {
         uncompressed_size_if_known: Option<usize>,
     ) -> Result<(Bytes, Vec<u32>)> {
         self.apply_api_delay().await;
-        let (url, range) = url_info.retrieve_url().await?;
-        let (xorb_hash, _url_byte_range, url_timestamp) = parse_fetch_url(&url)?;
+        let (url, http_ranges) = url_info.retrieve_url().await?;
+        let (xorb_hash, url_timestamp) = parse_any_fetch_url(&url)?;
 
         // Check if URL has expired
         let expiration_ms = self.url_expiration_ms.load(Ordering::Relaxed);
@@ -883,36 +848,49 @@ impl Client for MemoryClient {
         let xorbs = self.xorbs.read().await;
         let storage = xorbs.get(&xorb_hash).ok_or(CasClientError::XORBNotFound(xorb_hash))?;
 
-        // Extract the byte range from the serialized data and deserialize
-        let start = range.start as usize;
-        let end = range.end as usize + 1; // HttpRange is inclusive end
-        let transfer_len = (end - start) as u64;
+        // Extract each byte range from the serialized data and deserialize
+        let mut all_decompressed = Vec::new();
+        let mut all_chunk_indices = Vec::<u32>::new();
+        let mut total_transfer = 0u64;
 
-        let (decompressed_data, chunk_byte_indices) = match storage {
-            XorbStorage::Materialized(entry) => {
-                let range_data = &entry.serialized_data[start..end];
-                cas_object::deserialize_chunks(&mut Cursor::new(range_data))?
-            },
-            XorbStorage::Random(xorb) => {
-                let range_data = xorb.get_serialized_range(start as u64, end as u64);
-                cas_object::deserialize_chunks(&mut Cursor::new(range_data.as_ref()))?
-            },
-        };
+        for http_range in &http_ranges {
+            let start = http_range.start as usize;
+            let end = http_range.end as usize + 1;
+            total_transfer += http_range.length();
+
+            let (data, mut chunk_indices) = match storage {
+                XorbStorage::Materialized(entry) => {
+                    let range_data = &entry.serialized_data[start..end];
+                    cas_object::deserialize_chunks(&mut Cursor::new(range_data))?
+                },
+                XorbStorage::Random(xorb) => {
+                    let range_data = xorb.get_serialized_range(start as u64, end as u64);
+                    cas_object::deserialize_chunks(&mut Cursor::new(range_data.as_ref()))?
+                },
+            };
+
+            let base_offset = all_decompressed.len() as u32;
+            if !all_chunk_indices.is_empty() {
+                chunk_indices = chunk_indices.iter().skip(1).map(|&o| o + base_offset).collect();
+            }
+            all_decompressed.extend_from_slice(&data);
+            all_chunk_indices.extend(chunk_indices);
+        }
 
         if let Some(expected) = uncompressed_size_if_known {
             debug_assert_eq!(
-                decompressed_data.len(),
+                all_decompressed.len(),
                 expected,
                 "get_file_term_data: expected {} bytes, got {}",
                 expected,
-                decompressed_data.len()
+                all_decompressed.len()
             );
         }
 
         if let Some(ref cb) = progress_callback {
-            cb(transfer_len, transfer_len, transfer_len);
+            cb(total_transfer, total_transfer, total_transfer);
         }
-        Ok((Bytes::from(decompressed_data), chunk_byte_indices))
+        Ok((Bytes::from(all_decompressed), all_chunk_indices))
     }
 }
 
@@ -938,6 +916,19 @@ fn parse_fetch_url(url: &str) -> Result<(MerkleHash, FileRange, Instant)> {
     let timestamp = *REFERENCE_INSTANT + Duration::from_millis(timestamp_ms);
 
     Ok((hash, byte_range, timestamp))
+}
+
+fn generate_v2_fetch_url(hash: &MerkleHash, ranges: &[XorbRangeDescriptor], timestamp: Instant) -> String {
+    xorb_utils::generate_v2_fetch_url(hash, ranges, timestamp)
+}
+
+/// Parse either a V1 or V2 fetch URL, returning (hash, timestamp).
+fn parse_any_fetch_url(url: &str) -> Result<(MerkleHash, Instant)> {
+    if let Ok((hash, _, ts)) = parse_fetch_url(url) {
+        return Ok((hash, ts));
+    }
+    let (hash, ts, _) = xorb_utils::parse_v2_fetch_url(url)?;
+    Ok((hash, ts))
 }
 
 #[cfg(all(test, not(target_family = "wasm")))]
@@ -1056,7 +1047,7 @@ mod tests {
         assert_eq!(range_data.as_ref(), &file2.data[start as usize..end as usize]);
 
         // Reconstruction workflow
-        let recon = client.get_reconstruction(&file2.file_hash, None).await.unwrap().unwrap();
+        let recon = client.get_reconstruction_v1(&file2.file_hash, None).await.unwrap().unwrap();
         for term in &recon.terms {
             let xorb_hash: MerkleHash = term.hash.into();
             for fetch_info in recon.fetch_info.get(&term.hash).unwrap() {

@@ -257,11 +257,32 @@ pub struct XorbRangeDescriptor {
     pub bytes: HttpRange,
 }
 
-/// Wrapper enum for V1/V2 reconstruction responses.
-/// Allows the client to handle both versions transparently.
-pub enum ReconstructionResponse {
-    V1(QueryReconstructionResponse),
-    V2(QueryReconstructionResponseV2),
+impl From<QueryReconstructionResponse> for QueryReconstructionResponseV2 {
+    fn from(v1: QueryReconstructionResponse) -> Self {
+        let xorbs = v1
+            .fetch_info
+            .into_iter()
+            .map(|(hash, fetch_infos)| {
+                let fetch = fetch_infos
+                    .into_iter()
+                    .map(|info| XorbMultiRangeFetch {
+                        url: info.url,
+                        ranges: vec![XorbRangeDescriptor {
+                            chunks: info.range,
+                            bytes: info.url_range,
+                        }],
+                    })
+                    .collect();
+                (hash, XorbFetchDescriptor { fetch })
+            })
+            .collect();
+
+        QueryReconstructionResponseV2 {
+            offset_into_first_range: v1.offset_into_first_range,
+            terms: v1.terms,
+            xorbs,
+        }
+    }
 }
 
 // Request json body type representation for the POST /reconstructions endpoint

@@ -10,7 +10,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use cas_object::CasObject;
-use cas_types::{CASReconstructionFetchInfo, FileRange};
+use cas_types::{CASReconstructionFetchInfo, FileRange, QueryReconstructionResponse, QueryReconstructionResponseV2};
 use merklehash::MerkleHash;
 
 use crate::error::Result;
@@ -39,6 +39,37 @@ pub trait DirectAccessClient: Client + Send + Sync {
     ///
     /// Pass `None` to disable the delay.
     fn set_api_delay_range(&self, delay_range: Option<Range<Duration>>);
+
+    /// Sets the maximum number of byte ranges per `XorbMultiRangeFetch` entry
+    /// in V2 reconstruction responses.
+    ///
+    /// Default is `usize::MAX` (all ranges in one fetch). When set to N,
+    /// ranges for each xorb are grouped into entries of at most N ranges.
+    /// This simulates the CloudFront URL length limit that forces splitting.
+    fn set_max_ranges_per_fetch(&self, max_ranges: usize);
+
+    /// Disables V2 reconstruction responses. When disabled, the V2 endpoint
+    /// returns 404, forcing clients to fall back to V1.
+    fn disable_v2_reconstruction(&self);
+
+    /// Returns whether V2 reconstruction is disabled.
+    fn is_v2_reconstruction_disabled(&self) -> bool {
+        false
+    }
+
+    /// V1 reconstruction: returns per-range presigned URLs.
+    async fn get_reconstruction_v1(
+        &self,
+        file_id: &MerkleHash,
+        bytes_range: Option<FileRange>,
+    ) -> Result<Option<QueryReconstructionResponse>>;
+
+    /// V2 reconstruction: returns per-xorb multi-range fetch descriptors.
+    async fn get_reconstruction_v2(
+        &self,
+        file_id: &MerkleHash,
+        bytes_range: Option<FileRange>,
+    ) -> Result<Option<QueryReconstructionResponseV2>>;
 
     /// Returns all XORB hashes stored in this client.
     async fn list_xorbs(&self) -> Result<Vec<MerkleHash>>;
