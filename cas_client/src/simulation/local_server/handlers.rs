@@ -25,8 +25,8 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bytes::Bytes;
 use cas_types::{
-    CASReconstructionFetchInfo, FileRange, HexKey, HexMerkleHash, UploadShardResponse, UploadShardResponseType,
-    UploadXorbResponse,
+    CASReconstructionFetchInfo, FileRange, HexKey, HexMerkleHash, QueryReconstructionResponseV2, UploadShardResponse,
+    UploadShardResponseType, UploadXorbResponse,
 };
 use futures_util::StreamExt;
 use http::header::RANGE;
@@ -117,27 +117,55 @@ fn error_to_response(e: CasClientError) -> Response {
     (status, e.to_string()).into_response()
 }
 
-/// Encodes term data (file path) into a URL-safe base64 string.
-///
-/// The term encodes the local file path that the LocalClient uses.
-/// This allows the fetch_term endpoint to retrieve the data.
-/// Encodes a fetch term for HTTP transport.
-///
-/// The encoded term contains:
-/// - xorb_hash: The XORB hash (hex encoded)
-///
-/// The byte range to fetch comes from the HTTP Range header, not encoded in the term.
+/// Encodes a V1 fetch term for HTTP transport.
+/// Contains only the xorb hash; the byte range comes from the HTTP Range header.
 fn encode_term(xorb_hash: &MerkleHash) -> String {
     URL_SAFE_NO_PAD.encode(xorb_hash.hex().as_bytes())
 }
 
-/// Decodes a fetch term back into its components.
-///
-/// Returns the xorb_hash.
-fn decode_term(term: &str) -> Result<MerkleHash, String> {
+/// Encodes a V2 fetch term with embedded byte ranges.
+/// Format: "{hash_hex}:{start1}-{end1},{start2}-{end2},..."
+/// Byte ranges use exclusive end (FileRange convention).
+fn encode_term_with_ranges(xorb_hash: &MerkleHash, ranges: &[cas_types::XorbRangeDescriptor]) -> String {
+    let ranges_str: Vec<String> = ranges
+        .iter()
+        .map(|r| {
+            let file_range = FileRange::from(r.bytes);
+            format!("{}-{}", file_range.start, file_range.end)
+        })
+        .collect();
+    let payload = format!("{}:{}", xorb_hash.hex(), ranges_str.join(","));
+    URL_SAFE_NO_PAD.encode(payload.as_bytes())
+}
+
+/// Decoded fetch term: hash and optional byte ranges (exclusive end).
+struct DecodedTerm {
+    hash: MerkleHash,
+    byte_ranges: Vec<FileRange>,
+}
+
+/// Decodes a fetch term. Supports both V1 (hash only) and V2 (hash + ranges).
+fn decode_term(term: &str) -> Result<DecodedTerm, String> {
     let bytes = URL_SAFE_NO_PAD.decode(term).map_err(|e| format!("Invalid base64: {e}"))?;
-    let hash_hex = String::from_utf8(bytes).map_err(|e| format!("Invalid UTF-8: {e}"))?;
-    MerkleHash::from_hex(&hash_hex).map_err(|e| format!("Invalid hash: {e}"))
+    let payload = String::from_utf8(bytes).map_err(|e| format!("Invalid UTF-8: {e}"))?;
+
+    if let Some((hash_hex, ranges_str)) = payload.split_once(':') {
+        let hash = MerkleHash::from_hex(hash_hex).map_err(|e| format!("Invalid hash: {e}"))?;
+        let mut byte_ranges = Vec::new();
+        for r in ranges_str.split(',').filter(|s| !s.is_empty()) {
+            let (start_s, end_s) = r.split_once('-').ok_or("Invalid range syntax")?;
+            let start: u64 = start_s.parse().map_err(|e| format!("Invalid range start: {e}"))?;
+            let end: u64 = end_s.parse().map_err(|e| format!("Invalid range end: {e}"))?;
+            byte_ranges.push(FileRange::new(start, end));
+        }
+        Ok(DecodedTerm { hash, byte_ranges })
+    } else {
+        let hash = MerkleHash::from_hex(&payload).map_err(|e| format!("Invalid hash: {e}"))?;
+        Ok(DecodedTerm {
+            hash,
+            byte_ranges: vec![],
+        })
+    }
 }
 
 /// Extracts the base URL from request headers (Host header).
@@ -204,13 +232,78 @@ pub async fn get_reconstruction(
         Err((status, msg)) => return (status, msg).into_response(),
     };
 
-    match state.get_reconstruction(&file_id, range).await {
+    match state.get_reconstruction_v1(&file_id, range).await {
         Ok(Some(mut response)) => {
             transform_fetch_info_urls(&mut response.fetch_info, &base_url);
             Json(response).into_response()
         },
         Ok(None) => (StatusCode::RANGE_NOT_SATISFIABLE, "Range not satisfiable").into_response(),
         Err(e) => error_to_response(e),
+    }
+}
+
+/// GET /v2/reconstructions/{file_id}
+///
+/// Returns V2 reconstruction information for a file, including:
+/// - List of terms (chunks) needed to reconstruct the file
+/// - Per-xorb fetch descriptors with multi-range URLs
+///
+/// Supports Range header for partial file reconstruction.
+/// URLs in the response point to the /v1/fetch_term endpoint.
+pub async fn get_reconstruction_v2(
+    State(state): State<Arc<dyn DirectAccessClient>>,
+    Path(HexMerkleHash(file_id)): Path<HexMerkleHash>,
+    headers: HeaderMap,
+) -> Response {
+    // Allow testing V1 fallback by simulating V2 endpoint unavailability.
+    if state.is_v2_reconstruction_disabled() {
+        return (StatusCode::NOT_FOUND, "V2 reconstruction endpoint disabled").into_response();
+    }
+
+    let base_url = get_base_url(&headers);
+
+    let range = match parse_range_header(headers.get(RANGE)) {
+        Ok(Some(FileRangeVariant::Normal(range))) => Some(range),
+        Ok(Some(FileRangeVariant::OpenRHS(start))) => {
+            let file_size = match state.get_file_size(&file_id).await {
+                Ok(size) => size,
+                Err(e) => return error_to_response(e),
+            };
+            Some(FileRange::new(start, file_size))
+        },
+        Ok(Some(FileRangeVariant::Suffix(suffix))) => {
+            let file_size = match state.get_file_size(&file_id).await {
+                Ok(size) => size,
+                Err(e) => return error_to_response(e),
+            };
+            Some(FileRange::new(file_size.saturating_sub(suffix), file_size))
+        },
+        Ok(None) => None,
+        Err((status, msg)) => return (status, msg).into_response(),
+    };
+
+    match state.get_reconstruction_v2(&file_id, range).await {
+        Ok(Some(mut response)) => {
+            transform_v2_xorb_urls(&mut response, &base_url);
+            Json(response).into_response()
+        },
+        Ok(None) => (StatusCode::RANGE_NOT_SATISFIABLE, "Range not satisfiable").into_response(),
+        Err(e) => error_to_response(e),
+    }
+}
+
+/// Transforms V2 xorb URLs from client-internal format to HTTP URLs.
+///
+/// Each `XorbMultiRangeFetch` URL is replaced with an HTTP URL pointing
+/// to the /v1/fetch_term endpoint. The byte ranges from the V2 response
+/// are encoded into the term so the endpoint can serve all ranges in one request.
+fn transform_v2_xorb_urls(response: &mut QueryReconstructionResponseV2, base_url: &str) {
+    for (xorb_hash, descriptor) in response.xorbs.iter_mut() {
+        let xorb_hash: MerkleHash = (*xorb_hash).into();
+        for fetch in descriptor.fetch.iter_mut() {
+            let encoded_term = encode_term_with_ranges(&xorb_hash, &fetch.ranges);
+            fetch.url = format!("{base_url}/v1/fetch_term?term={encoded_term}");
+        }
     }
 }
 
@@ -265,10 +358,12 @@ pub async fn batch_get_reconstruction(
 /// GET /v1/fetch_term?term=<base64_encoded_term>
 ///
 /// Fetches raw XORB data based on an encoded term.
-/// The term contains the xorb hash. The byte range is specified via HTTP Range header.
 ///
-/// This endpoint is called by RemoteClient when fetching reconstruction terms.
-/// It returns raw (compressed) bytes that the client will decompress.
+/// For V1 terms (hash only), the byte range comes from the HTTP Range header.
+/// For V2 terms (hash + ranges), all encoded byte ranges are fetched and
+/// concatenated in order, allowing a single request to serve multi-range blocks.
+///
+/// Returns raw (compressed) bytes that the client will decompress.
 pub async fn fetch_term(
     State(state): State<Arc<dyn DirectAccessClient>>,
     uri: axum::http::Uri,
@@ -284,13 +379,58 @@ pub async fn fetch_term(
         return (StatusCode::BAD_REQUEST, "Missing 'term' query parameter").into_response();
     };
 
-    let xorb_hash = match decode_term(&term) {
-        Ok(h) => h,
+    let decoded = match decode_term(&term) {
+        Ok(d) => d,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("Invalid term: {e}")).into_response(),
     };
 
-    // Get total length of the raw XORB data for Range header handling
-    let total_length = match state.xorb_raw_length(&xorb_hash).await {
+    if !decoded.byte_ranges.is_empty() {
+        if decoded.byte_ranges.len() == 1 {
+            // Single range: return the raw bytes directly (standard 206 single-range).
+            let range = &decoded.byte_ranges[0];
+            return match state.get_xorb_raw_bytes(&decoded.hash, Some(*range)).await {
+                Ok(data) => (StatusCode::OK, data).into_response(),
+                Err(e) => error_to_response(e),
+            };
+        }
+
+        // Multiple ranges: return a multipart/byteranges response (RFC 7233 Section 4.1),
+        // matching the format that S3/CloudFront returns for multi-range requests.
+        let total_length = match state.xorb_raw_length(&decoded.hash).await {
+            Ok(len) => len,
+            Err(e) => return error_to_response(e),
+        };
+
+        let boundary = "xet_multipart_boundary";
+        let mut response_body = Vec::new();
+
+        for range in &decoded.byte_ranges {
+            let data = match state.get_xorb_raw_bytes(&decoded.hash, Some(*range)).await {
+                Ok(d) => d,
+                Err(e) => return error_to_response(e),
+            };
+            // FileRange uses exclusive end; Content-Range header uses inclusive end.
+            let inclusive_end = range.end.saturating_sub(1);
+            let part_header = format!(
+                "--{boundary}\r\nContent-Type: application/octet-stream\r\nContent-Range: bytes {}-{}/{total_length}\r\n\r\n",
+                range.start, inclusive_end
+            );
+            response_body.extend_from_slice(part_header.as_bytes());
+            response_body.extend_from_slice(&data);
+            response_body.extend_from_slice(b"\r\n");
+        }
+        response_body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+
+        let content_type = format!("multipart/byteranges; boundary={boundary}");
+        let mut headers = HeaderMap::new();
+        headers.insert(http::header::CONTENT_TYPE, HeaderValue::from_str(&content_type).unwrap());
+
+        return (StatusCode::PARTIAL_CONTENT, headers, Bytes::from(response_body)).into_response();
+    }
+
+    // V1 term: byte range comes from the HTTP Range header.
+    // Get total length of the raw XORB data for Range header handling.
+    let total_length = match state.xorb_raw_length(&decoded.hash).await {
         Ok(len) => len,
         Err(e) => return error_to_response(e),
     };
@@ -307,7 +447,7 @@ pub async fn fetch_term(
     };
 
     // Fetch raw (serialized/compressed) bytes from the XORB
-    match state.get_xorb_raw_bytes(&xorb_hash, byte_range).await {
+    match state.get_xorb_raw_bytes(&decoded.hash, byte_range).await {
         Ok(data) => (StatusCode::OK, data).into_response(),
         Err(e) => error_to_response(e),
     }
@@ -490,8 +630,32 @@ mod tests {
         let xorb_hash = MerkleHash::from_hex(&format!("{:0>64}", "abc123")).unwrap();
 
         let encoded = encode_term(&xorb_hash);
-        let decoded_hash = decode_term(&encoded).unwrap();
+        let decoded = decode_term(&encoded).unwrap();
+        assert_eq!(decoded.hash, xorb_hash);
+        assert!(decoded.byte_ranges.is_empty());
+    }
 
-        assert_eq!(decoded_hash, xorb_hash);
+    #[test]
+    fn test_encode_decode_term_with_ranges() {
+        use cas_types::{ChunkRange, HttpRange, XorbRangeDescriptor};
+
+        let xorb_hash = MerkleHash::from_hex(&format!("{:0>64}", "abc123")).unwrap();
+        let ranges = vec![
+            XorbRangeDescriptor {
+                chunks: ChunkRange::new(0, 3),
+                bytes: HttpRange::new(0, 1023),
+            },
+            XorbRangeDescriptor {
+                chunks: ChunkRange::new(5, 8),
+                bytes: HttpRange::new(2048, 4095),
+            },
+        ];
+
+        let encoded = encode_term_with_ranges(&xorb_hash, &ranges);
+        let decoded = decode_term(&encoded).unwrap();
+        assert_eq!(decoded.hash, xorb_hash);
+        assert_eq!(decoded.byte_ranges.len(), 2);
+        assert_eq!(decoded.byte_ranges[0], FileRange::new(0, 1024));
+        assert_eq!(decoded.byte_ranges[1], FileRange::new(2048, 4096));
     }
 }

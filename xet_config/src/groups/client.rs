@@ -242,4 +242,13 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_CLIENT_UNIX_SOCKET_PATH` to set this value.
     ref unix_socket_path: Option<String> = None;
 
+    /// The reconstruction API version to request from the CAS server.
+    /// Version 1 returns per-range presigned URLs; version 2 returns
+    /// per-xorb multi-range fetch descriptors.
+    ///
+    /// The default value is 2.
+    ///
+    /// Use the environment variable `HF_XET_CLIENT_RECONSTRUCTION_API_VERSION` to set this value.
+    ref reconstruction_api_version: u32 = 2;
+
 });

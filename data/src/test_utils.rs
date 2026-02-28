@@ -3,7 +3,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use cas_client::{Client, LocalClient, LocalTestServer};
+use cas_client::{Client, DirectAccessClient, LocalClient, LocalTestServer};
 use progress_tracking::TrackingProgressUpdater;
 use rand::prelude::*;
 use tempfile::TempDir;
@@ -11,6 +11,48 @@ use tempfile::TempDir;
 use crate::configurations::TranslatorConfig;
 use crate::data_client::clean_file;
 use crate::{FileDownloadSession, FileUploadSession, XetFileInfo};
+
+/// Describes how hydration (download/smudge) should be performed during a test.
+///
+/// Each variant exercises a different reconstruction path:
+/// - `DirectClient`: Uses `LocalClient` directly (no HTTP server).
+/// - `ServerV2`: Uses `LocalTestServer` with default V2 reconstruction.
+/// - `ServerV1Fallback`: Uses `LocalTestServer` with V2 disabled, forcing V1 fallback.
+/// - `ServerMaxRanges2`: Uses `LocalTestServer` with `max_ranges_per_fetch=2`, forcing multi-range fetch splitting in
+///   V2 responses.
+#[derive(Debug, Clone, Copy)]
+pub enum HydrationMode {
+    DirectClient,
+    ServerV2,
+    ServerV1Fallback,
+    ServerMaxRanges2,
+}
+
+impl HydrationMode {
+    pub fn all() -> &'static [HydrationMode] {
+        &[
+            HydrationMode::DirectClient,
+            HydrationMode::ServerV2,
+            HydrationMode::ServerV1Fallback,
+            HydrationMode::ServerMaxRanges2,
+        ]
+    }
+
+    pub fn uses_server(&self) -> bool {
+        !matches!(self, HydrationMode::DirectClient)
+    }
+}
+
+impl std::fmt::Display for HydrationMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HydrationMode::DirectClient => write!(f, "direct_client"),
+            HydrationMode::ServerV2 => write!(f, "server_v2"),
+            HydrationMode::ServerV1Fallback => write!(f, "server_v1_fallback"),
+            HydrationMode::ServerMaxRanges2 => write!(f, "server_max_ranges_2"),
+        }
+    }
+}
 
 /// Creates or overwrites a single file in `dir` with `size` bytes of random data.
 /// Panics on any I/O error. Returns the total number of bytes written (=`size`).
@@ -171,13 +213,48 @@ impl HydrateDehydrateTest {
         }
     }
 
+    /// Creates a new test harness configured for a specific hydration mode.
+    pub fn for_mode(mode: HydrationMode) -> Self {
+        Self::new(mode.uses_server())
+    }
+
+    /// Applies hydration mode configuration to the test server.
+    /// Must be called after `dehydrate()` and before `hydrate()`.
+    pub async fn apply_hydration_mode(&mut self, mode: HydrationMode) {
+        match mode {
+            HydrationMode::DirectClient => {},
+            HydrationMode::ServerV2 => {
+                self.ensure_server_created().await;
+            },
+            HydrationMode::ServerV1Fallback => {
+                self.ensure_server_created().await;
+                self.test_server.as_ref().unwrap().disable_v2_reconstruction();
+            },
+            HydrationMode::ServerMaxRanges2 => {
+                self.ensure_server_created().await;
+                self.test_server.as_ref().unwrap().set_max_ranges_per_fetch(2);
+            },
+        }
+    }
+
+    /// Ensures the test server is running, creating it if necessary.
+    /// Call this before configuring the server (e.g., disabling V2 or setting max ranges).
+    pub async fn ensure_server_created(&mut self) {
+        if self.use_test_server && self.test_server.is_none() {
+            let local_client = LocalClient::new(self.cas_dir.join("xet/xorbs")).await.unwrap();
+            self.test_server = Some(LocalTestServer::start_with_client(local_client).await);
+        }
+    }
+
+    /// Returns a reference to the test server, if one has been created.
+    pub fn test_server(&self) -> Option<&LocalTestServer> {
+        self.test_server.as_ref()
+    }
+
     /// Lazily initializes the test server (if needed) and returns a CAS client.
     async fn get_or_create_client(&mut self) -> Arc<dyn Client> {
         if self.use_test_server {
-            if self.test_server.is_none() {
-                let local_client = LocalClient::new(self.cas_dir.join("xet/xorbs")).await.unwrap();
-                self.test_server = Some(LocalTestServer::start_with_client(local_client).await);
-            }
+            self.ensure_server_created().await;
             self.test_server.as_ref().unwrap().remote_client().clone() as Arc<dyn Client>
         } else {
             LocalClient::new(self.cas_dir.join("xet/xorbs")).await.unwrap() as Arc<dyn Client>

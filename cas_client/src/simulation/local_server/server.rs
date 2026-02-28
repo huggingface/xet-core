@@ -147,6 +147,7 @@ impl LocalServer {
                     .route("/get_xorb/{prefix}/{hash}/", get(handlers::get_file_term_data))
                     .route("/fetch_term", get(handlers::fetch_term)),
             )
+            .nest("/v2", Router::new().route("/reconstructions/{file_id}", get(handlers::get_reconstruction_v2)))
             // Routes used by RemoteClient without /v1/ prefix
             .route("/reconstructions", get(handlers::batch_get_reconstruction))
             .route("/shards", post(handlers::post_shard))
@@ -388,7 +389,7 @@ impl Client for LocalTestServer {
         &self,
         file_id: &merklehash::MerkleHash,
         bytes_range: Option<cas_types::FileRange>,
-    ) -> Result<Option<cas_types::QueryReconstructionResponse>> {
+    ) -> Result<Option<cas_types::QueryReconstructionResponseV2>> {
         self.remote_client.get_reconstruction(file_id, bytes_range).await
     }
 
@@ -452,6 +453,34 @@ impl Client for LocalTestServer {
 impl DirectAccessClient for LocalTestServer {
     fn set_fetch_term_url_expiration(&self, expiration: std::time::Duration) {
         self.client.set_fetch_term_url_expiration(expiration);
+    }
+
+    fn set_max_ranges_per_fetch(&self, max_ranges: usize) {
+        self.client.set_max_ranges_per_fetch(max_ranges);
+    }
+
+    fn disable_v2_reconstruction(&self) {
+        self.client.disable_v2_reconstruction();
+    }
+
+    fn is_v2_reconstruction_disabled(&self) -> bool {
+        self.client.is_v2_reconstruction_disabled()
+    }
+
+    async fn get_reconstruction_v1(
+        &self,
+        file_id: &merklehash::MerkleHash,
+        bytes_range: Option<cas_types::FileRange>,
+    ) -> Result<Option<cas_types::QueryReconstructionResponse>> {
+        self.remote_client.get_reconstruction_v1(file_id, bytes_range).await
+    }
+
+    async fn get_reconstruction_v2(
+        &self,
+        file_id: &merklehash::MerkleHash,
+        bytes_range: Option<cas_types::FileRange>,
+    ) -> Result<Option<cas_types::QueryReconstructionResponseV2>> {
+        self.remote_client.get_reconstruction_v2(file_id, bytes_range).await
     }
 
     fn set_api_delay_range(&self, delay_range: Option<std::ops::Range<std::time::Duration>>) {
@@ -553,16 +582,16 @@ mod tests {
         let local_data = server.client().get_file_data(&file.file_hash, None).await.unwrap();
         assert_eq!(file.data, local_data);
 
-        // Full file reconstruction - compare remote and local
+        // Full file reconstruction - compare remote and local (V1)
         let remote_recon = server
             .remote_client()
-            .get_reconstruction(&file.file_hash, None)
+            .get_reconstruction_v1(&file.file_hash, None)
             .await
             .unwrap()
             .unwrap();
         let local_recon = server
             .client()
-            .get_reconstruction(&file.file_hash, None)
+            .get_reconstruction_v1(&file.file_hash, None)
             .await
             .unwrap()
             .unwrap();
@@ -578,7 +607,7 @@ mod tests {
         let range = FileRange::new(file_size / 4, file_size * 3 / 4);
         let range_recon = server
             .remote_client()
-            .get_reconstruction(&file.file_hash, Some(range))
+            .get_reconstruction_v1(&file.file_hash, Some(range))
             .await
             .unwrap();
         assert!(range_recon.is_some());
@@ -588,7 +617,7 @@ mod tests {
         let multi_file = server.client().upload_random_file(term_spec, CHUNK_SIZE).await.unwrap();
         let multi_recon = server
             .remote_client()
-            .get_reconstruction(&multi_file.file_hash, None)
+            .get_reconstruction_v1(&multi_file.file_hash, None)
             .await
             .unwrap()
             .unwrap();
@@ -666,7 +695,7 @@ mod tests {
         let fake_hash =
             merklehash::MerkleHash::from_hex("d760aaf4beb07581956e24c847c47f1abd2e419166aa68259035bc412232e9da")
                 .unwrap();
-        let result = server.remote_client().get_reconstruction(&fake_hash, None).await;
+        let result = server.remote_client().get_reconstruction_v1(&fake_hash, None).await;
         assert!(result.is_err() || result.unwrap().is_none());
 
         // Nonexistent file for file info
@@ -698,7 +727,7 @@ mod tests {
         // Verify single XORB URLs are HTTP
         let recon1 = server
             .remote_client()
-            .get_reconstruction(&file1.file_hash, None)
+            .get_reconstruction_v1(&file1.file_hash, None)
             .await
             .unwrap()
             .unwrap();
@@ -718,7 +747,7 @@ mod tests {
         // Verify multi-XORB file has HTTP URLs for all XORBs
         let multi_recon = server
             .remote_client()
-            .get_reconstruction(&multi_file.file_hash, None)
+            .get_reconstruction_v1(&multi_file.file_hash, None)
             .await
             .unwrap()
             .unwrap();
@@ -734,7 +763,7 @@ mod tests {
         let range = FileRange::new(file_size / 4, file_size * 3 / 4);
         let range_recon = server
             .remote_client()
-            .get_reconstruction(&multi_file.file_hash, Some(range))
+            .get_reconstruction_v1(&multi_file.file_hash, Some(range))
             .await
             .unwrap()
             .unwrap();
@@ -765,7 +794,7 @@ mod tests {
         // Get reconstruction via remote client
         let recon = server
             .remote_client()
-            .get_reconstruction(&file.file_hash, None)
+            .get_reconstruction_v1(&file.file_hash, None)
             .await
             .unwrap()
             .unwrap();
@@ -789,7 +818,7 @@ mod tests {
         // Get reconstruction
         let recon = server
             .remote_client()
-            .get_reconstruction(&file.file_hash, None)
+            .get_reconstruction_v1(&file.file_hash, None)
             .await
             .unwrap()
             .unwrap();
@@ -854,6 +883,160 @@ mod tests {
         }
     }
 
+    /// Tests V2 reconstruction endpoint returns valid responses through the server.
+    async fn check_v2_reconstruction(server: &LocalTestServer) {
+        let file = server.client().upload_random_file(&[(1, (0, 5))], CHUNK_SIZE).await.unwrap();
+
+        // Query V2 endpoint via remote client
+        let v2 = server
+            .remote_client()
+            .get_reconstruction_v2(&file.file_hash, None)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(!v2.terms.is_empty());
+        assert!(!v2.xorbs.is_empty());
+        assert_eq!(v2.offset_into_first_range, 0);
+
+        // V2 URLs should be HTTP URLs pointing to /v1/fetch_term
+        for descriptor in v2.xorbs.values() {
+            for fetch in &descriptor.fetch {
+                assert!(fetch.url.starts_with("http://"), "V2 URL should be HTTP, got: {}", fetch.url);
+                assert!(
+                    fetch.url.contains("/v1/fetch_term?term="),
+                    "V2 URL should point to fetch_term endpoint, got: {}",
+                    fetch.url
+                );
+            }
+        }
+
+        // V2 terms should match V1 terms
+        let v1 = server
+            .remote_client()
+            .get_reconstruction_v1(&file.file_hash, None)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(v1.terms.len(), v2.terms.len());
+        assert_eq!(v1.offset_into_first_range, v2.offset_into_first_range);
+        for (t1, t2) in v1.terms.iter().zip(v2.terms.iter()) {
+            assert_eq!(t1.hash, t2.hash);
+            assert_eq!(t1.range, t2.range);
+        }
+    }
+
+    /// Tests V2 fetch URLs are fetchable via the /v1/fetch_term endpoint.
+    async fn check_v2_url_transformation(server: &LocalTestServer) {
+        let http_client = reqwest::Client::new();
+
+        let file = server
+            .client()
+            .upload_random_file(&[(1, (0, 3)), (2, (0, 2))], CHUNK_SIZE)
+            .await
+            .unwrap();
+
+        let v2 = server
+            .remote_client()
+            .get_reconstruction_v2(&file.file_hash, None)
+            .await
+            .unwrap()
+            .unwrap();
+
+        for descriptor in v2.xorbs.values() {
+            for fetch in &descriptor.fetch {
+                let response = http_client.get(&fetch.url).send().await.unwrap();
+                assert!(
+                    response.status().is_success(),
+                    "V2 fetch URL should be fetchable: {} (status: {})",
+                    fetch.url,
+                    response.status()
+                );
+                let data = response.bytes().await.unwrap();
+                assert!(!data.is_empty(), "Fetched data should not be empty");
+            }
+        }
+    }
+
+    /// Tests V2 with range requests through the server.
+    async fn check_v2_range_reconstruction(server: &LocalTestServer) {
+        let term_spec = &[(1, (0, 3)), (2, (0, 2)), (1, (3, 5))];
+        let file = server.client().upload_random_file(term_spec, CHUNK_SIZE).await.unwrap();
+        let file_size = file.data.len() as u64;
+
+        let range = FileRange::new(file_size / 4, file_size * 3 / 4);
+        let v2 = server
+            .remote_client()
+            .get_reconstruction_v2(&file.file_hash, Some(range))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(!v2.terms.is_empty());
+        for descriptor in v2.xorbs.values() {
+            for fetch in &descriptor.fetch {
+                assert!(fetch.url.starts_with("http://"));
+            }
+        }
+    }
+
+    /// Tests V2 max_ranges_per_fetch through the server.
+    async fn check_v2_max_ranges(server: &LocalTestServer) {
+        let term_spec = &[(1, (0, 2)), (2, (0, 1)), (1, (2, 4)), (2, (1, 2)), (1, (4, 6))];
+        let file = server.client().upload_random_file(term_spec, 512).await.unwrap();
+
+        // Set max_ranges_per_fetch to 1
+        server.set_max_ranges_per_fetch(1);
+
+        let v2 = server
+            .client()
+            .get_reconstruction_v2(&file.file_hash, None)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let xorb1_hash: cas_types::HexMerkleHash = file.terms[0].xorb_hash.into();
+        if let Some(desc) = v2.xorbs.get(&xorb1_hash) {
+            for fetch in &desc.fetch {
+                assert!(fetch.ranges.len() <= 1, "Each fetch should have at most 1 range, got {}", fetch.ranges.len());
+            }
+        }
+
+        // Reset
+        server.set_max_ranges_per_fetch(usize::MAX);
+    }
+
+    /// Verifies that disabling V2 causes the V2 endpoint to return an error,
+    /// and that get_reconstruction (which falls back to V1) still works.
+    async fn check_v2_disabled_fallback(server: &LocalTestServer) {
+        let file = server
+            .remote_client()
+            .upload_random_file(&[(1, (0, 3)), (2, (0, 2))], CHUNK_SIZE)
+            .await
+            .unwrap();
+
+        // V2 should work before disabling.
+        let v2_result = server.remote_client().get_reconstruction_v2(&file.file_hash, None).await;
+        assert!(v2_result.is_ok());
+
+        // Disable V2.
+        server.disable_v2_reconstruction();
+
+        // V2 should now fail (404).
+        let v2_result = server.remote_client().get_reconstruction_v2(&file.file_hash, None).await;
+        assert!(v2_result.is_err(), "V2 should return error when disabled");
+
+        // get_reconstruction should still work via V1 fallback.
+        let result = server
+            .remote_client()
+            .get_reconstruction(&file.file_hash, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.terms.len(), 2);
+    }
+
     /// Runs all server checks for a given test server instance.
     async fn run_all_server_checks(server: &LocalTestServer) {
         check_basic_correctness(server).await;
@@ -863,6 +1046,11 @@ mod tests {
         check_downloaded_terms_match_expected_data(server).await;
         check_complete_file_reconstruction(server).await;
         check_chunk_hashes_correctness(server).await;
+        check_v2_reconstruction(server).await;
+        check_v2_url_transformation(server).await;
+        check_v2_range_reconstruction(server).await;
+        check_v2_max_ranges(server).await;
+        check_v2_disabled_fallback(server).await;
     }
 
     /// Main test that runs all server checks with both in-memory and disk-backed storage.
