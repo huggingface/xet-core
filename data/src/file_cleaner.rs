@@ -50,7 +50,11 @@ impl SingleFileCleaner {
         sha256: Option<Sha256>,
         session: Arc<FileUploadSession>,
     ) -> Self {
-        let deduper = FileDeduper::new(UploadSessionDataManager::new(session.clone()), file_id);
+        let deduper = FileDeduper::new(
+            UploadSessionDataManager::new(session.clone()),
+            file_id,
+            xet_config().deduplication.clone(),
+        );
 
         Self {
             file_name,
