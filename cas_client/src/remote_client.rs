@@ -4,8 +4,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use bytes::Bytes;
 use cas_object::SerializedCasObject;
 use cas_types::{
-    BatchQueryReconstructionResponse, FileRange, HttpRange, Key, QueryReconstructionResponse, UploadShardResponse,
-    UploadShardResponseType, UploadXorbResponse,
+    BatchQueryReconstructionResponse, FileRange, HttpRange, Key, QueryReconstructionResponse,
+    QueryReconstructionResponseV2, ReconstructionResponse, UploadShardResponse, UploadShardResponseType,
+    UploadXorbResponse,
 };
 use futures::TryStreamExt;
 use http::HeaderValue;
@@ -258,6 +259,210 @@ impl Client for RemoteClient {
             },
             Err(e) => Err(e),
         }
+    }
+
+    async fn get_reconstruction_v2(
+        &self,
+        file_id: &MerkleHash,
+        bytes_range: Option<FileRange>,
+    ) -> Result<Option<ReconstructionResponse>> {
+        let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
+        let url = Url::parse(&format!("{}/v1/reconstructions/{}", self.endpoint, file_id.hex()))?;
+        event!(
+            INFORMATION_LOG_LEVEL,
+            call_id,
+            %file_id,
+            ?bytes_range,
+            "Starting get_reconstruction_v2 API call",
+        );
+
+        let api_tag = "cas::get_reconstruction_v2";
+        let client = self.authenticated_http_client.clone();
+
+        let result: Result<ReconstructionResponse> = RetryWrapper::new(api_tag)
+            .run_and_extract_custom(
+                move || {
+                    let mut request = client
+                        .get(url.clone())
+                        .with_extension(Api(api_tag))
+                        .header("X-Xet-Reconstruction-Version", "2");
+                    if let Some(range) = bytes_range {
+                        request = request.header(RANGE, HttpRange::from(range).range_header())
+                    }
+                    request.send()
+                },
+                |resp: Response| async move {
+                    let version = resp
+                        .headers()
+                        .get("X-Xet-Reconstruction-Version")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("1")
+                        .to_string();
+
+                    let body = resp
+                        .bytes()
+                        .await
+                        .map_err(|e| RetryableReqwestError::RetryableError(e.into()))?;
+
+                    if version == "2" {
+                        let v2: QueryReconstructionResponseV2 = serde_json::from_slice(&body).map_err(|e| {
+                            RetryableReqwestError::RetryableError(CasClientError::Other(format!(
+                                "Failed to parse V2 reconstruction response: {e}"
+                            )))
+                        })?;
+                        Ok(ReconstructionResponse::V2(v2))
+                    } else {
+                        let v1: QueryReconstructionResponse = serde_json::from_slice(&body).map_err(|e| {
+                            RetryableReqwestError::RetryableError(CasClientError::Other(format!(
+                                "Failed to parse V1 reconstruction response: {e}"
+                            )))
+                        })?;
+                        Ok(ReconstructionResponse::V1(v1))
+                    }
+                },
+            )
+            .await;
+
+        match result {
+            Ok(response) => {
+                event!(
+                    INFORMATION_LOG_LEVEL,
+                    call_id,
+                    %file_id,
+                    ?bytes_range,
+                    "Completed get_reconstruction_v2 API call"
+                );
+                Ok(Some(response))
+            },
+            Err(CasClientError::ReqwestError(ref e, _)) if e.status() == Some(StatusCode::RANGE_NOT_SATISFIABLE) => {
+                Ok(None)
+            },
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn get_multi_range_term_data(
+        &self,
+        url: &str,
+        range_header: &str,
+        expected_parts: usize,
+        download_permit: ConnectionPermit,
+        progress_callback: Option<ProgressCallback>,
+    ) -> Result<Vec<(Bytes, Vec<u32>)>> {
+        let api_tag = "s3::get_multi_range";
+        let http_client = self.http_client.clone();
+        let url_string = url.to_string();
+        let range_header_string = range_header.to_string();
+
+        let mut transfer_reporter = StreamProgressReporter::new(0)
+            .with_adaptive_concurrency_reporter(download_permit.get_partial_completion_reporting_function());
+        if let Some(cb) = progress_callback {
+            transfer_reporter = transfer_reporter.with_progress_callback(cb);
+        }
+
+        let result = RetryWrapper::new(api_tag)
+            .with_retry_on_403()
+            .with_connection_permit(download_permit, None)
+            .run_and_extract_custom(
+                move || {
+                    let http_client = http_client.clone();
+                    let url_string = url_string.clone();
+                    let range_header_string = range_header_string.clone();
+
+                    async move {
+                        let url =
+                            Url::parse(&url_string).map_err(|e| reqwest_middleware::Error::Middleware(e.into()))?;
+
+                        http_client
+                            .get(url)
+                            .header(RANGE, &range_header_string)
+                            .with_extension(Api(api_tag))
+                            .send()
+                            .await
+                    }
+                },
+                move |resp: Response| {
+                    let transfer_reporter = transfer_reporter.clone();
+                    async move {
+                        let content_type = resp
+                            .headers()
+                            .get("content-type")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("")
+                            .to_string();
+
+                        let incoming_stream = DownloadProgressStream::wrap_stream(
+                            resp.bytes_stream().map_err(std::io::Error::other),
+                            transfer_reporter,
+                        );
+
+                        // Collect the full body through the progress stream
+                        use futures::StreamExt;
+                        let mut body_parts = Vec::new();
+                        futures::pin_mut!(incoming_stream);
+                        while let Some(chunk) = incoming_stream.next().await {
+                            let chunk =
+                                chunk.map_err(|e| RetryableReqwestError::RetryableError(CasClientError::from(e)))?;
+                            body_parts.push(chunk);
+                        }
+                        let body: Bytes = body_parts.into_iter().flatten().collect::<Vec<u8>>().into();
+
+                        // If the response is multipart/byteranges, parse into parts.
+                        // Otherwise (single range → 206 with plain body), treat the entire body as one part.
+                        let part_bodies: Vec<Bytes> = if content_type.contains("multipart/byteranges") {
+                            let multipart_parts =
+                                crate::multipart::parse_multipart_byteranges(&content_type, body)
+                                    .map_err(RetryableReqwestError::FatalError)?;
+
+                            if multipart_parts.len() != expected_parts {
+                                return Err(RetryableReqwestError::FatalError(CasClientError::Other(format!(
+                                    "Expected {expected_parts} parts in multipart response, got {}",
+                                    multipart_parts.len()
+                                ))));
+                            }
+
+                            multipart_parts.into_iter().map(|p| p.data).collect()
+                        } else {
+                            if expected_parts != 1 {
+                                return Err(RetryableReqwestError::FatalError(CasClientError::Other(format!(
+                                    "Expected multipart response with {expected_parts} parts, but got single-range response"
+                                ))));
+                            }
+                            vec![body]
+                        };
+
+                        let mut results = Vec::with_capacity(part_bodies.len());
+                        for part_data in part_bodies {
+                            let mut buffer = Vec::new();
+                            let mut writer = std::io::Cursor::new(&mut buffer);
+
+                            let stream = futures::stream::iter(std::iter::once(Ok::<_, std::io::Error>(part_data)));
+
+                            let result = cas_object::deserialize_async::deserialize_chunks_to_writer_from_stream(
+                                stream,
+                                &mut writer,
+                            )
+                            .await;
+
+                            match result {
+                                Ok((_compressed_len, chunk_byte_indices)) => {
+                                    results.push((Bytes::from(buffer), chunk_byte_indices));
+                                },
+                                Err(e) => {
+                                    return Err(RetryableReqwestError::RetryableError(CasClientError::CasObjectError(
+                                        e,
+                                    )));
+                                },
+                            }
+                        }
+
+                        Ok(results)
+                    }
+                },
+            )
+            .await?;
+
+        Ok(result)
     }
 
     async fn batch_get_reconstruction(&self, file_ids: &[MerkleHash]) -> Result<BatchQueryReconstructionResponse> {

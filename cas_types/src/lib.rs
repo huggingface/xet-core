@@ -217,6 +217,53 @@ pub struct QueryReconstructionResponse {
     pub fetch_info: HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>,
 }
 
+/// V2 reconstruction response - optimized for multi-range fetching.
+/// Instead of N presigned URLs per fragmented xorb, provides 1 signed
+/// CloudFront URL per xorb + all byte ranges listed separately.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct QueryReconstructionResponseV2 {
+    pub offset_into_first_range: u64,
+    pub terms: Vec<CASReconstructionTerm>,
+    /// Map from xorb hash -> xorb fetch descriptor with single URL + all ranges.
+    pub xorbs: HashMap<HexMerkleHash, XorbFetchDescriptor>,
+}
+
+/// Fetch descriptor for a single xorb: one or more signed URLs covering all byte ranges.
+/// Usually 1 URL covers all ranges. If the URL would exceed CloudFront's 8,192 byte limit,
+/// ranges are split across multiple URLs.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct XorbFetchDescriptor {
+    /// List of fetch entries. Each entry has a signed URL + the ranges it covers.
+    /// Typically 1 entry. Multiple entries only when URL length limit forces a split.
+    pub fetch: Vec<XorbMultiRangeFetch>,
+}
+
+/// A signed multi-range fetch: one URL covering a subset of ranges for a xorb.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct XorbMultiRangeFetch {
+    /// Signed CloudFront URL with X-Xet-Signed-Range covering all ranges below.
+    /// Client sends exactly the signed range value as the Range: header.
+    pub url: String,
+    /// Byte ranges covered by this URL, sorted by chunk start.
+    pub ranges: Vec<XorbRangeDescriptor>,
+}
+
+/// A single byte range within a xorb, mapping chunk indices to physical bytes.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct XorbRangeDescriptor {
+    /// Chunk index range [start, end) within the xorb.
+    pub chunks: ChunkRange,
+    /// Physical byte range [start, end] (inclusive end) for the HTTP Range header.
+    pub bytes: HttpRange,
+}
+
+/// Wrapper enum for V1/V2 reconstruction responses.
+/// Allows the client to handle both versions transparently.
+pub enum ReconstructionResponse {
+    V1(QueryReconstructionResponse),
+    V2(QueryReconstructionResponseV2),
+}
+
 // Request json body type representation for the POST /reconstructions endpoint
 // to get the reconstruction for multiple files at a time.
 // listing of non-duplicate (enforced by HashSet) keys (file ids) to get reconstructions for

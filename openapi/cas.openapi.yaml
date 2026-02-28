@@ -17,21 +17,48 @@ paths:
       summary: Get File Reconstruction
       description: |
         Retrieves reconstruction information for a specific file. Supports byte range via the optional `Range` header.
+
+        **Version negotiation:** Send `X-Xet-Reconstruction-Version: 2` request header to get the V2
+        multi-range optimized response. Without the header (or with value `1`), the V1 response is returned.
+        The response includes the same header indicating which version was served.
+
+        V2 returns 1 signed CloudFront URL per xorb with all byte ranges listed separately, enabling
+        multi-range HTTP requests (RFC 7233) instead of N separate presigned URLs.
+
         Minimum token scope: `read`.
         x-required-scope: read
       operationId: getReconstruction
       parameters:
         - $ref: '#/components/parameters/FileIdParam'
         - $ref: '#/components/parameters/RangeHeader'
+        - name: X-Xet-Reconstruction-Version
+          in: header
+          required: false
+          description: |
+            Request a specific response format version. `1` (default) returns V1 format,
+            `2` returns V2 multi-range optimized format.
+          schema:
+            type: string
+            enum: ["1", "2"]
+            default: "1"
       responses:
         '200':
-          description: Reconstruction object
+          description: Reconstruction object (V1 or V2 depending on requested version)
+          headers:
+            X-Xet-Reconstruction-Version:
+              description: Response format version that was served
+              schema:
+                type: string
+                enum: ["1", "2"]
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/QueryReconstructionResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/QueryReconstructionResponse'
+                  - $ref: '#/components/schemas/QueryReconstructionResponseV2'
               examples:
-                example:
+                v1:
+                  summary: V1 response (default)
                   value:
                     offset_into_first_range: 0
                     terms:
@@ -49,6 +76,27 @@ paths:
                           url_range:
                             start: 0
                             end: 131071
+                v2:
+                  summary: V2 response (multi-range optimized)
+                  value:
+                    offset_into_first_range: 0
+                    terms:
+                      - hash: a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456
+                        unpacked_length: 263873
+                        range:
+                          start: 0
+                          end: 4
+                    xorbs:
+                      a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456:
+                        fetch:
+                          - url: "https://transfer.xethub.hf.co/xorbs/default/a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456?X-Xet-Signed-Range=bytes%3D0-131071&Signature=..."
+                            ranges:
+                              - chunks:
+                                  start: 0
+                                  end: 4
+                                bytes:
+                                  start: 0
+                                  end: 131071
         '400':
           description: Bad Request — Malformed file_id
         '401':
@@ -285,6 +333,68 @@ components:
             items:
               $ref: '#/components/schemas/CASReconstructionFetchInfo'
       required: [offset_into_first_range, terms, fetch_info]
+      additionalProperties: false
+    XorbRangeDescriptor:
+      type: object
+      description: A chunk/byte range within a xorb
+      properties:
+        chunks:
+          $ref: '#/components/schemas/IndexRange'
+        bytes:
+          $ref: '#/components/schemas/ByteRange'
+      required: [chunks, bytes]
+      additionalProperties: false
+    XorbMultiRangeFetch:
+      type: object
+      description: A signed multi-range fetch entry covering a subset of ranges for a xorb
+      properties:
+        url:
+          type: string
+          format: uri
+          description: |
+            Signed CloudFront URL with X-Xet-Signed-Range covering all ranges below.
+            Client sends exactly the signed range value as the Range header.
+        ranges:
+          type: array
+          items:
+            $ref: '#/components/schemas/XorbRangeDescriptor'
+          description: Byte ranges covered by this URL, sorted by chunk start
+      required: [url, ranges]
+      additionalProperties: false
+    XorbFetchDescriptor:
+      type: object
+      description: |
+        Fetch descriptor for a single xorb. Contains one or more fetch entries.
+        Usually 1 entry covers all ranges. If the signed URL would exceed the
+        CloudFront 8,192 byte limit, ranges are split across multiple entries.
+      properties:
+        fetch:
+          type: array
+          items:
+            $ref: '#/components/schemas/XorbMultiRangeFetch'
+          minItems: 1
+          description: List of multi-range fetch entries for this xorb
+      required: [fetch]
+      additionalProperties: false
+    QueryReconstructionResponseV2:
+      type: object
+      description: V2 reconstruction response optimized for multi-range fetching
+      properties:
+        offset_into_first_range:
+          type: integer
+          minimum: 0
+        terms:
+          type: array
+          items:
+            $ref: '#/components/schemas/CASReconstructionTerm'
+        xorbs:
+          type: object
+          description: Map from xorb hash to fetch descriptor (1 URL + N ranges)
+          propertyNames:
+            $ref: '#/components/schemas/HexString64Lowercase'
+          additionalProperties:
+            $ref: '#/components/schemas/XorbFetchDescriptor'
+      required: [offset_into_first_range, terms, xorbs]
       additionalProperties: false
     UploadXorbResponse:
       type: object
