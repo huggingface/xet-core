@@ -14,7 +14,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, Semaphore};
 use tokio::time::{Instant, interval, sleep, sleep_until};
-use utils::CallbackGuard;
+use utils::ClosureGuard;
 
 use super::network_profile::{NetworkConfig, NetworkProfile};
 use crate::error::{CasClientError, Result};
@@ -171,7 +171,7 @@ impl NetworkSimulationProxy {
     pub async fn handle_connection(self: Arc<Self>, client: TcpStream) -> std::io::Result<()> {
         self.active_connections.fetch_add(1, Ordering::Relaxed);
         let me = Arc::clone(&self);
-        let _active_guard = CallbackGuard::new(move || {
+        let _active_guard = ClosureGuard::new(move || {
             me.active_connections.fetch_sub(1, Ordering::Relaxed);
         });
         let profile = self.current_network_profile.lock().await.clone();

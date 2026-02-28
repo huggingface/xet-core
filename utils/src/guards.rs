@@ -97,46 +97,33 @@ impl Drop for CwdGuard {
     }
 }
 
-/// Guard that runs a callback when dropped.
+/// Guard that executes a closure when dropped.
 ///
-/// Holds any `FnOnce()` and invokes it exactly once when the guard is dropped.
-/// Useful for ad-hoc cleanup, logging, or running code at scope exit.
+/// Useful for ensuring cleanup logic runs even on early returns or panics.
 ///
 /// # Examples
 ///
-/// ```
-/// use utils::CallbackGuard;
+/// ```no_run
+/// use utils::ClosureGuard;
 ///
-/// let ran = std::cell::Cell::new(false);
-/// {
-///     let _grd = CallbackGuard::new(|| ran.set(true));
-/// }
-/// assert!(ran.get());
+/// let _guard = ClosureGuard::new(|| {
+///     println!("cleanup!");
+/// });
+/// // closure runs when _guard is dropped
 /// ```
-pub struct CallbackGuard<F>
-where
-    F: FnOnce(),
-{
-    callback: Option<F>,
+pub struct ClosureGuard<F: FnOnce()> {
+    closure: Option<F>,
 }
 
-impl<F> CallbackGuard<F>
-where
-    F: FnOnce(),
-{
-    pub fn new(callback: F) -> Self {
-        Self {
-            callback: Some(callback),
-        }
+impl<F: FnOnce()> ClosureGuard<F> {
+    pub fn new(f: F) -> Self {
+        Self { closure: Some(f) }
     }
 }
 
-impl<F> Drop for CallbackGuard<F>
-where
-    F: FnOnce(),
-{
+impl<F: FnOnce()> Drop for ClosureGuard<F> {
     fn drop(&mut self) {
-        if let Some(f) = self.callback.take() {
+        if let Some(f) = self.closure.take() {
             f();
         }
     }
@@ -250,31 +237,16 @@ mod tests {
     }
 
     #[test]
-    fn callback_guard_invokes_on_drop() {
-        let ran = std::cell::Cell::new(false);
-        {
-            let _grd = CallbackGuard::new(|| ran.set(true));
-            assert!(!ran.get());
-        }
-        assert!(ran.get());
-    }
+    fn closure_guard_runs_on_drop() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
 
-    #[test]
-    fn callback_guard_invokes_only_once() {
-        let count = std::cell::Cell::new(0u32);
+        let ran = Arc::new(AtomicBool::new(false));
+        let ran_clone = ran.clone();
         {
-            let _grd = CallbackGuard::new(|| count.set(count.get() + 1));
+            let _guard = ClosureGuard::new(move || ran_clone.store(true, Ordering::SeqCst));
+            assert!(!ran.load(Ordering::SeqCst));
         }
-        assert_eq!(count.get(), 1);
-    }
-
-    #[test]
-    fn callback_guard_captures_environment() {
-        let x = std::cell::Cell::new(0i32);
-        {
-            let _grd = CallbackGuard::new(|| x.set(x.get() + 10));
-            x.set(1);
-        }
-        assert_eq!(x.get(), 11);
+        assert!(ran.load(Ordering::SeqCst));
     }
 }

@@ -1388,6 +1388,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.12",
  "tokio",
+ "tokio-util",
  "tracing",
  "utils",
  "xet_config",
@@ -1730,6 +1731,7 @@ dependencies = [
  "thiserror 2.0.12",
  "tokio",
  "utils",
+ "xet_config",
 ]
 
 [[package]]
@@ -5373,11 +5375,14 @@ dependencies = [
  "futures-util",
  "lazy_static",
  "merklehash",
+ "more-asserts",
  "pin-project",
  "rand 0.9.1",
  "serde",
+ "serde_json",
  "serial_test",
  "shellexpand",
+ "sysinfo",
  "tempfile",
  "thiserror 2.0.12",
  "tokio",

@@ -1,18 +1,11 @@
-use std::fs::OpenOptions;
 use std::future::Future;
-use std::io::{Seek, SeekFrom};
 use std::pin::Pin;
-use std::sync::Arc;
 
 use bytes::Bytes;
 use cas_types::FileRange;
-use progress_tracking::download_tracking::DownloadTaskUpdater;
-use tokio::sync::OwnedSemaphorePermit;
-use xet_config::ReconstructionConfig;
+use utils::adjustable_semaphore::AdjustableSemaphorePermit;
 
-use crate::data_writer::DataOutput;
-use crate::data_writer::sequential_writer::SequentialWriter;
-use crate::error::Result;
+use crate::Result;
 
 /// A future that produces the data bytes to be written.
 pub type DataFuture = Pin<Box<dyn Future<Output = Result<Bytes>> + Send + 'static>>;
@@ -32,7 +25,7 @@ pub trait DataWriter: Send + Sync + 'static {
     async fn set_next_term_data_source(
         &self,
         byte_range: FileRange,
-        permit: Option<OwnedSemaphorePermit>,
+        permit: Option<AdjustableSemaphorePermit>,
         data_future: DataFuture,
     ) -> Result<()>;
 
@@ -40,55 +33,4 @@ pub trait DataWriter: Send + Sync + 'static {
     ///
     /// Once this method is called, further calls to set_next_term_data_source will fail.
     async fn finish(&self) -> Result<u64>;
-}
-
-/// Creates a new data writer from the given output specification.
-///
-/// # Arguments
-/// * `output` - The output destination (either a custom writer or a file path)
-/// * `default_write_position` - The default byte position where writing should begin. For
-///   `DataOutput::SequentialWriter`, this is ignored (the writer handles positioning). For `DataOutput::File`, the file
-///   is seeked to either the explicit offset (if provided) or this default position.
-/// * `config` - Reconstruction configuration, including whether to use vectorized writes.
-/// * `progress_updater` - Optional progress updater; when provided, decompressed bytes written are reported on each
-///   successful write.
-///
-/// # File Handling
-/// When using `DataOutput::File`, the file is opened with read/write access without
-/// truncation, allowing multiple concurrent reconstructions to write to different
-/// regions of the same file.
-pub fn new_data_writer(
-    output: DataOutput,
-    default_write_position: u64,
-    config: &ReconstructionConfig,
-    progress_updater: Option<Arc<DownloadTaskUpdater>>,
-) -> Result<Arc<dyn DataWriter>> {
-    let use_vectored = config.use_vectored_write;
-
-    match output {
-        DataOutput::SequentialWriter(writer) => {
-            if use_vectored {
-                Ok(Arc::new(SequentialWriter::new_vectorized(writer, progress_updater)))
-            } else {
-                Ok(Arc::new(SequentialWriter::new(writer, progress_updater)))
-            }
-        },
-        DataOutput::File { path, offset } => {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let mut file = OpenOptions::new().write(true).create(true).truncate(false).open(&path)?;
-
-            let seek_position = offset.unwrap_or(default_write_position);
-            if seek_position > 0 {
-                file.seek(SeekFrom::Start(seek_position))?;
-            }
-
-            if use_vectored {
-                Ok(Arc::new(SequentialWriter::new_vectorized(file, progress_updater)))
-            } else {
-                Ok(Arc::new(SequentialWriter::new(file, progress_updater)))
-            }
-        },
-    }
 }

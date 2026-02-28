@@ -5,4 +5,6 @@ pub mod deduplication;
 pub mod log;
 pub mod mdb_shard;
 pub mod reconstruction;
+#[cfg(not(target_family = "wasm"))]
+pub mod system_monitor;
 pub mod xorb;
