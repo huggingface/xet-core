@@ -114,6 +114,10 @@ impl RemoteClient {
         &self.endpoint
     }
 
+    pub(crate) fn http_client(&self) -> Arc<ClientWithMiddleware> {
+        self.http_client.clone()
+    }
+
     async fn query_dedup_api(&self, prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Response>> {
         // The API endpoint now only supports non-batched dedup request and
         let key = Key {
@@ -161,50 +165,6 @@ impl RemoteClient {
             "Completed query_dedup API call",
         );
         Ok(Some(result?))
-    }
-}
-
-impl RemoteClient {
-    #[instrument(skip_all, name = "RemoteClient::batch_get_reconstruction")]
-    #[allow(dead_code)]
-    async fn batch_get_reconstruction_internal(
-        &self,
-        file_ids: impl Iterator<Item = &MerkleHash>,
-    ) -> Result<BatchQueryReconstructionResponse> {
-        let mut url_str = format!("{}/reconstructions?", self.endpoint);
-        let mut is_first = true;
-        let mut file_id_list = Vec::new();
-        for hash in file_ids {
-            file_id_list.push(hash.hex());
-            if is_first {
-                is_first = false;
-            } else {
-                url_str.push('&');
-            }
-            url_str.push_str("file_id=");
-            url_str.push_str(hash.hex().as_str());
-        }
-        let url: Url = url_str.parse()?;
-
-        let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
-        event!(INFORMATION_LOG_LEVEL, call_id, file_ids=?file_id_list, "Starting batch_get_reconstruction API call");
-
-        let api_tag = "cas::batch_get_reconstruction";
-        let client = self.authenticated_http_client.clone();
-
-        let response: BatchQueryReconstructionResponse = RetryWrapper::new(api_tag)
-            .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
-            .await?;
-
-        event!(
-            INFORMATION_LOG_LEVEL,
-            call_id,
-            file_ids=?file_id_list,
-            response_count=response.files.len(),
-            "Completed batch_get_reconstruction API call",
-        );
-
-        Ok(response)
     }
 }
 

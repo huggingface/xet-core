@@ -40,6 +40,12 @@ pub trait DirectAccessClient: Client + Send + Sync {
     /// Pass `None` to disable the delay.
     fn set_api_delay_range(&self, delay_range: Option<Range<Duration>>);
 
+    /// Applies the configured API delay if set.
+    ///
+    /// This method sleeps for a random duration within the configured delay range.
+    /// If no delay is configured (via `set_api_delay_range`), this returns immediately.
+    async fn apply_api_delay(&self);
+
     /// Returns all XORB hashes stored in this client.
     async fn list_xorbs(&self) -> Result<Vec<MerkleHash>>;
 

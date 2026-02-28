@@ -1,0 +1,39 @@
+[package]
+name = "simulation"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "run_upload_scenario"
+path = "src/bin/run_upload_scenario.rs"
+
+[[bin]]
+name = "run_upload_simulations"
+path = "src/bin/run_upload_simulations.rs"
+
+[dependencies]
+cas_client = { path = "../cas_client" }
+chrono = { workspace = true }
+duration-str = { workspace = true }
+clap = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+xet_logging = { path = "../xet_logging" }
+xet_runtime = { path = "../xet_runtime" }
+
+bytes = { workspace = true }
+http = { workspace = true }
+reqwest = { workspace = true }
+reqwest-middleware = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
