@@ -3,8 +3,8 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use cas_types::{REQUEST_ID_HEADER, SESSION_ID_HEADER};
 use error_printer::{ErrorPrinter, OptionPrinter};
-use http::{Extensions, StatusCode};
-use reqwest::header::{AUTHORIZATION, HeaderValue};
+use http::{Extensions, HeaderMap, StatusCode};
+use reqwest::header::{AUTHORIZATION, COOKIE, HeaderValue, SET_COOKIE};
 use reqwest::{Request, Response};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
 use tokio::sync::Mutex;
@@ -38,9 +38,25 @@ impl Middleware for HttpsToHttpMiddleware {
     }
 }
 
+/// Utility to redact sensitive headers from a HeaderMap before logging
+fn redact_headers(headers: &HeaderMap) -> HeaderMap {
+    let mut sanitized_headers = headers.clone();
+    let sensitive_keys = vec![AUTHORIZATION, COOKIE, SET_COOKIE];
+
+    for key in sensitive_keys {
+        if sanitized_headers.contains_key(&key) {
+            sanitized_headers.insert(key, "[REDACTED]".parse().unwrap());
+        }
+    }
+    sanitized_headers
+}
+
 #[allow(unused_variables)]
 #[cfg(not(target_family = "wasm"))]
-fn reqwest_client(user_agent: &str, unix_socket_path: Option<&str>) -> Result<reqwest::Client, CasClientError> {
+fn reqwest_client(
+    unix_socket_path: Option<&str>,
+    custom_headers: Option<Arc<HeaderMap>>,
+) -> Result<reqwest::Client, CasClientError> {
     // Check config if explicit socket path is not provided
     let socket_path = unix_socket_path
         .map(|s| s.to_string())
@@ -51,7 +67,7 @@ fn reqwest_client(user_agent: &str, unix_socket_path: Option<&str>) -> Result<re
 
     // Create client function
     let socket_path_clone = socket_path.clone();
-    let user_agent_for_closure = user_agent.to_string();
+    let custom_headers_for_client = custom_headers.clone();
     let create_client = move || {
         let config = &xet_config().client;
         let mut builder = reqwest::Client::builder()
@@ -61,13 +77,13 @@ fn reqwest_client(user_agent: &str, unix_socket_path: Option<&str>) -> Result<re
             .read_timeout(config.read_timeout)
             .http1_only();
 
-        if !user_agent_for_closure.is_empty() {
-            builder = builder.user_agent(&user_agent_for_closure);
-        }
-
         #[cfg(unix)]
         if let Some(ref path) = socket_path_clone {
             builder = builder.unix_socket(path.clone());
+        }
+
+        if let Some(headers) = custom_headers_for_client {
+            builder = builder.default_headers((*headers).clone());
         }
 
         builder.build()
@@ -80,10 +96,11 @@ fn reqwest_client(user_agent: &str, unix_socket_path: Option<&str>) -> Result<re
         info!(socket_path=?socket_path, "HTTP client configured with Unix socket");
     } else {
         let config = &xet_config().client;
+        let custom_headers = custom_headers.as_deref().map(redact_headers);
         info!(
             idle_timeout=?config.idle_connection_timeout,
             max_idle_connections=config.max_idle_connections,
-            user_agent=?if user_agent.is_empty() { None } else { Some(user_agent) },
+            custom_headers=?custom_headers,
             "HTTP client configured"
         );
     }
@@ -92,13 +109,16 @@ fn reqwest_client(user_agent: &str, unix_socket_path: Option<&str>) -> Result<re
 }
 
 #[cfg(target_family = "wasm")]
-fn reqwest_client(user_agent: &str, _unix_socket_path: Option<&str>) -> Result<reqwest::Client, CasClientError> {
-    // For WASM, create a new client with the specified user_agent
+fn reqwest_client(
+    _unix_socket_path: Option<&str>,
+    custom_headers: Option<Arc<HeaderMap>>,
+) -> Result<reqwest::Client, CasClientError> {
+    // For WASM, create a new client with the specified headers, including the user-agent.
     // Note: we could cache this, but user_agent can vary, so we create per-call
     // Unix socket path is ignored on WASM
     let mut builder = reqwest::Client::builder();
-    if !user_agent.is_empty() {
-        builder = builder.user_agent(user_agent);
+    if let Some(custom_headers) = custom_headers {
+        builder = builder.default_headers((*custom_headers).clone());
     }
     Ok(builder.build()?)
 }
@@ -108,14 +128,14 @@ fn reqwest_client(user_agent: &str, _unix_socket_path: Option<&str>) -> Result<r
 pub fn build_auth_http_client(
     auth_config: &Option<AuthConfig>,
     session_id: &str,
-    user_agent: &str,
     unix_socket_path: Option<&str>,
+    custom_headers: Option<Arc<HeaderMap>>,
 ) -> Result<ClientWithMiddleware, CasClientError> {
     let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
 
-    let mut builder = ClientBuilder::new(reqwest_client(user_agent, unix_socket_path)?);
+    let mut builder = ClientBuilder::new(reqwest_client(unix_socket_path, custom_headers)?);
 
     #[cfg(unix)]
     if unix_socket_path.is_some() {
@@ -132,10 +152,10 @@ pub fn build_auth_http_client(
 /// Builds HTTP Client to talk to CAS.
 pub fn build_http_client(
     session_id: &str,
-    user_agent: &str,
     unix_socket_path: Option<&str>,
+    custom_headers: Option<Arc<HeaderMap>>,
 ) -> Result<ClientWithMiddleware, CasClientError> {
-    build_auth_http_client(&None, session_id, user_agent, unix_socket_path)
+    build_auth_http_client(&None, session_id, unix_socket_path, custom_headers)
 }
 
 /// Helper trait to allow the reqwest_middleware client to optionally add a middleware.
@@ -365,7 +385,7 @@ mod tests {
 
     #[test]
     fn test_build_http_client_without_uds() {
-        let result = build_http_client("test-session", "test-agent", None);
+        let result = build_http_client("test-session", None, None);
         assert!(result.is_ok());
     }
 }

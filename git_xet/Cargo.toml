@@ -19,6 +19,7 @@ async-trait = { workspace = true }
 clap = { workspace = true }
 git-url-parse = { workspace = true }
 git2 = { workspace = true }
+http = { workspace = true }
 rand_core = { workspace = true }
 reqwest = { workspace = true }
 reqwest-middleware = { workspace = true }

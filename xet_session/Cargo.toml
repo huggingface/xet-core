@@ -1,0 +1,39 @@
+[package]
+name = "xet-session"
+version = "0.1.0"
+edition = "2024"
+description = "Session-based file upload/download API for XetHub"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/xetdata/xet-core"
+keywords = ["xet", "upload", "download", "deduplication", "session"]
+categories = ["network-programming", "api-bindings"]
+
+[lib]
+name = "xet_session"
+path = "src/lib.rs"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[features]
+
+[dependencies]
+xet_runtime = { path = "../xet_runtime" }
+xet_config = { path = "../xet_config" }
+data = { path = "../data" }
+utils = { path = "../utils" }
+progress_tracking = { path = "../progress_tracking" }
+
+# Workspace dependencies
+async-trait = { workspace = true }
+http = { workspace = true }
+tokio = { workspace = true }
+ulid = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+serial_test = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tracing-subscriber = { workspace = true }

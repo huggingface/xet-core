@@ -360,7 +360,7 @@ impl XetRuntime {
     pub fn external_run_async_task<F>(&self, future: F) -> Result<F::Output, MultithreadedRuntimeError>
     where
         F: Future + Send + 'static,
-        F::Output: Send + Sync,
+        F::Output: Send + 'static,
     {
         self.external_executor_count.fetch_add(1, Ordering::SeqCst);
 

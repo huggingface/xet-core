@@ -6,10 +6,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct XetFileInfo {
     /// The Merkle hash of the file
-    hash: String,
+    pub hash: String,
 
     /// The size of the file
-    file_size: u64,
+    pub file_size: u64,
 }
 
 impl XetFileInfo {

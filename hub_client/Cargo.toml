@@ -8,6 +8,7 @@ cas_client = { path = "../cas_client" }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+http = { workspace = true }
 reqwest = { workspace = true }
 reqwest-middleware = { workspace = true }
 serde = { workspace = true }

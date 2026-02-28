@@ -3,6 +3,7 @@ use std::sync::Arc;
 use cas_client::exports::ClientWithMiddleware;
 use cas_client::retry_wrapper::RetryWrapper;
 use cas_client::{Api, build_http_client};
+use http::header::HeaderMap;
 use urlencoding::encode;
 
 use crate::auth::CredentialHelper;
@@ -46,15 +47,15 @@ impl HubClient {
         endpoint: &str,
         repo_info: RepoInfo,
         reference: Option<String>,
-        user_agent: &str,
         session_id: &str,
         cred_helper: Arc<dyn CredentialHelper>,
+        custom_headers: Option<Arc<HeaderMap>>,
     ) -> Result<Self> {
         Ok(HubClient {
             endpoint: endpoint.to_owned(),
             repo_info,
             reference,
-            client: build_http_client(session_id, user_agent, None)?,
+            client: build_http_client(session_id, None, custom_headers)?,
             cred_helper,
         })
     }
@@ -109,6 +110,10 @@ impl HubClient {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use http::header::{self, HeaderMap, HeaderValue};
+
     use super::HubClient;
     use crate::errors::Result;
     use crate::{BearerCredentialHelper, HFRepoType, Operation, RepoInfo};
@@ -117,6 +122,8 @@ mod tests {
     #[ignore = "need valid write token"]
     async fn test_get_jwt_token_with_hf_write_token() -> Result<()> {
         let cred_helper = BearerCredentialHelper::new("[hf_write_token]".to_owned(), "");
+        let mut headers = HeaderMap::new();
+        headers.insert(header::USER_AGENT, HeaderValue::from_static("xtool"));
         let hub_client = HubClient::new(
             "https://huggingface.co",
             RepoInfo {
@@ -124,9 +131,9 @@ mod tests {
                 full_name: "seanses/tm".into(),
             },
             Some("main".into()),
-            "xtool",
             "",
             cred_helper,
+            Some(Arc::new(headers)),
         )?;
 
         let read_info = hub_client.get_cas_jwt(Operation::Upload).await?;
@@ -142,6 +149,8 @@ mod tests {
     #[ignore = "need valid read token and pr created on hub"]
     async fn test_get_jwt_token_with_hf_read_token_pr_branch() -> Result<()> {
         let cred_helper = BearerCredentialHelper::new("[hf_read_token]".to_owned(), "");
+        let mut headers = HeaderMap::new();
+        headers.insert(header::USER_AGENT, HeaderValue::from_static("xtool"));
         let hub_client = HubClient::new(
             "https://huggingface.co",
             RepoInfo {
@@ -149,9 +158,9 @@ mod tests {
                 full_name: "seanses/tm".into(),
             },
             Some("refs/pr/1".into()),
-            "xtool",
             "",
             cred_helper,
+            Some(Arc::new(headers)),
         )?;
 
         let read_info = hub_client.get_cas_jwt(Operation::Upload).await?;
@@ -167,6 +176,8 @@ mod tests {
     #[ignore = "need valid read token"]
     async fn test_get_jwt_token_with_hf_read_token_create_pr() -> Result<()> {
         let cred_helper = BearerCredentialHelper::new("[hf_read_token]".to_owned(), "");
+        let mut headers = HeaderMap::new();
+        headers.insert(header::USER_AGENT, HeaderValue::from_static("xtool"));
         let hub_client = HubClient::new(
             "https://huggingface.co",
             RepoInfo {
@@ -174,9 +185,9 @@ mod tests {
                 full_name: "seanses/tm".into(),
             },
             None,
-            "xtool",
             "",
             cred_helper,
+            Some(Arc::new(headers)),
         )?;
 
         let read_info = hub_client.get_cas_jwt(Operation::Upload).await?;

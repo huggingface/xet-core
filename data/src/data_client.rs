@@ -7,6 +7,7 @@ use bytes::Bytes;
 use cas_client::remote_client::PREFIX_DEFAULT;
 use cas_object::CompressionScheme;
 use deduplication::{Chunker, DeduplicationMetrics};
+use http::header::HeaderMap;
 use itertools::multizip;
 use mdb_shard::Sha256;
 use merklehash::MerkleHash;
@@ -28,7 +29,7 @@ pub fn default_config(
     xorb_compression: Option<CompressionScheme>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
-    user_agent: String,
+    custom_headers: Option<Arc<HeaderMap>>,
 ) -> errors::Result<TranslatorConfig> {
     // Intercept local:// to run a simulated CAS server in a specified directory.
     // This is useful for testing and development.
@@ -72,7 +73,7 @@ pub fn default_config(
             auth: auth_cfg.clone(),
             prefix: PREFIX_DEFAULT.into(),
             staging_directory: None,
-            user_agent: user_agent.clone(),
+            custom_headers,
         },
         shard_config: ShardConfig {
             prefix: PREFIX_DEFAULT.into(),
@@ -98,14 +99,14 @@ pub async fn upload_bytes_async(
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
-    user_agent: String,
+    custom_headers: Option<Arc<HeaderMap>>,
 ) -> errors::Result<Vec<XetFileInfo>> {
     let config = default_config(
         endpoint.unwrap_or_else(|| xet_config().data.default_cas_endpoint.clone()),
         None,
         token_info,
         token_refresher,
-        user_agent,
+        custom_headers,
     )?;
 
     Span::current().record("session_id", &config.session_id);
@@ -143,7 +144,7 @@ pub async fn upload_async(
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
-    user_agent: String,
+    custom_headers: Option<Arc<HeaderMap>>,
 ) -> errors::Result<Vec<XetFileInfo>> {
     // chunk files
     // produce Xorbs + Shards
@@ -154,7 +155,7 @@ pub async fn upload_async(
         None,
         token_info,
         token_refresher,
-        user_agent,
+        custom_headers,
     )?;
 
     let span = Span::current();
@@ -202,7 +203,7 @@ pub async fn download_async(
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     progress_updaters: Option<Vec<Arc<dyn TrackingProgressUpdater>>>,
-    user_agent: String,
+    custom_headers: Option<Arc<HeaderMap>>,
 ) -> errors::Result<Vec<String>> {
     if let Some(updaters) = &progress_updaters
         && updaters.len() != file_infos.len()
@@ -214,9 +215,10 @@ pub async fn download_async(
         None,
         token_info,
         token_refresher,
-        user_agent,
+        custom_headers,
     )?
     .into();
+
     Span::current().record("session_id", &config.session_id);
 
     let updaters = match progress_updaters {
@@ -410,7 +412,7 @@ mod tests {
         let _hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None, String::new());
+        let result = default_config(endpoint, None, None, None, None);
 
         assert!(result.is_ok());
         let config = result.unwrap();
@@ -427,7 +429,7 @@ mod tests {
         let hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir_hf_home.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None, String::new());
+        let result = default_config(endpoint, None, None, None, None);
 
         assert!(result.is_ok());
         let config = result.unwrap();
@@ -440,7 +442,7 @@ mod tests {
         let _hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None, String::new());
+        let result = default_config(endpoint, None, None, None, None);
 
         assert!(result.is_ok());
         let config = result.unwrap();
@@ -454,7 +456,7 @@ mod tests {
         let _hf_xet_cache_guard = EnvVarGuard::set("HF_XET_CACHE", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None, String::new());
+        let result = default_config(endpoint, None, None, None, None);
 
         assert!(result.is_ok());
         let config = result.unwrap();
@@ -465,7 +467,7 @@ mod tests {
     #[serial(default_config_env)]
     fn test_default_config_without_env_vars() {
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None, String::new());
+        let result = default_config(endpoint, None, None, None, None);
 
         let expected = home_dir().unwrap().join(".cache").join("huggingface").join("xet");
 
