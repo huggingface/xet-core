@@ -76,9 +76,10 @@ impl XorbBlock {
         }
 
         // Build cache key once for both get and put.
-        let cache_key = chunk_cache
-            .as_ref()
-            .map(|_| Key { prefix: String::new(), hash: self.xorb_hash });
+        let cache_key = chunk_cache.as_ref().map(|_| Key {
+            prefix: String::new(),
+            hash: self.xorb_hash,
+        });
 
         // Try the on-disk chunk cache before hitting the network.
         if let Some(ref cache) = chunk_cache {
@@ -124,7 +125,9 @@ impl XorbBlock {
 
         // Store in chunk cache (best-effort).
         if let Some(ref cache) = chunk_cache {
-            let _ = cache.put(cache_key.as_ref().unwrap(), &self.chunk_range, &chunk_byte_offsets, &data).await;
+            let _ = cache
+                .put(cache_key.as_ref().unwrap(), &self.chunk_range, &chunk_byte_offsets, &data)
+                .await;
         }
 
         let chunk_offsets: Vec<usize> = chunk_byte_offsets.iter().map(|&x| x as usize).collect();

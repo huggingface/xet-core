@@ -10,10 +10,7 @@ use crate::errors::Result;
 /// This is useful for callers that want to wrap the client (e.g. with a cache)
 /// before passing it to `FileDownloadSession::from_client`.
 pub async fn create_client(config: &TranslatorConfig) -> Result<Arc<dyn Client>> {
-    let session_id = config
-        .session_id
-        .clone()
-        .unwrap_or_else(|| ulid::Ulid::new().to_string());
+    let session_id = config.session_id.clone().unwrap_or_else(|| ulid::Ulid::new().to_string());
     create_remote_client(config, &session_id, false).await
 }
 

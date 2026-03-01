@@ -66,8 +66,9 @@ impl FileTerm {
         let xorb_block = self.xorb_block.clone();
 
         let task = tokio::task::spawn(async move {
-            let xorb_block_data =
-                xorb_block.retrieve_data(client, permit, url_info, progress_updater, chunk_cache).await?;
+            let xorb_block_data = xorb_block
+                .retrieve_data(client, permit, url_info, progress_updater, chunk_cache)
+                .await?;
             Ok(file_term.extract_bytes(&xorb_block_data))
         });
 
