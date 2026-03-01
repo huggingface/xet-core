@@ -75,15 +75,14 @@ impl XorbBlock {
             return Ok(xorb_block_data.clone());
         }
 
-        // Build cache key once for both get and put.
-        let cache_key = chunk_cache.as_ref().map(|_| Key {
+        let cache_key = Key {
             prefix: String::new(),
             hash: self.xorb_hash,
-        });
+        };
 
         // Try the on-disk chunk cache before hitting the network.
         if let Some(ref cache) = chunk_cache
-            && let Ok(Some(cache_range)) = cache.get(cache_key.as_ref().unwrap(), &self.chunk_range).await
+            && let Ok(Some(cache_range)) = cache.get(&cache_key, &self.chunk_range).await
         {
             // Report the transfer bytes as completed so progress tracking stays consistent.
             if let Some(ref updater) = progress_updater {
@@ -126,7 +125,7 @@ impl XorbBlock {
         // Store in chunk cache (best-effort).
         if let Some(ref cache) = chunk_cache {
             let _ = cache
-                .put(cache_key.as_ref().unwrap(), &self.chunk_range, &chunk_byte_offsets, &data)
+                .put(&cache_key, &self.chunk_range, &chunk_byte_offsets, &data)
                 .await;
         }
 
