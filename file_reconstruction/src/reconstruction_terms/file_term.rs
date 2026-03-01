@@ -58,16 +58,14 @@ impl FileTerm {
             return Ok(Box::pin(async move { Ok(bytes) }));
         }
 
-        // Data not cached - need to download it.
-        let permit = client.acquire_download_permit().await?;
-
+        // Data not cached in memory — spawn a task to check the disk cache or download.
         let file_term = self.clone();
         let url_info = self.url_info.clone();
         let xorb_block = self.xorb_block.clone();
 
         let task = tokio::task::spawn(async move {
             let xorb_block_data = xorb_block
-                .retrieve_data(client, permit, url_info, progress_updater, chunk_cache)
+                .retrieve_data(client, url_info, progress_updater, chunk_cache)
                 .await?;
             Ok(file_term.extract_bytes(&xorb_block_data))
         });

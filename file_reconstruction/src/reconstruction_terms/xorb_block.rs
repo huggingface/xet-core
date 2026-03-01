@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use cas_client::adaptive_concurrency::ConnectionPermit;
 use cas_client::{Client, ProgressCallback};
 use cas_types::{ChunkRange, Key};
 use chunk_cache::ChunkCache;
@@ -57,7 +56,6 @@ impl XorbBlock {
     pub async fn retrieve_data(
         self: Arc<Self>,
         client: Arc<dyn Client>,
-        permit: ConnectionPermit,
         url_info: Arc<TermBlockRetrievalURLs>,
         progress_updater: Option<Arc<DownloadTaskUpdater>>,
         chunk_cache: Option<Arc<dyn ChunkCache>>,
@@ -76,7 +74,7 @@ impl XorbBlock {
         }
 
         let cache_key = Key {
-            prefix: String::new(),
+            prefix: "default".to_string(),
             hash: self.xorb_hash,
         };
 
@@ -101,6 +99,9 @@ impl XorbBlock {
             *xbd_lg = Some(xorb_block_data.clone());
             return Ok(xorb_block_data);
         }
+
+        // Cache miss — acquire a download permit now that we actually need the network.
+        let permit = client.acquire_download_permit().await?;
 
         let url_provider = XorbURLProvider {
             client: client.clone(),
