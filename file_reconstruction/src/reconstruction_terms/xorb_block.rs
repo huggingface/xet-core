@@ -125,9 +125,7 @@ impl XorbBlock {
 
         // Store in chunk cache (best-effort).
         if let Some(ref cache) = chunk_cache {
-            let _ = cache
-                .put(&cache_key, &self.chunk_range, &chunk_byte_offsets, &data)
-                .await;
+            let _ = cache.put(&cache_key, &self.chunk_range, &chunk_byte_offsets, &data).await;
         }
 
         let chunk_offsets: Vec<usize> = chunk_byte_offsets.iter().map(|&x| x as usize).collect();
