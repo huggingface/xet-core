@@ -230,7 +230,6 @@ impl Client for RemoteClient {
         let client = self.authenticated_http_client.clone();
 
         let result: Result<QueryReconstructionResponse> = RetryWrapper::new(api_tag)
-            .log_errors_as_info()
             .run_and_extract_json(move || {
                 let mut request = client.get(url.clone()).with_extension(Api(api_tag));
                 if let Some(range) = bytes_range {
