@@ -82,25 +82,25 @@ impl XorbBlock {
         });
 
         // Try the on-disk chunk cache before hitting the network.
-        if let Some(ref cache) = chunk_cache {
-            if let Ok(Some(cache_range)) = cache.get(cache_key.as_ref().unwrap(), &self.chunk_range).await {
-                // Report the transfer bytes as completed so progress tracking stays consistent.
-                if let Some(ref updater) = progress_updater {
-                    let (_, _, http_range) = url_info.get_retrieval_url(self.xorb_block_index).await;
-                    let file_range = cas_types::FileRange::from(http_range);
-                    let transfer_bytes = file_range.end.saturating_sub(file_range.start);
-                    updater.report_transfer_progress(transfer_bytes);
-                }
-                let chunk_offsets: Vec<usize> = cache_range.offsets.iter().map(|&x| x as usize).collect();
-                let data = Bytes::from(cache_range.data);
-                let xorb_block_data = Arc::new(XorbBlockData {
-                    chunk_offsets,
-                    uncompressed_size: data.len() as u64,
-                    data,
-                });
-                *xbd_lg = Some(xorb_block_data.clone());
-                return Ok(xorb_block_data);
+        if let Some(ref cache) = chunk_cache
+            && let Ok(Some(cache_range)) = cache.get(cache_key.as_ref().unwrap(), &self.chunk_range).await
+        {
+            // Report the transfer bytes as completed so progress tracking stays consistent.
+            if let Some(ref updater) = progress_updater {
+                let (_, _, http_range) = url_info.get_retrieval_url(self.xorb_block_index).await;
+                let file_range = cas_types::FileRange::from(http_range);
+                let transfer_bytes = file_range.end.saturating_sub(file_range.start);
+                updater.report_transfer_progress(transfer_bytes);
             }
+            let chunk_offsets: Vec<usize> = cache_range.offsets.iter().map(|&x| x as usize).collect();
+            let data = Bytes::from(cache_range.data);
+            let xorb_block_data = Arc::new(XorbBlockData {
+                chunk_offsets,
+                uncompressed_size: data.len() as u64,
+                data,
+            });
+            *xbd_lg = Some(xorb_block_data.clone());
+            return Ok(xorb_block_data);
         }
 
         let url_provider = XorbURLProvider {
