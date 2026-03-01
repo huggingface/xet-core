@@ -19,7 +19,7 @@ pub use deduplication::RawXorbData;
 pub use file_download_session::FileDownloadSession;
 pub use file_reconstruction::DownloadStream;
 pub use file_upload_session::FileUploadSession;
-pub use remote_client_interface::create_client;
+pub use remote_client_interface::create_remote_client;
 pub use xet_file::XetFileInfo;
 
 #[cfg(debug_assertions)]

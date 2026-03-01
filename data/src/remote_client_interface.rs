@@ -5,16 +5,7 @@ use cas_client::{Client, RemoteClient};
 use crate::configurations::*;
 use crate::errors::Result;
 
-/// Creates a CAS client from a `TranslatorConfig`.
-///
-/// This is useful for callers that want to wrap the client (e.g. with a cache)
-/// before passing it to `FileDownloadSession::from_client`.
-pub async fn create_client(config: &TranslatorConfig) -> Result<Arc<dyn Client>> {
-    let session_id = config.session_id.clone().unwrap_or_else(|| ulid::Ulid::new().to_string());
-    create_remote_client(config, &session_id, false).await
-}
-
-pub(crate) async fn create_remote_client(
+pub async fn create_remote_client(
     config: &TranslatorConfig,
     session_id: &str,
     dry_run: bool,
