@@ -41,6 +41,10 @@ pub struct FileReconstructor {
 
     /// Optional on-disk chunk cache for xorb data deduplication across files.
     chunk_cache: Option<Arc<dyn ChunkCache>>,
+
+    /// Known file size used to bound the reconstruction range for full-file downloads.
+    /// Prevents speculative prefetch blocks from requesting ranges beyond EOF.
+    file_size: Option<u64>,
 }
 
 impl FileReconstructor {
@@ -54,6 +58,7 @@ impl FileReconstructor {
             custom_buffer_semaphore: None,
             cancellation_token: CancellationToken::new(),
             chunk_cache: None,
+            file_size: None,
         }
     }
 
@@ -94,6 +99,13 @@ impl FileReconstructor {
     pub fn with_cancellation_token(self, token: CancellationToken) -> Self {
         Self {
             cancellation_token: token,
+            ..self
+        }
+    }
+
+    pub fn with_file_size(self, file_size: u64) -> Self {
+        Self {
+            file_size: Some(file_size),
             ..self
         }
     }
@@ -202,6 +214,7 @@ impl FileReconstructor {
         let Self {
             client,
             byte_range,
+            file_size,
             config,
             custom_buffer_semaphore,
             chunk_cache,
@@ -211,7 +224,10 @@ impl FileReconstructor {
         run_state.check_run_state()?;
 
         let file_hash = *run_state.file_hash();
-        let requested_range = byte_range.unwrap_or_else(FileRange::full);
+        let requested_range = byte_range.unwrap_or_else(|| match file_size {
+            Some(s) => FileRange::new(0, s),
+            None => FileRange::full(),
+        });
 
         let mut term_manager = ReconstructionTermManager::new(
             config.clone(),
