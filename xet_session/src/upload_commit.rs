@@ -82,10 +82,10 @@ impl UploadCommit {
 
     // ===== Public synchronous methods =====
 
-    /// Queue a file for upload, starting the transfer immediately.
+    /// Queue a file for upload, starting the transfer immediately if system resource permits.
     ///
-    /// Returns the task ID that can be used to correlate entries returned by
-    /// [`get_progress`](Self::get_progress).
+    /// Returns a [`TaskHandle`] that can be used to poll status and per-file
+    /// progress without taking the GIL.
     ///
     /// # Errors
     ///
@@ -142,9 +142,9 @@ impl UploadCommit {
             .external_run_async_task(async move { inner.start_upload_file(file_name, file_size).await })?
     }
 
-    /// Queue raw bytes for upload, starting the transfer immediately.
+    /// Queue raw bytes for upload, starting the transfer immediately if system resource permits.
     ///
-    /// Returns the task ID. See [`upload_file`](Self::upload_file) for details.
+    /// Returns a [`TaskHandle`]. See [`upload_from_path`](Self::upload_from_path) for details.
     pub fn upload_bytes(&self, bytes: Vec<u8>, tracking_name: Option<String>) -> Result<TaskHandle, SessionError> {
         self.session.check_alive()?;
         let inner = self.inner.clone();
@@ -171,7 +171,7 @@ impl UploadCommit {
     ///
     /// Blocks until every queued upload finishes (or fails), then finalises
     /// the upload session.  Returns one [`FileMetadata`] entry per uploaded
-    /// file in the order they were registered.
+    /// file.
     ///
     /// Consumes `self` — subsequent calls on any clone will return
     /// [`SessionError::AlreadyCommitted`].
@@ -445,8 +445,15 @@ pub struct FileMetadata {
 
 #[cfg(test)]
 mod tests {
+    use tempfile::{TempDir, tempdir};
+
     use super::*;
     use crate::session::XetSession;
+
+    fn local_session(temp: &TempDir) -> Result<XetSession, Box<dyn std::error::Error>> {
+        let cas_path = temp.path().join("cas");
+        Ok(XetSession::new(Some(format!("local://{}", cas_path.display())), None, None, None)?)
+    }
 
     // ── Identity ─────────────────────────────────────────────────────────────
 
@@ -611,6 +618,94 @@ mod tests {
         let c2 = session.new_upload_commit()?;
         c1.commit()?;
         assert!(!c2.is_committed());
+        Ok(())
+    }
+
+    // ── Round-trip tests ─────────────────────────────────────────────────────
+
+    #[test]
+    // Uploading raw bytes and committing returns a non-empty hash and the correct file size.
+    fn test_upload_bytes_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let session = local_session(&temp)?;
+        let data = b"Hello, upload commit round-trip!";
+        let commit = session.new_upload_commit()?;
+        commit.upload_bytes(data.to_vec(), Some("hello.bin".into()))?;
+        let results = commit.commit()?;
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].file_size, data.len() as u64);
+        assert!(!results[0].hash.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    // Uploading a file from disk and committing returns the correct file size.
+    fn test_upload_from_path_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let session = local_session(&temp)?;
+        let src = temp.path().join("data.bin");
+        let data = b"file path upload content";
+        std::fs::write(&src, data)?;
+        let commit = session.new_upload_commit()?;
+        commit.upload_from_path(src)?;
+        let results = commit.commit()?;
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].file_size, data.len() as u64);
+        assert!(!results[0].hash.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    // Streaming upload via upload_file + SingleFileCleaner: the caller receives XetFileInfo
+    // directly from cleaner.finish(); commit() returns no entry for user-managed uploads.
+    fn test_upload_streaming_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let session = local_session(&temp)?;
+        let data = b"streamed upload bytes";
+        let runtime = session.runtime.clone();
+        let commit = session.new_upload_commit()?;
+        let (_handle, mut cleaner) = commit.upload_file(Some("stream.bin".into()), data.len() as u64)?;
+        // Drive the cleaner and extract only Send + 'static fields from XetFileInfo.
+        let (hash, file_size) = runtime.external_run_async_task(async move {
+            cleaner.add_data(data).await.unwrap();
+            let (xfi, _) = cleaner.finish().await.unwrap();
+            (xfi.hash, xfi.file_size)
+        })?;
+        // Streaming uploads are user-managed; commit() returns results only for internally
+        // tracked tasks (upload_from_path / upload_bytes).
+        let results = commit.commit()?;
+        assert!(results.is_empty());
+        assert_eq!(file_size, data.len() as u64);
+        assert!(!hash.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    // Uploading multiple blobs in one commit returns one result per upload.
+    fn test_upload_multiple_files_in_one_commit() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let session = local_session(&temp)?;
+        let commit = session.new_upload_commit()?;
+        commit.upload_bytes(b"file one".to_vec(), Some("a.bin".into()))?;
+        commit.upload_bytes(b"file two".to_vec(), Some("b.bin".into()))?;
+        commit.upload_bytes(b"file three".to_vec(), Some("c.bin".into()))?;
+        let results = commit.commit()?;
+        assert_eq!(results.len(), 3);
+        Ok(())
+    }
+
+    #[test]
+    // After a successful commit the aggregate progress reflects bytes processed.
+    fn test_upload_progress_reflects_bytes_after_commit() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let session = local_session(&temp)?;
+        let data = b"progress tracking upload data";
+        let commit = session.new_upload_commit()?;
+        let progress_observer = commit.clone();
+        commit.upload_bytes(data.to_vec(), Some("prog.bin".into()))?;
+        commit.commit()?;
+        let snapshot = progress_observer.get_progress()?;
+        assert!(snapshot.total().total_bytes_completed > 0);
         Ok(())
     }
 }

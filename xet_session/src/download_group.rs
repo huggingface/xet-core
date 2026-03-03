@@ -16,7 +16,7 @@ use crate::session::XetSession;
 
 /// Groups related file downloads into a single unit of work.
 ///
-/// Queue files with [`download_file`](Self::download_file) (they start
+/// Queue files with [`download_file_to_path`](Self::download_file_to_path) (they start
 /// downloading immediately in the background), poll progress with
 /// [`get_progress`](Self::get_progress), then call
 /// [`finish`](Self::finish) to wait for all downloads to complete.
@@ -80,13 +80,12 @@ impl DownloadGroup {
 
     // ===== Public synchronous methods =====
 
-    /// Queue a file for download to `dest_path`, starting the transfer immediately.
+    /// Queue a file for download to `dest_path`, starting the transfer immediately if system resource permits.
     ///
     /// # Parameters
     ///
-    /// * `file_hash` – Content-addressed hash returned by a previous
+    /// * `file_info` – Content-addressed hash and size returned by a previous
     ///   [`UploadCommit::commit`](crate::UploadCommit::commit).
-    /// * `file_size` – Expected file size in bytes (used to pre-allocate buffers and report progress).
     /// * `dest_path` – Local path where the downloaded file will be written. Parent directories are created
     ///   automatically.
     ///
@@ -130,7 +129,7 @@ impl DownloadGroup {
     /// Wait for all downloads to complete and return their results.
     ///
     /// Blocks until every queued download finishes (or fails).  Returns one
-    /// [`DownloadResult`] entry per download in the order they were registered.
+    /// [`DownloadResult`] entry per download.
     ///
     /// Consumes `self` — subsequent calls on any clone will return
     /// [`SessionError::AlreadyFinished`] (or a channel-closed error if the
@@ -340,8 +339,27 @@ pub struct DownloadResult {
 
 #[cfg(test)]
 mod tests {
+    use tempfile::{TempDir, tempdir};
+
     use super::*;
     use crate::session::XetSession;
+    use crate::upload_commit::FileMetadata;
+
+    fn local_session(temp: &TempDir) -> Result<XetSession, Box<dyn std::error::Error>> {
+        let cas_path = temp.path().join("cas");
+        Ok(XetSession::new(Some(format!("local://{}", cas_path.display())), None, None, None)?)
+    }
+
+    fn upload_bytes(session: &XetSession, data: &[u8], name: &str) -> Result<XetFileInfo, Box<dyn std::error::Error>> {
+        let commit = session.new_upload_commit()?;
+        commit.upload_bytes(data.to_vec(), Some(name.into()))?;
+        let results = commit.commit()?;
+        let m = &results[0];
+        Ok(XetFileInfo {
+            hash: m.hash.clone(),
+            file_size: m.file_size,
+        })
+    }
 
     // ── Identity ─────────────────────────────────────────────────────────────
 
@@ -485,6 +503,79 @@ mod tests {
         let g2 = session.new_download_group()?;
         g1.finish()?;
         assert!(!g2.is_finished());
+        Ok(())
+    }
+
+    // ── Round-trip tests ─────────────────────────────────────────────────────
+
+    #[test]
+    // Downloading a previously uploaded file produces byte-identical content at the destination.
+    fn test_download_file_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let session = local_session(&temp)?;
+        let original = b"Hello, download round-trip!";
+        let file_info = upload_bytes(&session, original, "payload.bin")?;
+
+        let dest = temp.path().join("downloaded.bin");
+        let group = session.new_download_group()?;
+        group.download_file_to_path(file_info, dest.clone())?;
+        group.finish()?;
+
+        assert_eq!(std::fs::read(&dest)?, original);
+        Ok(())
+    }
+
+    #[test]
+    // Downloading multiple files from a single group produces correct content for each.
+    fn test_download_multiple_files() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let session = local_session(&temp)?;
+
+        let data_a = b"First file content";
+        let data_b = b"Second file content - different";
+
+        // Upload both files in one commit; use tracking_name to locate each result.
+        let commit = session.new_upload_commit()?;
+        commit.upload_bytes(data_a.to_vec(), Some("a.bin".into()))?;
+        commit.upload_bytes(data_b.to_vec(), Some("b.bin".into()))?;
+        let results = commit.commit()?;
+
+        let find_info = |name: &str| -> XetFileInfo {
+            let m: &FileMetadata = results.iter().find(|r| r.tracking_name.as_deref() == Some(name)).unwrap();
+            XetFileInfo {
+                hash: m.hash.clone(),
+                file_size: m.file_size,
+            }
+        };
+
+        let dest_a = temp.path().join("a_out.bin");
+        let dest_b = temp.path().join("b_out.bin");
+        let group = session.new_download_group()?;
+        group.download_file_to_path(find_info("a.bin"), dest_a.clone())?;
+        group.download_file_to_path(find_info("b.bin"), dest_b.clone())?;
+        group.finish()?;
+
+        assert_eq!(std::fs::read(&dest_a)?, data_a);
+        assert_eq!(std::fs::read(&dest_b)?, data_b);
+        Ok(())
+    }
+
+    #[test]
+    // After a successful finish the aggregate download progress reflects bytes received.
+    fn test_download_progress_reflects_bytes_after_finish() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let session = local_session(&temp)?;
+        let original = b"download progress tracking data";
+        let file_info = upload_bytes(&session, original, "prog.bin")?;
+
+        let dest = temp.path().join("out.bin");
+        let group = session.new_download_group()?;
+        let progress_observer = group.clone();
+        group.download_file_to_path(file_info, dest)?;
+        group.finish()?;
+
+        let snapshot = progress_observer.get_progress()?;
+        assert!(snapshot.total().total_bytes_completed > 0);
         Ok(())
     }
 }
