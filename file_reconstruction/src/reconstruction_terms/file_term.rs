@@ -102,20 +102,6 @@ struct FileTermEntry {
     xorb_block_start_index: usize,
 }
 
-/// Computes the index into chunk_offsets for a given chunk start within a set of chunk ranges.
-/// Returns the flattened index: sum of chunks in earlier ranges + offset within the containing range.
-fn compute_block_start_index(chunk_ranges: &[ChunkRange], chunk_start: u32) -> usize {
-    let mut idx = 0;
-    for range in chunk_ranges {
-        if chunk_start >= range.start && chunk_start < range.end {
-            idx += (chunk_start - range.start) as usize;
-            return idx;
-        }
-        idx += (range.end - range.start) as usize;
-    }
-    idx
-}
-
 /// Retrieve file terms from the client for a given file hash and byte range.
 /// Returns None if the requested byte range is past the end of the file.
 /// Returns the actual retrieved range and the number of bytes required for the
@@ -237,8 +223,25 @@ pub async fn retrieve_file_term_block(
 
         // Compute the flattened index into the block's chunk_offsets for this term's
         // starting chunk. This accounts for disjoint chunk ranges in multi-range blocks.
-        let xorb_block_start_index =
-            compute_block_start_index(&xorb_blocks[xorb_block_index].chunk_ranges, term.range.start);
+        //
+        // The term_contained check above guarantees term.range.start falls within one of
+        // the block's chunk_ranges, so this loop always finds a match.
+        let xorb_block_start_index = {
+            let chunk_start = term.range.start;
+            let chunk_ranges = &xorb_blocks[xorb_block_index].chunk_ranges;
+            let mut idx = 0;
+            let mut found = false;
+            for range in chunk_ranges {
+                if chunk_start >= range.start && chunk_start < range.end {
+                    idx += (chunk_start - range.start) as usize;
+                    found = true;
+                    break;
+                }
+                idx += (range.end - range.start) as usize;
+            }
+            debug_assert!(found, "chunk_start {chunk_start} not found in chunk_ranges {chunk_ranges:?}");
+            idx
+        };
 
         file_term_data.push(FileTermEntry {
             byte_range: FileRange::new(cur_file_byte_offset, cur_file_byte_offset + term_byte_size),
