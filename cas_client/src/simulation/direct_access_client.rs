@@ -48,13 +48,15 @@ pub trait DirectAccessClient: Client + Send + Sync {
     /// This simulates the CloudFront URL length limit that forces splitting.
     fn set_max_ranges_per_fetch(&self, max_ranges: usize);
 
-    /// Disables V2 reconstruction responses. When disabled, the V2 endpoint
-    /// returns 404, forcing clients to fall back to V1.
-    fn disable_v2_reconstruction(&self);
+    /// Disables V2 reconstruction responses with the given HTTP status code.
+    /// When disabled, the V2 endpoint returns this status, forcing clients to
+    /// fall back to V1. Pass 0 to re-enable.
+    fn disable_v2_reconstruction(&self, status_code: u16);
 
-    /// Returns whether V2 reconstruction is disabled.
-    fn is_v2_reconstruction_disabled(&self) -> bool {
-        false
+    /// Returns the HTTP status code the V2 endpoint should return when disabled,
+    /// or 0 if V2 is enabled.
+    fn v2_disabled_status_code(&self) -> u16 {
+        0
     }
 
     /// V1 reconstruction: returns per-range presigned URLs.

@@ -5,7 +5,7 @@ use std::mem::size_of;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
 
 use anyhow::anyhow;
 use async_trait::async_trait;
@@ -54,8 +54,8 @@ pub struct LocalClient {
     random_ms_delay_window: (AtomicU64, AtomicU64),
     /// Max ranges per XorbMultiRangeFetch entry. usize::MAX means no splitting.
     max_ranges_per_fetch: AtomicUsize,
-    /// Whether V2 reconstruction is disabled (forces V1 fallback).
-    v2_disabled: AtomicBool,
+    /// HTTP status code to return when V2 is disabled (0 = enabled).
+    v2_disabled_status: AtomicU16,
     _tmp_dir: Option<TempDir>, // Must be last - dropped after heed env is closed
 }
 
@@ -152,7 +152,7 @@ impl LocalClient {
             url_expiration_ms: AtomicU64::new(u64::MAX),
             random_ms_delay_window: (AtomicU64::new(0), AtomicU64::new(0)),
             max_ranges_per_fetch: AtomicUsize::new(usize::MAX),
-            v2_disabled: AtomicBool::new(false),
+            v2_disabled_status: AtomicU16::new(0),
             _tmp_dir: tmp_dir, // Must be last - dropped after heed env is closed
         })
     }
@@ -204,12 +204,12 @@ impl DirectAccessClient for LocalClient {
         self.max_ranges_per_fetch.store(max_ranges, Ordering::Relaxed);
     }
 
-    fn disable_v2_reconstruction(&self) {
-        self.v2_disabled.store(true, Ordering::Relaxed);
+    fn disable_v2_reconstruction(&self, status_code: u16) {
+        self.v2_disabled_status.store(status_code, Ordering::Relaxed);
     }
 
-    fn is_v2_reconstruction_disabled(&self) -> bool {
-        self.v2_disabled.load(Ordering::Relaxed)
+    fn v2_disabled_status_code(&self) -> u16 {
+        self.v2_disabled_status.load(Ordering::Relaxed)
     }
 
     async fn get_reconstruction_v1(

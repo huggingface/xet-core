@@ -256,8 +256,10 @@ pub async fn get_reconstruction_v2(
     headers: HeaderMap,
 ) -> Response {
     // Allow testing V1 fallback by simulating V2 endpoint unavailability.
-    if state.is_v2_reconstruction_disabled() {
-        return (StatusCode::NOT_FOUND, "V2 reconstruction endpoint disabled").into_response();
+    let disabled_status = state.v2_disabled_status_code();
+    if disabled_status != 0 {
+        let code = StatusCode::from_u16(disabled_status).unwrap_or(StatusCode::NOT_FOUND);
+        return (code, "V2 reconstruction endpoint disabled").into_response();
     }
 
     let base_url = get_base_url(&headers);
@@ -389,7 +391,7 @@ pub async fn fetch_term(
             // Single range: return the raw bytes directly (standard 206 single-range).
             let range = &decoded.byte_ranges[0];
             return match state.get_xorb_raw_bytes(&decoded.hash, Some(*range)).await {
-                Ok(data) => (StatusCode::OK, data).into_response(),
+                Ok(data) => (StatusCode::PARTIAL_CONTENT, data).into_response(),
                 Err(e) => error_to_response(e),
             };
         }

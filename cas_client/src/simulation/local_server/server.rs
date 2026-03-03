@@ -459,12 +459,12 @@ impl DirectAccessClient for LocalTestServer {
         self.client.set_max_ranges_per_fetch(max_ranges);
     }
 
-    fn disable_v2_reconstruction(&self) {
-        self.client.disable_v2_reconstruction();
+    fn disable_v2_reconstruction(&self, status_code: u16) {
+        self.client.disable_v2_reconstruction(status_code);
     }
 
-    fn is_v2_reconstruction_disabled(&self) -> bool {
-        self.client.is_v2_reconstruction_disabled()
+    fn v2_disabled_status_code(&self) -> u16 {
+        self.client.v2_disabled_status_code()
     }
 
     async fn get_reconstruction_v1(
@@ -1007,8 +1007,8 @@ mod tests {
         server.set_max_ranges_per_fetch(usize::MAX);
     }
 
-    /// Verifies that disabling V2 causes the V2 endpoint to return an error,
-    /// and that get_reconstruction (which falls back to V1) still works.
+    /// Verifies that disabling V2 with various status codes causes the V2 endpoint
+    /// to return that code, and that get_reconstruction falls back to V1.
     async fn check_v2_disabled_fallback(server: &LocalTestServer) {
         let file = server
             .remote_client()
@@ -1020,14 +1020,33 @@ mod tests {
         let v2_result = server.remote_client().get_reconstruction_v2(&file.file_hash, None).await;
         assert!(v2_result.is_ok());
 
-        // Disable V2.
-        server.disable_v2_reconstruction();
+        // Test 501 (Not Implemented) fallback first, before the RemoteClient
+        // caches a V1 preference from a 404 fallback.
+        server.disable_v2_reconstruction(501);
 
-        // V2 should now fail (404).
         let v2_result = server.remote_client().get_reconstruction_v2(&file.file_hash, None).await;
-        assert!(v2_result.is_err(), "V2 should return error when disabled");
+        assert!(v2_result.is_err(), "V2 should return error when disabled with 501");
 
-        // get_reconstruction should still work via V1 fallback.
+        let result = server
+            .remote_client()
+            .get_reconstruction(&file.file_hash, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.terms.len(), 2);
+
+        // Re-enable V2, then test 404 fallback.
+        server.disable_v2_reconstruction(0);
+
+        // Reset the RemoteClient's cached version by making a successful V2 call.
+        let v2_result = server.remote_client().get_reconstruction_v2(&file.file_hash, None).await;
+        assert!(v2_result.is_ok(), "V2 should work again after re-enabling");
+
+        server.disable_v2_reconstruction(404);
+
+        let v2_result = server.remote_client().get_reconstruction_v2(&file.file_hash, None).await;
+        assert!(v2_result.is_err(), "V2 should return error when disabled with 404");
+
         let result = server
             .remote_client()
             .get_reconstruction(&file.file_hash, None)

@@ -335,8 +335,11 @@ impl Client for RemoteClient {
                     }
                     Ok(result)
                 },
-                Err(e) if forced_version.is_none() && e.status() == Some(StatusCode::NOT_FOUND) => {
-                    info!("V2 reconstruction endpoint returned 404, falling back to V1");
+                Err(e)
+                    if forced_version.is_none()
+                        && matches!(e.status(), Some(StatusCode::NOT_FOUND) | Some(StatusCode::NOT_IMPLEMENTED)) =>
+                {
+                    info!(status = ?e.status(), "V2 reconstruction not available, falling back to V1");
                     let result = self.get_reconstruction_v1(file_id, bytes_range).await?.map(Into::into);
                     // Store after success to make sure we don't mess up on e.g. network failure.
                     self.detected_reconstruction_api_version.store(1, Ordering::Relaxed);
