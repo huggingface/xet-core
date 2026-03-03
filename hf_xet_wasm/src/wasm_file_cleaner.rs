@@ -47,6 +47,9 @@ pub struct SingleFileCleaner {
     dedup_manager: FileDeduper<UploadSessionDataManager>,
 }
 
+// NOTE: Unlike the native `data` crate, this WASM implementation always computes SHA-256
+// and does not support Sha256Policy::Skip. If skip support is needed for WASM uploads,
+// this should be updated to use a shared Sha256Policy enum (see data::file_upload_session::Sha256Policy).
 impl SingleFileCleaner {
     pub fn new(
         session: Arc<FileUploadSession>,

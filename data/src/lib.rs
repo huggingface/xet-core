@@ -4,7 +4,7 @@ mod deduplication_interface;
 pub mod errors;
 mod file_cleaner;
 mod file_download_session;
-mod file_upload_session;
+pub mod file_upload_session;
 pub mod migration_tool;
 mod prometheus_metrics;
 mod remote_client_interface;

@@ -22,6 +22,7 @@ use xet_runtime::{XetRuntime, xet_cache_root, xet_config};
 use crate::configurations::*;
 use crate::errors::DataProcessingError;
 use crate::file_download_session::FileDownloadSession;
+use crate::file_upload_session::Sha256Policy;
 use crate::{FileUploadSession, XetFileInfo, errors};
 
 pub fn default_config(
@@ -262,7 +263,7 @@ pub async fn clean_bytes(
     bytes: Vec<u8>,
     tracking_id: Option<Ulid>,
 ) -> errors::Result<(XetFileInfo, DeduplicationMetrics)> {
-    let mut handle = processor.start_clean(None, bytes.len() as u64, None, false).await;
+    let mut handle = processor.start_clean(None, bytes.len() as u64, Sha256Policy::Compute).await;
     handle.add_data(&bytes).await?;
     handle.finish().await
 }
@@ -289,8 +290,7 @@ pub async fn clean_file(
         .start_clean(
             Some(filename.as_ref().to_string_lossy().into()),
             filesize,
-            Sha256::from_hex(sha256.as_ref()).ok(),
-            false,
+            Sha256::from_hex(sha256.as_ref()).ok().into(),
         )
         .await;
 

@@ -28,6 +28,7 @@ use crate::configurations::*;
 use crate::errors::*;
 use crate::file_cleaner::SingleFileCleaner;
 use crate::remote_client_interface::create_remote_client;
+pub use crate::sha256::Sha256Policy;
 use crate::shard_interface::SessionShardInterface;
 use crate::{XetFileInfo, prometheus_metrics};
 
@@ -185,7 +186,7 @@ impl FileUploadSession {
                     let mut reader = File::open(&file_path)?;
 
                     // Start the clean process for each file.
-                    let mut cleaner = SingleFileCleaner::new(Some(file_name), file_id, sha256, false, session);
+                    let mut cleaner = SingleFileCleaner::new(Some(file_name), file_id, sha256.into(), session);
                     let mut bytes_read = 0;
 
                     while bytes_read < file_size {
@@ -251,15 +252,14 @@ impl FileUploadSession {
     /// The caller is responsible for memory usage management, the parameter "buffer_size"
     /// indicates the maximum number of Vec<u8> in the internal buffer.
     ///
-    /// If a sha256 is provided, the value will be directly used in shard upload to
-    /// avoid redundant computation. If skip_sha256 is true, SHA-256 computation is
-    /// skipped entirely and no metadata_ext is included in the shard.
+    /// If a sha256 is provided via [`Sha256Policy::Provided`], the value will be directly
+    /// used in shard upload to avoid redundant computation. [`Sha256Policy::Skip`] skips
+    /// SHA-256 computation entirely and no metadata_ext is included in the shard.
     pub async fn start_clean(
         self: &Arc<Self>,
         file_name: Option<Arc<str>>,
         size: u64,
-        sha256: Option<Sha256>,
-        skip_sha256: bool,
+        sha256: Sha256Policy,
     ) -> SingleFileCleaner {
         // Get a new file id for the completion tracking
         let file_id = self
@@ -267,7 +267,7 @@ impl FileUploadSession {
             .register_new_file(Ulid::new(), file_name.clone().unwrap_or_default(), Some(size))
             .await;
 
-        SingleFileCleaner::new(file_name, file_id, sha256, skip_sha256, self.clone())
+        SingleFileCleaner::new(file_name, file_id, sha256, self.clone())
     }
 
     /// Registers a new xorb for upload, returning true if the xorb was added to the upload queue and false
@@ -577,7 +577,7 @@ mod tests {
             .unwrap();
 
         let mut cleaner = upload_session
-            .start_clean(Some("test".into()), read_data.len() as u64, None, false)
+            .start_clean(Some("test".into()), read_data.len() as u64, Sha256Policy::Compute)
             .await;
 
         // Read blocks from the source file and hand them to the cleaning handle

@@ -4,6 +4,7 @@ use cas_client::LocalTestServer;
 // Run tests that determine deduplication, especially across different test subjects.
 use data::FileUploadSession;
 use data::configurations::TranslatorConfig;
+use data::file_upload_session::Sha256Policy;
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS, TARGET_CHUNK_SIZE};
 use tempfile::TempDir;
 use utils::{test_set_config, test_set_constants};
@@ -68,7 +69,7 @@ mod tests {
 
             // Feed it half the data, and checkpoint.
             let mut cleaner = file_upload_session
-                .start_clean(Some("data".into()), data.len() as u64, None, false)
+                .start_clean(Some("data".into()), data.len() as u64, Sha256Policy::Compute)
                 .await;
             cleaner.add_data(&data[..half_n]).await.unwrap();
             cleaner.checkpoint().await.unwrap();
@@ -86,7 +87,7 @@ mod tests {
 
             // Feed it half the data, and checkpoint.
             let mut cleaner = file_upload_session
-                .start_clean(Some("data".into()), data.len() as u64, None, false)
+                .start_clean(Some("data".into()), data.len() as u64, Sha256Policy::Compute)
                 .await;
 
             // Add all the data.  Roughly the first half should dedup.
@@ -141,7 +142,7 @@ mod tests {
 
             // Feed it half the data, and checkpoint.
             let mut cleaner = file_upload_session
-                .start_clean(Some("data".into()), data.len() as u64, None, false)
+                .start_clean(Some("data".into()), data.len() as u64, Sha256Policy::Compute)
                 .await;
             cleaner.add_data(&data[..rn]).await.unwrap();
             cleaner.checkpoint().await.unwrap();
@@ -173,7 +174,7 @@ mod tests {
 
             // Feed it half the data, and checkpoint.
             let mut cleaner = file_upload_session
-                .start_clean(Some("data".into()), data.len() as u64, None, false)
+                .start_clean(Some("data".into()), data.len() as u64, Sha256Policy::Compute)
                 .await;
 
             // Add all the data.  Roughly the first half should dedup.

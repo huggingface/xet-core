@@ -5,7 +5,6 @@ use std::sync::Arc;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use deduplication::{Chunk, Chunker, DeduplicationMetrics, FileDeduper};
-use mdb_shard::Sha256;
 use mdb_shard::file_structs::FileMetadataExt;
 use progress_tracking::upload_tracking::CompletionTrackerFileId;
 use tracing::{Instrument, debug_span, info, instrument};
@@ -15,7 +14,7 @@ use crate::XetFileInfo;
 use crate::deduplication_interface::UploadSessionDataManager;
 use crate::errors::Result;
 use crate::file_upload_session::FileUploadSession;
-use crate::sha256::ShaGenerator;
+use crate::sha256::{Sha256Policy, ShaGenerator};
 
 /// A class that encapsulates the clean and data task around a single file.
 pub struct SingleFileCleaner {
@@ -43,22 +42,13 @@ pub struct SingleFileCleaner {
 }
 
 impl SingleFileCleaner {
-    // If a sha256 value is given in the parameter, the cleaner avoids computing the sha256 again internally.
-    // If skip_sha256 is true, SHA-256 computation is skipped entirely and no metadata_ext is written to the shard.
     pub(crate) fn new(
         file_name: Option<Arc<str>>,
         file_id: CompletionTrackerFileId,
-        sha256: Option<Sha256>,
-        skip_sha256: bool,
+        sha256: Sha256Policy,
         session: Arc<FileUploadSession>,
     ) -> Self {
         let deduper = FileDeduper::new(UploadSessionDataManager::new(session.clone()), file_id);
-
-        let sha_generator = if skip_sha256 {
-            ShaGenerator::Skip
-        } else {
-            sha256.map(ShaGenerator::ProvidedValue).unwrap_or_else(ShaGenerator::generate)
-        };
 
         Self {
             file_name,
@@ -66,7 +56,7 @@ impl SingleFileCleaner {
             dedup_manager_fut: Box::pin(async move { Ok(deduper) }),
             session,
             chunker: deduplication::Chunker::default(),
-            sha_generator,
+            sha_generator: sha256.into(),
             start_time: Utc::now(),
         }
     }

@@ -6,6 +6,7 @@ use std::sync::{Arc, OnceLock};
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use data::configurations::*;
+use data::file_upload_session::Sha256Policy;
 use data::{FileUploadSession, XetFileInfo};
 use ulid::Ulid;
 use xet_runtime::XetRuntime;
@@ -92,7 +93,7 @@ async fn clean(mut reader: impl Read, mut writer: impl Write, size: u64) -> Resu
         FileUploadSession::new(TranslatorConfig::local_config(std::env::current_dir()?)?.into(), None).await?;
 
     let mut size_read = 0;
-    let mut handle = translator.start_clean(None, size, None, false).await;
+    let mut handle = translator.start_clean(None, size, Sha256Policy::Compute).await;
 
     loop {
         let bytes = reader.read(&mut read_buf)?;
