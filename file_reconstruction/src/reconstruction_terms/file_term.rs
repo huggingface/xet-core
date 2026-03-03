@@ -154,7 +154,7 @@ pub async fn retrieve_file_term_block(
         // A V2 xorb descriptor may have multiple fetch entries (e.g. when ranges were
         // split due to URL length limits), so we search for the one that covers this term.
         let xorb_block_index = 'find_xorb_block: {
-            for fetch_entry in xorb_descriptor.fetch.iter() {
+            for fetch_entry in xorb_descriptor.iter() {
                 // Check if the term's chunk range is fully contained within
                 // one of this fetch entry's ranges.
                 let term_contained = fetch_entry

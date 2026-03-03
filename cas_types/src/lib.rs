@@ -218,31 +218,23 @@ pub struct QueryReconstructionResponse {
 }
 
 /// V2 reconstruction response - optimized for multi-range fetching.
-/// Instead of N presigned URLs per fragmented xorb, provides 1 signed
-/// CloudFront URL per xorb + all byte ranges listed separately.
+/// May provide fewer signed URLs per xorb by combining multiple byte ranges
+/// into a single URL where possible.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct QueryReconstructionResponseV2 {
     pub offset_into_first_range: u64,
     pub terms: Vec<CASReconstructionTerm>,
-    /// Map from xorb hash -> xorb fetch descriptor with single URL + all ranges.
-    pub xorbs: HashMap<HexMerkleHash, XorbFetchDescriptor>,
-}
-
-/// Fetch descriptor for a single xorb: one or more signed URLs covering all byte ranges.
-/// Usually 1 URL covers all ranges. If the URL would exceed CloudFront's 8,192 byte limit,
-/// ranges are split across multiple URLs.
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct XorbFetchDescriptor {
-    /// List of fetch entries. Each entry has a signed URL + the ranges it covers.
-    /// Typically 1 entry. Multiple entries only when URL length limit forces a split.
-    pub fetch: Vec<XorbMultiRangeFetch>,
+    /// Map from xorb hash -> list of multi-range fetch entries.
+    /// Typically 1 entry per xorb. Multiple entries when the URL length limit
+    /// (~8 KiB, roughly ~500 ranges) forces a split.
+    pub xorbs: HashMap<HexMerkleHash, Vec<XorbMultiRangeFetch>>,
 }
 
 /// A signed multi-range fetch: one URL covering a subset of ranges for a xorb.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct XorbMultiRangeFetch {
-    /// Signed CloudFront URL with X-Xet-Signed-Range covering all ranges below.
-    /// Client sends exactly the signed range value as the Range: header.
+    /// Signed URL with all byte ranges encoded. Client must send exactly the
+    /// signed range value as the Range header.
     pub url: String,
     /// Byte ranges covered by this URL, sorted by chunk start.
     pub ranges: Vec<XorbRangeDescriptor>,
@@ -273,7 +265,7 @@ impl From<QueryReconstructionResponse> for QueryReconstructionResponseV2 {
                         }],
                     })
                     .collect();
-                (hash, XorbFetchDescriptor { fetch })
+                (hash, fetch)
             })
             .collect();
 

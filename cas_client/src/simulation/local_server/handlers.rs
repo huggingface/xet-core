@@ -300,9 +300,9 @@ pub async fn get_reconstruction_v2(
 /// to the /v1/fetch_term endpoint. The byte ranges from the V2 response
 /// are encoded into the term so the endpoint can serve all ranges in one request.
 fn transform_v2_xorb_urls(response: &mut QueryReconstructionResponseV2, base_url: &str) {
-    for (xorb_hash, descriptor) in response.xorbs.iter_mut() {
+    for (xorb_hash, fetch_entries) in response.xorbs.iter_mut() {
         let xorb_hash: MerkleHash = (*xorb_hash).into();
-        for fetch in descriptor.fetch.iter_mut() {
+        for fetch in fetch_entries.iter_mut() {
             let encoded_term = encode_term_with_ranges(&xorb_hash, &fetch.ranges);
             fetch.url = format!("{base_url}/v1/fetch_term?term={encoded_term}");
         }

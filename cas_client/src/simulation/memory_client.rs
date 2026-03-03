@@ -9,7 +9,7 @@ use bytes::Bytes;
 use cas_object::{CasObject, SerializedCasObject};
 use cas_types::{
     BatchQueryReconstructionResponse, CASReconstructionFetchInfo, FileRange, HexMerkleHash, HttpRange,
-    QueryReconstructionResponse, QueryReconstructionResponseV2, XorbFetchDescriptor, XorbMultiRangeFetch,
+    QueryReconstructionResponse, QueryReconstructionResponseV2, XorbMultiRangeFetch,
     XorbRangeDescriptor,
 };
 use mdb_shard::cas_structs::MDBCASInfo;
@@ -630,7 +630,7 @@ impl MemoryClient {
         let timestamp = Instant::now();
         let max_ranges = self.max_ranges_per_fetch.load(Ordering::Relaxed);
 
-        let mut xorbs: HashMap<HexMerkleHash, XorbFetchDescriptor> = HashMap::new();
+        let mut xorbs: HashMap<HexMerkleHash, Vec<XorbMultiRangeFetch>> = HashMap::new();
         for (hash, ranges) in merged_ranges {
             let mut fetch_entries = Vec::new();
 
@@ -650,7 +650,7 @@ impl MemoryClient {
                 });
             }
 
-            xorbs.insert(hash.into(), XorbFetchDescriptor { fetch: fetch_entries });
+            xorbs.insert(hash.into(), fetch_entries);
         }
 
         Ok(Some(QueryReconstructionResponseV2 {

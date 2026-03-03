@@ -931,8 +931,8 @@ async fn test_v2_reconstruction_basic(client: Arc<dyn DirectAccessClient>) {
 
     for term in &response.terms {
         let xorb_descriptor = response.xorbs.get(&term.hash).expect("xorb descriptor missing for term");
-        assert!(!xorb_descriptor.fetch.is_empty());
-        for fetch in &xorb_descriptor.fetch {
+        assert!(!xorb_descriptor.is_empty());
+        for fetch in xorb_descriptor {
             assert!(!fetch.url.is_empty());
             assert!(!fetch.ranges.is_empty());
             for range in &fetch.ranges {
@@ -1070,8 +1070,8 @@ async fn test_v2_url_encoding(client: Arc<dyn DirectAccessClient>) {
 
     let response = client.get_reconstruction_v2(&file.file_hash, None).await.unwrap().unwrap();
 
-    for descriptor in response.xorbs.values() {
-        for fetch in &descriptor.fetch {
+    for fetch_entries in response.xorbs.values() {
+        for fetch in fetch_entries {
             assert!(!fetch.url.is_empty(), "URL should not be empty");
 
             if fetch.url.starts_with("http://") || fetch.url.starts_with("https://") {

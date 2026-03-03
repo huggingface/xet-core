@@ -900,8 +900,8 @@ mod tests {
         assert_eq!(v2.offset_into_first_range, 0);
 
         // V2 URLs should be HTTP URLs pointing to /v1/fetch_term
-        for descriptor in v2.xorbs.values() {
-            for fetch in &descriptor.fetch {
+        for fetch_entries in v2.xorbs.values() {
+            for fetch in fetch_entries {
                 assert!(fetch.url.starts_with("http://"), "V2 URL should be HTTP, got: {}", fetch.url);
                 assert!(
                     fetch.url.contains("/v1/fetch_term?term="),
@@ -944,8 +944,8 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        for descriptor in v2.xorbs.values() {
-            for fetch in &descriptor.fetch {
+        for fetch_entries in v2.xorbs.values() {
+            for fetch in fetch_entries {
                 let response = http_client.get(&fetch.url).send().await.unwrap();
                 assert!(
                     response.status().is_success(),
@@ -974,8 +974,8 @@ mod tests {
             .unwrap();
 
         assert!(!v2.terms.is_empty());
-        for descriptor in v2.xorbs.values() {
-            for fetch in &descriptor.fetch {
+        for fetch_entries in v2.xorbs.values() {
+            for fetch in fetch_entries {
                 assert!(fetch.url.starts_with("http://"));
             }
         }

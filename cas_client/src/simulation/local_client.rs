@@ -13,7 +13,7 @@ use bytes::Bytes;
 use cas_object::{CasObject, SerializedCasObject};
 use cas_types::{
     BatchQueryReconstructionResponse, CASReconstructionFetchInfo, FileRange, HexMerkleHash, HttpRange,
-    QueryReconstructionResponse, QueryReconstructionResponseV2, XorbFetchDescriptor, XorbMultiRangeFetch,
+    QueryReconstructionResponse, QueryReconstructionResponseV2, XorbMultiRangeFetch,
     XorbRangeDescriptor,
 };
 use file_utils::SafeFileCreator;
@@ -70,7 +70,7 @@ impl LocalClient {
     }
 
     /// Create a local client hosted in a directory.  Effectively, this directory
-    /// is the CAS endpoint and persists across instances of LocalClient.  
+    /// is the CAS endpoint and persists across instances of LocalClient.
     pub async fn new(path: impl AsRef<Path>) -> Result<Arc<Self>> {
         let path = path.as_ref().to_owned();
         Ok(Arc::new(Self::new_internal(path, None).await?))
@@ -579,7 +579,7 @@ impl LocalClient {
         let timestamp = Instant::now();
         let max_ranges = self.max_ranges_per_fetch.load(Ordering::Relaxed);
 
-        let mut xorbs: HashMap<HexMerkleHash, XorbFetchDescriptor> = HashMap::new();
+        let mut xorbs: HashMap<HexMerkleHash, Vec<XorbMultiRangeFetch>> = HashMap::new();
         for (hash, ranges) in merged_ranges {
             let mut fetch_entries = Vec::new();
 
@@ -599,7 +599,7 @@ impl LocalClient {
                 });
             }
 
-            xorbs.insert(hash.into(), XorbFetchDescriptor { fetch: fetch_entries });
+            xorbs.insert(hash.into(), fetch_entries);
         }
 
         Ok(Some(QueryReconstructionResponseV2 {

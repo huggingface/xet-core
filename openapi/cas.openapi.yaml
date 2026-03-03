@@ -14,51 +14,27 @@ security:
 paths:
   /v1/reconstructions/{file_id}:
     get:
-      summary: Get File Reconstruction
+      summary: Get File Reconstruction (V1)
       description: |
         Retrieves reconstruction information for a specific file. Supports byte range via the optional `Range` header.
-
-        **Version negotiation:** Send `X-Xet-Reconstruction-Version: 2` request header to get the V2
-        multi-range optimized response. Without the header (or with value `1`), the V1 response is returned.
-        The response includes the same header indicating which version was served.
-
-        V2 returns 1 signed CloudFront URL per xorb with all byte ranges listed separately, enabling
-        multi-range HTTP requests (RFC 7233) instead of N separate presigned URLs.
+        Returns one presigned URL per chunk range per xorb.
 
         Minimum token scope: `read`.
         x-required-scope: read
-      operationId: getReconstruction
+      operationId: getReconstructionV1
       parameters:
         - $ref: '#/components/parameters/FileIdParam'
         - $ref: '#/components/parameters/RangeHeader'
-        - name: X-Xet-Reconstruction-Version
-          in: header
-          required: false
-          description: |
-            Request a specific response format version. `1` (default) returns V1 format,
-            `2` returns V2 multi-range optimized format.
-          schema:
-            type: string
-            enum: ["1", "2"]
-            default: "1"
       responses:
         '200':
-          description: Reconstruction object (V1 or V2 depending on requested version)
-          headers:
-            X-Xet-Reconstruction-Version:
-              description: Response format version that was served
-              schema:
-                type: string
-                enum: ["1", "2"]
+          description: V1 reconstruction object
           content:
             application/json:
               schema:
-                oneOf:
-                  - $ref: '#/components/schemas/QueryReconstructionResponse'
-                  - $ref: '#/components/schemas/QueryReconstructionResponseV2'
+                $ref: '#/components/schemas/QueryReconstructionResponse'
               examples:
                 v1:
-                  summary: V1 response (default)
+                  summary: V1 response
                   value:
                     offset_into_first_range: 0
                     terms:
@@ -76,6 +52,38 @@ paths:
                           url_range:
                             start: 0
                             end: 131071
+        '400':
+          description: Bad Request — Malformed file_id
+        '401':
+          description: Unauthorized — Missing/expired token
+        '404':
+          description: Not Found — File does not exist
+        '416':
+          description: Range Not Satisfiable — Requested byte range start exceeds file length
+  /v2/reconstructions/{file_id}:
+    get:
+      summary: Get File Reconstruction (V2)
+      description: |
+        V2 reconstruction endpoint optimized for multi-range fetching.
+        Returns fewer signed URLs by combining multiple byte ranges for the same xorb into a single URL,
+        enabling multi-range HTTP requests (RFC 7233).
+
+        Clients SHOULD try V2 first and fall back to V1 if the server returns 404 or 501.
+
+        Minimum token scope: `read`.
+        x-required-scope: read
+      operationId: getReconstructionV2
+      parameters:
+        - $ref: '#/components/parameters/FileIdParam'
+        - $ref: '#/components/parameters/RangeHeader'
+      responses:
+        '200':
+          description: V2 reconstruction object
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryReconstructionResponseV2'
+              examples:
                 v2:
                   summary: V2 response (multi-range optimized)
                   value:
@@ -88,23 +96,24 @@ paths:
                           end: 4
                     xorbs:
                       a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456:
-                        fetch:
-                          - url: "https://transfer.xethub.hf.co/xorbs/default/a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456?X-Xet-Signed-Range=bytes%3D0-131071&Signature=..."
-                            ranges:
-                              - chunks:
-                                  start: 0
-                                  end: 4
-                                bytes:
-                                  start: 0
-                                  end: 131071
+                        - url: "https://transfer.xethub.hf.co/xorbs/default/a1b2c3...?<signed-params>"
+                          ranges:
+                            - chunks:
+                                start: 0
+                                end: 4
+                              bytes:
+                                start: 0
+                                end: 131071
         '400':
           description: Bad Request — Malformed file_id
         '401':
           description: Unauthorized — Missing/expired token
         '404':
-          description: Not Found — File does not exist
+          description: Not Found — File does not exist, or V2 not supported (fall back to V1)
         '416':
           description: Range Not Satisfiable — Requested byte range start exceeds file length
+        '501':
+          description: Not Implemented — V2 not supported by this server (fall back to V1)
   /v1/chunks/{prefix}/{hash}:
     get:
       summary: Query Chunk Deduplication (Global Deduplication)
@@ -352,29 +361,14 @@ components:
           type: string
           format: uri
           description: |
-            Signed CloudFront URL with X-Xet-Signed-Range covering all ranges below.
-            Client sends exactly the signed range value as the Range header.
+            Signed URL with all byte ranges encoded.
+            Client must send exactly the signed range value as the Range header.
         ranges:
           type: array
           items:
             $ref: '#/components/schemas/XorbRangeDescriptor'
           description: Byte ranges covered by this URL, sorted by chunk start
       required: [url, ranges]
-      additionalProperties: false
-    XorbFetchDescriptor:
-      type: object
-      description: |
-        Fetch descriptor for a single xorb. Contains one or more fetch entries.
-        Usually 1 entry covers all ranges. If the signed URL would exceed the
-        CloudFront 8,192 byte limit, ranges are split across multiple entries.
-      properties:
-        fetch:
-          type: array
-          items:
-            $ref: '#/components/schemas/XorbMultiRangeFetch'
-          minItems: 1
-          description: List of multi-range fetch entries for this xorb
-      required: [fetch]
       additionalProperties: false
     QueryReconstructionResponseV2:
       type: object
@@ -389,11 +383,14 @@ components:
             $ref: '#/components/schemas/CASReconstructionTerm'
         xorbs:
           type: object
-          description: Map from xorb hash to fetch descriptor (1 URL + N ranges)
+          description: Map from xorb hash to list of multi-range fetch entries
           propertyNames:
             $ref: '#/components/schemas/HexString64Lowercase'
           additionalProperties:
-            $ref: '#/components/schemas/XorbFetchDescriptor'
+            type: array
+            items:
+              $ref: '#/components/schemas/XorbMultiRangeFetch'
+            minItems: 1
       required: [offset_into_first_range, terms, xorbs]
       additionalProperties: false
     UploadXorbResponse:
