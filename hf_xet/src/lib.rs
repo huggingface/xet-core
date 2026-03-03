@@ -128,7 +128,7 @@ pub fn upload_bytes(
 }
 
 #[pyfunction]
-#[pyo3(signature = (file_paths, endpoint, token_info, token_refresher, progress_updater, _repo_type, request_headers=None, sha256s=None), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str], request_headers: Optional[Dict[str, str]], sha256s: Optional[List[str]]) -> List[PyXetUploadInfo]")]
+#[pyo3(signature = (file_paths, endpoint, token_info, token_refresher, progress_updater, _repo_type, request_headers=None), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str], request_headers: Optional[Dict[str, str]]) -> List[PyXetUploadInfo]")]
 #[allow(clippy::too_many_arguments)]
 pub fn upload_files(
     py: Python,
@@ -139,7 +139,6 @@ pub fn upload_files(
     progress_updater: Option<Py<PyAny>>,
     _repo_type: Option<String>,
     request_headers: Option<HashMap<String, String>>,
-    sha256s: Option<Vec<String>>,
 ) -> PyResult<Vec<PyXetUploadInfo>> {
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updater = progress_updater.map(WrappedProgressUpdater::new).transpose()?.map(Arc::new);
@@ -161,7 +160,7 @@ pub fn upload_files(
 
         let out: Vec<PyXetUploadInfo> = data_client::upload_async(
             file_paths,
-            sha256s,
+            None,
             endpoint,
             token_info,
             refresher.map(|v| v as Arc<_>),
