@@ -44,13 +44,21 @@ pub struct SingleFileCleaner {
 
 impl SingleFileCleaner {
     // If a sha256 value is given in the parameter, the cleaner avoids computing the sha256 again internally.
+    // If skip_sha256 is true, SHA-256 computation is skipped entirely and no metadata_ext is written to the shard.
     pub(crate) fn new(
         file_name: Option<Arc<str>>,
         file_id: CompletionTrackerFileId,
         sha256: Option<Sha256>,
+        skip_sha256: bool,
         session: Arc<FileUploadSession>,
     ) -> Self {
         let deduper = FileDeduper::new(UploadSessionDataManager::new(session.clone()), file_id);
+
+        let sha_generator = if skip_sha256 {
+            ShaGenerator::Skip
+        } else {
+            sha256.map(ShaGenerator::ProvidedValue).unwrap_or_else(ShaGenerator::generate)
+        };
 
         Self {
             file_name,
@@ -58,7 +66,7 @@ impl SingleFileCleaner {
             dedup_manager_fut: Box::pin(async move { Ok(deduper) }),
             session,
             chunker: deduplication::Chunker::default(),
-            sha_generator: sha256.map(ShaGenerator::ProvidedValue).unwrap_or_else(ShaGenerator::generate),
+            sha_generator,
             start_time: Utc::now(),
         }
     }
@@ -142,7 +150,7 @@ impl SingleFileCleaner {
         Ok(())
     }
 
-    /// Ensures all current background work is completed.  
+    /// Ensures all current background work is completed.
     pub async fn checkpoint(&mut self) -> Result<()> {
         // Flush the background process by sending it a dummy bit of data.
         self.deduper_process_chunks(Arc::new([])).await
@@ -158,11 +166,11 @@ impl SingleFileCleaner {
         }
 
         // Finalize the sha256 hashing and create the metadata extension
-        let sha256: Sha256 = self.sha_generator.finalize().await?;
-        let metadata_ext = FileMetadataExt::new(sha256);
+        let sha256 = self.sha_generator.finalize().await?;
+        let metadata_ext = sha256.map(FileMetadataExt::new);
 
         let (file_hash, remaining_file_data, deduplication_metrics) =
-            self.dedup_manager_fut.await?.finalize(Some(metadata_ext));
+            self.dedup_manager_fut.await?.finalize(metadata_ext);
 
         let file_info = XetFileInfo::new(file_hash.hex(), deduplication_metrics.total_bytes);
 

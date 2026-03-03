@@ -6,20 +6,23 @@ use xet_runtime::XetRuntime;
 pub enum ShaGenerator {
     Generate(Sha256Generator),
     ProvidedValue(Sha256),
+    /// Skip SHA-256 computation entirely. `finalize()` returns `None`.
+    Skip,
 }
 
 impl ShaGenerator {
     pub async fn update(&mut self, new_data: impl AsRef<[u8]> + Send + Sync + 'static) -> Result<(), JoinError> {
         match self {
             Self::Generate(generator) => generator.update(new_data).await,
-            Self::ProvidedValue(_) => Ok(()),
+            Self::ProvidedValue(_) | Self::Skip => Ok(()),
         }
     }
 
-    pub async fn finalize(self) -> Result<Sha256, JoinError> {
+    pub async fn finalize(self) -> Result<Option<Sha256>, JoinError> {
         match self {
-            Self::Generate(generator) => generator.finalize().await,
-            Self::ProvidedValue(hash) => Ok(hash),
+            Self::Generate(generator) => generator.finalize().await.map(Some),
+            Self::ProvidedValue(hash) => Ok(Some(hash)),
+            Self::Skip => Ok(None),
         }
     }
 
