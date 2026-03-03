@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use cas_client::adaptive_concurrency::ConnectionPermit;
 use cas_client::{Client, ProgressCallback};
-use cas_types::ChunkRange;
+use cas_types::{ChunkRange, Key};
+use chunk_cache::ChunkCache;
 use merklehash::MerkleHash;
 use progress_tracking::download_tracking::DownloadTaskUpdater;
 use tokio::sync::{Mutex, RwLock};
@@ -51,12 +51,14 @@ impl Eq for XorbBlock {}
 
 impl XorbBlock {
     /// Retrieve the xorb block data from the client, caching it for subsequent calls.
+    /// If a `chunk_cache` is provided, it is checked before making an HTTP request
+    /// and populated after a successful download.
     pub async fn retrieve_data(
         self: Arc<Self>,
         client: Arc<dyn Client>,
-        permit: ConnectionPermit,
         url_info: Arc<TermBlockRetrievalURLs>,
         progress_updater: Option<Arc<DownloadTaskUpdater>>,
+        chunk_cache: Option<Arc<dyn ChunkCache>>,
     ) -> Result<Arc<XorbBlockData>> {
         // Check again in case another task already downloaded it.
         if let Some(ref xorb_block_data) = *self.data.read().await {
@@ -70,6 +72,36 @@ impl XorbBlock {
         if let Some(ref xorb_block_data) = *xbd_lg {
             return Ok(xorb_block_data.clone());
         }
+
+        let cache_key = Key {
+            prefix: "default".to_string(),
+            hash: self.xorb_hash,
+        };
+
+        // Try the on-disk chunk cache before hitting the network.
+        if let Some(ref cache) = chunk_cache
+            && let Ok(Some(cache_range)) = cache.get(&cache_key, &self.chunk_range).await
+        {
+            // Report the transfer bytes as completed so progress tracking stays consistent.
+            if let Some(ref updater) = progress_updater {
+                let (_, _, http_range) = url_info.get_retrieval_url(self.xorb_block_index).await;
+                let file_range = cas_types::FileRange::from(http_range);
+                let transfer_bytes = file_range.end.saturating_sub(file_range.start);
+                updater.report_transfer_progress(transfer_bytes);
+            }
+            let chunk_offsets: Vec<usize> = cache_range.offsets.iter().map(|&x| x as usize).collect();
+            let data = Bytes::from(cache_range.data);
+            let xorb_block_data = Arc::new(XorbBlockData {
+                chunk_offsets,
+                uncompressed_size: data.len() as u64,
+                data,
+            });
+            *xbd_lg = Some(xorb_block_data.clone());
+            return Ok(xorb_block_data);
+        }
+
+        // Cache miss — acquire a download permit now that we actually need the network.
+        let permit = client.acquire_download_permit().await?;
 
         let url_provider = XorbURLProvider {
             client: client.clone(),
@@ -90,6 +122,11 @@ impl XorbBlock {
         let (data, chunk_byte_offsets) = client
             .get_file_term_data(Box::new(url_provider), permit, progress_callback, self.uncompressed_size_if_known)
             .await?;
+
+        // Store in chunk cache (best-effort).
+        if let Some(ref cache) = chunk_cache {
+            let _ = cache.put(&cache_key, &self.chunk_range, &chunk_byte_offsets, &data).await;
+        }
 
         let chunk_offsets: Vec<usize> = chunk_byte_offsets.iter().map(|&x| x as usize).collect();
         let uncompressed_size = data.len() as u64;

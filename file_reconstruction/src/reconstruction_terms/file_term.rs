@@ -5,6 +5,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use cas_client::Client;
 use cas_types::{ChunkRange, FileRange, HttpRange};
+use chunk_cache::ChunkCache;
 use merklehash::MerkleHash;
 use progress_tracking::download_tracking::DownloadTaskUpdater;
 use tokio::sync::RwLock;
@@ -47,6 +48,7 @@ impl FileTerm {
         &self,
         client: Arc<dyn Client>,
         progress_updater: Option<Arc<DownloadTaskUpdater>>,
+        chunk_cache: Option<Arc<dyn ChunkCache>>,
     ) -> Result<DataFuture> {
         // First, try to read the cached data without blocking.
         if let Ok(guard) = self.xorb_block.data.try_read()
@@ -56,15 +58,15 @@ impl FileTerm {
             return Ok(Box::pin(async move { Ok(bytes) }));
         }
 
-        // Data not cached - need to download it.
-        let permit = client.acquire_download_permit().await?;
-
+        // Data not cached in memory — spawn a task to check the disk cache or download.
         let file_term = self.clone();
         let url_info = self.url_info.clone();
         let xorb_block = self.xorb_block.clone();
 
         let task = tokio::task::spawn(async move {
-            let xorb_block_data = xorb_block.retrieve_data(client, permit, url_info, progress_updater).await?;
+            let xorb_block_data = xorb_block
+                .retrieve_data(client, url_info, progress_updater, chunk_cache)
+                .await?;
             Ok(file_term.extract_bytes(&xorb_block_data))
         });
 
@@ -378,7 +380,7 @@ mod tests {
             assert!(file_contents.xorbs.contains_key(&file_term.xorb_block.xorb_hash));
 
             // Get the data task and await it.
-            let data_future = file_term.get_data_task(dyn_client.clone(), None).await.unwrap();
+            let data_future = file_term.get_data_task(dyn_client.clone(), None, None).await.unwrap();
             let data = data_future.await.unwrap();
 
             // Verify the data size matches the byte range.
