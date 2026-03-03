@@ -13,6 +13,7 @@ mod error;
 pub mod exports;
 pub mod http_client;
 mod interface;
+pub mod multipart;
 pub mod progress_tracked_streams;
 pub mod remote_client;
 pub mod retry_wrapper;
