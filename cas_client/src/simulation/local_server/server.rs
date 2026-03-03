@@ -533,7 +533,10 @@ impl Drop for LocalTestServer {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use cas_types::FileRange;
+    use merklehash::MerkleHash;
 
     use super::super::super::ClientTestingUtils;
     use super::*;
@@ -865,6 +868,19 @@ mod tests {
         check_chunk_hashes_correctness(server).await;
     }
 
+    fn all_file_hashes(client: &LocalClient) -> HashSet<MerkleHash> {
+        client
+            .list_file_shard_entries()
+            .unwrap()
+            .into_iter()
+            .map(|(fh, _)| fh)
+            .collect()
+    }
+
+    async fn all_xorb_hashes(client: &LocalClient) -> HashSet<MerkleHash> {
+        client.list_xorbs().await.unwrap().into_iter().collect()
+    }
+
     /// Main test that runs all server checks with both in-memory and disk-backed storage.
     #[tokio::test]
     async fn test_local_server() {
@@ -883,5 +899,69 @@ mod tests {
             assert!(server.client().list_xorbs().await.unwrap().is_empty());
             run_all_server_checks(&server).await;
         }
+    }
+
+    /// Integration test: creates a LocalClient, wraps it in a LocalTestServer,
+    /// uploads via remote client, then uses the held LocalClient reference for
+    /// deletion controls.
+    #[tokio::test]
+    async fn test_deletion_lifecycle_via_server() {
+        let lc = LocalClient::temporary().await.unwrap();
+        let server = LocalTestServer::start_with_client(lc.clone()).await;
+
+        // Upload files via remote client (goes through HTTP server)
+        let file1 = server
+            .remote_client()
+            .upload_random_file(&[(10, (0, 3))], CHUNK_SIZE)
+            .await
+            .unwrap();
+        let file2 = server
+            .remote_client()
+            .upload_random_file(&[(20, (0, 2))], CHUNK_SIZE)
+            .await
+            .unwrap();
+
+        let all_files: HashSet<_> = [file1.file_hash, file2.file_hash].into();
+        let all_xorbs: HashSet<_> = [&file1, &file2]
+            .iter()
+            .flat_map(|f| f.terms.iter().map(|t| t.xorb_hash))
+            .collect();
+
+        // Verify everything is consistent
+        lc.verify_integrity().await.unwrap();
+
+        assert_eq!(all_file_hashes(&lc), all_files);
+        assert_eq!(all_xorb_hashes(&lc).await, all_xorbs);
+
+        // Verify files are retrievable
+        let data1 = server.client().get_file_data(&file1.file_hash, None).await.unwrap();
+        assert_eq!(data1, file1.data);
+
+        // Step 1: Delete file entries -- shards and xorbs remain
+        lc.delete_file_entry(&file1.file_hash).await.unwrap();
+
+        assert_eq!(all_file_hashes(&lc), HashSet::from([file2.file_hash]));
+
+        lc.delete_file_entry(&file2.file_hash).await.unwrap();
+        assert!(lc.list_file_shard_entries().unwrap().is_empty());
+        assert!(!lc.list_shard_entries().unwrap().is_empty());
+
+        assert_eq!(all_xorb_hashes(&lc).await, all_xorbs);
+
+        // Step 2: Delete shards -- xorbs remain
+        let shard_hashes = lc.list_shard_entries().unwrap();
+        for h in &shard_hashes {
+            lc.delete_shard_entry(h).unwrap();
+        }
+
+        assert!(lc.list_shard_entries().unwrap().is_empty());
+        assert_eq!(all_xorb_hashes(&lc).await, all_xorbs);
+
+        // Step 3: Delete xorbs -- everything gone
+        for h in &all_xorbs {
+            lc.delete_xorb(h).await;
+        }
+
+        assert!(lc.list_xorbs().await.unwrap().is_empty());
     }
 }
