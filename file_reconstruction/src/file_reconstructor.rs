@@ -1323,7 +1323,7 @@ mod tests {
             .unwrap();
 
         // Disable V2 so the remote client falls back to V1 + conversion.
-        server.disable_v2_reconstruction();
+        server.disable_v2_reconstruction(404);
 
         let config = test_config();
         let result = reconstruct_via_server(&server, file_contents.file_hash, None, &config)
@@ -1341,7 +1341,7 @@ mod tests {
             .await
             .unwrap();
 
-        server.disable_v2_reconstruction();
+        server.disable_v2_reconstruction(404);
 
         let file_len = file_contents.data.len() as u64;
         let range = FileRange::new(file_len / 4, file_len * 3 / 4);
@@ -1362,7 +1362,7 @@ mod tests {
             .await
             .unwrap();
 
-        server.disable_v2_reconstruction();
+        server.disable_v2_reconstruction(404);
 
         let config = test_config();
         let result = reconstruct_via_server(&server, file_contents.file_hash, None, &config)
@@ -1380,7 +1380,7 @@ mod tests {
             .await
             .unwrap();
 
-        server.disable_v2_reconstruction();
+        server.disable_v2_reconstruction(404);
 
         let config = test_config();
         let result = reconstruct_via_server(&server, file_contents.file_hash, None, &config)
@@ -1399,7 +1399,7 @@ mod tests {
             .await
             .unwrap();
 
-        server.disable_v2_reconstruction();
+        server.disable_v2_reconstruction(404);
 
         let config = test_config();
         let result = reconstruct_via_server(&server, file_contents.file_hash, None, &config)

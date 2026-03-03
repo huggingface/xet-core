@@ -228,7 +228,7 @@ impl HydrateDehydrateTest {
             },
             HydrationMode::ServerV1Fallback => {
                 self.ensure_server_created().await;
-                self.test_server.as_ref().unwrap().disable_v2_reconstruction();
+                self.test_server.as_ref().unwrap().disable_v2_reconstruction(404);
             },
             HydrationMode::ServerMaxRanges2 => {
                 self.ensure_server_created().await;
