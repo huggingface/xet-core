@@ -163,7 +163,7 @@ async fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<(
     for m in &metadata {
         println!(
             "  📄 {} -> {} ({} bytes)",
-            m.file_name.as_ref().unwrap_or(&"<unknown>".to_string()),
+            m.tracking_name.as_ref().unwrap_or(&"<unknown>".to_string()),
             m.hash,
             m.file_size
         );
@@ -175,7 +175,7 @@ async fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<(
             .iter()
             .map(|m| {
                 serde_json::json!({
-                    "file_name": m.file_name,
+                    "file_name": m.tracking_name,
                     "hash": m.hash.to_string(),
                     "file_size": m.file_size,
                 })
@@ -220,7 +220,7 @@ async fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: O
 
         let dest_path = output_dir.join(file_name);
 
-        let handle = download_group.download_file(XetFileInfo::new(hash, file_size), dest_path)?;
+        let handle = download_group.download_file_to_path(XetFileInfo::new(hash, file_size), dest_path)?;
         println!("  ⏬ Started download: {}", file_name);
         task_handles.push(handle);
     }
@@ -308,10 +308,11 @@ async fn round_trip(files: Vec<PathBuf>, output_dir: PathBuf) -> Result<()> {
 
     let mut download_handles: Vec<TaskHandle> = Vec::new();
     for m in &metadata {
-        let file_name = m.file_name.as_ref().unwrap();
+        let file_name = m.tracking_name.as_ref().unwrap();
         let dest_path = output_dir.join(file_name);
 
-        let handle = download_group.download_file(XetFileInfo::new(m.hash.to_string(), m.file_size), dest_path)?;
+        let handle =
+            download_group.download_file_to_path(XetFileInfo::new(m.hash.to_string(), m.file_size), dest_path)?;
         download_handles.push(handle);
     }
     println!("⏬ Started {} downloads", metadata.len());

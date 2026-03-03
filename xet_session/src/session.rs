@@ -209,32 +209,28 @@ mod tests {
         XetSession::new(None, None, None, None).expect("Failed to create session")
     }
 
-    #[test]
-    fn test_session_new_succeeds() {
-        let _session = make_session();
-    }
+    // ── Identity ─────────────────────────────────────────────────────────────
 
     #[test]
+    // A clone refers to the same inner Arc, so their session IDs must match.
     fn test_session_clone_shares_state() {
         let s1 = make_session();
         let s2 = s1.clone();
-        // Both refer to the same inner, so their session IDs must match.
         assert_eq!(s1.id, s2.id);
     }
 
     #[test]
-    fn test_check_alive_before_abort() {
-        let session = make_session();
-        assert!(session.check_alive().is_ok());
+    // Two independently created sessions have distinct IDs.
+    fn test_two_sessions_have_distinct_ids() {
+        let s1 = make_session();
+        let s2 = make_session();
+        assert_ne!(s1.id, s2.id);
     }
 
-    #[test]
-    fn test_abort_returns_ok() {
-        let session = make_session();
-        assert!(session.abort().is_ok());
-    }
+    // ── Abort behavior ───────────────────────────────────────────────────────
 
     #[test]
+    // After abort, check_alive returns Aborted.
     fn test_check_alive_after_abort() {
         let session = make_session();
         session.abort().unwrap();
@@ -243,6 +239,7 @@ mod tests {
     }
 
     #[test]
+    // new_upload_commit on an aborted session returns Aborted.
     fn test_new_upload_commit_after_abort_returns_aborted() {
         let session = make_session();
         session.abort().unwrap();
@@ -251,6 +248,7 @@ mod tests {
     }
 
     #[test]
+    // new_download_group on an aborted session returns Aborted.
     fn test_new_download_group_after_abort_returns_aborted() {
         let session = make_session();
         session.abort().unwrap();
@@ -259,25 +257,73 @@ mod tests {
     }
 
     #[test]
+    // Aborting a session clears all registered upload commits.
+    fn test_abort_clears_active_upload_commits() {
+        let session = make_session();
+        let _c1 = session.new_upload_commit().unwrap();
+        let _c2 = session.new_upload_commit().unwrap();
+        session.abort().unwrap();
+        assert_eq!(session.active_upload_commits.lock().unwrap().len(), 0);
+    }
+
+    #[test]
+    // Aborting a session clears all registered download groups.
+    fn test_abort_clears_active_download_groups() {
+        let session = make_session();
+        let _g1 = session.new_download_group().unwrap();
+        session.abort().unwrap();
+        assert_eq!(session.active_download_groups.lock().unwrap().len(), 0);
+    }
+
+    // ── Registration ─────────────────────────────────────────────────────────
+
+    #[test]
+    // A new upload commit is registered in the session's active set.
     fn test_new_upload_commit_registers_in_session() {
         let session = make_session();
-        let _commit = session.new_upload_commit().expect("Failed to create upload commit");
-        // Session tracked it — active_upload_commits should have 1 entry.
+        let _commit = session.new_upload_commit().unwrap();
         assert_eq!(session.active_upload_commits.lock().unwrap().len(), 1);
     }
 
     #[test]
+    // A new download group is registered in the session's active set.
     fn test_new_download_group_registers_in_session() {
         let session = make_session();
-        let _group = session.new_download_group().expect("Failed to create download group");
+        let _group = session.new_download_group().unwrap();
+        assert_eq!(session.active_download_groups.lock().unwrap().len(), 1);
+    }
+
+    // ── Deregistration ───────────────────────────────────────────────────────
+
+    #[test]
+    // finish_upload_commit removes only the specified commit, leaving others intact.
+    fn test_finish_upload_commit_removes_only_that_commit() {
+        let session = make_session();
+        let c1 = session.new_upload_commit().unwrap();
+        let _c2 = session.new_upload_commit().unwrap();
+        assert_eq!(session.active_upload_commits.lock().unwrap().len(), 2);
+        session.finish_upload_commit(c1.id()).unwrap();
+        assert_eq!(session.active_upload_commits.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    // finish_download_group removes only the specified group, leaving others intact.
+    fn test_finish_download_group_removes_only_that_group() {
+        let session = make_session();
+        let g1 = session.new_download_group().unwrap();
+        let _g2 = session.new_download_group().unwrap();
+        assert_eq!(session.active_download_groups.lock().unwrap().len(), 2);
+        session.finish_download_group(g1.id()).unwrap();
         assert_eq!(session.active_download_groups.lock().unwrap().len(), 1);
     }
 
     #[test]
-    fn test_multiple_commits_registered() {
+    // finish_upload_commit on an unknown ID is a no-op (no error, no change).
+    fn test_finish_upload_commit_with_unknown_id_is_noop() {
         let session = make_session();
         let _c1 = session.new_upload_commit().unwrap();
-        let _c2 = session.new_upload_commit().unwrap();
-        assert_eq!(session.active_upload_commits.lock().unwrap().len(), 2);
+        let unknown_id = ulid::Ulid::new();
+        assert!(session.finish_upload_commit(unknown_id).is_ok());
+        assert_eq!(session.active_upload_commits.lock().unwrap().len(), 1);
     }
 }

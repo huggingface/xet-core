@@ -255,7 +255,7 @@ impl FileUploadSession {
     /// avoid redundant computation.
     pub async fn start_clean(
         self: &Arc<Self>,
-        file_name: Option<Arc<str>>,
+        tracking_name: Option<Arc<str>>,
         size: u64,
         sha256: Option<Sha256>,
         tracking_id: Ulid,
@@ -263,10 +263,10 @@ impl FileUploadSession {
         // Get a new file id for the completion tracking
         let file_id = self
             .completion_tracker
-            .register_new_file(tracking_id, file_name.clone().unwrap_or_default(), Some(size))
+            .register_new_file(tracking_id, tracking_name.clone().unwrap_or_default(), Some(size))
             .await;
 
-        SingleFileCleaner::new(file_name, file_id, sha256, self.clone())
+        SingleFileCleaner::new(tracking_name, file_id, sha256, self.clone())
     }
 
     /// Registers a new xorb for upload, returning true if the xorb was added to the upload queue and false

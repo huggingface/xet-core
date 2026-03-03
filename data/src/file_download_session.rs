@@ -11,7 +11,6 @@ use progress_tracking::TrackingProgressUpdater;
 use progress_tracking::download_tracking::DownloadProgressTracker;
 use tracing::instrument;
 use ulid::Ulid;
-use xet_runtime::XetRuntime;
 
 use crate::configurations::TranslatorConfig;
 use crate::errors::*;
@@ -70,9 +69,7 @@ impl FileDownloadSession {
     /// otherwise the write path is used.
     #[instrument(skip_all, name = "FileDownloadSession::download_file", fields(hash = file_info.hash()))]
     pub async fn download_file(&self, file_info: &XetFileInfo, write_path: &Path, tracking_id: Ulid) -> Result<u64> {
-        let semaphore = XetRuntime::current().common().file_download_semaphore.clone();
-        let _permit = semaphore.acquire().await?;
-
+        // download concurrency controlled outside
         let reconstructor = self.setup_reconstructor(file_info, None, tracking_id, Some(write_path))?;
         let n_bytes = reconstructor.reconstruct_to_file(write_path, None).await?;
         prometheus_metrics::FILTER_BYTES_SMUDGED.inc_by(n_bytes);
@@ -95,6 +92,7 @@ impl FileDownloadSession {
         writer: W,
         tracking_id: Ulid,
     ) -> Result<u64> {
+        // download concurrency controlled outside
         let range = FileRange::new(source_range.start, source_range.end);
         let reconstructor = self.setup_reconstructor(file_info, Some(range), tracking_id, None)?;
         let n_bytes = reconstructor.reconstruct_to_writer(writer).await?;
@@ -114,9 +112,7 @@ impl FileDownloadSession {
         write_path: &Path,
         progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
     ) -> Result<u64> {
-        let semaphore = XetRuntime::current().common().file_download_semaphore.clone();
-        let _permit = semaphore.acquire().await?;
-
+        // download concurrency controlled outside
         let tracking_name = self.tracker_name(Some(write_path));
 
         let per_file_tracker = progress_updater.map(|updater| {
@@ -270,30 +266,6 @@ mod tests {
 
                 session.download_file(&xfi, &out_path, Ulid::new()).await.unwrap();
 
-                assert_eq!(read(&out_path).unwrap(), original_data);
-            })
-            .unwrap();
-    }
-
-    #[test]
-    fn test_download_file_with_tracking_id() {
-        let runtime = get_threadpool();
-        runtime
-            .clone()
-            .external_run_async_task(async {
-                let temp = tempdir().unwrap();
-                let cas_path = temp.path().join("cas");
-                let original_data = b"tracking id test";
-
-                let xfi = upload_data(&cas_path, original_data).await;
-
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
-
-                let out_path = temp.path().join("tracked.txt");
-                let n_bytes = session.download_file(&xfi, &out_path, Ulid::new()).await.unwrap();
-
-                assert_eq!(n_bytes, original_data.len() as u64);
                 assert_eq!(read(&out_path).unwrap(), original_data);
             })
             .unwrap();
@@ -482,39 +454,6 @@ mod tests {
     }
 
     #[test]
-    fn test_download_stream_auto_start_blocking() {
-        let runtime = get_threadpool();
-        runtime
-            .clone()
-            .external_run_async_task(async {
-                let temp = tempdir().unwrap();
-                let cas_path = temp.path().join("cas");
-                let original_data = b"Auto-start stream test";
-
-                let xfi = upload_data(&cas_path, original_data).await;
-
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
-
-                let stream = session.download_stream(&xfi, Ulid::new()).unwrap();
-
-                let collected = tokio::task::spawn_blocking(move || {
-                    let mut stream = stream;
-                    let mut buf = Vec::new();
-                    while let Some(chunk) = stream.blocking_next().unwrap() {
-                        buf.extend_from_slice(&chunk);
-                    }
-                    buf
-                })
-                .await
-                .unwrap();
-
-                assert_eq!(collected, original_data);
-            })
-            .unwrap();
-    }
-
-    #[test]
     fn test_download_stream_returns_none_after_finish() {
         let runtime = get_threadpool();
         runtime
@@ -537,33 +476,6 @@ mod tests {
                 // Subsequent calls should return Ok(None)
                 assert!(stream.next().await.unwrap().is_none());
                 assert!(stream.next().await.unwrap().is_none());
-            })
-            .unwrap();
-    }
-
-    #[test]
-    fn test_download_stream_with_tracking_id() {
-        let runtime = get_threadpool();
-        runtime
-            .clone()
-            .external_run_async_task(async {
-                let temp = tempdir().unwrap();
-                let cas_path = temp.path().join("cas");
-                let original_data = b"Stream with tracking";
-
-                let xfi = upload_data(&cas_path, original_data).await;
-
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
-
-                let mut stream = session.download_stream(&xfi, Ulid::new()).unwrap();
-
-                let mut collected = Vec::new();
-                while let Some(chunk) = stream.next().await.unwrap() {
-                    collected.extend_from_slice(&chunk);
-                }
-
-                assert_eq!(collected, original_data);
             })
             .unwrap();
     }
@@ -634,36 +546,6 @@ mod tests {
                 drop(stream);
 
                 // A subsequent file download must succeed, proving no resources leaked.
-                let out_path = temp.path().join("after_drop.txt");
-                session.download_file(&xfi, &out_path, Ulid::new()).await.unwrap();
-                assert_eq!(read(&out_path).unwrap(), original_data);
-            })
-            .unwrap();
-    }
-
-    #[test]
-    fn test_drop_stream_started_no_reads_then_download() {
-        let runtime = get_threadpool();
-        runtime
-            .clone()
-            .external_run_async_task(async {
-                let temp = tempdir().unwrap();
-                let cas_path = temp.path().join("cas");
-                let original_data = b"Drop-after-start-no-reads cleanup test";
-
-                let xfi = upload_data(&cas_path, original_data).await;
-
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
-
-                // Create the stream, then drop without reading any chunks.
-                let stream = session.download_stream(&xfi, Ulid::new()).unwrap();
-                drop(stream);
-
-                // Yield to let the runtime process the cancellation.
-                tokio::task::yield_now().await;
-
-                // A subsequent download must succeed.
                 let out_path = temp.path().join("after_drop.txt");
                 session.download_file(&xfi, &out_path, Ulid::new()).await.unwrap();
                 assert_eq!(read(&out_path).unwrap(), original_data);

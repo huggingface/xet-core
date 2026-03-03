@@ -33,6 +33,11 @@ pub enum SessionError {
     #[error("Runtime error: {0}")]
     Runtime(#[from] xet_runtime::errors::MultithreadedRuntimeError),
 
+    /// A semaphore was closed before a permit could be acquired, typically
+    /// because the runtime is shutting down.
+    #[error("Semaphore closed: session is shutting down")]
+    SemaphoreClosed(#[from] tokio::sync::AcquireError),
+
     /// An error occurred in the underlying data-processing layer (chunking,
     /// deduplication, CAS communication, etc.).
     #[error("Data processing error: {0}")]

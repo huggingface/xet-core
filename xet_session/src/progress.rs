@@ -27,14 +27,18 @@ pub enum TaskStatus {
 
 #[derive(Debug)]
 pub struct TaskHandle {
-    pub(crate) status: Arc<Mutex<TaskStatus>>,
+    pub(crate) status: Option<Arc<Mutex<TaskStatus>>>,
     pub(crate) group_progress: Arc<GroupProgress>,
     pub(crate) tracking_id: Ulid,
 }
 
 impl TaskHandle {
     pub fn status(&self) -> Result<TaskStatus, SessionError> {
-        Ok(*self.status.lock()?)
+        if let Some(status) = &self.status {
+            Ok(*status.lock()?)
+        } else {
+            Err(SessionError::other("status not available"))
+        }
     }
 
     pub fn progress(&self) -> Result<FileProgress, SessionError> {
@@ -206,7 +210,103 @@ mod tests {
 
     use super::*;
 
+    // ── GroupProgress unit tests ─────────────────────────────────────────────
+
+    #[test]
+    // A freshly created GroupProgress has all-zero totals and no completion rates.
+    fn test_snapshot_empty_initially() {
+        let p = GroupProgress::new();
+        let snapshot = p.snapshot().unwrap();
+        let total = snapshot.total();
+        assert_eq!(total.total_bytes, 0);
+        assert_eq!(total.total_bytes_completed, 0);
+        assert_eq!(total.total_transfer_bytes, 0);
+        assert_eq!(total.total_transfer_bytes_completed, 0);
+        assert!(total.total_bytes_completion_rate.is_none());
+        assert!(total.total_transfer_bytes_completion_rate.is_none());
+    }
+
+    #[test]
+    // Looking up an unknown tracking ID in a snapshot returns InvalidTaskID.
+    fn test_snapshot_file_with_unknown_id_returns_error() {
+        let p = GroupProgress::new();
+        let snapshot = p.snapshot().unwrap();
+        let unknown_id = Ulid::new();
+        let result = snapshot.file(unknown_id);
+        assert!(matches!(result, Err(SessionError::InvalidTaskID(_))));
+    }
+
     #[tokio::test]
+    // Per-file bytes_completed uses max semantics: a stale/lower update does not reduce progress.
+    async fn test_register_updates_per_file_bytes_completed_never_decreases() {
+        let p = GroupProgress::new();
+        let tracking_id = Ulid::new();
+
+        p.register_updates(ProgressUpdate {
+            total_bytes: 100,
+            total_bytes_completed: 80,
+            item_updates: vec![ItemProgressUpdate {
+                tracking_id,
+                item_name: "file.bin".into(),
+                total_bytes: 100,
+                bytes_completed: 80,
+                bytes_completion_increment: 80,
+            }],
+            ..Default::default()
+        })
+        .await;
+
+        // Simulate a stale/out-of-order update carrying a smaller value.
+        p.register_updates(ProgressUpdate {
+            total_bytes: 100,
+            total_bytes_completed: 40,
+            item_updates: vec![ItemProgressUpdate {
+                tracking_id,
+                item_name: "file.bin".into(),
+                total_bytes: 100,
+                bytes_completed: 40, // lower than previously seen
+                bytes_completion_increment: 0,
+            }],
+            ..Default::default()
+        })
+        .await;
+
+        let snapshot = p.snapshot().unwrap();
+        let file = snapshot.file(tracking_id).unwrap();
+        // Max semantics: should still report 80, not the lower 40.
+        assert_eq!(file.bytes_completed, 80);
+    }
+
+    // ── TaskHandle unit tests ────────────────────────────────────────────────
+
+    #[test]
+    // A TaskHandle with no status Arc (streaming upload) returns an error from status().
+    fn test_task_handle_with_no_status_returns_error() {
+        let progress = Arc::new(GroupProgress::new());
+        let handle = TaskHandle {
+            status: None,
+            group_progress: progress,
+            tracking_id: Ulid::new(),
+        };
+        assert!(handle.status().is_err());
+    }
+
+    #[test]
+    // TaskHandle::progress() returns InvalidTaskID when the tracking_id has no registered progress.
+    fn test_task_handle_progress_for_unknown_id_returns_error() {
+        let progress = Arc::new(GroupProgress::new());
+        let handle = TaskHandle {
+            status: None,
+            group_progress: progress,
+            tracking_id: Ulid::new(), // not registered in GroupProgress
+        };
+        assert!(matches!(handle.progress(), Err(SessionError::InvalidTaskID(_))));
+    }
+
+    // ── Full register_updates test ───────────────────────────────────────────
+
+    #[tokio::test]
+    // A single register_updates call populates all aggregate fields and per-file entries correctly.
     async fn test_commit_progress_register_updates() {
         let p = GroupProgress::new();
 

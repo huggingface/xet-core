@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use data::{FileDownloadSession, XetFileInfo};
 use tokio::task::JoinHandle;
 use ulid::Ulid;
+use xet_runtime::XetRuntime;
 
 use crate::common::{GroupState, create_translator_config};
 use crate::errors::SessionError;
@@ -74,8 +75,7 @@ impl DownloadGroup {
 
     /// Abort this download group.
     pub(crate) fn abort(&self) -> Result<(), SessionError> {
-        *self.state.lock()? = GroupState::Aborted;
-        Ok(())
+        self.inner.abort()
     }
 
     // ===== Public synchronous methods =====
@@ -98,13 +98,13 @@ impl DownloadGroup {
     /// Returns [`SessionError::Aborted`] if the session has been aborted, or
     /// [`SessionError::AlreadyFinished`] if [`finish`](Self::finish) has already
     /// been called.
-    pub fn download_file(&self, file_info: XetFileInfo, dest_path: PathBuf) -> Result<TaskHandle, SessionError> {
+    pub fn download_file_to_path(
+        &self,
+        file_info: XetFileInfo,
+        dest_path: PathBuf,
+    ) -> Result<TaskHandle, SessionError> {
         self.session.check_alive()?;
         self.inner.start_download_file_to_path(file_info, dest_path)
-    }
-
-    pub fn download_stream(&self, _file_hash: String, _file_size: u64) -> Result<(), SessionError> {
-        todo!()
     }
 
     /// Returns `true` if [`finish`](Self::finish) has been called and completed.
@@ -145,6 +145,7 @@ impl DownloadGroup {
 
 /// Handle for a single download task tracked internally by DownloadGroup.
 pub(crate) struct InnerDownloadTaskHandle {
+    status: Arc<Mutex<TaskStatus>>,
     dest_path: PathBuf,
     join_handle: JoinHandle<Result<XetFileInfo, SessionError>>,
 }
@@ -190,7 +191,11 @@ impl DownloadGroupInner {
         status: Arc<Mutex<TaskStatus>>,
         tracking_id: Ulid,
     ) -> JoinHandle<Result<XetFileInfo, SessionError>> {
-        self.session.runtime.spawn(async move {
+        let semaphore = self.runtime().common().file_download_semaphore.clone();
+        self.runtime().spawn(async move {
+            // Update status from "Queued" to "Running" once a semaphore permit is acquired.
+            let _permit = semaphore.acquire().await?;
+
             *status.lock()? = TaskStatus::Running;
 
             let result: Result<_, SessionError> = download_session
@@ -223,7 +228,7 @@ impl DownloadGroupInner {
         let status = Arc::new(Mutex::new(TaskStatus::Queued));
 
         let task_handle = TaskHandle {
-            status: status.clone(),
+            status: Some(status.clone()),
             group_progress: self.progress.clone(),
             tracking_id,
         };
@@ -232,10 +237,19 @@ impl DownloadGroupInner {
             return Err(SessionError::other("Download session not initialized"));
         };
 
-        let join_handle =
-            self.spawn_download_task(download_session, file_info.clone(), dest_path.clone(), status, tracking_id);
+        let join_handle = self.spawn_download_task(
+            download_session,
+            file_info.clone(),
+            dest_path.clone(),
+            status.clone(),
+            tracking_id,
+        );
 
-        let handle = InnerDownloadTaskHandle { dest_path, join_handle };
+        let handle = InnerDownloadTaskHandle {
+            status,
+            dest_path,
+            join_handle,
+        };
 
         self.active_tasks.write()?.insert(tracking_id, handle);
 
@@ -243,7 +257,7 @@ impl DownloadGroupInner {
     }
 
     /// Handle a `Finish` command from the public API.
-    pub(crate) async fn handle_finish(self: &Arc<Self>) -> Result<Vec<DownloadResult>, SessionError> {
+    async fn handle_finish(self: &Arc<Self>) -> Result<Vec<DownloadResult>, SessionError> {
         // Mark as not accepting new tasks
         {
             let mut state_guard = self.state.lock()?;
@@ -276,6 +290,21 @@ impl DownloadGroupInner {
         self.session.finish_download_group(self.group_id)?;
 
         Ok(results)
+    }
+
+    fn runtime(&self) -> &XetRuntime {
+        &self.session.runtime
+    }
+
+    fn abort(&self) -> Result<(), SessionError> {
+        *self.state.lock()? = GroupState::Aborted;
+        let mut active_tasks = self.active_tasks.write()?;
+        for (_tracking_id, inner_task_handle) in active_tasks.drain() {
+            inner_task_handle.join_handle.abort();
+            *inner_task_handle.status.lock()? = TaskStatus::Cancelled;
+        }
+
+        Ok(())
     }
 }
 
@@ -314,15 +343,10 @@ mod tests {
     use super::*;
     use crate::session::XetSession;
 
-    #[test]
-    fn test_group_not_finished_initially() -> Result<(), Box<dyn std::error::Error>> {
-        let session = XetSession::new(None, None, None, None)?;
-        let group = session.new_download_group()?;
-        assert!(!group.is_finished());
-        Ok(())
-    }
+    // ── Identity ─────────────────────────────────────────────────────────────
 
     #[test]
+    // Two download groups created from the same session have distinct IDs.
     fn test_group_has_unique_id() -> Result<(), Box<dyn std::error::Error>> {
         let session = XetSession::new(None, None, None, None)?;
         let g1 = session.new_download_group()?;
@@ -331,22 +355,76 @@ mod tests {
         Ok(())
     }
 
+    // ── Initial state ────────────────────────────────────────────────────────
+
     #[test]
-    fn test_group_clone_shares_id() -> Result<(), Box<dyn std::error::Error>> {
+    // A fresh group has all-zero aggregate progress.
+    fn test_get_progress_empty_initially() -> Result<(), Box<dyn std::error::Error>> {
         let session = XetSession::new(None, None, None, None)?;
         let group = session.new_download_group()?;
-        let group2 = group.clone();
-        assert_eq!(group.id(), group2.id());
+        let snapshot = group.get_progress()?;
+        let total = snapshot.total();
+        assert_eq!(total.total_bytes, 0);
+        assert_eq!(total.total_bytes_completed, 0);
+        Ok(())
+    }
+
+    // ── Finish lifecycle ─────────────────────────────────────────────────────
+
+    #[test]
+    // An empty finish succeeds and returns an empty result set.
+    fn test_finish_empty_succeeds() -> Result<(), Box<dyn std::error::Error>> {
+        let session = XetSession::new(None, None, None, None)?;
+        let group = session.new_download_group()?;
+        let results = group.finish()?;
+        assert!(results.is_empty());
         Ok(())
     }
 
     #[test]
+    // finish() transitions the group into the Finished state.
+    fn test_finish_marks_as_finished() -> Result<(), Box<dyn std::error::Error>> {
+        let session = XetSession::new(None, None, None, None)?;
+        let group = session.new_download_group()?;
+        let group_clone = group.clone();
+        group.finish().unwrap();
+        assert!(group_clone.is_finished());
+        Ok(())
+    }
+
+    #[test]
+    // A second finish() call on any clone returns AlreadyFinished.
+    fn test_second_finish_fails() -> Result<(), Box<dyn std::error::Error>> {
+        let session = XetSession::new(None, None, None, None)?;
+        let g1 = session.new_download_group()?;
+        let g2 = g1.clone();
+        g1.finish()?;
+        let err = g2.finish().unwrap_err();
+        assert!(matches!(err, SessionError::AlreadyFinished | SessionError::Other(_)));
+        Ok(())
+    }
+
+    #[test]
+    // finish() unregisters the group from the session's active set.
+    fn test_finish_unregisters_from_session() -> Result<(), Box<dyn std::error::Error>> {
+        let session = XetSession::new(None, None, None, None)?;
+        let group = session.new_download_group()?;
+        assert_eq!(session.active_download_groups.lock().unwrap().len(), 1);
+        group.finish().unwrap();
+        assert_eq!(session.active_download_groups.lock().unwrap().len(), 0);
+        Ok(())
+    }
+
+    // ── Guards ───────────────────────────────────────────────────────────────
+
+    #[test]
+    // download_file_to_path returns Aborted when the parent session has been aborted.
     fn test_download_file_on_aborted_session_returns_error() -> Result<(), Box<dyn std::error::Error>> {
         let session = XetSession::new(None, None, None, None)?;
         let group = session.new_download_group()?;
         session.abort().unwrap();
         let err = group
-            .download_file(
+            .download_file_to_path(
                 XetFileInfo {
                     hash: "abc123".to_string(),
                     file_size: 1024,
@@ -359,53 +437,54 @@ mod tests {
     }
 
     #[test]
-    fn test_get_progress_empty_initially() -> Result<(), Box<dyn std::error::Error>> {
-        let session = XetSession::new(None, None, None, None)?;
-        let group = session.new_download_group()?;
-        let snapshot = group.get_progress()?;
-        let total = snapshot.total();
-        assert_eq!(total.total_bytes, 0);
-        assert_eq!(total.total_bytes_completed, 0);
-        Ok(())
-    }
-
-    #[test]
-    fn test_finish_empty_succeeds() -> Result<(), Box<dyn std::error::Error>> {
-        let session = XetSession::new(None, None, None, None)?;
-        let group = session.new_download_group()?;
-        let results = group.finish()?;
-        assert!(results.is_empty());
-        Ok(())
-    }
-
-    #[test]
-    fn test_finish_marks_as_finished() -> Result<(), Box<dyn std::error::Error>> {
-        let session = XetSession::new(None, None, None, None)?;
-        let group = session.new_download_group()?;
-        let group_clone = group.clone();
-        group.finish().unwrap();
-        assert!(group_clone.is_finished());
-        Ok(())
-    }
-
-    #[test]
-    fn test_second_finish_fails() -> Result<(), Box<dyn std::error::Error>> {
+    // download_file_to_path after finish returns AlreadyFinished.
+    fn test_download_file_after_finish_fails() -> Result<(), Box<dyn std::error::Error>> {
         let session = XetSession::new(None, None, None, None)?;
         let g1 = session.new_download_group()?;
         let g2 = g1.clone();
         g1.finish()?;
-        let err = g2.finish().unwrap_err();
-        assert!(matches!(err, SessionError::AlreadyFinished | SessionError::Other(_)));
+        let err = g2
+            .download_file_to_path(
+                XetFileInfo {
+                    hash: "abc123".to_string(),
+                    file_size: 1024,
+                },
+                PathBuf::from("dest.bin"),
+            )
+            .unwrap_err();
+        assert!(matches!(err, SessionError::AlreadyFinished));
         Ok(())
     }
 
     #[test]
-    fn test_finish_unregisters_from_session() -> Result<(), Box<dyn std::error::Error>> {
+    // download_file_to_path on a directly-aborted group returns Aborted (not AlreadyFinished).
+    fn test_download_file_on_aborted_group_returns_aborted() -> Result<(), Box<dyn std::error::Error>> {
         let session = XetSession::new(None, None, None, None)?;
         let group = session.new_download_group()?;
-        assert_eq!(session.active_download_groups.lock().unwrap().len(), 1);
-        group.finish().unwrap();
-        assert_eq!(session.active_download_groups.lock().unwrap().len(), 0);
+        group.abort()?;
+        let err = group
+            .download_file_to_path(
+                XetFileInfo {
+                    hash: "abc123".to_string(),
+                    file_size: 1024,
+                },
+                PathBuf::from("dest.bin"),
+            )
+            .unwrap_err();
+        assert!(matches!(err, SessionError::Aborted));
+        Ok(())
+    }
+
+    // ── Independence ─────────────────────────────────────────────────────────
+
+    #[test]
+    // Finishing one group does not affect the state of another from the same session.
+    fn test_two_groups_are_independent() -> Result<(), Box<dyn std::error::Error>> {
+        let session = XetSession::new(None, None, None, None)?;
+        let g1 = session.new_download_group()?;
+        let g2 = session.new_download_group()?;
+        g1.finish()?;
+        assert!(!g2.is_finished());
         Ok(())
     }
 }

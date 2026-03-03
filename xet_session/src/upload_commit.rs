@@ -4,9 +4,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
+use data::data_client::{clean_bytes, clean_file};
 use data::{FileUploadSession, SingleFileCleaner, XetFileInfo};
 use tokio::task::JoinHandle;
 use ulid::Ulid;
+use xet_runtime::XetRuntime;
 
 use crate::common::{GroupState, create_translator_config};
 use crate::errors::SessionError;
@@ -75,8 +77,7 @@ impl UploadCommit {
 
     /// Abort this upload commit.
     pub(crate) fn abort(&self) -> Result<(), SessionError> {
-        *self.state.lock()? = GroupState::Aborted;
-        Ok(())
+        self.inner.abort()
     }
 
     // ===== Public synchronous methods =====
@@ -93,7 +94,10 @@ impl UploadCommit {
     /// already been called.
     pub fn upload_from_path(&self, file_path: PathBuf) -> Result<TaskHandle, SessionError> {
         self.session.check_alive()?;
-        self.inner.start_upload_file_from_path(file_path)
+        // Use the absolute path in case the process current working directory changes
+        // while the task is queued.
+        let absolute_path = std::path::absolute(file_path)?;
+        self.inner.start_upload_file_from_path(absolute_path)
     }
 
     /// Begin an incremental file upload, returning a [`SingleFileCleaner`] that the
@@ -141,12 +145,12 @@ impl UploadCommit {
     /// Queue raw bytes for upload, starting the transfer immediately.
     ///
     /// Returns the task ID. See [`upload_file`](Self::upload_file) for details.
-    pub fn upload_bytes(&self, bytes: Vec<u8>) -> Result<TaskHandle, SessionError> {
+    pub fn upload_bytes(&self, bytes: Vec<u8>, tracking_name: Option<String>) -> Result<TaskHandle, SessionError> {
         self.session.check_alive()?;
         let inner = self.inner.clone();
         self.session
             .runtime
-            .external_run_async_task(async move { inner.start_upload_bytes(bytes).await })?
+            .external_run_async_task(async move { inner.start_upload_bytes(bytes, tracking_name).await })?
     }
 
     /// Returns `true` if [`commit`](Self::commit) has been called and completed.
@@ -181,7 +185,8 @@ impl UploadCommit {
 
 /// Handle for a single upload task tracked internally by UploadCommit.
 pub(crate) struct InnerUploadTaskHandle {
-    file_name: Option<String>,
+    status: Arc<Mutex<TaskStatus>>,
+    tracking_name: Option<String>,
     join_handle: JoinHandle<Result<XetFileInfo, SessionError>>,
 }
 
@@ -217,24 +222,56 @@ impl UploadCommitInner {
         }
     }
 
-    /// Spawn a runtime task that performs the actual file upload.
-    fn spawn_upload_task(
+    /// Spawn a runtime task that performs the actual file upload from path
+    fn spawn_upload_from_path_task(
         &self,
         upload_session: Arc<FileUploadSession>,
         file_path: PathBuf,
         status: Arc<Mutex<TaskStatus>>,
         tracking_id: Ulid,
     ) -> JoinHandle<Result<XetFileInfo, SessionError>> {
-        self.session.runtime.spawn(async move {
+        let semaphore = self.runtime().common().file_ingestion_semaphore.clone();
+        self.runtime().spawn(async move {
+            // Update status from "Queued" to "Running" once a semaphore permit is acquired.
+            let _permit = semaphore.acquire().await?;
+
             *status.lock()? = TaskStatus::Running;
 
-            let files = vec![(file_path.as_path(), None, tracking_id)];
-
-            let result: Result<XetFileInfo, SessionError> = upload_session
-                .upload_files(files)
+            let result = clean_file(upload_session, &file_path, "", Some(tracking_id))
                 .await
                 .map_err(SessionError::from)
-                .and_then(|mut results| results.pop().ok_or_else(|| SessionError::other("No upload result")));
+                .map(|(file_info, _metrics)| file_info);
+
+            let new_status = if result.is_ok() {
+                TaskStatus::Completed
+            } else {
+                TaskStatus::Failed
+            };
+            *status.lock()? = new_status;
+
+            result
+        })
+    }
+
+    /// Spawn a runtime task that performs the actual bytes upload
+    fn spawn_upload_bytes_task(
+        &self,
+        upload_session: Arc<FileUploadSession>,
+        bytes: Vec<u8>,
+        status: Arc<Mutex<TaskStatus>>,
+        tracking_id: Ulid,
+    ) -> JoinHandle<Result<XetFileInfo, SessionError>> {
+        let semaphore = self.runtime().common().file_ingestion_semaphore.clone();
+        self.runtime().spawn(async move {
+            // Update status from "Queued" to "Running" once a semaphore permit is acquired.
+            let _permit = semaphore.acquire().await?;
+
+            *status.lock()? = TaskStatus::Running;
+
+            let result = clean_bytes(upload_session, bytes, Some(tracking_id))
+                .await
+                .map_err(SessionError::from)
+                .map(|(file_info, _metrics)| file_info);
 
             let new_status = if result.is_ok() {
                 TaskStatus::Completed
@@ -253,7 +290,7 @@ impl UploadCommitInner {
         let tracking_id = Ulid::new();
         let status = Arc::new(Mutex::new(TaskStatus::Queued));
         let task_handle = TaskHandle {
-            status: status.clone(),
+            status: Some(status.clone()),
             group_progress: self.progress.clone(),
             tracking_id,
         };
@@ -262,10 +299,12 @@ impl UploadCommitInner {
             return Err(SessionError::other("Upload session not initialized"));
         };
 
-        let join_handle = self.spawn_upload_task(upload_session, file_path.clone(), status.clone(), tracking_id);
+        let join_handle =
+            self.spawn_upload_from_path_task(upload_session, file_path.clone(), status.clone(), tracking_id);
 
         let handle = InnerUploadTaskHandle {
-            file_name: file_path.file_name().and_then(|n| n.to_str()).map(|s| s.to_string()),
+            status,
+            tracking_name: file_path.to_str().map(|s| s.to_owned()),
             join_handle,
         };
 
@@ -278,15 +317,14 @@ impl UploadCommitInner {
     /// [`SingleFileCleaner`] that the caller drives incrementally.
     async fn start_upload_file(
         &self,
-        file_name: Option<String>,
+        tracking_name: Option<String>,
         file_size: u64,
     ) -> Result<(TaskHandle, SingleFileCleaner), SessionError> {
         self.check_accepting_tasks()?;
 
         let tracking_id = Ulid::new();
-        let status = Arc::new(Mutex::new(TaskStatus::Queued));
         let task_handle = TaskHandle {
-            status,
+            status: None, // upload directly managed by user - not internally managed
             group_progress: self.progress.clone(),
             tracking_id,
         };
@@ -295,16 +333,43 @@ impl UploadCommitInner {
             return Err(SessionError::other("Upload session not initialized"));
         };
 
-        let file_name_arc: Option<std::sync::Arc<str>> = file_name.as_deref().map(std::sync::Arc::from);
-        let cleaner = upload_session.start_clean(file_name_arc, file_size, None, tracking_id).await;
+        let tracking_name: Option<Arc<str>> = tracking_name.as_deref().map(Arc::from);
+        let cleaner = upload_session.start_clean(tracking_name, file_size, None, tracking_id).await;
 
         Ok((task_handle, cleaner))
     }
 
     /// Handle an `UploadBytes` command from the public API.
-    async fn start_upload_bytes(&self, _bytes: Vec<u8>) -> Result<TaskHandle, SessionError> {
-        // TODO: Implement upload_bytes
-        Err(SessionError::other("upload_bytes not yet implemented"))
+    async fn start_upload_bytes(
+        &self,
+        bytes: Vec<u8>,
+        tracking_name: Option<String>,
+    ) -> Result<TaskHandle, SessionError> {
+        self.check_accepting_tasks()?;
+
+        let tracking_id = Ulid::new();
+        let status = Arc::new(Mutex::new(TaskStatus::Queued));
+        let task_handle = TaskHandle {
+            status: Some(status.clone()),
+            group_progress: self.progress.clone(),
+            tracking_id,
+        };
+
+        let Some(upload_session) = self.upload_session.lock()?.clone() else {
+            return Err(SessionError::other("Upload session not initialized"));
+        };
+
+        let join_handle = self.spawn_upload_bytes_task(upload_session, bytes, status.clone(), tracking_id);
+
+        let handle = InnerUploadTaskHandle {
+            status,
+            tracking_name,
+            join_handle,
+        };
+
+        self.active_tasks.write()?.insert(tracking_id, handle);
+
+        Ok(task_handle)
     }
 
     /// Handle a `Commit` command from the public API.
@@ -329,7 +394,7 @@ impl UploadCommitInner {
             let file_info = handle.join_handle.await.map_err(SessionError::TaskJoinError)??;
 
             results.push(FileMetadata {
-                file_name: handle.file_name,
+                tracking_name: handle.tracking_name,
                 hash: file_info.hash().to_string(),
                 file_size: file_info.file_size(),
             });
@@ -349,13 +414,29 @@ impl UploadCommitInner {
 
         Ok(results)
     }
+
+    fn runtime(&self) -> &XetRuntime {
+        &self.session.runtime
+    }
+
+    /// Cancle all tasks and set task status to "Cancelled"
+    fn abort(&self) -> Result<(), SessionError> {
+        *self.state.lock()? = GroupState::Aborted;
+        let mut active_tasks = self.active_tasks.write()?;
+        for (_tracking_id, inner_task_handle) in active_tasks.drain() {
+            inner_task_handle.join_handle.abort();
+            *inner_task_handle.status.lock()? = TaskStatus::Cancelled;
+        }
+
+        Ok(())
+    }
 }
 
 /// Per-file metadata returned by [`UploadCommit::commit`].
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct FileMetadata {
-    /// Original file name, if known.
-    pub file_name: Option<String>,
+    /// Original file name or designated tracking name
+    pub tracking_name: Option<String>,
     /// File Xet hash.
     pub hash: String,
     /// File size in bytes.
@@ -367,15 +448,10 @@ mod tests {
     use super::*;
     use crate::session::XetSession;
 
-    #[test]
-    fn test_commit_not_committed_initially() -> Result<(), Box<dyn std::error::Error>> {
-        let session = XetSession::new(None, None, None, None)?;
-        let commit = session.new_upload_commit()?;
-        assert!(!commit.is_committed());
-        Ok(())
-    }
+    // ── Identity ─────────────────────────────────────────────────────────────
 
     #[test]
+    // Two separate commits from the same session have distinct IDs.
     fn test_commit_has_unique_id() -> Result<(), Box<dyn std::error::Error>> {
         let session = XetSession::new(None, None, None, None)?;
         let c1 = session.new_upload_commit()?;
@@ -385,6 +461,7 @@ mod tests {
     }
 
     #[test]
+    // A clone refers to the same inner Arc, so their IDs must match.
     fn test_commit_clone_shares_id() -> Result<(), Box<dyn std::error::Error>> {
         let session = XetSession::new(None, None, None, None)?;
         let commit = session.new_upload_commit()?;
@@ -393,27 +470,10 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_upload_file_on_aborted_session_returns_error() -> Result<(), Box<dyn std::error::Error>> {
-        let session = XetSession::new(None, None, None, None)?;
-        let commit = session.new_upload_commit()?;
-        session.abort().unwrap();
-        let err = commit.upload_from_path(PathBuf::from("nonexistent.bin")).unwrap_err();
-        assert!(matches!(err, SessionError::Aborted));
-        Ok(())
-    }
+    // ── Initial state ────────────────────────────────────────────────────────
 
     #[test]
-    fn test_upload_bytes_on_aborted_session_returns_error() -> Result<(), Box<dyn std::error::Error>> {
-        let session = XetSession::new(None, None, None, None)?;
-        let commit = session.new_upload_commit()?;
-        session.abort().unwrap();
-        let err = commit.upload_bytes(b"data".to_vec()).unwrap_err();
-        assert!(matches!(err, SessionError::Aborted));
-        Ok(())
-    }
-
-    #[test]
+    // A fresh commit has all-zero aggregate progress.
     fn test_get_progress_empty_initially() -> Result<(), Box<dyn std::error::Error>> {
         let session = XetSession::new(None, None, None, None)?;
         let commit = session.new_upload_commit()?;
@@ -424,7 +484,10 @@ mod tests {
         Ok(())
     }
 
+    // ── Commit lifecycle ─────────────────────────────────────────────────────
+
     #[test]
+    // An empty commit succeeds and returns an empty result set.
     fn test_commit_empty_succeeds() -> Result<(), Box<dyn std::error::Error>> {
         let session = XetSession::new(None, None, None, None)?;
         let results = session.new_upload_commit()?.commit()?;
@@ -433,6 +496,7 @@ mod tests {
     }
 
     #[test]
+    // commit() transitions the commit into the Finished state.
     fn test_commit_marks_as_committed() -> Result<(), Box<dyn std::error::Error>> {
         let session = XetSession::new(None, None, None, None)?;
         let commit = session.new_upload_commit()?;
@@ -443,6 +507,7 @@ mod tests {
     }
 
     #[test]
+    // A second commit() call on any clone returns AlreadyCommitted.
     fn test_second_commit_fails() -> Result<(), Box<dyn std::error::Error>> {
         let session = XetSession::new(None, None, None, None)?;
         let c1 = session.new_upload_commit()?;
@@ -454,12 +519,98 @@ mod tests {
     }
 
     #[test]
+    // commit() unregisters the commit from the session's active set.
     fn test_commit_unregisters_from_session() -> Result<(), Box<dyn std::error::Error>> {
         let session = XetSession::new(None, None, None, None)?;
         let commit = session.new_upload_commit()?;
         assert_eq!(session.active_upload_commits.lock().unwrap().len(), 1);
         commit.commit().unwrap();
         assert_eq!(session.active_upload_commits.lock().unwrap().len(), 0);
+        Ok(())
+    }
+
+    // ── Session-abort guards ─────────────────────────────────────────────────
+
+    #[test]
+    // upload_from_path returns Aborted when the parent session has been aborted.
+    fn test_upload_file_on_aborted_session_returns_error() -> Result<(), Box<dyn std::error::Error>> {
+        let session = XetSession::new(None, None, None, None)?;
+        let commit = session.new_upload_commit()?;
+        session.abort().unwrap();
+        let err = commit.upload_from_path(PathBuf::from("nonexistent.bin")).unwrap_err();
+        assert!(matches!(err, SessionError::Aborted));
+        Ok(())
+    }
+
+    #[test]
+    // upload_bytes returns Aborted when the parent session has been aborted.
+    fn test_upload_bytes_on_aborted_session_returns_error() -> Result<(), Box<dyn std::error::Error>> {
+        let session = XetSession::new(None, None, None, None)?;
+        let commit = session.new_upload_commit()?;
+        session.abort().unwrap();
+        let err = commit.upload_bytes(b"data".to_vec(), Some("bytes 1".into())).unwrap_err();
+        assert!(matches!(err, SessionError::Aborted));
+        Ok(())
+    }
+
+    // ── Post-commit guards (AlreadyCommitted) ────────────────────────────────
+
+    #[test]
+    // upload_from_path after commit returns AlreadyCommitted (synchronous path).
+    fn test_upload_from_path_after_commit_fails() -> Result<(), Box<dyn std::error::Error>> {
+        let session = XetSession::new(None, None, None, None)?;
+        let c1 = session.new_upload_commit()?;
+        let c2 = c1.clone();
+        c1.commit()?;
+        let err = c2.upload_from_path(PathBuf::from("any.bin")).unwrap_err();
+        assert!(matches!(err, SessionError::AlreadyCommitted));
+        Ok(())
+    }
+
+    #[test]
+    // upload_bytes after commit returns AlreadyCommitted (via external_run_async_task).
+    fn test_upload_bytes_after_commit_fails() -> Result<(), Box<dyn std::error::Error>> {
+        let session = XetSession::new(None, None, None, None)?;
+        let c1 = session.new_upload_commit()?;
+        let c2 = c1.clone();
+        c1.commit()?;
+        let err = c2.upload_bytes(b"hello".to_vec(), None).unwrap_err();
+        assert!(matches!(err, SessionError::AlreadyCommitted));
+        Ok(())
+    }
+
+    // ── API coverage & abort ─────────────────────────────────────────────────
+
+    #[test]
+    // upload_file returns a (TaskHandle, SingleFileCleaner) pair; the handle has no internal status.
+    fn test_upload_file_returns_handle_and_cleaner() -> Result<(), Box<dyn std::error::Error>> {
+        let session = XetSession::new(None, None, None, None)?;
+        let commit = session.new_upload_commit()?;
+        let (handle, _cleaner) = commit.upload_file(Some("stream.bin".into()), 1024)?;
+        // Streaming uploads have no internally-managed status; status() returns an error.
+        assert!(handle.status().is_err());
+        Ok(())
+    }
+
+    #[test]
+    // abort() drains active_tasks and sets each task's status to Cancelled.
+    fn test_abort_marks_queued_task_as_cancelled() -> Result<(), Box<dyn std::error::Error>> {
+        let session = XetSession::new(None, None, None, None)?;
+        let commit = session.new_upload_commit()?;
+        let handle = commit.upload_bytes(b"data".to_vec(), None)?;
+        commit.abort()?;
+        assert!(matches!(handle.status()?, TaskStatus::Cancelled));
+        Ok(())
+    }
+
+    #[test]
+    // Committing one commit does not affect the state of another from the same session.
+    fn test_two_commits_are_independent() -> Result<(), Box<dyn std::error::Error>> {
+        let session = XetSession::new(None, None, None, None)?;
+        let c1 = session.new_upload_commit()?;
+        let c2 = session.new_upload_commit()?;
+        c1.commit()?;
+        assert!(!c2.is_committed());
         Ok(())
     }
 }
