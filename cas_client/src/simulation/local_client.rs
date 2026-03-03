@@ -13,8 +13,7 @@ use bytes::Bytes;
 use cas_object::{CasObject, SerializedCasObject};
 use cas_types::{
     BatchQueryReconstructionResponse, CASReconstructionFetchInfo, FileRange, HexMerkleHash, HttpRange,
-    QueryReconstructionResponse, QueryReconstructionResponseV2, XorbMultiRangeFetch,
-    XorbRangeDescriptor,
+    QueryReconstructionResponse, QueryReconstructionResponseV2, XorbMultiRangeFetch, XorbRangeDescriptor,
 };
 use file_utils::SafeFileCreator;
 use heed::types::*;

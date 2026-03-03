@@ -9,8 +9,7 @@ use bytes::Bytes;
 use cas_object::{CasObject, SerializedCasObject};
 use cas_types::{
     BatchQueryReconstructionResponse, CASReconstructionFetchInfo, FileRange, HexMerkleHash, HttpRange,
-    QueryReconstructionResponse, QueryReconstructionResponseV2, XorbMultiRangeFetch,
-    XorbRangeDescriptor,
+    QueryReconstructionResponse, QueryReconstructionResponseV2, XorbMultiRangeFetch, XorbRangeDescriptor,
 };
 use mdb_shard::cas_structs::MDBCASInfo;
 use mdb_shard::file_structs::MDBFileInfo;
