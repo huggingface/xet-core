@@ -4,7 +4,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cas_client::{CasClientError, Client};
 use cas_object::SerializedCasObject;
-use tokio::sync::Semaphore;
 use tokio_with_wasm::alias as wasmtokio;
 
 use crate::errors::*;
@@ -17,11 +16,13 @@ pub trait XorbUploader {
     async fn finalize(&mut self) -> Result<()>;
 }
 
+#[allow(dead_code)]
 pub struct XorbUploaderLocalSequential {
     client: Arc<dyn Client + Send + Sync>,
     cas_prefix: String,
 }
 
+#[allow(dead_code)]
 impl XorbUploaderLocalSequential {
     pub fn new(client: Arc<dyn Client + Send + Sync>, cas_prefix: &str, _upload_concurrency: usize) -> Self {
         Self {
@@ -48,16 +49,14 @@ impl XorbUploader for XorbUploaderLocalSequential {
 pub struct XorbUploaderSpawnParallel {
     client: Arc<dyn Client + Send + Sync>,
     cas_prefix: String,
-    semaphore: Arc<Semaphore>,
     tasks: wasmtokio::task::JoinSet<stdResult<u64, CasClientError>>,
 }
 
 impl XorbUploaderSpawnParallel {
-    pub fn new(client: Arc<dyn Client + Send + Sync>, cas_prefix: &str, upload_concurrency: usize) -> Self {
+    pub fn new(client: Arc<dyn Client + Send + Sync>, cas_prefix: &str, _upload_concurrency: usize) -> Self {
         Self {
             client,
             cas_prefix: cas_prefix.to_owned(),
-            semaphore: Arc::new(Semaphore::new(upload_concurrency)),
             tasks: wasmtokio::task::JoinSet::new(),
         }
     }
@@ -77,8 +76,7 @@ impl XorbUploader for XorbUploaderSpawnParallel {
 
         self.tasks.spawn(async move {
             let _timer = ConsoleTimer::new(format!("upload xorb {}", input.hash));
-            let ret = client.upload_xorb(&cas_prefix, input, None, upload_permit).await;
-            ret
+            client.upload_xorb(&cas_prefix, input, None, upload_permit).await
         });
 
         Ok(())

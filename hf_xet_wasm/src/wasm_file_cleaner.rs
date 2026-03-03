@@ -12,6 +12,13 @@ use super::wasm_file_upload_session::FileUploadSession;
 use crate::sha256::ShaGeneration;
 use crate::wasm_timer::ConsoleTimer;
 
+type WorkerThreadTask = (
+    wasmtokio::task::JoinHandle<Result<MerkleHash>>,
+    mpsc::UnboundedSender<Vec<u8>>,
+    mpsc::UnboundedReceiver<Vec<Chunk>>,
+    u64,
+);
+
 // CPUTask represents a large CPU intensive task that we want to decide if it should run on its own thread
 // With the only currently supported variant CurrentThread, on the current thread we update the internal state
 // (chunker and hasher) on the current thread.
@@ -22,13 +29,7 @@ enum CPUTask {
     CurrentThread((Chunker, ShaGeneration)),
     WorkerThread(
         // WorkerThread tasks not yet supported; removing lint warning on scaffolding.
-        #[allow(dead_code)]
-        (
-            wasmtokio::task::JoinHandle<Result<MerkleHash>>,
-            mpsc::UnboundedSender<Vec<u8>>,
-            mpsc::UnboundedReceiver<Vec<Chunk>>,
-            u64,
-        ),
+        #[allow(dead_code)] WorkerThreadTask,
     ),
 }
 
@@ -197,7 +198,7 @@ impl SingleFileCleaner {
     ) -> Result<(Option<Chunk>, MerkleHash)> {
         // Chunk the rest of the data.
         if let Some(chunk) = chunker.finish() {
-            sha_generation.update(&[chunk.clone()]);
+            sha_generation.update(std::slice::from_ref(&chunk));
 
             // Finalize the sha256 hashing
             let sha256: MerkleHash = sha_generation.finalize()?;

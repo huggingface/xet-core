@@ -20,21 +20,31 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_RECONSTRUCTION_MAX_RECONSTRUCTION_FETCH_SIZE` to set this value.
     ref max_reconstruction_fetch_size: ByteSize = ByteSize::from("8gb");
 
-    /// The maximum amount of data that can be buffered in flight during file reconstruction.
-    /// This controls memory usage by limiting how much data can be downloaded but not yet written.
+    /// The amount of download buffer always available for file reconstruction.
+    /// The full buffer size will be this plus the number of simultaneous active
+    /// file downloads times the per file size up to the global limit of
+    /// download_buffer_limit.
     ///
     /// The default value is 2GB.
     ///
     /// Use the environment variable `HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE` to set this value.
     ref download_buffer_size: ByteSize = ByteSize::from("2gb");
 
-    /// The basic unit of data acquired in a permit for the download buffer.  Because the underlying unit in the
-    /// Mutex supporting this is a u32, this requires us to measure size in larger values than bytes.
+    /// The additional download buffer allocated per active file download.
+    /// Each active file download increases the total buffer by this amount.
     ///
-    /// The default value is 1MB.
+    /// The default value is 512MB.
     ///
-    /// Use the environment variable `HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERMIT_BASIS` to set this value.
-    ref download_buffer_permit_basis: ByteSize = ByteSize::from("1mb");
+    /// Use the environment variable `HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERFILE_SIZE` to set this value.
+    ref download_buffer_perfile_size: ByteSize = ByteSize::from("512mb");
+
+    /// The maximum total download buffer allowed during file reconstruction.
+    /// The buffer will not grow beyond this limit regardless of the number of concurrent downloads.
+    ///
+    /// The default value is 8GB.
+    ///
+    /// Use the environment variable `HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT` to set this value.
+    ref download_buffer_limit: ByteSize = ByteSize::from("8gb");
 
     /// The half-life in count of observations for the exponentially weighted moving average used to estimate
     /// completion rate during reconstruction prefetching.
@@ -65,10 +75,7 @@ crate::config_group!({
     /// When true, multiple pending writes are batched and written using write_vectored.
     /// When false, standard sequential writes are used.
     ///
-    /// Vectorized writes can improve performance for writers that benefit from batching,
-    /// such as network sockets or buffered file writers.
-    ///
-    /// The default value is false.
+    /// The default value is true.
     ///
     /// Use the environment variable `HF_XET_RECONSTRUCTION_USE_VECTORED_WRITE` to set this value.
     ref use_vectored_write: bool = true;

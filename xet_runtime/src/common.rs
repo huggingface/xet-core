@@ -1,8 +1,9 @@
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use reqwest::Client;
 use tokio::sync::Semaphore;
-use utils::ResourceSemaphore;
+use utils::adjustable_semaphore::AdjustableSemaphore;
 use xet_config::XetConfig;
 
 /// Holds global values that are shared across the entire runtime.
@@ -21,7 +22,10 @@ pub struct XetCommon {
     pub file_download_semaphore: Arc<Semaphore>,
 
     /// Limits total memory used for buffering data during reconstruction downloads.
-    pub reconstruction_download_buffer: ResourceSemaphore,
+    pub reconstruction_download_buffer: Arc<AdjustableSemaphore>,
+
+    /// Tracks the number of currently active file downloads for dynamic buffer scaling.
+    pub active_downloads: Arc<AtomicU64>,
 }
 
 impl XetCommon {
@@ -31,7 +35,12 @@ impl XetCommon {
             global_reqwest_client: Mutex::new(None),
             file_ingestion_semaphore: Arc::new(Semaphore::new(config.data.max_concurrent_file_ingestion)),
             file_download_semaphore: Arc::new(Semaphore::new(config.data.max_concurrent_file_downloads)),
-            reconstruction_download_buffer: ResourceSemaphore::new(config.reconstruction.download_buffer_size.as_u64()),
+            reconstruction_download_buffer: {
+                let base = config.reconstruction.download_buffer_size.as_u64();
+                let limit = config.reconstruction.download_buffer_limit.as_u64();
+                AdjustableSemaphore::new(base, (base, limit))
+            },
+            active_downloads: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -163,11 +172,13 @@ mod tests {
         assert_eq!(common.file_ingestion_semaphore.available_permits(), config.data.max_concurrent_file_ingestion);
         assert_eq!(common.file_download_semaphore.available_permits(), config.data.max_concurrent_file_downloads);
 
-        // Total capacity is at least the configured download_buffer_size (may be slightly
-        // larger due to rounding up to a whole number of permits).
+        // Total permits is at least the configured download_buffer_base (may be slightly
+        // larger due to rounding up to a whole number of internal permits).
         assert!(
-            common.reconstruction_download_buffer.total_capacity()
+            common.reconstruction_download_buffer.total_permits()
                 >= config.reconstruction.download_buffer_size.as_u64()
         );
+
+        assert_eq!(common.active_downloads.load(Ordering::Relaxed), 0);
     }
 }

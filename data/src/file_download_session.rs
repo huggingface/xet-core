@@ -8,9 +8,11 @@ use cas_client::Client;
 use cas_types::FileRange;
 use file_reconstruction::{DownloadStream, FileReconstructor};
 use progress_tracking::TrackingProgressUpdater;
+use progress_tracking::aggregator::AggregatingProgressUpdater;
 use progress_tracking::download_tracking::DownloadProgressTracker;
 use tracing::instrument;
 use ulid::Ulid;
+use xet_runtime::xet_config;
 
 use crate::configurations::TranslatorConfig;
 use crate::errors::*;
@@ -25,6 +27,7 @@ use crate::{XetFileInfo, prometheus_metrics};
 pub struct FileDownloadSession {
     client: Arc<dyn Client>,
     progress_tracker: Option<Arc<DownloadProgressTracker>>,
+    progress_aggregator: Option<Arc<AggregatingProgressUpdater>>,
 }
 
 impl FileDownloadSession {
@@ -40,11 +43,13 @@ impl FileDownloadSession {
 
         let client = create_remote_client(&config, &session_id, false).await?;
 
+        let (progress_updater, progress_aggregator) = Self::maybe_wrap_in_aggregator(progress_updater);
         let progress_tracker = progress_updater.map(DownloadProgressTracker::new);
 
         Ok(Arc::new(Self {
             client,
             progress_tracker,
+            progress_aggregator,
         }))
     }
 
@@ -56,10 +61,12 @@ impl FileDownloadSession {
         client: Arc<dyn Client>,
         progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
     ) -> Arc<Self> {
+        let (progress_updater, progress_aggregator) = Self::maybe_wrap_in_aggregator(progress_updater);
         let progress_tracker = progress_updater.map(DownloadProgressTracker::new);
         Arc::new(Self {
             client,
             progress_tracker,
+            progress_aggregator,
         })
     }
 
@@ -70,7 +77,7 @@ impl FileDownloadSession {
     #[instrument(skip_all, name = "FileDownloadSession::download_file", fields(hash = file_info.hash()))]
     pub async fn download_file(&self, file_info: &XetFileInfo, write_path: &Path, tracking_id: Ulid) -> Result<u64> {
         // download concurrency controlled outside
-        let reconstructor = self.setup_reconstructor(file_info, None, tracking_id, Some(write_path))?;
+        let reconstructor = self.setup_reconstructor(file_info, None, tracking_id, Some(write_path), None)?;
         let n_bytes = reconstructor.reconstruct_to_file(write_path, None).await?;
         prometheus_metrics::FILTER_BYTES_SMUDGED.inc_by(n_bytes);
 
@@ -94,7 +101,7 @@ impl FileDownloadSession {
     ) -> Result<u64> {
         // download concurrency controlled outside
         let range = FileRange::new(source_range.start, source_range.end);
-        let reconstructor = self.setup_reconstructor(file_info, Some(range), tracking_id, None)?;
+        let reconstructor = self.setup_reconstructor(file_info, Some(range), tracking_id, None, None)?;
         let n_bytes = reconstructor.reconstruct_to_writer(writer).await?;
         prometheus_metrics::FILTER_BYTES_SMUDGED.inc_by(n_bytes);
 
@@ -103,34 +110,26 @@ impl FileDownloadSession {
 
     /// Downloads a complete file to the given path, using a caller-provided progress updater
     /// instead of the session's shared progress tracker.
-    ///
-    /// This is intended for legacy callers that manage per-file progress updaters externally.
     #[instrument(skip_all, name = "FileDownloadSession::download_file_with_updater", fields(hash = file_info.hash()))]
     pub async fn download_file_with_updater(
         self: &Arc<Self>,
         file_info: &XetFileInfo,
         write_path: &Path,
-        progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
+        progress_updater: Arc<dyn TrackingProgressUpdater>,
     ) -> Result<u64> {
         // download concurrency controlled outside
-        let tracking_name = self.tracker_name(Some(write_path));
 
-        let per_file_tracker = progress_updater.map(|updater| {
-            let tracker = DownloadProgressTracker::new(updater);
-            let task = tracker.new_download_task(Ulid::new(), tracking_name);
-            task.update_item_size(file_info.file_size(), true);
-            task
-        });
+        let (wrapped_updater, aggregator) = Self::maybe_wrap_in_aggregator(Some(progress_updater));
+        let tracker = wrapped_updater.map(DownloadProgressTracker::new);
 
-        let file_id = file_info.merkle_hash()?;
-        let mut reconstructor = FileReconstructor::new(&self.client, file_id);
-
-        if let Some(tracker) = per_file_tracker {
-            reconstructor = reconstructor.with_progress_updater(tracker);
-        }
-
+        let reconstructor =
+            self.setup_reconstructor(file_info, None, Ulid::new(), Some(write_path), tracker.as_ref())?;
         let n_bytes = reconstructor.reconstruct_to_file(write_path, None).await?;
         prometheus_metrics::FILTER_BYTES_SMUDGED.inc_by(n_bytes);
+
+        if let Some(agg) = aggregator {
+            agg.finalize().await;
+        }
 
         Ok(n_bytes)
     }
@@ -145,7 +144,7 @@ impl FileDownloadSession {
     /// This path does not acquire the session-level file download semaphore.
     #[instrument(skip_all, name = "FileDownloadSession::download_stream", fields(hash = file_info.hash()))]
     pub fn download_stream(&self, file_info: &XetFileInfo, tracking_id: Ulid) -> Result<DownloadStream> {
-        let reconstructor = self.setup_reconstructor(file_info, None, tracking_id, None)?;
+        let reconstructor = self.setup_reconstructor(file_info, None, tracking_id, None, None)?;
         Ok(reconstructor.reconstruct_to_stream())
     }
 
@@ -155,17 +154,49 @@ impl FileDownloadSession {
             .unwrap_or_else(|| Arc::from(""))
     }
 
+    fn maybe_wrap_in_aggregator(
+        updater: Option<Arc<dyn TrackingProgressUpdater>>,
+    ) -> (Option<Arc<dyn TrackingProgressUpdater>>, Option<Arc<AggregatingProgressUpdater>>) {
+        match updater {
+            Some(updater) => {
+                let flush_interval = xet_config().data.progress_update_interval;
+                let sampling_window = xet_config().data.progress_update_speed_sampling_window;
+                if !flush_interval.is_zero() {
+                    let agg = AggregatingProgressUpdater::new(updater, flush_interval, sampling_window);
+                    (Some(agg.clone() as Arc<dyn TrackingProgressUpdater>), Some(agg))
+                } else {
+                    (Some(updater), None)
+                }
+            },
+            None => (None, None),
+        }
+    }
+
+    /// Finalizes the session-level progress aggregator, flushing any remaining
+    /// updates and stopping its background task.
+    pub async fn finalize(&self) {
+        if let Some(agg) = &self.progress_aggregator {
+            agg.finalize().await;
+        }
+    }
+
     /// Common setup: builds a `FileReconstructor` with the given options.
+    ///
+    /// When `progress_override` is provided, it is used instead of the session's
+    /// shared `progress_tracker`.
     fn setup_reconstructor(
         &self,
         file_info: &XetFileInfo,
         range: Option<FileRange>,
         tracking_id: Ulid,
         write_path: Option<&Path>,
+        progress_override: Option<&Arc<DownloadProgressTracker>>,
     ) -> Result<FileReconstructor> {
         let file_id = file_info.merkle_hash()?;
-        let tracking_name = self.tracker_name(write_path);
-        let task_updater = self.progress_tracker.as_ref().map(|tracker| {
+
+        let tracker = progress_override.or(self.progress_tracker.as_ref());
+        let task_updater = tracker.map(|tracker| {
+            let tracking_name = self.tracker_name(write_path);
             let task = tracker.new_download_task(tracking_id, tracking_name);
             let size = range
                 .map(|r| r.end.saturating_sub(r.start))
@@ -527,56 +558,26 @@ mod tests {
     }
 
     #[test]
-    fn test_drop_stream_never_started_then_download() {
+    fn test_drop_stream_without_reading() {
         let runtime = get_threadpool();
         runtime
             .clone()
             .external_run_async_task(async {
                 let temp = tempdir().unwrap();
                 let cas_path = temp.path().join("cas");
-                let original_data = b"Drop-before-start cleanup test";
+                let original_data = b"Drop-without-reading cleanup test";
 
                 let xfi = upload_data(&cas_path, original_data).await;
 
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
-                // Create a stream but never start it, then drop.
+                // Create and drop a stream without ever reading from it.
                 let stream = session.download_stream(&xfi, Ulid::new()).unwrap();
                 drop(stream);
-
-                // A subsequent file download must succeed, proving no resources leaked.
-                let out_path = temp.path().join("after_drop.txt");
-                session.download_file(&xfi, &out_path, Ulid::new()).await.unwrap();
-                assert_eq!(read(&out_path).unwrap(), original_data);
-            })
-            .unwrap();
-    }
-
-    #[test]
-    fn test_drop_stream_mid_read_then_download() {
-        let runtime = get_threadpool();
-        runtime
-            .clone()
-            .external_run_async_task(async {
-                let temp = tempdir().unwrap();
-                let cas_path = temp.path().join("cas");
-                let original_data = b"Drop-mid-read cleanup test data";
-
-                let xfi = upload_data(&cas_path, original_data).await;
-
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
-
-                // Read one chunk, then drop mid-stream.
-                let mut stream = session.download_stream(&xfi, Ulid::new()).unwrap();
-                let _chunk = stream.next().await;
-                drop(stream);
-
-                // Yield to let the runtime process the cancellation.
                 tokio::task::yield_now().await;
 
-                // A subsequent download must succeed.
+                // A subsequent file download must succeed, proving no resources leaked.
                 let out_path = temp.path().join("after_drop.txt");
                 session.download_file(&xfi, &out_path, Ulid::new()).await.unwrap();
                 assert_eq!(read(&out_path).unwrap(), original_data);

@@ -97,6 +97,38 @@ impl Drop for CwdGuard {
     }
 }
 
+/// Guard that executes a closure when dropped.
+///
+/// Useful for ensuring cleanup logic runs even on early returns or panics.
+///
+/// # Examples
+///
+/// ```no_run
+/// use utils::ClosureGuard;
+///
+/// let _guard = ClosureGuard::new(|| {
+///     println!("cleanup!");
+/// });
+/// // closure runs when _guard is dropped
+/// ```
+pub struct ClosureGuard<F: FnOnce()> {
+    closure: Option<F>,
+}
+
+impl<F: FnOnce()> ClosureGuard<F> {
+    pub fn new(f: F) -> Self {
+        Self { closure: Some(f) }
+    }
+}
+
+impl<F: FnOnce()> Drop for ClosureGuard<F> {
+    fn drop(&mut self) {
+        if let Some(f) = self.closure.take() {
+            f();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serial_test::serial;
@@ -202,5 +234,19 @@ mod tests {
 
         let result = CwdGuard::set(nonexistent);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn closure_guard_runs_on_drop() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let ran = Arc::new(AtomicBool::new(false));
+        let ran_clone = ran.clone();
+        {
+            let _guard = ClosureGuard::new(move || ran_clone.store(true, Ordering::SeqCst));
+            assert!(!ran.load(Ordering::SeqCst));
+        }
+        assert!(ran.load(Ordering::SeqCst));
     }
 }

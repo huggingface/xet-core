@@ -8,7 +8,7 @@ run-name: hf-xet release, tag ${{ inputs.tag || 'main' }}
 
 on:
   push:
-    branches: 
+    branches:
       - main
   workflow_dispatch:
     inputs:
@@ -47,8 +47,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install wheel
       - name: Update version in toml
+        env:
+          TAG: ${{ github.event.inputs.tag }}
         run: |
-          TAG=${{ github.event.inputs.tag }}
           VERSION=${TAG#v}
           if [ -n "$VERSION" ]; then
             sed -i '/^version /s/=.*$/= "'"$VERSION"'"/' hf_xet/Cargo.toml
@@ -84,7 +85,7 @@ jobs:
             sudo apt-get install -y binutils-aarch64-linux-gnu
             alias objcopy=aarch64-linux-gnu-objcopy
           fi
-        
+
           mkdir hf_xet/dbg
           mkdir dist
           pushd dist
@@ -101,7 +102,7 @@ jobs:
           mv hf_xet-${WHEEL_VERSION}/hf_xet/${SYMBOL_FILE} ../hf_xet/dbg/${SYMBOL_FILE}
           wheel pack hf_xet-${WHEEL_VERSION}
           rm -rf hf_xet-${WHEEL_VERSION}
-      - name: Copy unstripped wheels to upload directory 
+      - name: Copy unstripped wheels to upload directory
         if: env.IS_RELEASE != 'true'
         run: |
           mkdir dist
@@ -140,10 +141,11 @@ jobs:
       - name: Install wheel tooling
         run: |
           python -m pip install --upgrade pip
-          pip install wheel 
+          pip install wheel
       - name: Update version in toml
+        env:
+          TAG: ${{ github.event.inputs.tag }}
         run: |
-          TAG=${{ github.event.inputs.tag }}
           VERSION=${TAG#v}
           if [ -n "$VERSION" ]; then
             sed -i '/^version /s/=.*$/= "'"$VERSION"'"/' hf_xet/Cargo.toml
@@ -171,7 +173,7 @@ jobs:
             sudo apt-get install -y binutils-aarch64-linux-gnu
             alias objcopy=aarch64-linux-gnu-objcopy
           fi
-        
+
           mkdir hf_xet/dbg
           mkdir dist
           pushd dist
@@ -188,7 +190,7 @@ jobs:
           mv hf_xet-${WHEEL_VERSION}/hf_xet/${SYMBOL_FILE} ../hf_xet/dbg/${SYMBOL_FILE}
           wheel pack hf_xet-${WHEEL_VERSION}
           rm -rf hf_xet-${WHEEL_VERSION}
-      - name: Copy unstripped wheels to upload directory 
+      - name: Copy unstripped wheels to upload directory
         if: env.IS_RELEASE != 'true'
         run: |
           mkdir dist
@@ -213,6 +215,9 @@ jobs:
           - runner: windows-latest
             target: x64
             rust_target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            target: aarch64
+            rust_target: aarch64-pc-windows-msvc
         python-version:
           - 3.14
           - 3.13t
@@ -225,8 +230,9 @@ jobs:
           cache: 'pip'
       - name: Update version in toml
         shell: bash
+        env:
+          TAG: ${{ github.event.inputs.tag }}
         run: |
-          TAG=${{ github.event.inputs.tag }}
           VERSION=${TAG#v}
           if [ -n "$VERSION" ]; then
             sed -i '/^version /s/=.*$/= "'"$VERSION"'"/' hf_xet/Cargo.toml
@@ -286,8 +292,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install wheel
       - name: Update version in toml
+        env:
+          TAG: ${{ github.event.inputs.tag }}
         run: |
-          TAG=${{ github.event.inputs.tag }}
           VERSION=${TAG#v}
           if [ -n "$VERSION" ]; then
             sed -i '' '/^version /s/=.*$/= "'"$VERSION"'"/' hf_xet/Cargo.toml
@@ -336,8 +343,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Update version in toml
+        env:
+          TAG: ${{ github.event.inputs.tag }}
         run: |
-          TAG=${{ github.event.inputs.tag }}
           VERSION=${TAG#v}
           if [ -n "$VERSION" ]; then
             sed -i '/^version /s/=.*$/= "'"$VERSION"'"/' hf_xet/Cargo.toml
@@ -353,12 +361,12 @@ jobs:
           pushd hf_xet/dist
           DISTFILE=$(ls -tr1 hf_xet-*.tar.gz | tail -n 1)
           DISTNAME=${DISTFILE%.tar.gz}
-          # maturin sdist will overwrite an edited pyproject.toml in the repo root, so we need to 
+          # maturin sdist will overwrite an edited pyproject.toml in the repo root, so we need to
           # update the python path in the built pyproject.toml to account for that.
           tar -xvzf ${DISTFILE}
           sed -i '/^python\-source =/ s/= .*/= "hf_xet\/python"/' ${DISTNAME}/pyproject.toml
           tar -cvzf ${DISTFILE} ${DISTNAME}
-          rm -rf ${DISTNAME} 
+          rm -rf ${DISTNAME}
       - name: Upload sdist
         uses: actions/upload-artifact@v6
         with:
@@ -401,8 +409,9 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/download-artifact@v7
       - name: Create GitHub Release
-        env: 
+        env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.inputs.tag }}
         run: |
           ls -l
           echo "wheels"
@@ -413,4 +422,4 @@ jobs:
           cp -r dbg-*/* dbg-symbols/
           echo "zipping debug symbols"
           zip -r dbg-symbols.zip dbg-symbols
-          gh release create ${{ github.event.inputs.tag}} wheels-*/* dbg-symbols.zip --generate-notes --prerelease --target ${{github.sha}}
+          gh release create "$RELEASE_TAG" wheels-*/* dbg-symbols.zip --generate-notes --prerelease --target ${{github.sha}}

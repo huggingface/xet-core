@@ -98,7 +98,7 @@ impl RunState {
         if let Err(e) = self.check_error() {
             return Err(RunError::Error(e));
         }
-        if self.is_cancelled() {
+        if self.cancellation_token.is_cancelled() {
             warn!(file_hash = %self.file_hash, "Reconstruction cancelled");
             return Err(RunError::Cancelled);
         }
@@ -108,11 +108,6 @@ impl RunState {
     /// Cancels without an error (genuine external cancellation).
     pub(crate) fn cancel(&self) {
         self.cancellation_token.cancel();
-    }
-
-    /// Returns true if cancelled (by error or external cancel).
-    pub(crate) fn is_cancelled(&self) -> bool {
-        self.cancellation_token.is_cancelled()
     }
 
     /// Future that resolves when cancelled; for use in `select!`.
@@ -136,8 +131,8 @@ impl RunState {
     }
 
     /// Records that a new block of file terms has begun processing.
-    pub(crate) fn record_new_block(&self) -> u64 {
-        self.block_count.fetch_add(1, AtomicOrdering::Relaxed) + 1
+    pub(crate) fn record_new_block(&self) {
+        self.block_count.fetch_add(1, AtomicOrdering::Relaxed);
     }
 
     /// Records that a term of the given size has been scheduled for writing.
@@ -146,25 +141,17 @@ impl RunState {
         self.total_bytes_scheduled.fetch_add(term_size, AtomicOrdering::Relaxed);
     }
 
-    pub(crate) fn total_terms_processed(&self) -> u64 {
-        self.total_terms_processed.load(AtomicOrdering::Relaxed)
-    }
-
     pub(crate) fn total_bytes_scheduled(&self) -> u64 {
         self.total_bytes_scheduled.load(AtomicOrdering::Relaxed)
-    }
-
-    pub(crate) fn block_count(&self) -> u64 {
-        self.block_count.load(AtomicOrdering::Relaxed)
     }
 
     /// Logs current progress stats with the file hash.
     pub(crate) fn log_progress(&self, message: &str) {
         info!(
             file_hash = %self.file_hash,
-            block_count = self.block_count(),
-            total_terms_processed = self.total_terms_processed(),
-            total_bytes_scheduled = self.total_bytes_scheduled(),
+            block_count = self.block_count.load(AtomicOrdering::Relaxed),
+            total_terms_processed = self.total_terms_processed.load(AtomicOrdering::Relaxed),
+            total_bytes_scheduled = self.total_bytes_scheduled.load(AtomicOrdering::Relaxed),
             "{message}"
         );
     }

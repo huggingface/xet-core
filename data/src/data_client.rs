@@ -234,10 +234,14 @@ pub async fn download_async(
         let session = session.clone();
         tasks.push(tokio::spawn(
             async move {
-                let path = PathBuf::from(&file_path);
                 let semaphore = XetRuntime::current().common().file_download_semaphore.clone();
                 let _permit = semaphore.acquire().await?;
-                session.download_file_with_updater(&file_info, &path, updater).await?;
+
+                let path = PathBuf::from(&file_path);
+                match updater {
+                    Some(u) => session.download_file_with_updater(&file_info, &path, u).await?,
+                    None => session.download_file(&file_info, &path, Ulid::new()).await?,
+                };
                 errors::Result::Ok(file_path)
             }
             .instrument(info_span!("download_file")),
