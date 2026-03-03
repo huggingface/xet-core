@@ -1039,20 +1039,20 @@ async fn test_v2_max_ranges_per_fetch(client: Arc<dyn DirectAccessClient>) {
 
     // With a limit of 2, the number of fetch entries should be >= the unlimited count
     assert!(
-        desc_limited.fetch.len() >= desc_unlimited.fetch.len(),
+        desc_limited.len() >= desc_unlimited.len(),
         "Limited ({}) should have at least as many fetch entries as unlimited ({})",
-        desc_limited.fetch.len(),
-        desc_unlimited.fetch.len()
+        desc_limited.len(),
+        desc_unlimited.len()
     );
 
     // Each fetch entry should have at most 2 ranges
-    for fetch in &desc_limited.fetch {
+    for fetch in desc_limited {
         assert!(fetch.ranges.len() <= 2, "Expected at most 2 ranges per fetch, got {}", fetch.ranges.len());
     }
 
     // Total ranges across all fetches should equal the unlimited total
-    let total_unlimited: usize = desc_unlimited.fetch.iter().map(|f| f.ranges.len()).sum();
-    let total_limited: usize = desc_limited.fetch.iter().map(|f| f.ranges.len()).sum();
+    let total_unlimited: usize = desc_unlimited.iter().map(|f| f.ranges.len()).sum();
+    let total_limited: usize = desc_limited.iter().map(|f| f.ranges.len()).sum();
     assert_eq!(total_unlimited, total_limited, "Total ranges should be preserved");
 
     // Reset for other tests

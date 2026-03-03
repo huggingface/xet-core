@@ -998,7 +998,7 @@ mod tests {
 
         let xorb1_hash: cas_types::HexMerkleHash = file.terms[0].xorb_hash.into();
         if let Some(desc) = v2.xorbs.get(&xorb1_hash) {
-            for fetch in &desc.fetch {
+            for fetch in desc {
                 assert!(fetch.ranges.len() <= 1, "Each fetch should have at most 1 range, got {}", fetch.ranges.len());
             }
         }
