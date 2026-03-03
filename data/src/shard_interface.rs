@@ -179,15 +179,15 @@ impl SessionShardInterface {
         }
     }
 
-    // Add the cas information to the session shard manager and the shard manager for the staged xorbs.
-    pub async fn add_xorb_block(&self, cas_block_contents: Arc<MDBXorbInfo>) -> Result<()> {
-        self.session_shard_manager.add_xorb_block(cas_block_contents).await?;
+    // Add the xorb information to the session shard manager and the shard manager for the staged xorbs.
+    pub async fn add_xorb_block(&self, xorb_block_contents: Arc<MDBXorbInfo>) -> Result<()> {
+        self.session_shard_manager.add_xorb_block(xorb_block_contents).await?;
 
         Ok(())
     }
 
-    // Add in uploaded cas information that has been known to be uploaded successfully.
-    pub async fn add_uploaded_xorb_block(&self, cas_block_contents: Arc<MDBXorbInfo>) -> Result<()> {
+    // Add in uploaded xorb information that has been known to be uploaded successfully.
+    pub async fn add_uploaded_xorb_block(&self, xorb_block_contents: Arc<MDBXorbInfo>) -> Result<()> {
         // Ignore this part of a dry run
         if self.dry_run {
             return Ok(());
@@ -196,7 +196,7 @@ impl SessionShardInterface {
         let mut lg = self.xorb_metadata_staging.lock().await;
         let (last_flush, xorb_shard) = &mut *lg;
 
-        xorb_shard.add_xorb_block(cas_block_contents)?;
+        xorb_shard.add_xorb_block(xorb_block_contents)?;
 
         let time_now = SystemTime::now();
         let flush_interval = xet_config().data.session_xorb_metadata_flush_interval;

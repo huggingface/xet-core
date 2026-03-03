@@ -85,7 +85,7 @@ impl MemoryClient {
     }
 
     /// Inserts a RandomXorb into the client's storage and registers it in the shard
-    /// for CAS block lookups. Returns the xorb hash.
+    /// for XORB block lookups. Returns the xorb hash.
     ///
     /// This allows storing XORBs that generate their data on-the-fly,
     /// enabling testing with massive files without storing all data in memory.
@@ -95,7 +95,7 @@ impl MemoryClient {
         let hash = xorb.xorb_hash();
         let xorb_obj = xorb.get_xorb_object();
 
-        // Create CAS block entries for each chunk
+        // Create XORB block entries for each chunk
         let mut chunk_entries = Vec::with_capacity(xorb.num_chunks() as usize);
         let mut byte_offset = 0u32;
 
@@ -554,7 +554,7 @@ impl Client for MemoryClient {
                 shard_lg.add_file_reconstruction_info(MDBFileInfo::from(file_view))?;
             }
 
-            // Add CAS info from the views
+            // Add XORB info from the views
             for i in 0..minimal_shard.num_xorb() {
                 let xorb_view = minimal_shard.xorb(i).unwrap();
                 shard_lg.add_xorb_block(MDBXorbInfo::from(xorb_view))?;
@@ -769,13 +769,13 @@ impl Client for MemoryClient {
             let (byte_start, byte_end) = xorb_footer.get_byte_offset(chunk_range.start, chunk_range.end)?;
             let byte_range = FileRange::new(byte_start as u64, byte_end as u64);
 
-            let cas_reconstruction_term = XorbReconstructionTerm {
+            let xorb_reconstruction_term = XorbReconstructionTerm {
                 hash: segment.xorb_hash.into(),
                 unpacked_length: segment.unpacked_segment_bytes,
                 range: chunk_range,
             };
 
-            terms.push(cas_reconstruction_term);
+            terms.push(xorb_reconstruction_term);
 
             let fetch_info_intermediate = FetchInfoIntermediate {
                 chunk_range,

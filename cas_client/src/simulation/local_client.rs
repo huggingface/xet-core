@@ -517,7 +517,7 @@ impl Client for LocalClient {
             in_memory_shard.add_file_reconstruction_info(MDBFileInfo::from(file_view))?;
         }
 
-        // Add CAS info from the views
+        // Add XORB info from the views
         for i in 0..minimal_shard.num_xorb() {
             let xorb_view = minimal_shard.xorb(i).unwrap();
             in_memory_shard.add_xorb_block(MDBXorbInfo::from(xorb_view))?;
@@ -742,13 +742,13 @@ impl Client for LocalClient {
             let (byte_start, byte_end) = xorb_footer.get_byte_offset(chunk_range.start, chunk_range.end)?;
             let byte_range = FileRange::new(byte_start as u64, byte_end as u64);
 
-            let cas_reconstruction_term = XorbReconstructionTerm {
+            let xorb_reconstruction_term = XorbReconstructionTerm {
                 hash: segment.xorb_hash.into(),
                 unpacked_length: segment.unpacked_segment_bytes,
                 range: chunk_range,
             };
 
-            terms.push(cas_reconstruction_term);
+            terms.push(xorb_reconstruction_term);
 
             let fetch_info_intemediate = FetchInfoIntermediate {
                 chunk_range,
@@ -875,7 +875,7 @@ impl Client for LocalClient {
             let mut data = vec![0u8; len];
             std::io::Read::read_exact(&mut file, &mut data)?;
 
-            // Deserialize the chunks from the raw CAS data
+            // Deserialize the chunks from the raw XORB data
             let (decompressed_data, chunk_byte_indices) = xorb_object::deserialize_chunks(&mut Cursor::new(&data))?;
 
             if let Some(expected) = uncompressed_size_if_known {

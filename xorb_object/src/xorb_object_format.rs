@@ -1443,7 +1443,7 @@ pub mod test_utils {
         Ok((xorb, total_written_bytes, footer_start))
     }
 
-    /// Serialize into Cas Object from uncompressed data and chunk boundaries.
+    /// Serialize into XORB object from uncompressed data and chunk boundaries.
     /// Assumes correctness from caller: it's the receiver's responsibility to validate a xorb object.
     pub fn serialized_xorb_object_from_components(
         hash: &MerkleHash,

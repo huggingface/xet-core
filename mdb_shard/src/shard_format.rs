@@ -852,7 +852,7 @@ impl MDBShardInfo {
         let (file_info_start, file_info_end) = self.file_info_byte_range();
         eprintln!("Byte size of file info: {}, ({file_info_start} - {file_info_end})", file_info_end - file_info_start);
 
-        // Cas info bytes.
+        // XORB info bytes.
         let (xorb_info_start, xorb_info_end) = self.xorb_info_byte_range();
         eprintln!("Byte size of xorb info: {}, ({xorb_info_start} - {xorb_info_end})", xorb_info_end - xorb_info_start);
 

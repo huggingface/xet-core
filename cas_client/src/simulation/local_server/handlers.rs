@@ -347,7 +347,7 @@ pub async fn head_xorb(State(state): State<Arc<dyn DirectAccessClient>>, Path(ke
 /// POST /v1/xorbs/{prefix}/{hash}
 ///
 /// Upload a XORB (content-addressed block) to the store.
-/// Request body: Serialized CAS object data
+/// Request body: Serialized XORB object data
 /// Response: JSON indicating if the XORB was newly inserted
 pub async fn post_xorb(
     State(state): State<Arc<dyn DirectAccessClient>>,
