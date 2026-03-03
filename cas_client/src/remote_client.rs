@@ -479,18 +479,18 @@ impl Client for RemoteClient {
                             for part in multipart_parts {
                                 total_compressed_bytes += part.data.len() as u64;
 
-                                let (data, mut chunk_indices) =
+                                let (data, chunk_indices) =
                                     cas_object::deserialize_chunks(&mut std::io::Cursor::new(part.data.as_ref()))
                                         .map_err(|e| {
                                             RetryableReqwestError::RetryableError(CasClientError::CasObjectError(e))
                                         })?;
 
-                                let base_offset = all_decompressed.len() as u32;
-                                if !all_chunk_indices.is_empty() {
-                                    chunk_indices = chunk_indices.iter().skip(1).map(|&o| o + base_offset).collect();
-                                }
-                                all_decompressed.extend_from_slice(&data);
-                                all_chunk_indices.extend(chunk_indices);
+                                cas_object::append_chunk_segment(
+                                    &mut all_decompressed,
+                                    &mut all_chunk_indices,
+                                    &data,
+                                    &chunk_indices,
+                                );
                             }
 
                             // Report transfer progress for the actual data bytes

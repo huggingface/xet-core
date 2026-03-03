@@ -841,14 +841,14 @@ impl Client for LocalClient {
                 let mut data = vec![0u8; len];
                 std::io::Read::read_exact(&mut file, &mut data)?;
 
-                let (data, mut chunk_indices) = cas_object::deserialize_chunks(&mut Cursor::new(&data))?;
+                let (decompressed, chunk_indices) = cas_object::deserialize_chunks(&mut Cursor::new(&data))?;
 
-                let base_offset = all_decompressed.len() as u32;
-                if !all_chunk_indices.is_empty() {
-                    chunk_indices = chunk_indices.iter().skip(1).map(|&o| o + base_offset).collect();
-                }
-                all_decompressed.extend_from_slice(&data);
-                all_chunk_indices.extend(chunk_indices);
+                cas_object::append_chunk_segment(
+                    &mut all_decompressed,
+                    &mut all_chunk_indices,
+                    &decompressed,
+                    &chunk_indices,
+                );
             }
 
             if let Some(expected) = uncompressed_size_if_known {

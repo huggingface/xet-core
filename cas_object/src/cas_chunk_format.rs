@@ -182,6 +182,27 @@ pub fn deserialize_chunks<R: Read>(reader: &mut R) -> Result<(Vec<u8>, Vec<u32>)
     Ok((buf, chunk_byte_indices))
 }
 
+/// Appends a deserialized chunk segment to existing accumulated buffers.
+///
+/// `deserialize_chunks` returns `chunk_byte_indices` starting with a leading `0`.
+/// When concatenating multiple segments, this function deduplicates that leading
+/// zero for subsequent segments and rebases all indices to account for data already
+/// accumulated.
+pub fn append_chunk_segment(
+    all_data: &mut Vec<u8>,
+    all_chunk_indices: &mut Vec<u32>,
+    segment_data: &[u8],
+    segment_indices: &[u32],
+) {
+    let base_offset = all_data.len() as u32;
+    if all_chunk_indices.is_empty() {
+        all_chunk_indices.extend_from_slice(segment_indices);
+    } else {
+        all_chunk_indices.extend(segment_indices.iter().skip(1).map(|&o| o + base_offset));
+    }
+    all_data.extend_from_slice(segment_data);
+}
+
 pub fn deserialize_chunks_to_writer<R: Read, W: Write>(
     reader: &mut R,
     writer: &mut W,
@@ -318,5 +339,36 @@ mod tests {
                 assert_eq!(chunk_byte_indices[i + 1] - chunk_byte_indices[i], *chunk_size);
             }
         }
+    }
+
+    #[test]
+    fn test_append_chunk_segment() {
+        let mut all_data = Vec::new();
+        let mut all_indices = Vec::<u32>::new();
+
+        // First segment: simulates deserialize_chunks output [0, 10, 25]
+        append_chunk_segment(&mut all_data, &mut all_indices, &[0u8; 25], &[0, 10, 25]);
+        assert_eq!(all_data.len(), 25);
+        assert_eq!(all_indices, vec![0, 10, 25]);
+
+        // Second segment: [0, 8, 20] — leading 0 should be skipped, offsets rebased by 25
+        append_chunk_segment(&mut all_data, &mut all_indices, &[1u8; 20], &[0, 8, 20]);
+        assert_eq!(all_data.len(), 45);
+        assert_eq!(all_indices, vec![0, 10, 25, 33, 45]);
+
+        // Third segment: single chunk [0, 5] — leading 0 skipped, rebased by 45
+        append_chunk_segment(&mut all_data, &mut all_indices, &[2u8; 5], &[0, 5]);
+        assert_eq!(all_data.len(), 50);
+        assert_eq!(all_indices, vec![0, 10, 25, 33, 45, 50]);
+    }
+
+    #[test]
+    fn test_append_chunk_segment_single() {
+        let mut all_data = Vec::new();
+        let mut all_indices = Vec::<u32>::new();
+
+        append_chunk_segment(&mut all_data, &mut all_indices, &[0u8; 10], &[0, 10]);
+        assert_eq!(all_data.len(), 10);
+        assert_eq!(all_indices, vec![0, 10]);
     }
 }

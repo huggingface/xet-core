@@ -858,7 +858,7 @@ impl Client for MemoryClient {
             let end = http_range.end as usize + 1;
             total_transfer += http_range.length();
 
-            let (data, mut chunk_indices) = match storage {
+            let (data, chunk_indices) = match storage {
                 XorbStorage::Materialized(entry) => {
                     let range_data = &entry.serialized_data[start..end];
                     cas_object::deserialize_chunks(&mut Cursor::new(range_data))?
@@ -869,12 +869,12 @@ impl Client for MemoryClient {
                 },
             };
 
-            let base_offset = all_decompressed.len() as u32;
-            if !all_chunk_indices.is_empty() {
-                chunk_indices = chunk_indices.iter().skip(1).map(|&o| o + base_offset).collect();
-            }
-            all_decompressed.extend_from_slice(&data);
-            all_chunk_indices.extend(chunk_indices);
+            cas_object::append_chunk_segment(
+                &mut all_decompressed,
+                &mut all_chunk_indices,
+                &data,
+                &chunk_indices,
+            );
         }
 
         if let Some(expected) = uncompressed_size_if_known {
