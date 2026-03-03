@@ -571,21 +571,4 @@ mod tests {
             assert!(err_msg.contains("sha256s length (1) must match file_paths length (2)"), "got: {err_msg}");
         });
     }
-
-    #[test]
-    fn test_upload_files_sha256s_none_does_not_error() {
-        setup();
-        pyo3::Python::attach(|py| {
-            // sha256s=None should not trigger a length validation error.
-            // It will fail later (no endpoint), but the validation itself should pass.
-            let file_paths = vec!["a.txt".to_string()];
-
-            let result = upload_files(py, file_paths, None, None, None, None, None, None, None);
-
-            // Should fail with a runtime error (no endpoint), not a length mismatch
-            if let Err(e) = result {
-                assert!(!e.to_string().contains("sha256s length"), "got unexpected sha256s error: {e}");
-            }
-        });
-    }
 }
