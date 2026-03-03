@@ -141,14 +141,14 @@ pub fn upload_files(
     request_headers: Option<HashMap<String, String>>,
     sha256s: Option<Vec<String>>,
 ) -> PyResult<Vec<PyXetUploadInfo>> {
-    if let Some(ref s) = sha256s {
-        if s.len() != file_paths.len() {
-            return Err(PyRuntimeError::new_err(format!(
-                "sha256s length ({}) must match file_paths length ({})",
-                s.len(),
-                file_paths.len()
-            )));
-        }
+    if let Some(ref s) = sha256s
+        && s.len() != file_paths.len()
+    {
+        return Err(PyRuntimeError::new_err(format!(
+            "sha256s length ({}) must match file_paths length ({})",
+            s.len(),
+            file_paths.len()
+        )));
     }
 
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
