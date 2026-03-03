@@ -21,6 +21,7 @@ use xet_runtime::{XetRuntime, xet_cache_root, xet_config};
 
 use crate::configurations::*;
 use crate::errors::DataProcessingError;
+use crate::file_cleaner::Sha256Policy;
 use crate::file_download_session::FileDownloadSession;
 use crate::{FileUploadSession, XetFileInfo, errors};
 
@@ -264,8 +265,9 @@ pub async fn clean_bytes(
 ) -> errors::Result<(XetFileInfo, DeduplicationMetrics)> {
     #[allow(clippy::unwrap_or_default)] // Ulid::default is Ulid::nil
     let tracking_id = tracking_id.unwrap_or_else(Ulid::new);
-
-    let mut handle = processor.start_clean(None, bytes.len() as u64, None, tracking_id).await;
+    let mut handle = processor
+        .start_clean(None, bytes.len() as u64, Sha256Policy::Compute, tracking_id)
+        .await;
     handle.add_data(&bytes).await?;
     handle.finish().await
 }
@@ -292,7 +294,7 @@ pub async fn clean_file(
         .start_clean(
             Some(filename.as_ref().to_string_lossy().into()),
             filesize,
-            Sha256::from_hex(sha256.as_ref()).ok(),
+            Sha256::from_hex(sha256.as_ref()).ok().into(),
             tracking_id,
         )
         .await;

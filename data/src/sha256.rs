@@ -3,34 +3,9 @@ use sha2::{Digest, Sha256 as sha2Sha256};
 use tokio::task::{JoinError, JoinHandle};
 use xet_runtime::XetRuntime;
 
-pub enum ShaGenerator {
-    Generate(Sha256Generator),
-    ProvidedValue(Sha256),
-}
-
-impl ShaGenerator {
-    pub async fn update(&mut self, new_data: impl AsRef<[u8]> + Send + Sync + 'static) -> Result<(), JoinError> {
-        match self {
-            Self::Generate(generator) => generator.update(new_data).await,
-            Self::ProvidedValue(_) => Ok(()),
-        }
-    }
-
-    pub async fn finalize(self) -> Result<Sha256, JoinError> {
-        match self {
-            Self::Generate(generator) => generator.finalize().await,
-            Self::ProvidedValue(hash) => Ok(hash),
-        }
-    }
-
-    pub fn generate() -> Self {
-        Self::Generate(Sha256Generator::default())
-    }
-}
-
 /// Helper struct to generate a sha256 hash.
 #[derive(Debug, Default)]
-pub struct Sha256Generator {
+pub(crate) struct Sha256Generator {
     hasher: Option<JoinHandle<Result<sha2Sha256, JoinError>>>,
 }
 
