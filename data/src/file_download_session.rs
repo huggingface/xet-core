@@ -245,7 +245,7 @@ mod tests {
             .unwrap();
 
         let mut cleaner = upload_session
-            .start_clean(Some("test".into()), data.len() as u64, None, Ulid::new())
+            .start_clean(Some("test".into()), data.len() as u64, None, false)
             .await;
         cleaner.add_data(data).await.unwrap();
         let (xfi, _metrics) = cleaner.finish().await.unwrap();
