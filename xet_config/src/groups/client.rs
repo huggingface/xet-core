@@ -242,4 +242,13 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_CLIENT_UNIX_SOCKET_PATH` to set this value.
     ref unix_socket_path: Option<String> = None;
 
+    /// The reconstruction API version to request from the CAS server.
+    /// When set to 1 or 2, forces that version with no fallback.
+    /// When unset, auto-detects by trying V2 first, falling back to V1 on 404.
+    ///
+    /// The default value is None (auto-detect).
+    ///
+    /// Use the environment variable `HF_XET_CLIENT_RECONSTRUCTION_API_VERSION` to set this value.
+    ref reconstruction_api_version: Option<u32> = None;
+
 });

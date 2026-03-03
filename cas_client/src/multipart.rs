@@ -55,6 +55,8 @@ pub fn parse_multipart_byteranges(content_type: &str, body: Bytes) -> Result<Vec
             let data = &part_data[data_start..];
 
             let range = parse_content_range(headers)?;
+            // Compute the byte offset of this part's data within the original `body` Bytes,
+            // so we can use body.slice() for zero-copy referencing.
             let offset = body.len() - body_slice.len()
                 + (remaining.as_ptr() as usize - body_slice.as_ptr() as usize)
                 + data_start;

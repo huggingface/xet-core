@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
-use cas_client::{Client, RemoteClient};
+use cas_client::RemoteClient;
 use cas_object::CompressionScheme;
 use cas_types::{FileRange, QueryReconstructionResponse};
 use clap::{Args, Parser, Subcommand};
@@ -231,7 +231,7 @@ async fn query_reconstruction(
     );
 
     remote_client
-        .get_reconstruction(&file_hash, bytes_range)
+        .get_reconstruction_v1(&file_hash, bytes_range)
         .await
         .map_err(anyhow::Error::from)
 }

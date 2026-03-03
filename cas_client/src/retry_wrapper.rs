@@ -157,9 +157,12 @@ impl RetryWrapper {
                 }
             },
             (Err(e), Some(Retryable::Transient)) => {
-                // Intercept the too many requests condition in the case of no retrying on 429.
                 if e.status() == Some(StatusCode::TOO_MANY_REQUESTS) && self.no_retry_on_429 {
                     let cas_err = process_error("Too Many Requests (retry on 429 disabled)", e, false);
+                    Err(RetryableReqwestError::FatalError(cas_err))
+                } else if e.status() == Some(StatusCode::NOT_IMPLEMENTED) {
+                    // 501 is permanent -- the server won't implement this on retry.
+                    let cas_err = process_error("Not Implemented", e, true);
                     Err(RetryableReqwestError::FatalError(cas_err))
                 } else {
                     let cas_err = process_error("Retryable Error", e, true);
