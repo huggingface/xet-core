@@ -155,7 +155,7 @@ pub(crate) fn compute_reconstruction_ranges(
         s_idx += 1;
     }
 
-    assert!(!terms.is_empty());
+    debug_assert!(!terms.is_empty());
 
     // Sort and merge adjacent/overlapping ranges per xorb
     let mut merged: MerkleHashMap<Vec<MergedRange>> = MerkleHashMap::new();

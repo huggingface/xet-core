@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use bytes::Bytes;
 use cas_object::SerializedCasObject;
@@ -44,6 +44,8 @@ pub struct RemoteClient {
     authenticated_http_client: Arc<ClientWithMiddleware>,
     upload_concurrency_controller: Arc<AdaptiveConcurrencyController>,
     download_concurrency_controller: Arc<AdaptiveConcurrencyController>,
+    /// Caches the discovered reconstruction API version (0 = not yet probed, 1 = V1, 2 = V2).
+    detected_reconstruction_api_version: AtomicU32,
 }
 
 impl RemoteClient {
@@ -76,6 +78,7 @@ impl RemoteClient {
             ),
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("upload"),
             download_concurrency_controller: AdaptiveConcurrencyController::new_download("download"),
+            detected_reconstruction_api_version: AtomicU32::new(0),
         })
     }
 
@@ -106,6 +109,7 @@ impl RemoteClient {
             http_client: Arc::new(http_client::build_http_client(session_id, None, custom_headers).unwrap()),
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("upload"),
             download_concurrency_controller: AdaptiveConcurrencyController::new_download("download"),
+            detected_reconstruction_api_version: AtomicU32::new(0),
         })
     }
 
@@ -313,9 +317,35 @@ impl Client for RemoteClient {
         file_id: &MerkleHash,
         bytes_range: Option<FileRange>,
     ) -> Result<Option<QueryReconstructionResponseV2>> {
-        match self.get_reconstruction_v2(file_id, bytes_range).await {
-            Ok(result) => Ok(result),
-            Err(_) => Ok(self.get_reconstruction_v1(file_id, bytes_range).await?.map(Into::into)),
+        let forced_version = xet_config().client.reconstruction_api_version;
+
+        let version = match forced_version {
+            Some(v) => v,
+            None => {
+                let detected = self.detected_reconstruction_api_version.load(Ordering::Relaxed);
+                if detected != 0 { detected } else { 2 }
+            },
+        };
+
+        match version {
+            2 => match self.get_reconstruction_v2(file_id, bytes_range).await {
+                Ok(result) => {
+                    if forced_version.is_none() {
+                        self.detected_reconstruction_api_version.store(2, Ordering::Relaxed);
+                    }
+                    Ok(result)
+                },
+                Err(e) if forced_version.is_none() && e.status() == Some(StatusCode::NOT_FOUND) => {
+                    info!("V2 reconstruction endpoint returned 404, falling back to V1");
+                    let result = self.get_reconstruction_v1(file_id, bytes_range).await?.map(Into::into);
+                    // Store after success to make sure we don't mess up on e.g. network failure.
+                    self.detected_reconstruction_api_version.store(1, Ordering::Relaxed);
+                    Ok(result)
+                },
+                Err(e) => Err(e),
+            },
+            1 => Ok(self.get_reconstruction_v1(file_id, bytes_range).await?.map(Into::into)),
+            other => Err(CasClientError::internal(format!("unsupported reconstruction API version: {other}"))),
         }
     }
 
