@@ -339,6 +339,8 @@ pub struct DownloadResult {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use tempfile::{TempDir, tempdir};
 
     use super::*;
@@ -574,6 +576,14 @@ mod tests {
         group.download_file_to_path(file_info, dest)?;
         group.finish()?;
 
+        std::thread::sleep(
+            session
+                .runtime
+                .config()
+                .data
+                .progress_update_interval
+                .saturating_add(Duration::from_secs(1)),
+        );
         let snapshot = progress_observer.get_progress()?;
         assert!(snapshot.total().total_bytes_completed > 0);
         Ok(())
