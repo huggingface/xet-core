@@ -869,12 +869,7 @@ impl Client for MemoryClient {
                 },
             };
 
-            cas_object::append_chunk_segment(
-                &mut all_decompressed,
-                &mut all_chunk_indices,
-                &data,
-                &chunk_indices,
-            );
+            cas_object::append_chunk_segment(&mut all_decompressed, &mut all_chunk_indices, &data, &chunk_indices);
         }
 
         if let Some(expected) = uncompressed_size_if_known {

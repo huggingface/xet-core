@@ -491,11 +491,9 @@ impl Client for RemoteClient {
                                     &data,
                                     &chunk_indices,
                                 );
-                            }
 
-                            // Report transfer progress for the actual data bytes
-                            // (excluding MIME overhead).
-                            transfer_reporter.report_progress(total_compressed_bytes as usize);
+                                transfer_reporter.report_progress(total_compressed_bytes as usize);
+                            }
 
                             if let Some(expected) = uncompressed_size_if_known {
                                 debug_assert_eq!(
