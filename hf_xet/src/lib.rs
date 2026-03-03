@@ -141,6 +141,16 @@ pub fn upload_files(
     request_headers: Option<HashMap<String, String>>,
     sha256s: Option<Vec<String>>,
 ) -> PyResult<Vec<PyXetUploadInfo>> {
+    if let Some(ref s) = sha256s {
+        if s.len() != file_paths.len() {
+            return Err(PyRuntimeError::new_err(format!(
+                "sha256s length ({}) must match file_paths length ({})",
+                s.len(),
+                file_paths.len()
+            )));
+        }
+    }
+
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updater = progress_updater.map(WrappedProgressUpdater::new).transpose()?.map(Arc::new);
 
@@ -545,5 +555,37 @@ mod tests {
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("Invalid header value"));
+    }
+
+    #[test]
+    fn test_upload_files_sha256s_length_mismatch() {
+        setup();
+        pyo3::Python::attach(|py| {
+            let file_paths = vec!["a.txt".to_string(), "b.txt".to_string()];
+            let sha256s = Some(vec!["abc123".to_string()]); // 1 hash for 2 files
+
+            let result = upload_files(py, file_paths, None, None, None, None, None, None, sha256s);
+
+            assert!(result.is_err());
+            let err_msg = result.unwrap_err().to_string();
+            assert!(err_msg.contains("sha256s length (1) must match file_paths length (2)"), "got: {err_msg}");
+        });
+    }
+
+    #[test]
+    fn test_upload_files_sha256s_none_does_not_error() {
+        setup();
+        pyo3::Python::attach(|py| {
+            // sha256s=None should not trigger a length validation error.
+            // It will fail later (no endpoint), but the validation itself should pass.
+            let file_paths = vec!["a.txt".to_string()];
+
+            let result = upload_files(py, file_paths, None, None, None, None, None, None, None);
+
+            // Should fail with a runtime error (no endpoint), not a length mismatch
+            if let Err(e) = result {
+                assert!(!e.to_string().contains("sha256s length"), "got unexpected sha256s error: {e}");
+            }
+        });
     }
 }
