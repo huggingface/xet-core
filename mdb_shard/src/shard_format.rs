@@ -12,13 +12,13 @@ use static_assertions::const_assert;
 use tracing::debug;
 use utils::serialization_utils::*;
 
-use crate::cas_structs::*;
 use crate::error::{MDBShardError, Result};
 use crate::file_structs::*;
 use crate::interpolation_search::search_on_sorted_u64s;
 use crate::shard_in_memory::MDBInMemoryShard;
 use crate::streaming_shard::MDBMinimalShard;
 use crate::utils::{shard_expiry_time, truncate_hash};
+use crate::xorb_structs::*;
 
 // Same size for FileDataSequenceHeader and FileDataSequenceEntry
 pub const MDB_FILE_INFO_ENTRY_SIZE: usize = size_of::<[u64; 4]>() + 4 * size_of::<u32>();
@@ -26,10 +26,10 @@ const_assert!(MDB_FILE_INFO_ENTRY_SIZE == size_of::<FileDataSequenceHeader>());
 const_assert!(MDB_FILE_INFO_ENTRY_SIZE == size_of::<FileDataSequenceEntry>());
 const_assert!(MDB_FILE_INFO_ENTRY_SIZE == size_of::<FileVerificationEntry>());
 const_assert!(MDB_FILE_INFO_ENTRY_SIZE == size_of::<FileMetadataExt>());
-// Same size for CASChunkSequenceHeader and CASChunkSequenceEntry
-const MDB_CAS_INFO_ENTRY_SIZE: usize = size_of::<[u64; 4]>() + 4 * size_of::<u32>();
-const_assert!(MDB_CAS_INFO_ENTRY_SIZE == size_of::<CASChunkSequenceHeader>());
-const_assert!(MDB_CAS_INFO_ENTRY_SIZE == size_of::<CASChunkSequenceEntry>());
+// Same size for XorbChunkSequenceHeader and XorbChunkSequenceEntry
+const MDB_XORB_INFO_ENTRY_SIZE: usize = size_of::<[u64; 4]>() + 4 * size_of::<u32>();
+const_assert!(MDB_XORB_INFO_ENTRY_SIZE == size_of::<XorbChunkSequenceHeader>());
+const_assert!(MDB_XORB_INFO_ENTRY_SIZE == size_of::<XorbChunkSequenceEntry>());
 
 const MDB_SHARD_FOOTER_SIZE: i64 = size_of::<MDBShardFileFooter>() as i64;
 
@@ -104,14 +104,14 @@ impl MDBShardFileHeader {
 pub struct MDBShardFileFooter {
     pub version: u64,
     pub file_info_offset: u64,
-    pub cas_info_offset: u64,
+    pub xorb_info_offset: u64,
 
     // Lookup tables.  These come after the info sections to allow the shard to be partially
     // read without needing to read the footer.
     pub file_lookup_offset: u64,
     pub file_lookup_num_entry: u64,
-    pub cas_lookup_offset: u64,
-    pub cas_lookup_num_entry: u64,
+    pub xorb_lookup_offset: u64,
+    pub xorb_lookup_num_entry: u64,
     pub chunk_lookup_offset: u64,
     pub chunk_lookup_num_entry: u64,
 
@@ -138,11 +138,11 @@ impl Default for MDBShardFileFooter {
         Self {
             version: MDB_SHARD_FOOTER_VERSION,
             file_info_offset: 0,
-            cas_info_offset: 0,
+            xorb_info_offset: 0,
             file_lookup_offset: 0,
             file_lookup_num_entry: 0,
-            cas_lookup_offset: 0,
-            cas_lookup_num_entry: 0,
+            xorb_lookup_offset: 0,
+            xorb_lookup_num_entry: 0,
             chunk_lookup_offset: 0,
             chunk_lookup_num_entry: 0,
             chunk_hash_hmac_key: HMACKey::default(), // No HMAC key
@@ -163,11 +163,11 @@ impl MDBShardFileFooter {
     pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<usize> {
         write_u64(writer, self.version)?;
         write_u64(writer, self.file_info_offset)?;
-        write_u64(writer, self.cas_info_offset)?;
+        write_u64(writer, self.xorb_info_offset)?;
         write_u64(writer, self.file_lookup_offset)?;
         write_u64(writer, self.file_lookup_num_entry)?;
-        write_u64(writer, self.cas_lookup_offset)?;
-        write_u64(writer, self.cas_lookup_num_entry)?;
+        write_u64(writer, self.xorb_lookup_offset)?;
+        write_u64(writer, self.xorb_lookup_num_entry)?;
         write_u64(writer, self.chunk_lookup_offset)?;
         write_u64(writer, self.chunk_lookup_num_entry)?;
         write_hash(writer, &self.chunk_hash_hmac_key)?;
@@ -195,11 +195,11 @@ impl MDBShardFileFooter {
         let mut obj = Self {
             version,
             file_info_offset: read_u64(reader)?,
-            cas_info_offset: read_u64(reader)?,
+            xorb_info_offset: read_u64(reader)?,
             file_lookup_offset: read_u64(reader)?,
             file_lookup_num_entry: read_u64(reader)?,
-            cas_lookup_offset: read_u64(reader)?,
-            cas_lookup_num_entry: read_u64(reader)?,
+            xorb_lookup_offset: read_u64(reader)?,
+            xorb_lookup_num_entry: read_u64(reader)?,
             chunk_lookup_offset: read_u64(reader)?,
             chunk_lookup_num_entry: read_u64(reader)?,
             chunk_hash_hmac_key: read_hash(reader)?,
@@ -239,17 +239,17 @@ impl MDBShardFileFooter {
 ///
 /// ----------------------------------------------------------------------------
 ///
-/// CAS info.  This is a list of chunks in order of appearance in the CAS chunks.
+/// XORB info.  This is a list of chunks in order of appearance in the XORB chunks.
 ///
-/// Each CAS consists of a CASChunkSequenceHeader following
-/// a sequence of CASChunkSequenceEntry.
+/// Each XORB consists of a XorbChunkSequenceHeader following
+/// a sequence of XorbChunkSequenceEntry.
 ///
 /// [
-///     CASChunkSequenceHeader, // u32 index in CAS lookup directs here.
+///     XorbChunkSequenceHeader, // u32 index in XORB lookup directs here.
 ///     [
-///         CASChunkSequenceEntry, // (u32, u32) index in Chunk lookup directs here.
+///         XorbChunkSequenceEntry, // (u32, u32) index in Chunk lookup directs here.
 ///     ],
-/// ], // Repeats per CAS.
+/// ], // Repeats per XORB.
 ///
 /// ----------------------------------------------------------------------------
 ///  
@@ -263,24 +263,24 @@ impl MDBShardFileFooter {
 ///
 /// ----------------------------------------------------------------------------
 ///
-/// CAS info lookup.  This is a lookup of a truncated CAS hash to the
-/// location index in the CAS info section.
+/// XORB info lookup.  This is a lookup of a truncated XORB hash to the
+/// location index in the XORB info section.
 ///
 /// Sorted Vec<(u64, u32)> on the u64.
 ///
-/// The first entry is the u64 truncated CAS block hash, and the next entry is the
-/// index in the cas info section of the element that starts the cas entry section.
+/// The first entry is the u64 truncated XORB block hash, and the next entry is the
+/// index in the xorb info section of the element that starts the xorb entry section.
 ///
 /// ----------------------------------------------------------------------------
 ///
-/// Chunk info lookup. This is a lookup of a truncated CAS chunk hash to the
-/// location in the CAS info section.
+/// Chunk info lookup. This is a lookup of a truncated XORB chunk hash to the
+/// location in the XORB info section.
 ///
 /// Sorted Vec<(u64, (u32, u32))> on the u64.
 ///
-/// The first entry is the u64 truncated CAS chunk in a CAS block, the first u32 is the index
-/// in the CAS info section that is the start of the CAS block, and the subsequent u32 gives
-/// the offset index of the chunk in that CAS block.
+/// The first entry is the u64 truncated XORB chunk in a XORB block, the first u32 is the index
+/// in the XORB info section that is the start of the XORB block, and the subsequent u32 gives
+/// the offset index of the chunk in that XORB block.
 
 #[derive(Clone, Default, Debug, PartialEq)]
 pub struct MDBShardInfo {
@@ -317,10 +317,10 @@ impl MDBShardInfo {
             Self::convert_and_save_file_info(writer, &mdb.file_content)?;
         bytes_pos += bytes_written;
 
-        // Write CAS info.
-        shard.metadata.cas_info_offset = bytes_pos as u64;
-        let ((cas_lookup_keys, cas_lookup_vals), (chunk_lookup_keys, chunk_lookup_vals), bytes_written) =
-            Self::convert_and_save_cas_info(writer, &mdb.cas_content)?;
+        // Write XORB info.
+        shard.metadata.xorb_info_offset = bytes_pos as u64;
+        let ((xorb_lookup_keys, xorb_lookup_vals), (chunk_lookup_keys, chunk_lookup_vals), bytes_written) =
+            Self::convert_and_save_xorb_info(writer, &mdb.xorb_content)?;
         bytes_pos += bytes_written;
 
         // Write file info lookup table.
@@ -336,14 +336,14 @@ impl MDBShardInfo {
         drop(file_lookup_keys);
         drop(file_lookup_vals);
 
-        // Write cas info lookup table.
-        shard.metadata.cas_lookup_offset = bytes_pos as u64;
-        shard.metadata.cas_lookup_num_entry = cas_lookup_keys.len() as u64;
-        for (&e1, &e2) in cas_lookup_keys.iter().zip(cas_lookup_vals.iter()) {
+        // Write xorb info lookup table.
+        shard.metadata.xorb_lookup_offset = bytes_pos as u64;
+        shard.metadata.xorb_lookup_num_entry = xorb_lookup_keys.len() as u64;
+        for (&e1, &e2) in xorb_lookup_keys.iter().zip(xorb_lookup_vals.iter()) {
             write_u64(writer, e1)?;
             write_u32(writer, e2)?;
         }
-        bytes_pos += size_of::<u64>() * cas_lookup_keys.len() + size_of::<u32>() * cas_lookup_vals.len();
+        bytes_pos += size_of::<u64>() * xorb_lookup_keys.len() + size_of::<u32>() * xorb_lookup_vals.len();
 
         // Write chunk lookup table.
         shard.metadata.chunk_lookup_offset = bytes_pos as u64;
@@ -408,28 +408,28 @@ impl MDBShardInfo {
     }
 
     #[allow(clippy::type_complexity)]
-    fn convert_and_save_cas_info<W: Write>(
+    fn convert_and_save_xorb_info<W: Write>(
         writer: &mut W,
-        cas_content: &BTreeMap<MerkleHash, Arc<MDBCASInfo>>,
+        xorb_content: &BTreeMap<MerkleHash, Arc<MDBXorbInfo>>,
     ) -> Result<(
-        (Vec<u64>, Vec<u32>),        // CAS Lookup Info
+        (Vec<u64>, Vec<u32>),        // XORB Lookup Info
         (Vec<u64>, Vec<(u32, u32)>), // Chunk Lookup Info
-        usize,                       // Bytes used for CAS Content Info
+        usize,                       // Bytes used for XORB Content Info
     )> {
-        // CAS info lookup table.
-        let mut cas_lookup_keys = Vec::<u64>::with_capacity(cas_content.len());
-        let mut cas_lookup_vals = Vec::<u32>::with_capacity(cas_content.len());
+        // XORB info lookup table.
+        let mut xorb_lookup_keys = Vec::<u64>::with_capacity(xorb_content.len());
+        let mut xorb_lookup_vals = Vec::<u32>::with_capacity(xorb_content.len());
 
         // Chunk lookup table.
-        let mut chunk_lookup_keys = Vec::<u64>::with_capacity(cas_content.len()); // may grow
-        let mut chunk_lookup_vals = Vec::<(u32, u32)>::with_capacity(cas_content.len()); // may grow
+        let mut chunk_lookup_keys = Vec::<u64>::with_capacity(xorb_content.len()); // may grow
+        let mut chunk_lookup_vals = Vec::<(u32, u32)>::with_capacity(xorb_content.len()); // may grow
 
         let mut index: u32 = 0;
         let mut bytes_written = 0;
 
-        for (cas_hash, content) in cas_content {
-            cas_lookup_keys.push(truncate_hash(cas_hash));
-            cas_lookup_vals.push(index);
+        for (xorb_hash, content) in xorb_content {
+            xorb_lookup_keys.push(truncate_hash(xorb_hash));
+            xorb_lookup_vals.push(index);
 
             bytes_written += content.metadata.serialize(writer)?;
 
@@ -444,9 +444,9 @@ impl MDBShardInfo {
         }
 
         // Serialize a single bookend entry as a guard for sequential reading.
-        bytes_written += CASChunkSequenceHeader::bookend().serialize(writer)?;
+        bytes_written += XorbChunkSequenceHeader::bookend().serialize(writer)?;
 
-        // No need to sort cas_lookup_ because BTreeMap is ordered and we truncate by the first 8 bytes.
+        // No need to sort xorb_lookup_ because BTreeMap is ordered and we truncate by the first 8 bytes.
 
         // Sort chunk lookup table by key.
         let mut chunk_lookup_combined = chunk_lookup_keys.iter().zip(chunk_lookup_vals.iter()).collect::<Vec<_>>();
@@ -454,7 +454,7 @@ impl MDBShardInfo {
         chunk_lookup_combined.sort_unstable_by_key(|&(k, _)| k);
 
         Ok((
-            (cas_lookup_keys, cas_lookup_vals),
+            (xorb_lookup_keys, xorb_lookup_vals),
             (
                 chunk_lookup_combined.iter().map(|&(k, _)| *k).collect(),
                 chunk_lookup_combined.iter().map(|&(_, v)| *v).collect(),
@@ -498,17 +498,17 @@ impl MDBShardInfo {
         }
     }
 
-    pub fn get_cas_info_index_by_hash<R: Read + Seek>(
+    pub fn get_xorb_info_index_by_hash<R: Read + Seek>(
         &self,
         reader: &mut R,
-        cas_hash: &MerkleHash,
+        xorb_hash: &MerkleHash,
         dest_indices: &mut [u32; 8],
     ) -> Result<usize> {
         let num_indices = search_on_sorted_u64s(
             reader,
-            self.metadata.cas_lookup_offset,
-            self.metadata.cas_lookup_num_entry,
-            truncate_hash(cas_hash),
+            self.metadata.xorb_lookup_offset,
+            self.metadata.xorb_lookup_num_entry,
+            truncate_hash(xorb_hash),
             read_u32::<R>,
             dest_indices,
         )?;
@@ -517,11 +517,11 @@ impl MDBShardInfo {
         if num_indices < dest_indices.len() {
             Ok(num_indices)
         } else {
-            Err(MDBShardError::TruncatedHashCollisionError(truncate_hash(cas_hash)))
+            Err(MDBShardError::TruncatedHashCollisionError(truncate_hash(xorb_hash)))
         }
     }
 
-    pub fn get_cas_info_index_by_chunk<R: Read + Seek>(
+    pub fn get_xorb_info_index_by_chunk<R: Read + Seek>(
         &self,
         reader: &mut R,
         unkeyed_chunk_hash: &MerkleHash,
@@ -574,27 +574,27 @@ impl MDBShardInfo {
         Ok(ret)
     }
 
-    pub fn read_all_cas_blocks<R: Read + Seek>(&self, reader: &mut R) -> Result<Vec<(CASChunkSequenceHeader, u64)>> {
-        // Reads all the cas blocks, returning a list of the cas info and the
-        // starting position of that cas block.
+    pub fn read_all_xorb_blocks<R: Read + Seek>(&self, reader: &mut R) -> Result<Vec<(XorbChunkSequenceHeader, u64)>> {
+        // Reads all the xorb blocks, returning a list of the xorb info and the
+        // starting position of that xorb block.
 
-        let mut cas_blocks =
-            Vec::<(CASChunkSequenceHeader, u64)>::with_capacity(self.metadata.cas_lookup_num_entry as usize);
+        let mut xorb_blocks =
+            Vec::<(XorbChunkSequenceHeader, u64)>::with_capacity(self.metadata.xorb_lookup_num_entry as usize);
 
-        reader.seek(SeekFrom::Start(self.metadata.cas_info_offset))?;
+        reader.seek(SeekFrom::Start(self.metadata.xorb_info_offset))?;
 
         loop {
             let pos = reader.stream_position()?;
-            let cas_block = CASChunkSequenceHeader::deserialize(reader)?;
-            if cas_block.is_bookend() {
+            let xorb_block = XorbChunkSequenceHeader::deserialize(reader)?;
+            if xorb_block.is_bookend() {
                 break;
             }
-            let n = cas_block.num_entries;
-            cas_blocks.push((cas_block, pos));
+            let n = xorb_block.num_entries;
+            xorb_blocks.push((xorb_block, pos));
 
-            reader.seek(SeekFrom::Current((size_of::<CASChunkSequenceEntry>() as i64) * (n as i64)))?;
+            reader.seek(SeekFrom::Current((size_of::<XorbChunkSequenceEntry>() as i64) * (n as i64)))?;
         }
-        Ok(cas_blocks)
+        Ok(xorb_blocks)
     }
 
     /// Returns the keyed chunk hash for the shard.
@@ -608,38 +608,38 @@ impl MDBShardInfo {
         }
     }
 
-    /// Returns a vector holding all the chunk hashes along with their (cas idx, entry idx) locations
-    pub fn read_all_cas_blocks_full<R: Read + Seek>(&self, reader: &mut R) -> Result<Vec<MDBCASInfo>> {
-        let mut ret = Vec::with_capacity(self.num_cas_entries());
+    /// Returns a vector holding all the chunk hashes along with their (xorb idx, entry idx) locations
+    pub fn read_all_xorb_blocks_full<R: Read + Seek>(&self, reader: &mut R) -> Result<Vec<MDBXorbInfo>> {
+        let mut ret = Vec::with_capacity(self.num_xorb_entries());
 
-        let (cas_info_start, _cas_info_end) = self.cas_info_byte_range();
+        let (xorb_info_start, _xorb_info_end) = self.xorb_info_byte_range();
 
-        reader.seek(SeekFrom::Start(cas_info_start))?;
+        reader.seek(SeekFrom::Start(xorb_info_start))?;
 
-        while let Some(cas_info) = MDBCASInfo::deserialize(reader)? {
-            debug_assert!(reader.stream_position()? < _cas_info_end);
-            ret.push(cas_info);
+        while let Some(xorb_info) = MDBXorbInfo::deserialize(reader)? {
+            debug_assert!(reader.stream_position()? < _xorb_info_end);
+            ret.push(xorb_info);
         }
-        debug_assert_eq!(reader.stream_position()?, _cas_info_end);
+        debug_assert_eq!(reader.stream_position()?, _xorb_info_end);
 
         Ok(ret)
     }
 
-    pub fn read_full_cas_lookup<R: Read + Seek>(&self, reader: &mut R) -> Result<Vec<(u64, u32)>> {
-        // Reads all the cas blocks, returning a list of the cas info and the
-        // starting position of that cas block.
+    pub fn read_full_xorb_lookup<R: Read + Seek>(&self, reader: &mut R) -> Result<Vec<(u64, u32)>> {
+        // Reads all the xorb blocks, returning a list of the xorb info and the
+        // starting position of that xorb block.
 
-        let mut cas_lookup: Vec<(u64, u32)> = Vec::with_capacity(self.metadata.cas_lookup_num_entry as usize);
+        let mut xorb_lookup: Vec<(u64, u32)> = Vec::with_capacity(self.metadata.xorb_lookup_num_entry as usize);
 
-        reader.seek(SeekFrom::Start(self.metadata.cas_lookup_offset))?;
+        reader.seek(SeekFrom::Start(self.metadata.xorb_lookup_offset))?;
 
-        for _ in 0..self.metadata.cas_lookup_num_entry {
-            let trunc_cas_hash: u64 = read_u64(reader)?;
+        for _ in 0..self.metadata.xorb_lookup_num_entry {
+            let trunc_xorb_hash: u64 = read_u64(reader)?;
             let idx: u32 = read_u32(reader)?;
-            cas_lookup.push((trunc_cas_hash, idx));
+            xorb_lookup.push((trunc_xorb_hash, idx));
         }
 
-        Ok(cas_lookup)
+        Ok(xorb_lookup)
     }
 
     // Given a file pointer, returns the information needed to reconstruct the file.
@@ -667,7 +667,7 @@ impl MDBShardInfo {
 
     // Performs a query of block hashes against a known block hash, matching
     // as many of the values in query_hashes as possible.  It returns the number
-    // of entries matched from the input hashes, the CAS block hash of the match,
+    // of entries matched from the input hashes, the XORB block hash of the match,
     // and the range matched from that block.
     // In this case, a location hint is given to the function.  It will only return a
     // match from that point
@@ -675,41 +675,41 @@ impl MDBShardInfo {
         &self,
         reader: &mut R,
         unkeyed_query_hashes: &[MerkleHash],
-        cas_entry_index: u32,
-        cas_chunk_offset: u32,
+        xorb_entry_index: u32,
+        xorb_chunk_offset: u32,
     ) -> Result<Option<(usize, FileDataSequenceEntry)>> {
         if unkeyed_query_hashes.is_empty() {
             return Ok(None);
         }
 
         reader.seek(SeekFrom::Start(
-            self.metadata.cas_info_offset + (MDB_CAS_INFO_ENTRY_SIZE as u64) * (cas_entry_index as u64),
+            self.metadata.xorb_info_offset + (MDB_XORB_INFO_ENTRY_SIZE as u64) * (xorb_entry_index as u64),
         ))?;
 
-        let cas_header = CASChunkSequenceHeader::deserialize(reader)?;
+        let xorb_header = XorbChunkSequenceHeader::deserialize(reader)?;
 
-        if cas_chunk_offset != 0 {
+        if xorb_chunk_offset != 0 {
             // Jump forward to the chunk at chunk_offset.
-            reader.seek(SeekFrom::Current(MDB_CAS_INFO_ENTRY_SIZE as i64 * cas_chunk_offset as i64))?;
+            reader.seek(SeekFrom::Current(MDB_XORB_INFO_ENTRY_SIZE as i64 * xorb_chunk_offset as i64))?;
         }
 
         // Now, read in data while the query hashes match.
-        let first_chunk = CASChunkSequenceEntry::deserialize(reader)?;
+        let first_chunk = XorbChunkSequenceEntry::deserialize(reader)?;
         if first_chunk.chunk_hash != self.keyed_chunk_hash(unkeyed_query_hashes[0]) {
             return Ok(None);
         }
 
         let mut n_bytes = first_chunk.unpacked_segment_bytes;
 
-        // Read everything else until the CAS block end.
+        // Read everything else until the XORB block end.
         let mut end_idx = 0;
         for i in 1.. {
-            if cas_chunk_offset as usize + i == cas_header.num_entries as usize {
+            if xorb_chunk_offset as usize + i == xorb_header.num_entries as usize {
                 end_idx = i;
                 break;
             }
 
-            let chunk = CASChunkSequenceEntry::deserialize(reader)?;
+            let chunk = XorbChunkSequenceEntry::deserialize(reader)?;
 
             if i == unkeyed_query_hashes.len() || chunk.chunk_hash != self.keyed_chunk_hash(unkeyed_query_hashes[i]) {
                 end_idx = i;
@@ -722,18 +722,18 @@ impl MDBShardInfo {
         Ok(Some((
             end_idx,
             FileDataSequenceEntry {
-                cas_hash: cas_header.cas_hash,
-                cas_flags: cas_header.cas_flags,
+                xorb_hash: xorb_header.xorb_hash,
+                xorb_flags: xorb_header.xorb_flags,
                 unpacked_segment_bytes: n_bytes,
-                chunk_index_start: cas_chunk_offset,
-                chunk_index_end: cas_chunk_offset + end_idx as u32,
+                chunk_index_start: xorb_chunk_offset,
+                chunk_index_end: xorb_chunk_offset + end_idx as u32,
             },
         )))
     }
 
     // Performs a query of block hashes against a known block hash, matching
     // as many of the values in query_hashes as possible.  It returns the number
-    // of entries matched from the input hashes, the CAS block hash of the match,
+    // of entries matched from the input hashes, the XORB block hash of the match,
     // and the range matched from that block.
     pub fn chunk_hash_dedup_query<R: Read + Seek>(
         &self,
@@ -744,14 +744,14 @@ impl MDBShardInfo {
             return Ok(None);
         }
 
-        // Lookup CAS block from chunk lookup.
+        // Lookup XORB block from chunk lookup.
         let mut dest_indices = [(0u32, 0u32); 8];
-        let num_indices = self.get_cas_info_index_by_chunk(reader, &query_hashes[0], &mut dest_indices)?;
+        let num_indices = self.get_xorb_info_index_by_chunk(reader, &query_hashes[0], &mut dest_indices)?;
 
         // Sequentially match chunks in that block.
-        for &(cas_index, chunk_offset) in dest_indices.iter().take(num_indices) {
-            if let Some(cas) = self.chunk_hash_dedup_query_direct(reader, query_hashes, cas_index, chunk_offset)? {
-                return Ok(Some(cas));
+        for &(xorb_index, chunk_offset) in dest_indices.iter().take(num_indices) {
+            if let Some(xorb) = self.chunk_hash_dedup_query_direct(reader, query_hashes, xorb_index, chunk_offset)? {
+                return Ok(Some(xorb));
             }
         }
         Ok(None)
@@ -767,32 +767,32 @@ impl MDBShardInfo {
                 ret.push((read_u64(reader)?, (read_u32(reader)?, read_u32(reader)?)));
             }
         } else {
-            let (cas_info_start, cas_info_end) = self.cas_info_byte_range();
+            let (xorb_info_start, xorb_info_end) = self.xorb_info_byte_range();
 
             // We don't have the lookup table, so
-            let n_elements_cap = (cas_info_end - cas_info_start) as usize / size_of::<CASChunkSequenceEntry>();
+            let n_elements_cap = (xorb_info_end - xorb_info_start) as usize / size_of::<XorbChunkSequenceEntry>();
 
             ret = Vec::with_capacity(n_elements_cap);
 
-            let mut cas_index = 0;
+            let mut xorb_index = 0;
 
-            reader.seek(SeekFrom::Start(cas_info_start))?;
-            while reader.stream_position()? < cas_info_end {
-                let cas_header = CASChunkSequenceHeader::deserialize(reader)?;
+            reader.seek(SeekFrom::Start(xorb_info_start))?;
+            while reader.stream_position()? < xorb_info_end {
+                let xorb_header = XorbChunkSequenceHeader::deserialize(reader)?;
 
-                for chunk_index in 0..cas_header.num_entries {
-                    let chunk = CASChunkSequenceEntry::deserialize(reader)?;
-                    ret.push((truncate_hash(&chunk.chunk_hash), (cas_index, chunk_index)));
+                for chunk_index in 0..xorb_header.num_entries {
+                    let chunk = XorbChunkSequenceEntry::deserialize(reader)?;
+                    ret.push((truncate_hash(&chunk.chunk_hash), (xorb_index, chunk_index)));
                 }
-                cas_index += 1 + cas_header.num_entries;
+                xorb_index += 1 + xorb_header.num_entries;
             }
         }
 
         Ok(ret)
     }
 
-    pub fn num_cas_entries(&self) -> usize {
-        self.metadata.cas_lookup_num_entry as usize
+    pub fn num_xorb_entries(&self) -> usize {
+        self.metadata.xorb_lookup_num_entry as usize
     }
 
     pub fn num_file_entries(&self) -> usize {
@@ -804,19 +804,19 @@ impl MDBShardInfo {
     }
 
     pub fn file_info_byte_range(&self) -> (u64, u64) {
-        (self.metadata.file_info_offset, self.metadata.cas_info_offset)
+        (self.metadata.file_info_offset, self.metadata.xorb_info_offset)
     }
 
-    pub fn cas_info_byte_range(&self) -> (u64, u64) {
-        (self.metadata.cas_info_offset, self.metadata.file_lookup_offset)
+    pub fn xorb_info_byte_range(&self) -> (u64, u64) {
+        (self.metadata.xorb_info_offset, self.metadata.file_lookup_offset)
     }
 
     pub fn file_lookup_byte_range(&self) -> (u64, u64) {
-        (self.metadata.file_lookup_offset, self.metadata.cas_lookup_offset)
+        (self.metadata.file_lookup_offset, self.metadata.xorb_lookup_offset)
     }
 
-    pub fn cas_lookup_byte_range(&self) -> (u64, u64) {
-        (self.metadata.cas_lookup_offset, self.metadata.chunk_lookup_offset)
+    pub fn xorb_lookup_byte_range(&self) -> (u64, u64) {
+        (self.metadata.xorb_lookup_offset, self.metadata.chunk_lookup_offset)
     }
 
     pub fn chuck_lookup_byte_range(&self) -> (u64, u64) {
@@ -844,7 +844,7 @@ impl MDBShardInfo {
     pub fn non_content_byte_size() -> u64 {
         (size_of::<MDBShardFileFooter>() + size_of::<MDBShardFileHeader>()) as u64 // Header and footer
             + size_of::<FileDataSequenceHeader>() as u64 // Guard block for scanning.
-            + size_of::<CASChunkSequenceHeader>() as u64 // Guard block for scanning.
+            + size_of::<XorbChunkSequenceHeader>() as u64 // Guard block for scanning.
     }
 
     pub fn print_report(&self) {
@@ -853,8 +853,8 @@ impl MDBShardInfo {
         eprintln!("Byte size of file info: {}, ({file_info_start} - {file_info_end})", file_info_end - file_info_start);
 
         // Cas info bytes.
-        let (cas_info_start, cas_info_end) = self.cas_info_byte_range();
-        eprintln!("Byte size of cas info: {}, ({cas_info_start} - {cas_info_end})", cas_info_end - cas_info_start);
+        let (xorb_info_start, xorb_info_end) = self.xorb_info_byte_range();
+        eprintln!("Byte size of xorb info: {}, ({xorb_info_start} - {xorb_info_end})", xorb_info_end - xorb_info_start);
 
         // File lookup bytes.
         let (file_lookup_start, file_lookup_end) = self.file_lookup_byte_range();
@@ -863,11 +863,11 @@ impl MDBShardInfo {
             file_lookup_end - file_lookup_start
         );
 
-        // CAS lookup bytes.
-        let (cas_lookup_start, cas_lookup_end) = self.cas_lookup_byte_range();
+        // XORB lookup bytes.
+        let (xorb_lookup_start, xorb_lookup_end) = self.xorb_lookup_byte_range();
         eprintln!(
-            "Byte size of cas lookup: {}, ({cas_lookup_start} - {cas_lookup_end})",
-            cas_lookup_end - cas_lookup_start
+            "Byte size of xorb lookup: {}, ({xorb_lookup_start} - {xorb_lookup_end})",
+            xorb_lookup_end - xorb_lookup_start
         );
 
         // Chunk lookup bytes.
@@ -945,7 +945,7 @@ impl MDBShardInfo {
         hmac_key: HMACKey,
         key_valid_for: Duration,
         include_file_info: bool,
-        include_cas_lookup_table: bool,
+        include_xorb_lookup_table: bool,
         include_chunk_lookup_table: bool,
     ) -> Result<usize> {
         Self::export_as_keyed_shard_impl(
@@ -954,7 +954,7 @@ impl MDBShardInfo {
             hmac_key,
             key_valid_for,
             include_file_info,
-            include_cas_lookup_table,
+            include_xorb_lookup_table,
             include_chunk_lookup_table,
             Some(self),
         )
@@ -968,7 +968,7 @@ impl MDBShardInfo {
         hmac_key: HMACKey,
         key_valid_for: Duration,
         include_file_info: bool,
-        include_cas_lookup_table: bool,
+        include_xorb_lookup_table: bool,
         include_chunk_lookup_table: bool,
     ) -> Result<usize> {
         Self::export_as_keyed_shard_impl(
@@ -977,7 +977,7 @@ impl MDBShardInfo {
             hmac_key,
             key_valid_for,
             include_file_info,
-            include_cas_lookup_table,
+            include_xorb_lookup_table,
             include_chunk_lookup_table,
             None,
         )
@@ -990,7 +990,7 @@ impl MDBShardInfo {
         hmac_key: HMACKey,
         key_valid_for: Duration,
         include_file_info: bool,
-        include_cas_lookup_table: bool,
+        include_xorb_lookup_table: bool,
         include_chunk_lookup_table: bool,
         // Pass this in when we have it so we can use debug asserts for verification checking in tests.
         self_verification: Option<&Self>,
@@ -1065,35 +1065,35 @@ impl MDBShardInfo {
         }
 
         if let Some(self_) = self_verification {
-            debug_assert_eq!(reader.stream_position()?, self_.metadata.cas_info_offset);
+            debug_assert_eq!(reader.stream_position()?, self_.metadata.xorb_info_offset);
         }
 
-        let mut cas_lookup = Vec::<(u64, u32)>::new();
+        let mut xorb_lookup = Vec::<(u64, u32)>::new();
         let mut chunk_lookup = Vec::<(u64, (u32, u32))>::new();
 
-        // Now deal with all the cas information
-        out_footer.cas_info_offset = byte_pos as u64;
+        // Now deal with all the xorb information
+        out_footer.xorb_info_offset = byte_pos as u64;
 
-        let mut cas_index = 0;
+        let mut xorb_index = 0;
         let mut stored_bytes_on_disk = 0;
         let mut stored_bytes = 0;
 
         loop {
-            let cas_metadata = CASChunkSequenceHeader::deserialize(reader)?;
+            let xorb_metadata = XorbChunkSequenceHeader::deserialize(reader)?;
 
             // All metadata gets serialized.
-            byte_pos += cas_metadata.serialize(writer)?;
+            byte_pos += xorb_metadata.serialize(writer)?;
 
-            if cas_metadata.is_bookend() {
+            if xorb_metadata.is_bookend() {
                 break;
             }
 
-            if include_cas_lookup_table {
-                cas_lookup.push((truncate_hash(&cas_metadata.cas_hash), cas_index));
+            if include_xorb_lookup_table {
+                xorb_lookup.push((truncate_hash(&xorb_metadata.xorb_hash), xorb_index));
             }
 
-            for chunk_index in 0..cas_metadata.num_entries {
-                let mut chunk = CASChunkSequenceEntry::deserialize(reader)?;
+            for chunk_index in 0..xorb_metadata.num_entries {
+                let mut chunk = XorbChunkSequenceEntry::deserialize(reader)?;
 
                 // MAke sure we don't actually put things into an unusable state.
                 if hmac_key != HMACKey::default() {
@@ -1101,15 +1101,15 @@ impl MDBShardInfo {
                 }
 
                 if include_chunk_lookup_table {
-                    chunk_lookup.push((truncate_hash(&chunk.chunk_hash), (cas_index, chunk_index)));
+                    chunk_lookup.push((truncate_hash(&chunk.chunk_hash), (xorb_index, chunk_index)));
                 }
 
                 byte_pos += chunk.serialize(writer)?;
             }
 
-            cas_index += 1 + cas_metadata.num_entries;
-            stored_bytes_on_disk += cas_metadata.num_bytes_on_disk as u64;
-            stored_bytes += cas_metadata.num_bytes_in_cas as u64;
+            xorb_index += 1 + xorb_metadata.num_entries;
+            stored_bytes_on_disk += xorb_metadata.num_bytes_on_disk as u64;
+            stored_bytes += xorb_metadata.num_bytes_in_xorb as u64;
         }
 
         if let Some(self_) = self_verification {
@@ -1136,24 +1136,24 @@ impl MDBShardInfo {
             out_footer.file_lookup_num_entry = 0;
         }
 
-        // CAS lookup section.
-        out_footer.cas_lookup_offset = byte_pos as u64;
+        // XORB lookup section.
+        out_footer.xorb_lookup_offset = byte_pos as u64;
 
-        if include_cas_lookup_table {
+        if include_xorb_lookup_table {
             if let Some(self_) = self_verification {
-                debug_assert_eq!(cas_lookup.len(), self_.metadata.cas_lookup_num_entry as usize);
+                debug_assert_eq!(xorb_lookup.len(), self_.metadata.xorb_lookup_num_entry as usize);
             }
 
-            for &(key, idx) in cas_lookup.iter() {
+            for &(key, idx) in xorb_lookup.iter() {
                 write_u64(writer, key)?;
                 write_u32(writer, idx)?;
             }
 
-            byte_pos += cas_lookup.len() * (size_of::<u64>() + size_of::<u32>());
+            byte_pos += xorb_lookup.len() * (size_of::<u64>() + size_of::<u32>());
 
-            out_footer.cas_lookup_num_entry = cas_lookup.len() as u64;
+            out_footer.xorb_lookup_num_entry = xorb_lookup.len() as u64;
         } else {
-            out_footer.cas_lookup_num_entry = 0;
+            out_footer.xorb_lookup_num_entry = 0;
         }
 
         out_footer.chunk_lookup_offset = byte_pos as u64;
@@ -1215,12 +1215,12 @@ pub mod test_routines {
     use rand::{Rng, SeedableRng};
 
     use super::FileVerificationEntry;
-    use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
     use crate::error::Result;
     use crate::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, MDBFileInfo};
     use crate::shard_format::MDBShardInfo;
     use crate::shard_in_memory::MDBInMemoryShard;
     use crate::streaming_shard::MDBMinimalShard;
+    use crate::xorb_structs::{MDBXorbInfo, XorbChunkSequenceEntry, XorbChunkSequenceHeader};
 
     pub fn simple_hash(n: u64) -> MerkleHash {
         MerkleHash::from([n, 1, 0, 0])
@@ -1240,25 +1240,25 @@ pub mod test_routines {
 
     #[allow(clippy::type_complexity)]
     pub fn gen_specific_shard(
-        cas_nodes: &[(u64, &[(u64, u32)])],
+        xorb_nodes: &[(u64, &[(u64, u32)])],
         file_nodes: &[(u64, &[(u64, (u32, u32))])],
         verifications: Option<&[&[u64]]>,
         metadata_exts: Option<&[u64]>,
     ) -> Result<MDBInMemoryShard> {
         let mut shard = MDBInMemoryShard::default();
 
-        for (hash, chunks) in cas_nodes {
-            let mut cas_block = Vec::<_>::new();
+        for (hash, chunks) in xorb_nodes {
+            let mut xorb_block = Vec::<_>::new();
             let mut pos = 0u32;
 
             for (h, s) in chunks.iter() {
-                cas_block.push(CASChunkSequenceEntry::new(simple_hash(*h), pos, *s));
+                xorb_block.push(XorbChunkSequenceEntry::new(simple_hash(*h), pos, *s));
                 pos += s
             }
 
-            shard.add_cas_block(MDBCASInfo {
-                metadata: CASChunkSequenceHeader::new(simple_hash(*hash), chunks.len(), pos),
-                chunks: cas_block,
+            shard.add_xorb_block(MDBXorbInfo {
+                metadata: XorbChunkSequenceHeader::new(simple_hash(*hash), chunks.len(), pos),
+                chunks: xorb_block,
             })?;
         }
 
@@ -1324,14 +1324,14 @@ pub mod test_routines {
 
     pub fn gen_random_shard(
         seed: u64,
-        cas_block_sizes: &[usize],
+        xorb_block_sizes: &[usize],
         file_chunk_range_sizes: &[usize],
         contains_verification: bool,
         contains_metadata_ext: bool,
     ) -> Result<MDBInMemoryShard> {
         gen_random_shard_impl(
             seed,
-            cas_block_sizes,
+            xorb_block_sizes,
             file_chunk_range_sizes,
             contains_verification,
             contains_metadata_ext,
@@ -1339,16 +1339,16 @@ pub mod test_routines {
         )
     }
 
-    pub fn gen_random_shard_with_cas_references(
+    pub fn gen_random_shard_with_xorb_references(
         seed: u64,
-        cas_block_sizes: &[usize],
+        xorb_block_sizes: &[usize],
         file_chunk_range_sizes: &[usize],
         contains_verification: bool,
         contains_metadata_ext: bool,
     ) -> Result<MDBInMemoryShard> {
         gen_random_shard_impl(
             seed,
-            cas_block_sizes,
+            xorb_block_sizes,
             file_chunk_range_sizes,
             contains_verification,
             contains_metadata_ext,
@@ -1358,44 +1358,48 @@ pub mod test_routines {
 
     pub fn gen_random_shard_impl(
         seed: u64,
-        cas_block_sizes: &[usize],
+        xorb_block_sizes: &[usize],
         file_chunk_range_sizes: &[usize],
         contains_verification: bool,
         contains_metadata_ext: bool,
-        files_cross_reference_cas: bool,
+        files_cross_reference_xorb: bool,
     ) -> Result<MDBInMemoryShard> {
-        // generate the cas content stuff.
+        // generate the xorb content stuff.
         let mut shard = MDBInMemoryShard::default();
         let mut rng = StdRng::seed_from_u64(seed);
 
-        let mut cas_nodes = Vec::new();
+        let mut xorb_nodes = Vec::new();
 
-        for cas_block_size in cas_block_sizes {
-            let mut cas_block = Vec::<_>::new();
+        for xorb_block_size in xorb_block_sizes {
+            let mut xorb_block = Vec::<_>::new();
             let mut pos = 0u32;
 
-            for _ in 0..*cas_block_size {
-                cas_block.push(CASChunkSequenceEntry::new(rng_hash(rng.random()), rng.random_range(10000..20000), pos));
+            for _ in 0..*xorb_block_size {
+                xorb_block.push(XorbChunkSequenceEntry::new(
+                    rng_hash(rng.random()),
+                    rng.random_range(10000..20000),
+                    pos,
+                ));
                 pos += rng.random_range(10000..20000);
             }
 
-            let cas_block = MDBCASInfo {
-                metadata: CASChunkSequenceHeader::new(rng_hash(rng.random()), *cas_block_size, pos),
-                chunks: cas_block,
+            let xorb_block = MDBXorbInfo {
+                metadata: XorbChunkSequenceHeader::new(rng_hash(rng.random()), *xorb_block_size, pos),
+                chunks: xorb_block,
             };
 
-            if files_cross_reference_cas {
-                cas_nodes.push(cas_block.clone());
+            if files_cross_reference_xorb {
+                xorb_nodes.push(xorb_block.clone());
             }
 
-            shard.add_cas_block(cas_block)?;
+            shard.add_xorb_block(xorb_block)?;
         }
 
         for file_block_size in file_chunk_range_sizes {
-            let file_info = if files_cross_reference_cas {
+            let file_info = if files_cross_reference_xorb {
                 gen_random_file_info_with_cas_references(
                     &mut rng,
-                    &cas_nodes,
+                    &xorb_nodes,
                     file_block_size,
                     contains_verification,
                     contains_metadata_ext,
@@ -1452,7 +1456,7 @@ pub mod test_routines {
 
     pub fn gen_random_file_info_with_cas_references(
         rng: &mut StdRng,
-        cas_nodes: &[MDBCASInfo],
+        xorb_nodes: &[MDBXorbInfo],
         file_block_size: &usize,
         contains_verification: bool,
         contains_metadata_ext: bool,
@@ -1461,14 +1465,14 @@ pub mod test_routines {
 
         let file_contents: Vec<_> = (0..*file_block_size)
             .map(|_| {
-                let cas_idx = rng.random_range(0..cas_nodes.len());
-                let cas_block = &cas_nodes[cas_idx];
-                let start_idx = rng.random_range(0..cas_block.chunks.len());
-                let end_idx = rng.random_range((start_idx + 1)..=cas_nodes[cas_idx].chunks.len());
+                let xorb_idx = rng.random_range(0..xorb_nodes.len());
+                let xorb_block = &xorb_nodes[xorb_idx];
+                let start_idx = rng.random_range(0..xorb_block.chunks.len());
+                let end_idx = rng.random_range((start_idx + 1)..=xorb_nodes[xorb_idx].chunks.len());
 
                 FileDataSequenceEntry::new(
-                    cas_block.metadata.cas_hash,
-                    cas_block.chunks[start_idx..end_idx]
+                    xorb_block.metadata.xorb_hash,
+                    xorb_block.chunks[start_idx..end_idx]
                         .iter()
                         .map(|c| c.unpacked_segment_bytes)
                         .sum(),
@@ -1524,14 +1528,14 @@ pub mod test_routines {
         assert_eq!(mem_shard.materialized_bytes(), shard_file.materialized_bytes());
         assert_eq!(mem_shard.stored_bytes(), shard_file.stored_bytes());
 
-        for (k, cas_block) in mem_shard.cas_content.iter() {
+        for (k, xorb_block) in mem_shard.xorb_content.iter() {
             // Go through and test queries on both the in-memory shard and the
             // serialized shard, making sure that they match completely.
 
-            for i in 0..cas_block.chunks.len() {
+            for i in 0..xorb_block.chunks.len() {
                 // Test the dedup query over a few hashes in which all the
-                // hashes queried are part of the cas_block.
-                let query_hashes_1: Vec<MerkleHash> = cas_block.chunks[i..(i + 3).min(cas_block.chunks.len())]
+                // hashes queried are part of the xorb_block.
+                let query_hashes_1: Vec<MerkleHash> = xorb_block.chunks[i..(i + 3).min(xorb_block.chunks.len())]
                     .iter()
                     .map(|c| c.chunk_hash)
                     .collect();
@@ -1543,7 +1547,7 @@ pub mod test_routines {
                 query_hashes_2.push(rng_hash(1000000 + i as u64));
 
                 let lb = i as u32;
-                let ub = min(i + 3, cas_block.chunks.len()) as u32;
+                let ub = min(i + 3, xorb_block.chunks.len()) as u32;
 
                 for query_hashes in [&query_hashes_1, &query_hashes_2] {
                     let result_m = mem_shard.chunk_hash_dedup_query(query_hashes).unwrap();
@@ -1554,9 +1558,9 @@ pub mod test_routines {
                     assert_eq!(result_m.0, n_items_to_read);
                     assert_eq!(result_f.0, n_items_to_read);
 
-                    // Make sure it gives the correct CAS block hash as the second part of the
-                    assert_eq!(result_m.1.cas_hash, *k);
-                    assert_eq!(result_f.1.cas_hash, *k);
+                    // Make sure it gives the correct XORB block hash as the second part of the
+                    assert_eq!(result_m.1.xorb_hash, *k);
+                    assert_eq!(result_f.1.xorb_hash, *k);
 
                     // Make sure the bounds are correct
                     assert_eq!((result_m.1.chunk_index_start, result_m.1.chunk_index_end), (lb, ub));
@@ -1590,31 +1594,31 @@ pub mod test_routines {
             }
         }
 
-        // Make sure the cas blocks and chunks are correct.
-        let cas_blocks_full = shard_file.read_all_cas_blocks_full(&mut cursor)?;
+        // Make sure the xorb blocks and chunks are correct.
+        let xorb_blocks_full = shard_file.read_all_xorb_blocks_full(&mut cursor)?;
 
-        // Make sure the cas blocks are correct
-        let cas_blocks = shard_file.read_all_cas_blocks(&mut cursor)?;
-        assert_eq!(cas_blocks.len(), min_shard.num_cas());
+        // Make sure the xorb blocks are correct
+        let xorb_blocks = shard_file.read_all_xorb_blocks(&mut cursor)?;
+        assert_eq!(xorb_blocks.len(), min_shard.num_xorb());
 
-        for (i, (cas_block, pos)) in cas_blocks.into_iter().enumerate() {
-            let cas = mem_shard.cas_content.get(&cas_block.cas_hash).unwrap();
+        for (i, (xorb_block, pos)) in xorb_blocks.into_iter().enumerate() {
+            let xorb = mem_shard.xorb_content.get(&xorb_block.xorb_hash).unwrap();
 
-            assert_eq!(cas_block.num_entries, cas.chunks.len() as u32);
+            assert_eq!(xorb_block.num_entries, xorb.chunks.len() as u32);
 
             cursor.seek(std::io::SeekFrom::Start(pos))?;
 
-            let read_cas = MDBCASInfo::deserialize(&mut cursor)?.unwrap();
-            assert_eq!(read_cas.metadata, cas_block);
+            let read_xorb = MDBXorbInfo::deserialize(&mut cursor)?.unwrap();
+            assert_eq!(read_xorb.metadata, xorb_block);
 
-            assert_eq!(&read_cas, cas.as_ref());
-            assert_eq!(&cas_blocks_full[i], cas.as_ref());
+            assert_eq!(&read_xorb, xorb.as_ref());
+            assert_eq!(&xorb_blocks_full[i], xorb.as_ref());
 
-            let m_cas_chunk = min_shard.cas(i).unwrap();
-            assert_eq!(m_cas_chunk.header(), &cas_blocks_full[i].metadata);
-            assert_eq!(m_cas_chunk.num_entries(), cas_blocks_full[i].chunks.len());
-            for j in 0..m_cas_chunk.num_entries() {
-                assert_eq!(cas_blocks_full[i].chunks[j], m_cas_chunk.chunk(j));
+            let m_xorb_chunk = min_shard.xorb(i).unwrap();
+            assert_eq!(m_xorb_chunk.header(), &xorb_blocks_full[i].metadata);
+            assert_eq!(m_xorb_chunk.num_entries(), xorb_blocks_full[i].chunks.len());
+            for j in 0..m_xorb_chunk.num_entries() {
+                assert_eq!(xorb_blocks_full[i].chunks[j], m_xorb_chunk.chunk(j));
             }
         }
 

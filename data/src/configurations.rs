@@ -3,9 +3,9 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use cas_client::remote_client::PREFIX_DEFAULT;
-use cas_object::CompressionScheme;
 use http::HeaderMap;
 use utils::auth::AuthConfig;
+use xorb_object::CompressionScheme;
 
 use crate::errors::Result;
 

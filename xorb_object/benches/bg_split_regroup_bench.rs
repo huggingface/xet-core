@@ -1,8 +1,8 @@
 use std::time::Instant;
 
 use byte_grouping::bg4::bg4_split_separate;
-use cas_object::*;
 use rand::Rng;
+use xorb_object::*;
 
 use crate::byte_grouping::bg4;
 

@@ -7,37 +7,37 @@ use utils::serialization_utils::*;
 
 use crate::hash_is_global_dedup_eligible;
 
-pub const MDB_DEFAULT_CAS_FLAG: u32 = 0;
+pub const MDB_DEFAULT_XORB_FLAG: u32 = 0;
 
 pub const MDB_CHUNK_WITH_GLOBAL_DEDUP_FLAG: u32 = 1 << 31;
 
-/// Each CAS consists of a CASChunkSequenceHeader following
-/// a sequence of CASChunkSequenceEntry.
+/// Each XORB consists of a XorbChunkSequenceHeader following
+/// a sequence of XorbChunkSequenceEntry.
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct CASChunkSequenceHeader {
-    pub cas_hash: MerkleHash,
-    pub cas_flags: u32,
+pub struct XorbChunkSequenceHeader {
+    pub xorb_hash: MerkleHash,
+    pub xorb_flags: u32,
     pub num_entries: u32,
-    pub num_bytes_in_cas: u32,
+    pub num_bytes_in_xorb: u32,
     pub num_bytes_on_disk: u32,
 }
 
-impl CASChunkSequenceHeader {
+impl XorbChunkSequenceHeader {
     pub fn new<I1: TryInto<u32>, I2: TryInto<u32> + Copy>(
-        cas_hash: MerkleHash,
+        xorb_hash: MerkleHash,
         num_entries: I1,
-        num_bytes_in_cas: I2,
+        num_bytes_in_xorb: I2,
     ) -> Self
     where
         <I1 as TryInto<u32>>::Error: std::fmt::Debug,
         <I2 as TryInto<u32>>::Error: std::fmt::Debug,
     {
         Self {
-            cas_hash,
-            cas_flags: MDB_DEFAULT_CAS_FLAG,
+            xorb_hash,
+            xorb_flags: MDB_DEFAULT_XORB_FLAG,
             num_entries: num_entries.try_into().unwrap(),
-            num_bytes_in_cas: num_bytes_in_cas.try_into().unwrap(),
+            num_bytes_in_xorb: num_bytes_in_xorb.try_into().unwrap(),
             num_bytes_on_disk: 0,
         }
     }
@@ -45,13 +45,13 @@ impl CASChunkSequenceHeader {
     pub fn bookend() -> Self {
         Self {
             // Use all 1s to denote a bookend hash.
-            cas_hash: [!0u64; 4].into(),
+            xorb_hash: [!0u64; 4].into(),
             ..Default::default()
         }
     }
 
     pub fn is_bookend(&self) -> bool {
-        self.cas_hash == [!0u64; 4].into()
+        self.xorb_hash == [!0u64; 4].into()
     }
 
     pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<usize, std::io::Error> {
@@ -60,10 +60,10 @@ impl CASChunkSequenceHeader {
             let mut writer_cur = Cursor::new(&mut buf[..]);
             let writer = &mut writer_cur;
 
-            write_hash(writer, &self.cas_hash)?;
-            write_u32(writer, self.cas_flags)?;
+            write_hash(writer, &self.xorb_hash)?;
+            write_u32(writer, self.xorb_flags)?;
             write_u32(writer, self.num_entries)?;
-            write_u32(writer, self.num_bytes_in_cas)?;
+            write_u32(writer, self.num_bytes_in_xorb)?;
             write_u32(writer, self.num_bytes_on_disk)?;
         }
 
@@ -79,17 +79,17 @@ impl CASChunkSequenceHeader {
         let reader = &mut reader_curs;
 
         Ok(Self {
-            cas_hash: read_hash(reader)?,
-            cas_flags: read_u32(reader)?,
+            xorb_hash: read_hash(reader)?,
+            xorb_flags: read_u32(reader)?,
             num_entries: read_u32(reader)?,
-            num_bytes_in_cas: read_u32(reader)?,
+            num_bytes_in_xorb: read_u32(reader)?,
             num_bytes_on_disk: read_u32(reader)?,
         })
     }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct CASChunkSequenceEntry {
+pub struct XorbChunkSequenceEntry {
     pub chunk_hash: MerkleHash,
     pub chunk_byte_range_start: u32,
     pub unpacked_segment_bytes: u32,
@@ -97,7 +97,7 @@ pub struct CASChunkSequenceEntry {
     pub _unused: u32,
 }
 
-impl CASChunkSequenceEntry {
+impl XorbChunkSequenceEntry {
     pub fn new<I1: TryInto<u32>, I2: TryInto<u32>>(
         chunk_hash: MerkleHash,
         unpacked_segment_bytes: I1,
@@ -151,7 +151,7 @@ impl CASChunkSequenceEntry {
 
         writer.write_all(&buf[..])?;
 
-        Ok(size_of::<CASChunkSequenceEntry>())
+        Ok(size_of::<XorbChunkSequenceEntry>())
     }
 
     pub fn deserialize<R: Read>(reader: &mut R) -> Result<Self, std::io::Error> {
@@ -171,18 +171,18 @@ impl CASChunkSequenceEntry {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct MDBCASInfo {
-    pub metadata: CASChunkSequenceHeader,
-    pub chunks: Vec<CASChunkSequenceEntry>,
+pub struct MDBXorbInfo {
+    pub metadata: XorbChunkSequenceHeader,
+    pub chunks: Vec<XorbChunkSequenceEntry>,
 }
 
-impl MDBCASInfo {
+impl MDBXorbInfo {
     pub fn num_bytes(&self) -> u64 {
-        (size_of::<CASChunkSequenceHeader>() + self.chunks.len() * size_of::<CASChunkSequenceEntry>()) as u64
+        (size_of::<XorbChunkSequenceHeader>() + self.chunks.len() * size_of::<XorbChunkSequenceEntry>()) as u64
     }
 
     pub fn deserialize<R: Read>(reader: &mut R) -> Result<Option<Self>, std::io::Error> {
-        let metadata = CASChunkSequenceHeader::deserialize(reader)?;
+        let metadata = XorbChunkSequenceHeader::deserialize(reader)?;
 
         // This is the single bookend entry as a guard for sequential reading.
         if metadata.is_bookend() {
@@ -191,7 +191,7 @@ impl MDBCASInfo {
 
         let mut chunks = Vec::with_capacity(metadata.num_entries as usize);
         for _ in 0..metadata.num_entries {
-            chunks.push(CASChunkSequenceEntry::deserialize(reader)?);
+            chunks.push(XorbChunkSequenceEntry::deserialize(reader)?);
         }
 
         Ok(Some(Self { metadata, chunks }))
@@ -217,51 +217,51 @@ impl MDBCASInfo {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct MDBCASInfoView {
-    header: CASChunkSequenceHeader,
+pub struct MDBXorbInfoView {
+    header: XorbChunkSequenceHeader,
     data: Bytes, // reference counted read-only vector
 }
 
-impl MDBCASInfoView {
+impl MDBXorbInfoView {
     pub fn new(data: Bytes) -> std::io::Result<Self> {
         let mut reader = Cursor::new(&data);
-        let header = CASChunkSequenceHeader::deserialize(&mut reader)?;
+        let header = XorbChunkSequenceHeader::deserialize(&mut reader)?;
 
         Self::from_data_and_header(header, data)
     }
 
-    pub fn from_data_and_header(header: CASChunkSequenceHeader, data: Bytes) -> std::io::Result<Self> {
+    pub fn from_data_and_header(header: XorbChunkSequenceHeader, data: Bytes) -> std::io::Result<Self> {
         let n = header.num_entries as usize;
 
-        let n_bytes = size_of::<CASChunkSequenceHeader>() + n * size_of::<CASChunkSequenceEntry>();
+        let n_bytes = size_of::<XorbChunkSequenceHeader>() + n * size_of::<XorbChunkSequenceEntry>();
 
         if data.len() < n_bytes {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
-                "Provided slice too small to read Cas Info",
+                "Provided slice too small to read Xorb Info",
             ));
         }
 
         Ok(Self { header, data })
     }
 
-    pub fn header(&self) -> &CASChunkSequenceHeader {
+    pub fn header(&self) -> &XorbChunkSequenceHeader {
         &self.header
     }
 
-    pub fn cas_hash(&self) -> MerkleHash {
-        self.header.cas_hash
+    pub fn xorb_hash(&self) -> MerkleHash {
+        self.header.xorb_hash
     }
 
     pub fn num_entries(&self) -> usize {
         self.header.num_entries as usize
     }
 
-    pub fn chunk(&self, idx: usize) -> CASChunkSequenceEntry {
+    pub fn chunk(&self, idx: usize) -> XorbChunkSequenceEntry {
         debug_assert!(idx < self.num_entries());
 
-        CASChunkSequenceEntry::deserialize(&mut Cursor::new(
-            &self.data[(size_of::<CASChunkSequenceHeader>() + idx * size_of::<CASChunkSequenceEntry>())..],
+        XorbChunkSequenceEntry::deserialize(&mut Cursor::new(
+            &self.data[(size_of::<XorbChunkSequenceHeader>() + idx * size_of::<XorbChunkSequenceEntry>())..],
         ))
         .expect("bookkeeping error on data bounds")
     }
@@ -269,7 +269,7 @@ impl MDBCASInfoView {
     #[inline]
     pub fn byte_size(&self) -> usize {
         let n = self.num_entries();
-        size_of::<CASChunkSequenceHeader>() + n * size_of::<CASChunkSequenceEntry>()
+        size_of::<XorbChunkSequenceHeader>() + n * size_of::<XorbChunkSequenceEntry>()
     }
 
     #[inline]
@@ -283,7 +283,7 @@ impl MDBCASInfoView {
     pub fn serialize_with_chunk_rewrite<W: Write>(
         &self,
         writer: &mut W,
-        chunk_rewrite_fn: impl Fn(usize, CASChunkSequenceEntry) -> CASChunkSequenceEntry,
+        chunk_rewrite_fn: impl Fn(usize, XorbChunkSequenceEntry) -> XorbChunkSequenceEntry,
     ) -> std::io::Result<usize> {
         let mut n_out_bytes = 0;
         n_out_bytes += self.header.serialize(writer)?;
@@ -297,15 +297,15 @@ impl MDBCASInfoView {
     }
 }
 
-impl From<&MDBCASInfoView> for MDBCASInfo {
-    fn from(view: &MDBCASInfoView) -> Self {
-        let chunks: Vec<CASChunkSequenceEntry> = (0..view.num_entries()).map(|i| view.chunk(i)).collect();
+impl From<&MDBXorbInfoView> for MDBXorbInfo {
+    fn from(view: &MDBXorbInfoView) -> Self {
+        let chunks: Vec<XorbChunkSequenceEntry> = (0..view.num_entries()).map(|i| view.chunk(i)).collect();
         let total_bytes = chunks
             .last()
             .map(|c| c.chunk_byte_range_start + c.unpacked_segment_bytes)
             .unwrap_or(0);
-        MDBCASInfo {
-            metadata: CASChunkSequenceHeader::new(view.cas_hash(), chunks.len() as u32, total_bytes),
+        MDBXorbInfo {
+            metadata: XorbChunkSequenceHeader::new(view.xorb_hash(), chunks.len() as u32, total_bytes),
             chunks,
         }
     }

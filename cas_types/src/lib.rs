@@ -178,7 +178,7 @@ impl<Idx: FromStr, Kind> FromStr for Range<Idx, Kind> {
 /// unpacked_length is used for validation, the result data of this term
 /// should have that field's value as its length
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct CASReconstructionTerm {
+pub struct XorbReconstructionTerm {
     pub hash: HexMerkleHash,
     // the resulting data from deserializing the range in this term
     // should have a length equal to `unpacked_length`
@@ -187,14 +187,14 @@ pub struct CASReconstructionTerm {
     pub range: ChunkRange,
 }
 
-/// To use a CASReconstructionFetchInfo fetch info all that's needed
+/// To use a XorbReconstructionFetchInfo fetch info all that's needed
 /// is an http get request on the url with the Range header directly
 /// formed from the url_range values.
 ///
 /// the `range` key describes the chunk range within the xorb that the
 /// url is used to fetch
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
-pub struct CASReconstructionFetchInfo {
+pub struct XorbReconstructionFetchInfo {
     // chunk index start and end in a xorb
     pub range: ChunkRange,
     pub url: String,
@@ -209,12 +209,12 @@ pub struct QueryReconstructionResponse {
     pub offset_into_first_range: u64,
     // Series of terms describing a xorb hash and chunk range to be retreived
     // to reconstruct the file
-    pub terms: Vec<CASReconstructionTerm>,
+    pub terms: Vec<XorbReconstructionTerm>,
     // information to fetch xorb ranges to reconstruct the file
     // each key is a hash that is present in the `terms` field reconstruction
     // terms, the values are information we will need to fetch ranges from
     // each xorb needed to reconstruct the file
-    pub fetch_info: HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>,
+    pub fetch_info: HashMap<HexMerkleHash, Vec<XorbReconstructionFetchInfo>>,
 }
 
 // Request json body type representation for the POST /reconstructions endpoint
@@ -227,12 +227,12 @@ pub type BatchQueryReconstructionRequest = HashSet<HexKey>;
 pub struct BatchQueryReconstructionResponse {
     // Map of FileID to series of terms describing a xorb hash and chunk range to be retreived
     // to reconstruct the file
-    pub files: HashMap<HexMerkleHash, Vec<CASReconstructionTerm>>,
+    pub files: HashMap<HexMerkleHash, Vec<XorbReconstructionTerm>>,
     // information to fetch xorb ranges to reconstruct the file
     // each key is a hash that is present in the `terms` field reconstruction
     // terms, the values are information we will need to fetch ranges from
     // each xorb needed to reconstruct the file
-    pub fetch_info: HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>,
+    pub fetch_info: HashMap<HexMerkleHash, Vec<XorbReconstructionFetchInfo>>,
 }
 
 #[derive(Debug, Serialize_repr, Deserialize_repr, Clone, Copy)]

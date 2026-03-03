@@ -25,8 +25,8 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bytes::Bytes;
 use cas_types::{
-    CASReconstructionFetchInfo, FileRange, HexKey, HexMerkleHash, UploadShardResponse, UploadShardResponseType,
-    UploadXorbResponse,
+    FileRange, HexKey, HexMerkleHash, UploadShardResponse, UploadShardResponseType, UploadXorbResponse,
+    XorbReconstructionFetchInfo,
 };
 use futures_util::StreamExt;
 use http::header::RANGE;
@@ -155,7 +155,7 @@ fn get_base_url(headers: &HeaderMap) -> String {
 /// This function transforms them into HTTP URLs that point to the /v1/fetch_term endpoint.
 /// The byte range to fetch comes from url_range (sent as HTTP Range header by client).
 fn transform_fetch_info_urls(
-    fetch_info: &mut std::collections::HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>,
+    fetch_info: &mut std::collections::HashMap<HexMerkleHash, Vec<XorbReconstructionFetchInfo>>,
     base_url: &str,
 ) {
     for (xorb_hash, fetch_infos) in fetch_info.iter_mut() {
@@ -359,7 +359,7 @@ pub async fn post_xorb(
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
     };
 
-    let cas_object = cas_object::SerializedCasObject {
+    let xorb_obj = xorb_object::SerializedXorbObject {
         hash: key.hash,
         serialized_data: data.to_vec(),
         raw_num_bytes: data.len() as u64,
@@ -372,7 +372,7 @@ pub async fn post_xorb(
         Err(e) => return error_to_response(e),
     };
 
-    match state.upload_xorb(&key.prefix, cas_object, None, permit).await {
+    match state.upload_xorb(&key.prefix, xorb_obj, None, permit).await {
         Ok(_) => Json(UploadXorbResponse { was_inserted: true }).into_response(),
         Err(e) => error_to_response(e),
     }

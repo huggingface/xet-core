@@ -2,7 +2,6 @@ use std::string::FromUtf8Error;
 use std::sync::mpsc::RecvError;
 
 use cas_client::CasClientError;
-use cas_object::error::CasObjectError;
 use file_reconstruction::FileReconstructionError;
 use mdb_shard::error::MDBShardError;
 use thiserror::Error;
@@ -10,6 +9,7 @@ use tokio::sync::AcquireError;
 use tracing::error;
 use utils::errors::{AuthError, SingleflightError};
 use xet_runtime::utils::ParutilsError;
+use xorb_object::error::XorbObjectError;
 
 #[derive(Error, Debug)]
 pub enum DataProcessingError {
@@ -47,7 +47,7 @@ pub enum DataProcessingError {
     CasClientError(#[from] CasClientError),
 
     #[error("Xorb Serialization error : {0}")]
-    XorbSerializationError(#[from] CasObjectError),
+    XorbSerializationError(#[from] XorbObjectError),
 
     #[error("Subtask scheduling error: {0}")]
     JoinError(#[from] tokio::task::JoinError),

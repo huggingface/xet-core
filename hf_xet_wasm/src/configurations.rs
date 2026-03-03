@@ -1,5 +1,5 @@
-use cas_object::CompressionScheme;
 use utils::auth::AuthConfig;
+use xorb_object::CompressionScheme;
 
 // configurations for hf_xet_wasm components, generally less complicated than hf_xet/data crate configurations
 

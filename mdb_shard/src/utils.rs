@@ -13,7 +13,7 @@ lazy_static! {
 }
 
 /// Parses a shard filename.  If the filename matches the shard filename pattern,
-/// then Some(hash) is returned, where hash is the CAS hash of the merkledb file.  
+/// then Some(hash) is returned, where hash is the XORB hash of the merkledb file.  
 /// If the filename does not match, None is returned.
 #[inline]
 pub fn parse_shard_filename<P: AsRef<Path>>(path: P) -> Option<MerkleHash> {

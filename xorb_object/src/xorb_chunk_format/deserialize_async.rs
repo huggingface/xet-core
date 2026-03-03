@@ -5,11 +5,13 @@ use anyhow::anyhow;
 use futures::io::{AsyncRead, AsyncReadExt};
 use futures::{Stream, TryStreamExt};
 
-use crate::error::CasObjectError;
-use crate::{CAS_CHUNK_HEADER_LENGTH, CASChunkHeader, parse_chunk_header};
+use crate::error::XorbObjectError;
+use crate::{XORB_CHUNK_HEADER_LENGTH, XorbChunkHeader, parse_chunk_header};
 
-pub async fn deserialize_chunk_header<R: AsyncRead + Unpin>(reader: &mut R) -> Result<CASChunkHeader, CasObjectError> {
-    let mut buf = [0u8; size_of::<CASChunkHeader>()];
+pub async fn deserialize_chunk_header<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> Result<XorbChunkHeader, XorbObjectError> {
+    let mut buf = [0u8; size_of::<XorbChunkHeader>()];
     reader.read_exact(&mut buf).await?;
     parse_chunk_header(buf)
 }
@@ -18,7 +20,7 @@ pub async fn deserialize_chunk_header<R: AsyncRead + Unpin>(reader: &mut R) -> R
 pub async fn deserialize_chunk_to_writer<R: AsyncRead + Unpin, W: Write>(
     reader: &mut R,
     writer: &mut W,
-) -> Result<(usize, u32), CasObjectError> {
+) -> Result<(usize, u32), XorbObjectError> {
     let header = deserialize_chunk_header(reader).await?;
     let mut compressed_data = vec![0u8; header.get_compressed_length() as usize];
     reader.read_exact(&mut compressed_data).await?;
@@ -27,18 +29,18 @@ pub async fn deserialize_chunk_to_writer<R: AsyncRead + Unpin, W: Write>(
     let uncompressed_len = uncompressed_data.len();
 
     if uncompressed_len != header.get_uncompressed_length() as usize {
-        return Err(CasObjectError::FormatError(anyhow!(
+        return Err(XorbObjectError::FormatError(anyhow!(
             "chunk is corrupted, uncompressed bytes len doesn't agree with chunk header"
         )));
     }
 
     writer.write_all(&uncompressed_data)?;
 
-    Ok((header.get_compressed_length() as usize + CAS_CHUNK_HEADER_LENGTH, uncompressed_len as u32))
+    Ok((header.get_compressed_length() as usize + XORB_CHUNK_HEADER_LENGTH, uncompressed_len as u32))
 }
 
 /// deserialize 1 chunk returning a Vec<u8>, the compressed length and the uncompressed length of the chunk
-pub async fn deserialize_chunk<R: AsyncRead + Unpin>(reader: &mut R) -> Result<(Vec<u8>, usize, u32), CasObjectError> {
+pub async fn deserialize_chunk<R: AsyncRead + Unpin>(reader: &mut R) -> Result<(Vec<u8>, usize, u32), XorbObjectError> {
     let mut buf = Vec::new();
     let (compressed_len, uncompressed_len) = deserialize_chunk_to_writer(reader, &mut buf).await?;
     Ok((buf, compressed_len, uncompressed_len))
@@ -47,7 +49,7 @@ pub async fn deserialize_chunk<R: AsyncRead + Unpin>(reader: &mut R) -> Result<(
 pub async fn deserialize_chunks_to_writer_from_async_read<R: AsyncRead + Unpin, W: Write>(
     reader: &mut R,
     writer: &mut W,
-) -> Result<(usize, Vec<u32>), CasObjectError> {
+) -> Result<(usize, Vec<u32>), XorbObjectError> {
     let mut num_compressed_written = 0;
     let mut num_uncompressed_written = 0;
 
@@ -63,11 +65,11 @@ pub async fn deserialize_chunks_to_writer_from_async_read<R: AsyncRead + Unpin, 
                 num_uncompressed_written += uncompressed_chunk_len;
                 chunk_byte_indices.push(num_uncompressed_written); // record end of current chunk
             },
-            Err(CasObjectError::InternalIOError(e)) => {
+            Err(XorbObjectError::InternalIOError(e)) => {
                 if e.kind() == std::io::ErrorKind::UnexpectedEof {
                     break;
                 }
-                return Err(CasObjectError::InternalIOError(e));
+                return Err(XorbObjectError::InternalIOError(e));
             },
             Err(e) => return Err(e),
         }
@@ -78,7 +80,7 @@ pub async fn deserialize_chunks_to_writer_from_async_read<R: AsyncRead + Unpin, 
 
 pub async fn deserialize_chunks_from_async_read<R: AsyncRead + Unpin>(
     reader: &mut R,
-) -> Result<(Vec<u8>, Vec<u32>), CasObjectError> {
+) -> Result<(Vec<u8>, Vec<u32>), XorbObjectError> {
     let mut buf = Vec::new();
     let (_, chunk_byte_indices) = deserialize_chunks_to_writer_from_async_read(reader, &mut buf).await?;
     Ok((buf, chunk_byte_indices))
@@ -87,7 +89,7 @@ pub async fn deserialize_chunks_from_async_read<R: AsyncRead + Unpin>(
 pub async fn deserialize_chunks_to_writer_from_stream<B, E, S, W>(
     stream: S,
     writer: &mut W,
-) -> Result<(usize, Vec<u32>), CasObjectError>
+) -> Result<(usize, Vec<u32>), XorbObjectError>
 where
     B: AsRef<[u8]>,
     E: Into<std::io::Error>,
@@ -98,7 +100,7 @@ where
     deserialize_chunks_to_writer_from_async_read(&mut stream_reader, writer).await
 }
 
-pub async fn deserialize_chunks_from_stream<B, E, S>(stream: S) -> Result<(Vec<u8>, Vec<u32>), CasObjectError>
+pub async fn deserialize_chunks_from_stream<B, E, S>(stream: S) -> Result<(Vec<u8>, Vec<u32>), XorbObjectError>
 where
     B: AsRef<[u8]>,
     E: Into<std::io::Error>,
