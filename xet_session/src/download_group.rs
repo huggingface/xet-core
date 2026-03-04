@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use data::{FileDownloadSession, XetFileInfo};
 use tokio::task::JoinHandle;
@@ -116,12 +116,6 @@ impl DownloadGroup {
     }
 
     /// Return a snapshot of progress for every queued download.
-    ///
-    /// Per-file byte counts come from [`GroupProgress`], which is updated by
-    /// the [`TrackingProgressUpdater`] implementation as data flows through
-    /// `FileDownloadSession`.  The method is safe to call frequently from Python:
-    /// integer counters are read atomically and the per-file map requires only
-    /// a brief lock.
     pub fn get_progress(&self) -> Result<ProgressSnapshot, SessionError> {
         self.progress.snapshot()
     }
@@ -134,7 +128,7 @@ impl DownloadGroup {
     /// Consumes `self` — subsequent calls on any clone will return
     /// [`SessionError::AlreadyFinished`] (or a channel-closed error if the
     /// background worker has already exited).
-    pub fn finish(self) -> Result<Vec<DownloadResult>, SessionError> {
+    pub fn finish(self) -> Result<Vec<Result<DownloadResult, SessionError>>, SessionError> {
         let inner = self.inner.clone();
         self.session
             .runtime
@@ -173,8 +167,8 @@ impl DownloadGroupInner {
     // ===== State helpers =====
 
     /// Check whether the group is still accepting new tasks.
-    fn check_accepting_tasks(&self) -> Result<(), SessionError> {
-        match *self.state.lock()? {
+    fn check_accepting_tasks(state: &MutexGuard<GroupState>) -> Result<(), SessionError> {
+        match **state {
             GroupState::Finished => Err(SessionError::AlreadyFinished),
             GroupState::Aborted => Err(SessionError::Aborted),
             GroupState::Alive => Ok(()),
@@ -221,7 +215,10 @@ impl DownloadGroupInner {
         file_info: XetFileInfo,
         dest_path: PathBuf,
     ) -> Result<TaskHandle, SessionError> {
-        self.check_accepting_tasks()?;
+        // Hold the state lock guard for the duration of this function so finish() will not run
+        // when a download task is registering.
+        let state = self.state.lock()?;
+        Self::check_accepting_tasks(&state)?;
 
         let tracking_id = Ulid::new();
         let status = Arc::new(Mutex::new(TaskStatus::Queued));
@@ -256,7 +253,7 @@ impl DownloadGroupInner {
     }
 
     /// Handle a `Finish` command from the public API.
-    async fn handle_finish(self: &Arc<Self>) -> Result<Vec<DownloadResult>, SessionError> {
+    async fn handle_finish(self: &Arc<Self>) -> Result<Vec<Result<DownloadResult, SessionError>>, SessionError> {
         // Mark as not accepting new tasks
         {
             let mut state_guard = self.state.lock()?;
@@ -267,19 +264,31 @@ impl DownloadGroupInner {
         }
 
         // Wait for all downloads to complete
-        let handles: Vec<_> = {
-            let mut tasks = self.active_tasks.write()?;
-            tasks.drain().collect()
-        };
+        let active_tasks = std::mem::take(&mut *self.active_tasks.write()?);
 
         let mut results = Vec::new();
-        for (_task_id, handle) in handles {
-            let file_info = handle.join_handle.await.map_err(SessionError::TaskJoinError)??;
-
-            results.push(DownloadResult {
-                dest_path: handle.dest_path,
-                file_info,
-            });
+        let mut join_err = None;
+        // Join all tasks first and then propogate errors.
+        for (_task_id, handle) in active_tasks {
+            match handle.join_handle.await.map_err(SessionError::TaskJoinError) {
+                Ok(Ok(file_info)) => {
+                    results.push(Ok(DownloadResult {
+                        dest_path: handle.dest_path,
+                        file_info,
+                    }));
+                },
+                Ok(Err(task_err)) => {
+                    results.push(Err(task_err));
+                },
+                Err(e) => {
+                    if join_err.is_none() {
+                        join_err = Some(e);
+                    }
+                },
+            }
+        }
+        if let Some(e) = join_err {
+            return Err(e);
         }
 
         // Mark as finished
@@ -297,10 +306,10 @@ impl DownloadGroupInner {
 
     fn abort(&self) -> Result<(), SessionError> {
         *self.state.lock()? = GroupState::Aborted;
-        let mut active_tasks = self.active_tasks.write()?;
-        for (_tracking_id, inner_task_handle) in active_tasks.drain() {
+        let active_tasks = std::mem::take(&mut *self.active_tasks.write()?);
+        for (_tracking_id, inner_task_handle) in active_tasks {
             inner_task_handle.join_handle.abort();
-            *inner_task_handle.status.lock()? = TaskStatus::Cancelled;
+            let _ = inner_task_handle.status.lock().map(|mut s| *s = TaskStatus::Cancelled);
         }
 
         Ok(())
@@ -345,7 +354,6 @@ mod tests {
 
     use super::*;
     use crate::session::XetSession;
-    use crate::upload_commit::FileMetadata;
 
     fn local_session(temp: &TempDir) -> Result<XetSession, Box<dyn std::error::Error>> {
         let cas_path = temp.path().join("cas");
@@ -358,8 +366,8 @@ mod tests {
         let results = commit.commit()?;
         let m = &results[0];
         Ok(XetFileInfo {
-            hash: m.hash.clone(),
-            file_size: m.file_size,
+            hash: m.as_ref().unwrap().hash.clone(),
+            file_size: m.as_ref().unwrap().file_size,
         })
     }
 
@@ -543,10 +551,13 @@ mod tests {
         let results = commit.commit()?;
 
         let find_info = |name: &str| -> XetFileInfo {
-            let m: &FileMetadata = results.iter().find(|r| r.tracking_name.as_deref() == Some(name)).unwrap();
+            let m = results
+                .iter()
+                .find(|r| r.as_ref().unwrap().tracking_name.as_deref() == Some(name))
+                .unwrap();
             XetFileInfo {
-                hash: m.hash.clone(),
-                file_size: m.file_size,
+                hash: m.as_ref().unwrap().hash.clone(),
+                file_size: m.as_ref().unwrap().file_size,
             }
         };
 
@@ -586,6 +597,48 @@ mod tests {
         );
         let snapshot = progress_observer.get_progress()?;
         assert!(snapshot.total().total_bytes_completed > 0);
+        Ok(())
+    }
+
+    // ── Mutex guard / concurrency test ───────────────────────────────────────
+    //
+    // `download_file_to_path` holds `self.state` for its entire execution so
+    // that `finish()` cannot race against an in-progress registration.  We
+    // verify this by locking the same mutex directly from the test thread
+    // (valid because `mod tests` is a descendant of `download_group` and can
+    // access private fields), simulating the method being mid-registration.
+
+    #[test]
+    // finish() must block while download_file_to_path() holds the state lock.
+    fn test_finish_blocked_while_download_registration_holds_state_lock() -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::mpsc;
+
+        let session = XetSession::new(None, None, None, None)?;
+        let group = session.new_download_group()?;
+        let group_for_thread = group.clone();
+
+        // Simulate download_file_to_path() holding the state lock mid-registration.
+        let guard = group.inner.state.lock().unwrap();
+
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        let join_handle = std::thread::spawn(move || {
+            let _ = group_for_thread.finish(); // must block until guard is dropped
+            let _ = done_tx.send(());
+        });
+
+        // Give the spawned thread enough time to reach the state-lock acquisition
+        // inside finish() and block there.
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(done_rx.try_recv().is_err(), "finish() should be blocked while state lock is held");
+
+        // Release the lock — simulates the enqueue method completing its registration.
+        drop(guard);
+
+        assert!(
+            done_rx.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "finish() should complete after state lock is released"
+        );
+        let _ = join_handle.join();
         Ok(())
     }
 }

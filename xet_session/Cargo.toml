@@ -5,8 +5,8 @@ edition = "2024"
 description = "Session-based file upload/download API for XetHub"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/xetdata/xet-core"
-keywords = ["xet", "upload", "download", "deduplication", "session"]
-categories = ["network-programming", "api-bindings"]
+keywords = ["xet", "upload", "download", "deduplication", "session", "huggingface"]
+categories = ["api-bindings"]
 
 [lib]
 name = "xet_session"

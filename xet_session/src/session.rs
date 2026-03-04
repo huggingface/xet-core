@@ -24,7 +24,7 @@ enum SessionState {
 #[doc(hidden)]
 pub struct XetSessionInner {
     // Independently cloned by background tasks, so needs its own Arc.
-    pub runtime: Arc<XetRuntime>,
+    pub(crate) runtime: Arc<XetRuntime>,
 
     // Only accessed through &self; no independent cloning needed.
     pub(crate) config: XetConfig,
@@ -44,6 +44,99 @@ pub struct XetSessionInner {
     pub(crate) id: Ulid,
 }
 
+/// Builder for [`XetSession`].
+///
+/// All fields are optional; call [`build`](XetSessionBuilder::build) when done.
+///
+/// ```rust,no_run
+/// # use xet_session::XetSessionBuilder;
+/// let session = XetSessionBuilder::new()
+///     .with_endpoint("https://cas.example.com".into())
+///     .with_token_info("my-token".into(), 1_700_000_000)
+///     .build()?;
+/// # Ok::<(), xet_session::SessionError>(())
+/// ```
+pub struct XetSessionBuilder {
+    config: XetConfig,
+    endpoint: Option<String>,
+    token_info: Option<(String, u64)>,
+    token_refresher: Option<Arc<dyn TokenRefresher>>,
+    custom_headers: Option<Arc<HeaderMap>>,
+}
+
+impl Default for XetSessionBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl XetSessionBuilder {
+    /// Create a builder with default [`XetConfig`] and no authentication.
+    pub fn new() -> Self {
+        Self {
+            config: XetConfig::new(),
+            endpoint: None,
+            token_info: None,
+            token_refresher: None,
+            custom_headers: None,
+        }
+    }
+
+    /// Create a builder pre-populated with the given [`XetConfig`].
+    pub fn new_with_config(config: XetConfig) -> Self {
+        Self {
+            config,
+            endpoint: None,
+            token_info: None,
+            token_refresher: None,
+            custom_headers: None,
+        }
+    }
+
+    /// Set the Xet CAS server endpoint URL (e.g. `"https://cas.example.com"`).
+    pub fn with_endpoint(self, endpoint: String) -> Self {
+        Self {
+            endpoint: Some(endpoint),
+            ..self
+        }
+    }
+
+    /// Set a static Xet CAS server access token and its expiry as a Unix timestamp (seconds).
+    pub fn with_token_info(self, token: String, expiry: u64) -> Self {
+        Self {
+            token_info: Some((token, expiry)),
+            ..self
+        }
+    }
+
+    /// Set a callback that is invoked to refresh the Xet CAS server access token when it expires.
+    pub fn with_token_refresher(self, refresher: Arc<dyn TokenRefresher>) -> Self {
+        Self {
+            token_refresher: Some(refresher),
+            ..self
+        }
+    }
+
+    /// Attach custom HTTP headers that are forwarded with every CAS request.
+    pub fn with_custom_headers(self, headers: Arc<HeaderMap>) -> Self {
+        Self {
+            custom_headers: Some(headers),
+            ..self
+        }
+    }
+
+    /// Consume the builder and create a [`XetSession`].
+    pub fn build(self) -> Result<XetSession, SessionError> {
+        XetSession::new_with_config(
+            self.config,
+            self.endpoint,
+            self.token_info,
+            self.token_refresher,
+            self.custom_headers,
+        )
+    }
+}
+
 /// Handle for managing file uploads and downloads.
 ///
 /// `XetSession` is the top-level entry point for the xet-session API.  It
@@ -58,10 +151,9 @@ pub struct XetSessionInner {
 ///
 /// # Lifecycle
 ///
-/// 1. Create a session with [`XetSession::new`] or [`XetSession::new_with_config`].
+/// 1. Create a session with [`XetSessionBuilder`].
 /// 2. Create one or more [`UploadCommit`]s / [`DownloadGroup`]s.
-/// 3. When a graceful shutdown is needed, drop the session (or all clones of it).  For an emergency stop, call
-///    [`XetSession::abort`].
+/// 3. For an emergency stop, call [`XetSession::abort`].
 #[derive(Clone)]
 pub struct XetSession {
     inner: Arc<XetSessionInner>,
@@ -75,16 +167,10 @@ impl std::ops::Deref for XetSession {
 }
 
 impl XetSession {
-    /// Create a new session with default [`XetConfig`].
-    ///
-    /// # Parameters
-    ///
-    /// * `endpoint` – Specify the CAS server endpoint URL.  Pass `None` to use the default (local CAS).
-    /// * `token_info` – `(token, expiry_unix_timestamp)` pair for authentication.  Pass `None` for unauthenticated
-    ///   access.
-    /// * `token_refresher` – Optional callback used to obtain a fresh token when the current one expires.
-    /// * `user_agent` – User-agent string sent with every request (e.g. `"my-app/1.2.3"`).
-    pub fn new(
+    /// Create a session with default [`XetConfig`] — used by tests only.
+    /// In production code, use [`XetSessionBuilder`] instead.
+    #[cfg(test)]
+    pub(crate) fn new(
         endpoint: Option<String>,
         token_info: Option<(String, u64)>,
         token_refresher: Option<Arc<dyn TokenRefresher>>,
@@ -93,11 +179,8 @@ impl XetSession {
         Self::new_with_config(XetConfig::new(), endpoint, token_info, token_refresher, custom_headers)
     }
 
-    /// Create a new session with a custom [`XetConfig`].
-    ///
-    /// Like [`XetSession::new`] but also accepts a fully-populated
-    /// [`XetConfig`].
-    pub fn new_with_config(
+    /// Internal constructor called by [`XetSessionBuilder::build`].
+    pub(crate) fn new_with_config(
         config: XetConfig,
         endpoint: Option<String>,
         token_info: Option<(String, u64)>,
@@ -172,12 +255,12 @@ impl XetSession {
         self.runtime.perform_sigint_shutdown();
 
         // Propagate states to registered tasks and clear registered work
-        let mut active_upload_commits = self.active_upload_commits.lock()?;
-        for (_id, task) in active_upload_commits.drain() {
+        let active_upload_commits = std::mem::take(&mut *self.active_upload_commits.lock()?);
+        for (_id, task) in active_upload_commits {
             task.abort()?;
         }
-        let mut active_download_groups = self.active_download_groups.lock()?;
-        for (_id, task) in active_download_groups.drain() {
+        let active_download_groups = std::mem::take(&mut *self.active_download_groups.lock()?);
+        for (_id, task) in active_download_groups {
             task.abort()?;
         }
         Ok(())

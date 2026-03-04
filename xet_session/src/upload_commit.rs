@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use data::data_client::{clean_bytes, clean_file};
 use data::{FileUploadSession, SingleFileCleaner, XetFileInfo};
@@ -94,6 +94,7 @@ impl UploadCommit {
     /// already been called.
     pub fn upload_from_path(&self, file_path: PathBuf) -> Result<TaskHandle, SessionError> {
         self.session.check_alive()?;
+
         // Use the absolute path in case the process current working directory changes
         // while the task is queued.
         let absolute_path = std::path::absolute(file_path)?;
@@ -136,10 +137,7 @@ impl UploadCommit {
     ) -> Result<(TaskHandle, SingleFileCleaner), SessionError> {
         self.session.check_alive()?;
 
-        let inner = self.inner.clone();
-        self.session
-            .runtime
-            .external_run_async_task(async move { inner.start_upload_file(file_name, file_size).await })?
+        self.inner.start_upload_file(file_name, file_size)
     }
 
     /// Queue raw bytes for upload, starting the transfer immediately if system resource permits.
@@ -147,10 +145,7 @@ impl UploadCommit {
     /// Returns a [`TaskHandle`]. See [`upload_from_path`](Self::upload_from_path) for details.
     pub fn upload_bytes(&self, bytes: Vec<u8>, tracking_name: Option<String>) -> Result<TaskHandle, SessionError> {
         self.session.check_alive()?;
-        let inner = self.inner.clone();
-        self.session
-            .runtime
-            .external_run_async_task(async move { inner.start_upload_bytes(bytes, tracking_name).await })?
+        self.inner.start_upload_bytes(bytes, tracking_name)
     }
 
     /// Returns `true` if [`commit`](Self::commit) has been called and completed.
@@ -175,7 +170,7 @@ impl UploadCommit {
     ///
     /// Consumes `self` — subsequent calls on any clone will return
     /// [`SessionError::AlreadyCommitted`].
-    pub fn commit(self) -> Result<Vec<FileMetadata>, SessionError> {
+    pub fn commit(self) -> Result<Vec<Result<FileMetadata, SessionError>>, SessionError> {
         let inner = self.inner.clone();
         self.session
             .runtime
@@ -214,8 +209,8 @@ impl UploadCommitInner {
     // ===== State helpers =====
 
     /// Check whether the commit is still accepting new tasks.
-    fn check_accepting_tasks(&self) -> Result<(), SessionError> {
-        match *self.state.lock()? {
+    fn check_accepting_tasks(state: &MutexGuard<GroupState>) -> Result<(), SessionError> {
+        match **state {
             GroupState::Finished => Err(SessionError::AlreadyCommitted),
             GroupState::Aborted => Err(SessionError::Aborted),
             GroupState::Alive => Ok(()),
@@ -285,7 +280,10 @@ impl UploadCommitInner {
     }
 
     fn start_upload_file_from_path(&self, file_path: PathBuf) -> Result<TaskHandle, SessionError> {
-        self.check_accepting_tasks()?;
+        // Hold the state lock guard for the duration of this function so commit() will not run
+        // when an upload task is registering.
+        let state = self.state.lock()?;
+        Self::check_accepting_tasks(&state)?;
 
         let tracking_id = Ulid::new();
         let status = Arc::new(Mutex::new(TaskStatus::Queued));
@@ -315,12 +313,15 @@ impl UploadCommitInner {
 
     /// Handle a `StartClean` command: initialise the upload session and return a
     /// [`SingleFileCleaner`] that the caller drives incrementally.
-    async fn start_upload_file(
+    fn start_upload_file(
         &self,
         tracking_name: Option<String>,
         file_size: u64,
     ) -> Result<(TaskHandle, SingleFileCleaner), SessionError> {
-        self.check_accepting_tasks()?;
+        // Hold the state lock guard for the duration of this function so commit() will not run
+        // when an upload task is registering.
+        let state = self.state.lock()?;
+        Self::check_accepting_tasks(&state)?;
 
         let tracking_id = Ulid::new();
         let task_handle = TaskHandle {
@@ -334,18 +335,19 @@ impl UploadCommitInner {
         };
 
         let tracking_name: Option<Arc<str>> = tracking_name.as_deref().map(Arc::from);
-        let cleaner = upload_session.start_clean(tracking_name, file_size, None, tracking_id).await;
+        let cleaner = self.runtime().external_run_async_task(async move {
+            upload_session.start_clean(tracking_name, file_size, None, tracking_id).await
+        })?;
 
         Ok((task_handle, cleaner))
     }
 
     /// Handle an `UploadBytes` command from the public API.
-    async fn start_upload_bytes(
-        &self,
-        bytes: Vec<u8>,
-        tracking_name: Option<String>,
-    ) -> Result<TaskHandle, SessionError> {
-        self.check_accepting_tasks()?;
+    fn start_upload_bytes(&self, bytes: Vec<u8>, tracking_name: Option<String>) -> Result<TaskHandle, SessionError> {
+        // Hold the state lock guard for the duration of this function so commit() will not run
+        // when an upload task is registering.
+        let state = self.state.lock()?;
+        Self::check_accepting_tasks(&state)?;
 
         let tracking_id = Ulid::new();
         let status = Arc::new(Mutex::new(TaskStatus::Queued));
@@ -373,7 +375,7 @@ impl UploadCommitInner {
     }
 
     /// Handle a `Commit` command from the public API.
-    async fn handle_commit(&self) -> Result<Vec<FileMetadata>, SessionError> {
+    async fn handle_commit(&self) -> Result<Vec<Result<FileMetadata, SessionError>>, SessionError> {
         // Mark as not accepting new tasks
         {
             let mut state_guard = self.state.lock()?;
@@ -384,20 +386,34 @@ impl UploadCommitInner {
         }
 
         // Wait for all uploads to complete
-        let handles: Vec<_> = {
-            let mut tasks = self.active_tasks.write()?;
-            tasks.drain().collect()
-        };
+        // Swap out the task map atomically while holding the write lock.
+        // The guard is dropped immediately so the lock is not held across any `.await`.
+        let active_tasks = std::mem::take(&mut *self.active_tasks.write()?);
 
         let mut results = Vec::new();
-        for (_task_id, handle) in handles {
-            let file_info = handle.join_handle.await.map_err(SessionError::TaskJoinError)??;
-
-            results.push(FileMetadata {
-                tracking_name: handle.tracking_name,
-                hash: file_info.hash().to_string(),
-                file_size: file_info.file_size(),
-            });
+        let mut join_err = None;
+        // Join all tasks first and then propogate errors.
+        for (_task_id, handle) in active_tasks {
+            match handle.join_handle.await.map_err(SessionError::TaskJoinError) {
+                Ok(Ok(file_info)) => {
+                    results.push(Ok(FileMetadata {
+                        tracking_name: handle.tracking_name,
+                        hash: file_info.hash().to_string(),
+                        file_size: file_info.file_size(),
+                    }));
+                },
+                Ok(Err(task_err)) => {
+                    results.push(Err(task_err));
+                },
+                Err(e) => {
+                    if join_err.is_none() {
+                        join_err = Some(e);
+                    }
+                },
+            };
+        }
+        if let Some(e) = join_err {
+            return Err(e);
         }
 
         // Finalize upload session
@@ -422,10 +438,10 @@ impl UploadCommitInner {
     /// Cancle all tasks and set task status to "Cancelled"
     fn abort(&self) -> Result<(), SessionError> {
         *self.state.lock()? = GroupState::Aborted;
-        let mut active_tasks = self.active_tasks.write()?;
-        for (_tracking_id, inner_task_handle) in active_tasks.drain() {
+        let active_tasks = std::mem::take(&mut *self.active_tasks.write()?);
+        for (_tracking_id, inner_task_handle) in active_tasks {
             inner_task_handle.join_handle.abort();
-            *inner_task_handle.status.lock()? = TaskStatus::Cancelled;
+            let _ = inner_task_handle.status.lock().map(|mut s| *s = TaskStatus::Cancelled);
         }
 
         Ok(())
@@ -633,8 +649,8 @@ mod tests {
         commit.upload_bytes(data.to_vec(), Some("hello.bin".into()))?;
         let results = commit.commit()?;
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].file_size, data.len() as u64);
-        assert!(!results[0].hash.is_empty());
+        assert_eq!(results[0].as_ref().unwrap().file_size, data.len() as u64);
+        assert!(!results[0].as_ref().unwrap().hash.is_empty());
         Ok(())
     }
 
@@ -650,8 +666,8 @@ mod tests {
         commit.upload_from_path(src)?;
         let results = commit.commit()?;
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].file_size, data.len() as u64);
-        assert!(!results[0].hash.is_empty());
+        assert_eq!(results[0].as_ref().unwrap().file_size, data.len() as u64);
+        assert!(!results[0].as_ref().unwrap().hash.is_empty());
         Ok(())
     }
 
@@ -706,6 +722,51 @@ mod tests {
         commit.commit()?;
         let snapshot = progress_observer.get_progress()?;
         assert!(snapshot.total().total_bytes_completed > 0);
+        Ok(())
+    }
+
+    // ── Mutex guard / concurrency test ───────────────────────────────────────
+    //
+    // All three enqueue methods (upload_from_path, upload_bytes, upload_file)
+    // hold `self.state` for their entire execution so that commit() cannot
+    // race against an in-progress registration.  Because they all share the
+    // same mutex, a single test covers all three: we lock the mutex directly
+    // from the test thread (valid because `mod tests` is a descendant of
+    // `upload_commit` and can access private fields), which simulates any of
+    // the three methods being mid-registration.
+
+    #[test]
+    // commit() must block while any enqueue method holds the state lock.
+    fn test_commit_blocked_while_upload_registration_holds_state_lock() -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let temp = tempdir()?;
+        let session = local_session(&temp)?;
+        let commit = session.new_upload_commit()?;
+        let commit_for_thread = commit.clone();
+
+        // Simulate an enqueue method (upload_from_path / upload_bytes /
+        // upload_file) holding the state lock mid-registration.
+        let guard = commit.inner.state.lock().unwrap();
+
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        let join_handle = std::thread::spawn(move || {
+            let _ = commit_for_thread.commit();
+            let _ = done_tx.send(());
+        });
+
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(done_rx.try_recv().is_err(), "commit() should be blocked while state lock is held");
+
+        // Release the lock — simulates the enqueue method completing its registration.
+        drop(guard);
+
+        assert!(
+            done_rx.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "commit() should complete after state lock is released"
+        );
+        let _ = join_handle.join();
         Ok(())
     }
 }
