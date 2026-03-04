@@ -27,14 +27,27 @@ pub struct FileTerm {
 }
 
 impl FileTerm {
-    pub fn extract_bytes(&self, xorb_block_data: &XorbBlockData) -> Bytes {
+    pub fn extract_bytes(&self, xorb_block_data: &XorbBlockData) -> Result<Bytes> {
         let local_start_chunk = (self.xorb_chunk_range.start - self.xorb_block.chunk_range.start) as usize;
         let start_byte_offset = xorb_block_data.chunk_offsets[local_start_chunk];
         let start_byte_offset = start_byte_offset + self.offset_into_first_range as usize;
         let expected_size = (self.byte_range.end - self.byte_range.start) as usize;
         let end_byte_offset = start_byte_offset + expected_size;
 
-        xorb_block_data.data.slice(start_byte_offset..end_byte_offset)
+        if end_byte_offset > xorb_block_data.data.len() {
+            return Err(FileReconstructionError::CorruptedReconstruction(format!(
+                "extract_bytes: range {}..{} out of bounds for xorb data of size {} \
+                 (xorb={:?}, chunks={:?}, file_range={:?})",
+                start_byte_offset,
+                end_byte_offset,
+                xorb_block_data.data.len(),
+                self.xorb_block.xorb_hash,
+                self.xorb_chunk_range,
+                self.byte_range,
+            )));
+        }
+
+        Ok(xorb_block_data.data.slice(start_byte_offset..end_byte_offset))
     }
 
     /// Get a future that will retrieve and extract the data bytes for this file term.
@@ -52,7 +65,7 @@ impl FileTerm {
         if let Ok(guard) = self.xorb_block.data.try_read()
             && let Some(ref xorb_block_data) = *guard
         {
-            let bytes = self.extract_bytes(xorb_block_data);
+            let bytes = self.extract_bytes(xorb_block_data)?;
             return Ok(Box::pin(async move { Ok(bytes) }));
         }
 
@@ -65,7 +78,7 @@ impl FileTerm {
 
         let task = tokio::task::spawn(async move {
             let xorb_block_data = xorb_block.retrieve_data(client, permit, url_info, progress_updater).await?;
-            Ok(file_term.extract_bytes(&xorb_block_data))
+            file_term.extract_bytes(&xorb_block_data)
         });
 
         Ok(Box::pin(async move { task.await? }))
