@@ -268,7 +268,9 @@ mod tests {
             .await
             .unwrap();
 
-        let mut cleaner = upload_session.start_clean(Some("test".into()), data.len() as u64, None).await;
+        let mut cleaner = upload_session
+            .start_clean(Some("test".into()), Some(data.len() as u64), None)
+            .await;
         cleaner.add_data(data).await.unwrap();
         let (xfi, _metrics) = cleaner.finish().await.unwrap();
         upload_session.finalize().await.unwrap();
