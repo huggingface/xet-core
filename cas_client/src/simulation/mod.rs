@@ -13,6 +13,8 @@
 pub mod client_testing_utils;
 #[cfg(all(test, not(target_family = "wasm")))]
 pub mod client_unit_testing;
+#[cfg(not(target_family = "wasm"))]
+mod deletion_controls;
 mod direct_access_client;
 #[cfg(not(target_family = "wasm"))]
 mod local_client;
@@ -25,11 +27,13 @@ mod random_xorb;
 pub mod socket_proxy;
 
 pub use client_testing_utils::{ClientTestingUtils, RandomFileContents};
+#[cfg(not(target_family = "wasm"))]
+pub use deletion_controls::DeletionControlableClient;
 pub use direct_access_client::DirectAccessClient;
 #[cfg(not(target_family = "wasm"))]
 pub use local_client::LocalClient;
 #[cfg(not(target_family = "wasm"))]
-pub use local_server::{LocalServer, LocalServerConfig, LocalTestServer};
+pub use local_server::{LocalServer, LocalServerConfig, LocalTestServer, SimulationControlClient};
 pub use memory_client::MemoryClient;
 pub use random_xorb::RandomXorb;
 #[cfg(unix)]

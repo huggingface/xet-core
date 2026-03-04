@@ -241,28 +241,27 @@ impl LocalClient {
 
         Ok(())
     }
+}
 
-    /// Returns all shard hashes from shard files on disk.
-    pub fn list_shard_entries(&self) -> Result<Vec<MerkleHash>> {
+#[async_trait]
+impl super::DeletionControlableClient for LocalClient {
+    async fn list_shard_entries(&self) -> Result<Vec<MerkleHash>> {
         Ok(self.shard_file_paths()?.into_iter().map(|(h, _)| h).collect())
     }
 
-    /// Returns a shard's raw bytes by its hash.
-    pub fn get_shard_bytes(&self, hash: &MerkleHash) -> Result<Bytes> {
+    async fn get_shard_bytes(&self, hash: &MerkleHash) -> Result<Bytes> {
         let path = self.shard_path_for_hash(hash)?;
         let data = std::fs::read(&path)?;
         Ok(Bytes::from(data))
     }
 
-    /// Deletes a shard file by its hash.
-    pub fn delete_shard_entry(&self, hash: &MerkleHash) -> Result<()> {
+    async fn delete_shard_entry(&self, hash: &MerkleHash) -> Result<()> {
         let path = self.shard_path_for_hash(hash)?;
         std::fs::remove_file(&path)?;
         Ok(())
     }
 
-    /// Returns (file_hash, shard_hash) tuples for all files across all shards.
-    pub fn list_file_shard_entries(&self) -> Result<Vec<(MerkleHash, MerkleHash)>> {
+    async fn list_file_shard_entries(&self) -> Result<Vec<(MerkleHash, MerkleHash)>> {
         let mut entries = Vec::new();
         for (shard_hash, path) in self.shard_file_paths()? {
             let shard_bytes = std::fs::read(&path)?;
@@ -276,9 +275,7 @@ impl LocalClient {
         Ok(entries)
     }
 
-    /// Deletes a file entry from all shards that contain it.
-    /// Shards that become empty are removed entirely.
-    pub async fn delete_file_entry(&self, file_hash: &MerkleHash) -> Result<()> {
+    async fn delete_file_entry(&self, file_hash: &MerkleHash) -> Result<()> {
         let mut in_memory = self.load_all_shard_data()?;
         in_memory.file_content.remove(file_hash);
         self.write_shard_data_and_register(&in_memory).await
@@ -288,7 +285,7 @@ impl LocalClient {
     /// 1. For each CAS block in each shard, the corresponding XORB must exist.
     /// 2. For each file entry, every segment's CAS hash must reference a CAS block present in the shard, and the chunk
     ///    range must be valid for that CAS block.
-    pub async fn verify_integrity(&self) -> Result<()> {
+    async fn verify_integrity(&self) -> Result<()> {
         for (shard_hash, path) in self.shard_file_paths()? {
             let shard_bytes = std::fs::read(&path)?;
             let minimal_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&shard_bytes), true, true)?;
@@ -297,7 +294,6 @@ impl LocalClient {
                 .map(|i| minimal_shard.cas(i).unwrap().cas_hash())
                 .collect();
 
-            // Map CAS hash -> number of chunks in that CAS block
             let cas_chunk_counts: HashMap<MerkleHash, usize> = (0..minimal_shard.num_cas())
                 .map(|i| {
                     let cas = minimal_shard.cas(i).unwrap();
@@ -305,7 +301,6 @@ impl LocalClient {
                 })
                 .collect();
 
-            // Verify each CAS block's XORB exists
             for cas_hash in &cas_hashes {
                 let xorb_path = self.get_path_for_entry(cas_hash);
                 if !xorb_path.exists() {
@@ -317,7 +312,6 @@ impl LocalClient {
                 }
             }
 
-            // Verify each file entry's segments reference valid CAS blocks with valid chunk ranges
             for i in 0..minimal_shard.num_files() {
                 let file_view = minimal_shard.file(i).unwrap();
                 let fh = file_view.file_hash();
@@ -1099,6 +1093,7 @@ mod tests {
     use cas_types::CASReconstructionFetchInfo;
 
     use super::*;
+    use crate::simulation::DeletionControlableClient;
     use crate::simulation::client_testing_utils::{ClientTestingUtils, RandomFileContents};
 
     /// Runs the common TestingClient trait test suite for LocalClient.
@@ -1258,9 +1253,10 @@ mod tests {
         files.iter().map(|f| f.file_hash).collect()
     }
 
-    fn full_file_hash_set(client: &LocalClient) -> HashSet<MerkleHash> {
+    async fn full_file_hash_set(client: &LocalClient) -> HashSet<MerkleHash> {
         client
             .list_file_shard_entries()
+            .await
             .unwrap()
             .into_iter()
             .map(|(fh, _)| fh)
@@ -1275,22 +1271,22 @@ mod tests {
     async fn test_shard_listing_and_deletion() {
         let client = LocalClient::temporary().await.unwrap();
 
-        assert!(client.list_shard_entries().unwrap().is_empty());
-        assert!(client.list_file_shard_entries().unwrap().is_empty());
+        assert!(client.list_shard_entries().await.unwrap().is_empty());
+        assert!(client.list_file_shard_entries().await.unwrap().is_empty());
 
         let file = client.upload_random_file(&[(1, (0, 3)), (2, (0, 2))], 2048).await.unwrap();
         let expected_xorbs = expected_xorb_hashes(&[&file]);
 
-        let file_shard_entries = client.list_file_shard_entries().unwrap();
+        let file_shard_entries = client.list_file_shard_entries().await.unwrap();
         assert_eq!(file_shard_entries.len(), 1);
         assert_eq!(file_shard_entries[0].0, file.file_hash);
 
-        let shard_entries = client.list_shard_entries().unwrap();
+        let shard_entries = client.list_shard_entries().await.unwrap();
         assert_eq!(shard_entries.len(), 1);
         assert_eq!(file_shard_entries[0].1, shard_entries[0]);
 
         for shard_hash in &shard_entries {
-            let shard_bytes = client.get_shard_bytes(shard_hash).unwrap();
+            let shard_bytes = client.get_shard_bytes(shard_hash).await.unwrap();
             assert!(!shard_bytes.is_empty());
         }
 
@@ -1298,8 +1294,8 @@ mod tests {
 
         client.verify_integrity().await.unwrap();
 
-        client.delete_shard_entry(&shard_entries[0]).unwrap();
-        assert!(client.list_shard_entries().unwrap().is_empty());
+        client.delete_shard_entry(&shard_entries[0]).await.unwrap();
+        assert!(client.list_shard_entries().await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1313,14 +1309,14 @@ mod tests {
 
         client.delete_file_entry(&file.file_hash).await.unwrap();
 
-        assert!(client.list_file_shard_entries().unwrap().is_empty());
+        assert!(client.list_file_shard_entries().await.unwrap().is_empty());
 
         let file_info = client.get_file_reconstruction_info(&file.file_hash).await.unwrap();
         assert!(file_info.is_none());
 
         assert_eq!(full_xorb_hash_set(&client).await, expected_xorbs);
 
-        assert!(!client.list_shard_entries().unwrap().is_empty());
+        assert!(!client.list_shard_entries().await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1349,27 +1345,27 @@ mod tests {
 
         client.verify_integrity().await.unwrap();
 
-        assert_eq!(full_file_hash_set(&client), all_files);
+        assert_eq!(full_file_hash_set(&client).await, all_files);
         assert_eq!(full_xorb_hash_set(&client).await, all_xorbs);
 
         // Step 1: Delete file entries -- shards and xorbs remain
         client.delete_file_entry(&file1.file_hash).await.unwrap();
 
-        assert_eq!(full_file_hash_set(&client), HashSet::from([file2.file_hash]));
+        assert_eq!(full_file_hash_set(&client).await, HashSet::from([file2.file_hash]));
 
         client.delete_file_entry(&file2.file_hash).await.unwrap();
-        assert!(client.list_file_shard_entries().unwrap().is_empty());
-        assert!(!client.list_shard_entries().unwrap().is_empty());
+        assert!(client.list_file_shard_entries().await.unwrap().is_empty());
+        assert!(!client.list_shard_entries().await.unwrap().is_empty());
 
         assert_eq!(full_xorb_hash_set(&client).await, all_xorbs);
 
         // Step 2: Delete shards -- xorbs remain
-        let shard_hashes = client.list_shard_entries().unwrap();
+        let shard_hashes = client.list_shard_entries().await.unwrap();
         for h in &shard_hashes {
-            client.delete_shard_entry(h).unwrap();
+            client.delete_shard_entry(h).await.unwrap();
         }
 
-        assert!(client.list_shard_entries().unwrap().is_empty());
+        assert!(client.list_shard_entries().await.unwrap().is_empty());
         assert_eq!(full_xorb_hash_set(&client).await, all_xorbs);
 
         // Step 3: Delete xorbs -- everything gone
@@ -1384,14 +1380,14 @@ mod tests {
     async fn test_missing_shard_entry_errors() {
         let client = LocalClient::temporary().await.unwrap();
         let file = client.upload_random_file(&[(7, (0, 2))], 2048).await.unwrap();
-        let mut shard_hashes = client.list_shard_entries().unwrap();
+        let mut shard_hashes = client.list_shard_entries().await.unwrap();
         let shard_hash = shard_hashes.pop().unwrap();
 
-        client.delete_shard_entry(&shard_hash).unwrap();
+        client.delete_shard_entry(&shard_hash).await.unwrap();
 
-        assert!(client.get_shard_bytes(&shard_hash).is_err());
-        assert!(client.delete_shard_entry(&shard_hash).is_err());
-        assert!(client.list_file_shard_entries().unwrap().is_empty());
+        assert!(client.get_shard_bytes(&shard_hash).await.is_err());
+        assert!(client.delete_shard_entry(&shard_hash).await.is_err());
+        assert!(client.list_file_shard_entries().await.unwrap().is_empty());
         assert_eq!(full_xorb_hash_set(&client).await, expected_xorb_hashes(&[&file]));
     }
 
