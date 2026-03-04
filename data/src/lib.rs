@@ -4,7 +4,7 @@ mod deduplication_interface;
 pub mod errors;
 mod file_cleaner;
 mod file_download_session;
-pub mod file_upload_session;
+mod file_upload_session;
 pub mod migration_tool;
 mod prometheus_metrics;
 mod remote_client_interface;
@@ -14,7 +14,7 @@ mod xet_file;
 
 // Reexport this one for now
 pub use deduplication::RawXorbData;
-pub use file_cleaner::SingleFileCleaner;
+pub use file_cleaner::{Sha256Policy, SingleFileCleaner};
 pub use file_download_session::FileDownloadSession;
 pub use file_reconstruction::DownloadStream;
 pub use file_upload_session::FileUploadSession;

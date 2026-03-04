@@ -3,66 +3,9 @@ use sha2::{Digest, Sha256 as sha2Sha256};
 use tokio::task::{JoinError, JoinHandle};
 use xet_runtime::XetRuntime;
 
-/// Controls how SHA-256 is handled during file cleaning.
-pub enum Sha256Policy {
-    /// Compute SHA-256 from the file data.
-    Compute,
-    /// Use a pre-computed SHA-256 value.
-    Provided(Sha256),
-    /// Skip SHA-256 entirely; no metadata_ext is written to the shard.
-    Skip,
-}
-
-impl From<Option<Sha256>> for Sha256Policy {
-    fn from(sha256: Option<Sha256>) -> Self {
-        match sha256 {
-            Some(hash) => Self::Provided(hash),
-            None => Self::Compute,
-        }
-    }
-}
-
-pub(crate) enum ShaGenerator {
-    Generate(Sha256Generator),
-    ProvidedValue(Sha256),
-    /// Skip SHA-256 computation entirely. `finalize()` returns `None`.
-    Skip,
-}
-
-impl From<Sha256Policy> for ShaGenerator {
-    fn from(policy: Sha256Policy) -> Self {
-        match policy {
-            Sha256Policy::Compute => Self::generate(),
-            Sha256Policy::Provided(hash) => Self::ProvidedValue(hash),
-            Sha256Policy::Skip => Self::Skip,
-        }
-    }
-}
-
-impl ShaGenerator {
-    pub async fn update(&mut self, new_data: impl AsRef<[u8]> + Send + Sync + 'static) -> Result<(), JoinError> {
-        match self {
-            Self::Generate(generator) => generator.update(new_data).await,
-            Self::ProvidedValue(_) | Self::Skip => Ok(()),
-        }
-    }
-
-    pub async fn finalize(self) -> Result<Option<Sha256>, JoinError> {
-        match self {
-            Self::Generate(generator) => generator.finalize().await.map(Some),
-            Self::ProvidedValue(hash) => Ok(Some(hash)),
-            Self::Skip => Ok(None),
-        }
-    }
-
-    pub fn generate() -> Self {
-        Self::Generate(Sha256Generator::default())
-    }
-}
-
 /// Helper struct to generate a sha256 hash.
 #[derive(Debug, Default)]
-pub struct Sha256Generator {
+pub(crate) struct Sha256Generator {
     hasher: Option<JoinHandle<Result<sha2Sha256, JoinError>>>,
 }
 
@@ -111,13 +54,6 @@ mod sha_tests {
 
     // use `echo -n "..." | sha256sum` with the `TEST_DATA` contents to get the sha to compare against
     const TEST_SHA: &str = "1307990e6ba5ca145eb35e99182a9bec46531bc54ddf656a602c780fa0240dee";
-
-    #[tokio::test]
-    async fn test_sha_skip() {
-        let mut sha_gen = ShaGenerator::Skip;
-        sha_gen.update(b"some data").await.unwrap();
-        assert!(sha_gen.finalize().await.unwrap().is_none());
-    }
 
     #[tokio::test]
     async fn test_sha_generation_builder() {

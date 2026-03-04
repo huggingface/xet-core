@@ -230,7 +230,7 @@ mod tests {
 
     use super::*;
     use crate::configurations::TranslatorConfig;
-    use crate::file_upload_session::Sha256Policy;
+    use crate::file_cleaner::Sha256Policy;
     use crate::{FileUploadSession, XetFileInfo};
 
     fn get_threadpool() -> Arc<XetRuntime> {
@@ -246,7 +246,7 @@ mod tests {
             .unwrap();
 
         let mut cleaner = upload_session
-            .start_clean(Some("test".into()), data.len() as u64, Sha256Policy::Compute)
+            .start_clean(Some("test".into()), data.len() as u64, Sha256Policy::Compute, Ulid::new())
             .await;
         cleaner.add_data(data).await.unwrap();
         let (xfi, _metrics) = cleaner.finish().await.unwrap();

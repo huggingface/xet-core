@@ -26,9 +26,8 @@ use xet_runtime::{XetRuntime, xet_config};
 
 use crate::configurations::*;
 use crate::errors::*;
-use crate::file_cleaner::SingleFileCleaner;
+use crate::file_cleaner::{Sha256Policy, SingleFileCleaner};
 use crate::remote_client_interface::create_remote_client;
-pub use crate::sha256::Sha256Policy;
 use crate::shard_interface::SessionShardInterface;
 use crate::{XetFileInfo, prometheus_metrics};
 
@@ -257,17 +256,18 @@ impl FileUploadSession {
     /// SHA-256 computation entirely and no metadata_ext is included in the shard.
     pub async fn start_clean(
         self: &Arc<Self>,
-        file_name: Option<Arc<str>>,
+        tracking_name: Option<Arc<str>>,
         size: u64,
         sha256: Sha256Policy,
+        tracking_id: Ulid,
     ) -> SingleFileCleaner {
         // Get a new file id for the completion tracking
         let file_id = self
             .completion_tracker
-            .register_new_file(Ulid::new(), file_name.clone().unwrap_or_default(), Some(size))
+            .register_new_file(tracking_id, tracking_name.clone().unwrap_or_default(), Some(size))
             .await;
 
-        SingleFileCleaner::new(file_name, file_id, sha256, self.clone())
+        SingleFileCleaner::new(tracking_name, file_id, sha256, self.clone())
     }
 
     /// Registers a new xorb for upload, returning true if the xorb was added to the upload queue and false
@@ -577,7 +577,7 @@ mod tests {
             .unwrap();
 
         let mut cleaner = upload_session
-            .start_clean(Some("test".into()), read_data.len() as u64, Sha256Policy::Compute)
+            .start_clean(Some("test".into()), read_data.len() as u64, Sha256Policy::Compute, Ulid::new())
             .await;
 
         // Read blocks from the source file and hand them to the cleaning handle
@@ -615,6 +615,26 @@ mod tests {
 
     use super::*;
 
+    /// Cleans a file using Sha256Policy::Skip and returns the XetFileInfo.
+    async fn test_clean_file_skip_sha256(cas_path: &Path, input_path: &Path) -> XetFileInfo {
+        let read_data = read(input_path).unwrap().to_vec();
+
+        let upload_session = FileUploadSession::new(TranslatorConfig::local_config(cas_path).unwrap().into(), None)
+            .await
+            .unwrap();
+
+        let mut cleaner = upload_session
+            .start_clean(Some("test".into()), read_data.len() as u64, Sha256Policy::Skip, Ulid::new())
+            .await;
+
+        cleaner.add_data(&read_data[..]).await.unwrap();
+
+        let (xet_file_info, _metrics) = cleaner.finish().await.unwrap();
+        upload_session.finalize().await.unwrap();
+
+        xet_file_info
+    }
+
     #[test]
     fn test_clean_smudge_round_trip() {
         let temp = tempdir().unwrap();
@@ -640,6 +660,37 @@ mod tests {
                 test_smudge_file(&cas_path, &pointer_path, &hydrated_path).await;
 
                 // 4. Verify that the round-tripped file matches the original
+                let result_data = read(hydrated_path).unwrap();
+                assert_eq!(original_data.to_vec(), result_data);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_clean_skip_sha256_round_trip() {
+        let temp = tempdir().unwrap();
+        let original_data = b"Hello, skip sha256!";
+
+        let runtime = get_threadpool();
+
+        runtime
+            .clone()
+            .external_run_async_task(async move {
+                let cas_path = temp.path().join("cas");
+
+                let original_path = temp.path().join("original.txt");
+                write(&original_path, original_data).unwrap();
+
+                // Clean with Sha256Policy::Skip
+                let xet_file_info = test_clean_file_skip_sha256(&cas_path, &original_path).await;
+
+                // Write pointer file, then smudge it back
+                let pointer_path = temp.path().join("pointer.txt");
+                write(&pointer_path, serde_json::to_string(&xet_file_info).unwrap()).unwrap();
+
+                let hydrated_path = temp.path().join("hydrated.txt");
+                test_smudge_file(&cas_path, &pointer_path, &hydrated_path).await;
+
                 let result_data = read(hydrated_path).unwrap();
                 assert_eq!(original_data.to_vec(), result_data);
             })
