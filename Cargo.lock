@@ -990,6 +990,7 @@ dependencies = [
  "file_reconstruction",
  "http",
  "hub_client",
+ "itertools 0.14.0",
  "lazy_static",
  "mdb_shard",
  "merklehash",
@@ -1353,6 +1354,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "ulid",
  "utils",
  "xet_config",
  "xet_runtime",
@@ -3462,6 +3464,7 @@ dependencies = [
  "merklehash",
  "more-asserts",
  "tokio",
+ "ulid",
  "utils",
 ]
 
@@ -6155,6 +6158,29 @@ name = "writeable"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea2f10b9bb0928dfb1b42b65e1f9e36f7f54dbdf08457afefb38afcdec4fa2bb"
+
+[[package]]
+name = "xet-session"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "clap",
+ "data",
+ "http",
+ "progress_tracking",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "tempfile",
+ "thiserror 2.0.12",
+ "tokio",
+ "tracing-subscriber",
+ "ulid",
+ "utils",
+ "xet_config",
+ "xet_runtime",
+]
 
 [[package]]
 name = "xet_config"

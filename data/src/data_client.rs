@@ -7,6 +7,7 @@ use bytes::Bytes;
 use cas_client::remote_client::PREFIX_DEFAULT;
 use deduplication::{Chunker, DeduplicationMetrics};
 use http::header::HeaderMap;
+use itertools::multizip;
 use mdb_shard::Sha256;
 use merklehash::MerkleHash;
 use progress_tracking::TrackingProgressUpdater;
@@ -114,7 +115,7 @@ pub async fn upload_bytes_async(
     let upload_session = FileUploadSession::new(config.into(), progress_updater).await?;
     let clean_futures = file_contents.into_iter().map(|blob| {
         let upload_session = upload_session.clone();
-        async move { clean_bytes(upload_session, blob).await.map(|(xf, _metrics)| xf) }
+        async move { clean_bytes(upload_session, blob, None).await.map(|(xf, _metrics)| xf) }
             .instrument(info_span!("clean_task"))
     });
     let files = run_constrained_with_semaphore(clean_futures, semaphore).await?;
@@ -177,9 +178,9 @@ pub async fn upload_async(
         None => Box::new(std::iter::repeat(None)),
     };
 
-    let files_and_sha256s = file_paths.into_iter().zip(sha256s);
+    let files_sha256_and_tracking_ids = multizip((file_paths.into_iter(), sha256s, std::iter::repeat_with(Ulid::new)));
 
-    let ret = upload_session.upload_files(files_and_sha256s).await?;
+    let ret = upload_session.upload_files(files_sha256_and_tracking_ids).await?;
 
     // Push the CAS blocks and flush the mdb to disk
     let metrics = upload_session.finalize().await?;
@@ -233,10 +234,13 @@ pub async fn download_async(
         let session = session.clone();
         tasks.push(tokio::spawn(
             async move {
+                let semaphore = XetRuntime::current().common().file_download_semaphore.clone();
+                let _permit = semaphore.acquire().await?;
+
                 let path = PathBuf::from(&file_path);
                 match updater {
                     Some(u) => session.download_file_with_updater(&file_info, &path, u).await?,
-                    None => session.download_file(&file_info, &path, None).await?,
+                    None => session.download_file(&file_info, &path, Ulid::new()).await?,
                 };
                 errors::Result::Ok(file_path)
             }
@@ -256,8 +260,12 @@ pub async fn download_async(
 pub async fn clean_bytes(
     processor: Arc<FileUploadSession>,
     bytes: Vec<u8>,
+    tracking_id: Option<Ulid>,
 ) -> errors::Result<(XetFileInfo, DeduplicationMetrics)> {
-    let mut handle = processor.start_clean(None, bytes.len() as u64, None).await;
+    #[allow(clippy::unwrap_or_default)] // Ulid::default is Ulid::nil
+    let tracking_id = tracking_id.unwrap_or_else(Ulid::new);
+
+    let mut handle = processor.start_clean(None, bytes.len() as u64, None, tracking_id).await;
     handle.add_data(&bytes).await?;
     handle.finish().await
 }
@@ -268,7 +276,10 @@ pub async fn clean_file(
     processor: Arc<FileUploadSession>,
     filename: impl AsRef<Path>,
     sha256: impl AsRef<str>,
+    tracking_id: Option<Ulid>,
 ) -> errors::Result<(XetFileInfo, DeduplicationMetrics)> {
+    #[allow(clippy::unwrap_or_default)] // Ulid::default is Ulid::nil
+    let tracking_id = tracking_id.unwrap_or_else(Ulid::new);
     let mut reader = File::open(&filename)?;
 
     let filesize = reader.metadata()?.len();
@@ -278,7 +289,12 @@ pub async fn clean_file(
     let mut buffer = vec![0u8; u64::min(filesize, *xet_config().data.ingestion_block_size) as usize];
 
     let mut handle = processor
-        .start_clean(Some(filename.as_ref().to_string_lossy().into()), filesize, Sha256::from_hex(sha256.as_ref()).ok())
+        .start_clean(
+            Some(filename.as_ref().to_string_lossy().into()),
+            filesize,
+            Sha256::from_hex(sha256.as_ref()).ok(),
+            tracking_id,
+        )
         .await;
 
     loop {
