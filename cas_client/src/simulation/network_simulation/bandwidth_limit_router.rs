@@ -110,26 +110,28 @@ impl NetworkSimulationProxy {
                 *last_guard = now;
                 drop(last_guard);
 
-                let bytes_per_sec = profile.bandwidth_bytes_per_sec.unwrap_or(0);
-                let add_bytes = (elapsed_since_last.as_secs_f64() * bytes_per_sec as f64).round() as u64;
-                self.total_upload_possible.fetch_add(add_bytes, Ordering::Relaxed);
-                self.total_download_possible.fetch_add(add_bytes, Ordering::Relaxed);
+                if let Some(bytes_per_sec) = profile.bandwidth_bytes_per_sec {
+                    let add_bytes = (elapsed_since_last.as_secs_f64() * bytes_per_sec as f64).round() as u64;
+                    self.total_upload_possible.fetch_add(add_bytes, Ordering::Relaxed);
+                    self.total_download_possible.fetch_add(add_bytes, Ordering::Relaxed);
 
-                // Only add permits if there are active connections; this prevents a situation where
-                // a slow network with just builds up a pool of bandwidth permits and allows a burst through
-                // on the next connection.
-                let current_active_connections = self.active_connections.load(Ordering::Relaxed);
-                if current_active_connections > 0 {
-                    let add_permits = add_bytes.div_ceil(BASE_BANDWIDTH_PERMIT_SIZE).min(usize::MAX as u64) as usize;
-                    let one_second_permits =
-                        (bytes_per_sec / BASE_BANDWIDTH_PERMIT_SIZE).min(usize::MAX as u64) as usize;
+                    // Only add permits if there are active connections; this prevents a situation where
+                    // a slow network with just builds up a pool of bandwidth permits and allows a burst through
+                    // on the next connection.
+                    let current_active_connections = self.active_connections.load(Ordering::Relaxed);
+                    if current_active_connections > 0 {
+                        let add_permits =
+                            add_bytes.div_ceil(BASE_BANDWIDTH_PERMIT_SIZE).min(usize::MAX as u64) as usize;
+                        let one_second_permits =
+                            (bytes_per_sec / BASE_BANDWIDTH_PERMIT_SIZE).min(usize::MAX as u64) as usize;
 
-                    if add_permits > 0 && self.upload_limiter.available_permits() < one_second_permits {
-                        self.upload_limiter.add_permits(add_permits);
-                    }
+                        if add_permits > 0 && self.upload_limiter.available_permits() < one_second_permits {
+                            self.upload_limiter.add_permits(add_permits);
+                        }
 
-                    if add_permits > 0 && self.download_limiter.available_permits() < one_second_permits {
-                        self.download_limiter.add_permits(add_permits);
+                        if add_permits > 0 && self.download_limiter.available_permits() < one_second_permits {
+                            self.download_limiter.add_permits(add_permits);
+                        }
                     }
                 }
             }

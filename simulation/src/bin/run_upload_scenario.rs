@@ -94,30 +94,33 @@ async fn run_gitxet_upload_burst(mut scenario: SimulationScenario, duration_sec:
 }
 
 /// Staggered client starts: launch clients in waves with pauses between.
-async fn run_added_uploads(mut scenario: SimulationScenario, _duration_sec: u64) -> ScenarioResult<()> {
+/// Total run time is split evenly across 6 stages.
+async fn run_added_uploads(mut scenario: SimulationScenario, duration_sec: u64) -> ScenarioResult<()> {
+    let stage_duration = Duration::from_secs(duration_sec / 6);
+
     add_upload_client_task(&mut scenario);
-    sleep(Duration::from_secs(100)).await;
+    sleep(stage_duration).await;
 
     for _ in 0..3 {
         add_upload_client_task(&mut scenario);
     }
-    sleep(Duration::from_secs(100)).await;
+    sleep(stage_duration).await;
 
     for _ in 0..2 {
         add_upload_client_task(&mut scenario);
     }
-    sleep(Duration::from_secs(100)).await;
+    sleep(stage_duration).await;
 
     for _ in 0..6 {
         add_upload_client_task(&mut scenario);
     }
-    sleep(Duration::from_secs(100)).await;
+    sleep(stage_duration).await;
 
     add_upload_client_task(&mut scenario);
-    sleep(Duration::from_secs(100)).await;
+    sleep(stage_duration).await;
 
     add_upload_client_task(&mut scenario);
-    sleep(Duration::from_secs(100)).await;
+    sleep(stage_duration).await;
 
     scenario.finish().await
 }

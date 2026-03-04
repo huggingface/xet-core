@@ -51,7 +51,7 @@ pub type ScenarioResult<T> = Result<T, ScenarioError>;
 pub struct NetworkStats {
     pub timestamp: String,
     pub latency_ms: f64,
-    pub bandwidth_bytes_per_sec: u64,
+    pub bandwidth_bytes_per_sec: Option<u64>,
     pub congestion_mode: Option<String>,
     pub interface: Option<String>,
     /// Elapsed seconds since scenario start.
@@ -216,7 +216,7 @@ async fn sample_network_stats(
     NetworkStats {
         timestamp: chrono::Utc::now().timestamp_millis().to_string(),
         latency_ms: server.current_latency_ms().await,
-        bandwidth_bytes_per_sec: server.current_bandwidth().await.unwrap_or(0),
+        bandwidth_bytes_per_sec: server.current_bandwidth().await,
         congestion_mode: None,
         interface: None,
         elapsed_sec: start_instant.elapsed().as_secs_f64(),

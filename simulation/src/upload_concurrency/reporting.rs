@@ -313,6 +313,7 @@ fn calculate_network_utilization(
     sorted_stats.sort_by(|a, b| a.elapsed_sec.partial_cmp(&b.elapsed_sec).unwrap_or(std::cmp::Ordering::Equal));
     let mut max_possible: f64 = 0.0;
     let mut current_elapsed_sec: f64 = 0.0;
+    let mut any_limited = false;
     for (i, stat) in sorted_stats.iter().enumerate() {
         let next_elapsed_sec = if i + 1 < sorted_stats.len() {
             sorted_stats[i + 1].elapsed_sec
@@ -320,8 +321,14 @@ fn calculate_network_utilization(
             duration_sec
         };
         let segment_sec = (next_elapsed_sec - current_elapsed_sec).max(0.0);
-        max_possible += stat.bandwidth_bytes_per_sec as f64 * segment_sec;
+        if let Some(bw) = stat.bandwidth_bytes_per_sec {
+            max_possible += bw as f64 * segment_sec;
+            any_limited = true;
+        }
         current_elapsed_sec = next_elapsed_sec;
+    }
+    if !any_limited {
+        return Ok(100.0);
     }
     if max_possible > 0.0 {
         let utilization = (total_bytes / max_possible) * 100.0;

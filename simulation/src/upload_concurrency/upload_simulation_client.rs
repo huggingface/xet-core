@@ -123,6 +123,8 @@ fn spawn_stats_reporter(
             if done {
                 break;
             }
+            let elapsed = start_instant.lock().unwrap().elapsed();
+            let elapsed_sec = elapsed.as_secs_f64();
             let current_bytes = counters.bytes_sent.load(Ordering::Relaxed);
             let interval_bytes = current_bytes.saturating_sub(last_reported_bytes);
             let interval_sec = STATS_INTERVAL_MS as f64 / 1000.0;
@@ -131,7 +133,6 @@ fn spawn_stats_reporter(
             } else {
                 0.0
             };
-            let elapsed_sec = start_instant.lock().unwrap().elapsed().as_secs_f64();
             let total_throughput_bps = if elapsed_sec > 0.0 {
                 current_bytes as f64 / elapsed_sec
             } else {
@@ -154,7 +155,7 @@ fn spawn_stats_reporter(
                 client_id,
                 server_tag: "upload-server".to_string(),
                 timestamp: chrono::Utc::now().timestamp_millis().to_string(),
-                elapsed_seconds: start_instant.lock().unwrap().elapsed().as_secs_f64(),
+                elapsed_seconds: elapsed_sec,
                 interval_bytes,
                 total_bytes: current_bytes,
                 interval_sec,
