@@ -179,7 +179,7 @@ pub struct MDBMinimalShard {
 }
 
 impl MDBMinimalShard {
-    pub fn from_reader<R: Read>(reader: &mut R, include_files: bool, include_cas: bool) -> Result<Self> {
+    pub fn from_reader<R: Read>(reader: &mut R, include_files: bool, include_xorb: bool) -> Result<Self> {
         // Check the header; not needed except for version verification.
         let _ = MDBShardFileHeader::deserialize(reader)?;
 
@@ -193,7 +193,7 @@ impl MDBMinimalShard {
         })?;
 
         let mut xorb_info_views = Vec::<MDBXorbInfoView>::new();
-        if include_cas {
+        if include_xorb {
             process_shard_xorb_info_section(reader, |civ: MDBXorbInfoView| {
                 xorb_info_views.push(civ);
                 Ok(())
@@ -209,15 +209,15 @@ impl MDBMinimalShard {
     pub async fn from_reader_async<R: AsyncRead + Unpin>(
         reader: &mut R,
         include_files: bool,
-        include_cas: bool,
+        include_xorb: bool,
     ) -> Result<Self> {
-        Self::from_reader_async_with_custom_callbacks(reader, include_files, include_cas, |_| Ok(()), |_| Ok(())).await
+        Self::from_reader_async_with_custom_callbacks(reader, include_files, include_xorb, |_| Ok(()), |_| Ok(())).await
     }
 
     pub async fn from_reader_async_with_custom_callbacks<R: AsyncRead + Unpin, FileFunc, XorbFunc>(
         reader: &mut R,
         include_files: bool,
-        include_cas: bool,
+        include_xorb: bool,
         mut file_callback: FileFunc,
         mut xorb_callback: XorbFunc,
     ) -> Result<Self>
@@ -248,7 +248,7 @@ impl MDBMinimalShard {
 
         // XORB stuff
         let mut xorb_info_views = Vec::<MDBXorbInfoView>::new();
-        if include_cas {
+        if include_xorb {
             process_shard_xorb_info_section_async(reader, |civ: MDBXorbInfoView| {
                 xorb_callback(&civ)?;
                 xorb_info_views.push(civ);

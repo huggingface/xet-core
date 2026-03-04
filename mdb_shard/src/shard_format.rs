@@ -1397,7 +1397,7 @@ pub mod test_routines {
 
         for file_block_size in file_chunk_range_sizes {
             let file_info = if files_cross_reference_xorb {
-                gen_random_file_info_with_cas_references(
+                gen_random_file_info_with_xorb_references(
                     &mut rng,
                     &xorb_nodes,
                     file_block_size,
@@ -1454,7 +1454,7 @@ pub mod test_routines {
         }
     }
 
-    pub fn gen_random_file_info_with_cas_references(
+    pub fn gen_random_file_info_with_xorb_references(
         rng: &mut StdRng,
         xorb_nodes: &[MDBXorbInfo],
         file_block_size: &usize,
