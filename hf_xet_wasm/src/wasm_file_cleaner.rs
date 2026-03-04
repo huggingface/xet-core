@@ -5,6 +5,7 @@ use mdb_shard::file_structs::FileMetadataExt;
 use merklehash::MerkleHash;
 use tokio::sync::mpsc;
 use tokio_with_wasm::alias as wasmtokio;
+use xet_runtime::xet_config;
 
 use super::errors::*;
 use super::wasm_deduplication_interface::UploadSessionDataManager;
@@ -72,7 +73,7 @@ impl SingleFileCleaner {
             _file_id: file_id,
             session: session.clone(),
             cpu_task: CPUTask::CurrentThread((Chunker::default(), ShaGeneration::new(sha256))),
-            dedup_manager: FileDeduper::new(UploadSessionDataManager::new(session), file_id),
+            dedup_manager: FileDeduper::new(UploadSessionDataManager::new(session), file_id, xet_config().deduplication.clone()),
         }
     }
 
@@ -110,7 +111,7 @@ impl SingleFileCleaner {
             _file_id: file_id,
             session: session.clone(),
             cpu_task,
-            dedup_manager: FileDeduper::new(UploadSessionDataManager::new(session), file_id),
+            dedup_manager: FileDeduper::new(UploadSessionDataManager::new(session), file_id, xet_config().deduplication.clone()),
         }
     }
 

@@ -344,6 +344,7 @@ dependencies = [
  "more-asserts",
  "progress_tracking",
  "utils",
+ "xet_config",
  "xet_runtime",
 ]
 

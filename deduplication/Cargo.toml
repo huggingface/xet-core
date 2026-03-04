@@ -9,6 +9,7 @@ mdb_shard = { path = "../mdb_shard" }
 merklehash = { path = "../merklehash" }
 progress_tracking = { path = "../progress_tracking" }
 utils = { path = "../utils" }
+xet_config = { path = "../xet_config" }
 
 async-trait = { workspace = true }
 bytes = { workspace = true }
@@ -18,3 +19,4 @@ lazy_static = { workspace = true }
 
 [dev-dependencies]
 rand = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros"] }
