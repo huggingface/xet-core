@@ -615,26 +615,6 @@ mod tests {
 
     use super::*;
 
-    /// Cleans a file using Sha256Policy::Skip and returns the XetFileInfo.
-    async fn test_clean_file_skip_sha256(cas_path: &Path, input_path: &Path) -> XetFileInfo {
-        let read_data = read(input_path).unwrap().to_vec();
-
-        let upload_session = FileUploadSession::new(TranslatorConfig::local_config(cas_path).unwrap().into(), None)
-            .await
-            .unwrap();
-
-        let mut cleaner = upload_session
-            .start_clean(Some("test".into()), read_data.len() as u64, Sha256Policy::Skip, Ulid::new())
-            .await;
-
-        cleaner.add_data(&read_data[..]).await.unwrap();
-
-        let (xet_file_info, _metrics) = cleaner.finish().await.unwrap();
-        upload_session.finalize().await.unwrap();
-
-        xet_file_info
-    }
-
     #[test]
     fn test_clean_smudge_round_trip() {
         let temp = tempdir().unwrap();
@@ -667,9 +647,9 @@ mod tests {
     }
 
     #[test]
-    fn test_clean_skip_sha256_round_trip() {
+    fn test_clean_skip_sha256_no_metadata_ext() {
         let temp = tempdir().unwrap();
-        let original_data = b"Hello, skip sha256!";
+        let data = b"Hello, skip sha256!";
 
         let runtime = get_threadpool();
 
@@ -678,21 +658,21 @@ mod tests {
             .external_run_async_task(async move {
                 let cas_path = temp.path().join("cas");
 
-                let original_path = temp.path().join("original.txt");
-                write(&original_path, original_data).unwrap();
+                let upload_session =
+                    FileUploadSession::new(TranslatorConfig::local_config(&cas_path).unwrap().into(), None)
+                        .await
+                        .unwrap();
 
-                // Clean with Sha256Policy::Skip
-                let xet_file_info = test_clean_file_skip_sha256(&cas_path, &original_path).await;
+                let mut cleaner = upload_session
+                    .start_clean(Some("test".into()), data.len() as u64, Sha256Policy::Skip, Ulid::new())
+                    .await;
+                cleaner.add_data(data).await.unwrap();
+                cleaner.finish().await.unwrap();
 
-                // Write pointer file, then smudge it back
-                let pointer_path = temp.path().join("pointer.txt");
-                write(&pointer_path, serde_json::to_string(&xet_file_info).unwrap()).unwrap();
-
-                let hydrated_path = temp.path().join("hydrated.txt");
-                test_smudge_file(&cas_path, &pointer_path, &hydrated_path).await;
-
-                let result_data = read(hydrated_path).unwrap();
-                assert_eq!(original_data.to_vec(), result_data);
+                // Verify that the shard has no metadata_ext (no SHA-256).
+                let (_metrics, file_infos) = upload_session.finalize_with_file_info().await.unwrap();
+                assert_eq!(file_infos.len(), 1);
+                assert!(file_infos[0].metadata_ext.is_none(), "Skip should produce no metadata_ext");
             })
             .unwrap();
     }
