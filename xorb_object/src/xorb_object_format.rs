@@ -57,6 +57,7 @@ pub struct XorbObjectInfoV0 {
     pub version: u8,
 
     /// 256-bits, 32-bytes, The XORB Hash of this Xorb.
+    #[serde(rename = "cashash")]
     pub xorb_hash: MerkleHash,
 
     /// Total number of chunks in the Xorb. Length of chunk_boundary_offsets & chunk_hashes vectors.
@@ -288,6 +289,7 @@ pub struct XorbObjectInfoV1 {
     pub version: u8,
 
     /// 256-bits, 32-bytes, The XORB Hash of this Xorb.
+    #[serde(rename = "cashash")]
     pub xorb_hash: MerkleHash,
 
     ///////////////////////////////////////////////////////////////////
