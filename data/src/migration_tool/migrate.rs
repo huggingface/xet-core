@@ -111,7 +111,7 @@ pub async fn migrate_files_impl(
     let clean_futs = file_paths.into_iter().zip(sha256s).map(|(file_path, sha256)| {
         let proc = processor.clone();
         async move {
-            let (pf, metrics) = clean_file(proc, file_path, sha256).await?;
+            let (pf, metrics) = clean_file(proc, file_path, sha256, None).await?;
             Ok::<(XetFileInfo, u64), DataProcessingError>((pf, metrics.new_bytes))
         }
         .instrument(info_span!("clean_file"))

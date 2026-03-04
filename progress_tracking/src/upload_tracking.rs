@@ -6,6 +6,7 @@ use std::sync::Arc;
 use merklehash::MerkleHash;
 use more_asserts::{debug_assert_ge, debug_assert_le};
 use tokio::sync::Mutex;
+use ulid::Ulid;
 use utils::MerkleHashMap;
 
 use crate::{ItemProgressUpdate, ProgressUpdate, TrackingProgressUpdater};
@@ -46,6 +47,9 @@ struct XorbPartCompletionStats {
 
 /// Represents a file that depends on one or more xorbs.
 struct FileDependency {
+    /// A unique id when the below name is not enough to identify a single file.
+    tracking_id: Ulid,
+
     /// Human-readable name of the file.
     name: Arc<str>,
 
@@ -97,6 +101,7 @@ impl CompletionTrackerImpl {
     /// call `update_file_size` to provide the actual size.
     fn register_new_file(
         &mut self,
+        tracking_id: Ulid,
         name: impl Into<Arc<str>>,
         n_bytes: Option<u64>,
     ) -> (ProgressUpdate, CompletionTrackerFileId) {
@@ -110,6 +115,7 @@ impl CompletionTrackerImpl {
 
         // Create a new FileDependency record.
         let file_dependency = FileDependency {
+            tracking_id,
             name: name.into(),
             total_bytes,
             is_final_size_known,
@@ -163,6 +169,7 @@ impl CompletionTrackerImpl {
 
         // Emit an item update so progress reporters see the new total for this file.
         let item_update = ItemProgressUpdate {
+            tracking_id: file_entry.tracking_id,
             item_name: file_entry.name.clone(),
             total_bytes: file_entry.total_bytes,
             bytes_completed: file_entry.completed_bytes,
@@ -199,6 +206,7 @@ impl CompletionTrackerImpl {
                 debug_assert_le!(file_entry.completed_bytes, file_entry.total_bytes);
 
                 let progress_update = ItemProgressUpdate {
+                    tracking_id: file_entry.tracking_id,
                     item_name: file_entry.name.clone(),
                     total_bytes: file_entry.total_bytes,
                     bytes_completed: file_entry.completed_bytes,
@@ -221,6 +229,7 @@ impl CompletionTrackerImpl {
                     debug_assert_le!(file_entry.completed_bytes, file_entry.total_bytes);
 
                     let progress_update = ItemProgressUpdate {
+                        tracking_id: file_entry.tracking_id,
                         item_name: file_entry.name.clone(),
                         total_bytes: file_entry.total_bytes,
                         bytes_completed: file_entry.completed_bytes,
@@ -340,6 +349,7 @@ impl CompletionTrackerImpl {
                 file_entry.completed_bytes += n_bytes_remaining;
 
                 let progress_update = ItemProgressUpdate {
+                    tracking_id: file_entry.tracking_id,
                     item_name: file_entry.name.clone(),
                     total_bytes: file_entry.total_bytes,
                     bytes_completed: file_entry.completed_bytes,
@@ -454,6 +464,7 @@ impl CompletionTrackerImpl {
                 file_entry.completed_bytes += incremental_update;
 
                 let progress_update = ItemProgressUpdate {
+                    tracking_id: file_entry.tracking_id,
                     item_name: file_entry.name.clone(),
                     total_bytes: file_entry.total_bytes,
                     bytes_completed: file_entry.completed_bytes,
@@ -548,10 +559,15 @@ impl CompletionTracker {
         }
     }
 
-    pub async fn register_new_file(&self, name: impl Into<Arc<str>>, n_bytes: Option<u64>) -> CompletionTrackerFileId {
+    pub async fn register_new_file(
+        &self,
+        tracking_id: Ulid,
+        name: impl Into<Arc<str>>,
+        n_bytes: Option<u64>,
+    ) -> CompletionTrackerFileId {
         let mut update_lock = self.inner.lock().await;
 
-        let (updates, ret) = update_lock.register_new_file(name, n_bytes);
+        let (updates, ret) = update_lock.register_new_file(tracking_id, name, n_bytes);
 
         if !updates.is_empty() {
             self.progress_reporter.register_updates(updates).await;
@@ -670,8 +686,8 @@ mod tests {
         let tracker = CompletionTracker::new(verifier.clone());
 
         // Register two files
-        let file_a = tracker.register_new_file("fileA", Some(100)).await;
-        let file_b = tracker.register_new_file("fileB", Some(50)).await;
+        let file_a = tracker.register_new_file(Ulid::new(), "fileA", Some(100)).await;
+        let file_b = tracker.register_new_file(Ulid::new(), "fileB", Some(50)).await;
 
         // Initially, done=0, total=150
         let (done, total) = tracker.status().await;
@@ -733,8 +749,8 @@ mod tests {
         let tracker = CompletionTracker::new(verifier.clone());
 
         // Two files => 200 + 300 = 500 total
-        let file_a = tracker.register_new_file("fileA", Some(200)).await;
-        let file_b = tracker.register_new_file("fileB", Some(300)).await;
+        let file_a = tracker.register_new_file(Ulid::new(), "fileA", Some(200)).await;
+        let file_b = tracker.register_new_file(Ulid::new(), "fileB", Some(300)).await;
 
         let (done, total) = tracker.status().await;
         assert_eq!(done, 0);
@@ -827,7 +843,7 @@ mod tests {
         let verifier = ProgressUpdaterVerificationWrapper::new(no_op);
         let tracker = CompletionTracker::new(verifier.clone());
 
-        let f = tracker.register_new_file("bigFile", Some(300)).await;
+        let f = tracker.register_new_file(Ulid::new(), "bigFile", Some(300)).await;
 
         let x1 = MerkleHash::random_from_seed(1);
         let x2 = MerkleHash::random_from_seed(2);
@@ -895,7 +911,7 @@ mod tests {
         let tracker = CompletionTracker::new(verifier.clone());
 
         // One file, 50 bytes
-        let file_id = tracker.register_new_file("lateFile", Some(50)).await;
+        let file_id = tracker.register_new_file(Ulid::new(), "lateFile", Some(50)).await;
 
         // xhash completed before we mention any dependencies
         let x = MerkleHash::random_from_seed(999);
@@ -932,7 +948,7 @@ mod tests {
         let verifier = ProgressUpdaterVerificationWrapper::new(no_op);
         let tracker = CompletionTracker::new(verifier.clone());
 
-        let file_id = tracker.register_new_file("someFile", Some(100)).await;
+        let file_id = tracker.register_new_file(Ulid::new(), "someFile", Some(100)).await;
         let x = MerkleHash::random_from_seed(123);
 
         tracker.register_new_xorb(x, 1000).await;
@@ -968,7 +984,7 @@ mod tests {
         let tracker = CompletionTracker::new(verifier.clone());
 
         // Register file with unknown size
-        let file_id = tracker.register_new_file("growingFile", None).await;
+        let file_id = tracker.register_new_file(Ulid::new(), "growingFile", None).await;
 
         let (done, total) = tracker.status().await;
         assert_eq!(done, 0);
@@ -1017,7 +1033,7 @@ mod tests {
         let verifier = ProgressUpdaterVerificationWrapper::new(no_op);
         let tracker = CompletionTracker::new(verifier.clone());
 
-        let file_id = tracker.register_new_file("streamFile", None).await;
+        let file_id = tracker.register_new_file(Ulid::new(), "streamFile", None).await;
 
         let x1 = MerkleHash::random_from_seed(10);
         let x2 = MerkleHash::random_from_seed(20);
@@ -1080,8 +1096,8 @@ mod tests {
         let tracker = CompletionTracker::new(verifier.clone());
 
         // fileA has known size, fileB does not
-        let file_a = tracker.register_new_file("fileA", Some(100)).await;
-        let file_b = tracker.register_new_file("fileB", None).await;
+        let file_a = tracker.register_new_file(Ulid::new(), "fileA", Some(100)).await;
+        let file_b = tracker.register_new_file(Ulid::new(), "fileB", None).await;
 
         let (done, total) = tracker.status().await;
         assert_eq!(done, 0);
@@ -1138,7 +1154,7 @@ mod tests {
         let tracker = CompletionTracker::new(verifier.clone());
 
         // Register with a known size (is_final_size_known = true)
-        let file_id = tracker.register_new_file("fixedFile", Some(100)).await;
+        let file_id = tracker.register_new_file(Ulid::new(), "fixedFile", Some(100)).await;
 
         // Attempt to increment -- should be ignored
         tracker.increment_file_size(file_id, 999).await;
@@ -1168,7 +1184,7 @@ mod tests {
         let verifier = ProgressUpdaterVerificationWrapper::new(no_op);
         let tracker = CompletionTracker::new(verifier.clone());
 
-        let file_id = tracker.register_new_file("partialFile", None).await;
+        let file_id = tracker.register_new_file(Ulid::new(), "partialFile", None).await;
 
         let x = MerkleHash::random_from_seed(42);
         tracker.register_new_xorb(x, 1000).await;

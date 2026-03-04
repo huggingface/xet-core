@@ -7,6 +7,7 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use data::configurations::*;
 use data::{FileUploadSession, XetFileInfo};
+use ulid::Ulid;
 use xet_runtime::XetRuntime;
 
 #[derive(Parser)]
@@ -91,7 +92,7 @@ async fn clean(mut reader: impl Read, mut writer: impl Write, size: u64) -> Resu
         FileUploadSession::new(TranslatorConfig::local_config(std::env::current_dir()?)?.into(), None).await?;
 
     let mut size_read = 0;
-    let mut handle = translator.start_clean(None, size, None).await;
+    let mut handle = translator.start_clean(None, size, None, Ulid::new()).await;
 
     loop {
         let bytes = reader.read(&mut read_buf)?;
@@ -139,7 +140,7 @@ async fn smudge(_name: Arc<str>, mut reader: impl Read, output_path: PathBuf) ->
     let config = TranslatorConfig::local_config(cas_path)?;
     let session = data::FileDownloadSession::new(config.into(), None).await?;
 
-    session.download_file(&xet_file, &output_path, None).await?;
+    session.download_file(&xet_file, &output_path, Ulid::new()).await?;
 
     Ok(())
 }

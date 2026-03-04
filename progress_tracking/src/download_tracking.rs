@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use more_asserts::debug_assert_le;
+use ulid::Ulid;
 
 use crate::{ItemProgressUpdate, ProgressUpdate, TrackingProgressUpdater};
 
@@ -26,8 +27,8 @@ impl DownloadProgressTracker {
         })
     }
 
-    pub fn new_download_task(self: &Arc<Self>, item_name: Arc<str>) -> Arc<DownloadTaskUpdater> {
-        Arc::new(DownloadTaskUpdater::new(item_name, self.clone()))
+    pub fn new_download_task(self: &Arc<Self>, tracking_id: Ulid, item_name: Arc<str>) -> Arc<DownloadTaskUpdater> {
+        Arc::new(DownloadTaskUpdater::new(tracking_id, item_name, self.clone()))
     }
 
     #[inline]
@@ -46,6 +47,7 @@ impl DownloadProgressTracker {
 /// The interface struct for a single file or file segment.  Holds a reference to the
 /// group-level DownloadProgressTracker.
 pub struct DownloadTaskUpdater {
+    tracking_id: Ulid,
     item_name: Arc<str>,
     item_bytes: AtomicU64,
     item_transfer_bytes: AtomicU64,
@@ -56,8 +58,9 @@ pub struct DownloadTaskUpdater {
 }
 
 impl DownloadTaskUpdater {
-    fn new(item_name: Arc<str>, tracker: Arc<DownloadProgressTracker>) -> Self {
+    fn new(tracking_id: Ulid, item_name: Arc<str>, tracker: Arc<DownloadProgressTracker>) -> Self {
         Self {
+            tracking_id,
             item_name,
             item_bytes: 0.into(),
             item_transfer_bytes: 0.into(),
@@ -73,7 +76,7 @@ impl DownloadTaskUpdater {
         let null_tracker = crate::NoOpProgressUpdater::new();
 
         let testing_download_tracker = DownloadProgressTracker::new(null_tracker);
-        testing_download_tracker.new_download_task(Arc::from(""))
+        testing_download_tracker.new_download_task(Ulid::new(), Arc::from(""))
     }
 
     /// Updates the total decompressed item size.
@@ -110,6 +113,7 @@ impl DownloadTaskUpdater {
         let total_bytes = old_total_bytes + total_bytes_increment;
 
         let item_update = ItemProgressUpdate {
+            tracking_id: self.tracking_id,
             item_name: self.item_name.clone(),
             total_bytes: total_item_bytes,
             bytes_completed: self.bytes_completed.load(Ordering::Relaxed),
@@ -196,6 +200,7 @@ impl DownloadTaskUpdater {
         debug_assert_le!(total_bytes_completed, total_bytes);
 
         let item_progress_update = ItemProgressUpdate {
+            tracking_id: self.tracking_id,
             item_name: self.item_name.clone(),
             total_bytes: item_total_bytes,
             bytes_completed,
@@ -281,7 +286,7 @@ mod tests {
 
     fn make_task(name: &str) -> (Arc<DownloadProgressTracker>, Arc<DownloadTaskUpdater>) {
         let tracker = DownloadProgressTracker::new(NoOpProgressUpdater::new());
-        let task = tracker.new_download_task(Arc::from(name));
+        let task = tracker.new_download_task(Ulid::new(), Arc::from(name));
         (tracker, task)
     }
 
@@ -554,8 +559,8 @@ mod tests {
     #[tokio::test]
     async fn test_multiple_tasks_independent_tracking() {
         let tracker = DownloadProgressTracker::new(NoOpProgressUpdater::new());
-        let task1 = tracker.new_download_task(Arc::from("file1.bin"));
-        let task2 = tracker.new_download_task(Arc::from("file2.bin"));
+        let task1 = tracker.new_download_task(Ulid::new(), Arc::from("file1.bin"));
+        let task2 = tracker.new_download_task(Ulid::new(), Arc::from("file2.bin"));
 
         task1.update_item_size(500, true);
         task1.update_transfer_size(200);
