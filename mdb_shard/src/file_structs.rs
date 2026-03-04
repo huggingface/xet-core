@@ -174,8 +174,9 @@ pub enum SupersetResult {
 #[repr(C)] // Just making this explicit
 pub struct FileDataSequenceEntry {
     // maps to one or more XORB chunk(s)
-    #[serde(with = "hex::serde")]
+    #[serde(with = "hex::serde", rename = "cas_hash")]
     pub xorb_hash: MerkleHash,
+    #[serde(rename = "cas_flags")]
     pub xorb_flags: u32,
     pub unpacked_segment_bytes: u32,
     pub chunk_index_start: u32,
