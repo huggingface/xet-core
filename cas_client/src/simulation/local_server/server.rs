@@ -28,27 +28,36 @@
 //! }
 //! ```
 
-use std::net::{SocketAddr, TcpListener as StdTcpListener};
+use std::net::SocketAddr;
+#[cfg(test)]
+use std::net::TcpListener as StdTcpListener;
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(test)]
 use std::time::Duration;
 
+#[cfg(test)]
 use async_trait::async_trait;
 use axum::Router;
 use axum::routing::{get, head, post};
+#[cfg(test)]
 use reqwest::header::{self, HeaderMap, HeaderValue};
 use tokio::net::TcpListener;
+#[cfg(test)]
 use tokio::sync::oneshot;
 use tower_http::cors::CorsLayer;
 
 use super::handlers;
 use super::latency_simulation::LatencySimulation;
+#[cfg(test)]
+use crate::RemoteClient;
 use crate::error::{CasClientError, Result};
+#[cfg(test)]
 use crate::interface::Client;
-use crate::simulation::{DirectAccessClient, LocalClient, MemoryClient};
+#[cfg(test)]
 #[cfg(unix)]
 use crate::simulation::UnixSocketProxy;
-use crate::RemoteClient;
+use crate::simulation::{DirectAccessClient, LocalClient, MemoryClient};
 
 /// Configuration for the local CAS server.
 #[derive(Debug, Clone)]
@@ -229,32 +238,7 @@ async fn shutdown_signal() {
     std::future::pending::<()>().await
 }
 
-/// A test server that wraps `LocalServer` and provides easy access to both
-/// `RemoteClient` (for HTTP interactions) and `DirectAccessClient` (for direct state access).
-///
-/// This is useful for integration tests where you want to verify that operations
-/// through the HTTP API produce the same results as direct client access.
-///
-/// The server runs as a spawned tokio task and automatically shuts down when dropped
-/// (no explicit shutdown call needed).
-///
-/// # Example
-///
-/// ```ignore
-/// // Start with disk-backed storage
-/// let server = LocalTestServer::start(false).await;
-///
-/// // Start with in-memory storage
-/// let server = LocalTestServer::start(true).await;
-///
-/// // Upload via RemoteClient
-/// let file = server.remote_client().upload_random_file(&[(1, (0, 5))], 123).await?;
-///
-/// // Verify via DirectAccessClient
-/// let stored = server.client().get_file_data(&file.file_hash, None).await?;
-/// assert_eq!(file.data, stored);
-/// // Server automatically shuts down when dropped
-/// ```
+#[cfg(test)]
 pub struct LocalTestServer {
     endpoint: String,
     server_shutdown_tx: Option<oneshot::Sender<()>>,
@@ -265,6 +249,7 @@ pub struct LocalTestServer {
     _socket_proxy: Option<UnixSocketProxy>,
 }
 
+#[cfg(test)]
 impl LocalTestServer {
     /// Starts a new test server.
     ///
@@ -395,6 +380,7 @@ impl LocalTestServer {
     }
 }
 
+#[cfg(test)]
 #[async_trait]
 impl Client for LocalTestServer {
     async fn get_file_reconstruction_info(
@@ -468,6 +454,7 @@ impl Client for LocalTestServer {
     }
 }
 
+#[cfg(test)]
 #[async_trait]
 impl DirectAccessClient for LocalTestServer {
     fn set_fetch_term_url_expiration(&self, expiration: std::time::Duration) {
@@ -547,6 +534,7 @@ impl DirectAccessClient for LocalTestServer {
     }
 }
 
+#[cfg(test)]
 impl Drop for LocalTestServer {
     fn drop(&mut self) {
         if let Some(tx) = self.server_shutdown_tx.take() {

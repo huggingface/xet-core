@@ -895,12 +895,12 @@ mod tests {
         assert_eq!(file.terms.len(), 1);
         assert_eq!(file.terms[0].chunk_hashes.len(), 3);
 
-        // Verify chunk hashes match the RawXorbData cas_info (keyed by xorb hash)
+        // Verify chunk hashes match the RawXorbData xorb_info (keyed by xorb hash)
         let xorb_hash = file.terms[0].xorb_hash;
         let raw_xorb = file.xorbs.get(&xorb_hash).unwrap();
-        assert_eq!(raw_xorb.cas_info.chunks.len(), 3);
+        assert_eq!(raw_xorb.xorb_info.chunks.len(), 3);
         for (i, chunk_hash) in file.terms[0].chunk_hashes.iter().enumerate() {
-            assert_eq!(*chunk_hash, raw_xorb.cas_info.chunks[i].chunk_hash);
+            assert_eq!(*chunk_hash, raw_xorb.xorb_info.chunks[i].chunk_hash);
         }
     }
 
