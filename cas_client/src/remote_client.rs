@@ -13,7 +13,7 @@ use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDB
 use merklehash::MerkleHash;
 use reqwest::{Body, Response, StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
-use tracing::{event, info, instrument, warn};
+use tracing::{event, info, instrument};
 use utils::auth::AuthConfig;
 use xet_runtime::xet_config;
 use xorb_object::SerializedXorbObject;
@@ -332,17 +332,13 @@ impl Client for RemoteClient {
 
                         match result {
                             Ok((_compressed_len, chunk_byte_indices)) => {
-                                if let Some(expected) = uncompressed_size_if_known {
-                                    debug_assert_eq!(
-                                        buffer.len(),
-                                        expected,
-                                        "get_file_term_data: expected {} bytes, got {}",
-                                        expected,
+                                if let Some(expected) = uncompressed_size_if_known
+                                    && expected != buffer.len()
+                                {
+                                    return Err(RetryableReqwestError::RetryableError(CasClientError::Other(format!(
+                                        "get_file_term_data: expected {expected} uncompressed bytes, got {}",
                                         buffer.len()
-                                    );
-                                    if expected != buffer.len() {
-                                        warn!("get_file_term_data: expected {} bytes, got {}", expected, buffer.len());
-                                    }
+                                    ))));
                                 }
                                 Ok((Bytes::from(buffer), chunk_byte_indices))
                             },

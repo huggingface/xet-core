@@ -221,7 +221,7 @@ impl LocalTestServerBuilder {
             (None, tcp_endpoint.clone())
         };
 
-        let server = LocalServer::from_client(client.clone(), host, port);
+        let server = LocalServer::from_client(client.clone(), None, host, port);
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         tokio::spawn(async move {
             let _ = server.run_until_stopped(shutdown_rx).await;

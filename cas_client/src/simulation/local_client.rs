@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, metadata};
 use std::io::{BufReader, Cursor, Seek, SeekFrom, Write};
 use std::mem::size_of;
@@ -21,7 +21,7 @@ use mdb_shard::file_structs::MDBFileInfo;
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
 use mdb_shard::streaming_shard::MDBMinimalShard;
-use mdb_shard::utils::shard_file_name;
+use mdb_shard::utils::{parse_shard_filename, shard_file_name};
 use mdb_shard::xorb_structs::MDBXorbInfo;
 use mdb_shard::{MDBShardFile, ShardFileManager};
 use merklehash::MerkleHash;
@@ -164,6 +164,167 @@ impl LocalClient {
     /// Internal function to get the path for a given hash entry
     fn get_path_for_entry(&self, hash: &MerkleHash) -> PathBuf {
         self.xorb_dir.join(format!("default.{hash:?}"))
+    }
+
+    /// Returns all shard files in the shard directory as (shard_hash, path) pairs.
+    fn shard_file_paths(&self) -> Result<Vec<(MerkleHash, PathBuf)>> {
+        let mut result = Vec::new();
+        for entry in std::fs::read_dir(&self.shard_dir).map_err(CasClientError::internal)? {
+            let entry = entry.map_err(CasClientError::internal)?;
+            let path = entry.path();
+            if let Some(hash) = parse_shard_filename(&path)
+                && path.is_file()
+            {
+                result.push((hash, path));
+            }
+        }
+        Ok(result)
+    }
+
+    /// Finds the path for a shard file by hash.
+    fn shard_path_for_hash(&self, hash: &MerkleHash) -> Result<PathBuf> {
+        let path = self.shard_dir.join(shard_file_name(hash));
+        if path.exists() {
+            Ok(path)
+        } else {
+            Err(CasClientError::Other(format!("Shard file not found for hash {}", hash.hex())))
+        }
+    }
+
+    /// Loads all shard data from disk into an in-memory shard.
+    fn load_all_shard_data(&self) -> Result<MDBInMemoryShard> {
+        let mut in_memory = MDBInMemoryShard::default();
+        for (_, path) in self.shard_file_paths()? {
+            let shard_bytes = std::fs::read(&path)?;
+            let minimal_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&shard_bytes), true, true)?;
+
+            for i in 0..minimal_shard.num_files() {
+                in_memory.add_file_reconstruction_info(MDBFileInfo::from(minimal_shard.file(i).unwrap()))?;
+            }
+            for i in 0..minimal_shard.num_xorb() {
+                in_memory.add_xorb_block(MDBXorbInfo::from(minimal_shard.xorb(i).unwrap()))?;
+            }
+        }
+        Ok(in_memory)
+    }
+
+    /// Clears shard files from disk, writes the given in-memory shard, and
+    /// registers the new shard file with the shard manager.
+    async fn write_shard_data_and_register(&self, in_memory: &MDBInMemoryShard) -> Result<()> {
+        for (_, path) in self.shard_file_paths()? {
+            std::fs::remove_file(&path)?;
+        }
+
+        if !in_memory.is_empty() {
+            let shard_path = in_memory.write_to_directory(&self.shard_dir, None)?;
+            let shard = MDBShardFile::load_from_file(&shard_path)?;
+            self.shard_manager.register_shards(&[shard]).await?;
+        }
+
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl super::DeletionControlableClient for LocalClient {
+    async fn list_shard_entries(&self) -> Result<Vec<MerkleHash>> {
+        Ok(self.shard_file_paths()?.into_iter().map(|(h, _)| h).collect())
+    }
+
+    async fn get_shard_bytes(&self, hash: &MerkleHash) -> Result<Bytes> {
+        let path = self.shard_path_for_hash(hash)?;
+        let data = std::fs::read(&path)?;
+        Ok(Bytes::from(data))
+    }
+
+    async fn delete_shard_entry(&self, hash: &MerkleHash) -> Result<()> {
+        let path = self.shard_path_for_hash(hash)?;
+        std::fs::remove_file(&path)?;
+        Ok(())
+    }
+
+    async fn list_file_shard_entries(&self) -> Result<Vec<(MerkleHash, MerkleHash)>> {
+        let mut entries = Vec::new();
+        for (shard_hash, path) in self.shard_file_paths()? {
+            let shard_bytes = std::fs::read(&path)?;
+            let minimal_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&shard_bytes), true, false)?;
+
+            for i in 0..minimal_shard.num_files() {
+                let file_view = minimal_shard.file(i).unwrap();
+                entries.push((file_view.file_hash(), shard_hash));
+            }
+        }
+        Ok(entries)
+    }
+
+    async fn delete_file_entry(&self, file_hash: &MerkleHash) -> Result<()> {
+        let mut in_memory = self.load_all_shard_data()?;
+        in_memory.file_content.remove(file_hash);
+        self.write_shard_data_and_register(&in_memory).await
+    }
+
+    /// Verifies referential integrity of all shards on disk:
+    /// 1. For each CAS block in each shard, the corresponding XORB must exist.
+    /// 2. For each file entry, every segment's CAS hash must reference a CAS block present in the shard, and the chunk
+    ///    range must be valid for that CAS block.
+    async fn verify_integrity(&self) -> Result<()> {
+        for (shard_hash, path) in self.shard_file_paths()? {
+            let shard_bytes = std::fs::read(&path)?;
+            let minimal_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&shard_bytes), true, true)?;
+
+            let xorb_hashes: HashSet<MerkleHash> = (0..minimal_shard.num_xorb())
+                .map(|i| minimal_shard.xorb(i).unwrap().xorb_hash())
+                .collect();
+
+            let xorb_chunk_counts: HashMap<MerkleHash, usize> = (0..minimal_shard.num_xorb())
+                .map(|i| {
+                    let xorb_view = minimal_shard.xorb(i).unwrap();
+                    (xorb_view.xorb_hash(), xorb_view.num_entries())
+                })
+                .collect();
+
+            for xorb_hash in &xorb_hashes {
+                let xorb_path = self.get_path_for_entry(xorb_hash);
+                if !xorb_path.exists() {
+                    return Err(CasClientError::Other(format!(
+                        "Integrity error: shard {} references non-existent XORB {}",
+                        shard_hash.hex(),
+                        xorb_hash.hex()
+                    )));
+                }
+            }
+
+            for i in 0..minimal_shard.num_files() {
+                let file_view = minimal_shard.file(i).unwrap();
+                let fh = file_view.file_hash();
+
+                for seg_idx in 0..file_view.num_entries() {
+                    let segment = file_view.entry(seg_idx);
+
+                    let chunk_count = xorb_chunk_counts.get(&segment.xorb_hash).ok_or_else(|| {
+                        CasClientError::Other(format!(
+                            "Integrity error: file {} references XORB block {} not present in shard {}",
+                            fh.hex(),
+                            segment.xorb_hash.hex(),
+                            shard_hash.hex()
+                        ))
+                    })?;
+
+                    if segment.chunk_index_end as usize > *chunk_count {
+                        return Err(CasClientError::Other(format!(
+                            "Integrity error: file {} references chunk range {}..{} but XORB block {} only has {} chunks",
+                            fh.hex(),
+                            segment.chunk_index_start,
+                            segment.chunk_index_end,
+                            segment.xorb_hash.hex(),
+                            chunk_count
+                        )));
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -935,6 +1096,8 @@ mod tests {
     use xorb_object::test_utils::*;
 
     use super::*;
+    use crate::simulation::DeletionControlableClient;
+    use crate::simulation::client_testing_utils::ClientTestingUtils;
 
     /// Runs the common TestingClient trait test suite for LocalClient.
     #[tokio::test]
@@ -1083,5 +1246,43 @@ mod tests {
             LocalClient::temporary().await.unwrap() as std::sync::Arc<dyn super::super::DirectAccessClient>
         })
         .await;
+    }
+
+    #[tokio::test]
+    async fn test_deletion_suite() {
+        super::super::deletion_unit_testing::test_deletion_functionality(|| async {
+            LocalClient::temporary().await.unwrap()
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_verify_integrity_detects_missing_cas_block_reference() {
+        let client = LocalClient::temporary().await.unwrap();
+        client.upload_random_file(&[(3, (0, 3)), (4, (0, 2))], 2048).await.unwrap();
+        client.verify_integrity().await.unwrap();
+
+        let mut in_memory = client.load_all_shard_data().unwrap();
+        let removed_hash = *in_memory.xorb_content.keys().next().unwrap();
+        in_memory.xorb_content.remove(&removed_hash);
+        client.write_shard_data_and_register(&in_memory).await.unwrap();
+
+        assert!(client.verify_integrity().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_verify_integrity_detects_invalid_chunk_range() {
+        let client = LocalClient::temporary().await.unwrap();
+        client.upload_random_file(&[(5, (0, 3))], 2048).await.unwrap();
+        client.verify_integrity().await.unwrap();
+
+        let mut in_memory = client.load_all_shard_data().unwrap();
+        let file_info = in_memory.file_content.values_mut().next().unwrap();
+        let segment = file_info.segments.first_mut().unwrap();
+        let xorb_entry_count = in_memory.xorb_content.get(&segment.xorb_hash).unwrap().metadata.num_entries;
+        segment.chunk_index_end = xorb_entry_count + 1;
+        client.write_shard_data_and_register(&in_memory).await.unwrap();
+
+        assert!(client.verify_integrity().await.is_err());
     }
 }

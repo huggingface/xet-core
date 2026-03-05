@@ -14,6 +14,10 @@
 pub mod client_testing_utils;
 #[cfg(all(test, not(target_family = "wasm")))]
 pub mod client_unit_testing;
+#[cfg(not(target_family = "wasm"))]
+mod deletion_controls;
+#[cfg(all(test, not(target_family = "wasm")))]
+pub mod deletion_unit_testing;
 mod direct_access_client;
 #[cfg(not(target_family = "wasm"))]
 mod local_client;
@@ -32,11 +36,13 @@ mod simulation_server;
 pub mod socket_proxy;
 
 pub use client_testing_utils::{ClientTestingUtils, RandomFileContents};
+#[cfg(not(target_family = "wasm"))]
+pub use deletion_controls::DeletionControlableClient;
 pub use direct_access_client::DirectAccessClient;
 #[cfg(not(target_family = "wasm"))]
 pub use local_client::LocalClient;
 #[cfg(not(target_family = "wasm"))]
-pub use local_server::{LocalServer, LocalServerConfig};
+pub use local_server::{LocalServer, LocalServerConfig, SimulationControlClient};
 pub use memory_client::MemoryClient;
 #[cfg(not(target_family = "wasm"))]
 pub use network_simulation::{NetworkConfig, NetworkProfile, NetworkProfileOptions, NetworkSimulationProxy};

@@ -4,7 +4,8 @@ pub use remote_client::RemoteClient;
 pub use simulation::{ClientTestingUtils, DirectAccessClient, MemoryClient, RandomFileContents, RandomXorb};
 #[cfg(not(target_family = "wasm"))]
 pub use simulation::{
-    LocalClient, LocalServer, LocalServerConfig, LocalTestServer, LocalTestServerBuilder, RemoteSimulationClient,
+    DeletionControlableClient, LocalClient, LocalServer, LocalServerConfig, LocalTestServer, LocalTestServerBuilder,
+    RemoteSimulationClient, SimulationControlClient,
 };
 use tracing::Level;
 

@@ -34,17 +34,18 @@ use merklehash::MerkleHash;
 
 use super::latency_simulation::{LatencySimulation, ServerLatencyProfile};
 use crate::error::CasClientError;
-use crate::simulation::DirectAccessClient;
+use crate::simulation::{DeletionControlableClient, DirectAccessClient};
 
 /// Server state passed to all handlers.
 #[derive(Clone)]
-pub struct ServerState {
-    pub client: Arc<dyn DirectAccessClient>,
-    pub latency_simulation: Arc<LatencySimulation>,
+pub(crate) struct ServerState {
+    pub(crate) client: Arc<dyn DirectAccessClient>,
+    pub(super) latency_simulation: Arc<LatencySimulation>,
+    pub(crate) deletion_client: Option<Arc<dyn DeletionControlableClient>>,
 }
 
 /// Represents the different forms a Range header can take.
-pub enum FileRangeVariant {
+pub(super) enum FileRangeVariant {
     /// Standard byte range: bytes=start-end (inclusive end, converted to exclusive)
     Normal(FileRange),
     /// Open-ended range: bytes=start- (from start to end of file)
@@ -61,7 +62,9 @@ pub enum FileRangeVariant {
 /// - `bytes=-500` - Last 500 bytes
 ///
 /// Returns `Ok(None)` if no Range header is present.
-fn parse_range_header(range_header: Option<&HeaderValue>) -> Result<Option<FileRangeVariant>, (StatusCode, String)> {
+pub(super) fn parse_range_header(
+    range_header: Option<&HeaderValue>,
+) -> Result<Option<FileRangeVariant>, (StatusCode, String)> {
     let Some(range_header) = range_header else {
         return Ok(None);
     };
@@ -115,7 +118,7 @@ fn parse_range_header(range_header: Option<&HeaderValue>) -> Result<Option<FileR
 }
 
 /// Maps CasClientError to appropriate HTTP status codes.
-fn error_to_response(e: CasClientError) -> Response {
+pub(super) fn error_to_response(e: CasClientError) -> Response {
     let status = match &e {
         CasClientError::XORBNotFound(_) | CasClientError::FileNotFound(_) => StatusCode::NOT_FOUND,
         CasClientError::InvalidRange => StatusCode::RANGE_NOT_SATISFIABLE,
