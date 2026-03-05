@@ -1,9 +1,9 @@
 use std::mem::size_of;
 use std::time::Instant;
 
-use cas_object::*;
 use half::prelude::*;
 use rand::Rng;
+use xorb_object::*;
 
 // Benchmark results on Apple M2 Max
 

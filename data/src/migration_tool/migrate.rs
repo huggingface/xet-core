@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
-use cas_object::CompressionScheme;
 use http::header;
 use hub_client::{BearerCredentialHelper, HubClient, Operation, RepoInfo};
 use mdb_shard::file_structs::MDBFileInfo;
@@ -9,6 +8,7 @@ use tracing::{Instrument, Span, info_span, instrument};
 use utils::auth::TokenRefresher;
 use xet_runtime::XetRuntime;
 use xet_runtime::utils::run_constrained;
+use xorb_object::CompressionScheme;
 
 use super::hub_client_token_refresher::HubClientTokenRefresher;
 use crate::data_client::{clean_file, default_config};

@@ -76,12 +76,12 @@ impl DeduplicationDataInterface for UploadSessionDataManager {
 
             let hmac_key = shard_info.metadata.chunk_hash_hmac_key;
 
-            let cas_info = shard_info.read_all_cas_blocks_full(&mut reader)?;
+            let xorb_info = shard_info.read_all_xorb_blocks_full(&mut reader)?;
 
             let keyed_shard = self.shard.entry(hmac_key).or_default();
 
-            for ci in cas_info {
-                let _ = keyed_shard.add_cas_block(ci);
+            for ci in xorb_info {
+                let _ = keyed_shard.add_xorb_block(ci);
             }
 
             any_result = true
@@ -94,7 +94,7 @@ impl DeduplicationDataInterface for UploadSessionDataManager {
     async fn register_new_xorb(&mut self, xorb: RawXorbData) -> Result<()> {
         // Add the xorb info to the current shard.  Note that we need to ensure all the xorb
         // uploads complete correctly before any shards get uploaded.
-        self.session.session_shard.lock().await.add_cas_block(xorb.cas_info.clone())?;
+        self.session.session_shard.lock().await.add_xorb_block(xorb.xorb_info.clone())?;
 
         // Begin the process for upload.
         self.session.register_new_xorb_for_upload(xorb).await?;

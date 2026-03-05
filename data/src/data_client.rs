@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use cas_client::remote_client::PREFIX_DEFAULT;
-use cas_object::CompressionScheme;
 use deduplication::{Chunker, DeduplicationMetrics};
 use http::header::HeaderMap;
 use itertools::multizip;
@@ -18,6 +17,7 @@ use utils::auth::{AuthConfig, TokenRefresher};
 use xet_runtime::runtime::check_sigint_shutdown;
 use xet_runtime::utils::run_constrained_with_semaphore;
 use xet_runtime::{XetRuntime, xet_cache_root, xet_config};
+use xorb_object::CompressionScheme;
 
 use crate::configurations::*;
 use crate::errors::DataProcessingError;

@@ -5,26 +5,26 @@ use anyhow::anyhow;
 use deduplication::constants::MAX_CHUNK_SIZE;
 
 use crate::CompressionScheme;
-use crate::cas_object_format::CAS_OBJECT_FORMAT_IDENT;
-use crate::error::CasObjectError;
+use crate::error::XorbObjectError;
+use crate::xorb_object_format::XORB_OBJECT_FORMAT_IDENT;
 
 pub mod deserialize_async;
 
-pub const CAS_CHUNK_HEADER_LENGTH: usize = size_of::<CASChunkHeader>();
+pub const XORB_CHUNK_HEADER_LENGTH: usize = size_of::<XorbChunkHeader>();
 const CURRENT_VERSION: u8 = 0;
 
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
-pub struct CASChunkHeader {
+pub struct XorbChunkHeader {
     pub version: u8,              // 1 byte
     compressed_length: [u8; 3],   // 3 bytes
     compression_scheme: u8,       // 1 byte
     uncompressed_length: [u8; 3], // 3 bytes
 }
 
-impl CASChunkHeader {
+impl XorbChunkHeader {
     pub fn new(compression_scheme: CompressionScheme, compressed_length: u32, uncompressed_length: u32) -> Self {
-        let mut result = CASChunkHeader {
+        let mut result = XorbChunkHeader {
             version: CURRENT_VERSION,
             ..Default::default()
         };
@@ -54,7 +54,7 @@ impl CASChunkHeader {
         convert_three_byte_num(&self.uncompressed_length)
     }
 
-    pub fn get_compression_scheme(&self) -> Result<CompressionScheme, CasObjectError> {
+    pub fn get_compression_scheme(&self) -> Result<CompressionScheme, XorbObjectError> {
         CompressionScheme::try_from(self.compression_scheme)
     }
 
@@ -62,17 +62,17 @@ impl CASChunkHeader {
         self.compression_scheme = compression_scheme as u8;
     }
 
-    fn validate(&self) -> Result<(), CasObjectError> {
+    fn validate(&self) -> Result<(), XorbObjectError> {
         let _ = self.get_compression_scheme()?;
         if self.version > CURRENT_VERSION {
-            return Err(CasObjectError::FormatError(anyhow!(
+            return Err(XorbObjectError::FormatError(anyhow!(
                 "chunk header version too high at {}, current version is {}",
                 self.version,
                 CURRENT_VERSION
             )));
         }
         if self.get_compressed_length() as usize > *MAX_CHUNK_SIZE * 2 {
-            return Err(CasObjectError::FormatError(anyhow!(
+            return Err(XorbObjectError::FormatError(anyhow!(
                 "chunk header compressed length too large at {}, maximum: {}",
                 self.get_compressed_length(),
                 *MAX_CHUNK_SIZE
@@ -80,7 +80,7 @@ impl CASChunkHeader {
         }
         // the max chunk size is strictly enforced
         if self.get_uncompressed_length() as usize > *MAX_CHUNK_SIZE {
-            return Err(CasObjectError::FormatError(anyhow!(
+            return Err(XorbObjectError::FormatError(anyhow!(
                 "chunk header uncompressed length too large at {}, maximum: {}",
                 self.get_uncompressed_length(),
                 *MAX_CHUNK_SIZE
@@ -90,7 +90,7 @@ impl CASChunkHeader {
     }
 }
 
-pub fn write_chunk_header<W: Write>(w: &mut W, chunk_header: &CASChunkHeader) -> std::io::Result<()> {
+pub fn write_chunk_header<W: Write>(w: &mut W, chunk_header: &XorbChunkHeader) -> std::io::Result<()> {
     w.write_all(&[chunk_header.version])?;
     w.write_all(&chunk_header.compressed_length)?;
     w.write_all(&[chunk_header.compression_scheme])?;
@@ -115,7 +115,7 @@ pub fn serialize_chunk<W: Write>(
     chunk: &[u8],
     w: &mut W,
     compression_scheme: Option<CompressionScheme>,
-) -> Result<usize, CasObjectError> {
+) -> Result<usize, XorbObjectError> {
     let compression_scheme = compression_scheme.unwrap_or_else(|| CompressionScheme::choose_from_data(chunk));
 
     let compressed = compression_scheme.compress_from_slice(chunk)?;
@@ -127,29 +127,31 @@ pub fn serialize_chunk<W: Write>(
     } else {
         (compression_scheme, compressed)
     };
-    let header = CASChunkHeader::new(compression_scheme, compressed.len() as u32, chunk.len() as u32);
+    let header = XorbChunkHeader::new(compression_scheme, compressed.len() as u32, chunk.len() as u32);
     write_chunk_header(w, &header)?;
     w.write_all(&compressed)?;
 
-    Ok(size_of::<CASChunkHeader>() + compressed.len())
+    Ok(size_of::<XorbChunkHeader>() + compressed.len())
 }
 
-pub fn parse_chunk_header(chunk_header_bytes: [u8; CAS_CHUNK_HEADER_LENGTH]) -> Result<CASChunkHeader, CasObjectError> {
-    if chunk_header_bytes[..CAS_OBJECT_FORMAT_IDENT.len()] == CAS_OBJECT_FORMAT_IDENT {
-        return Err(CasObjectError::ChunkHeaderParseErrorFooterIdent);
+pub fn parse_chunk_header(
+    chunk_header_bytes: [u8; XORB_CHUNK_HEADER_LENGTH],
+) -> Result<XorbChunkHeader, XorbObjectError> {
+    if chunk_header_bytes[..XORB_OBJECT_FORMAT_IDENT.len()] == XORB_OBJECT_FORMAT_IDENT {
+        return Err(XorbObjectError::ChunkHeaderParseErrorFooterIdent);
     }
-    let result: CASChunkHeader = unsafe { std::mem::transmute_copy(&chunk_header_bytes) };
+    let result: XorbChunkHeader = unsafe { std::mem::transmute_copy(&chunk_header_bytes) };
     result.validate()?;
     Ok(result)
 }
 
-pub fn deserialize_chunk_header<R: Read>(reader: &mut R) -> Result<CASChunkHeader, CasObjectError> {
-    let mut buf = [0u8; size_of::<CASChunkHeader>()];
+pub fn deserialize_chunk_header<R: Read>(reader: &mut R) -> Result<XorbChunkHeader, XorbObjectError> {
+    let mut buf = [0u8; size_of::<XorbChunkHeader>()];
     reader.read_exact(&mut buf)?;
     parse_chunk_header(buf)
 }
 
-pub fn deserialize_chunk<R: Read>(reader: &mut R) -> Result<(Vec<u8>, usize, u32), CasObjectError> {
+pub fn deserialize_chunk<R: Read>(reader: &mut R) -> Result<(Vec<u8>, usize, u32), XorbObjectError> {
     let mut buf = Vec::new();
     let (compressed_chunk_size, uncompressed_chunk_size) = deserialize_chunk_to_writer(reader, &mut buf)?;
     Ok((buf, compressed_chunk_size, uncompressed_chunk_size))
@@ -159,7 +161,7 @@ pub fn deserialize_chunk<R: Read>(reader: &mut R) -> Result<(Vec<u8>, usize, u32
 pub fn deserialize_chunk_to_writer<R: Read, W: Write>(
     reader: &mut R,
     writer: &mut W,
-) -> Result<(usize, u32), CasObjectError> {
+) -> Result<(usize, u32), XorbObjectError> {
     let header = deserialize_chunk_header(reader)?;
     deserialize_chunk_with_header_to_writer(reader, writer, header)
 }
@@ -167,8 +169,8 @@ pub fn deserialize_chunk_to_writer<R: Read, W: Write>(
 fn deserialize_chunk_with_header_to_writer<R: Read, W: Write>(
     reader: &mut R,
     writer: &mut W,
-    header: CASChunkHeader,
-) -> Result<(usize, u32), CasObjectError> {
+    header: XorbChunkHeader,
+) -> Result<(usize, u32), XorbObjectError> {
     let mut compressed_data_reader = reader.take(header.get_compressed_length().into());
 
     let uncompressed_len = header
@@ -176,15 +178,15 @@ fn deserialize_chunk_with_header_to_writer<R: Read, W: Write>(
         .decompress_from_reader(&mut compressed_data_reader, writer)?;
 
     if uncompressed_len != header.get_uncompressed_length() as u64 {
-        return Err(CasObjectError::FormatError(anyhow!(
+        return Err(XorbObjectError::FormatError(anyhow!(
             "chunk is corrupted, uncompressed bytes len doesn't agree with chunk header"
         )));
     }
 
-    Ok((header.get_compressed_length() as usize + CAS_CHUNK_HEADER_LENGTH, uncompressed_len as u32))
+    Ok((header.get_compressed_length() as usize + XORB_CHUNK_HEADER_LENGTH, uncompressed_len as u32))
 }
 
-pub fn deserialize_chunks<R: Read>(reader: &mut R) -> Result<(Vec<u8>, Vec<u32>), CasObjectError> {
+pub fn deserialize_chunks<R: Read>(reader: &mut R) -> Result<(Vec<u8>, Vec<u32>), XorbObjectError> {
     let mut buf = Vec::new();
     let (_, chunk_byte_indices) = deserialize_chunks_to_writer(reader, &mut buf)?;
     Ok((buf, chunk_byte_indices))
@@ -195,14 +197,14 @@ pub fn deserialize_chunks<R: Read>(reader: &mut R) -> Result<(Vec<u8>, Vec<u32>)
 /// Uses a single `read()` call to detect EOF (returns 0), then completes
 /// any partial header with `read_exact`. An `UnexpectedEof` from `read_exact`
 /// means the stream was truncated mid-header.
-fn try_read_chunk_header<R: Read>(reader: &mut R) -> Result<Option<CASChunkHeader>, CasObjectError> {
-    let mut header_buf = [0u8; CAS_CHUNK_HEADER_LENGTH];
+fn try_read_chunk_header<R: Read>(reader: &mut R) -> Result<Option<XorbChunkHeader>, XorbObjectError> {
+    let mut header_buf = [0u8; XORB_CHUNK_HEADER_LENGTH];
     let n = match reader.read(&mut header_buf) {
         Ok(0) => return Ok(None),
         Ok(n) => n,
-        Err(e) => return Err(CasObjectError::InternalIOError(e)),
+        Err(e) => return Err(XorbObjectError::InternalIOError(e)),
     };
-    if n < CAS_CHUNK_HEADER_LENGTH {
+    if n < XORB_CHUNK_HEADER_LENGTH {
         reader.read_exact(&mut header_buf[n..])?;
     }
     parse_chunk_header(header_buf).map(Some)
@@ -211,7 +213,7 @@ fn try_read_chunk_header<R: Read>(reader: &mut R) -> Result<Option<CASChunkHeade
 pub fn deserialize_chunks_to_writer<R: Read, W: Write>(
     reader: &mut R,
     writer: &mut W,
-) -> Result<(usize, Vec<u32>), CasObjectError> {
+) -> Result<(usize, Vec<u32>), XorbObjectError> {
     let mut num_compressed_written = 0;
     let mut num_uncompressed_written = 0;
 
@@ -235,12 +237,12 @@ mod tests {
     use std::io::Cursor;
 
     use super::*;
-    use crate::test_utils::{ChunkSize, build_cas_object};
+    use crate::test_utils::{ChunkSize, build_xorb_object};
 
     const COMPRESSED_LEN: u32 = 66051;
     const UNCOMPRESSED_LEN: u32 = 131072;
 
-    fn assert_chunk_header_deserialize_match(header: &CASChunkHeader, buf: &[u8]) {
+    fn assert_chunk_header_deserialize_match(header: &XorbChunkHeader, buf: &[u8]) {
         assert_eq!(buf[0], header.version);
         assert_eq!(buf[4], header.compression_scheme);
         for i in 0..3 {
@@ -251,24 +253,24 @@ mod tests {
 
     #[test]
     fn test_basic_header_serialization() {
-        let header = CASChunkHeader::new(CompressionScheme::None, COMPRESSED_LEN, UNCOMPRESSED_LEN);
+        let header = XorbChunkHeader::new(CompressionScheme::None, COMPRESSED_LEN, UNCOMPRESSED_LEN);
 
-        let mut buf = Vec::with_capacity(size_of::<CASChunkHeader>());
+        let mut buf = Vec::with_capacity(size_of::<XorbChunkHeader>());
         write_chunk_header(&mut buf, &header).unwrap();
         assert_chunk_header_deserialize_match(&header, &buf);
 
-        let header = CASChunkHeader::new(CompressionScheme::LZ4, COMPRESSED_LEN, UNCOMPRESSED_LEN);
+        let header = XorbChunkHeader::new(CompressionScheme::LZ4, COMPRESSED_LEN, UNCOMPRESSED_LEN);
 
-        let mut buf = Vec::with_capacity(size_of::<CASChunkHeader>());
+        let mut buf = Vec::with_capacity(size_of::<XorbChunkHeader>());
         write_chunk_header(&mut buf, &header).unwrap();
         assert_chunk_header_deserialize_match(&header, &buf);
     }
 
     #[test]
     fn test_basic_header_deserialization() {
-        let header = CASChunkHeader::new(CompressionScheme::None, COMPRESSED_LEN, UNCOMPRESSED_LEN);
+        let header = XorbChunkHeader::new(CompressionScheme::None, COMPRESSED_LEN, UNCOMPRESSED_LEN);
 
-        let mut buf = Vec::with_capacity(size_of::<CASChunkHeader>());
+        let mut buf = Vec::with_capacity(size_of::<XorbChunkHeader>());
         write_chunk_header(&mut buf, &header).unwrap();
         let deserialized_header = deserialize_chunk_header(&mut Cursor::new(buf)).unwrap();
         assert_eq!(deserialized_header, header)
@@ -277,8 +279,8 @@ mod tests {
     #[test]
     fn test_deserialize_chunk_uncompressed() {
         let data = &[1, 2, 3, 4];
-        let header = CASChunkHeader::new(CompressionScheme::None, 4, 4);
-        let mut buf = Vec::with_capacity(size_of::<CASChunkHeader>() + 4);
+        let header = XorbChunkHeader::new(CompressionScheme::None, 4, 4);
+        let mut buf = Vec::with_capacity(size_of::<XorbChunkHeader>() + 4);
         write_chunk_header(&mut buf, &header).unwrap();
         buf.extend_from_slice(data);
 
@@ -305,16 +307,16 @@ mod tests {
     #[test]
     fn test_deserialize_multiple_chunks() {
         for (num_chunks, chunk_size, compression_scheme) in CASES {
-            let (c, cas_data, raw_data, raw_chunk_boundaries) =
-                build_cas_object(*num_chunks, *chunk_size, *compression_scheme);
+            let (c, xorb_data, raw_data, raw_chunk_boundaries) =
+                build_xorb_object(*num_chunks, *chunk_size, *compression_scheme);
             let mut deserialized = Vec::new();
-            let res = deserialize_chunks_to_writer(&mut Cursor::new(&cas_data), &mut deserialized);
+            let res = deserialize_chunks_to_writer(&mut Cursor::new(&xorb_data), &mut deserialized);
             assert!(res.is_ok());
             assert_eq!(deserialized.len(), raw_data.len());
             assert_eq!(deserialized, raw_data);
 
             let (num_read, chunk_byte_indices) = res.unwrap();
-            assert_eq!(num_read, cas_data.len());
+            assert_eq!(num_read, xorb_data.len());
             assert_eq!(chunk_byte_indices[0], 0);
             assert_eq!(
                 chunk_byte_indices.iter().skip(1).map(|v| *v).collect::<Vec<_>>(),
@@ -338,30 +340,30 @@ mod tests {
 
     #[test]
     fn test_truncated_stream_returns_error() {
-        let (_, cas_data, _, _) = build_cas_object(3, ChunkSize::Fixed(1024), CompressionScheme::None);
+        let (_, xorb_data, _, _) = build_xorb_object(3, ChunkSize::Fixed(1024), CompressionScheme::None);
 
         // Truncate mid-header (e.g. 2 bytes into the second chunk's header)
-        let first_chunk_end = CAS_CHUNK_HEADER_LENGTH + 1024;
+        let first_chunk_end = XORB_CHUNK_HEADER_LENGTH + 1024;
         let mid_header = first_chunk_end + 2;
-        let truncated = &cas_data[..mid_header];
+        let truncated = &xorb_data[..mid_header];
         let res = deserialize_chunks_to_writer(&mut Cursor::new(truncated), &mut Vec::new());
         assert!(res.is_err(), "truncation mid-header should error, not silently succeed");
 
         // Truncate mid-data (header present but compressed payload cut short)
-        let mid_data = first_chunk_end + CAS_CHUNK_HEADER_LENGTH + 10;
-        let truncated = &cas_data[..mid_data];
+        let mid_data = first_chunk_end + XORB_CHUNK_HEADER_LENGTH + 10;
+        let truncated = &xorb_data[..mid_data];
         let res = deserialize_chunks_to_writer(&mut Cursor::new(truncated), &mut Vec::new());
         assert!(res.is_err(), "truncation mid-data should error, not silently succeed");
     }
 
     #[test]
     fn test_exact_eof_after_complete_chunk_succeeds() {
-        let (_, cas_data, raw_data, raw_chunk_boundaries) =
-            build_cas_object(3, ChunkSize::Fixed(1024), CompressionScheme::None);
+        let (_, xorb_data, raw_data, raw_chunk_boundaries) =
+            build_xorb_object(3, ChunkSize::Fixed(1024), CompressionScheme::None);
 
         // Truncate exactly at the end of chunk 0. This should be treated as clean EOF.
-        let first_chunk_end = CAS_CHUNK_HEADER_LENGTH + 1024;
-        let truncated = &cas_data[..first_chunk_end];
+        let first_chunk_end = XORB_CHUNK_HEADER_LENGTH + 1024;
+        let truncated = &xorb_data[..first_chunk_end];
 
         let mut out = Vec::new();
         let (num_read, chunk_byte_indices) =

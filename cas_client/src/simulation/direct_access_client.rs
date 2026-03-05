@@ -9,9 +9,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use cas_object::CasObject;
-use cas_types::{CASReconstructionFetchInfo, FileRange};
+use cas_types::{FileRange, XorbReconstructionFetchInfo};
 use merklehash::MerkleHash;
+use xorb_object::XorbObject;
 
 use crate::error::Result;
 use crate::interface::Client;
@@ -59,8 +59,8 @@ pub trait DirectAccessClient: Client + Send + Sync {
     /// Check if a XORB exists.
     async fn xorb_exists(&self, hash: &MerkleHash) -> Result<bool>;
 
-    /// Get the CasObject footer/metadata for a XORB.
-    async fn xorb_footer(&self, hash: &MerkleHash) -> Result<CasObject>;
+    /// Get the XorbObject footer/metadata for a XORB.
+    async fn xorb_footer(&self, hash: &MerkleHash) -> Result<XorbObject>;
 
     /// Get the file size for a given file hash.
     async fn get_file_size(&self, hash: &MerkleHash) -> Result<u64>;
@@ -83,6 +83,6 @@ pub trait DirectAccessClient: Client + Send + Sync {
     async fn fetch_term_data(
         &self,
         hash: MerkleHash,
-        fetch_term: CASReconstructionFetchInfo,
+        fetch_term: XorbReconstructionFetchInfo,
     ) -> Result<(Bytes, Vec<u32>)>;
 }

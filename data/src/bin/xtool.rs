@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use cas_client::{Client, RemoteClient};
-use cas_object::CompressionScheme;
 use cas_types::{FileRange, QueryReconstructionResponse};
 use clap::{Args, Parser, Subcommand};
 use data::data_client::default_config;
@@ -17,6 +16,7 @@ use merklehash::MerkleHash;
 use utils::auth::TokenRefresher;
 use walkdir::WalkDir;
 use xet_runtime::XetRuntime;
+use xorb_object::CompressionScheme;
 
 const DEFAULT_HF_ENDPOINT: &str = "https://huggingface.co";
 const USER_AGENT: &str = concat!("xtool", "/", env!("CARGO_PKG_VERSION"));

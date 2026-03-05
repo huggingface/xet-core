@@ -13,7 +13,7 @@ use tokio::task::JoinError;
 #[derive(Error, Debug)]
 pub enum CasClientError {
     #[error("Cas Object Error: {0}")]
-    CasObjectError(#[from] cas_object::error::CasObjectError),
+    XorbObjectError(#[from] xorb_object::error::XorbObjectError),
 
     #[error("Configuration Error: {0} ")]
     ConfigurationError(String),

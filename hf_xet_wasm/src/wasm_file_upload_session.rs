@@ -2,7 +2,6 @@ use std::mem::{swap, take};
 use std::sync::Arc;
 
 use cas_client::{Client, RemoteClient};
-use cas_object::SerializedCasObject;
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
 use http::header::{self, HeaderValue};
@@ -10,6 +9,7 @@ use mdb_shard::MDBShardInfo;
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
 use merklehash::{HashedWrite, MerkleHash};
 use tokio::sync::Mutex;
+use xorb_object::SerializedXorbObject;
 
 use super::configurations::TranslatorConfig;
 use super::errors::*;
@@ -108,7 +108,7 @@ impl FileUploadSession {
 
         // Add the xorb info to the current shard.
         if xorb.num_bytes() > 0 {
-            self.session_shard.lock().await.add_cas_block(xorb.cas_info.clone())?;
+            self.session_shard.lock().await.add_xorb_block(xorb.xorb_info.clone())?;
         }
         self.register_new_xorb_for_upload(xorb).await?;
 
@@ -127,12 +127,12 @@ impl FileUploadSession {
 
         // XORBs are sent without footer - the server/client reconstructs it from chunk data.
         let compression_scheme = self.config.data_config.compression;
-        let cas_object = SerializedCasObject::from_xorb(xorb, compression_scheme, false)?;
+        let xorb_obj = SerializedXorbObject::from_xorb(xorb, compression_scheme, false)?;
 
         let Some(ref mut xorb_uploader) = *self.xorb_uploader.lock().await else {
             return Err(DataProcessingError::internal("register xorb after drop"));
         };
-        xorb_uploader.upload_xorb(cas_object).await?;
+        xorb_uploader.upload_xorb(xorb_obj).await?;
 
         Ok(())
     }
