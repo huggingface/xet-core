@@ -15,6 +15,8 @@ pub mod client_testing_utils;
 pub mod client_unit_testing;
 #[cfg(not(target_family = "wasm"))]
 mod deletion_controls;
+#[cfg(all(test, not(target_family = "wasm")))]
+pub mod deletion_unit_testing;
 mod direct_access_client;
 #[cfg(not(target_family = "wasm"))]
 mod local_client;

@@ -1013,139 +1013,41 @@ mod tests {
         assert!(lc.list_xorbs().await.unwrap().is_empty());
     }
 
-    /// Tests that SimulationControlClient can perform the full deletion lifecycle
-    /// through HTTP /simulation/ routes.
-    #[tokio::test]
-    async fn test_simulation_control_client_deletion_lifecycle() {
-        let lc = LocalClient::temporary().await.unwrap();
-        let dc: Arc<dyn DeletionControlableClient> = lc.clone();
-        let server = LocalTestServer::start_with_client_and_deletion(lc.clone(), Some(dc)).await;
-
-        let sc = SimulationControlClient::new(server.endpoint());
-
-        // Upload files via the SimulationControlClient (delegates to RemoteClient)
-        let file1 = ClientTestingUtils::upload_random_file(&sc, &[(10, (0, 3))], CHUNK_SIZE)
-            .await
-            .unwrap();
-        let file2 = ClientTestingUtils::upload_random_file(&sc, &[(20, (0, 2))], CHUNK_SIZE)
-            .await
-            .unwrap();
-
-        let all_files: HashSet<_> = [file1.file_hash, file2.file_hash].into();
-        let all_xorbs: HashSet<_> = [&file1, &file2]
-            .iter()
-            .flat_map(|f| f.terms.iter().map(|t| t.xorb_hash))
-            .collect();
-
-        // Verify integrity through the HTTP route
-        DeletionControlableClient::verify_integrity(&sc).await.unwrap();
-
-        // Verify listing through simulation routes
-        let listed_xorbs: HashSet<_> = DirectAccessClient::list_xorbs(&sc).await.unwrap().into_iter().collect();
-        assert_eq!(listed_xorbs, all_xorbs);
-
-        let listed_files: HashSet<_> = DeletionControlableClient::list_file_shard_entries(&sc)
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|(fh, _)| fh)
-            .collect();
-        assert_eq!(listed_files, all_files);
-
-        let shard_entries = DeletionControlableClient::list_shard_entries(&sc).await.unwrap();
-        assert!(!shard_entries.is_empty());
-
-        for h in &shard_entries {
-            let bytes = DeletionControlableClient::get_shard_bytes(&sc, h).await.unwrap();
-            assert!(!bytes.is_empty());
-        }
-
-        // Step 1: Delete file entries via HTTP
-        DeletionControlableClient::delete_file_entry(&sc, &file1.file_hash)
-            .await
-            .unwrap();
-        let remaining_files: HashSet<_> = DeletionControlableClient::list_file_shard_entries(&sc)
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|(fh, _)| fh)
-            .collect();
-        assert_eq!(remaining_files, HashSet::from([file2.file_hash]));
-
-        DeletionControlableClient::delete_file_entry(&sc, &file2.file_hash)
-            .await
-            .unwrap();
-        assert!(
-            DeletionControlableClient::list_file_shard_entries(&sc)
-                .await
-                .unwrap()
-                .is_empty()
-        );
-
-        // Step 2: Delete shards via HTTP
-        let shard_hashes = DeletionControlableClient::list_shard_entries(&sc).await.unwrap();
-        for h in &shard_hashes {
-            DeletionControlableClient::delete_shard_entry(&sc, h).await.unwrap();
-        }
-        assert!(DeletionControlableClient::list_shard_entries(&sc).await.unwrap().is_empty());
-
-        // XORBs should still exist
-        let remaining_xorbs: HashSet<_> = DirectAccessClient::list_xorbs(&sc).await.unwrap().into_iter().collect();
-        assert_eq!(remaining_xorbs, all_xorbs);
-
-        // Step 3: Delete xorbs via HTTP
-        for h in &all_xorbs {
-            DirectAccessClient::delete_xorb(&sc, h).await;
-        }
-        assert!(DirectAccessClient::list_xorbs(&sc).await.unwrap().is_empty());
+    /// Keeps a LocalTestServer alive for the duration of the tokio runtime by
+    /// moving it into a spawned task. Returns the endpoint URL.
+    fn detach_server(server: LocalTestServer) -> String {
+        let endpoint = server.endpoint().to_string();
+        tokio::spawn(async move {
+            let _server = server;
+            futures::future::pending::<()>().await;
+        });
+        endpoint
     }
 
-    /// Tests that DirectAccessClient methods work through SimulationControlClient.
+    /// Runs the common DirectAccessClient test suite via SimulationControlClient.
     #[tokio::test]
-    async fn test_simulation_control_client_direct_access() {
-        let server = LocalTestServer::start(false).await;
-        let sc = SimulationControlClient::new(server.endpoint());
+    async fn test_simulation_control_client_common_suite() {
+        crate::simulation::client_unit_testing::test_client_functionality(|| async {
+            let lc = LocalClient::temporary().await.unwrap();
+            let dc: Arc<dyn DeletionControlableClient> = lc.clone();
+            let server = LocalTestServer::start_with_client_and_deletion(lc, Some(dc)).await;
+            let endpoint = detach_server(server);
+            Arc::new(SimulationControlClient::new(&endpoint)) as Arc<dyn DirectAccessClient>
+        })
+        .await;
+    }
 
-        let file = ClientTestingUtils::upload_random_file(&sc, &[(1, (0, 3))], CHUNK_SIZE)
-            .await
-            .unwrap();
-
-        // Verify xorb operations
-        let xorbs = DirectAccessClient::list_xorbs(&sc).await.unwrap();
-        assert!(!xorbs.is_empty());
-
-        for xorb_hash in &xorbs {
-            assert!(DirectAccessClient::xorb_exists(&sc, xorb_hash).await.unwrap());
-
-            let length = DirectAccessClient::xorb_length(&sc, xorb_hash).await.unwrap();
-            assert!(length > 0);
-
-            let raw_length = DirectAccessClient::xorb_raw_length(&sc, xorb_hash).await.unwrap();
-            assert!(raw_length > 0);
-
-            let full_data = DirectAccessClient::get_full_xorb(&sc, xorb_hash).await.unwrap();
-            assert!(!full_data.is_empty());
-
-            let raw_data = DirectAccessClient::get_xorb_raw_bytes(&sc, xorb_hash, None).await.unwrap();
-            assert!(!raw_data.is_empty());
-        }
-
-        // Verify file operations
-        let file_size = DirectAccessClient::get_file_size(&sc, &file.file_hash).await.unwrap();
-        assert_eq!(file_size, file.data.len() as u64);
-
-        let file_data = DirectAccessClient::get_file_data(&sc, &file.file_hash, None).await.unwrap();
-        assert_eq!(file_data, file.data);
-
-        // Verify range file data
-        if file.data.len() > 10 {
-            let range = FileRange::new(0, 10);
-            let range_data = DirectAccessClient::get_file_data(&sc, &file.file_hash, Some(range))
-                .await
-                .unwrap();
-            assert_eq!(range_data.len(), 10);
-            assert_eq!(&range_data[..], &file.data[..10]);
-        }
+    /// Runs the common DeletionControlableClient test suite via SimulationControlClient.
+    #[tokio::test]
+    async fn test_simulation_control_client_deletion_suite() {
+        crate::simulation::deletion_unit_testing::test_deletion_functionality(|| async {
+            let lc = LocalClient::temporary().await.unwrap();
+            let dc: Arc<dyn DeletionControlableClient> = lc.clone();
+            let server = LocalTestServer::start_with_client_and_deletion(lc, Some(dc)).await;
+            let endpoint = detach_server(server);
+            Arc::new(SimulationControlClient::new(&endpoint))
+        })
+        .await;
     }
 
     /// Tests that deletion routes return 501 when the backend is MemoryClient.

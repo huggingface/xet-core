@@ -57,9 +57,21 @@ impl SimulationControlClient {
             Ok(response)
         } else if status == reqwest::StatusCode::NOT_IMPLEMENTED {
             Err(CasClientError::Other("Deletion controls not available for this server backend".to_string()))
+        } else if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+            Err(CasClientError::InvalidRange)
         } else {
             let body = response.text().await.unwrap_or_default();
             Err(CasClientError::Other(format!("HTTP {status}: {body}")))
+        }
+    }
+
+    /// Like `check_status`, but maps 404 to `CasClientError::XORBNotFound` for XORB endpoints.
+    async fn check_xorb_status(response: reqwest::Response, hash: &MerkleHash) -> Result<reqwest::Response> {
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            Err(CasClientError::XORBNotFound(*hash))
+        } else {
+            Self::check_status(response).await
         }
     }
 }
@@ -204,7 +216,7 @@ impl DirectAccessClient for SimulationControlClient {
             .send()
             .await
             .map_err(|e| CasClientError::Other(e.to_string()))?;
-        let resp = Self::check_status(resp).await?;
+        let resp = Self::check_xorb_status(resp, hash).await?;
         resp.bytes().await.map_err(|e| CasClientError::Other(e.to_string()))
     }
 
@@ -220,7 +232,7 @@ impl DirectAccessClient for SimulationControlClient {
             .send()
             .await
             .map_err(|e| CasClientError::Other(e.to_string()))?;
-        let resp = Self::check_status(resp).await?;
+        let resp = Self::check_xorb_status(resp, hash).await?;
         let result: XorbRangesResponse = resp.json().await.map_err(|e| CasClientError::Other(e.to_string()))?;
         Ok(result.data.into_iter().map(Bytes::from).collect())
     }
@@ -235,7 +247,7 @@ impl DirectAccessClient for SimulationControlClient {
             .send()
             .await
             .map_err(|e| CasClientError::Other(e.to_string()))?;
-        let resp = Self::check_status(resp).await?;
+        let resp = Self::check_xorb_status(resp, hash).await?;
         let result: XorbLengthResponse = resp.json().await.map_err(|e| CasClientError::Other(e.to_string()))?;
         Ok(result.length)
     }
@@ -299,7 +311,7 @@ impl DirectAccessClient for SimulationControlClient {
             req = req.header(reqwest::header::RANGE, format!("bytes={}-{}", range.start, range.end.saturating_sub(1)));
         }
         let resp = req.send().await.map_err(|e| CasClientError::Other(e.to_string()))?;
-        let resp = Self::check_status(resp).await?;
+        let resp = Self::check_xorb_status(resp, hash).await?;
         resp.bytes().await.map_err(|e| CasClientError::Other(e.to_string()))
     }
 
@@ -313,7 +325,7 @@ impl DirectAccessClient for SimulationControlClient {
             .send()
             .await
             .map_err(|e| CasClientError::Other(e.to_string()))?;
-        let resp = Self::check_status(resp).await?;
+        let resp = Self::check_xorb_status(resp, hash).await?;
         let result: XorbRawLengthResponse = resp.json().await.map_err(|e| CasClientError::Other(e.to_string()))?;
         Ok(result.length)
     }
