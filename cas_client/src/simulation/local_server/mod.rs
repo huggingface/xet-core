@@ -11,14 +11,15 @@
 //!
 //! - [`LocalServer`]: The main server struct that manages the HTTP listener
 //! - [`LocalServerConfig`]: Configuration for the server (host, port, data directory)
-//! - [`LocalTestServer`]: A test utility that starts a server and provides both remote and local client access
 //! - `handlers`: HTTP request handlers for each API endpoint
 
 mod handlers;
+mod latency_simulation;
 mod server;
 mod simulation_control_client;
 pub(crate) mod simulation_handlers;
 mod simulation_types;
 
-pub use server::{LocalServer, LocalServerConfig, LocalTestServer, ServerState};
+pub use latency_simulation::ServerLatencyProfile;
+pub use server::{LocalServer, LocalServerConfig};
 pub use simulation_control_client::SimulationControlClient;

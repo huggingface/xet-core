@@ -168,6 +168,10 @@ impl DirectAccessClient for SimulationControlClient {
         });
     }
 
+    async fn apply_api_delay(&self) {
+        // No-op: delays are applied server-side via set_api_delay_range
+    }
+
     /// Sets the API delay range via the `/simulation/config/api_delay` endpoint.
     fn set_api_delay_range(&self, delay_range: Option<Range<Duration>>) {
         let url = self.sim_url("/config/api_delay");

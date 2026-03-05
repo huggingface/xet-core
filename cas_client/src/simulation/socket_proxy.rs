@@ -361,14 +361,18 @@ mod tests {
         use tempfile::TempDir;
 
         use crate::simulation::client_unit_testing::test_client_functionality;
-        use crate::simulation::local_server::LocalTestServer;
+        use crate::simulation::simulation_server::LocalTestServerBuilder;
 
         let temp_dir = TempDir::new().unwrap();
         let socket_path = temp_dir.path().join("test_socket.sock");
 
         // Run all client functionality tests through the socket proxy
         test_client_functionality(|| async {
-            let server = LocalTestServer::start_with_socket_proxy(true, Some(socket_path.clone())).await;
+            let server = LocalTestServerBuilder::new()
+                .with_socket(socket_path.clone())
+                .with_ephemeral_disk()
+                .start()
+                .await;
 
             // Verify the socket file exists
             assert!(socket_path.exists(), "Unix socket file should exist");
