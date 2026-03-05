@@ -22,6 +22,14 @@ pub async fn deserialize_chunk_to_writer<R: AsyncRead + Unpin, W: Write>(
     writer: &mut W,
 ) -> Result<(usize, u32), XorbObjectError> {
     let header = deserialize_chunk_header(reader).await?;
+    deserialize_chunk_with_header_to_writer(reader, writer, header).await
+}
+
+async fn deserialize_chunk_with_header_to_writer<R: AsyncRead + Unpin, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    header: XorbChunkHeader,
+) -> Result<(usize, u32), XorbObjectError> {
     let mut compressed_data = vec![0u8; header.get_compressed_length() as usize];
     reader.read_exact(&mut compressed_data).await?;
 
@@ -46,6 +54,26 @@ pub async fn deserialize_chunk<R: AsyncRead + Unpin>(reader: &mut R) -> Result<(
     Ok((buf, compressed_len, uncompressed_len))
 }
 
+/// Reads the next chunk header from an async reader, returning `None` on clean EOF.
+///
+/// Uses a single `read()` call to detect EOF (returns 0), then completes
+/// any partial header with `read_exact`. An `UnexpectedEof` from `read_exact`
+/// means the stream was truncated mid-header.
+async fn try_read_chunk_header_async<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> Result<Option<XorbChunkHeader>, XorbObjectError> {
+    let mut header_buf = [0u8; XORB_CHUNK_HEADER_LENGTH];
+    let n = match AsyncReadExt::read(reader, &mut header_buf).await {
+        Ok(0) => return Ok(None),
+        Ok(n) => n,
+        Err(e) => return Err(XorbObjectError::InternalIOError(e)),
+    };
+    if n < XORB_CHUNK_HEADER_LENGTH {
+        reader.read_exact(&mut header_buf[n..]).await?;
+    }
+    parse_chunk_header(header_buf).map(Some)
+}
+
 pub async fn deserialize_chunks_to_writer_from_async_read<R: AsyncRead + Unpin, W: Write>(
     reader: &mut R,
     writer: &mut W,
@@ -58,21 +86,12 @@ pub async fn deserialize_chunks_to_writer_from_async_read<R: AsyncRead + Unpin, 
     let mut chunk_byte_indices = Vec::<u32>::new();
     chunk_byte_indices.push(num_uncompressed_written);
 
-    loop {
-        match deserialize_chunk_to_writer(reader, writer).await {
-            Ok((delta_written, uncompressed_chunk_len)) => {
-                num_compressed_written += delta_written;
-                num_uncompressed_written += uncompressed_chunk_len;
-                chunk_byte_indices.push(num_uncompressed_written); // record end of current chunk
-            },
-            Err(XorbObjectError::InternalIOError(e)) => {
-                if e.kind() == std::io::ErrorKind::UnexpectedEof {
-                    break;
-                }
-                return Err(XorbObjectError::InternalIOError(e));
-            },
-            Err(e) => return Err(e),
-        }
+    while let Some(header) = try_read_chunk_header_async(reader).await? {
+        let (delta_written, uncompressed_chunk_len) =
+            deserialize_chunk_with_header_to_writer(reader, writer, header).await?;
+        num_compressed_written += delta_written;
+        num_uncompressed_written += uncompressed_chunk_len;
+        chunk_byte_indices.push(num_uncompressed_written);
     }
 
     Ok((num_compressed_written, chunk_byte_indices))
@@ -176,5 +195,47 @@ mod tests {
                 assert_eq!(chunk_byte_indices[i + 1] - chunk_byte_indices[i], CHUNK_SIZE as u32);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_truncated_stream_returns_error() {
+        use crate::XORB_CHUNK_HEADER_LENGTH;
+
+        let rng = &mut rng();
+        let data = get_chunks(rng, 3, CompressionScheme::None);
+
+        let first_chunk_end = XORB_CHUNK_HEADER_LENGTH + CHUNK_SIZE;
+
+        // Truncate mid-header
+        let mid_header = first_chunk_end + 2;
+        let stream = futures::stream::iter(vec![Ok::<_, std::io::Error>(Bytes::copy_from_slice(&data[..mid_header]))]);
+        let res = deserialize_chunks_to_writer_from_stream(stream, &mut Vec::new()).await;
+        assert!(res.is_err(), "truncation mid-header should error, not silently succeed");
+
+        // Truncate mid-data
+        let mid_data = first_chunk_end + XORB_CHUNK_HEADER_LENGTH + 10;
+        let stream = futures::stream::iter(vec![Ok::<_, std::io::Error>(Bytes::copy_from_slice(&data[..mid_data]))]);
+        let res = deserialize_chunks_to_writer_from_stream(stream, &mut Vec::new()).await;
+        assert!(res.is_err(), "truncation mid-data should error, not silently succeed");
+    }
+
+    #[tokio::test]
+    async fn test_exact_eof_after_complete_chunk_succeeds() {
+        use crate::XORB_CHUNK_HEADER_LENGTH;
+
+        let rng = &mut rng();
+        let data = get_chunks(rng, 3, CompressionScheme::None);
+        let first_chunk_end = XORB_CHUNK_HEADER_LENGTH + CHUNK_SIZE;
+
+        // Truncate exactly at end of first chunk. This should be clean EOF.
+        let stream = futures::stream::iter(vec![Ok::<_, std::io::Error>(Bytes::copy_from_slice(
+            &data[..first_chunk_end],
+        ))]);
+        let mut out = Vec::new();
+        let (num_read, chunk_byte_indices) = deserialize_chunks_to_writer_from_stream(stream, &mut out).await.unwrap();
+
+        assert_eq!(num_read, first_chunk_end);
+        assert_eq!(chunk_byte_indices, vec![0, CHUNK_SIZE as u32]);
+        assert_eq!(out.len(), CHUNK_SIZE);
     }
 }

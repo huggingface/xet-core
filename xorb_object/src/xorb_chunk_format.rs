@@ -163,6 +163,14 @@ pub fn deserialize_chunk_to_writer<R: Read, W: Write>(
     writer: &mut W,
 ) -> Result<(usize, u32), XorbObjectError> {
     let header = deserialize_chunk_header(reader)?;
+    deserialize_chunk_with_header_to_writer(reader, writer, header)
+}
+
+fn deserialize_chunk_with_header_to_writer<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    header: XorbChunkHeader,
+) -> Result<(usize, u32), XorbObjectError> {
     let mut compressed_data_reader = reader.take(header.get_compressed_length().into());
 
     let uncompressed_len = header
@@ -184,6 +192,24 @@ pub fn deserialize_chunks<R: Read>(reader: &mut R) -> Result<(Vec<u8>, Vec<u32>)
     Ok((buf, chunk_byte_indices))
 }
 
+/// Reads the next chunk header, returning `None` on clean EOF.
+///
+/// Uses a single `read()` call to detect EOF (returns 0), then completes
+/// any partial header with `read_exact`. An `UnexpectedEof` from `read_exact`
+/// means the stream was truncated mid-header.
+fn try_read_chunk_header<R: Read>(reader: &mut R) -> Result<Option<XorbChunkHeader>, XorbObjectError> {
+    let mut header_buf = [0u8; XORB_CHUNK_HEADER_LENGTH];
+    let n = match reader.read(&mut header_buf) {
+        Ok(0) => return Ok(None),
+        Ok(n) => n,
+        Err(e) => return Err(XorbObjectError::InternalIOError(e)),
+    };
+    if n < XORB_CHUNK_HEADER_LENGTH {
+        reader.read_exact(&mut header_buf[n..])?;
+    }
+    parse_chunk_header(header_buf).map(Some)
+}
+
 pub fn deserialize_chunks_to_writer<R: Read, W: Write>(
     reader: &mut R,
     writer: &mut W,
@@ -196,21 +222,11 @@ pub fn deserialize_chunks_to_writer<R: Read, W: Write>(
     let mut chunk_byte_indices = Vec::<u32>::new();
     chunk_byte_indices.push(num_uncompressed_written);
 
-    loop {
-        match deserialize_chunk_to_writer(reader, writer) {
-            Ok((delta_written, uncompressed_chunk_len)) => {
-                num_compressed_written += delta_written;
-                num_uncompressed_written += uncompressed_chunk_len;
-                chunk_byte_indices.push(num_uncompressed_written); // record end of current chunk
-            },
-            Err(XorbObjectError::InternalIOError(e)) => {
-                if e.kind() == std::io::ErrorKind::UnexpectedEof {
-                    break;
-                }
-                return Err(XorbObjectError::InternalIOError(e));
-            },
-            Err(e) => return Err(e),
-        }
+    while let Some(header) = try_read_chunk_header(reader)? {
+        let (delta_written, uncompressed_chunk_len) = deserialize_chunk_with_header_to_writer(reader, writer, header)?;
+        num_compressed_written += delta_written;
+        num_uncompressed_written += uncompressed_chunk_len;
+        chunk_byte_indices.push(num_uncompressed_written);
     }
 
     Ok((num_compressed_written, chunk_byte_indices))
@@ -320,5 +336,41 @@ mod tests {
                 assert_eq!(chunk_byte_indices[i + 1] - chunk_byte_indices[i], *chunk_size);
             }
         }
+    }
+
+    #[test]
+    fn test_truncated_stream_returns_error() {
+        let (_, xorb_data, _, _) = build_xorb_object(3, ChunkSize::Fixed(1024), CompressionScheme::None);
+
+        // Truncate mid-header (e.g. 2 bytes into the second chunk's header)
+        let first_chunk_end = XORB_CHUNK_HEADER_LENGTH + 1024;
+        let mid_header = first_chunk_end + 2;
+        let truncated = &xorb_data[..mid_header];
+        let res = deserialize_chunks_to_writer(&mut Cursor::new(truncated), &mut Vec::new());
+        assert!(res.is_err(), "truncation mid-header should error, not silently succeed");
+
+        // Truncate mid-data (header present but compressed payload cut short)
+        let mid_data = first_chunk_end + XORB_CHUNK_HEADER_LENGTH + 10;
+        let truncated = &xorb_data[..mid_data];
+        let res = deserialize_chunks_to_writer(&mut Cursor::new(truncated), &mut Vec::new());
+        assert!(res.is_err(), "truncation mid-data should error, not silently succeed");
+    }
+
+    #[test]
+    fn test_exact_eof_after_complete_chunk_succeeds() {
+        let (_, xorb_data, raw_data, raw_chunk_boundaries) =
+            build_xorb_object(3, ChunkSize::Fixed(1024), CompressionScheme::None);
+
+        // Truncate exactly at the end of chunk 0. This should be treated as clean EOF.
+        let first_chunk_end = XORB_CHUNK_HEADER_LENGTH + 1024;
+        let truncated = &xorb_data[..first_chunk_end];
+
+        let mut out = Vec::new();
+        let (num_read, chunk_byte_indices) =
+            deserialize_chunks_to_writer(&mut Cursor::new(truncated), &mut out).unwrap();
+
+        assert_eq!(num_read, first_chunk_end);
+        assert_eq!(chunk_byte_indices, vec![0, raw_chunk_boundaries[0].1]);
+        assert_eq!(&out[..], &raw_data[..1024]);
     }
 }
