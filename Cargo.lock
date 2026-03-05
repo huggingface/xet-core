@@ -458,7 +458,6 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bytes",
- "cas_object",
  "cas_types",
  "chrono",
  "clap",
@@ -498,32 +497,7 @@ dependencies = [
  "web-time",
  "wiremock",
  "xet_runtime",
-]
-
-[[package]]
-name = "cas_object"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake3",
- "bytes",
- "clap",
- "countio",
- "csv",
- "deduplication",
- "futures",
- "half",
- "lz4_flex",
- "mdb_shard",
- "merklehash",
- "more-asserts",
- "rand 0.9.1",
- "serde",
- "thiserror 2.0.12",
- "tokio",
- "tracing",
- "utils",
- "xet_runtime",
+ "xorb_object",
 ]
 
 [[package]]
@@ -1006,7 +980,6 @@ dependencies = [
  "async-trait",
  "bytes",
  "cas_client",
- "cas_object",
  "cas_types",
  "chrono",
  "clap",
@@ -1017,6 +990,7 @@ dependencies = [
  "file_reconstruction",
  "http",
  "hub_client",
+ "itertools 0.14.0",
  "lazy_static",
  "mdb_shard",
  "merklehash",
@@ -1038,6 +1012,7 @@ dependencies = [
  "utils",
  "walkdir",
  "xet_runtime",
+ "xorb_object",
 ]
 
 [[package]]
@@ -1379,6 +1354,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "ulid",
  "utils",
  "xet_config",
  "xet_runtime",
@@ -3488,6 +3464,7 @@ dependencies = [
  "merklehash",
  "more-asserts",
  "tokio",
+ "ulid",
  "utils",
 ]
 
@@ -6183,6 +6160,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea2f10b9bb0928dfb1b42b65e1f9e36f7f54dbdf08457afefb38afcdec4fa2bb"
 
 [[package]]
+name = "xet-session"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "clap",
+ "data",
+ "http",
+ "progress_tracking",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "tempfile",
+ "thiserror 2.0.12",
+ "tokio",
+ "tracing-subscriber",
+ "ulid",
+ "utils",
+ "xet_config",
+ "xet_runtime",
+]
+
+[[package]]
 name = "xet_config"
 version = "0.14.5"
 dependencies = [
@@ -6224,6 +6224,32 @@ dependencies = [
  "tracing",
  "utils",
  "xet_config",
+]
+
+[[package]]
+name = "xorb_object"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "bytes",
+ "clap",
+ "countio",
+ "csv",
+ "deduplication",
+ "futures",
+ "half",
+ "lz4_flex",
+ "mdb_shard",
+ "merklehash",
+ "more-asserts",
+ "rand 0.9.1",
+ "serde",
+ "thiserror 2.0.12",
+ "tokio",
+ "tracing",
+ "utils",
+ "xet_runtime",
 ]
 
 [[package]]

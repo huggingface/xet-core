@@ -8,7 +8,7 @@ use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 
 use crate::byte_grouping::BG4Predictor;
 use crate::byte_grouping::bg4::{bg4_regroup, bg4_split};
-use crate::error::{CasObjectError, Result};
+use crate::error::{Result, XorbObjectError};
 
 pub static mut BG4_SPLIT_RUNTIME: f64 = 0.;
 pub static mut BG4_REGROUP_RUNTIME: f64 = 0.;
@@ -48,14 +48,14 @@ impl From<CompressionScheme> for &'static str {
 }
 
 impl TryFrom<u8> for CompressionScheme {
-    type Error = CasObjectError;
+    type Error = XorbObjectError;
 
     fn try_from(value: u8) -> Result<Self> {
         match value {
             0 => Ok(CompressionScheme::None),
             1 => Ok(CompressionScheme::LZ4),
             2 => Ok(CompressionScheme::ByteGrouping4LZ4),
-            _ => Err(CasObjectError::FormatError(anyhow!("cannot convert value {value} to CompressionScheme"))),
+            _ => Err(XorbObjectError::FormatError(anyhow!("cannot convert value {value} to CompressionScheme"))),
         }
     }
 }

@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cas_client::{CasClientError, Client};
-use cas_object::SerializedCasObject;
 use tokio_with_wasm::alias as wasmtokio;
+use xorb_object::SerializedXorbObject;
 
 use crate::errors::*;
 use crate::wasm_timer::ConsoleTimer;
@@ -12,7 +12,7 @@ use crate::wasm_timer::ConsoleTimer;
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 pub trait XorbUploader {
-    async fn upload_xorb(&mut self, input: SerializedCasObject) -> Result<()>;
+    async fn upload_xorb(&mut self, input: SerializedXorbObject) -> Result<()>;
     async fn finalize(&mut self) -> Result<()>;
 }
 
@@ -35,7 +35,7 @@ impl XorbUploaderLocalSequential {
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl XorbUploader for XorbUploaderLocalSequential {
-    async fn upload_xorb(&mut self, input: SerializedCasObject) -> Result<()> {
+    async fn upload_xorb(&mut self, input: SerializedXorbObject) -> Result<()> {
         let permit = self.client.acquire_upload_permit().await?;
         let _ = self.client.upload_xorb(&self.cas_prefix, input, None, permit).await?;
         Ok(())
@@ -65,7 +65,7 @@ impl XorbUploaderSpawnParallel {
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl XorbUploader for XorbUploaderSpawnParallel {
-    async fn upload_xorb(&mut self, input: SerializedCasObject) -> Result<()> {
+    async fn upload_xorb(&mut self, input: SerializedXorbObject) -> Result<()> {
         while let Some(ret) = self.tasks.try_join_next() {
             ret.map_err(DataProcessingError::internal)??;
         }

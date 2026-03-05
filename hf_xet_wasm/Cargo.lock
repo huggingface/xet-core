@@ -284,7 +284,6 @@ dependencies = [
  "axum",
  "base64",
  "bytes",
- "cas_object",
  "cas_types",
  "chrono",
  "clap",
@@ -320,32 +319,7 @@ dependencies = [
  "warp",
  "web-time",
  "xet_runtime",
-]
-
-[[package]]
-name = "cas_object"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake3",
- "bytes",
- "clap",
- "countio",
- "csv",
- "deduplication",
- "futures",
- "half",
- "lz4_flex",
- "mdb_shard",
- "merklehash",
- "more-asserts",
- "rand 0.9.2",
- "serde",
- "thiserror 2.0.16",
- "tokio",
- "tracing",
- "utils",
- "xet_runtime",
+ "xorb_object",
 ]
 
 [[package]]
@@ -1137,7 +1111,6 @@ dependencies = [
  "async-trait",
  "bytes",
  "cas_client",
- "cas_object",
  "console_error_panic_hook",
  "console_log",
  "deduplication",
@@ -1163,6 +1136,7 @@ dependencies = [
  "wasm-bindgen-test",
  "wasm_thread",
  "web-sys",
+ "xorb_object",
 ]
 
 [[package]]
@@ -2082,6 +2056,7 @@ dependencies = [
  "merklehash",
  "more-asserts",
  "tokio",
+ "ulid",
  "utils",
 ]
 
@@ -3211,6 +3186,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8c1ae7cc0fdb8b842d65d127cb981574b0d2b249b74d1c7a2986863dc134f71"
 
 [[package]]
+name = "ulid"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "470dbf6591da1b39d43c14523b2b469c86879a53e8b758c8e090a470fe7b1fbe"
+dependencies = [
+ "rand 0.9.2",
+ "web-time",
+]
+
+[[package]]
 name = "unicase"
 version = "2.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4157,6 +4142,32 @@ dependencies = [
  "tracing",
  "utils",
  "xet_config",
+]
+
+[[package]]
+name = "xorb_object"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "bytes",
+ "clap",
+ "countio",
+ "csv",
+ "deduplication",
+ "futures",
+ "half",
+ "lz4_flex",
+ "mdb_shard",
+ "merklehash",
+ "more-asserts",
+ "rand 0.9.2",
+ "serde",
+ "thiserror 2.0.16",
+ "tokio",
+ "tracing",
+ "utils",
+ "xet_runtime",
 ]
 
 [[package]]

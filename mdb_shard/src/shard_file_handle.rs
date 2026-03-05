@@ -11,13 +11,13 @@ use merklehash::{HMACKey, HashedWrite, MerkleHash, compute_data_hash};
 use tracing::{debug, error, info, warn};
 
 use crate::MDBShardFileFooter;
-use crate::cas_structs::CASChunkSequenceHeader;
 use crate::constants::MDB_SHARD_EXPIRATION_BUFFER;
 use crate::error::{MDBShardError, Result};
 use crate::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use crate::shard_file::current_timestamp;
 use crate::shard_format::MDBShardInfo;
 use crate::utils::{parse_shard_filename, shard_file_name, temp_shard_file_name, truncate_hash};
+use crate::xorb_structs::XorbChunkSequenceHeader;
 
 /// When a specific implementation of the  
 #[derive(Debug)]
@@ -329,7 +329,7 @@ impl MDBShardFile {
         hmac_key: HMACKey,
         key_valid_for: Duration,
         include_file_info: bool,
-        include_cas_lookup_table: bool,
+        include_xorb_lookup_table: bool,
         include_chunk_lookup_table: bool,
     ) -> Result<Arc<Self>> {
         let mut output_bytes = Vec::<u8>::new();
@@ -340,7 +340,7 @@ impl MDBShardFile {
             hmac_key,
             key_valid_for,
             include_file_info,
-            include_cas_lookup_table,
+            include_xorb_lookup_table,
             include_chunk_lookup_table,
         )?;
 
@@ -351,15 +351,15 @@ impl MDBShardFile {
     }
 
     #[inline]
-    pub fn read_all_cas_blocks(&self) -> Result<Vec<(CASChunkSequenceHeader, u64)>> {
-        self.shard.read_all_cas_blocks(&mut self.get_reader()?)
+    pub fn read_all_xorb_blocks(&self) -> Result<Vec<(XorbChunkSequenceHeader, u64)>> {
+        self.shard.read_all_xorb_blocks(&mut self.get_reader()?)
     }
 
     pub fn get_reader(&self) -> Result<BufReader<std::fs::File>> {
         Ok(BufReader::with_capacity(2048, std::fs::File::open(&self.path)?))
     }
 
-    // Helper function to swallow io::ErrorKind::NotFound errors. In the case of
+    // Helper function to swallow io::ErrorKind::NotFound errors. In the xorbe of
     // a cached shard was registered but later deleted during the lifetime
     // of a shard file manager, queries to this shard should not fail hard.
     pub fn get_reader_if_present(&self) -> Result<Option<BufReader<std::fs::File>>> {
@@ -401,15 +401,15 @@ impl MDBShardFile {
     pub fn chunk_hash_dedup_query_direct(
         &self,
         query_hashes: &[MerkleHash],
-        cas_block_index: u32,
-        cas_chunk_offset: u32,
+        xorb_block_index: u32,
+        xorb_chunk_offset: u32,
     ) -> Result<Option<(usize, FileDataSequenceEntry)>> {
         let Some(mut reader) = self.get_reader_if_present()? else {
             return Ok(None);
         };
 
         self.shard
-            .chunk_hash_dedup_query_direct(&mut reader, query_hashes, cas_block_index, cas_chunk_offset)
+            .chunk_hash_dedup_query_direct(&mut reader, query_hashes, xorb_block_index, xorb_chunk_offset)
     }
 
     #[inline]
@@ -423,8 +423,8 @@ impl MDBShardFile {
     }
 
     #[inline]
-    pub fn read_full_cas_lookup(&self) -> Result<Vec<(u64, u32)>> {
-        self.shard.read_full_cas_lookup(&mut self.get_reader()?)
+    pub fn read_full_xorb_lookup(&self) -> Result<Vec<(u64, u32)>> {
+        self.shard.read_full_xorb_lookup(&mut self.get_reader()?)
     }
 
     #[inline]
@@ -502,15 +502,15 @@ impl MDBShardFile {
 
         let mut truncated_hashes = Vec::new();
 
-        let cas_blocks = self.shard.read_all_cas_blocks_full(&mut self.get_reader().unwrap()).unwrap();
+        let xorb_blocks = self.shard.read_all_xorb_blocks_full(&mut self.get_reader().unwrap()).unwrap();
 
-        // Read from the cas blocks
-        let mut cas_index = 0;
-        for ci in cas_blocks {
+        // Read from the xorb blocks
+        let mut xorb_index = 0;
+        for ci in xorb_blocks {
             for (i, chunk) in ci.chunks.iter().enumerate() {
-                truncated_hashes.push((truncate_hash(&chunk.chunk_hash), (cas_index as u32, i as u32)));
+                truncated_hashes.push((truncate_hash(&chunk.chunk_hash), (xorb_index as u32, i as u32)));
             }
-            cas_index += 1 + ci.chunks.len();
+            xorb_index += 1 + ci.chunks.len();
         }
 
         read_truncated_hashes.sort();

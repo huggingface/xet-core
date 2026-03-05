@@ -3,7 +3,7 @@ resolver = "2"
 
 members = [
     "cas_client",
-    "cas_object",
+    "xorb_object",
     "cas_types",
     "chunk_cache",
     "xet_config",
@@ -20,6 +20,7 @@ members = [
     "utils",
     "xet_logging",
     "xet_runtime",
+    "xet_session",
 ]
 
 exclude = ["chunk_cache_bench", "hf_xet", "hf_xet_wasm", "hf_xet_thin_wasm"]

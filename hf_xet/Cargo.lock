@@ -349,7 +349,6 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bytes",
- "cas_object",
  "cas_types",
  "chrono",
  "clap",
@@ -385,32 +384,7 @@ dependencies = [
  "warp",
  "web-time",
  "xet_runtime",
-]
-
-[[package]]
-name = "cas_object"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake3",
- "bytes",
- "clap",
- "countio",
- "csv",
- "deduplication",
- "futures",
- "half",
- "lz4_flex",
- "mdb_shard",
- "merklehash",
- "more-asserts",
- "rand 0.9.2",
- "serde",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "utils",
- "xet_runtime",
+ "xorb_object",
 ]
 
 [[package]]
@@ -754,7 +728,6 @@ dependencies = [
  "async-trait",
  "bytes",
  "cas_client",
- "cas_object",
  "cas_types",
  "chrono",
  "clap",
@@ -763,6 +736,7 @@ dependencies = [
  "file_reconstruction",
  "http",
  "hub_client",
+ "itertools 0.14.0",
  "lazy_static",
  "mdb_shard",
  "merklehash",
@@ -782,6 +756,7 @@ dependencies = [
  "utils",
  "walkdir",
  "xet_runtime",
+ "xorb_object",
 ]
 
 [[package]]
@@ -2552,6 +2527,7 @@ dependencies = [
  "merklehash",
  "more-asserts",
  "tokio",
+ "ulid",
  "utils",
 ]
 
@@ -4926,6 +4902,32 @@ dependencies = [
  "tracing",
  "utils",
  "xet_config",
+]
+
+[[package]]
+name = "xorb_object"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "bytes",
+ "clap",
+ "countio",
+ "csv",
+ "deduplication",
+ "futures",
+ "half",
+ "lz4_flex",
+ "mdb_shard",
+ "merklehash",
+ "more-asserts",
+ "rand 0.9.2",
+ "serde",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "utils",
+ "xet_runtime",
 ]
 
 [[package]]

@@ -6,15 +6,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use cas_object::{CasObject, SerializedCasObject};
 use cas_types::{
-    BatchQueryReconstructionResponse, CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange, FileRange,
-    HexMerkleHash, HttpRange, QueryReconstructionResponse,
+    BatchQueryReconstructionResponse, ChunkRange, FileRange, HexMerkleHash, HttpRange, QueryReconstructionResponse,
+    XorbReconstructionFetchInfo, XorbReconstructionTerm,
 };
-use mdb_shard::cas_structs::MDBCASInfo;
 use mdb_shard::file_structs::MDBFileInfo;
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
 use mdb_shard::streaming_shard::MDBMinimalShard;
+use mdb_shard::xorb_structs::MDBXorbInfo;
 use merklehash::MerkleHash;
 use more_asserts::{assert_ge, assert_gt, debug_assert_lt};
 use rand::Rng;
@@ -22,6 +21,7 @@ use tokio::sync::RwLock;
 use tokio::time::{Duration, Instant};
 use tracing::{error, info};
 use utils::MerkleHashMap;
+use xorb_object::{SerializedXorbObject, XorbObject};
 
 use super::client_testing_utils::{FileTermReference, RandomFileContents};
 use super::direct_access_client::DirectAccessClient;
@@ -41,10 +41,10 @@ lazy_static::lazy_static! {
     };
 }
 
-/// Stored XORB data: the serialized data and the deserialized CasObject (header/footer).
+/// Stored XORB data: the serialized data and the deserialized XorbObject (header/footer).
 struct MaterializedXorb {
     serialized_data: Bytes,
-    cas_object: CasObject,
+    xorb_object: XorbObject,
 }
 
 /// Storage for a XORB - either fully materialized or generated on-the-fly.
@@ -85,23 +85,23 @@ impl MemoryClient {
     }
 
     /// Inserts a RandomXorb into the client's storage and registers it in the shard
-    /// for CAS block lookups. Returns the xorb hash.
+    /// for XORB block lookups. Returns the xorb hash.
     ///
     /// This allows storing XORBs that generate their data on-the-fly,
     /// enabling testing with massive files without storing all data in memory.
     pub async fn insert_random_xorb(&self, xorb: RandomXorb) -> Result<MerkleHash> {
-        use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
+        use mdb_shard::xorb_structs::{MDBXorbInfo, XorbChunkSequenceEntry, XorbChunkSequenceHeader};
 
         let hash = xorb.xorb_hash();
-        let cas = xorb.get_cas_object();
+        let xorb_obj = xorb.get_xorb_object();
 
-        // Create CAS block entries for each chunk
+        // Create XORB block entries for each chunk
         let mut chunk_entries = Vec::with_capacity(xorb.num_chunks() as usize);
         let mut byte_offset = 0u32;
 
         for i in 0..xorb.num_chunks() {
             let chunk_size = xorb.chunk_size(i).unwrap();
-            chunk_entries.push(CASChunkSequenceEntry {
+            chunk_entries.push(XorbChunkSequenceEntry {
                 chunk_hash: xorb.chunk_hash(i).unwrap(),
                 chunk_byte_range_start: byte_offset,
                 unpacked_segment_bytes: chunk_size,
@@ -111,18 +111,18 @@ impl MemoryClient {
             byte_offset += chunk_size;
         }
 
-        let cas_info = MDBCASInfo {
-            metadata: CASChunkSequenceHeader::new(
+        let cas_info = MDBXorbInfo {
+            metadata: XorbChunkSequenceHeader::new(
                 hash,
                 xorb.num_chunks(),
-                cas.info.unpacked_chunk_offsets.last().copied().unwrap_or(0),
+                xorb_obj.info.unpacked_chunk_offsets.last().copied().unwrap_or(0),
             ),
             chunks: chunk_entries,
         };
 
         {
             let mut shard = self.shard.write().await;
-            shard.add_cas_block(cas_info)?;
+            shard.add_xorb_block(cas_info)?;
         }
 
         self.xorbs.write().await.insert(hash, XorbStorage::Random(xorb));
@@ -285,8 +285,8 @@ impl DirectAccessClient for MemoryClient {
         match storage {
             XorbStorage::Materialized(entry) => {
                 let mut reader = BufReader::new(Cursor::new(&entry.serialized_data));
-                let cas = CasObject::deserialize(&mut reader)?;
-                let result = cas.get_all_bytes(&mut reader)?;
+                let xorb_obj = XorbObject::deserialize(&mut reader)?;
+                let result = xorb_obj.get_all_bytes(&mut reader)?;
                 Ok(Bytes::from(result))
             },
             XorbStorage::Random(xorb) => xorb
@@ -309,7 +309,7 @@ impl DirectAccessClient for MemoryClient {
         match storage {
             XorbStorage::Materialized(entry) => {
                 let mut reader = BufReader::new(Cursor::new(&entry.serialized_data));
-                let cas = CasObject::deserialize(&mut reader)?;
+                let xorb_obj = XorbObject::deserialize(&mut reader)?;
 
                 let mut ret: Vec<Bytes> = Vec::new();
                 for r in chunk_ranges {
@@ -317,7 +317,7 @@ impl DirectAccessClient for MemoryClient {
                         ret.push(Bytes::new());
                         continue;
                     }
-                    let data = cas.get_bytes_by_chunk_range(&mut reader, r.0, r.1)?;
+                    let data = xorb_obj.get_bytes_by_chunk_range(&mut reader, r.0, r.1)?;
                     ret.push(Bytes::from(data));
                 }
                 Ok(ret)
@@ -346,7 +346,7 @@ impl DirectAccessClient for MemoryClient {
         Ok(self.xorbs.read().await.contains_key(hash))
     }
 
-    async fn xorb_footer(&self, hash: &MerkleHash) -> Result<CasObject> {
+    async fn xorb_footer(&self, hash: &MerkleHash) -> Result<XorbObject> {
         let xorbs = self.xorbs.read().await;
         let storage = xorbs.get(hash).ok_or_else(|| {
             error!("Unable to find xorb in memory CAS {:?}", hash);
@@ -354,8 +354,8 @@ impl DirectAccessClient for MemoryClient {
         })?;
 
         match storage {
-            XorbStorage::Materialized(entry) => Ok(entry.cas_object.clone()),
-            XorbStorage::Random(xorb) => Ok(xorb.get_cas_object()),
+            XorbStorage::Materialized(entry) => Ok(entry.xorb_object.clone()),
+            XorbStorage::Random(xorb) => Ok(xorb.get_xorb_object()),
         }
     }
 
@@ -378,7 +378,7 @@ impl DirectAccessClient for MemoryClient {
         let mut file_vec = Vec::new();
         for entry in &file_info.segments {
             let entry_bytes = self
-                .get_xorb_ranges(&entry.cas_hash, vec![(entry.chunk_index_start, entry.chunk_index_end)])
+                .get_xorb_ranges(&entry.xorb_hash, vec![(entry.chunk_index_start, entry.chunk_index_end)])
                 .await?
                 .pop()
                 .unwrap();
@@ -450,7 +450,7 @@ impl DirectAccessClient for MemoryClient {
     async fn fetch_term_data(
         &self,
         hash: MerkleHash,
-        fetch_term: CASReconstructionFetchInfo,
+        fetch_term: XorbReconstructionFetchInfo,
     ) -> Result<(Bytes, Vec<u32>)> {
         self.apply_api_delay().await;
         let (xorb_hash, url_byte_range, url_timestamp) = parse_fetch_url(&fetch_term.url)?;
@@ -476,19 +476,20 @@ impl DirectAccessClient for MemoryClient {
             CasClientError::XORBNotFound(hash)
         })?;
 
-        let (data, cas) = match storage {
+        let (data, xorb_obj) = match storage {
             XorbStorage::Materialized(entry) => {
                 let mut reader = BufReader::new(Cursor::new(&entry.serialized_data));
-                let cas = CasObject::deserialize(&mut reader)?;
-                let data = cas.get_bytes_by_chunk_range(&mut reader, fetch_term.range.start, fetch_term.range.end)?;
-                (Bytes::from(data), cas)
+                let xorb_obj = XorbObject::deserialize(&mut reader)?;
+                let data =
+                    xorb_obj.get_bytes_by_chunk_range(&mut reader, fetch_term.range.start, fetch_term.range.end)?;
+                (Bytes::from(data), xorb_obj)
             },
             XorbStorage::Random(xorb) => {
                 let data = xorb
                     .get_chunk_range_data(fetch_term.range.start, fetch_term.range.end)
                     .ok_or(CasClientError::XORBNotFound(hash))?;
-                let cas = xorb.get_cas_object();
-                (data, cas)
+                let xorb_obj = xorb.get_xorb_object();
+                (data, xorb_obj)
             },
         };
 
@@ -497,7 +498,7 @@ impl DirectAccessClient for MemoryClient {
             let mut cumulative = 0u32;
             indices.push(0);
             for chunk_idx in fetch_term.range.start..fetch_term.range.end {
-                let chunk_len = cas
+                let chunk_len = xorb_obj
                     .uncompressed_chunk_length(chunk_idx)
                     .map_err(|e| CasClientError::Other(format!("Failed to get chunk length: {e}")))?;
                 cumulative += chunk_len;
@@ -553,10 +554,10 @@ impl Client for MemoryClient {
                 shard_lg.add_file_reconstruction_info(MDBFileInfo::from(file_view))?;
             }
 
-            // Add CAS info from the views
-            for i in 0..minimal_shard.num_cas() {
-                let cas_view = minimal_shard.cas(i).unwrap();
-                shard_lg.add_cas_block(MDBCASInfo::from(cas_view))?;
+            // Add XORB info from the views
+            for i in 0..minimal_shard.num_xorb() {
+                let xorb_view = minimal_shard.xorb(i).unwrap();
+                shard_lg.add_xorb_block(MDBXorbInfo::from(xorb_view))?;
             }
         }
 
@@ -576,14 +577,14 @@ impl Client for MemoryClient {
     async fn upload_xorb(
         &self,
         _prefix: &str,
-        serialized_cas_object: SerializedCasObject,
+        serialized_xorb_object: SerializedXorbObject,
         progress_callback: Option<ProgressCallback>,
         _permit: crate::adaptive_concurrency::ConnectionPermit,
     ) -> Result<u64> {
         self.apply_api_delay().await;
-        let hash = serialized_cas_object.hash;
-        let footer_start = serialized_cas_object.footer_start;
-        let serialized_data = serialized_cas_object.serialized_data;
+        let hash = serialized_xorb_object.hash;
+        let footer_start = serialized_xorb_object.footer_start;
+        let serialized_data = serialized_xorb_object.serialized_data;
 
         // Check if already exists
         {
@@ -596,17 +597,17 @@ impl Client for MemoryClient {
 
         info!("Storing XORB {hash:?} in memory");
 
-        // Reconstruct CasObject from chunk data if no footer, or deserialize if footer present
-        let (cas_object, serialized_data) = if footer_start.is_some() {
+        // Reconstruct XorbObject from chunk data if no footer, or deserialize if footer present
+        let (xorb_obj, serialized_data) = if footer_start.is_some() {
             // Data has footer - deserialize directly
             let mut reader = Cursor::new(&serialized_data);
-            let cas_object = CasObject::deserialize(&mut reader)?;
-            (cas_object, serialized_data)
+            let xorb_obj = XorbObject::deserialize(&mut reader)?;
+            (xorb_obj, serialized_data)
         } else {
-            // No footer - reconstruct CasObject from chunk data and append footer
+            // No footer - reconstruct XorbObject from chunk data and append footer
             let mut data_with_footer = Vec::new();
-            let (cas_object, computed_hash) =
-                cas_object::reconstruct_xorb_with_footer(&mut data_with_footer, &serialized_data)?;
+            let (xorb_obj, computed_hash) =
+                xorb_object::reconstruct_xorb_with_footer(&mut data_with_footer, &serialized_data)?;
             if computed_hash != hash {
                 return Err(CasClientError::Other(format!(
                     "XORB hash mismatch: expected {}, got {}",
@@ -614,7 +615,7 @@ impl Client for MemoryClient {
                     computed_hash.hex(),
                 )));
             }
-            (cas_object, data_with_footer)
+            (xorb_obj, data_with_footer)
         };
 
         let bytes_written = serialized_data.len();
@@ -626,7 +627,7 @@ impl Client for MemoryClient {
                 hash,
                 XorbStorage::Materialized(MaterializedXorb {
                     serialized_data: Bytes::from(serialized_data),
-                    cas_object,
+                    xorb_object: xorb_obj,
                 }),
             );
         }
@@ -723,13 +724,13 @@ impl Client for MemoryClient {
             let mut segment = file_info.segments[s_idx].clone();
             let mut chunk_range = ChunkRange::new(segment.chunk_index_start, segment.chunk_index_end);
 
-            let storage = xorbs.get(&segment.cas_hash).ok_or_else(|| {
-                error!("Unable to find xorb in memory CAS {:?}", segment.cas_hash);
-                CasClientError::XORBNotFound(segment.cas_hash)
+            let storage = xorbs.get(&segment.xorb_hash).ok_or_else(|| {
+                error!("Unable to find xorb in memory CAS {:?}", segment.xorb_hash);
+                CasClientError::XORBNotFound(segment.xorb_hash)
             })?;
             let xorb_footer = match storage {
-                XorbStorage::Materialized(entry) => entry.cas_object.clone(),
-                XorbStorage::Random(xorb) => xorb.get_cas_object(),
+                XorbStorage::Materialized(entry) => entry.xorb_object.clone(),
+                XorbStorage::Random(xorb) => xorb.get_xorb_object(),
             };
 
             // Prune first segment on chunk boundaries
@@ -768,13 +769,13 @@ impl Client for MemoryClient {
             let (byte_start, byte_end) = xorb_footer.get_byte_offset(chunk_range.start, chunk_range.end)?;
             let byte_range = FileRange::new(byte_start as u64, byte_end as u64);
 
-            let cas_reconstruction_term = CASReconstructionTerm {
-                hash: segment.cas_hash.into(),
+            let xorb_reconstruction_term = XorbReconstructionTerm {
+                hash: segment.xorb_hash.into(),
                 unpacked_length: segment.unpacked_segment_bytes,
                 range: chunk_range,
             };
 
-            terms.push(cas_reconstruction_term);
+            terms.push(xorb_reconstruction_term);
 
             let fetch_info_intermediate = FetchInfoIntermediate {
                 chunk_range,
@@ -782,7 +783,7 @@ impl Client for MemoryClient {
             };
 
             fetch_info_map
-                .entry(segment.cas_hash)
+                .entry(segment.xorb_hash)
                 .or_default()
                 .push(fetch_info_intermediate);
 
@@ -795,11 +796,11 @@ impl Client for MemoryClient {
         let timestamp = Instant::now();
 
         // Sort and merge adjacent/overlapping ranges in each fetch_info Vec
-        let mut merged_fetch_info_map: HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>> = HashMap::new();
+        let mut merged_fetch_info_map: HashMap<HexMerkleHash, Vec<XorbReconstructionFetchInfo>> = HashMap::new();
         for (hash, mut fi_vec) in fetch_info_map {
             fi_vec.sort_by_key(|fi| fi.chunk_range.start);
 
-            let mut merged: Vec<CASReconstructionFetchInfo> = Vec::new();
+            let mut merged: Vec<XorbReconstructionFetchInfo> = Vec::new();
             let mut idx = 0;
 
             while idx < fi_vec.len() {
@@ -816,7 +817,7 @@ impl Client for MemoryClient {
                     }
                 }
 
-                merged.push(CASReconstructionFetchInfo {
+                merged.push(XorbReconstructionFetchInfo {
                     range: new_fi.chunk_range,
                     url: generate_fetch_url(&hash, &new_fi.byte_range, timestamp),
                     url_range: HttpRange::from(new_fi.byte_range),
@@ -838,7 +839,7 @@ impl Client for MemoryClient {
     async fn batch_get_reconstruction(&self, file_ids: &[MerkleHash]) -> Result<BatchQueryReconstructionResponse> {
         self.apply_api_delay().await;
         let mut files = HashMap::new();
-        let mut fetch_info_map: HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>> = HashMap::new();
+        let mut fetch_info_map: HashMap<HexMerkleHash, Vec<XorbReconstructionFetchInfo>> = HashMap::new();
 
         for file_id in file_ids {
             if let Some(response) = self.get_reconstruction(file_id, None).await? {
@@ -891,11 +892,11 @@ impl Client for MemoryClient {
         let (decompressed_data, chunk_byte_indices) = match storage {
             XorbStorage::Materialized(entry) => {
                 let range_data = &entry.serialized_data[start..end];
-                cas_object::deserialize_chunks(&mut Cursor::new(range_data))?
+                xorb_object::deserialize_chunks(&mut Cursor::new(range_data))?
             },
             XorbStorage::Random(xorb) => {
                 let range_data = xorb.get_serialized_range(start as u64, end as u64);
-                cas_object::deserialize_chunks(&mut Cursor::new(range_data.as_ref()))?
+                xorb_object::deserialize_chunks(&mut Cursor::new(range_data.as_ref()))?
             },
         };
 
@@ -984,11 +985,11 @@ mod tests {
         let range_data = client.get_xorb_ranges(&xorb_hash, vec![(1, 3)]).await.unwrap();
         assert_eq!(range_data[0], xorb.get_chunk_range_data(1, 3).unwrap());
 
-        // Footer/CasObject correctness
+        // Footer/XorbObject correctness
         let footer = client.xorb_footer(&xorb_hash).await.unwrap();
-        let expected_footer = xorb.get_cas_object();
+        let expected_footer = xorb.get_xorb_object();
         assert_eq!(footer.info.num_chunks, expected_footer.info.num_chunks);
-        assert_eq!(footer.info.cashash, expected_footer.info.cashash);
+        assert_eq!(footer.info.xorb_hash, expected_footer.info.xorb_hash);
         assert_eq!(footer.info.chunk_hashes, expected_footer.info.chunk_hashes);
 
         // Raw serialized bytes

@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use cas_object::CasObject;
-use cas_types::{CASReconstructionFetchInfo, FileRange, HexMerkleHash};
+use cas_types::{FileRange, HexMerkleHash, XorbReconstructionFetchInfo};
+use xorb_object::XorbObject;
 use http::header::HeaderMap;
 use merklehash::MerkleHash;
 
@@ -144,12 +144,12 @@ impl Client for SimulationControlClient {
     async fn upload_xorb(
         &self,
         prefix: &str,
-        serialized_cas_object: cas_object::SerializedCasObject,
+        serialized_xorb_object: xorb_object::SerializedXorbObject,
         progress_callback: Option<crate::ProgressCallback>,
         upload_permit: crate::adaptive_concurrency::ConnectionPermit,
     ) -> Result<u64> {
         self.remote_client
-            .upload_xorb(prefix, serialized_cas_object, progress_callback, upload_permit)
+            .upload_xorb(prefix, serialized_xorb_object, progress_callback, upload_permit)
             .await
     }
 }
@@ -267,11 +267,11 @@ impl DirectAccessClient for SimulationControlClient {
         Ok(result.exists)
     }
 
-    /// Fetches the raw XORB bytes and deserializes the `CasObject` footer locally.
-    async fn xorb_footer(&self, hash: &MerkleHash) -> Result<CasObject> {
+    /// Fetches the raw XORB bytes and deserializes the `XorbObject` footer locally.
+    async fn xorb_footer(&self, hash: &MerkleHash) -> Result<XorbObject> {
         let raw_bytes = self.get_xorb_raw_bytes(hash, None).await?;
-        CasObject::deserialize(&mut std::io::Cursor::new(raw_bytes))
-            .map_err(|e| CasClientError::Other(format!("Failed to deserialize CasObject footer: {e}")))
+        XorbObject::deserialize(&mut std::io::Cursor::new(raw_bytes))
+            .map_err(|e| CasClientError::Other(format!("Failed to deserialize XorbObject footer: {e}")))
     }
 
     /// Returns the file size via the `/simulation/files/{hash}/size` endpoint.
@@ -334,7 +334,7 @@ impl DirectAccessClient for SimulationControlClient {
     async fn fetch_term_data(
         &self,
         hash: MerkleHash,
-        fetch_term: CASReconstructionFetchInfo,
+        fetch_term: XorbReconstructionFetchInfo,
     ) -> Result<(Bytes, Vec<u32>)> {
         let url = self.sim_url("/fetch_term_data");
         let body = FetchTermDataRequest { hash, fetch_term };

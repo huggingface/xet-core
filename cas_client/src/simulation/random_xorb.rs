@@ -5,9 +5,9 @@
 //! without actually storing them in memory.
 
 use bytes::Bytes;
-use cas_object::{CAS_CHUNK_HEADER_LENGTH, CASChunkHeader, CasObject, CasObjectInfoV1, CompressionScheme};
 use merklehash::{MerkleHash, compute_data_hash};
 use rand::prelude::*;
+use xorb_object::{CompressionScheme, XORB_CHUNK_HEADER_LENGTH, XorbChunkHeader, XorbObject, XorbObjectInfoV1};
 
 /// Information about a single chunk in a RandomXorb.
 #[derive(Clone, Debug)]
@@ -29,8 +29,8 @@ pub struct RandomChunkInfo {
 pub struct RandomXorb {
     /// Information about each chunk.
     chunks: Vec<RandomChunkInfo>,
-    /// Cached CasObject header/footer.
-    cas_object: CasObject,
+    /// Cached XorbObject header/footer.
+    xorb_object: XorbObject,
 }
 
 impl RandomXorb {
@@ -48,10 +48,13 @@ impl RandomXorb {
             })
             .collect();
 
-        // Build the CasObject header/footer
-        let cas_object = Self::build_cas_object(&chunks);
+        // Build the XorbObject header/footer
+        let xorb_obj = Self::build_xorb_object(&chunks);
 
-        Self { chunks, cas_object }
+        Self {
+            chunks,
+            xorb_object: xorb_obj,
+        }
     }
 
     /// Creates a new RandomXorb from a seed, number of chunks, and chunk size.
@@ -71,8 +74,8 @@ impl RandomXorb {
         Self::new(&chunk_specs)
     }
 
-    /// Builds a CasObject from chunk information.
-    fn build_cas_object(chunks: &[RandomChunkInfo]) -> CasObject {
+    /// Builds a XorbObject from chunk information.
+    fn build_xorb_object(chunks: &[RandomChunkInfo]) -> XorbObject {
         let num_chunks = chunks.len() as u32;
 
         // Compute XORB hash from chunk hashes
@@ -94,7 +97,7 @@ impl RandomXorb {
         let mut chunk_boundary_offsets = Vec::with_capacity(num_chunks as usize);
         let mut cumulative_offset = 0u32;
         for chunk in chunks {
-            cumulative_offset += CAS_CHUNK_HEADER_LENGTH as u32 + chunk.size;
+            cumulative_offset += XORB_CHUNK_HEADER_LENGTH as u32 + chunk.size;
             chunk_boundary_offsets.push(cumulative_offset);
         }
 
@@ -107,8 +110,8 @@ impl RandomXorb {
         }
 
         // Start with default and override the fields we need
-        let mut info = CasObjectInfoV1::default();
-        info.cashash = xorb_hash;
+        let mut info = XorbObjectInfoV1::default();
+        info.xorb_hash = xorb_hash;
         info.chunk_hashes = chunk_hashes;
         info.chunk_boundary_offsets = chunk_boundary_offsets;
         info.unpacked_chunk_offsets = unpacked_chunk_offsets;
@@ -119,7 +122,7 @@ impl RandomXorb {
 
         let info_length = info.serialized_length() as u32;
 
-        CasObject { info, info_length }
+        XorbObject { info, info_length }
     }
 
     /// Generates chunk data from a seed.
@@ -137,7 +140,7 @@ impl RandomXorb {
 
     /// Returns the hash of the XORB.
     pub fn xorb_hash(&self) -> MerkleHash {
-        self.cas_object.info.cashash
+        self.xorb_object.info.xorb_hash
     }
 
     /// Returns the hash of a specific chunk.
@@ -199,18 +202,22 @@ impl RandomXorb {
         Some(Bytes::from(data))
     }
 
-    /// Returns the CasObject header/footer for this XORB.
+    /// Returns the XorbObject header/footer for this XORB.
     ///
     /// Uses no compression (CompressionScheme::None) for all chunks.
-    pub fn get_cas_object(&self) -> CasObject {
-        self.cas_object.clone()
+    pub fn get_xorb_object(&self) -> XorbObject {
+        self.xorb_object.clone()
     }
 
     /// Returns the total serialized length of the XORB (chunks + footer).
     pub fn serialized_length(&self) -> u64 {
-        let chunks_length: u64 = self.chunks.iter().map(|c| CAS_CHUNK_HEADER_LENGTH as u64 + c.size as u64).sum();
+        let chunks_length: u64 = self
+            .chunks
+            .iter()
+            .map(|c| XORB_CHUNK_HEADER_LENGTH as u64 + c.size as u64)
+            .sum();
 
-        let footer_length = self.cas_object.info.serialized_length() as u64 + 4; // +4 for info_length u32
+        let footer_length = self.xorb_object.info.serialized_length() as u64 + 4; // +4 for info_length u32
 
         chunks_length + footer_length
     }
@@ -228,7 +235,11 @@ impl RandomXorb {
         }
 
         // Calculate where the footer starts
-        let chunks_length: u64 = self.chunks.iter().map(|c| CAS_CHUNK_HEADER_LENGTH as u64 + c.size as u64).sum();
+        let chunks_length: u64 = self
+            .chunks
+            .iter()
+            .map(|c| XORB_CHUNK_HEADER_LENGTH as u64 + c.size as u64)
+            .sum();
 
         let mut result = Vec::with_capacity((end - start) as usize);
 
@@ -237,12 +248,12 @@ impl RandomXorb {
 
         // Generate chunk data
         for chunk in &self.chunks {
-            let chunk_serialized_len = CAS_CHUNK_HEADER_LENGTH as u64 + chunk.size as u64;
+            let chunk_serialized_len = XORB_CHUNK_HEADER_LENGTH as u64 + chunk.size as u64;
             let chunk_end = pos + chunk_serialized_len;
 
             if chunk_end > start && pos < end {
                 // This chunk overlaps with our range
-                let header = CASChunkHeader::new(CompressionScheme::None, chunk.size, chunk.size);
+                let header = XorbChunkHeader::new(CompressionScheme::None, chunk.size, chunk.size);
                 let header_bytes = header_to_bytes(&header);
                 let chunk_data = Self::generate_chunk_data_from_seed(chunk.seed, chunk.size);
 
@@ -269,8 +280,8 @@ impl RandomXorb {
         // Generate footer if needed
         if end > chunks_length && pos < end {
             let mut footer_bytes = Vec::new();
-            self.cas_object.info.serialize(&mut footer_bytes).unwrap();
-            footer_bytes.extend_from_slice(&self.cas_object.info_length.to_le_bytes());
+            self.xorb_object.info.serialize(&mut footer_bytes).unwrap();
+            footer_bytes.extend_from_slice(&self.xorb_object.info_length.to_le_bytes());
 
             let footer_start_in_stream = chunks_length;
             let overlap_start = start.saturating_sub(footer_start_in_stream) as usize;
@@ -293,9 +304,9 @@ impl RandomXorb {
     }
 }
 
-/// Converts a CASChunkHeader to bytes.
-fn header_to_bytes(header: &CASChunkHeader) -> [u8; CAS_CHUNK_HEADER_LENGTH] {
-    let mut bytes = [0u8; CAS_CHUNK_HEADER_LENGTH];
+/// Converts a XorbChunkHeader to bytes.
+fn header_to_bytes(header: &XorbChunkHeader) -> [u8; XORB_CHUNK_HEADER_LENGTH] {
+    let mut bytes = [0u8; XORB_CHUNK_HEADER_LENGTH];
     bytes[0] = 0; // version
     bytes[1..4].copy_from_slice(&header.get_compressed_length().to_le_bytes()[..3]);
     bytes[4] = CompressionScheme::None as u8;
@@ -326,24 +337,24 @@ mod tests {
     }
 
     #[test]
-    fn test_random_xorb_cas_object() {
+    fn test_random_xorb_object() {
         let specs = vec![(1, 100), (2, 200)];
         let xorb = RandomXorb::new(&specs);
 
-        let cas = xorb.get_cas_object();
-        assert_eq!(cas.info.num_chunks, 2);
-        assert_eq!(cas.info.chunk_hashes.len(), 2);
-        assert_eq!(cas.info.chunk_boundary_offsets.len(), 2);
-        assert_eq!(cas.info.unpacked_chunk_offsets.len(), 2);
+        let xorb_obj = xorb.get_xorb_object();
+        assert_eq!(xorb_obj.info.num_chunks, 2);
+        assert_eq!(xorb_obj.info.chunk_hashes.len(), 2);
+        assert_eq!(xorb_obj.info.chunk_boundary_offsets.len(), 2);
+        assert_eq!(xorb_obj.info.unpacked_chunk_offsets.len(), 2);
 
         // First chunk: header (8) + data (100) = 108
-        assert_eq!(cas.info.chunk_boundary_offsets[0], 108);
+        assert_eq!(xorb_obj.info.chunk_boundary_offsets[0], 108);
         // Second chunk: 108 + header (8) + data (200) = 316
-        assert_eq!(cas.info.chunk_boundary_offsets[1], 316);
+        assert_eq!(xorb_obj.info.chunk_boundary_offsets[1], 316);
 
         // Unpacked offsets (no headers)
-        assert_eq!(cas.info.unpacked_chunk_offsets[0], 100);
-        assert_eq!(cas.info.unpacked_chunk_offsets[1], 300);
+        assert_eq!(xorb_obj.info.unpacked_chunk_offsets[0], 100);
+        assert_eq!(xorb_obj.info.unpacked_chunk_offsets[1], 300);
     }
 
     #[test]

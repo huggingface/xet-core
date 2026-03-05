@@ -185,10 +185,10 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
                     // Report this as a dependency
                     // The case where it's dededuped against the present xorb is handled
                     // when the xorb gets cut and we know the hash.
-                    if fse.cas_hash != MerkleHash::marker() {
+                    if fse.xorb_hash != MerkleHash::marker() {
                         xorb_dependencies.push(FileXorbDependency {
                             file_id: self.file_id,
-                            xorb_hash: fse.cas_hash,
+                            xorb_hash: fse.xorb_hash,
                             n_bytes: fse.unpacked_segment_bytes as u64,
                             is_external,
                         });
@@ -226,7 +226,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
             }
 
             if !self.file_info.is_empty()
-                && self.file_info.last().unwrap().cas_hash == MerkleHash::marker()
+                && self.file_info.last().unwrap().xorb_hash == MerkleHash::marker()
                 && self.file_info.last().unwrap().chunk_index_end as usize == self.new_data.len()
             {
                 // This is the next chunk in the CAS block we're building,
@@ -274,7 +274,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
 
     fn file_data_sequence_continues_current(&self, fse: &FileDataSequenceEntry) -> bool {
         !self.file_info.is_empty()
-            && self.file_info.last().unwrap().cas_hash == fse.cas_hash
+            && self.file_info.last().unwrap().xorb_hash == fse.xorb_hash
             && self.file_info.last().unwrap().chunk_index_end == fse.chunk_index_start
     }
 
@@ -293,7 +293,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
             self.defrag_tracker.increment_last_range_in_fragmentation_estimate(n_deduped);
         } else {
             // Make sure we're tracking any that we need to fill in later.
-            if fse.cas_hash == MerkleHash::marker() {
+            if fse.xorb_hash == MerkleHash::marker() {
                 self.internally_referencing_entries.push(self.file_info.len());
             }
             // This block is new
@@ -313,18 +313,18 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
         // the new xorb if referenced.
         for &idx in self.internally_referencing_entries.iter() {
             let fse = &mut self.file_info[idx];
-            debug_assert_eq!(fse.cas_hash, MerkleHash::marker());
+            debug_assert_eq!(fse.xorb_hash, MerkleHash::marker());
             debug_assert_lt!(fse.chunk_index_start as usize, self.new_data.len());
             debug_assert_le!(fse.chunk_index_end as usize, self.new_data.len());
 
-            fse.cas_hash = xorb_hash;
+            fse.xorb_hash = xorb_hash;
         }
 
         #[cfg(debug_assertions)]
         {
             // For bookkeeping checks, make sure we have everything.
             for fse in self.file_info.iter() {
-                debug_assert_ne!(fse.cas_hash, MerkleHash::marker());
+                debug_assert_ne!(fse.xorb_hash, MerkleHash::marker());
             }
         }
 

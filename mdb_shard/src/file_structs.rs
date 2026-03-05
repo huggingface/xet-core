@@ -8,9 +8,9 @@ use merklehash::{DataHash, MerkleHash};
 use serde::Serialize;
 use utils::serialization_utils::*;
 
-use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader};
 use crate::error::MDBShardError;
 use crate::shard_file::MDB_FILE_INFO_ENTRY_SIZE;
+use crate::xorb_structs::{XorbChunkSequenceEntry, XorbChunkSequenceHeader};
 
 pub const MDB_DEFAULT_FILE_FLAG: u32 = 0;
 pub const MDB_FILE_FLAG_WITH_VERIFICATION: u32 = 1 << 31;
@@ -25,7 +25,7 @@ pub type Sha256 = DataHash;
 /// of FileVerificationEntry, and maybe a FileMetadataExt
 /// determined by file flags.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
-// Already the case, but making it explicit here to avoid compiler
+// Already the xorbe, but making it explicit here to avoid compiler
 // complaints on the offset_of calls.
 #[repr(C)]
 pub struct FileDataSequenceHeader {
@@ -173,10 +173,11 @@ pub enum SupersetResult {
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[repr(C)] // Just making this explicit
 pub struct FileDataSequenceEntry {
-    // maps to one or more CAS chunk(s)
-    #[serde(with = "hex::serde")]
-    pub cas_hash: MerkleHash,
-    pub cas_flags: u32,
+    // maps to one or more XORB chunk(s)
+    #[serde(with = "hex::serde", rename = "cas_hash")]
+    pub xorb_hash: MerkleHash,
+    #[serde(rename = "cas_flags")]
+    pub xorb_flags: u32,
     pub unpacked_segment_bytes: u32,
     pub chunk_index_start: u32,
     pub chunk_index_end: u32,
@@ -184,7 +185,7 @@ pub struct FileDataSequenceEntry {
 
 impl FileDataSequenceEntry {
     pub fn new<I1: TryInto<u32>>(
-        cas_hash: MerkleHash,
+        xorb_hash: MerkleHash,
         unpacked_segment_bytes: I1,
         chunk_index_start: I1,
         chunk_index_end: I1,
@@ -193,17 +194,17 @@ impl FileDataSequenceEntry {
         <I1 as TryInto<u32>>::Error: Debug,
     {
         Self {
-            cas_hash,
-            cas_flags: MDB_DEFAULT_FILE_FLAG,
+            xorb_hash,
+            xorb_flags: MDB_DEFAULT_FILE_FLAG,
             unpacked_segment_bytes: unpacked_segment_bytes.try_into().unwrap(),
             chunk_index_start: chunk_index_start.try_into().unwrap(),
             chunk_index_end: chunk_index_end.try_into().unwrap(),
         }
     }
 
-    pub fn from_cas_entries<I1: TryInto<u32>>(
-        metadata: &CASChunkSequenceHeader,
-        chunks: &[CASChunkSequenceEntry],
+    pub fn from_xorb_entries<I1: TryInto<u32>>(
+        metadata: &XorbChunkSequenceHeader,
+        chunks: &[XorbChunkSequenceEntry],
         chunk_index_start: I1,
         chunk_index_end: I1,
     ) -> Self
@@ -215,8 +216,8 @@ impl FileDataSequenceEntry {
         }
 
         Self {
-            cas_hash: metadata.cas_hash,
-            cas_flags: metadata.cas_flags,
+            xorb_hash: metadata.xorb_hash,
+            xorb_flags: metadata.xorb_flags,
             unpacked_segment_bytes: chunks.iter().map(|sb| sb.unpacked_segment_bytes).sum(),
             chunk_index_start: chunk_index_start.try_into().unwrap(),
             chunk_index_end: chunk_index_end.try_into().unwrap(),
@@ -229,8 +230,8 @@ impl FileDataSequenceEntry {
             let mut writer_cur = Cursor::new(&mut buf[..]);
             let writer = &mut writer_cur;
 
-            write_hash(writer, &self.cas_hash)?;
-            write_u32(writer, self.cas_flags)?;
+            write_hash(writer, &self.xorb_hash)?;
+            write_u32(writer, self.xorb_flags)?;
             write_u32(writer, self.unpacked_segment_bytes)?;
             write_u32(writer, self.chunk_index_start)?;
             write_u32(writer, self.chunk_index_end)?;
@@ -249,8 +250,8 @@ impl FileDataSequenceEntry {
         let reader = &mut reader_curs;
 
         Ok(Self {
-            cas_hash: read_hash(reader)?,
-            cas_flags: read_u32(reader)?,
+            xorb_hash: read_hash(reader)?,
+            xorb_flags: read_u32(reader)?,
             unpacked_segment_bytes: read_u32(reader)?,
             chunk_index_start: read_u32(reader)?,
             chunk_index_end: read_u32(reader)?,

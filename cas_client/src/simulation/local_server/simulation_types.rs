@@ -1,4 +1,4 @@
-use cas_types::CASReconstructionFetchInfo;
+use cas_types::XorbReconstructionFetchInfo;
 use merklehash::MerkleHash;
 use serde::{Deserialize, Serialize};
 
@@ -52,7 +52,7 @@ pub struct FileSizeResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FetchTermDataRequest {
     pub hash: MerkleHash,
-    pub fetch_term: CASReconstructionFetchInfo,
+    pub fetch_term: XorbReconstructionFetchInfo,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

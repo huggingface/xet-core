@@ -8,7 +8,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 cas_client = { path = "../cas_client" }
-cas_object = { path = "../cas_object" }
+xorb_object = { path = "../xorb_object" }
 deduplication = { path = "../deduplication" }
 mdb_shard = { path = "../mdb_shard" }
 merklehash = { path = "../merklehash" }

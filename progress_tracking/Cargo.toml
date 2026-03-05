@@ -10,6 +10,7 @@ utils = { path = "../utils" }
 async-trait = { workspace = true }
 more-asserts = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
+ulid = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "rt", "rt-multi-thread", "macros", "time"] }

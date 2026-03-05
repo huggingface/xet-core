@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
-use cas_object::CompressionScheme;
 use http::header;
 use hub_client::{BearerCredentialHelper, HubClient, Operation, RepoInfo};
 use mdb_shard::file_structs::MDBFileInfo;
@@ -9,6 +8,7 @@ use tracing::{Instrument, Span, info_span, instrument};
 use utils::auth::TokenRefresher;
 use xet_runtime::XetRuntime;
 use xet_runtime::utils::run_constrained;
+use xorb_object::CompressionScheme;
 
 use super::hub_client_token_refresher::HubClientTokenRefresher;
 use crate::data_client::{clean_file, default_config};
@@ -111,7 +111,7 @@ pub async fn migrate_files_impl(
     let clean_futs = file_paths.into_iter().zip(sha256s).map(|(file_path, sha256)| {
         let proc = processor.clone();
         async move {
-            let (pf, metrics) = clean_file(proc, file_path, sha256).await?;
+            let (pf, metrics) = clean_file(proc, file_path, sha256, None).await?;
             Ok::<(XetFileInfo, u64), DataProcessingError>((pf, metrics.new_bytes))
         }
         .instrument(info_span!("clean_file"))

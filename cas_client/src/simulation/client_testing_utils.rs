@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 
 use bytes::Bytes;
-use cas_object::SerializedCasObject;
 use deduplication::{Chunk, RawXorbData};
 use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
 use merklehash::{MerkleHash, compute_data_hash, file_hash_with_salt};
 use rand::prelude::*;
 use utils::MerkleHashMap;
+use xorb_object::SerializedXorbObject;
 
 use crate::error::Result;
 use crate::interface::Client;
@@ -132,9 +132,9 @@ pub trait ClientTestingUtils: Client + Send + Sync {
 
             let raw_xorb = RawXorbData::from_chunks(&chunks, vec![0]);
 
-            shard.add_cas_block(raw_xorb.cas_info.clone())?;
+            shard.add_xorb_block(raw_xorb.xorb_info.clone())?;
 
-            let serialized_xorb = SerializedCasObject::from_xorb(raw_xorb.clone(), None, true)?;
+            let serialized_xorb = SerializedXorbObject::from_xorb(raw_xorb.clone(), None, true)?;
 
             let upload_permit = self.acquire_upload_permit().await?;
             self.upload_xorb("default", serialized_xorb, None, upload_permit).await?;
@@ -160,7 +160,7 @@ pub trait ClientTestingUtils: Client + Send + Sync {
 
             for i in c_lb..c_ub {
                 let chunk_bytes = &raw_xorb.data[i];
-                let chunk_hash = raw_xorb.cas_info.chunks[i].chunk_hash;
+                let chunk_hash = raw_xorb.xorb_info.chunks[i].chunk_hash;
 
                 file_data.extend_from_slice(chunk_bytes);
                 term_data.extend_from_slice(chunk_bytes);

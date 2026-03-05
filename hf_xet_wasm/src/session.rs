@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use cas_object::CompressionScheme;
 use futures::AsyncReadExt;
 use serde::{Deserialize, Serialize};
 use utils::auth::AuthConfig;
 use wasm_bindgen::prelude::*;
 use web_sys::Blob;
+use xorb_object::CompressionScheme;
 
 use crate::auth::{TokenInfo, TokenRefresher, WrappedTokenRefresher};
 use crate::blob_reader::BlobReader;

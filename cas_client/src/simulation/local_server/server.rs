@@ -484,12 +484,12 @@ impl Client for LocalTestServer {
     async fn upload_xorb(
         &self,
         prefix: &str,
-        serialized_cas_object: cas_object::SerializedCasObject,
+        serialized_xorb_object: xorb_object::SerializedXorbObject,
         progress_callback: Option<crate::ProgressCallback>,
         upload_permit: crate::adaptive_concurrency::ConnectionPermit,
     ) -> Result<u64> {
         self.remote_client
-            .upload_xorb(prefix, serialized_cas_object, progress_callback, upload_permit)
+            .upload_xorb(prefix, serialized_xorb_object, progress_callback, upload_permit)
             .await
     }
 }
@@ -532,7 +532,7 @@ impl DirectAccessClient for LocalTestServer {
         self.client.xorb_exists(hash).await
     }
 
-    async fn xorb_footer(&self, hash: &merklehash::MerkleHash) -> Result<cas_object::CasObject> {
+    async fn xorb_footer(&self, hash: &merklehash::MerkleHash) -> Result<xorb_object::XorbObject> {
         self.client.xorb_footer(hash).await
     }
 
@@ -563,7 +563,7 @@ impl DirectAccessClient for LocalTestServer {
     async fn fetch_term_data(
         &self,
         hash: merklehash::MerkleHash,
-        fetch_term: cas_types::CASReconstructionFetchInfo,
+        fetch_term: cas_types::XorbReconstructionFetchInfo,
     ) -> Result<(bytes::Bytes, Vec<u32>)> {
         self.client.fetch_term_data(hash, fetch_term).await
     }
@@ -898,9 +898,9 @@ mod tests {
         // Verify chunk hashes match the RawXorbData cas_info (keyed by xorb hash)
         let xorb_hash = file.terms[0].xorb_hash;
         let raw_xorb = file.xorbs.get(&xorb_hash).unwrap();
-        assert_eq!(raw_xorb.cas_info.chunks.len(), 3);
+        assert_eq!(raw_xorb.xorb_info.chunks.len(), 3);
         for (i, chunk_hash) in file.terms[0].chunk_hashes.iter().enumerate() {
-            assert_eq!(*chunk_hash, raw_xorb.cas_info.chunks[i].chunk_hash);
+            assert_eq!(*chunk_hash, raw_xorb.xorb_info.chunks[i].chunk_hash);
         }
     }
 

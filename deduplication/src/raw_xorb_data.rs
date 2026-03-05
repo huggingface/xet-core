@@ -1,4 +1,4 @@
-use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
+use mdb_shard::xorb_structs::{MDBXorbInfo, XorbChunkSequenceEntry, XorbChunkSequenceHeader};
 use merklehash::{MerkleHash, xorb_hash};
 use more_asserts::*;
 
@@ -12,7 +12,7 @@ pub struct RawXorbData {
     pub data: Vec<bytes::Bytes>,
 
     /// The cas info associated with the current xorb.
-    pub cas_info: MDBCASInfo,
+    pub xorb_info: MDBXorbInfo,
 
     /// The indices where a new file starts, to be used for the compression heuristic.
     pub file_boundaries: Vec<usize>,
@@ -29,7 +29,7 @@ impl RawXorbData {
         // Build the sequences.
         let mut pos = 0;
         for c in chunks {
-            chunk_seq_entries.push(CASChunkSequenceEntry::new(c.hash, c.data.len(), pos));
+            chunk_seq_entries.push(XorbChunkSequenceEntry::new(c.hash, c.data.len(), pos));
             data.push(c.data.clone());
             pos += c.data.len();
         }
@@ -38,29 +38,29 @@ impl RawXorbData {
         debug_assert_le!(num_bytes, *MAX_XORB_BYTES);
 
         let hash_and_len: Vec<_> = chunks.iter().map(|c| (c.hash, c.data.len() as u64)).collect();
-        let cas_hash = xorb_hash(&hash_and_len);
+        let xorb_hash = xorb_hash(&hash_and_len);
 
-        // Build the MDBCASInfo struct.
-        let metadata = CASChunkSequenceHeader::new(cas_hash, chunks.len(), num_bytes);
+        // Build the MDBXorbInfo struct.
+        let metadata = XorbChunkSequenceHeader::new(xorb_hash, chunks.len(), num_bytes);
 
-        let cas_info = MDBCASInfo {
+        let xorb_info = MDBXorbInfo {
             metadata,
             chunks: chunk_seq_entries,
         };
 
         RawXorbData {
             data,
-            cas_info,
+            xorb_info,
             file_boundaries,
         }
     }
 
     pub fn hash(&self) -> MerkleHash {
-        self.cas_info.metadata.cas_hash
+        self.xorb_info.metadata.xorb_hash
     }
 
     pub fn num_bytes(&self) -> usize {
-        let n = self.cas_info.metadata.num_bytes_in_cas as usize;
+        let n = self.xorb_info.metadata.num_bytes_in_xorb as usize;
 
         debug_assert_eq!(n, self.data.iter().map(|c| c.len()).sum::<usize>());
 
