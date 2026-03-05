@@ -161,6 +161,20 @@ impl FileDownloadSession {
         Ok(reconstructor.reconstruct_to_stream())
     }
 
+    /// Like [`download_stream`](Self::download_stream), but starts at the given byte offset
+    /// instead of the beginning of the file. Only fetches terms covering `offset..file_size`.
+    #[instrument(skip_all, name = "FileDownloadSession::download_stream_from_offset", fields(hash = file_info.hash(), offset))]
+    pub fn download_stream_from_offset(
+        &self,
+        file_info: &XetFileInfo,
+        offset: u64,
+        tracking_id: Option<&str>,
+    ) -> Result<DownloadStream> {
+        let range = FileRange::new(offset, file_info.file_size());
+        let reconstructor = self.setup_reconstructor(file_info, Some(range), tracking_id, None, None, None)?;
+        Ok(reconstructor.reconstruct_to_stream())
+    }
+
     fn tracker_name(
         &self,
         tracking_id: Option<&str>,
