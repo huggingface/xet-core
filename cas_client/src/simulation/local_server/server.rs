@@ -396,6 +396,7 @@ impl LocalTestServer {
     }
 
     /// Returns the deletion-capable client if the server backend supports it.
+    #[allow(unused)]
     pub fn deletion_client(&self) -> Option<&Arc<dyn DeletionControlableClient>> {
         self.deletion_client.as_ref()
     }
