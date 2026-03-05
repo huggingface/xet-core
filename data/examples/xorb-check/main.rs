@@ -48,7 +48,7 @@ fn main() {
         None => Box::new(std::io::stdin()),
     };
 
-    let (data, boundaries) = match cas_object::deserialize_chunks(&mut input) {
+    let (data, boundaries) = match xorb_object::deserialize_chunks(&mut input) {
         Ok(chunks) => chunks,
         Err(e) => panic!("failed to deserialize xorb: {e}"),
     };

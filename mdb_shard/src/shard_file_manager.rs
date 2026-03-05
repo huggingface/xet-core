@@ -10,7 +10,6 @@ use tracing::{debug, info, instrument, trace, warn};
 use utils::{MerkleHashMap, RwTaskLock, TruncatedMerkleHashMap};
 use xet_runtime::{XetRuntime, xet_config};
 
-use crate::cas_structs::*;
 use crate::constants::MDB_SHARD_EXPIRATION_BUFFER;
 use crate::error::{MDBShardError, Result};
 use crate::file_structs::*;
@@ -18,6 +17,7 @@ use crate::shard_file_handle::MDBShardFile;
 use crate::shard_file_reconstructor::FileReconstructor;
 use crate::shard_in_memory::MDBInMemoryShard;
 use crate::utils::truncate_hash;
+use crate::xorb_structs::*;
 
 // The shard manager cache
 lazy_static::lazy_static! {
@@ -27,8 +27,8 @@ lazy_static::lazy_static! {
 // The structure used as the target for the dedup lookup
 #[repr(Rust, packed)]
 struct ChunkCacheElement {
-    cas_start_index: u32, // the index of the first chunk
-    cas_chunk_offset: u16,
+    xorb_start_index: u32, // the index of the first chunk
+    xorb_chunk_offset: u16,
     shard_index: u16, // This one is last so that the u16 bits can be packed in.
 }
 
@@ -91,7 +91,7 @@ pub struct ShardFileManager {
 /// mng.register_shards(&[other shard, directories, etc.])?;
 ///
 /// // Run queries, add data, etc. with get_file_reconstruction_info, chunk_hash_dedup_query,
-/// add_cas_block, add_file_reconstruction_info.
+/// add_xorb_block, add_file_reconstruction_info.
 ///
 /// // Finalize by calling process_session_directory
 /// let new_shards = mdb.process_session_directory()?;
@@ -300,18 +300,18 @@ impl ShardFileManager {
                         if update_chunk_lookup {
                             shard_col.chunk_lookup.reserve(insert_hashes.len());
 
-                            for (h, (cas_start_index, cas_chunk_offset)) in insert_hashes {
-                                if cas_chunk_offset > u16::MAX as u32 {
+                            for (h, (xorb_start_index, xorb_chunk_offset)) in insert_hashes {
+                                if xorb_chunk_offset > u16::MAX as u32 {
                                     continue;
                                 }
 
-                                let cas_chunk_offset = cas_chunk_offset as u16;
+                                let xorb_chunk_offset = xorb_chunk_offset as u16;
 
                                 shard_col.chunk_lookup.insert(
                                     h,
                                     ChunkCacheElement {
-                                        cas_start_index,
-                                        cas_chunk_offset,
+                                        xorb_start_index,
+                                        xorb_chunk_offset,
                                         shard_index: shard_index as u16,
                                     },
                                 );
@@ -405,7 +405,7 @@ impl FileReconstructor<MDBShardError> for ShardFileManager {
 impl ShardFileManager {
     // Performs a query of chunk hashes against known chunk hashes, matching
     // as many of the values in query_hashes as possible.  It returns the number
-    // of entries matched from the input hashes, the CAS block hash of the match,
+    // of entries matched from the input hashes, the XORB block hash of the match,
     // and the range matched from that block.
     pub async fn chunk_hash_dedup_query(
         &self,
@@ -435,7 +435,7 @@ impl ShardFileManager {
                 let si = &shard_col.shard_list[cce.shard_index as usize];
 
                 if let Some((count, fdse)) =
-                    si.chunk_hash_dedup_query_direct(query_hashes, cce.cas_start_index, cce.cas_chunk_offset as u32)?
+                    si.chunk_hash_dedup_query_direct(query_hashes, cce.xorb_start_index, cce.xorb_chunk_offset as u32)?
                 {
                     return Ok(Some((count, fdse)));
                 }
@@ -445,20 +445,20 @@ impl ShardFileManager {
         Ok(None)
     }
 
-    /// Add CAS info to the in-memory state.
-    pub async fn add_cas_block(&self, cas_block_contents: impl Into<Arc<MDBCASInfo>>) -> Result<()> {
-        let cas_block_contents = cas_block_contents.into();
+    /// Add XORB info to the in-memory state.
+    pub async fn add_xorb_block(&self, xorb_block_contents: impl Into<Arc<MDBXorbInfo>>) -> Result<()> {
+        let xorb_block_contents = xorb_block_contents.into();
         let mut lg = self.current_state.write().await;
 
-        // cut a new shard if adding this cas block will take us over the max shard file size
-        let new_shard_path = if lg.shard_file_size() + cas_block_contents.num_bytes() > self.target_shard_max_size {
+        // cut a new shard if adding this xorb block will take us over the max shard file size
+        let new_shard_path = if lg.shard_file_size() + xorb_block_contents.num_bytes() > self.target_shard_max_size {
             let path = Self::cut_shard(&mut lg, &self.shard_directory)?;
             Some(path)
         } else {
             None
         };
 
-        lg.add_cas_block(cas_block_contents)?;
+        lg.add_xorb_block(xorb_block_contents)?;
         drop(lg);
 
         // if we cut a new shard, register it after dropping the lock guard
@@ -572,36 +572,36 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader};
     use crate::error::Result;
     use crate::file_structs::FileDataSequenceHeader;
     use crate::session_directory::{consolidate_shards_in_directory, merge_shards};
     use crate::shard_format::test_routines::{gen_random_file_info, rng_hash, simple_hash};
     use crate::utils::parse_shard_filename;
+    use crate::xorb_structs::{XorbChunkSequenceEntry, XorbChunkSequenceHeader};
 
     #[allow(clippy::type_complexity)]
     pub async fn fill_with_specific_shard(
         shard: &ShardFileManager,
         in_mem_shard: &mut MDBInMemoryShard,
-        cas_nodes: &[(u64, &[(u64, u32)])],
+        xorb_nodes: &[(u64, &[(u64, u32)])],
         file_nodes: &[(u64, &[(u64, (u32, u32))])],
     ) -> Result<()> {
-        for (hash, chunks) in cas_nodes {
-            let mut cas_block = Vec::<_>::new();
+        for (hash, chunks) in xorb_nodes {
+            let mut xorb_block = Vec::<_>::new();
             let mut pos = 0;
 
             for (h, s) in chunks.iter() {
-                cas_block.push(CASChunkSequenceEntry::new(simple_hash(*h), *s, pos));
+                xorb_block.push(XorbChunkSequenceEntry::new(simple_hash(*h), *s, pos));
                 pos += *s;
             }
-            let cas_info = MDBCASInfo {
-                metadata: CASChunkSequenceHeader::new(simple_hash(*hash), chunks.len(), pos),
-                chunks: cas_block,
+            let xorb_info = MDBXorbInfo {
+                metadata: XorbChunkSequenceHeader::new(simple_hash(*hash), chunks.len(), pos),
+                chunks: xorb_block,
             };
 
-            shard.add_cas_block(cas_info.clone()).await?;
+            shard.add_xorb_block(xorb_info.clone()).await?;
 
-            in_mem_shard.add_cas_block(cas_info)?;
+            in_mem_shard.add_xorb_block(xorb_info)?;
         }
 
         for (file_hash, segments) in file_nodes {
@@ -629,10 +629,10 @@ mod tests {
         seed: u64,
         shard_dir: impl AsRef<Path>,
         n_shards: usize,
-        cas_block_sizes: &[usize],
+        xorb_block_sizes: &[usize],
         file_chunk_range_sizes: &[usize],
     ) -> Result<MDBInMemoryShard> {
-        // generate the cas content stuff.
+        // generate the xorb content stuff.
         let mut rng = StdRng::seed_from_u64(seed);
 
         let shard_dir = shard_dir.as_ref();
@@ -640,7 +640,7 @@ mod tests {
         let mut reference_shard = MDBInMemoryShard::default();
 
         for _ in 0..n_shards {
-            fill_with_random_shard(&sfm, &mut reference_shard, rng.random(), cas_block_sizes, file_chunk_range_sizes)
+            fill_with_random_shard(&sfm, &mut reference_shard, rng.random(), xorb_block_sizes, file_chunk_range_sizes)
                 .await?;
 
             sfm.flush().await?;
@@ -653,25 +653,25 @@ mod tests {
         shard: &Arc<ShardFileManager>,
         in_mem_shard: &mut MDBInMemoryShard,
         seed: u64,
-        cas_block_sizes: &[usize],
+        xorb_block_sizes: &[usize],
         file_chunk_range_sizes: &[usize],
     ) -> Result<()> {
-        // generate the cas content stuff.
+        // generate the xorb content stuff.
         let mut rng = StdRng::seed_from_u64(seed);
 
-        for cas_block_size in cas_block_sizes {
+        for xorb_block_size in xorb_block_sizes {
             let mut chunks = Vec::<_>::new();
             let mut pos = 0u32;
 
-            for _ in 0..*cas_block_size {
-                chunks.push(CASChunkSequenceEntry::new(rng_hash(rng.random()), rng.random_range(10000..20000), pos));
+            for _ in 0..*xorb_block_size {
+                chunks.push(XorbChunkSequenceEntry::new(rng_hash(rng.random()), rng.random_range(10000..20000), pos));
                 pos += rng.random_range(10000..20000);
             }
-            let metadata = CASChunkSequenceHeader::new(rng_hash(rng.random()), *cas_block_size, pos);
-            let mdb_cas_info = MDBCASInfo { metadata, chunks };
+            let metadata = XorbChunkSequenceHeader::new(rng_hash(rng.random()), *xorb_block_size, pos);
+            let mdb_xorb_info = MDBXorbInfo { metadata, chunks };
 
-            shard.add_cas_block(mdb_cas_info.clone()).await?;
-            in_mem_shard.add_cas_block(mdb_cas_info)?;
+            shard.add_xorb_block(mdb_xorb_info.clone()).await?;
+            in_mem_shard.add_xorb_block(mdb_xorb_info)?;
         }
 
         for file_block_size in file_chunk_range_sizes {
@@ -690,14 +690,14 @@ mod tests {
     ) -> Result<()> {
         // Now, test that the results of queries from the in-memory shard match those
         // of the other shard.
-        for (k, cas_block) in mem_shard.cas_content.iter() {
+        for (k, xorb_block) in mem_shard.xorb_content.iter() {
             // Go through and test queries on both the in-memory shard and the
             // serialized shard, making sure that they match completely.
 
-            for i in 0..cas_block.chunks.len() {
+            for i in 0..xorb_block.chunks.len() {
                 // Test the dedup query over a few hashes in which all the
-                // hashes queried are part of the cas_block.
-                let query_hashes_1: Vec<MerkleHash> = cas_block.chunks[i..(i + 3).min(cas_block.chunks.len())]
+                // hashes queried are part of the xorb_block.
+                let query_hashes_1: Vec<MerkleHash> = xorb_block.chunks[i..(i + 3).min(xorb_block.chunks.len())]
                     .iter()
                     .map(|c| c.chunk_hash)
                     .collect();
@@ -709,7 +709,7 @@ mod tests {
                 query_hashes_2.push(rng_hash(1000000 + i as u64));
 
                 let lb = i as u32;
-                let ub = min(i + 3, cas_block.chunks.len()) as u32;
+                let ub = min(i + 3, xorb_block.chunks.len()) as u32;
 
                 for query_hashes in [&query_hashes_1, &query_hashes_2] {
                     let result_m = mem_shard.chunk_hash_dedup_query(query_hashes).unwrap();
@@ -720,9 +720,9 @@ mod tests {
                     assert_eq!(result_m.0, n_items_to_read);
                     assert_eq!(result_f.0, n_items_to_read);
 
-                    // Make sure it gives the correct CAS block hash as the second part of the
-                    assert_eq!(result_m.1.cas_hash, *k);
-                    assert_eq!(result_f.1.cas_hash, *k);
+                    // Make sure it gives the correct XORB block hash as the second part of the
+                    assert_eq!(result_m.1.xorb_hash, *k);
+                    assert_eq!(result_f.1.xorb_hash, *k);
 
                     // Make sure the bounds are correct
                     assert_eq!((result_m.1.chunk_index_start, result_m.1.chunk_index_end), (lb, ub));

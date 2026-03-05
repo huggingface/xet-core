@@ -173,12 +173,12 @@ impl Client for RemoteSimulationClient {
     async fn upload_xorb(
         &self,
         prefix: &str,
-        serialized_cas_object: cas_object::SerializedCasObject,
+        serialized_xorb_object: xorb_object::SerializedXorbObject,
         progress_callback: Option<ProgressCallback>,
         upload_permit: ConnectionPermit,
     ) -> Result<u64> {
         self.inner
-            .upload_xorb(prefix, serialized_cas_object, progress_callback, upload_permit)
+            .upload_xorb(prefix, serialized_xorb_object, progress_callback, upload_permit)
             .await
     }
 }

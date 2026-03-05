@@ -46,7 +46,7 @@ pub trait ChunkCache: Sync + Send {
     /// Given implementors are expected to be able to evict members there's no guarantee
     /// that a previously put range will be a cache hit
     ///
-    /// key is required to be a valid CAS Key
+    /// key is required to be a valid XORB key
     /// range is intended to be an index range within the xorb with constraint
     ///     0 <= range.start < range.end <= num_chunks_in_xorb(key)
     async fn get(&self, key: &Key, range: &ChunkRange) -> Result<Option<CacheRange>, ChunkCacheError>;
@@ -59,7 +59,7 @@ pub trait ChunkCache: Sync + Send {
     /// the first entry must be 0 (start of first chunk in the data)
     /// the last entry must be data.len() i.e. the end of data, start of chunk past end
     ///
-    /// key is required to be a valid CAS Key
+    /// key is required to be a valid XORB key
     /// range is intended to be an index range within the xorb with constraint
     ///     0 <= range.start < range.end <= num_chunks_in_xorb(key)
     async fn put(

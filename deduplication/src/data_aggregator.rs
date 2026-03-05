@@ -82,8 +82,8 @@ impl DataAggregator {
         // hash as needed.
         for (f_idx, (fi, chunk_hash_indices_ref, _file_id)) in self.pending_file_info.iter_mut().enumerate() {
             for &i in chunk_hash_indices_ref.iter() {
-                debug_assert_eq!(fi.segments[i].cas_hash, MerkleHash::marker());
-                fi.segments[i].cas_hash = xorb_hash;
+                debug_assert_eq!(fi.segments[i].xorb_hash, MerkleHash::marker());
+                fi.segments[i].xorb_hash = xorb_hash;
                 ret[f_idx] += fi.segments[i].unpacked_segment_bytes as u64;
             }
 
@@ -94,7 +94,7 @@ impl DataAggregator {
             {
                 // Make sure our bookkeeping along the way was good.
                 for fse in fi.segments.iter() {
-                    debug_assert_ne!(fse.cas_hash, MerkleHash::marker());
+                    debug_assert_ne!(fse.xorb_hash, MerkleHash::marker());
                 }
             }
         }
@@ -123,7 +123,7 @@ impl DataAggregator {
                 // To transfer the cas chunks from the other data aggregator to this one,
                 // shift chunk indices so the new index start and end values reflect the
                 // append opperation above.
-                if fi.cas_hash == MerkleHash::marker() {
+                if fi.xorb_hash == MerkleHash::marker() {
                     fi.chunk_index_start += shift;
                     fi.chunk_index_end += shift;
                 }

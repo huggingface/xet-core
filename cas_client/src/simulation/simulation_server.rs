@@ -485,12 +485,12 @@ impl Client for LocalTestServer {
     async fn upload_xorb(
         &self,
         prefix: &str,
-        serialized_cas_object: cas_object::SerializedCasObject,
+        serialized_xorb_object: xorb_object::SerializedXorbObject,
         progress_callback: Option<ProgressCallback>,
         upload_permit: crate::adaptive_concurrency::ConnectionPermit,
     ) -> Result<u64> {
         self.remote_simulation_client
-            .upload_xorb(prefix, serialized_cas_object, progress_callback, upload_permit)
+            .upload_xorb(prefix, serialized_xorb_object, progress_callback, upload_permit)
             .await
     }
 }
@@ -537,7 +537,7 @@ impl DirectAccessClient for LocalTestServer {
         self.client.xorb_exists(hash).await
     }
 
-    async fn xorb_footer(&self, hash: &merklehash::MerkleHash) -> Result<cas_object::CasObject> {
+    async fn xorb_footer(&self, hash: &merklehash::MerkleHash) -> Result<xorb_object::XorbObject> {
         self.client.xorb_footer(hash).await
     }
 
@@ -568,7 +568,7 @@ impl DirectAccessClient for LocalTestServer {
     async fn fetch_term_data(
         &self,
         hash: merklehash::MerkleHash,
-        fetch_term: cas_types::CASReconstructionFetchInfo,
+        fetch_term: cas_types::XorbReconstructionFetchInfo,
     ) -> Result<(bytes::Bytes, Vec<u32>)> {
         self.client.fetch_term_data(hash, fetch_term).await
     }

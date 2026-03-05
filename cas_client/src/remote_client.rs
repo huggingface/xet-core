@@ -2,7 +2,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytes::Bytes;
-use cas_object::SerializedCasObject;
 use cas_types::{
     BatchQueryReconstructionResponse, FileRange, HttpRange, Key, QueryReconstructionResponse, UploadShardResponse,
     UploadShardResponseType, UploadXorbResponse,
@@ -17,6 +16,7 @@ use reqwest_middleware::ClientWithMiddleware;
 use tracing::{event, info, instrument, warn};
 use utils::auth::AuthConfig;
 use xet_runtime::xet_config;
+use xorb_object::SerializedXorbObject;
 
 use crate::adaptive_concurrency::{AdaptiveConcurrencyController, ConnectionPermit};
 use crate::error::{CasClientError, Result};
@@ -324,7 +324,7 @@ impl Client for RemoteClient {
                         let mut buffer = Vec::with_capacity(capacity);
                         let mut writer = std::io::Cursor::new(&mut buffer);
 
-                        let result = cas_object::deserialize_async::deserialize_chunks_to_writer_from_stream(
+                        let result = xorb_object::deserialize_async::deserialize_chunks_to_writer_from_stream(
                             incoming_stream,
                             &mut writer,
                         )
@@ -346,7 +346,7 @@ impl Client for RemoteClient {
                                 }
                                 Ok((Bytes::from(buffer), chunk_byte_indices))
                             },
-                            Err(e) => Err(RetryableReqwestError::RetryableError(CasClientError::CasObjectError(e))),
+                            Err(e) => Err(RetryableReqwestError::RetryableError(CasClientError::XorbObjectError(e))),
                         }
                     }
                 },
@@ -458,38 +458,38 @@ impl Client for RemoteClient {
     }
 
     #[cfg(not(target_family = "wasm"))]
-    #[instrument(skip_all, name = "RemoteClient::upload_xorb", fields(key = Key{prefix : prefix.to_string(), hash : serialized_cas_object.hash}.to_string(),
-                 xorb.len = serialized_cas_object.serialized_data.len(), xorb.num_chunks = serialized_cas_object.num_chunks
+    #[instrument(skip_all, name = "RemoteClient::upload_xorb", fields(key = Key{prefix : prefix.to_string(), hash : serialized_xorb_object.hash}.to_string(),
+                 xorb.len = serialized_xorb_object.serialized_data.len(), xorb.num_chunks = serialized_xorb_object.num_chunks
     ))]
     async fn upload_xorb(
         &self,
         prefix: &str,
-        serialized_cas_object: SerializedCasObject,
+        serialized_xorb_object: SerializedXorbObject,
         progress_callback: Option<ProgressCallback>,
         upload_permit: ConnectionPermit,
     ) -> Result<u64> {
         let key = Key {
             prefix: prefix.to_string(),
-            hash: serialized_cas_object.hash,
+            hash: serialized_xorb_object.hash,
         };
 
         let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
         let url = Url::parse(&format!("{}/v1/xorbs/{key}", self.endpoint))?;
 
-        let n_upload_bytes = serialized_cas_object.serialized_data.len() as u64;
+        let n_upload_bytes = serialized_xorb_object.serialized_data.len() as u64;
         event!(
             INFORMATION_LOG_LEVEL,
             call_id,
             prefix,
-            hash=%serialized_cas_object.hash,
+            hash=%serialized_xorb_object.hash,
             size=n_upload_bytes,
-            num_chunks=serialized_cas_object.num_chunks,
+            num_chunks=serialized_xorb_object.num_chunks,
             "Starting upload_xorb API call",
         );
 
-        let n_transfer_bytes = serialized_cas_object.serialized_data.len() as u64;
+        let n_transfer_bytes = serialized_xorb_object.serialized_data.len() as u64;
 
-        let serialized_data = serialized_cas_object.serialized_data.clone();
+        let serialized_data = serialized_xorb_object.serialized_data.clone();
         let block_size = xet_config().client.upload_reporting_block_size;
 
         let mut upload_reporter = StreamProgressReporter::new(n_transfer_bytes)
@@ -534,7 +534,7 @@ impl Client for RemoteClient {
                 INFORMATION_LOG_LEVEL,
                 call_id,
                 prefix,
-                hash=%serialized_cas_object.hash,
+                hash=%serialized_xorb_object.hash,
                 result="not_inserted",
                 "Completed upload_xorb API call",
             );
@@ -543,7 +543,7 @@ impl Client for RemoteClient {
                 INFORMATION_LOG_LEVEL,
                 call_id,
                 prefix,
-                hash=%serialized_cas_object.hash,
+                hash=%serialized_xorb_object.hash,
                 size=n_upload_bytes,
                 result="inserted",
                 "Completed upload_xorb API call",
@@ -557,24 +557,24 @@ impl Client for RemoteClient {
     async fn upload_xorb(
         &self,
         prefix: &str,
-        serialized_cas_object: SerializedCasObject,
+        serialized_xorb_object: SerializedXorbObject,
         _progress_callback: Option<ProgressCallback>,
         _upload_permit: ConnectionPermit,
     ) -> Result<u64> {
         let key = Key {
             prefix: prefix.to_string(),
-            hash: serialized_cas_object.hash,
+            hash: serialized_xorb_object.hash,
         };
 
         let url = Url::parse(&format!("{}/v1/xorbs/{key}", self.endpoint))?;
 
-        let n_upload_bytes = serialized_cas_object.serialized_data.len() as u64;
+        let n_upload_bytes = serialized_xorb_object.serialized_data.len() as u64;
 
         let xorb_uploaded = self
             .authenticated_http_client
             .post(url)
             .with_extension(Api("cas::upload_xorb"))
-            .body(serialized_cas_object.serialized_data)
+            .body(serialized_xorb_object.serialized_data)
             .send()
             .await?;
 
@@ -585,10 +585,10 @@ impl Client for RemoteClient {
 #[cfg(test)]
 #[cfg(not(target_family = "wasm"))]
 mod tests {
-    use cas_object::CompressionScheme;
-    use cas_object::test_utils::*;
     use tracing_test::traced_test;
     use xet_runtime::XetRuntime;
+    use xorb_object::CompressionScheme;
+    use xorb_object::test_utils::*;
 
     use super::*;
 
@@ -603,13 +603,13 @@ mod tests {
         let threadpool = XetRuntime::new().unwrap();
         let client = RemoteClient::new(CAS_ENDPOINT, &None, "", false, None);
 
-        let cas_object = build_and_verify_cas_object(raw_xorb, Some(CompressionScheme::LZ4));
+        let xorb_obj = build_and_verify_xorb_object(raw_xorb, Some(CompressionScheme::LZ4));
 
         // Act
         let result = threadpool
             .external_run_async_task(async move {
                 let permit = client.acquire_upload_permit().await.unwrap();
-                client.upload_xorb(prefix, cas_object, None, permit).await
+                client.upload_xorb(prefix, xorb_obj, None, permit).await
             })
             .unwrap();
 

@@ -16,24 +16,24 @@ use tracing::warn;
 use utils::serialization_utils::*;
 use xet_runtime::xet_config;
 
-use crate::cas_chunk_format::{deserialize_chunk, deserialize_chunk_header, serialize_chunk, write_chunk_header};
 use crate::constants::XORB_BLOCK_SIZE;
-use crate::error::{CasObjectError, Validate};
-use crate::{CASChunkHeader, CompressionScheme};
+use crate::error::{Validate, XorbObjectError};
+use crate::xorb_chunk_format::{deserialize_chunk, deserialize_chunk_header, serialize_chunk, write_chunk_header};
+use crate::{CompressionScheme, XorbChunkHeader};
 
-pub type CasObjectIdent = [u8; 7];
-pub(crate) const CAS_OBJECT_FORMAT_IDENT: CasObjectIdent = [b'X', b'E', b'T', b'B', b'L', b'O', b'B'];
-pub(crate) const CAS_OBJECT_FORMAT_VERSION_V0: u8 = 0;
-pub(crate) const CAS_OBJECT_FORMAT_IDENT_HASHES: CasObjectIdent = [b'X', b'B', b'L', b'B', b'H', b'S', b'H'];
-pub(crate) const CAS_OBJECT_FORMAT_IDENT_BOUNDARIES: CasObjectIdent = [b'X', b'B', b'L', b'B', b'B', b'N', b'D'];
-pub(crate) const CAS_OBJECT_FORMAT_VERSION: u8 = 1;
-pub(crate) const CAS_OBJECT_FORMAT_HASHES_VERSION: u8 = 0;
+pub type XorbObjectIdent = [u8; 7];
+pub(crate) const XORB_OBJECT_FORMAT_IDENT: XorbObjectIdent = [b'X', b'E', b'T', b'B', b'L', b'O', b'B'];
+pub(crate) const XORB_OBJECT_FORMAT_VERSION_V0: u8 = 0;
+pub(crate) const XORB_OBJECT_FORMAT_IDENT_HASHES: XorbObjectIdent = [b'X', b'B', b'L', b'B', b'H', b'S', b'H'];
+pub(crate) const XORB_OBJECT_FORMAT_IDENT_BOUNDARIES: XorbObjectIdent = [b'X', b'B', b'L', b'B', b'B', b'N', b'D'];
+pub(crate) const XORB_OBJECT_FORMAT_VERSION: u8 = 1;
+pub(crate) const XORB_OBJECT_FORMAT_HASHES_VERSION: u8 = 0;
 
 // This is 1 as we can test on the struct using this version field whether we have the unpacked boundary lengths
-pub(crate) const CAS_OBJECT_FORMAT_BOUNDARIES_VERSION_NO_UNPACKED_INFO: u8 = 0;
-pub(crate) const CAS_OBJECT_FORMAT_BOUNDARIES_VERSION: u8 = 1;
-const _CAS_OBJECT_INFO_DEFAULT_LENGTH_V0: u32 = 60;
-const CAS_OBJECT_INFO_DEFAULT_LENGTH: u32 = 92;
+pub(crate) const XORB_OBJECT_FORMAT_BOUNDARIES_VERSION_NO_UNPACKED_INFO: u8 = 0;
+pub(crate) const XORB_OBJECT_FORMAT_BOUNDARIES_VERSION: u8 = 1;
+const _XORB_OBJECT_INFO_DEFAULT_LENGTH_V0: u32 = 60;
+const XORB_OBJECT_INFO_DEFAULT_LENGTH: u32 = 92;
 
 // Decide array preallocation size based on the declared size, to prevent an adversarial
 // giant size that leads to OOM on allocation.
@@ -47,17 +47,18 @@ fn prealloc_num_chunks(declared_size: usize) -> usize {
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize)]
-/// Info struct for [CasObject]. This is stored at the end of the XORB.
+/// Info struct for [XorbObject]. This is stored at the end of the XORB.
 /// DO NOT USE in any new code
-pub struct CasObjectInfoV0 {
-    /// CAS identifier: "XETBLOB"
-    pub ident: CasObjectIdent,
+pub struct XorbObjectInfoV0 {
+    /// XORB identifier: "XETBLOB"
+    pub ident: XorbObjectIdent,
 
     /// Format version, expected to be 0 right now.
     pub version: u8,
 
-    /// 256-bits, 32-bytes, The CAS Hash of this Xorb.
-    pub cashash: MerkleHash,
+    /// 256-bits, 32-bytes, The XORB Hash of this Xorb.
+    #[serde(rename = "cashash")]
+    pub xorb_hash: MerkleHash,
 
     /// Total number of chunks in the Xorb. Length of chunk_boundary_offsets & chunk_hashes vectors.
     pub num_chunks: u32,
@@ -82,12 +83,12 @@ pub struct CasObjectInfoV0 {
     _buffer: [u8; 16],
 }
 
-impl Default for CasObjectInfoV0 {
+impl Default for XorbObjectInfoV0 {
     fn default() -> Self {
-        CasObjectInfoV0 {
-            ident: CAS_OBJECT_FORMAT_IDENT,
-            version: CAS_OBJECT_FORMAT_VERSION_V0,
-            cashash: MerkleHash::default(),
+        XorbObjectInfoV0 {
+            ident: XORB_OBJECT_FORMAT_IDENT,
+            version: XORB_OBJECT_FORMAT_VERSION_V0,
+            xorb_hash: MerkleHash::default(),
             num_chunks: 0,
             chunk_boundary_offsets: Vec::new(),
             chunk_hashes: Vec::new(),
@@ -96,25 +97,25 @@ impl Default for CasObjectInfoV0 {
     }
 }
 
-impl CasObjectInfoV0 {
-    /// Serialize CasObjectInfoV0 to provided Writer.
+impl XorbObjectInfoV0 {
+    /// Serialize XorbObjectInfoV0 to provided Writer.
     ///
     /// Assumes caller has set position of Writer to appropriate location for serialization.
     #[deprecated]
-    pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<usize, CasObjectError> {
+    pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<usize, XorbObjectError> {
         let mut total_bytes_written = 0;
 
         // Helper function to write data and update the byte count
-        let mut write_bytes = |data: &[u8]| -> Result<(), CasObjectError> {
+        let mut write_bytes = |data: &[u8]| -> Result<(), XorbObjectError> {
             writer.write_all(data)?;
             total_bytes_written += data.len();
             Ok(())
         };
 
-        // Write fixed-size fields, in order: ident, version, cashash, num_chunks
+        // Write fixed-size fields, in order: ident, version, xorb_hash, num_chunks
         write_bytes(&self.ident)?;
         write_bytes(&[self.version])?;
-        write_bytes(self.cashash.as_bytes())?;
+        write_bytes(self.xorb_hash.as_bytes())?;
         write_bytes(&self.num_chunks.to_le_bytes())?;
 
         // write variable field: chunk boundaries & hashes
@@ -131,15 +132,15 @@ impl CasObjectInfoV0 {
         Ok(total_bytes_written)
     }
 
-    /// Construct CasObjectInfoV0 object from Read.
+    /// Construct XorbObjectInfoV0 object from Read.
     ///
     /// Expects metadata struct is found at end of Reader, written out in struct order.
     #[deprecated]
-    pub fn deserialize<R: Read>(reader: &mut R) -> Result<(Self, u32), CasObjectError> {
+    pub fn deserialize<R: Read>(reader: &mut R) -> Result<(Self, u32), XorbObjectError> {
         let mut total_bytes_read: u32 = 0;
 
         // Helper function to read data and update the byte count
-        let mut read_bytes = |data: &mut [u8]| -> Result<(), CasObjectError> {
+        let mut read_bytes = |data: &mut [u8]| -> Result<(), XorbObjectError> {
             reader.read_exact(data)?;
             total_bytes_read += data.len() as u32;
             Ok(())
@@ -148,15 +149,15 @@ impl CasObjectInfoV0 {
         let mut ident = [0u8; 7];
         read_bytes(&mut ident)?;
 
-        if ident != CAS_OBJECT_FORMAT_IDENT {
-            return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Ident")));
+        if ident != XORB_OBJECT_FORMAT_IDENT {
+            return Err(XorbObjectError::FormatError(anyhow!("Xorb Invalid Ident")));
         }
 
         let mut version = [0u8; 1];
         read_bytes(&mut version)?;
 
-        if version[0] != CAS_OBJECT_FORMAT_VERSION_V0 {
-            return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Format Version")));
+        if version[0] != XORB_OBJECT_FORMAT_VERSION_V0 {
+            return Err(XorbObjectError::FormatError(anyhow!("Xorb Invalid Format Version")));
         }
 
         let (s, bytes_read_v0) = Self::deserialize_v0(reader)?;
@@ -164,11 +165,11 @@ impl CasObjectInfoV0 {
         Ok((s, total_bytes_read + bytes_read_v0))
     }
 
-    pub fn deserialize_v0<R: Read>(reader: &mut R) -> Result<(Self, u32), CasObjectError> {
+    pub fn deserialize_v0<R: Read>(reader: &mut R) -> Result<(Self, u32), XorbObjectError> {
         let mut total_bytes_read: u32 = 0;
 
         // Helper function to read data and update the byte count
-        let mut read_bytes = |data: &mut [u8]| -> Result<(), CasObjectError> {
+        let mut read_bytes = |data: &mut [u8]| -> Result<(), XorbObjectError> {
             reader.read_exact(data)?;
             total_bytes_read += data.len() as u32;
             Ok(())
@@ -176,7 +177,7 @@ impl CasObjectInfoV0 {
 
         let mut buf = [0u8; size_of::<MerkleHash>()];
         read_bytes(&mut buf)?;
-        let cashash = MerkleHash::from(&buf);
+        let xorb_hash = MerkleHash::from(&buf);
 
         let mut num_chunks = [0u8; size_of::<u32>()];
         read_bytes(&mut num_chunks)?;
@@ -199,10 +200,10 @@ impl CasObjectInfoV0 {
         read_bytes(&mut _buffer)?;
 
         Ok((
-            CasObjectInfoV0 {
-                ident: CAS_OBJECT_FORMAT_IDENT,
-                version: CAS_OBJECT_FORMAT_VERSION_V0,
-                cashash,
+            XorbObjectInfoV0 {
+                ident: XORB_OBJECT_FORMAT_IDENT,
+                version: XORB_OBJECT_FORMAT_VERSION_V0,
+                xorb_hash,
                 num_chunks,
                 chunk_boundary_offsets,
                 chunk_hashes,
@@ -212,7 +213,7 @@ impl CasObjectInfoV0 {
         ))
     }
 
-    /// Construct CasObjectInfo object from AsyncRead.
+    /// Construct XorbObjectInfo object from AsyncRead.
     /// assumes that the ident and version have already been read and verified.
     ///
     /// verifies that the length of the footer data matches the length field at the very end of the buffer
@@ -220,16 +221,16 @@ impl CasObjectInfoV0 {
     pub async fn deserialize_async<R: futures::io::AsyncRead + Unpin>(
         reader: &mut R,
         version: u8,
-    ) -> Result<(Self, u32), CasObjectError> {
+    ) -> Result<(Self, u32), XorbObjectError> {
         // already read 8 bytes (ident + version)
-        let mut total_bytes_read: u32 = (size_of::<CasObjectIdent>() + size_of::<u8>()) as u32;
+        let mut total_bytes_read: u32 = (size_of::<XorbObjectIdent>() + size_of::<u8>()) as u32;
 
         // Helper function to read data and update the byte count
         async fn read_bytes<R: futures::io::AsyncRead + Unpin>(
             reader: &mut R,
             total_bytes_read: &mut u32,
             buf: &mut [u8],
-        ) -> Result<(), CasObjectError> {
+        ) -> Result<(), XorbObjectError> {
             reader.read_exact(buf).await?;
             *total_bytes_read += buf.len() as u32;
             Ok(())
@@ -240,7 +241,7 @@ impl CasObjectInfoV0 {
 
         let mut buf = [0u8; size_of::<MerkleHash>()];
         read_bytes(reader, &mut total_bytes_read, &mut buf).await?;
-        let cashash = MerkleHash::from(&buf);
+        let xorb_hash = MerkleHash::from(&buf);
 
         let mut num_chunks = [0u8; size_of::<u32>()];
         read_bytes(reader, &mut total_bytes_read, &mut num_chunks).await?;
@@ -263,10 +264,10 @@ impl CasObjectInfoV0 {
         read_bytes(reader, &mut total_bytes_read, &mut _buffer).await?;
 
         Ok((
-            CasObjectInfoV0 {
-                ident: CAS_OBJECT_FORMAT_IDENT,
+            XorbObjectInfoV0 {
+                ident: XORB_OBJECT_FORMAT_IDENT,
                 version,
-                cashash,
+                xorb_hash,
                 num_chunks,
                 chunk_boundary_offsets,
                 chunk_hashes,
@@ -279,22 +280,23 @@ impl CasObjectInfoV0 {
 
 #[allow(clippy::empty_line_after_doc_comments)]
 #[derive(Clone, PartialEq, Eq, Debug, Serialize)]
-/// Info struct for [CasObject]. This is stored at the end of the XORB.
-pub struct CasObjectInfoV1 {
-    /// CAS identifier: "XETBLOB"
-    pub ident: CasObjectIdent,
+/// Info struct for [XorbObject]. This is stored at the end of the XORB.
+pub struct XorbObjectInfoV1 {
+    /// XORB identifier: "XETBLOB"
+    pub ident: XorbObjectIdent,
 
     /// Format version, expected to be 1 right now.
     pub version: u8,
 
-    /// 256-bits, 32-bytes, The CAS Hash of this Xorb.
-    pub cashash: MerkleHash,
+    /// 256-bits, 32-bytes, The XORB Hash of this Xorb.
+    #[serde(rename = "cashash")]
+    pub xorb_hash: MerkleHash,
 
     ///////////////////////////////////////////////////////////////////
     /// The hashes section
 
-    /// CAS identifier: "XBLBHSH"
-    pub ident_hash_section: CasObjectIdent,
+    /// XORB identifier: "XBLBHSH"
+    pub ident_hash_section: XorbObjectIdent,
 
     /// The version of the chunk hash section.
     pub hashes_version: u8,
@@ -310,7 +312,7 @@ pub struct CasObjectInfoV1 {
     /// The boundaries and index metadata
 
     /// The identity for the metadata section; should be "XBLBMDT"
-    pub ident_boundary_section: CasObjectIdent,
+    pub ident_boundary_section: XorbObjectIdent,
 
     /// The version of the boundary section.
     pub boundaries_version: u8,
@@ -356,19 +358,19 @@ pub struct CasObjectInfoV1 {
     _buffer: [u8; 16],
 }
 
-impl Default for CasObjectInfoV1 {
+impl Default for XorbObjectInfoV1 {
     fn default() -> Self {
-        let mut s = CasObjectInfoV1 {
-            ident: CAS_OBJECT_FORMAT_IDENT,
-            version: CAS_OBJECT_FORMAT_VERSION,
-            cashash: MerkleHash::default(),
+        let mut s = XorbObjectInfoV1 {
+            ident: XORB_OBJECT_FORMAT_IDENT,
+            version: XORB_OBJECT_FORMAT_VERSION,
+            xorb_hash: MerkleHash::default(),
 
-            ident_hash_section: CAS_OBJECT_FORMAT_IDENT_HASHES,
-            hashes_version: CAS_OBJECT_FORMAT_HASHES_VERSION,
+            ident_hash_section: XORB_OBJECT_FORMAT_IDENT_HASHES,
+            hashes_version: XORB_OBJECT_FORMAT_HASHES_VERSION,
             chunk_hashes: Vec::new(),
 
-            ident_boundary_section: CAS_OBJECT_FORMAT_IDENT_BOUNDARIES,
-            boundaries_version: CAS_OBJECT_FORMAT_BOUNDARIES_VERSION,
+            ident_boundary_section: XORB_OBJECT_FORMAT_IDENT_BOUNDARIES,
+            boundaries_version: XORB_OBJECT_FORMAT_BOUNDARIES_VERSION,
             chunk_boundary_offsets: Vec::new(),
             unpacked_chunk_offsets: Vec::new(),
 
@@ -383,9 +385,9 @@ impl Default for CasObjectInfoV1 {
     }
 }
 
-impl CasObjectInfoV1 {
+impl XorbObjectInfoV1 {
     pub fn serialized_length(&self) -> usize {
-        size_of::<CasObjectIdent>() * 3 // ident, ident_hash_section, ident_boundary_section
+        size_of::<XorbObjectIdent>() * 3 // ident, ident_hash_section, ident_boundary_section
             + size_of::<u8>() * 3 // version, hashes_version, boundaries_version
             + size_of::<u32>() * 5 // num_chunks, hashes_section_offset_from_end, boundary_section_offset_from_end,
                                    // chunk_boundary_offsets, unpacked_chunk_offsets
@@ -393,13 +395,13 @@ impl CasObjectInfoV1 {
             + size_of_val(&self._buffer) // _buffer
             + self.chunk_boundary_offsets.len() * size_of::<u32>() // chunk_boundary_offsets
             + self.unpacked_chunk_offsets.len() * size_of::<u32>() // unpacked_chunk_offsets
-            + size_of::<MerkleHash>() // cashash
+            + size_of::<MerkleHash>() // xorb_hash
     }
 
-    /// Serialize CasObjectInfoV1 to provided Writer.
+    /// Serialize XorbObjectInfoV1 to provided Writer.
     ///
     /// Assumes caller has set position of Writer to appropriate location for serialization.
-    pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<usize, CasObjectError> {
+    pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<usize, XorbObjectError> {
         let mut counting_writer = countio::Counter::new(writer);
         let w = &mut counting_writer;
 
@@ -408,7 +410,7 @@ impl CasObjectInfoV1 {
 
         write_bytes(w, &self.ident)?;
         write_u8(w, self.version)?;
-        write_hash(w, &self.cashash)?;
+        write_hash(w, &self.xorb_hash)?;
 
         //////////////////////////////////////////////////////////////////////////////////////////////
         // Hash section (Ankle)
@@ -422,7 +424,7 @@ impl CasObjectInfoV1 {
 
         if self.num_chunks as usize != self.chunk_hashes.len() {
             debug_assert_eq!(self.num_chunks as usize, self.chunk_hashes.len());
-            return Err(CasObjectError::FormatError(anyhow!(
+            return Err(XorbObjectError::FormatError(anyhow!(
                 "Chunk hash vector not correct length on serialization. ({}, expected {})",
                 self.chunk_hashes.len(),
                 self.num_chunks
@@ -443,7 +445,7 @@ impl CasObjectInfoV1 {
         // write variable field: chunk boundaries
         if self.num_chunks as usize != self.chunk_boundary_offsets.len() {
             debug_assert_eq!(self.num_chunks as usize, self.chunk_boundary_offsets.len());
-            return Err(CasObjectError::FormatError(anyhow!(
+            return Err(XorbObjectError::FormatError(anyhow!(
                 "Chunk boundary offset vector not correct length on serialization. ({}, expected {})",
                 self.chunk_boundary_offsets.len(),
                 self.num_chunks
@@ -454,7 +456,7 @@ impl CasObjectInfoV1 {
         // write variable field: unpacked chunk data offsets
         if self.num_chunks as usize != self.unpacked_chunk_offsets.len() {
             debug_assert_eq!(self.num_chunks as usize, self.unpacked_chunk_offsets.len());
-            return Err(CasObjectError::FormatError(anyhow!(
+            return Err(XorbObjectError::FormatError(anyhow!(
                 "Unpacked chunk offset vector not correct length on serialization. ({}, expected {})",
                 self.unpacked_chunk_offsets.len(),
                 self.num_chunks
@@ -478,10 +480,10 @@ impl CasObjectInfoV1 {
         Ok(w.writer_bytes())
     }
 
-    /// Construct CasObjectInfo object from Reader + Seek.
+    /// Construct XorbObjectInfo object from Reader + Seek.
     ///
     /// Expects metadata struct is found at end of Reader, written out in struct order.
-    pub fn deserialize<R: Read>(reader: &mut R) -> Result<(Self, u32), CasObjectError> {
+    pub fn deserialize<R: Read>(reader: &mut R) -> Result<(Self, u32), XorbObjectError> {
         let mut counting_reader = countio::Counter::new(reader);
         let r = &mut counting_reader;
 
@@ -492,21 +494,21 @@ impl CasObjectInfoV1 {
 
         read_bytes(r, &mut s.ident)?;
 
-        if s.ident != CAS_OBJECT_FORMAT_IDENT {
-            return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Ident")));
+        if s.ident != XORB_OBJECT_FORMAT_IDENT {
+            return Err(XorbObjectError::FormatError(anyhow!("Xorb Invalid Ident")));
         }
 
         s.version = read_u8(r)?;
 
-        if s.version == CAS_OBJECT_FORMAT_VERSION_V0 {
-            let (sv0, _) = CasObjectInfoV0::deserialize_v0(r)?;
+        if s.version == XORB_OBJECT_FORMAT_VERSION_V0 {
+            let (sv0, _) = XorbObjectInfoV0::deserialize_v0(r)?;
             // we don't have the missing info (unpacked_chunk_offsets), it's OK
             return Ok((Self::from_v0(sv0), r.reader_bytes() as u32));
-        } else if s.version != CAS_OBJECT_FORMAT_VERSION {
-            return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Format Version")));
+        } else if s.version != XORB_OBJECT_FORMAT_VERSION {
+            return Err(XorbObjectError::FormatError(anyhow!("Xorb Invalid Format Version")));
         }
 
-        s.cashash = read_hash(r)?;
+        s.xorb_hash = read_hash(r)?;
 
         //////////////////////////////////////////////////////////////////////////////////////////////
         // Hash section
@@ -515,14 +517,14 @@ impl CasObjectInfoV1 {
 
         read_bytes(r, &mut s.ident_hash_section)?;
 
-        if s.ident_hash_section != CAS_OBJECT_FORMAT_IDENT_HASHES {
-            return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Ident for Hash Metadata Section")));
+        if s.ident_hash_section != XORB_OBJECT_FORMAT_IDENT_HASHES {
+            return Err(XorbObjectError::FormatError(anyhow!("Xorb Invalid Ident for Hash Metadata Section")));
         }
 
         s.hashes_version = read_u8(r)?;
 
-        if s.hashes_version != CAS_OBJECT_FORMAT_HASHES_VERSION {
-            return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Format Version for Hash Metadata Section")));
+        if s.hashes_version != XORB_OBJECT_FORMAT_HASHES_VERSION {
+            return Err(XorbObjectError::FormatError(anyhow!("Xorb Invalid Format Version for Hash Metadata Section")));
         }
 
         let num_chunks_2 = read_u32(r)?;
@@ -540,14 +542,14 @@ impl CasObjectInfoV1 {
 
         read_bytes(r, &mut s.ident_boundary_section)?;
 
-        if s.ident_boundary_section != CAS_OBJECT_FORMAT_IDENT_BOUNDARIES {
-            return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Ident for Boundary Metadata Section")));
+        if s.ident_boundary_section != XORB_OBJECT_FORMAT_IDENT_BOUNDARIES {
+            return Err(XorbObjectError::FormatError(anyhow!("Xorb Invalid Ident for Boundary Metadata Section")));
         }
 
         s.boundaries_version = read_u8(r)?;
 
-        if s.boundaries_version != CAS_OBJECT_FORMAT_BOUNDARIES_VERSION {
-            return Err(CasObjectError::FormatError(anyhow!(
+        if s.boundaries_version != XORB_OBJECT_FORMAT_BOUNDARIES_VERSION {
+            return Err(XorbObjectError::FormatError(anyhow!(
                 "Xorb Invalid Format Version for Boundaries Metadata Section"
             )));
         }
@@ -555,7 +557,7 @@ impl CasObjectInfoV1 {
         let num_chunks_3 = read_u32(r)?;
 
         if num_chunks_2 != num_chunks_3 {
-            return Err(CasObjectError::FormatError(anyhow!(
+            return Err(XorbObjectError::FormatError(anyhow!(
                 "Xorb Invalid: inconsistent num_chunks between hashes and boundaries section."
             )));
         }
@@ -574,7 +576,7 @@ impl CasObjectInfoV1 {
         s.num_chunks = read_u32(r)?;
 
         if s.num_chunks != num_chunks_2 {
-            return Err(CasObjectError::FormatError(anyhow!(
+            return Err(XorbObjectError::FormatError(anyhow!(
                 "Xorb Invalid: inconsistent num_chunks between metadata and hashes section."
             )));
         }
@@ -587,13 +589,13 @@ impl CasObjectInfoV1 {
         let end_byte_offset = r.reader_bytes();
 
         if end_byte_offset - hash_section_begin_byte_offset != s.hashes_section_offset_from_end as usize {
-            return Err(CasObjectError::FormatError(anyhow!(
+            return Err(XorbObjectError::FormatError(anyhow!(
                 "Xorb Invalid: incorrect hashes_section_offset_from_end."
             )));
         }
 
         if end_byte_offset - boundary_section_begin_byte_offset != s.boundary_section_offset_from_end as usize {
-            return Err(CasObjectError::FormatError(anyhow!(
+            return Err(XorbObjectError::FormatError(anyhow!(
                 "Xorb Invalid: incorrect boundary_section_offset_from_end."
             )));
         }
@@ -601,10 +603,10 @@ impl CasObjectInfoV1 {
         Ok((s, r.reader_bytes() as u32))
     }
 
-    /// Construct CasObjectInfo object from Reader + Seek.
+    /// Construct XorbObjectInfo object from Reader + Seek.
     ///
     /// Expects metadata struct is found at end of Reader, written out in struct order.
-    pub fn deserialize_only_boundaries_section<R: Read + Seek>(reader: &mut R) -> Result<(Self, u32), CasObjectError> {
+    pub fn deserialize_only_boundaries_section<R: Read + Seek>(reader: &mut R) -> Result<(Self, u32), XorbObjectError> {
         let mut s = Self::default();
 
         // info_length + size of _buffer + size of u32 for offset field
@@ -625,14 +627,14 @@ impl CasObjectInfoV1 {
 
         read_bytes(r, &mut s.ident_boundary_section)?;
 
-        if s.ident_boundary_section != CAS_OBJECT_FORMAT_IDENT_BOUNDARIES {
-            return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Ident for Boundary Metadata Section")));
+        if s.ident_boundary_section != XORB_OBJECT_FORMAT_IDENT_BOUNDARIES {
+            return Err(XorbObjectError::FormatError(anyhow!("Xorb Invalid Ident for Boundary Metadata Section")));
         }
 
         s.boundaries_version = read_u8(r)?;
 
-        if s.boundaries_version != CAS_OBJECT_FORMAT_BOUNDARIES_VERSION {
-            return Err(CasObjectError::FormatError(anyhow!(
+        if s.boundaries_version != XORB_OBJECT_FORMAT_BOUNDARIES_VERSION {
+            return Err(XorbObjectError::FormatError(anyhow!(
                 "Xorb Invalid Format Version for Boundaries Metadata Section"
             )));
         }
@@ -649,7 +651,7 @@ impl CasObjectInfoV1 {
         s.num_chunks = read_u32(r)?;
 
         if s.num_chunks != num_chunks_boundaries_section {
-            return Err(CasObjectError::FormatError(anyhow!(
+            return Err(XorbObjectError::FormatError(anyhow!(
                 "Xorb Invalid: inconsistent num_chunks between metadata and hashes section."
             )));
         }
@@ -662,7 +664,7 @@ impl CasObjectInfoV1 {
         let end_byte_offset = r.reader_bytes();
 
         if end_byte_offset != s.boundary_section_offset_from_end as usize {
-            return Err(CasObjectError::FormatError(anyhow!(
+            return Err(XorbObjectError::FormatError(anyhow!(
                 "Xorb Invalid: incorrect boundary_section_offset_from_end."
             )));
         }
@@ -675,18 +677,18 @@ impl CasObjectInfoV1 {
     #[cfg(not(target_family = "wasm"))]
     pub async fn deserialize_async_v1<R: futures::io::AsyncRead + Unpin>(
         reader: &mut R,
-    ) -> Result<(Self, u32), CasObjectError> {
+    ) -> Result<(Self, u32), XorbObjectError> {
         // already read 8 bytes (ident + version)
-        let total_bytes_read: u32 = (size_of::<CasObjectIdent>() + size_of::<u8>()) as u32;
+        let total_bytes_read: u32 = (size_of::<XorbObjectIdent>() + size_of::<u8>()) as u32;
 
         let mut counting_reader = countio::Counter::new(reader);
         let r = &mut counting_reader;
 
         // ident and version have been read already above
         let mut s = Self {
-            ident: CAS_OBJECT_FORMAT_IDENT,
-            version: CAS_OBJECT_FORMAT_VERSION,
-            cashash: read_hash_async(r).await?,
+            ident: XORB_OBJECT_FORMAT_IDENT,
+            version: XORB_OBJECT_FORMAT_VERSION,
+            xorb_hash: read_hash_async(r).await?,
             ..Default::default()
         };
 
@@ -697,14 +699,14 @@ impl CasObjectInfoV1 {
 
         read_bytes_async(r, &mut s.ident_hash_section).await?;
 
-        if s.ident_hash_section != CAS_OBJECT_FORMAT_IDENT_HASHES {
-            return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Ident for Hash Metadata Section")));
+        if s.ident_hash_section != XORB_OBJECT_FORMAT_IDENT_HASHES {
+            return Err(XorbObjectError::FormatError(anyhow!("Xorb Invalid Ident for Hash Metadata Section")));
         }
 
         s.hashes_version = read_u8_async(r).await?;
 
-        if s.hashes_version != CAS_OBJECT_FORMAT_HASHES_VERSION {
-            return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Format Version for Hash Metadata Section")));
+        if s.hashes_version != XORB_OBJECT_FORMAT_HASHES_VERSION {
+            return Err(XorbObjectError::FormatError(anyhow!("Xorb Invalid Format Version for Hash Metadata Section")));
         }
 
         let num_chunks_2 = read_u32_async(r).await?;
@@ -722,14 +724,14 @@ impl CasObjectInfoV1 {
 
         read_bytes_async(r, &mut s.ident_boundary_section).await?;
 
-        if s.ident_boundary_section != CAS_OBJECT_FORMAT_IDENT_BOUNDARIES {
-            return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Ident for Boundary Metadata Section")));
+        if s.ident_boundary_section != XORB_OBJECT_FORMAT_IDENT_BOUNDARIES {
+            return Err(XorbObjectError::FormatError(anyhow!("Xorb Invalid Ident for Boundary Metadata Section")));
         }
 
         s.boundaries_version = read_u8_async(r).await?;
 
-        if s.boundaries_version != CAS_OBJECT_FORMAT_BOUNDARIES_VERSION {
-            return Err(CasObjectError::FormatError(anyhow!(
+        if s.boundaries_version != XORB_OBJECT_FORMAT_BOUNDARIES_VERSION {
+            return Err(XorbObjectError::FormatError(anyhow!(
                 "Xorb Invalid Format Version for Boundaries Metadata Section"
             )));
         }
@@ -737,7 +739,7 @@ impl CasObjectInfoV1 {
         let num_chunks_3 = read_u32_async(r).await?;
 
         if num_chunks_2 != num_chunks_3 {
-            return Err(CasObjectError::FormatError(anyhow!(
+            return Err(XorbObjectError::FormatError(anyhow!(
                 "Xorb Invalid: inconsistent num_chunks between hashes and boundaries section."
             )));
         }
@@ -755,7 +757,7 @@ impl CasObjectInfoV1 {
         s.num_chunks = read_u32_async(r).await?;
 
         if s.num_chunks != num_chunks_2 {
-            return Err(CasObjectError::FormatError(anyhow!(
+            return Err(XorbObjectError::FormatError(anyhow!(
                 "Xorb Invalid: inconsistent num_chunks between metadata and hashes section."
             )));
         }
@@ -768,20 +770,20 @@ impl CasObjectInfoV1 {
         let end_byte_offset = r.reader_bytes();
 
         if end_byte_offset - hash_section_begin_byte_offset != s.hashes_section_offset_from_end as usize {
-            return Err(CasObjectError::FormatError(anyhow!(
+            return Err(XorbObjectError::FormatError(anyhow!(
                 "Xorb Invalid: incorrect hashes_section_offset_from_end."
             )));
         }
 
         if end_byte_offset - boundary_section_begin_byte_offset != s.boundary_section_offset_from_end as usize {
-            return Err(CasObjectError::FormatError(anyhow!(
+            return Err(XorbObjectError::FormatError(anyhow!(
                 "Xorb Invalid: incorrect boundary_section_offset_from_end."
             )));
         }
 
         Ok((s, r.reader_bytes() as u32 + total_bytes_read))
     }
-    /// Construct CasObjectInfo object from AsyncRead.
+    /// Construct XorbObjectInfo object from AsyncRead.
     /// assumes that the ident and version have already been read and verified.
     ///
     /// verifies that the length of the footer data matches the length field at the very end of the buffer
@@ -789,31 +791,31 @@ impl CasObjectInfoV1 {
     pub async fn deserialize_async<R: futures::io::AsyncRead + Unpin>(
         reader: &mut R,
         version: u8,
-    ) -> Result<(Self, u32), CasObjectError> {
+    ) -> Result<(Self, u32), XorbObjectError> {
         if version == 0 {
-            let (s, n) = CasObjectInfoV0::deserialize_async(reader, 0).await?;
+            let (s, n) = XorbObjectInfoV0::deserialize_async(reader, 0).await?;
             // we don't have the missing info (unpacked_chunk_offsets), it's OK
             Ok((Self::from_v0(s), n))
         } else if version == 1 {
             Self::deserialize_async_v1(reader).await
         } else {
-            Err(CasObjectError::FormatError(anyhow!(
+            Err(XorbObjectError::FormatError(anyhow!(
                 "Xorb Format Error: Version {version} not supported by this code version."
             )))
         }
     }
 
-    pub fn from_v0(src: CasObjectInfoV0) -> Self {
+    pub fn from_v0(src: XorbObjectInfoV0) -> Self {
         // Fill in all the appropriate fields from the V0 version.
         let mut s = Self {
             ident: src.ident,
-            version: CAS_OBJECT_FORMAT_VERSION,
-            cashash: src.cashash,
-            ident_hash_section: CAS_OBJECT_FORMAT_IDENT_HASHES,
-            hashes_version: CAS_OBJECT_FORMAT_HASHES_VERSION,
+            version: XORB_OBJECT_FORMAT_VERSION,
+            xorb_hash: src.xorb_hash,
+            ident_hash_section: XORB_OBJECT_FORMAT_IDENT_HASHES,
+            hashes_version: XORB_OBJECT_FORMAT_HASHES_VERSION,
             chunk_hashes: src.chunk_hashes,
-            ident_boundary_section: CAS_OBJECT_FORMAT_IDENT_BOUNDARIES,
-            boundaries_version: CAS_OBJECT_FORMAT_BOUNDARIES_VERSION_NO_UNPACKED_INFO,
+            ident_boundary_section: XORB_OBJECT_FORMAT_IDENT_BOUNDARIES,
+            boundaries_version: XORB_OBJECT_FORMAT_BOUNDARIES_VERSION_NO_UNPACKED_INFO,
             chunk_boundary_offsets: src.chunk_boundary_offsets,
             unpacked_chunk_offsets: Vec::new(),
             num_chunks: src.num_chunks,
@@ -826,7 +828,7 @@ impl CasObjectInfoV1 {
         s
     }
 
-    pub fn from_v0_with_unpacked_chunk_offsets(src: CasObjectInfoV0, unpacked_chunk_offsets: Vec<u32>) -> Self {
+    pub fn from_v0_with_unpacked_chunk_offsets(src: XorbObjectInfoV0, unpacked_chunk_offsets: Vec<u32>) -> Self {
         if unpacked_chunk_offsets.len() != src.chunk_boundary_offsets.len() {
             warn!(
                 "unpacked_chunk_offsets len ({}) does not match src chunk_boundary_offsets len ({})",
@@ -838,12 +840,12 @@ impl CasObjectInfoV1 {
         let mut s = Self {
             ident: src.ident,
             version: 1,
-            cashash: src.cashash,
-            ident_hash_section: CAS_OBJECT_FORMAT_IDENT_HASHES,
-            hashes_version: CAS_OBJECT_FORMAT_HASHES_VERSION,
+            xorb_hash: src.xorb_hash,
+            ident_hash_section: XORB_OBJECT_FORMAT_IDENT_HASHES,
+            hashes_version: XORB_OBJECT_FORMAT_HASHES_VERSION,
             chunk_hashes: src.chunk_hashes,
-            ident_boundary_section: CAS_OBJECT_FORMAT_IDENT_BOUNDARIES,
-            boundaries_version: CAS_OBJECT_FORMAT_BOUNDARIES_VERSION,
+            ident_boundary_section: XORB_OBJECT_FORMAT_IDENT_BOUNDARIES,
+            boundaries_version: XORB_OBJECT_FORMAT_BOUNDARIES_VERSION,
             chunk_boundary_offsets: src.chunk_boundary_offsets,
             unpacked_chunk_offsets,
             num_chunks: src.num_chunks,
@@ -890,35 +892,35 @@ impl CasObjectInfoV1 {
 /// <CHUNK 1>
 /// <..>
 /// <CHUNK N>
-/// <CasObjectInfo>
-/// CasObjectInfo length: u32
+/// <XorbObjectInfo>
+/// XorbObjectInfo length: u32
 /// [END OF XORB]
-pub struct CasObject {
-    /// CasObjectInfo block see [CasObjectInfo] for details.
-    pub info: CasObjectInfoV1,
+pub struct XorbObject {
+    /// XorbObjectInfo block see [XorbObjectInfo] for details.
+    pub info: XorbObjectInfoV1,
 
     /// Length of entire info block.
     ///
-    /// This is required to be at the end of the CasObject, so readers can read the
+    /// This is required to be at the end of the XorbObject, so readers can read the
     /// final 4 bytes and know the full length of the info block.
     pub info_length: u32,
 }
 
-impl Default for CasObject {
+impl Default for XorbObject {
     fn default() -> Self {
         Self {
             info: Default::default(),
-            info_length: CAS_OBJECT_INFO_DEFAULT_LENGTH,
+            info_length: XORB_OBJECT_INFO_DEFAULT_LENGTH,
         }
     }
 }
 
-impl CasObject {
+impl XorbObject {
     /// Deserializes only the info length field of the footer to tell the user how many bytes
     /// make up the info portion of the xorb.
     ///
     /// Assumes reader has at least size_of::<u32>() bytes, otherwise returns an error.
-    pub fn get_info_length<R: Read + Seek>(reader: &mut R) -> Result<u32, CasObjectError> {
+    pub fn get_info_length<R: Read + Seek>(reader: &mut R) -> Result<u32, XorbObjectError> {
         // Go to end of Reader and get length, then jump back to it, and read sequentially
         // read last 4 bytes to get length
         reader.seek(SeekFrom::End(-(size_of::<u32>() as i64)))?;
@@ -929,33 +931,33 @@ impl CasObject {
         Ok(info_length)
     }
 
-    /// Deserialize the CasObjectInfo struct, the metadata for this Xorb.
+    /// Deserialize the XorbObjectInfo struct, the metadata for this Xorb.
     ///
-    /// This allows the CasObject to be partially constructed, allowing for range reads inside the CasObject.
-    pub fn deserialize<R: Read + Seek>(reader: &mut R) -> Result<Self, CasObjectError> {
+    /// This allows the XorbObject to be partially constructed, allowing for range reads inside the XorbObject.
+    pub fn deserialize<R: Read + Seek>(reader: &mut R) -> Result<Self, XorbObjectError> {
         let info_length = Self::get_info_length(reader)?;
 
         // now seek back that many bytes + size of length (u32) and read sequentially.
         reader.seek(SeekFrom::End(-(size_of::<u32>() as i64 + info_length as i64)))?;
 
-        let (info, total_bytes_read) = CasObjectInfoV1::deserialize(reader)?;
+        let (info, total_bytes_read) = XorbObjectInfoV1::deserialize(reader)?;
 
         // validate that info_length matches what we read off of header
         if total_bytes_read != info_length {
-            return Err(CasObjectError::FormatError(anyhow!("Xorb Info Format Error")));
+            return Err(XorbObjectError::FormatError(anyhow!("Xorb Info Format Error")));
         }
 
         Ok(Self { info, info_length })
     }
 
-    /// Construct CasObject object from AsyncRead.
+    /// Construct XorbObject object from AsyncRead.
     /// assumes that the ident and version have already been read and verified.
     #[cfg(not(target_family = "wasm"))]
     pub async fn deserialize_async<R: futures::io::AsyncRead + Unpin>(
         reader: &mut R,
         version: u8,
-    ) -> Result<Self, CasObjectError> {
-        let (info, total_bytes_read) = CasObjectInfoV1::deserialize_async(reader, version).await?;
+    ) -> Result<Self, XorbObjectError> {
+        let (info, total_bytes_read) = XorbObjectInfoV1::deserialize_async(reader, version).await?;
 
         let mut info_length_buf = [0u8; size_of::<u32>()];
         // not using read_bytes since we do not want to count these bytes in total_bytes_read
@@ -964,12 +966,12 @@ impl CasObject {
         let info_length = u32::from_le_bytes(info_length_buf);
 
         if info_length != total_bytes_read {
-            return Err(CasObjectError::FormatError(anyhow!("Xorb Info Format Error")));
+            return Err(XorbObjectError::FormatError(anyhow!("Xorb Info Format Error")));
         }
 
         // verify we've read to the end
         if reader.read(&mut [0u8; 8]).await? != 0 {
-            return Err(CasObjectError::FormatError(anyhow!(
+            return Err(XorbObjectError::FormatError(anyhow!(
                 "Xorb Reader has content past the end of serialized xorb"
             )));
         }
@@ -977,35 +979,35 @@ impl CasObject {
         Ok(Self { info, info_length })
     }
 
-    pub fn serialize_given_info<W: Write>(w: &mut W, info: CasObjectInfoV1) -> Result<(Self, usize), CasObjectError> {
+    pub fn serialize_given_info<W: Write>(w: &mut W, info: XorbObjectInfoV1) -> Result<(Self, usize), XorbObjectError> {
         let mut total_written_bytes: usize = 0;
         let info_length = info.serialize(w)? as u32;
         total_written_bytes += info_length as usize;
         write_u32(w, info_length)?;
         total_written_bytes += size_of::<u32>();
 
-        let cas_object = Self { info, info_length };
+        let xorb_obj = Self { info, info_length };
 
-        debug_assert_eq!(cas_object.info_length, info_length);
-        debug_assert_eq!(cas_object.info_length as usize, cas_object.info.serialized_length());
+        debug_assert_eq!(xorb_obj.info_length, info_length);
+        debug_assert_eq!(xorb_obj.info_length as usize, xorb_obj.info.serialized_length());
 
-        Ok((cas_object, total_written_bytes))
+        Ok((xorb_obj, total_written_bytes))
     }
 
-    pub fn from_info(info: CasObjectInfoV1) -> Self {
+    pub fn from_info(info: XorbObjectInfoV1) -> Self {
         let info_length = info.serialized_length() as u32;
         Self { info, info_length }
     }
 
-    /// Validate CasObject.
-    /// Verifies each chunk is valid and correctly represented in CasObjectInfo, along with
-    /// recomputing the hash and validating it matches CasObjectInfo.
+    /// Validate XorbObject.
+    /// Verifies each chunk is valid and correctly represented in XorbObjectInfo, along with
+    /// recomputing the hash and validating it matches XorbObjectInfo.
     ///
-    /// Returns Ok(Some(cas object)) if recomputed hash matches what is passed in.
-    pub fn validate_cas_object<R: Read + Seek>(
+    /// Returns Ok(Some(xorb object)) if recomputed hash matches what is passed in.
+    pub fn validate_xorb_object<R: Read + Seek>(
         reader: &mut R,
         hash: &MerkleHash,
-    ) -> Result<Option<CasObject>, CasObjectError> {
+    ) -> Result<Option<XorbObject>, XorbObjectError> {
         // 1. deserialize to get Info
         // Errors can occur if either
         // - the object doesn't have at least 4 bytes for the "info_length";
@@ -1013,7 +1015,7 @@ impl CasObject {
         // - the object info format is incorrect (e.g. ident mismatch);
         // and we should reject instead of propagating the error.
 
-        let Some(cas) = CasObject::deserialize(reader).ok_for_format_error()? else {
+        let Some(xorb) = XorbObject::deserialize(reader).ok_for_format_error()? else {
             return Ok(None);
         };
 
@@ -1024,8 +1026,8 @@ impl CasObject {
 
         let mut start_offset = 0;
         // Validate each chunk: iterate chunks, deserialize chunk, compare stored hash with
-        // computed hash, store chunk hashes for cashash validation
-        for idx in 0..cas.info.num_chunks {
+        // computed hash, store chunk hashes for xorb_hash validation
+        for idx in 0..xorb.info.num_chunks {
             // deserialize each chunk
             reader.seek(SeekFrom::Start(start_offset as u64))?;
             // Reject if chunk is corrupted
@@ -1042,14 +1044,14 @@ impl CasObject {
             unpacked_chunk_offset += chunk_uncompressed_length;
 
             // verify chunk hash
-            if *cas.info.chunk_hashes.get(idx as usize).unwrap() != chunk_hash {
+            if *xorb.info.chunk_hashes.get(idx as usize).unwrap() != chunk_hash {
                 warn!("XORB Validation: Chunk hash does not match Info object.");
                 return Ok(None);
             }
 
-            let boundary = *cas.info.chunk_boundary_offsets.get(idx as usize).unwrap();
+            let boundary = *xorb.info.chunk_boundary_offsets.get(idx as usize).unwrap();
 
-            // verify that cas.chunk[n].len + 1 == cas.chunk_boundary_offsets[n]
+            // verify that xorb.chunk[n].len + 1 == xorb.chunk_boundary_offsets[n]
             if (start_offset + compressed_chunk_length as u32) != boundary {
                 warn!("XORB Validation: Chunk boundary byte index does not match Info object.");
                 return Ok(None);
@@ -1059,8 +1061,8 @@ impl CasObject {
             start_offset = boundary;
 
             // verify unpacked chunk offsets
-            if cas.info.boundaries_version == CAS_OBJECT_FORMAT_BOUNDARIES_VERSION
-                && unpacked_chunk_offset != *cas.info.unpacked_chunk_offsets.get(idx as usize).unwrap()
+            if xorb.info.boundaries_version == XORB_OBJECT_FORMAT_BOUNDARIES_VERSION
+                && unpacked_chunk_offset != *xorb.info.unpacked_chunk_offsets.get(idx as usize).unwrap()
             {
                 warn!("XORB Validation: Chunk unpacked byte offset does not match Info object.");
                 return Ok(None);
@@ -1072,7 +1074,7 @@ impl CasObject {
         let cur_position = reader.stream_position()? as u32;
         let expected_position = cumulative_compressed_length;
         let expected_from_end_position =
-            reader.seek(SeekFrom::End(0))? as u32 - cas.info_length - size_of::<u32>() as u32;
+            reader.seek(SeekFrom::End(0))? as u32 - xorb.info_length - size_of::<u32>() as u32;
         if cur_position != expected_position || cur_position != expected_from_end_position {
             warn!("XORB Validation: Content bytes after known chunks in Info object.");
             return Ok(None);
@@ -1081,17 +1083,17 @@ impl CasObject {
         // 4. combine hashes to get full xorb hash, compare to provided
         let xorb_hash = merklehash::xorb_hash(&hash_chunks);
 
-        if xorb_hash != *hash || xorb_hash != cas.info.cashash {
+        if xorb_hash != *hash || xorb_hash != xorb.info.xorb_hash {
             warn!("XORB Validation: Computed hash does not match provided hash or Info hash.");
             return Ok(None);
         }
 
-        Ok(Some(cas))
+        Ok(Some(xorb))
     }
 
     /// Generate a hash for securing a chunk range.
     ///
-    /// chunk_start_index, chunk_end_index: indices for chunks in CasObject.
+    /// chunk_start_index, chunk_end_index: indices for chunks in XorbObject.
     /// The indices should be [start, end) - meaning start is inclusive and end is exclusive.
     /// Ex. For specifying the 1st chunk: chunk_start_index: 0, chunk_end_index: 1
     ///
@@ -1104,11 +1106,11 @@ impl CasObject {
         &self,
         chunk_start_index: u32,
         chunk_end_index: u32,
-    ) -> Result<DataHash, CasObjectError> {
-        self.validate_cas_object_info()?;
+    ) -> Result<DataHash, XorbObjectError> {
+        self.validate_xorb_object_info()?;
 
         if chunk_end_index <= chunk_start_index || chunk_end_index > self.info.num_chunks {
-            return Err(CasObjectError::InvalidArguments);
+            return Err(XorbObjectError::InvalidArguments);
         }
 
         // Collect relevant hashes
@@ -1118,11 +1120,11 @@ impl CasObject {
     }
 
     /// Return end offset of all physical chunk contents (byte index at the beginning of footer)
-    pub fn get_contents_length(&self) -> Result<u32, CasObjectError> {
-        self.validate_cas_object_info()?;
+    pub fn get_contents_length(&self) -> Result<u32, XorbObjectError> {
+        self.validate_xorb_object_info()?;
         match self.info.chunk_boundary_offsets.last() {
             Some(c) => Ok(*c),
-            None => Err(CasObjectError::FormatError(anyhow!("Cannot retrieve content length"))),
+            None => Err(XorbObjectError::FormatError(anyhow!("Cannot retrieve content length"))),
         }
     }
 
@@ -1136,12 +1138,12 @@ impl CasObject {
         reader: &mut R,
         byte_start: u32,
         byte_end: u32,
-    ) -> Result<Vec<u8>, CasObjectError> {
+    ) -> Result<Vec<u8>, XorbObjectError> {
         if byte_end < byte_start {
-            return Err(CasObjectError::InvalidRange);
+            return Err(XorbObjectError::InvalidRange);
         }
 
-        self.validate_cas_object_info()?;
+        self.validate_xorb_object_info()?;
 
         // make sure the end of the range is within the bounds of the xorb
         let end = min(byte_end, self.get_contents_length()?);
@@ -1157,8 +1159,8 @@ impl CasObject {
     }
 
     /// Get all the content bytes from a Xorb
-    pub fn get_all_bytes<R: Read + Seek>(&self, reader: &mut R) -> Result<Vec<u8>, CasObjectError> {
-        self.validate_cas_object_info()?;
+    pub fn get_all_bytes<R: Read + Seek>(&self, reader: &mut R) -> Result<Vec<u8>, XorbObjectError> {
+        self.validate_xorb_object_info()?;
         self.get_range(reader, 0, self.get_contents_length()?)
     }
 
@@ -1168,14 +1170,14 @@ impl CasObject {
         reader: &mut R,
         chunk_index_start: u32,
         chunk_index_end: u32,
-    ) -> Result<Vec<u8>, CasObjectError> {
+    ) -> Result<Vec<u8>, XorbObjectError> {
         let (byte_start, byte_end) = self.get_byte_offset(chunk_index_start, chunk_index_end)?;
 
         self.get_range(reader, byte_start, byte_end)
     }
 
     /// Assumes chunk_data is 1+ complete chunks. Processes them sequentially and returns them as Vec<u8>.
-    fn get_chunk_contents(&self, chunk_data: &[u8]) -> Result<Vec<u8>, CasObjectError> {
+    fn get_chunk_contents(&self, chunk_data: &[u8]) -> Result<Vec<u8>, XorbObjectError> {
         // walk chunk_data, deserialize into Chunks, and then get_bytes() from each of them.
         let mut reader = Cursor::new(chunk_data);
         let mut res = Vec::<u8>::new();
@@ -1188,10 +1190,10 @@ impl CasObject {
     }
 
     /// Helper function to translate a range of chunk indices to physical byte offset range.
-    pub fn get_byte_offset(&self, chunk_index_start: u32, chunk_index_end: u32) -> Result<(u32, u32), CasObjectError> {
-        self.validate_cas_object_info()?;
+    pub fn get_byte_offset(&self, chunk_index_start: u32, chunk_index_end: u32) -> Result<(u32, u32), XorbObjectError> {
+        self.validate_xorb_object_info()?;
         if chunk_index_end <= chunk_index_start || chunk_index_end > self.info.num_chunks {
-            return Err(CasObjectError::InvalidArguments);
+            return Err(XorbObjectError::InvalidArguments);
         }
 
         let byte_offset_start = match chunk_index_start {
@@ -1205,11 +1207,11 @@ impl CasObject {
 
     /// given a valid chunk_index, returns the uncompressed chunk length for the chunk
     /// at the given index, chunk_index must be less than the number of chunks in the xorb
-    pub fn uncompressed_chunk_length(&self, chunk_index: u32) -> Result<u32, CasObjectError> {
-        self.validate_cas_object_info()?;
+    pub fn uncompressed_chunk_length(&self, chunk_index: u32) -> Result<u32, XorbObjectError> {
+        self.validate_xorb_object_info()?;
         let chunk_index = chunk_index as usize;
         if chunk_index >= self.info.unpacked_chunk_offsets.len() {
-            return Err(CasObjectError::InvalidArguments);
+            return Err(XorbObjectError::InvalidArguments);
         }
         let cumulative_sum = self.info.unpacked_chunk_offsets[chunk_index];
         let before = match chunk_index {
@@ -1229,13 +1231,13 @@ impl CasObject {
         &self,
         chunk_index_start: u32,
         chunk_index_end: u32,
-    ) -> Result<u32, CasObjectError> {
-        self.validate_cas_object_info()?;
+    ) -> Result<u32, XorbObjectError> {
+        self.validate_xorb_object_info()?;
         if chunk_index_start > chunk_index_end
             || chunk_index_end > self.info.num_chunks
             || chunk_index_start >= self.info.num_chunks
         {
-            return Err(CasObjectError::InvalidArguments);
+            return Err(XorbObjectError::InvalidArguments);
         }
 
         // this check is important if chunk_index_end is 0
@@ -1252,23 +1254,23 @@ impl CasObject {
     }
 
     /// Helper method to verify that info object is complete
-    fn validate_cas_object_info(&self) -> Result<(), CasObjectError> {
+    fn validate_xorb_object_info(&self) -> Result<(), XorbObjectError> {
         if self.info.num_chunks == 0 {
-            return Err(CasObjectError::FormatError(anyhow!("Invalid CasObjectInfo, no chunks in CasObject.")));
+            return Err(XorbObjectError::FormatError(anyhow!("Invalid XorbObjectInfo, no chunks in XorbObject.")));
         }
 
         if self.info.num_chunks != self.info.chunk_boundary_offsets.len() as u32
             || self.info.num_chunks != self.info.chunk_hashes.len() as u32
-            || (self.info.boundaries_version == CAS_OBJECT_FORMAT_BOUNDARIES_VERSION
+            || (self.info.boundaries_version == XORB_OBJECT_FORMAT_BOUNDARIES_VERSION
                 && self.info.num_chunks != self.info.unpacked_chunk_offsets.len() as u32)
         {
-            return Err(CasObjectError::FormatError(anyhow!(
-                "Invalid CasObjectInfo, num chunks not matching boundaries or hashes."
+            return Err(XorbObjectError::FormatError(anyhow!(
+                "Invalid XorbObjectInfo, num chunks not matching boundaries or hashes."
             )));
         }
 
-        if self.info.cashash == MerkleHash::default() {
-            return Err(CasObjectError::FormatError(anyhow!("Invalid CasObjectInfo, Missing cashash.")));
+        if self.info.xorb_hash == MerkleHash::default() {
+            return Err(XorbObjectError::FormatError(anyhow!("Invalid XorbObjectInfo, Missing xorb_hash.")));
         }
 
         Ok(())
@@ -1276,7 +1278,7 @@ impl CasObject {
 }
 
 /// A convenience struct that holds the raw information for the upload path.
-pub struct SerializedCasObject {
+pub struct SerializedXorbObject {
     /// The serialized data and header; can be uploaded as a blob.
     pub serialized_data: Vec<u8>,
 
@@ -1292,26 +1294,26 @@ pub struct SerializedCasObject {
     pub footer_start: Option<u64>,
 }
 
-impl SerializedCasObject {
+impl SerializedXorbObject {
     /// Builds the xorb from raw xorb data.
     pub fn from_xorb(
         xorb: RawXorbData,
         compression_scheme: Option<CompressionScheme>,
         serialize_footer: bool,
-    ) -> Result<Self, CasObjectError> {
-        let mut cas_object_info = CasObjectInfoV1::default();
+    ) -> Result<Self, XorbObjectError> {
+        let mut xorb_object_info = XorbObjectInfoV1::default();
 
         let hash = xorb.hash();
-        cas_object_info.cashash = hash;
+        xorb_object_info.xorb_hash = hash;
         let raw_num_bytes = xorb.num_bytes() as u64;
         let num_chunks = xorb.data.len();
 
-        let chunks_and_boundaries = xorb.cas_info.chunks_and_boundaries();
+        let chunks_and_boundaries = xorb.xorb_info.chunks_and_boundaries();
 
-        cas_object_info.num_chunks = chunks_and_boundaries.len() as u32;
-        cas_object_info.chunk_boundary_offsets = Vec::with_capacity(cas_object_info.num_chunks as usize);
-        cas_object_info.chunk_hashes = chunks_and_boundaries.iter().map(|(hash, _)| *hash).collect();
-        cas_object_info.unpacked_chunk_offsets = chunks_and_boundaries
+        xorb_object_info.num_chunks = chunks_and_boundaries.len() as u32;
+        xorb_object_info.chunk_boundary_offsets = Vec::with_capacity(xorb_object_info.num_chunks as usize);
+        xorb_object_info.chunk_hashes = chunks_and_boundaries.iter().map(|(hash, _)| *hash).collect();
+        xorb_object_info.unpacked_chunk_offsets = chunks_and_boundaries
             .iter()
             .map(|(_, unpacked_chunk_boundary)| *unpacked_chunk_boundary)
             .collect();
@@ -1320,8 +1322,8 @@ impl SerializedCasObject {
         // doesn't help at all, and add just a bit of buffer on it (lz4 with no compression adds just a few
         // bytes).
         let size_upper_bound = xorb.num_bytes()
-            + size_of::<CasObjectInfoV1>()
-            + (32 + 2 * size_of::<u32>() + size_of::<MerkleHash>() + size_of::<CASChunkHeader>()) * xorb.data.len();
+            + size_of::<XorbObjectInfoV1>()
+            + (32 + 2 * size_of::<u32>() + size_of::<MerkleHash>() + size_of::<XorbChunkHeader>()) * xorb.data.len();
 
         let mut serialized_data = Vec::with_capacity(size_upper_bound);
 
@@ -1350,7 +1352,7 @@ impl SerializedCasObject {
                     for chunk in &xorb.data[s_idx..n_idx] {
                         // now serialize chunk directly to writer (since chunks come first!)
                         serialize_chunk(chunk, &mut serialized_data, Some(compression_scheme))?;
-                        cas_object_info.chunk_boundary_offsets.push(serialized_data.len() as u32);
+                        xorb_object_info.chunk_boundary_offsets.push(serialized_data.len() as u32);
                     }
                     s_idx = n_idx;
                 }
@@ -1359,18 +1361,18 @@ impl SerializedCasObject {
             for chunk in xorb.data {
                 // now serialize chunk directly to writer (since chunks come first!)
                 serialize_chunk(&chunk, &mut serialized_data, compression_scheme)?;
-                cas_object_info.chunk_boundary_offsets.push(serialized_data.len() as u32);
+                xorb_object_info.chunk_boundary_offsets.push(serialized_data.len() as u32);
             }
         }
 
         // Fill in the boundary offsets
-        cas_object_info.fill_in_boundary_offsets();
+        xorb_object_info.fill_in_boundary_offsets();
 
         let mut footer_start = None;
         if serialize_footer {
-            // Serialize the CasObject footer
+            // Serialize the XorbObject footer
             footer_start = Some(serialized_data.len() as u64);
-            CasObject::serialize_given_info(&mut serialized_data, cas_object_info)?;
+            XorbObject::serialize_given_info(&mut serialized_data, xorb_object_info)?;
         }
 
         Ok(Self {
@@ -1389,24 +1391,24 @@ pub mod test_utils {
     use rand::Rng;
 
     use super::*;
-    use crate::cas_chunk_format::serialize_chunk;
+    use crate::xorb_chunk_format::serialize_chunk;
 
-    /// The reference version of the code serializing components of a raw cas object to
-    /// a stream.  Replaced by SerializedCasObject::from_xorb; used here for correctness testing.
-    /// returns the serialized CasObject, the number of bytes written, and the footer start offset.
+    /// The reference version of the code serializing components of a raw xorb object to
+    /// a stream.  Replaced by SerializedXorbObject::from_xorb; used here for correctness testing.
+    /// returns the serialized XorbObject, the number of bytes written, and the footer start offset.
     pub fn serialize_xorb_to_stream_reference<W: Write + Seek>(
         writer: &mut W,
         hash: &MerkleHash,
         data: &[u8],
         chunk_and_boundaries: &[(MerkleHash, u32)],
         compression_scheme: Option<CompressionScheme>,
-    ) -> Result<(CasObject, usize, u64), CasObjectError> {
-        let mut cas = CasObject::default();
-        cas.info.cashash = *hash;
-        cas.info.num_chunks = chunk_and_boundaries.len() as u32;
-        cas.info.chunk_boundary_offsets = Vec::with_capacity(cas.info.num_chunks as usize);
-        cas.info.chunk_hashes = chunk_and_boundaries.iter().map(|(hash, _)| *hash).collect();
-        cas.info.unpacked_chunk_offsets = chunk_and_boundaries
+    ) -> Result<(XorbObject, usize, u64), XorbObjectError> {
+        let mut xorb = XorbObject::default();
+        xorb.info.xorb_hash = *hash;
+        xorb.info.num_chunks = chunk_and_boundaries.len() as u32;
+        xorb.info.chunk_boundary_offsets = Vec::with_capacity(xorb.info.num_chunks as usize);
+        xorb.info.chunk_hashes = chunk_and_boundaries.iter().map(|(hash, _)| *hash).collect();
+        xorb.info.unpacked_chunk_offsets = chunk_and_boundaries
             .iter()
             .map(|(_, unpacked_chunk_boundary)| *unpacked_chunk_boundary)
             .collect();
@@ -1422,41 +1424,41 @@ pub mod test_utils {
             // now serialize chunk directly to writer (since chunks come first!)
             let chunk_written_bytes = serialize_chunk(chunk_raw_bytes, writer, compression_scheme)?;
             total_written_bytes += chunk_written_bytes;
-            cas.info.chunk_boundary_offsets.push(total_written_bytes as u32);
+            xorb.info.chunk_boundary_offsets.push(total_written_bytes as u32);
 
             // update indexes and onto next chunk
             raw_start_idx = chunk_boundary;
         }
 
-        cas.info.fill_in_boundary_offsets();
+        xorb.info.fill_in_boundary_offsets();
 
         let footer_start = writer.stream_position()?;
 
         // now that footer is ready, write out to writer.
-        let info_length = cas.info.serialize(writer)?;
-        cas.info_length = info_length as u32;
+        let info_length = xorb.info.serialize(writer)?;
+        xorb.info_length = info_length as u32;
         total_written_bytes += info_length;
 
-        writer.write_all(&cas.info_length.to_le_bytes())?;
+        writer.write_all(&xorb.info_length.to_le_bytes())?;
         total_written_bytes += size_of::<u32>();
 
-        Ok((cas, total_written_bytes, footer_start))
+        Ok((xorb, total_written_bytes, footer_start))
     }
 
-    /// Serialize into Cas Object from uncompressed data and chunk boundaries.
-    /// Assumes correctness from caller: it's the receiver's responsibility to validate a cas object.
-    pub fn serialized_cas_object_from_components(
+    /// Serialize into XORB object from uncompressed data and chunk boundaries.
+    /// Assumes correctness from caller: it's the receiver's responsibility to validate a xorb object.
+    pub fn serialized_xorb_object_from_components(
         hash: &MerkleHash,
         data: Vec<u8>,
         chunk_and_boundaries: Vec<(MerkleHash, u32)>,
         compression: Option<CompressionScheme>,
-    ) -> Result<SerializedCasObject, CasObjectError> {
+    ) -> Result<SerializedXorbObject, XorbObjectError> {
         let mut writer = Cursor::new(Vec::new());
 
         let (_, _, footer_start) =
             serialize_xorb_to_stream_reference(&mut writer, hash, &data, &chunk_and_boundaries, compression)?;
 
-        Ok(SerializedCasObject {
+        Ok(SerializedXorbObject {
             serialized_data: writer.into_inner(),
             hash: *hash,
             raw_num_bytes: data.len() as u64,
@@ -1465,15 +1467,15 @@ pub mod test_utils {
         })
     }
 
-    pub fn verify_serialized_cas_object(
+    pub fn verify_serialized_xorb_object(
         xorb: &RawXorbData,
         compression_scheme: Option<CompressionScheme>,
-        cas_object: &SerializedCasObject,
+        xorb_obj: &SerializedXorbObject,
     ) {
         let xorb_hash = xorb.hash();
         let num_chunks = xorb.data.len();
 
-        let chunks_and_boundaries = xorb.cas_info.chunks_and_boundaries();
+        let chunks_and_boundaries = xorb.xorb_info.chunks_and_boundaries();
 
         // For testing, check the current serialization method against the older version, byte for byte.
         let mut verification_data = Vec::new();
@@ -1494,16 +1496,16 @@ pub mod test_utils {
 
         assert_eq!(
             footer_start,
-            cas_object.serialized_data.len() as u64 - size_of::<u32>() as u64 - c.info_length as u64
+            xorb_obj.serialized_data.len() as u64 - size_of::<u32>() as u64 - c.info_length as u64
         );
 
         assert_eq!(verification_data.len(), nbytes_trans);
 
-        assert_eq!(cas_object.serialized_data, verification_data);
+        assert_eq!(xorb_obj.serialized_data, verification_data);
 
-        assert_eq!(cas_object.raw_num_bytes, xorb.num_bytes() as u64);
+        assert_eq!(xorb_obj.raw_num_bytes, xorb.num_bytes() as u64);
 
-        assert_eq!(cas_object.num_chunks, num_chunks);
+        assert_eq!(xorb_obj.num_chunks, num_chunks);
     }
 
     pub fn gen_random_bytes(size: u32) -> Vec<u8> {
@@ -1554,26 +1556,26 @@ pub mod test_utils {
         // Now, validate that this is actually the same
     }
 
-    pub fn build_and_verify_cas_object(
+    pub fn build_and_verify_xorb_object(
         xorb: RawXorbData,
         compression_scheme: Option<CompressionScheme>,
-    ) -> SerializedCasObject {
-        let cas_object = SerializedCasObject::from_xorb(xorb.clone(), compression_scheme, true).unwrap();
+    ) -> SerializedXorbObject {
+        let xorb_obj = SerializedXorbObject::from_xorb(xorb.clone(), compression_scheme, true).unwrap();
 
-        verify_serialized_cas_object(&xorb, compression_scheme, &cas_object);
+        verify_serialized_xorb_object(&xorb, compression_scheme, &xorb_obj);
 
-        cas_object
+        xorb_obj
     }
 
-    /// Utility test method for creating a cas object
-    /// Returns (CasObject, chunks serialized, raw data, raw data chunk hash and boundaries)
+    /// Utility test method for creating a xorb object
+    /// Returns (XorbObject, chunks serialized, raw data, raw data chunk hash and boundaries)
     #[allow(clippy::type_complexity)]
-    pub fn build_cas_object(
+    pub fn build_xorb_object(
         num_chunks: u32,
         chunk_size: ChunkSize,
         compression_scheme: CompressionScheme,
-    ) -> (CasObject, Vec<u8>, Vec<u8>, Vec<(MerkleHash, u32)>) {
-        let mut c = CasObject::default();
+    ) -> (XorbObject, Vec<u8>, Vec<u8>, Vec<(MerkleHash, u32)>) {
+        let mut c = XorbObject::default();
 
         let mut chunk_hashes = vec![];
         let mut chunk_boundary_offsets = vec![];
@@ -1619,7 +1621,7 @@ pub mod test_utils {
             .collect();
         c.info.chunk_hashes = chunk_hashes;
 
-        c.info.cashash = xorb_hash(&chunks);
+        c.info.xorb_hash = xorb_hash(&chunks);
 
         c.info.fill_in_boundary_offsets();
 
@@ -1629,7 +1631,7 @@ pub mod test_utils {
     }
 }
 
-/// Reconstructs a CasObject from raw chunk data (potentially without footer).
+/// Reconstructs a XorbObject from raw chunk data (potentially without footer).
 ///
 /// This function parses the raw XORB data (chunk headers + compressed data),
 /// validates the chunk structure, and appends a proper footer.
@@ -1639,7 +1641,7 @@ pub mod test_utils {
 /// * `raw_data` - The raw XORB data (chunk headers + compressed data, optionally with footer)
 ///
 /// # Returns
-/// - `CasObject`: The reconstructed CasObject with metadata
+/// - `XorbObject`: The reconstructed XorbObject with metadata
 /// - `MerkleHash`: The computed XORB hash (caller should verify this matches expected)
 ///
 /// # Errors
@@ -1650,15 +1652,15 @@ pub mod test_utils {
 pub fn reconstruct_xorb_with_footer(
     writer: &mut impl Write,
     raw_data: &[u8],
-) -> Result<(CasObject, MerkleHash), CasObjectError> {
+) -> Result<(XorbObject, MerkleHash), XorbObjectError> {
     let mut reader = Cursor::new(raw_data);
     let mut chunk_hash_and_size: Vec<(MerkleHash, u64)> = Vec::new();
-    let mut info = CasObjectInfoV1::default();
+    let mut info = XorbObjectInfoV1::default();
 
     while (reader.position() as usize) < raw_data.len() {
         let chunk_header = match deserialize_chunk_header(&mut reader) {
             Ok(header) => header,
-            Err(CasObjectError::ChunkHeaderParseErrorFooterIdent) => {
+            Err(XorbObjectError::ChunkHeaderParseErrorFooterIdent) => {
                 // Hit footer identifier, stop processing chunks
                 break;
             },
@@ -1669,19 +1671,19 @@ pub fn reconstruct_xorb_with_footer(
         let mut compressed_buf = vec![0u8; compressed_len];
         reader
             .read_exact(&mut compressed_buf)
-            .map_err(|e| CasObjectError::FormatError(anyhow!("Failed to read chunk data: {e}")))?;
+            .map_err(|e| XorbObjectError::FormatError(anyhow!("Failed to read chunk data: {e}")))?;
 
         let uncompressed_data = chunk_header
             .get_compression_scheme()?
             .decompress_from_slice(&compressed_buf)
-            .map_err(|e| CasObjectError::FormatError(anyhow!("Failed to decompress chunk: {e}")))?;
+            .map_err(|e| XorbObjectError::FormatError(anyhow!("Failed to decompress chunk: {e}")))?;
 
         let chunk_hash = merklehash::compute_data_hash(&uncompressed_data);
         chunk_hash_and_size.push((chunk_hash, uncompressed_data.len() as u64));
 
         info.chunk_hashes.push(chunk_hash);
         info.chunk_boundary_offsets.push(
-            info.chunk_boundary_offsets.last().unwrap_or(&0) + (size_of::<CASChunkHeader>() + compressed_len) as u32,
+            info.chunk_boundary_offsets.last().unwrap_or(&0) + (size_of::<XorbChunkHeader>() + compressed_len) as u32,
         );
         info.unpacked_chunk_offsets
             .push(info.unpacked_chunk_offsets.last().unwrap_or(&0) + uncompressed_data.len() as u32);
@@ -1691,13 +1693,13 @@ pub fn reconstruct_xorb_with_footer(
     }
 
     let computed_hash = merklehash::xorb_hash(&chunk_hash_and_size);
-    info.cashash = computed_hash;
+    info.xorb_hash = computed_hash;
     info.num_chunks = chunk_hash_and_size.len() as u32;
     info.fill_in_boundary_offsets();
 
-    let (cas_object, _) = CasObject::serialize_given_info(writer, info)?;
+    let (xorb_obj, _) = XorbObject::serialize_given_info(writer, info)?;
 
-    Ok((cas_object, computed_hash))
+    Ok((xorb_obj, computed_hash))
 }
 
 #[cfg(test)]
@@ -1711,21 +1713,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_default_cas_object() {
-        let cas = CasObject::default();
+    fn test_default_xorb_object() {
+        let xorb = XorbObject::default();
 
         let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
-        let len = cas.info.serialize(&mut writer).unwrap();
+        let len = xorb.info.serialize(&mut writer).unwrap();
 
-        assert_eq!(cas.info_length, len as u32);
-        assert_eq!(cas.info_length, CAS_OBJECT_INFO_DEFAULT_LENGTH);
+        assert_eq!(xorb.info_length, len as u32);
+        assert_eq!(xorb.info_length, XORB_OBJECT_INFO_DEFAULT_LENGTH);
     }
 
     #[test]
-    fn test_uncompressed_cas_object() {
+    fn test_uncompressed_xorb_object() {
         // Arrange
         let (c, _cas_data, _raw_data, _raw_chunk_boundaries) =
-            build_cas_object(3, ChunkSize::Fixed(100), CompressionScheme::None);
+            build_xorb_object(3, ChunkSize::Fixed(100), CompressionScheme::None);
         // Act & Assert
         assert_eq!(c.info.num_chunks, 3);
         assert_eq!(c.info.chunk_boundary_offsets.len(), c.info.num_chunks as usize);
@@ -1747,7 +1749,7 @@ mod tests {
     fn test_generate_range_hash_full_range() {
         // Arrange
         let (c, _cas_data, _raw_data, _raw_chunk_boundaries) =
-            build_cas_object(3, ChunkSize::Fixed(100), CompressionScheme::None);
+            build_xorb_object(3, ChunkSize::Fixed(100), CompressionScheme::None);
 
         let hashes: Vec<u8> = c.info.chunk_hashes.iter().flat_map(|hash| hash.as_bytes().to_vec()).collect();
 
@@ -1762,7 +1764,7 @@ mod tests {
     fn test_generate_range_hash_partial() {
         // Arrange
         let (c, _cas_data, _raw_data, _raw_chunk_boundaries) =
-            build_cas_object(5, ChunkSize::Fixed(100), CompressionScheme::None);
+            build_xorb_object(5, ChunkSize::Fixed(100), CompressionScheme::None);
 
         let hashes: Vec<u8> = c.info.chunk_hashes.as_slice()[1..=3]
             .to_vec()
@@ -1790,58 +1792,61 @@ mod tests {
     fn test_generate_range_hash_invalid_range() {
         // Arrange
         let (c, _cas_data, _raw_data, _raw_chunk_boundaries) =
-            build_cas_object(5, ChunkSize::Fixed(100), CompressionScheme::None);
+            build_xorb_object(5, ChunkSize::Fixed(100), CompressionScheme::None);
 
         // Act & Assert
-        assert_eq!(c.generate_chunk_range_hash(1, 6), Err(CasObjectError::InvalidArguments));
-        assert_eq!(c.generate_chunk_range_hash(100, 10), Err(CasObjectError::InvalidArguments));
-        assert_eq!(c.generate_chunk_range_hash(0, 0), Err(CasObjectError::InvalidArguments));
+        assert_eq!(c.generate_chunk_range_hash(1, 6), Err(XorbObjectError::InvalidArguments));
+        assert_eq!(c.generate_chunk_range_hash(100, 10), Err(XorbObjectError::InvalidArguments));
+        assert_eq!(c.generate_chunk_range_hash(0, 0), Err(XorbObjectError::InvalidArguments));
     }
 
     #[test]
-    fn test_validate_cas_object_info() {
+    fn test_validate_xorb_object_info() {
         // Arrange & Act & Assert
         let (c, _cas_data, _raw_data, _raw_chunk_boundaries) =
-            build_cas_object(5, ChunkSize::Fixed(100), CompressionScheme::None);
-        let result = c.validate_cas_object_info();
+            build_xorb_object(5, ChunkSize::Fixed(100), CompressionScheme::None);
+        let result = c.validate_xorb_object_info();
         assert!(result.is_ok());
 
         // no chunks
-        let c = CasObject::default();
-        let result = c.validate_cas_object_info();
-        assert_eq!(result, Err(CasObjectError::FormatError(anyhow!("Invalid CasObjectInfo, no chunks in CasObject."))));
-
-        // num_chunks doesn't match chunk_boundaries.len()
-        let mut c = CasObject::default();
-        c.info.num_chunks = 1;
-        let result = c.validate_cas_object_info();
+        let c = XorbObject::default();
+        let result = c.validate_xorb_object_info();
         assert_eq!(
             result,
-            Err(CasObjectError::FormatError(anyhow!(
-                "Invalid CasObjectInfo, num chunks not matching boundaries or hashes."
+            Err(XorbObjectError::FormatError(anyhow!("Invalid XorbObjectInfo, no chunks in XorbObject.")))
+        );
+
+        // num_chunks doesn't match chunk_boundaries.len()
+        let mut c = XorbObject::default();
+        c.info.num_chunks = 1;
+        let result = c.validate_xorb_object_info();
+        assert_eq!(
+            result,
+            Err(XorbObjectError::FormatError(anyhow!(
+                "Invalid XorbObjectInfo, num chunks not matching boundaries or hashes."
             )))
         );
 
         // no hash
         let (mut c, _cas_data, _raw_data, _raw_chunk_boundaries) =
-            build_cas_object(1, ChunkSize::Fixed(100), CompressionScheme::None);
-        c.info.cashash = MerkleHash::default();
-        let result = c.validate_cas_object_info();
-        assert_eq!(result, Err(CasObjectError::FormatError(anyhow!("Invalid CasObjectInfo, Missing cashash."))));
+            build_xorb_object(1, ChunkSize::Fixed(100), CompressionScheme::None);
+        c.info.xorb_hash = MerkleHash::default();
+        let result = c.validate_xorb_object_info();
+        assert_eq!(result, Err(XorbObjectError::FormatError(anyhow!("Invalid XorbObjectInfo, Missing xorb_hash."))));
     }
 
     #[test]
     fn test_compress_decompress() {
         // Arrange
         let (c, _cas_data, raw_data, raw_chunk_boundaries) =
-            build_cas_object(55, ChunkSize::Fixed(53212), CompressionScheme::LZ4);
+            build_xorb_object(55, ChunkSize::Fixed(53212), CompressionScheme::LZ4);
 
         // Act & Assert
         let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         assert!(
             serialize_xorb_to_stream_reference(
                 &mut writer,
-                &c.info.cashash,
+                &c.info.xorb_hash,
                 &raw_data,
                 &raw_chunk_boundaries,
                 Some(CompressionScheme::LZ4)
@@ -1851,7 +1856,7 @@ mod tests {
 
         let mut reader = writer.clone();
         reader.set_position(0);
-        let res = CasObject::deserialize(&mut reader);
+        let res = XorbObject::deserialize(&mut reader);
         assert!(res.is_ok());
         let c = res.unwrap();
 
@@ -1861,7 +1866,7 @@ mod tests {
         assert!(
             serialize_xorb_to_stream_reference(
                 &mut writer,
-                &c.info.cashash,
+                &c.info.xorb_hash,
                 &c_bytes,
                 &raw_chunk_boundaries,
                 Some(CompressionScheme::None)
@@ -1871,27 +1876,35 @@ mod tests {
 
         let mut reader = writer.clone();
         reader.set_position(0);
-        let res = CasObject::deserialize(&mut reader);
+        let res = XorbObject::deserialize(&mut reader);
         assert!(res.is_ok());
         let c2 = res.unwrap();
 
-        assert_eq!(c2.info.cashash, c.info.cashash);
+        assert_eq!(c2.info.xorb_hash, c.info.xorb_hash);
         assert_eq!(c.get_all_bytes(&mut writer), c.get_all_bytes(&mut reader));
-        assert!(CasObject::validate_cas_object(&mut reader, &c2.info.cashash).unwrap().is_some());
-        assert!(CasObject::validate_cas_object(&mut writer, &c.info.cashash).unwrap().is_some());
+        assert!(
+            XorbObject::validate_xorb_object(&mut reader, &c2.info.xorb_hash)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            XorbObject::validate_xorb_object(&mut writer, &c.info.xorb_hash)
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]
     fn test_hash_generation_compression() {
         // Arrange
-        let (c, cas_data, raw_data, raw_chunk_boundaries) =
-            build_cas_object(55, ChunkSize::Fixed(53212), CompressionScheme::LZ4);
+        let (c, xorb_data, raw_data, raw_chunk_boundaries) =
+            build_xorb_object(55, ChunkSize::Fixed(53212), CompressionScheme::LZ4);
         // Act & Assert
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         assert!(
             serialize_xorb_to_stream_reference(
                 &mut buf,
-                &c.info.cashash,
+                &c.info.xorb_hash,
                 &raw_data,
                 &raw_chunk_boundaries,
                 Some(CompressionScheme::LZ4)
@@ -1902,20 +1915,20 @@ mod tests {
         let serialized_all_bytes = c.get_all_bytes(&mut buf).unwrap();
 
         assert_eq!(raw_data, serialized_all_bytes);
-        assert_eq!(cas_data.len() as u32, c.get_contents_length().unwrap());
+        assert_eq!(xorb_data.len() as u32, c.get_contents_length().unwrap());
     }
 
     #[test]
     fn test_basic_serialization_mem() {
         // Arrange
         let (c, _cas_data, raw_data, raw_chunk_boundaries) =
-            build_cas_object(3, ChunkSize::Fixed(100), CompressionScheme::None);
+            build_xorb_object(3, ChunkSize::Fixed(100), CompressionScheme::None);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
         assert!(
             serialize_xorb_to_stream_reference(
                 &mut buf,
-                &c.info.cashash,
+                &c.info.xorb_hash,
                 &raw_data,
                 &raw_chunk_boundaries,
                 Some(CompressionScheme::None)
@@ -1923,20 +1936,20 @@ mod tests {
             .is_ok()
         );
 
-        assert!(CasObject::validate_cas_object(&mut buf, &c.info.cashash).unwrap().is_some());
+        assert!(XorbObject::validate_xorb_object(&mut buf, &c.info.xorb_hash).unwrap().is_some());
     }
 
     #[test]
     fn test_serialization_deserialization_mem_medium() {
         // Arrange
         let (c, _cas_data, raw_data, raw_chunk_boundaries) =
-            build_cas_object(32, ChunkSize::Fixed(16384), CompressionScheme::None);
+            build_xorb_object(32, ChunkSize::Fixed(16384), CompressionScheme::None);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
         assert!(
             serialize_xorb_to_stream_reference(
                 &mut buf,
-                &c.info.cashash,
+                &c.info.xorb_hash,
                 &raw_data,
                 &raw_chunk_boundaries,
                 Some(CompressionScheme::None)
@@ -1944,11 +1957,11 @@ mod tests {
             .is_ok()
         );
 
-        assert!(CasObject::validate_cas_object(&mut buf, &c.info.cashash).unwrap().is_some());
+        assert!(XorbObject::validate_xorb_object(&mut buf, &c.info.xorb_hash).unwrap().is_some());
 
         let mut reader = buf.clone();
         reader.set_position(0);
-        let res = CasObject::deserialize(&mut reader);
+        let res = XorbObject::deserialize(&mut reader);
         assert!(res.is_ok());
 
         let c2 = res.unwrap();
@@ -1963,13 +1976,13 @@ mod tests {
     fn test_serialization_deserialization_mem_large_random() {
         // Arrange
         let (c, _cas_data, raw_data, raw_chunk_boundaries) =
-            build_cas_object(32, ChunkSize::Random(512, 65536), CompressionScheme::None);
+            build_xorb_object(32, ChunkSize::Random(512, 65536), CompressionScheme::None);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
         assert!(
             serialize_xorb_to_stream_reference(
                 &mut buf,
-                &c.info.cashash,
+                &c.info.xorb_hash,
                 &raw_data,
                 &raw_chunk_boundaries,
                 Some(CompressionScheme::None)
@@ -1977,11 +1990,11 @@ mod tests {
             .is_ok()
         );
 
-        assert!(CasObject::validate_cas_object(&mut buf, &c.info.cashash).unwrap().is_some());
+        assert!(XorbObject::validate_xorb_object(&mut buf, &c.info.xorb_hash).unwrap().is_some());
 
         let mut reader = buf.clone();
         reader.set_position(0);
-        let res = CasObject::deserialize(&mut reader);
+        let res = XorbObject::deserialize(&mut reader);
         assert!(res.is_ok());
 
         let c2 = res.unwrap();
@@ -1995,13 +2008,13 @@ mod tests {
     fn test_serialization_deserialization_file_large_random() {
         // Arrange
         let (c, _cas_data, raw_data, raw_chunk_boundaries) =
-            build_cas_object(256, ChunkSize::Random(512, 65536), CompressionScheme::None);
+            build_xorb_object(256, ChunkSize::Random(512, 65536), CompressionScheme::None);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
         assert!(
             serialize_xorb_to_stream_reference(
                 &mut buf,
-                &c.info.cashash,
+                &c.info.xorb_hash,
                 &raw_data,
                 &raw_chunk_boundaries,
                 Some(CompressionScheme::None)
@@ -2009,11 +2022,11 @@ mod tests {
             .is_ok()
         );
 
-        assert!(CasObject::validate_cas_object(&mut buf, &c.info.cashash).unwrap().is_some());
+        assert!(XorbObject::validate_xorb_object(&mut buf, &c.info.xorb_hash).unwrap().is_some());
 
         let mut reader = buf.clone();
         reader.set_position(0);
-        let res = CasObject::deserialize(&mut reader);
+        let res = XorbObject::deserialize(&mut reader);
         assert!(res.is_ok());
 
         let c2 = res.unwrap();
@@ -2027,13 +2040,13 @@ mod tests {
     fn test_basic_mem_lz4() {
         // Arrange
         let (c, _cas_data, raw_data, raw_chunk_boundaries) =
-            build_cas_object(1, ChunkSize::Fixed(8), CompressionScheme::LZ4);
+            build_xorb_object(1, ChunkSize::Fixed(8), CompressionScheme::LZ4);
         let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
         assert!(
             serialize_xorb_to_stream_reference(
                 &mut writer,
-                &c.info.cashash,
+                &c.info.xorb_hash,
                 &raw_data,
                 &raw_chunk_boundaries,
                 Some(CompressionScheme::LZ4)
@@ -2043,7 +2056,7 @@ mod tests {
 
         let mut reader = writer.clone();
         reader.set_position(0);
-        let res = CasObject::deserialize(&mut reader);
+        let res = XorbObject::deserialize(&mut reader);
         assert!(res.is_ok());
 
         let c2 = res.unwrap();
@@ -2058,13 +2071,13 @@ mod tests {
     fn test_serialization_deserialization_mem_medium_lz4() {
         // Arrange
         let (c, _cas_data, raw_data, raw_chunk_boundaries) =
-            build_cas_object(32, ChunkSize::Fixed(16384), CompressionScheme::LZ4);
+            build_xorb_object(32, ChunkSize::Fixed(16384), CompressionScheme::LZ4);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
         assert!(
             serialize_xorb_to_stream_reference(
                 &mut buf,
-                &c.info.cashash,
+                &c.info.xorb_hash,
                 &raw_data,
                 &raw_chunk_boundaries,
                 Some(CompressionScheme::LZ4)
@@ -2072,11 +2085,11 @@ mod tests {
             .is_ok()
         );
 
-        assert!(CasObject::validate_cas_object(&mut buf, &c.info.cashash).unwrap().is_some());
+        assert!(XorbObject::validate_xorb_object(&mut buf, &c.info.xorb_hash).unwrap().is_some());
 
         let mut reader = buf.clone();
         reader.set_position(0);
-        let res = CasObject::deserialize(&mut reader);
+        let res = XorbObject::deserialize(&mut reader);
         assert!(res.is_ok());
 
         let c2 = res.unwrap();
@@ -2091,13 +2104,13 @@ mod tests {
     fn test_serialization_deserialization_mem_large_random_lz4() {
         // Arrange
         let (c, _cas_data, raw_data, raw_chunk_boundaries) =
-            build_cas_object(32, ChunkSize::Random(512, 65536), CompressionScheme::LZ4);
+            build_xorb_object(32, ChunkSize::Random(512, 65536), CompressionScheme::LZ4);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
         assert!(
             serialize_xorb_to_stream_reference(
                 &mut buf,
-                &c.info.cashash,
+                &c.info.xorb_hash,
                 &raw_data,
                 &raw_chunk_boundaries,
                 Some(CompressionScheme::LZ4)
@@ -2105,11 +2118,11 @@ mod tests {
             .is_ok()
         );
 
-        assert!(CasObject::validate_cas_object(&mut buf, &c.info.cashash).unwrap().is_some());
+        assert!(XorbObject::validate_xorb_object(&mut buf, &c.info.xorb_hash).unwrap().is_some());
 
         let mut reader = buf.clone();
         reader.set_position(0);
-        let res = CasObject::deserialize(&mut reader);
+        let res = XorbObject::deserialize(&mut reader);
         assert!(res.is_ok());
 
         let c2 = res.unwrap();
@@ -2123,13 +2136,13 @@ mod tests {
     fn test_serialization_deserialization_file_large_random_lz4() {
         // Arrange
         let (c, _cas_data, raw_data, raw_chunk_boundaries) =
-            build_cas_object(256, ChunkSize::Random(512, 65536), CompressionScheme::LZ4);
+            build_xorb_object(256, ChunkSize::Random(512, 65536), CompressionScheme::LZ4);
         let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
         assert!(
             serialize_xorb_to_stream_reference(
                 &mut writer,
-                &c.info.cashash,
+                &c.info.xorb_hash,
                 &raw_data,
                 &raw_chunk_boundaries,
                 Some(CompressionScheme::LZ4)
@@ -2139,7 +2152,7 @@ mod tests {
 
         let mut reader = writer.clone();
         reader.set_position(0);
-        let res = CasObject::deserialize(&mut reader);
+        let res = XorbObject::deserialize(&mut reader);
         assert!(res.is_ok());
 
         let c2 = res.unwrap();
@@ -2153,13 +2166,13 @@ mod tests {
     async fn test_serialization_async_deserialization() {
         // Arrange
         let (c, _cas_data, raw_data, raw_chunk_boundaries) =
-            build_cas_object(64, ChunkSize::Random(512, 2048), CompressionScheme::LZ4);
+            build_xorb_object(64, ChunkSize::Random(512, 2048), CompressionScheme::LZ4);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
         assert!(
             serialize_xorb_to_stream_reference(
                 &mut buf,
-                &c.info.cashash,
+                &c.info.xorb_hash,
                 &raw_data,
                 &raw_chunk_boundaries,
                 Some(CompressionScheme::LZ4)
@@ -2170,28 +2183,28 @@ mod tests {
         let xorb_bytes = buf.into_inner();
         // length - 4 byte for the info_length - info_length + ident + version (already read ident + version)
         let start_pos = xorb_bytes.len() - size_of::<u32>() - c.info_length as usize
-            + size_of::<CasObjectIdent>()
+            + size_of::<XorbObjectIdent>()
             + size_of::<u8>();
 
         let chunks = xorb_bytes[start_pos..].chunks(10).map(Ok).collect::<Vec<_>>();
         let mut xorb_footer_async_reader = futures::stream::iter(chunks).into_async_read();
-        let cas_object_result =
-            CasObject::deserialize_async(&mut xorb_footer_async_reader, CAS_OBJECT_FORMAT_VERSION).await;
-        assert!(cas_object_result.is_ok(), "{cas_object_result:?}");
-        let cas_object = cas_object_result.unwrap();
-        assert_eq!(c, cas_object);
+        let xorb_object_result =
+            XorbObject::deserialize_async(&mut xorb_footer_async_reader, XORB_OBJECT_FORMAT_VERSION).await;
+        assert!(xorb_object_result.is_ok(), "{xorb_object_result:?}");
+        let xorb_obj = xorb_object_result.unwrap();
+        assert_eq!(c, xorb_obj);
     }
 
     #[test]
     fn test_jump_pointer_in_metadata() {
         let (c, _cas_data, raw_data, raw_chunk_boundaries) =
-            build_cas_object(4, ChunkSize::Random(512, 2048), CompressionScheme::LZ4);
+            build_xorb_object(4, ChunkSize::Random(512, 2048), CompressionScheme::LZ4);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
         assert!(
             serialize_xorb_to_stream_reference(
                 &mut buf,
-                &c.info.cashash,
+                &c.info.xorb_hash,
                 &raw_data,
                 &raw_chunk_boundaries,
                 Some(CompressionScheme::LZ4)
@@ -2251,13 +2264,13 @@ mod tests {
     fn test_deserialize_from_v0_xorb() {
         // build a v1 xorb
         let (c, _cas_data, raw_data, raw_chunk_boundaries) =
-            build_cas_object(4, ChunkSize::Random(512, 2048), CompressionScheme::LZ4);
+            build_xorb_object(4, ChunkSize::Random(512, 2048), CompressionScheme::LZ4);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
 
         assert!(
             serialize_xorb_to_stream_reference(
                 &mut buf,
-                &c.info.cashash,
+                &c.info.xorb_hash,
                 &raw_data,
                 &raw_chunk_boundaries,
                 Some(CompressionScheme::LZ4),
@@ -2266,11 +2279,11 @@ mod tests {
         );
 
         // Switch V1 footer to V0
-        let mut cas_info_v0 = CasObjectInfoV0::default();
-        cas_info_v0.cashash = c.info.cashash;
-        cas_info_v0.num_chunks = c.info.num_chunks;
-        cas_info_v0.chunk_boundary_offsets = c.info.chunk_boundary_offsets.clone();
-        cas_info_v0.chunk_hashes = c.info.chunk_hashes.clone();
+        let mut xorb_info_v0 = XorbObjectInfoV0::default();
+        xorb_info_v0.xorb_hash = c.info.xorb_hash;
+        xorb_info_v0.num_chunks = c.info.num_chunks;
+        xorb_info_v0.chunk_boundary_offsets = c.info.chunk_boundary_offsets.clone();
+        xorb_info_v0.chunk_hashes = c.info.chunk_hashes.clone();
 
         let mut buf = buf.into_inner();
         let serialized_chunks_length = c.get_contents_length().unwrap();
@@ -2279,23 +2292,23 @@ mod tests {
         let mut buf = Cursor::new(buf);
         buf.seek(SeekFrom::End(0)).unwrap();
         #[allow(deprecated)]
-        let info_length = cas_info_v0.serialize(&mut buf).unwrap() as u32;
+        let info_length = xorb_info_v0.serialize(&mut buf).unwrap() as u32;
         write_u32(&mut buf, info_length).unwrap();
 
         let xorb_bytes = buf.into_inner();
         let mut reader = Cursor::new(xorb_bytes);
-        let ret = CasObject::deserialize(&mut reader).unwrap();
-        assert_eq!(ret.info.cashash, cas_info_v0.cashash);
-        assert_eq!(ret.info.num_chunks, cas_info_v0.num_chunks);
-        assert_eq!(ret.info.chunk_boundary_offsets, cas_info_v0.chunk_boundary_offsets);
-        assert_eq!(ret.info.chunk_hashes, cas_info_v0.chunk_hashes);
-        assert_eq!(ret.info._buffer, cas_info_v0._buffer);
+        let ret = XorbObject::deserialize(&mut reader).unwrap();
+        assert_eq!(ret.info.xorb_hash, xorb_info_v0.xorb_hash);
+        assert_eq!(ret.info.num_chunks, xorb_info_v0.num_chunks);
+        assert_eq!(ret.info.chunk_boundary_offsets, xorb_info_v0.chunk_boundary_offsets);
+        assert_eq!(ret.info.chunk_hashes, xorb_info_v0.chunk_hashes);
+        assert_eq!(ret.info._buffer, xorb_info_v0._buffer);
     }
 
     #[test]
     fn test_uncompressed_chunk_length() {
         const NUM_CHUNKS: u32 = 8;
-        let (c, _, _, _) = build_cas_object(NUM_CHUNKS, ChunkSize::Random(512, 2048), CompressionScheme::LZ4);
+        let (c, _, _, _) = build_xorb_object(NUM_CHUNKS, ChunkSize::Random(512, 2048), CompressionScheme::LZ4);
 
         let mut cumulative_sum = 0;
         for i in 0..NUM_CHUNKS {
@@ -2310,7 +2323,7 @@ mod tests {
     #[test]
     fn test_uncompressed_chunk_length_invalid() {
         const NUM_CHUNKS: u32 = 8;
-        let (c, _, _, _) = build_cas_object(NUM_CHUNKS, ChunkSize::Random(512, 2048), CompressionScheme::LZ4);
+        let (c, _, _, _) = build_xorb_object(NUM_CHUNKS, ChunkSize::Random(512, 2048), CompressionScheme::LZ4);
 
         assert!(c.uncompressed_chunk_length(NUM_CHUNKS).is_err());
         assert!(c.uncompressed_chunk_length(NUM_CHUNKS + 1).is_err());
@@ -2320,7 +2333,7 @@ mod tests {
     fn test_uncompressed_range_length() {
         const NUM_CHUNKS: u32 = 4;
         const CHUNK_SIZE: u32 = 512;
-        let (c, _, _, _) = build_cas_object(NUM_CHUNKS, ChunkSize::Fixed(CHUNK_SIZE), CompressionScheme::LZ4);
+        let (c, _, _, _) = build_xorb_object(NUM_CHUNKS, ChunkSize::Fixed(CHUNK_SIZE), CompressionScheme::LZ4);
 
         for start in 0..(NUM_CHUNKS - 1) {
             for end in start..NUM_CHUNKS {
@@ -2336,7 +2349,7 @@ mod tests {
     fn test_uncompressed_range_length_invalid() {
         const NUM_CHUNKS: u32 = 4;
         const CHUNK_SIZE: u32 = 512;
-        let (c, _, _, _) = build_cas_object(NUM_CHUNKS, ChunkSize::Fixed(CHUNK_SIZE), CompressionScheme::LZ4);
+        let (c, _, _, _) = build_xorb_object(NUM_CHUNKS, ChunkSize::Fixed(CHUNK_SIZE), CompressionScheme::LZ4);
 
         assert!(c.uncompressed_range_length(1, 0).is_err());
         assert!(c.uncompressed_range_length(0, NUM_CHUNKS + 1).is_err());
@@ -2351,14 +2364,14 @@ mod tests {
 
         for num_chunks in [1, 10, 100, 1000] {
             let (c, _, raw_data, raw_chunk_boundaries) =
-                build_cas_object(num_chunks, ChunkSize::Fixed(CHUNK_SIZE), COMPRESSION_SCHEME);
+                build_xorb_object(num_chunks, ChunkSize::Fixed(CHUNK_SIZE), COMPRESSION_SCHEME);
 
             // Act & Assert
             let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
             assert!(
                 serialize_xorb_to_stream_reference(
                     &mut writer,
-                    &c.info.cashash,
+                    &c.info.xorb_hash,
                     &raw_data,
                     &raw_chunk_boundaries,
                     Some(COMPRESSION_SCHEME)
@@ -2369,7 +2382,7 @@ mod tests {
 
             writer.seek(SeekFrom::Start(0)).unwrap();
 
-            let result = CasObjectInfoV1::deserialize_only_boundaries_section(&mut writer);
+            let result = XorbObjectInfoV1::deserialize_only_boundaries_section(&mut writer);
             assert!(result.is_ok());
             let (boundaries_footer, _num_read) = result.unwrap();
 
@@ -2395,7 +2408,7 @@ mod tests {
         const COMPRESSION_SCHEME: CompressionScheme = CompressionScheme::LZ4;
 
         for num_chunks in [1, 10, 100, 1000] {
-            let (c, _, _, _) = build_cas_object(num_chunks, ChunkSize::Fixed(CHUNK_SIZE), COMPRESSION_SCHEME);
+            let (c, _, _, _) = build_xorb_object(num_chunks, ChunkSize::Fixed(CHUNK_SIZE), COMPRESSION_SCHEME);
 
             // serialize the info, match that returned length matches the serialized_length() function
             // output and the actual result length of the serialized data
@@ -2429,40 +2442,38 @@ mod tests {
 
         // Reconstruct with footer
         let mut data_with_footer = Vec::new();
-        let (cas_object, computed_hash) =
-            super::reconstruct_xorb_with_footer(&mut data_with_footer, &raw_data).unwrap();
+        let (xorb_obj, computed_hash) = super::reconstruct_xorb_with_footer(&mut data_with_footer, &raw_data).unwrap();
 
         assert_eq!(computed_hash, expected_hash);
-        assert_eq!(cas_object.info.cashash, expected_hash);
-        assert_eq!(cas_object.info.num_chunks, 3);
-        assert_eq!(cas_object.info.chunk_hashes.len(), 3);
+        assert_eq!(xorb_obj.info.xorb_hash, expected_hash);
+        assert_eq!(xorb_obj.info.num_chunks, 3);
+        assert_eq!(xorb_obj.info.chunk_hashes.len(), 3);
 
         // Verify the reconstructed data can be deserialized
         let mut reader = Cursor::new(&data_with_footer);
-        let deserialized = CasObject::deserialize(&mut reader).unwrap();
-        assert_eq!(deserialized.info.cashash, expected_hash);
+        let deserialized = XorbObject::deserialize(&mut reader).unwrap();
+        assert_eq!(deserialized.info.xorb_hash, expected_hash);
         assert_eq!(deserialized.info.num_chunks, 3);
     }
 
     #[test]
     fn test_reconstruct_xorb_with_footer_already_has_footer() {
-        // Build a CasObject with footer using the test utilities
-        let (original, cas_data, _, _) = build_cas_object(5, ChunkSize::Fixed(1024), CompressionScheme::LZ4);
+        // Build a XorbObject with footer using the test utilities
+        let (original, xorb_data, _, _) = build_xorb_object(5, ChunkSize::Fixed(1024), CompressionScheme::LZ4);
 
         // Reconstruct from the data that already has footer
         let mut data_with_footer = Vec::new();
-        let (cas_object, computed_hash) =
-            super::reconstruct_xorb_with_footer(&mut data_with_footer, &cas_data).unwrap();
+        let (xorb_obj, computed_hash) = super::reconstruct_xorb_with_footer(&mut data_with_footer, &xorb_data).unwrap();
 
-        assert_eq!(computed_hash, original.info.cashash);
-        assert_eq!(cas_object.info.cashash, original.info.cashash);
-        assert_eq!(cas_object.info.num_chunks, original.info.num_chunks);
-        assert_eq!(cas_object.info.chunk_hashes, original.info.chunk_hashes);
+        assert_eq!(computed_hash, original.info.xorb_hash);
+        assert_eq!(xorb_obj.info.xorb_hash, original.info.xorb_hash);
+        assert_eq!(xorb_obj.info.num_chunks, original.info.num_chunks);
+        assert_eq!(xorb_obj.info.chunk_hashes, original.info.chunk_hashes);
 
         // Verify the reconstructed data can be deserialized
         let mut reader = Cursor::new(&data_with_footer);
-        let deserialized = CasObject::deserialize(&mut reader).unwrap();
-        assert_eq!(deserialized.info.cashash, original.info.cashash);
+        let deserialized = XorbObject::deserialize(&mut reader).unwrap();
+        assert_eq!(deserialized.info.xorb_hash, original.info.xorb_hash);
     }
 
     #[test]
@@ -2482,10 +2493,10 @@ mod tests {
             let expected_hash = merklehash::xorb_hash(&chunk_hashes_and_sizes);
 
             let mut output = Vec::new();
-            let (cas_object, computed_hash) = super::reconstruct_xorb_with_footer(&mut output, &raw_data).unwrap();
+            let (xorb_obj, computed_hash) = super::reconstruct_xorb_with_footer(&mut output, &raw_data).unwrap();
 
             assert_eq!(computed_hash, expected_hash);
-            assert_eq!(cas_object.info.num_chunks, 3);
+            assert_eq!(xorb_obj.info.num_chunks, 3);
         }
     }
 
@@ -2505,16 +2516,16 @@ mod tests {
         }
 
         let mut output = Vec::new();
-        let (cas_object, _) = super::reconstruct_xorb_with_footer(&mut output, &raw_data).unwrap();
+        let (xorb_obj, _) = super::reconstruct_xorb_with_footer(&mut output, &raw_data).unwrap();
 
         // Verify unpacked chunk offsets are cumulative
-        assert_eq!(cas_object.info.unpacked_chunk_offsets.len(), 3);
-        assert_eq!(cas_object.info.unpacked_chunk_offsets[0], 100);
-        assert_eq!(cas_object.info.unpacked_chunk_offsets[1], 300);
-        assert_eq!(cas_object.info.unpacked_chunk_offsets[2], 600);
+        assert_eq!(xorb_obj.info.unpacked_chunk_offsets.len(), 3);
+        assert_eq!(xorb_obj.info.unpacked_chunk_offsets[0], 100);
+        assert_eq!(xorb_obj.info.unpacked_chunk_offsets[1], 300);
+        assert_eq!(xorb_obj.info.unpacked_chunk_offsets[2], 600);
 
         // Verify chunk boundary offsets are cumulative (8-byte header per chunk + data)
-        assert_eq!(cas_object.info.chunk_boundary_offsets.len(), 3);
+        assert_eq!(xorb_obj.info.chunk_boundary_offsets.len(), 3);
     }
 
     #[test]
@@ -2527,17 +2538,16 @@ mod tests {
         let expected_hash = merklehash::xorb_hash(&[(chunk_hash, 1024)]);
 
         let mut data_with_footer = Vec::new();
-        let (cas_object, computed_hash) =
-            super::reconstruct_xorb_with_footer(&mut data_with_footer, &raw_data).unwrap();
+        let (xorb_obj, computed_hash) = super::reconstruct_xorb_with_footer(&mut data_with_footer, &raw_data).unwrap();
 
         assert_eq!(computed_hash, expected_hash);
-        assert_eq!(cas_object.info.num_chunks, 1);
-        assert_eq!(cas_object.info.chunk_hashes.len(), 1);
-        assert_eq!(cas_object.info.chunk_hashes[0], chunk_hash);
+        assert_eq!(xorb_obj.info.num_chunks, 1);
+        assert_eq!(xorb_obj.info.chunk_hashes.len(), 1);
+        assert_eq!(xorb_obj.info.chunk_hashes[0], chunk_hash);
 
         // Verify the reconstructed data can be deserialized
         let mut reader = Cursor::new(&data_with_footer);
-        let deserialized = CasObject::deserialize(&mut reader).unwrap();
+        let deserialized = XorbObject::deserialize(&mut reader).unwrap();
         assert_eq!(deserialized.info.num_chunks, 1);
     }
 }

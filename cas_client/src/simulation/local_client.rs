@@ -10,20 +10,19 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::anyhow;
 use async_trait::async_trait;
 use bytes::Bytes;
-use cas_object::{CasObject, SerializedCasObject};
 use cas_types::{
-    BatchQueryReconstructionResponse, CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange, FileRange,
-    HexMerkleHash, HttpRange, QueryReconstructionResponse,
+    BatchQueryReconstructionResponse, ChunkRange, FileRange, HexMerkleHash, HttpRange, QueryReconstructionResponse,
+    XorbReconstructionFetchInfo, XorbReconstructionTerm,
 };
 use file_utils::SafeFileCreator;
 use heed::types::*;
 use lazy_static::lazy_static;
-use mdb_shard::cas_structs::MDBCASInfo;
 use mdb_shard::file_structs::MDBFileInfo;
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
 use mdb_shard::streaming_shard::MDBMinimalShard;
 use mdb_shard::utils::shard_file_name;
+use mdb_shard::xorb_structs::MDBXorbInfo;
 use mdb_shard::{MDBShardFile, ShardFileManager};
 use merklehash::MerkleHash;
 use more_asserts::*;
@@ -32,6 +31,7 @@ use tempfile::TempDir;
 use tokio::time::{Duration, Instant};
 use tracing::{error, info, warn};
 use utils::serialization_utils::read_u32;
+use xorb_object::{SerializedXorbObject, XorbObject};
 
 use super::direct_access_client::DirectAccessClient;
 use crate::Client;
@@ -263,8 +263,8 @@ impl DirectAccessClient for LocalClient {
         })?;
 
         let mut reader = BufReader::new(file);
-        let cas = CasObject::deserialize(&mut reader)?;
-        let result = cas.get_all_bytes(&mut reader)?;
+        let xorb_obj = XorbObject::deserialize(&mut reader)?;
+        let result = xorb_obj.get_all_bytes(&mut reader)?;
         Ok(Bytes::from(result))
     }
 
@@ -280,7 +280,7 @@ impl DirectAccessClient for LocalClient {
         })?;
 
         let mut reader = BufReader::new(file);
-        let cas = CasObject::deserialize(&mut reader)?;
+        let xorb_obj = XorbObject::deserialize(&mut reader)?;
 
         let mut ret: Vec<Bytes> = Vec::new();
         for r in chunk_ranges {
@@ -289,7 +289,7 @@ impl DirectAccessClient for LocalClient {
                 continue;
             }
 
-            let data = cas.get_bytes_by_chunk_range(&mut reader, r.0, r.1)?;
+            let data = xorb_obj.get_bytes_by_chunk_range(&mut reader, r.0, r.1)?;
             ret.push(Bytes::from(data));
         }
         Ok(ret)
@@ -300,8 +300,8 @@ impl DirectAccessClient for LocalClient {
         match File::open(file_path) {
             Ok(file) => {
                 let mut reader = BufReader::new(file);
-                let cas = CasObject::deserialize(&mut reader)?;
-                let length = cas.get_all_bytes(&mut reader)?.len();
+                let xorb_obj = XorbObject::deserialize(&mut reader)?;
+                let length = xorb_obj.get_all_bytes(&mut reader)?.len();
                 Ok(length as u32)
             },
             Err(_) => Err(CasClientError::XORBNotFound(*hash)),
@@ -326,11 +326,11 @@ impl DirectAccessClient for LocalClient {
         };
 
         let mut reader = BufReader::new(file);
-        CasObject::deserialize(&mut reader)?;
+        XorbObject::deserialize(&mut reader)?;
         Ok(true)
     }
 
-    async fn xorb_footer(&self, hash: &MerkleHash) -> Result<CasObject> {
+    async fn xorb_footer(&self, hash: &MerkleHash) -> Result<XorbObject> {
         let file_path = self.get_path_for_entry(hash);
         let mut file = File::open(&file_path).map_err(|_| {
             error!("Unable to find xorb in local CAS {:?}", file_path);
@@ -343,8 +343,8 @@ impl DirectAccessClient for LocalClient {
         file.seek(SeekFrom::End(-(info_length as i64)))?;
 
         let mut reader = BufReader::new(file);
-        let cas_object = CasObject::deserialize(&mut reader)?;
-        Ok(cas_object)
+        let xorb_obj = XorbObject::deserialize(&mut reader)?;
+        Ok(xorb_obj)
     }
 
     async fn get_file_size(&self, hash: &MerkleHash) -> Result<u64> {
@@ -365,7 +365,7 @@ impl DirectAccessClient for LocalClient {
         let mut file_vec = Vec::new();
         for entry in &file_info.segments {
             let entry_bytes = self
-                .get_xorb_ranges(&entry.cas_hash, vec![(entry.chunk_index_start, entry.chunk_index_end)])
+                .get_xorb_ranges(&entry.xorb_hash, vec![(entry.chunk_index_start, entry.chunk_index_end)])
                 .await?
                 .pop()
                 .unwrap();
@@ -416,7 +416,7 @@ impl DirectAccessClient for LocalClient {
     async fn fetch_term_data(
         &self,
         hash: MerkleHash,
-        fetch_term: CASReconstructionFetchInfo,
+        fetch_term: XorbReconstructionFetchInfo,
     ) -> Result<(Bytes, Vec<u32>)> {
         self.apply_api_delay().await;
         let (file_path, url_byte_range, url_timestamp) = parse_fetch_url(&fetch_term.url)?;
@@ -441,9 +441,9 @@ impl DirectAccessClient for LocalClient {
         })?;
 
         let mut reader = BufReader::new(file);
-        let cas = CasObject::deserialize(&mut reader)?;
+        let xorb_obj = XorbObject::deserialize(&mut reader)?;
 
-        let data = cas.get_bytes_by_chunk_range(&mut reader, fetch_term.range.start, fetch_term.range.end)?;
+        let data = xorb_obj.get_bytes_by_chunk_range(&mut reader, fetch_term.range.start, fetch_term.range.end)?;
 
         let chunk_byte_indices = {
             let mut indices = Vec::new();
@@ -452,7 +452,7 @@ impl DirectAccessClient for LocalClient {
             indices.push(0);
             // ChunkRange is exclusive-end, so we iterate from start to end (exclusive)
             for chunk_idx in fetch_term.range.start..fetch_term.range.end {
-                let chunk_len = cas
+                let chunk_len = xorb_obj
                     .uncompressed_chunk_length(chunk_idx)
                     .map_err(|e| CasClientError::Other(format!("Failed to get chunk length: {e}")))?;
                 cumulative += chunk_len;
@@ -516,10 +516,10 @@ impl Client for LocalClient {
             in_memory_shard.add_file_reconstruction_info(MDBFileInfo::from(file_view))?;
         }
 
-        // Add CAS info from the views
-        for i in 0..minimal_shard.num_cas() {
-            let cas_view = minimal_shard.cas(i).unwrap();
-            in_memory_shard.add_cas_block(MDBCASInfo::from(cas_view))?;
+        // Add XORB info from the views
+        for i in 0..minimal_shard.num_xorb() {
+            let xorb_view = minimal_shard.xorb(i).unwrap();
+            in_memory_shard.add_xorb_block(MDBXorbInfo::from(xorb_view))?;
         }
 
         // Write the rebuilt shard to disk (creates proper lookup tables)
@@ -552,14 +552,14 @@ impl Client for LocalClient {
     async fn upload_xorb(
         &self,
         _prefix: &str,
-        serialized_cas_object: SerializedCasObject,
+        serialized_xorb_object: SerializedXorbObject,
         progress_callback: Option<ProgressCallback>,
         _permit: crate::adaptive_concurrency::ConnectionPermit,
     ) -> Result<u64> {
         self.apply_api_delay().await;
-        let hash = serialized_cas_object.hash;
-        let footer_start = serialized_cas_object.footer_start;
-        let serialized_data = serialized_cas_object.serialized_data;
+        let hash = serialized_xorb_object.hash;
+        let footer_start = serialized_xorb_object.footer_start;
+        let serialized_data = serialized_xorb_object.serialized_data;
         if self.xorb_exists(&hash).await? {
             info!("object {hash:?} already exists in Local CAS; returning.");
             return Ok(0);
@@ -570,7 +570,8 @@ impl Client for LocalClient {
             serialized_data
         } else {
             let mut data_with_footer = Vec::new();
-            let (_, computed_hash) = cas_object::reconstruct_xorb_with_footer(&mut data_with_footer, &serialized_data)?;
+            let (_, computed_hash) =
+                xorb_object::reconstruct_xorb_with_footer(&mut data_with_footer, &serialized_data)?;
             if computed_hash != hash {
                 return Err(CasClientError::Other(format!(
                     "XORB hash mismatch: expected {}, got {}",
@@ -698,7 +699,7 @@ impl Client for LocalClient {
             let mut chunk_range = ChunkRange::new(segment.chunk_index_start, segment.chunk_index_end);
 
             // Now get the URL for this segment, which involves reading the actual byte range there.
-            let xorb_footer = self.xorb_footer(&segment.cas_hash).await?;
+            let xorb_footer = self.xorb_footer(&segment.xorb_hash).await?;
 
             // Do we need to prune the first segment on chunk boundaries to align with the range given?
             if cumulative_bytes < file_range.start {
@@ -740,20 +741,23 @@ impl Client for LocalClient {
             let (byte_start, byte_end) = xorb_footer.get_byte_offset(chunk_range.start, chunk_range.end)?;
             let byte_range = FileRange::new(byte_start as u64, byte_end as u64);
 
-            let cas_reconstruction_term = CASReconstructionTerm {
-                hash: segment.cas_hash.into(),
+            let xorb_reconstruction_term = XorbReconstructionTerm {
+                hash: segment.xorb_hash.into(),
                 unpacked_length: segment.unpacked_segment_bytes,
                 range: chunk_range,
             };
 
-            terms.push(cas_reconstruction_term);
+            terms.push(xorb_reconstruction_term);
 
             let fetch_info_intemediate = FetchInfoIntermediate {
                 chunk_range,
                 byte_range,
             };
 
-            fetch_info_map.entry(segment.cas_hash).or_default().push(fetch_info_intemediate);
+            fetch_info_map
+                .entry(segment.xorb_hash)
+                .or_default()
+                .push(fetch_info_intemediate);
 
             cumulative_bytes += segment.unpacked_segment_bytes as u64;
             s_idx += 1;
@@ -764,19 +768,19 @@ impl Client for LocalClient {
         let timestamp = Instant::now();
 
         // Sort and merge adjacent/overlapping ranges in each fetch_info Vec
-        let mut merged_fetch_info_map: HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>> = HashMap::new();
+        let mut merged_fetch_info_map: HashMap<HexMerkleHash, Vec<XorbReconstructionFetchInfo>> = HashMap::new();
         for (hash, mut fi_vec) in fetch_info_map {
             // Sort by url_range.start
             fi_vec.sort_by_key(|fi| fi.chunk_range.start);
             let file_path = self.get_path_for_entry(&hash);
 
             // Merge adjacent or overlapping ranges
-            let mut merged: Vec<CASReconstructionFetchInfo> = Vec::new();
+            let mut merged: Vec<XorbReconstructionFetchInfo> = Vec::new();
             let mut idx = 0;
 
             while idx < fi_vec.len() {
                 // Go through and merge adjascent or overlapping ranges,
-                // then form the full CASReconstructionFetchInfo structs.
+                // then form the full XorbReconstructionFetchInfo structs.
                 let mut new_fi = fi_vec[idx].clone();
 
                 while idx + 1 < fi_vec.len() {
@@ -790,7 +794,7 @@ impl Client for LocalClient {
                     }
                 }
 
-                merged.push(CASReconstructionFetchInfo {
+                merged.push(XorbReconstructionFetchInfo {
                     range: new_fi.chunk_range,
                     url: generate_fetch_url(&file_path, &new_fi.byte_range, timestamp),
                     url_range: HttpRange::from(new_fi.byte_range),
@@ -812,7 +816,7 @@ impl Client for LocalClient {
     async fn batch_get_reconstruction(&self, file_ids: &[MerkleHash]) -> Result<BatchQueryReconstructionResponse> {
         self.apply_api_delay().await;
         let mut files = HashMap::new();
-        let mut fetch_info_map: HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>> = HashMap::new();
+        let mut fetch_info_map: HashMap<HexMerkleHash, Vec<XorbReconstructionFetchInfo>> = HashMap::new();
 
         for file_id in file_ids {
             if let Some(response) = self.get_reconstruction(file_id, None).await? {
@@ -870,8 +874,8 @@ impl Client for LocalClient {
             let mut data = vec![0u8; len];
             std::io::Read::read_exact(&mut file, &mut data)?;
 
-            // Deserialize the chunks from the raw CAS data
-            let (decompressed_data, chunk_byte_indices) = cas_object::deserialize_chunks(&mut Cursor::new(&data))?;
+            // Deserialize the chunks from the raw XORB data
+            let (decompressed_data, chunk_byte_indices) = xorb_object::deserialize_chunks(&mut Cursor::new(&data))?;
 
             if let Some(expected) = uncompressed_size_if_known {
                 debug_assert_eq!(
@@ -927,8 +931,8 @@ fn parse_fetch_url(url: &str) -> Result<(PathBuf, FileRange, Instant)> {
 }
 #[cfg(test)]
 mod tests {
-    use cas_object::test_utils::*;
-    use cas_types::CASReconstructionFetchInfo;
+    use cas_types::XorbReconstructionFetchInfo;
+    use xorb_object::test_utils::*;
 
     use super::*;
 
@@ -945,19 +949,19 @@ mod tests {
     async fn test_download_fetch_term_data_validation() {
         // Setup: Create a client and upload a xorb
         let xorb = build_raw_xorb(3, ChunkSize::Fixed(2048));
-        let cas_object = build_and_verify_cas_object(xorb, None);
-        let hash = cas_object.hash;
+        let xorb_obj = build_and_verify_xorb_object(xorb, None);
+        let hash = xorb_obj.hash;
 
         let client = LocalClient::temporary().await.unwrap();
         let permit = client.acquire_upload_permit().await.unwrap();
-        client.upload_xorb("default", cas_object, None, permit).await.unwrap();
+        client.upload_xorb("default", xorb_obj, None, permit).await.unwrap();
 
         // Get the actual byte offsets for a chunk range
         let file_path = client.get_path_for_entry(&hash);
         let file = File::open(&file_path).unwrap();
         let mut reader = BufReader::new(file);
-        let cas = CasObject::deserialize(&mut reader).unwrap();
-        let (fetch_byte_start, fetch_byte_end) = cas.get_byte_offset(0, 1).unwrap();
+        let xorb_obj = XorbObject::deserialize(&mut reader).unwrap();
+        let (fetch_byte_start, fetch_byte_end) = xorb_obj.get_byte_offset(0, 1).unwrap();
 
         let timestamp = Instant::now();
         let byte_range = FileRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
@@ -966,7 +970,7 @@ mod tests {
         let valid_url_range = HttpRange::from(byte_range);
 
         // Test 1: Valid URL and fetch_term should succeed
-        let valid_fetch_term = CASReconstructionFetchInfo {
+        let valid_fetch_term = XorbReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
             url: valid_url.clone(),
             url_range: valid_url_range,
@@ -976,7 +980,7 @@ mod tests {
 
         // Test 2: Invalid URL format - too few parts (3 instead of 4)
         let too_few_parts = "filename:123:456";
-        let invalid_fetch_term = CASReconstructionFetchInfo {
+        let invalid_fetch_term = XorbReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
             url: too_few_parts.to_string(),
             url_range: valid_url_range,
@@ -988,7 +992,7 @@ mod tests {
         // Test 3: Invalid start_pos - doesn't match url_range.start
         let wrong_byte_range = FileRange::new(fetch_byte_start as u64 + 1, fetch_byte_end as u64);
         let wrong_start_pos = generate_fetch_url(&file_path, &wrong_byte_range, timestamp);
-        let invalid_fetch_term = CASReconstructionFetchInfo {
+        let invalid_fetch_term = XorbReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
             url: wrong_start_pos,
             url_range: valid_url_range,
@@ -1000,7 +1004,7 @@ mod tests {
         // Test 4: Invalid end_pos - doesn't match url_range.end
         let wrong_byte_range = FileRange::new(fetch_byte_start as u64, fetch_byte_end as u64 + 1);
         let wrong_end_pos = generate_fetch_url(&file_path, &wrong_byte_range, timestamp);
-        let invalid_fetch_term = CASReconstructionFetchInfo {
+        let invalid_fetch_term = XorbReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
             url: wrong_end_pos,
             url_range: valid_url_range,
@@ -1012,7 +1016,7 @@ mod tests {
         // Test 5: Invalid start_pos - non-numeric
         let timestamp_ms = timestamp.saturating_duration_since(*REFERENCE_INSTANT).as_millis() as u64;
         let non_numeric_start = format!("{:?}:not_a_number:{}:{}", file_path, fetch_byte_end, timestamp_ms);
-        let invalid_fetch_term = CASReconstructionFetchInfo {
+        let invalid_fetch_term = XorbReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
             url: non_numeric_start,
             url_range: valid_url_range,
@@ -1023,7 +1027,7 @@ mod tests {
 
         // Test 6: Invalid end_pos - non-numeric
         let non_numeric_end = format!("{:?}:{}:not_a_number:{}", file_path, fetch_byte_start, timestamp_ms);
-        let invalid_fetch_term = CASReconstructionFetchInfo {
+        let invalid_fetch_term = XorbReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
             url: non_numeric_end,
             url_range: valid_url_range,
@@ -1033,7 +1037,7 @@ mod tests {
         assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
 
         // Test 7: Empty URL
-        let invalid_fetch_term = CASReconstructionFetchInfo {
+        let invalid_fetch_term = XorbReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
             url: String::new(),
             url_range: valid_url_range,
@@ -1044,7 +1048,7 @@ mod tests {
 
         // Test 8: Invalid timestamp - non-numeric
         let non_numeric_timestamp = format!("{:?}:{}:{}:not_a_number", file_path, fetch_byte_start, fetch_byte_end);
-        let invalid_fetch_term = CASReconstructionFetchInfo {
+        let invalid_fetch_term = XorbReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
             url: non_numeric_timestamp,
             url_range: valid_url_range,
@@ -1056,7 +1060,7 @@ mod tests {
         // Test 9: Non-existent file path
         let non_existent_path = PathBuf::from("/nonexistent/path/file.xorb");
         let non_existent_url = generate_fetch_url(&non_existent_path, &byte_range, timestamp);
-        let invalid_fetch_term = CASReconstructionFetchInfo {
+        let invalid_fetch_term = XorbReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
             url: non_existent_url,
             url_range: valid_url_range,

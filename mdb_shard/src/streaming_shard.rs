@@ -10,10 +10,10 @@ use merklehash::MerkleHash;
 use more_asserts::debug_assert_lt;
 use utils::MerkleHashMap;
 
-use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfoView};
 use crate::error::{MDBShardError, Result};
 use crate::file_structs::{FileDataSequenceHeader, MDBFileInfoView};
 use crate::shard_file::{MDB_FILE_INFO_ENTRY_SIZE, current_timestamp};
+use crate::xorb_structs::{MDBXorbInfoView, XorbChunkSequenceEntry, XorbChunkSequenceHeader};
 use crate::{MDBShardFileFooter, MDBShardFileHeader};
 
 /// Runs through a shard file info section, calling the specified callback function for each entry.
@@ -57,30 +57,30 @@ where
     Ok(())
 }
 
-/// Runs through a shard cas info section and processes each entry, calling the
+/// Runs through a shard xorb info section and processes each entry, calling the
 /// specified callback function for each entry.
 ///
-/// Assumes that the reader is at the start of the cas info section, and on return, the
-/// reader will be at the end of the cas info section.
-pub fn process_shard_cas_info_section<R: Read, CasFunc>(reader: &mut R, mut cas_callback: CasFunc) -> Result<()>
+/// Assumes that the reader is at the start of the xorb info section, and on return, the
+/// reader will be at the end of the xorb info section.
+pub fn process_shard_xorb_info_section<R: Read, XorbFunc>(reader: &mut R, mut xorb_callback: XorbFunc) -> Result<()>
 where
-    CasFunc: FnMut(MDBCASInfoView) -> Result<()>,
+    XorbFunc: FnMut(MDBXorbInfoView) -> Result<()>,
 {
     loop {
-        let header = CASChunkSequenceHeader::deserialize(reader)?;
+        let header = XorbChunkSequenceHeader::deserialize(reader)?;
 
         if header.is_bookend() {
             break;
         }
 
-        let n_bytes = (header.num_entries as usize) * size_of::<CASChunkSequenceEntry>();
+        let n_bytes = (header.num_entries as usize) * size_of::<XorbChunkSequenceEntry>();
 
-        let mut cas_data = Vec::with_capacity(size_of::<CASChunkSequenceHeader>() + n_bytes);
+        let mut xorb_data = Vec::with_capacity(size_of::<XorbChunkSequenceHeader>() + n_bytes);
 
-        header.serialize(&mut cas_data)?;
-        copy(&mut reader.take(n_bytes as u64), &mut cas_data)?;
+        header.serialize(&mut xorb_data)?;
+        copy(&mut reader.take(n_bytes as u64), &mut xorb_data)?;
 
-        cas_callback(MDBCASInfoView::from_data_and_header(header, Bytes::from(cas_data))?)?;
+        xorb_callback(MDBXorbInfoView::from_data_and_header(header, Bytes::from(xorb_data))?)?;
     }
     Ok(())
 }
@@ -134,35 +134,37 @@ where
     Ok(())
 }
 
-pub async fn process_shard_cas_info_section_async<R: AsyncRead + Unpin, CasFunc>(
+pub async fn process_shard_xorb_info_section_async<R: AsyncRead + Unpin, XorbFunc>(
     reader: &mut R,
-    mut cas_callback: CasFunc,
+    mut xorb_callback: XorbFunc,
 ) -> Result<()>
 where
-    CasFunc: FnMut(MDBCASInfoView) -> Result<()>,
+    XorbFunc: FnMut(MDBXorbInfoView) -> Result<()>,
 {
     loop {
         // Read header
-        let mut header_buf = [0u8; size_of::<CASChunkSequenceHeader>()];
+        let mut header_buf = [0u8; size_of::<XorbChunkSequenceHeader>()];
         reader.read_exact(&mut header_buf).await?;
 
-        let header = CASChunkSequenceHeader::deserialize(&mut Cursor::new(&header_buf[..]))?;
+        let header = XorbChunkSequenceHeader::deserialize(&mut Cursor::new(&header_buf[..]))?;
         if header.is_bookend() {
             break;
         }
 
-        let n_bytes = (header.num_entries as usize) * size_of::<CASChunkSequenceEntry>();
-        let total_len = size_of::<CASChunkSequenceHeader>() + n_bytes;
+        let n_bytes = (header.num_entries as usize) * size_of::<XorbChunkSequenceEntry>();
+        let total_len = size_of::<XorbChunkSequenceHeader>() + n_bytes;
 
-        let mut cas_data = Vec::with_capacity(total_len);
-        cas_data.extend_from_slice(&header_buf); // Insert the header we read
-        cas_data.resize(total_len, 0);
+        let mut xorb_data = Vec::with_capacity(total_len);
+        xorb_data.extend_from_slice(&header_buf); // Insert the header we read
+        xorb_data.resize(total_len, 0);
 
-        // Read the remainder of the CAS chunk data
-        reader.read_exact(&mut cas_data[size_of::<CASChunkSequenceHeader>()..]).await?;
+        // Read the remainder of the XORB chunk data
+        reader
+            .read_exact(&mut xorb_data[size_of::<XorbChunkSequenceHeader>()..])
+            .await?;
 
         // Invoke callback
-        cas_callback(MDBCASInfoView::from_data_and_header(header, Bytes::from(cas_data))?)?;
+        xorb_callback(MDBXorbInfoView::from_data_and_header(header, Bytes::from(xorb_data))?)?;
     }
 
     Ok(())
@@ -173,11 +175,11 @@ where
 #[derive(Clone, Debug, PartialEq)]
 pub struct MDBMinimalShard {
     file_info_views: Vec<MDBFileInfoView>,
-    cas_info_views: Vec<MDBCASInfoView>,
+    xorb_info_views: Vec<MDBXorbInfoView>,
 }
 
 impl MDBMinimalShard {
-    pub fn from_reader<R: Read>(reader: &mut R, include_files: bool, include_cas: bool) -> Result<Self> {
+    pub fn from_reader<R: Read>(reader: &mut R, include_files: bool, include_xorb: bool) -> Result<Self> {
         // Check the header; not needed except for version verification.
         let _ = MDBShardFileHeader::deserialize(reader)?;
 
@@ -190,38 +192,38 @@ impl MDBMinimalShard {
             Ok(())
         })?;
 
-        let mut cas_info_views = Vec::<MDBCASInfoView>::new();
-        if include_cas {
-            process_shard_cas_info_section(reader, |civ: MDBCASInfoView| {
-                cas_info_views.push(civ);
+        let mut xorb_info_views = Vec::<MDBXorbInfoView>::new();
+        if include_xorb {
+            process_shard_xorb_info_section(reader, |civ: MDBXorbInfoView| {
+                xorb_info_views.push(civ);
                 Ok(())
             })?;
         }
 
         Ok(Self {
             file_info_views,
-            cas_info_views,
+            xorb_info_views,
         })
     }
 
     pub async fn from_reader_async<R: AsyncRead + Unpin>(
         reader: &mut R,
         include_files: bool,
-        include_cas: bool,
+        include_xorb: bool,
     ) -> Result<Self> {
-        Self::from_reader_async_with_custom_callbacks(reader, include_files, include_cas, |_| Ok(()), |_| Ok(())).await
+        Self::from_reader_async_with_custom_callbacks(reader, include_files, include_xorb, |_| Ok(()), |_| Ok(())).await
     }
 
-    pub async fn from_reader_async_with_custom_callbacks<R: AsyncRead + Unpin, FileFunc, CasFunc>(
+    pub async fn from_reader_async_with_custom_callbacks<R: AsyncRead + Unpin, FileFunc, XorbFunc>(
         reader: &mut R,
         include_files: bool,
-        include_cas: bool,
+        include_xorb: bool,
         mut file_callback: FileFunc,
-        mut cas_callback: CasFunc,
+        mut xorb_callback: XorbFunc,
     ) -> Result<Self>
     where
         FileFunc: FnMut(&MDBFileInfoView) -> Result<()>,
-        CasFunc: FnMut(&MDBCASInfoView) -> Result<()>,
+        XorbFunc: FnMut(&MDBXorbInfoView) -> Result<()>,
     {
         // Check the header; not needed except for version verification.
         let mut buf = [0u8; size_of::<MDBShardFileHeader>()];
@@ -244,12 +246,12 @@ impl MDBMinimalShard {
             return Err(MDBShardError::invalid_shard("only some files contain verification"));
         }
 
-        // CAS stuff
-        let mut cas_info_views = Vec::<MDBCASInfoView>::new();
-        if include_cas {
-            process_shard_cas_info_section_async(reader, |civ: MDBCASInfoView| {
-                cas_callback(&civ)?;
-                cas_info_views.push(civ);
+        // XORB stuff
+        let mut xorb_info_views = Vec::<MDBXorbInfoView>::new();
+        if include_xorb {
+            process_shard_xorb_info_section_async(reader, |civ: MDBXorbInfoView| {
+                xorb_callback(&civ)?;
+                xorb_info_views.push(civ);
                 Ok(())
             })
             .await?;
@@ -257,7 +259,7 @@ impl MDBMinimalShard {
 
         Ok(Self {
             file_info_views,
-            cas_info_views,
+            xorb_info_views,
         })
     }
 
@@ -276,12 +278,12 @@ impl MDBMinimalShard {
         self.file_info_views.get(index)
     }
 
-    pub fn num_cas(&self) -> usize {
-        self.cas_info_views.len()
+    pub fn num_xorb(&self) -> usize {
+        self.xorb_info_views.len()
     }
 
-    pub fn cas(&self, index: usize) -> Option<&MDBCASInfoView> {
-        self.cas_info_views.get(index)
+    pub fn xorb(&self, index: usize) -> Option<&MDBXorbInfoView> {
+        self.xorb_info_views.get(index)
     }
 
     // returns 0 if with_verification is true but the shard has no verification information.
@@ -295,8 +297,8 @@ impl MDBMinimalShard {
                 .iter()
                 .fold(0, |acc, fiv| acc + fiv.byte_size(with_verification))
             + size_of::<FileDataSequenceHeader>() // bookend of file section
-            + self.cas_info_views.iter().fold(0, |acc, civ| acc + civ.byte_size())
-            + size_of::<CASChunkSequenceHeader>() // bookend for cas info section
+            + self.xorb_info_views.iter().fold(0, |acc, civ| acc + civ.byte_size())
+            + size_of::<XorbChunkSequenceHeader>() // bookend for xorb info section
             + size_of::<MDBShardFileFooter>()
     }
 
@@ -312,10 +314,10 @@ impl MDBMinimalShard {
 
             if fv.num_entries() > 0 {
                 let entry = fv.entry(0);
-                let cas_hash = entry.cas_hash;
+                let xorb_hash = entry.xorb_hash;
                 let idx = entry.chunk_index_start;
 
-                file_start_entries.entry(cas_hash).or_default().push(idx as usize);
+                file_start_entries.entry(xorb_hash).or_default().push(idx as usize);
             }
         }
 
@@ -335,14 +337,14 @@ impl MDBMinimalShard {
         writer: &mut W,
         with_file_section: bool,
         with_verification: bool,
-        xorb_filter_fn: impl Fn(&MDBCASInfoView) -> bool,
+        xorb_filter_fn: impl Fn(&MDBXorbInfoView) -> bool,
     ) -> Result<usize> {
         let mut bytes = 0;
 
         bytes += MDBShardFileHeader::default().serialize(writer)?;
 
         // Now, to serialize this correctly, we need to go through and calculate all the stored information
-        // as given in the file and cas section
+        // as given in the file and xorb section
         let mut stored_bytes_on_disk = 0;
         let mut stored_bytes = 0;
         let mut materialized_bytes = 0;
@@ -369,18 +371,18 @@ impl MDBMinimalShard {
         bytes += FileDataSequenceHeader::bookend().serialize(writer)?;
 
         let cs_start = bytes as u64;
-        for cas_info in &self.cas_info_views {
+        for xorb_info in &self.xorb_info_views {
             // Skip any filtered sections.
-            if !xorb_filter_fn(cas_info) {
+            if !xorb_filter_fn(xorb_info) {
                 continue;
             }
 
-            stored_bytes_on_disk += cas_info.header().num_bytes_on_disk as u64;
-            stored_bytes += cas_info.header().num_bytes_in_cas as u64;
+            stored_bytes_on_disk += xorb_info.header().num_bytes_on_disk as u64;
+            stored_bytes += xorb_info.header().num_bytes_in_xorb as u64;
 
-            if let Some(gde_indices) = file_start_chunks.get(&cas_info.cas_hash()) {
+            if let Some(gde_indices) = file_start_chunks.get(&xorb_info.xorb_hash()) {
                 debug_assert!(gde_indices.is_sorted());
-                bytes += cas_info.serialize_with_chunk_rewrite(writer, |idx, chunk| {
+                bytes += xorb_info.serialize_with_chunk_rewrite(writer, |idx, chunk| {
                     if gde_indices.binary_search(&idx).is_ok() {
                         chunk.with_global_dedup_flag(true)
                     } else {
@@ -388,21 +390,21 @@ impl MDBMinimalShard {
                     }
                 })?;
             } else {
-                bytes += cas_info.serialize(writer)?;
+                bytes += xorb_info.serialize(writer)?;
             }
         }
-        bytes += CASChunkSequenceHeader::bookend().serialize(writer)?;
+        bytes += XorbChunkSequenceHeader::bookend().serialize(writer)?;
 
         let footer_start = bytes as u64;
 
         // Now fill out the footer and write it out.
         bytes += MDBShardFileFooter {
             file_info_offset: fs_start,
-            cas_info_offset: cs_start,
+            xorb_info_offset: cs_start,
             file_lookup_offset: footer_start,
             file_lookup_num_entry: 0,
-            cas_lookup_offset: footer_start,
-            cas_lookup_num_entry: 0,
+            xorb_lookup_offset: footer_start,
+            xorb_lookup_num_entry: 0,
             chunk_lookup_offset: footer_start,
             chunk_lookup_num_entry: 0,
             shard_creation_timestamp: current_timestamp(),
@@ -423,7 +425,7 @@ impl MDBMinimalShard {
     pub fn serialize_xorb_subset_only<W: Write>(
         &self,
         writer: &mut W,
-        xorb_filter_fn: impl Fn(&MDBCASInfoView) -> bool,
+        xorb_filter_fn: impl Fn(&MDBXorbInfoView) -> bool,
     ) -> Result<usize> {
         self.serialize_impl(writer, false, false, xorb_filter_fn)
     }
@@ -449,28 +451,28 @@ impl MDBMinimalShard {
         // we can easily extract the hashes that match these indices.
         let file_start_entries = self.file_start_entries();
 
-        for cas_idx in 0..self.num_cas() {
-            let Some(cas_view) = self.cas(cas_idx) else {
+        for xorb_idx in 0..self.num_xorb() {
+            let Some(xorb_view) = self.xorb(xorb_idx) else {
                 break;
             };
 
-            let num_entries = cas_view.num_entries();
+            let num_entries = xorb_view.num_entries();
 
-            if let Some(fse) = file_start_entries.get(&cas_view.cas_hash()) {
+            if let Some(fse) = file_start_entries.get(&xorb_view.xorb_hash()) {
                 for &c_idx in fse {
                     debug_assert_lt!(c_idx, num_entries);
 
                     // Check bounds to be safe here to ensure things don't crash in production; would be
                     // an error and fail verification elsewhere.
                     if c_idx < num_entries {
-                        let chunk_hash = cas_view.chunk(c_idx).chunk_hash;
+                        let chunk_hash = xorb_view.chunk(c_idx).chunk_hash;
                         ret.insert(chunk_hash);
                     }
                 }
             }
 
             for c_idx in 0..num_entries {
-                let chunk = cas_view.chunk(c_idx);
+                let chunk = xorb_view.chunk(c_idx);
 
                 if chunk.is_global_dedup_eligible() {
                     ret.insert(chunk.chunk_hash);
@@ -494,10 +496,10 @@ mod tests {
 
     use super::MDBMinimalShard;
     use crate::MDBShardInfo;
-    use crate::cas_structs::MDBCASInfo;
     use crate::file_structs::MDBFileInfo;
-    use crate::shard_file::test_routines::{convert_to_file, gen_random_shard, gen_random_shard_with_cas_references};
+    use crate::shard_file::test_routines::{convert_to_file, gen_random_shard, gen_random_shard_with_xorb_references};
     use crate::shard_in_memory::MDBInMemoryShard;
+    use crate::xorb_structs::MDBXorbInfo;
 
     fn verify_serialization(min_shard: &MDBMinimalShard, mem_shard: &MDBInMemoryShard) -> Result<()> {
         for verification in [true, false] {
@@ -532,15 +534,15 @@ mod tests {
                 assert!(read.equal_accepting_no_verification(mem), "i: {i} verification = {verification}");
             }
 
-            let cas_info: Vec<MDBCASInfo> = si.read_all_cas_blocks_full(&mut Cursor::new(&reloaded_shard)).unwrap();
-            let mem_cas_info: Vec<_> = mem_shard.cas_content.clone().into_values().collect();
+            let xorb_info: Vec<MDBXorbInfo> = si.read_all_xorb_blocks_full(&mut Cursor::new(&reloaded_shard)).unwrap();
+            let mem_xorb_info: Vec<_> = mem_shard.xorb_content.clone().into_values().collect();
 
-            assert_eq!(cas_info.len(), mem_cas_info.len(), "verification = {verification}");
+            assert_eq!(xorb_info.len(), mem_xorb_info.len(), "verification = {verification}");
 
             // Test for equality while ignoring the global dedup flag, as this gets modified on reserializing.
-            for i in 0..cas_info.len() {
-                let c1 = &cas_info[i];
-                let c2 = mem_cas_info[i].as_ref();
+            for i in 0..xorb_info.len() {
+                let c1 = &xorb_info[i];
+                let c2 = mem_xorb_info[i].as_ref();
 
                 assert_eq!(c1.metadata, c2.metadata);
 
@@ -574,25 +576,25 @@ mod tests {
                 assert_eq!(file_info.contains_metadata_ext(), file_view.contains_metadata_ext());
             }
 
-            for i in 0..min_shard.num_cas() {
-                let cas_view = min_shard.cas(i).unwrap();
-                let cas_info = MDBCASInfo::from(cas_view);
-                assert_eq!(cas_info.metadata.cas_hash, cas_view.cas_hash());
-                assert_eq!(cas_info.chunks.len(), cas_view.num_entries());
+            for i in 0..min_shard.num_xorb() {
+                let xorb_view = min_shard.xorb(i).unwrap();
+                let xorb_info = MDBXorbInfo::from(xorb_view);
+                assert_eq!(xorb_info.metadata.xorb_hash, xorb_view.xorb_hash());
+                assert_eq!(xorb_info.chunks.len(), xorb_view.num_entries());
             }
 
             verify_serialization(&min_shard, mem_shard).unwrap();
         }
 
         {
-            // Test we're good on the ones without cas entries.
+            // Test we're good on the ones without xorb entries.
             let min_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&buffer), true, false).unwrap();
             let min_shard_async = MDBMinimalShard::from_reader_async(&mut &buffer[..], true, false).await.unwrap();
 
             assert_eq!(min_shard, min_shard_async);
 
             let mut file_only_memshard = mem_shard.clone();
-            file_only_memshard.cas_content.clear();
+            file_only_memshard.xorb_content.clear();
             file_only_memshard.chunk_hash_lookup.clear();
 
             verify_serialization(&min_shard, &file_only_memshard).unwrap();
@@ -605,16 +607,16 @@ mod tests {
 
             assert_eq!(min_shard, min_shard_async);
 
-            let mut cas_only_memshard = mem_shard.clone();
-            cas_only_memshard.file_content.clear();
+            let mut xorb_only_memshard = mem_shard.clone();
+            xorb_only_memshard.file_content.clear();
 
-            verify_serialization(&min_shard, &cas_only_memshard).unwrap();
+            verify_serialization(&min_shard, &xorb_only_memshard).unwrap();
         }
 
         // Test custom callbacks
         {
             let mut file_info_views = vec![];
-            let mut cas_info_views = vec![];
+            let mut xorb_info_views = vec![];
 
             let min_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&buffer), true, true).unwrap();
             let min_shard_async = MDBMinimalShard::from_reader_async_with_custom_callbacks(
@@ -626,7 +628,7 @@ mod tests {
                     Ok(())
                 },
                 |c| {
-                    cas_info_views.push(c.clone());
+                    xorb_info_views.push(c.clone());
                     Ok(())
                 },
             )
@@ -635,10 +637,10 @@ mod tests {
 
             assert_eq!(min_shard, min_shard_async);
             assert_eq!(file_info_views, min_shard.file_info_views);
-            assert_eq!(cas_info_views, min_shard.cas_info_views);
+            assert_eq!(xorb_info_views, min_shard.xorb_info_views);
 
-            let mut cas_only_memshard = mem_shard.clone();
-            cas_only_memshard.file_content.clear();
+            let mut xorb_only_memshard = mem_shard.clone();
+            xorb_only_memshard.file_content.clear();
 
             verify_serialization(&min_shard, mem_shard).unwrap();
         }
@@ -706,11 +708,11 @@ mod tests {
 
         let mut rng = SmallRng::seed_from_u64(0);
 
-        for xi in 0..min_shard.num_cas() {
-            let xorb = min_shard.cas(xi).unwrap();
+        for xi in 0..min_shard.num_xorb() {
+            let xorb = min_shard.xorb(xi).unwrap();
             let group = rng.random_range(0..=3);
 
-            xorb_map.insert(xorb.cas_hash(), group);
+            xorb_map.insert(xorb.xorb_hash(), group);
             for ci in 0..xorb.num_entries() {
                 let chunk_hash = xorb.chunk(ci).chunk_hash;
                 if ref_global_dedup_chunks.contains(&chunk_hash) {
@@ -735,17 +737,17 @@ mod tests {
 
             let mut xo_subset_shard_buffer = Vec::<u8>::new();
             min_shard
-                .serialize_xorb_subset_only(&mut xo_subset_shard_buffer, |xorb| xorb_filter_fn(xorb.cas_hash()))
+                .serialize_xorb_subset_only(&mut xo_subset_shard_buffer, |xorb| xorb_filter_fn(xorb.xorb_hash()))
                 .unwrap();
 
             let xo_subset_shard =
                 MDBMinimalShard::from_reader(&mut Cursor::new(&xo_subset_shard_buffer), true, true).unwrap();
 
             assert_eq!(xo_subset_shard.num_files(), 0);
-            assert_eq!(xo_subset_shard.num_cas(), ref_filtered_xorbs.len());
+            assert_eq!(xo_subset_shard.num_xorb(), ref_filtered_xorbs.len());
 
-            let xorbs_present: HashSet<_> = (0..xo_subset_shard.num_cas())
-                .map(|i| xo_subset_shard.cas(i).unwrap().cas_hash())
+            let xorbs_present: HashSet<_> = (0..xo_subset_shard.num_xorb())
+                .map(|i| xo_subset_shard.xorb(i).unwrap().xorb_hash())
                 .collect();
 
             assert_eq!(xorbs_present, ref_filtered_xorbs);
@@ -760,23 +762,24 @@ mod tests {
     // Tests to verify that all the shard filtering options are supported.
     #[tokio::test]
     async fn test_shard_processing() {
-        let shard = gen_random_shard_with_cas_references(1, &[1], &[1], false, false).unwrap();
+        let shard = gen_random_shard_with_xorb_references(1, &[1], &[1], false, false).unwrap();
         verify_minimal_shard_dedup_processing(&shard).await;
 
         // Tests to make sure the async and non-async match.
-        let shard = gen_random_shard_with_cas_references(1, &[2], &[1, 1], false, false).unwrap();
+        let shard = gen_random_shard_with_xorb_references(1, &[2], &[1, 1], false, false).unwrap();
         verify_minimal_shard_dedup_processing(&shard).await;
 
-        let shard = gen_random_shard_with_cas_references(1, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], false, false).unwrap();
+        let shard =
+            gen_random_shard_with_xorb_references(1, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], false, false).unwrap();
         verify_minimal_shard_dedup_processing(&shard).await;
 
-        let shard = gen_random_shard_with_cas_references(1, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], true, false).unwrap();
+        let shard = gen_random_shard_with_xorb_references(1, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], true, false).unwrap();
         verify_minimal_shard_dedup_processing(&shard).await;
 
-        let shard = gen_random_shard_with_cas_references(1, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], false, true).unwrap();
+        let shard = gen_random_shard_with_xorb_references(1, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], false, true).unwrap();
         verify_minimal_shard_dedup_processing(&shard).await;
 
-        let shard = gen_random_shard_with_cas_references(1, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], true, true).unwrap();
+        let shard = gen_random_shard_with_xorb_references(1, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], true, true).unwrap();
         verify_minimal_shard_dedup_processing(&shard).await;
     }
 }

@@ -634,7 +634,7 @@ pub async fn test_get_file_size(client: Arc<dyn DirectAccessClient>) {
 pub async fn test_global_dedup(client: Arc<dyn DirectAccessClient>) {
     use std::io::Cursor;
 
-    use mdb_shard::shard_format::test_routines::gen_random_shard_with_cas_references;
+    use mdb_shard::shard_format::test_routines::gen_random_shard_with_xorb_references;
     use mdb_shard::utils::parse_shard_filename;
     use mdb_shard::{MDBShardFile, MDBShardInfo};
     use tempfile::TempDir;
@@ -645,7 +645,7 @@ pub async fn test_global_dedup(client: Arc<dyn DirectAccessClient>) {
     let shard_dir_2 = tmp_dir.path().join("shard_2");
     std::fs::create_dir_all(&shard_dir_2).unwrap();
 
-    let shard_in = gen_random_shard_with_cas_references(0, &[16; 8], &[2; 20], true, true).unwrap();
+    let shard_in = gen_random_shard_with_xorb_references(0, &[16; 8], &[2; 20], true, true).unwrap();
 
     let new_shard_path = shard_in.write_to_directory(&shard_dir_1, None).unwrap();
 

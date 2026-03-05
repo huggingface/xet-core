@@ -8,7 +8,6 @@ use merklehash::{HashedWrite, MerkleHash};
 use utils::serialization_utils::*;
 use uuid::Uuid;
 
-use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader};
 use crate::error::Result;
 use crate::file_structs::{
     FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, FileVerificationEntry, SupersetResult,
@@ -16,6 +15,7 @@ use crate::file_structs::{
 use crate::shard_file::MDB_FILE_INFO_ENTRY_SIZE;
 use crate::shard_format::{MDBShardFileFooter, MDBShardFileHeader, MDBShardInfo};
 use crate::utils::truncate_hash;
+use crate::xorb_structs::{XorbChunkSequenceEntry, XorbChunkSequenceHeader};
 
 #[derive(PartialEq, Debug, Copy, Clone)]
 enum MDBSetOperation {
@@ -257,59 +257,59 @@ fn set_operation<R: Read + Seek, W: Write>(
     }
 
     // These are written later.
-    let mut cas_lookup_data = Vec::<(u64, u32)>::new();
+    let mut xorb_lookup_data = Vec::<(u64, u32)>::new();
     let mut chunk_lookup_data = Vec::<(u64, (u32, u32))>::new();
 
     {
         ///////////////////////////////////
-        // CAS info section.
+        // XORB info section.
         // Set up the seek for the first section:
-        footer.cas_info_offset = out_offset;
+        footer.xorb_info_offset = out_offset;
 
-        r[0].seek(SeekFrom::Start(s[0].metadata.cas_info_offset))?;
-        r[1].seek(SeekFrom::Start(s[1].metadata.cas_info_offset))?;
+        r[0].seek(SeekFrom::Start(s[0].metadata.xorb_info_offset))?;
+        r[1].seek(SeekFrom::Start(s[1].metadata.xorb_info_offset))?;
 
         let mut current_index = 0;
 
         let load_next = |_r: &mut R, _s: &MDBShardInfo| -> Result<_> {
-            let ccsh = CASChunkSequenceHeader::deserialize(_r)?;
+            let ccsh = XorbChunkSequenceHeader::deserialize(_r)?;
             if ccsh.is_bookend() { Ok(None) } else { Ok(Some(ccsh)) }
         };
 
-        let mut cas_data_header = [load_next(r[0], s[0])?, load_next(r[1], s[1])?];
+        let mut xorb_data_header = [load_next(r[0], s[0])?, load_next(r[1], s[1])?];
 
         while let Some(action) = get_next_actions(
-            cas_data_header[0].as_ref().map(|h| &h.cas_hash),
-            cas_data_header[1].as_ref().map(|h| &h.cas_hash),
+            xorb_data_header[0].as_ref().map(|h| &h.xorb_hash),
+            xorb_data_header[1].as_ref().map(|h| &h.xorb_hash),
             op,
         ) {
             for i in [0, 1] {
                 match action[i] {
                     NextAction::CopyToOut => {
-                        let fh = cas_data_header[i].as_ref().unwrap();
+                        let fh = xorb_data_header[i].as_ref().unwrap();
                         footer.stored_bytes_on_disk += fh.num_bytes_on_disk as u64;
-                        footer.stored_bytes += fh.num_bytes_in_cas as u64;
+                        footer.stored_bytes += fh.num_bytes_in_xorb as u64;
 
                         out_offset += fh.serialize(out)? as u64;
 
                         for j in 0..fh.num_entries {
-                            let chunk = CASChunkSequenceEntry::deserialize(r[i])?;
+                            let chunk = XorbChunkSequenceEntry::deserialize(r[i])?;
 
                             chunk_lookup_data.push((truncate_hash(&chunk.chunk_hash), (current_index, j)));
                             out_offset += chunk.serialize(out)? as u64;
                         }
 
-                        cas_lookup_data.push((truncate_hash(&fh.cas_hash), current_index));
+                        xorb_lookup_data.push((truncate_hash(&fh.xorb_hash), current_index));
 
                         current_index += 1 + fh.num_entries;
-                        cas_data_header[i] = load_next(r[i], s[i])?;
+                        xorb_data_header[i] = load_next(r[i], s[i])?;
                     },
                     NextAction::SkipOver => {
-                        let fh = cas_data_header[i].as_ref().unwrap();
+                        let fh = xorb_data_header[i].as_ref().unwrap();
                         r[i].seek(SeekFrom::Current(
-                            (fh.num_entries as i64) * (size_of::<CASChunkSequenceEntry>() as i64),
+                            (fh.num_entries as i64) * (size_of::<XorbChunkSequenceEntry>() as i64),
                         ))?;
-                        cas_data_header[i] = load_next(r[i], s[i])?;
+                        xorb_data_header[i] = load_next(r[i], s[i])?;
                     },
                     NextAction::Nothing => {},
                     NextAction::Merge => {},
@@ -317,7 +317,7 @@ fn set_operation<R: Read + Seek, W: Write>(
             }
         }
 
-        out_offset += CASChunkSequenceHeader::bookend().serialize(out)? as u64;
+        out_offset += XorbChunkSequenceHeader::bookend().serialize(out)? as u64;
     }
 
     // The file lookup table
@@ -331,14 +331,14 @@ fn set_operation<R: Read + Seek, W: Write>(
         }
     }
 
-    // The cas lookup table
+    // The xorb lookup table
     {
-        // Write out the cas and chunk lookup sections.
-        footer.cas_lookup_offset = out_offset;
-        footer.cas_lookup_num_entry = cas_lookup_data.len() as u64;
-        out_offset += (cas_lookup_data.len() * (size_of::<u64>() + size_of::<u32>())) as u64;
+        // Write out the xorb and chunk lookup sections.
+        footer.xorb_lookup_offset = out_offset;
+        footer.xorb_lookup_num_entry = xorb_lookup_data.len() as u64;
+        out_offset += (xorb_lookup_data.len() * (size_of::<u64>() + size_of::<u32>())) as u64;
 
-        for (h, idx) in cas_lookup_data {
+        for (h, idx) in xorb_lookup_data {
             write_u64(out, h)?;
             write_u32(out, idx)?;
         }
@@ -348,7 +348,7 @@ fn set_operation<R: Read + Seek, W: Write>(
     {
         chunk_lookup_data.sort_unstable_by_key(|t| t.0);
 
-        // Write out the cas and chunk lookup sections.
+        // Write out the xorb and chunk lookup sections.
         footer.chunk_lookup_offset = out_offset;
         footer.chunk_lookup_num_entry = chunk_lookup_data.len() as u64;
         out_offset += (chunk_lookup_data.len() * (size_of::<u64>() + 2 * size_of::<u32>())) as u64;
@@ -537,18 +537,18 @@ mod tests {
     #[allow(clippy::type_complexity)]
     fn gen_specific_shard_cases(
         name: &str,
-        cas_nodes: &[(u64, &[(u64, u32)])],
+        xorb_nodes: &[(u64, &[(u64, u32)])],
         file_nodes: &[(u64, &[(u64, (u32, u32))])],
         verifications: &[&[u64]],
         metadata_exts: &[u64],
     ) -> Result<Vec<(String, MDBInMemoryShard)>> {
         Ok(vec![
-            (format!("{name}_None_None"), gen_specific_shard(cas_nodes, file_nodes, None, None)?),
-            (format!("{name}_Some_None"), gen_specific_shard(cas_nodes, file_nodes, Some(verifications), None)?),
-            (format!("{name}_None_Some"), gen_specific_shard(cas_nodes, file_nodes, None, Some(metadata_exts))?),
+            (format!("{name}_None_None"), gen_specific_shard(xorb_nodes, file_nodes, None, None)?),
+            (format!("{name}_Some_None"), gen_specific_shard(xorb_nodes, file_nodes, Some(verifications), None)?),
+            (format!("{name}_None_Some"), gen_specific_shard(xorb_nodes, file_nodes, None, Some(metadata_exts))?),
             (
                 format!("{name}_Some_Some"),
-                gen_specific_shard(cas_nodes, file_nodes, Some(verifications), Some(metadata_exts))?,
+                gen_specific_shard(xorb_nodes, file_nodes, Some(verifications), Some(metadata_exts))?,
             ),
         ])
     }

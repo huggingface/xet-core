@@ -1,7 +1,7 @@
 use std::time::Instant;
 
-use cas_object::byte_grouping::BG4Predictor;
 use rand::prelude::*;
+use xorb_object::byte_grouping::BG4Predictor;
 
 fn main() {
     const SIZE_MB: usize = 100;
