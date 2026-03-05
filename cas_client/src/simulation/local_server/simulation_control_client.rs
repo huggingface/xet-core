@@ -5,9 +5,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use cas_types::{FileRange, HexMerkleHash, XorbReconstructionFetchInfo};
-use xorb_object::XorbObject;
 use http::header::HeaderMap;
 use merklehash::MerkleHash;
+use xorb_object::XorbObject;
 
 use super::simulation_types::{
     ConfigDelayRangeRequest, ConfigDurationRequest, FetchTermDataRequest, FetchTermDataResponse, FileShardsEntry,
