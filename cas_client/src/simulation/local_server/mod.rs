@@ -16,5 +16,9 @@
 
 mod handlers;
 mod server;
+mod simulation_control_client;
+pub(crate) mod simulation_handlers;
+mod simulation_types;
 
-pub use server::{LocalServer, LocalServerConfig, LocalTestServer};
+pub use server::{LocalServer, LocalServerConfig, LocalTestServer, ServerState};
+pub use simulation_control_client::SimulationControlClient;
