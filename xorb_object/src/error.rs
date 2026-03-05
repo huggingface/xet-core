@@ -5,7 +5,7 @@ use tracing::warn;
 
 #[non_exhaustive]
 #[derive(Error, Debug)]
-pub enum CasObjectError {
+pub enum XorbObjectError {
     #[error("Invalid Range Read")]
     InvalidRange,
 
@@ -35,15 +35,15 @@ pub enum CasObjectError {
 }
 
 // Define our own result type here (this seems to be the standard).
-pub type Result<T> = std::result::Result<T, CasObjectError>;
+pub type Result<T> = std::result::Result<T, XorbObjectError>;
 
-impl PartialEq for CasObjectError {
-    fn eq(&self, other: &CasObjectError) -> bool {
+impl PartialEq for XorbObjectError {
+    fn eq(&self, other: &XorbObjectError) -> bool {
         std::mem::discriminant(self) == std::mem::discriminant(other)
     }
 }
 
-/// Helper trait to swallow CAS object format errors. Used in object
+/// Helper trait to swallow XORB object format errors. Used in object
 /// validation to reject the object instead of propagating errors.
 pub trait Validate<T> {
     fn ok_for_format_error(self) -> Result<Option<T>>;
@@ -53,7 +53,7 @@ impl<T> Validate<T> for Result<T> {
     fn ok_for_format_error(self) -> Result<Option<T>> {
         match self {
             Ok(v) => Ok(Some(v)),
-            Err(CasObjectError::FormatError(e)) => {
+            Err(XorbObjectError::FormatError(e)) => {
                 warn!("XORB Validation: {e}");
                 Ok(None)
             },

@@ -1,8 +1,8 @@
 use bytes::Bytes;
-use cas_object::SerializedCasObject;
 use cas_types::{BatchQueryReconstructionResponse, FileRange, HttpRange, QueryReconstructionResponse};
 use mdb_shard::file_structs::MDBFileInfo;
 use merklehash::MerkleHash;
+use xorb_object::SerializedXorbObject;
 
 use crate::adaptive_concurrency::ConnectionPermit;
 use crate::error::Result;
@@ -62,7 +62,7 @@ pub trait Client: Send + Sync {
     async fn upload_xorb(
         &self,
         prefix: &str,
-        serialized_cas_object: SerializedCasObject,
+        serialized_xorb_object: SerializedXorbObject,
         progress_callback: Option<ProgressCallback>,
         upload_permit: ConnectionPermit,
     ) -> Result<u64>;

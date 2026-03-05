@@ -7,40 +7,40 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Ok, Result, anyhow};
 use clap::Parser;
-use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
 use mdb_shard::shard_file_manager::ShardFileManager;
 use mdb_shard::shard_format::MDBShardInfo;
 use mdb_shard::shard_format::test_routines::rng_hash;
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
+use mdb_shard::xorb_structs::{MDBXorbInfo, XorbChunkSequenceEntry, XorbChunkSequenceHeader};
 use merklehash::MerkleHash;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use tempfile::TempDir;
 use tokio::time;
 
-const CAS_BLOCK_SIZE: usize = 512;
+const XORB_BLOCK_SIZE: usize = 512;
 const PAR_TASK: usize = 1;
 
 fn make_shard(size: u64, seed: &mut u64) -> MDBInMemoryShard {
     let mut shard = MDBInMemoryShard::default();
 
     while shard.shard_file_size() < size {
-        let mut cas_block = Vec::<_>::new();
+        let mut xorb_block = Vec::<_>::new();
         let mut pos = 0u32;
 
-        for _ in 0..CAS_BLOCK_SIZE {
+        for _ in 0..XORB_BLOCK_SIZE {
             let h = rng_hash(*seed);
 
             let r = (1000 + (&h as &[u64; 4])[0] % 1000) as u32;
-            cas_block.push(CASChunkSequenceEntry::new(rng_hash(*seed), r, pos));
+            xorb_block.push(XorbChunkSequenceEntry::new(rng_hash(*seed), r, pos));
             pos += r;
             *seed += 1;
         }
 
         shard
-            .add_cas_block(MDBCASInfo {
-                metadata: CASChunkSequenceHeader::new(rng_hash(!(*seed)), CAS_BLOCK_SIZE, pos),
-                chunks: cas_block,
+            .add_xorb_block(MDBXorbInfo {
+                metadata: XorbChunkSequenceHeader::new(rng_hash(!(*seed)), XORB_BLOCK_SIZE, pos),
+                chunks: xorb_block,
             })
             .unwrap();
     }
@@ -65,10 +65,10 @@ async fn run_shard_benchmark(
             let path = shard.write_to_directory(dir, None)?;
 
             eprintln!(
-                "-> Target size {target_size:?}: Created shard {:?} / {n_shards:?} with {} CAS blocks and {} chunks",
+                "-> Target size {target_size:?}: Created shard {:?} / {n_shards:?} with {} XORB blocks and {} chunks",
                 i + 1,
-                shard.num_cas_entries(),
-                shard.num_cas_entries() * CAS_BLOCK_SIZE
+                shard.num_xorb_entries(),
+                shard.num_xorb_entries() * XORB_BLOCK_SIZE
             );
             MDBShardInfo::load_from_reader(&mut File::open(path)?)?.print_report();
         }

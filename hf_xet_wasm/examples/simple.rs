@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use cas_object::CompressionScheme;
 use futures::AsyncReadExt;
 use hf_xet_wasm::blob_reader::BlobReader;
 use hf_xet_wasm::configurations::{DataConfig, ShardConfig, TranslatorConfig};
@@ -11,6 +10,7 @@ use tokio::sync::mpsc;
 use utils::auth::AuthConfig;
 use wasm_bindgen::prelude::*;
 use wasm_thread as thread;
+use xorb_object::CompressionScheme;
 
 fn main() {
     #[cfg(target_arch = "wasm32")]

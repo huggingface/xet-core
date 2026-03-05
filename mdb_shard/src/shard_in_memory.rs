@@ -11,27 +11,27 @@ use merklehash::{HashedWrite, MerkleHash};
 use tracing::debug;
 use utils::MerkleHashMap;
 
-use crate::cas_structs::*;
 use crate::error::Result;
 use crate::file_structs::*;
 use crate::shard_format::MDBShardInfo;
 use crate::utils::{shard_file_name, temp_shard_file_name};
+use crate::xorb_structs::*;
 
 #[allow(clippy::type_complexity)]
 #[derive(Clone, Default, Debug)]
 pub struct MDBInMemoryShard {
-    pub cas_content: BTreeMap<MerkleHash, Arc<MDBCASInfo>>,
+    pub xorb_content: BTreeMap<MerkleHash, Arc<MDBXorbInfo>>,
     pub file_content: BTreeMap<MerkleHash, MDBFileInfo>,
-    pub chunk_hash_lookup: MerkleHashMap<(Arc<MDBCASInfo>, u64)>,
+    pub chunk_hash_lookup: MerkleHashMap<(Arc<MDBXorbInfo>, u64)>,
     current_shard_file_size: u64,
 }
 
 impl MDBInMemoryShard {
-    pub fn add_cas_block(&mut self, cas_block_contents: impl Into<Arc<MDBCASInfo>>) -> Result<()> {
-        let dest_content_v: Arc<MDBCASInfo> = cas_block_contents.into();
+    pub fn add_xorb_block(&mut self, xorb_block_contents: impl Into<Arc<MDBXorbInfo>>) -> Result<()> {
+        let dest_content_v: Arc<MDBXorbInfo> = xorb_block_contents.into();
 
-        self.cas_content
-            .insert(dest_content_v.metadata.cas_hash, dest_content_v.clone());
+        self.xorb_content
+            .insert(dest_content_v.metadata.xorb_hash, dest_content_v.clone());
 
         for (i, chunk) in dest_content_v.chunks.iter().enumerate() {
             self.chunk_hash_lookup
@@ -54,9 +54,9 @@ impl MDBInMemoryShard {
     }
 
     pub fn union(&self, other: &Self) -> Result<Self> {
-        let mut cas_content = self.cas_content.clone();
-        other.cas_content.iter().for_each(|(k, v)| {
-            cas_content.insert(*k, v.clone());
+        let mut xorb_content = self.xorb_content.clone();
+        other.xorb_content.iter().for_each(|(k, v)| {
+            xorb_content.insert(*k, v.clone());
         });
 
         let mut file_content = self.file_content.clone();
@@ -75,7 +75,7 @@ impl MDBInMemoryShard {
         });
 
         let mut s = Self {
-            cas_content,
+            xorb_content,
             file_content,
             current_shard_file_size: 0,
             chunk_hash_lookup,
@@ -88,10 +88,10 @@ impl MDBInMemoryShard {
     pub fn recalculate_shard_size(&mut self) {
         // Calculate the size
         let mut num_bytes = 0u64;
-        for (_, cas_block_contents) in self.cas_content.iter() {
-            num_bytes += cas_block_contents.num_bytes();
+        for (_, xorb_block_contents) in self.xorb_content.iter() {
+            num_bytes += xorb_block_contents.num_bytes();
 
-            // The cas lookup table
+            // The xorb lookup table
             num_bytes += (size_of::<u64>() + size_of::<u32>()) as u64;
         }
 
@@ -107,10 +107,10 @@ impl MDBInMemoryShard {
 
     pub fn difference(&self, other: &Self) -> Result<Self> {
         let mut s = Self {
-            cas_content: other
-                .cas_content
+            xorb_content: other
+                .xorb_content
                 .iter()
-                .filter(|(k, _)| !self.cas_content.contains_key(k))
+                .filter(|(k, _)| !self.xorb_content.contains_key(k))
                 .map(|(k, v)| (*k, v.clone()))
                 .collect(),
             file_content: other
@@ -166,7 +166,7 @@ impl MDBInMemoryShard {
 
         Some((
             query_idx,
-            FileDataSequenceEntry::from_cas_entries(
+            FileDataSequenceEntry::from_xorb_entries(
                 &chunk_ref.metadata,
                 &chunk_ref.chunks[chunk_index_start..(chunk_index_start + query_idx)],
                 chunk_index_start,
@@ -175,8 +175,8 @@ impl MDBInMemoryShard {
         ))
     }
 
-    pub fn num_cas_entries(&self) -> usize {
-        self.cas_content.len()
+    pub fn num_xorb_entries(&self) -> usize {
+        self.xorb_content.len()
     }
 
     pub fn num_file_entries(&self) -> usize {
@@ -184,9 +184,9 @@ impl MDBInMemoryShard {
     }
 
     pub fn stored_bytes_on_disk(&self) -> u64 {
-        self.cas_content
+        self.xorb_content
             .iter()
-            .fold(0u64, |acc, (_, cas)| acc + cas.metadata.num_bytes_on_disk as u64)
+            .fold(0u64, |acc, (_, xorb)| acc + xorb.metadata.num_bytes_on_disk as u64)
     }
 
     pub fn materialized_bytes(&self) -> u64 {
@@ -199,13 +199,13 @@ impl MDBInMemoryShard {
     }
 
     pub fn stored_bytes(&self) -> u64 {
-        self.cas_content
+        self.xorb_content
             .iter()
-            .fold(0u64, |acc, (_, cas)| acc + cas.metadata.num_bytes_in_cas as u64)
+            .fold(0u64, |acc, (_, xorb)| acc + xorb.metadata.num_bytes_in_xorb as u64)
     }
 
     pub fn is_empty(&self) -> bool {
-        self.cas_content.is_empty() && self.file_content.is_empty()
+        self.xorb_content.is_empty() && self.file_content.is_empty()
     }
 
     /// Returns the number of bytes required

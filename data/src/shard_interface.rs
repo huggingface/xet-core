@@ -8,10 +8,10 @@ use std::time::SystemTime;
 use bytes::Bytes;
 use cas_client::Client;
 use error_printer::ErrorPrinter;
-use mdb_shard::cas_structs::MDBCASInfo;
 use mdb_shard::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use mdb_shard::session_directory::{ShardMergeResult, consolidate_shards_in_directory, merge_shards_background};
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
+use mdb_shard::xorb_structs::MDBXorbInfo;
 use mdb_shard::{MDB_SHARD_LOCAL_CACHE_EXPIRATION, MDBShardFile, MDBShardFileHeader, ShardFileManager};
 use merklehash::MerkleHash;
 use tempfile::TempDir;
@@ -179,15 +179,15 @@ impl SessionShardInterface {
         }
     }
 
-    // Add the cas information to the session shard manager and the shard manager for the staged xorbs.
-    pub async fn add_cas_block(&self, cas_block_contents: Arc<MDBCASInfo>) -> Result<()> {
-        self.session_shard_manager.add_cas_block(cas_block_contents).await?;
+    // Add the xorb information to the session shard manager and the shard manager for the staged xorbs.
+    pub async fn add_xorb_block(&self, xorb_block_contents: Arc<MDBXorbInfo>) -> Result<()> {
+        self.session_shard_manager.add_xorb_block(xorb_block_contents).await?;
 
         Ok(())
     }
 
-    // Add in uploaded cas information that has been known to be uploaded successfully.
-    pub async fn add_uploaded_cas_block(&self, cas_block_contents: Arc<MDBCASInfo>) -> Result<()> {
+    // Add in uploaded xorb information that has been known to be uploaded successfully.
+    pub async fn add_uploaded_xorb_block(&self, xorb_block_contents: Arc<MDBXorbInfo>) -> Result<()> {
         // Ignore this part of a dry run
         if self.dry_run {
             return Ok(());
@@ -196,14 +196,14 @@ impl SessionShardInterface {
         let mut lg = self.xorb_metadata_staging.lock().await;
         let (last_flush, xorb_shard) = &mut *lg;
 
-        xorb_shard.add_cas_block(cas_block_contents)?;
+        xorb_shard.add_xorb_block(xorb_block_contents)?;
 
         let time_now = SystemTime::now();
         let flush_interval = xet_config().data.session_xorb_metadata_flush_interval;
 
         // Flush if it's time or we've hit enough new shards that we should do the flush
         if *last_flush + flush_interval < time_now
-            || xorb_shard.num_cas_entries() >= xet_config().data.session_xorb_metadata_flush_max_count
+            || xorb_shard.num_xorb_entries() >= xet_config().data.session_xorb_metadata_flush_max_count
         {
             xorb_shard.write_to_directory(&self.xorb_metadata_staging_dir, Some(*MDB_SHARD_LOCAL_CACHE_EXPIRATION))?;
 
