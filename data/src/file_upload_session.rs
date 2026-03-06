@@ -40,7 +40,7 @@ use crate::{XetFileInfo, prometheus_metrics};
 /// and xorbs needed to reconstruct those files are properly uploaded and registered.
 pub struct FileUploadSession {
     // The parts of this that manage the
-    pub(crate) client: Arc<dyn Client + Send + Sync>,
+    pub client: Arc<dyn Client + Send + Sync>,
     pub(crate) shard_interface: SessionShardInterface,
 
     /// The configuration settings, if needed.
