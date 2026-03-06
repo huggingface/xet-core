@@ -277,8 +277,13 @@ impl FileUploadSession {
     /// and fed through the chunker so that the dedup layer recognizes them.
     ///
     /// `dirty_ranges` must be sorted, non-overlapping `(start, end)` byte ranges
-    /// (exclusive end). Gaps between dirty ranges are considered clean and are
-    /// downloaded from CAS via `download_session`.
+    /// (exclusive end) in new-file coordinates. Gaps between dirty ranges are
+    /// considered clean and are downloaded from CAS via `download_session`.
+    ///
+    /// **Important**: this function assumes positional overwrites (as FUSE/POSIX
+    /// write() semantics guarantee). Clean byte ranges share the same offset in
+    /// both old and new files. Insert/delete operations that shift content are
+    /// not supported.
     #[instrument(skip_all, name = "FileUploadSession::upload_file_delta",
         fields(new_file_size, num_dirty_ranges = dirty_ranges.len()))]
     pub async fn upload_file_delta(
