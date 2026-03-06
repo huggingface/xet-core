@@ -380,14 +380,26 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
         &mut self,
         chunk_info: &[(MerkleHash, u64)],
         segments: &[FileDataSequenceEntry],
-    ) {
+    ) -> Vec<FileXorbDependency> {
         // Push all chunk hashes.
         self.chunk_hashes.extend_from_slice(chunk_info);
+
+        // Collect external dependencies so the caller can register them for progress tracking.
+        let mut xorb_dependencies = Vec::new();
 
         // Add all segments via the existing merge logic.
         for segment in segments {
             let n_chunks = (segment.chunk_index_end - segment.chunk_index_start) as usize;
             self.add_file_data_sequence_entry(segment.clone(), n_chunks);
+
+            if segment.cas_hash != MerkleHash::marker() {
+                xorb_dependencies.push(FileXorbDependency {
+                    file_id: self.file_id,
+                    xorb_hash: segment.cas_hash,
+                    n_bytes: segment.unpacked_segment_bytes as u64,
+                    is_external: true,
+                });
+            }
         }
 
         // Update dedup metrics: these bytes are all deduped (they already exist in CAS).
@@ -397,6 +409,8 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
         self.deduplication_metrics.deduped_chunks += deduped_chunks;
         self.deduplication_metrics.total_bytes += deduped_bytes;
         self.deduplication_metrics.total_chunks += deduped_chunks;
+
+        xorb_dependencies
     }
 
     /// Finalize the internal state, converting remaining data to a DataAggregator object that contains the file info

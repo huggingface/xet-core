@@ -32,6 +32,9 @@ use crate::remote_client_interface::create_remote_client;
 use crate::shard_interface::SessionShardInterface;
 use crate::{XetFileInfo, prometheus_metrics};
 
+/// Max bytes to read from the staging file per iteration to bound memory usage.
+const STAGING_READ_CHUNK_SIZE: usize = 8 * 1024 * 1024;
+
 /// Manages the translation of files between the
 /// MerkleDB / pointer file format and the materialized version.
 ///
@@ -323,11 +326,12 @@ impl FileUploadSession {
                 cursor = dirty_start;
             }
 
-            // Dirty range: read from staging file
-            if cursor < dirty_end {
+            // Dirty range: read from staging file in chunks to bound memory usage.
+            while cursor < dirty_end {
+                let read_end = dirty_end.min(cursor + STAGING_READ_CHUNK_SIZE as u64);
                 let path = staging_path.clone();
                 let offset = cursor;
-                let len = (dirty_end - cursor) as usize;
+                let len = (read_end - cursor) as usize;
                 let data = tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
                     let mut f = File::open(&path)?;
                     f.seek(SeekFrom::Start(offset))?;
@@ -339,7 +343,7 @@ impl FileUploadSession {
                 .map_err(|e| DataProcessingError::InternalError(e.to_string()))??;
 
                 cleaner.add_data(&data).await?;
-                cursor = dirty_end;
+                cursor = read_end;
             }
         }
 
@@ -408,19 +412,24 @@ impl FileUploadSession {
         let prefix_chunks = &chunk_info.chunks[..chunk_info.chunks.len() - 1];
 
         // Build prefix segments: we need to adjust segments to exclude the last chunk.
-        // The simplest approach: recompute segments for the prefix chunks only.
-        let prefix_chunk_count = prefix_chunks.len() as u32;
+        // chunk_index_start/end in FileDataSequenceEntry are per-xorb indices, not
+        // file-global. Track a running file-global offset to correctly identify which
+        // segment contains the boundary.
+        let prefix_chunk_count = prefix_chunks.len();
+        let mut global_chunk_offset: usize = 0;
         let prefix_segments: Vec<_> = chunk_info
             .segments
             .iter()
             .filter_map(|seg| {
-                if seg.chunk_index_start >= prefix_chunk_count {
-                    // This segment is entirely in the last chunk or beyond.
+                let seg_n_chunks = (seg.chunk_index_end - seg.chunk_index_start) as usize;
+                let seg_global_end = global_chunk_offset + seg_n_chunks;
+                let result = if global_chunk_offset >= prefix_chunk_count {
+                    // Entirely beyond prefix.
                     None
-                } else if seg.chunk_index_end > prefix_chunk_count {
-                    // This segment spans the boundary: truncate it.
-                    let truncated_end = prefix_chunk_count;
-                    let truncated_bytes: u32 = prefix_chunks[seg.chunk_index_start as usize..]
+                } else if seg_global_end > prefix_chunk_count {
+                    // Partially in prefix: truncate to keep only prefix chunks.
+                    let chunks_to_keep = prefix_chunk_count - global_chunk_offset;
+                    let truncated_bytes: u32 = prefix_chunks[global_chunk_offset..global_chunk_offset + chunks_to_keep]
                         .iter()
                         .map(|(_, s)| *s as u32)
                         .sum();
@@ -429,11 +438,13 @@ impl FileUploadSession {
                         cas_flags: seg.cas_flags,
                         unpacked_segment_bytes: truncated_bytes,
                         chunk_index_start: seg.chunk_index_start,
-                        chunk_index_end: truncated_end,
+                        chunk_index_end: seg.chunk_index_start + chunks_to_keep as u32,
                     })
                 } else {
                     Some(seg.clone())
-                }
+                };
+                global_chunk_offset = seg_global_end;
+                result
             })
             .collect();
 
@@ -453,12 +464,14 @@ impl FileUploadSession {
             }
         }
 
-        // Read new appended data from the staging file.
+        // Read new appended data from the staging file in chunks.
         let (dirty_start, dirty_end) = dirty_ranges[0];
-        if dirty_start < dirty_end {
+        let mut cursor = dirty_start;
+        while cursor < dirty_end {
+            let read_end = dirty_end.min(cursor + STAGING_READ_CHUNK_SIZE as u64);
             let path = staging_path.to_owned();
-            let offset = dirty_start;
-            let len = (dirty_end - dirty_start) as usize;
+            let offset = cursor;
+            let len = (read_end - cursor) as usize;
             let data = tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
                 let mut f = File::open(&path)?;
                 f.seek(SeekFrom::Start(offset))?;
@@ -470,6 +483,7 @@ impl FileUploadSession {
             .map_err(|e| DataProcessingError::InternalError(e.to_string()))??;
 
             cleaner.add_data(&data).await?;
+            cursor = read_end;
         }
 
         Ok(Some(cleaner.finish().await?))

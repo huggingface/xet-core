@@ -107,8 +107,13 @@ impl SingleFileCleaner {
 
         // Resolve the future so we can mutate the deduper directly.
         let mut deduper = std::mem::replace(&mut self.dedup_manager_fut, Box::pin(future::pending())).await?;
-        deduper.pre_populate_from_reconstruction(&chunk_info, &segments);
+        let xorb_deps = deduper.pre_populate_from_reconstruction(&chunk_info, &segments);
         self.dedup_manager_fut = Box::pin(async move { Ok(deduper) });
+
+        // Register external dependencies for progress tracking.
+        if !xorb_deps.is_empty() {
+            self.session.register_xorb_dependencies(&xorb_deps).await;
+        }
 
         self.skip_sha256 = true;
         Ok(())
@@ -190,7 +195,7 @@ impl SingleFileCleaner {
         // When skip_sha256 is set (pre-populated prefix without full data), we can't
         // compute the SHA256 so we omit the metadata extension.
         let metadata_ext = if self.skip_sha256 {
-            Some(FileMetadataExt::new([0u8; 32].into()))
+            None
         } else {
             let sha256: Sha256 = self.sha_generator.finalize().await?;
             Some(FileMetadataExt::new(sha256))
