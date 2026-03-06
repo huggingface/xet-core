@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use bytes::Bytes;
 use cas_types::{
@@ -458,12 +459,18 @@ impl Client for RemoteClient {
 
         let url = Url::parse(&format!("{}/shards", self.endpoint))?;
 
+        // Server-side shard processing scales linearly with file entry count and can exceed the
+        // global read_timeout (120s) for large shards. Use a per-request timeout that scales at
+        // ~1s/KB of shard data (a proxy for entry count), clamped to [120s, 600s].
+        let shard_timeout = Duration::from_secs((n_upload_bytes / 1024).clamp(120, 600) as u64);
+
         let response: UploadShardResponse = RetryWrapper::new(api_tag)
             .with_connection_permit(upload_permit, Some(shard_data.len() as u64))
             .run_and_extract_json(move || {
                 client
                     .post(url.clone())
                     .with_extension(Api(api_tag))
+                    .timeout(shard_timeout)
                     .body(shard_data.clone())
                     .send()
             })
