@@ -522,6 +522,10 @@ impl Client for MemoryClient {
         Ok(shard.get_file_reconstruction_info(file_hash).map(|fi| (fi, None)))
     }
 
+    async fn get_file_chunk_hashes(&self, _file_hash: &MerkleHash) -> Result<Option<Vec<(MerkleHash, u64)>>> {
+        Ok(None)
+    }
+
     async fn query_for_global_dedup_shard(&self, _prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Bytes>> {
         self.apply_api_delay().await;
         let dedup = self.global_dedup.read().await;

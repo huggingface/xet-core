@@ -229,9 +229,20 @@ impl SessionShardInterface {
     /// the file's MDBFileInfo (from session/cache shards), then resolving each
     /// segment's xorb to get per-chunk hashes and sizes.
     ///
-    /// Returns `None` if the file or any of its xorbs are not found in local shards.
+    /// Falls back to CAS endpoint when local shards don't have the info.
+    /// Returns `None` if the file is not found anywhere.
     pub async fn get_file_chunk_info(&self, file_hash: &MerkleHash) -> Result<Option<FileChunkInfo>> {
-        // Step 1: Get the file reconstruction info from session or cache shards.
+        // Try local shards first.
+        if let Some(info) = self.get_file_chunk_info_local(file_hash).await? {
+            return Ok(Some(info));
+        }
+
+        // Fallback: fetch chunk hashes from CAS endpoint.
+        self.get_file_chunk_info_remote(file_hash).await
+    }
+
+    /// Try to resolve file chunk info from local session/cache shards only.
+    async fn get_file_chunk_info_local(&self, file_hash: &MerkleHash) -> Result<Option<FileChunkInfo>> {
         let file_info =
             if let Some((fi, _)) = self.session_shard_manager.get_file_reconstruction_info(file_hash).await? {
                 fi
@@ -241,22 +252,18 @@ impl SessionShardInterface {
                 return Ok(None);
             };
 
-        // Step 2: For each segment, look up the xorb's CAS info to get per-chunk hashes.
         let mut chunks = Vec::new();
         let mut total_size: u64 = 0;
 
         for segment in &file_info.segments {
-            // Look up the xorb in session then cache shard managers.
             let cas_info = if let Some(ci) = self.session_shard_manager.get_cas_info_by_hash(&segment.cas_hash).await? {
                 ci
             } else if let Some(ci) = self.cache_shard_manager.get_cas_info_by_hash(&segment.cas_hash).await? {
                 ci
             } else {
-                // Xorb not found locally, can't do the optimization.
                 return Ok(None);
             };
 
-            // Extract per-chunk hashes for the range covered by this segment.
             let start = segment.chunk_index_start as usize;
             let end = segment.chunk_index_end as usize;
 
@@ -270,6 +277,35 @@ impl SessionShardInterface {
                 total_size += chunk_size;
             }
         }
+
+        Ok(Some(FileChunkInfo {
+            chunks,
+            segments: file_info.segments,
+            total_size,
+        }))
+    }
+
+    /// Fetch file chunk info from CAS endpoint (chunk hashes + reconstruction info).
+    async fn get_file_chunk_info_remote(&self, file_hash: &MerkleHash) -> Result<Option<FileChunkInfo>> {
+        let chunks = match self.client.get_file_chunk_hashes(file_hash).await {
+            Ok(Some(c)) => c,
+            Ok(None) => return Ok(None),
+            Err(e) => {
+                info!("get_file_chunk_hashes failed for {file_hash}: {e}");
+                return Ok(None);
+            },
+        };
+
+        let (file_info, _) = match self.client.get_file_reconstruction_info(file_hash).await {
+            Ok(Some(fi)) => fi,
+            Ok(None) => return Ok(None),
+            Err(e) => {
+                info!("get_file_reconstruction_info failed for {file_hash}: {e}");
+                return Ok(None);
+            },
+        };
+
+        let total_size: u64 = chunks.iter().map(|(_, size)| size).sum();
 
         Ok(Some(FileChunkInfo {
             chunks,

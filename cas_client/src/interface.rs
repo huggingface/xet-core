@@ -58,6 +58,10 @@ pub trait Client: Send + Sync {
     /// Upload a new shard.
     async fn upload_shard(&self, shard_data: bytes::Bytes, upload_permit: ConnectionPermit) -> Result<bool>;
 
+    /// Get per-chunk hashes and sizes for a file, fetched from CAS.
+    /// Returns None if the file is not found.
+    async fn get_file_chunk_hashes(&self, file_hash: &MerkleHash) -> Result<Option<Vec<(MerkleHash, u64)>>>;
+
     /// Upload a new xorb. Optional progress callback receives (delta, completed, total) in transfer bytes.
     async fn upload_xorb(
         &self,

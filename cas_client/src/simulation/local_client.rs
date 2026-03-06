@@ -76,7 +76,7 @@ impl LocalClient {
     }
 
     /// Create a local client hosted in a directory.  Effectively, this directory
-    /// is the CAS endpoint and persists across instances of LocalClient.  
+    /// is the CAS endpoint and persists across instances of LocalClient.
     pub async fn new(path: impl AsRef<Path>) -> Result<Arc<Self>> {
         let path = path.as_ref().to_owned();
         Ok(Arc::new(Self::new_internal(path, None).await?))
@@ -475,6 +475,10 @@ impl Client for LocalClient {
     ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
         self.apply_api_delay().await;
         Ok(self.shard_manager.get_file_reconstruction_info(file_hash).await?)
+    }
+
+    async fn get_file_chunk_hashes(&self, _file_hash: &MerkleHash) -> Result<Option<Vec<(MerkleHash, u64)>>> {
+        Ok(None)
     }
 
     async fn query_for_global_dedup_shard(&self, _prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Bytes>> {

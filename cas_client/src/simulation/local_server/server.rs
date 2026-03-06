@@ -384,6 +384,13 @@ impl Client for LocalTestServer {
         self.remote_client.get_file_reconstruction_info(file_hash).await
     }
 
+    async fn get_file_chunk_hashes(
+        &self,
+        file_hash: &merklehash::MerkleHash,
+    ) -> Result<Option<Vec<(merklehash::MerkleHash, u64)>>> {
+        self.remote_client.get_file_chunk_hashes(file_hash).await
+    }
+
     async fn get_reconstruction(
         &self,
         file_id: &merklehash::MerkleHash,

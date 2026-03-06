@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use bytes::Bytes;
 use cas_object::SerializedCasObject;
 use cas_types::{
-    BatchQueryReconstructionResponse, FileRange, HttpRange, Key, QueryReconstructionResponse, UploadShardResponse,
-    UploadShardResponseType, UploadXorbResponse,
+    BatchQueryReconstructionResponse, FileChunkHashesResponse, FileRange, HttpRange, Key, QueryReconstructionResponse,
+    UploadShardResponse, UploadShardResponseType, UploadXorbResponse,
 };
 use futures::TryStreamExt;
 use http::HeaderValue;
@@ -433,6 +433,30 @@ impl Client for RemoteClient {
         event!(INFORMATION_LOG_LEVEL, call_id, %file_hash, terms_count, "Completed get_file_reconstruction_info API call");
 
         Ok(result)
+    }
+
+    async fn get_file_chunk_hashes(&self, file_hash: &MerkleHash) -> Result<Option<Vec<(MerkleHash, u64)>>> {
+        let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
+        let url = Url::parse(&format!("{}/v1/file_chunk_hashes/{}", self.endpoint, file_hash.hex()))?;
+        event!(INFORMATION_LOG_LEVEL, call_id, %file_hash, "Starting get_file_chunk_hashes API call");
+
+        let api_tag = "cas::get_file_chunk_hashes";
+        let client = self.authenticated_http_client.clone();
+
+        let result: Result<FileChunkHashesResponse> = RetryWrapper::new(api_tag)
+            .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
+            .await;
+
+        match result {
+            Ok(response) => {
+                let chunks: Vec<(MerkleHash, u64)> =
+                    response.chunks.into_iter().map(|c| (c.hash.into(), c.size)).collect();
+                event!(INFORMATION_LOG_LEVEL, call_id, %file_hash, num_chunks = chunks.len(), "Completed get_file_chunk_hashes API call");
+                Ok(Some(chunks))
+            },
+            Err(CasClientError::ReqwestError(ref e, _)) if e.status() == Some(StatusCode::NOT_FOUND) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     async fn query_for_global_dedup_shard(&self, prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Bytes>> {

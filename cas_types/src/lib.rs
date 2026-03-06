@@ -252,6 +252,20 @@ pub struct QueryChunkResponse {
     pub shard: MerkleHash,
 }
 
+/// Response type for the file chunk hashes endpoint.
+/// Returns per-chunk hash and size for all chunks in a file.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FileChunkHashesResponse {
+    pub chunks: Vec<ChunkHashEntry>,
+}
+
+/// A single chunk's hash and uncompressed size.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChunkHashEntry {
+    pub hash: HexMerkleHash,
+    pub size: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use crate::*;
