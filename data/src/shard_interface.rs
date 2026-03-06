@@ -278,6 +278,17 @@ impl SessionShardInterface {
             }
         }
 
+        // Validate: recompute file hash from the chunk hashes. If it doesn't match,
+        // the local CAS info may contain HMACed (keyed) chunk hashes from a global
+        // dedup shard. Fall through to the remote CAS endpoint in that case.
+        let computed_hash = merklehash::file_hash(&chunks);
+        if computed_hash != *file_hash {
+            info!(
+                "Local chunk hashes for {file_hash} produced mismatching file hash {computed_hash}, falling back to remote"
+            );
+            return Ok(None);
+        }
+
         Ok(Some(FileChunkInfo {
             chunks,
             segments: file_info.segments,

@@ -327,8 +327,17 @@ impl FileUploadSession {
                     while let Some(chunk) = stream.next().await? {
                         cleaner.add_data(&chunk).await?;
                     }
+                    cursor = clean_end;
                 }
-                cursor = dirty_start;
+                // Zero-filled gap past old EOF (sparse write beyond old file size).
+                if cursor < dirty_start {
+                    let zero_buf = vec![0u8; STAGING_READ_CHUNK_SIZE];
+                    while cursor < dirty_start {
+                        let chunk_size = ((dirty_start - cursor) as usize).min(STAGING_READ_CHUNK_SIZE);
+                        cleaner.add_data(&zero_buf[..chunk_size]).await?;
+                        cursor += chunk_size as u64;
+                    }
+                }
             }
 
             // Dirty range: read from staging file in chunks to bound memory usage.
@@ -358,6 +367,17 @@ impl FileUploadSession {
             let mut stream = download_session.download_stream_range(old_file_info, cursor..trailing_end, None)?;
             while let Some(chunk) = stream.next().await? {
                 cleaner.add_data(&chunk).await?;
+            }
+            cursor = trailing_end;
+        }
+
+        // Trailing zero-fill past old EOF (e.g., ftruncate to extend without writing).
+        if cursor < new_file_size {
+            let zero_buf = vec![0u8; STAGING_READ_CHUNK_SIZE];
+            while cursor < new_file_size {
+                let chunk_size = ((new_file_size - cursor) as usize).min(STAGING_READ_CHUNK_SIZE);
+                cleaner.add_data(&zero_buf[..chunk_size]).await?;
+                cursor += chunk_size as u64;
             }
         }
 
