@@ -175,6 +175,20 @@ impl FileDownloadSession {
         Ok(reconstructor.reconstruct_to_stream())
     }
 
+    /// Like [`download_stream`](Self::download_stream), but downloads only the specified byte range.
+    #[instrument(skip_all, name = "FileDownloadSession::download_stream_range",
+        fields(hash = file_info.hash(), range_start = range.start, range_end = range.end))]
+    pub fn download_stream_range(
+        &self,
+        file_info: &XetFileInfo,
+        range: Range<u64>,
+        tracking_id: Option<&str>,
+    ) -> Result<DownloadStream> {
+        let file_range = FileRange::new(range.start, range.end);
+        let reconstructor = self.setup_reconstructor(file_info, Some(file_range), tracking_id, None, None, None)?;
+        Ok(reconstructor.reconstruct_to_stream())
+    }
+
     fn tracker_name(
         &self,
         tracking_id: Option<&str>,

@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::mem::{swap, take};
 use std::path::Path;
 use std::sync::Arc;
@@ -27,6 +27,7 @@ use xet_runtime::{XetRuntime, xet_config};
 use crate::configurations::*;
 use crate::errors::*;
 use crate::file_cleaner::SingleFileCleaner;
+use crate::file_download_session::FileDownloadSession;
 use crate::remote_client_interface::create_remote_client;
 use crate::shard_interface::SessionShardInterface;
 use crate::{XetFileInfo, prometheus_metrics};
@@ -266,6 +267,75 @@ impl FileUploadSession {
             .await;
 
         SingleFileCleaner::new(file_name, file_id, sha256, self.clone())
+    }
+
+    /// Uploads a file using delta deduplication: only changed portions go through
+    /// the full upload pipeline while unchanged byte ranges are streamed from CAS
+    /// and fed through the chunker so that the dedup layer recognizes them.
+    ///
+    /// `dirty_ranges` must be sorted, non-overlapping `(start, end)` byte ranges
+    /// (exclusive end). Gaps between dirty ranges are considered clean and are
+    /// downloaded from CAS via `download_session`.
+    #[instrument(skip_all, name = "FileUploadSession::upload_file_delta",
+        fields(new_file_size, num_dirty_ranges = dirty_ranges.len()))]
+    pub async fn upload_file_delta(
+        self: &Arc<Self>,
+        download_session: &FileDownloadSession,
+        old_file_info: &XetFileInfo,
+        new_file_size: u64,
+        dirty_ranges: &[(u64, u64)],
+        staging_path: impl AsRef<Path>,
+    ) -> Result<(XetFileInfo, DeduplicationMetrics)> {
+        let staging_path = staging_path.as_ref().to_owned();
+        let old_size = old_file_info.file_size();
+
+        let mut cleaner = self.start_clean(None, Some(new_file_size), None).await;
+
+        let mut cursor: u64 = 0;
+
+        for &(dirty_start, dirty_end) in dirty_ranges {
+            // Clean gap before this dirty range: download from CAS
+            if cursor < dirty_start {
+                let clean_end = dirty_start.min(old_size);
+                if cursor < clean_end {
+                    let mut stream = download_session.download_stream_range(old_file_info, cursor..clean_end, None)?;
+                    while let Some(chunk) = stream.next().await? {
+                        cleaner.add_data(&chunk).await?;
+                    }
+                }
+                cursor = dirty_start;
+            }
+
+            // Dirty range: read from staging file
+            if cursor < dirty_end {
+                let path = staging_path.clone();
+                let offset = cursor;
+                let len = (dirty_end - cursor) as usize;
+                let data = tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
+                    let mut f = File::open(&path)?;
+                    f.seek(SeekFrom::Start(offset))?;
+                    let mut buf = vec![0u8; len];
+                    f.read_exact(&mut buf)?;
+                    Ok(buf)
+                })
+                .await
+                .map_err(|e| DataProcessingError::InternalError(e.to_string()))??;
+
+                cleaner.add_data(&data).await?;
+                cursor = dirty_end;
+            }
+        }
+
+        // Trailing clean gap after last dirty range
+        let trailing_end = new_file_size.min(old_size);
+        if cursor < trailing_end {
+            let mut stream = download_session.download_stream_range(old_file_info, cursor..trailing_end, None)?;
+            while let Some(chunk) = stream.next().await? {
+                cleaner.add_data(&chunk).await?;
+            }
+        }
+
+        cleaner.finish().await
     }
 
     /// Registers a new xorb for upload, returning true if the xorb was added to the upload queue and false
@@ -613,6 +683,20 @@ mod tests {
 
     use super::*;
 
+    async fn upload_data(cas_path: &Path, data: &[u8]) -> XetFileInfo {
+        let upload_session = FileUploadSession::new(TranslatorConfig::local_config(cas_path).unwrap().into(), None)
+            .await
+            .unwrap();
+
+        let mut cleaner = upload_session
+            .start_clean(Some("test".into()), Some(data.len() as u64), None)
+            .await;
+        cleaner.add_data(data).await.unwrap();
+        let (xfi, _metrics) = cleaner.finish().await.unwrap();
+        upload_session.finalize().await.unwrap();
+        xfi
+    }
+
     #[test]
     fn test_clean_smudge_round_trip() {
         let temp = tempdir().unwrap();
@@ -640,6 +724,54 @@ mod tests {
                 // 4. Verify that the round-tripped file matches the original
                 let result_data = read(hydrated_path).unwrap();
                 assert_eq!(original_data.to_vec(), result_data);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_upload_file_delta_partial_modification() {
+        let runtime = get_threadpool();
+        runtime
+            .clone()
+            .external_run_async_task(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+
+                // Upload original file
+                let original = b"AAAA BBBB CCCC DDDD";
+                let old_xfi = upload_data(&cas_path, original).await;
+
+                // Create modified staging file (change middle portion)
+                let mut modified = original.to_vec();
+                modified[5..9].copy_from_slice(b"XXXX");
+                let staging_path = temp.path().join("staging");
+                write(&staging_path, &modified).unwrap();
+
+                // Delta upload: only the middle range [5,9) is dirty.
+                // Share the client between download and upload sessions to avoid
+                // opening the same LMDB environment twice.
+                let config: Arc<TranslatorConfig> = TranslatorConfig::local_config(&cas_path).unwrap().into();
+                let upload_session = FileUploadSession::new(config, None).await.unwrap();
+                let download_session = FileDownloadSession::from_client(upload_session.client.clone(), None, None);
+
+                let dirty_ranges = vec![(5u64, 9u64)];
+                let (new_xfi, metrics) = upload_session
+                    .upload_file_delta(&download_session, &old_xfi, modified.len() as u64, &dirty_ranges, &staging_path)
+                    .await
+                    .unwrap();
+
+                assert_eq!(new_xfi.file_size(), modified.len() as u64);
+                assert!(metrics.total_bytes > 0);
+
+                drop(download_session);
+                upload_session.finalize().await.unwrap();
+
+                // Download the new file and verify contents
+                let config2: Arc<TranslatorConfig> = TranslatorConfig::local_config(&cas_path).unwrap().into();
+                let dl = FileDownloadSession::new(config2, None, None).await.unwrap();
+                let out_path = temp.path().join("result.txt");
+                dl.download_file(&new_xfi, &out_path, None).await.unwrap();
+                assert_eq!(read(&out_path).unwrap(), modified);
             })
             .unwrap();
     }
