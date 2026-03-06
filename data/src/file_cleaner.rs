@@ -190,7 +190,7 @@ impl SingleFileCleaner {
         // When skip_sha256 is set (pre-populated prefix without full data), we can't
         // compute the SHA256 so we omit the metadata extension.
         let metadata_ext = if self.skip_sha256 {
-            None
+            Some(FileMetadataExt::new([0u8; 32].into()))
         } else {
             let sha256: Sha256 = self.sha_generator.finalize().await?;
             Some(FileMetadataExt::new(sha256))
