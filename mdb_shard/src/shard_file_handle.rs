@@ -11,7 +11,7 @@ use merklehash::{HMACKey, HashedWrite, MerkleHash, compute_data_hash};
 use tracing::{debug, error, info, warn};
 
 use crate::MDBShardFileFooter;
-use crate::cas_structs::CASChunkSequenceHeader;
+use crate::cas_structs::{CASChunkSequenceHeader, MDBCASInfo};
 use crate::constants::MDB_SHARD_EXPIRATION_BUFFER;
 use crate::error::{MDBShardError, Result};
 use crate::file_structs::{FileDataSequenceEntry, MDBFileInfo};
@@ -19,7 +19,7 @@ use crate::shard_file::current_timestamp;
 use crate::shard_format::MDBShardInfo;
 use crate::utils::{parse_shard_filename, shard_file_name, temp_shard_file_name, truncate_hash};
 
-/// When a specific implementation of the  
+/// When a specific implementation of the
 #[derive(Debug)]
 pub struct MDBShardFile {
     pub shard_hash: MerkleHash,
@@ -383,6 +383,15 @@ impl MDBShardFile {
         };
 
         self.shard.get_file_reconstruction_info(&mut reader, file_hash)
+    }
+
+    #[inline]
+    pub fn read_cas_info_by_hash(&self, cas_hash: &MerkleHash) -> Result<Option<MDBCASInfo>> {
+        let Some(mut reader) = self.get_reader_if_present()? else {
+            return Ok(None);
+        };
+
+        self.shard.read_cas_info_by_hash(&mut reader, cas_hash)
     }
 
     #[inline]

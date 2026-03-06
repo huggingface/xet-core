@@ -6,7 +6,8 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use deduplication::{Chunk, Chunker, DeduplicationMetrics, FileDeduper};
 use mdb_shard::Sha256;
-use mdb_shard::file_structs::FileMetadataExt;
+use mdb_shard::file_structs::{FileDataSequenceEntry, FileMetadataExt};
+use merklehash::MerkleHash;
 use progress_tracking::upload_tracking::CompletionTrackerFileId;
 use tracing::{Instrument, debug_span, info, instrument};
 use xet_runtime::{XetRuntime, xet_config};
@@ -38,6 +39,9 @@ pub struct SingleFileCleaner {
     // Generating the sha256 hash
     sha_generator: ShaGenerator,
 
+    // When true, skip SHA256 in finalize (used when prefix was pre-populated without data).
+    skip_sha256: bool,
+
     // Start time
     start_time: DateTime<Utc>,
 }
@@ -59,6 +63,7 @@ impl SingleFileCleaner {
             session,
             chunker: deduplication::Chunker::default(),
             sha_generator: sha256.map(ShaGenerator::ProvidedValue).unwrap_or_else(ShaGenerator::generate),
+            skip_sha256: false,
             start_time: Utc::now(),
         }
     }
@@ -82,6 +87,30 @@ impl SingleFileCleaner {
 
         self.dedup_manager_fut = Box::pin(async move { dedup_background.await? });
 
+        Ok(())
+    }
+
+    /// Pre-populate the dedup pipeline with chunk metadata from an existing file's
+    /// reconstruction info, avoiding the need to download and re-chunk that data.
+    /// After calling this, only seam data (last chunk) and new appended data need
+    /// to flow through add_data().
+    ///
+    /// This sets `skip_sha256 = true` because we can't compute SHA256 without the
+    /// full original file data.
+    pub async fn add_pre_resolved_prefix(
+        &mut self,
+        chunk_info: &[(MerkleHash, u64)],
+        segments: &[FileDataSequenceEntry],
+    ) -> Result<()> {
+        let chunk_info = chunk_info.to_vec();
+        let segments = segments.to_vec();
+
+        // Resolve the future so we can mutate the deduper directly.
+        let mut deduper = std::mem::replace(&mut self.dedup_manager_fut, Box::pin(future::pending())).await?;
+        deduper.pre_populate_from_reconstruction(&chunk_info, &segments);
+        self.dedup_manager_fut = Box::pin(async move { Ok(deduper) });
+
+        self.skip_sha256 = true;
         Ok(())
     }
 
@@ -142,7 +171,7 @@ impl SingleFileCleaner {
         Ok(())
     }
 
-    /// Ensures all current background work is completed.  
+    /// Ensures all current background work is completed.
     pub async fn checkpoint(&mut self) -> Result<()> {
         // Flush the background process by sending it a dummy bit of data.
         self.deduper_process_chunks(Arc::new([])).await
@@ -157,12 +186,18 @@ impl SingleFileCleaner {
             self.deduper_process_chunks(data).await?;
         }
 
-        // Finalize the sha256 hashing and create the metadata extension
-        let sha256: Sha256 = self.sha_generator.finalize().await?;
-        let metadata_ext = FileMetadataExt::new(sha256);
+        // Finalize the sha256 hashing and create the metadata extension.
+        // When skip_sha256 is set (pre-populated prefix without full data), we can't
+        // compute the SHA256 so we omit the metadata extension.
+        let metadata_ext = if self.skip_sha256 {
+            None
+        } else {
+            let sha256: Sha256 = self.sha_generator.finalize().await?;
+            Some(FileMetadataExt::new(sha256))
+        };
 
         let (file_hash, remaining_file_data, deduplication_metrics) =
-            self.dedup_manager_fut.await?.finalize(Some(metadata_ext));
+            self.dedup_manager_fut.await?.finalize(metadata_ext);
 
         let file_info = XetFileInfo::new(file_hash.hex(), deduplication_metrics.total_bytes);
 

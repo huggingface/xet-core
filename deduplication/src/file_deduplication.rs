@@ -133,7 +133,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
                     if
                     // Only do this query on the first pass.
                     first_pass
-                        // The first hash of every file and those matching a pattern are eligible. 
+                        // The first hash of every file and those matching a pattern are eligible.
                         && (global_chunk_index == 0
                             || hash_is_global_dedup_eligible(&chunk_hashes[local_chunk_index]))
                         // Limit by enforcing at least 4MB between chunk queries.
@@ -302,7 +302,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
         }
     }
 
-    /// Cut a new xorb from the existing data.  
+    /// Cut a new xorb from the existing data.
     fn cut_new_xorb(&mut self) -> RawXorbData {
         // Cut the new xorb.
         let new_xorb = RawXorbData::from_chunks(&self.new_data[..], vec![0]);
@@ -368,6 +368,35 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
         } else {
             None
         }
+    }
+
+    /// Pre-populate the deduper with chunk metadata from an existing file's reconstruction info.
+    /// This allows the deduper to skip re-downloading data for known chunks: only new/seam chunks
+    /// need to go through the actual chunking pipeline.
+    ///
+    /// `chunk_info` contains (hash, size) pairs for each chunk to pre-populate.
+    /// `segments` contains the reconstruction segments referencing CAS xorbs.
+    pub fn pre_populate_from_reconstruction(
+        &mut self,
+        chunk_info: &[(MerkleHash, u64)],
+        segments: &[FileDataSequenceEntry],
+    ) {
+        // Push all chunk hashes.
+        self.chunk_hashes.extend_from_slice(chunk_info);
+
+        // Add all segments via the existing merge logic.
+        for segment in segments {
+            let n_chunks = (segment.chunk_index_end - segment.chunk_index_start) as usize;
+            self.add_file_data_sequence_entry(segment.clone(), n_chunks);
+        }
+
+        // Update dedup metrics: these bytes are all deduped (they already exist in CAS).
+        let deduped_bytes: u64 = chunk_info.iter().map(|(_, size)| *size).sum();
+        let deduped_chunks = chunk_info.len() as u64;
+        self.deduplication_metrics.deduped_bytes += deduped_bytes;
+        self.deduplication_metrics.deduped_chunks += deduped_chunks;
+        self.deduplication_metrics.total_bytes += deduped_bytes;
+        self.deduplication_metrics.total_chunks += deduped_chunks;
     }
 
     /// Finalize the internal state, converting remaining data to a DataAggregator object that contains the file info

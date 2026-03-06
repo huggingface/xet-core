@@ -11,6 +11,7 @@ use error_printer::ErrorPrinter;
 use mdb_shard::cas_structs::MDBCASInfo;
 use mdb_shard::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use mdb_shard::session_directory::{ShardMergeResult, consolidate_shards_in_directory, merge_shards_background};
+use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
 use mdb_shard::{MDB_SHARD_LOCAL_CACHE_EXPIRATION, MDBShardFile, MDBShardFileHeader, ShardFileManager};
 use merklehash::MerkleHash;
@@ -22,6 +23,16 @@ use xet_runtime::xet_config;
 
 use crate::configurations::TranslatorConfig;
 use crate::errors::Result;
+
+/// Chunk-level reconstruction info for a file, resolved from local MDB shards.
+pub struct FileChunkInfo {
+    /// Per-chunk (hash, size) pairs for all chunks in the file.
+    pub chunks: Vec<(MerkleHash, u64)>,
+    /// The reconstruction segments from the file's MDBFileInfo.
+    pub segments: Vec<FileDataSequenceEntry>,
+    /// Total file size in bytes.
+    pub total_size: u64,
+}
 
 pub struct SessionShardInterface {
     session_shard_manager: Arc<ShardFileManager>,
@@ -212,6 +223,59 @@ impl SessionShardInterface {
         }
 
         Ok(())
+    }
+
+    /// Retrieves the chunk-level reconstruction info for a file by looking up
+    /// the file's MDBFileInfo (from session/cache shards), then resolving each
+    /// segment's xorb to get per-chunk hashes and sizes.
+    ///
+    /// Returns `None` if the file or any of its xorbs are not found in local shards.
+    pub async fn get_file_chunk_info(&self, file_hash: &MerkleHash) -> Result<Option<FileChunkInfo>> {
+        // Step 1: Get the file reconstruction info from session or cache shards.
+        let file_info =
+            if let Some((fi, _)) = self.session_shard_manager.get_file_reconstruction_info(file_hash).await? {
+                fi
+            } else if let Some((fi, _)) = self.cache_shard_manager.get_file_reconstruction_info(file_hash).await? {
+                fi
+            } else {
+                return Ok(None);
+            };
+
+        // Step 2: For each segment, look up the xorb's CAS info to get per-chunk hashes.
+        let mut chunks = Vec::new();
+        let mut total_size: u64 = 0;
+
+        for segment in &file_info.segments {
+            // Look up the xorb in session then cache shard managers.
+            let cas_info = if let Some(ci) = self.session_shard_manager.get_cas_info_by_hash(&segment.cas_hash).await? {
+                ci
+            } else if let Some(ci) = self.cache_shard_manager.get_cas_info_by_hash(&segment.cas_hash).await? {
+                ci
+            } else {
+                // Xorb not found locally, can't do the optimization.
+                return Ok(None);
+            };
+
+            // Extract per-chunk hashes for the range covered by this segment.
+            let start = segment.chunk_index_start as usize;
+            let end = segment.chunk_index_end as usize;
+
+            if end > cas_info.chunks.len() {
+                return Ok(None);
+            }
+
+            for chunk_entry in &cas_info.chunks[start..end] {
+                let chunk_size = chunk_entry.unpacked_segment_bytes as u64;
+                chunks.push((chunk_entry.chunk_hash, chunk_size));
+                total_size += chunk_size;
+            }
+        }
+
+        Ok(Some(FileChunkInfo {
+            chunks,
+            segments: file_info.segments,
+            total_size,
+        }))
     }
 
     // Add the file reconstruction information to the session shard manager

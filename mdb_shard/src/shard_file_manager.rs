@@ -48,7 +48,7 @@ impl KeyedShardCollection {
     }
 }
 
-/// We have a couple levels of arc redirection here to handle the different queries needed.  
+/// We have a couple levels of arc redirection here to handle the different queries needed.
 /// This just holds the two things needed for lookup.
 #[derive(Default)]
 struct ShardBookkeeper {
@@ -403,6 +403,31 @@ impl FileReconstructor<MDBShardError> for ShardFileManager {
 }
 
 impl ShardFileManager {
+    /// Looks up a CAS block (xorb) by its hash and returns the full `MDBCASInfo`.
+    /// Searches in-memory state first, then disk shard files.
+    pub async fn get_cas_info_by_hash(&self, cas_hash: &MerkleHash) -> Result<Option<MDBCASInfo>> {
+        // First try in-memory state.
+        {
+            let lg = self.current_state.read().await;
+            if let Some(cas_info) = lg.cas_content.get(cas_hash) {
+                return Ok(Some((**cas_info).clone()));
+            }
+        }
+
+        // Then search disk shard files.
+        let current_shards = self.shard_bookkeeper.read().await?;
+
+        for sc in current_shards.shard_collections.iter() {
+            for si in sc.shard_list.iter() {
+                if let Some(cas_info) = si.read_cas_info_by_hash(cas_hash)? {
+                    return Ok(Some(cas_info));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
     // Performs a query of chunk hashes against known chunk hashes, matching
     // as many of the values in query_hashes as possible.  It returns the number
     // of entries matched from the input hashes, the CAS block hash of the match,

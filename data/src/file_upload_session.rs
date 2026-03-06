@@ -11,7 +11,7 @@ use cas_object::SerializedCasObject;
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
 use mdb_shard::Sha256;
-use mdb_shard::file_structs::MDBFileInfo;
+use mdb_shard::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use more_asserts::*;
 use progress_tracking::aggregator::AggregatingProgressUpdater;
 use progress_tracking::upload_tracking::{CompletionTracker, FileXorbDependency};
@@ -20,7 +20,7 @@ use progress_tracking::verification_wrapper::ProgressUpdaterVerificationWrapper;
 use progress_tracking::{NoOpProgressUpdater, TrackingProgressUpdater};
 use tokio::sync::Mutex;
 use tokio::task::{JoinHandle, JoinSet};
-use tracing::{Instrument, Span, info_span, instrument};
+use tracing::{Instrument, Span, info, info_span, instrument};
 use ulid::Ulid;
 use xet_runtime::{XetRuntime, xet_config};
 
@@ -289,6 +289,23 @@ impl FileUploadSession {
         let staging_path = staging_path.as_ref().to_owned();
         let old_size = old_file_info.file_size();
 
+        // Optimized path: for append-only writes (single dirty range starting at old_size),
+        // pre-populate the dedup pipeline with chunk metadata from local shards instead of
+        // downloading the entire original file from CAS.
+        if let Some(result) = self
+            .try_upload_file_delta_optimized(
+                download_session,
+                old_file_info,
+                new_file_size,
+                dirty_ranges,
+                &staging_path,
+            )
+            .await?
+        {
+            return Ok(result);
+        }
+
+        // Fallback: streaming path that downloads clean ranges from CAS.
         let mut cleaner = self.start_clean(None, Some(new_file_size), None).await;
 
         let mut cursor: u64 = 0;
@@ -336,6 +353,126 @@ impl FileUploadSession {
         }
 
         cleaner.finish().await
+    }
+
+    /// Attempts the optimized delta upload path: pre-populate chunk metadata from
+    /// local MDB shards instead of downloading from CAS. Only applies when:
+    /// 1. The write is append-only (single dirty range starting at old file size)
+    /// 2. The file's chunk info is available in local session/cache shards
+    ///
+    /// Returns `None` to signal fallback to the streaming path.
+    async fn try_upload_file_delta_optimized(
+        self: &Arc<Self>,
+        download_session: &FileDownloadSession,
+        old_file_info: &XetFileInfo,
+        new_file_size: u64,
+        dirty_ranges: &[(u64, u64)],
+        staging_path: &Path,
+    ) -> Result<Option<(XetFileInfo, DeduplicationMetrics)>> {
+        let old_size = old_file_info.file_size();
+
+        // Only optimize append-only writes: single dirty range starting at old_size.
+        if dirty_ranges.len() != 1 || dirty_ranges[0].0 != old_size {
+            return Ok(None);
+        }
+
+        // Resolve the old file hash.
+        let old_file_hash = match old_file_info.merkle_hash() {
+            Ok(h) => h,
+            Err(_) => return Ok(None),
+        };
+
+        // Look up chunk-level reconstruction info from local shards.
+        let chunk_info = match self.shard_interface.get_file_chunk_info(&old_file_hash).await? {
+            Some(ci) => ci,
+            None => return Ok(None),
+        };
+
+        if chunk_info.chunks.is_empty() {
+            return Ok(None);
+        }
+
+        info!(
+            "Delta upload: using optimized path, pre-populating {} chunks ({} bytes), \
+             re-chunking last chunk ({} bytes) + {} bytes new data",
+            chunk_info.chunks.len() - 1,
+            chunk_info.total_size,
+            chunk_info.chunks.last().map(|(_, s)| *s).unwrap_or(0),
+            new_file_size - old_size,
+        );
+
+        let mut cleaner = self.start_clean(None, Some(new_file_size), None).await;
+
+        // Pre-populate all chunks EXCEPT the last one. The last chunk's CDC boundary
+        // was forced at EOF and will shift when new data is appended.
+        let prefix_chunks = &chunk_info.chunks[..chunk_info.chunks.len() - 1];
+
+        // Build prefix segments: we need to adjust segments to exclude the last chunk.
+        // The simplest approach: recompute segments for the prefix chunks only.
+        let prefix_chunk_count = prefix_chunks.len() as u32;
+        let prefix_segments: Vec<_> = chunk_info
+            .segments
+            .iter()
+            .filter_map(|seg| {
+                if seg.chunk_index_start >= prefix_chunk_count {
+                    // This segment is entirely in the last chunk or beyond.
+                    None
+                } else if seg.chunk_index_end > prefix_chunk_count {
+                    // This segment spans the boundary: truncate it.
+                    let truncated_end = prefix_chunk_count;
+                    let truncated_bytes: u32 = prefix_chunks[seg.chunk_index_start as usize..]
+                        .iter()
+                        .map(|(_, s)| *s as u32)
+                        .sum();
+                    Some(FileDataSequenceEntry {
+                        cas_hash: seg.cas_hash,
+                        cas_flags: seg.cas_flags,
+                        unpacked_segment_bytes: truncated_bytes,
+                        chunk_index_start: seg.chunk_index_start,
+                        chunk_index_end: truncated_end,
+                    })
+                } else {
+                    Some(seg.clone())
+                }
+            })
+            .collect();
+
+        if !prefix_chunks.is_empty() {
+            cleaner.add_pre_resolved_prefix(prefix_chunks, &prefix_segments).await?;
+        }
+
+        // Download only the last chunk (~64-128KB) for CDC boundary re-alignment.
+        let last_chunk_size = chunk_info.chunks.last().map(|(_, s)| *s).unwrap_or(0);
+        let seam_offset = chunk_info.total_size - last_chunk_size;
+
+        if last_chunk_size > 0 {
+            let mut stream =
+                download_session.download_stream_range(old_file_info, seam_offset..chunk_info.total_size, None)?;
+            while let Some(data) = stream.next().await? {
+                cleaner.add_data(&data).await?;
+            }
+        }
+
+        // Read new appended data from the staging file.
+        let (dirty_start, dirty_end) = dirty_ranges[0];
+        if dirty_start < dirty_end {
+            let path = staging_path.to_owned();
+            let offset = dirty_start;
+            let len = (dirty_end - dirty_start) as usize;
+            let data = tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
+                let mut f = File::open(&path)?;
+                f.seek(SeekFrom::Start(offset))?;
+                let mut buf = vec![0u8; len];
+                f.read_exact(&mut buf)?;
+                Ok(buf)
+            })
+            .await
+            .map_err(|e| DataProcessingError::InternalError(e.to_string()))??;
+
+            cleaner.add_data(&data).await?;
+        }
+
+        Ok(Some(cleaner.finish().await?))
     }
 
     /// Registers a new xorb for upload, returning true if the xorb was added to the upload queue and false

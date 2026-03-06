@@ -252,7 +252,7 @@ impl MDBShardFileFooter {
 /// ], // Repeats per CAS.
 ///
 /// ----------------------------------------------------------------------------
-///  
+///
 /// File info lookup.  This is a lookup of a truncated file hash to the
 /// location index in the File info section.
 ///
@@ -519,6 +519,33 @@ impl MDBShardInfo {
         } else {
             Err(MDBShardError::TruncatedHashCollisionError(truncate_hash(cas_hash)))
         }
+    }
+
+    /// Looks up a CAS block (xorb) by its hash and returns the full `MDBCASInfo`
+    /// with per-chunk entries. Returns `None` if not found.
+    pub fn read_cas_info_by_hash<R: Read + Seek>(
+        &self,
+        reader: &mut R,
+        cas_hash: &MerkleHash,
+    ) -> Result<Option<MDBCASInfo>> {
+        let mut dest_indices = [0u32; 8];
+        let num_indices = self.get_cas_info_index_by_hash(reader, cas_hash, &mut dest_indices)?;
+
+        for &cas_entry_index in dest_indices.iter().take(num_indices) {
+            reader.seek(SeekFrom::Start(
+                self.metadata.cas_info_offset + (MDB_CAS_INFO_ENTRY_SIZE as u64) * (cas_entry_index as u64),
+            ))?;
+
+            let Some(cas_info) = MDBCASInfo::deserialize(reader)? else {
+                continue;
+            };
+
+            if cas_info.metadata.cas_hash == *cas_hash {
+                return Ok(Some(cas_info));
+            }
+        }
+
+        Ok(None)
     }
 
     pub fn get_cas_info_index_by_chunk<R: Read + Seek>(
