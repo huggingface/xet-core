@@ -59,6 +59,16 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_CLIENT_READ_TIMEOUT` to set this value.
     ref read_timeout: Duration = Duration::from_secs(120);
 
+    /// Maximum time allowed for the entire shard upload request, including server-side
+    /// processing. Shard processing time scales with file entry count and can exceed
+    /// the global read_timeout for large shards.
+    ///
+    /// When set to 0 (default), uses a dynamic timeout that scales at ~1s/KB of shard
+    /// data, clamped to [120s, 600s].
+    ///
+    /// Use the environment variable `HF_XET_CLIENT_SHARD_READ_TIMEOUT` to set this value.
+    ref shard_read_timeout: Duration = Duration::ZERO;
+
     /// Send a report of a successful partial upload every 512kb.
     ///
     /// The default value is 524288.
