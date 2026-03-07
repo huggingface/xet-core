@@ -4,8 +4,10 @@ use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
 
-use cas_client::Client;
-use cas_types::FileRange;
+use async_trait::async_trait;
+use bytes::{Bytes, BytesMut};
+use cas_client::{CasClientError, Client, URLProvider};
+use cas_types::{FileRange, HttpRange, Key};
 use chunk_cache::ChunkCache;
 use file_reconstruction::{DownloadStream, FileReconstructor};
 use progress_tracking::TrackingProgressUpdater;
@@ -175,6 +177,111 @@ impl FileDownloadSession {
         Ok(reconstructor.reconstruct_to_stream())
     }
 
+    /// Read exactly `length` bytes from `file_info` starting at `offset`.
+    ///
+    /// Unlike `download_stream_from_offset`, this bypasses the full streaming
+    /// reconstruction pipeline (no `ReconstructionTermManager`, no prefetch tasks,
+    /// no async task spawning). For warm reads (xorb data already in the disk
+    /// cache), each call is a direct disk seek + read — typically sub-millisecond.
+    ///
+    /// On a cache miss, downloads the required xorb block from CDN and populates
+    /// the cache so subsequent reads of the same block are served from disk.
+    #[instrument(skip_all, name = "FileDownloadSession::pread",
+        fields(hash = file_info.hash(), offset, length))]
+    pub async fn pread(&self, file_info: &XetFileInfo, offset: u64, length: u32) -> Result<Bytes> {
+        let file_hash = file_info.merkle_hash()?;
+        let end = (offset + length as u64).min(file_info.file_size());
+        if offset >= end {
+            return Ok(Bytes::new());
+        }
+
+        let range = FileRange::new(offset, end);
+        let Some(reconstruction) = self.client.get_reconstruction(&file_hash, Some(range)).await? else {
+            return Ok(Bytes::new());
+        };
+
+        let mut result = BytesMut::with_capacity((end - offset) as usize);
+        let mut remaining = (end - offset) as usize;
+        let mut first = true;
+
+        for term in &reconstruction.terms {
+            if remaining == 0 {
+                break;
+            }
+
+            let xorb_key = Key {
+                prefix: "default".to_string(),
+                hash: term.hash.0,
+            };
+
+            // Try disk cache first — no network round-trip for warm reads.
+            let term_data: Option<Bytes> = if let Some(ref cache) = self.chunk_cache {
+                match cache.get(&xorb_key, &term.range).await {
+                    Ok(Some(cached)) => Some(Bytes::from(cached.data)),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+
+            let term_data = match term_data {
+                Some(data) => data,
+                None => {
+                    // Cache miss: find the fetch URL and download the xorb block.
+                    let infos = reconstruction.fetch_info.get(&term.hash).ok_or_else(|| {
+                        DataProcessingError::InternalError(format!(
+                            "pread: no fetch_info for xorb {}",
+                            term.hash.0.hex()
+                        ))
+                    })?;
+                    let info = infos
+                        .iter()
+                        .find(|i| i.range.start <= term.range.start && term.range.end <= i.range.end)
+                        .ok_or_else(|| {
+                            DataProcessingError::InternalError(format!(
+                                "pread: no fetch_info covers chunk range [{}, {})",
+                                term.range.start, term.range.end
+                            ))
+                        })?;
+
+                    let url_provider = Box::new(StaticURLProvider {
+                        url: info.url.clone(),
+                        range: info.url_range,
+                    });
+                    let permit = self.client.acquire_download_permit().await?;
+                    let (data, chunk_byte_offsets) =
+                        self.client.get_file_term_data(url_provider, permit, None, None).await?;
+
+                    // Cache so future reads of this block skip the network.
+                    if let Some(ref cache) = self.chunk_cache {
+                        let _ = cache.put(&xorb_key, &info.range, &chunk_byte_offsets, &data).await;
+                    }
+
+                    // The downloaded block covers info.range; extract the bytes for term.range.
+                    let local_start = (term.range.start - info.range.start) as usize;
+                    let local_end = (term.range.end - info.range.start) as usize;
+                    let start_byte = chunk_byte_offsets[local_start] as usize;
+                    let end_byte = chunk_byte_offsets[local_end] as usize;
+                    data.slice(start_byte..end_byte)
+                },
+            };
+
+            let skip = if first {
+                first = false;
+                reconstruction.offset_into_first_range as usize
+            } else {
+                0
+            };
+
+            let avail = term_data.len().saturating_sub(skip);
+            let to_take = avail.min(remaining);
+            result.extend_from_slice(&term_data[skip..skip + to_take]);
+            remaining -= to_take;
+        }
+
+        Ok(result.freeze())
+    }
+
     fn tracker_name(
         &self,
         tracking_id: Option<&str>,
@@ -254,6 +361,26 @@ impl FileDownloadSession {
         }
 
         Ok(reconstructor)
+    }
+}
+
+/// A minimal [`URLProvider`] that returns a pre-fetched URL directly.
+/// Used by [`FileDownloadSession::pread`] for single-block downloads.
+struct StaticURLProvider {
+    url: String,
+    range: HttpRange,
+}
+
+#[async_trait]
+impl URLProvider for StaticURLProvider {
+    async fn retrieve_url(&self) -> std::result::Result<(String, HttpRange), CasClientError> {
+        Ok((self.url.clone(), self.range))
+    }
+
+    async fn refresh_url(&self) -> std::result::Result<(), CasClientError> {
+        // Static URLs cannot be refreshed; the caller will fall back to a
+        // full reconstruction query if the URL has expired.
+        Ok(())
     }
 }
 
