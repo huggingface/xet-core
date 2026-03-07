@@ -420,12 +420,18 @@ impl Client for RemoteClient {
 
         let url = Url::parse(&format!("{}/shards", self.endpoint))?;
 
-        // Server-side shard processing scales linearly with file entry count and can exceed the
-        // global read_timeout (120s) for large shards. Use a per-request timeout that scales at
-        // ~1s/KB of shard data (a proxy for entry count), clamped to [120s, 600s].
+        // Use configured shard_read_timeout if set, otherwise dynamically scale at ~1s/KB
+        // of shard data (a proxy for entry count), clamped to [120s, 600s].
         // Note: reqwest's WASM client does not support per-request timeouts.
         #[cfg(not(target_family = "wasm"))]
-        let shard_timeout = Duration::from_secs((n_upload_bytes / 1024).clamp(120, 600) as u64);
+        let shard_timeout = {
+            let configured = xet_config().client.shard_read_timeout;
+            if configured.is_zero() {
+                Duration::from_secs((n_upload_bytes / 1024).clamp(120, 600) as u64)
+            } else {
+                configured
+            }
+        };
 
         let response: UploadShardResponse = RetryWrapper::new(api_tag)
             .with_connection_permit(upload_permit, Some(shard_data.len() as u64))
