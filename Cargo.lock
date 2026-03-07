@@ -470,6 +470,7 @@ dependencies = [
  "bytes",
  "cas_types",
  "clap",
+ "ctor",
  "deduplication",
  "duration-str",
  "error_printer",
