@@ -321,42 +321,23 @@ impl DiskCache {
             };
 
             let path = self.item_path(key, &cache_item)?;
+            let range_copy = *range;
 
-            let mut file = match File::open(&path) {
-                Ok(file) => file,
-                Err(e) => match e.kind() {
-                    ErrorKind::NotFound => {
-                        self.remove_item(key, &cache_item).await?;
-                        continue;
-                    },
-                    _ => return Err(e.into()),
-                },
-            };
+            // Run blocking file I/O on a dedicated blocking thread so tokio workers stay free.
+            // cache_item is returned so we can call remove_item on it if needed.
+            let (cache_item, read_result) = tokio::task::spawn_blocking(move || {
+                let result = read_item_from_disk(path, &cache_item, range_copy);
+                (cache_item, result)
+            })
+            .await?;
 
-            if !cache_item.is_verified() {
-                let checksum = crc32_from_reader(&mut file)?;
-                if checksum == cache_item.checksum {
-                    cache_item.verify();
-                    file.rewind()?;
-                } else {
-                    debug!("computed checksum {checksum} mismatch on cache item {key}/{cache_item}");
+            match read_result? {
+                Some(data) => return Ok(Some(data)),
+                None => {
                     self.remove_item(key, &cache_item).await?;
                     continue;
-                }
+                },
             }
-
-            let mut file_reader = std::io::BufReader::new(file);
-
-            let Ok(header) = CacheFileHeader::deserialize(&mut file_reader)
-                .debug_error(format!("failed to deserialize cache file header on path: {path:?}"))
-            else {
-                self.remove_item(key, &cache_item).await?;
-                continue;
-            };
-
-            let start = cache_item.range.start;
-            let result_buf = get_range_from_cache_file(&header, &mut file_reader, range, start)?;
-            return Ok(Some(result_buf));
         }
     }
 
@@ -567,6 +548,46 @@ fn crc32_from_reader(reader: &mut impl Read) -> Result<u32, ChunkCacheError> {
         hasher.update(&buf[..num_read])
     }
     Ok(hasher.finalize())
+}
+
+/// Reads a single cache item from disk synchronously.
+///
+/// Returns `Ok(None)` for conditions that should cause the caller to remove the item and retry
+/// (file not found, checksum mismatch, corrupt header). Intended to run inside
+/// `tokio::task::spawn_blocking` so the async runtime is not blocked on file I/O.
+fn read_item_from_disk(
+    path: PathBuf,
+    cache_item: &VerificationCell<CacheItem>,
+    range: ChunkRange,
+) -> Result<Option<CacheRange>, ChunkCacheError> {
+    let mut file = match File::open(&path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+
+    if !cache_item.is_verified() {
+        let checksum = crc32_from_reader(&mut file)?;
+        if checksum == cache_item.checksum {
+            cache_item.verify();
+            file.rewind()?;
+        } else {
+            debug!("computed checksum {checksum} mismatch on cache item {cache_item}");
+            return Ok(None);
+        }
+    }
+
+    let mut file_reader = std::io::BufReader::new(file);
+
+    let Ok(header) = CacheFileHeader::deserialize(&mut file_reader)
+        .debug_error(format!("failed to deserialize cache file header on path: {path:?}"))
+    else {
+        return Ok(None);
+    };
+
+    let start = cache_item.range.start;
+    let result_buf = get_range_from_cache_file(&header, &mut file_reader, &range, start)?;
+    Ok(Some(result_buf))
 }
 
 #[inline]
