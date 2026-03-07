@@ -461,6 +461,7 @@ dependencies = [
  "cas_types",
  "chrono",
  "clap",
+ "ctor",
  "deduplication",
  "error_printer",
  "file_utils",
