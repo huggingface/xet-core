@@ -26,7 +26,7 @@ use xorb_object::SerializedXorbObject;
 
 use crate::configurations::*;
 use crate::errors::*;
-use crate::file_cleaner::SingleFileCleaner;
+use crate::file_cleaner::{Sha256Policy, SingleFileCleaner};
 use crate::remote_client_interface::create_remote_client;
 use crate::shard_interface::SessionShardInterface;
 use crate::{XetFileInfo, prometheus_metrics};
@@ -185,7 +185,7 @@ impl FileUploadSession {
                     let mut reader = File::open(&file_path)?;
 
                     // Start the clean process for each file.
-                    let mut cleaner = SingleFileCleaner::new(Some(file_name), file_id, sha256, session);
+                    let mut cleaner = SingleFileCleaner::new(Some(file_name), file_id, sha256.into(), session);
                     let mut bytes_read = 0;
 
                     while bytes_read < file_size {
@@ -251,13 +251,14 @@ impl FileUploadSession {
     /// The caller is responsible for memory usage management, the parameter "buffer_size"
     /// indicates the maximum number of Vec<u8> in the internal buffer.
     ///
-    /// If a sha256 is provided, the value will be directly used in shard upload to
-    /// avoid redundant computation.
+    /// If a sha256 is provided via [`Sha256Policy::Provided`], the value will be directly
+    /// used in shard upload to avoid redundant computation. [`Sha256Policy::Skip`] skips
+    /// SHA-256 computation entirely and no metadata_ext is included in the shard.
     pub async fn start_clean(
         self: &Arc<Self>,
         tracking_name: Option<Arc<str>>,
         size: u64,
-        sha256: Option<Sha256>,
+        sha256: Sha256Policy,
         tracking_id: Ulid,
     ) -> SingleFileCleaner {
         // Get a new file id for the completion tracking
@@ -576,7 +577,7 @@ mod tests {
             .unwrap();
 
         let mut cleaner = upload_session
-            .start_clean(Some("test".into()), read_data.len() as u64, None, Ulid::new())
+            .start_clean(Some("test".into()), read_data.len() as u64, Sha256Policy::Compute, Ulid::new())
             .await;
 
         // Read blocks from the source file and hand them to the cleaning handle
@@ -641,6 +642,37 @@ mod tests {
                 // 4. Verify that the round-tripped file matches the original
                 let result_data = read(hydrated_path).unwrap();
                 assert_eq!(original_data.to_vec(), result_data);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_clean_skip_sha256_no_metadata_ext() {
+        let temp = tempdir().unwrap();
+        let data = b"Hello, skip sha256!";
+
+        let runtime = get_threadpool();
+
+        runtime
+            .clone()
+            .external_run_async_task(async move {
+                let cas_path = temp.path().join("cas");
+
+                let upload_session =
+                    FileUploadSession::new(TranslatorConfig::local_config(&cas_path).unwrap().into(), None)
+                        .await
+                        .unwrap();
+
+                let mut cleaner = upload_session
+                    .start_clean(Some("test".into()), data.len() as u64, Sha256Policy::Skip, Ulid::new())
+                    .await;
+                cleaner.add_data(data).await.unwrap();
+                cleaner.finish().await.unwrap();
+
+                // Verify that the shard has no metadata_ext (no SHA-256).
+                let (_metrics, file_infos) = upload_session.finalize_with_file_info().await.unwrap();
+                assert_eq!(file_infos.len(), 1);
+                assert!(file_infos[0].metadata_ext.is_none(), "Skip should produce no metadata_ext");
             })
             .unwrap();
     }
