@@ -37,7 +37,7 @@ pub fn create_random_file(path: impl AsRef<Path>, size: usize, seed: u64) -> usi
     size
 }
 
-/// Creates a collection of random files, each with a deterministic seed.  
+/// Creates a collection of random files, each with a deterministic seed.
 /// the total number of bytes written for all files combined.
 pub fn create_random_files(dir: impl AsRef<Path>, files: &[(impl AsRef<str>, usize)], seed: u64) -> usize {
     let dir = dir.as_ref();
@@ -239,7 +239,7 @@ impl HydrateDehydrateTest {
 
     pub async fn hydrate(&mut self) {
         let client = self.get_or_create_client().await;
-        let session = FileDownloadSession::from_client(client, None);
+        let session = FileDownloadSession::from_client(client, None, None);
 
         for entry in read_dir(&self.ptr_dir).unwrap() {
             let entry = entry.unwrap();
@@ -252,7 +252,7 @@ impl HydrateDehydrateTest {
 
     pub async fn hydrate_partitioned_writers(&mut self, partitions: usize) {
         let client = self.get_or_create_client().await;
-        let session = FileDownloadSession::from_client(client, None);
+        let session = FileDownloadSession::from_client(client, None, None);
 
         for entry in read_dir(&self.ptr_dir).unwrap() {
             let entry = entry.unwrap();
@@ -296,7 +296,7 @@ impl HydrateDehydrateTest {
 
     pub async fn hydrate_stream(&mut self) {
         let client = self.get_or_create_client().await;
-        let session = FileDownloadSession::from_client(client, None);
+        let session = FileDownloadSession::from_client(client, None, None);
 
         for entry in read_dir(&self.ptr_dir).unwrap() {
             let entry = entry.unwrap();

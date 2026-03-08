@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 cas_client = { path = "../cas_client" }
 cas_types = { path = "../cas_types" }
+chunk_cache = { path = "../chunk_cache" }
 merklehash = { path = "../merklehash" }
 progress_tracking = { path = "../progress_tracking" }
 utils = { path = "../utils" }

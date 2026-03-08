@@ -260,7 +260,7 @@ impl FileUploadSession {
         sha256: Option<Sha256>,
         tracking_id: Ulid,
     ) -> SingleFileCleaner {
-        // Get a new file id for the completion tracking
+        // Get a new file id for the completion tracking.
         let file_id = self
             .completion_tracker
             .register_new_file(tracking_id, tracking_name.clone().unwrap_or_default(), Some(size))
@@ -603,7 +603,7 @@ mod tests {
         let xet_file = serde_json::from_str::<XetFileInfo>(&input).unwrap();
 
         let config = TranslatorConfig::local_config(cas_path).unwrap();
-        let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+        let session = FileDownloadSession::new(config.into(), None, None).await.unwrap();
 
         session.download_file(&xet_file, output_path, Ulid::new()).await.unwrap();
     }
