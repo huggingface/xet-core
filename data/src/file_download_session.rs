@@ -141,18 +141,20 @@ impl FileDownloadSession {
     /// chunk directly to its final offset in the buffer. This bypasses the
     /// `SequentialWriter` overhead and the adaptive prefetch loop.
     ///
-    /// The buffer must be large enough to hold `source_range.end - source_range.start` bytes.
+    /// When `source_range` is `None`, the entire file is downloaded and the
+    /// buffer must be large enough to hold the full file. When a range is
+    /// provided, only that byte range is fetched.
     #[instrument(skip_all, name = "FileDownloadSession::download_to_buffer",
-        fields(hash = file_info.hash(), range_start = source_range.start, range_end = source_range.end))]
+        fields(hash = file_info.hash()))]
     pub async fn download_to_buffer(
         &self,
         file_info: &XetFileInfo,
-        source_range: Range<u64>,
+        source_range: Option<Range<u64>>,
         buffer: &mut [u8],
         tracking_id: Ulid,
     ) -> Result<u64> {
-        let range = FileRange::new(source_range.start, source_range.end);
-        let reconstructor = self.setup_reconstructor(file_info, Some(range), tracking_id, None, None)?;
+        let range = source_range.map(|r| FileRange::new(r.start, r.end));
+        let reconstructor = self.setup_reconstructor(file_info, range, tracking_id, None, None)?;
         let n_bytes = reconstructor.reconstruct_to_buffer(buffer).await?;
         prometheus_metrics::FILTER_BYTES_SMUDGED.inc_by(n_bytes);
         Ok(n_bytes)
