@@ -17,8 +17,19 @@ use xet_runtime::{XetRuntime, xet_config};
 
 use crate::data_writer::{DataWriter, DownloadStream, SequentialWriter};
 use crate::error::{FileReconstructionError, Result};
-use crate::reconstruction_terms::ReconstructionTermManager;
+use crate::reconstruction_terms::{ReconstructionTermManager, retrieve_file_term_block};
 use crate::run_state::{RunError, RunState};
+
+/// A Send + Sync wrapper around a raw pointer, used to share a mutable buffer
+/// across parallel tokio tasks that write to non-overlapping regions.
+///
+/// # Safety
+/// The caller must ensure that:
+/// - The buffer outlives all tasks using this pointer.
+/// - Each task writes to a disjoint region of the buffer.
+struct SharedBufPtr(*mut u8);
+unsafe impl Send for SharedBufPtr {}
+unsafe impl Sync for SharedBufPtr {}
 
 /// Reconstructs a file from its content-addressed chunks by downloading xorb blocks
 /// and writing the reassembled data to an output. Supports byte range requests and
@@ -154,6 +165,83 @@ impl FileReconstructor {
         let run_state = RunState::new(self.cancellation_token.clone(), self.file_hash, self.progress_updater.clone());
 
         DownloadStream::new(self, run_state)
+    }
+
+    /// Reconstructs the file directly into a caller-provided buffer.
+    ///
+    /// This bypasses the `SequentialWriter` and `ReconstructionTermManager` overhead
+    /// by resolving all file terms in a single CAS roundtrip and then downloading
+    /// all xorb blocks in parallel, writing each chunk directly to its final offset
+    /// in the buffer.
+    ///
+    /// The buffer must be large enough to hold the requested byte range (or the
+    /// full file if no byte range is set). Returns the number of bytes written.
+    ///
+    /// # Safety
+    /// This method uses `unsafe` internally to share the buffer pointer across
+    /// parallel tasks. Each task writes to a disjoint region determined by the
+    /// file term byte ranges, so no data races occur.
+    pub async fn reconstruct_to_buffer(self, buffer: &mut [u8]) -> Result<u64> {
+        info!(
+            file_hash = %self.file_hash,
+            byte_range = ?self.byte_range,
+            buffer_len = buffer.len(),
+            "Reconstructing file to buffer"
+        );
+
+        let requested_range = self.byte_range.unwrap_or_else(|| FileRange::new(0, buffer.len() as u64));
+        let expected_size = (requested_range.end - requested_range.start) as usize;
+
+        if buffer.len() < expected_size {
+            return Err(FileReconstructionError::InternalError(format!(
+                "Buffer too small: {} bytes provided, {} bytes needed",
+                buffer.len(),
+                expected_size,
+            )));
+        }
+
+        // Resolve all file terms in a single CAS roundtrip.
+        let (_, _, file_terms) = retrieve_file_term_block(self.client.clone(), self.file_hash, requested_range)
+            .await?
+            .ok_or_else(|| {
+                FileReconstructionError::InternalError("No file terms returned for the requested range".to_string())
+            })?;
+
+        let range_start = requested_range.start;
+        let buf_ptr = SharedBufPtr(buffer.as_mut_ptr());
+        let buf_ptr = Arc::new(buf_ptr);
+
+        // Spawn parallel download tasks for each file term.
+        // Progress tracking is not used here; the buffer path bypasses RunState.
+        let mut tasks = Vec::with_capacity(file_terms.len());
+        for term in &file_terms {
+            let client = self.client.clone();
+            let term = term.clone();
+            let buf_ptr = buf_ptr.clone();
+
+            tasks.push(tokio::spawn(async move {
+                let data_future = term.get_data_task(client, None).await?;
+                let data = data_future.await?;
+
+                let offset = (term.byte_range.start - range_start) as usize;
+                // SAFETY: Each term writes to a disjoint byte range in the buffer.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(data.as_ptr(), buf_ptr.0.add(offset), data.len());
+                }
+
+                Ok::<u64, FileReconstructionError>(data.len() as u64)
+            }));
+        }
+
+        let mut total_written = 0u64;
+        for task in tasks {
+            let n = task
+                .await
+                .map_err(|e| FileReconstructionError::InternalError(format!("Task join error: {e}")))??;
+            total_written += n;
+        }
+
+        Ok(total_written)
     }
 
     /// Runs the file reconstruction with error handling and cancellation support.
@@ -543,6 +631,12 @@ mod tests {
             let file_specific_result = reconstruct_to_file_at_specific_offset(client, h, None, &config).await.unwrap();
             assert_eq!(file_specific_result, *expected, "file_at_specific_offset failed (vectored={use_vectored})");
         }
+
+        // Test 5: reconstruct_to_buffer (not affected by vectored write setting)
+        let mut buf = vec![0u8; expected.len()];
+        let reconstructor = FileReconstructor::new(&(client.clone() as Arc<dyn Client>), h);
+        reconstructor.reconstruct_to_buffer(&mut buf).await.unwrap();
+        assert_eq!(buf, *expected, "buffer reconstruction failed");
     }
 
     /// Reconstructs and verifies a byte range using all output methods and vectored/non-vectored writes.
@@ -578,6 +672,13 @@ mod tests {
                     .expect("reconstruct_to_file_at_offset_zero should succeed");
             assert_eq!(file_offset_result, expected, "file_at_offset failed (vectored={use_vectored})");
         }
+
+        // Test 4: reconstruct_to_buffer with byte range
+        let mut buf = vec![0u8; expected.len()];
+        let reconstructor = FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_byte_range(range);
+        reconstructor.reconstruct_to_buffer(&mut buf).await.unwrap();
+        assert_eq!(buf, expected, "buffer range reconstruction failed");
     }
 
     // ==================== Full File Reconstruction Tests ====================
