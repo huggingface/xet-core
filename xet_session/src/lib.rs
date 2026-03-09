@@ -88,7 +88,7 @@
 //! // Pattern 2: read directly from the handle (populated by finish())
 //! let r2 = dl_handle.result().unwrap(); // DownloadResult
 //! let r2 = r2.as_ref().as_ref().unwrap(); // &DownloadedFile
-//!     
+//!
 //! # Ok::<(), xet_session::SessionError>(())
 //! ```
 

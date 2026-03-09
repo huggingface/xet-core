@@ -84,7 +84,7 @@ impl UploadCommit {
 
     /// Queue a file for upload, starting the transfer immediately if system resource permits.
     ///
-    /// Returns a [`TaskHandle`] that can be used to poll status and per-file
+    /// Returns an [`UploadTaskHandle`] that can be used to poll status and per-file
     /// progress without taking the GIL.
     ///
     /// # Errors
@@ -111,7 +111,7 @@ impl UploadCommit {
     /// # use std::io::Read;
     /// # use xet_session::SessionError;
     /// # async fn example(commit: xet_session::UploadCommit, filename: &str, filesize: u64) -> Result<(), Box<dyn std::error::Error>> {
-    /// let (task_id, mut cleaner) = commit.upload_file(Some(filename.into()), filesize)?;
+    /// let (handle, mut cleaner) = commit.upload_file(Some(filename.into()), filesize)?;
     /// let mut reader = File::open(&filename)?;
     /// let mut buffer = vec![0u8; 65536];
     /// loop {
@@ -142,7 +142,7 @@ impl UploadCommit {
 
     /// Queue raw bytes for upload, starting the transfer immediately if system resource permits.
     ///
-    /// Returns a [`TaskHandle`]. See [`upload_from_path`](Self::upload_from_path) for details.
+    /// Returns an [`UploadTaskHandle`]. See [`upload_from_path`](Self::upload_from_path) for details.
     pub fn upload_bytes(
         &self,
         bytes: Vec<u8>,
@@ -714,7 +714,7 @@ mod tests {
     //
     //   1. HashMap lookup:  `commit_results.get(&handle.task_id)`
     //   2. Direct handle:   `handle.result()` (only on UploadTaskHandle, not the plain TaskHandle returned by
-    //      upload_bytes)
+    //      upload_file)
     //
     // Both patterns are exercised by the tests below.
 

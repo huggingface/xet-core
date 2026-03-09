@@ -89,7 +89,7 @@ impl DownloadGroup {
     /// * `dest_path` – Local path where the downloaded file will be written. Parent directories are created
     ///   automatically.
     ///
-    /// Returns a [`TaskHandle`] that can be used to poll status and per-file
+    /// Returns a [`DownloadTaskHandle`] that can be used to poll status and per-file
     /// progress without taking the GIL.
     ///
     /// # Errors
