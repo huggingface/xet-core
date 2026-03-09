@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::{Cursor, Write};
 use std::mem::size_of;
 
 use anyhow::anyhow;
@@ -33,16 +33,16 @@ async fn deserialize_chunk_with_header_to_writer<R: AsyncRead + Unpin, W: Write>
     let mut compressed_data = vec![0u8; header.get_compressed_length() as usize];
     reader.read_exact(&mut compressed_data).await?;
 
-    let uncompressed_data = header.get_compression_scheme()?.decompress_from_slice(&compressed_data)?;
-    let uncompressed_len = uncompressed_data.len();
+    // Decompress directly into the writer, avoiding an intermediate Vec allocation.
+    let uncompressed_len = header
+        .get_compression_scheme()?
+        .decompress_from_reader(&mut Cursor::new(&compressed_data), writer)? as usize;
 
     if uncompressed_len != header.get_uncompressed_length() as usize {
         return Err(XorbObjectError::FormatError(anyhow!(
             "chunk is corrupted, uncompressed bytes len doesn't agree with chunk header"
         )));
     }
-
-    writer.write_all(&uncompressed_data)?;
 
     Ok((header.get_compressed_length() as usize + XORB_CHUNK_HEADER_LENGTH, uncompressed_len as u32))
 }

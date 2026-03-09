@@ -7,4 +7,6 @@ mod run_state;
 pub use data_writer::{DataWriter, DownloadStream, SequentialWriter};
 pub use error::{FileReconstructionError, Result};
 pub use file_reconstructor::FileReconstructor;
-pub use reconstruction_terms::{FileTerm, ReconstructionTermManager, XorbBlock, XorbBlockData};
+pub use reconstruction_terms::{
+    FileTerm, ReconstructionTermManager, XorbBlock, XorbBlockData, retrieve_file_term_block,
+};
