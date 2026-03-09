@@ -198,12 +198,12 @@ impl FileReconstructor {
         let requested_range = self.byte_range.unwrap_or_else(FileRange::full);
 
         // Resolve all file terms in a single CAS roundtrip.
-        let (actual_range, _, file_terms) =
-            retrieve_file_term_block(self.client.clone(), self.file_hash, requested_range)
-                .await?
-                .ok_or_else(|| {
-                    FileReconstructionError::InternalError("No file terms returned for the requested range".to_string())
-                })?;
+        // None means the range is past EOF, consistent with other reconstruction methods.
+        let Some((actual_range, _, file_terms)) =
+            retrieve_file_term_block(self.client.clone(), self.file_hash, requested_range).await?
+        else {
+            return Ok(0);
+        };
 
         let total_size = (actual_range.end - actual_range.start) as usize;
         if buffer.len() < total_size {
@@ -231,7 +231,7 @@ impl FileReconstructor {
 
                 let offset = (term.byte_range.start - range_start) as usize;
                 // SAFETY: Each term writes to a disjoint byte range in the buffer,
-                // and the JoinSet is fully drained (or aborted) before we return.
+                // and the JoinSet is fully drained before we return (see error handling below).
                 unsafe {
                     std::ptr::copy_nonoverlapping(data.as_ptr(), buf_ptr.0.add(offset), data.len());
                 }
@@ -241,19 +241,25 @@ impl FileReconstructor {
         }
 
         let mut total_written = 0u64;
+        let mut first_error: Option<FileReconstructionError> = None;
         while let Some(result) = join_set.join_next().await {
             match result {
                 Ok(Ok(n)) => total_written += n,
-                Ok(Err(e)) => {
-                    // Abort all remaining tasks before returning, so no task outlives the buffer.
+                Ok(Err(e)) if first_error.is_none() => {
+                    first_error = Some(e);
                     join_set.abort_all();
-                    return Err(e);
                 },
-                Err(e) => {
+                Err(e) if first_error.is_none() => {
+                    first_error = Some(FileReconstructionError::InternalError(format!("Task join error: {e}")));
                     join_set.abort_all();
-                    return Err(FileReconstructionError::InternalError(format!("Task join error: {e}")));
                 },
+                // Already captured an error; drain remaining tasks.
+                _ => {},
             }
+        }
+
+        if let Some(e) = first_error {
+            return Err(e);
         }
 
         Ok(total_written)
