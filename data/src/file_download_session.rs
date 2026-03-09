@@ -14,7 +14,6 @@ use tracing::instrument;
 use ulid::Ulid;
 use xet_runtime::xet_config;
 
-use crate::cached_xet_client::CachedXetClient;
 use crate::configurations::TranslatorConfig;
 use crate::errors::*;
 use crate::remote_client_interface::create_remote_client;
@@ -52,45 +51,6 @@ impl FileDownloadSession {
             progress_tracker,
             progress_aggregator,
         }))
-    }
-
-    /// Creates a download session with a `CachedXetClient` that caches full-file
-    /// reconstruction plans and derives range responses locally, avoiding repeated
-    /// CAS roundtrips when downloading many byte ranges from the same file.
-    ///
-    /// Use `prepare()` to warm the cache for a file before issuing range requests.
-    pub async fn new_cached(
-        config: Arc<TranslatorConfig>,
-        progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
-    ) -> Result<Arc<Self>> {
-        let session_id = config
-            .session_id
-            .as_ref()
-            .map(Cow::Borrowed)
-            .unwrap_or_else(|| Cow::Owned(Ulid::new().to_string()));
-
-        let raw_client = create_remote_client(&config, &session_id, false).await?;
-        let cached_client = CachedXetClient::new(raw_client);
-
-        let (progress_updater, progress_aggregator) = Self::maybe_wrap_in_aggregator(progress_updater);
-        let progress_tracker = progress_updater.map(DownloadProgressTracker::new);
-
-        Ok(Arc::new(Self {
-            client: cached_client,
-            progress_tracker,
-            progress_aggregator,
-        }))
-    }
-
-    /// Warms the reconstruction cache for the given file by fetching its full-file
-    /// reconstruction plan from CAS. Subsequent `download_to_buffer` calls with
-    /// byte ranges on this file will derive the plan locally instead of hitting CAS.
-    ///
-    /// Only effective when the session was created with `new_cached()`.
-    pub async fn prepare(&self, file_info: &XetFileInfo) -> Result<()> {
-        let file_id = file_info.merkle_hash()?;
-        let _ = self.client.get_reconstruction(&file_id, None).await?;
-        Ok(())
     }
 
     /// Creates a new download session from an existing CAS client.

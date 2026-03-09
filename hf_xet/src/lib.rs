@@ -345,104 +345,6 @@ pub fn download_to_buffer(
     })
 }
 
-/// A reusable download session with an internal reconstruction cache.
-///
-/// Caches full-file reconstruction plans so that many byte-range downloads
-/// from the same file only need a single CAS roundtrip. Call `prepare()`
-/// to warm the cache, then `download_range()` for each byte range.
-#[pyclass]
-struct DownloadSession {
-    session: Arc<data::FileDownloadSession>,
-}
-
-#[pymethods]
-impl DownloadSession {
-    #[new]
-    #[pyo3(signature = (endpoint, token_info, token_refresher, request_headers=None))]
-    fn new(
-        py: Python,
-        endpoint: Option<String>,
-        token_info: Option<(String, u64)>,
-        token_refresher: Option<Py<PyAny>>,
-        request_headers: Option<HashMap<String, String>>,
-    ) -> PyResult<Self> {
-        let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
-        let header_map = build_headers_with_user_agent(request_headers)?;
-
-        let session = async_run(py, async move {
-            let config: Arc<data::configurations::TranslatorConfig> = Arc::new(
-                data::data_client::default_config(
-                    endpoint.unwrap_or_else(|| xet_runtime::xet_config().data.default_cas_endpoint.clone()),
-                    None,
-                    token_info,
-                    refresher.map(|v| v as Arc<_>),
-                    header_map,
-                )
-                .map_err(convert_data_processing_error)?,
-            );
-
-            let session = data::FileDownloadSession::new_cached(config, None)
-                .await
-                .map_err(convert_data_processing_error)?;
-
-            PyResult::Ok(session)
-        })?;
-
-        Ok(Self { session })
-    }
-
-    /// Warm the reconstruction cache for a file (single CAS roundtrip).
-    /// Subsequent `download_range` calls for this file derive locally.
-    #[pyo3(signature = (hash, file_size))]
-    fn prepare(&self, py: Python, hash: String, file_size: u64) -> PyResult<()> {
-        let session = self.session.clone();
-        async_run(py, async move {
-            let file_info = data::XetFileInfo::new(hash, file_size);
-            session.prepare(&file_info).await.map_err(convert_data_processing_error)?;
-            PyResult::Ok(())
-        })
-    }
-
-    /// Download a byte range into a caller-provided pinned buffer.
-    #[pyo3(signature = (hash, file_size, buf_ptr, buf_len, byte_range))]
-    fn download_range(
-        &self,
-        py: Python,
-        hash: String,
-        file_size: u64,
-        buf_ptr: usize,
-        buf_len: usize,
-        byte_range: (u64, u64),
-    ) -> PyResult<u64> {
-        if buf_ptr == 0 {
-            return Err(PyRuntimeError::new_err("buf_ptr is null"));
-        }
-
-        let expected_size = byte_range.1 - byte_range.0;
-        if (buf_len as u64) < expected_size {
-            return Err(PyRuntimeError::new_err(format!("Buffer too small: {buf_len} < {expected_size}")));
-        }
-
-        let session = self.session.clone();
-        let source_range = byte_range.0..byte_range.1;
-
-        async_run(py, async move {
-            let file_info = data::XetFileInfo::new(hash, file_size);
-
-            // SAFETY: buf_ptr points to a buffer owned by the Python caller that
-            // outlives this call (GIL is released but the caller is blocked).
-            let buffer = unsafe { std::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) };
-
-            let n_bytes = session
-                .download_to_buffer(&file_info, Some(source_range), buffer, ulid::Ulid::new())
-                .await
-                .map_err(convert_data_processing_error)?;
-
-            PyResult::Ok(n_bytes)
-        })
-    }
-}
-
 #[pyfunction]
 pub fn force_sigint_shutdown() -> PyResult<()> {
     // Force a signint shutdown in the case where it gets intercepted by another process.
@@ -586,7 +488,6 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(download_files, m)?)?;
     m.add_function(wrap_pyfunction!(download_to_buffer, m)?)?;
     m.add_function(wrap_pyfunction!(force_sigint_shutdown, m)?)?;
-    m.add_class::<DownloadSession>()?;
     m.add_class::<PyXetUploadInfo>()?;
     m.add_class::<PyXetDownloadInfo>()?;
     m.add_class::<PyXetUploadInfo>()?;

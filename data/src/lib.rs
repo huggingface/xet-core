@@ -1,4 +1,3 @@
-mod cached_xet_client;
 pub mod configurations;
 pub mod data_client;
 mod deduplication_interface;
@@ -14,7 +13,6 @@ mod shard_interface;
 mod xet_file;
 
 // Reexport this one for now
-pub use cached_xet_client::CachedXetClient;
 pub use deduplication::RawXorbData;
 pub use file_cleaner::SingleFileCleaner;
 pub use file_download_session::FileDownloadSession;
