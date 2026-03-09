@@ -5,8 +5,8 @@
 
 use std::time::Duration;
 
-use cas_client::LocalTestServer;
 use cas_client::simulation::ClientTestingUtils;
+use cas_client::{DirectAccessClient, LocalTestServerBuilder};
 use utils::test_set_config;
 
 test_set_config! {
@@ -21,7 +21,7 @@ const CHUNK_SIZE: usize = 123;
 
 #[tokio::test]
 async fn test_shard_upload_succeeds_within_timeout() {
-    let server = LocalTestServer::start(true).await;
+    let server = LocalTestServerBuilder::new().start().await;
 
     let result = server.remote_client().upload_random_file(&[(1, (0, 5))], CHUNK_SIZE).await;
 
@@ -30,11 +30,9 @@ async fn test_shard_upload_succeeds_within_timeout() {
 
 #[tokio::test]
 async fn test_shard_upload_times_out_when_server_slow() {
-    let server = LocalTestServer::start(true).await;
+    let server = LocalTestServerBuilder::new().start().await;
 
-    server
-        .client()
-        .set_api_delay_range(Some(Duration::from_secs(3)..Duration::from_secs(3)));
+    server.set_api_delay_range(Some(Duration::from_secs(3)..Duration::from_secs(3)));
 
     let result = server.remote_client().upload_random_file(&[(1, (0, 5))], CHUNK_SIZE).await;
 
