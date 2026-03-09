@@ -278,6 +278,67 @@ pub fn download_files(
 }
 
 #[pyfunction]
+#[pyo3(signature = (hash, file_size, buf_ptr, buf_len, endpoint, token_info, token_refresher, request_headers=None), text_signature = "(hash: str, file_size: int, buf_ptr: int, buf_len: int, endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], request_headers: Optional[Dict[str, str]]) -> int")]
+#[allow(clippy::too_many_arguments)]
+pub fn download_to_buffer(
+    py: Python,
+    hash: String,
+    file_size: u64,
+    buf_ptr: usize,
+    buf_len: usize,
+    endpoint: Option<String>,
+    token_info: Option<(String, u64)>,
+    token_refresher: Option<Py<PyAny>>,
+    request_headers: Option<HashMap<String, String>>,
+) -> PyResult<u64> {
+    if buf_ptr == 0 {
+        return Err(PyRuntimeError::new_err("buf_ptr is null"));
+    }
+    if buf_len < file_size as usize {
+        return Err(PyRuntimeError::new_err(format!("Buffer too small: {buf_len} < {file_size}")));
+    }
+
+    let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
+    let header_map = build_headers_with_user_agent(request_headers)?;
+
+    let x: u64 = rand::rng().random();
+
+    async_run(py, async move {
+        debug!("Download to buffer call {x:x}: (PID = {}) hash={hash} size={file_size}", std::process::id(),);
+
+        let config: Arc<data::configurations::TranslatorConfig> = Arc::new(
+            data::data_client::default_config(
+                endpoint.unwrap_or_else(|| xet_runtime::xet_config().data.default_cas_endpoint.clone()),
+                None,
+                token_info,
+                refresher.map(|v| v as Arc<_>),
+                header_map,
+            )
+            .map_err(convert_data_processing_error)?,
+        );
+
+        let session = data::FileDownloadSession::new(config, None)
+            .await
+            .map_err(convert_data_processing_error)?;
+
+        let file_info = XetFileInfo::new(hash, file_size);
+
+        // SAFETY: buf_ptr points to a buffer owned by the Python caller that
+        // outlives this call (GIL is released but the caller is blocked).
+        let buffer = unsafe { std::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) };
+
+        let n_bytes = session
+            .download_to_buffer(&file_info, None, buffer, ulid::Ulid::new())
+            .await
+            .map_err(convert_data_processing_error)?;
+
+        debug!("Download to buffer call {x:x}: wrote {n_bytes} bytes.");
+
+        PyResult::Ok(n_bytes)
+    })
+}
+
+#[pyfunction]
 pub fn force_sigint_shutdown() -> PyResult<()> {
     // Force a signint shutdown in the case where it gets intercepted by another process.
     crate::runtime::perform_sigint_shutdown();
@@ -418,6 +479,7 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(upload_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(hash_files, m)?)?;
     m.add_function(wrap_pyfunction!(download_files, m)?)?;
+    m.add_function(wrap_pyfunction!(download_to_buffer, m)?)?;
     m.add_function(wrap_pyfunction!(force_sigint_shutdown, m)?)?;
     m.add_class::<PyXetUploadInfo>()?;
     m.add_class::<PyXetDownloadInfo>()?;
