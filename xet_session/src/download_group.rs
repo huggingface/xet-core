@@ -11,7 +11,7 @@ use xet_runtime::XetRuntime;
 
 use crate::common::{GroupState, create_translator_config};
 use crate::errors::SessionError;
-use crate::progress::{GroupProgress, ProgressSnapshot, TaskHandle, TaskStatus};
+use crate::progress::{DownloadTaskHandle, GroupProgress, ProgressSnapshot, TaskHandle, TaskStatus};
 use crate::session::XetSession;
 
 /// Groups related file downloads into a single unit of work.
@@ -101,7 +101,7 @@ impl DownloadGroup {
         &self,
         file_info: XetFileInfo,
         dest_path: PathBuf,
-    ) -> Result<TaskHandle, SessionError> {
+    ) -> Result<DownloadTaskHandle, SessionError> {
         self.session.check_alive()?;
         self.inner.start_download_file_to_path(file_info, dest_path)
     }
@@ -122,13 +122,21 @@ impl DownloadGroup {
 
     /// Wait for all downloads to complete and return their results.
     ///
-    /// Blocks until every queued download finishes (or fails).  Returns one
-    /// [`DownloadResult`] entry per download.
+    /// Blocks until every queued download finishes (or fails).  Returns a
+    /// `HashMap` keyed by task ID (the [`Ulid`] returned by
+    /// [`download_file_to_path`](Self::download_file_to_path)), where each
+    /// value is `Arc<Result<`[`DownloadResult`]`,
+    /// `[`SessionError`](crate::SessionError)`>>`.  A single failed download
+    /// does not prevent the others from being collected.
+    ///
+    /// Per-task results can also be read directly from the
+    /// [`DownloadTaskHandle`] returned by `download_file_to_path` via
+    /// [`result`](DownloadTaskHandle::result) after this method returns.
     ///
     /// Consumes `self` — subsequent calls on any clone will return
     /// [`SessionError::AlreadyFinished`] (or a channel-closed error if the
     /// background worker has already exited).
-    pub fn finish(self) -> Result<Vec<Result<DownloadResult, SessionError>>, SessionError> {
+    pub fn finish(self) -> Result<HashMap<Ulid, DownloadResult>, SessionError> {
         let inner = self.inner.clone();
         self.session
             .runtime
@@ -136,11 +144,15 @@ impl DownloadGroup {
     }
 }
 
+/// Type alias for the Arc-wrapped per-file result returned by [`DownloadGroup::finish`].
+pub type DownloadResult = Arc<Result<DownloadedFile, SessionError>>;
+
 /// Handle for a single download task tracked internally by DownloadGroup.
 pub(crate) struct InnerDownloadTaskHandle {
     status: Arc<Mutex<TaskStatus>>,
     dest_path: PathBuf,
     join_handle: JoinHandle<Result<XetFileInfo, SessionError>>,
+    result: Arc<Mutex<Option<DownloadResult>>>,
 }
 
 /// All shared state owned by a single DownloadGroup instance.
@@ -214,7 +226,7 @@ impl DownloadGroupInner {
         self: &Arc<Self>,
         file_info: XetFileInfo,
         dest_path: PathBuf,
-    ) -> Result<TaskHandle, SessionError> {
+    ) -> Result<DownloadTaskHandle, SessionError> {
         // Hold the state lock guard for the duration of this function so finish() will not run
         // when a download task is registering.
         let state = self.state.lock()?;
@@ -223,10 +235,14 @@ impl DownloadGroupInner {
         let tracking_id = Ulid::new();
         let status = Arc::new(Mutex::new(TaskStatus::Queued));
 
-        let task_handle = TaskHandle {
-            status: Some(status.clone()),
-            group_progress: self.progress.clone(),
-            tracking_id,
+        let result = Arc::new(Mutex::new(None));
+        let task_handle = DownloadTaskHandle {
+            inner: TaskHandle {
+                status: Some(status.clone()),
+                group_progress: self.progress.clone(),
+                task_id: tracking_id,
+            },
+            result: result.clone(),
         };
 
         let Some(download_session) = self.download_session.lock()?.clone() else {
@@ -245,6 +261,7 @@ impl DownloadGroupInner {
             status,
             dest_path,
             join_handle,
+            result,
         };
 
         self.active_tasks.write()?.insert(tracking_id, handle);
@@ -253,7 +270,7 @@ impl DownloadGroupInner {
     }
 
     /// Handle a `Finish` command from the public API.
-    async fn handle_finish(self: &Arc<Self>) -> Result<Vec<Result<DownloadResult, SessionError>>, SessionError> {
+    async fn handle_finish(self: &Arc<Self>) -> Result<HashMap<Ulid, DownloadResult>, SessionError> {
         // Mark as not accepting new tasks
         {
             let mut state_guard = self.state.lock()?;
@@ -266,19 +283,24 @@ impl DownloadGroupInner {
         // Wait for all downloads to complete
         let active_tasks = std::mem::take(&mut *self.active_tasks.write()?);
 
-        let mut results = Vec::new();
+        let mut results = HashMap::new();
         let mut join_err = None;
-        // Join all tasks first and then propogate errors.
-        for (_task_id, handle) in active_tasks {
+        // Join all tasks first and then propagate errors.
+        for (task_id, handle) in active_tasks {
             match handle.join_handle.await.map_err(SessionError::TaskJoinError) {
                 Ok(Ok(file_info)) => {
-                    results.push(Ok(DownloadResult {
+                    let result = Arc::new(Ok(DownloadedFile {
                         dest_path: handle.dest_path,
                         file_info,
                     }));
+                    // Populate the shared Arc so callers can read via handle.result().
+                    let _ = handle.result.lock().map(|mut r| *r = Some(result.clone()));
+                    results.insert(task_id, result);
                 },
                 Ok(Err(task_err)) => {
-                    results.push(Err(task_err));
+                    let result: Arc<Result<DownloadedFile, SessionError>> = Arc::new(Err(task_err));
+                    let _ = handle.result.lock().map(|mut r| *r = Some(result.clone()));
+                    results.insert(task_id, result);
                 },
                 Err(e) => {
                     if join_err.is_none() {
@@ -316,30 +338,9 @@ impl DownloadGroupInner {
     }
 }
 
-/// A progress snapshot for a single queued download.
-///
-/// Returned by [`DownloadGroup::get_progress`].
-#[derive(Clone, Debug)]
-pub struct DownloadProgress {
-    /// Unique identifier for this download task.
-    pub task_id: Ulid,
-    /// Local path where the file will be written.
-    pub dest_path: PathBuf,
-    /// Content-addressed hash of the file being downloaded.
-    pub file_hash: String,
-    /// Number of bytes downloaded so far.
-    pub bytes_completed: u64,
-    /// Total file size in bytes (0 if not yet known).
-    pub bytes_total: u64,
-    /// Current lifecycle state of the task.
-    pub status: TaskStatus,
-    /// Instantaneous download throughput in bytes per second.
-    pub speed_bps: f64,
-}
-
 /// Per-file result returned by [`DownloadGroup::finish`].
 #[derive(Clone, Debug)]
-pub struct DownloadResult {
+pub struct DownloadedFile {
     /// Local path where the file was written.
     pub dest_path: PathBuf,
     /// Xet file hash and size of the downloaded file.
@@ -353,6 +354,7 @@ mod tests {
     use tempfile::{TempDir, tempdir};
 
     use super::*;
+    use crate::progress::UploadTaskHandle;
     use crate::session::XetSession;
 
     fn local_session(temp: &TempDir) -> Result<XetSession, Box<dyn std::error::Error>> {
@@ -362,12 +364,12 @@ mod tests {
 
     fn upload_bytes(session: &XetSession, data: &[u8], name: &str) -> Result<XetFileInfo, Box<dyn std::error::Error>> {
         let commit = session.new_upload_commit()?;
-        commit.upload_bytes(data.to_vec(), Some(name.into()))?;
+        let handle = commit.upload_bytes(data.to_vec(), Some(name.into()))?;
         let results = commit.commit()?;
-        let m = &results[0];
+        let meta = results.get(&handle.task_id()).unwrap().as_ref().as_ref().unwrap();
         Ok(XetFileInfo {
-            hash: m.as_ref().unwrap().hash.clone(),
-            file_size: m.as_ref().unwrap().file_size,
+            hash: meta.hash.clone(),
+            file_size: meta.file_size,
         })
     }
 
@@ -544,28 +546,25 @@ mod tests {
         let data_a = b"First file content";
         let data_b = b"Second file content - different";
 
-        // Upload both files in one commit; use tracking_name to locate each result.
+        // Upload both files; capture handles so results can be retrieved by task_id.
         let commit = session.new_upload_commit()?;
-        commit.upload_bytes(data_a.to_vec(), Some("a.bin".into()))?;
-        commit.upload_bytes(data_b.to_vec(), Some("b.bin".into()))?;
+        let handle_a = commit.upload_bytes(data_a.to_vec(), Some("a.bin".into()))?;
+        let handle_b = commit.upload_bytes(data_b.to_vec(), Some("b.bin".into()))?;
         let results = commit.commit()?;
 
-        let find_info = |name: &str| -> XetFileInfo {
-            let m = results
-                .iter()
-                .find(|r| r.as_ref().unwrap().tracking_name.as_deref() == Some(name))
-                .unwrap();
+        let to_file_info = |handle: &UploadTaskHandle| -> XetFileInfo {
+            let meta = results.get(&handle.task_id()).unwrap().as_ref().as_ref().unwrap();
             XetFileInfo {
-                hash: m.as_ref().unwrap().hash.clone(),
-                file_size: m.as_ref().unwrap().file_size,
+                hash: meta.hash.clone(),
+                file_size: meta.file_size,
             }
         };
 
         let dest_a = temp.path().join("a_out.bin");
         let dest_b = temp.path().join("b_out.bin");
         let group = session.new_download_group()?;
-        group.download_file_to_path(find_info("a.bin"), dest_a.clone())?;
-        group.download_file_to_path(find_info("b.bin"), dest_b.clone())?;
+        group.download_file_to_path(to_file_info(&handle_a), dest_a.clone())?;
+        group.download_file_to_path(to_file_info(&handle_b), dest_b.clone())?;
         group.finish()?;
 
         assert_eq!(std::fs::read(&dest_a)?, data_a);
@@ -597,6 +596,62 @@ mod tests {
         );
         let snapshot = progress_observer.get_progress()?;
         assert!(snapshot.total().total_bytes_completed > 0);
+        Ok(())
+    }
+
+    // ── Per-task result access patterns ──────────────────────────────────────
+    //
+    // After finish() completes there are two equivalent ways to retrieve a
+    // per-task DownloadResult:
+    //
+    //   1. HashMap lookup:  `finish_results.get(&handle.task_id())`
+    //   2. Direct handle:   `handle.result()` (on DownloadTaskHandle)
+
+    #[test]
+    // Pattern 1: per-task result is accessible via task_id in the finish() HashMap.
+    fn test_download_result_accessible_via_task_id_in_finish_map() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let session = local_session(&temp)?;
+        let data = b"result via task_id in finish map";
+        let file_info = upload_bytes(&session, data, "file.bin")?;
+        let dest = temp.path().join("out.bin");
+        let group = session.new_download_group()?;
+        let handle = group.download_file_to_path(file_info, dest)?;
+        let results = group.finish()?;
+        let result = results.get(&handle.task_id()).expect("task_id must be present in results");
+        assert_eq!(result.as_ref().as_ref().unwrap().file_info.file_size, data.len() as u64);
+        Ok(())
+    }
+
+    #[test]
+    // DownloadTaskHandle::result() returns None before finish() is called.
+    fn test_download_result_none_before_finish() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let session = local_session(&temp)?;
+        let file_info = upload_bytes(&session, b"some data", "file.bin")?;
+        let dest = temp.path().join("out.bin");
+        let group = session.new_download_group()?;
+        let handle = group.download_file_to_path(file_info, dest)?;
+        assert!(handle.result().is_none(), "result must be None before finish()");
+        group.finish()?;
+        Ok(())
+    }
+
+    #[test]
+    // DownloadTaskHandle::result() returns Some after finish() completes.
+    fn test_download_result_some_after_finish() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let session = local_session(&temp)?;
+        let data = b"download result test data";
+        let file_info = upload_bytes(&session, data, "file.bin")?;
+        let dest = temp.path().join("out.bin");
+        let group = session.new_download_group()?;
+        let handle = group.download_file_to_path(file_info.clone(), dest)?;
+        group.finish()?;
+        let result = handle.result().expect("result must be set after finish()");
+        let dl = result.as_ref().as_ref().unwrap();
+        assert_eq!(dl.file_info.file_size, data.len() as u64);
+        assert_eq!(dl.file_info.hash, file_info.hash);
         Ok(())
     }
 

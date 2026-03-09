@@ -12,7 +12,7 @@ use xet_runtime::XetRuntime;
 
 use crate::common::{GroupState, create_translator_config};
 use crate::errors::SessionError;
-use crate::progress::{GroupProgress, ProgressSnapshot, TaskHandle, TaskStatus};
+use crate::progress::{GroupProgress, ProgressSnapshot, TaskHandle, TaskStatus, UploadTaskHandle};
 use crate::session::XetSession;
 
 /// Groups related file uploads into a single atomic commit.
@@ -92,7 +92,7 @@ impl UploadCommit {
     /// Returns [`SessionError::Aborted`] if the session has been aborted, or
     /// [`SessionError::AlreadyCommitted`] if [`commit`](Self::commit) has
     /// already been called.
-    pub fn upload_from_path(&self, file_path: PathBuf) -> Result<TaskHandle, SessionError> {
+    pub fn upload_from_path(&self, file_path: PathBuf) -> Result<UploadTaskHandle, SessionError> {
         self.session.check_alive()?;
 
         // Use the absolute path in case the process current working directory changes
@@ -143,7 +143,11 @@ impl UploadCommit {
     /// Queue raw bytes for upload, starting the transfer immediately if system resource permits.
     ///
     /// Returns a [`TaskHandle`]. See [`upload_from_path`](Self::upload_from_path) for details.
-    pub fn upload_bytes(&self, bytes: Vec<u8>, tracking_name: Option<String>) -> Result<TaskHandle, SessionError> {
+    pub fn upload_bytes(
+        &self,
+        bytes: Vec<u8>,
+        tracking_name: Option<String>,
+    ) -> Result<UploadTaskHandle, SessionError> {
         self.session.check_alive()?;
         self.inner.start_upload_bytes(bytes, tracking_name)
     }
@@ -170,7 +174,7 @@ impl UploadCommit {
     ///
     /// Consumes `self` — subsequent calls on any clone will return
     /// [`SessionError::AlreadyCommitted`].
-    pub fn commit(self) -> Result<Vec<Result<FileMetadata, SessionError>>, SessionError> {
+    pub fn commit(self) -> Result<HashMap<Ulid, UploadResult>, SessionError> {
         let inner = self.inner.clone();
         self.session
             .runtime
@@ -178,11 +182,15 @@ impl UploadCommit {
     }
 }
 
+/// Type alias for the Arc-wrapped per-file result returned by [`UploadCommit::commit`].
+pub type UploadResult = Arc<Result<FileMetadata, SessionError>>;
+
 /// Handle for a single upload task tracked internally by UploadCommit.
 pub(crate) struct InnerUploadTaskHandle {
     status: Arc<Mutex<TaskStatus>>,
     tracking_name: Option<String>,
     join_handle: JoinHandle<Result<XetFileInfo, SessionError>>,
+    result: Arc<Mutex<Option<UploadResult>>>,
 }
 
 /// All shared state owned by a single UploadCommit instance.
@@ -279,7 +287,7 @@ impl UploadCommitInner {
         })
     }
 
-    fn start_upload_file_from_path(&self, file_path: PathBuf) -> Result<TaskHandle, SessionError> {
+    fn start_upload_file_from_path(&self, file_path: PathBuf) -> Result<UploadTaskHandle, SessionError> {
         // Hold the state lock guard for the duration of this function so commit() will not run
         // when an upload task is registering.
         let state = self.state.lock()?;
@@ -287,10 +295,14 @@ impl UploadCommitInner {
 
         let tracking_id = Ulid::new();
         let status = Arc::new(Mutex::new(TaskStatus::Queued));
-        let task_handle = TaskHandle {
-            status: Some(status.clone()),
-            group_progress: self.progress.clone(),
-            tracking_id,
+        let result = Arc::new(Mutex::new(None));
+        let task_handle = UploadTaskHandle {
+            inner: TaskHandle {
+                status: Some(status.clone()),
+                group_progress: self.progress.clone(),
+                task_id: tracking_id,
+            },
+            result: result.clone(),
         };
 
         let Some(upload_session) = self.upload_session.lock()?.clone() else {
@@ -304,6 +316,7 @@ impl UploadCommitInner {
             status,
             tracking_name: file_path.to_str().map(|s| s.to_owned()),
             join_handle,
+            result,
         };
 
         self.active_tasks.write()?.insert(tracking_id, handle);
@@ -327,7 +340,7 @@ impl UploadCommitInner {
         let task_handle = TaskHandle {
             status: None, // upload directly managed by user - not internally managed
             group_progress: self.progress.clone(),
-            tracking_id,
+            task_id: tracking_id,
         };
 
         let Some(upload_session) = self.upload_session.lock()?.clone() else {
@@ -343,7 +356,11 @@ impl UploadCommitInner {
     }
 
     /// Handle an `UploadBytes` command from the public API.
-    fn start_upload_bytes(&self, bytes: Vec<u8>, tracking_name: Option<String>) -> Result<TaskHandle, SessionError> {
+    fn start_upload_bytes(
+        &self,
+        bytes: Vec<u8>,
+        tracking_name: Option<String>,
+    ) -> Result<UploadTaskHandle, SessionError> {
         // Hold the state lock guard for the duration of this function so commit() will not run
         // when an upload task is registering.
         let state = self.state.lock()?;
@@ -351,10 +368,14 @@ impl UploadCommitInner {
 
         let tracking_id = Ulid::new();
         let status = Arc::new(Mutex::new(TaskStatus::Queued));
-        let task_handle = TaskHandle {
-            status: Some(status.clone()),
-            group_progress: self.progress.clone(),
-            tracking_id,
+        let result = Arc::new(Mutex::new(None));
+        let task_handle = UploadTaskHandle {
+            inner: TaskHandle {
+                status: Some(status.clone()),
+                group_progress: self.progress.clone(),
+                task_id: tracking_id,
+            },
+            result: result.clone(),
         };
 
         let Some(upload_session) = self.upload_session.lock()?.clone() else {
@@ -367,6 +388,7 @@ impl UploadCommitInner {
             status,
             tracking_name,
             join_handle,
+            result,
         };
 
         self.active_tasks.write()?.insert(tracking_id, handle);
@@ -375,7 +397,7 @@ impl UploadCommitInner {
     }
 
     /// Handle a `Commit` command from the public API.
-    async fn handle_commit(&self) -> Result<Vec<Result<FileMetadata, SessionError>>, SessionError> {
+    async fn handle_commit(&self) -> Result<HashMap<Ulid, UploadResult>, SessionError> {
         // Mark as not accepting new tasks
         {
             let mut state_guard = self.state.lock()?;
@@ -390,20 +412,26 @@ impl UploadCommitInner {
         // The guard is dropped immediately so the lock is not held across any `.await`.
         let active_tasks = std::mem::take(&mut *self.active_tasks.write()?);
 
-        let mut results = Vec::new();
+        let mut results = HashMap::new();
         let mut join_err = None;
         // Join all tasks first and then propogate errors.
-        for (_task_id, handle) in active_tasks {
+        for (task_id, handle) in active_tasks {
             match handle.join_handle.await.map_err(SessionError::TaskJoinError) {
                 Ok(Ok(file_info)) => {
-                    results.push(Ok(FileMetadata {
+                    let result = Arc::new(Ok(FileMetadata {
                         tracking_name: handle.tracking_name,
                         hash: file_info.hash().to_string(),
                         file_size: file_info.file_size(),
                     }));
+                    results.insert(task_id, result.clone());
+                    // Update result to the external task handle at best effort.
+                    let _ = handle.result.lock().map(|mut r| *r = Some(result));
                 },
                 Ok(Err(task_err)) => {
-                    results.push(Err(task_err));
+                    let result = Arc::new(Err(task_err));
+                    results.insert(task_id, result.clone());
+                    // Update result to the external task handle at best effort.
+                    let _ = handle.result.lock().map(|mut r| *r = Some(result));
                 },
                 Err(e) => {
                     if join_err.is_none() {
@@ -646,11 +674,12 @@ mod tests {
         let session = local_session(&temp)?;
         let data = b"Hello, upload commit round-trip!";
         let commit = session.new_upload_commit()?;
-        commit.upload_bytes(data.to_vec(), Some("hello.bin".into()))?;
+        let task_handle = commit.upload_bytes(data.to_vec(), Some("hello.bin".into()))?;
         let results = commit.commit()?;
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].as_ref().unwrap().file_size, data.len() as u64);
-        assert!(!results[0].as_ref().unwrap().hash.is_empty());
+        let meta = results.get(&task_handle.task_id()).unwrap().as_ref().as_ref().unwrap();
+        assert_eq!(meta.file_size, data.len() as u64);
+        assert!(!meta.hash.is_empty());
         Ok(())
     }
 
@@ -663,11 +692,70 @@ mod tests {
         let data = b"file path upload content";
         std::fs::write(&src, data)?;
         let commit = session.new_upload_commit()?;
-        commit.upload_from_path(src)?;
+        let handle = commit.upload_from_path(src)?;
+        commit.commit()?;
+        let meta = handle.result().unwrap();
+        let meta = meta.as_ref().as_ref().unwrap();
+        assert_eq!(meta.file_size, data.len() as u64);
+        assert!(!meta.hash.is_empty());
+        Ok(())
+    }
+
+    // ── Per-task result access patterns ──────────────────────────────────────
+    //
+    // After commit() completes there are two equivalent ways to retrieve a
+    // per-task FileMetadata result:
+    //
+    //   1. HashMap lookup:  `commit_results.get(&handle.task_id())`
+    //   2. Direct handle:   `handle.result()` (only on UploadTaskHandle, not the plain TaskHandle returned by
+    //      upload_bytes)
+    //
+    // Both patterns are exercised by the tests below.
+
+    #[test]
+    // UploadTaskHandle::result() returns None before commit() is called.
+    fn test_upload_result_none_before_commit() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let session = local_session(&temp)?;
+        let src = temp.path().join("data.bin");
+        std::fs::write(&src, b"content")?;
+        let commit = session.new_upload_commit()?;
+        let handle = commit.upload_from_path(src)?;
+        assert!(handle.result().is_none(), "result must be None before commit()");
+        commit.commit()?;
+        Ok(())
+    }
+
+    #[test]
+    // Pattern 1: per-task result is accessible via task_id in the commit() HashMap.
+    fn test_upload_result_accessible_via_task_id_in_commit_map() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let session = local_session(&temp)?;
+        let data = b"result via task_id";
+        let src = temp.path().join("data.bin");
+        std::fs::write(&src, data)?;
+        let commit = session.new_upload_commit()?;
+        let handle = commit.upload_from_path(src)?;
         let results = commit.commit()?;
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].as_ref().unwrap().file_size, data.len() as u64);
-        assert!(!results[0].as_ref().unwrap().hash.is_empty());
+        let result = results.get(&handle.task_id()).expect("task_id must be present in results");
+        assert_eq!(result.as_ref().as_ref().unwrap().file_size, data.len() as u64);
+        Ok(())
+    }
+
+    #[test]
+    // Pattern 2: per-task result is accessible directly from the UploadTaskHandle after commit().
+    fn test_upload_result_accessible_via_handle_after_commit() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let session = local_session(&temp)?;
+        let data = b"result via handle";
+        let src = temp.path().join("data.bin");
+        std::fs::write(&src, data)?;
+        let commit = session.new_upload_commit()?;
+        let handle = commit.upload_from_path(src)?;
+        commit.commit()?;
+        // handle.result() is populated by commit() via the shared Arc.
+        let result = handle.result().expect("result must be set after commit");
+        assert_eq!(result.as_ref().as_ref().unwrap().file_size, data.len() as u64);
         Ok(())
     }
 

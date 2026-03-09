@@ -8,7 +8,9 @@ use async_trait::async_trait;
 use progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
 use ulid::Ulid;
 
-use crate::SessionError;
+use crate::download_group::DownloadResult;
+use crate::upload_commit::UploadResult;
+use crate::{SessionError, download_group, upload_commit};
 
 /// Lifecycle state of a single upload or download task.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,7 +31,54 @@ pub enum TaskStatus {
 pub struct TaskHandle {
     pub(crate) status: Option<Arc<Mutex<TaskStatus>>>,
     pub(crate) group_progress: Arc<GroupProgress>,
-    pub(crate) tracking_id: Ulid,
+    /// Id of the task, can be used to retrive per-task progress and result.
+    pub(crate) task_id: Ulid,
+}
+
+impl TaskHandle {
+    pub fn task_id(&self) -> Ulid {
+        self.task_id
+    }
+}
+
+#[derive(Debug)]
+pub struct UploadTaskHandle {
+    pub(crate) inner: TaskHandle,
+    pub(crate) result: Arc<Mutex<Option<upload_commit::UploadResult>>>,
+}
+
+#[derive(Debug)]
+pub struct DownloadTaskHandle {
+    pub(crate) inner: TaskHandle,
+    pub(crate) result: Arc<Mutex<Option<download_group::DownloadResult>>>,
+}
+
+impl UploadTaskHandle {
+    pub fn task_id(&self) -> Ulid {
+        self.inner.task_id()
+    }
+
+    pub fn status(&self) -> Result<TaskStatus, SessionError> {
+        self.inner.status()
+    }
+
+    pub fn progress(&self) -> Result<FileProgress, SessionError> {
+        self.inner.progress()
+    }
+}
+
+impl DownloadTaskHandle {
+    pub fn task_id(&self) -> Ulid {
+        self.inner.task_id()
+    }
+
+    pub fn status(&self) -> Result<TaskStatus, SessionError> {
+        self.inner.status()
+    }
+
+    pub fn progress(&self) -> Result<FileProgress, SessionError> {
+        self.inner.progress()
+    }
 }
 
 impl TaskHandle {
@@ -42,7 +91,19 @@ impl TaskHandle {
     }
 
     pub fn progress(&self) -> Result<FileProgress, SessionError> {
-        self.group_progress.file(self.tracking_id)
+        self.group_progress.file(self.task_id)
+    }
+}
+
+impl UploadTaskHandle {
+    pub fn result(&self) -> Option<UploadResult> {
+        self.result.lock().ok().and_then(|r| r.clone())
+    }
+}
+
+impl DownloadTaskHandle {
+    pub fn result(&self) -> Option<DownloadResult> {
+        self.result.lock().ok().and_then(|r| r.clone())
     }
 }
 
@@ -206,6 +267,9 @@ impl TrackingProgressUpdater for GroupProgress {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
+    use data::XetFileInfo;
     use progress_tracking::ItemProgressUpdate;
 
     use super::*;
@@ -240,13 +304,13 @@ mod tests {
     // Per-file bytes_completed uses max semantics: a stale/lower update does not reduce progress.
     async fn test_register_updates_per_file_bytes_completed_never_decreases() {
         let p = GroupProgress::new();
-        let tracking_id = Ulid::new();
+        let task_id = Ulid::new();
 
         p.register_updates(ProgressUpdate {
             total_bytes: 100,
             total_bytes_completed: 80,
             item_updates: vec![ItemProgressUpdate {
-                tracking_id,
+                tracking_id: task_id,
                 item_name: "file.bin".into(),
                 total_bytes: 100,
                 bytes_completed: 80,
@@ -261,7 +325,7 @@ mod tests {
             total_bytes: 100,
             total_bytes_completed: 40,
             item_updates: vec![ItemProgressUpdate {
-                tracking_id,
+                tracking_id: task_id,
                 item_name: "file.bin".into(),
                 total_bytes: 100,
                 bytes_completed: 40, // lower than previously seen
@@ -272,7 +336,7 @@ mod tests {
         .await;
 
         let snapshot = p.snapshot().unwrap();
-        let file = snapshot.file(tracking_id).unwrap();
+        let file = snapshot.file(task_id).unwrap();
         // Max semantics: should still report 80, not the lower 40.
         assert_eq!(file.bytes_completed, 80);
     }
@@ -286,21 +350,131 @@ mod tests {
         let handle = TaskHandle {
             status: None,
             group_progress: progress,
-            tracking_id: Ulid::new(),
+            task_id: Ulid::new(),
         };
         assert!(handle.status().is_err());
     }
 
     #[test]
-    // TaskHandle::progress() returns InvalidTaskID when the tracking_id has no registered progress.
+    // TaskHandle::progress() returns InvalidTaskID when the task_id has no registered progress.
     fn test_task_handle_progress_for_unknown_id_returns_error() {
         let progress = Arc::new(GroupProgress::new());
         let handle = TaskHandle {
             status: None,
             group_progress: progress,
-            tracking_id: Ulid::new(), // not registered in GroupProgress
+            task_id: Ulid::new(), // not registered in GroupProgress
         };
         assert!(matches!(handle.progress(), Err(SessionError::InvalidTaskID(_))));
+    }
+
+    // ── UploadTaskHandle unit tests ──────────────────────────────────────────
+    //
+    // `UploadTaskHandle` wraps a `TaskHandle` and adds a `result` Arc that is
+    // shared with the internal `InnerUploadTaskHandle` inside `UploadCommit`.
+    // After `commit()` completes, the internal handle writes the per-file
+    // `UploadResult` (= `Arc<Result<FileMetadata, SessionError>>`) into that
+    // shared Arc so callers can read it directly from the task handle without
+    // touching the `commit()` return value.
+    //
+    // There are therefore two equivalent ways to retrieve a per-task result:
+    //   1. `commit()` returns `HashMap<Ulid, UploadResult>`; look up the task using `handle.task_id()`.
+    //   2. Call `handle.result()` directly after `commit()` returns.
+    //
+    // The tests below exercise the `result` Arc mechanics in isolation; see
+    // `upload_commit.rs` for end-to-end integration tests of both patterns.
+
+    #[test]
+    // UploadTaskHandle::result() returns None before the result Arc is populated.
+    fn test_upload_task_handle_result_none_before_commit() {
+        let progress = Arc::new(GroupProgress::new());
+        let handle = UploadTaskHandle {
+            inner: TaskHandle {
+                status: None,
+                group_progress: progress,
+                task_id: Ulid::new(),
+            },
+            result: Arc::new(Mutex::new(None)),
+        };
+        assert!(handle.result().is_none());
+    }
+
+    #[test]
+    // UploadTaskHandle::result() returns the value once the shared Arc is populated.
+    fn test_upload_task_handle_result_some_after_result_set() {
+        let progress = Arc::new(GroupProgress::new());
+        let result_arc = Arc::new(Mutex::new(None));
+        let handle = UploadTaskHandle {
+            inner: TaskHandle {
+                status: None,
+                group_progress: progress,
+                task_id: Ulid::new(),
+            },
+            result: result_arc.clone(),
+        };
+
+        // Simulate commit() writing the result.
+        let metadata = Arc::new(Ok(upload_commit::FileMetadata {
+            tracking_name: Some("file.bin".to_string()),
+            hash: "abc123".to_string(),
+            file_size: 42,
+        }));
+        *result_arc.lock().unwrap() = Some(metadata);
+
+        let result = handle.result().unwrap();
+        let meta = result.as_ref().as_ref().unwrap();
+        assert_eq!(meta.file_size, 42);
+        assert_eq!(meta.hash, "abc123");
+    }
+
+    // ── DownloadTaskHandle unit tests ────────────────────────────────────────
+    //
+    // `DownloadTaskHandle` follows the same Arc-sharing pattern as
+    // `UploadTaskHandle`.  Its `result` field holds a `DownloadResult`
+    // (= `Arc<Result<DownloadedFile, SessionError>>`), populated by `finish()`.
+
+    #[test]
+    // DownloadTaskHandle::result() returns None before finish() populates the result Arc.
+    fn test_download_task_handle_result_none_before_finish() {
+        let progress = Arc::new(GroupProgress::new());
+        let handle = DownloadTaskHandle {
+            inner: TaskHandle {
+                status: None,
+                group_progress: progress,
+                task_id: Ulid::new(),
+            },
+            result: Arc::new(Mutex::new(None)),
+        };
+        assert!(handle.result().is_none());
+    }
+
+    #[test]
+    // DownloadTaskHandle::result() returns the value once the shared Arc is populated.
+    fn test_download_task_handle_result_some_after_result_set() {
+        let progress = Arc::new(GroupProgress::new());
+        let result_arc = Arc::new(Mutex::new(None));
+        let handle = DownloadTaskHandle {
+            inner: TaskHandle {
+                status: None,
+                group_progress: progress,
+                task_id: Ulid::new(),
+            },
+            result: result_arc.clone(),
+        };
+
+        // Simulate finish() writing the result.
+        let download_result = Arc::new(Ok(download_group::DownloadedFile {
+            dest_path: PathBuf::from("out/file.bin"),
+            file_info: XetFileInfo {
+                hash: "def456".to_string(),
+                file_size: 99,
+            },
+        }));
+        *result_arc.lock().unwrap() = Some(download_result);
+
+        let result = handle.result().unwrap();
+        let dl = result.as_ref().as_ref().unwrap();
+        assert_eq!(dl.file_info.file_size, 99);
+        assert_eq!(dl.dest_path, PathBuf::from("out/file.bin"));
     }
 
     // ── Full register_updates test ───────────────────────────────────────────
