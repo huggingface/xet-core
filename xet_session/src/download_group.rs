@@ -125,8 +125,8 @@ impl DownloadGroup {
     /// Blocks until every queued download finishes (or fails).  Returns a
     /// `HashMap` keyed by task ID (the [`Ulid`] returned by
     /// [`download_file_to_path`](Self::download_file_to_path)), where each
-    /// value is `Arc<Result<`[`DownloadResult`]`,
-    /// `[`SessionError`](crate::SessionError)`>>`.  A single failed download
+    /// value is [`DownloadResult`] (= `Arc<Result<`[`DownloadedFile`]`,
+    /// `[`SessionError`](crate::SessionError)`>>`).  A single failed download
     /// does not prevent the others from being collected.
     ///
     /// Per-task results can also be read directly from the
@@ -144,7 +144,11 @@ impl DownloadGroup {
     }
 }
 
-/// Type alias for the Arc-wrapped per-file result returned by [`DownloadGroup::finish`].
+/// Per-file result type returned by [`DownloadGroup::finish`].
+///
+/// The `Arc` lets the same value be stored in both the `finish()` return map
+/// and the per-task [`DownloadTaskHandle`] without requiring the inner
+/// `Result` to be `Clone`.
 pub type DownloadResult = Arc<Result<DownloadedFile, SessionError>>;
 
 /// Handle for a single download task tracked internally by DownloadGroup.
@@ -366,7 +370,7 @@ mod tests {
         let commit = session.new_upload_commit()?;
         let handle = commit.upload_bytes(data.to_vec(), Some(name.into()))?;
         let results = commit.commit()?;
-        let meta = results.get(&handle.task_id()).unwrap().as_ref().as_ref().unwrap();
+        let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
         Ok(XetFileInfo {
             hash: meta.hash.clone(),
             file_size: meta.file_size,
@@ -553,7 +557,7 @@ mod tests {
         let results = commit.commit()?;
 
         let to_file_info = |handle: &UploadTaskHandle| -> XetFileInfo {
-            let meta = results.get(&handle.task_id()).unwrap().as_ref().as_ref().unwrap();
+            let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
             XetFileInfo {
                 hash: meta.hash.clone(),
                 file_size: meta.file_size,
@@ -604,7 +608,7 @@ mod tests {
     // After finish() completes there are two equivalent ways to retrieve a
     // per-task DownloadResult:
     //
-    //   1. HashMap lookup:  `finish_results.get(&handle.task_id())`
+    //   1. HashMap lookup:  `finish_results.get(&handle.task_id)`
     //   2. Direct handle:   `handle.result()` (on DownloadTaskHandle)
 
     #[test]
@@ -618,7 +622,7 @@ mod tests {
         let group = session.new_download_group()?;
         let handle = group.download_file_to_path(file_info, dest)?;
         let results = group.finish()?;
-        let result = results.get(&handle.task_id()).expect("task_id must be present in results");
+        let result = results.get(&handle.task_id).expect("task_id must be present in results");
         assert_eq!(result.as_ref().as_ref().unwrap().file_info.file_size, data.len() as u64);
         Ok(())
     }

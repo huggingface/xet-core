@@ -169,8 +169,10 @@ impl UploadCommit {
     /// Wait for all uploads to complete and push metadata to the CAS server.
     ///
     /// Blocks until every queued upload finishes (or fails), then finalises
-    /// the upload session.  Returns one [`FileMetadata`] entry per uploaded
-    /// file.
+    /// the upload session.  Returns a `HashMap` keyed by task ID where each
+    /// value is [`UploadResult`] (= `Arc<Result<`[`FileMetadata`]`,
+    /// `[`SessionError`]`>>`).  A single failed upload does not prevent the
+    /// others from being collected.
     ///
     /// Consumes `self` — subsequent calls on any clone will return
     /// [`SessionError::AlreadyCommitted`].
@@ -182,7 +184,11 @@ impl UploadCommit {
     }
 }
 
-/// Type alias for the Arc-wrapped per-file result returned by [`UploadCommit::commit`].
+/// Per-file result type returned by [`UploadCommit::commit`].
+///
+/// The `Arc` lets the same value be stored in both the `commit()` return map
+/// and the per-task [`UploadTaskHandle`] without requiring the inner
+/// `Result` to be `Clone`.
 pub type UploadResult = Arc<Result<FileMetadata, SessionError>>;
 
 /// Handle for a single upload task tracked internally by UploadCommit.
@@ -295,7 +301,7 @@ impl UploadCommitInner {
 
         let tracking_id = Ulid::new();
         let status = Arc::new(Mutex::new(TaskStatus::Queued));
-        let result = Arc::new(Mutex::new(None));
+        let result: Arc<Mutex<Option<UploadResult>>> = Arc::new(Mutex::new(None));
         let task_handle = UploadTaskHandle {
             inner: TaskHandle {
                 status: Some(status.clone()),
@@ -677,7 +683,7 @@ mod tests {
         let task_handle = commit.upload_bytes(data.to_vec(), Some("hello.bin".into()))?;
         let results = commit.commit()?;
         assert_eq!(results.len(), 1);
-        let meta = results.get(&task_handle.task_id()).unwrap().as_ref().as_ref().unwrap();
+        let meta = results.get(&task_handle.task_id).unwrap().as_ref().as_ref().unwrap();
         assert_eq!(meta.file_size, data.len() as u64);
         assert!(!meta.hash.is_empty());
         Ok(())
@@ -706,7 +712,7 @@ mod tests {
     // After commit() completes there are two equivalent ways to retrieve a
     // per-task FileMetadata result:
     //
-    //   1. HashMap lookup:  `commit_results.get(&handle.task_id())`
+    //   1. HashMap lookup:  `commit_results.get(&handle.task_id)`
     //   2. Direct handle:   `handle.result()` (only on UploadTaskHandle, not the plain TaskHandle returned by
     //      upload_bytes)
     //
@@ -737,7 +743,7 @@ mod tests {
         let commit = session.new_upload_commit()?;
         let handle = commit.upload_from_path(src)?;
         let results = commit.commit()?;
-        let result = results.get(&handle.task_id()).expect("task_id must be present in results");
+        let result = results.get(&handle.task_id).expect("task_id must be present in results");
         assert_eq!(result.as_ref().as_ref().unwrap().file_size, data.len() as u64);
         Ok(())
     }

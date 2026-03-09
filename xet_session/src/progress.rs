@@ -1,6 +1,7 @@
 //! Progress tracking for upload commits and download groups.
 
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -8,9 +9,9 @@ use async_trait::async_trait;
 use progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
 use ulid::Ulid;
 
+use crate::SessionError;
 use crate::download_group::DownloadResult;
 use crate::upload_commit::UploadResult;
-use crate::{SessionError, download_group, upload_commit};
 
 /// Lifecycle state of a single upload or download task.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,52 +33,34 @@ pub struct TaskHandle {
     pub(crate) status: Option<Arc<Mutex<TaskStatus>>>,
     pub(crate) group_progress: Arc<GroupProgress>,
     /// Id of the task, can be used to retrive per-task progress and result.
-    pub(crate) task_id: Ulid,
-}
-
-impl TaskHandle {
-    pub fn task_id(&self) -> Ulid {
-        self.task_id
-    }
+    pub task_id: Ulid,
 }
 
 #[derive(Debug)]
 pub struct UploadTaskHandle {
     pub(crate) inner: TaskHandle,
-    pub(crate) result: Arc<Mutex<Option<upload_commit::UploadResult>>>,
+    pub(crate) result: Arc<Mutex<Option<UploadResult>>>,
+}
+
+impl Deref for UploadTaskHandle {
+    type Target = TaskHandle;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
 }
 
 #[derive(Debug)]
 pub struct DownloadTaskHandle {
     pub(crate) inner: TaskHandle,
-    pub(crate) result: Arc<Mutex<Option<download_group::DownloadResult>>>,
+    pub(crate) result: Arc<Mutex<Option<DownloadResult>>>,
 }
 
-impl UploadTaskHandle {
-    pub fn task_id(&self) -> Ulid {
-        self.inner.task_id()
-    }
+impl Deref for DownloadTaskHandle {
+    type Target = TaskHandle;
 
-    pub fn status(&self) -> Result<TaskStatus, SessionError> {
-        self.inner.status()
-    }
-
-    pub fn progress(&self) -> Result<FileProgress, SessionError> {
-        self.inner.progress()
-    }
-}
-
-impl DownloadTaskHandle {
-    pub fn task_id(&self) -> Ulid {
-        self.inner.task_id()
-    }
-
-    pub fn status(&self) -> Result<TaskStatus, SessionError> {
-        self.inner.status()
-    }
-
-    pub fn progress(&self) -> Result<FileProgress, SessionError> {
-        self.inner.progress()
+    fn deref(&self) -> &Self::Target {
+        &self.inner
     }
 }
 
@@ -272,6 +255,8 @@ mod tests {
     use data::XetFileInfo;
     use progress_tracking::ItemProgressUpdate;
 
+    use crate::{DownloadedFile, FileMetadata};
+
     use super::*;
 
     // ── GroupProgress unit tests ─────────────────────────────────────────────
@@ -377,7 +362,7 @@ mod tests {
     // touching the `commit()` return value.
     //
     // There are therefore two equivalent ways to retrieve a per-task result:
-    //   1. `commit()` returns `HashMap<Ulid, UploadResult>`; look up the task using `handle.task_id()`.
+    //   1. `commit()` returns `HashMap<Ulid, UploadResult>`; look up the task using `handle.task_id`.
     //   2. Call `handle.result()` directly after `commit()` returns.
     //
     // The tests below exercise the `result` Arc mechanics in isolation; see
@@ -413,7 +398,7 @@ mod tests {
         };
 
         // Simulate commit() writing the result.
-        let metadata = Arc::new(Ok(upload_commit::FileMetadata {
+        let metadata = Arc::new(Ok(FileMetadata {
             tracking_name: Some("file.bin".to_string()),
             hash: "abc123".to_string(),
             file_size: 42,
@@ -462,7 +447,7 @@ mod tests {
         };
 
         // Simulate finish() writing the result.
-        let download_result = Arc::new(Ok(download_group::DownloadedFile {
+        let download_result = Arc::new(Ok(DownloadedFile {
             dest_path: PathBuf::from("out/file.bin"),
             file_info: XetFileInfo {
                 hash: "def456".to_string(),

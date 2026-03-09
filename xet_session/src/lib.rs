@@ -20,20 +20,22 @@
 //! files with [`upload_from_path`](UploadCommit::upload_from_path) or
 //! [`upload_bytes`](UploadCommit::upload_bytes), then call
 //! [`commit`](UploadCommit::commit) to wait for all transfers to finish and
-//! receive a `HashMap<Ulid, `[`UploadResult`]`>` keyed by task ID, where each
-//! value is `Arc<Result<`[`FileMetadata`]`, `[`SessionError`]`>>`.  Per-task
-//! results can also be read directly from the returned [`UploadTaskHandle`]
-//! via [`result`](UploadTaskHandle::result) after `commit()` returns.
+//! receive a `HashMap<Ulid, `[`UploadResult`]`>` keyed by task ID
+//! (`UploadResult` = `Arc<Result<`[`FileMetadata`]`, `[`SessionError`]`>>`).
+//! Per-task results can also be read directly from the returned
+//! [`UploadTaskHandle`] via [`result`](UploadTaskHandle::result) after
+//! `commit()` returns.
 //!
 //! ## Downloads
 //!
 //! Create a [`DownloadGroup`] with [`XetSession::new_download_group`], queue
 //! files with [`download_file_to_path`](DownloadGroup::download_file_to_path),
 //! then call [`finish`](DownloadGroup::finish) to wait for all transfers and
-//! receive a `HashMap<Ulid, `[`DownloadResult`]`>` keyed by task ID, where each
-//! value is `Arc<Result<`[`DownloadedFile`]`, `[`SessionError`]`>>`.  Per-task
-//! results can also be read directly from the returned [`DownloadTaskHandle`]
-//! via [`result`](DownloadTaskHandle::result) after `finish()` returns.
+//! receive a `HashMap<Ulid, `[`DownloadResult`]`>` keyed by task ID
+//! (`DownloadResult` = `Arc<Result<`[`DownloadedFile`]`, `[`SessionError`]`>>`).
+//! Per-task results can also be read directly from the returned
+//! [`DownloadTaskHandle`] via [`result`](DownloadTaskHandle::result) after
+//! `finish()` returns.
 //!
 //! ## Progress tracking
 //!
@@ -67,8 +69,9 @@
 //! let handle = commit.upload_from_path("file.bin".into())?;
 //! commit.commit()?;
 //! // Access result directly from the handle (populated by commit())
-//! let m = handle.result().unwrap();
-//! let m = m.as_ref().as_ref().unwrap();
+//! // UploadResult = Arc<Result<FileMetadata, SessionError>>
+//! let m = handle.result().unwrap();   // Option<UploadResult>
+//! let m = m.as_ref().as_ref().unwrap(); // &FileMetadata
 //!
 //! // 3. Download
 //! let group = session.new_download_group()?;
@@ -79,11 +82,12 @@
 //! let dl_handle = group.download_file_to_path(info, "out/file.bin".into())?;
 //! let finish_results = group.finish()?;
 //! // Pattern 1: look up by task ID in the returned HashMap
-//! let r1 = finish_results.get(&dl_handle.task_id()).unwrap();
-//! let r1 = r1.as_ref().as_ref().unwrap();
+//! // DownloadResult = Arc<Result<DownloadedFile, SessionError>>
+//! let r1 = finish_results.get(&dl_handle.task_id).unwrap(); // &DownloadResult
+//! let r1 = r1.as_ref().as_ref().unwrap(); // &DownloadedFile
 //! // Pattern 2: read directly from the handle (populated by finish())
-//! let r2 = dl_handle.result().unwrap();
-//! let r2 = r2.as_ref().as_ref().unwrap();
+//! let r2 = dl_handle.result().unwrap();   // DownloadResult
+//! let r2 = r2.as_ref().as_ref().unwrap(); // &DownloadedFile
 //! # Ok::<(), xet_session::SessionError>(())
 //! ```
 
