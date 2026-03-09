@@ -255,9 +255,8 @@ mod tests {
     use data::XetFileInfo;
     use progress_tracking::ItemProgressUpdate;
 
-    use crate::{DownloadedFile, FileMetadata};
-
     use super::*;
+    use crate::{DownloadedFile, FileMetadata};
 
     // ── GroupProgress unit tests ─────────────────────────────────────────────
 

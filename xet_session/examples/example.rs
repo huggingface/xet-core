@@ -81,17 +81,17 @@ fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<()> {
     });
 
     // Block until all uploads finish and metadata is finalized.
-    let metadata: Vec<_> = commit
-        .commit()?
-        .into_values()
-        .filter_map(|m| Arc::try_unwrap(m).ok().and_then(|r| r.ok()))
-        .collect();
+    let results = commit.commit()?;
 
-    for m in &metadata {
+    for m in results.values().filter_map(|m| m.as_ref().as_ref().ok()) {
         println!("  {} -> {} ({} bytes)", m.tracking_name.as_deref().unwrap_or("?"), m.hash, m.file_size);
     }
 
     // Persist metadata so it can be passed to the `download` subcommand.
+    let metadata: Vec<_> = results
+        .into_values()
+        .filter_map(|m| Arc::try_unwrap(m).ok().and_then(|r| r.ok()))
+        .collect();
     std::fs::write("upload_metadata.json", serde_json::to_string_pretty(&metadata)?)?;
 
     Ok(())
