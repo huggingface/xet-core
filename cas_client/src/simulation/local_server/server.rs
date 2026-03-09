@@ -28,44 +28,39 @@
 //! }
 //! ```
 
-use std::net::{SocketAddr, TcpListener as StdTcpListener};
+use std::net::SocketAddr;
+#[cfg(test)]
+use std::net::TcpListener as StdTcpListener;
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(test)]
 use std::time::Duration;
 
+#[cfg(test)]
 use async_trait::async_trait;
 use axum::Router;
-use axum::extract::FromRef;
 use axum::routing::{get, head, post};
-use http::header::{self, HeaderMap, HeaderValue};
+#[cfg(test)]
+use reqwest::header::{self, HeaderMap, HeaderValue};
 use tokio::net::TcpListener;
+#[cfg(test)]
 use tokio::sync::oneshot;
 use tower_http::cors::CorsLayer;
 
 use super::handlers;
+use super::latency_simulation::LatencySimulation;
+#[cfg(test)]
 use crate::RemoteClient;
 use crate::error::{CasClientError, Result};
+#[cfg(test)]
 use crate::interface::Client;
+#[cfg(test)]
 #[cfg(unix)]
-use crate::simulation::socket_proxy::UnixSocketProxy;
+use crate::simulation::UnixSocketProxy;
 use crate::simulation::{DeletionControlableClient, DirectAccessClient, LocalClient, MemoryClient};
 
-/// Shared state for the Axum server, providing access to both the main client
-/// and an optional deletion-capable client.
-#[derive(Clone)]
-pub struct ServerState {
-    pub client: Arc<dyn DirectAccessClient>,
-    pub deletion_client: Option<Arc<dyn DeletionControlableClient>>,
-}
-
-impl FromRef<ServerState> for Arc<dyn DirectAccessClient> {
-    fn from_ref(state: &ServerState) -> Self {
-        state.client.clone()
-    }
-}
-
 /// Configuration for the local CAS server.
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 pub struct LocalServerConfig {
     /// Directory where CAS data (XORBs, shards, indices) will be stored.
     /// Only used when `in_memory` is false.
@@ -99,7 +94,9 @@ impl Default for LocalServerConfig {
 /// The server can use either a disk-backed `LocalClient` or an in-memory `MemoryClient`.
 pub struct LocalServer {
     config: LocalServerConfig,
-    state: ServerState,
+    client: Arc<dyn DirectAccessClient>,
+    deletion_client: Option<Arc<dyn DeletionControlableClient>>,
+    latency_simulation: Arc<LatencySimulation>,
 }
 
 impl LocalServer {
@@ -108,20 +105,21 @@ impl LocalServer {
     /// If `in_memory` is false, creates a new `LocalClient` pointing to the configured data directory.
     /// If `in_memory` is true, creates a new `MemoryClient` (data directory is ignored).
     pub async fn new(config: LocalServerConfig) -> Result<Self> {
-        let state = if config.in_memory {
-            let client = MemoryClient::new();
-            ServerState {
-                client,
-                deletion_client: None,
-            }
-        } else {
-            let client = LocalClient::new(&config.data_directory).await?;
-            ServerState {
-                deletion_client: Some(client.clone() as Arc<dyn DeletionControlableClient>),
-                client,
-            }
-        };
-        Ok(Self { config, state })
+        let (client, deletion_client): (Arc<dyn DirectAccessClient>, Option<Arc<dyn DeletionControlableClient>>) =
+            if config.in_memory {
+                (MemoryClient::new(), None)
+            } else {
+                let client = LocalClient::new(&config.data_directory).await?;
+                let deletion_client = client.clone() as Arc<dyn DeletionControlableClient>;
+                (client, Some(deletion_client))
+            };
+        let latency_simulation = LatencySimulation::new();
+        Ok(Self {
+            config,
+            client,
+            deletion_client,
+            latency_simulation,
+        })
     }
 
     /// Creates a server from an existing `DirectAccessClient`.
@@ -135,6 +133,7 @@ impl LocalServer {
         host: String,
         port: u16,
     ) -> Self {
+        let latency_simulation = LatencySimulation::new();
         Self {
             config: LocalServerConfig {
                 data_directory: PathBuf::new(),
@@ -142,16 +141,15 @@ impl LocalServer {
                 port,
                 in_memory: false,
             },
-            state: ServerState {
-                client,
-                deletion_client,
-            },
+            client,
+            deletion_client,
+            latency_simulation,
         }
     }
 
     /// Returns a clone of the underlying client.
     pub fn client(&self) -> Arc<dyn DirectAccessClient> {
-        self.state.client.clone()
+        self.client.clone()
     }
 
     /// Returns the server's bind address as "host:port".
@@ -164,7 +162,7 @@ impl LocalServer {
     /// Routes follow the pattern used by RemoteClient:
     /// - `/v1/` prefixed routes for chunks, xorbs, reconstructions, and files
     /// - Root-level `/reconstructions` for batch queries and `/shards` for uploads
-    /// - `/simulation/` prefixed routes for direct access and deletion operations
+    /// - `/simulation/` prefixed routes for testing/simulation configuration and direct access
     fn create_router(&self) -> Router {
         Router::new()
             .route("/health", get(handlers::health_check))
@@ -179,12 +177,22 @@ impl LocalServer {
                     .route("/get_xorb/{prefix}/{hash}/", get(handlers::get_file_term_data))
                     .route("/fetch_term", get(handlers::fetch_term)),
             )
-            .nest("/simulation", super::simulation_handlers::simulation_routes())
+            .nest(
+                "/simulation",
+                super::simulation_handlers::simulation_routes()
+                    .route("/ping", get(handlers::ping))
+                    .route("/set_config", post(handlers::set_config))
+                    .route("/dummy_upload", post(handlers::dummy_upload)),
+            )
             // Routes used by RemoteClient without /v1/ prefix
             .route("/reconstructions", get(handlers::batch_get_reconstruction))
             .route("/shards", post(handlers::post_shard))
             .layer(CorsLayer::very_permissive())
-            .with_state(self.state.clone())
+            .with_state(handlers::ServerState {
+                client: self.client.clone(),
+                latency_simulation: self.latency_simulation.clone(),
+                deletion_client: self.deletion_client.clone(),
+            })
     }
 
     /// Runs the server, listening for incoming HTTP requests.
@@ -242,32 +250,7 @@ async fn shutdown_signal() {
     std::future::pending::<()>().await
 }
 
-/// A test server that wraps `LocalServer` and provides easy access to both
-/// `RemoteClient` (for HTTP interactions) and `DirectAccessClient` (for direct state access).
-///
-/// This is useful for integration tests where you want to verify that operations
-/// through the HTTP API produce the same results as direct client access.
-///
-/// The server runs as a spawned tokio task and automatically shuts down when dropped
-/// (no explicit shutdown call needed).
-///
-/// # Example
-///
-/// ```ignore
-/// // Start with disk-backed storage
-/// let server = LocalTestServer::start(false).await;
-///
-/// // Start with in-memory storage
-/// let server = LocalTestServer::start(true).await;
-///
-/// // Upload via RemoteClient
-/// let file = server.remote_client().upload_random_file(&[(1, (0, 5))], 123).await?;
-///
-/// // Verify via DirectAccessClient
-/// let stored = server.client().get_file_data(&file.file_hash, None).await?;
-/// assert_eq!(file.data, stored);
-/// // Server automatically shuts down when dropped
-/// ```
+#[cfg(test)]
 pub struct LocalTestServer {
     endpoint: String,
     server_shutdown_tx: Option<oneshot::Sender<()>>,
@@ -279,6 +262,7 @@ pub struct LocalTestServer {
     _socket_proxy: Option<UnixSocketProxy>,
 }
 
+#[cfg(test)]
 impl LocalTestServer {
     /// Starts a new test server.
     ///
@@ -412,6 +396,7 @@ impl LocalTestServer {
     }
 
     /// Returns the deletion-capable client if the server backend supports it.
+    #[allow(unused)]
     pub fn deletion_client(&self) -> Option<&Arc<dyn DeletionControlableClient>> {
         self.deletion_client.as_ref()
     }
@@ -421,6 +406,7 @@ impl LocalTestServer {
     }
 }
 
+#[cfg(test)]
 #[async_trait]
 impl Client for LocalTestServer {
     async fn get_file_reconstruction_info(
@@ -494,6 +480,7 @@ impl Client for LocalTestServer {
     }
 }
 
+#[cfg(test)]
 #[async_trait]
 impl DirectAccessClient for LocalTestServer {
     fn set_fetch_term_url_expiration(&self, expiration: std::time::Duration) {
@@ -502,6 +489,10 @@ impl DirectAccessClient for LocalTestServer {
 
     fn set_api_delay_range(&self, delay_range: Option<std::ops::Range<std::time::Duration>>) {
         self.client.set_api_delay_range(delay_range);
+    }
+
+    async fn apply_api_delay(&self) {
+        self.client.apply_api_delay().await;
     }
 
     async fn list_xorbs(&self) -> Result<Vec<merklehash::MerkleHash>> {
@@ -569,6 +560,7 @@ impl DirectAccessClient for LocalTestServer {
     }
 }
 
+#[cfg(test)]
 impl Drop for LocalTestServer {
     fn drop(&mut self) {
         if let Some(tx) = self.server_shutdown_tx.take() {
