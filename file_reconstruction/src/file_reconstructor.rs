@@ -177,10 +177,16 @@ impl FileReconstructor {
     /// The buffer must be large enough to hold the requested byte range (or the
     /// full file if no byte range is set). Returns the number of bytes written.
     ///
+    /// Note: unlike the streaming reconstruction methods, this spawns all download
+    /// tasks up front and does not go through the download-buffer semaphore. This
+    /// is intentional for maximum throughput, but means peak memory usage includes
+    /// the caller's buffer plus all in-flight xorb block data. Callers working with
+    /// very large files should set an explicit byte range or use `reconstruct_to_writer`.
+    ///
     /// # Safety
     /// This method uses `unsafe` internally to share the buffer pointer across
-    /// parallel tasks. Each task writes to a disjoint region determined by the
-    /// file term byte ranges, so no data races occur.
+    /// parallel tasks. All tasks are guaranteed to complete or be aborted before
+    /// the method returns, so the buffer is never accessed after its lifetime ends.
     pub async fn reconstruct_to_buffer(self, buffer: &mut [u8]) -> Result<u64> {
         info!(
             file_hash = %self.file_hash,
@@ -189,56 +195,65 @@ impl FileReconstructor {
             "Reconstructing file to buffer"
         );
 
-        let requested_range = self.byte_range.unwrap_or_else(|| FileRange::new(0, buffer.len() as u64));
-        let expected_size = (requested_range.end - requested_range.start) as usize;
+        let requested_range = self.byte_range.unwrap_or_else(FileRange::full);
 
-        if buffer.len() < expected_size {
+        // Resolve all file terms in a single CAS roundtrip.
+        let (actual_range, _, file_terms) =
+            retrieve_file_term_block(self.client.clone(), self.file_hash, requested_range)
+                .await?
+                .ok_or_else(|| {
+                    FileReconstructionError::InternalError("No file terms returned for the requested range".to_string())
+                })?;
+
+        let total_size = (actual_range.end - actual_range.start) as usize;
+        if buffer.len() < total_size {
             return Err(FileReconstructionError::InternalError(format!(
                 "Buffer too small: {} bytes provided, {} bytes needed",
                 buffer.len(),
-                expected_size,
+                total_size,
             )));
         }
 
-        // Resolve all file terms in a single CAS roundtrip.
-        let (_, _, file_terms) = retrieve_file_term_block(self.client.clone(), self.file_hash, requested_range)
-            .await?
-            .ok_or_else(|| {
-                FileReconstructionError::InternalError("No file terms returned for the requested range".to_string())
-            })?;
-
-        let range_start = requested_range.start;
-        let buf_ptr = SharedBufPtr(buffer.as_mut_ptr());
-        let buf_ptr = Arc::new(buf_ptr);
+        let range_start = actual_range.start;
+        let buf_ptr = Arc::new(SharedBufPtr(buffer.as_mut_ptr()));
 
         // Spawn parallel download tasks for each file term.
         // Progress tracking is not used here; the buffer path bypasses RunState.
-        let mut tasks = Vec::with_capacity(file_terms.len());
+        let mut join_set = tokio::task::JoinSet::new();
         for term in &file_terms {
             let client = self.client.clone();
             let term = term.clone();
             let buf_ptr = buf_ptr.clone();
 
-            tasks.push(tokio::spawn(async move {
+            join_set.spawn(async move {
                 let data_future = term.get_data_task(client, None).await?;
                 let data = data_future.await?;
 
                 let offset = (term.byte_range.start - range_start) as usize;
-                // SAFETY: Each term writes to a disjoint byte range in the buffer.
+                // SAFETY: Each term writes to a disjoint byte range in the buffer,
+                // and the JoinSet is fully drained (or aborted) before we return.
                 unsafe {
                     std::ptr::copy_nonoverlapping(data.as_ptr(), buf_ptr.0.add(offset), data.len());
                 }
 
                 Ok::<u64, FileReconstructionError>(data.len() as u64)
-            }));
+            });
         }
 
         let mut total_written = 0u64;
-        for task in tasks {
-            let n = task
-                .await
-                .map_err(|e| FileReconstructionError::InternalError(format!("Task join error: {e}")))??;
-            total_written += n;
+        while let Some(result) = join_set.join_next().await {
+            match result {
+                Ok(Ok(n)) => total_written += n,
+                Ok(Err(e)) => {
+                    // Abort all remaining tasks before returning, so no task outlives the buffer.
+                    join_set.abort_all();
+                    return Err(e);
+                },
+                Err(e) => {
+                    join_set.abort_all();
+                    return Err(FileReconstructionError::InternalError(format!("Task join error: {e}")));
+                },
+            }
         }
 
         Ok(total_written)
