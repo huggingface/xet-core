@@ -772,6 +772,7 @@ impl Client for MemoryClient {
                 hash: segment.xorb_hash.into(),
                 unpacked_length: segment.unpacked_segment_bytes,
                 range: chunk_range,
+                chunk_byte_sizes: Vec::new(),
             };
 
             terms.push(xorb_reconstruction_term);

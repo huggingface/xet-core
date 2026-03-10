@@ -185,6 +185,12 @@ pub struct XorbReconstructionTerm {
     pub unpacked_length: u32,
     // chunk index start and end in a xorb
     pub range: ChunkRange,
+    // Per-chunk uncompressed byte sizes, in chunk order within `range`.
+    // Enables client-side chunk-level trimming for range queries derived
+    // from a cached full-file plan, avoiding over-fetch of entire xorb terms.
+    // Empty when the server does not populate this field (backward-compatible).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chunk_byte_sizes: Vec<u32>,
 }
 
 /// To use a XorbReconstructionFetchInfo fetch info all that's needed
