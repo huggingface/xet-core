@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use data::data_client::{clean_bytes, clean_file};
-use data::{FileUploadSession, SingleFileCleaner, XetFileInfo};
+use data::{FileUploadSession, Sha256Policy, SingleFileCleaner, XetFileInfo};
 use tokio::task::JoinHandle;
 use ulid::Ulid;
 use xet_runtime::XetRuntime;
@@ -336,7 +336,9 @@ impl UploadCommitInner {
 
         let tracking_name: Option<Arc<str>> = tracking_name.as_deref().map(Arc::from);
         let cleaner = self.runtime().external_run_async_task(async move {
-            upload_session.start_clean(tracking_name, file_size, None, tracking_id).await
+            upload_session
+                .start_clean(tracking_name, file_size, Sha256Policy::Compute, tracking_id)
+                .await
         })?;
 
         Ok((task_handle, cleaner))
