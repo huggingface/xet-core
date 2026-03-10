@@ -151,51 +151,105 @@ pub async fn retrieve_file_term_block(
         };
 
         // Find the XorbMultiRangeFetch entry that contains this term's chunk range.
-        // A V2 xorb descriptor may have multiple fetch entries (e.g. when ranges were
-        // split due to URL length limits), so we search for the one that covers this term.
+        //
+        // For each fetch entry, we decide whether to split individual ranges into
+        // separate XorbBlocks (one HTTP request per range) or keep them grouped
+        // (one multi-range HTTP request).
+        //
+        // Splitting is better for large ranges: each single-range request benefits
+        // from CDN cache and runs in parallel. Multi-range requests bypass the CDN
+        // cache (unique Range header = cache miss) and are slower.
+        //
+        // Grouping is better for many small ranges: avoids per-request overhead
+        // (~15ms per connection) when ranges are tiny.
+        //
+        // Threshold: split when average range size >= 256KB and there aren't
+        // too many ranges (to avoid overwhelming the CDN with parallel requests).
+        const SPLIT_RANGE_THRESHOLD: u64 = 256 * 1024;
+        const MAX_SPLIT_RANGES: usize = 200;
+
         let xorb_block_index = 'find_xorb_block: {
             for fetch_entry in xorb_descriptor.iter() {
-                // Check if the term's chunk range is fully contained within
-                // one of this fetch entry's ranges.
-                let term_contained = fetch_entry
-                    .ranges
-                    .iter()
-                    .any(|r| r.chunks.start <= term.range.start && term.range.end <= r.chunks.end);
+                let total_bytes: u64 = fetch_entry.ranges.iter().map(|r| r.bytes.length()).sum();
+                let avg_range_size = total_bytes / fetch_entry.ranges.len().max(1) as u64;
+                let should_split = fetch_entry.ranges.len() > 1
+                    && fetch_entry.ranges.len() <= MAX_SPLIT_RANGES
+                    && avg_range_size >= SPLIT_RANGE_THRESHOLD;
 
-                if !term_contained {
-                    continue;
+                if should_split {
+                    // Split mode: find the specific range containing this term and
+                    // create a separate single-range XorbBlock for it.
+                    let matching_range = fetch_entry
+                        .ranges
+                        .iter()
+                        .find(|r| r.chunks.start <= term.range.start && term.range.end <= r.chunks.end);
+
+                    let Some(range_desc) = matching_range else {
+                        continue;
+                    };
+
+                    let index = match xorb_index_lookup.entry((xorb_hash, range_desc.chunks.start)) {
+                        Entry::Occupied(entry) => *entry.get(),
+                        Entry::Vacant(entry) => {
+                            let new_index = xorb_blocks.len();
+
+                            xorb_blocks.push(XorbBlock {
+                                xorb_hash,
+                                chunk_ranges: vec![range_desc.chunks],
+                                xorb_block_index: new_index,
+                                references: vec![],
+                                uncompressed_size_if_known: None,
+                                data: RwLock::new(None),
+                            });
+
+                            xorb_block_retrieval_urls.push((fetch_entry.url.clone(), vec![range_desc.bytes]));
+
+                            entry.insert(new_index);
+                            new_index
+                        },
+                    };
+
+                    break 'find_xorb_block index;
+                } else {
+                    // Grouped mode: keep all ranges in a single XorbBlock (original V2 behavior).
+                    // Used for small/fragmented ranges where per-request overhead dominates.
+                    let term_contained = fetch_entry
+                        .ranges
+                        .iter()
+                        .any(|r| r.chunks.start <= term.range.start && term.range.end <= r.chunks.end);
+
+                    if !term_contained {
+                        continue;
+                    }
+
+                    let first_chunk_start = fetch_entry.ranges[0].chunks.start;
+
+                    let index = match xorb_index_lookup.entry((xorb_hash, first_chunk_start)) {
+                        Entry::Occupied(entry) => *entry.get(),
+                        Entry::Vacant(entry) => {
+                            let new_index = xorb_blocks.len();
+
+                            let chunk_ranges: Vec<ChunkRange> = fetch_entry.ranges.iter().map(|r| r.chunks).collect();
+                            let http_ranges: Vec<HttpRange> = fetch_entry.ranges.iter().map(|r| r.bytes).collect();
+
+                            xorb_blocks.push(XorbBlock {
+                                xorb_hash,
+                                chunk_ranges,
+                                xorb_block_index: new_index,
+                                references: vec![],
+                                uncompressed_size_if_known: None,
+                                data: RwLock::new(None),
+                            });
+
+                            xorb_block_retrieval_urls.push((fetch_entry.url.clone(), http_ranges));
+
+                            entry.insert(new_index);
+                            new_index
+                        },
+                    };
+
+                    break 'find_xorb_block index;
                 }
-
-                // Use (xorb_hash, first_chunk_start) as a dedup key so that multiple
-                // terms referencing the same fetch entry share a single XorbBlock.
-                let first_chunk_start = fetch_entry.ranges[0].chunks.start;
-
-                let index = match xorb_index_lookup.entry((xorb_hash, first_chunk_start)) {
-                    Entry::Occupied(entry) => *entry.get(),
-                    Entry::Vacant(entry) => {
-                        // First time seeing this fetch entry — create a new XorbBlock.
-                        let new_index = xorb_blocks.len();
-
-                        let chunk_ranges: Vec<ChunkRange> = fetch_entry.ranges.iter().map(|r| r.chunks).collect();
-                        let http_ranges: Vec<HttpRange> = fetch_entry.ranges.iter().map(|r| r.bytes).collect();
-
-                        xorb_blocks.push(XorbBlock {
-                            xorb_hash,
-                            chunk_ranges,
-                            xorb_block_index: new_index,
-                            references: vec![],
-                            uncompressed_size_if_known: None,
-                            data: RwLock::new(None),
-                        });
-
-                        xorb_block_retrieval_urls.push((fetch_entry.url.clone(), http_ranges));
-
-                        entry.insert(new_index);
-                        new_index
-                    },
-                };
-
-                break 'find_xorb_block index;
             }
             return Err(FileReconstructionError::CorruptedReconstruction(format!(
                 "No xorb fetch entry found for file term {local_term_index:?} in xorb info for xorb hash {xorb_hash:?}"
