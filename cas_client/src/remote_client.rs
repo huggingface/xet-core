@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::time::Instant;
 
 use bytes::Bytes;
 use cas_object::SerializedCasObject;
@@ -232,6 +233,7 @@ impl RemoteClient {
         let api_tag = "cas::get_reconstruction_v1";
         let client = self.authenticated_http_client.clone();
 
+        let t0 = Instant::now();
         let result: Result<QueryReconstructionResponse> = RetryWrapper::new(api_tag)
             .run_and_extract_json(move || {
                 let mut request = client.get(url.clone()).with_extension(Api(api_tag));
@@ -245,6 +247,18 @@ impl RemoteClient {
 
         match result {
             Ok(query_reconstruction_response) => {
+                let elapsed = t0.elapsed();
+                let n_terms = query_reconstruction_response.terms.len();
+                let n_xorbs = query_reconstruction_response.fetch_info.len();
+                let n_urls: usize = query_reconstruction_response.fetch_info.values().map(|v| v.len()).sum();
+                eprintln!(
+                    "[BENCH] recon_v1 file={} elapsed={:.1?} terms={} xorbs={} urls={}",
+                    file_id.hex(),
+                    elapsed,
+                    n_terms,
+                    n_xorbs,
+                    n_urls
+                );
                 event!(
                     INFORMATION_LOG_LEVEL,
                     call_id,
@@ -280,6 +294,7 @@ impl RemoteClient {
         let api_tag = "cas::get_reconstruction_v2";
         let client = self.authenticated_http_client.clone();
 
+        let t0 = Instant::now();
         let result: Result<QueryReconstructionResponseV2> = RetryWrapper::new(api_tag)
             .run_and_extract_json(move || {
                 let mut request = client.get(url.clone()).with_extension(Api(api_tag));
@@ -292,6 +307,20 @@ impl RemoteClient {
 
         match result {
             Ok(response) => {
+                let elapsed = t0.elapsed();
+                let n_terms = response.terms.len();
+                let n_xorbs = response.xorbs.len();
+                let n_urls: usize = response.xorbs.values().map(|v| v.len()).sum();
+                let n_ranges: usize = response.xorbs.values().flat_map(|v| v.iter().map(|f| f.ranges.len())).sum();
+                eprintln!(
+                    "[BENCH] recon_v2 file={} elapsed={:.1?} terms={} xorbs={} urls={} ranges={}",
+                    file_id.hex(),
+                    elapsed,
+                    n_terms,
+                    n_xorbs,
+                    n_urls,
+                    n_ranges
+                );
                 event!(
                     INFORMATION_LOG_LEVEL,
                     call_id,
@@ -402,8 +431,11 @@ impl Client for RemoteClient {
         let http_client = self.http_client.clone();
         let url_info = Arc::new(url_info);
 
-        let (_, url_ranges) = url_info.retrieve_url().await?;
+        let (bench_url_str, url_ranges) = url_info.retrieve_url().await?;
         let total_download_bytes: u64 = url_ranges.iter().map(|r| r.length()).sum();
+        let bench_n_ranges = url_ranges.len();
+        let bench_host = bench_url_str.split('/').nth(2).unwrap_or("?").to_string();
+        let bench_t0 = Instant::now();
 
         let mut transfer_reporter = StreamProgressReporter::new(total_download_bytes)
             .with_adaptive_concurrency_reporter(download_permit.get_partial_completion_reporting_function());
@@ -434,11 +466,29 @@ impl Client for RemoteClient {
                             .join(",");
 
                         let response = http_client
-                            .get(url)
+                            .get(url.clone())
                             .header(RANGE, format!("bytes={range_header}"))
                             .with_extension(Api(api_tag))
                             .send()
                             .await?;
+
+                        let xcache = response
+                            .headers()
+                            .get("x-cache")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("?")
+                            .to_string();
+                        let status = response.status();
+                        eprintln!(
+                            "[BENCH] s3_resp url_host={} status={} x-cache={} ranges={}",
+                            url.host_str().unwrap_or("?"),
+                            status,
+                            xcache,
+                            range_header.matches(',').count() + 1
+                        );
+                        if status.as_u16() >= 400 {
+                            eprintln!("[BENCH] s3_err status={} range=bytes={}", status, range_header);
+                        }
 
                         if response.status() == reqwest::StatusCode::FORBIDDEN {
                             url_info
@@ -467,19 +517,24 @@ impl Client for RemoteClient {
                             // parts, and deserialize each CAS object independently. We bypass
                             // the streaming progress wrapper since the multipart MIME overhead
                             // would inflate the byte count beyond what the progress tracker expects.
+                            let t_body = Instant::now();
                             let body = resp
                                 .bytes()
                                 .await
                                 .map_err(|e| RetryableReqwestError::RetryableError(CasClientError::from(e)))?;
+                            let body_elapsed = t_body.elapsed();
 
+                            let t_parse = Instant::now();
                             let multipart_parts = crate::multipart::parse_multipart_byteranges(&content_type, body)
                                 .map_err(RetryableReqwestError::FatalError)?;
+                            let parse_elapsed = t_parse.elapsed();
 
                             let mut all_decompressed = Vec::with_capacity(uncompressed_size_if_known.unwrap_or(0));
                             let mut all_chunk_indices = Vec::<u32>::new();
                             let mut total_compressed_bytes = 0u64;
 
-                            for part in multipart_parts {
+                            let t_decomp = Instant::now();
+                            for part in &multipart_parts {
                                 total_compressed_bytes += part.data.len() as u64;
 
                                 let (data, chunk_indices) =
@@ -497,6 +552,10 @@ impl Client for RemoteClient {
 
                                 transfer_reporter.report_progress(total_compressed_bytes as usize);
                             }
+                            let decomp_elapsed = t_decomp.elapsed();
+
+                            eprintln!("[BENCH] multipart parts={} body_bytes={} body_recv={:.1?} parse={:.1?} decompress={:.1?} decompressed_bytes={}",
+                                multipart_parts.len(), total_compressed_bytes, body_elapsed, parse_elapsed, decomp_elapsed, all_decompressed.len());
 
                             if let Some(expected) = uncompressed_size_if_known {
                                 debug_assert_eq!(
@@ -559,6 +618,16 @@ impl Client for RemoteClient {
                 },
             )
             .await?;
+
+        let bench_elapsed = bench_t0.elapsed();
+        eprintln!(
+            "[BENCH] s3_fetch host={} ranges={} download_bytes={} decompressed_bytes={} elapsed={:.1?}",
+            bench_host,
+            bench_n_ranges,
+            total_download_bytes,
+            result.0.len(),
+            bench_elapsed
+        );
 
         Ok(result)
     }
