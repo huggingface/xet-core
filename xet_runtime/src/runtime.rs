@@ -263,8 +263,13 @@ impl XetRuntime {
         Ok(rt)
     }
 
-    pub fn from_external(rt_handle: TokioRuntimeHandle) -> Arc<Self> {
-        let config = XetConfig::new();
+    /// Wrap an existing tokio [`TokioRuntimeHandle`] with a [`XetRuntime`] using the provided
+    /// [`XetConfig`].  No new thread pool is created; `spawn()` calls will schedule work on the
+    /// runtime that owns `rt_handle`.
+    ///
+    /// This does **not** set the thread-local `THREAD_RUNTIME_REF` — those threads are not owned
+    /// by this `XetRuntime`.
+    pub fn from_external_with_config(rt_handle: TokioRuntimeHandle, config: XetConfig) -> Arc<Self> {
         Arc::new(Self {
             runtime: std::sync::RwLock::new(None),
             handle_ref: rt_handle.into(),
@@ -285,6 +290,27 @@ impl XetRuntime {
                 .flatten(),
             config: Arc::new(config),
         })
+    }
+
+    /// Wrap an existing tokio [`TokioRuntimeHandle`] with a [`XetRuntime`] using a default
+    /// [`XetConfig`].  Prefer [`from_external_with_config`](Self::from_external_with_config) when
+    /// you have a config available.
+    pub fn from_external(rt_handle: TokioRuntimeHandle) -> Arc<Self> {
+        Self::from_external_with_config(rt_handle, XetConfig::new())
+    }
+
+    /// Create a new [`XetRuntime`], or attach to the current tokio runtime if one exists.
+    ///
+    /// - **Called from outside any async runtime** (sync Rust, Python via PyO3): creates a fresh `XetRuntime` with its
+    ///   own thread pool, identical to [`new_with_config`](Self::new_with_config).
+    /// - **Called from within a tokio async context** (inside `async fn` or `#[tokio::test]`): wraps the caller's
+    ///   runtime handle via [`from_external_with_config`](Self::from_external_with_config). No new thread pool is
+    ///   created; `spawn()` calls schedule work on the caller's runtime.
+    pub fn new_or_attach_with_config(config: XetConfig) -> Result<Arc<Self>, MultithreadedRuntimeError> {
+        match TokioRuntimeHandle::try_current() {
+            Ok(handle) => Ok(Self::from_external_with_config(handle, config)),
+            Err(_) => Self::new_with_config(config),
+        }
     }
 
     #[inline]

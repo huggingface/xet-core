@@ -1,17 +1,17 @@
-//! Session-based upload/download example.
+//! Async session-based upload/download example.
 //!
-//! Shows the three-level hierarchy: XetSession → UploadCommit/DownloadGroup → files.
+//! Mirror of `example.rs` using the async API (`UploadCommit` / `DownloadGroup`).
+//! Requires an async runtime — here provided by `#[tokio::main]`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use xet_session::{FileMetadata, TaskStatus, XetFileInfo, XetSessionBuilder};
+use xet_session::{FileMetadata, TaskStatus, UploadTaskHandle, XetFileInfo, XetSessionBuilder};
 
 #[derive(Parser)]
-#[clap(name = "session-demo", about = "XetSession API demo")]
+#[clap(name = "session-demo-async", about = "XetSession async API demo")]
 struct Cli {
     #[clap(subcommand)]
     command: Command,
@@ -36,52 +36,53 @@ enum Command {
     },
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();
     match cli.command {
-        Command::Upload { files, endpoint } => upload_files(files, endpoint),
+        Command::Upload { files, endpoint } => upload_files(files, endpoint).await,
         Command::Download {
             metadata_file,
             output_dir,
             endpoint,
-        } => download_files(metadata_file, output_dir, endpoint),
+        } => download_files(metadata_file, output_dir, endpoint).await,
     }
 }
 
-fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<()> {
+async fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<()> {
     let mut builder = XetSessionBuilder::new();
     if let Some(ep) = endpoint {
         builder = builder.with_endpoint(ep);
     }
     let session = builder.build()?;
-    let commit = session.new_upload_commit_blocking()?;
+    let commit = session.new_upload_commit().await?;
 
     // Enqueue all uploads; each starts immediately in the background.
     let n_files = files.len();
-    let handles: Vec<_> = files
-        .iter()
-        .map(|f| commit.upload_from_path(f.clone()))
-        .collect::<Result<_, _>>()?;
+    let mut handles = Vec::with_capacity(n_files);
+    for f in &files {
+        handles.push(commit.upload_from_path(f.clone()).await?);
+    }
 
-    // Spawn a task to print progress; the main thread blocks in commit() below.
+    // Spawn a task to print progress while the main task awaits commit().
     let commit_for_progress = commit.clone();
-    std::thread::spawn(move || {
+    tokio::spawn(async move {
         loop {
             if let Ok(snapshot) = commit_for_progress.get_progress() {
                 let p = snapshot.total();
                 let done = handles
                     .iter()
-                    .filter(|h| matches!(h.status(), Ok(TaskStatus::Completed)))
+                    .filter(|h: &&UploadTaskHandle| matches!(h.status(), Ok(TaskStatus::Completed)))
                     .count();
                 println!("{}/{} files | {}/{} bytes", done, n_files, p.total_bytes_completed, p.total_bytes);
             }
-            std::thread::sleep(Duration::from_millis(100));
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     });
 
-    // Block until all uploads finish and metadata is finalized.
-    let results = commit.commit()?;
+    // Await until all uploads finish and metadata is finalized.
+    let results = commit.commit().await?;
 
     for m in results.values().filter_map(|m| m.as_ref().as_ref().ok()) {
         println!("  {} -> {} ({} bytes)", m.tracking_name.as_deref().unwrap_or("?"), m.hash, m.file_size);
@@ -97,7 +98,7 @@ fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<()> {
     Ok(())
 }
 
-fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: Option<String>) -> Result<()> {
+async fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: Option<String>) -> Result<()> {
     let metadata: Vec<FileMetadata> = serde_json::from_str(&std::fs::read_to_string(metadata_file)?)?;
     std::fs::create_dir_all(&output_dir)?;
 
@@ -106,7 +107,7 @@ fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: Option<
         builder = builder.with_endpoint(ep);
     }
     let session = builder.build()?;
-    let group = session.new_download_group_blocking()?;
+    let group = session.new_download_group().await?;
 
     // Enqueue all downloads; each starts immediately in the background.
     let n_files = metadata.len();
@@ -124,9 +125,9 @@ fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: Option<
         })
         .collect::<Result<_, _>>()?;
 
-    // Spawn a task to print progress; the main thread blocks in finish() below.
+    // Spawn a task to print progress while the main task awaits finish().
     let group_for_progress = group.clone();
-    std::thread::spawn(move || {
+    tokio::spawn(async move {
         loop {
             if let Ok(snapshot) = group_for_progress.get_progress() {
                 let p = snapshot.total();
@@ -136,12 +137,12 @@ fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: Option<
                     .count();
                 println!("{}/{} files | {}/{} bytes", done, n_files, p.total_bytes_completed, p.total_bytes);
             }
-            std::thread::sleep(Duration::from_millis(100));
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     });
 
-    // Block until all downloads finish.
-    let results = group.finish()?;
+    // Await until all downloads finish.
+    let results = group.finish().await?;
 
     for (_task_id, result) in &results {
         if let Ok(r) = result.as_ref() {

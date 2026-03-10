@@ -11,6 +11,7 @@ use xet_runtime::XetRuntime;
 
 use crate::download_group::DownloadGroup;
 use crate::errors::SessionError;
+use crate::sync::{DownloadGroupSync, UploadCommitSync};
 use crate::upload_commit::UploadCommit;
 
 /// Session state
@@ -187,7 +188,7 @@ impl XetSession {
         token_refresher: Option<Arc<dyn TokenRefresher>>,
         custom_headers: Option<Arc<HeaderMap>>,
     ) -> Result<Self, SessionError> {
-        let runtime = XetRuntime::new_with_config(config.clone())?;
+        let runtime = XetRuntime::new_or_attach_with_config(config.clone())?;
 
         let session_id = Ulid::new();
 
@@ -210,13 +211,21 @@ impl XetSession {
     /// Create a new [`UploadCommit`] that groups related file uploads.
     ///
     /// Returns `Err(SessionError::Aborted)` if the session has been aborted.
-    pub fn new_upload_commit(&self) -> Result<UploadCommit, SessionError> {
-        let state = self.state.lock()?;
-        if matches!(*state, SessionState::Aborted) {
-            return Err(SessionError::Aborted);
+    ///
+    /// # Note
+    ///
+    /// This is an `async fn` and must be `.await`ed. For sync Rust or Python (PyO3) callers,
+    /// use [`new_upload_commit_blocking`](Self::new_upload_commit_blocking).
+    pub async fn new_upload_commit(&self) -> Result<UploadCommit, SessionError> {
+        // Check state before the async init; drop the guard so it is not held across .await.
+        {
+            let state = self.state.lock()?;
+            if matches!(*state, SessionState::Aborted) {
+                return Err(SessionError::Aborted);
+            }
         }
 
-        let commit = UploadCommit::new(self.clone())?;
+        let commit = UploadCommit::new(self.clone()).await?;
 
         // Register the commit
         self.active_upload_commits.lock()?.insert(commit.id(), commit.clone());
@@ -224,21 +233,75 @@ impl XetSession {
         Ok(commit)
     }
 
+    /// Create a new [`UploadCommit`] from a **sync** (non-async) context.
+    ///
+    /// Returns `Err(SessionError::Aborted)` if the session has been aborted.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within an async runtime. Use
+    /// [`new_upload_commit`](Self::new_upload_commit) instead.
+    pub fn new_upload_commit_blocking(&self) -> Result<UploadCommitSync, SessionError> {
+        {
+            let state = self.state.lock()?;
+            if matches!(*state, SessionState::Aborted) {
+                return Err(SessionError::Aborted);
+            }
+        }
+
+        let sync_commit = UploadCommitSync::new(self.clone())?;
+        self.active_upload_commits
+            .lock()?
+            .insert(sync_commit.inner.id(), sync_commit.inner.clone());
+        Ok(sync_commit)
+    }
+
     /// Create a new [`DownloadGroup`] that groups related file downloads.
     ///
     /// Returns `Err(SessionError::Aborted)` if the session has been aborted.
-    pub fn new_download_group(&self) -> Result<DownloadGroup, SessionError> {
-        let state = self.state.lock()?;
-        if matches!(*state, SessionState::Aborted) {
-            return Err(SessionError::Aborted);
+    ///
+    /// # Note
+    ///
+    /// This is an `async fn` and must be `.await`ed. For sync Rust or Python (PyO3) callers,
+    /// use [`new_download_group_blocking`](Self::new_download_group_blocking).
+    pub async fn new_download_group(&self) -> Result<DownloadGroup, SessionError> {
+        // Check state before the async init; drop the guard so it is not held across .await.
+        {
+            let state = self.state.lock()?;
+            if matches!(*state, SessionState::Aborted) {
+                return Err(SessionError::Aborted);
+            }
         }
 
-        let group = DownloadGroup::new(self.clone())?;
+        let group = DownloadGroup::new(self.clone()).await?;
 
         // Register the group
         self.active_download_groups.lock()?.insert(group.id(), group.clone());
 
         Ok(group)
+    }
+
+    /// Create a new [`DownloadGroup`] from a **sync** (non-async) context.
+    ///
+    /// Returns `Err(SessionError::Aborted)` if the session has been aborted.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within an async runtime. Use
+    /// [`new_download_group`](Self::new_download_group) instead.
+    pub fn new_download_group_blocking(&self) -> Result<DownloadGroupSync, SessionError> {
+        {
+            let state = self.state.lock()?;
+            if matches!(*state, SessionState::Aborted) {
+                return Err(SessionError::Aborted);
+            }
+        }
+
+        let sync_group = DownloadGroupSync::new(self.clone())?;
+        self.active_download_groups
+            .lock()?
+            .insert(sync_group.inner.id(), sync_group.inner.clone());
+        Ok(sync_group)
     }
 
     /// Abort the session - cancel all currently running tasks
@@ -322,20 +385,20 @@ mod tests {
     }
 
     #[test]
-    // new_upload_commit on an aborted session returns Aborted.
+    // new_upload_commit_blocking on an aborted session returns Aborted.
     fn test_new_upload_commit_after_abort_returns_aborted() {
         let session = make_session();
         session.abort().unwrap();
-        let err = session.new_upload_commit().err().unwrap();
+        let err = session.new_upload_commit_blocking().err().unwrap();
         assert!(matches!(err, SessionError::Aborted));
     }
 
     #[test]
-    // new_download_group on an aborted session returns Aborted.
+    // new_download_group_blocking on an aborted session returns Aborted.
     fn test_new_download_group_after_abort_returns_aborted() {
         let session = make_session();
         session.abort().unwrap();
-        let err = session.new_download_group().err().unwrap();
+        let err = session.new_download_group_blocking().err().unwrap();
         assert!(matches!(err, SessionError::Aborted));
     }
 
@@ -343,8 +406,8 @@ mod tests {
     // Aborting a session clears all registered upload commits.
     fn test_abort_clears_active_upload_commits() {
         let session = make_session();
-        let _c1 = session.new_upload_commit().unwrap();
-        let _c2 = session.new_upload_commit().unwrap();
+        let _c1 = session.new_upload_commit_blocking().unwrap();
+        let _c2 = session.new_upload_commit_blocking().unwrap();
         session.abort().unwrap();
         assert_eq!(session.active_upload_commits.lock().unwrap().len(), 0);
     }
@@ -353,7 +416,7 @@ mod tests {
     // Aborting a session clears all registered download groups.
     fn test_abort_clears_active_download_groups() {
         let session = make_session();
-        let _g1 = session.new_download_group().unwrap();
+        let _g1 = session.new_download_group_blocking().unwrap();
         session.abort().unwrap();
         assert_eq!(session.active_download_groups.lock().unwrap().len(), 0);
     }
@@ -364,7 +427,7 @@ mod tests {
     // A new upload commit is registered in the session's active set.
     fn test_new_upload_commit_registers_in_session() {
         let session = make_session();
-        let _commit = session.new_upload_commit().unwrap();
+        let _commit = session.new_upload_commit_blocking().unwrap();
         assert_eq!(session.active_upload_commits.lock().unwrap().len(), 1);
     }
 
@@ -372,7 +435,7 @@ mod tests {
     // A new download group is registered in the session's active set.
     fn test_new_download_group_registers_in_session() {
         let session = make_session();
-        let _group = session.new_download_group().unwrap();
+        let _group = session.new_download_group_blocking().unwrap();
         assert_eq!(session.active_download_groups.lock().unwrap().len(), 1);
     }
 
@@ -382,10 +445,10 @@ mod tests {
     // finish_upload_commit removes only the specified commit, leaving others intact.
     fn test_finish_upload_commit_removes_only_that_commit() {
         let session = make_session();
-        let c1 = session.new_upload_commit().unwrap();
-        let _c2 = session.new_upload_commit().unwrap();
+        let c1 = session.new_upload_commit_blocking().unwrap();
+        let _c2 = session.new_upload_commit_blocking().unwrap();
         assert_eq!(session.active_upload_commits.lock().unwrap().len(), 2);
-        session.finish_upload_commit(c1.id()).unwrap();
+        session.finish_upload_commit(c1.inner.id()).unwrap();
         assert_eq!(session.active_upload_commits.lock().unwrap().len(), 1);
     }
 
@@ -393,10 +456,10 @@ mod tests {
     // finish_download_group removes only the specified group, leaving others intact.
     fn test_finish_download_group_removes_only_that_group() {
         let session = make_session();
-        let g1 = session.new_download_group().unwrap();
-        let _g2 = session.new_download_group().unwrap();
+        let g1 = session.new_download_group_blocking().unwrap();
+        let _g2 = session.new_download_group_blocking().unwrap();
         assert_eq!(session.active_download_groups.lock().unwrap().len(), 2);
-        session.finish_download_group(g1.id()).unwrap();
+        session.finish_download_group(g1.inner.id()).unwrap();
         assert_eq!(session.active_download_groups.lock().unwrap().len(), 1);
     }
 
@@ -404,9 +467,94 @@ mod tests {
     // finish_upload_commit on an unknown ID is a no-op (no error, no change).
     fn test_finish_upload_commit_with_unknown_id_is_noop() {
         let session = make_session();
-        let _c1 = session.new_upload_commit().unwrap();
+        let _c1 = session.new_upload_commit_blocking().unwrap();
         let unknown_id = ulid::Ulid::new();
         assert!(session.finish_upload_commit(unknown_id).is_ok());
         assert_eq!(session.active_upload_commits.lock().unwrap().len(), 1);
+    }
+
+    // ── Async abort behavior ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    // new_upload_commit / new_download_group on an aborted session both return Aborted.
+    async fn test_async_new_after_abort_returns_aborted() {
+        let session = make_session();
+        session.abort().unwrap();
+        let commit_err = session.new_upload_commit().await.err().unwrap();
+        let group_err = session.new_download_group().await.err().unwrap();
+        assert!(matches!(commit_err, SessionError::Aborted));
+        assert!(matches!(group_err, SessionError::Aborted));
+    }
+
+    #[tokio::test]
+    // Aborting a session clears all active upload commits and download groups.
+    async fn test_async_abort_clears_active_commits_and_groups() {
+        let session = make_session();
+        let (_c1, _c2, _g1) =
+            tokio::join!(session.new_upload_commit(), session.new_upload_commit(), session.new_download_group(),);
+        session.abort().unwrap();
+        assert_eq!(session.active_upload_commits.lock().unwrap().len(), 0);
+        assert_eq!(session.active_download_groups.lock().unwrap().len(), 0);
+    }
+
+    // ── Async registration ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    // A new upload commit and a new download group are each registered in the
+    // session's active set, and concurrent creation registers both.
+    async fn test_async_new_registers_in_session() {
+        let session = make_session();
+        let (commit_res, group_res) = tokio::join!(session.new_upload_commit(), session.new_download_group());
+        let _commit = commit_res.unwrap();
+        let _group = group_res.unwrap();
+        assert_eq!(session.active_upload_commits.lock().unwrap().len(), 1);
+        assert_eq!(session.active_download_groups.lock().unwrap().len(), 1);
+    }
+
+    // ── Async deregistration ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    // Finishing one upload commit / download group removes only that one,
+    // leaving the other still registered.
+    async fn test_async_finish_removes_only_that_item() {
+        let session = make_session();
+        let (c1_res, c2_res, g1_res, g2_res) = tokio::join!(
+            session.new_upload_commit(),
+            session.new_upload_commit(),
+            session.new_download_group(),
+            session.new_download_group(),
+        );
+        let c1 = c1_res.unwrap();
+        let _c2 = c2_res.unwrap();
+        let g1 = g1_res.unwrap();
+        let _g2 = g2_res.unwrap();
+        assert_eq!(session.active_upload_commits.lock().unwrap().len(), 2);
+        assert_eq!(session.active_download_groups.lock().unwrap().len(), 2);
+        session.finish_upload_commit(c1.id()).unwrap();
+        session.finish_download_group(g1.id()).unwrap();
+        assert_eq!(session.active_upload_commits.lock().unwrap().len(), 1);
+        assert_eq!(session.active_download_groups.lock().unwrap().len(), 1);
+    }
+
+    // ── Sync-inside-async panic guards ───────────────────────────────────────
+
+    #[tokio::test]
+    // new_upload_commit_blocking panics when called from inside a tokio runtime.
+    async fn test_new_upload_commit_blocking_panics_in_async_context() {
+        let session = make_session();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = session.new_upload_commit_blocking();
+        }));
+        assert!(result.is_err(), "expected panic from _blocking inside async");
+    }
+
+    #[tokio::test]
+    // new_download_group_blocking panics when called from inside a tokio runtime.
+    async fn test_new_download_group_blocking_panics_in_async_context() {
+        let session = make_session();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = session.new_download_group_blocking();
+        }));
+        assert!(result.is_err(), "expected panic from _blocking inside async");
     }
 }

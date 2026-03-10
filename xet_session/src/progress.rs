@@ -107,7 +107,7 @@ impl ProgressSnapshot {
     }
 }
 
-/// Snapshot of aggregate progress returned by [`TaskProgress::total`].
+/// Snapshot of aggregate progress.
 #[derive(Clone, Debug, Default)]
 pub struct TotalProgressSnapshot {
     /// Total bytes known to process (includes deduplicated bytes).
@@ -124,7 +124,7 @@ pub struct TotalProgressSnapshot {
     pub total_transfer_bytes_completion_rate: Option<f64>,
 }
 
-/// Snapshot of a single file's progress returned by [`TaskProgress::files`].
+/// Snapshot of a single file's progress.
 #[derive(Clone, Debug)]
 pub struct FileProgress {
     /// File name as reported by the data layer.
