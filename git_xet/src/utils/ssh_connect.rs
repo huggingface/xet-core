@@ -175,7 +175,7 @@ fn format_for_shell_execution(command: &str, args: &[String]) -> Result<(String,
 mod tests {
     use anyhow::{Ok, Result};
     use serial_test::serial;
-    use utils::EnvVarGuard;
+    use xet_runtime::utils::EnvVarGuard;
 
     use super::*;
     use crate::git_repo::GitRepo;
@@ -443,7 +443,7 @@ mod tests {
             let _env = EnvVarGuard::set("GIT_SSH_COMMAND", "ssh -i ~/.ssh/id_rsa");
             let (cmd, args) = get_sshcmd_and_args(&meta, &repo)?;
             assert_eq!(cmd, "sh");
-            assert_eq!(args, vec!["-c", "ssh -i ~/.ssh/id_rsa git@hf.co auth org/repo upload"]);
+            assert_eq!(args, vec!["-c", "ssh -i '~/.ssh/id_rsa' git@hf.co auth org/repo upload"]);
         }
 
         // Test with GIT_SSH

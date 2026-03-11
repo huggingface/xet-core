@@ -6,9 +6,9 @@ use lazy_static::lazy_static;
 use pyo3::exceptions::{PyKeyboardInterrupt, PyRuntimeError};
 use pyo3::prelude::*;
 use tracing::info;
-use xet_runtime::XetRuntime;
-use xet_runtime::errors::MultithreadedRuntimeError;
-use xet_runtime::sync_primatives::spawn_os_thread;
+use xet_runtime::RuntimeError;
+use xet_runtime::core::XetRuntime;
+use xet_runtime::core::sync_primatives::spawn_os_thread;
 
 lazy_static! {
     static ref SIGINT_DETECTED: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
@@ -17,15 +17,14 @@ lazy_static! {
 }
 
 #[cfg(unix)]
-fn install_sigint_handler() -> Result<(), MultithreadedRuntimeError> {
+fn install_sigint_handler() -> Result<(), RuntimeError> {
     use signal_hook::consts::SIGINT;
     use signal_hook::flag;
 
     // Register the SIGINT handler to set our atomic flag.
     // Using `signal_hook::flag::register` allows us to set the atomic flag when SIGINT is received.
-    flag::register(SIGINT, SIGINT_DETECTED.clone()).map_err(|e| {
-        MultithreadedRuntimeError::Other(format!("Initialization Error: Unable to register SIGINT handler {e:?}"))
-    })?;
+    flag::register(SIGINT, SIGINT_DETECTED.clone())
+        .map_err(|e| RuntimeError::Other(format!("Initialization Error: Unable to register SIGINT handler {e:?}")))?;
 
     Ok(())
 }
@@ -47,7 +46,7 @@ extern "system" fn console_ctrl_handler(
 }
 
 #[cfg(windows)]
-fn install_sigint_handler() -> Result<(), MultithreadedRuntimeError> {
+fn install_sigint_handler() -> Result<(), RuntimeError> {
     use winapi::um::consoleapi::SetConsoleCtrlHandler;
     use winapi::um::wincon::CTRL_C_EVENT;
 
@@ -57,7 +56,7 @@ fn install_sigint_handler() -> Result<(), MultithreadedRuntimeError> {
     unsafe {
         if SetConsoleCtrlHandler(Some(console_ctrl_handler), winapi::shared::minwindef::TRUE) == 0 {
             let error = winapi::um::errhandlingapi::GetLastError();
-            return Err(MultithreadedRuntimeError::Other(format!(
+            return Err(RuntimeError::Other(format!(
                 "Initialization Error: Unable to register SIGINT handler. Windows error: {error}"
             )));
         }
@@ -65,7 +64,7 @@ fn install_sigint_handler() -> Result<(), MultithreadedRuntimeError> {
     Ok(())
 }
 
-fn check_sigint_handler() -> Result<(), MultithreadedRuntimeError> {
+fn check_sigint_handler() -> Result<(), RuntimeError> {
     // Clear the sigint flag.  It is possible but unlikely that there will be a race condition here
     // that will cause a CTRL-C to be temporarily ignored by us.  In such a case, the user
     // will have to press it again.
@@ -139,7 +138,7 @@ fn signal_check_background_loop() {
 }
 
 // This should be called once on library load.
-pub fn init_threadpool() -> Result<Arc<XetRuntime>, MultithreadedRuntimeError> {
+pub fn init_threadpool() -> Result<Arc<XetRuntime>, RuntimeError> {
     // Need to initialize. Upgrade to write lock.
     let mut guard = MULTITHREADED_RUNTIME.write().unwrap();
 
@@ -190,7 +189,7 @@ pub fn init_threadpool() -> Result<Arc<XetRuntime>, MultithreadedRuntimeError> {
 }
 
 // This function initializes the runtime if not present, otherwise returns the existing one.
-fn get_threadpool() -> Result<Arc<XetRuntime>, MultithreadedRuntimeError> {
+fn get_threadpool() -> Result<Arc<XetRuntime>, RuntimeError> {
     // First try a read lock to see if it's already initialized.
     {
         let guard = MULTITHREADED_RUNTIME.read().unwrap();
@@ -208,7 +207,7 @@ fn get_threadpool() -> Result<Arc<XetRuntime>, MultithreadedRuntimeError> {
     init_threadpool()
 }
 
-pub fn convert_multithreading_error(e: impl Into<MultithreadedRuntimeError> + std::fmt::Display) -> PyErr {
+pub fn convert_multithreading_error(e: impl Into<RuntimeError> + std::fmt::Display) -> PyErr {
     PyRuntimeError::new_err(format!("Xet Runtime Error: {e}"))
 }
 

@@ -1,0 +1,88 @@
+[package]
+name = "xet-core-structures"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Core data structures including MerkleHash, metadata shards, and xorb objects"
+
+[lib]
+name = "xet_core_structures"
+path = "src/lib.rs"
+
+[[bench]]
+name = "compression_bench"
+harness = false
+bench = true
+
+[[bench]]
+name = "bg_split_regroup_bench"
+harness = false
+bench = true
+
+[dependencies]
+xet-runtime = { version = "1.4.0", path = "../xet_runtime" }
+
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+blake3 = { workspace = true }
+bytes = { workspace = true }
+clap = { workspace = true }
+countio = { workspace = true }
+csv = { workspace = true }
+futures = { workspace = true }
+futures-util = { workspace = true }
+half = { workspace = true }
+heapify = { workspace = true }
+itertools = { workspace = true }
+lazy_static = { workspace = true }
+lz4_flex = { workspace = true }
+more-asserts = { workspace = true }
+rand = { workspace = true, features = ["small_rng"] }
+regex = { workspace = true }
+safe-transmute = { workspace = true }
+serde = { workspace = true }
+static_assertions = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+bincode = { workspace = true }
+bytemuck = { workspace = true }
+heed = { workspace = true }
+tokio = { workspace = true, features = ["time", "rt", "macros", "sync", "test-util", "io-util", "rt-multi-thread"] }
+tokio-util = { workspace = true, features = ["io"] }
+uuid = { workspace = true, features = ["v4"] }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+getrandom = { workspace = true, features = ["wasm_js"] }
+tokio = { workspace = true, features = ["sync", "macros", "io-util", "rt", "time"] }
+uuid = { workspace = true, features = ["v4", "js"] }
+web-time = { workspace = true }
+
+[dev-dependencies]
+bincode = { workspace = true }
+futures-util = { workspace = true }
+rand = { workspace = true }
+serial_test = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+tempfile = { workspace = true }
+
+[[bin]]
+name = "shard_benchmark"
+path = "src/metadata_shard/shard_benchmark.rs"
+
+[[bin]]
+path = "src/xorb_object/byte_grouping/compression_stats/collect_compression_stats.rs"
+name = "collect_compression_stats"
+
+[[bin]]
+path = "src/xorb_object/byte_grouping/bg4_prediction_benchmark.rs"
+name = "bg4_prediction_benchmark"
+
+[features]
+strict = []

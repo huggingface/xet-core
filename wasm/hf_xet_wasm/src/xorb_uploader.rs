@@ -1,0 +1,92 @@
+use std::result::Result as stdResult;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use tokio_with_wasm::alias as wasmtokio;
+use xet_client::cas_client::{CasClientError, Client};
+use xet_core_structures::xorb_object::SerializedXorbObject;
+
+use crate::errors::*;
+use crate::wasm_timer::ConsoleTimer;
+
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+pub trait XorbUploader {
+    async fn upload_xorb(&mut self, input: SerializedXorbObject) -> Result<()>;
+    async fn finalize(&mut self) -> Result<()>;
+}
+
+#[allow(dead_code)]
+pub struct XorbUploaderLocalSequential {
+    client: Arc<dyn Client + Send + Sync>,
+    cas_prefix: String,
+}
+
+#[allow(dead_code)]
+impl XorbUploaderLocalSequential {
+    pub fn new(client: Arc<dyn Client + Send + Sync>, cas_prefix: &str, _upload_concurrency: usize) -> Self {
+        Self {
+            client,
+            cas_prefix: cas_prefix.to_owned(),
+        }
+    }
+}
+
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+impl XorbUploader for XorbUploaderLocalSequential {
+    async fn upload_xorb(&mut self, input: SerializedXorbObject) -> Result<()> {
+        let permit = self.client.acquire_upload_permit().await?;
+        let _ = self.client.upload_xorb(&self.cas_prefix, input, None, permit).await?;
+        Ok(())
+    }
+
+    async fn finalize(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+pub struct XorbUploaderSpawnParallel {
+    client: Arc<dyn Client + Send + Sync>,
+    cas_prefix: String,
+    tasks: wasmtokio::task::JoinSet<stdResult<u64, CasClientError>>,
+}
+
+impl XorbUploaderSpawnParallel {
+    pub fn new(client: Arc<dyn Client + Send + Sync>, cas_prefix: &str, _upload_concurrency: usize) -> Self {
+        Self {
+            client,
+            cas_prefix: cas_prefix.to_owned(),
+            tasks: wasmtokio::task::JoinSet::new(),
+        }
+    }
+}
+
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+impl XorbUploader for XorbUploaderSpawnParallel {
+    async fn upload_xorb(&mut self, input: SerializedXorbObject) -> Result<()> {
+        while let Some(ret) = self.tasks.try_join_next() {
+            ret.map_err(DataProcessingError::internal)??;
+        }
+
+        let client = self.client.clone();
+        let cas_prefix = self.cas_prefix.clone();
+        let upload_permit = client.acquire_upload_permit().await?;
+
+        self.tasks.spawn(async move {
+            let _timer = ConsoleTimer::new(format!("upload xorb {}", input.hash));
+            client.upload_xorb(&cas_prefix, input, None, upload_permit).await
+        });
+
+        Ok(())
+    }
+
+    async fn finalize(&mut self) -> Result<()> {
+        while let Some(ret) = self.tasks.join_next().await {
+            ret.map_err(DataProcessingError::internal)??;
+        }
+
+        Ok(())
+    }
+}
