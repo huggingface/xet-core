@@ -2,12 +2,11 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use cas_client::adaptive_concurrency::ConnectionPermit;
 use cas_client::{Client, ProgressCallback};
 use cas_types::ChunkRange;
 use merklehash::MerkleHash;
 use progress_tracking::download_tracking::DownloadTaskUpdater;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, OnceCell};
 use utils::UniqueId;
 
 use crate::error::Result;
@@ -36,7 +35,7 @@ pub struct XorbBlock {
     pub references: Vec<XorbReference>,
     /// Expected decompressed size of the block when known. Used for debug_assert in clients.
     pub uncompressed_size_if_known: Option<usize>,
-    pub data: RwLock<Option<Arc<XorbBlockData>>>,
+    pub data: OnceCell<Arc<XorbBlockData>>,
 }
 
 impl PartialEq for XorbBlock {
@@ -51,59 +50,56 @@ impl Eq for XorbBlock {}
 
 impl XorbBlock {
     /// Retrieve the xorb block data from the client, caching it for subsequent calls.
+    ///
+    /// Uses single-flight: the first caller acquires a CAS download permit and downloads
+    /// the data; concurrent callers wait on the same result without acquiring permits or
+    /// duplicating work. If the download fails, the cell remains empty and a later caller
+    /// can retry.
     pub async fn retrieve_data(
         self: Arc<Self>,
         client: Arc<dyn Client>,
-        permit: ConnectionPermit,
         url_info: Arc<TermBlockRetrievalURLs>,
         progress_updater: Option<Arc<DownloadTaskUpdater>>,
     ) -> Result<Arc<XorbBlockData>> {
-        // Check again in case another task already downloaded it.
-        if let Some(ref xorb_block_data) = *self.data.read().await {
-            return Ok(xorb_block_data.clone());
-        }
+        let xorb_block_index = self.xorb_block_index;
+        let uncompressed_size_if_known = self.uncompressed_size_if_known;
 
-        // Okay, now it's not there, so let's retrieve it.
-        let mut xbd_lg = self.data.write().await;
+        self.data
+            .get_or_try_init(|| async {
+                // Acquire a CAS download permit only when actually downloading.
+                let permit = client.acquire_download_permit().await?;
 
-        // See if it's been filled while we were waiting for the write lock.
-        if let Some(ref xorb_block_data) = *xbd_lg {
-            return Ok(xorb_block_data.clone());
-        }
+                let url_provider = XorbURLProvider {
+                    client: client.clone(),
+                    url_info,
+                    xorb_block_index,
+                    last_acquisition_id: Mutex::new(UniqueId::null()),
+                };
 
-        let url_provider = XorbURLProvider {
-            client: client.clone(),
-            url_info,
-            xorb_block_index: self.xorb_block_index,
-            last_acquisition_id: Mutex::new(UniqueId::null()),
-        };
+                // Progress callback reports only transfer (network) bytes during get_file_term_data.
+                // Decompressed bytes are reported by the data writer when written to disk.
+                let progress_callback: Option<ProgressCallback> = progress_updater.as_ref().map(|updater| {
+                    let updater = updater.clone();
+                    Arc::new(move |delta: u64, _completed: u64, _total: u64| {
+                        updater.report_transfer_progress(delta);
+                    }) as ProgressCallback
+                });
 
-        // Progress callback reports only transfer (network) bytes during get_file_term_data.
-        // Decompressed bytes are reported by the data writer when written to disk.
-        let progress_callback: Option<ProgressCallback> = progress_updater.as_ref().map(|updater| {
-            let updater = updater.clone();
-            Arc::new(move |delta: u64, _completed: u64, _total: u64| {
-                updater.report_transfer_progress(delta);
-            }) as ProgressCallback
-        });
+                let (data, chunk_byte_offsets) = client
+                    .get_file_term_data(Box::new(url_provider), permit, progress_callback, uncompressed_size_if_known)
+                    .await?;
 
-        let (data, chunk_byte_offsets) = client
-            .get_file_term_data(Box::new(url_provider), permit, progress_callback, self.uncompressed_size_if_known)
-            .await?;
+                let chunk_offsets: Vec<usize> = chunk_byte_offsets.iter().map(|&x| x as usize).collect();
+                let uncompressed_size = data.len() as u64;
 
-        let chunk_offsets: Vec<usize> = chunk_byte_offsets.iter().map(|&x| x as usize).collect();
-        let uncompressed_size = data.len() as u64;
-
-        let xorb_block_data = Arc::new(XorbBlockData {
-            chunk_offsets,
-            uncompressed_size,
-            data,
-        });
-
-        // Store the data in the xorb block.
-        *xbd_lg = Some(xorb_block_data.clone());
-
-        Ok(xorb_block_data)
+                Ok(Arc::new(XorbBlockData {
+                    chunk_offsets,
+                    uncompressed_size,
+                    data,
+                }))
+            })
+            .await
+            .cloned()
     }
 
     /// Determines the total uncompressed size of the xorb block from the reference terms,
