@@ -1,13 +1,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cas_client::retry_wrapper::RetryWrapper;
-use cas_client::{Api, build_http_client};
 use http::header::HeaderMap;
-use hub_client::{CasJWTInfo, CredentialHelper, Operation};
 use reqwest_middleware::ClientWithMiddleware;
-use utils::auth::{TokenInfo, TokenRefresher};
-use utils::errors::AuthError;
+use xet_client::cas_client::auth::{AuthError, TokenInfo, TokenRefresher};
+use xet_client::cas_client::retry_wrapper::RetryWrapper;
+use xet_client::cas_client::{Api, build_http_client};
+use xet_client::hub_client::{CasJWTInfo, CredentialHelper, Operation};
 
 use crate::auth::get_credential;
 use crate::errors::Result;

@@ -112,10 +112,10 @@ jobs:
           cargo install --version 0.2.100 wasm-bindgen-cli
           cargo install --version 0.13.1 wasm-pack
       - name: Build hf_xet_thin_wasm
-        working-directory: hf_xet_thin_wasm
+        working-directory: wasm/hf_xet_thin_wasm
         run: |
           ./build_wasm.sh
       - name: Build hf_xet_wasm
-        working-directory: hf_xet_wasm
+        working-directory: wasm/hf_xet_wasm
         run: |
           ./build_wasm.sh

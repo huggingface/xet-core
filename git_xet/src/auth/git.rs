@@ -2,7 +2,7 @@ use std::io::{BufRead, BufReader, Cursor, Write};
 use std::path::Path;
 use std::sync::Arc;
 
-use hub_client::BearerCredentialHelper;
+use xet_client::hub_client::BearerCredentialHelper;
 
 use crate::errors::{GitXetError, Result};
 use crate::utils::process_wrapping::run_git_captured_with_input_and_output;

@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use hub_client::{CredentialHelper, Operation};
 use reqwest::header;
 use reqwest_middleware::RequestBuilder;
 use serde::{Deserialize, Serialize};
+use xet_client::hub_client::{CredentialHelper, Operation};
 
 use crate::errors::{GitXetError, Result};
 use crate::git_repo::GitRepo;
@@ -86,7 +86,7 @@ impl CredentialHelper for SSHCredentialHelper {
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
-    use hub_client::Operation;
+    use xet_client::hub_client::Operation;
 
     use super::SSHCredentialHelper;
     use crate::git_repo::GitRepo;
