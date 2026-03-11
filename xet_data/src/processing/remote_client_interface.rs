@@ -5,7 +5,7 @@ use xet_client::cas_client::{Client, RemoteClient};
 use super::configurations::*;
 use super::errors::Result;
 
-pub(crate) async fn create_remote_client(
+pub async fn create_remote_client(
     config: &TranslatorConfig,
     session_id: &str,
     dry_run: bool,

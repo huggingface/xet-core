@@ -53,7 +53,7 @@ impl DownloadGroup {
         let config = create_translator_config(&session)?;
         let download_session = session.runtime.external_run_async_task(async move {
             let progress_updater = progress_clone as Arc<dyn xet_data::progress_tracking::TrackingProgressUpdater>;
-            FileDownloadSession::new(Arc::new(config), Some(progress_updater)).await
+            FileDownloadSession::new(Arc::new(config), Some(progress_updater), None).await
         })??;
 
         let inner = Arc::new(DownloadGroupInner {

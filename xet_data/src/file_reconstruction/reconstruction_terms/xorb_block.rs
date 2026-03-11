@@ -4,7 +4,8 @@ use std::sync::Arc;
 use bytes::Bytes;
 use tokio::sync::{Mutex, OnceCell};
 use xet_client::cas_client::{Client, ProgressCallback};
-use xet_client::cas_types::ChunkRange;
+use xet_client::cas_types::{ChunkRange, Key};
+use xet_client::chunk_cache::ChunkCache;
 use xet_core_structures::merklehash::MerkleHash;
 use xet_runtime::utils::UniqueId;
 
@@ -55,18 +56,48 @@ impl XorbBlock {
     /// the data; concurrent callers wait on the same result without acquiring permits or
     /// duplicating work. If the download fails, the cell remains empty and a later caller
     /// can retry.
+    ///
+    /// If a `chunk_cache` is provided, it is checked before making an HTTP request
+    /// and populated after a successful download.
     pub async fn retrieve_data(
         self: Arc<Self>,
         client: Arc<dyn Client>,
         url_info: Arc<TermBlockRetrievalURLs>,
         progress_updater: Option<Arc<DownloadTaskUpdater>>,
+        chunk_cache: Option<Arc<dyn ChunkCache>>,
     ) -> Result<Arc<XorbBlockData>> {
         let xorb_block_index = self.xorb_block_index;
+        let chunk_range = self.chunk_range;
         let uncompressed_size_if_known = self.uncompressed_size_if_known;
+
+        let cache_key = Key {
+            prefix: "default".to_string(),
+            hash: self.xorb_hash,
+        };
 
         self.data
             .get_or_try_init(|| async {
-                // Acquire a CAS download permit only when actually downloading.
+                // Try the on-disk chunk cache before hitting the network.
+                if let Some(ref cache) = chunk_cache {
+                    if let Ok(Some(cache_range)) = cache.get(&cache_key, &chunk_range).await {
+                        // Report the transfer bytes as completed so progress tracking stays consistent.
+                        if let Some(ref updater) = progress_updater {
+                            let (_, _, http_range) = url_info.get_retrieval_url(xorb_block_index).await;
+                            let file_range = xet_client::cas_types::FileRange::from(http_range);
+                            let transfer_bytes = file_range.end.saturating_sub(file_range.start);
+                            updater.report_transfer_progress(transfer_bytes);
+                        }
+                        let chunk_offsets: Vec<usize> = cache_range.offsets.iter().map(|&x| x as usize).collect();
+                        let data = Bytes::from(cache_range.data);
+                        return Ok(Arc::new(XorbBlockData {
+                            chunk_offsets,
+                            uncompressed_size: data.len() as u64,
+                            data,
+                        }));
+                    }
+                }
+
+                // Cache miss - acquire a CAS download permit now that we actually need the network.
                 let permit = client.acquire_download_permit().await?;
 
                 let url_provider = XorbURLProvider {
@@ -91,6 +122,17 @@ impl XorbBlock {
 
                 let chunk_offsets: Vec<usize> = chunk_byte_offsets.iter().map(|&x| x as usize).collect();
                 let uncompressed_size = data.len() as u64;
+
+                // Store in chunk cache (best-effort, non-blocking).
+                // Spawned so the read path is not bottlenecked by disk write latency.
+                if let Some(cache) = chunk_cache {
+                    let cache_key = cache_key.clone();
+                    let data = data.clone();
+                    let chunk_byte_offsets = chunk_byte_offsets.clone();
+                    tokio::spawn(async move {
+                        let _ = cache.put(&cache_key, &chunk_range, &chunk_byte_offsets, &data).await;
+                    });
+                }
 
                 Ok(Arc::new(XorbBlockData {
                     chunk_offsets,
