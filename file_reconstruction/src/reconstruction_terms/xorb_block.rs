@@ -51,6 +51,12 @@ impl Eq for XorbBlock {}
 
 impl XorbBlock {
     /// Retrieve the xorb block data from the client, caching it for subsequent calls.
+    ///
+    /// The write lock is NOT held during the HTTP download to avoid blocking other tasks
+    /// that share this xorb block. Multiple concurrent callers may download the same data;
+    /// the first to acquire the write lock stores the result, and latecomers use the cache.
+    /// This trades occasional duplicate downloads for much better CAS permit utilization:
+    /// tasks waiting on the write lock no longer hold CAS permits idle.
     pub async fn retrieve_data(
         self: Arc<Self>,
         client: Arc<dyn Client>,
@@ -58,19 +64,13 @@ impl XorbBlock {
         url_info: Arc<TermBlockRetrievalURLs>,
         progress_updater: Option<Arc<DownloadTaskUpdater>>,
     ) -> Result<Arc<XorbBlockData>> {
-        // Check again in case another task already downloaded it.
+        // Check in case another task already downloaded it.
         if let Some(ref xorb_block_data) = *self.data.read().await {
             return Ok(xorb_block_data.clone());
         }
 
-        // Okay, now it's not there, so let's retrieve it.
-        let mut xbd_lg = self.data.write().await;
-
-        // See if it's been filled while we were waiting for the write lock.
-        if let Some(ref xorb_block_data) = *xbd_lg {
-            return Ok(xorb_block_data.clone());
-        }
-
+        // Download without holding any lock. This allows other tasks sharing this
+        // xorb to proceed independently rather than queuing behind our write lock.
         let url_provider = XorbURLProvider {
             client: client.clone(),
             url_info,
@@ -100,7 +100,11 @@ impl XorbBlock {
             data,
         });
 
-        // Store the data in the xorb block.
+        // Store with write lock. If another task stored data first, use theirs.
+        let mut xbd_lg = self.data.write().await;
+        if let Some(ref existing) = *xbd_lg {
+            return Ok(existing.clone());
+        }
         *xbd_lg = Some(xorb_block_data.clone());
 
         Ok(xorb_block_data)

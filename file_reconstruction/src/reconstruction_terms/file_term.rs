@@ -41,8 +41,12 @@ impl FileTerm {
     ///
     /// If the xorb data is already cached, returns a future that immediately resolves (no progress
     /// report, since the block was already reported by the term that triggered the download).
-    /// Otherwise, acquires a download permit and returns a future that downloads the data (progress
+    /// Otherwise, spawns a task that acquires a download permit and downloads the data (progress
     /// is reported inside retrieve_data during get_file_term_data and in reconciliation after).
+    ///
+    /// The download permit is acquired inside the spawned task rather than in the caller to avoid
+    /// blocking the main reconstruction loop while it holds a buffer permit. This prevents stalls
+    /// where the buffer fills up because the main loop is stuck waiting for a CAS connection permit.
     pub async fn get_data_task(
         &self,
         client: Arc<dyn Client>,
@@ -56,14 +60,19 @@ impl FileTerm {
             return Ok(Box::pin(async move { Ok(bytes) }));
         }
 
-        // Data not cached - need to download it.
-        let permit = client.acquire_download_permit().await?;
-
         let file_term = self.clone();
         let url_info = self.url_info.clone();
         let xorb_block = self.xorb_block.clone();
 
         let task = tokio::task::spawn(async move {
+            // Check cache again: another task may have completed the download
+            // while we were waiting to be scheduled.
+            if let Some(ref xorb_block_data) = *xorb_block.data.read().await {
+                return Ok(file_term.extract_bytes(xorb_block_data));
+            }
+
+            // Acquire download permit only when actually needed for a cache miss.
+            let permit = client.acquire_download_permit().await?;
             let xorb_block_data = xorb_block.retrieve_data(client, permit, url_info, progress_updater).await?;
             Ok(file_term.extract_bytes(&xorb_block_data))
         });

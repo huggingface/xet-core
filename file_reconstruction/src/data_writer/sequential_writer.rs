@@ -271,12 +271,15 @@ impl DataWriter for SequentialWriter {
 
             let (sender, receiver) = oneshot::channel();
 
-            state
-                .sender
-                .send(SequentialRetrievalItem::Data { receiver, permit })
-                .map_err(|_| {
-                    FileReconstructionError::InternalWriterError("Background writer channel closed".to_string())
-                })?;
+            if state.sender.send(SequentialRetrievalItem::Data { receiver, permit }).is_err() {
+                // The background writer exited. Return the original error that
+                // killed it (stored in RunState) instead of a generic message.
+                drop(state);
+                self.run_state.check_error()?;
+                return Err(FileReconstructionError::InternalWriterError(
+                    "Background writer channel closed".to_string(),
+                ));
+            }
 
             (sender, expected_size)
         };
@@ -299,9 +302,12 @@ impl DataWriter for SequentialWriter {
                     )));
                 }
 
-                sender.send(data).map_err(|_| {
-                    FileReconstructionError::InternalWriterError("Failed to send data: receiver dropped".to_string())
-                })?;
+                if sender.send(data).is_err() {
+                    run_state.check_error()?;
+                    return Err(FileReconstructionError::InternalWriterError(
+                        "Failed to send data: receiver dropped".to_string(),
+                    ));
+                }
 
                 Ok(())
             }
@@ -335,9 +341,13 @@ impl DataWriter for SequentialWriter {
 
             state.finished = true;
 
-            state.sender.send(SequentialRetrievalItem::Finish).map_err(|_| {
-                FileReconstructionError::InternalWriterError("Background writer channel closed".to_string())
-            })?;
+            if state.sender.send(SequentialRetrievalItem::Finish).is_err() {
+                drop(state);
+                self.run_state.check_error()?;
+                return Err(FileReconstructionError::InternalWriterError(
+                    "Background writer channel closed".to_string(),
+                ));
+            }
 
             state.next_position
         };
