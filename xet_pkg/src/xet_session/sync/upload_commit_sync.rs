@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use ulid::Ulid;
-use xet_data::processing::SingleFileCleaner;
+use xet_data::processing::{Sha256Policy, SingleFileCleaner};
 
 use super::super::errors::SessionError;
 use super::super::progress::{ProgressSnapshot, TaskHandle, UploadTaskHandle};
@@ -44,23 +44,24 @@ impl UploadCommitSync {
     }
 
     /// Queue a file for upload. See [`UploadCommit::upload_from_path`] for full documentation.
-    pub fn upload_from_path(&self, file_path: PathBuf) -> Result<UploadTaskHandle, SessionError> {
+    pub fn upload_from_path(&self, file_path: PathBuf, sha256: Sha256Policy) -> Result<UploadTaskHandle, SessionError> {
         let commit = self.inner.clone();
         self.inner
             .runtime()
-            .external_run_async_task(async move { commit.upload_from_path(file_path).await })?
+            .external_run_async_task(async move { commit.upload_from_path(file_path, sha256).await })?
     }
 
     /// Queue raw bytes for upload. See [`UploadCommit::upload_bytes`] for full documentation.
     pub fn upload_bytes(
         &self,
         bytes: Vec<u8>,
+        sha256: Sha256Policy,
         tracking_name: Option<String>,
     ) -> Result<UploadTaskHandle, SessionError> {
         let commit = self.inner.clone();
         self.inner
             .runtime()
-            .external_run_async_task(async move { commit.upload_bytes(bytes, tracking_name).await })?
+            .external_run_async_task(async move { commit.upload_bytes(bytes, sha256, tracking_name).await })?
     }
 
     /// Begin an incremental file upload, returning a [`SingleFileCleaner`] to stream bytes.
@@ -79,11 +80,12 @@ impl UploadCommitSync {
         &self,
         file_name: Option<String>,
         file_size: u64,
+        sha256: Sha256Policy,
     ) -> Result<(TaskHandle, SingleFileCleaner), SessionError> {
         let commit = self.inner.clone();
         self.inner
             .runtime()
-            .external_run_async_task(async move { commit.upload_file(file_name, file_size).await })?
+            .external_run_async_task(async move { commit.upload_file(file_name, file_size, sha256).await })?
     }
 
     /// Return a snapshot of progress for every queued upload.
@@ -107,6 +109,7 @@ impl UploadCommitSync {
 #[cfg(test)]
 mod tests {
     use tempfile::{TempDir, tempdir};
+    use xet_data::processing::Sha256Policy;
 
     use crate::xet_session::session::{XetSession, XetSessionBuilder};
 
@@ -124,7 +127,7 @@ mod tests {
         let session = local_session(&temp)?;
         let data = b"Hello, upload commit round-trip!";
         let commit = session.new_upload_commit_blocking()?;
-        let task_handle = commit.upload_bytes(data.to_vec(), Some("hello.bin".into()))?;
+        let task_handle = commit.upload_bytes(data.to_vec(), Sha256Policy::Compute, Some("hello.bin".into()))?;
         let results = commit.commit()?;
         assert_eq!(results.len(), 1);
         let meta = results.get(&task_handle.task_id).unwrap().as_ref().as_ref().unwrap();
@@ -142,7 +145,7 @@ mod tests {
         let data = b"file path upload content";
         std::fs::write(&src, data)?;
         let commit = session.new_upload_commit_blocking()?;
-        let handle = commit.upload_from_path(src)?;
+        let handle = commit.upload_from_path(src, Sha256Policy::Compute)?;
         commit.commit()?;
         let meta = handle.result().unwrap();
         let meta = meta.as_ref().as_ref().unwrap();
@@ -161,7 +164,7 @@ mod tests {
         let src = temp.path().join("data.bin");
         std::fs::write(&src, b"content")?;
         let commit = session.new_upload_commit_blocking()?;
-        let handle = commit.upload_from_path(src)?;
+        let handle = commit.upload_from_path(src, Sha256Policy::Compute)?;
         assert!(handle.result().is_none(), "result must be None before commit()");
         commit.commit()?;
         Ok(())
@@ -176,7 +179,7 @@ mod tests {
         let src = temp.path().join("data.bin");
         std::fs::write(&src, data)?;
         let commit = session.new_upload_commit_blocking()?;
-        let handle = commit.upload_from_path(src)?;
+        let handle = commit.upload_from_path(src, Sha256Policy::Compute)?;
         let results = commit.commit()?;
         let result = results.get(&handle.task_id).expect("task_id must be present in results");
         assert_eq!(result.as_ref().as_ref().unwrap().file_size, data.len() as u64);
@@ -192,7 +195,7 @@ mod tests {
         let src = temp.path().join("data.bin");
         std::fs::write(&src, data)?;
         let commit = session.new_upload_commit_blocking()?;
-        let handle = commit.upload_from_path(src)?;
+        let handle = commit.upload_from_path(src, Sha256Policy::Compute)?;
         commit.commit()?;
         let result = handle.result().expect("result must be set after commit");
         assert_eq!(result.as_ref().as_ref().unwrap().file_size, data.len() as u64);
@@ -207,7 +210,8 @@ mod tests {
         let data = b"streamed upload bytes";
         let runtime = session.runtime.clone();
         let commit = session.new_upload_commit_blocking()?;
-        let (_handle, mut cleaner) = commit.upload_file(Some("stream.bin".into()), data.len() as u64)?;
+        let (_handle, mut cleaner) =
+            commit.upload_file(Some("stream.bin".into()), data.len() as u64, Sha256Policy::Compute)?;
         let (hash, file_size) = runtime.external_run_async_task(async move {
             cleaner.add_data(data).await.unwrap();
             let (xfi, _) = cleaner.finish().await.unwrap();
@@ -226,9 +230,9 @@ mod tests {
         let temp = tempdir()?;
         let session = local_session(&temp)?;
         let commit = session.new_upload_commit_blocking()?;
-        commit.upload_bytes(b"file one".to_vec(), Some("a.bin".into()))?;
-        commit.upload_bytes(b"file two".to_vec(), Some("b.bin".into()))?;
-        commit.upload_bytes(b"file three".to_vec(), Some("c.bin".into()))?;
+        commit.upload_bytes(b"file one".to_vec(), Sha256Policy::Compute, Some("a.bin".into()))?;
+        commit.upload_bytes(b"file two".to_vec(), Sha256Policy::Compute, Some("b.bin".into()))?;
+        commit.upload_bytes(b"file three".to_vec(), Sha256Policy::Compute, Some("c.bin".into()))?;
         let results = commit.commit()?;
         assert_eq!(results.len(), 3);
         Ok(())
@@ -242,7 +246,7 @@ mod tests {
         let data = b"progress tracking upload data";
         let commit = session.new_upload_commit_blocking()?;
         let progress_observer = commit.clone();
-        commit.upload_bytes(data.to_vec(), Some("prog.bin".into()))?;
+        commit.upload_bytes(data.to_vec(), Sha256Policy::Compute, Some("prog.bin".into()))?;
         commit.commit()?;
         let snapshot = progress_observer.get_progress()?;
         assert!(snapshot.total().total_bytes_completed > 0);

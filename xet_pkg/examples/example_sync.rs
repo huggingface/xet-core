@@ -3,12 +3,12 @@
 //! Shows the three-level hierarchy: XetSession → UploadCommit/DownloadGroup → files.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use xet::xet_session::{FileMetadata, TaskStatus, XetFileInfo, XetSessionBuilder};
+use xet_data::processing::Sha256Policy;
 
 #[derive(Parser)]
 #[clap(name = "session-demo", about = "XetSession API demo")]
@@ -61,7 +61,7 @@ fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<()> {
     let n_files = files.len();
     let handles: Vec<_> = files
         .iter()
-        .map(|f| commit.upload_from_path(f.clone()))
+        .map(|f| commit.upload_from_path(f.clone(), Sha256Policy::Compute))
         .collect::<Result<_, _>>()?;
 
     // Spawn a task to print progress; the main thread blocks in commit() below.

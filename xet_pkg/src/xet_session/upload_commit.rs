@@ -93,18 +93,27 @@ impl UploadCommit {
     /// Returns an [`UploadTaskHandle`] that can be used to poll status and per-file
     /// progress without taking the GIL.
     ///
+    /// # Parameters
+    ///
+    /// - `file_path`: path to the file to upload.
+    /// - `sha256`: controls whether a SHA-256 digest is computed, provided, or skipped.
+    ///
     /// # Errors
     ///
     /// Returns [`SessionError::Aborted`] if the session has been aborted, or
     /// [`SessionError::AlreadyCommitted`] if [`commit`](Self::commit) has
     /// already been called.
-    pub async fn upload_from_path(&self, file_path: PathBuf) -> Result<UploadTaskHandle, SessionError> {
+    pub async fn upload_from_path(
+        &self,
+        file_path: PathBuf,
+        sha256: Sha256Policy,
+    ) -> Result<UploadTaskHandle, SessionError> {
         self.session.check_alive()?;
 
         // Use the absolute path in case the process current working directory changes
         // while the task is queued.
         let absolute_path = std::path::absolute(file_path)?;
-        self.inner.start_upload_file_from_path(absolute_path).await
+        self.inner.start_upload_file_from_path(absolute_path, sha256).await
     }
 
     /// Begin an incremental file upload, returning a [`SingleFileCleaner`] that the
@@ -116,8 +125,9 @@ impl UploadCommit {
     /// # use std::fs::File;
     /// # use std::io::Read;
     /// # use xet::xet_session::SessionError;
+    /// # use xet_data::processing::Sha256Policy;
     /// # async fn example(commit: xet::xet_session::UploadCommit, filename: &str, filesize: u64) -> Result<(), Box<dyn std::error::Error>> {
-    /// let (handle, mut cleaner) = commit.upload_file(Some(filename.into()), filesize).await?;
+    /// let (handle, mut cleaner) = commit.upload_file(Some(filename.into()), filesize, Sha256Policy::Compute).await?;
     /// let mut reader = File::open(&filename)?;
     /// let mut buffer = vec![0u8; 65536];
     /// loop {
@@ -136,27 +146,37 @@ impl UploadCommit {
     ///
     /// - `file_name`: optional name used for progress/telemetry reporting.
     /// - `file_size`: expected size in bytes (used for progress tracking; `0` is valid if unknown).
+    /// - `sha256`: controls whether a SHA-256 digest is computed, provided, or skipped.
+    ///
     /// # Returns [`TaskHandle`] because the handle isn't expected to hold any result, and instead
     /// the user is expected to get upload result from the returned [`SingleFileCleaner`].
     pub async fn upload_file(
         &self,
         file_name: Option<String>,
         file_size: u64,
+        sha256: Sha256Policy,
     ) -> Result<(TaskHandle, SingleFileCleaner), SessionError> {
         self.session.check_alive()?;
-        self.inner.start_upload_file(file_name, file_size).await
+        self.inner.start_upload_file(file_name, file_size, sha256).await
     }
 
     /// Queue raw bytes for upload, starting the transfer immediately if system resource permits.
     ///
     /// Returns an [`UploadTaskHandle`]. See [`upload_from_path`](Self::upload_from_path) for details.
+    ///
+    /// # Parameters
+    ///
+    /// - `bytes`: raw file content to upload.
+    /// - `sha256`: controls whether a SHA-256 digest is computed, provided, or skipped.
+    /// - `tracking_name`: optional name used for progress/telemetry reporting.
     pub async fn upload_bytes(
         &self,
         bytes: Vec<u8>,
+        sha256: Sha256Policy,
         tracking_name: Option<String>,
     ) -> Result<UploadTaskHandle, SessionError> {
         self.session.check_alive()?;
-        self.inner.start_upload_bytes(bytes, tracking_name).await
+        self.inner.start_upload_bytes(bytes, sha256, tracking_name).await
     }
 
     /// Return a snapshot of progress for every queued upload.
@@ -235,6 +255,7 @@ impl UploadCommitInner {
         &self,
         upload_session: Arc<FileUploadSession>,
         file_path: PathBuf,
+        sha256: Sha256Policy,
         status: Arc<Mutex<TaskStatus>>,
         tracking_id: Ulid,
     ) -> JoinHandle<Result<XetFileInfo, SessionError>> {
@@ -245,7 +266,7 @@ impl UploadCommitInner {
 
             *status.lock()? = TaskStatus::Running;
 
-            let result = clean_file(upload_session, &file_path, "", Some(tracking_id))
+            let result = clean_file(upload_session, &file_path, sha256, Some(tracking_id))
                 .await
                 .map_err(SessionError::from)
                 .map(|(file_info, _metrics)| file_info);
@@ -266,6 +287,7 @@ impl UploadCommitInner {
         &self,
         upload_session: Arc<FileUploadSession>,
         bytes: Vec<u8>,
+        sha256: Sha256Policy,
         status: Arc<Mutex<TaskStatus>>,
         tracking_id: Ulid,
     ) -> JoinHandle<Result<XetFileInfo, SessionError>> {
@@ -276,7 +298,7 @@ impl UploadCommitInner {
 
             *status.lock()? = TaskStatus::Running;
 
-            let result = clean_bytes(upload_session, bytes, Some(tracking_id))
+            let result = clean_bytes(upload_session, bytes, sha256, Some(tracking_id))
                 .await
                 .map_err(SessionError::from)
                 .map(|(file_info, _metrics)| file_info);
@@ -292,7 +314,11 @@ impl UploadCommitInner {
         })
     }
 
-    async fn start_upload_file_from_path(&self, file_path: PathBuf) -> Result<UploadTaskHandle, SessionError> {
+    async fn start_upload_file_from_path(
+        &self,
+        file_path: PathBuf,
+        sha256: Sha256Policy,
+    ) -> Result<UploadTaskHandle, SessionError> {
         // Hold the state lock for the duration of this function so commit() will not run
         // when an upload task is registering.
         let state = self.state.lock().await;
@@ -315,7 +341,7 @@ impl UploadCommitInner {
         };
 
         let join_handle =
-            self.spawn_upload_from_path_task(upload_session, file_path.clone(), status.clone(), tracking_id);
+            self.spawn_upload_from_path_task(upload_session, file_path.clone(), sha256, status.clone(), tracking_id);
 
         let handle = InnerUploadTaskHandle {
             status,
@@ -339,6 +365,7 @@ impl UploadCommitInner {
         &self,
         tracking_name: Option<String>,
         file_size: u64,
+        sha256: Sha256Policy,
     ) -> Result<(TaskHandle, SingleFileCleaner), SessionError> {
         let tracking_id = Ulid::new();
         // Hold the state lock across start_clean so handle_commit cannot finalise
@@ -356,9 +383,7 @@ impl UploadCommitInner {
             task_id: tracking_id,
         };
         let tracking_name: Option<Arc<str>> = tracking_name.as_deref().map(Arc::from);
-        let cleaner = upload_session
-            .start_clean(tracking_name, file_size, Sha256Policy::Compute, tracking_id)
-            .await;
+        let cleaner = upload_session.start_clean(tracking_name, file_size, sha256, tracking_id).await;
 
         Ok((task_handle, cleaner))
     }
@@ -367,6 +392,7 @@ impl UploadCommitInner {
     async fn start_upload_bytes(
         &self,
         bytes: Vec<u8>,
+        sha256: Sha256Policy,
         tracking_name: Option<String>,
     ) -> Result<UploadTaskHandle, SessionError> {
         // Hold the state lock for the duration of this function so commit() will not run
@@ -390,7 +416,7 @@ impl UploadCommitInner {
             return Err(SessionError::other("Upload session not initialized"));
         };
 
-        let join_handle = self.spawn_upload_bytes_task(upload_session, bytes, status.clone(), tracking_id);
+        let join_handle = self.spawn_upload_bytes_task(upload_session, bytes, sha256, status.clone(), tracking_id);
 
         let handle = InnerUploadTaskHandle {
             status,
@@ -518,6 +544,7 @@ mod tests {
     use std::path::PathBuf;
 
     use tempfile::{TempDir, tempdir};
+    use xet_data::processing::Sha256Policy;
 
     use super::*;
     use crate::xet_session::progress::TaskStatus;
@@ -658,7 +685,10 @@ mod tests {
         let session = XetSessionBuilder::new().build().unwrap();
         let commit = session.new_upload_commit().await.unwrap();
         session.abort().unwrap();
-        let err = commit.upload_from_path(PathBuf::from("nonexistent.bin")).await.unwrap_err();
+        let err = commit
+            .upload_from_path(PathBuf::from("nonexistent.bin"), Sha256Policy::Compute)
+            .await
+            .unwrap_err();
         assert!(matches!(err, SessionError::Aborted));
     }
 
@@ -668,7 +698,10 @@ mod tests {
         let session = XetSessionBuilder::new().build().unwrap();
         let commit = session.new_upload_commit().await.unwrap();
         session.abort().unwrap();
-        let err = commit.upload_bytes(b"data".to_vec(), Some("bytes 1".into())).await.unwrap_err();
+        let err = commit
+            .upload_bytes(b"data".to_vec(), Sha256Policy::Compute, Some("bytes 1".into()))
+            .await
+            .unwrap_err();
         assert!(matches!(err, SessionError::Aborted));
     }
 
@@ -681,7 +714,10 @@ mod tests {
         let c1 = session.new_upload_commit().await.unwrap();
         let c2 = c1.clone();
         c1.commit().await.unwrap();
-        let err = c2.upload_from_path(PathBuf::from("any.bin")).await.unwrap_err();
+        let err = c2
+            .upload_from_path(PathBuf::from("any.bin"), Sha256Policy::Compute)
+            .await
+            .unwrap_err();
         assert!(matches!(err, SessionError::AlreadyCommitted));
     }
 
@@ -692,7 +728,10 @@ mod tests {
         let c1 = session.new_upload_commit().await.unwrap();
         let c2 = c1.clone();
         c1.commit().await.unwrap();
-        let err = c2.upload_bytes(b"hello".to_vec(), None).await.unwrap_err();
+        let err = c2
+            .upload_bytes(b"hello".to_vec(), Sha256Policy::Compute, None)
+            .await
+            .unwrap_err();
         assert!(matches!(err, SessionError::AlreadyCommitted));
     }
 
@@ -703,7 +742,10 @@ mod tests {
     async fn test_upload_file_returns_handle_and_cleaner() {
         let session = XetSessionBuilder::new().build().unwrap();
         let commit = session.new_upload_commit().await.unwrap();
-        let (handle, _cleaner) = commit.upload_file(Some("stream.bin".into()), 1024).await.unwrap();
+        let (handle, _cleaner) = commit
+            .upload_file(Some("stream.bin".into()), 1024, Sha256Policy::Compute)
+            .await
+            .unwrap();
         assert!(handle.status().is_err());
     }
 
@@ -712,7 +754,10 @@ mod tests {
     async fn test_abort_marks_queued_task_as_cancelled() {
         let session = XetSessionBuilder::new().build().unwrap();
         let commit = session.new_upload_commit().await.unwrap();
-        let handle = commit.upload_bytes(b"data".to_vec(), None).await.unwrap();
+        let handle = commit
+            .upload_bytes(b"data".to_vec(), Sha256Policy::Compute, None)
+            .await
+            .unwrap();
         commit.inner.abort().unwrap();
         assert!(matches!(handle.status().unwrap(), TaskStatus::Cancelled));
     }
@@ -727,7 +772,10 @@ mod tests {
         let commit = session.new_upload_commit().await.unwrap();
 
         // Queue a task so we can verify active_tasks draining still happens.
-        let handle = commit.upload_bytes(b"data".to_vec(), None).await.unwrap();
+        let handle = commit
+            .upload_bytes(b"data".to_vec(), Sha256Policy::Compute, None)
+            .await
+            .unwrap();
 
         // Hold the state lock — simulates a registration method mid-execution.
         let guard = commit.inner.state.try_lock().expect("lock should be free before abort");
@@ -768,7 +816,10 @@ mod tests {
         let session = local_session(&temp).unwrap();
         let data = b"Hello, upload commit round-trip!";
         let commit = session.new_upload_commit().await.unwrap();
-        let task_handle = commit.upload_bytes(data.to_vec(), Some("hello.bin".into())).await.unwrap();
+        let task_handle = commit
+            .upload_bytes(data.to_vec(), Sha256Policy::Compute, Some("hello.bin".into()))
+            .await
+            .unwrap();
         let results = commit.commit().await.unwrap();
         assert_eq!(results.len(), 1);
         let meta = results.get(&task_handle.task_id).unwrap().as_ref().as_ref().unwrap();
@@ -785,7 +836,7 @@ mod tests {
         let data = b"file path upload content";
         std::fs::write(&src, data).unwrap();
         let commit = session.new_upload_commit().await.unwrap();
-        let handle = commit.upload_from_path(src).await.unwrap();
+        let handle = commit.upload_from_path(src, Sha256Policy::Compute).await.unwrap();
         commit.commit().await.unwrap();
         let meta = handle.result().unwrap();
         let meta = meta.as_ref().as_ref().unwrap();
@@ -803,7 +854,7 @@ mod tests {
         let src = temp.path().join("data.bin");
         std::fs::write(&src, b"content").unwrap();
         let commit = session.new_upload_commit().await.unwrap();
-        let handle = commit.upload_from_path(src).await.unwrap();
+        let handle = commit.upload_from_path(src, Sha256Policy::Compute).await.unwrap();
         assert!(handle.result().is_none(), "result must be None before commit()");
         commit.commit().await.unwrap();
     }
@@ -817,7 +868,7 @@ mod tests {
         let src = temp.path().join("data.bin");
         std::fs::write(&src, data).unwrap();
         let commit = session.new_upload_commit().await.unwrap();
-        let handle = commit.upload_from_path(src).await.unwrap();
+        let handle = commit.upload_from_path(src, Sha256Policy::Compute).await.unwrap();
         let results = commit.commit().await.unwrap();
         let result = results.get(&handle.task_id).expect("task_id must be present in results");
         assert_eq!(result.as_ref().as_ref().unwrap().file_size, data.len() as u64);
@@ -832,7 +883,7 @@ mod tests {
         let src = temp.path().join("data.bin");
         std::fs::write(&src, data).unwrap();
         let commit = session.new_upload_commit().await.unwrap();
-        let handle = commit.upload_from_path(src).await.unwrap();
+        let handle = commit.upload_from_path(src, Sha256Policy::Compute).await.unwrap();
         commit.commit().await.unwrap();
         let result = handle.result().expect("result must be set after commit");
         assert_eq!(result.as_ref().as_ref().unwrap().file_size, data.len() as u64);
@@ -845,7 +896,10 @@ mod tests {
         let session = local_session(&temp).unwrap();
         let data = b"streamed upload bytes";
         let commit = session.new_upload_commit().await.unwrap();
-        let (_handle, mut cleaner) = commit.upload_file(Some("stream.bin".into()), data.len() as u64).await.unwrap();
+        let (_handle, mut cleaner) = commit
+            .upload_file(Some("stream.bin".into()), data.len() as u64, Sha256Policy::Compute)
+            .await
+            .unwrap();
         cleaner.add_data(data).await.unwrap();
         let (xfi, _) = cleaner.finish().await.unwrap();
         let results = commit.commit().await.unwrap();
@@ -860,9 +914,18 @@ mod tests {
         let temp = tempdir().unwrap();
         let session = local_session(&temp).unwrap();
         let commit = session.new_upload_commit().await.unwrap();
-        commit.upload_bytes(b"file one".to_vec(), Some("a.bin".into())).await.unwrap();
-        commit.upload_bytes(b"file two".to_vec(), Some("b.bin".into())).await.unwrap();
-        commit.upload_bytes(b"file three".to_vec(), Some("c.bin".into())).await.unwrap();
+        commit
+            .upload_bytes(b"file one".to_vec(), Sha256Policy::Compute, Some("a.bin".into()))
+            .await
+            .unwrap();
+        commit
+            .upload_bytes(b"file two".to_vec(), Sha256Policy::Compute, Some("b.bin".into()))
+            .await
+            .unwrap();
+        commit
+            .upload_bytes(b"file three".to_vec(), Sha256Policy::Compute, Some("c.bin".into()))
+            .await
+            .unwrap();
         let results = commit.commit().await.unwrap();
         assert_eq!(results.len(), 3);
     }
@@ -875,7 +938,10 @@ mod tests {
         let data = b"progress tracking upload data";
         let commit = session.new_upload_commit().await.unwrap();
         let progress_observer = commit.clone();
-        commit.upload_bytes(data.to_vec(), Some("prog.bin".into())).await.unwrap();
+        commit
+            .upload_bytes(data.to_vec(), Sha256Policy::Compute, Some("prog.bin".into()))
+            .await
+            .unwrap();
         commit.commit().await.unwrap();
         let snapshot = progress_observer.get_progress().unwrap();
         assert!(snapshot.total().total_bytes_completed > 0);

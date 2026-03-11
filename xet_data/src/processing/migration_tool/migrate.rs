@@ -5,6 +5,7 @@ use http::header;
 use tracing::{Instrument, Span, info_span, instrument};
 use xet_client::cas_client::auth::TokenRefresher;
 use xet_client::hub_client::{BearerCredentialHelper, HubClient, Operation, RepoInfo};
+use xet_core_structures::metadata_shard::Sha256;
 use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
 use xet_core_structures::xorb_object::CompressionScheme;
 use xet_runtime::core::XetRuntime;
@@ -111,7 +112,7 @@ pub async fn migrate_files_impl(
     let clean_futs = file_paths.into_iter().zip(sha256s).map(|(file_path, sha256)| {
         let proc = processor.clone();
         async move {
-            let (pf, metrics) = clean_file(proc, file_path, sha256, None).await?;
+            let (pf, metrics) = clean_file(proc, file_path, Sha256::from_hex(&sha256).ok().into(), None).await?;
             Ok::<(XetFileInfo, u64), DataProcessingError>((pf, metrics.new_bytes))
         }
         .instrument(info_span!("clean_file"))

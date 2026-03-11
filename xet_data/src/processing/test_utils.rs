@@ -12,6 +12,7 @@ use xet_client::cas_client::{Client, LocalClient, LocalTestServer, LocalTestServ
 use super::configurations::TranslatorConfig;
 use super::data_client::clean_file;
 use super::{FileDownloadSession, FileUploadSession, XetFileInfo};
+use crate::processing::Sha256Policy;
 use crate::progress_tracking::TrackingProgressUpdater;
 
 /// Creates or overwrites a single file in `dir` with `size` bytes of random data.
@@ -204,7 +205,9 @@ impl HydrateDehydrateTest {
                 let upload_session = upload_session.clone();
 
                 if sequential {
-                    let (pf, metrics) = clean_file(upload_session.clone(), entry.path(), "", None).await.unwrap();
+                    let (pf, metrics) = clean_file(upload_session.clone(), entry.path(), Sha256Policy::Compute, None)
+                        .await
+                        .unwrap();
                     assert_eq!({ metrics.total_bytes }, entry.metadata().unwrap().len());
                     std::fs::write(out_file, pf.as_pointer_file().unwrap().as_bytes()).unwrap();
 

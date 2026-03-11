@@ -115,8 +115,12 @@ pub async fn upload_bytes_async(
     let upload_session = FileUploadSession::new(config.into(), progress_updater).await?;
     let clean_futures = file_contents.into_iter().map(|blob| {
         let upload_session = upload_session.clone();
-        async move { clean_bytes(upload_session, blob, None).await.map(|(xf, _metrics)| xf) }
-            .instrument(info_span!("clean_task"))
+        async move {
+            clean_bytes(upload_session, blob, Sha256Policy::Compute, None)
+                .await
+                .map(|(xf, _metrics)| xf)
+        }
+        .instrument(info_span!("clean_task"))
     });
     let files = run_constrained_with_semaphore(clean_futures, semaphore).await?;
 
@@ -260,13 +264,12 @@ pub async fn download_async(
 pub async fn clean_bytes(
     processor: Arc<FileUploadSession>,
     bytes: Vec<u8>,
+    sha256: Sha256Policy,
     tracking_id: Option<Ulid>,
 ) -> errors::Result<(XetFileInfo, DeduplicationMetrics)> {
     #[allow(clippy::unwrap_or_default)] // Ulid::default is Ulid::nil
     let tracking_id = tracking_id.unwrap_or_else(Ulid::new);
-    let mut handle = processor
-        .start_clean(None, bytes.len() as u64, Sha256Policy::Compute, tracking_id)
-        .await;
+    let mut handle = processor.start_clean(None, bytes.len() as u64, sha256, tracking_id).await;
     handle.add_data(&bytes).await?;
     handle.finish().await
 }
@@ -276,7 +279,7 @@ pub async fn clean_bytes(
 pub async fn clean_file(
     processor: Arc<FileUploadSession>,
     filename: impl AsRef<Path>,
-    sha256: impl AsRef<str>,
+    sha256: Sha256Policy,
     tracking_id: Option<Ulid>,
 ) -> errors::Result<(XetFileInfo, DeduplicationMetrics)> {
     #[allow(clippy::unwrap_or_default)] // Ulid::default is Ulid::nil
@@ -290,12 +293,7 @@ pub async fn clean_file(
     let mut buffer = vec![0u8; u64::min(filesize, *xet_config().data.ingestion_block_size) as usize];
 
     let mut handle = processor
-        .start_clean(
-            Some(filename.as_ref().to_string_lossy().into()),
-            filesize,
-            Sha256::from_hex(sha256.as_ref()).ok().into(),
-            tracking_id,
-        )
+        .start_clean(Some(filename.as_ref().to_string_lossy().into()), filesize, sha256, tracking_id)
         .await;
 
     loop {

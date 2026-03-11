@@ -68,6 +68,7 @@
 //!
 //! ```rust,no_run
 //! use xet::xet_session::{XetFileInfo, XetSessionBuilder};
+//! use xet_data::processing::Sha256Policy;
 //!
 //! // 1. Build a session (sync or async context)
 //! let session = XetSessionBuilder::new()
@@ -77,7 +78,7 @@
 //!
 //! // 2. Upload — use the _blocking factory; returns UploadCommitSync
 //! let commit = session.new_upload_commit_blocking()?;
-//! let handle = commit.upload_from_path("file.bin".into())?;
+//! let handle = commit.upload_from_path("file.bin".into(), Sha256Policy::Compute)?;
 //! // UploadResult = Arc<Result<FileMetadata, SessionError>>
 //! let results = commit.commit()?;
 //! let m = results.values().next().unwrap().as_ref().as_ref().unwrap();
@@ -100,6 +101,7 @@
 //!
 //! ```rust,no_run
 //! use xet::xet_session::{XetFileInfo, XetSessionBuilder};
+//! use xet_data::processing::Sha256Policy;
 //!
 //! # async fn example() -> Result<(), xet::xet_session::SessionError> {
 //! // 1. Build a session (sync or async context)
@@ -110,7 +112,7 @@
 //!
 //! // 2. Upload — use the async factory; returns UploadCommit
 //! let commit = session.new_upload_commit().await?;
-//! let handle = commit.upload_from_path("file.bin".into()).await?;
+//! let handle = commit.upload_from_path("file.bin".into(), Sha256Policy::Compute).await?;
 //! // UploadResult = Arc<Result<FileMetadata, SessionError>>
 //! let results = commit.commit().await?;
 //! let m = results.values().next().unwrap().as_ref().as_ref().unwrap();

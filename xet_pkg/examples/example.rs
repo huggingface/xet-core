@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use xet::xet_session::{FileMetadata, TaskStatus, UploadTaskHandle, XetFileInfo, XetSessionBuilder};
+use xet_data::processing::Sha256Policy;
 
 #[derive(Parser)]
 #[clap(name = "session-demo-async", about = "XetSession async API demo")]
@@ -61,7 +62,7 @@ async fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<(
     let n_files = files.len();
     let mut handles = Vec::with_capacity(n_files);
     for f in &files {
-        handles.push(commit.upload_from_path(f.clone()).await?);
+        handles.push(commit.upload_from_path(f.clone(), Sha256Policy::Compute).await?);
     }
 
     // Spawn a task to print progress while the main task awaits commit().

@@ -13,7 +13,7 @@ mod shard_interface;
 mod xet_file;
 
 // Reexport this one for now
-pub use file_cleaner::{Sha256Policy, SingleFileCleaner};
+pub use file_cleaner::{Sha256, Sha256Policy, SingleFileCleaner};
 pub use file_download_session::FileDownloadSession;
 pub use file_upload_session::FileUploadSession;
 pub use xet_file::XetFileInfo;

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use tracing::{Instrument, debug_span, info, instrument};
-use xet_core_structures::metadata_shard::Sha256;
+pub use xet_core_structures::metadata_shard::Sha256; // re-export
 use xet_core_structures::metadata_shard::file_structs::FileMetadataExt;
 use xet_runtime::core::{XetRuntime, xet_config};
 

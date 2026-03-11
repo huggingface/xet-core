@@ -363,6 +363,7 @@ mod tests {
     use std::time::Duration;
 
     use tempfile::{TempDir, tempdir};
+    use xet_data::processing::Sha256Policy;
 
     use super::*;
     use crate::xet_session::session::{XetSession, XetSessionBuilder};
@@ -378,7 +379,9 @@ mod tests {
         name: &str,
     ) -> Result<XetFileInfo, Box<dyn std::error::Error>> {
         let commit = session.new_upload_commit().await?;
-        let handle = commit.upload_bytes(data.to_vec(), Some(name.into())).await?;
+        let handle = commit
+            .upload_bytes(data.to_vec(), Sha256Policy::Compute, Some(name.into()))
+            .await?;
         let results = commit.commit().await?;
         let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
         Ok(XetFileInfo {
@@ -594,8 +597,14 @@ mod tests {
         let data_b = b"Second file content - different";
 
         let commit = session.new_upload_commit().await.unwrap();
-        let handle_a = commit.upload_bytes(data_a.to_vec(), Some("a.bin".into())).await.unwrap();
-        let handle_b = commit.upload_bytes(data_b.to_vec(), Some("b.bin".into())).await.unwrap();
+        let handle_a = commit
+            .upload_bytes(data_a.to_vec(), Sha256Policy::Compute, Some("a.bin".into()))
+            .await
+            .unwrap();
+        let handle_b = commit
+            .upload_bytes(data_b.to_vec(), Sha256Policy::Compute, Some("b.bin".into()))
+            .await
+            .unwrap();
         let results = commit.commit().await.unwrap();
 
         let to_file_info = |handle: &crate::xet_session::progress::UploadTaskHandle| -> XetFileInfo {
