@@ -108,14 +108,14 @@ fn reqwest_client(
     Ok(client)
 }
 
-/// Creates a reqwest client with a custom read_timeout. Not cached, since the timeout
-/// varies per request (e.g., based on shard size).
+/// Creates a reqwest client with no read_timeout. Used for shard uploads where server-side
+/// processing time is unbounded and would otherwise be killed by the global read_timeout.
+/// Not cached — uses a separate connection pool from the main client.
 #[cfg(not(target_family = "wasm"))]
 #[allow(unused_variables)]
-fn reqwest_client_with_read_timeout(
+fn reqwest_client_no_read_timeout(
     unix_socket_path: Option<&str>,
     custom_headers: Option<Arc<HeaderMap>>,
-    read_timeout: std::time::Duration,
 ) -> Result<reqwest::Client, CasClientError> {
     let socket_path = unix_socket_path
         .map(|s| s.to_string())
@@ -126,7 +126,7 @@ fn reqwest_client_with_read_timeout(
         .pool_idle_timeout(config.idle_connection_timeout)
         .pool_max_idle_per_host(config.max_idle_connections)
         .connect_timeout(config.connect_timeout)
-        .read_timeout(read_timeout)
+        // No read_timeout — shard processing time scales with entry count and is unbounded
         .http1_only();
 
     #[cfg(unix)]
@@ -141,9 +141,8 @@ fn reqwest_client_with_read_timeout(
     let client = builder.build()?;
 
     info!(
-        ?read_timeout,
         connect_timeout=?config.connect_timeout,
-        "Shard upload HTTP client configured"
+        "No-read-timeout HTTP client configured (for shard uploads)"
     );
 
     Ok(client)
@@ -190,26 +189,24 @@ pub fn build_auth_http_client(
         .build())
 }
 
-/// Builds an authenticated HTTP Client with a custom read_timeout.
+/// Builds an authenticated HTTP Client with no read_timeout.
 ///
-/// This creates a **non-cached** reqwest client with the specified `read_timeout`,
-/// while keeping all other settings (connect timeout, pool config, middleware) identical
+/// All other settings (connect timeout, pool config, middleware) are identical
 /// to the standard client. Used for shard uploads where server-side processing time
-/// can exceed the global read_timeout.
+/// scales with file entry count and can exceed the global read_timeout.
 #[cfg(not(target_family = "wasm"))]
 #[allow(unused_mut)]
-pub fn build_auth_http_client_with_read_timeout(
+pub fn build_auth_http_client_no_read_timeout(
     auth_config: &Option<AuthConfig>,
     session_id: &str,
     unix_socket_path: Option<&str>,
     custom_headers: Option<Arc<HeaderMap>>,
-    read_timeout: std::time::Duration,
 ) -> Result<ClientWithMiddleware, CasClientError> {
     let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
 
-    let raw_client = reqwest_client_with_read_timeout(unix_socket_path, custom_headers, read_timeout)?;
+    let raw_client = reqwest_client_no_read_timeout(unix_socket_path, custom_headers)?;
     let mut builder = ClientBuilder::new(raw_client);
 
     #[cfg(unix)]
@@ -465,71 +462,40 @@ mod tests {
     }
 
     mod shard_upload_client_tests {
-        use std::time::Duration;
-
         use super::*;
 
         #[test]
-        fn test_build_with_custom_read_timeout() {
-            let result =
-                build_auth_http_client_with_read_timeout(&None, "test-session", None, None, Duration::from_secs(300));
+        fn test_build_no_read_timeout_succeeds() {
+            let result = build_auth_http_client_no_read_timeout(&None, "test-session", None, None);
             assert!(result.is_ok());
         }
 
         #[test]
-        fn test_build_with_zero_read_timeout() {
-            let result = build_auth_http_client_with_read_timeout(&None, "test-session", None, None, Duration::ZERO);
+        fn test_build_no_read_timeout_with_empty_session_id() {
+            let result = build_auth_http_client_no_read_timeout(&None, "", None, None);
             assert!(result.is_ok());
         }
 
         #[test]
-        fn test_build_with_large_read_timeout() {
-            let result =
-                build_auth_http_client_with_read_timeout(&None, "test-session", None, None, Duration::from_secs(600));
-            assert!(result.is_ok());
-        }
-
-        #[test]
-        fn test_build_with_empty_session_id() {
-            let result = build_auth_http_client_with_read_timeout(&None, "", None, None, Duration::from_secs(120));
-            assert!(result.is_ok());
-        }
-
-        #[test]
-        fn test_build_with_custom_headers() {
+        fn test_build_no_read_timeout_with_custom_headers() {
             let mut headers = HeaderMap::new();
             headers.insert("X-Custom-Header", HeaderValue::from_static("test-value"));
             headers.insert(reqwest::header::USER_AGENT, HeaderValue::from_static("test-agent/1.0"));
 
-            let result = build_auth_http_client_with_read_timeout(
-                &None,
-                "test-session",
-                None,
-                Some(Arc::new(headers)),
-                Duration::from_secs(300),
+            let result = build_auth_http_client_no_read_timeout(&None, "test-session", None, Some(Arc::new(headers)));
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn test_no_read_timeout_client_is_distinct_from_standard_client() {
+            let standard = build_auth_http_client(&None, "test-session", None, None).unwrap();
+            let no_timeout = build_auth_http_client_no_read_timeout(&None, "test-session", None, None).unwrap();
+
+            assert_ne!(
+                format!("{:p}", &standard),
+                format!("{:p}", &no_timeout),
+                "Standard and no-timeout clients should be distinct instances"
             );
-            assert!(result.is_ok());
-        }
-
-        #[test]
-        fn test_build_with_sub_second_read_timeout() {
-            let result =
-                build_auth_http_client_with_read_timeout(&None, "test-session", None, None, Duration::from_millis(500));
-            assert!(result.is_ok());
-        }
-
-        #[test]
-        fn test_build_produces_distinct_clients() {
-            let client_a =
-                build_auth_http_client_with_read_timeout(&None, "session-a", None, None, Duration::from_secs(120))
-                    .unwrap();
-
-            let client_b =
-                build_auth_http_client_with_read_timeout(&None, "session-b", None, None, Duration::from_secs(300))
-                    .unwrap();
-
-            // Different sessions/timeouts should produce independent clients (not cached)
-            assert_ne!(format!("{:p}", &client_a), format!("{:p}", &client_b), "Clients should be distinct instances");
         }
     }
 }

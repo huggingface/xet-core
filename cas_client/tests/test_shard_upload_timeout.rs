@@ -1,7 +1,7 @@
-//! Integration tests for the shard upload per-request timeout feature (XET-885).
+//! Integration tests for the shard upload no-read-timeout client (XET-885).
 //!
-//! Uses test_set_config! to set a short shard_read_timeout (1s) and disable retries,
-//! then uses LocalTestServer with set_api_delay_range to simulate slow server responses.
+//! Verifies that shard uploads succeed even when the server takes a long time to process,
+//! since the shard upload client has no read_timeout.
 
 use std::time::Duration;
 
@@ -11,7 +11,6 @@ use utils::test_set_config;
 
 test_set_config! {
     client {
-        shard_read_timeout = Duration::from_secs(1);
         retry_max_attempts = 1usize;
         retry_base_delay = Duration::from_millis(10);
     }
@@ -20,7 +19,7 @@ test_set_config! {
 const CHUNK_SIZE: usize = 123;
 
 #[tokio::test]
-async fn test_shard_upload_succeeds_within_timeout() {
+async fn test_shard_upload_succeeds_with_no_server_delay() {
     let server = LocalTestServerBuilder::new().start().await;
 
     let result = server.remote_client().upload_random_file(&[(1, (0, 5))], CHUNK_SIZE).await;
@@ -29,12 +28,13 @@ async fn test_shard_upload_succeeds_within_timeout() {
 }
 
 #[tokio::test]
-async fn test_shard_upload_times_out_when_server_slow() {
+async fn test_shard_upload_succeeds_with_slow_server() {
     let server = LocalTestServerBuilder::new().start().await;
 
+    // Server takes 3s to respond — shard upload client has no read_timeout so this should succeed
     server.set_api_delay_range(Some(Duration::from_secs(3)..Duration::from_secs(3)));
 
     let result = server.remote_client().upload_random_file(&[(1, (0, 5))], CHUNK_SIZE).await;
 
-    assert!(result.is_err(), "Shard upload should fail with timeout when server is slow");
+    assert!(result.is_ok(), "Shard upload should succeed even with slow server (no read_timeout): {result:?}");
 }
