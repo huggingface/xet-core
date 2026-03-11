@@ -66,9 +66,7 @@ impl DownloadGroupSync {
     /// Panics if called from within an async runtime. Use [`DownloadGroup::finish`] instead.
     pub fn finish(self) -> Result<HashMap<Ulid, DownloadResult>, SessionError> {
         let group = self.inner.clone();
-        self.inner
-            .runtime()
-            .external_run_async_task(async move { group.handle_finish().await })?
+        self.inner.runtime().external_run_async_task(group.finish())?
     }
 }
 

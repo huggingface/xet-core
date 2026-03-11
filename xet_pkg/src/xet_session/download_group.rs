@@ -278,7 +278,7 @@ impl DownloadGroupInner {
     }
 
     /// Join all active download tasks and mark the group as finished.
-    pub(crate) async fn handle_finish(&self) -> Result<HashMap<Ulid, DownloadResult>, SessionError> {
+    async fn handle_finish(&self) -> Result<HashMap<Ulid, DownloadResult>, SessionError> {
         // Mark as not accepting new tasks
         {
             let mut state_guard = self.state.lock()?;

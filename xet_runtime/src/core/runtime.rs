@@ -266,9 +266,6 @@ impl XetRuntime {
     /// Wrap an existing tokio [`TokioRuntimeHandle`] with a [`XetRuntime`] using the provided
     /// [`XetConfig`].  No new thread pool is created; `spawn()` calls will schedule work on the
     /// runtime that owns `rt_handle`.
-    ///
-    /// This does **not** set the thread-local `THREAD_RUNTIME_REF` — those threads are not owned
-    /// by this `XetRuntime`.
     pub fn from_external_with_config(rt_handle: TokioRuntimeHandle, config: XetConfig) -> Arc<Self> {
         Arc::new(Self {
             runtime: std::sync::RwLock::new(None),

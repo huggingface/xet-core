@@ -100,9 +100,7 @@ impl UploadCommitSync {
     /// Panics if called from within an async runtime. Use [`UploadCommit::commit`] instead.
     pub fn commit(self) -> Result<HashMap<Ulid, UploadResult>, SessionError> {
         let commit = self.inner.clone();
-        self.inner
-            .runtime()
-            .external_run_async_task(async move { commit.handle_commit().await })?
+        self.inner.runtime().external_run_async_task(commit.commit())?
     }
 }
 
