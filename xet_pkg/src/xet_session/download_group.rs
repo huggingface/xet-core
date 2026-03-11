@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock};
 
 use tokio::task::JoinHandle;
 use ulid::Ulid;
@@ -156,7 +156,7 @@ pub(crate) struct InnerDownloadTaskHandle {
     status: Arc<Mutex<TaskStatus>>,
     dest_path: PathBuf,
     join_handle: JoinHandle<Result<XetFileInfo, SessionError>>,
-    result: Arc<Mutex<Option<DownloadResult>>>,
+    result: Arc<OnceLock<DownloadResult>>,
 }
 
 /// All shared state owned by a single DownloadGroup instance.
@@ -239,7 +239,7 @@ impl DownloadGroupInner {
         let tracking_id = Ulid::new();
         let status = Arc::new(Mutex::new(TaskStatus::Queued));
 
-        let result = Arc::new(Mutex::new(None));
+        let result: Arc<OnceLock<DownloadResult>> = Arc::new(OnceLock::new());
         let task_handle = DownloadTaskHandle {
             inner: TaskHandle {
                 status: Some(status.clone()),
@@ -297,14 +297,17 @@ impl DownloadGroupInner {
                         dest_path: handle.dest_path,
                         file_info,
                     }));
-                    // Populate the shared Arc so callers can read via handle.result().
-                    let _ = handle.result.lock().map(|mut r| *r = Some(result.clone()));
-                    results.insert(task_id, result);
+                    results.insert(task_id, result.clone());
+                    // Update result to the external task handle, this is the only place setting
+                    // the result, so no error will happen.
+                    let _ = handle.result.set(result);
                 },
                 Ok(Err(task_err)) => {
                     let result: Arc<Result<DownloadedFile, SessionError>> = Arc::new(Err(task_err));
-                    let _ = handle.result.lock().map(|mut r| *r = Some(result.clone()));
-                    results.insert(task_id, result);
+                    results.insert(task_id, result.clone());
+                    // Update result to the external task handle, this is the only place setting
+                    // the result, so no error will happen.
+                    let _ = handle.result.set(result);
                 },
                 Err(e) => {
                     if join_err.is_none() {
@@ -358,8 +361,8 @@ mod tests {
     use tempfile::{TempDir, tempdir};
 
     use super::*;
-    use crate::progress::UploadTaskHandle;
-    use crate::session::XetSession;
+    use crate::xet_session::progress::UploadTaskHandle;
+    use crate::xet_session::session::XetSession;
 
     fn local_session(temp: &TempDir) -> Result<XetSession, Box<dyn std::error::Error>> {
         let cas_path = temp.path().join("cas");

@@ -3,12 +3,11 @@
 //! Shows the three-level hierarchy: XetSession → UploadCommit/DownloadGroup → files.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use xet_session::{FileMetadata, TaskStatus, XetFileInfo, XetSessionBuilder};
+use xet::xet_session::{FileMetadata, TaskStatus, XetFileInfo, XetSessionBuilder};
 
 #[derive(Parser)]
 #[clap(name = "session-demo", about = "XetSession API demo")]
@@ -90,7 +89,7 @@ fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<()> {
     // Persist metadata so it can be passed to the `download` subcommand.
     let metadata: Vec<_> = results
         .into_values()
-        .filter_map(|m| Arc::try_unwrap(m).ok().and_then(|r| r.ok()))
+        .filter_map(|m| m.as_ref().as_ref().ok().cloned())
         .collect();
     std::fs::write("upload_metadata.json", serde_json::to_string_pretty(&metadata)?)?;
 

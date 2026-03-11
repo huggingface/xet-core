@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock};
 
 use tokio::task::JoinHandle;
 use ulid::Ulid;
@@ -130,6 +130,8 @@ impl UploadCommit {
     ///
     /// - `file_name`: optional name used for progress/telemetry reporting.
     /// - `file_size`: expected size in bytes (used for progress tracking; `0` is valid if unknown).
+    /// # Returns [`TaskHandle`] because the handle isn't expected to hold any result, and instead
+    /// the user is expected to get upload result from the returned [`SingleFileCleaner`].
     pub fn upload_file(
         &self,
         file_name: Option<String>,
@@ -196,7 +198,7 @@ pub(crate) struct InnerUploadTaskHandle {
     status: Arc<Mutex<TaskStatus>>,
     tracking_name: Option<String>,
     join_handle: JoinHandle<Result<XetFileInfo, SessionError>>,
-    result: Arc<Mutex<Option<UploadResult>>>,
+    result: Arc<OnceLock<UploadResult>>,
 }
 
 /// All shared state owned by a single UploadCommit instance.
@@ -301,7 +303,7 @@ impl UploadCommitInner {
 
         let tracking_id = Ulid::new();
         let status = Arc::new(Mutex::new(TaskStatus::Queued));
-        let result: Arc<Mutex<Option<UploadResult>>> = Arc::new(Mutex::new(None));
+        let result: Arc<OnceLock<UploadResult>> = Arc::new(OnceLock::new());
         let task_handle = UploadTaskHandle {
             inner: TaskHandle {
                 status: Some(status.clone()),
@@ -376,7 +378,7 @@ impl UploadCommitInner {
 
         let tracking_id = Ulid::new();
         let status = Arc::new(Mutex::new(TaskStatus::Queued));
-        let result = Arc::new(Mutex::new(None));
+        let result: Arc<OnceLock<UploadResult>> = Arc::new(OnceLock::new());
         let task_handle = UploadTaskHandle {
             inner: TaskHandle {
                 status: Some(status.clone()),
@@ -432,14 +434,16 @@ impl UploadCommitInner {
                         file_size: file_info.file_size(),
                     }));
                     results.insert(task_id, result.clone());
-                    // Update result to the external task handle at best effort.
-                    let _ = handle.result.lock().map(|mut r| *r = Some(result));
+                    // Update result to the external task handle, this is the only place setting
+                    // the result, so no error will happen.
+                    let _ = handle.result.set(result);
                 },
                 Ok(Err(task_err)) => {
                     let result = Arc::new(Err(task_err));
                     results.insert(task_id, result.clone());
-                    // Update result to the external task handle at best effort.
-                    let _ = handle.result.lock().map(|mut r| *r = Some(result));
+                    // Update result to the external task handle, this is the only place setting
+                    // the result, so no error will happen.
+                    let _ = handle.result.set(result);
                 },
                 Err(e) => {
                     if join_err.is_none() {

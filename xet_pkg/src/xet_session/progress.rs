@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use async_trait::async_trait;
 use ulid::Ulid;
@@ -39,7 +39,7 @@ pub struct TaskHandle {
 #[derive(Debug)]
 pub struct UploadTaskHandle {
     pub(crate) inner: TaskHandle,
-    pub(crate) result: Arc<Mutex<Option<UploadResult>>>,
+    pub(crate) result: Arc<OnceLock<UploadResult>>,
 }
 
 impl Deref for UploadTaskHandle {
@@ -53,7 +53,7 @@ impl Deref for UploadTaskHandle {
 #[derive(Debug)]
 pub struct DownloadTaskHandle {
     pub(crate) inner: TaskHandle,
-    pub(crate) result: Arc<Mutex<Option<DownloadResult>>>,
+    pub(crate) result: Arc<OnceLock<DownloadResult>>,
 }
 
 impl Deref for DownloadTaskHandle {
@@ -80,13 +80,13 @@ impl TaskHandle {
 
 impl UploadTaskHandle {
     pub fn result(&self) -> Option<UploadResult> {
-        self.result.lock().ok().and_then(|r| r.clone())
+        self.result.get().cloned()
     }
 }
 
 impl DownloadTaskHandle {
     pub fn result(&self) -> Option<DownloadResult> {
-        self.result.lock().ok().and_then(|r| r.clone())
+        self.result.get().cloned()
     }
 }
 
@@ -252,11 +252,11 @@ impl TrackingProgressUpdater for GroupProgress {
 mod tests {
     use std::path::PathBuf;
 
-    use data::XetFileInfo;
+    use xet_data::processing::XetFileInfo;
     use xet_data::progress_tracking::ItemProgressUpdate;
 
     use super::*;
-    use crate::{DownloadedFile, FileMetadata};
+    use crate::xet_session::{DownloadedFile, FileMetadata};
 
     // ── GroupProgress unit tests ─────────────────────────────────────────────
 
@@ -377,7 +377,7 @@ mod tests {
                 group_progress: progress,
                 task_id: Ulid::new(),
             },
-            result: Arc::new(Mutex::new(None)),
+            result: Arc::new(OnceLock::new()),
         };
         assert!(handle.result().is_none());
     }
@@ -386,7 +386,7 @@ mod tests {
     // UploadTaskHandle::result() returns the value once the shared Arc is populated.
     fn test_upload_task_handle_result_some_after_result_set() {
         let progress = Arc::new(GroupProgress::new());
-        let result_arc = Arc::new(Mutex::new(None));
+        let result_arc = Arc::new(OnceLock::new());
         let handle = UploadTaskHandle {
             inner: TaskHandle {
                 status: None,
@@ -402,7 +402,7 @@ mod tests {
             hash: "abc123".to_string(),
             file_size: 42,
         }));
-        *result_arc.lock().unwrap() = Some(metadata);
+        result_arc.set(metadata).unwrap();
 
         let result = handle.result().unwrap();
         let meta = result.as_ref().as_ref().unwrap();
@@ -426,7 +426,7 @@ mod tests {
                 group_progress: progress,
                 task_id: Ulid::new(),
             },
-            result: Arc::new(Mutex::new(None)),
+            result: Arc::new(OnceLock::new()),
         };
         assert!(handle.result().is_none());
     }
@@ -435,7 +435,7 @@ mod tests {
     // DownloadTaskHandle::result() returns the value once the shared Arc is populated.
     fn test_download_task_handle_result_some_after_result_set() {
         let progress = Arc::new(GroupProgress::new());
-        let result_arc = Arc::new(Mutex::new(None));
+        let result_arc = Arc::new(OnceLock::new());
         let handle = DownloadTaskHandle {
             inner: TaskHandle {
                 status: None,
@@ -453,7 +453,7 @@ mod tests {
                 file_size: 99,
             },
         }));
-        *result_arc.lock().unwrap() = Some(download_result);
+        result_arc.set(download_result).unwrap();
 
         let result = handle.result().unwrap();
         let dl = result.as_ref().as_ref().unwrap();
