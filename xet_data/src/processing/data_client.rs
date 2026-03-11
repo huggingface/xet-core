@@ -6,17 +6,15 @@ use std::sync::Arc;
 use bytes::Bytes;
 use http::header::HeaderMap;
 use itertools::multizip;
-use tracing::{Instrument, Span, info, info_span, instrument};
+use tracing::{Instrument, Span, info_span, instrument};
 use ulid::Ulid;
 use xet_client::cas_client::auth::{AuthConfig, TokenRefresher};
-use xet_client::cas_client::remote_client::PREFIX_DEFAULT;
 use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::metadata_shard::Sha256;
-use xet_core_structures::xorb_object::CompressionScheme;
 use xet_runtime::core::par_utils::run_constrained_with_semaphore;
-use xet_runtime::core::{XetRuntime, check_sigint_shutdown, xet_cache_root, xet_config};
+use xet_runtime::core::{XetRuntime, check_sigint_shutdown, xet_config};
 
-use super::configurations::*;
+use super::configurations::{SessionContext, TranslatorConfig};
 use super::errors::DataProcessingError;
 use super::file_cleaner::Sha256Policy;
 use super::file_download_session::FileDownloadSession;
@@ -26,70 +24,20 @@ use crate::progress_tracking::TrackingProgressUpdater;
 
 pub fn default_config(
     endpoint: String,
-    xorb_compression: Option<CompressionScheme>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     custom_headers: Option<Arc<HeaderMap>>,
 ) -> errors::Result<TranslatorConfig> {
-    // Intercept local:// to run a simulated CAS server in a specified directory.
-    // This is useful for testing and development.
-    if endpoint.starts_with("local://") {
-        let local_path = endpoint.strip_prefix("local://").unwrap();
-        let local_path = PathBuf::from(local_path);
-        std::fs::create_dir_all(&local_path)?;
-        return TranslatorConfig::local_config(local_path);
-    }
-
-    let cache_root_path = xet_cache_root();
-    info!("Using cache path {cache_root_path:?}.");
-
     let (token, token_expiration) = token_info.unzip();
     let auth_cfg = AuthConfig::maybe_new(token, token_expiration, token_refresher);
 
-    // Calculate a fingerprint of the current endpoint to make sure caches stay separated.
-    let endpoint_tag = {
-        let endpoint_prefix = endpoint
-            .chars()
-            .take(16)
-            .map(|c| if c.is_alphanumeric() { c } else { '_' })
-            .collect::<String>();
+    let session = SessionContext::new(endpoint)
+        .with_auth(auth_cfg)
+        .with_custom_headers(custom_headers)
+        .with_repo_paths(vec!["".into()])
+        .with_session_id(Ulid::new().to_string());
 
-        // If more gets added
-        let endpoint_hash = xet_core_structures::merklehash::compute_data_hash(endpoint.as_bytes()).base64();
-
-        format!("{endpoint_prefix}-{}", &endpoint_hash[..16])
-    };
-
-    let cache_path = cache_root_path.join(endpoint_tag);
-    std::fs::create_dir_all(&cache_path)?;
-
-    let staging_root = cache_path.join("staging");
-    std::fs::create_dir_all(&staging_root)?;
-
-    let translator_config = TranslatorConfig {
-        data_config: DataConfig {
-            endpoint: Endpoint::Server(endpoint.clone()),
-            compression: xorb_compression,
-            auth: auth_cfg.clone(),
-            prefix: PREFIX_DEFAULT.into(),
-            staging_directory: None,
-            custom_headers,
-        },
-        shard_config: ShardConfig {
-            prefix: PREFIX_DEFAULT.into(),
-            cache_directory: cache_path.join("shard-cache"),
-            session_directory: staging_root.join("shard-session"),
-            global_dedup_policy: Default::default(),
-        },
-        repo_info: Some(RepoInfo {
-            repo_paths: vec!["".into()],
-        }),
-        session_id: Some(Ulid::new().to_string()),
-        progress_config: ProgressConfig { aggregate: true },
-    };
-
-    // Return the temp dir so that it's not dropped and thus the directory deleted.
-    Ok(translator_config)
+    TranslatorConfig::new(session)
 }
 
 #[instrument(skip_all, name = "data_client::upload_bytes", fields(session_id = tracing::field::Empty, num_files=file_contents.len()))]
@@ -103,13 +51,12 @@ pub async fn upload_bytes_async(
 ) -> errors::Result<Vec<XetFileInfo>> {
     let config = default_config(
         endpoint.unwrap_or_else(|| xet_config().data.default_cas_endpoint.clone()),
-        None,
         token_info,
         token_refresher,
         custom_headers,
     )?;
 
-    Span::current().record("session_id", &config.session_id);
+    Span::current().record("session_id", &config.session.session_id);
 
     let semaphore = XetRuntime::current().common().file_ingestion_semaphore.clone();
     let upload_session = FileUploadSession::new(config.into(), progress_updater).await?;
@@ -152,7 +99,6 @@ pub async fn upload_async(
     // for each file, return the filehash
     let config = default_config(
         endpoint.unwrap_or_else(|| xet_config().data.default_cas_endpoint.clone()),
-        None,
         token_info,
         token_refresher,
         custom_headers,
@@ -160,7 +106,7 @@ pub async fn upload_async(
 
     let span = Span::current();
 
-    span.record("session_id", &config.session_id);
+    span.record("session_id", &config.session.session_id);
 
     let upload_session = FileUploadSession::new(config.into(), progress_updater).await?;
 
@@ -212,14 +158,13 @@ pub async fn download_async(
     }
     let config: Arc<TranslatorConfig> = default_config(
         endpoint.unwrap_or_else(|| xet_config().data.default_cas_endpoint.clone()),
-        None,
         token_info,
         token_refresher,
         custom_headers,
     )?
     .into();
 
-    Span::current().record("session_id", &config.session_id);
+    Span::current().record("session_id", &config.session.session_id);
 
     let updaters = match progress_updaters {
         None => vec![None; file_infos.len()],
@@ -316,21 +261,6 @@ pub async fn clean_file(
 /// chunking it using content-defined chunking, and computing the aggregated
 /// hash from the chunk hashes. The resulting hash is identical to what would
 /// be returned by upload operations, enabling verification of downloaded files.
-///
-/// # Arguments
-/// * `filename` - Path to the file to hash
-/// * `buffer_size` - Size of the read buffer in bytes
-///
-/// # Returns
-/// * `XetFileInfo` containing the hex-encoded hash and file size
-///
-/// # Errors
-/// * `IoError` if the file cannot be opened or read
-///
-/// # Use Cases
-/// - Verify that downloaded files are correctly reassembled
-/// - Check if a file needs to be uploaded (by comparing hashes)
-/// - Generate cache keys for local file operations
 fn hash_single_file(filename: String, buffer_size: usize) -> errors::Result<XetFileInfo> {
     let mut reader = File::open(&filename)?;
     let filesize = reader.metadata()?.len();
@@ -365,30 +295,6 @@ fn hash_single_file(filename: String, buffer_size: usize) -> errors::Result<XetF
 }
 
 /// Computes xet hashes for multiple files in parallel without uploading.
-///
-/// This function processes multiple files concurrently using a semaphore to limit
-/// parallelism. Each file is hashed independently using `hash_single_file()`.
-/// The resulting hashes are identical to those from upload operations,
-/// enabling validation and verification of file transfers.
-///
-/// # Arguments
-/// * `file_paths` - Vector of file paths to hash
-///
-/// # Returns
-/// * Vector of `XetFileInfo` in the same order as input file paths
-///
-/// # Errors
-/// * Returns error if any file cannot be read or hashed
-///
-/// # Use Cases
-/// - Verify integrity of downloaded files by comparing computed hashes
-/// - Batch validation of multiple files after transfer
-/// - Determine which files need to be uploaded by comparing with server hashes
-///
-/// # Performance
-/// - Uses `file_ingestion_semaphore` to control parallelism
-/// - No authentication or server connection required
-/// - Pure local computation
 #[instrument(skip_all, name = "data_client::hash_files", fields(num_files=file_paths.len()))]
 pub async fn hash_files_async(file_paths: Vec<String>) -> errors::Result<Vec<XetFileInfo>> {
     let rt = XetRuntime::current();
@@ -426,11 +332,11 @@ mod tests {
         let _hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None, None);
+        let result = default_config(endpoint, None, None, None);
 
         assert!(result.is_ok());
         let config = result.unwrap();
-        assert!(config.shard_config.cache_directory.starts_with(temp_dir.path()));
+        assert!(config.shard_cache_directory.starts_with(temp_dir.path()));
     }
 
     #[test]
@@ -443,11 +349,11 @@ mod tests {
         let hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir_hf_home.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None, None);
+        let result = default_config(endpoint, None, None, None);
 
         assert!(result.is_ok());
         let config = result.unwrap();
-        assert!(config.shard_config.cache_directory.starts_with(temp_dir_xet_cache.path()));
+        assert!(config.shard_cache_directory.starts_with(temp_dir_xet_cache.path()));
 
         drop(hf_xet_cache_guard);
         drop(hf_home_guard);
@@ -456,11 +362,11 @@ mod tests {
         let _hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None, None);
+        let result = default_config(endpoint, None, None, None);
 
         assert!(result.is_ok());
         let config = result.unwrap();
-        assert!(config.shard_config.cache_directory.starts_with(temp_dir.path()));
+        assert!(config.shard_cache_directory.starts_with(temp_dir.path()));
     }
 
     #[test]
@@ -470,24 +376,24 @@ mod tests {
         let _hf_xet_cache_guard = EnvVarGuard::set("HF_XET_CACHE", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None, None);
+        let result = default_config(endpoint, None, None, None);
 
         assert!(result.is_ok());
         let config = result.unwrap();
-        assert!(config.shard_config.cache_directory.starts_with(temp_dir.path()));
+        assert!(config.shard_cache_directory.starts_with(temp_dir.path()));
     }
 
     #[test]
     #[serial(default_config_env)]
     fn test_default_config_without_env_vars() {
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None, None);
+        let result = default_config(endpoint, None, None, None);
 
         let expected = home_dir().unwrap().join(".cache").join("huggingface").join("xet");
 
         assert!(result.is_ok());
         let config = result.unwrap();
-        let test_cache_dir = &config.shard_config.cache_directory;
+        let test_cache_dir = &config.shard_cache_directory;
         assert!(
             test_cache_dir.starts_with(&expected),
             "cache dir = {test_cache_dir:?}; does not start with {expected:?}",
@@ -531,25 +437,20 @@ mod tests {
         let file_path = temp_dir.path().join("test.txt");
 
         // Create a file that is large enough to span multiple buffer reads
-        // Using 20MB to ensure it's larger than typical buffer sizes
         let file_size = 20 * 1024 * 1024;
         let content: Vec<u8> = (0..file_size).map(|i| (i % 256) as u8).collect();
         std::fs::write(&file_path, &content).unwrap();
 
         let file_path_str = file_path.to_str().unwrap().to_string();
 
-        // Hash with 8MB buffer size
         let result1 = hash_single_file(file_path_str.clone(), 8 * 1024 * 1024);
         assert!(result1.is_ok());
         let file_info1 = result1.unwrap();
 
-        // Hash with 4MB buffer size
         let result2 = hash_single_file(file_path_str, 4 * 1024 * 1024);
         assert!(result2.is_ok());
         let file_info2 = result2.unwrap();
 
-        // Hashes should be identical regardless of buffer size
-        // This verifies that chunker.finish() is called correctly
         assert_eq!(file_info1.hash(), file_info2.hash());
         assert_eq!(file_info1.file_size(), file_info2.file_size());
     }
@@ -588,39 +489,29 @@ mod tests {
 
     #[tokio::test]
     async fn test_hash_file_size_multiple_of_buffer() {
-        // Regression test for bug where final chunk wasn't produced when file size
-        // is exactly a multiple of buffer_size. This test verifies that
-        // chunker.finish() is called to flush any remaining data.
         let temp_dir = tempdir().unwrap();
         let file_path = temp_dir.path().join("multiple_of_buffer.bin");
 
-        // Create a file that is exactly 16MB
         let file_size = 16 * 1024 * 1024;
         let content: Vec<u8> = (0..file_size).map(|i| (i % 256) as u8).collect();
         std::fs::write(&file_path, &content).unwrap();
 
         let file_path_str = file_path.to_str().unwrap().to_string();
 
-        // Hash with 8MB buffer size - file is exactly 2x buffer size
         let result1 = hash_single_file(file_path_str.clone(), 8 * 1024 * 1024);
         assert!(result1.is_ok());
         let file_info1 = result1.unwrap();
         assert_eq!(file_info1.file_size(), file_size as u64);
         assert!(!file_info1.hash().is_empty());
 
-        // Hash with 4MB buffer size - file is exactly 4x buffer size
         let result2 = hash_single_file(file_path_str.clone(), 4 * 1024 * 1024);
         assert!(result2.is_ok());
         let file_info2 = result2.unwrap();
 
-        // Hash with 2MB buffer size - file is exactly 8x buffer size
         let result3 = hash_single_file(file_path_str, 2 * 1024 * 1024);
         assert!(result3.is_ok());
         let file_info3 = result3.unwrap();
 
-        // All hashes should be identical regardless of buffer size
-        // This verifies that chunker.finish() is properly called to flush remaining chunks
-        // Without finish(), different buffer sizes would produce different (incomplete) hashes
         assert_eq!(file_info1.hash(), file_info2.hash(), "Hash mismatch between 8MB and 4MB buffer sizes");
         assert_eq!(file_info1.hash(), file_info3.hash(), "Hash mismatch between 8MB and 2MB buffer sizes");
         assert_eq!(file_info1.file_size(), file_info2.file_size());

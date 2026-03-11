@@ -11,7 +11,6 @@ pub(crate) fn create_translator_config(session: &XetSession) -> Result<Translato
 
     Ok(xet_data::processing::data_client::default_config(
         endpoint,
-        None, // xorb_compression
         session.token_info.clone(),
         session.token_refresher.clone(),
         session.custom_headers.clone(),

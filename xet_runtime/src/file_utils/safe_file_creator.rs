@@ -170,7 +170,7 @@ impl Drop for SafeFileCreator {
 
 #[cfg(test)]
 mod tests {
-    use std::fs::File;
+    use std::fs::{self, File};
     use std::io::Read;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
@@ -196,7 +196,7 @@ mod tests {
         // Verify file permissions
         #[cfg(unix)]
         {
-            let metadata = std::fs::metadata(&dest_path).unwrap();
+            let metadata = fs::metadata(&dest_path).unwrap();
             let permissions = metadata.permissions();
             assert_eq!(permissions.mode() & 0o777, 0o644); // Assuming default creation mode
         }
@@ -225,7 +225,7 @@ mod tests {
         // Verify file permissions
         #[cfg(unix)]
         {
-            let metadata = std::fs::metadata(&dest_path).unwrap();
+            let metadata = fs::metadata(&dest_path).unwrap();
             let permissions = metadata.permissions();
             assert_eq!(permissions.mode() & 0o777, 0o644); // Assuming default creation mode
         }
@@ -244,7 +244,7 @@ mod tests {
             {
                 let mut perms = file.metadata().unwrap().permissions();
                 perms.set_mode(0o600);
-                std::fs::set_permissions(&dest_path, perms).unwrap();
+                fs::set_permissions(&dest_path, perms).unwrap();
             }
         }
 
@@ -260,7 +260,7 @@ mod tests {
         // Verify file permissions
         #[cfg(unix)]
         {
-            let metadata = std::fs::metadata(&dest_path).unwrap();
+            let metadata = fs::metadata(&dest_path).unwrap();
             let permissions = metadata.permissions();
             assert_eq!(permissions.mode() & 0o777, 0o600); // Original file mode
         }

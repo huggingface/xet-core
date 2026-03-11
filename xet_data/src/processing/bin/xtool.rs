@@ -127,16 +127,8 @@ impl Command {
                 let file_paths = walk_files(arg.files, arg.recursive);
                 eprintln!("Dedupping {} files...", file_paths.len());
 
-                let (all_file_info, clean_ret, total_bytes_trans) = migrate_files_impl(
-                    file_paths,
-                    None,
-                    arg.sequential,
-                    hub_client,
-                    None,
-                    arg.compression.and_then(|c| CompressionScheme::try_from(c).ok()),
-                    !arg.migrate,
-                )
-                .await?;
+                let (all_file_info, clean_ret, total_bytes_trans) =
+                    migrate_files_impl(file_paths, None, arg.sequential, hub_client, None, !arg.migrate).await?;
 
                 // Print file info for analysis
                 if !arg.migrate {
@@ -216,19 +208,12 @@ async fn query_reconstruction(
 
     let config = default_config(
         jwt_info.cas_url.clone(),
-        None,
         Some((jwt_info.access_token, jwt_info.exp)),
         Some(token_refresher),
         Some(Arc::new(headers)),
     )?;
-    let cas_storage_config = &config.data_config;
-    let remote_client = RemoteClient::new(
-        &jwt_info.cas_url,
-        &cas_storage_config.auth,
-        "",
-        true,
-        cas_storage_config.custom_headers.clone(),
-    );
+    let remote_client =
+        RemoteClient::new(&jwt_info.cas_url, &config.session.auth, "", true, config.session.custom_headers.clone());
 
     remote_client
         .get_reconstruction(&file_hash, bytes_range)
@@ -238,6 +223,19 @@ async fn query_reconstruction(
 
 fn main() -> Result<()> {
     let cli = XCommand::parse();
+
+    if let Command::Dedup(ref arg) = cli.command
+        && let Some(c) = arg.compression
+    {
+        let scheme = CompressionScheme::try_from(c).map_err(|_| {
+            anyhow::anyhow!("Invalid compression value {c}; expected one of: 0 (none), 1 (lz4), 2 (bg4-lz4)")
+        })?;
+        let scheme_str: &str = scheme.into();
+        unsafe {
+            std::env::set_var("HF_XET_DATA_COMPRESSION_POLICY", scheme_str);
+        }
+    }
+
     let threadpool = XetRuntime::new()?;
     threadpool.external_run_async_task(async move { cli.run().await })??;
 

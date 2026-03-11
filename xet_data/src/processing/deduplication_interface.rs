@@ -6,7 +6,6 @@ use tracing::Instrument;
 use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::metadata_shard::file_structs::FileDataSequenceEntry;
 
-use super::configurations::GlobalDedupPolicy;
 use super::errors::Result;
 use super::file_upload_session::FileUploadSession;
 use crate::deduplication::{DeduplicationDataInterface, RawXorbData};
@@ -26,7 +25,7 @@ impl UploadSessionDataManager {
     }
 
     fn global_dedup_queries_enabled(&self) -> bool {
-        matches!(self.session.config.shard_config.global_dedup_policy, GlobalDedupPolicy::Always)
+        xet_runtime::core::xet_config().deduplication.global_dedup_query_enabled
     }
 }
 

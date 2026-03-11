@@ -6,7 +6,7 @@ use std::sync::{Arc, OnceLock};
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use ulid::Ulid;
-use xet_data::processing::configurations::*;
+use xet_data::processing::configurations::TranslatorConfig;
 use xet_data::processing::{FileUploadSession, Sha256Policy, XetFileInfo};
 use xet_runtime::core::XetRuntime;
 
@@ -127,8 +127,6 @@ async fn smudge_file(arg: &SmudgeArg) -> Result<()> {
 }
 
 async fn smudge(_name: Arc<str>, mut reader: impl Read, output_path: PathBuf) -> Result<()> {
-    use xet_data::processing::configurations::TranslatorConfig;
-
     let mut input = String::new();
     reader.read_to_string(&mut input)?;
 
