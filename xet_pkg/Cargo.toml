@@ -25,6 +25,9 @@ ulid = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 
+[features]
+python = ["xet-runtime/python"]
+
 [dev-dependencies]
 tempfile = { workspace = true }
 serial_test = { workspace = true }

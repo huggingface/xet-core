@@ -1,6 +1,6 @@
 use crate::utils::ByteSize;
 
-crate::config_group!({
+crate::config_group!("XetShardConfig", {
 
     /// The target shard size in bytes.
     ///

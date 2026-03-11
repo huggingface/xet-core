@@ -57,6 +57,11 @@ impl TemplatedPathBuf {
         &self.evaluated
     }
 
+    /// Returns the original template path as a string.
+    pub fn template_string(&self) -> String {
+        self.template.to_string_lossy().into_owned()
+    }
+
     /// Re-evaluates the template by replacing all placeholders with fresh values and expanding paths.
     ///
     /// This method updates the internal evaluated path and returns a reference to it.

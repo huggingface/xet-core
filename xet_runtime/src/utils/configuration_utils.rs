@@ -12,11 +12,13 @@ pub const INFORMATION_LOG_LEVEL: Level = Level::DEBUG;
 pub const INFORMATION_LOG_LEVEL: Level = Level::INFO;
 
 /// A trait to control how a value is parsed from an environment string or other config source
-/// if it's present.
-///
-/// The main reason to do things like this is to
+/// if it's present. Also provides serialization back to a string representation that
+/// roundtrips with `parse_user_value`.
 pub trait ParsableConfigValue: std::fmt::Debug + Sized {
     fn parse_user_value(value: &str) -> Option<Self>;
+
+    /// Serialize this value to a string that can be parsed back via `parse_user_value`.
+    fn to_config_string(&self) -> String;
 
     /// Parse the value, returning the default if it can't be parsed or the string is empty.  
     /// Issue a warning if it can't be parsed.
@@ -45,12 +47,15 @@ pub trait ParsableConfigValue: std::fmt::Debug + Sized {
 
 /// Most values work with the FromStr implementation, but we want to override the behavior for some types
 /// (e.g. Option<T> and bool) to have custom parsing behavior.
-pub trait FromStrParseable: FromStr + std::fmt::Debug {}
+pub trait FromStrParseable: FromStr + std::fmt::Debug + std::fmt::Display {}
 
 impl<T: FromStrParseable> ParsableConfigValue for T {
     fn parse_user_value(value: &str) -> Option<Self> {
-        // Just wrap the base FromStr parser.
         value.parse::<T>().ok()
+    }
+
+    fn to_config_string(&self) -> String {
+        self.to_string()
     }
 }
 
@@ -87,6 +92,10 @@ impl ParsableConfigValue for bool {
     fn parse_user_value(value: &str) -> Option<Self> {
         parse_bool_value(value)
     }
+
+    fn to_config_string(&self) -> String {
+        if *self { "true" } else { "false" }.to_owned()
+    }
 }
 
 /// Enable Option<T> to allow the default value to be None if nothing is set and appear as
@@ -94,6 +103,13 @@ impl ParsableConfigValue for bool {
 impl<T: ParsableConfigValue> ParsableConfigValue for Option<T> {
     fn parse_user_value(value: &str) -> Option<Self> {
         T::parse_user_value(value).map(Some)
+    }
+
+    fn to_config_string(&self) -> String {
+        match self {
+            Some(v) => v.to_config_string(),
+            None => String::new(),
+        }
     }
 }
 
@@ -105,12 +121,27 @@ impl ParsableConfigValue for std::time::Duration {
     fn parse_user_value(value: &str) -> Option<Self> {
         duration_str::parse(value).ok()
     }
+
+    fn to_config_string(&self) -> String {
+        let total_ms = self.as_millis();
+        if self.subsec_nanos() == 0 {
+            format!("{}s", self.as_secs())
+        } else if self.subsec_nanos().is_multiple_of(1_000_000) {
+            format!("{total_ms}ms")
+        } else {
+            format!("{}us", self.as_micros())
+        }
+    }
 }
 
 #[cfg(not(target_family = "wasm"))]
 impl ParsableConfigValue for TemplatedPathBuf {
     fn parse_user_value(value: &str) -> Option<Self> {
         Some(Self::new(value))
+    }
+
+    fn to_config_string(&self) -> String {
+        self.template_string()
     }
 }
 
@@ -300,4 +331,150 @@ lazy_static! {
 #[inline]
 pub fn is_high_performance() -> bool {
     *HIGH_PERFORMANCE
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    fn assert_roundtrip<T: ParsableConfigValue + PartialEq + std::fmt::Debug>(value: T) {
+        let s = value.to_config_string();
+        let restored = T::parse_user_value(&s).unwrap_or_else(|| {
+            panic!("Failed to parse config string '{s}' back into {:?}", std::any::type_name::<T>())
+        });
+        assert_eq!(value, restored, "Roundtrip failed for '{s}'");
+    }
+
+    #[test]
+    fn test_roundtrip_usize() {
+        assert_roundtrip(0usize);
+        assert_roundtrip(42usize);
+        assert_roundtrip(usize::MAX);
+    }
+
+    #[test]
+    fn test_roundtrip_u8() {
+        assert_roundtrip(0u8);
+        assert_roundtrip(255u8);
+    }
+
+    #[test]
+    fn test_roundtrip_u16() {
+        assert_roundtrip(0u16);
+        assert_roundtrip(65535u16);
+    }
+
+    #[test]
+    fn test_roundtrip_u32() {
+        assert_roundtrip(0u32);
+        assert_roundtrip(123456u32);
+    }
+
+    #[test]
+    fn test_roundtrip_u64() {
+        assert_roundtrip(0u64);
+        assert_roundtrip(u64::MAX);
+    }
+
+    #[test]
+    fn test_roundtrip_isize() {
+        assert_roundtrip(0isize);
+        assert_roundtrip(-42isize);
+        assert_roundtrip(isize::MAX);
+    }
+
+    #[test]
+    fn test_roundtrip_i8() {
+        assert_roundtrip(-128i8);
+        assert_roundtrip(127i8);
+    }
+
+    #[test]
+    fn test_roundtrip_i16() {
+        assert_roundtrip(-32768i16);
+        assert_roundtrip(32767i16);
+    }
+
+    #[test]
+    fn test_roundtrip_i32() {
+        assert_roundtrip(0i32);
+        assert_roundtrip(-123456i32);
+    }
+
+    #[test]
+    fn test_roundtrip_i64() {
+        assert_roundtrip(0i64);
+        assert_roundtrip(i64::MIN);
+    }
+
+    #[test]
+    fn test_roundtrip_f32() {
+        assert_roundtrip(0.0f32);
+        assert_roundtrip(3.14f32);
+        assert_roundtrip(-1.5f32);
+    }
+
+    #[test]
+    fn test_roundtrip_f64() {
+        assert_roundtrip(0.0f64);
+        assert_roundtrip(std::f64::consts::PI);
+        assert_roundtrip(-1e10f64);
+    }
+
+    #[test]
+    fn test_roundtrip_string() {
+        assert_roundtrip(String::new());
+        assert_roundtrip("hello world".to_owned());
+        assert_roundtrip("http://localhost:8080".to_owned());
+    }
+
+    #[test]
+    fn test_roundtrip_bool() {
+        assert_roundtrip(true);
+        assert_roundtrip(false);
+    }
+
+    #[test]
+    fn test_roundtrip_byte_size() {
+        assert_roundtrip(ByteSize::new(0));
+        assert_roundtrip(ByteSize::new(1000));
+        assert_roundtrip(ByteSize::new(1_000_000));
+        assert_roundtrip(ByteSize::new(8_000_000));
+        assert_roundtrip(ByteSize::new(10_000_000_000));
+    }
+
+    #[test]
+    fn test_roundtrip_duration() {
+        assert_roundtrip(Duration::from_secs(0));
+        assert_roundtrip(Duration::from_secs(60));
+        assert_roundtrip(Duration::from_secs(120));
+        assert_roundtrip(Duration::from_millis(200));
+        assert_roundtrip(Duration::from_millis(3000));
+        assert_roundtrip(Duration::from_secs(360));
+    }
+
+    #[test]
+    fn test_roundtrip_option_some() {
+        assert_roundtrip(Some(42usize));
+        assert_roundtrip(Some("hello".to_owned()));
+    }
+
+    #[test]
+    fn test_roundtrip_option_none_string() {
+        let none_val: Option<String> = None;
+        let s = none_val.to_config_string();
+        assert_eq!(s, "");
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn test_roundtrip_templated_path_buf() {
+        let path = TemplatedPathBuf::new("/some/simple/path");
+        let s = path.to_config_string();
+        assert_eq!(s, "/some/simple/path");
+        let restored = TemplatedPathBuf::parse_user_value(&s).unwrap();
+        assert_eq!(path.template_string(), restored.template_string());
+    }
 }
