@@ -42,6 +42,10 @@ pub struct RemoteClient {
     dry_run: bool,
     http_client: Arc<ClientWithMiddleware>,
     authenticated_http_client: Arc<ClientWithMiddleware>,
+    /// Authenticated client with no read_timeout, used for shard uploads where server-side
+    /// processing time scales with file entry count and can exceed the global read_timeout.
+    #[cfg(not(target_family = "wasm"))]
+    shard_upload_http_client: Arc<ClientWithMiddleware>,
     upload_concurrency_controller: Arc<AdaptiveConcurrencyController>,
     download_concurrency_controller: Arc<AdaptiveConcurrencyController>,
 }
@@ -72,7 +76,12 @@ impl RemoteClient {
                     .unwrap(),
             ),
             http_client: Arc::new(
-                http_client::build_http_client(session_id, unix_socket_path, custom_headers).unwrap(),
+                http_client::build_http_client(session_id, unix_socket_path, custom_headers.clone()).unwrap(),
+            ),
+            #[cfg(not(target_family = "wasm"))]
+            shard_upload_http_client: Arc::new(
+                http_client::build_auth_http_client_no_read_timeout(auth, session_id, unix_socket_path, custom_headers)
+                    .unwrap(),
             ),
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("upload"),
             download_concurrency_controller: AdaptiveConcurrencyController::new_download("download"),
@@ -97,16 +106,7 @@ impl RemoteClient {
         dry_run: bool,
         custom_headers: Option<Arc<HeaderMap>>,
     ) -> Arc<Self> {
-        Arc::new(Self {
-            endpoint: endpoint.to_string(),
-            dry_run,
-            authenticated_http_client: Arc::new(
-                http_client::build_auth_http_client(auth, session_id, None, custom_headers.clone()).unwrap(),
-            ),
-            http_client: Arc::new(http_client::build_http_client(session_id, None, custom_headers).unwrap()),
-            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("upload"),
-            download_concurrency_controller: AdaptiveConcurrencyController::new_download("download"),
-        })
+        Self::new_with_socket(endpoint, auth, session_id, dry_run, None, custom_headers)
     }
 
     /// Get the endpoint URL.
@@ -414,9 +414,17 @@ impl Client for RemoteClient {
         event!(INFORMATION_LOG_LEVEL, call_id, size = n_upload_bytes, "Starting upload_shard API call",);
 
         let api_tag = "cas::upload_shard";
-        let client = self.authenticated_http_client.clone();
-
         let url = Url::parse(&format!("{}/shards", self.endpoint))?;
+
+        // Use the no-read-timeout client for shard uploads. reqwest's per-request timeout()
+        // does NOT override the client-level read_timeout(), so we use a separate client
+        // with no read_timeout. Server-side shard processing scales linearly with file entry
+        // count and can exceed the global read_timeout (120s) for large shards.
+        #[cfg(not(target_family = "wasm"))]
+        let client = self.shard_upload_http_client.clone();
+
+        #[cfg(target_family = "wasm")]
+        let client = self.authenticated_http_client.clone();
 
         let response: UploadShardResponse = RetryWrapper::new(api_tag)
             .with_connection_permit(upload_permit, Some(shard_data.len() as u64))
