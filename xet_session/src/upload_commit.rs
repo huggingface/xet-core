@@ -52,8 +52,9 @@ impl std::ops::Deref for UploadCommit {
 }
 
 impl UploadCommit {
-    /// Async initialisation logic shared by the sync and async constructors.
-    pub(crate) async fn init(session: XetSession) -> Result<Self, SessionError> {
+    /// Create a new upload commit from an **async** context. Initialisation logic shared by the sync and async
+    /// constructors.
+    pub(crate) async fn new(session: XetSession) -> Result<Self, SessionError> {
         let commit_id = Ulid::new();
         let progress = Arc::new(GroupProgress::new());
         let config = create_translator_config(&session)?;
@@ -72,11 +73,6 @@ impl UploadCommit {
         Ok(Self { inner })
     }
 
-    /// Create a new upload commit from an **async** context.
-    pub(crate) async fn new(session: XetSession) -> Result<Self, SessionError> {
-        Self::init(session).await
-    }
-
     /// Get the commit ID.
     pub(crate) fn id(&self) -> Ulid {
         self.commit_id
@@ -90,11 +86,6 @@ impl UploadCommit {
     /// Returns the runtime used by this commit.
     pub(crate) fn runtime(&self) -> &XetRuntime {
         &self.inner.session.runtime
-    }
-
-    /// Check whether the parent session has been aborted.
-    pub(crate) fn check_session_alive(&self) -> Result<(), SessionError> {
-        self.inner.session.check_alive()
     }
 
     /// Queue a file for upload, starting the transfer immediately if system resource permits.
@@ -198,7 +189,7 @@ impl UploadCommit {
 pub type UploadResult = Arc<Result<FileMetadata, SessionError>>;
 
 /// Handle for a single upload task tracked internally by UploadCommit.
-pub(crate) struct InnerUploadTaskHandle {
+struct InnerUploadTaskHandle {
     status: Arc<Mutex<TaskStatus>>,
     tracking_name: Option<String>,
     join_handle: JoinHandle<Result<XetFileInfo, SessionError>>,
@@ -363,6 +354,8 @@ impl UploadCommitInner {
             task_id: tracking_id,
         };
         let tracking_name: Option<Arc<str>> = tracking_name.as_deref().map(Arc::from);
+        // Although the state lock is held across the await call below, note that this call
+        // only does initialization and is supposed to finish instantaneously.
         let cleaner = upload_session.start_clean(tracking_name, file_size, None, tracking_id).await;
 
         Ok((task_handle, cleaner))
@@ -478,16 +471,23 @@ impl UploadCommitInner {
 
     /// Cancel all tasks and set task status to "Cancelled".
     ///
-    /// Uses `try_lock` on the tokio state mutex so this method is safe to call
-    /// from both sync and async contexts without blocking.  If a registration
-    /// is concurrently holding the state lock, the state flag is not updated here;
-    /// in the SIGINT scenario the caller (`session.abort`) shuts down the runtime
-    /// first, so any in-flight registration task will be cancelled by the runtime
-    /// regardless.
+    /// Called only from [`XetSession::abort`], which always calls
+    /// `perform_sigint_shutdown()` first — so the runtime is already shutting
+    /// down when this runs.
+    ///
+    /// Uses `try_lock` on the tokio state mutex so this method does not block.
+    /// If a registration holds the state lock, the state flag is not updated here;
+    /// the runtime shutdown cancels the in-flight task regardless.
+    ///
+    /// Clearing `upload_session` prevents future `start_upload_file` calls from
+    /// obtaining a session and prevents `handle_commit` from calling `finalize`.
+    /// It does not invalidate any `SingleFileCleaner` already in the caller's hands,
+    /// since the cleaner holds its own `Arc` to the session.
     fn abort(&self) -> Result<(), SessionError> {
         if let Ok(mut guard) = self.state.try_lock() {
             *guard = GroupState::Aborted;
         }
+        self.upload_session.lock()?.take();
         let active_tasks = std::mem::take(&mut *self.active_tasks.write()?);
         for (_tracking_id, inner_task_handle) in active_tasks {
             inner_task_handle.join_handle.abort();
@@ -546,7 +546,7 @@ mod tests {
         let runtime = session.runtime.clone();
         // Create UploadCommit directly so we can access its private state field
         // (accessible here because mod tests is a submodule of upload_commit).
-        let commit = runtime.external_run_async_task(UploadCommit::init(session.clone()))??;
+        let commit = runtime.external_run_async_task(UploadCommit::new(session.clone()))??;
         let commit_for_thread = commit.clone();
         let runtime_for_thread = runtime.clone();
 
@@ -737,6 +737,10 @@ mod tests {
 
         // active_tasks are always drained; already-queued tasks are Cancelled.
         assert!(matches!(handle.status().unwrap(), TaskStatus::Cancelled));
+
+        // upload_session is always cleared, preventing future start_upload_file calls
+        // from obtaining a session and preventing handle_commit from calling finalize.
+        assert!(commit.inner.upload_session.lock().unwrap().is_none());
     }
 
     // ── Independence ─────────────────────────────────────────────────────────

@@ -39,13 +39,12 @@ impl UploadCommitSync {
     /// [`XetSession::new_upload_commit`] instead.
     pub(crate) fn new(session: XetSession) -> Result<Self, SessionError> {
         let runtime = session.runtime.clone();
-        let commit = runtime.external_run_async_task(UploadCommit::init(session.clone()))??;
+        let commit = runtime.external_run_async_task(UploadCommit::new(session.clone()))??;
         Ok(Self { inner: commit })
     }
 
     /// Queue a file for upload. See [`UploadCommit::upload_from_path`] for full documentation.
     pub fn upload_from_path(&self, file_path: PathBuf) -> Result<UploadTaskHandle, SessionError> {
-        self.inner.check_session_alive()?;
         let commit = self.inner.clone();
         self.inner
             .runtime()
@@ -58,7 +57,6 @@ impl UploadCommitSync {
         bytes: Vec<u8>,
         tracking_name: Option<String>,
     ) -> Result<UploadTaskHandle, SessionError> {
-        self.inner.check_session_alive()?;
         let commit = self.inner.clone();
         self.inner
             .runtime()

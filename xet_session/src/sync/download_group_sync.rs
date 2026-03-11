@@ -39,7 +39,7 @@ impl DownloadGroupSync {
     /// [`XetSession::new_download_group`] instead.
     pub(crate) fn new(session: XetSession) -> Result<Self, SessionError> {
         let runtime = session.runtime.clone();
-        let group = runtime.external_run_async_task(DownloadGroup::init(session.clone()))??;
+        let group = runtime.external_run_async_task(DownloadGroup::new(session.clone()))??;
         Ok(Self { inner: group })
     }
 

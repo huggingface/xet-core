@@ -50,8 +50,9 @@ impl std::ops::Deref for DownloadGroup {
 }
 
 impl DownloadGroup {
-    /// Async initialisation logic shared by the sync and async constructors.
-    pub(crate) async fn init(session: XetSession) -> Result<Self, SessionError> {
+    /// Create a new download group from an **async** context. Initialisation logic shared by the sync and async
+    /// constructors.
+    pub(crate) async fn new(session: XetSession) -> Result<Self, SessionError> {
         let group_id = Ulid::new();
         let progress = Arc::new(GroupProgress::new());
         let config = create_translator_config(&session)?;
@@ -68,11 +69,6 @@ impl DownloadGroup {
         });
 
         Ok(Self { inner })
-    }
-
-    /// Create a new download group from an **async** context.
-    pub(crate) async fn new(session: XetSession) -> Result<Self, SessionError> {
-        Self::init(session).await
     }
 
     /// Get the group ID.
@@ -113,7 +109,11 @@ impl DownloadGroup {
         dest_path: PathBuf,
     ) -> Result<DownloadTaskHandle, SessionError> {
         self.session.check_alive()?;
-        self.inner.start_download_file_to_path(file_info, dest_path)
+
+        // Use the absolute path in case the process current working directory changes
+        // while the task is queued.
+        let absolute_path = std::path::absolute(dest_path)?;
+        self.inner.start_download_file_to_path(file_info, absolute_path)
     }
 
     /// Return a snapshot of progress for every queued download.
@@ -140,7 +140,7 @@ impl DownloadGroup {
 
     /// Returns `true` if [`finish`](Self::finish) has been called and completed.
     #[cfg(test)]
-    pub(crate) fn is_finished(&self) -> bool {
+    fn is_finished(&self) -> bool {
         match self.state.lock() {
             Ok(state) => *state == GroupState::Finished,
             Err(_) => false,
@@ -156,7 +156,7 @@ impl DownloadGroup {
 pub type DownloadResult = Arc<Result<DownloadedFile, SessionError>>;
 
 /// Handle for a single download task tracked internally by DownloadGroup.
-pub(crate) struct InnerDownloadTaskHandle {
+struct InnerDownloadTaskHandle {
     status: Arc<Mutex<TaskStatus>>,
     dest_path: PathBuf,
     join_handle: JoinHandle<Result<XetFileInfo, SessionError>>,
@@ -402,7 +402,7 @@ mod tests {
         let runtime = session.runtime.clone();
         // Create DownloadGroup directly so we can access its private state field
         // (accessible here because mod tests is a submodule of download_group).
-        let group = runtime.external_run_async_task(DownloadGroup::init(session.clone()))??;
+        let group = runtime.external_run_async_task(DownloadGroup::new(session.clone()))??;
         let group_for_thread = group.clone();
         let runtime_for_thread = runtime.clone();
 
@@ -538,7 +538,7 @@ mod tests {
     async fn test_download_file_on_aborted_group_returns_aborted() {
         let session = XetSessionBuilder::new().build().unwrap();
         let group = session.new_download_group().await.unwrap();
-        group.inner.abort().unwrap();
+        group.abort().unwrap();
         let err = group
             .download_file_to_path(
                 XetFileInfo {
