@@ -7,7 +7,7 @@ use itertools::multizip;
 use rand::prelude::*;
 use tempfile::TempDir;
 use ulid::Ulid;
-use xet_client::cas_client::{Client, DirectAccessClient, LocalClient, LocalTestServer, LocalTestServerBuilder};
+use xet_client::cas_client::{Client, LocalClient, LocalTestServer, LocalTestServerBuilder};
 
 use super::configurations::TranslatorConfig;
 use super::data_client::clean_file;

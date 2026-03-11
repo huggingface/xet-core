@@ -1156,8 +1156,7 @@ mod tests {
 
         rt.external_run_async_task(async move {
             let (client, file_contents) = setup_test_file(&[(1, (0, 2)), (2, (0, 2)), (3, (0, 2))]).await;
-            let sem = AdjustableSemaphore::new(4, (1, 8));
-            let initial_available = sem.available_permits();
+            let sem = XetRuntime::current().common().reconstruction_download_buffer.clone();
 
             // Pre-grow to max so the run's increment request is a no-op.
             let p = sem.increment_total_permits(u64::MAX).unwrap();
@@ -1172,7 +1171,8 @@ mod tests {
                 .unwrap();
             assert_eq!(reconstructed, file_contents.data);
 
-            assert_eq!(sem.available_permits(), initial_available);
+            assert_eq!(sem.total_permits(), expected_total);
+            assert_eq!(XetRuntime::current().common().active_downloads.load(Ordering::Relaxed), 0);
         })
         .unwrap();
     }
@@ -1303,7 +1303,7 @@ mod tests {
 
     /// Helper to reconstruct through a LocalTestServer (RemoteClient HTTP path).
     async fn reconstruct_via_server(
-        server: &cas_client::LocalTestServer,
+        server: &xet_client::cas_client::LocalTestServer,
         file_hash: MerkleHash,
         byte_range: Option<FileRange>,
         config: &ReconstructionConfig,
@@ -1326,7 +1326,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_v1_fallback_full_reconstruction() {
-        let server = cas_client::LocalTestServer::start(true).await;
+        let server = xet_client::cas_client::LocalTestServerBuilder::new().start().await;
         let file_contents = server
             .remote_client()
             .upload_random_file(&[(1, (0, 3)), (2, (0, 2))], TEST_CHUNK_SIZE)
@@ -1345,7 +1345,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_v1_fallback_partial_range() {
-        let server = cas_client::LocalTestServer::start(true).await;
+        let server = xet_client::cas_client::LocalTestServerBuilder::new().start().await;
         let file_contents = server
             .remote_client()
             .upload_random_file(&[(1, (0, 5)), (2, (0, 3))], TEST_CHUNK_SIZE)
@@ -1366,7 +1366,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_v1_fallback_non_contiguous_chunks() {
-        let server = cas_client::LocalTestServer::start(true).await;
+        let server = xet_client::cas_client::LocalTestServerBuilder::new().start().await;
         let file_contents = server
             .remote_client()
             .upload_random_file(&[(1, (0, 2)), (1, (4, 6))], TEST_CHUNK_SIZE)
@@ -1384,7 +1384,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_v1_fallback_multiple_xorbs() {
-        let server = cas_client::LocalTestServer::start(true).await;
+        let server = xet_client::cas_client::LocalTestServerBuilder::new().start().await;
         let file_contents = server
             .remote_client()
             .upload_random_file(&[(1, (0, 2)), (2, (0, 3)), (3, (0, 2)), (1, (2, 4))], TEST_CHUNK_SIZE)
@@ -1403,7 +1403,7 @@ mod tests {
     /// V1 fallback with three disjoint ranges from the same xorb.
     #[tokio::test]
     async fn test_v1_fallback_triple_disjoint_ranges() {
-        let server = cas_client::LocalTestServer::start(true).await;
+        let server = xet_client::cas_client::LocalTestServerBuilder::new().start().await;
         let file_contents = server
             .remote_client()
             .upload_random_file(&[(1, (0, 2)), (1, (4, 6)), (1, (8, 10))], TEST_CHUNK_SIZE)
@@ -1430,7 +1430,7 @@ mod tests {
         max_ranges: usize,
         byte_range: Option<FileRange>,
     ) -> (Vec<u8>, RandomFileContents) {
-        let server = cas_client::LocalTestServer::start(true).await;
+        let server = xet_client::cas_client::LocalTestServerBuilder::new().start().await;
         let file_contents = server
             .remote_client()
             .upload_random_file(term_spec, TEST_CHUNK_SIZE)
@@ -1498,7 +1498,7 @@ mod tests {
             (2, (4, 6)),
             (1, (0, 2)),
         ];
-        let server = cas_client::LocalTestServer::start(true).await;
+        let server = xet_client::cas_client::LocalTestServerBuilder::new().start().await;
         let file_contents = server
             .remote_client()
             .upload_random_file(term_spec, TEST_CHUNK_SIZE)

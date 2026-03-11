@@ -11,8 +11,6 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use bytes::Bytes;
 use heed::types::*;
-use lazy_static::lazy_static;
-use more_asserts::*;
 use rand::Rng;
 use tempfile::TempDir;
 use tokio::time::{Duration, Instant};
@@ -36,9 +34,8 @@ use crate::cas_client::adaptive_concurrency::AdaptiveConcurrencyController;
 use crate::cas_client::error::{CasClientError, Result};
 use crate::cas_client::progress_tracked_streams::ProgressCallback;
 use crate::cas_types::{
-    BatchQueryReconstructionResponse, ChunkRange, FileRange, HexMerkleHash, HttpRange, QueryReconstructionResponse,
+    BatchQueryReconstructionResponse, FileRange, HexMerkleHash, HttpRange, QueryReconstructionResponse,
     QueryReconstructionResponseV2, XorbMultiRangeFetch, XorbRangeDescriptor, XorbReconstructionFetchInfo,
-    XorbReconstructionTerm,
 };
 
 pub struct LocalClient {

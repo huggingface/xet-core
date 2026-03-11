@@ -6,7 +6,6 @@ use std::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use more_asserts::{assert_ge, assert_gt, debug_assert_lt};
 use rand::Rng;
 use tokio::sync::RwLock;
 use tokio::time::{Duration, Instant};
@@ -30,7 +29,6 @@ use super::xorb_utils::{self, REFERENCE_INSTANT};
 use crate::cas_types::{
     BatchQueryReconstructionResponse, FileRange, HexMerkleHash, HttpRange, QueryReconstructionResponse,
     QueryReconstructionResponseV2, XorbMultiRangeFetch, XorbRangeDescriptor, XorbReconstructionFetchInfo,
-    XorbReconstructionTerm,
 };
 
 /// Stored XORB data: the serialized data and the deserialized XorbObject (header/footer).

@@ -15,8 +15,7 @@ use xet_core_structures::xorb_object::XorbObject;
 use super::super::error::Result;
 use super::super::interface::Client;
 use crate::cas_types::{
-    FileRange, QueryReconstructionResponse, QueryReconstructionResponseV2, XorbMultiRangeFetch, XorbRangeDescriptor,
-    XorbReconstructionFetchInfo,
+    FileRange, QueryReconstructionResponse, QueryReconstructionResponseV2, XorbReconstructionFetchInfo,
 };
 
 /// A Client with direct access to XORB and file storage.

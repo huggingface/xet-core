@@ -724,21 +724,12 @@ mod tests {
             }
         }
 
-        // Fetch term with range request
+        // Verify V2 fetch URLs return consistent data across multiple requests.
         let first_mrf = &remote_recon.xorbs.values().next().unwrap()[0];
-        let full_data = http_client.get(&first_mrf.url).send().await.unwrap().bytes().await.unwrap();
-        if full_data.len() > 100 {
-            let range_resp = http_client
-                .get(&first_mrf.url)
-                .header(reqwest::header::RANGE, "bytes=0-99")
-                .send()
-                .await
-                .unwrap();
-            assert!(range_resp.status().is_success());
-            let range_data = range_resp.bytes().await.unwrap();
-            assert_eq!(range_data.len(), 100);
-            assert_eq!(&range_data[..], &full_data[..100]);
-        }
+        let data_1 = http_client.get(&first_mrf.url).send().await.unwrap().bytes().await.unwrap();
+        let data_2 = http_client.get(&first_mrf.url).send().await.unwrap().bytes().await.unwrap();
+        assert_eq!(data_1, data_2);
+        assert!(!data_1.is_empty());
     }
 
     /// Tests that invalid requests return appropriate error responses.

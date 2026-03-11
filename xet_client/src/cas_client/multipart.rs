@@ -31,8 +31,6 @@ pub fn parse_multipart_byteranges(content_type: &str, body: Bytes) -> Result<Vec
     loop {
         if remaining.starts_with(b"\r\n") {
             remaining = &remaining[2..];
-        } else if remaining.starts_with(b"--") {
-            break;
         } else {
             break;
         }

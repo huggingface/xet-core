@@ -1033,7 +1033,7 @@ async fn test_v2_max_ranges_per_fetch(client: Arc<dyn DirectAccessClient>) {
 
     // Find xorb 1's descriptor
     let xorb1_hash = &file.terms[0].xorb_hash;
-    let hex_hash: cas_types::HexMerkleHash = (*xorb1_hash).into();
+    let hex_hash: crate::cas_types::HexMerkleHash = (*xorb1_hash).into();
     let desc_unlimited = response_unlimited.xorbs.get(&hex_hash).unwrap();
 
     // Now set max_ranges_per_fetch to 2
@@ -1092,7 +1092,7 @@ async fn test_v2_url_encoding(client: Arc<dyn DirectAccessClient>) {
                 let parts: Vec<&str> = payload.splitn(3, ':').collect();
                 assert_eq!(parts.len(), 3, "Payload should have 3 colon-separated parts");
 
-                let hash = merklehash::MerkleHash::from_hex(parts[0]);
+                let hash = xet_core_structures::merklehash::MerkleHash::from_hex(parts[0]);
                 assert!(hash.is_ok(), "Hash part should be valid hex");
 
                 let ts: std::result::Result<u64, _> = parts[1].parse();
