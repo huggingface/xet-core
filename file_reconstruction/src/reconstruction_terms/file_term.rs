@@ -7,7 +7,7 @@ use cas_client::Client;
 use cas_types::{ChunkRange, FileRange, HttpRange};
 use merklehash::MerkleHash;
 use progress_tracking::download_tracking::DownloadTaskUpdater;
-use tokio::sync::RwLock;
+use tokio::sync::OnceCell;
 use utils::UniqueId;
 
 use crate::FileReconstructionError;
@@ -41,21 +41,15 @@ impl FileTerm {
     ///
     /// If the xorb data is already cached, returns a future that immediately resolves (no progress
     /// report, since the block was already reported by the term that triggered the download).
-    /// Otherwise, spawns a task that acquires a download permit and downloads the data (progress
-    /// is reported inside retrieve_data during get_file_term_data and in reconciliation after).
-    ///
-    /// The download permit is acquired inside the spawned task rather than in the caller to avoid
-    /// blocking the main reconstruction loop while it holds a buffer permit. This prevents stalls
-    /// where the buffer fills up because the main loop is stuck waiting for a CAS connection permit.
+    /// Otherwise, spawns a task that calls retrieve_data, which uses single-flight to ensure
+    /// only one download per xorb block (other callers wait without acquiring CAS permits).
     pub async fn get_data_task(
         &self,
         client: Arc<dyn Client>,
         progress_updater: Option<Arc<DownloadTaskUpdater>>,
     ) -> Result<DataFuture> {
-        // First, try to read the cached data without blocking.
-        if let Ok(guard) = self.xorb_block.data.try_read()
-            && let Some(ref xorb_block_data) = *guard
-        {
+        // Fast path: data already cached, no need to spawn a task.
+        if let Some(xorb_block_data) = self.xorb_block.data.get() {
             let bytes = self.extract_bytes(xorb_block_data);
             return Ok(Box::pin(async move { Ok(bytes) }));
         }
@@ -65,15 +59,7 @@ impl FileTerm {
         let xorb_block = self.xorb_block.clone();
 
         let task = tokio::task::spawn(async move {
-            // Check cache again: another task may have completed the download
-            // while we were waiting to be scheduled.
-            if let Some(ref xorb_block_data) = *xorb_block.data.read().await {
-                return Ok(file_term.extract_bytes(xorb_block_data));
-            }
-
-            // Acquire download permit only when actually needed for a cache miss.
-            let permit = client.acquire_download_permit().await?;
-            let xorb_block_data = xorb_block.retrieve_data(client, permit, url_info, progress_updater).await?;
+            let xorb_block_data = xorb_block.retrieve_data(client, url_info, progress_updater).await?;
             Ok(file_term.extract_bytes(&xorb_block_data))
         });
 
@@ -155,7 +141,7 @@ pub async fn retrieve_file_term_block(
                                 xorb_block_index: new_index,
                                 references: vec![],
                                 uncompressed_size_if_known: None,
-                                data: RwLock::new(None),
+                                data: OnceCell::new(),
                             });
 
                             // Store the retrieval URL and range for this xorb block.
