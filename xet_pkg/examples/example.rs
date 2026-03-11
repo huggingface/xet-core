@@ -110,19 +110,17 @@ async fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: O
 
     // Enqueue all downloads; each starts immediately in the background.
     let n_files = metadata.len();
-    let handles: Vec<_> = metadata
-        .iter()
-        .map(|m| {
-            let dest = output_dir.join(m.tracking_name.as_deref().unwrap_or("file"));
-            group.download_file_to_path(
-                XetFileInfo {
-                    hash: m.hash.clone(),
-                    file_size: m.file_size,
-                },
-                dest,
-            )
-        })
-        .collect::<Result<_, _>>()?;
+    let mut handles = Vec::with_capacity(n_files);
+    for m in &metadata {
+        let dest = output_dir.join(m.tracking_name.as_deref().unwrap_or("file"));
+        handles.push(group.download_file_to_path(
+            XetFileInfo {
+                hash: m.hash.clone(),
+                file_size: m.file_size,
+            },
+            dest,
+        ).await?);
+    }
 
     // Spawn a task to print progress while the main task awaits finish().
     let group_for_progress = group.clone();

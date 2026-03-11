@@ -3,7 +3,6 @@
 //! Shows the three-level hierarchy: XetSession → UploadCommit/DownloadGroup → files.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -59,10 +58,10 @@ fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<()> {
 
     // Enqueue all uploads; each starts immediately in the background.
     let n_files = files.len();
-    let handles: Vec<_> = files
-        .iter()
-        .map(|f| commit.upload_from_path(f.clone()))
-        .collect::<Result<_, _>>()?;
+    let mut handles = Vec::with_capacity(n_files);
+    for f in &files {
+        handles.push(commit.upload_from_path(f.clone())?);
+    }
 
     // Spawn a task to print progress; the main thread blocks in commit() below.
     let commit_for_progress = commit.clone();
@@ -110,19 +109,17 @@ fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: Option<
 
     // Enqueue all downloads; each starts immediately in the background.
     let n_files = metadata.len();
-    let handles: Vec<_> = metadata
-        .iter()
-        .map(|m| {
-            let dest = output_dir.join(m.tracking_name.as_deref().unwrap_or("file"));
-            group.download_file_to_path(
-                XetFileInfo {
-                    hash: m.hash.clone(),
-                    file_size: m.file_size,
-                },
-                dest,
-            )
-        })
-        .collect::<Result<_, _>>()?;
+    let mut handles = Vec::with_capacity(n_files);
+    for m in &metadata {
+        let dest = output_dir.join(m.tracking_name.as_deref().unwrap_or("file"));
+        handles.push(group.download_file_to_path(
+            XetFileInfo {
+                hash: m.hash.clone(),
+                file_size: m.file_size,
+            },
+            dest,
+        )?);
+    }
 
     // Spawn a task to print progress; the main thread blocks in finish() below.
     let group_for_progress = group.clone();
