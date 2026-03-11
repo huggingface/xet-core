@@ -229,7 +229,7 @@ pub async fn download_async(
         Some(updaters) => updaters.into_iter().map(Some).collect(),
     };
 
-    let session = FileDownloadSession::new(config, None).await?;
+    let session = FileDownloadSession::new(config, None, None).await?;
 
     let mut tasks = Vec::with_capacity(file_infos.len());
 
