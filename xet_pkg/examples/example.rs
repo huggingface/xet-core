@@ -7,7 +7,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use xet::xet_session::{FileMetadata, TaskStatus, XetFileInfo, XetSessionBuilder};
+use xet::xet_session::{
+    DownloadTaskHandle, FileMetadata, TaskStatus, UploadTaskHandle, XetFileInfo, XetSessionBuilder,
+};
 
 #[derive(Parser)]
 #[clap(name = "session-demo", about = "XetSession API demo")]
@@ -58,7 +60,7 @@ fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<()> {
 
     // Enqueue all uploads; each starts immediately in the background.
     let n_files = files.len();
-    let handles: Vec<_> = files
+    let handles: Vec<UploadTaskHandle> = files
         .iter()
         .map(|f| commit.upload_from_path(f.clone()))
         .collect::<Result<_, _>>()?;
@@ -109,7 +111,7 @@ fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: Option<
 
     // Enqueue all downloads; each starts immediately in the background.
     let n_files = metadata.len();
-    let handles: Vec<_> = metadata
+    let handles: Vec<DownloadTaskHandle> = metadata
         .iter()
         .map(|m| {
             let dest = output_dir.join(m.tracking_name.as_deref().unwrap_or("file"));
