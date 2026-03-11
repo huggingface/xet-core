@@ -1,15 +1,15 @@
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
-use error_printer::ErrorPrinter;
 use itertools::Itertools;
-use progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::PyAnyMethods;
 use pyo3::types::{IntoPyDict, PyList, PyString};
 use pyo3::{IntoPyObjectExt, Py, PyAny, PyResult, Python, pyclass};
 use tracing::error;
-use xet_runtime::XetRuntime;
+use xet_data::progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
+use xet_runtime::core::XetRuntime;
+use xet_runtime::error_printer::ErrorPrinter;
 
 use crate::runtime::convert_multithreading_error;
 

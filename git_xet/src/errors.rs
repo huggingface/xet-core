@@ -1,9 +1,9 @@
 use std::fmt::Display;
 use std::path::PathBuf;
 
-use cas_client::CasClientError;
-use data::errors::DataProcessingError;
 use thiserror::Error;
+use xet_client::ClientError;
+use xet_data::processing::errors::DataProcessingError;
 
 use crate::lfs_agent_protocol::GitLFSProtocolError;
 
@@ -42,8 +42,8 @@ pub enum GitXetError {
     #[error("Transfer agent error: {0}")]
     TransferAgent(#[from] DataProcessingError),
 
-    #[error("Hub client error: {0}")]
-    HubClient(#[from] hub_client::HubClientError),
+    #[error("Client error: {0}")]
+    Client(#[from] ClientError),
 }
 
 pub type Result<T> = std::result::Result<T, GitXetError>;
@@ -66,11 +66,5 @@ impl GitXetError {
 
     pub(crate) fn internal(e: impl Display) -> GitXetError {
         GitXetError::Internal(e.to_string())
-    }
-}
-
-impl From<CasClientError> for GitXetError {
-    fn from(value: CasClientError) -> Self {
-        Self::from(DataProcessingError::CasClientError(value))
     }
 }

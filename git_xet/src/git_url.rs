@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use git_url_parse::GitUrl as innerGitUrl;
 pub use git_url_parse::Scheme;
-use hub_client::{HFRepoType, RepoInfo};
+use xet_client::hub_client::{HFRepoType, RepoInfo};
 
 use crate::errors::{GitXetError, Result};
 

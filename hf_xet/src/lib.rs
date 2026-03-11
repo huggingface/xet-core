@@ -8,11 +8,8 @@ use std::fmt::Debug;
 use std::iter::IntoIterator;
 use std::sync::Arc;
 
-use data::errors::DataProcessingError;
-use data::{XetFileInfo, data_client};
 use http::header::{self, HeaderMap, HeaderName, HeaderValue};
 use itertools::Itertools;
-use progress_tracking::TrackingProgressUpdater;
 use pyo3::exceptions::{PyKeyboardInterrupt, PyRuntimeError};
 use pyo3::prelude::*;
 use pyo3::pyfunction;
@@ -20,7 +17,10 @@ use rand::Rng;
 use runtime::async_run;
 use token_refresh::WrappedTokenRefresher;
 use tracing::debug;
-use xet_runtime::file_handle_limits;
+use xet_data::processing::errors::DataProcessingError;
+use xet_data::processing::{XetFileInfo, data_client};
+use xet_data::progress_tracking::TrackingProgressUpdater;
+use xet_runtime::core::file_handle_limits;
 
 use crate::logging::init_logging;
 use crate::progress_update::WrappedProgressUpdater;
