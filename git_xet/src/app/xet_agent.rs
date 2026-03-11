@@ -3,12 +3,12 @@ use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use data::FileUploadSession;
-use data::data_client::{clean_file, default_config};
 use http::header;
-use hub_client::Operation;
-use progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
-use utils::auth::TokenRefresher;
+use xet_client::cas_client::auth::TokenRefresher;
+use xet_client::hub_client::Operation;
+use xet_data::processing::FileUploadSession;
+use xet_data::processing::data_client::{clean_file, default_config};
+use xet_data::progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
 
 use crate::constants::{
     HF_ENDPOINT_ENV, XET_ACCESS_TOKEN_HEADER, XET_CAS_URL, XET_SESSION_ID, XET_TOKEN_EXPIRATION_HEADER,
@@ -78,8 +78,11 @@ impl TransferAgent for XetAgent {
         // only one prompt is presented.
         let repo = self.repo.get().unwrap(); // protocol state guarantees self.repo is set.
 
-        let mut headers = header::HeaderMap::new();
-        headers.insert(header::USER_AGENT, header::HeaderValue::from_static(USER_AGENT));
+        let user_agent_headers = {
+            let mut h = header::HeaderMap::new();
+            h.insert(header::USER_AGENT, header::HeaderValue::from_static(USER_AGENT));
+            h
+        };
 
         let session_id = req.action.header.get(XET_SESSION_ID).map(|s| s.as_str()).unwrap_or_default();
         let token_refresher: Arc<dyn TokenRefresher> = Arc::new(DirectRefreshRouteTokenRefresher::new(
@@ -88,7 +91,7 @@ impl TransferAgent for XetAgent {
             &req.action.href,
             Operation::Upload,
             session_id,
-            Some(Arc::new(headers)),
+            Some(Arc::new(user_agent_headers.clone())),
         )?);
         // From git-lfs:
         // > First worker is the only one allowed to start immediately.
@@ -126,9 +129,7 @@ impl TransferAgent for XetAgent {
             .parse()
             .map_err(GitXetError::internal)?;
 
-        // Create headers with user agent
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(header::USER_AGENT, header::HeaderValue::from_static(USER_AGENT));
+        let headers = user_agent_headers;
 
         let config =
             default_config(cas_url, None, Some((token, token_expiry)), Some(token_refresher), Some(Arc::new(headers)))?

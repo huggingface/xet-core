@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use anyhow::Result;
 use tempfile::{TempDir, tempdir};
-use utils::EnvVarGuard;
+use xet_runtime::utils::EnvVarGuard;
 
 use crate::utils::process_wrapping::run_git_captured;
 

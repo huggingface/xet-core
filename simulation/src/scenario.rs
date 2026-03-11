@@ -2,13 +2,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use cas_client::simulation::NetworkProfileOptions;
-use cas_client::simulation::local_server::ServerLatencyProfile;
-use cas_client::{LocalTestServer, LocalTestServerBuilder, build_http_client};
 use reqwest_middleware::Error as ReqwestMiddlewareError;
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use xet_client::cas_client::simulation::NetworkProfileOptions;
+use xet_client::cas_client::simulation::local_server::ServerLatencyProfile;
+use xet_client::cas_client::{LocalTestServer, LocalTestServerBuilder, build_http_client};
 
 use crate::upload_concurrency::generate_timeline_csv;
 
@@ -35,7 +35,7 @@ pub enum ScenarioError {
     #[error("Scenario error: {0}")]
     Scenario(String),
     #[error(transparent)]
-    CasClient(#[from] cas_client::CasClientError),
+    CasClient(#[from] xet_client::cas_client::CasClientError),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
@@ -342,7 +342,7 @@ impl SimulationScenario {
 mod tests {
     use std::time::Duration;
 
-    use cas_client::simulation::local_server::ServerLatencyProfile;
+    use xet_client::cas_client::simulation::local_server::ServerLatencyProfile;
 
     use super::SimulationScenarioBuilder;
 

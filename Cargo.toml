@@ -1,30 +1,24 @@
 [workspace]
 resolver = "2"
-
 members = [
-    "cas_client",
-    "simulation",
-    "xorb_object",
-    "cas_types",
-    "chunk_cache",
-    "xet_config",
-    "data",
-    "deduplication",
-    "error_printer",
-    "file_reconstruction",
-    "file_utils",
-    "git_xet",
-    "hub_client",
-    "mdb_shard",
-    "merklehash",
-    "progress_tracking",
-    "utils",
-    "xet_logging",
+    # Consolidated packages
     "xet_runtime",
-    "xet_session",
-]
+    "xet_core_structures",
+    "xet_client",
+    "xet_data",
+    "xet_pkg",
 
-exclude = ["chunk_cache_bench", "hf_xet", "hf_xet_wasm", "hf_xet_thin_wasm"]
+    # Top-level crates (not published as packages)
+    "git_xet",
+    "simulation",
+]
+exclude = ["simulation/chunk_cache_bench", "hf_xet", "wasm/hf_xet_wasm", "wasm/hf_xet_thin_wasm"]
+
+[workspace.package]
+version = "1.4.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/huggingface/xet-core"
 
 [profile.release]
 opt-level = 3

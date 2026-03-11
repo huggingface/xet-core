@@ -10,7 +10,6 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use cas_client::simulation::local_server::ServerLatencyProfile;
 use clap::Parser;
 use simulation::scenario::{
     MAX_DATA_KB, MIN_DATA_KB, ScenarioError, ScenarioResult, SimulationScenario, SimulationScenarioBuilder,
@@ -19,8 +18,9 @@ use simulation::scenario::{
 use simulation::upload_concurrency::run_upload_clients_until_cancelled;
 use tokio::time::sleep;
 use tracing::info;
-use xet_logging::{LoggingConfig, init as init_logging};
-use xet_runtime::XetRuntime;
+use xet_client::cas_client::simulation::local_server::ServerLatencyProfile;
+use xet_runtime::core::XetRuntime;
+use xet_runtime::logging::{LoggingConfig, init as init_logging};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]

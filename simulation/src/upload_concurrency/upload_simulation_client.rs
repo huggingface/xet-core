@@ -7,10 +7,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use cas_client::adaptive_concurrency::{AdaptiveConcurrencyController, CCLatencyModelState, CCSuccessModelState};
-use cas_client::http_client::build_http_client;
-use cas_client::progress_tracked_streams::UploadProgressStream;
-use cas_client::retry_wrapper::RetryWrapper;
 use http::HeaderValue;
 use http::header::CONTENT_LENGTH;
 use rand::Rng;
@@ -18,7 +14,13 @@ use reqwest::Body;
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use xet_runtime::xet_config;
+use xet_client::cas_client::adaptive_concurrency::{
+    AdaptiveConcurrencyController, CCLatencyModelState, CCSuccessModelState,
+};
+use xet_client::cas_client::http_client::build_http_client;
+use xet_client::cas_client::progress_tracked_streams::UploadProgressStream;
+use xet_client::cas_client::retry_wrapper::RetryWrapper;
+use xet_runtime::core::xet_config;
 
 use crate::scenario::base_url;
 
@@ -379,7 +381,7 @@ async fn run_upload_clients_impl(
 mod tests {
     use std::time::Duration;
 
-    use cas_client::simulation::local_server::ServerLatencyProfile;
+    use xet_client::cas_client::simulation::local_server::ServerLatencyProfile;
 
     use super::run_upload_clients_until_cancelled;
     use crate::scenario::{ScenarioError, SimulationScenarioBuilder};

@@ -175,7 +175,7 @@ fn format_for_shell_execution(command: &str, args: &[String]) -> Result<(String,
 mod tests {
     use anyhow::{Ok, Result};
     use serial_test::serial;
-    use utils::EnvVarGuard;
+    use xet_runtime::utils::EnvVarGuard;
 
     use super::*;
     use crate::git_repo::GitRepo;
