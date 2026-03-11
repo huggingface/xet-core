@@ -1391,6 +1391,7 @@ dependencies = [
  "rand 0.9.2",
  "signal-hook",
  "tracing",
+ "ulid",
  "utils",
  "winapi",
  "xet_config",

@@ -134,6 +134,32 @@ impl FileDownloadSession {
         Ok(n_bytes)
     }
 
+    /// Downloads a file (or byte range) directly into a caller-provided buffer.
+    ///
+    /// This is the fastest download path: it resolves all file terms in a single
+    /// CAS roundtrip and downloads all xorb blocks in parallel, writing each
+    /// chunk directly to its final offset in the buffer. This bypasses the
+    /// `SequentialWriter` overhead and the adaptive prefetch loop.
+    ///
+    /// When `source_range` is `None`, the entire file is downloaded and the
+    /// buffer must be large enough to hold the full file. When a range is
+    /// provided, only that byte range is fetched.
+    #[instrument(skip_all, name = "FileDownloadSession::download_to_buffer",
+        fields(hash = file_info.hash()))]
+    pub async fn download_to_buffer(
+        &self,
+        file_info: &XetFileInfo,
+        source_range: Option<Range<u64>>,
+        buffer: &mut [u8],
+        tracking_id: Ulid,
+    ) -> Result<u64> {
+        let range = source_range.map(|r| FileRange::new(r.start, r.end));
+        let reconstructor = self.setup_reconstructor(file_info, range, tracking_id, None, None)?;
+        let n_bytes = reconstructor.reconstruct_to_buffer(buffer).await?;
+        prometheus_metrics::FILTER_BYTES_SMUDGED.inc_by(n_bytes);
+        Ok(n_bytes)
+    }
+
     /// Creates a streaming download of a file.
     ///
     /// Returns a [`DownloadStream`] that yields data chunks as the file is
