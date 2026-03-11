@@ -1,0 +1,63 @@
+[package]
+name = "hf_xet_wasm"
+version = "1.4.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+xet-core-structures = { path = "../../xet_core_structures" }
+xet-client = { path = "../../xet_client" }
+xet-data = { path = "../../xet_data" }
+
+async-trait = "0.1"
+bytes = "1.11"
+console_error_panic_hook = "0.1.7"
+console_log = { version = "1.0.0", features = ["color"] }
+env_logger = "0.11"
+futures = "0.3"
+getrandom = { version = "0.3", features = ["wasm_js"] }
+http = "1"
+js-sys = "0.3.77"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6.5"
+sha2 = { version = "0.10", features = ["asm"] }
+thiserror = "2.0"
+tokio = { version = "1.49", features = ["sync", "rt"] }
+tokio_with_wasm = { version = "0.8", features = ["rt"] }
+uuid = { version = "1", features = ["v4", "js"] }
+wasm_thread = "0.3"
+wasm-bindgen = "=0.2.100"
+wasm-bindgen-futures = "0.4.50"
+web-sys = { version = "0.3.77", features = [
+    "File",
+    "ReadableStream",
+    "ReadableStreamDefaultReader",
+    "Blob",
+    "DedicatedWorkerGlobalScope",
+    "MessageEvent",
+    "Url",
+    "Worker",
+    "WorkerType",
+    "WorkerOptions",
+    "WorkerGlobalScope",
+    "Window",
+    "Navigator",
+    "WorkerNavigator",
+    "Headers",
+    "Request",
+    "RequestInit",
+    "RequestMode",
+    "Response",
+] }
+
+[package.metadata.docs.rs]
+targets = ["wasm32-unknown-unknown"]
+
+[package.metadata.cargo-machete]
+ignored = ["getrandom"]
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3.50"

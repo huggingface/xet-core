@@ -1,8 +1,8 @@
 use std::str::FromStr;
 use std::sync::Arc;
 
-use hub_client::{BearerCredentialHelper, CredentialHelper, NoopCredentialHelper, Operation};
 use netrc::Netrc;
+use xet_client::hub_client::{BearerCredentialHelper, CredentialHelper, NoopCredentialHelper, Operation};
 
 use crate::constants::HF_TOKEN_ENV;
 use crate::errors::{GitXetError, Result};
@@ -172,10 +172,10 @@ mod test_cred_helpers {
     use std::io::Write;
 
     use anyhow::Result;
-    use hub_client::Operation;
     use serial_test::serial;
     use tempfile::NamedTempFile;
-    use utils::EnvVarGuard;
+    use xet_client::hub_client::Operation;
+    use xet_runtime::utils::EnvVarGuard;
 
     use super::get_credential;
     use crate::constants::HF_TOKEN_ENV;

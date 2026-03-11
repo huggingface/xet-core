@@ -1,23 +1,77 @@
 [package]
+name = "xet-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Async runtime, configuration, logging, and utility infrastructure for the Hugging Face Xet client tools"
+
+[lib]
 name = "xet_runtime"
-version = "0.1.0"
-edition = "2024"
+path = "src/lib.rs"
 
 [dependencies]
-utils = { path = "../utils" }
-error_printer = { path = "../error_printer" }
-xet_config = { path = "../xet_config" }
-
+chrono = { workspace = true }
+colored = { workspace = true }
+const-str = "1.1"
+ctor = { workspace = true }
 dirs = { workspace = true }
+duration-str = { workspace = true }
+git-version = { workspace = true }
+konst = "0.4"
+lazy_static = { workspace = true }
+libc = { workspace = true }
+more-asserts = { workspace = true }
 oneshot = { workspace = true }
+rand = { workspace = true }
 reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sysinfo = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+futures-util = { workspace = true }
+pin-project = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["time", "rt", "macros", "io-util"] }
 tracing = { workspace = true }
+tracing-appender = { workspace = true }
+tracing-subscriber = { workspace = true }
 
+console-subscriber = { workspace = true, optional = true }
+
+[target.'cfg(windows)'.dependencies]
+winapi = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+whoami = { workspace = true }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+tokio = { workspace = true, features = ["sync", "macros", "io-util", "rt", "time"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+shellexpand = { workspace = true, features = ["path"] }
+tokio = { workspace = true, features = ["time", "rt", "macros", "sync", "test-util", "io-util", "rt-multi-thread"] }
+tokio-util = { workspace = true, features = ["io"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = { workspace = true }
+
+[features]
+strict = []
+elevated_information_level = []
+no-default-cache = []
+tokio-console = ["dep:console-subscriber"]
+
+[[bin]]
+name = "log_test_executable"
+path = "tests/bin/log_test_executable.rs"
+
+[dev-dependencies]
+anyhow = { workspace = true }
+xet-core-structures = { version = "1.4.0", path = "../xet_core_structures" }
+
+rand = { workspace = true }
+serial_test = { workspace = true }
+tempfile = { workspace = true }
+tracing-test = { workspace = true }

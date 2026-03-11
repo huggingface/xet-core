@@ -13,8 +13,8 @@ use agent_state::LFSAgentState;
 pub use errors::GitLFSProtocolError;
 pub use progress_updater::ProgressUpdater;
 pub use protocol_spec::*;
-use utils::SystemMonitor;
-use xet_config::XetConfig;
+use xet_runtime::config::XetConfig;
+use xet_runtime::logging::SystemMonitor;
 
 // Any Git LFS custom transfer agent should implement this trait to be plugged
 // into the driver function `lfs_protocol_loop`.
