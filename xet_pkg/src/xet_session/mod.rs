@@ -147,6 +147,6 @@ pub use progress::{
 pub use session::{XetSession, XetSessionBuilder};
 pub use sync::{DownloadGroupSync, UploadCommitSync};
 pub use upload_commit::{FileMetadata, UploadCommit, UploadResult};
-pub use xet_data::processing::XetFileInfo;
-// Re-export XetConfig for convenience
+// Re-export for convenience
+pub use xet_data::processing::{Sha256Policy, XetFileInfo};
 pub use xet_runtime::config::XetConfig;
