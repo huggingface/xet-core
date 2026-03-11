@@ -443,7 +443,7 @@ mod tests {
             let _env = EnvVarGuard::set("GIT_SSH_COMMAND", "ssh -i ~/.ssh/id_rsa");
             let (cmd, args) = get_sshcmd_and_args(&meta, &repo)?;
             assert_eq!(cmd, "sh");
-            assert_eq!(args, vec!["-c", "ssh -i ~/.ssh/id_rsa git@hf.co auth org/repo upload"]);
+            assert_eq!(args, vec!["-c", "ssh -i '~/.ssh/id_rsa' git@hf.co auth org/repo upload"]);
         }
 
         // Test with GIT_SSH
