@@ -26,13 +26,24 @@ if ! command -v uv &> /dev/null; then
     exit 1
 fi
 
-# If a local wheel is specified, install it as an override
+# Parse --hf-xet-version from args (if present)
+HF_XET_VERSION=""
+for arg in "$@"; do
+    if [[ "${prev_arg:-}" == "--hf-xet-version" ]]; then
+        HF_XET_VERSION="$arg"
+    fi
+    prev_arg="$arg"
+done
+
 echo "Running hf-xet smoke tests..."
 echo ""
 
 if [ -n "${HF_XET_WHEEL:-}" ]; then
     echo "Using local wheel: ${HF_XET_WHEEL}"
     uv run --with "${HF_XET_WHEEL}" "${SCRIPT_DIR}/test_upload_download.py" "$@"
+elif [ -n "${HF_XET_VERSION}" ]; then
+    echo "Using hf_xet version: ${HF_XET_VERSION} (fetching from PyPI)"
+    uv run --with "hf_xet==${HF_XET_VERSION}" --refresh-package hf_xet "${SCRIPT_DIR}/test_upload_download.py" "$@"
 else
     uv run "${SCRIPT_DIR}/test_upload_download.py" "$@"
 fi
