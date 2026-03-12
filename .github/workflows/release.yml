@@ -32,6 +32,9 @@ jobs:
           - runner: ubuntu-22.04
             target: aarch64
             manylinux: manylinux_2_28
+          - runner: ubuntu-22.04
+            target: riscv64
+            manylinux: manylinux_2_28
         python-version:
           - 3.14
           - 3.13t
@@ -84,6 +87,11 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y binutils-aarch64-linux-gnu
             alias objcopy=aarch64-linux-gnu-objcopy
+          elif [[ ${{ matrix.platform.target }} == "riscv64" ]]
+          then
+            sudo apt-get update
+            sudo apt-get install -y binutils-riscv64-linux-gnu
+            alias objcopy=riscv64-linux-gnu-objcopy
           fi
 
           mkdir hf_xet/dbg
@@ -172,6 +180,11 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y binutils-aarch64-linux-gnu
             alias objcopy=aarch64-linux-gnu-objcopy
+          elif [[ ${{ matrix.platform.target }} == "riscv64" ]]
+          then
+            sudo apt-get update
+            sudo apt-get install -y binutils-riscv64-linux-gnu
+            alias objcopy=riscv64-linux-gnu-objcopy
           fi
 
           mkdir hf_xet/dbg
