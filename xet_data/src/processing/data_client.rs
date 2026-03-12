@@ -95,6 +95,7 @@ pub fn default_config(
 #[instrument(skip_all, name = "data_client::upload_bytes", fields(session_id = tracing::field::Empty, num_files=file_contents.len()))]
 pub async fn upload_bytes_async(
     file_contents: Vec<Vec<u8>>,
+    skip_sha256: bool,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
@@ -115,7 +116,8 @@ pub async fn upload_bytes_async(
     let upload_session = FileUploadSession::new(config.into(), progress_updater).await?;
     let clean_futures = file_contents.into_iter().map(|blob| {
         let upload_session = upload_session.clone();
-        async move { clean_bytes(upload_session, blob, None).await.map(|(xf, _metrics)| xf) }
+        let sha256_policy = if skip_sha256 { Sha256Policy::Skip } else { Sha256Policy::Compute };
+        async move { clean_bytes(upload_session, blob, None, sha256_policy).await.map(|(xf, _metrics)| xf) }
             .instrument(info_span!("clean_task"))
     });
     let files = run_constrained_with_semaphore(clean_futures, semaphore).await?;
@@ -140,6 +142,7 @@ pub async fn upload_bytes_async(
 pub async fn upload_async(
     file_paths: Vec<String>,
     sha256s: Option<Vec<String>>,
+    skip_sha256: bool,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
@@ -164,21 +167,24 @@ pub async fn upload_async(
 
     let upload_session = FileUploadSession::new(config.into(), progress_updater).await?;
 
-    // Parse sha256 hex string and ignore invalid ones, or if no sha256 is provided,
-    // create an iterator of infinite number of "None"s.
-    let sha256s: Box<dyn Iterator<Item = Option<Sha256>> + Send> = match &sha256s {
-        Some(v) => {
-            if v.len() != file_paths.len() {
-                return Err(DataProcessingError::ParameterError(
-                    "mismatched length of the file list and the sha256 list".into(),
-                ));
-            }
-            Box::new(v.iter().map(|s| Sha256::from_hex(s).ok()))
-        },
-        None => Box::new(std::iter::repeat(None)),
+    // Build per-file Sha256Policy: Skip overrides everything, otherwise use provided hashes or Compute.
+    let sha256_policies: Box<dyn Iterator<Item = Sha256Policy> + Send> = if skip_sha256 {
+        Box::new(std::iter::repeat_with(|| Sha256Policy::Skip))
+    } else {
+        match &sha256s {
+            Some(v) => {
+                if v.len() != file_paths.len() {
+                    return Err(DataProcessingError::ParameterError(
+                        "mismatched length of the file list and the sha256 list".into(),
+                    ));
+                }
+                Box::new(v.iter().map(|s| Sha256::from_hex(s).ok().into()))
+            },
+            None => Box::new(std::iter::repeat_with(|| Sha256Policy::Compute)),
+        }
     };
 
-    let files_sha256_and_tracking_ids = multizip((file_paths.into_iter(), sha256s, std::iter::repeat_with(Ulid::new)));
+    let files_sha256_and_tracking_ids = multizip((file_paths.into_iter(), sha256_policies, std::iter::repeat_with(Ulid::new)));
 
     let ret = upload_session.upload_files(files_sha256_and_tracking_ids).await?;
 
@@ -261,11 +267,12 @@ pub async fn clean_bytes(
     processor: Arc<FileUploadSession>,
     bytes: Vec<u8>,
     tracking_id: Option<Ulid>,
+    sha256_policy: Sha256Policy,
 ) -> errors::Result<(XetFileInfo, DeduplicationMetrics)> {
     #[allow(clippy::unwrap_or_default)] // Ulid::default is Ulid::nil
     let tracking_id = tracking_id.unwrap_or_else(Ulid::new);
     let mut handle = processor
-        .start_clean(None, bytes.len() as u64, Sha256Policy::Compute, tracking_id)
+        .start_clean(None, bytes.len() as u64, sha256_policy, tracking_id)
         .await;
     handle.add_data(&bytes).await?;
     handle.finish().await

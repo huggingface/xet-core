@@ -11,6 +11,7 @@ use xet_client::cas_client::{Client, LocalClient, LocalTestServer, LocalTestServ
 
 use super::configurations::TranslatorConfig;
 use super::data_client::clean_file;
+use super::file_cleaner::Sha256Policy;
 use super::{FileDownloadSession, FileUploadSession, XetFileInfo};
 use crate::progress_tracking::TrackingProgressUpdater;
 
@@ -218,8 +219,11 @@ impl HydrateDehydrateTest {
                 .map(|entry| self.src_dir.join(entry.unwrap().file_name()))
                 .collect();
 
-            let files_sha256_and_tracking_ids =
-                multizip((files.iter(), std::iter::repeat(None), std::iter::repeat_with(Ulid::new)));
+            let files_sha256_and_tracking_ids = multizip((
+                files.iter(),
+                std::iter::repeat_with(|| Sha256Policy::Compute),
+                std::iter::repeat_with(Ulid::new),
+            ));
 
             let clean_results = upload_session.upload_files(files_sha256_and_tracking_ids).await.unwrap();
 
