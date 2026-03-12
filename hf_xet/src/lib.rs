@@ -81,7 +81,7 @@ fn convert_data_processing_error(e: DataProcessingError) -> PyErr {
 }
 
 #[pyfunction]
-#[pyo3(signature = (file_contents, endpoint, token_info, token_refresher, progress_updater, _repo_type, request_headers=None, skip_sha256=false), text_signature = "(file_contents: List[bytes], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str], request_headers: Optional[Dict[str, str]], skip_sha256: bool = False) -> List[PyXetUploadInfo]")]
+#[pyo3(signature = (file_contents, endpoint, token_info, token_refresher, progress_updater, _repo_type, request_headers=None, sha256s=None, skip_sha256=false), text_signature = "(file_contents: List[bytes], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str], request_headers: Optional[Dict[str, str]], sha256s: Optional[List[str]], skip_sha256: bool = False) -> List[PyXetUploadInfo]")]
 #[allow(clippy::too_many_arguments)]
 pub fn upload_bytes(
     py: Python,
@@ -92,8 +92,29 @@ pub fn upload_bytes(
     progress_updater: Option<Py<PyAny>>,
     _repo_type: Option<String>,
     request_headers: Option<HashMap<String, String>>,
+    sha256s: Option<Vec<String>>,
     skip_sha256: bool,
 ) -> PyResult<Vec<PyXetUploadInfo>> {
+    if skip_sha256 && sha256s.is_some() {
+        return Err(PyRuntimeError::new_err("skip_sha256=True and sha256s are mutually exclusive"));
+    }
+
+    if let Some(ref s) = sha256s
+        && s.len() != file_contents.len()
+    {
+        return Err(PyRuntimeError::new_err(format!(
+            "sha256s length ({}) must match file_contents length ({})",
+            s.len(),
+            file_contents.len()
+        )));
+    }
+
+    let sha256_policies: Vec<Sha256Policy> = match sha256s {
+        _ if skip_sha256 => vec![Sha256Policy::Skip; file_contents.len()],
+        Some(v) => v.iter().map(|s| Sha256Policy::from_hex(s)).collect(),
+        None => vec![Sha256Policy::Compute; file_contents.len()],
+    };
+
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updater = progress_updater.map(WrappedProgressUpdater::new).transpose()?.map(Arc::new);
     let x: u64 = rand::rng().random();
@@ -110,7 +131,7 @@ pub fn upload_bytes(
 
         let out: Vec<PyXetUploadInfo> = data_client::upload_bytes_async(
             file_contents,
-            Sha256Policy::from_skip(skip_sha256),
+            sha256_policies,
             endpoint,
             token_info,
             refresher.map(|v| v as Arc<_>),

@@ -94,13 +94,21 @@ pub fn default_config(
 #[instrument(skip_all, name = "data_client::upload_bytes", fields(session_id = tracing::field::Empty, num_files=file_contents.len()))]
 pub async fn upload_bytes_async(
     file_contents: Vec<Vec<u8>>,
-    sha256_policy: Sha256Policy,
+    sha256_policies: Vec<Sha256Policy>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
     custom_headers: Option<Arc<HeaderMap>>,
 ) -> errors::Result<Vec<XetFileInfo>> {
+    if sha256_policies.len() != file_contents.len() {
+        return Err(DataProcessingError::ParameterError(format!(
+            "sha256_policies length ({}) must match file_contents length ({})",
+            sha256_policies.len(),
+            file_contents.len()
+        )));
+    }
+
     let config = default_config(
         endpoint.unwrap_or_else(|| xet_config().data.default_cas_endpoint.clone()),
         None,
@@ -113,14 +121,10 @@ pub async fn upload_bytes_async(
 
     let semaphore = XetRuntime::current().common().file_ingestion_semaphore.clone();
     let upload_session = FileUploadSession::new(config.into(), progress_updater).await?;
-    let clean_futures = file_contents.into_iter().map(|blob| {
+    let clean_futures = file_contents.into_iter().zip(sha256_policies).map(|(blob, policy)| {
         let upload_session = upload_session.clone();
-        async move {
-            clean_bytes(upload_session, blob, None, sha256_policy)
-                .await
-                .map(|(xf, _metrics)| xf)
-        }
-        .instrument(info_span!("clean_task"))
+        async move { clean_bytes(upload_session, blob, None, policy).await.map(|(xf, _metrics)| xf) }
+            .instrument(info_span!("clean_task"))
     });
     let files = run_constrained_with_semaphore(clean_futures, semaphore).await?;
 
