@@ -386,15 +386,20 @@ impl Client for RemoteClient {
                         let url =
                             Url::parse(&url_string).map_err(|e| reqwest_middleware::Error::Middleware(e.into()))?;
 
-                        let range_header = url_ranges
-                            .iter()
-                            .map(|r| format!("{}-{}", r.start, r.end))
-                            .collect::<Vec<_>>()
-                            .join(",");
+                        let range_header_value = if url_ranges.len() == 1 {
+                            url_ranges[0].range_header()
+                        } else {
+                            let joined = url_ranges
+                                .iter()
+                                .map(|r| format!("{}-{}", r.start, r.end))
+                                .collect::<Vec<_>>()
+                                .join(",");
+                            format!("bytes={joined}")
+                        };
 
                         let response = http_client
                             .get(url)
-                            .header(RANGE, format!("bytes={range_header}"))
+                            .header(RANGE, range_header_value)
                             .with_extension(Api(api_tag))
                             .send()
                             .await?;

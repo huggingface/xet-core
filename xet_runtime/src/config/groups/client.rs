@@ -251,4 +251,15 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_CLIENT_RECONSTRUCTION_API_VERSION` to set this value.
     ref reconstruction_api_version: Option<u32> = None;
 
+    /// Whether to use multi-range HTTP requests when fetching xorb data.
+    /// When false (default), V2 multi-range fetch entries are split into
+    /// individual single-range requests executed in parallel, which avoids
+    /// slow server-side multirange processing.
+    /// When true, multi-range requests are sent as-is.
+    ///
+    /// The default value is false.
+    ///
+    /// Use the environment variable `HF_XET_CLIENT_PREFER_MULTIRANGE_FETCHING` to set this value.
+    ref prefer_multirange_fetching: bool = false;
+
 });

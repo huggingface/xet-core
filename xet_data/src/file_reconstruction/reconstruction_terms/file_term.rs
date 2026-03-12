@@ -7,6 +7,7 @@ use tokio::sync::RwLock;
 use xet_client::cas_client::Client;
 use xet_client::cas_types::{ChunkRange, FileRange, HttpRange};
 use xet_core_structures::merklehash::MerkleHash;
+use xet_runtime::core::xet_config;
 use xet_runtime::utils::UniqueId;
 
 use super::super::FileReconstructionError;
@@ -136,6 +137,8 @@ pub async fn retrieve_file_term_block(
     // Track the current byte offset in the output file as we process terms sequentially.
     let mut cur_file_byte_offset = query_file_byte_range.start;
 
+    let prefer_multirange = xet_config().client.prefer_multirange_fetching;
+
     for (local_term_index, term) in raw_reconstruction.terms.iter().enumerate() {
         let xorb_hash: MerkleHash = term.hash.into();
 
@@ -145,52 +148,80 @@ pub async fn retrieve_file_term_block(
             )));
         };
 
-        // Find the XorbMultiRangeFetch entry that contains this term's chunk range.
-        // A V2 xorb descriptor may have multiple fetch entries (e.g. when ranges were
-        // split due to URL length limits), so we search for the one that covers this term.
+        // Find the XorbBlock for this term's chunk range. The behavior depends on the
+        // prefer_multirange_fetching config:
+        //
+        // - When true: one XorbBlock per XorbMultiRangeFetch entry, preserving all ranges in a single block
+        //   (multi-range HTTP request).
+        // - When false (default): one XorbBlock per individual XorbRangeDescriptor, so each range is fetched as a
+        //   separate single-range HTTP request in parallel.
         let xorb_block_index = 'find_xorb_block: {
             for fetch_entry in xorb_descriptor.iter() {
-                // Check if the term's chunk range is fully contained within
-                // one of this fetch entry's ranges.
-                let term_contained = fetch_entry
-                    .ranges
-                    .iter()
-                    .any(|r| r.chunks.start <= term.range.start && term.range.end <= r.chunks.end);
+                if prefer_multirange {
+                    let term_contained = fetch_entry
+                        .ranges
+                        .iter()
+                        .any(|r| r.chunks.start <= term.range.start && term.range.end <= r.chunks.end);
 
-                if !term_contained {
-                    continue;
+                    if !term_contained {
+                        continue;
+                    }
+
+                    let first_chunk_start = fetch_entry.ranges[0].chunks.start;
+
+                    let index = match xorb_index_lookup.entry((xorb_hash, first_chunk_start)) {
+                        Entry::Occupied(entry) => *entry.get(),
+                        Entry::Vacant(entry) => {
+                            let new_index = xorb_blocks.len();
+
+                            let chunk_ranges: Vec<ChunkRange> = fetch_entry.ranges.iter().map(|r| r.chunks).collect();
+                            let http_ranges: Vec<HttpRange> = fetch_entry.ranges.iter().map(|r| r.bytes).collect();
+
+                            xorb_blocks.push(XorbBlock {
+                                xorb_hash,
+                                chunk_ranges,
+                                xorb_block_index: new_index,
+                                references: vec![],
+                                uncompressed_size_if_known: None,
+                                data: RwLock::new(None),
+                            });
+
+                            xorb_block_retrieval_urls.push((fetch_entry.url.clone(), http_ranges));
+
+                            entry.insert(new_index);
+                            new_index
+                        },
+                    };
+
+                    break 'find_xorb_block index;
+                } else {
+                    for range in &fetch_entry.ranges {
+                        if range.chunks.start <= term.range.start && term.range.end <= range.chunks.end {
+                            let index = match xorb_index_lookup.entry((xorb_hash, range.chunks.start)) {
+                                Entry::Occupied(entry) => *entry.get(),
+                                Entry::Vacant(entry) => {
+                                    let new_index = xorb_blocks.len();
+
+                                    xorb_blocks.push(XorbBlock {
+                                        xorb_hash,
+                                        chunk_ranges: vec![range.chunks],
+                                        xorb_block_index: new_index,
+                                        references: vec![],
+                                        uncompressed_size_if_known: None,
+                                        data: RwLock::new(None),
+                                    });
+
+                                    xorb_block_retrieval_urls.push((fetch_entry.url.clone(), vec![range.bytes]));
+
+                                    entry.insert(new_index);
+                                    new_index
+                                },
+                            };
+
+                            break 'find_xorb_block index;
+                        }
+                    }
                 }
-
-                // Use (xorb_hash, first_chunk_start) as a dedup key so that multiple
-                // terms referencing the same fetch entry share a single XorbBlock.
-                let first_chunk_start = fetch_entry.ranges[0].chunks.start;
-
-                let index = match xorb_index_lookup.entry((xorb_hash, first_chunk_start)) {
-                    Entry::Occupied(entry) => *entry.get(),
-                    Entry::Vacant(entry) => {
-                        // First time seeing this fetch entry — create a new XorbBlock.
-                        let new_index = xorb_blocks.len();
-
-                        let chunk_ranges: Vec<ChunkRange> = fetch_entry.ranges.iter().map(|r| r.chunks).collect();
-                        let http_ranges: Vec<HttpRange> = fetch_entry.ranges.iter().map(|r| r.bytes).collect();
-
-                        xorb_blocks.push(XorbBlock {
-                            xorb_hash,
-                            chunk_ranges,
-                            xorb_block_index: new_index,
-                            references: vec![],
-                            uncompressed_size_if_known: None,
-                            data: RwLock::new(None),
-                        });
-
-                        xorb_block_retrieval_urls.push((fetch_entry.url.clone(), http_ranges));
-
-                        entry.insert(new_index);
-                        new_index
-                    },
-                };
-
-                break 'find_xorb_block index;
             }
             return Err(FileReconstructionError::CorruptedReconstruction(format!(
                 "No xorb fetch entry found for file term {local_term_index:?} in xorb info for xorb hash {xorb_hash:?}"

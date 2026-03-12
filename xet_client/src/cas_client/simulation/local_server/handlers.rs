@@ -412,8 +412,19 @@ pub async fn fetch_term(State(state): State<ServerState>, uri: axum::http::Uri, 
     };
 
     if !decoded.byte_ranges.is_empty() {
+        // If the client sends a single-range HTTP Range header, serve just that range.
+        // This simulates S3/CDN behavior where the Range header controls the response
+        // regardless of what ranges are encoded in the presigned URL. This is the
+        // common path when prefer_multirange_fetching is disabled and V2 URLs are
+        // used with individual single-range requests.
+        if let Ok(Some(FileRangeVariant::Normal(range))) = parse_range_header(headers.get(RANGE)) {
+            return match state.client.get_xorb_raw_bytes(&decoded.hash, Some(range)).await {
+                Ok(data) => (StatusCode::PARTIAL_CONTENT, data).into_response(),
+                Err(e) => error_to_response(e),
+            };
+        }
+
         if decoded.byte_ranges.len() == 1 {
-            // Single range: return the raw bytes directly (standard 206 single-range).
             let range = &decoded.byte_ranges[0];
             return match state.client.get_xorb_raw_bytes(&decoded.hash, Some(*range)).await {
                 Ok(data) => (StatusCode::PARTIAL_CONTENT, data).into_response(),
@@ -421,8 +432,8 @@ pub async fn fetch_term(State(state): State<ServerState>, uri: axum::http::Uri, 
             };
         }
 
-        // Multiple ranges: return a multipart/byteranges response (RFC 7233 Section 4.1),
-        // matching the format that S3/CloudFront returns for multi-range requests.
+        // Multiple ranges with no Range header override: return a multipart/byteranges
+        // response (RFC 7233 Section 4.1), matching S3/CloudFront multi-range format.
         let total_length = match state.client.xorb_raw_length(&decoded.hash).await {
             Ok(len) => len,
             Err(e) => return error_to_response(e),

@@ -1736,4 +1736,176 @@ mod tests {
         assert_eq!(bytes_written, file_contents.data.len() as u64);
         assert_eq!(buffer.lock().unwrap().get_ref().clone(), file_contents.data);
     }
+
+    // ==================== Prefer Multirange Fetching Tests ====================
+    //
+    // These tests verify that reconstruction works correctly with both values
+    // of `prefer_multirange_fetching`. When true, V2 multi-range fetch entries
+    // are used as-is (multirange HTTP requests). When false (default), each
+    // range is split into its own XorbBlock and fetched via a separate
+    // single-range request in parallel.
+    //
+    // Uses XetRuntime::new_with_config() to override the config per-test,
+    // following the pattern from test_dynamic_buffer_scaling_noop_increment_preserves_total_permits.
+
+    fn with_multirange_config(prefer: bool) -> Arc<XetRuntime> {
+        let mut config = xet_runtime::config::XetConfig::new();
+        config.client.prefer_multirange_fetching = prefer;
+        XetRuntime::new_with_config(config).unwrap()
+    }
+
+    #[test]
+    fn test_prefer_multirange_triple_disjoint() {
+        for prefer in [false, true] {
+            let rt = with_multirange_config(prefer);
+            rt.external_run_async_task(async {
+                let (client, fc) = setup_test_file(&[(1, (0, 2)), (1, (4, 6)), (1, (8, 10))]).await;
+                reconstruct_and_verify_full(&client, &fc, test_config()).await;
+            })
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn test_prefer_multirange_multi_xorb_interleaved() {
+        for prefer in [false, true] {
+            let rt = with_multirange_config(prefer);
+            rt.external_run_async_task(async {
+                let term_spec: Vec<(u64, (u64, u64))> = vec![
+                    (1, (0, 2)),
+                    (2, (0, 2)),
+                    (1, (4, 6)),
+                    (2, (4, 6)),
+                    (1, (8, 10)),
+                    (2, (8, 10)),
+                ];
+                let (client, fc) = setup_test_file(&term_spec).await;
+                reconstruct_and_verify_full(&client, &fc, test_config()).await;
+            })
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn test_prefer_multirange_partial_range() {
+        for prefer in [false, true] {
+            let rt = with_multirange_config(prefer);
+            rt.external_run_async_task(async {
+                let (client, fc) = setup_test_file(&[(1, (0, 2)), (1, (4, 6)), (1, (8, 10))]).await;
+                let file_len = fc.data.len() as u64;
+                let range = FileRange::new(file_len / 4, file_len * 3 / 4);
+                reconstruct_and_verify_range(&client, &fc, range, test_config()).await;
+            })
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn test_prefer_multirange_complex_three_xorb() {
+        for prefer in [false, true] {
+            let rt = with_multirange_config(prefer);
+            rt.external_run_async_task(async {
+                let term_spec: Vec<(u64, (u64, u64))> = vec![
+                    (1, (0, 2)),
+                    (2, (0, 3)),
+                    (3, (2, 5)),
+                    (1, (5, 8)),
+                    (2, (6, 8)),
+                    (3, (0, 2)),
+                ];
+                let (client, fc) = setup_test_file(&term_spec).await;
+                reconstruct_and_verify_full(&client, &fc, test_config()).await;
+            })
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn test_prefer_multirange_max_ranges_2() {
+        for prefer in [false, true] {
+            let rt = with_multirange_config(prefer);
+            rt.external_run_async_task(async {
+                let client = LocalClient::temporary().await.unwrap();
+                client.set_max_ranges_per_fetch(2);
+
+                let term_spec = &[(1, (0, 2)), (1, (4, 6)), (1, (8, 10)), (1, (12, 14))];
+                let fc = client.upload_random_file(term_spec, TEST_CHUNK_SIZE).await.unwrap();
+
+                let config = test_config();
+                let result = reconstruct_to_vec(&client, fc.file_hash, None, &config, None).await.unwrap();
+                assert_eq!(result, fc.data.as_ref());
+            })
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn test_prefer_multirange_via_server() {
+        for prefer in [false, true] {
+            let rt = with_multirange_config(prefer);
+            rt.external_run_async_task(async {
+                let server = xet_client::cas_client::LocalTestServerBuilder::new().start().await;
+                let fc = server
+                    .remote_client()
+                    .upload_random_file(&[(1, (0, 2)), (1, (4, 6)), (1, (8, 10))], TEST_CHUNK_SIZE)
+                    .await
+                    .unwrap();
+
+                let config = test_config();
+                let result = reconstruct_via_server(&server, fc.file_hash, None, &config).await.unwrap();
+                assert_eq!(result, fc.data.as_ref());
+            })
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn test_prefer_multirange_via_server_max_ranges() {
+        for prefer in [false, true] {
+            let rt = with_multirange_config(prefer);
+            rt.external_run_async_task(async {
+                let server = xet_client::cas_client::LocalTestServerBuilder::new().start().await;
+                let fc = server
+                    .remote_client()
+                    .upload_random_file(
+                        &[(1, (0, 2)), (2, (0, 2)), (1, (4, 6)), (2, (4, 6)), (1, (8, 10))],
+                        TEST_CHUNK_SIZE,
+                    )
+                    .await
+                    .unwrap();
+
+                server.set_max_ranges_per_fetch(2);
+
+                let config = test_config();
+                let result = reconstruct_via_server(&server, fc.file_hash, None, &config).await.unwrap();
+                assert_eq!(result, fc.data.as_ref());
+            })
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn test_prefer_multirange_via_server_partial_range() {
+        for prefer in [false, true] {
+            let rt = with_multirange_config(prefer);
+            rt.external_run_async_task(async {
+                let server = xet_client::cas_client::LocalTestServerBuilder::new().start().await;
+                let fc = server
+                    .remote_client()
+                    .upload_random_file(&[(1, (0, 3)), (2, (0, 2)), (1, (3, 5)), (2, (4, 6))], TEST_CHUNK_SIZE)
+                    .await
+                    .unwrap();
+
+                let file_len = fc.data.len() as u64;
+                let range = FileRange::new(file_len / 4, file_len * 3 / 4);
+
+                let config = test_config();
+                let result = reconstruct_via_server(&server, fc.file_hash, Some(range), &config)
+                    .await
+                    .unwrap();
+                assert_eq!(result, &fc.data[range.start as usize..range.end as usize]);
+            })
+            .unwrap();
+        }
+    }
 }
