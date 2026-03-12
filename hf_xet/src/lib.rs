@@ -145,9 +145,7 @@ pub fn upload_files(
     skip_sha256: bool,
 ) -> PyResult<Vec<PyXetUploadInfo>> {
     if skip_sha256 && sha256s.is_some() {
-        return Err(PyRuntimeError::new_err(
-            "skip_sha256=True and sha256s are mutually exclusive",
-        ));
+        return Err(PyRuntimeError::new_err("skip_sha256=True and sha256s are mutually exclusive"));
     }
 
     if let Some(ref s) = sha256s

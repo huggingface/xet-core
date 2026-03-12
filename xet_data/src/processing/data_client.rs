@@ -116,9 +116,17 @@ pub async fn upload_bytes_async(
     let upload_session = FileUploadSession::new(config.into(), progress_updater).await?;
     let clean_futures = file_contents.into_iter().map(|blob| {
         let upload_session = upload_session.clone();
-        let sha256_policy = if skip_sha256 { Sha256Policy::Skip } else { Sha256Policy::Compute };
-        async move { clean_bytes(upload_session, blob, None, sha256_policy).await.map(|(xf, _metrics)| xf) }
-            .instrument(info_span!("clean_task"))
+        let sha256_policy = if skip_sha256 {
+            Sha256Policy::Skip
+        } else {
+            Sha256Policy::Compute
+        };
+        async move {
+            clean_bytes(upload_session, blob, None, sha256_policy)
+                .await
+                .map(|(xf, _metrics)| xf)
+        }
+        .instrument(info_span!("clean_task"))
     });
     let files = run_constrained_with_semaphore(clean_futures, semaphore).await?;
 
@@ -184,7 +192,8 @@ pub async fn upload_async(
         }
     };
 
-    let files_sha256_and_tracking_ids = multizip((file_paths.into_iter(), sha256_policies, std::iter::repeat_with(Ulid::new)));
+    let files_sha256_and_tracking_ids =
+        multizip((file_paths.into_iter(), sha256_policies, std::iter::repeat_with(Ulid::new)));
 
     let ret = upload_session.upload_files(files_sha256_and_tracking_ids).await?;
 
