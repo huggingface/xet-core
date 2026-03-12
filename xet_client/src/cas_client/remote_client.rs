@@ -172,74 +172,32 @@ impl RemoteClient {
 }
 
 impl RemoteClient {
-    /// V1 reconstruction: returns per-range presigned URLs.
-    pub async fn get_reconstruction_v1(
+    async fn get_reconstruction_impl<T>(
         &self,
         file_id: &MerkleHash,
         bytes_range: Option<FileRange>,
-    ) -> Result<Option<QueryReconstructionResponse>> {
+        api_version: &str,
+    ) -> Result<Option<T>>
+    where
+        T: serde::de::DeserializeOwned + 'static,
+    {
         let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
-        let url = Url::parse(&format!("{}/v1/reconstructions/{}", self.endpoint, file_id.hex()))?;
+        let url = Url::parse(&format!("{}/{api_version}/reconstructions/{}", self.endpoint, file_id.hex()))?;
+        let api_tag_owned = format!("cas::get_reconstruction_{api_version}");
+        let api_tag: &'static str = api_tag_owned.leak();
+
         event!(
             INFORMATION_LOG_LEVEL,
             call_id,
             %file_id,
             ?bytes_range,
-            "Starting get_reconstruction_v1 API call",
+            api_version,
+            "Starting get_reconstruction API call",
         );
 
-        let api_tag = "cas::get_reconstruction_v1";
         let client = self.authenticated_http_client.clone();
 
-        let result: Result<QueryReconstructionResponse> = RetryWrapper::new(api_tag)
-            .run_and_extract_json(move || {
-                let mut request = client.get(url.clone()).with_extension(Api(api_tag));
-                if let Some(range) = bytes_range {
-                    request = request.header(RANGE, HttpRange::from(range).range_header())
-                }
-
-                request.send()
-            })
-            .await;
-
-        match result {
-            Ok(query_reconstruction_response) => {
-                event!(
-                    INFORMATION_LOG_LEVEL,
-                    call_id,
-                    %file_id,
-                    ?bytes_range,
-                    "Completed get_reconstruction_v1 API call"
-                );
-                Ok(Some(query_reconstruction_response))
-            },
-            Err(CasClientError::ReqwestError(ref e, _)) if e.status() == Some(StatusCode::RANGE_NOT_SATISFIABLE) => {
-                Ok(None)
-            },
-            Err(e) => Err(e),
-        }
-    }
-
-    /// V2 reconstruction: returns per-xorb multi-range fetch descriptors.
-    pub async fn get_reconstruction_v2(
-        &self,
-        file_id: &MerkleHash,
-        bytes_range: Option<FileRange>,
-    ) -> Result<Option<QueryReconstructionResponseV2>> {
-        let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
-        let url = Url::parse(&format!("{}/v2/reconstructions/{}", self.endpoint, file_id.hex()))?;
-        event!(
-            INFORMATION_LOG_LEVEL,
-            call_id,
-            %file_id,
-            ?bytes_range,
-            "Starting get_reconstruction_v2 API call",
-        );
-
-        let api_tag = "cas::get_reconstruction_v2";
-        let client = self.authenticated_http_client.clone();
-
-        let result: Result<QueryReconstructionResponseV2> = RetryWrapper::new(api_tag)
+        let result: Result<T> = RetryWrapper::new(api_tag)
             .run_and_extract_json(move || {
                 let mut request = client.get(url.clone()).with_extension(Api(api_tag));
                 if let Some(range) = bytes_range {
@@ -256,7 +214,8 @@ impl RemoteClient {
                     call_id,
                     %file_id,
                     ?bytes_range,
-                    "Completed get_reconstruction_v2 API call"
+                    api_version,
+                    "Completed get_reconstruction API call"
                 );
                 Ok(Some(response))
             },
@@ -265,6 +224,24 @@ impl RemoteClient {
             },
             Err(e) => Err(e),
         }
+    }
+
+    /// V1 reconstruction: returns per-range presigned URLs.
+    pub async fn get_reconstruction_v1(
+        &self,
+        file_id: &MerkleHash,
+        bytes_range: Option<FileRange>,
+    ) -> Result<Option<QueryReconstructionResponse>> {
+        self.get_reconstruction_impl(file_id, bytes_range, "v1").await
+    }
+
+    /// V2 reconstruction: returns per-xorb multi-range fetch descriptors.
+    pub async fn get_reconstruction_v2(
+        &self,
+        file_id: &MerkleHash,
+        bytes_range: Option<FileRange>,
+    ) -> Result<Option<QueryReconstructionResponseV2>> {
+        self.get_reconstruction_impl(file_id, bytes_range, "v2").await
     }
 }
 
@@ -278,6 +255,8 @@ impl Client for RemoteClient {
     ) -> Result<Option<QueryReconstructionResponseV2>> {
         let forced_version = xet_config().client.reconstruction_api_version;
 
+        // Prefer V2; fall back to V1 on 404/501; persist detected version to
+        // avoid repeated fallback attempts.
         let version = match forced_version {
             Some(v) => v,
             None => {
@@ -386,6 +365,7 @@ impl Client for RemoteClient {
                         let url =
                             Url::parse(&url_string).map_err(|e| reqwest_middleware::Error::Middleware(e.into()))?;
 
+                        // RFC 7233 §2.1: single-range uses "bytes=S-E", multi-range uses "bytes=S1-E1,S2-E2,..."
                         let range_header_value = if url_ranges.len() == 1 {
                             url_ranges[0].range_header()
                         } else {

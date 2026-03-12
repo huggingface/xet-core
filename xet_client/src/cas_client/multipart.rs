@@ -87,9 +87,10 @@ fn parse_content_range(headers: &[u8]) -> Result<HttpRange> {
     for line in headers_str.split("\r\n") {
         let line_lower = line.to_ascii_lowercase();
         if let Some(value) = line_lower.strip_prefix("content-range:") {
-            let value = value.trim();
-            if value.starts_with("bytes ") {
-                let original_value = line[line.len() - value.len() + "bytes ".len()..].trim();
+            // Digits, dashes, and slashes are case-invariant, so we can parse
+            // directly from the lowercased value.
+            if let Some(range_spec) = value.trim().strip_prefix("bytes ") {
+                let original_value = range_spec.trim();
                 let slash_pos = original_value
                     .find('/')
                     .ok_or_else(|| CasClientError::Other(format!("Invalid Content-Range: {line}")))?;

@@ -342,7 +342,7 @@ pub async fn retrieve_file_term_block(
 mod tests {
     use std::sync::Arc;
 
-    use more_asserts::{assert_ge, assert_le};
+    use more_asserts::assert_le;
     use xet_client::cas_client::{ClientTestingUtils, LocalClient, RandomFileContents};
     use xet_client::cas_types::{ChunkRange, FileRange};
     use xet_runtime::utils::UniqueId;

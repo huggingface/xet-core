@@ -21,7 +21,7 @@ pub struct TermBlockRetrievalURLs {
     // which may be smaller than the originally requested range if the file ends early.
     pub byte_range: FileRange,
 
-    // The xorb retreival URLs.  These could be refreshed if need be.
+    // The xorb retrieval URLs.  These could be refreshed if need be.
     // Indexed by xorb_block_index stored in each XorbBlock.
     // Each entry is (url, http_ranges) to support multi-range V2 blocks.
     #[allow(clippy::type_complexity)]
