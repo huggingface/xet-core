@@ -17,7 +17,7 @@ use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
 use xet_core_structures::xorb_object::SerializedXorbObject;
 use xet_runtime::core::{XetRuntime, xet_config};
 
-use super::configurations::{TranslatorConfig, resolve_compression_policy};
+use super::configurations::TranslatorConfig;
 use super::errors::*;
 use super::file_cleaner::{Sha256Policy, SingleFileCleaner};
 use super::remote_client_interface::create_remote_client;
@@ -320,9 +320,8 @@ impl FileUploadSession {
 
         // Serialize the object; this can be relatively expensive, so run it on a compute thread.
         // XORBs are sent without footer - the server/client reconstructs it from chunk data.
-        let compression_scheme = resolve_compression_policy(&xet_config().data.compression_policy)?;
         let xorb_obj = XetRuntime::current()
-            .spawn_blocking(move || SerializedXorbObject::from_xorb(xorb, compression_scheme, false))
+            .spawn_blocking(move || SerializedXorbObject::from_xorb(xorb, false))
             .await??;
 
         let session = self.clone();

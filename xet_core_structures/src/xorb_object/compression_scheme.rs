@@ -61,6 +61,20 @@ impl TryFrom<u8> for CompressionScheme {
 }
 
 impl CompressionScheme {
+    /// Parses a compression policy string into an `Option<CompressionScheme>`.
+    /// Returns `None` for auto-detect (empty or "auto"), or `Some(scheme)` for explicit values.
+    pub fn from_policy_str(policy: &str) -> Result<Option<Self>> {
+        match policy.trim().to_lowercase().as_str() {
+            "" | "auto" => Ok(None),
+            "none" => Ok(Some(CompressionScheme::None)),
+            "lz4" => Ok(Some(CompressionScheme::LZ4)),
+            "bg4-lz4" => Ok(Some(CompressionScheme::ByteGrouping4LZ4)),
+            _ => Err(XorbObjectError::Format(anyhow!(
+                "Invalid compression policy value '{policy}'. Valid values are: auto, none, lz4, bg4-lz4."
+            ))),
+        }
+    }
+
     pub fn compress_from_slice<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, [u8]>> {
         Ok(match self {
             CompressionScheme::None => data.into(),
@@ -174,6 +188,17 @@ mod tests {
         assert_eq!(Into::<&str>::into(CompressionScheme::None), "none");
         assert_eq!(Into::<&str>::into(CompressionScheme::LZ4), "lz4");
         assert_eq!(Into::<&str>::into(CompressionScheme::ByteGrouping4LZ4), "bg4-lz4");
+    }
+
+    #[test]
+    fn test_from_policy_str() {
+        assert_eq!(CompressionScheme::from_policy_str("").unwrap(), None);
+        assert_eq!(CompressionScheme::from_policy_str("auto").unwrap(), None);
+        assert_eq!(CompressionScheme::from_policy_str("none").unwrap(), Some(CompressionScheme::None));
+        assert_eq!(CompressionScheme::from_policy_str("lz4").unwrap(), Some(CompressionScheme::LZ4));
+        assert_eq!(CompressionScheme::from_policy_str("bg4-lz4").unwrap(), Some(CompressionScheme::ByteGrouping4LZ4));
+        assert_eq!(CompressionScheme::from_policy_str("  LZ4 ").unwrap(), Some(CompressionScheme::LZ4));
+        assert!(CompressionScheme::from_policy_str("zstd").is_err());
     }
 
     #[test]

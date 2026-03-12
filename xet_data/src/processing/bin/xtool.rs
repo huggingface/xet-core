@@ -232,7 +232,7 @@ fn main() -> Result<()> {
         })?;
         let scheme_str: &str = scheme.into();
         unsafe {
-            std::env::set_var("HF_XET_DATA_COMPRESSION_POLICY", scheme_str);
+            std::env::set_var("HF_XET_XORB_COMPRESSION_POLICY", scheme_str);
         }
     }
 

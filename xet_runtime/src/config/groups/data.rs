@@ -103,13 +103,4 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_DATA_STAGING_SUBDIR` to set this value.
     ref staging_subdir: String = "staging".to_string();
 
-    /// Compression policy for xorb data.
-    /// Valid values: "" or "auto" for automatic detection, "none", "lz4", "bg4-lz4".
-    /// When set to "" or "auto", the best compression scheme is chosen based on data analysis.
-    ///
-    /// The default value is "" (auto-detect).
-    ///
-    /// Use the environment variable `HF_XET_DATA_COMPRESSION_POLICY` to set this value.
-    ref compression_policy: String = "".to_string();
-
 });

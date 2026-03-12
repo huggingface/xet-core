@@ -4,25 +4,9 @@ use std::sync::Arc;
 use http::HeaderMap;
 use tracing::info;
 use xet_client::cas_client::auth::AuthConfig;
-use xet_core_structures::xorb_object::CompressionScheme;
 use xet_runtime::core::{xet_cache_root, xet_config};
 
-use super::errors::{DataProcessingError, Result};
-
-/// Parses the `compression_policy` config string into an `Option<CompressionScheme>`.
-/// Returns `None` for auto-detect (empty or "auto"), or `Some(scheme)` for explicit values.
-pub fn resolve_compression_policy(policy: &str) -> Result<Option<CompressionScheme>> {
-    let normalized_policy = policy.trim().to_lowercase();
-    match normalized_policy.as_str() {
-        "" | "auto" => Ok(None),
-        "none" => Ok(Some(CompressionScheme::None)),
-        "lz4" => Ok(Some(CompressionScheme::LZ4)),
-        "bg4-lz4" => Ok(Some(CompressionScheme::ByteGrouping4LZ4)),
-        _ => Err(DataProcessingError::ParameterError(format!(
-            "Invalid HF_XET_DATA_COMPRESSION_POLICY value '{policy}'. Valid values are: auto, none, lz4, bg4-lz4."
-        ))),
-    }
-}
+use super::errors::Result;
 
 /// Session-specific configuration that varies per upload/download session.
 /// These are runtime values that cannot be configured via environment variables.
@@ -38,16 +22,6 @@ pub struct SessionContext {
 }
 
 impl SessionContext {
-    pub fn new(endpoint: impl Into<String>) -> Self {
-        Self {
-            endpoint: endpoint.into(),
-            auth: None,
-            custom_headers: None,
-            repo_paths: Vec::new(),
-            session_id: None,
-        }
-    }
-
     /// Returns true if this endpoint points to a local filesystem path.
     pub fn is_local(&self) -> bool {
         self.endpoint.starts_with(&xet_config().data.local_cas_scheme)
@@ -64,39 +38,28 @@ impl SessionContext {
         self.endpoint == "memory://"
     }
 
-    pub fn with_auth(mut self, auth: Option<AuthConfig>) -> Self {
-        self.auth = auth;
-        self
-    }
-
-    pub fn with_custom_headers(mut self, headers: Option<Arc<HeaderMap>>) -> Self {
-        self.custom_headers = headers;
-        self
-    }
-
-    pub fn with_repo_paths(mut self, repo_paths: Vec<String>) -> Self {
-        self.repo_paths = repo_paths;
-        self
-    }
-
-    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
-        let id = session_id.into();
-        if !id.is_empty() {
-            self.session_id = Some(id);
-        }
-        self
-    }
-
     /// Creates a SessionContext for local filesystem-based operations.
     pub fn for_local_path(base_dir: impl AsRef<Path>) -> Self {
         let path = base_dir.as_ref().to_path_buf();
         let endpoint = format!("{}{}", xet_config().data.local_cas_scheme, path.display());
-        Self::new(endpoint).with_repo_paths(vec!["".into()])
+        Self {
+            endpoint,
+            auth: None,
+            custom_headers: None,
+            repo_paths: vec!["".into()],
+            session_id: None,
+        }
     }
 
     /// Creates a SessionContext for in-memory storage.
     pub fn for_memory() -> Self {
-        Self::new("memory://").with_repo_paths(vec!["".into()])
+        Self {
+            endpoint: "memory://".into(),
+            auth: None,
+            custom_headers: None,
+            repo_paths: vec!["".into()],
+            session_id: None,
+        }
     }
 }
 
@@ -118,19 +81,6 @@ pub struct TranslatorConfig {
 }
 
 impl TranslatorConfig {
-    fn with_shard_directories(
-        session: SessionContext,
-        shard_cache_directory: PathBuf,
-        shard_session_directory: PathBuf,
-    ) -> Self {
-        Self {
-            session,
-            shard_cache_directory,
-            shard_session_directory,
-            force_disable_progress_aggregation: false,
-        }
-    }
-
     fn create_base_xet_dir(base_dir: impl AsRef<Path>) -> Result<PathBuf> {
         let base_path = base_dir.as_ref().join("xet");
         std::fs::create_dir_all(&base_path)?;
@@ -172,7 +122,12 @@ impl TranslatorConfig {
             "TranslatorConfig initialized"
         );
 
-        Ok(Self::with_shard_directories(session, shard_cache_directory, shard_session_directory))
+        Ok(Self {
+            session,
+            shard_cache_directory,
+            shard_session_directory,
+            force_disable_progress_aggregation: false,
+        })
     }
 
     /// Creates a TranslatorConfig for local filesystem-based storage.
@@ -187,33 +142,34 @@ impl TranslatorConfig {
         let config = xet_config();
         let base_path = Self::create_base_xet_dir(base_dir)?;
 
-        Ok(Self::with_shard_directories(
+        Ok(Self {
             session,
-            base_path.join(&config.shard.cache_subdir),
-            base_path.join(&config.session.session_dir_name),
-        ))
-    }
-
-    pub fn with_session_id(mut self, session_id: &str) -> Self {
-        if !session_id.is_empty() {
-            self.session.session_id = Some(session_id.to_owned());
-        }
-        self
+            shard_cache_directory: base_path.join(&config.shard.cache_subdir),
+            shard_session_directory: base_path.join(&config.session.session_dir_name),
+            force_disable_progress_aggregation: false,
+        })
     }
 
     /// Creates a TranslatorConfig that connects to a CAS server at the given endpoint.
     /// Shard cache and session directories are created under the provided base directory.
     /// Useful for tests that use LocalTestServer.
     pub fn test_server_config(endpoint: impl AsRef<str>, base_dir: impl AsRef<Path>) -> Result<Self> {
-        let session = SessionContext::new(endpoint.as_ref().to_string()).with_repo_paths(vec!["".into()]);
+        let session = SessionContext {
+            endpoint: endpoint.as_ref().to_string(),
+            auth: None,
+            custom_headers: None,
+            repo_paths: vec!["".into()],
+            session_id: None,
+        };
         let config = xet_config();
         let base_path = Self::create_base_xet_dir(base_dir)?;
 
-        Ok(Self::with_shard_directories(
+        Ok(Self {
             session,
-            base_path.join(&config.shard.cache_subdir),
-            base_path.join(&config.session.session_dir_name),
-        ))
+            shard_cache_directory: base_path.join(&config.shard.cache_subdir),
+            shard_session_directory: base_path.join(&config.session.session_dir_name),
+            force_disable_progress_aggregation: false,
+        })
     }
 
     pub fn disable_progress_aggregation(mut self) -> Self {
@@ -241,25 +197,8 @@ fn compute_cache_path(endpoint: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;
-    use xet_core_structures::xorb_object::CompressionScheme;
 
-    use super::{SessionContext, TranslatorConfig, resolve_compression_policy};
-
-    #[test]
-    fn test_resolve_compression_policy_accepts_supported_values() {
-        assert_eq!(resolve_compression_policy("").unwrap(), None);
-        assert_eq!(resolve_compression_policy("auto").unwrap(), None);
-        assert_eq!(resolve_compression_policy("none").unwrap(), Some(CompressionScheme::None));
-        assert_eq!(resolve_compression_policy("lz4").unwrap(), Some(CompressionScheme::LZ4));
-        assert_eq!(resolve_compression_policy("bg4-lz4").unwrap(), Some(CompressionScheme::ByteGrouping4LZ4));
-        assert_eq!(resolve_compression_policy("  LZ4 ").unwrap(), Some(CompressionScheme::LZ4));
-    }
-
-    #[test]
-    fn test_resolve_compression_policy_rejects_invalid_value() {
-        let err = resolve_compression_policy("zstd").unwrap_err();
-        assert!(err.to_string().contains("HF_XET_DATA_COMPRESSION_POLICY"));
-    }
+    use super::{SessionContext, TranslatorConfig};
 
     #[test]
     fn test_session_context_mode_detection() {
@@ -274,7 +213,13 @@ mod tests {
         assert!(!memory_session.is_local());
         assert!(memory_session.local_path().is_none());
 
-        let remote_session = SessionContext::new("http://localhost:8080");
+        let remote_session = SessionContext {
+            endpoint: "http://localhost:8080".into(),
+            auth: None,
+            custom_headers: None,
+            repo_paths: Vec::new(),
+            session_id: None,
+        };
         assert!(!remote_session.is_local());
         assert!(!remote_session.is_memory());
         assert!(remote_session.local_path().is_none());

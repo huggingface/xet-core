@@ -131,10 +131,12 @@ impl TransferAgent for XetAgent {
 
         let headers = user_agent_headers;
 
-        let config =
+        let mut config =
             default_config(cas_url, Some((token, token_expiry)), Some(token_refresher), Some(Arc::new(headers)))?
-                .disable_progress_aggregation()
-                .with_session_id(session_id); // upload one file at a time so no need for the heavy progress aggregator
+                .disable_progress_aggregation();
+        if !session_id.is_empty() {
+            config.session.session_id = Some(session_id.to_owned());
+        }
         let session = FileUploadSession::new(config.into(), Some(Arc::new(xet_updater))).await?;
 
         let Some(file_path) = &req.path else {

@@ -133,7 +133,7 @@ pub trait ClientTestingUtils: Client + Send + Sync {
 
             shard.add_xorb_block(raw_xorb.xorb_info.clone())?;
 
-            let serialized_xorb = SerializedXorbObject::from_xorb(raw_xorb.clone(), None, true)?;
+            let serialized_xorb = SerializedXorbObject::from_xorb(raw_xorb.clone(), true)?;
 
             let upload_permit = self.acquire_upload_permit().await?;
             self.upload_xorb("default", serialized_xorb, None, upload_permit).await?;

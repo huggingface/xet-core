@@ -31,11 +31,13 @@ pub fn default_config(
     let (token, token_expiration) = token_info.unzip();
     let auth_cfg = AuthConfig::maybe_new(token, token_expiration, token_refresher);
 
-    let session = SessionContext::new(endpoint)
-        .with_auth(auth_cfg)
-        .with_custom_headers(custom_headers)
-        .with_repo_paths(vec!["".into()])
-        .with_session_id(Ulid::new().to_string());
+    let session = SessionContext {
+        endpoint,
+        auth: auth_cfg,
+        custom_headers,
+        repo_paths: vec!["".into()],
+        session_id: Some(Ulid::new().to_string()),
+    };
 
     TranslatorConfig::new(session)
 }
