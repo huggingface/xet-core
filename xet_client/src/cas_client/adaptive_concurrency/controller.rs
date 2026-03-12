@@ -21,7 +21,6 @@ use super::rtt_prediction::RTTPredictor;
 const MIN_PARTIAL_REPORT_INTERVAL_MS: u64 = 200;
 const PARTIAL_REPORT_WEIGHT_RATIO: f64 = 0.2;
 
-const MIN_REFERENCE_TRANSMISSION_SIZE: u64 = 1024 * 1024; // 1 MB floor
 const REFERENCE_SIZE_QUANTILE_Z: f64 = 1.645; // z-score for 95th percentile
 const MIN_SIZE_OBSERVATIONS_FOR_REFERENCE: u64 = 3;
 
@@ -134,7 +133,7 @@ impl ConcurrencyControllerState {
         let config = xet_config();
         let (predicted_max_rtt, prediction_max_rtt_standard_error) = self
             .rtt_predictor
-            .predict(config.client.ac_target_rtt_transmission_size, current_concurrency);
+            .predict(*config.client.ac_max_reference_transmission_size, current_concurrency);
 
         let predicted_bandwidth = self.rtt_predictor.predicted_bandwidth();
 
@@ -147,7 +146,7 @@ impl ConcurrencyControllerState {
 
     /// Estimates a workload-appropriate reference transmission size using the 95th percentile
     /// of observed transfer sizes (log-normal model). Returns None if insufficient data.
-    /// The result is clamped to [MIN_REFERENCE_TRANSMISSION_SIZE, ac_target_rtt_transmission_size].
+    /// The result is clamped to [ac_min_reference_transmission_size, ac_max_reference_transmission_size].
     fn estimated_reference_transmission_size(&self) -> Option<u64> {
         if self.size_observation_count < MIN_SIZE_OBSERVATIONS_FOR_REFERENCE {
             return None;
@@ -161,9 +160,10 @@ impl ConcurrencyControllerState {
         let quantile_95 = (mu + REFERENCE_SIZE_QUANTILE_Z * sigma).exp();
 
         let config = xet_config();
-        let max_size = config.client.ac_target_rtt_transmission_size;
+        let min_size = *config.client.ac_min_reference_transmission_size;
+        let max_size = *config.client.ac_max_reference_transmission_size;
 
-        Some((quantile_95 as u64).clamp(MIN_REFERENCE_TRANSMISSION_SIZE, max_size))
+        Some((quantile_95 as u64).clamp(min_size, max_size))
     }
 
     fn update_size_tracking(&mut self, n_bytes: u64) {
@@ -506,7 +506,7 @@ impl AdaptiveConcurrencyController {
         // when most transfers are small, the reference size drops and concurrency can grow faster.
         let reference_size = state_lg
             .estimated_reference_transmission_size()
-            .unwrap_or(config.client.ac_target_rtt_transmission_size);
+            .unwrap_or(*config.client.ac_max_reference_transmission_size);
         let target_rtt_secs = config.client.ac_target_rtt.as_secs_f64();
 
         // If the success ratio is healthy and the predicted RTT is below the target RTT,
@@ -995,8 +995,8 @@ mod tests {
         let config = xet_config();
 
         // With zero variance, the 95th percentile should equal the mean (~10MB).
-        debug_assert!(ref_size >= MIN_REFERENCE_TRANSMISSION_SIZE);
-        debug_assert_le!(ref_size, config.client.ac_target_rtt_transmission_size);
+        debug_assert!(ref_size >= *config.client.ac_min_reference_transmission_size);
+        debug_assert_le!(ref_size, *config.client.ac_max_reference_transmission_size);
         assert!((5 * 1024 * 1024..=12 * 1024 * 1024).contains(&ref_size));
     }
 
@@ -1009,8 +1009,9 @@ mod tests {
             state.update_size_tracking(size);
         }
 
+        let config = xet_config();
         let ref_size = state.estimated_reference_transmission_size().unwrap();
-        assert_eq!(ref_size, MIN_REFERENCE_TRANSMISSION_SIZE);
+        assert_eq!(ref_size, *config.client.ac_min_reference_transmission_size);
     }
 
     #[test]
@@ -1024,7 +1025,7 @@ mod tests {
 
         let ref_size = state.estimated_reference_transmission_size().unwrap();
         let config = xet_config();
-        assert!(ref_size <= config.client.ac_target_rtt_transmission_size);
+        assert!(ref_size <= *config.client.ac_max_reference_transmission_size);
     }
 
     #[test]
@@ -1060,8 +1061,8 @@ mod tests {
         }
 
         let ref_size = state.estimated_reference_transmission_size().unwrap();
-        debug_assert!(ref_size >= MIN_REFERENCE_TRANSMISSION_SIZE);
-        debug_assert_le!(ref_size, config.client.ac_target_rtt_transmission_size);
+        debug_assert!(ref_size >= *config.client.ac_min_reference_transmission_size);
+        debug_assert_le!(ref_size, *config.client.ac_max_reference_transmission_size);
 
         // Mixed workloads should produce a larger reference than the small-only baseline.
         assert!(ref_size > small_only_ref_size);
