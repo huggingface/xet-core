@@ -257,14 +257,16 @@ impl FileUploadSession {
     pub async fn start_clean(
         self: &Arc<Self>,
         tracking_name: Option<Arc<str>>,
-        size: u64,
+        size: Option<u64>,
         sha256: Sha256Policy,
         tracking_id: Ulid,
     ) -> SingleFileCleaner {
-        // Get a new file id for the completion tracking
+        // Get a new file id for the completion tracking.
+        // When `size` is `None`, the final file size is unknown (streaming uploads);
+        // the tracker will accept incremental size updates without debug_assert panics.
         let file_id = self
             .completion_tracker
-            .register_new_file(tracking_id, tracking_name.clone().unwrap_or_default(), Some(size))
+            .register_new_file(tracking_id, tracking_name.clone().unwrap_or_default(), size)
             .await;
 
         SingleFileCleaner::new(tracking_name, file_id, sha256, self.clone())
@@ -577,7 +579,7 @@ mod tests {
             .unwrap();
 
         let mut cleaner = upload_session
-            .start_clean(Some("test".into()), read_data.len() as u64, Sha256Policy::Compute, Ulid::new())
+            .start_clean(Some("test".into()), Some(read_data.len() as u64), Sha256Policy::Compute, Ulid::new())
             .await;
 
         // Read blocks from the source file and hand them to the cleaning handle
@@ -664,7 +666,7 @@ mod tests {
                         .unwrap();
 
                 let mut cleaner = upload_session
-                    .start_clean(Some("test".into()), data.len() as u64, Sha256Policy::Skip, Ulid::new())
+                    .start_clean(Some("test".into()), Some(data.len() as u64), Sha256Policy::Skip, Ulid::new())
                     .await;
                 cleaner.add_data(data).await.unwrap();
                 cleaner.finish().await.unwrap();
