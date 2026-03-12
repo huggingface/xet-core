@@ -79,8 +79,14 @@ impl XetConfig {
         self
     }
 
-    /// Set a configuration value by dotted path (e.g. "data.max_concurrent_file_ingestion").
-    pub fn set(&mut self, path: &str, value: impl ToString) -> Result<(), ConfigError> {
+    /// Return a new config with the value at the given dotted path updated
+    /// (e.g. "data.max_concurrent_file_ingestion").
+    pub fn with_config(mut self, path: &str, value: impl ToString) -> Result<Self, ConfigError> {
+        self.set_field(path, value)?;
+        Ok(self)
+    }
+
+    fn set_field(&mut self, path: &str, value: impl ToString) -> Result<(), ConfigError> {
         let (group, field) = path.split_once('.').ok_or_else(|| ConfigError::InvalidPath(path.to_owned()))?;
 
         match group {
@@ -95,6 +101,27 @@ impl XetConfig {
             #[cfg(not(target_family = "wasm"))]
             "system_monitor" => self.system_monitor.set(field, value),
             _ => Err(ConfigError::UnknownGroup(group.to_owned())),
+        }
+    }
+
+    #[cfg(feature = "python")]
+    fn set_field_from_python(&mut self, path: &str, value: &pyo3::Bound<'_, pyo3::PyAny>) -> pyo3::PyResult<()> {
+        let (group, field) = path.split_once('.').ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err(ConfigError::InvalidPath(path.to_owned()).to_string())
+        })?;
+
+        match group {
+            "data" => self.data.set_from_python(field, value),
+            "shard" => self.shard.set_from_python(field, value),
+            "deduplication" => self.deduplication.set_from_python(field, value),
+            "chunk_cache" => self.chunk_cache.set_from_python(field, value),
+            "client" => self.client.set_from_python(field, value),
+            "log" => self.log.set_from_python(field, value),
+            "reconstruction" => self.reconstruction.set_from_python(field, value),
+            "xorb" => self.xorb.set_from_python(field, value),
+            #[cfg(not(target_family = "wasm"))]
+            "system_monitor" => self.system_monitor.set_from_python(field, value),
+            _ => Err(pyo3::exceptions::PyValueError::new_err(ConfigError::UnknownGroup(group.to_owned()).to_string())),
         }
     }
 
@@ -124,67 +151,66 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_set_and_get_via_group() {
-        let mut config = XetConfig::default();
-        config.data.set("max_concurrent_file_ingestion", "16").unwrap();
+    fn test_with_config_and_get() {
+        let config = XetConfig::default()
+            .with_config("data.max_concurrent_file_ingestion", "16")
+            .unwrap();
         assert_eq!(config.data.max_concurrent_file_ingestion, 16);
-        assert_eq!(config.data.get("max_concurrent_file_ingestion").unwrap(), "16");
-    }
-
-    #[test]
-    fn test_set_with_integer() {
-        let mut config = XetConfig::default();
-        config.data.set("max_concurrent_file_ingestion", 32).unwrap();
-        assert_eq!(config.data.max_concurrent_file_ingestion, 32);
-    }
-
-    #[test]
-    fn test_set_and_get_via_dotted_path() {
-        let mut config = XetConfig::default();
-        config.set("data.max_concurrent_file_ingestion", "16").unwrap();
         assert_eq!(config.get("data.max_concurrent_file_ingestion").unwrap(), "16");
-        assert_eq!(config.data.max_concurrent_file_ingestion, 16);
     }
 
     #[test]
-    fn test_set_dotted_path_with_integer() {
-        let mut config = XetConfig::default();
-        config.set("data.max_concurrent_file_ingestion", 64).unwrap();
+    fn test_with_config_integer() {
+        let config = XetConfig::default()
+            .with_config("data.max_concurrent_file_ingestion", 64)
+            .unwrap();
         assert_eq!(config.data.max_concurrent_file_ingestion, 64);
     }
 
     #[test]
-    fn test_set_duration_field() {
-        let mut config = XetConfig::default();
-        config.set("data.progress_update_interval", "500ms").unwrap();
+    fn test_with_config_duration_field() {
+        let config = XetConfig::default()
+            .with_config("data.progress_update_interval", "500ms")
+            .unwrap();
         assert_eq!(config.data.progress_update_interval, std::time::Duration::from_millis(500));
     }
 
     #[test]
-    fn test_set_byte_size_field() {
-        let mut config = XetConfig::default();
-        config.set("data.ingestion_block_size", "16MB").unwrap();
+    fn test_with_config_byte_size_field() {
+        let config = XetConfig::default().with_config("data.ingestion_block_size", "16MB").unwrap();
         assert_eq!(config.data.ingestion_block_size.as_u64(), 16_000_000);
     }
 
     #[test]
-    fn test_set_bool_field() {
-        let mut config = XetConfig::default();
-        config.set("client.enable_adaptive_concurrency", "false").unwrap();
+    fn test_with_config_bool_field() {
+        let config = XetConfig::default()
+            .with_config("client.enable_adaptive_concurrency", "false")
+            .unwrap();
         assert!(!config.client.enable_adaptive_concurrency);
     }
 
     #[test]
-    fn test_set_string_field() {
-        let mut config = XetConfig::default();
-        config.set("data.default_cas_endpoint", "http://example.com:9090").unwrap();
+    fn test_with_config_string_field() {
+        let config = XetConfig::default()
+            .with_config("data.default_cas_endpoint", "http://example.com:9090")
+            .unwrap();
         assert_eq!(config.data.default_cas_endpoint, "http://example.com:9090");
     }
 
     #[test]
+    fn test_with_config_chained() {
+        let config = XetConfig::default()
+            .with_config("data.max_concurrent_file_ingestion", 16)
+            .unwrap()
+            .with_config("client.retry_max_attempts", 10)
+            .unwrap();
+        assert_eq!(config.data.max_concurrent_file_ingestion, 16);
+        assert_eq!(config.client.retry_max_attempts, 10);
+    }
+
+    #[test]
     fn test_unknown_field_error() {
-        let mut config = XetConfig::default();
-        let result = config.set("data.nonexistent_field", "42");
+        let result = XetConfig::default().with_config("data.nonexistent_field", "42");
         assert!(result.is_err());
         match result.unwrap_err() {
             ConfigError::UnknownField(name) => assert_eq!(name, "nonexistent_field"),
@@ -194,8 +220,7 @@ mod tests {
 
     #[test]
     fn test_unknown_group_error() {
-        let mut config = XetConfig::default();
-        let result = config.set("nonexistent_group.field", "42");
+        let result = XetConfig::default().with_config("nonexistent_group.field", "42");
         assert!(result.is_err());
         match result.unwrap_err() {
             ConfigError::UnknownGroup(name) => assert_eq!(name, "nonexistent_group"),
@@ -205,8 +230,7 @@ mod tests {
 
     #[test]
     fn test_invalid_path_error() {
-        let mut config = XetConfig::default();
-        let result = config.set("no_dot_in_path", "42");
+        let result = XetConfig::default().with_config("no_dot_in_path", "42");
         assert!(result.is_err());
         match result.unwrap_err() {
             ConfigError::InvalidPath(path) => assert_eq!(path, "no_dot_in_path"),
@@ -216,8 +240,7 @@ mod tests {
 
     #[test]
     fn test_parse_error() {
-        let mut config = XetConfig::default();
-        let result = config.set("data.max_concurrent_file_ingestion", "not_a_number");
+        let result = XetConfig::default().with_config("data.max_concurrent_file_ingestion", "not_a_number");
         assert!(result.is_err());
         match result.unwrap_err() {
             ConfigError::ParseError { field, value } => {
@@ -248,25 +271,31 @@ mod tests {
     }
 
     #[test]
-    fn test_set_get_roundtrip_all_groups() {
-        let mut config = XetConfig::default();
-
-        config.set("shard.target_size", "2048").unwrap();
+    fn test_with_config_roundtrip_all_groups() {
+        let config = XetConfig::default().with_config("shard.target_size", "2048").unwrap();
         assert_eq!(config.get("shard.target_size").unwrap(), "2048");
 
-        config.set("deduplication.min_n_chunks_per_range", "4").unwrap();
+        let config = XetConfig::default()
+            .with_config("deduplication.min_n_chunks_per_range", "4")
+            .unwrap();
         assert_eq!(config.get("deduplication.min_n_chunks_per_range").unwrap(), "4");
 
-        config.set("chunk_cache.size_bytes", "5000000000").unwrap();
+        let config = XetConfig::default()
+            .with_config("chunk_cache.size_bytes", "5000000000")
+            .unwrap();
         assert_eq!(config.get("chunk_cache.size_bytes").unwrap(), "5000000000");
 
-        config.set("client.retry_max_attempts", "10").unwrap();
+        let config = XetConfig::default().with_config("client.retry_max_attempts", "10").unwrap();
         assert_eq!(config.get("client.retry_max_attempts").unwrap(), "10");
 
-        config.set("reconstruction.target_block_completion_time", "30s").unwrap();
+        let config = XetConfig::default()
+            .with_config("reconstruction.target_block_completion_time", "30s")
+            .unwrap();
         assert_eq!(config.get("reconstruction.target_block_completion_time").unwrap(), "30s");
 
-        config.set("xorb.compression_scheme_retest_interval", "64").unwrap();
+        let config = XetConfig::default()
+            .with_config("xorb.compression_scheme_retest_interval", "64")
+            .unwrap();
         assert_eq!(config.get("xorb.compression_scheme_retest_interval").unwrap(), "64");
     }
 }
@@ -274,7 +303,6 @@ mod tests {
 #[cfg(feature = "python")]
 pub mod py_xet_config {
     use pyo3::prelude::*;
-    use pyo3::types::PyAnyMethods;
 
     use super::*;
 
@@ -293,10 +321,6 @@ pub mod py_xet_config {
         pub fn inner(&self) -> &XetConfig {
             &self.inner
         }
-
-        pub fn inner_mut(&mut self) -> &mut XetConfig {
-            &mut self.inner
-        }
     }
 
     #[pymethods]
@@ -308,13 +332,37 @@ pub mod py_xet_config {
             }
         }
 
-        /// Set a configuration value by dotted path (e.g. "data.max_concurrent_file_ingestion").
-        #[pyo3(name = "set")]
-        fn py_set(&mut self, path: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
-            let value_str: String = value.str()?.extract()?;
-            self.inner
-                .set(path, value_str)
-                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+        /// Return a new XetConfig with one or more values updated.
+        ///
+        /// Can be called in two ways:
+        ///   config.with_config("group.field", value)          – single update
+        ///   config.with_config({"group.field": value, ...})   – batch update
+        #[pyo3(name = "with_config")]
+        #[pyo3(signature = (name_or_dict, value=None))]
+        fn py_with_config(&self, name_or_dict: &Bound<'_, PyAny>, value: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
+            use pyo3::types::PyDict;
+
+            let mut new_inner = self.inner.clone();
+
+            if let Ok(dict) = name_or_dict.downcast::<PyDict>() {
+                if value.is_some() {
+                    return Err(pyo3::exceptions::PyTypeError::new_err(
+                        "with_config(dict) does not accept a second argument",
+                    ));
+                }
+                for (key, val) in dict.iter() {
+                    let key_str: String = key.extract()?;
+                    new_inner.set_field_from_python(&key_str, &val)?;
+                }
+            } else {
+                let name: String = name_or_dict.extract()?;
+                let val = value.ok_or_else(|| {
+                    pyo3::exceptions::PyTypeError::new_err("with_config(name, value) requires a value argument")
+                })?;
+                new_inner.set_field_from_python(&name, val)?;
+            }
+
+            Ok(Self { inner: new_inner })
         }
 
         /// Get a configuration value's string representation by dotted path.
@@ -325,6 +373,8 @@ pub mod py_xet_config {
                 .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
         }
 
+        /// Group getters return snapshot copies for inspection.
+        /// To create a modified config, use `with_config("group.field", value)`.
         #[getter]
         fn data(&self) -> groups::data::PyConfigValueGroup {
             self.inner.data.clone().into()

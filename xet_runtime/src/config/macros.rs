@@ -5,24 +5,33 @@
 /// use xet_runtime::config_group;
 ///
 /// // Without Python class name:
-/// config_group!({
-///     ref TEST_INT: usize = 42;
-///     ref TEST_STRING: String = "default".to_string();
-/// });
+/// mod basic_group {
+///     use xet_runtime::config_group;
+///
+///     config_group!({
+///         ref TEST_INT: usize = 42;
+///         ref TEST_STRING: String = "default".to_string();
+///     });
+/// }
 ///
 /// // With Python class name (enables PyO3 bindings when "python" feature is active):
-/// config_group!("MyConfig", {
-///     ref TEST_INT: usize = 42;
-///     ref TEST_STRING: String = "default".to_string();
-/// });
+/// mod python_named_group {
+///     use xet_runtime::config_group;
+///
+///     config_group!("MyConfig", {
+///         ref TEST_INT: usize = 42;
+///         ref TEST_STRING: String = "default".to_string();
+///     });
+/// }
 /// ```
 ///
 /// This creates a `ConfigValueGroup` struct with the specified fields, default values,
-/// environment variable overrides, and string-based get/set accessors.
+/// environment variable overrides, and string-based accessors.
 ///
 /// When a Python class name is provided and the `python` feature is enabled, the macro
 /// also generates `#[pyclass]` and `#[pymethods]` implementations with typed getters
-/// and setters for each field.
+/// for each field. Group structs are read-only from Python; use `XetConfig.with_config()`
+/// to create modified copies.
 #[macro_export]
 macro_rules! config_group {
     // Arm without Python class name -- no PyO3 bindings
@@ -175,6 +184,24 @@ macro_rules! config_group {
                     _ => Err($crate::config::ConfigError::UnknownField(name.to_owned())),
                 }
             }
+
+            /// Set a configuration field by name from a Python value.
+            #[cfg(feature = "python")]
+            pub fn set_from_python(
+                &mut self,
+                name: &str,
+                value: &pyo3::Bound<'_, pyo3::PyAny>,
+            ) -> pyo3::PyResult<()> {
+                match name {
+                    $(
+                        stringify!($name) => {
+                            self.$name = <$type as $crate::config::python::PythonConfigValue>::from_python(value)?;
+                            Ok(())
+                        }
+                    )+
+                    _ => Err(pyo3::exceptions::PyValueError::new_err(format!("Unknown config field: '{name}'"))),
+                }
+            }
         }
 
         /// Type alias for easier reference in config aggregation macros
@@ -188,7 +215,6 @@ macro_rules! config_group {
         )+
     }) => {
         use $crate::config::python::PythonConfigValue;
-        use pyo3::types::PyAnyMethods;
 
         #[pyo3::pyclass(name = $py_name)]
         pub struct PyConfigValueGroup {
@@ -211,27 +237,10 @@ macro_rules! config_group {
             pub fn inner(&self) -> &ConfigValueGroup {
                 &self.inner
             }
-
-            pub fn inner_mut(&mut self) -> &mut ConfigValueGroup {
-                &mut self.inner
-            }
         }
 
         #[pyo3::pymethods]
         impl PyConfigValueGroup {
-            #[new]
-            fn py_new() -> Self {
-                Self { inner: ConfigValueGroup::default() }
-            }
-
-            /// Set a field by name from a string value.
-            #[pyo3(name = "set")]
-            fn py_set(&mut self, name: &str, value: &pyo3::Bound<'_, pyo3::PyAny>) -> pyo3::PyResult<()> {
-                let value_str: String = value.str()?.extract()?;
-                self.inner.set(name, value_str)
-                    .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
-            }
-
             /// Get a field's string representation by name.
             #[pyo3(name = "get")]
             fn py_get(&self, name: &str) -> pyo3::PyResult<String> {

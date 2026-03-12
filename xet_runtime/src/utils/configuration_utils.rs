@@ -128,8 +128,10 @@ impl ParsableConfigValue for std::time::Duration {
             format!("{}s", self.as_secs())
         } else if self.subsec_nanos().is_multiple_of(1_000_000) {
             format!("{total_ms}ms")
-        } else {
+        } else if self.subsec_nanos().is_multiple_of(1_000) {
             format!("{}us", self.as_micros())
+        } else {
+            format!("{}ns", self.as_nanos())
         }
     }
 }
@@ -344,121 +346,82 @@ mod tests {
         let restored = T::parse_user_value(&s).unwrap_or_else(|| {
             panic!("Failed to parse config string '{s}' back into {:?}", std::any::type_name::<T>())
         });
-        assert_eq!(value, restored, "Roundtrip failed for '{s}'");
+        assert_eq!(value, restored);
+    }
+
+    macro_rules! assert_roundtrips {
+        ($($value:expr),+ $(,)?) => {
+            $(assert_roundtrip($value);)+
+        };
     }
 
     #[test]
-    fn test_roundtrip_usize() {
-        assert_roundtrip(0usize);
-        assert_roundtrip(42usize);
-        assert_roundtrip(usize::MAX);
+    fn test_roundtrip_numeric_primitives() {
+        assert_roundtrips!(
+            0usize,
+            42usize,
+            usize::MAX,
+            0u8,
+            255u8,
+            0u16,
+            65535u16,
+            0u32,
+            123456u32,
+            0u64,
+            u64::MAX,
+            0isize,
+            -42isize,
+            isize::MAX,
+            -128i8,
+            127i8,
+            -32768i16,
+            32767i16,
+            0i32,
+            -123456i32,
+            0i64,
+            i64::MIN,
+            0.0f32,
+            3.14f32,
+            -1.5f32,
+            0.0f64,
+            std::f64::consts::PI,
+            -1e10f64
+        );
     }
 
     #[test]
-    fn test_roundtrip_u8() {
-        assert_roundtrip(0u8);
-        assert_roundtrip(255u8);
-    }
-
-    #[test]
-    fn test_roundtrip_u16() {
-        assert_roundtrip(0u16);
-        assert_roundtrip(65535u16);
-    }
-
-    #[test]
-    fn test_roundtrip_u32() {
-        assert_roundtrip(0u32);
-        assert_roundtrip(123456u32);
-    }
-
-    #[test]
-    fn test_roundtrip_u64() {
-        assert_roundtrip(0u64);
-        assert_roundtrip(u64::MAX);
-    }
-
-    #[test]
-    fn test_roundtrip_isize() {
-        assert_roundtrip(0isize);
-        assert_roundtrip(-42isize);
-        assert_roundtrip(isize::MAX);
-    }
-
-    #[test]
-    fn test_roundtrip_i8() {
-        assert_roundtrip(-128i8);
-        assert_roundtrip(127i8);
-    }
-
-    #[test]
-    fn test_roundtrip_i16() {
-        assert_roundtrip(-32768i16);
-        assert_roundtrip(32767i16);
-    }
-
-    #[test]
-    fn test_roundtrip_i32() {
-        assert_roundtrip(0i32);
-        assert_roundtrip(-123456i32);
-    }
-
-    #[test]
-    fn test_roundtrip_i64() {
-        assert_roundtrip(0i64);
-        assert_roundtrip(i64::MIN);
-    }
-
-    #[test]
-    fn test_roundtrip_f32() {
-        assert_roundtrip(0.0f32);
-        assert_roundtrip(3.14f32);
-        assert_roundtrip(-1.5f32);
-    }
-
-    #[test]
-    fn test_roundtrip_f64() {
-        assert_roundtrip(0.0f64);
-        assert_roundtrip(std::f64::consts::PI);
-        assert_roundtrip(-1e10f64);
-    }
-
-    #[test]
-    fn test_roundtrip_string() {
-        assert_roundtrip(String::new());
-        assert_roundtrip("hello world".to_owned());
-        assert_roundtrip("http://localhost:8080".to_owned());
-    }
-
-    #[test]
-    fn test_roundtrip_bool() {
-        assert_roundtrip(true);
-        assert_roundtrip(false);
+    fn test_roundtrip_bool_and_string() {
+        assert_roundtrips!(true, false, String::new(), "hello world".to_owned(), "http://localhost:8080".to_owned());
     }
 
     #[test]
     fn test_roundtrip_byte_size() {
-        assert_roundtrip(ByteSize::new(0));
-        assert_roundtrip(ByteSize::new(1000));
-        assert_roundtrip(ByteSize::new(1_000_000));
-        assert_roundtrip(ByteSize::new(8_000_000));
-        assert_roundtrip(ByteSize::new(10_000_000_000));
+        assert_roundtrips!(
+            ByteSize::new(0),
+            ByteSize::new(1000),
+            ByteSize::new(1_000_000),
+            ByteSize::new(8_000_000),
+            ByteSize::new(10_000_000_000)
+        );
     }
 
     #[test]
     fn test_roundtrip_duration() {
-        assert_roundtrip(Duration::from_secs(0));
-        assert_roundtrip(Duration::from_secs(60));
-        assert_roundtrip(Duration::from_secs(120));
-        assert_roundtrip(Duration::from_millis(200));
-        assert_roundtrip(Duration::from_millis(3000));
-        assert_roundtrip(Duration::from_secs(360));
+        assert_roundtrips!(
+            Duration::from_secs(0),
+            Duration::from_secs(60),
+            Duration::from_secs(120),
+            Duration::from_millis(200),
+            Duration::from_millis(3000),
+            Duration::from_secs(360),
+            Duration::from_micros(123),
+            Duration::from_nanos(123)
+        );
     }
 
     #[test]
     fn test_roundtrip_option_some() {
-        assert_roundtrip(Some(42usize));
-        assert_roundtrip(Some("hello".to_owned()));
+        assert_roundtrips!(Some(42usize), Some("hello".to_owned()));
     }
 
     #[test]
