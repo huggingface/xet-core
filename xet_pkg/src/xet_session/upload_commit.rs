@@ -385,7 +385,7 @@ impl UploadCommitInner {
         };
         let tracking_name: Option<Arc<str>> = tracking_name.as_deref().map(Arc::from);
         let cleaner = upload_session
-            .start_clean(tracking_name, file_size, Sha256Policy::Compute, tracking_id)
+            .start_clean(tracking_name, Some(file_size), Sha256Policy::Compute, tracking_id)
             .await;
 
         Ok((task_handle, cleaner))
