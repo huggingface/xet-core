@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use bytes::Bytes;
 use futures::TryStreamExt;
@@ -24,8 +24,8 @@ use super::progress_tracked_streams::{
 use super::retry_wrapper::{RetryWrapper, RetryableReqwestError};
 use super::{Client, INFORMATION_LOG_LEVEL};
 use crate::cas_types::{
-    BatchQueryReconstructionResponse, FileRange, HttpRange, Key, QueryReconstructionResponse, UploadShardResponse,
-    UploadShardResponseType, UploadXorbResponse,
+    BatchQueryReconstructionResponse, FileRange, HttpRange, Key, QueryReconstructionResponse,
+    QueryReconstructionResponseV2, UploadShardResponse, UploadShardResponseType, UploadXorbResponse,
 };
 
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
@@ -48,6 +48,8 @@ pub struct RemoteClient {
     shard_upload_http_client: Arc<ClientWithMiddleware>,
     upload_concurrency_controller: Arc<AdaptiveConcurrencyController>,
     download_concurrency_controller: Arc<AdaptiveConcurrencyController>,
+    /// Caches the discovered reconstruction API version (0 = not yet probed, 1 = V1, 2 = V2).
+    detected_reconstruction_api_version: AtomicU32,
 }
 
 impl RemoteClient {
@@ -85,6 +87,7 @@ impl RemoteClient {
             ),
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("upload"),
             download_concurrency_controller: AdaptiveConcurrencyController::new_download("download"),
+            detected_reconstruction_api_version: AtomicU32::new(0),
         })
     }
 
@@ -168,10 +171,9 @@ impl RemoteClient {
     }
 }
 
-#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
-impl Client for RemoteClient {
-    async fn get_reconstruction(
+impl RemoteClient {
+    /// V1 reconstruction: returns per-range presigned URLs.
+    pub async fn get_reconstruction_v1(
         &self,
         file_id: &MerkleHash,
         bytes_range: Option<FileRange>,
@@ -183,17 +185,16 @@ impl Client for RemoteClient {
             call_id,
             %file_id,
             ?bytes_range,
-            "Starting get_reconstruction API call",
+            "Starting get_reconstruction_v1 API call",
         );
 
-        let api_tag = "cas::get_reconstruction";
+        let api_tag = "cas::get_reconstruction_v1";
         let client = self.authenticated_http_client.clone();
 
         let result: Result<QueryReconstructionResponse> = RetryWrapper::new(api_tag)
             .run_and_extract_json(move || {
                 let mut request = client.get(url.clone()).with_extension(Api(api_tag));
                 if let Some(range) = bytes_range {
-                    // convert exclusive-end to inclusive-end range
                     request = request.header(RANGE, HttpRange::from(range).range_header())
                 }
 
@@ -208,15 +209,105 @@ impl Client for RemoteClient {
                     call_id,
                     %file_id,
                     ?bytes_range,
-                    "Completed get_reconstruction API call"
+                    "Completed get_reconstruction_v1 API call"
                 );
                 Ok(Some(query_reconstruction_response))
             },
             Err(CasClientError::ReqwestError(ref e, _)) if e.status() == Some(StatusCode::RANGE_NOT_SATISFIABLE) => {
-                // bytes_range not satisfiable
                 Ok(None)
             },
             Err(e) => Err(e),
+        }
+    }
+
+    /// V2 reconstruction: returns per-xorb multi-range fetch descriptors.
+    pub async fn get_reconstruction_v2(
+        &self,
+        file_id: &MerkleHash,
+        bytes_range: Option<FileRange>,
+    ) -> Result<Option<QueryReconstructionResponseV2>> {
+        let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
+        let url = Url::parse(&format!("{}/v2/reconstructions/{}", self.endpoint, file_id.hex()))?;
+        event!(
+            INFORMATION_LOG_LEVEL,
+            call_id,
+            %file_id,
+            ?bytes_range,
+            "Starting get_reconstruction_v2 API call",
+        );
+
+        let api_tag = "cas::get_reconstruction_v2";
+        let client = self.authenticated_http_client.clone();
+
+        let result: Result<QueryReconstructionResponseV2> = RetryWrapper::new(api_tag)
+            .run_and_extract_json(move || {
+                let mut request = client.get(url.clone()).with_extension(Api(api_tag));
+                if let Some(range) = bytes_range {
+                    request = request.header(RANGE, HttpRange::from(range).range_header())
+                }
+                request.send()
+            })
+            .await;
+
+        match result {
+            Ok(response) => {
+                event!(
+                    INFORMATION_LOG_LEVEL,
+                    call_id,
+                    %file_id,
+                    ?bytes_range,
+                    "Completed get_reconstruction_v2 API call"
+                );
+                Ok(Some(response))
+            },
+            Err(CasClientError::ReqwestError(ref e, _)) if e.status() == Some(StatusCode::RANGE_NOT_SATISFIABLE) => {
+                Ok(None)
+            },
+            Err(e) => Err(e),
+        }
+    }
+}
+
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
+impl Client for RemoteClient {
+    async fn get_reconstruction(
+        &self,
+        file_id: &MerkleHash,
+        bytes_range: Option<FileRange>,
+    ) -> Result<Option<QueryReconstructionResponseV2>> {
+        let forced_version = xet_config().client.reconstruction_api_version;
+
+        let version = match forced_version {
+            Some(v) => v,
+            None => {
+                let detected = self.detected_reconstruction_api_version.load(Ordering::Relaxed);
+                if detected != 0 { detected } else { 2 }
+            },
+        };
+
+        match version {
+            2 => match self.get_reconstruction_v2(file_id, bytes_range).await {
+                Ok(result) => {
+                    if forced_version.is_none() {
+                        self.detected_reconstruction_api_version.store(2, Ordering::Relaxed);
+                    }
+                    Ok(result)
+                },
+                Err(e)
+                    if forced_version.is_none()
+                        && matches!(e.status(), Some(StatusCode::NOT_FOUND) | Some(StatusCode::NOT_IMPLEMENTED)) =>
+                {
+                    info!(status = ?e.status(), "V2 reconstruction not available, falling back to V1");
+                    let result = self.get_reconstruction_v1(file_id, bytes_range).await?.map(Into::into);
+                    // Store after success to make sure we don't mess up on e.g. network failure.
+                    self.detected_reconstruction_api_version.store(1, Ordering::Relaxed);
+                    Ok(result)
+                },
+                Err(e) => Err(e),
+            },
+            1 => Ok(self.get_reconstruction_v1(file_id, bytes_range).await?.map(Into::into)),
+            other => Err(CasClientError::internal(format!("unsupported reconstruction API version: {other}"))),
         }
     }
 
@@ -270,8 +361,8 @@ impl Client for RemoteClient {
         let http_client = self.http_client.clone();
         let url_info = Arc::new(url_info);
 
-        let (_, url_range) = url_info.retrieve_url().await?;
-        let total_download_bytes = url_range.length();
+        let (_, url_ranges) = url_info.retrieve_url().await?;
+        let total_download_bytes: u64 = url_ranges.iter().map(|r| r.length()).sum();
 
         let mut transfer_reporter = StreamProgressReporter::new(total_download_bytes)
             .with_adaptive_concurrency_reporter(download_permit.get_partial_completion_reporting_function());
@@ -288,16 +379,22 @@ impl Client for RemoteClient {
                     let url_info = url_info.clone();
 
                     async move {
-                        let (url_string, url_range) = url_info
+                        let (url_string, url_ranges) = url_info
                             .retrieve_url()
                             .await
                             .map_err(|e| reqwest_middleware::Error::Middleware(e.into()))?;
                         let url =
                             Url::parse(&url_string).map_err(|e| reqwest_middleware::Error::Middleware(e.into()))?;
 
+                        let range_header = url_ranges
+                            .iter()
+                            .map(|r| format!("{}-{}", r.start, r.end))
+                            .collect::<Vec<_>>()
+                            .join(",");
+
                         let response = http_client
                             .get(url)
-                            .header(RANGE, url_range.range_header())
+                            .header(RANGE, format!("bytes={range_header}"))
                             .with_extension(Api(api_tag))
                             .send()
                             .await?;
@@ -315,34 +412,86 @@ impl Client for RemoteClient {
                 move |resp: Response| {
                     let transfer_reporter = transfer_reporter.clone();
                     async move {
-                        let incoming_stream = DownloadProgressStream::wrap_stream(
-                            resp.bytes_stream().map_err(std::io::Error::other),
-                            transfer_reporter,
-                        );
+                        let content_type = resp
+                            .headers()
+                            .get("content-type")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("")
+                            .to_string();
 
-                        let capacity = uncompressed_size_if_known.unwrap_or(0);
-                        let mut buffer = Vec::with_capacity(capacity);
-                        let mut writer = std::io::Cursor::new(&mut buffer);
+                        let is_multipart = content_type.contains("multipart/byteranges");
 
-                        let result = xet_core_structures::xorb_object::deserialize_async::deserialize_chunks_to_writer_from_stream(
-                            incoming_stream,
-                            &mut writer,
-                        )
-                        .await;
+                        if is_multipart {
+                            let body = resp
+                                .bytes()
+                                .await
+                                .map_err(|e| RetryableReqwestError::RetryableError(CasClientError::from(e)))?;
 
-                        match result {
-                            Ok((_compressed_len, chunk_byte_indices)) => {
-                                if let Some(expected) = uncompressed_size_if_known
-                                    && expected != buffer.len()
-                                {
-                                    return Err(RetryableReqwestError::RetryableError(CasClientError::Other(format!(
-                                        "get_file_term_data: expected {expected} uncompressed bytes, got {}",
-                                        buffer.len()
-                                    ))));
-                                }
-                                Ok((Bytes::from(buffer), chunk_byte_indices))
-                            },
-                            Err(e) => Err(RetryableReqwestError::RetryableError(CasClientError::FormatError(e))),
+                            let multipart_parts = crate::cas_client::multipart::parse_multipart_byteranges(&content_type, body)
+                                .map_err(RetryableReqwestError::FatalError)?;
+
+                            let mut all_decompressed = Vec::with_capacity(uncompressed_size_if_known.unwrap_or(0));
+                            let mut all_chunk_indices = Vec::<u32>::new();
+                            let mut total_compressed_bytes = 0u64;
+
+                            for part in multipart_parts {
+                                total_compressed_bytes += part.data.len() as u64;
+
+                                let (data, chunk_indices) =
+                                    xet_core_structures::xorb_object::deserialize_chunks(&mut std::io::Cursor::new(part.data.as_ref()))
+                                        .map_err(|e| {
+                                            RetryableReqwestError::RetryableError(CasClientError::FormatError(e))
+                                        })?;
+
+                                xet_core_structures::xorb_object::append_chunk_segment(
+                                    &mut all_decompressed,
+                                    &mut all_chunk_indices,
+                                    &data,
+                                    &chunk_indices,
+                                );
+
+                                transfer_reporter.report_progress(total_compressed_bytes as usize);
+                            }
+
+                            if let Some(expected) = uncompressed_size_if_known
+                                && expected != all_decompressed.len()
+                            {
+                                return Err(RetryableReqwestError::RetryableError(CasClientError::Other(format!(
+                                    "get_file_term_data: expected {expected} uncompressed bytes, got {}",
+                                    all_decompressed.len()
+                                ))));
+                            }
+                            Ok((Bytes::from(all_decompressed), all_chunk_indices))
+                        } else {
+                            let incoming_stream = DownloadProgressStream::wrap_stream(
+                                resp.bytes_stream().map_err(std::io::Error::other),
+                                transfer_reporter,
+                            );
+
+                            let capacity = uncompressed_size_if_known.unwrap_or(0);
+                            let mut buffer = Vec::with_capacity(capacity);
+                            let mut writer = std::io::Cursor::new(&mut buffer);
+
+                            let result = xet_core_structures::xorb_object::deserialize_async::deserialize_chunks_to_writer_from_stream(
+                                incoming_stream,
+                                &mut writer,
+                            )
+                            .await;
+
+                            match result {
+                                Ok((_compressed_len, chunk_byte_indices)) => {
+                                    if let Some(expected) = uncompressed_size_if_known
+                                        && expected != buffer.len()
+                                    {
+                                        return Err(RetryableReqwestError::RetryableError(CasClientError::Other(format!(
+                                            "get_file_term_data: expected {expected} uncompressed bytes, got {}",
+                                            buffer.len()
+                                        ))));
+                                    }
+                                    Ok((Bytes::from(buffer), chunk_byte_indices))
+                                },
+                                Err(e) => Err(RetryableReqwestError::RetryableError(CasClientError::FormatError(e))),
+                            }
                         }
                     }
                 },

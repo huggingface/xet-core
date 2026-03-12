@@ -6,14 +6,16 @@ use xet_core_structures::xorb_object::SerializedXorbObject;
 use super::adaptive_concurrency::ConnectionPermit;
 use super::error::Result;
 use super::progress_tracked_streams::ProgressCallback;
-use crate::cas_types::{BatchQueryReconstructionResponse, FileRange, HttpRange, QueryReconstructionResponse};
+use crate::cas_types::{BatchQueryReconstructionResponse, FileRange, HttpRange, QueryReconstructionResponseV2};
 
 #[async_trait::async_trait]
 pub trait URLProvider: Send + Sync {
-    // Retrieves the URL.
-    async fn retrieve_url(&self) -> Result<(String, HttpRange)>;
+    /// Retrieves the URL and the byte ranges to fetch.
+    /// For single-range (V1) blocks, the Vec has one entry.
+    /// For multi-range (V2) blocks, all ranges are included.
+    async fn retrieve_url(&self) -> Result<(String, Vec<HttpRange>)>;
 
-    // Asks for a refresh of the URL; triggered on 403 errors.
+    /// Asks for a refresh of the URL; triggered on 403 errors.
     async fn refresh_url(&self) -> Result<()>;
 }
 
@@ -30,11 +32,13 @@ pub trait Client: Send + Sync {
         file_hash: &MerkleHash,
     ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>>;
 
+    /// Returns reconstruction info always in V2 format.
+    /// Implementations may try V2 first and fall back to V1 + convert.
     async fn get_reconstruction(
         &self,
         file_id: &MerkleHash,
         bytes_range: Option<FileRange>,
-    ) -> Result<Option<QueryReconstructionResponse>>;
+    ) -> Result<Option<QueryReconstructionResponseV2>>;
 
     async fn batch_get_reconstruction(&self, file_ids: &[MerkleHash]) -> Result<BatchQueryReconstructionResponse>;
 

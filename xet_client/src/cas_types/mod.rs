@@ -217,6 +217,66 @@ pub struct QueryReconstructionResponse {
     pub fetch_info: HashMap<HexMerkleHash, Vec<XorbReconstructionFetchInfo>>,
 }
 
+/// V2 reconstruction response - optimized for multi-range fetching.
+/// May provide fewer signed URLs per xorb by combining multiple byte ranges
+/// into a single URL where possible.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct QueryReconstructionResponseV2 {
+    pub offset_into_first_range: u64,
+    pub terms: Vec<XorbReconstructionTerm>,
+    /// Map from xorb hash -> list of multi-range fetch entries.
+    /// Typically 1 entry per xorb. Multiple entries when the URL length limit
+    /// (~8 KiB, roughly ~500 ranges) forces a split.
+    pub xorbs: HashMap<HexMerkleHash, Vec<XorbMultiRangeFetch>>,
+}
+
+/// A signed multi-range fetch: one URL covering a subset of ranges for a xorb.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct XorbMultiRangeFetch {
+    /// Signed URL with all byte ranges encoded. Client must send exactly the
+    /// signed range value as the Range header.
+    pub url: String,
+    /// Byte ranges covered by this URL, sorted by chunk start.
+    pub ranges: Vec<XorbRangeDescriptor>,
+}
+
+/// A single byte range within a xorb, mapping chunk indices to physical bytes.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct XorbRangeDescriptor {
+    /// Chunk index range [start, end) within the xorb.
+    pub chunks: ChunkRange,
+    /// Physical byte range [start, end] (inclusive end) for the HTTP Range header.
+    pub bytes: HttpRange,
+}
+
+impl From<QueryReconstructionResponse> for QueryReconstructionResponseV2 {
+    fn from(v1: QueryReconstructionResponse) -> Self {
+        let xorbs = v1
+            .fetch_info
+            .into_iter()
+            .map(|(hash, fetch_infos)| {
+                let fetch = fetch_infos
+                    .into_iter()
+                    .map(|info| XorbMultiRangeFetch {
+                        url: info.url,
+                        ranges: vec![XorbRangeDescriptor {
+                            chunks: info.range,
+                            bytes: info.url_range,
+                        }],
+                    })
+                    .collect();
+                (hash, fetch)
+            })
+            .collect();
+
+        QueryReconstructionResponseV2 {
+            offset_into_first_range: v1.offset_into_first_range,
+            terms: v1.terms,
+            xorbs,
+        }
+    }
+}
+
 // Request json body type representation for the POST /reconstructions endpoint
 // to get the reconstruction for multiple files at a time.
 // listing of non-duplicate (enforced by HashSet) keys (file ids) to get reconstructions for
