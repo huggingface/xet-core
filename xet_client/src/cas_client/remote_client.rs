@@ -255,8 +255,10 @@ impl Client for RemoteClient {
         Ok(response)
     }
 
-    async fn acquire_download_permit(&self) -> Result<ConnectionPermit> {
-        self.download_concurrency_controller.acquire_connection_permit().await
+    async fn acquire_download_permit(&self, size: Option<u64>) -> Result<ConnectionPermit> {
+        self.download_concurrency_controller
+            .acquire_connection_permit_with_size(size)
+            .await
     }
 
     async fn get_file_term_data(
@@ -399,8 +401,10 @@ impl Client for RemoteClient {
         Ok(Some(response.bytes().await?))
     }
 
-    async fn acquire_upload_permit(&self) -> Result<ConnectionPermit> {
-        self.upload_concurrency_controller.acquire_connection_permit().await
+    async fn acquire_upload_permit(&self, size: Option<u64>) -> Result<ConnectionPermit> {
+        self.upload_concurrency_controller
+            .acquire_connection_permit_with_size(size)
+            .await
     }
 
     #[instrument(skip_all, name = "RemoteClient::upload_shard", fields(shard.len = shard_data.len()))]
@@ -614,7 +618,10 @@ mod tests {
         // Act
         let result = threadpool
             .external_run_async_task(async move {
-                let permit = client.acquire_upload_permit().await.unwrap();
+                let permit = client
+                    .acquire_upload_permit(Some(xorb_obj.serialized_data.len() as u64))
+                    .await
+                    .unwrap();
                 client.upload_xorb(prefix, xorb_obj, None, permit).await
             })
             .unwrap();

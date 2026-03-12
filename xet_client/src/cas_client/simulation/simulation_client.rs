@@ -143,8 +143,8 @@ impl Client for RemoteSimulationClient {
         self.inner.batch_get_reconstruction(file_ids).await
     }
 
-    async fn acquire_download_permit(&self) -> Result<ConnectionPermit> {
-        self.inner.acquire_download_permit().await
+    async fn acquire_download_permit(&self, size: Option<u64>) -> Result<ConnectionPermit> {
+        self.inner.acquire_download_permit(size).await
     }
 
     async fn get_file_term_data(
@@ -167,8 +167,8 @@ impl Client for RemoteSimulationClient {
         self.inner.query_for_global_dedup_shard(prefix, chunk_hash).await
     }
 
-    async fn acquire_upload_permit(&self) -> Result<ConnectionPermit> {
-        self.inner.acquire_upload_permit().await
+    async fn acquire_upload_permit(&self, size: Option<u64>) -> Result<ConnectionPermit> {
+        self.inner.acquire_upload_permit(size).await
     }
 
     async fn upload_shard(&self, shard_data: Bytes, upload_permit: ConnectionPermit) -> Result<bool> {

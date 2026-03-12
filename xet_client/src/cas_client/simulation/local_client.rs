@@ -652,7 +652,10 @@ impl Client for LocalClient {
         Ok(None)
     }
 
-    async fn acquire_upload_permit(&self) -> Result<super::super::adaptive_concurrency::ConnectionPermit> {
+    async fn acquire_upload_permit(
+        &self,
+        _size: Option<u64>,
+    ) -> Result<super::super::adaptive_concurrency::ConnectionPermit> {
         self.apply_api_delay().await;
         self.upload_concurrency_controller.acquire_connection_permit().await
     }
@@ -998,7 +1001,10 @@ impl Client for LocalClient {
         })
     }
 
-    async fn acquire_download_permit(&self) -> Result<super::super::adaptive_concurrency::ConnectionPermit> {
+    async fn acquire_download_permit(
+        &self,
+        _size: Option<u64>,
+    ) -> Result<super::super::adaptive_concurrency::ConnectionPermit> {
         self.apply_api_delay().await;
         self.upload_concurrency_controller.acquire_connection_permit().await
     }
@@ -1122,7 +1128,10 @@ mod tests {
         let hash = xorb_obj.hash;
 
         let client = LocalClient::temporary().await.unwrap();
-        let permit = client.acquire_upload_permit().await.unwrap();
+        let permit = client
+            .acquire_upload_permit(Some(xorb_obj.serialized_data.len() as u64))
+            .await
+            .unwrap();
         client.upload_xorb("default", xorb_obj, None, permit).await.unwrap();
 
         // Get the actual byte offsets for a chunk range

@@ -326,7 +326,10 @@ impl FileUploadSession {
             .await??;
 
         let session = self.clone();
-        let upload_permit = self.client.acquire_upload_permit().await?;
+        let upload_permit = self
+            .client
+            .acquire_upload_permit(Some(xorb_obj.serialized_data.len() as u64))
+            .await?;
         let cas_prefix = session.config.data_config.prefix.clone();
         let completion_tracker = self.completion_tracker.clone();
         let xorb_hash = xorb_obj.hash;

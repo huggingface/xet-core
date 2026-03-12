@@ -36,7 +36,10 @@ impl XorbUploaderLocalSequential {
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl XorbUploader for XorbUploaderLocalSequential {
     async fn upload_xorb(&mut self, input: SerializedXorbObject) -> Result<()> {
-        let permit = self.client.acquire_upload_permit().await?;
+        let permit = self
+            .client
+            .acquire_upload_permit(Some(input.serialized_data.len() as u64))
+            .await?;
         let _ = self.client.upload_xorb(&self.cas_prefix, input, None, permit).await?;
         Ok(())
     }
@@ -72,7 +75,9 @@ impl XorbUploader for XorbUploaderSpawnParallel {
 
         let client = self.client.clone();
         let cas_prefix = self.cas_prefix.clone();
-        let upload_permit = client.acquire_upload_permit().await?;
+        let upload_permit = client
+            .acquire_upload_permit(Some(input.serialized_data.len() as u64))
+            .await?;
 
         self.tasks.spawn(async move {
             let _timer = ConsoleTimer::new(format!("upload xorb {}", input.hash));

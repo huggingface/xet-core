@@ -393,7 +393,7 @@ pub async fn post_xorb(State(state): State<ServerState>, Path(key): Path<HexKey>
         footer_start: None,
     };
 
-    let permit = match state.client.acquire_upload_permit().await {
+    let permit = match state.client.acquire_upload_permit(Some(data.len() as u64)).await {
         Ok(p) => p,
         Err(e) => return error_to_response(e),
     };
@@ -419,7 +419,7 @@ pub async fn post_shard(State(state): State<ServerState>, body: Body) -> Respons
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
     };
 
-    let permit = match state.client.acquire_upload_permit().await {
+    let permit = match state.client.acquire_upload_permit(Some(data.len() as u64)).await {
         Ok(p) => p,
         Err(e) => return error_to_response(e),
     };

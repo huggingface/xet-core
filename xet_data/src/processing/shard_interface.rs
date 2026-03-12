@@ -263,7 +263,7 @@ impl SessionShardInterface {
             // It's also important to acquire the permit before the task is launched; otherwise, we may spawn an
             // unlimited number of tasks that end up using up a ton of memory; this forces the pipeline to
             // block here while the upload is happening.
-            let upload_permit = shard_client.acquire_upload_permit().await?;
+            let upload_permit = shard_client.acquire_upload_permit(None).await?;
 
             shard_uploads.spawn(
                 async move {

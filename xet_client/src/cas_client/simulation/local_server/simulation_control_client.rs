@@ -104,8 +104,11 @@ impl Client for SimulationControlClient {
     }
 
     /// Delegates download permit acquisition to the internal `RemoteClient`.
-    async fn acquire_download_permit(&self) -> Result<crate::cas_client::adaptive_concurrency::ConnectionPermit> {
-        self.remote_client.acquire_download_permit().await
+    async fn acquire_download_permit(
+        &self,
+        size: Option<u64>,
+    ) -> Result<crate::cas_client::adaptive_concurrency::ConnectionPermit> {
+        self.remote_client.acquire_download_permit(size).await
     }
 
     /// Delegates file term data download to the internal `RemoteClient`.
@@ -127,8 +130,11 @@ impl Client for SimulationControlClient {
     }
 
     /// Delegates upload permit acquisition to the internal `RemoteClient`.
-    async fn acquire_upload_permit(&self) -> Result<crate::cas_client::adaptive_concurrency::ConnectionPermit> {
-        self.remote_client.acquire_upload_permit().await
+    async fn acquire_upload_permit(
+        &self,
+        size: Option<u64>,
+    ) -> Result<crate::cas_client::adaptive_concurrency::ConnectionPermit> {
+        self.remote_client.acquire_upload_permit(size).await
     }
 
     /// Delegates shard upload to the internal `RemoteClient`.

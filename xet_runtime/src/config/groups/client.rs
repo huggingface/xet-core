@@ -179,6 +179,17 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_CLIENT_AC_MAX_REFERENCE_TRANSMISSION_SIZE` to set this value.
     ref ac_max_reference_transmission_size: ByteSize = ByteSize::from("64mb");
 
+    /// The maximum concurrency multiplier for small transfers when using scaled permits.
+    /// With permit scaling enabled, tiny transfers consume fewer semaphore permits than large
+    /// transfers, allowing up to this factor more concurrent connections for small-transfer
+    /// workloads. For example, with the default value of 2.0, a workload of very small transfers
+    /// can achieve up to 2x the concurrency of a workload of max-reference-size transfers.
+    ///
+    /// The default value is 2.0.
+    ///
+    /// Use the environment variable `HF_XET_CLIENT_AC_MAX_SMALL_TRANSFER_CONCURRENCY_FACTOR` to set this value.
+    ref ac_max_small_transfer_concurrency_factor: f64 = 2.0;
+
     /// The minimum reference transmission size used for bandwidth target checks.
     /// The dynamic reference size (estimated from observed transfer sizes) is floored at this value
     /// to prevent excessively aggressive concurrency increases with very small transfers.

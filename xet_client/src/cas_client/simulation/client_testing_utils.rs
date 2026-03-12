@@ -135,7 +135,9 @@ pub trait ClientTestingUtils: Client + Send + Sync {
 
             let serialized_xorb = SerializedXorbObject::from_xorb(raw_xorb.clone(), None, true)?;
 
-            let upload_permit = self.acquire_upload_permit().await?;
+            let upload_permit = self
+                .acquire_upload_permit(Some(serialized_xorb.serialized_data.len() as u64))
+                .await?;
             self.upload_xorb("default", serialized_xorb, None, upload_permit).await?;
 
             xorb_data.insert(xorb_seed, raw_xorb);
@@ -193,8 +195,9 @@ pub trait ClientTestingUtils: Client + Send + Sync {
             metadata_ext: None,
         })?;
 
-        let upload_permit = self.acquire_upload_permit().await?;
-        self.upload_shard(shard.to_bytes()?.into(), upload_permit).await?;
+        let shard_bytes = shard.to_bytes()?;
+        let upload_permit = self.acquire_upload_permit(Some(shard_bytes.len() as u64)).await?;
+        self.upload_shard(shard_bytes.into(), upload_permit).await?;
 
         // Convert xorb_data from seed-keyed to hash-keyed
         let xorbs = xorb_data.into_values().map(|x| (x.hash(), x)).collect();

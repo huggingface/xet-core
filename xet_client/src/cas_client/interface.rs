@@ -38,7 +38,10 @@ pub trait Client: Send + Sync {
 
     async fn batch_get_reconstruction(&self, file_ids: &[MerkleHash]) -> Result<BatchQueryReconstructionResponse>;
 
-    async fn acquire_download_permit(&self) -> Result<ConnectionPermit>;
+    /// Acquire a download permit. When `size` is provided, the permit cost is
+    /// scaled proportionally to the transfer size, allowing higher concurrency
+    /// for small downloads.
+    async fn acquire_download_permit(&self, size: Option<u64>) -> Result<ConnectionPermit>;
 
     /// Optional progress callback receives (delta, completed, total) in transfer bytes.
     /// When [uncompressed_size_if_known] is [Some], the returned Bytes must have len() equal to that value.
@@ -52,8 +55,10 @@ pub trait Client: Send + Sync {
 
     async fn query_for_global_dedup_shard(&self, prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Bytes>>;
 
-    /// Acquire an upload permit.
-    async fn acquire_upload_permit(&self) -> Result<ConnectionPermit>;
+    /// Acquire an upload permit. When `size` is provided, the permit cost is
+    /// scaled proportionally to the transfer size, allowing higher concurrency
+    /// for small uploads.
+    async fn acquire_upload_permit(&self, size: Option<u64>) -> Result<ConnectionPermit>;
 
     /// Upload a new shard.
     async fn upload_shard(&self, shard_data: bytes::Bytes, upload_permit: ConnectionPermit) -> Result<bool>;

@@ -262,8 +262,16 @@ pub struct AdaptiveConcurrencyController {
     // Also holds related constants
     state: Mutex<ConcurrencyControllerState>,
 
-    // The semaphore from which new permits are issued.
+    // The semaphore from which new permits are issued. With scaled permits,
+    // the semaphore holds `concurrency * permit_base_unit` raw permits where
+    // permit_base_unit = ac_max_reference_transmission_size (in bytes).
     concurrency_semaphore: Arc<AdjustableSemaphore>,
+
+    // The max reference transmission size in bytes. Each byte of transfer costs
+    // one raw semaphore permit, so a full-size transfer costs permit_base_unit
+    // permits. Smaller transfers cost proportionally fewer permits (floored
+    // at base_unit / ac_max_small_transfer_concurrency_factor).
+    permit_base_unit: u64,
 
     // constants used to calculate how long things should be expected to take.
     min_concurrency_increase_delay: Duration,
@@ -300,12 +308,14 @@ impl AdaptiveConcurrencyController {
         );
 
         let config = xet_config();
+        let base_unit = *config.client.ac_max_reference_transmission_size;
         Arc::new(Self {
             state: Mutex::new(ConcurrencyControllerState::new()),
             concurrency_semaphore: AdjustableSemaphore::new(
-                current_concurrency as u64,
-                (min_concurrency as u64, max_concurrency as u64),
+                current_concurrency as u64 * base_unit,
+                (min_concurrency as u64 * base_unit, max_concurrency as u64 * base_unit),
             ),
+            permit_base_unit: base_unit,
 
             min_concurrency_increase_delay: Duration::from_millis(config.client.ac_min_adjustment_window_ms),
             min_concurrency_decrease_delay: Duration::from_millis(config.client.ac_min_adjustment_window_ms),
@@ -320,12 +330,14 @@ impl AdaptiveConcurrencyController {
     pub fn new_fixed(logging_tag: &'static str, concurrency: usize) -> Arc<Self> {
         info!("Fixing maximum concurrency for {logging_tag} at {concurrency}; adaptive concurrency disabled.");
 
+        let base_unit = *xet_config().client.ac_max_reference_transmission_size;
         Arc::new(Self {
             state: Mutex::new(ConcurrencyControllerState::new()),
             concurrency_semaphore: AdjustableSemaphore::new(
-                concurrency as u64,
-                (concurrency as u64, concurrency as u64),
+                concurrency as u64 * base_unit,
+                (concurrency as u64 * base_unit, concurrency as u64 * base_unit),
             ),
+            permit_base_unit: base_unit,
             adjustment_disabled: true,
             min_concurrency_increase_delay: Default::default(),
             min_concurrency_decrease_delay: Default::default(),
@@ -361,13 +373,55 @@ impl AdaptiveConcurrencyController {
         )
     }
 
-    pub async fn acquire_connection_permit(self: &Arc<Self>) -> Result<ConnectionPermit, CasClientError> {
-        let _permit = self.concurrency_semaphore.acquire().await?;
+    /// Computes the number of raw semaphore permits a transfer of the given size should consume.
+    ///
+    /// Each byte of transfer size costs one permit, so permit_base_unit
+    /// (= ac_max_reference_transmission_size) permits represent one full-size transfer.
+    /// The result is clamped to `[base_unit / F, base_unit]` where
+    /// F = ac_max_small_transfer_concurrency_factor.
+    fn compute_permit_cost(&self, size: Option<u64>) -> u64 {
+        let base_unit = self.permit_base_unit;
+        let configured_factor = xet_config().client.ac_max_small_transfer_concurrency_factor;
+        // Guard against invalid/misconfigured values so clamp bounds remain well-ordered.
+        let factor = if configured_factor.is_finite() && configured_factor >= 1.0 {
+            configured_factor
+        } else {
+            1.0
+        };
+        let min_permits = (base_unit as f64 / factor).ceil() as u64;
+
+        let size = match size {
+            Some(s) if s > 0 => s,
+            _ => return base_unit,
+        };
+
+        size.clamp(min_permits, base_unit)
+    }
+
+    /// Returns the effective concurrency as a float: total active raw permits / base_unit.
+    /// This represents bandwidth-weighted concurrent connections.
+    fn effective_active_concurrency(&self) -> f64 {
+        self.concurrency_semaphore.active_permits() as f64 / self.permit_base_unit as f64
+    }
+
+    /// Acquire a connection permit, optionally providing the expected transfer size in bytes.
+    ///
+    /// When `size` is provided, the permit cost is scaled proportionally to the transfer's
+    /// expected bandwidth consumption relative to a full-size (64MB) transfer. Smaller transfers
+    /// consume fewer permits, allowing higher concurrency for small-transfer workloads.
+    ///
+    /// When `size` is `None`, the permit defaults to a full-size transfer cost.
+    pub async fn acquire_connection_permit_with_size(
+        self: &Arc<Self>,
+        size: Option<u64>,
+    ) -> Result<ConnectionPermit, CasClientError> {
+        let num_permits = self.compute_permit_cost(size);
+        let _permit = self.concurrency_semaphore.acquire_many(num_permits).await?;
 
         let info = Arc::new(ConnectionPermitInfo {
             controller: Arc::clone(self),
             transfer_start_time: Mutex::new(Instant::now()),
-            starting_concurrency: self.concurrency_semaphore.active_permits() as usize,
+            starting_concurrency: self.effective_active_concurrency(),
             rtt_model_at_start: Some(self.state.lock().await.rtt_predictor.clone()),
             report_portion: AtomicU32::new(0),
             last_partial_report_ms: AtomicU64::new(0),
@@ -376,20 +430,26 @@ impl AdaptiveConcurrencyController {
         Ok(ConnectionPermit { _permit, info })
     }
 
-    /// The current concurrency; there may be more permits out there due to the lazy resolution of decrements, but those
-    /// are resolved before any new permits are issued.
+    pub async fn acquire_connection_permit(self: &Arc<Self>) -> Result<ConnectionPermit, CasClientError> {
+        self.acquire_connection_permit_with_size(None).await
+    }
+
+    /// The current effective concurrency (total raw permits / base_unit).
+    /// There may be more permits out there due to the lazy resolution of decrements,
+    /// but those are resolved before any new permits are issued.
     pub fn total_permits(&self) -> usize {
-        self.concurrency_semaphore.total_permits() as usize
+        (self.concurrency_semaphore.total_permits() / self.permit_base_unit) as usize
     }
 
-    /// The number of permits available currently.  Used mainly for testing.
+    /// The number of available permits in effective concurrency units (raw / base_unit).
+    /// Used mainly for testing.
     pub fn available_permits(&self) -> usize {
-        self.concurrency_semaphore.available_permits() as usize
+        (self.concurrency_semaphore.available_permits() / self.permit_base_unit) as usize
     }
 
-    /// The number of currently active permits (concurrent connections).
+    /// The number of currently active permits in effective concurrency units (raw / base_unit).
     pub fn active_permits(&self) -> usize {
-        self.concurrency_semaphore.active_permits() as usize
+        (self.concurrency_semaphore.active_permits() / self.permit_base_unit) as usize
     }
 
     /// Get the current network model state from the concurrency controller.
@@ -400,10 +460,7 @@ impl AdaptiveConcurrencyController {
 
     /// The current state of the model used for predicting the network latency.
     pub async fn latency_model_state(&self) -> CCLatencyModelState {
-        self.state
-            .lock()
-            .await
-            .latency_model_state(self.concurrency_semaphore.active_permits() as f64)
+        self.state.lock().await.latency_model_state(self.effective_active_concurrency())
     }
 
     /// Update the controller with the results of a transfer.
@@ -458,9 +515,9 @@ impl AdaptiveConcurrencyController {
             state_lg.completed_transmissions_count += 1;
         }
 
-        // Get the effective concurrency for this transfer.
-        let cur_concurrency = self.concurrency_semaphore.active_permits() as f64;
-        let avg_concurrency = (cur_concurrency + permit_info.starting_concurrency as f64) / 2.;
+        // Get the effective (bandwidth-weighted) concurrency for this transfer.
+        let cur_concurrency = self.effective_active_concurrency();
+        let avg_concurrency = (cur_concurrency + permit_info.starting_concurrency) / 2.;
 
         let track_as_success = transmission_successful && completed_in_time && {
             // Now test to see if the transfer is within a reasonable margin of error from the predicted rtt.
@@ -516,25 +573,25 @@ impl AdaptiveConcurrencyController {
             && state_lg.completed_transmissions_count >= self.min_completed_transmissions_required_for_adjustment
             && state_lg.last_adjustment_time.elapsed() > self.min_concurrency_increase_delay
         {
-            let old_concurrency = self.concurrency_semaphore.total_permits();
-            let new_concurrency = 1. + old_concurrency as f64;
+            let old_effective = self.total_permits();
+            let new_effective = 1.0 + old_effective as f64;
 
             // Calculate predicted RTT once for both decision and logging
             let predicted_rtt = state_lg
                 .rtt_predictor
-                .predicted_rtt(reference_size, new_concurrency)
+                .predicted_rtt(reference_size, new_effective)
                 .unwrap_or(f64::INFINITY);
 
             if predicted_rtt < target_rtt_secs {
-                self.concurrency_semaphore.increment_total_permits(1);
-                let new_concurrency_actual = self.concurrency_semaphore.total_permits();
+                self.concurrency_semaphore.increment_total_permits(self.permit_base_unit);
+                let new_effective_actual = self.total_permits();
                 state_lg.last_adjustment_time = Instant::now();
 
                 info!(
                     "Concurrency control for {}: Increased concurrency from {} to {}; reason: success ratio {:.3} is above threshold {:.3} and predicted RTT for {}MB at new concurrency is {:.2}s < target {:.1}s",
                     self.logging_tag,
-                    old_concurrency,
-                    new_concurrency_actual,
+                    old_effective,
+                    new_effective_actual,
                     model_state.success_ratio,
                     model_state.success_ratio_thresholds.0,
                     reference_size / (1024 * 1024),
@@ -553,13 +610,12 @@ impl AdaptiveConcurrencyController {
             // Now, only adjust it down if it's a fully completed transfer.  Otherwise we may run things out of
             // permits too quickly.
             if state_lg.last_adjustment_time.elapsed() > self.min_concurrency_decrease_delay {
-                let old_concurrency = self.concurrency_semaphore.total_permits();
+                let old_effective = self.total_permits();
 
-                // Attempt decrement; we're delegating the bounds checking entirely to the semaphore, so
-                // we don't care about whether it succeeded or not.
-                let _ = self.concurrency_semaphore.decrement_total_permits(1);
+                // Attempt decrement by one base_unit (one full-size transfer slot).
+                let _ = self.concurrency_semaphore.decrement_total_permits(self.permit_base_unit);
 
-                let new_concurrency = self.concurrency_semaphore.total_permits();
+                let new_effective = self.total_permits();
                 state_lg.last_adjustment_time = Instant::now();
 
                 let reason = if !transmission_successful {
@@ -571,8 +627,8 @@ impl AdaptiveConcurrencyController {
                 info!(
                     "Concurrency control for {}: Decreased concurrency from {} to {}; reason: {} (success_ratio = {:.3}, threshold = {:.3})",
                     self.logging_tag,
-                    old_concurrency,
-                    new_concurrency,
+                    old_effective,
+                    new_effective,
                     reason,
                     model_state.success_ratio,
                     model_state.success_ratio_thresholds.1
@@ -582,12 +638,12 @@ impl AdaptiveConcurrencyController {
 
         if state_lg.last_logging_time.elapsed() > Duration::from_millis(config.client.ac_logging_interval_ms) {
             state_lg.last_logging_time = Instant::now();
-            let latency_state = state_lg.latency_model_state(self.concurrency_semaphore.active_permits() as f64);
+            let latency_state = state_lg.latency_model_state(self.effective_active_concurrency());
             let ref_size_mb = reference_size as f64 / (1024.0 * 1024.0);
             info!(
                 "Concurrency control for {}: Current concurrency = {}; predicted bandwidth = {:.0}; success_ratio = {:.3}; reference_size = {:.1}MB; observed bytes sent so far = {}; completed transmissions = {}",
                 self.logging_tag,
-                self.concurrency_semaphore.total_permits(),
+                self.total_permits(),
                 latency_state.predicted_bandwidth,
                 model_state.success_ratio,
                 ref_size_mb,
@@ -602,7 +658,8 @@ impl AdaptiveConcurrencyController {
 pub struct ConnectionPermitInfo {
     controller: Arc<AdaptiveConcurrencyController>,
     transfer_start_time: Mutex<Instant>,
-    starting_concurrency: usize,
+    /// Effective concurrency (bandwidth-weighted) at the time the permit was acquired.
+    starting_concurrency: f64,
     rtt_model_at_start: Option<RTTPredictor>,
     /// Maximum portion completed so far, scaled to u32::MAX (0-u32::MAX represents 0.0-1.0)
     report_portion: AtomicU32,
@@ -758,12 +815,14 @@ impl ConcurrencyControllerState {
 #[cfg(test)]
 impl AdaptiveConcurrencyController {
     pub fn new_testing(concurrency: usize, concurrency_bounds: (usize, usize)) -> Arc<Self> {
+        let base_unit = *xet_config().client.ac_max_reference_transmission_size;
         Arc::new(Self {
             state: Mutex::new(ConcurrencyControllerState::new_testing()),
             concurrency_semaphore: AdjustableSemaphore::new(
-                concurrency as u64,
-                (concurrency_bounds.0 as u64, concurrency_bounds.1 as u64),
+                concurrency as u64 * base_unit,
+                (concurrency_bounds.0 as u64 * base_unit, concurrency_bounds.1 as u64 * base_unit),
             ),
+            permit_base_unit: base_unit,
             min_concurrency_increase_delay: Duration::from_millis(test_constants::INCR_SPACING_MS),
             min_concurrency_decrease_delay: Duration::from_millis(test_constants::DECR_SPACING_MS),
             adjustment_disabled: false,
@@ -1130,5 +1189,82 @@ mod tests {
             small_concurrency >= large_concurrency,
             "Small-transfer concurrency ({small_concurrency}) should be >= large-transfer concurrency ({large_concurrency})"
         );
+    }
+
+    #[tokio::test]
+    async fn test_permit_cost_scales_with_size() {
+        time::pause();
+        let controller = AdaptiveConcurrencyController::new_testing(10, (1, 20));
+
+        let config = xet_config();
+        let ref_size = *config.client.ac_max_reference_transmission_size;
+        let factor = config.client.ac_max_small_transfer_concurrency_factor;
+        let base_unit = controller.permit_base_unit;
+        let min_permits = (base_unit as f64 / factor).ceil() as u64;
+
+        // Full-size transfer costs base_unit (= ref_size / 1024)
+        assert_eq!(controller.compute_permit_cost(Some(ref_size)), base_unit);
+
+        // Half-size transfer costs half
+        assert_eq!(controller.compute_permit_cost(Some(ref_size / 2)), base_unit / 2);
+
+        // Tiny transfer hits the floor (min_permits = base_unit / factor)
+        assert_eq!(controller.compute_permit_cost(Some(1024)), min_permits);
+
+        // Unknown size defaults to base_unit
+        assert_eq!(controller.compute_permit_cost(None), base_unit);
+
+        // Zero size defaults to base_unit
+        assert_eq!(controller.compute_permit_cost(Some(0)), base_unit);
+    }
+
+    #[tokio::test]
+    async fn test_scaled_permits_allow_more_small_concurrent_transfers() {
+        time::pause();
+        let controller = AdaptiveConcurrencyController::new_testing(4, (1, 4));
+
+        let config = xet_config();
+        let factor = config.client.ac_max_small_transfer_concurrency_factor;
+        let base_unit = controller.permit_base_unit;
+        let min_permits = (base_unit as f64 / factor).ceil() as u64;
+
+        assert_eq!(controller.total_permits(), 4);
+
+        // With full-size transfers (base_unit each), we can acquire exactly 4
+        let mut full_permits = Vec::new();
+        for _ in 0..4 {
+            let p = controller.acquire_connection_permit().await.unwrap();
+            full_permits.push(p);
+        }
+        assert_eq!(controller.available_permits(), 0);
+        drop(full_permits);
+
+        // With minimum-cost transfers (min_permits each), we can fit more.
+        let expected_tiny_count = (4 * base_unit / min_permits) as usize;
+        let mut tiny_permits = Vec::new();
+        for _ in 0..expected_tiny_count {
+            let p = controller.acquire_connection_permit_with_size(Some(1024)).await.unwrap();
+            tiny_permits.push(p);
+        }
+
+        // Should have acquired factor times more permits than full-size
+        assert_eq!(tiny_permits.len(), (4.0 * factor) as usize);
+    }
+
+    #[tokio::test]
+    async fn test_effective_concurrency_reflects_permit_weights() {
+        time::pause();
+        let controller = AdaptiveConcurrencyController::new_testing(10, (1, 10));
+
+        // Acquire one full-size permit: effective active = 1.0 base_unit
+        let _p1 = controller.acquire_connection_permit().await.unwrap();
+        let eff_1 = controller.effective_active_concurrency();
+        assert!((eff_1 - 1.0).abs() < 0.01);
+
+        // Acquire one tiny permit: effective active ~ 1.0 + 0.5 = 1.5
+        let _p2 = controller.acquire_connection_permit_with_size(Some(1024)).await.unwrap();
+        let eff_2 = controller.effective_active_concurrency();
+        assert!(eff_2 > 1.0);
+        assert!(eff_2 < 2.0);
     }
 }

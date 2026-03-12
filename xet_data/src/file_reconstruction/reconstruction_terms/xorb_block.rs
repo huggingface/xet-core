@@ -67,7 +67,9 @@ impl XorbBlock {
         self.data
             .get_or_try_init(|| async {
                 // Acquire a CAS download permit only when actually downloading.
-                let permit = client.acquire_download_permit().await?;
+                let permit = client
+                    .acquire_download_permit(uncompressed_size_if_known.map(|s| s as u64))
+                    .await?;
 
                 let url_provider = XorbURLProvider {
                     client: client.clone(),

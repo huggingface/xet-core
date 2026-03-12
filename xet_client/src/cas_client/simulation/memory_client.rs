@@ -532,7 +532,10 @@ impl Client for MemoryClient {
         Ok(dedup.get(chunk_hash).cloned())
     }
 
-    async fn acquire_upload_permit(&self) -> Result<super::super::adaptive_concurrency::ConnectionPermit> {
+    async fn acquire_upload_permit(
+        &self,
+        _size: Option<u64>,
+    ) -> Result<super::super::adaptive_concurrency::ConnectionPermit> {
         self.apply_api_delay().await;
         self.upload_concurrency_controller.acquire_connection_permit().await
     }
@@ -863,7 +866,10 @@ impl Client for MemoryClient {
         })
     }
 
-    async fn acquire_download_permit(&self) -> Result<super::super::adaptive_concurrency::ConnectionPermit> {
+    async fn acquire_download_permit(
+        &self,
+        _size: Option<u64>,
+    ) -> Result<super::super::adaptive_concurrency::ConnectionPermit> {
         self.apply_api_delay().await;
         self.upload_concurrency_controller.acquire_connection_permit().await
     }

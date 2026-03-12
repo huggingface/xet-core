@@ -653,11 +653,9 @@ pub async fn test_global_dedup(client: Arc<dyn DirectAccessClient>) {
 
     let shard_hash = parse_shard_filename(&new_shard_path).unwrap();
 
-    let permit = client.acquire_upload_permit().await.unwrap();
-    client
-        .upload_shard(std::fs::read(&new_shard_path).unwrap().into(), permit)
-        .await
-        .unwrap();
+    let shard_data = std::fs::read(&new_shard_path).unwrap();
+    let permit = client.acquire_upload_permit(Some(shard_data.len() as u64)).await.unwrap();
+    client.upload_shard(shard_data.into(), permit).await.unwrap();
 
     let dedup_hashes =
         MDBShardInfo::filter_cas_chunks_for_global_dedup(&mut std::fs::File::open(&new_shard_path).unwrap()).unwrap();
