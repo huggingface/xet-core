@@ -102,6 +102,9 @@ impl ParsableConfigValue for bool {
 /// Some(Value) if the user specifies the value.
 impl<T: ParsableConfigValue> ParsableConfigValue for Option<T> {
     fn parse_user_value(value: &str) -> Option<Self> {
+        if value.trim().is_empty() {
+            return Some(None);
+        }
         T::parse_user_value(value).map(Some)
     }
 
@@ -429,6 +432,13 @@ mod tests {
         let none_val: Option<String> = None;
         let s = none_val.to_config_string();
         assert_eq!(s, "");
+    }
+
+    #[test]
+    fn test_parse_option_empty_string_as_none() {
+        assert_eq!(Option::<String>::parse_user_value(""), Some(None));
+        assert_eq!(Option::<String>::parse_user_value("   "), Some(None));
+        assert_eq!(Option::<usize>::parse_user_value(""), Some(None));
     }
 
     #[cfg(not(target_family = "wasm"))]

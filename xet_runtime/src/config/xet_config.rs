@@ -16,6 +16,96 @@ pub struct XetConfig {
     pub system_monitor: groups::system_monitor::ConfigValues,
 }
 
+macro_rules! dispatch_config_group_mut {
+    ($self:expr, $group:expr, |$config:ident| $body:expr, $unknown:expr) => {
+        match $group {
+            "data" => {
+                let $config = &mut $self.data;
+                $body
+            },
+            "shard" => {
+                let $config = &mut $self.shard;
+                $body
+            },
+            "deduplication" => {
+                let $config = &mut $self.deduplication;
+                $body
+            },
+            "chunk_cache" => {
+                let $config = &mut $self.chunk_cache;
+                $body
+            },
+            "client" => {
+                let $config = &mut $self.client;
+                $body
+            },
+            "log" => {
+                let $config = &mut $self.log;
+                $body
+            },
+            "reconstruction" => {
+                let $config = &mut $self.reconstruction;
+                $body
+            },
+            "xorb" => {
+                let $config = &mut $self.xorb;
+                $body
+            },
+            #[cfg(not(target_family = "wasm"))]
+            "system_monitor" => {
+                let $config = &mut $self.system_monitor;
+                $body
+            },
+            _ => $unknown,
+        }
+    };
+}
+
+macro_rules! dispatch_config_group_ref {
+    ($self:expr, $group:expr, |$config:ident| $body:expr, $unknown:expr) => {
+        match $group {
+            "data" => {
+                let $config = &$self.data;
+                $body
+            },
+            "shard" => {
+                let $config = &$self.shard;
+                $body
+            },
+            "deduplication" => {
+                let $config = &$self.deduplication;
+                $body
+            },
+            "chunk_cache" => {
+                let $config = &$self.chunk_cache;
+                $body
+            },
+            "client" => {
+                let $config = &$self.client;
+                $body
+            },
+            "log" => {
+                let $config = &$self.log;
+                $body
+            },
+            "reconstruction" => {
+                let $config = &$self.reconstruction;
+                $body
+            },
+            "xorb" => {
+                let $config = &$self.xorb;
+                $body
+            },
+            #[cfg(not(target_family = "wasm"))]
+            "system_monitor" => {
+                let $config = &$self.system_monitor;
+                $body
+            },
+            _ => $unknown,
+        }
+    };
+}
+
 impl XetConfig {
     /// Create a new XetConfig instance with default values and apply environment variable overrides.
     /// If high performance mode is enabled (via environment variables HF_XET_HIGH_PERFORMANCE or HF_XET_HP),
@@ -89,19 +179,12 @@ impl XetConfig {
     fn set_field(&mut self, path: &str, value: impl ToString) -> Result<(), ConfigError> {
         let (group, field) = path.split_once('.').ok_or_else(|| ConfigError::InvalidPath(path.to_owned()))?;
 
-        match group {
-            "data" => self.data.set(field, value),
-            "shard" => self.shard.set(field, value),
-            "deduplication" => self.deduplication.set(field, value),
-            "chunk_cache" => self.chunk_cache.set(field, value),
-            "client" => self.client.set(field, value),
-            "log" => self.log.set(field, value),
-            "reconstruction" => self.reconstruction.set(field, value),
-            "xorb" => self.xorb.set(field, value),
-            #[cfg(not(target_family = "wasm"))]
-            "system_monitor" => self.system_monitor.set(field, value),
-            _ => Err(ConfigError::UnknownGroup(group.to_owned())),
-        }
+        dispatch_config_group_mut!(
+            self,
+            group,
+            |config_group| config_group.set(field, value),
+            Err(ConfigError::UnknownGroup(group.to_owned()))
+        )
     }
 
     #[cfg(feature = "python")]
@@ -110,19 +193,12 @@ impl XetConfig {
             pyo3::exceptions::PyValueError::new_err(ConfigError::InvalidPath(path.to_owned()).to_string())
         })?;
 
-        match group {
-            "data" => self.data.set_from_python(field, value),
-            "shard" => self.shard.set_from_python(field, value),
-            "deduplication" => self.deduplication.set_from_python(field, value),
-            "chunk_cache" => self.chunk_cache.set_from_python(field, value),
-            "client" => self.client.set_from_python(field, value),
-            "log" => self.log.set_from_python(field, value),
-            "reconstruction" => self.reconstruction.set_from_python(field, value),
-            "xorb" => self.xorb.set_from_python(field, value),
-            #[cfg(not(target_family = "wasm"))]
-            "system_monitor" => self.system_monitor.set_from_python(field, value),
-            _ => Err(pyo3::exceptions::PyValueError::new_err(ConfigError::UnknownGroup(group.to_owned()).to_string())),
-        }
+        dispatch_config_group_mut!(
+            self,
+            group,
+            |config_group| config_group.set_from_python(field, value),
+            Err(pyo3::exceptions::PyValueError::new_err(ConfigError::UnknownGroup(group.to_owned()).to_string()))
+        )
     }
 
     /// Get a configuration value's string representation by dotted path
@@ -130,19 +206,12 @@ impl XetConfig {
     pub fn get(&self, path: &str) -> Result<String, ConfigError> {
         let (group, field) = path.split_once('.').ok_or_else(|| ConfigError::InvalidPath(path.to_owned()))?;
 
-        match group {
-            "data" => self.data.get(field),
-            "shard" => self.shard.get(field),
-            "deduplication" => self.deduplication.get(field),
-            "chunk_cache" => self.chunk_cache.get(field),
-            "client" => self.client.get(field),
-            "log" => self.log.get(field),
-            "reconstruction" => self.reconstruction.get(field),
-            "xorb" => self.xorb.get(field),
-            #[cfg(not(target_family = "wasm"))]
-            "system_monitor" => self.system_monitor.get(field),
-            _ => Err(ConfigError::UnknownGroup(group.to_owned())),
-        }
+        dispatch_config_group_ref!(
+            self,
+            group,
+            |config_group| config_group.get(field),
+            Err(ConfigError::UnknownGroup(group.to_owned()))
+        )
     }
 }
 
@@ -297,6 +366,23 @@ mod tests {
             .with_config("xorb.compression_scheme_retest_interval", "64")
             .unwrap();
         assert_eq!(config.get("xorb.compression_scheme_retest_interval").unwrap(), "64");
+    }
+
+    #[test]
+    fn test_with_config_option_empty_string_sets_none() {
+        let config = XetConfig::default().with_config("log.dest", "").unwrap();
+        assert_eq!(config.log.dest, None);
+        assert_eq!(config.get("log.dest").unwrap(), "");
+    }
+
+    #[test]
+    fn test_with_config_option_can_transition_some_to_none() {
+        let config = XetConfig::default()
+            .with_config("log.dest", "path/to/log")
+            .unwrap()
+            .with_config("log.dest", "")
+            .unwrap();
+        assert_eq!(config.log.dest, None);
     }
 }
 
