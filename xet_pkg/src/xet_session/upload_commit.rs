@@ -248,7 +248,7 @@ impl UploadCommitInner {
 
             *status.lock()? = TaskStatus::Running;
 
-            let result = clean_file(upload_session, &file_path, "", Some(tracking_id))
+            let result = clean_file(upload_session, &file_path, Sha256Policy::Compute, Some(tracking_id))
                 .await
                 .map_err(SessionError::from)
                 .map(|(file_info, _metrics)| file_info);

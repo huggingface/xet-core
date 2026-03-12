@@ -18,7 +18,7 @@ use runtime::async_run;
 use token_refresh::WrappedTokenRefresher;
 use tracing::debug;
 use xet_data::processing::errors::DataProcessingError;
-use xet_data::processing::{XetFileInfo, data_client};
+use xet_data::processing::{Sha256Policy, XetFileInfo, data_client};
 use xet_data::progress_tracking::TrackingProgressUpdater;
 use xet_runtime::core::file_handle_limits;
 
@@ -110,7 +110,7 @@ pub fn upload_bytes(
 
         let out: Vec<PyXetUploadInfo> = data_client::upload_bytes_async(
             file_contents,
-            skip_sha256,
+            Sha256Policy::from_skip(skip_sha256),
             endpoint,
             token_info,
             refresher.map(|v| v as Arc<_>),
@@ -158,6 +158,12 @@ pub fn upload_files(
         )));
     }
 
+    let sha256_policies: Vec<Sha256Policy> = match sha256s {
+        _ if skip_sha256 => vec![Sha256Policy::Skip; file_paths.len()],
+        Some(v) => v.iter().map(|s| Sha256Policy::from_hex(s)).collect(),
+        None => vec![Sha256Policy::Compute; file_paths.len()],
+    };
+
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updater = progress_updater.map(WrappedProgressUpdater::new).transpose()?.map(Arc::new);
 
@@ -178,8 +184,7 @@ pub fn upload_files(
 
         let out: Vec<PyXetUploadInfo> = data_client::upload_async(
             file_paths,
-            sha256s,
-            skip_sha256,
+            sha256_policies,
             endpoint,
             token_info,
             refresher.map(|v| v as Arc<_>),
