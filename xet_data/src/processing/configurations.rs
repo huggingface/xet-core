@@ -95,12 +95,12 @@ impl TranslatorConfig {
             let base_path = local_path.join("xet");
             std::fs::create_dir_all(&base_path)?;
 
-            (base_path.join(&config.shard.cache_subdir), base_path.join(&config.session.session_dir_name))
+            (base_path.join(&config.shard.cache_subdir), base_path.join(&config.session.dir_name))
         } else if session.is_memory() {
             let cache_path = xet_cache_root().join("memory");
             std::fs::create_dir_all(&cache_path)?;
 
-            (cache_path.join(&config.shard.cache_subdir), cache_path.join(&config.session.session_dir_name))
+            (cache_path.join(&config.shard.cache_subdir), cache_path.join(&config.session.dir_name))
         } else {
             let cache_path = compute_cache_path(&session.endpoint);
             std::fs::create_dir_all(&cache_path)?;
@@ -108,10 +108,7 @@ impl TranslatorConfig {
             let staging_directory = cache_path.join(&config.data.staging_subdir);
             std::fs::create_dir_all(&staging_directory)?;
 
-            (
-                cache_path.join(&config.shard.cache_subdir),
-                staging_directory.join(&config.session.session_dir_name),
-            )
+            (cache_path.join(&config.shard.cache_subdir), staging_directory.join(&config.session.dir_name))
         };
 
         info!(
@@ -145,7 +142,7 @@ impl TranslatorConfig {
         Ok(Self {
             session,
             shard_cache_directory: base_path.join(&config.shard.cache_subdir),
-            shard_session_directory: base_path.join(&config.session.session_dir_name),
+            shard_session_directory: base_path.join(&config.session.dir_name),
             force_disable_progress_aggregation: false,
         })
     }
@@ -167,7 +164,7 @@ impl TranslatorConfig {
         Ok(Self {
             session,
             shard_cache_directory: base_path.join(&config.shard.cache_subdir),
-            shard_session_directory: base_path.join(&config.session.session_dir_name),
+            shard_session_directory: base_path.join(&config.session.dir_name),
             force_disable_progress_aggregation: false,
         })
     }

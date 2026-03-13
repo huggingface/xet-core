@@ -94,8 +94,8 @@ fn test_new_config_env_overrides() {
         assert_eq!(XetConfig::new().data.staging_subdir, "tmp-stage");
     }
     {
-        let _guard = EnvVarGuard::set("HF_XET_SESSION_SESSION_DIR_NAME", "tmp-session");
-        assert_eq!(XetConfig::new().session.session_dir_name, "tmp-session");
+        let _guard = EnvVarGuard::set("HF_XET_SESSION_DIR_NAME", "tmp-session");
+        assert_eq!(XetConfig::new().session.dir_name, "tmp-session");
     }
     {
         let _guard = EnvVarGuard::set("HF_XET_DEDUPLICATION_GLOBAL_DEDUP_QUERY_ENABLED", "false");

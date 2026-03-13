@@ -16,6 +16,7 @@ use xet_core_structures::xorb_object::CompressionScheme;
 use xet_data::processing::data_client::default_config;
 use xet_data::processing::migration_tool::hub_client_token_refresher::HubClientTokenRefresher;
 use xet_data::processing::migration_tool::migrate::migrate_files_impl;
+use xet_runtime::config::XetConfig;
 use xet_runtime::core::XetRuntime;
 
 const DEFAULT_HF_ENDPOINT: &str = "https://huggingface.co";
@@ -224,19 +225,17 @@ async fn query_reconstruction(
 fn main() -> Result<()> {
     let cli = XCommand::parse();
 
+    let mut config = XetConfig::new();
     if let Command::Dedup(ref arg) = cli.command
         && let Some(c) = arg.compression
     {
         let scheme = CompressionScheme::try_from(c).map_err(|_| {
             anyhow::anyhow!("Invalid compression value {c}; expected one of: 0 (none), 1 (lz4), 2 (bg4-lz4)")
         })?;
-        let scheme_str: &str = scheme.into();
-        unsafe {
-            std::env::set_var("HF_XET_XORB_COMPRESSION_POLICY", scheme_str);
-        }
+        config.xorb.compression_policy = <&str>::from(scheme).to_string();
     }
 
-    let threadpool = XetRuntime::new()?;
+    let threadpool = XetRuntime::new_with_config(config)?;
     threadpool.external_run_async_task(async move { cli.run().await })??;
 
     Ok(())

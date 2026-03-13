@@ -10,11 +10,6 @@ use tracing::{Instrument, Span, info_span, instrument};
 use ulid::Ulid;
 use xet_client::cas_client::auth::{AuthConfig, TokenRefresher};
 use xet_core_structures::merklehash::MerkleHash;
-<<<<<<< HEAD
-use xet_core_structures::metadata_shard::Sha256;
-=======
-use xet_core_structures::xorb_object::CompressionScheme;
->>>>>>> origin/main
 use xet_runtime::core::par_utils::run_constrained_with_semaphore;
 use xet_runtime::core::{XetRuntime, check_sigint_shutdown, xet_config};
 
