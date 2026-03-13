@@ -13,7 +13,7 @@ use xet_runtime::core::XetRuntime;
 use super::common::{GroupState, create_translator_config};
 use super::errors::SessionError;
 use super::progress::{GroupProgress, ProgressSnapshot, TaskHandle, TaskStatus, UploadTaskHandle};
-use super::session::{RuntimeMode, XetSession};
+use super::session::XetSession;
 
 /// Async API for grouping related file uploads into a single atomic commit.
 ///
@@ -105,13 +105,9 @@ impl UploadCommit {
         // while the task is queued.
         let absolute_path = std::path::absolute(file_path)?;
 
-        if matches!(self.session.runtime_mode, RuntimeMode::External) {
-            return self.inner.start_upload_file_from_path(absolute_path).await;
-        }
         let inner = self.inner.clone();
         self.session
-            .runtime
-            .bridge_to_owned("upload_from_path", async move { inner.start_upload_file_from_path(absolute_path).await })
+            .dispatch("upload_from_path", async move { inner.start_upload_file_from_path(absolute_path).await })
             .await?
     }
 
@@ -153,13 +149,9 @@ impl UploadCommit {
     ) -> Result<(TaskHandle, SingleFileCleaner), SessionError> {
         self.session.check_alive()?;
 
-        if matches!(self.session.runtime_mode, RuntimeMode::External) {
-            return self.inner.start_upload_file(file_name, file_size).await;
-        }
         let inner = self.inner.clone();
         self.session
-            .runtime
-            .bridge_to_owned("upload_file", async move { inner.start_upload_file(file_name, file_size).await })
+            .dispatch("upload_file", async move { inner.start_upload_file(file_name, file_size).await })
             .await?
     }
 
@@ -173,13 +165,9 @@ impl UploadCommit {
     ) -> Result<UploadTaskHandle, SessionError> {
         self.session.check_alive()?;
 
-        if matches!(self.session.runtime_mode, RuntimeMode::External) {
-            return self.inner.start_upload_bytes(bytes, tracking_name).await;
-        }
         let inner = self.inner.clone();
         self.session
-            .runtime
-            .bridge_to_owned("upload_bytes", async move { inner.start_upload_bytes(bytes, tracking_name).await })
+            .dispatch("upload_bytes", async move { inner.start_upload_bytes(bytes, tracking_name).await })
             .await?
     }
 
@@ -197,13 +185,9 @@ impl UploadCommit {
     /// Consumes `self` — subsequent calls on any clone will return
     /// [`SessionError::AlreadyCommitted`].
     pub async fn commit(self) -> Result<HashMap<Ulid, UploadResult>, SessionError> {
-        if matches!(self.session.runtime_mode, RuntimeMode::External) {
-            return self.inner.handle_commit().await;
-        }
         let inner = self.inner.clone();
         self.session
-            .runtime
-            .bridge_to_owned("commit", async move { inner.handle_commit().await })
+            .dispatch("commit", async move { inner.handle_commit().await })
             .await?
     }
 
@@ -245,7 +229,9 @@ pub struct UploadCommitInner {
     // Shared upload session (FileUploadSession from data crate)
     upload_session: Mutex<Option<Arc<FileUploadSession>>>,
 
-    // State
+    // tokio::sync::Mutex (not std) because registration methods hold this lock across
+    // .await points (e.g. start_clean in start_upload_file) to serialise with commit.
+    // DownloadGroupInner uses std::sync::Mutex because its registration is synchronous.
     state: tokio::sync::Mutex<GroupState>,
 }
 
@@ -518,9 +504,13 @@ impl UploadCommitInner {
     /// `perform_sigint_shutdown()` first — so the runtime is already shutting
     /// down when this runs.
     ///
-    /// Uses `try_lock` on the tokio state mutex so this method does not block.
-    /// If a registration holds the state lock, the state flag is not updated here;
-    /// the runtime shutdown cancels the in-flight task regardless.
+    /// The state flag update uses `try_lock` on the tokio state mutex and is
+    /// best-effort: if a registration method currently holds the lock, the flag
+    /// is left unchanged.  This is safe because `upload_session` is
+    /// unconditionally cleared (set to `None`) and all active task handles are
+    /// aborted, so the commit is effectively dead regardless of the state flag
+    /// value.  A `blocking_lock()` is not used because `abort()` can be called
+    /// from within a tokio async context (e.g. tests), where it would panic.
     ///
     /// Clearing `upload_session` prevents future `start_upload_file` calls from
     /// obtaining a session and prevents `handle_commit` from calling `finalize`.
@@ -562,7 +552,7 @@ mod tests {
 
     use super::*;
     use crate::xet_session::progress::TaskStatus;
-    use crate::xet_session::session::{XetSession, XetSessionBuilder};
+    use crate::xet_session::session::{RuntimeMode, XetSession, XetSessionBuilder};
 
     async fn local_session(temp: &TempDir) -> Result<XetSession, Box<dyn std::error::Error>> {
         let cas_path = temp.path().join("cas");

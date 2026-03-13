@@ -1,6 +1,7 @@
 //! XetSession - manages runtime and configuration
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::pin::pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Waker};
@@ -8,6 +9,7 @@ use std::task::{Context, Waker};
 use http::HeaderMap;
 use ulid::Ulid;
 use xet_client::cas_client::auth::TokenRefresher;
+use xet_runtime::RuntimeError;
 use xet_runtime::config::XetConfig;
 use xet_runtime::core::XetRuntime;
 
@@ -77,6 +79,13 @@ pub struct XetSessionInner {
 /// driver-dependent future once inside `catch_unwind`.  Tokio panics synchronously
 /// on the first poll when a driver is absent, so the result is immediate — no
 /// spawning or blocking required.
+///
+/// **Fragility note:** this probing technique relies on tokio panicking
+/// synchronously on the first poll of `tokio::time::sleep` /
+/// `tokio::net::TcpListener::bind` when the corresponding driver (time / IO)
+/// is absent.  This is undocumented internal behavior validated against
+/// tokio 1.x.  If a future tokio version returns an error instead of
+/// panicking, this function will incorrectly accept a runtime missing drivers.
 ///
 /// Returns `true` if all requirements are met, `false` otherwise.
 fn handle_meets_session_requirements(handle: &tokio::runtime::Handle) -> bool {
@@ -227,6 +236,11 @@ impl XetSessionBuilder {
 
     /// Build and automatically attach to the current runtime.
     ///
+    /// Despite being `async`, this method resolves synchronously (no internal
+    /// `.await` points).  It is declared `async` so callers in an async context
+    /// can use it naturally alongside `tokio::runtime::Handle::try_current()`
+    /// detection.
+    ///
     /// - **Tokio context** with a suitable runtime (multi-thread, time + IO drivers): wraps the caller's handle via
     ///   [`with_tokio_handle`](Self::with_tokio_handle) — External mode.
     /// - **Tokio context** with an unsuitable runtime (e.g. `current_thread`): handle is discarded by
@@ -322,6 +336,22 @@ impl XetSession {
         }
     }
 
+    /// Run a future on the appropriate runtime for this session.
+    ///
+    /// In External mode the future is awaited directly on the caller's executor.
+    /// In Owned mode the future is bridged onto the owned thread pool via
+    /// [`XetRuntime::bridge_to_owned`].
+    pub(super) async fn dispatch<T, F>(&self, task_name: &'static str, fut: F) -> Result<T, RuntimeError>
+    where
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        match self.runtime_mode {
+            RuntimeMode::External => Ok(fut.await),
+            RuntimeMode::Owned => self.runtime.bridge_to_owned(task_name, fut).await,
+        }
+    }
+
     /// Create a new [`UploadCommit`] that groups related file uploads.
     ///
     /// Returns `Err(SessionError::Aborted)` if the session has been aborted.
@@ -339,15 +369,10 @@ impl XetSession {
             }
         }
 
-        let commit = match self.runtime_mode {
-            RuntimeMode::External => UploadCommit::new(self.clone()).await?,
-            RuntimeMode::Owned => {
-                let session = self.clone();
-                self.runtime
-                    .bridge_to_owned("new_upload_commit", async move { UploadCommit::new(session).await })
-                    .await??
-            },
-        };
+        let session = self.clone();
+        let commit = self
+            .dispatch("new_upload_commit", async move { UploadCommit::new(session).await })
+            .await??;
 
         // Register the commit (sync insertion, safe in any executor context)
         self.active_upload_commits.lock()?.insert(commit.id(), commit.clone());
@@ -406,15 +431,10 @@ impl XetSession {
             }
         }
 
-        let group = match self.runtime_mode {
-            RuntimeMode::External => DownloadGroup::new(self.clone()).await?,
-            RuntimeMode::Owned => {
-                let session = self.clone();
-                self.runtime
-                    .bridge_to_owned("new_download_group", async move { DownloadGroup::new(session).await })
-                    .await??
-            },
-        };
+        let session = self.clone();
+        let group = self
+            .dispatch("new_download_group", async move { DownloadGroup::new(session).await })
+            .await??;
 
         // Register the group (sync insertion, safe in any executor context)
         self.active_download_groups.lock()?.insert(group.id(), group.clone());

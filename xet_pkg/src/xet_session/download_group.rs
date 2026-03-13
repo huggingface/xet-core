@@ -12,7 +12,7 @@ use xet_runtime::core::XetRuntime;
 use super::common::{GroupState, create_translator_config};
 use super::errors::SessionError;
 use super::progress::{DownloadTaskHandle, GroupProgress, ProgressSnapshot, TaskHandle, TaskStatus};
-use super::session::{RuntimeMode, XetSession};
+use super::session::XetSession;
 
 /// Async API for grouping related file downloads into a single unit of work.
 ///
@@ -135,13 +135,9 @@ impl DownloadGroup {
     /// Consumes `self` — subsequent calls on any clone will return
     /// [`SessionError::AlreadyFinished`].
     pub async fn finish(self) -> Result<HashMap<Ulid, DownloadResult>, SessionError> {
-        if matches!(self.session.runtime_mode, RuntimeMode::External) {
-            return self.inner.handle_finish().await;
-        }
         let inner = self.inner.clone();
         self.session
-            .runtime
-            .bridge_to_owned("finish", async move { inner.handle_finish().await })
+            .dispatch("finish", async move { inner.handle_finish().await })
             .await?
     }
 
@@ -377,7 +373,7 @@ mod tests {
     use tempfile::{TempDir, tempdir};
 
     use super::*;
-    use crate::xet_session::session::{XetSession, XetSessionBuilder};
+    use crate::xet_session::session::{RuntimeMode, XetSession, XetSessionBuilder};
 
     async fn local_session(temp: &TempDir) -> Result<XetSession, Box<dyn std::error::Error>> {
         let cas_path = temp.path().join("cas");
