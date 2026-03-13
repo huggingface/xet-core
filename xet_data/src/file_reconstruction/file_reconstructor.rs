@@ -375,6 +375,7 @@ mod tests {
     use ulid::Ulid;
     use xet_client::cas_client::{ClientTestingUtils, DirectAccessClient, LocalClient, RandomFileContents};
     use xet_client::cas_types::FileRange;
+    use xet_runtime::core::XetRuntime;
 
     use super::*;
     use crate::progress_tracking::NoOpProgressUpdater;
@@ -405,6 +406,7 @@ mod tests {
         file_hash: MerkleHash,
         byte_range: Option<FileRange>,
         config: &ReconstructionConfig,
+        semaphore: Option<Arc<AdjustableSemaphore>>,
     ) -> Result<Vec<u8>> {
         let buffer = Arc::new(std::sync::Mutex::new(Cursor::new(Vec::new())));
         let writer = StaticCursorWriter(buffer.clone());
@@ -414,6 +416,9 @@ mod tests {
 
         if let Some(range) = byte_range {
             reconstructor = reconstructor.with_byte_range(range);
+        }
+        if let Some(sem) = semaphore {
+            reconstructor = reconstructor.with_buffer_semaphore(sem);
         }
 
         reconstructor.reconstruct_to_writer(writer).await?;
@@ -528,7 +533,7 @@ mod tests {
             config.use_vectored_write = use_vectored;
 
             // Test 1: reconstruct_to_writer
-            let vec_result = reconstruct_to_vec(client, h, None, &config).await.unwrap();
+            let vec_result = reconstruct_to_vec(client, h, None, &config, None).await.unwrap();
             assert_eq!(vec_result, *expected, "vec failed (vectored={use_vectored})");
 
             // Test 2: reconstruct_to_file
@@ -560,7 +565,7 @@ mod tests {
             config.use_vectored_write = use_vectored;
 
             // Test 1: reconstruct_to_writer
-            let vec_result = reconstruct_to_vec(client, file_contents.file_hash, Some(range), &config)
+            let vec_result = reconstruct_to_vec(client, file_contents.file_hash, Some(range), &config, None)
                 .await
                 .expect("reconstruct_to_vec should succeed");
             assert_eq!(vec_result, expected, "vec failed (vectored={use_vectored})");
@@ -911,7 +916,11 @@ mod tests {
     #[tokio::test]
     async fn test_non_contiguous_chunks() {
         let (client, file_contents) = setup_test_file(&[(1, (0, 2)), (1, (4, 6))]).await;
-        reconstruct_and_verify_full(&client, &file_contents, test_config()).await;
+        let config = test_config();
+        let result = reconstruct_to_vec(&client, file_contents.file_hash, None, &config, None)
+            .await
+            .unwrap();
+        assert_eq!(result, file_contents.data);
     }
 
     // ==================== Default Config Tests ====================
@@ -1157,7 +1166,7 @@ mod tests {
             let mut config = test_config();
             config.download_buffer_perfile_size = xet_runtime::utils::ByteSize::from("8kb");
 
-            let reconstructed = reconstruct_to_vec(&client, file_contents.file_hash, None, &config)
+            let reconstructed = reconstruct_to_vec(&client, file_contents.file_hash, None, &config, None)
                 .await
                 .unwrap();
             assert_eq!(reconstructed, file_contents.data);
@@ -1287,6 +1296,348 @@ mod tests {
         assert_eq!(&result[start as usize..end as usize], &file_contents.data[start as usize..end as usize]);
     }
 
+    // ==================== V1 Fallback Tests ====================
+    //
+    // These tests use LocalTestServer with V2 disabled to verify that
+    // reconstruction works correctly when the client falls back from V2 to V1.
+
+    /// Helper to reconstruct through a LocalTestServer (RemoteClient HTTP path).
+    async fn reconstruct_via_server(
+        server: &xet_client::cas_client::LocalTestServer,
+        file_hash: MerkleHash,
+        byte_range: Option<FileRange>,
+        config: &ReconstructionConfig,
+    ) -> Result<Vec<u8>> {
+        let buffer = Arc::new(std::sync::Mutex::new(Cursor::new(Vec::new())));
+        let writer = StaticCursorWriter(buffer.clone());
+
+        let client: Arc<dyn Client> = server.remote_client().clone();
+        let mut reconstructor = FileReconstructor::new(&client, file_hash).with_config(config);
+
+        if let Some(range) = byte_range {
+            reconstructor = reconstructor.with_byte_range(range);
+        }
+
+        reconstructor.reconstruct_to_writer(writer).await?;
+
+        let data = buffer.lock().unwrap().get_ref().clone();
+        Ok(data)
+    }
+
+    #[tokio::test]
+    async fn test_v1_fallback_full_reconstruction() {
+        let server = xet_client::cas_client::LocalTestServerBuilder::new().start().await;
+        let file_contents = server
+            .remote_client()
+            .upload_random_file(&[(1, (0, 3)), (2, (0, 2))], TEST_CHUNK_SIZE)
+            .await
+            .unwrap();
+
+        // Disable V2 so the remote client falls back to V1 + conversion.
+        server.disable_v2_reconstruction(404);
+
+        let config = test_config();
+        let result = reconstruct_via_server(&server, file_contents.file_hash, None, &config)
+            .await
+            .unwrap();
+        assert_eq!(result, file_contents.data.as_ref());
+    }
+
+    #[tokio::test]
+    async fn test_v1_fallback_partial_range() {
+        let server = xet_client::cas_client::LocalTestServerBuilder::new().start().await;
+        let file_contents = server
+            .remote_client()
+            .upload_random_file(&[(1, (0, 5)), (2, (0, 3))], TEST_CHUNK_SIZE)
+            .await
+            .unwrap();
+
+        server.disable_v2_reconstruction(404);
+
+        let file_len = file_contents.data.len() as u64;
+        let range = FileRange::new(file_len / 4, file_len * 3 / 4);
+
+        let config = test_config();
+        let result = reconstruct_via_server(&server, file_contents.file_hash, Some(range), &config)
+            .await
+            .unwrap();
+        assert_eq!(result, &file_contents.data[range.start as usize..range.end as usize]);
+    }
+
+    #[tokio::test]
+    async fn test_v1_fallback_non_contiguous_chunks() {
+        let server = xet_client::cas_client::LocalTestServerBuilder::new().start().await;
+        let file_contents = server
+            .remote_client()
+            .upload_random_file(&[(1, (0, 2)), (1, (4, 6))], TEST_CHUNK_SIZE)
+            .await
+            .unwrap();
+
+        server.disable_v2_reconstruction(404);
+
+        let config = test_config();
+        let result = reconstruct_via_server(&server, file_contents.file_hash, None, &config)
+            .await
+            .unwrap();
+        assert_eq!(result, file_contents.data.as_ref());
+    }
+
+    #[tokio::test]
+    async fn test_v1_fallback_multiple_xorbs() {
+        let server = xet_client::cas_client::LocalTestServerBuilder::new().start().await;
+        let file_contents = server
+            .remote_client()
+            .upload_random_file(&[(1, (0, 2)), (2, (0, 3)), (3, (0, 2)), (1, (2, 4))], TEST_CHUNK_SIZE)
+            .await
+            .unwrap();
+
+        server.disable_v2_reconstruction(404);
+
+        let config = test_config();
+        let result = reconstruct_via_server(&server, file_contents.file_hash, None, &config)
+            .await
+            .unwrap();
+        assert_eq!(result, file_contents.data.as_ref());
+    }
+
+    /// V1 fallback with three disjoint ranges from the same xorb.
+    #[tokio::test]
+    async fn test_v1_fallback_triple_disjoint_ranges() {
+        let server = xet_client::cas_client::LocalTestServerBuilder::new().start().await;
+        let file_contents = server
+            .remote_client()
+            .upload_random_file(&[(1, (0, 2)), (1, (4, 6)), (1, (8, 10))], TEST_CHUNK_SIZE)
+            .await
+            .unwrap();
+
+        server.disable_v2_reconstruction(404);
+
+        let config = test_config();
+        let result = reconstruct_via_server(&server, file_contents.file_hash, None, &config)
+            .await
+            .unwrap();
+        assert_eq!(result, file_contents.data.as_ref());
+    }
+
+    // ==================== Max Ranges Tests ====================
+    //
+    // These tests use LocalTestServer with max_ranges_per_fetch=2 to verify that
+    // multi-range fetch splitting works correctly through the full HTTP path.
+
+    /// Helper to set up a server with max_ranges_per_fetch and reconstruct.
+    async fn reconstruct_via_server_with_max_ranges(
+        term_spec: &[(u64, (u64, u64))],
+        max_ranges: usize,
+        byte_range: Option<FileRange>,
+    ) -> (Vec<u8>, RandomFileContents) {
+        let server = xet_client::cas_client::LocalTestServerBuilder::new().start().await;
+        let file_contents = server
+            .remote_client()
+            .upload_random_file(term_spec, TEST_CHUNK_SIZE)
+            .await
+            .unwrap();
+
+        server.set_max_ranges_per_fetch(max_ranges);
+
+        let config = test_config();
+        let result = reconstruct_via_server(&server, file_contents.file_hash, byte_range, &config)
+            .await
+            .unwrap();
+        (result, file_contents)
+    }
+
+    #[tokio::test]
+    async fn test_max_ranges_simple() {
+        let (result, file_contents) =
+            reconstruct_via_server_with_max_ranges(&[(1, (0, 3)), (2, (0, 2))], 2, None).await;
+        assert_eq!(result, file_contents.data.as_ref());
+    }
+
+    /// A single xorb with two disjoint ranges, split at max_ranges=1.
+    /// Each range becomes its own fetch entry.
+    #[tokio::test]
+    async fn test_max_ranges_1_disjoint() {
+        let (result, file_contents) =
+            reconstruct_via_server_with_max_ranges(&[(1, (0, 2)), (1, (4, 6))], 1, None).await;
+        assert_eq!(result, file_contents.data.as_ref());
+    }
+
+    /// Three disjoint ranges from the same xorb with max_ranges=2.
+    /// First two ranges are grouped, third gets its own fetch entry.
+    #[tokio::test]
+    async fn test_max_ranges_2_triple_disjoint() {
+        let (result, file_contents) =
+            reconstruct_via_server_with_max_ranges(&[(1, (0, 2)), (1, (4, 6)), (1, (8, 10))], 2, None).await;
+        assert_eq!(result, file_contents.data.as_ref());
+    }
+
+    /// Multiple xorbs, each with disjoint ranges, with max_ranges=2.
+    /// Tests that splitting is applied per-xorb correctly.
+    #[tokio::test]
+    async fn test_max_ranges_2_multi_xorb_disjoint() {
+        let term_spec = &[
+            (1, (0, 2)),
+            (2, (0, 2)),
+            (1, (4, 6)),
+            (2, (4, 6)),
+            (1, (8, 10)),
+            (2, (8, 10)),
+        ];
+        let (result, file_contents) = reconstruct_via_server_with_max_ranges(term_spec, 2, None).await;
+        assert_eq!(result, file_contents.data.as_ref());
+    }
+
+    /// Complex interleaved pattern with max_ranges=2 and a partial byte range.
+    #[tokio::test]
+    async fn test_max_ranges_2_partial_range() {
+        let term_spec = &[
+            (1, (0, 3)),
+            (2, (0, 2)),
+            (1, (3, 5)),
+            (3, (1, 4)),
+            (2, (4, 6)),
+            (1, (0, 2)),
+        ];
+        let server = xet_client::cas_client::LocalTestServerBuilder::new().start().await;
+        let file_contents = server
+            .remote_client()
+            .upload_random_file(term_spec, TEST_CHUNK_SIZE)
+            .await
+            .unwrap();
+
+        server.set_max_ranges_per_fetch(2);
+
+        let file_len = file_contents.data.len() as u64;
+        let range = FileRange::new(file_len / 4, file_len * 3 / 4);
+
+        let config = test_config();
+        let result = reconstruct_via_server(&server, file_contents.file_hash, Some(range), &config)
+            .await
+            .unwrap();
+        assert_eq!(result, &file_contents.data[range.start as usize..range.end as usize]);
+    }
+
+    // ==================== Multi-Disjoint Range Tests (LocalClient) ====================
+    //
+    // These tests exercise complex disjoint range patterns through the LocalClient path
+    // (no HTTP server), ensuring the reconstruction logic handles V2 multi-range
+    // XorbBlocks correctly.
+
+    /// Single xorb with three disjoint chunk ranges.
+    #[tokio::test]
+    async fn test_triple_disjoint_ranges_full() {
+        let (client, file_contents) = setup_test_file(&[(1, (0, 2)), (1, (4, 6)), (1, (8, 10))]).await;
+        reconstruct_and_verify_full(&client, &file_contents, test_config()).await;
+    }
+
+    /// Single xorb with three disjoint chunk ranges, partial byte range.
+    #[tokio::test]
+    async fn test_triple_disjoint_ranges_partial() {
+        let (client, file_contents) = setup_test_file(&[(1, (0, 2)), (1, (4, 6)), (1, (8, 10))]).await;
+        let file_len = file_contents.data.len() as u64;
+        let range = FileRange::new(file_len / 4, file_len * 3 / 4);
+        reconstruct_and_verify_range(&client, &file_contents, range, test_config()).await;
+    }
+
+    /// Multiple xorbs, each with multiple disjoint ranges, interleaved.
+    #[tokio::test]
+    async fn test_multi_xorb_interleaved_disjoint() {
+        let term_spec = &[
+            (1, (0, 2)),
+            (2, (0, 2)),
+            (1, (4, 6)),
+            (2, (4, 6)),
+            (1, (8, 10)),
+            (2, (8, 10)),
+        ];
+        let (client, file_contents) = setup_test_file(term_spec).await;
+        reconstruct_and_verify_full(&client, &file_contents, test_config()).await;
+    }
+
+    /// Multiple xorbs with interleaved disjoint ranges, partial byte range.
+    #[tokio::test]
+    async fn test_multi_xorb_interleaved_disjoint_partial() {
+        let term_spec = &[
+            (1, (0, 2)),
+            (2, (0, 2)),
+            (1, (4, 6)),
+            (2, (4, 6)),
+            (1, (8, 10)),
+            (2, (8, 10)),
+        ];
+        let (client, file_contents) = setup_test_file(term_spec).await;
+        let file_len = file_contents.data.len() as u64;
+        let range = FileRange::new(file_len / 3, file_len * 2 / 3);
+        reconstruct_and_verify_range(&client, &file_contents, range, test_config()).await;
+    }
+
+    /// Single xorb with four disjoint ranges (many gaps).
+    #[tokio::test]
+    async fn test_four_disjoint_ranges() {
+        let term_spec = &[(1, (0, 2)), (1, (4, 6)), (1, (8, 10)), (1, (12, 14))];
+        let (client, file_contents) = setup_test_file(term_spec).await;
+        reconstruct_and_verify_full(&client, &file_contents, test_config()).await;
+    }
+
+    /// Mix of contiguous and disjoint ranges from the same xorb.
+    #[tokio::test]
+    async fn test_mixed_contiguous_and_disjoint() {
+        let term_spec = &[
+            (1, (0, 3)),  // contiguous block
+            (1, (3, 5)),  // continues contiguously
+            (1, (8, 10)), // gap, then disjoint
+        ];
+        let (client, file_contents) = setup_test_file(term_spec).await;
+        reconstruct_and_verify_full(&client, &file_contents, test_config()).await;
+    }
+
+    /// Disjoint ranges across three xorbs with a complex access pattern.
+    #[tokio::test]
+    async fn test_complex_three_xorb_disjoint() {
+        let term_spec = &[
+            (1, (0, 2)),
+            (2, (0, 3)),
+            (3, (2, 5)),
+            (1, (5, 8)),
+            (2, (6, 8)),
+            (3, (0, 2)),
+        ];
+        let (client, file_contents) = setup_test_file(term_spec).await;
+        reconstruct_and_verify_full(&client, &file_contents, test_config()).await;
+    }
+
+    /// LocalClient with max_ranges_per_fetch=2 (tests V2 response splitting without HTTP).
+    #[tokio::test]
+    async fn test_local_client_max_ranges_2_disjoint() {
+        let client = LocalClient::temporary().await.unwrap();
+        client.set_max_ranges_per_fetch(2);
+
+        let term_spec = &[(1, (0, 2)), (1, (4, 6)), (1, (8, 10)), (1, (12, 14))];
+        let file_contents = client.upload_random_file(term_spec, TEST_CHUNK_SIZE).await.unwrap();
+
+        let config = test_config();
+        let result = reconstruct_to_vec(&client, file_contents.file_hash, None, &config, None)
+            .await
+            .unwrap();
+        assert_eq!(result, file_contents.data.as_ref());
+    }
+
+    /// LocalClient with max_ranges_per_fetch=1 (every range gets its own fetch entry).
+    #[tokio::test]
+    async fn test_local_client_max_ranges_1_multi_xorb() {
+        let client = LocalClient::temporary().await.unwrap();
+        client.set_max_ranges_per_fetch(1);
+
+        let term_spec = &[(1, (0, 2)), (2, (0, 2)), (1, (4, 6)), (2, (4, 6))];
+        let file_contents = client.upload_random_file(term_spec, TEST_CHUNK_SIZE).await.unwrap();
+
+        let config = test_config();
+        let result = reconstruct_to_vec(&client, file_contents.file_hash, None, &config, None)
+            .await
+            .unwrap();
+        assert_eq!(result, file_contents.data.as_ref());
+    }
+
     // ==================== Cancellation Flag Tests ====================
 
     #[tokio::test]
@@ -1384,5 +1735,134 @@ mod tests {
 
         assert_eq!(bytes_written, file_contents.data.len() as u64);
         assert_eq!(buffer.lock().unwrap().get_ref().clone(), file_contents.data);
+    }
+
+    // ==================== Multirange Fetching Tests ====================
+    //
+    // These tests verify that reconstruction works correctly across multirange
+    // fetch configurations. Tests exercise both extremes: forcing all multirange
+    // (max_multirange_term_size=MAX, min_multirange_group_size=1) and forcing
+    // all single-range (min_multirange_group_size=MAX).
+
+    fn with_multirange_config(force_multirange: bool) -> Arc<XetRuntime> {
+        let mut config = xet_runtime::config::XetConfig::new();
+        if force_multirange {
+            config.client.max_multirange_term_size = xet_runtime::utils::ByteSize::new(u64::MAX);
+            config.client.min_multirange_group_size = 1;
+        } else {
+            config.client.min_multirange_group_size = usize::MAX;
+        }
+        XetRuntime::new_with_config(config).unwrap()
+    }
+
+    /// Exercises multiple disjoint-range scenarios through LocalClient with both
+    /// forced multirange and forced single-range configs.
+    #[test]
+    fn test_multirange_local_client() {
+        for prefer in [false, true] {
+            let rt = with_multirange_config(prefer);
+            rt.external_run_async_task(async move {
+                let scenarios: Vec<Vec<(u64, (u64, u64))>> = vec![
+                    vec![(1, (0, 2)), (1, (4, 6)), (1, (8, 10))],
+                    vec![
+                        (1, (0, 2)),
+                        (2, (0, 2)),
+                        (1, (4, 6)),
+                        (2, (4, 6)),
+                        (1, (8, 10)),
+                        (2, (8, 10)),
+                    ],
+                    vec![
+                        (1, (0, 2)),
+                        (2, (0, 3)),
+                        (3, (2, 5)),
+                        (1, (5, 8)),
+                        (2, (6, 8)),
+                        (3, (0, 2)),
+                    ],
+                ];
+                let config = test_config();
+                for term_spec in &scenarios {
+                    let (client, fc) = setup_test_file(term_spec).await;
+                    reconstruct_and_verify_full(&client, &fc, config.clone()).await;
+
+                    let file_len = fc.data.len() as u64;
+                    let range = FileRange::new(file_len / 4, file_len * 3 / 4);
+                    reconstruct_and_verify_range(&client, &fc, range, config.clone()).await;
+                }
+            })
+            .unwrap();
+        }
+    }
+
+    /// LocalClient with max_ranges_per_fetch constraint, both multirange configs.
+    #[test]
+    fn test_multirange_max_ranges() {
+        for prefer in [false, true] {
+            let rt = with_multirange_config(prefer);
+            rt.external_run_async_task(async {
+                let client = LocalClient::temporary().await.unwrap();
+                client.set_max_ranges_per_fetch(2);
+
+                let term_spec = &[(1, (0, 2)), (1, (4, 6)), (1, (8, 10)), (1, (12, 14))];
+                let fc = client.upload_random_file(term_spec, TEST_CHUNK_SIZE).await.unwrap();
+
+                let config = test_config();
+                let result = reconstruct_to_vec(&client, fc.file_hash, None, &config, None).await.unwrap();
+                assert_eq!(result, fc.data.as_ref());
+            })
+            .unwrap();
+        }
+    }
+
+    /// Exercises HTTP server path with full, max-ranges-split, and partial-range
+    /// reconstruction, both multirange configs.
+    #[test]
+    fn test_multirange_via_server() {
+        for prefer in [false, true] {
+            let rt = with_multirange_config(prefer);
+            rt.external_run_async_task(async {
+                let config = test_config();
+
+                // Full reconstruction with disjoint ranges
+                let server = xet_client::cas_client::LocalTestServerBuilder::new().start().await;
+                let fc = server
+                    .remote_client()
+                    .upload_random_file(&[(1, (0, 2)), (1, (4, 6)), (1, (8, 10))], TEST_CHUNK_SIZE)
+                    .await
+                    .unwrap();
+                let result = reconstruct_via_server(&server, fc.file_hash, None, &config).await.unwrap();
+                assert_eq!(result, fc.data.as_ref());
+
+                // Multi-xorb with max_ranges_per_fetch=2
+                let server = xet_client::cas_client::LocalTestServerBuilder::new().start().await;
+                let fc = server
+                    .remote_client()
+                    .upload_random_file(
+                        &[(1, (0, 2)), (2, (0, 2)), (1, (4, 6)), (2, (4, 6)), (1, (8, 10))],
+                        TEST_CHUNK_SIZE,
+                    )
+                    .await
+                    .unwrap();
+                server.set_max_ranges_per_fetch(2);
+                let result = reconstruct_via_server(&server, fc.file_hash, None, &config).await.unwrap();
+                assert_eq!(result, fc.data.as_ref());
+
+                // Partial byte range
+                let server = xet_client::cas_client::LocalTestServerBuilder::new().start().await;
+                let fc = server
+                    .remote_client()
+                    .upload_random_file(&[(1, (0, 3)), (2, (0, 2)), (1, (3, 5)), (2, (4, 6))], TEST_CHUNK_SIZE)
+                    .await
+                    .unwrap();
+                let file_len = fc.data.len() as u64;
+                let range = FileRange::new(file_len / 4, file_len * 3 / 4);
+                let result = reconstruct_via_server(&server, fc.file_hash, Some(range), &config)
+                    .await
+                    .unwrap();
+                assert_eq!(result, &fc.data[range.start as usize..range.end as usize]);
+            })
+            .unwrap();
+        }
     }
 }

@@ -132,7 +132,7 @@ impl Client for RemoteSimulationClient {
         &self,
         file_id: &xet_core_structures::merklehash::MerkleHash,
         bytes_range: Option<crate::cas_types::FileRange>,
-    ) -> Result<Option<crate::cas_types::QueryReconstructionResponse>> {
+    ) -> Result<Option<crate::cas_types::QueryReconstructionResponseV2>> {
         self.inner.get_reconstruction(file_id, bytes_range).await
     }
 

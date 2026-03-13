@@ -15,6 +15,48 @@ use super::file_cleaner::Sha256Policy;
 use super::{FileDownloadSession, FileUploadSession, XetFileInfo};
 use crate::progress_tracking::TrackingProgressUpdater;
 
+/// Describes how hydration (download/smudge) should be performed during a test.
+///
+/// Each variant exercises a different reconstruction path:
+/// - `DirectClient`: Uses `LocalClient` directly (no HTTP server).
+/// - `ServerV2`: Uses `LocalTestServer` with default V2 reconstruction.
+/// - `ServerV1Fallback`: Uses `LocalTestServer` with V2 disabled, forcing V1 fallback.
+/// - `ServerMaxRanges2`: Uses `LocalTestServer` with `max_ranges_per_fetch=2`, forcing multi-range fetch splitting in
+///   V2 responses.
+#[derive(Debug, Clone, Copy)]
+pub enum HydrationMode {
+    DirectClient,
+    ServerV2,
+    ServerV1Fallback,
+    ServerMaxRanges2,
+}
+
+impl HydrationMode {
+    pub fn all() -> &'static [HydrationMode] {
+        &[
+            HydrationMode::DirectClient,
+            HydrationMode::ServerV2,
+            HydrationMode::ServerV1Fallback,
+            HydrationMode::ServerMaxRanges2,
+        ]
+    }
+
+    pub fn uses_server(&self) -> bool {
+        !matches!(self, HydrationMode::DirectClient)
+    }
+}
+
+impl std::fmt::Display for HydrationMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HydrationMode::DirectClient => write!(f, "direct_client"),
+            HydrationMode::ServerV2 => write!(f, "server_v2"),
+            HydrationMode::ServerV1Fallback => write!(f, "server_v1_fallback"),
+            HydrationMode::ServerMaxRanges2 => write!(f, "server_max_ranges_2"),
+        }
+    }
+}
+
 /// Creates or overwrites a single file in `dir` with `size` bytes of random data.
 /// Panics on any I/O error. Returns the total number of bytes written (=`size`).
 pub fn create_random_file(path: impl AsRef<Path>, size: usize, seed: u64) -> usize {
@@ -172,6 +214,44 @@ impl HydrateDehydrateTest {
             use_test_server,
             test_server: None,
         }
+    }
+
+    /// Creates a new test harness configured for a specific hydration mode.
+    pub fn for_mode(mode: HydrationMode) -> Self {
+        Self::new(mode.uses_server())
+    }
+
+    /// Applies hydration mode configuration to the test server.
+    /// Must be called after `dehydrate()` and before `hydrate()`.
+    pub async fn apply_hydration_mode(&mut self, mode: HydrationMode) {
+        match mode {
+            HydrationMode::DirectClient => {},
+            HydrationMode::ServerV2 => {
+                self.ensure_server_created().await;
+            },
+            HydrationMode::ServerV1Fallback => {
+                self.ensure_server_created().await;
+                self.test_server.as_ref().unwrap().client().disable_v2_reconstruction(404);
+            },
+            HydrationMode::ServerMaxRanges2 => {
+                self.ensure_server_created().await;
+                self.test_server.as_ref().unwrap().client().set_max_ranges_per_fetch(2);
+            },
+        }
+    }
+
+    /// Ensures the test server is running, creating it if necessary.
+    /// Call this before configuring the server (e.g., disabling V2 or setting max ranges).
+    pub async fn ensure_server_created(&mut self) {
+        if self.use_test_server && self.test_server.is_none() {
+            let local_client = LocalClient::new(self.cas_dir.join("xet/xorbs")).await.unwrap();
+            self.test_server = Some(LocalTestServerBuilder::new().with_client(local_client).start().await);
+        }
+    }
+
+    /// Returns a reference to the test server, if one has been created.
+    pub fn test_server(&self) -> Option<&LocalTestServer> {
+        self.test_server.as_ref()
     }
 
     /// Lazily initializes the test server (if needed) and returns a CAS client.

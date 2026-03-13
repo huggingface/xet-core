@@ -17,7 +17,7 @@ use crate::cas_client::RemoteClient;
 use crate::cas_client::error::{CasClientError, Result};
 use crate::cas_client::interface::Client;
 use crate::cas_client::simulation::{DeletionControlableClient, DirectAccessClient};
-use crate::cas_types::{FileRange, HexMerkleHash, XorbReconstructionFetchInfo};
+use crate::cas_types::{FileRange, HexMerkleHash, QueryReconstructionResponseV2, XorbReconstructionFetchInfo};
 
 /// A client that connects to a `LocalTestServer` via HTTP and provides access
 /// to both `DirectAccessClient` and `DeletionControlableClient` operations
@@ -91,7 +91,7 @@ impl Client for SimulationControlClient {
         &self,
         file_id: &MerkleHash,
         bytes_range: Option<FileRange>,
-    ) -> Result<Option<crate::cas_types::QueryReconstructionResponse>> {
+    ) -> Result<Option<QueryReconstructionResponseV2>> {
         self.remote_client.get_reconstruction(file_id, bytes_range).await
     }
 
@@ -170,6 +170,30 @@ impl DirectAccessClient for SimulationControlClient {
 
     async fn apply_api_delay(&self) {
         // No-op: delays are applied server-side via set_api_delay_range
+    }
+
+    fn set_max_ranges_per_fetch(&self, _max_ranges: usize) {
+        // No-op: SimulationControlClient configures server via HTTP; endpoint not yet implemented.
+    }
+
+    fn disable_v2_reconstruction(&self, _status_code: u16) {
+        // No-op: SimulationControlClient configures server via HTTP; endpoint not yet implemented.
+    }
+
+    async fn get_reconstruction_v1(
+        &self,
+        file_id: &MerkleHash,
+        bytes_range: Option<FileRange>,
+    ) -> Result<Option<crate::cas_types::QueryReconstructionResponse>> {
+        self.remote_client.get_reconstruction_v1(file_id, bytes_range).await
+    }
+
+    async fn get_reconstruction_v2(
+        &self,
+        file_id: &MerkleHash,
+        bytes_range: Option<FileRange>,
+    ) -> Result<Option<QueryReconstructionResponseV2>> {
+        self.remote_client.get_reconstruction_v2(file_id, bytes_range).await
     }
 
     /// Sets the API delay range via the `/simulation/config/api_delay` endpoint.

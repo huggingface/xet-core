@@ -34,6 +34,7 @@ mod simulation_server;
 #[cfg(unix)]
 #[cfg(not(target_family = "wasm"))]
 pub mod socket_proxy;
+pub(crate) mod xorb_utils;
 
 pub use client_testing_utils::{ClientTestingUtils, RandomFileContents};
 #[cfg(not(target_family = "wasm"))]
