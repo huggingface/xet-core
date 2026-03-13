@@ -31,10 +31,10 @@ crate::config_group!({
 
     /// The maximum number of files to ingest at once on the download path.
     ///
-    /// The default value is 8.
+    /// The default value is 350.
     ///
     /// Use the environment variable `HF_XET_DATA_MAX_CONCURRENT_FILE_DOWNLOADS` to set this value.
-    ref max_concurrent_file_downloads: usize = 8;
+    ref max_concurrent_file_downloads: usize = 350;
 
     /// The maximum block size from a file to process at once.
     ///
