@@ -18,6 +18,7 @@ use crate::deduplication::{Chunk, Chunker, DeduplicationMetrics, FileDeduper};
 use crate::progress_tracking::upload_tracking::CompletionTrackerFileId;
 
 /// Controls how SHA-256 is handled during file cleaning.
+#[derive(Clone, Copy)]
 pub enum Sha256Policy {
     /// Compute SHA-256 from the file data.
     Compute,
@@ -25,6 +26,20 @@ pub enum Sha256Policy {
     Provided(Sha256),
     /// Skip SHA-256 entirely; no metadata_ext is written to the shard.
     Skip,
+}
+
+impl Sha256Policy {
+    /// Returns `Skip` when `true`, `Compute` when `false`.
+    pub fn from_skip(skip: bool) -> Self {
+        if skip { Self::Skip } else { Self::Compute }
+    }
+
+    /// Parses a hex-encoded SHA-256 string into a policy.
+    ///
+    /// Returns `Provided(hash)` if the hex is valid, `Compute` otherwise.
+    pub fn from_hex(hex: &str) -> Self {
+        Sha256::from_hex(hex).ok().into()
+    }
 }
 
 impl From<Option<Sha256>> for Sha256Policy {

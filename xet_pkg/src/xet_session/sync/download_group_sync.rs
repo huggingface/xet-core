@@ -27,7 +27,7 @@ use super::super::session::XetSession;
 /// All clones share the same background worker and task state.
 #[derive(Clone)]
 pub struct DownloadGroupSync {
-    pub(crate) inner: DownloadGroup,
+    pub(in super::super) inner: DownloadGroup,
 }
 
 impl DownloadGroupSync {
@@ -37,9 +37,8 @@ impl DownloadGroupSync {
     ///
     /// Panics if called from within an async runtime — use
     /// [`XetSession::new_download_group`] instead.
-    pub(crate) fn new(session: XetSession) -> Result<Self, SessionError> {
-        let runtime = session.runtime.clone();
-        let group = runtime.external_run_async_task(DownloadGroup::new(session.clone()))??;
+    pub(in super::super) fn new(session: XetSession) -> Result<Self, SessionError> {
+        let group = session.runtime.external_run_async_task(DownloadGroup::new(session.clone()))??;
         Ok(Self { inner: group })
     }
 
@@ -83,7 +82,9 @@ mod tests {
 
     fn local_session(temp: &TempDir) -> Result<XetSession, Box<dyn std::error::Error>> {
         let cas_path = temp.path().join("cas");
-        Ok(XetSession::new(Some(format!("local://{}", cas_path.display())), None, None, None)?)
+        Ok(XetSessionBuilder::new()
+            .with_endpoint(format!("local://{}", cas_path.display()))
+            .build()?)
     }
 
     fn upload_bytes(session: &XetSession, data: &[u8], name: &str) -> Result<XetFileInfo, Box<dyn std::error::Error>> {
@@ -220,22 +221,67 @@ mod tests {
         let group = session.new_download_group_blocking()?;
         let handle = group.download_file_to_path(file_info.clone(), dest)?;
         group.finish()?;
-        let result = handle.result().expect("result must be set after finish()");
+        let result = handle.result().unwrap();
         let dl = result.as_ref().as_ref().unwrap();
         assert_eq!(dl.file_info.file_size, data.len() as u64);
         assert_eq!(dl.file_info.hash, file_info.hash);
         Ok(())
     }
 
-    // ── Async-context panic guard ─────────────────────────────────────────────
+    // ── Non-tokio executor (no-panic + round-trip) ────────────────────────────
+    //
+    // smol, async-std, and futures::executor do not set tokio's thread-local
+    // runtime context, so Handle::block_on inside external_run_async_task does
+    // not panic — it just blocks the calling executor thread.
 
-    #[tokio::test]
-    // new_download_group_blocking panics when called from inside a tokio runtime.
-    async fn test_new_download_group_blocking_panics_in_async_context() {
-        let session = XetSessionBuilder::new().build().unwrap();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = session.new_download_group_blocking();
-        }));
-        assert!(result.is_err(), "expected panic from _blocking inside async");
+    #[test]
+    // new_download_group_blocking completes a full upload+download round-trip inside smol.
+    fn test_download_blocking_round_trip_in_smol() {
+        let temp = tempdir().unwrap();
+        let session = local_session(&temp).unwrap();
+
+        smol::block_on(async {
+            let data = b"download from smol executor";
+            let file_info = upload_bytes(&session, data, "test.bin").unwrap();
+            let dest = temp.path().join("out_smol.bin");
+            let group = session.new_download_group_blocking().unwrap();
+            group.download_file_to_path(file_info, dest.clone()).unwrap();
+            group.finish().unwrap();
+            assert_eq!(std::fs::read(&dest).unwrap(), data);
+        });
+    }
+
+    #[test]
+    // new_download_group_blocking completes a full upload+download round-trip inside futures::executor.
+    fn test_download_blocking_round_trip_in_futures_executor() {
+        let temp = tempdir().unwrap();
+        let session = local_session(&temp).unwrap();
+
+        futures::executor::block_on(async {
+            let data = b"download from futures executor";
+            let file_info = upload_bytes(&session, data, "test.bin").unwrap();
+            let dest = temp.path().join("out_futures.bin");
+            let group = session.new_download_group_blocking().unwrap();
+            group.download_file_to_path(file_info, dest.clone()).unwrap();
+            group.finish().unwrap();
+            assert_eq!(std::fs::read(&dest).unwrap(), data);
+        });
+    }
+
+    #[test]
+    // new_download_group_blocking completes a full upload+download round-trip inside async-std.
+    fn test_download_blocking_round_trip_in_async_std() {
+        let temp = tempdir().unwrap();
+        let session = local_session(&temp).unwrap();
+
+        async_std::task::block_on(async {
+            let data = b"download from async-std executor";
+            let file_info = upload_bytes(&session, data, "test.bin").unwrap();
+            let dest = temp.path().join("out_async_std.bin");
+            let group = session.new_download_group_blocking().unwrap();
+            group.download_file_to_path(file_info, dest.clone()).unwrap();
+            group.finish().unwrap();
+            assert_eq!(std::fs::read(&dest).unwrap(), data);
+        });
     }
 }

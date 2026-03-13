@@ -12,7 +12,6 @@ use tokio::task::{JoinHandle, JoinSet};
 use tracing::{Instrument, Span, info_span, instrument};
 use ulid::Ulid;
 use xet_client::cas_client::{Client, ProgressCallback};
-use xet_core_structures::metadata_shard::Sha256;
 use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
 use xet_core_structures::xorb_object::SerializedXorbObject;
 use xet_runtime::core::{XetRuntime, xet_config};
@@ -142,7 +141,7 @@ impl FileUploadSession {
 
     pub async fn upload_files(
         self: &Arc<Self>,
-        files_sha256_and_tracking_ids: impl IntoIterator<Item = (impl AsRef<Path>, Option<Sha256>, Ulid)> + Send,
+        files_sha256_and_tracking_ids: impl IntoIterator<Item = (impl AsRef<Path>, Sha256Policy, Ulid)> + Send,
     ) -> Result<Vec<XetFileInfo>> {
         let mut cleaning_tasks: Vec<JoinHandle<_>> = vec![];
 
@@ -185,7 +184,7 @@ impl FileUploadSession {
                     let mut reader = File::open(&file_path)?;
 
                     // Start the clean process for each file.
-                    let mut cleaner = SingleFileCleaner::new(Some(file_name), file_id, sha256.into(), session);
+                    let mut cleaner = SingleFileCleaner::new(Some(file_name), file_id, sha256, session);
                     let mut bytes_read = 0;
 
                     while bytes_read < file_size {

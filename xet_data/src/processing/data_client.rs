@@ -11,7 +11,6 @@ use ulid::Ulid;
 use xet_client::cas_client::auth::{AuthConfig, TokenRefresher};
 use xet_client::cas_client::remote_client::PREFIX_DEFAULT;
 use xet_core_structures::merklehash::MerkleHash;
-use xet_core_structures::metadata_shard::Sha256;
 use xet_core_structures::xorb_object::CompressionScheme;
 use xet_runtime::core::par_utils::run_constrained_with_semaphore;
 use xet_runtime::core::{XetRuntime, check_sigint_shutdown, xet_cache_root, xet_config};
@@ -95,12 +94,21 @@ pub fn default_config(
 #[instrument(skip_all, name = "data_client::upload_bytes", fields(session_id = tracing::field::Empty, num_files=file_contents.len()))]
 pub async fn upload_bytes_async(
     file_contents: Vec<Vec<u8>>,
+    sha256_policies: Vec<Sha256Policy>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
     custom_headers: Option<Arc<HeaderMap>>,
 ) -> errors::Result<Vec<XetFileInfo>> {
+    if sha256_policies.len() != file_contents.len() {
+        return Err(DataProcessingError::ParameterError(format!(
+            "sha256_policies length ({}) must match file_contents length ({})",
+            sha256_policies.len(),
+            file_contents.len()
+        )));
+    }
+
     let config = default_config(
         endpoint.unwrap_or_else(|| xet_config().data.default_cas_endpoint.clone()),
         None,
@@ -113,14 +121,10 @@ pub async fn upload_bytes_async(
 
     let semaphore = XetRuntime::current().common().file_ingestion_semaphore.clone();
     let upload_session = FileUploadSession::new(config.into(), progress_updater).await?;
-    let clean_futures = file_contents.into_iter().map(|blob| {
+    let clean_futures = file_contents.into_iter().zip(sha256_policies).map(|(blob, policy)| {
         let upload_session = upload_session.clone();
-        async move {
-            clean_bytes(upload_session, blob, Sha256Policy::Compute, None)
-                .await
-                .map(|(xf, _metrics)| xf)
-        }
-        .instrument(info_span!("clean_task"))
+        async move { clean_bytes(upload_session, blob, None, policy).await.map(|(xf, _metrics)| xf) }
+            .instrument(info_span!("clean_task"))
     });
     let files = run_constrained_with_semaphore(clean_futures, semaphore).await?;
 
@@ -143,13 +147,21 @@ pub async fn upload_bytes_async(
     ))]
 pub async fn upload_async(
     file_paths: Vec<String>,
-    sha256s: Option<Vec<String>>,
+    sha256_policies: Vec<Sha256Policy>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
     custom_headers: Option<Arc<HeaderMap>>,
 ) -> errors::Result<Vec<XetFileInfo>> {
+    if sha256_policies.len() != file_paths.len() {
+        return Err(DataProcessingError::ParameterError(format!(
+            "sha256_policies length ({}) must match file_paths length ({})",
+            sha256_policies.len(),
+            file_paths.len()
+        )));
+    }
+
     // chunk files
     // produce Xorbs + Shards
     // upload shards and xorbs
@@ -168,21 +180,8 @@ pub async fn upload_async(
 
     let upload_session = FileUploadSession::new(config.into(), progress_updater).await?;
 
-    // Parse sha256 hex string and ignore invalid ones, or if no sha256 is provided,
-    // create an iterator of infinite number of "None"s.
-    let sha256s: Box<dyn Iterator<Item = Option<Sha256>> + Send> = match &sha256s {
-        Some(v) => {
-            if v.len() != file_paths.len() {
-                return Err(DataProcessingError::ParameterError(
-                    "mismatched length of the file list and the sha256 list".into(),
-                ));
-            }
-            Box::new(v.iter().map(|s| Sha256::from_hex(s).ok()))
-        },
-        None => Box::new(std::iter::repeat(None)),
-    };
-
-    let files_sha256_and_tracking_ids = multizip((file_paths.into_iter(), sha256s, std::iter::repeat_with(Ulid::new)));
+    let files_sha256_and_tracking_ids =
+        multizip((file_paths.into_iter(), sha256_policies.into_iter(), std::iter::repeat_with(Ulid::new)));
 
     let ret = upload_session.upload_files(files_sha256_and_tracking_ids).await?;
 
@@ -264,22 +263,23 @@ pub async fn download_async(
 pub async fn clean_bytes(
     processor: Arc<FileUploadSession>,
     bytes: Vec<u8>,
-    sha256: Sha256Policy,
     tracking_id: Option<Ulid>,
+    sha256_policy: Sha256Policy,
 ) -> errors::Result<(XetFileInfo, DeduplicationMetrics)> {
     #[allow(clippy::unwrap_or_default)] // Ulid::default is Ulid::nil
     let tracking_id = tracking_id.unwrap_or_else(Ulid::new);
-    let mut handle = processor.start_clean(None, bytes.len() as u64, sha256, tracking_id).await;
+    let mut handle = processor
+        .start_clean(None, bytes.len() as u64, sha256_policy, tracking_id)
+        .await;
     handle.add_data(&bytes).await?;
     handle.finish().await
 }
 
-// The provided sha256, if valid, will be directly used in shard upload to avoid redundant computation.
 #[instrument(skip_all, name = "clean_file", fields(file.name = tracing::field::Empty, file.len = tracing::field::Empty))]
 pub async fn clean_file(
     processor: Arc<FileUploadSession>,
     filename: impl AsRef<Path>,
-    sha256: Sha256Policy,
+    sha256_policy: Sha256Policy,
     tracking_id: Option<Ulid>,
 ) -> errors::Result<(XetFileInfo, DeduplicationMetrics)> {
     #[allow(clippy::unwrap_or_default)] // Ulid::default is Ulid::nil
@@ -293,7 +293,7 @@ pub async fn clean_file(
     let mut buffer = vec![0u8; u64::min(filesize, *xet_config().data.ingestion_block_size) as usize];
 
     let mut handle = processor
-        .start_clean(Some(filename.as_ref().to_string_lossy().into()), filesize, sha256, tracking_id)
+        .start_clean(Some(filename.as_ref().to_string_lossy().into()), filesize, sha256_policy, tracking_id)
         .await;
 
     loop {
