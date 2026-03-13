@@ -62,12 +62,21 @@ pub enum XetError {
     /// Catch-all for unexpected internal errors (panics, lock poison, bugs).
     #[error("Internal error: {0}")]
     Internal(String),
+
+    /// Caller invoked a method that is incompatible with the session's runtime mode.
+    #[error("Wrong runtime mode: {0}")]
+    WrongRuntimeMode(String),
 }
 
 impl XetError {
     pub fn other(msg: impl std::fmt::Display) -> Self {
         Self::Internal(msg.to_string())
     }
+
+    pub fn wrong_mode(msg: impl std::fmt::Display) -> Self {
+        Self::WrongRuntimeMode(msg.to_string())
+    }
+
     fn from_runtime_error_ref(re: &RuntimeError) -> Self {
         match re {
             RuntimeError::TaskCanceled(_) => XetError::Cancelled(re.to_string()),

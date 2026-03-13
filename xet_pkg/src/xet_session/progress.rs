@@ -30,16 +30,16 @@ pub enum TaskStatus {
 
 #[derive(Debug)]
 pub struct TaskHandle {
-    pub(crate) status: Option<Arc<Mutex<TaskStatus>>>,
-    pub(crate) group_progress: Arc<GroupProgress>,
+    pub(super) status: Option<Arc<Mutex<TaskStatus>>>,
+    pub(super) group_progress: Arc<GroupProgress>,
     /// Id of the task, can be used to retrive per-task progress and result.
     pub task_id: Ulid,
 }
 
 #[derive(Debug)]
 pub struct UploadTaskHandle {
-    pub(crate) inner: TaskHandle,
-    pub(crate) result: Arc<OnceLock<UploadResult>>,
+    pub(super) inner: TaskHandle,
+    pub(super) result: Arc<OnceLock<UploadResult>>,
 }
 
 impl Deref for UploadTaskHandle {
@@ -52,8 +52,8 @@ impl Deref for UploadTaskHandle {
 
 #[derive(Debug)]
 pub struct DownloadTaskHandle {
-    pub(crate) inner: TaskHandle,
-    pub(crate) result: Arc<OnceLock<DownloadResult>>,
+    pub(super) inner: TaskHandle,
+    pub(super) result: Arc<OnceLock<DownloadResult>>,
 }
 
 impl Deref for DownloadTaskHandle {
@@ -107,7 +107,7 @@ impl ProgressSnapshot {
     }
 }
 
-/// Snapshot of aggregate progress returned by [`TaskProgress::total`].
+/// Snapshot of aggregate progress.
 #[derive(Clone, Debug, Default)]
 pub struct TotalProgressSnapshot {
     /// Total bytes known to process (includes deduplicated bytes).
@@ -124,7 +124,7 @@ pub struct TotalProgressSnapshot {
     pub total_transfer_bytes_completion_rate: Option<f64>,
 }
 
-/// Snapshot of a single file's progress returned by [`TaskProgress::files`].
+/// Snapshot of a single file's progress.
 #[derive(Clone, Debug)]
 pub struct FileProgress {
     /// File name as reported by the data layer.

@@ -20,15 +20,19 @@ xet-data = { version = "1.4.0", path = "../xet_data" }
 
 async-trait = { workspace = true }
 http = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["net"] }
 ulid = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 
 [features]
 python = ["xet-runtime/python"]
 
 [dev-dependencies]
+async-std = { workspace = true }
+futures = { workspace = true }
+smol = { workspace = true }
 tempfile = { workspace = true }
 serial_test = { workspace = true }
 anyhow = { workspace = true }
