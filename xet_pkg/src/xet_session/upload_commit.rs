@@ -111,7 +111,7 @@ impl UploadCommit {
 
         let inner = self.inner.clone();
         self.session
-            .dispatch("upload_from_path", async move { inner.start_upload_file_from_path(absolute_path).await })
+            .dispatch("upload_from_path", async move { inner.start_upload_file_from_path(absolute_path, sha256).await })
             .await?
     }
 
@@ -158,7 +158,7 @@ impl UploadCommit {
 
         let inner = self.inner.clone();
         self.session
-            .dispatch("upload_file", async move { inner.start_upload_file(file_name, file_size).await })
+            .dispatch("upload_file", async move { inner.start_upload_file(file_name, file_size, sha256).await })
             .await?
     }
 
@@ -175,7 +175,7 @@ impl UploadCommit {
 
         let inner = self.inner.clone();
         self.session
-            .dispatch("upload_bytes", async move { inner.start_upload_bytes(bytes, tracking_name).await })
+            .dispatch("upload_bytes", async move { inner.start_upload_bytes(bytes, tracking_name, sha256).await })
             .await?
     }
 

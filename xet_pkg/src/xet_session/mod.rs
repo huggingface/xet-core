@@ -101,8 +101,7 @@
 //! # Quick start — async API
 //!
 //! ```rust,no_run
-//! use xet::xet_session::{XetFileInfo, XetSessionBuilder};
-//! use xet_data::processing::Sha256Policy;
+//! use xet::xet_session::{Sha256Policy, XetFileInfo, XetSessionBuilder};
 //!
 //! # async fn example() -> Result<(), xet::xet_session::SessionError> {
 //! // 1. Build a session. build_async() auto-detects the executor:
