@@ -18,7 +18,7 @@ use runtime::async_run;
 use token_refresh::WrappedTokenRefresher;
 use tracing::debug;
 use xet_data::processing::errors::DataProcessingError;
-use xet_data::processing::{XetFileInfo, data_client};
+use xet_data::processing::{Sha256Policy, XetFileInfo, data_client};
 use xet_data::progress_tracking::TrackingProgressUpdater;
 use xet_runtime::core::file_handle_limits;
 
@@ -81,7 +81,7 @@ fn convert_data_processing_error(e: DataProcessingError) -> PyErr {
 }
 
 #[pyfunction]
-#[pyo3(signature = (file_contents, endpoint, token_info, token_refresher, progress_updater, _repo_type, request_headers=None), text_signature = "(file_contents: List[bytes], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str], request_headers: Optional[Dict[str, str]]) -> List[PyXetUploadInfo]")]
+#[pyo3(signature = (file_contents, endpoint, token_info, token_refresher, progress_updater, _repo_type, request_headers=None, sha256s=None, skip_sha256=false), text_signature = "(file_contents: List[bytes], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str], request_headers: Optional[Dict[str, str]], sha256s: Optional[List[str]], skip_sha256: bool = False) -> List[PyXetUploadInfo]")]
 #[allow(clippy::too_many_arguments)]
 pub fn upload_bytes(
     py: Python,
@@ -92,7 +92,29 @@ pub fn upload_bytes(
     progress_updater: Option<Py<PyAny>>,
     _repo_type: Option<String>,
     request_headers: Option<HashMap<String, String>>,
+    sha256s: Option<Vec<String>>,
+    skip_sha256: bool,
 ) -> PyResult<Vec<PyXetUploadInfo>> {
+    if skip_sha256 && sha256s.is_some() {
+        return Err(PyRuntimeError::new_err("skip_sha256=True and sha256s are mutually exclusive"));
+    }
+
+    if let Some(ref s) = sha256s
+        && s.len() != file_contents.len()
+    {
+        return Err(PyRuntimeError::new_err(format!(
+            "sha256s length ({}) must match file_contents length ({})",
+            s.len(),
+            file_contents.len()
+        )));
+    }
+
+    let sha256_policies: Vec<Sha256Policy> = match sha256s {
+        _ if skip_sha256 => vec![Sha256Policy::Skip; file_contents.len()],
+        Some(v) => v.iter().map(|s| Sha256Policy::from_hex(s)).collect(),
+        None => vec![Sha256Policy::Compute; file_contents.len()],
+    };
+
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updater = progress_updater.map(WrappedProgressUpdater::new).transpose()?.map(Arc::new);
     let x: u64 = rand::rng().random();
@@ -109,6 +131,7 @@ pub fn upload_bytes(
 
         let out: Vec<PyXetUploadInfo> = data_client::upload_bytes_async(
             file_contents,
+            sha256_policies,
             endpoint,
             token_info,
             refresher.map(|v| v as Arc<_>),
@@ -128,7 +151,7 @@ pub fn upload_bytes(
 }
 
 #[pyfunction]
-#[pyo3(signature = (file_paths, endpoint, token_info, token_refresher, progress_updater, _repo_type, request_headers=None, sha256s=None), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str], request_headers: Optional[Dict[str, str]], sha256s: Optional[List[str]]) -> List[PyXetUploadInfo]")]
+#[pyo3(signature = (file_paths, endpoint, token_info, token_refresher, progress_updater, _repo_type, request_headers=None, sha256s=None, skip_sha256=false), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str], request_headers: Optional[Dict[str, str]], sha256s: Optional[List[str]], skip_sha256: bool = False) -> List[PyXetUploadInfo]")]
 #[allow(clippy::too_many_arguments)]
 pub fn upload_files(
     py: Python,
@@ -140,7 +163,12 @@ pub fn upload_files(
     _repo_type: Option<String>,
     request_headers: Option<HashMap<String, String>>,
     sha256s: Option<Vec<String>>,
+    skip_sha256: bool,
 ) -> PyResult<Vec<PyXetUploadInfo>> {
+    if skip_sha256 && sha256s.is_some() {
+        return Err(PyRuntimeError::new_err("skip_sha256=True and sha256s are mutually exclusive"));
+    }
+
     if let Some(ref s) = sha256s
         && s.len() != file_paths.len()
     {
@@ -150,6 +178,12 @@ pub fn upload_files(
             file_paths.len()
         )));
     }
+
+    let sha256_policies: Vec<Sha256Policy> = match sha256s {
+        _ if skip_sha256 => vec![Sha256Policy::Skip; file_paths.len()],
+        Some(v) => v.iter().map(|s| Sha256Policy::from_hex(s)).collect(),
+        None => vec![Sha256Policy::Compute; file_paths.len()],
+    };
 
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updater = progress_updater.map(WrappedProgressUpdater::new).transpose()?.map(Arc::new);
@@ -171,7 +205,7 @@ pub fn upload_files(
 
         let out: Vec<PyXetUploadInfo> = data_client::upload_async(
             file_paths,
-            sha256s,
+            sha256_policies,
             endpoint,
             token_info,
             refresher.map(|v| v as Arc<_>),
@@ -564,11 +598,26 @@ mod tests {
             let file_paths = vec!["a.txt".to_string(), "b.txt".to_string()];
             let sha256s = Some(vec!["abc123".to_string()]); // 1 hash for 2 files
 
-            let result = upload_files(py, file_paths, None, None, None, None, None, None, sha256s);
+            let result = upload_files(py, file_paths, None, None, None, None, None, None, sha256s, false);
 
             assert!(result.is_err());
             let err_msg = result.unwrap_err().to_string();
             assert!(err_msg.contains("sha256s length (1) must match file_paths length (2)"), "got: {err_msg}");
+        });
+    }
+
+    #[test]
+    fn test_upload_files_skip_sha256_conflicts_with_sha256s() {
+        setup();
+        pyo3::Python::attach(|py| {
+            let file_paths = vec!["a.txt".to_string()];
+            let sha256s = Some(vec!["abc123".to_string()]);
+
+            let result = upload_files(py, file_paths, None, None, None, None, None, None, sha256s, true);
+
+            assert!(result.is_err());
+            let err_msg = result.unwrap_err().to_string();
+            assert!(err_msg.contains("mutually exclusive"), "got: {err_msg}");
         });
     }
 }
