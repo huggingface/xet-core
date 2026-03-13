@@ -44,10 +44,12 @@ impl UploadCommitSync {
 
     /// Queue a file for upload. See [`UploadCommit::upload_from_path`] for full documentation.
     pub fn upload_from_path(&self, file_path: PathBuf, sha256: Sha256Policy) -> Result<UploadTaskHandle, SessionError> {
-        let commit = self.inner.clone();
+        self.inner.session.check_alive()?;
+
+        let commit_inner = self.inner.inner.clone();
         self.inner
             .runtime()
-            .external_run_async_task(async move { commit.upload_from_path(file_path, sha256).await })?
+            .external_run_async_task(async move { commit_inner.start_upload_file_from_path(file_path, sha256).await })?
     }
 
     /// Queue raw bytes for upload. See [`UploadCommit::upload_bytes`] for full documentation.
@@ -57,10 +59,12 @@ impl UploadCommitSync {
         sha256: Sha256Policy,
         tracking_name: Option<String>,
     ) -> Result<UploadTaskHandle, SessionError> {
-        let commit = self.inner.clone();
-        self.inner
-            .runtime()
-            .external_run_async_task(async move { commit.upload_bytes(bytes, sha256, tracking_name).await })?
+        self.inner.session.check_alive()?;
+
+        let commit_inner = self.inner.inner.clone();
+        self.inner.runtime().external_run_async_task(async move {
+            commit_inner.start_upload_bytes(bytes, tracking_name, sha256).await
+        })?
     }
 
     /// Begin an incremental file upload, returning a [`SingleFileCleaner`] to stream bytes.
@@ -81,10 +85,12 @@ impl UploadCommitSync {
         file_size: u64,
         sha256: Sha256Policy,
     ) -> Result<(TaskHandle, SingleFileCleaner), SessionError> {
-        let commit = self.inner.clone();
-        self.inner
-            .runtime()
-            .external_run_async_task(async move { commit.upload_file(file_name, file_size, sha256).await })?
+        self.inner.session.check_alive()?;
+
+        let commit_inner = self.inner.clone();
+        self.inner.runtime().external_run_async_task(async move {
+            commit_inner.start_upload_file(file_name, file_size, sha256).await
+        })?
     }
 
     /// Return a snapshot of progress for every queued upload.

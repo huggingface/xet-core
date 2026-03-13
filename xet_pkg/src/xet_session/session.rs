@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Waker};
 
 use http::HeaderMap;
+use tracing::info;
 use ulid::Ulid;
 use xet_client::cas_client::auth::TokenRefresher;
 use xet_runtime::RuntimeError;
@@ -228,8 +229,12 @@ impl XetSessionBuilder {
     /// Use [`build_async`](Self::build_async) as a convenient alternative when building from
     /// within a tokio async context.
     pub fn with_tokio_handle(self, handle: tokio::runtime::Handle) -> Self {
+        let accept = handle_meets_session_requirements(&handle);
+        if !accept {
+            info!("supplied tokio handle rejected (missing drivers or wrong flavor); falling back to Owned mode");
+        }
         Self {
-            tokio_handle: handle_meets_session_requirements(&handle).then_some(handle),
+            tokio_handle: accept.then_some(handle),
             ..self
         }
     }

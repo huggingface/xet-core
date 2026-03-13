@@ -11,7 +11,7 @@ use reqwest::Client;
 use tokio::runtime::{Builder as TokioRuntimeBuilder, Handle as TokioRuntimeHandle, Runtime as TokioRuntime};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use super::XetCommon;
 use crate::config::XetConfig;
@@ -324,6 +324,8 @@ impl XetRuntime {
         });
         if let Ok(mut reg) = EXTERNAL_RUNTIME_REGISTRY.write() {
             reg.insert(id, Arc::downgrade(&rt));
+        } else {
+            warn!("EXTERNAL_RUNTIME_REGISTRY poisoned; skipping registration");
         }
         rt
     }
