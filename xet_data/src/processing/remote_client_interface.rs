@@ -1,0 +1,40 @@
+use std::sync::Arc;
+
+use xet_client::cas_client::{Client, RemoteClient};
+
+use super::configurations::*;
+use super::errors::Result;
+
+pub(crate) async fn create_remote_client(
+    config: &TranslatorConfig,
+    session_id: &str,
+    dry_run: bool,
+) -> Result<Arc<dyn Client>> {
+    let cas_storage_config = &config.data_config;
+
+    match cas_storage_config.endpoint {
+        Endpoint::Server(ref endpoint) => Ok(RemoteClient::new(
+            endpoint,
+            &cas_storage_config.auth,
+            session_id,
+            dry_run,
+            cas_storage_config.custom_headers.clone(),
+        )),
+        Endpoint::FileSystem(ref path) => {
+            #[cfg(not(target_family = "wasm"))]
+            {
+                Ok(xet_client::cas_client::LocalClient::new(path).await?)
+            }
+            #[cfg(target_family = "wasm")]
+            unimplemented!("Local file system access is not supported in WASM builds")
+        },
+        Endpoint::InMemory => {
+            #[cfg(not(target_family = "wasm"))]
+            {
+                Ok(xet_client::cas_client::MemoryClient::new())
+            }
+            #[cfg(target_family = "wasm")]
+            unimplemented!("In-memory client is not supported in WASM builds")
+        },
+    }
+}

@@ -59,7 +59,7 @@ fn uninstall_impl(location: ConfigLocation) -> Result<()> {
 mod tests {
     use anyhow::Result;
     use serial_test::serial;
-    use utils::CwdGuard;
+    use xet_runtime::utils::CwdGuard;
 
     use super::{all, local};
     use crate::app::install;

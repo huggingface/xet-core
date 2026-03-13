@@ -8,11 +8,8 @@ use std::fmt::Debug;
 use std::iter::IntoIterator;
 use std::sync::Arc;
 
-use data::errors::DataProcessingError;
-use data::{XetFileInfo, data_client};
 use http::header::{self, HeaderMap, HeaderName, HeaderValue};
 use itertools::Itertools;
-use progress_tracking::TrackingProgressUpdater;
 use pyo3::exceptions::{PyKeyboardInterrupt, PyRuntimeError};
 use pyo3::prelude::*;
 use pyo3::pyfunction;
@@ -20,7 +17,10 @@ use rand::Rng;
 use runtime::async_run;
 use token_refresh::WrappedTokenRefresher;
 use tracing::debug;
-use xet_runtime::file_handle_limits;
+use xet_data::processing::errors::DataProcessingError;
+use xet_data::processing::{XetFileInfo, data_client};
+use xet_data::progress_tracking::TrackingProgressUpdater;
+use xet_runtime::core::file_handle_limits;
 
 use crate::logging::init_logging;
 use crate::progress_update::WrappedProgressUpdater;
@@ -128,7 +128,7 @@ pub fn upload_bytes(
 }
 
 #[pyfunction]
-#[pyo3(signature = (file_paths, endpoint, token_info, token_refresher, progress_updater, _repo_type, request_headers=None), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str], request_headers: Optional[Dict[str, str]]) -> List[PyXetUploadInfo]")]
+#[pyo3(signature = (file_paths, endpoint, token_info, token_refresher, progress_updater, _repo_type, request_headers=None, sha256s=None), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str], request_headers: Optional[Dict[str, str]], sha256s: Optional[List[str]]) -> List[PyXetUploadInfo]")]
 #[allow(clippy::too_many_arguments)]
 pub fn upload_files(
     py: Python,
@@ -139,7 +139,18 @@ pub fn upload_files(
     progress_updater: Option<Py<PyAny>>,
     _repo_type: Option<String>,
     request_headers: Option<HashMap<String, String>>,
+    sha256s: Option<Vec<String>>,
 ) -> PyResult<Vec<PyXetUploadInfo>> {
+    if let Some(ref s) = sha256s
+        && s.len() != file_paths.len()
+    {
+        return Err(PyRuntimeError::new_err(format!(
+            "sha256s length ({}) must match file_paths length ({})",
+            s.len(),
+            file_paths.len()
+        )));
+    }
+
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updater = progress_updater.map(WrappedProgressUpdater::new).transpose()?.map(Arc::new);
 
@@ -160,7 +171,7 @@ pub fn upload_files(
 
         let out: Vec<PyXetUploadInfo> = data_client::upload_async(
             file_paths,
-            None,
+            sha256s,
             endpoint,
             token_info,
             refresher.map(|v| v as Arc<_>),
@@ -544,5 +555,20 @@ mod tests {
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("Invalid header value"));
+    }
+
+    #[test]
+    fn test_upload_files_sha256s_length_mismatch() {
+        setup();
+        pyo3::Python::attach(|py| {
+            let file_paths = vec!["a.txt".to_string(), "b.txt".to_string()];
+            let sha256s = Some(vec!["abc123".to_string()]); // 1 hash for 2 files
+
+            let result = upload_files(py, file_paths, None, None, None, None, None, None, sha256s);
+
+            assert!(result.is_err());
+            let err_msg = result.unwrap_err().to_string();
+            assert!(err_msg.contains("sha256s length (1) must match file_paths length (2)"), "got: {err_msg}");
+        });
     }
 }

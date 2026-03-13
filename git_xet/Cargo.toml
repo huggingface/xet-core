@@ -2,17 +2,16 @@
 name = "git_xet"
 version = "0.2.1"
 edition = "2024"
+publish = false
 
 [[bin]]
 name = "git-xet"
 path = "src/bin/main.rs"
 
 [dependencies]
-cas_client = { path = "../cas_client" }
-data = { path = "../data" }
-progress_tracking = { path = "../progress_tracking" }
-utils = { path = "../utils" }
-hub_client = { path = "../hub_client" }
+xet-runtime = { path = "../xet_runtime" }
+xet-client = { path = "../xet_client" }
+xet-data = { path = "../xet_data" }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
