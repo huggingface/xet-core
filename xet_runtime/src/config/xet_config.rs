@@ -1,110 +1,81 @@
 use super::{ConfigError, groups};
 use crate::utils::ByteSize;
 
-/// Primary configuration struct containing all config sections
-#[derive(Debug, Clone, Default)]
-pub struct XetConfig {
-    pub data: groups::data::ConfigValues,
-    pub shard: groups::shard::ConfigValues,
-    pub deduplication: groups::deduplication::ConfigValues,
-    pub chunk_cache: groups::chunk_cache::ConfigValues,
-    pub client: groups::client::ConfigValues,
-    pub log: groups::log::ConfigValues,
-    pub reconstruction: groups::reconstruction::ConfigValues,
-    pub xorb: groups::xorb::ConfigValues,
-    #[cfg(not(target_family = "wasm"))]
-    pub system_monitor: groups::system_monitor::ConfigValues,
-}
-
-macro_rules! dispatch_config_group_mut {
-    ($self:expr, $group:expr, |$config:ident| $body:expr, $unknown:expr) => {
-        match $group {
-            "data" => {
-                let $config = &mut $self.data;
-                $body
-            },
-            "shard" => {
-                let $config = &mut $self.shard;
-                $body
-            },
-            "deduplication" => {
-                let $config = &mut $self.deduplication;
-                $body
-            },
-            "chunk_cache" => {
-                let $config = &mut $self.chunk_cache;
-                $body
-            },
-            "client" => {
-                let $config = &mut $self.client;
-                $body
-            },
-            "log" => {
-                let $config = &mut $self.log;
-                $body
-            },
-            "reconstruction" => {
-                let $config = &mut $self.reconstruction;
-                $body
-            },
-            "xorb" => {
-                let $config = &mut $self.xorb;
-                $body
-            },
+macro_rules! define_xet_config {
+    ($($group:ident),*) => {
+        /// Primary configuration struct containing all config sections
+        #[derive(Debug, Clone, Default)]
+        pub struct XetConfig {
+            $(pub $group: groups::$group::ConfigValues,)*
             #[cfg(not(target_family = "wasm"))]
-            "system_monitor" => {
-                let $config = &mut $self.system_monitor;
-                $body
-            },
-            _ => $unknown,
+            pub system_monitor: groups::system_monitor::ConfigValues,
         }
     };
 }
+crate::all_config_groups!(define_xet_config);
 
-macro_rules! dispatch_config_group_ref {
-    ($self:expr, $group:expr, |$config:ident| $body:expr, $unknown:expr) => {
-        match $group {
-            "data" => {
-                let $config = &$self.data;
-                $body
-            },
-            "shard" => {
-                let $config = &$self.shard;
-                $body
-            },
-            "deduplication" => {
-                let $config = &$self.deduplication;
-                $body
-            },
-            "chunk_cache" => {
-                let $config = &$self.chunk_cache;
-                $body
-            },
-            "client" => {
-                let $config = &$self.client;
-                $body
-            },
-            "log" => {
-                let $config = &$self.log;
-                $body
-            },
-            "reconstruction" => {
-                let $config = &$self.reconstruction;
-                $body
-            },
-            "xorb" => {
-                let $config = &$self.xorb;
-                $body
-            },
-            #[cfg(not(target_family = "wasm"))]
-            "system_monitor" => {
-                let $config = &$self.system_monitor;
-                $body
-            },
-            _ => $unknown,
+macro_rules! impl_xet_config_group_dispatch {
+    ($($group:ident),*) => {
+        impl XetConfig {
+            /// Apply environment variable overrides to all configuration sections.
+            /// Returns a new `XetConfig` instance with overrides applied.
+            /// The group name for each section is derived from its module name.
+            /// Environment variables follow the pattern: HF_XET_{GROUP_NAME}_{FIELD_NAME}
+            pub fn with_env_overrides(mut self) -> Self {
+                $(self.$group.apply_env_overrides();)*
+                #[cfg(not(target_family = "wasm"))]
+                self.system_monitor.apply_env_overrides();
+                self
+            }
+
+            fn set_field(&mut self, path: &str, value: impl ToString) -> Result<(), ConfigError> {
+                let (group, field) =
+                    path.split_once('.').ok_or_else(|| ConfigError::InvalidPath(path.to_owned()))?;
+                match group {
+                    $(stringify!($group) => self.$group.set(field, value),)*
+                    #[cfg(not(target_family = "wasm"))]
+                    "system_monitor" => self.system_monitor.set(field, value),
+                    _ => Err(ConfigError::UnknownGroup(group.to_owned())),
+                }
+            }
+
+            #[cfg(feature = "python")]
+            fn set_field_from_python(
+                &mut self,
+                path: &str,
+                value: &pyo3::Bound<'_, pyo3::PyAny>,
+            ) -> pyo3::PyResult<()> {
+                let (group, field) = path.split_once('.').ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err(
+                        ConfigError::InvalidPath(path.to_owned()).to_string(),
+                    )
+                })?;
+                match group {
+                    $(stringify!($group) => self.$group.set_from_python(field, value),)*
+                    #[cfg(not(target_family = "wasm"))]
+                    "system_monitor" => self.system_monitor.set_from_python(field, value),
+                    _ => Err(pyo3::exceptions::PyValueError::new_err(
+                        ConfigError::UnknownGroup(group.to_owned()).to_string(),
+                    )),
+                }
+            }
+
+            /// Get a configuration value's string representation by dotted path
+            /// (e.g. "data.max_concurrent_file_ingestion").
+            pub fn get(&self, path: &str) -> Result<String, ConfigError> {
+                let (group, field) =
+                    path.split_once('.').ok_or_else(|| ConfigError::InvalidPath(path.to_owned()))?;
+                match group {
+                    $(stringify!($group) => self.$group.get(field),)*
+                    #[cfg(not(target_family = "wasm"))]
+                    "system_monitor" => self.system_monitor.get(field),
+                    _ => Err(ConfigError::UnknownGroup(group.to_owned())),
+                }
+            }
         }
     };
 }
+crate::all_config_groups!(impl_xet_config_group_dispatch);
 
 impl XetConfig {
     /// Create a new XetConfig instance with default values and apply environment variable overrides.
@@ -118,24 +89,6 @@ impl XetConfig {
             config = config.with_high_performance();
         }
         config
-    }
-
-    /// Apply environment variable overrides to all configuration sections.
-    /// Returns a new `XetConfig` instance with overrides applied.
-    /// The group name for each section is derived from its module name.
-    /// Environment variables follow the pattern: HF_XET_{GROUP_NAME}_{FIELD_NAME}
-    pub fn with_env_overrides(mut self) -> Self {
-        self.data.apply_env_overrides();
-        self.shard.apply_env_overrides();
-        self.deduplication.apply_env_overrides();
-        self.chunk_cache.apply_env_overrides();
-        self.client.apply_env_overrides();
-        self.log.apply_env_overrides();
-        self.reconstruction.apply_env_overrides();
-        self.xorb.apply_env_overrides();
-        #[cfg(not(target_family = "wasm"))]
-        self.system_monitor.apply_env_overrides();
-        self
     }
 
     /// Apply high performance mode settings to this configuration.
@@ -174,44 +127,6 @@ impl XetConfig {
     pub fn with_config(mut self, path: &str, value: impl ToString) -> Result<Self, ConfigError> {
         self.set_field(path, value)?;
         Ok(self)
-    }
-
-    fn set_field(&mut self, path: &str, value: impl ToString) -> Result<(), ConfigError> {
-        let (group, field) = path.split_once('.').ok_or_else(|| ConfigError::InvalidPath(path.to_owned()))?;
-
-        dispatch_config_group_mut!(
-            self,
-            group,
-            |config_group| config_group.set(field, value),
-            Err(ConfigError::UnknownGroup(group.to_owned()))
-        )
-    }
-
-    #[cfg(feature = "python")]
-    fn set_field_from_python(&mut self, path: &str, value: &pyo3::Bound<'_, pyo3::PyAny>) -> pyo3::PyResult<()> {
-        let (group, field) = path.split_once('.').ok_or_else(|| {
-            pyo3::exceptions::PyValueError::new_err(ConfigError::InvalidPath(path.to_owned()).to_string())
-        })?;
-
-        dispatch_config_group_mut!(
-            self,
-            group,
-            |config_group| config_group.set_from_python(field, value),
-            Err(pyo3::exceptions::PyValueError::new_err(ConfigError::UnknownGroup(group.to_owned()).to_string()))
-        )
-    }
-
-    /// Get a configuration value's string representation by dotted path
-    /// (e.g. "data.max_concurrent_file_ingestion").
-    pub fn get(&self, path: &str) -> Result<String, ConfigError> {
-        let (group, field) = path.split_once('.').ok_or_else(|| ConfigError::InvalidPath(path.to_owned()))?;
-
-        dispatch_config_group_ref!(
-            self,
-            group,
-            |config_group| config_group.get(field),
-            Err(ConfigError::UnknownGroup(group.to_owned()))
-        )
     }
 }
 
@@ -386,6 +301,31 @@ mod tests {
     }
 }
 
+/// Generates `#[pymethods]` getters on `PyXetConfig` for each config group.
+/// Defined here (before the `py_xet_config` child module) so it is visible inside it.
+#[allow(unused_macros)]
+macro_rules! impl_py_xet_config_getters {
+    ($($group:ident),*) => {
+        /// Group getters return snapshot copies for inspection.
+        /// To create a modified config, use `with_config("group.field", value)`.
+        #[pymethods]
+        impl PyXetConfig {
+            $(
+                #[getter]
+                fn $group(&self) -> groups::$group::PyConfigValueGroup {
+                    self.inner.$group.clone().into()
+                }
+            )*
+
+            #[cfg(not(target_family = "wasm"))]
+            #[getter]
+            fn system_monitor(&self) -> groups::system_monitor::PyConfigValueGroup {
+                self.inner.system_monitor.clone().into()
+            }
+        }
+    };
+}
+
 #[cfg(feature = "python")]
 pub mod py_xet_config {
     use pyo3::prelude::*;
@@ -459,54 +399,6 @@ pub mod py_xet_config {
                 .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
         }
 
-        /// Group getters return snapshot copies for inspection.
-        /// To create a modified config, use `with_config("group.field", value)`.
-        #[getter]
-        fn data(&self) -> groups::data::PyConfigValueGroup {
-            self.inner.data.clone().into()
-        }
-
-        #[getter]
-        fn shard(&self) -> groups::shard::PyConfigValueGroup {
-            self.inner.shard.clone().into()
-        }
-
-        #[getter]
-        fn deduplication(&self) -> groups::deduplication::PyConfigValueGroup {
-            self.inner.deduplication.clone().into()
-        }
-
-        #[getter]
-        fn chunk_cache(&self) -> groups::chunk_cache::PyConfigValueGroup {
-            self.inner.chunk_cache.clone().into()
-        }
-
-        #[getter]
-        fn client(&self) -> groups::client::PyConfigValueGroup {
-            self.inner.client.clone().into()
-        }
-
-        #[getter]
-        fn log(&self) -> groups::log::PyConfigValueGroup {
-            self.inner.log.clone().into()
-        }
-
-        #[getter]
-        fn reconstruction(&self) -> groups::reconstruction::PyConfigValueGroup {
-            self.inner.reconstruction.clone().into()
-        }
-
-        #[getter]
-        fn xorb(&self) -> groups::xorb::PyConfigValueGroup {
-            self.inner.xorb.clone().into()
-        }
-
-        #[cfg(not(target_family = "wasm"))]
-        #[getter]
-        fn system_monitor(&self) -> groups::system_monitor::PyConfigValueGroup {
-            self.inner.system_monitor.clone().into()
-        }
-
         fn __repr__(&self) -> String {
             format!("XetConfig({:?})", self.inner)
         }
@@ -515,4 +407,6 @@ pub mod py_xet_config {
             format!("{:?}", self.inner)
         }
     }
+
+    crate::all_config_groups!(impl_py_xet_config_getters);
 }

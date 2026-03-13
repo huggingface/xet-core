@@ -1,3 +1,15 @@
+/// Single source of truth for all platform-independent config groups.
+/// Invokes the given callback macro with the list of group names.
+///
+/// The `system_monitor` group is excluded because it is `#[cfg(not(target_family = "wasm"))]`;
+/// each consumer appends it separately with the appropriate cfg gate.
+#[macro_export]
+macro_rules! all_config_groups {
+    ($mac:ident) => {
+        $mac!(data, shard, deduplication, chunk_cache, client, log, reconstruction, xorb);
+    };
+}
+
 /// Macro to create a configuration value group struct.
 ///
 /// Usage:
