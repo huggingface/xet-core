@@ -128,10 +128,15 @@ impl ReconstructionTermManager {
             // Log the download domain once per file using the first block's first URL.
             if !self.logged_domain {
                 self.logged_domain = true;
-                let domain = file_terms.first()
+                let domain = file_terms
+                    .first()
                     .and_then(|t| t.url_info.xorb_block_retrieval_urls.try_read().ok())
-                    .and_then(|urls| urls.1.first().and_then(|(url, _)| url::Url::parse(url).ok())
-                        .and_then(|u| u.host_str().map(str::to_owned)));
+                    .and_then(|urls| {
+                        urls.1
+                            .first()
+                            .and_then(|(url, _)| url::Url::parse(url).ok())
+                            .and_then(|u| u.host_str().map(str::to_owned))
+                    });
                 debug!(file_hash = %self.file_hash, domain = domain.as_deref().unwrap_or("unknown"), "Downloading file");
             }
 
