@@ -41,7 +41,7 @@ use super::session::XetSession;
 /// [`UploadCommitSync`]: crate::xet_session::sync::UploadCommitSync
 #[derive(Clone)]
 pub struct UploadCommit {
-    inner: Arc<UploadCommitInner>,
+    pub(super) inner: Arc<UploadCommitInner>,
 }
 
 impl std::ops::Deref for UploadCommit {
@@ -218,7 +218,7 @@ struct InnerUploadTaskHandle {
 #[doc(hidden)]
 pub struct UploadCommitInner {
     commit_id: Ulid,
-    session: XetSession,
+    pub(super) session: XetSession,
 
     // Active upload tasks for this commit
     active_tasks: RwLock<HashMap<Ulid, InnerUploadTaskHandle>>,
@@ -317,7 +317,10 @@ impl UploadCommitInner {
         })
     }
 
-    async fn start_upload_file_from_path(&self, file_path: PathBuf) -> Result<UploadTaskHandle, SessionError> {
+    pub(super) async fn start_upload_file_from_path(
+        &self,
+        file_path: PathBuf,
+    ) -> Result<UploadTaskHandle, SessionError> {
         // Hold the state lock for the duration of this function so commit() will not run
         // when an upload task is registering.
         let state = self.state.lock().await;
@@ -360,7 +363,7 @@ impl UploadCommitInner {
     /// The state lock is held across `start_clean(...).await` so that a concurrent
     /// `handle_commit` cannot finalise the upload session between the state check and the
     /// creation of the cleaner.
-    async fn start_upload_file(
+    pub(super) async fn start_upload_file(
         &self,
         tracking_name: Option<String>,
         file_size: u64,
@@ -389,7 +392,7 @@ impl UploadCommitInner {
     }
 
     /// Enqueue a bytes upload task, spawning it on the runtime immediately.
-    async fn start_upload_bytes(
+    pub(super) async fn start_upload_bytes(
         &self,
         bytes: Vec<u8>,
         tracking_name: Option<String>,

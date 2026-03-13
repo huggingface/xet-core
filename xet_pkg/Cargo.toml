@@ -23,6 +23,7 @@ http = { workspace = true }
 tokio = { workspace = true, features = ["net"] }
 ulid = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]

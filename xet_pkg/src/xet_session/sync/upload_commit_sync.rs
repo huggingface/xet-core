@@ -44,10 +44,12 @@ impl UploadCommitSync {
 
     /// Queue a file for upload. See [`UploadCommit::upload_from_path`] for full documentation.
     pub fn upload_from_path(&self, file_path: PathBuf) -> Result<UploadTaskHandle, SessionError> {
-        let commit = self.inner.clone();
+        self.inner.session.check_alive()?;
+
+        let commit_inner = self.inner.inner.clone();
         self.inner
             .runtime()
-            .external_run_async_task(async move { commit.upload_from_path(file_path).await })?
+            .external_run_async_task(async move { commit_inner.start_upload_file_from_path(file_path).await })?
     }
 
     /// Queue raw bytes for upload. See [`UploadCommit::upload_bytes`] for full documentation.
@@ -56,10 +58,12 @@ impl UploadCommitSync {
         bytes: Vec<u8>,
         tracking_name: Option<String>,
     ) -> Result<UploadTaskHandle, SessionError> {
-        let commit = self.inner.clone();
+        self.inner.session.check_alive()?;
+
+        let commit_inner = self.inner.inner.clone();
         self.inner
             .runtime()
-            .external_run_async_task(async move { commit.upload_bytes(bytes, tracking_name).await })?
+            .external_run_async_task(async move { commit_inner.start_upload_bytes(bytes, tracking_name).await })?
     }
 
     /// Begin an incremental file upload, returning a [`SingleFileCleaner`] to stream bytes.
@@ -79,10 +83,12 @@ impl UploadCommitSync {
         file_name: Option<String>,
         file_size: u64,
     ) -> Result<(TaskHandle, SingleFileCleaner), SessionError> {
-        let commit = self.inner.clone();
+        self.inner.session.check_alive()?;
+
+        let commit_inner = self.inner.clone();
         self.inner
             .runtime()
-            .external_run_async_task(async move { commit.upload_file(file_name, file_size).await })?
+            .external_run_async_task(async move { commit_inner.start_upload_file(file_name, file_size).await })?
     }
 
     /// Return a snapshot of progress for every queued upload.
