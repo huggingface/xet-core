@@ -112,12 +112,19 @@ impl SizeGroupedFetchBlock {
     ///
     /// 1. Ranges whose compressed byte size exceeds `max_single_range_bytes` are each placed in their own block
     ///    (individual single-range HTTP requests).
-    /// 2. Remaining small ranges are grouped into one multirange block if there are at least `min_group_size` of them;
-    ///    otherwise each is split into its own single-range block.
-    fn resolve(entry: &XorbMultiRangeFetch, max_single_range_bytes: u64, min_group_size: usize) -> Vec<Self> {
+    /// 2. Remaining small ranges are grouped into multirange blocks based on adjacency and size constraints:
+    ///    - A new group is started when the byte gap from the previous range exceeds `max_gap_bytes`, or the current
+    ///      group has reached `max_group_size` ranges.
+    ///    - Groups with fewer than `min_group_size` ranges are split into individual single-range blocks.
+    fn resolve(
+        entry: &XorbMultiRangeFetch,
+        max_single_range_bytes: u64,
+        min_group_size: usize,
+        max_group_size: usize,
+        max_gap_bytes: u64,
+    ) -> Vec<Self> {
         let mut blocks = Vec::new();
-        let mut small_chunk_ranges = Vec::new();
-        let mut small_http_ranges = Vec::new();
+        let mut small_ranges: Vec<(ChunkRange, HttpRange)> = Vec::new();
 
         for range in &entry.ranges {
             if range.bytes.length() > max_single_range_bytes {
@@ -127,26 +134,57 @@ impl SizeGroupedFetchBlock {
                     http_ranges: vec![range.bytes],
                 });
             } else {
-                small_chunk_ranges.push(range.chunks);
-                small_http_ranges.push(range.bytes);
+                small_ranges.push((range.chunks, range.bytes));
             }
         }
 
-        if small_chunk_ranges.len() >= min_group_size {
-            blocks.push(SizeGroupedFetchBlock {
-                url: entry.url.clone(),
-                chunk_ranges: small_chunk_ranges,
-                http_ranges: small_http_ranges,
-            });
-        } else {
-            for (chunks, bytes) in small_chunk_ranges.into_iter().zip(small_http_ranges) {
-                blocks.push(SizeGroupedFetchBlock {
-                    url: entry.url.clone(),
-                    chunk_ranges: vec![chunks],
-                    http_ranges: vec![bytes],
-                });
+        // Group small ranges by adjacency (max byte gap) and size (max group size).
+        // Ranges are already sorted by chunk start from the server.
+        let mut group_chunks: Vec<ChunkRange> = Vec::new();
+        let mut group_bytes: Vec<HttpRange> = Vec::new();
+
+        let flush_group = |blocks: &mut Vec<SizeGroupedFetchBlock>,
+                           group_chunks: &mut Vec<ChunkRange>,
+                           group_bytes: &mut Vec<HttpRange>,
+                           url: &str| {
+            if group_chunks.is_empty() {
+                return;
             }
+            if group_chunks.len() >= min_group_size {
+                blocks.push(SizeGroupedFetchBlock {
+                    url: url.to_string(),
+                    chunk_ranges: std::mem::take(group_chunks),
+                    http_ranges: std::mem::take(group_bytes),
+                });
+            } else {
+                for (chunks, bytes) in group_chunks.drain(..).zip(group_bytes.drain(..)) {
+                    blocks.push(SizeGroupedFetchBlock {
+                        url: url.to_string(),
+                        chunk_ranges: vec![chunks],
+                        http_ranges: vec![bytes],
+                    });
+                }
+            }
+        };
+
+        for (chunks, bytes) in &small_ranges {
+            let should_flush = if group_bytes.is_empty() {
+                false
+            } else {
+                let prev_end = group_bytes.last().unwrap().end;
+                let gap = bytes.start.saturating_sub(prev_end);
+                gap > max_gap_bytes || group_chunks.len() >= max_group_size
+            };
+
+            if should_flush {
+                flush_group(&mut blocks, &mut group_chunks, &mut group_bytes, &entry.url);
+            }
+
+            group_chunks.push(*chunks);
+            group_bytes.push(*bytes);
         }
+
+        flush_group(&mut blocks, &mut group_chunks, &mut group_bytes, &entry.url);
 
         blocks
     }
@@ -212,6 +250,8 @@ pub async fn retrieve_file_term_block(
     let config = xet_config();
     let max_multirange_term_size = config.client.max_multirange_term_size.as_u64();
     let min_multirange_group_size = config.client.min_multirange_group_size;
+    let max_multirange_group_size = config.client.max_multirange_group_size;
+    let max_multirange_gap = config.client.max_multirange_gap.as_u64();
     let mut resolved_fetch_blocks = HashMap::<MerkleHash, Vec<SizeGroupedFetchBlock>>::new();
     for (xorb_hash_hex, fetch_entries) in &raw_reconstruction.xorbs {
         let xorb_hash: MerkleHash = (*xorb_hash_hex).into();
@@ -221,6 +261,8 @@ pub async fn retrieve_file_term_block(
                 fetch_entry,
                 max_multirange_term_size,
                 min_multirange_group_size,
+                max_multirange_group_size,
+                max_multirange_gap,
             ));
         }
         resolved_fetch_blocks.insert(xorb_hash, blocks);
@@ -406,7 +448,7 @@ mod tests {
             (ChunkRange::new(2, 4), HttpRange::new(200, 280)),
         ]);
 
-        let blocks = SizeGroupedFetchBlock::resolve(&entry, 50, 2);
+        let blocks = SizeGroupedFetchBlock::resolve(&entry, 50, 2, 100, u64::MAX);
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0].chunk_ranges.len(), 1);
         assert_eq!(blocks[1].chunk_ranges.len(), 1);
@@ -420,7 +462,7 @@ mod tests {
             (ChunkRange::new(2, 3), HttpRange::new(40, 50)),
         ]);
 
-        let blocks = SizeGroupedFetchBlock::resolve(&entry, 100, 3);
+        let blocks = SizeGroupedFetchBlock::resolve(&entry, 100, 3, 100, u64::MAX);
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].chunk_ranges.len(), 3);
         assert_eq!(blocks[0].http_ranges.len(), 3);
@@ -433,10 +475,124 @@ mod tests {
             (ChunkRange::new(1, 2), HttpRange::new(20, 30)),
         ]);
 
-        let blocks = SizeGroupedFetchBlock::resolve(&entry, 100, 3);
+        let blocks = SizeGroupedFetchBlock::resolve(&entry, 100, 3, 100, u64::MAX);
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0].chunk_ranges.len(), 1);
         assert_eq!(blocks[1].chunk_ranges.len(), 1);
+    }
+
+    #[test]
+    fn test_resolve_max_group_size_splits_large_groups() {
+        let entry = make_fetch_entry(vec![
+            (ChunkRange::new(0, 1), HttpRange::new(0, 10)),
+            (ChunkRange::new(1, 2), HttpRange::new(20, 30)),
+            (ChunkRange::new(2, 3), HttpRange::new(40, 50)),
+            (ChunkRange::new(3, 4), HttpRange::new(60, 70)),
+            (ChunkRange::new(4, 5), HttpRange::new(80, 90)),
+            (ChunkRange::new(5, 6), HttpRange::new(100, 110)),
+            (ChunkRange::new(6, 7), HttpRange::new(120, 130)),
+            (ChunkRange::new(7, 8), HttpRange::new(140, 150)),
+            (ChunkRange::new(8, 9), HttpRange::new(160, 170)),
+            (ChunkRange::new(9, 10), HttpRange::new(180, 190)),
+        ]);
+
+        // max_group_size=4, min_group_size=2: should produce 3 groups (4, 4, 2)
+        let blocks = SizeGroupedFetchBlock::resolve(&entry, 1000, 2, 4, u64::MAX);
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0].chunk_ranges.len(), 4);
+        assert_eq!(blocks[1].chunk_ranges.len(), 4);
+        assert_eq!(blocks[2].chunk_ranges.len(), 2);
+    }
+
+    #[test]
+    fn test_resolve_max_group_size_remainder_under_min_splits_individually() {
+        let entry = make_fetch_entry(vec![
+            (ChunkRange::new(0, 1), HttpRange::new(0, 10)),
+            (ChunkRange::new(1, 2), HttpRange::new(20, 30)),
+            (ChunkRange::new(2, 3), HttpRange::new(40, 50)),
+            (ChunkRange::new(3, 4), HttpRange::new(60, 70)),
+            (ChunkRange::new(4, 5), HttpRange::new(80, 90)),
+        ]);
+
+        // max_group_size=4, min_group_size=3: first group of 4, remainder of 1 < min, so individual
+        let blocks = SizeGroupedFetchBlock::resolve(&entry, 1000, 3, 4, u64::MAX);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].chunk_ranges.len(), 4);
+        assert_eq!(blocks[1].chunk_ranges.len(), 1);
+    }
+
+    #[test]
+    fn test_resolve_gap_based_splitting() {
+        let entry = make_fetch_entry(vec![
+            (ChunkRange::new(0, 1), HttpRange::new(0, 10)),
+            (ChunkRange::new(1, 2), HttpRange::new(20, 30)),
+            // Large gap here: 30 -> 100000
+            (ChunkRange::new(10, 11), HttpRange::new(100000, 100010)),
+            (ChunkRange::new(11, 12), HttpRange::new(100020, 100030)),
+        ]);
+
+        // max_gap=100: gap of ~99970 exceeds threshold, producing two groups of 2
+        let blocks = SizeGroupedFetchBlock::resolve(&entry, 1000, 2, 100, 100);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].chunk_ranges.len(), 2);
+        assert_eq!(blocks[0].http_ranges[0], HttpRange::new(0, 10));
+        assert_eq!(blocks[1].chunk_ranges.len(), 2);
+        assert_eq!(blocks[1].http_ranges[0], HttpRange::new(100000, 100010));
+    }
+
+    #[test]
+    fn test_resolve_gap_split_under_min_becomes_individual() {
+        let entry = make_fetch_entry(vec![
+            (ChunkRange::new(0, 1), HttpRange::new(0, 10)),
+            // Large gap
+            (ChunkRange::new(10, 11), HttpRange::new(100000, 100010)),
+        ]);
+
+        // max_gap=100, min_group=2: each group has 1 range < min, so both become individual
+        let blocks = SizeGroupedFetchBlock::resolve(&entry, 1000, 2, 100, 100);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].chunk_ranges.len(), 1);
+        assert_eq!(blocks[1].chunk_ranges.len(), 1);
+    }
+
+    #[test]
+    fn test_resolve_max_group_size_one_disables_multirange() {
+        let entry = make_fetch_entry(vec![
+            (ChunkRange::new(0, 1), HttpRange::new(0, 10)),
+            (ChunkRange::new(1, 2), HttpRange::new(20, 30)),
+            (ChunkRange::new(2, 3), HttpRange::new(40, 50)),
+        ]);
+
+        // max_group_size=1: every range becomes its own block
+        let blocks = SizeGroupedFetchBlock::resolve(&entry, 1000, 1, 1, u64::MAX);
+        assert_eq!(blocks.len(), 3);
+        for block in &blocks {
+            assert_eq!(block.chunk_ranges.len(), 1);
+        }
+    }
+
+    #[test]
+    fn test_resolve_combined_gap_and_size_constraints() {
+        let entry = make_fetch_entry(vec![
+            // Group 1: 3 adjacent ranges
+            (ChunkRange::new(0, 1), HttpRange::new(0, 10)),
+            (ChunkRange::new(1, 2), HttpRange::new(20, 30)),
+            (ChunkRange::new(2, 3), HttpRange::new(40, 50)),
+            // Group 2: 3 adjacent ranges after a gap
+            (ChunkRange::new(10, 11), HttpRange::new(50000, 50010)),
+            (ChunkRange::new(11, 12), HttpRange::new(50020, 50030)),
+            (ChunkRange::new(12, 13), HttpRange::new(50040, 50050)),
+            // Group 3: 2 adjacent ranges after another gap
+            (ChunkRange::new(20, 21), HttpRange::new(200000, 200010)),
+            (ChunkRange::new(21, 22), HttpRange::new(200020, 200030)),
+        ]);
+
+        // max_gap=1000, max_group_size=4, min_group_size=2
+        let blocks = SizeGroupedFetchBlock::resolve(&entry, 10000, 2, 4, 1000);
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0].chunk_ranges.len(), 3);
+        assert_eq!(blocks[1].chunk_ranges.len(), 3);
+        assert_eq!(blocks[2].chunk_ranges.len(), 2);
     }
 
     fn verify_xorb_block_references(file_terms: &[FileTerm]) {

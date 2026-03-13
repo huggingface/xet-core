@@ -274,9 +274,28 @@ crate::config_group!({
     /// into a single multirange HTTP request. If fewer small ranges remain
     /// after large-range splitting, they are fetched individually instead.
     ///
-    /// The default value is 8.
+    /// The default value is 4.
     ///
     /// Use the environment variable `HF_XET_CLIENT_MIN_MULTIRANGE_GROUP_SIZE` to set this value.
-    ref min_multirange_group_size: usize = 8;
+    ref min_multirange_group_size: usize = 4;
+
+    /// The maximum number of ranges allowed in a single multirange HTTP
+    /// request. Groups exceeding this limit are split into multiple requests
+    /// to avoid head-of-line blocking from gateway serialization.
+    /// Set to 1 to disable multirange entirely (all single-range requests).
+    ///
+    /// The default value is 8.
+    ///
+    /// Use the environment variable `HF_XET_CLIENT_MAX_MULTIRANGE_GROUP_SIZE` to set this value.
+    ref max_multirange_group_size: usize = 8;
+
+    /// The maximum byte gap between consecutive ranges for them to be
+    /// grouped into a single multirange HTTP request. Ranges further apart
+    /// are placed into separate requests to avoid costly seeks at the gateway.
+    ///
+    /// The default value is 8MB.
+    ///
+    /// Use the environment variable `HF_XET_CLIENT_MAX_MULTIRANGE_GAP` to set this value.
+    ref max_multirange_gap: ByteSize = ByteSize::from("8mb");
 
 });
