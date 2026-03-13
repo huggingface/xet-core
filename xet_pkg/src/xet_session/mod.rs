@@ -67,8 +67,7 @@
 //! # Quick start — sync API
 //!
 //! ```rust,no_run
-//! use xet::xet_session::{XetFileInfo, XetSessionBuilder};
-//! use xet_data::processing::Sha256Policy;
+//! use xet::xet_session::{Sha256Policy, XetFileInfo, XetSessionBuilder};
 //!
 //! // 1. Build a session — sync (non-async) context only.
 //! //    For async code call build_async().await instead.
