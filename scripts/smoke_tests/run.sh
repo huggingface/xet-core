@@ -1,17 +1,19 @@
 #!/bin/bash
 set -euo pipefail
 
-# Smoke test runner for hf-xet upload/download.
+# Smoke test runner for hf-xet upload/download via the hf CLI.
 #
 # Prerequisites:
-#   - uv (https://docs.astral.sh/uv/)
-#   - HF_TOKEN env var with write access
+#   - uv        (https://docs.astral.sh/uv/)
+#   - hf CLI    (pip install huggingface_hub, or uv tool install huggingface_hub)
+#   - HF_TOKEN  env var with write access
 #
 # Usage:
-#   ./smoke_tests/run.sh                              # test latest hf_xet from PyPI
-#   ./smoke_tests/run.sh --hf-xet-version 1.1.0      # test specific version
-#   ./smoke_tests/run.sh --keep-repo                  # don't delete test repo
-#   HF_XET_WHEEL=./dist/hf_xet-1.2.0.whl ./smoke_tests/run.sh  # test local wheel
+#   ./scripts/smoke_tests/run.sh                              # latest hf_xet from PyPI
+#   ./scripts/smoke_tests/run.sh --hf-xet-version 1.4.0      # specific version (bypasses uv cache)
+#   ./scripts/smoke_tests/run.sh --skip-buckets               # skip storage bucket tests
+#   ./scripts/smoke_tests/run.sh --keep-repo                  # leave test repo/bucket after run
+#   HF_XET_WHEEL=./dist/hf_xet-1.4.0.whl ./scripts/smoke_tests/run.sh  # local wheel
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -23,6 +25,11 @@ fi
 
 if ! command -v uv &> /dev/null; then
     echo "ERROR: uv is required. Install: curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
+    exit 1
+fi
+
+if ! command -v hf &> /dev/null; then
+    echo "ERROR: hf CLI is required. Install: uv tool install huggingface_hub" >&2
     exit 1
 fi
 
