@@ -254,7 +254,7 @@ crate::config_group!({
 
     /// The reconstruction API version to request from the CAS server.
     /// When set to 1 or 2, forces that version with no fallback.
-    /// When unset, auto-detects by trying V2 first, falling back to V1 on 404.
+    /// When unset, auto-detects by trying V2 first, falling back to V1 on 404 or 501.
     ///
     /// The default value is None (auto-detect).
     ///

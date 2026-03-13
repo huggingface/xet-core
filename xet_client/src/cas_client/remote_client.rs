@@ -183,8 +183,13 @@ impl RemoteClient {
     {
         let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
         let url = Url::parse(&format!("{}/{api_version}/reconstructions/{}", self.endpoint, file_id.hex()))?;
-        let api_tag_owned = format!("cas::get_reconstruction_{api_version}");
-        let api_tag: &'static str = api_tag_owned.leak();
+        let api_tag = match api_version {
+            "v1" => "cas::get_reconstruction_v1",
+            "v2" => "cas::get_reconstruction_v2",
+            _ => {
+                return Err(CasClientError::internal(format!("unsupported reconstruction API version: {api_version}")));
+            },
+        };
 
         event!(
             INFORMATION_LOG_LEVEL,
@@ -243,18 +248,13 @@ impl RemoteClient {
     ) -> Result<Option<QueryReconstructionResponseV2>> {
         self.get_reconstruction_impl(file_id, bytes_range, "v2").await
     }
-}
 
-#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
-impl Client for RemoteClient {
-    async fn get_reconstruction(
+    pub(crate) async fn get_reconstruction_with_version_override(
         &self,
         file_id: &MerkleHash,
         bytes_range: Option<FileRange>,
+        forced_version: Option<u32>,
     ) -> Result<Option<QueryReconstructionResponseV2>> {
-        let forced_version = xet_config().client.reconstruction_api_version;
-
         // Prefer V2; fall back to V1 on 404/501; persist detected version to
         // avoid repeated fallback attempts.
         let version = match forced_version {
@@ -288,6 +288,20 @@ impl Client for RemoteClient {
             1 => Ok(self.get_reconstruction_v1(file_id, bytes_range).await?.map(Into::into)),
             other => Err(CasClientError::internal(format!("unsupported reconstruction API version: {other}"))),
         }
+    }
+}
+
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
+impl Client for RemoteClient {
+    async fn get_reconstruction(
+        &self,
+        file_id: &MerkleHash,
+        bytes_range: Option<FileRange>,
+    ) -> Result<Option<QueryReconstructionResponseV2>> {
+        let forced_version = xet_config().client.reconstruction_api_version;
+        self.get_reconstruction_with_version_override(file_id, bytes_range, forced_version)
+            .await
     }
 
     async fn batch_get_reconstruction(&self, file_ids: &[MerkleHash]) -> Result<BatchQueryReconstructionResponse> {

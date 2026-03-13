@@ -158,6 +158,18 @@ impl SizeGroupedFetchBlock {
     }
 }
 
+fn find_chunk_start_index(chunk_ranges: &[ChunkRange], chunk_start: u32) -> Option<usize> {
+    let mut idx = 0usize;
+    for range in chunk_ranges {
+        if chunk_start >= range.start && chunk_start < range.end {
+            idx += (chunk_start - range.start) as usize;
+            return Some(idx);
+        }
+        idx += (range.end - range.start) as usize;
+    }
+    None
+}
+
 /// Retrieve file terms from the client for a given file hash and byte range.
 /// Returns None if the requested byte range is past the end of the file.
 /// Returns the actual retrieved range and the number of bytes required for the
@@ -200,11 +212,24 @@ pub async fn retrieve_file_term_block(
     let config = xet_config();
     let max_multirange_term_size = config.client.max_multirange_term_size.as_u64();
     let min_multirange_group_size = config.client.min_multirange_group_size;
+    let mut resolved_fetch_blocks = HashMap::<MerkleHash, Vec<SizeGroupedFetchBlock>>::new();
+    for (xorb_hash_hex, fetch_entries) in &raw_reconstruction.xorbs {
+        let xorb_hash: MerkleHash = (*xorb_hash_hex).into();
+        let mut blocks = Vec::new();
+        for fetch_entry in fetch_entries {
+            blocks.extend(SizeGroupedFetchBlock::resolve(
+                fetch_entry,
+                max_multirange_term_size,
+                min_multirange_group_size,
+            ));
+        }
+        resolved_fetch_blocks.insert(xorb_hash, blocks);
+    }
 
     for (local_term_index, term) in raw_reconstruction.terms.iter().enumerate() {
         let xorb_hash: MerkleHash = term.hash.into();
 
-        let Some(xorb_descriptor) = raw_reconstruction.xorbs.get(&term.hash) else {
+        let Some(xorb_resolved_blocks) = resolved_fetch_blocks.get(&xorb_hash) else {
             return Err(FileReconstructionError::CorruptedReconstruction(format!(
                 "Xorb info not found for xorb hash {xorb_hash:?}"
             )));
@@ -215,39 +240,35 @@ pub async fn retrieve_file_term_block(
         // large ranges get their own single-range blocks; remaining small ranges are
         // grouped into a multirange block only if there are enough of them.
         let xorb_block_index = 'find_xorb_block: {
-            for fetch_entry in xorb_descriptor.iter() {
-                for resolved in
-                    SizeGroupedFetchBlock::resolve(fetch_entry, max_multirange_term_size, min_multirange_group_size)
-                {
-                    if !resolved.contains_term(term.range) {
-                        continue;
-                    }
-
-                    let first_chunk_start = resolved.chunk_ranges[0].start;
-
-                    let index = match xorb_index_lookup.entry((xorb_hash, first_chunk_start)) {
-                        Entry::Occupied(entry) => *entry.get(),
-                        Entry::Vacant(entry) => {
-                            let new_index = xorb_blocks.len();
-
-                            xorb_blocks.push(XorbBlock {
-                                xorb_hash,
-                                chunk_ranges: resolved.chunk_ranges,
-                                xorb_block_index: new_index,
-                                references: vec![],
-                                uncompressed_size_if_known: None,
-                                data: RwLock::new(None),
-                            });
-
-                            xorb_block_retrieval_urls.push((resolved.url, resolved.http_ranges));
-
-                            entry.insert(new_index);
-                            new_index
-                        },
-                    };
-
-                    break 'find_xorb_block index;
+            for resolved in xorb_resolved_blocks {
+                if !resolved.contains_term(term.range) {
+                    continue;
                 }
+
+                let first_chunk_start = resolved.chunk_ranges[0].start;
+
+                let index = match xorb_index_lookup.entry((xorb_hash, first_chunk_start)) {
+                    Entry::Occupied(entry) => *entry.get(),
+                    Entry::Vacant(entry) => {
+                        let new_index = xorb_blocks.len();
+
+                        xorb_blocks.push(XorbBlock {
+                            xorb_hash,
+                            chunk_ranges: resolved.chunk_ranges.clone(),
+                            xorb_block_index: new_index,
+                            references: vec![],
+                            uncompressed_size_if_known: None,
+                            data: RwLock::new(None),
+                        });
+
+                        xorb_block_retrieval_urls.push((resolved.url.clone(), resolved.http_ranges.clone()));
+
+                        entry.insert(new_index);
+                        new_index
+                    },
+                };
+
+                break 'find_xorb_block index;
             }
             return Err(FileReconstructionError::CorruptedReconstruction(format!(
                 "No xorb fetch entry found for file term {local_term_index:?} in xorb info for xorb hash {xorb_hash:?}"
@@ -278,21 +299,12 @@ pub async fn retrieve_file_term_block(
         //
         // The term_contained check above guarantees term.range.start falls within one of
         // the block's chunk_ranges, so this loop always finds a match.
-        let xorb_block_start_index = {
-            let chunk_start = term.range.start;
-            let chunk_ranges = &xorb_blocks[xorb_block_index].chunk_ranges;
-            let mut idx = 0;
-            let mut found = false;
-            for range in chunk_ranges {
-                if chunk_start >= range.start && chunk_start < range.end {
-                    idx += (chunk_start - range.start) as usize;
-                    found = true;
-                    break;
-                }
-                idx += (range.end - range.start) as usize;
-            }
-            debug_assert!(found, "chunk_start {chunk_start} not found in chunk_ranges {chunk_ranges:?}");
-            idx
+        let chunk_start = term.range.start;
+        let chunk_ranges = &xorb_blocks[xorb_block_index].chunk_ranges;
+        let Some(xorb_block_start_index) = find_chunk_start_index(chunk_ranges, chunk_start) else {
+            return Err(FileReconstructionError::CorruptedReconstruction(format!(
+                "chunk_start {chunk_start} not found in chunk_ranges {chunk_ranges:?} for xorb {xorb_hash:?}"
+            )));
         };
 
         file_term_data.push(FileTermEntry {
@@ -370,12 +382,62 @@ mod tests {
 
     use more_asserts::assert_le;
     use xet_client::cas_client::{ClientTestingUtils, LocalClient, RandomFileContents};
-    use xet_client::cas_types::{ChunkRange, FileRange};
+    use xet_client::cas_types::{ChunkRange, FileRange, HttpRange, XorbRangeDescriptor};
     use xet_runtime::utils::UniqueId;
 
     use super::*;
 
     const TEST_CHUNK_SIZE: usize = 101;
+
+    fn make_fetch_entry(ranges: Vec<(ChunkRange, HttpRange)>) -> XorbMultiRangeFetch {
+        XorbMultiRangeFetch {
+            url: "http://example.test/fetch".to_string(),
+            ranges: ranges
+                .into_iter()
+                .map(|(chunks, bytes)| XorbRangeDescriptor { chunks, bytes })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn test_size_grouped_fetch_block_resolve_large_ranges_split() {
+        let entry = make_fetch_entry(vec![
+            (ChunkRange::new(0, 2), HttpRange::new(0, 100)),
+            (ChunkRange::new(2, 4), HttpRange::new(200, 280)),
+        ]);
+
+        let blocks = SizeGroupedFetchBlock::resolve(&entry, 50, 2);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].chunk_ranges.len(), 1);
+        assert_eq!(blocks[1].chunk_ranges.len(), 1);
+    }
+
+    #[test]
+    fn test_size_grouped_fetch_block_resolve_small_ranges_grouped() {
+        let entry = make_fetch_entry(vec![
+            (ChunkRange::new(0, 1), HttpRange::new(0, 10)),
+            (ChunkRange::new(1, 2), HttpRange::new(20, 30)),
+            (ChunkRange::new(2, 3), HttpRange::new(40, 50)),
+        ]);
+
+        let blocks = SizeGroupedFetchBlock::resolve(&entry, 100, 3);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].chunk_ranges.len(), 3);
+        assert_eq!(blocks[0].http_ranges.len(), 3);
+    }
+
+    #[test]
+    fn test_size_grouped_fetch_block_resolve_small_ranges_split_when_under_min() {
+        let entry = make_fetch_entry(vec![
+            (ChunkRange::new(0, 1), HttpRange::new(0, 10)),
+            (ChunkRange::new(1, 2), HttpRange::new(20, 30)),
+        ]);
+
+        let blocks = SizeGroupedFetchBlock::resolve(&entry, 100, 3);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].chunk_ranges.len(), 1);
+        assert_eq!(blocks[1].chunk_ranges.len(), 1);
+    }
 
     fn verify_xorb_block_references(file_terms: &[FileTerm]) {
         for file_term in file_terms {

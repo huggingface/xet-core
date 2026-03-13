@@ -617,7 +617,7 @@ mod tests {
     use crate::cas_client::simulation::client_testing_utils::ClientTestingUtils;
     use crate::cas_client::simulation::local_server::SimulationControlClient;
     use crate::cas_client::simulation::{DeletionControlableClient, DirectAccessClient};
-    use crate::cas_types::FileRange;
+    use crate::cas_types::{FileRange, QueryReconstructionResponseV2};
 
     const CHUNK_SIZE: usize = 123;
 
@@ -1031,6 +1031,36 @@ mod tests {
                 assert!(fetch.url.starts_with("http://"));
             }
         }
+
+        // Validate open-ended and suffix range variants through the V2 HTTP endpoint.
+        let v2_url = format!("{}/v2/reconstructions/{}", server.endpoint(), file.file_hash.hex());
+        let http_client = reqwest::Client::new();
+
+        let open_rhs: QueryReconstructionResponseV2 = http_client
+            .get(&v2_url)
+            .header(reqwest::header::RANGE, "bytes=100-")
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(!open_rhs.terms.is_empty());
+
+        let suffix: QueryReconstructionResponseV2 = http_client
+            .get(&v2_url)
+            .header(reqwest::header::RANGE, "bytes=-128")
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(!suffix.terms.is_empty());
     }
 
     /// Tests V2 max_ranges_per_fetch through the server.
@@ -1079,6 +1109,23 @@ mod tests {
         let v2_result = server.remote_client().get_reconstruction_v2(&file.file_hash, None).await;
         assert!(v2_result.is_err(), "V2 should return error when disabled with 501");
 
+        // Forced V2 should surface the endpoint error directly with no fallback.
+        let forced_v2 = server
+            .remote_client()
+            .get_reconstruction_with_version_override(&file.file_hash, None, Some(2))
+            .await;
+        assert!(forced_v2.is_err());
+        assert_eq!(forced_v2.unwrap_err().status(), Some(reqwest::StatusCode::NOT_IMPLEMENTED));
+
+        // Forced V1 should continue to succeed when V2 is disabled.
+        let forced_v1 = server
+            .remote_client()
+            .get_reconstruction_with_version_override(&file.file_hash, None, Some(1))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(forced_v1.terms.len(), 2);
+
         let result = server
             .remote_client()
             .get_reconstruction(&file.file_hash, None)
@@ -1098,6 +1145,21 @@ mod tests {
 
         let v2_result = server.remote_client().get_reconstruction_v2(&file.file_hash, None).await;
         assert!(v2_result.is_err(), "V2 should return error when disabled with 404");
+
+        let forced_v2 = server
+            .remote_client()
+            .get_reconstruction_with_version_override(&file.file_hash, None, Some(2))
+            .await;
+        assert!(forced_v2.is_err());
+        assert_eq!(forced_v2.unwrap_err().status(), Some(reqwest::StatusCode::NOT_FOUND));
+
+        let forced_v1 = server
+            .remote_client()
+            .get_reconstruction_with_version_override(&file.file_hash, None, Some(1))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(forced_v1.terms.len(), 2);
 
         let result = server
             .remote_client()

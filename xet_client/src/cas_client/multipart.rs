@@ -41,20 +41,21 @@ pub fn parse_multipart_byteranges(content_type: &str, body: Bytes) -> Result<Vec
             None => remaining,
         };
 
-        if let Some(header_end) = find_subsequence(part_data, b"\r\n\r\n") {
-            let headers = &part_data[..header_end];
-            let data_start = header_end + 4;
-            let data = &part_data[data_start..];
+        let Some(header_end) = find_subsequence(part_data, b"\r\n\r\n") else {
+            return Err(CasClientError::Other("Malformed multipart part: missing header/data separator".to_string()));
+        };
 
-            let range = parse_content_range(headers)?;
-            let offset = body.len() - body_slice.len()
-                + (remaining.as_ptr() as usize - body_slice.as_ptr() as usize)
-                + data_start;
-            parts.push(MultipartPart {
-                range,
-                data: body.slice(offset..offset + data.len()),
-            });
-        }
+        let headers = &part_data[..header_end];
+        let data_start = header_end + 4;
+        let data = &part_data[data_start..];
+
+        let range = parse_content_range(headers)?;
+        let offset =
+            body.len() - body_slice.len() + (remaining.as_ptr() as usize - body_slice.as_ptr() as usize) + data_start;
+        parts.push(MultipartPart {
+            range,
+            data: body.slice(offset..offset + data.len()),
+        });
 
         match next_boundary {
             Some(pos) => {
@@ -104,6 +105,7 @@ fn parse_content_range(headers: &[u8]) -> Result<HttpRange> {
                 let end: u64 = range_part[dash_pos + 1..]
                     .parse()
                     .map_err(|e| CasClientError::Other(format!("Invalid Content-Range end: {e}")))?;
+                // RFC 7233 Content-Range uses an inclusive end, which matches HttpRange.
                 return Ok(HttpRange::new(start, end));
             }
         }
@@ -168,6 +170,15 @@ mod tests {
     fn test_parse_empty_body_no_boundary() {
         let content_type = "multipart/byteranges; boundary=xyz";
         let result = parse_multipart_byteranges(content_type, Bytes::new());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_part_missing_header_separator() {
+        let boundary = "xyz";
+        let body = format!("--{boundary}\r\nContent-Range: bytes 0-9/100\r\nMISSING_SEPARATOR\r\n--{boundary}--\r\n");
+        let content_type = format!("multipart/byteranges; boundary={boundary}");
+        let result = parse_multipart_byteranges(&content_type, Bytes::from(body));
         assert!(result.is_err());
     }
 }
