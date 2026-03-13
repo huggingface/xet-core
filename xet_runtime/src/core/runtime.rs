@@ -2,10 +2,11 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock, Weak};
+use std::sync::{Arc, LazyLock, OnceLock, Weak};
 
-use lazy_static::lazy_static;
+use futures::FutureExt;
 use reqwest::Client;
 use tokio::runtime::{Builder as TokioRuntimeBuilder, Handle as TokioRuntimeHandle, Runtime as TokioRuntime};
 use tokio::sync::oneshot;
@@ -159,10 +160,11 @@ thread_local! {
 // Keyed by tokio runtime ID so current_if_exists() can find the right XetRuntime
 // (with the correct XetConfig and XetCommon) when called from the caller's tokio threads,
 // where THREAD_RUNTIME_REF is never set.
-lazy_static! {
-    static ref EXTERNAL_RUNTIME_REGISTRY: std::sync::RwLock<HashMap<tokio::runtime::Id, Weak<XetRuntime>>> =
-        std::sync::RwLock::new(HashMap::new());
-}
+//
+// Uses std::sync (not tokio::sync) because the registry must be accessible from non-async
+// contexts such as Drop impls and sync builder methods.
+static EXTERNAL_RUNTIME_REGISTRY: LazyLock<std::sync::RwLock<HashMap<tokio::runtime::Id, Weak<XetRuntime>>>> =
+    LazyLock::new(|| std::sync::RwLock::new(HashMap::new()));
 
 impl XetRuntime {
     /// Return the current threadpool that the current worker thread uses.  Will fail if  
@@ -497,8 +499,9 @@ impl XetRuntime {
     /// The result is delivered via a `tokio::sync::oneshot` channel whose receiver only
     /// requires a `std::task::Waker`, making it compatible with every standard executor.
     ///
-    /// Returns `Err(RuntimeError::TaskCanceled)` if the runtime shuts down before
-    /// the task result can be delivered.
+    /// Returns `Err(RuntimeError::TaskPanic)` if the spawned future panics, or
+    /// `Err(RuntimeError::TaskCanceled)` if the runtime shuts down before the result
+    /// can be delivered.
     pub async fn bridge_to_owned<T, F>(&self, task_name: &'static str, fut: F) -> Result<T, RuntimeError>
     where
         F: Future<Output = T> + Send + 'static,
@@ -506,9 +509,23 @@ impl XetRuntime {
     {
         let (tx, rx) = oneshot::channel();
         self.spawn(async move {
-            let _ = tx.send(fut.await);
+            let result = AssertUnwindSafe(fut).catch_unwind().await;
+            let _ = tx.send(result);
         });
-        rx.await.map_err(|_| RuntimeError::TaskCanceled(task_name.to_string()))
+        match rx.await {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(panic_payload)) => {
+                let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                    format!("{task_name}: {s}")
+                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                    format!("{task_name}: {s}")
+                } else {
+                    format!("{task_name}: <unknown panic>")
+                };
+                Err(RuntimeError::TaskPanic(msg))
+            },
+            Err(_) => Err(RuntimeError::TaskCanceled(task_name.to_string())),
+        }
     }
 
     /// Spawn a blocking task on the runtime's blocking thread pool. The task runs with this
