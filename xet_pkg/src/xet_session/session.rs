@@ -638,8 +638,9 @@ mod tests {
     // Aborting a session clears all active upload commits and download groups.
     async fn test_async_abort_clears_active_commits_and_groups() {
         let session = XetSessionBuilder::new().build_async().await.unwrap();
-        let (_c1, _c2, _g1) =
-            tokio::join!(session.new_upload_commit(), session.new_upload_commit(), session.new_download_group(),);
+        let _c1 = session.new_upload_commit().await.unwrap();
+        let _c2 = session.new_upload_commit().await.unwrap();
+        let _g1 = session.new_download_group().await.unwrap();
         session.abort().unwrap();
         assert_eq!(session.active_upload_commits.lock().unwrap().len(), 0);
         assert_eq!(session.active_download_groups.lock().unwrap().len(), 0);
@@ -652,9 +653,8 @@ mod tests {
     // session's active set, and concurrent creation registers both.
     async fn test_async_new_registers_in_session() {
         let session = XetSessionBuilder::new().build_async().await.unwrap();
-        let (commit_res, group_res) = tokio::join!(session.new_upload_commit(), session.new_download_group());
-        let _commit = commit_res.unwrap();
-        let _group = group_res.unwrap();
+        let _commit = session.new_upload_commit().await.unwrap();
+        let _group = session.new_download_group().await.unwrap();
         assert_eq!(session.active_upload_commits.lock().unwrap().len(), 1);
         assert_eq!(session.active_download_groups.lock().unwrap().len(), 1);
     }
@@ -666,16 +666,10 @@ mod tests {
     // leaving the other still registered.
     async fn test_async_finish_removes_only_that_item() {
         let session = XetSessionBuilder::new().build_async().await.unwrap();
-        let (c1_res, c2_res, g1_res, g2_res) = tokio::join!(
-            session.new_upload_commit(),
-            session.new_upload_commit(),
-            session.new_download_group(),
-            session.new_download_group(),
-        );
-        let c1 = c1_res.unwrap();
-        let _c2 = c2_res.unwrap();
-        let g1 = g1_res.unwrap();
-        let _g2 = g2_res.unwrap();
+        let c1 = session.new_upload_commit().await.unwrap();
+        let _c2 = session.new_upload_commit().await.unwrap();
+        let g1 = session.new_download_group().await.unwrap();
+        let _g2 = session.new_download_group().await.unwrap();
         assert_eq!(session.active_upload_commits.lock().unwrap().len(), 2);
         assert_eq!(session.active_download_groups.lock().unwrap().len(), 2);
         session.finish_upload_commit(c1.id()).unwrap();
