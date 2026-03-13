@@ -171,12 +171,22 @@ crate::config_group!("XetClientConfig", {
     /// Use the environment variable `HF_XET_CLIENT_AC_UNHEALTHY_SUCCESS_RATIO_THRESHOLD` to set this value.
     ref ac_unhealthy_success_ratio_threshold: f64 = 0.5;
 
-    /// The reference size (64MB) used for bandwidth target checks.
+    /// The maximum reference transmission size used for bandwidth target checks.
+    /// The dynamic reference size (estimated from observed transfer sizes) is capped at this value.
     ///
     /// The default value is 64MB.
     ///
-    /// Use the environment variable `HF_XET_CLIENT_AC_TARGET_RTT_TRANSMISSION_SIZE` to set this value.
-    ref ac_target_rtt_transmission_size: u64 = 64 * 1024 * 1024;
+    /// Use the environment variable `HF_XET_CLIENT_AC_MAX_REFERENCE_TRANSMISSION_SIZE` to set this value.
+    ref ac_max_reference_transmission_size: ByteSize = ByteSize::from("64mb");
+
+    /// The minimum reference transmission size used for bandwidth target checks.
+    /// The dynamic reference size (estimated from observed transfer sizes) is floored at this value
+    /// to prevent excessively aggressive concurrency increases with very small transfers.
+    ///
+    /// The default value is 1MB.
+    ///
+    /// Use the environment variable `HF_XET_CLIENT_AC_MIN_REFERENCE_TRANSMISSION_SIZE` to set this value.
+    ref ac_min_reference_transmission_size: ByteSize = ByteSize::from("1mb");
 
     /// Log the concurrency on this interval.
     ///
