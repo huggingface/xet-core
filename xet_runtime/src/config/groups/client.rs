@@ -217,7 +217,7 @@ crate::config_group!({
     /// The default value is 2.
     ///
     /// Use the environment variable `HF_XET_CLIENT_AC_INITIAL_UPLOAD_CONCURRENCY` to set this value.
-    ref ac_initial_upload_concurrency: usize = 1;
+    ref ac_initial_upload_concurrency: usize = 2;
 
     /// The maximum number of simultaneous download streams permitted by
     /// the adaptive concurrency control.
@@ -238,10 +238,10 @@ crate::config_group!({
     /// The starting number of concurrent download streams, which will increase up to max_concurrent_downloads
     /// on successful completions.
     ///
-    /// The default value is 1.
+    /// The default value is 4.
     ///
     /// Use the environment variable `HF_XET_CLIENT_AC_INITIAL_DOWNLOAD_CONCURRENCY` to set this value.
-    ref ac_initial_download_concurrency: usize = 1;
+    ref ac_initial_download_concurrency: usize = 4;
 
     /// Path to Unix domain socket for CAS HTTP connections.
     /// When set, all CAS HTTP traffic uses this socket instead of TCP.
