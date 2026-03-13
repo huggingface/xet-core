@@ -6,8 +6,8 @@ use async_trait::async_trait;
 use http::header;
 use xet_client::cas_client::auth::TokenRefresher;
 use xet_client::hub_client::Operation;
-use xet_data::processing::FileUploadSession;
 use xet_data::processing::data_client::{clean_file, default_config};
+use xet_data::processing::{FileUploadSession, Sha256Policy};
 use xet_data::progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
 
 use crate::constants::{
@@ -141,7 +141,7 @@ impl TransferAgent for XetAgent {
             return Err(GitLFSProtocolError::bad_syntax("file path not provided for upload request").into());
         };
 
-        clean_file(session.clone(), file_path, &req.oid, None).await?;
+        clean_file(session.clone(), file_path, Sha256Policy::from_hex(&req.oid), None).await?;
 
         // We need to actually upload the shard after each file upload to have the files registered, because
         //
