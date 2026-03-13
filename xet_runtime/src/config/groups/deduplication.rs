@@ -23,4 +23,13 @@ crate::config_group!({
     ///
     /// Use the environment variable `HF_XET_DEDUPLICATION_MIN_N_CHUNKS_PER_RANGE` to set this value.
     ref min_n_chunks_per_range: f32 = 8.0;
+
+    /// Whether to enable global deduplication queries to the server.
+    /// When enabled, the system will query the server for deduplication shards
+    /// based on chunk hashes to enable cross-repository deduplication.
+    ///
+    /// The default value is true.
+    ///
+    /// Use the environment variable `HF_XET_DEDUPLICATION_GLOBAL_DEDUP_QUERY_ENABLED` to set this value.
+    ref global_dedup_query_enabled: bool = true;
 });

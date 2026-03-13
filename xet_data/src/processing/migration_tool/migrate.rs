@@ -6,7 +6,6 @@ use tracing::{Instrument, Span, info_span, instrument};
 use xet_client::cas_client::auth::TokenRefresher;
 use xet_client::hub_client::{BearerCredentialHelper, HubClient, Operation, RepoInfo};
 use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
-use xet_core_structures::xorb_object::CompressionScheme;
 use xet_runtime::core::XetRuntime;
 use xet_runtime::core::par_utils::run_constrained;
 
@@ -48,7 +47,7 @@ pub async fn migrate_with_external_runtime(
         Some(Arc::new(headers)),
     )?;
 
-    migrate_files_impl(file_paths, sha256s, false, hub_client, cas_endpoint, None, false).await?;
+    migrate_files_impl(file_paths, sha256s, false, hub_client, cas_endpoint, false).await?;
 
     Ok(())
 }
@@ -63,7 +62,6 @@ pub async fn migrate_files_impl(
     sequential: bool,
     hub_client: HubClient,
     cas_endpoint: Option<String>,
-    compression: Option<CompressionScheme>,
     dry_run: bool,
 ) -> Result<MigrationInfo> {
     let operation = Operation::Upload;
@@ -80,12 +78,11 @@ pub async fn migrate_files_impl(
 
     let config = default_config(
         cas,
-        compression,
         Some((jwt_info.access_token, jwt_info.exp)),
         Some(token_refresher),
         Some(Arc::new(headers)),
     )?;
-    Span::current().record("session_id", &config.session_id);
+    Span::current().record("session_id", &config.session.session_id);
 
     let num_workers = if sequential {
         1

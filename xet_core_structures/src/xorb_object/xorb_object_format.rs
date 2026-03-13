@@ -1282,7 +1282,16 @@ pub struct SerializedXorbObject {
 
 impl SerializedXorbObject {
     /// Builds the xorb from raw xorb data.
-    pub fn from_xorb(
+    ///
+    /// The compression scheme is determined by `HF_XET_XORB_COMPRESSION_POLICY`:
+    /// auto-detect (default) or an explicit scheme (none, lz4, bg4-lz4).
+    pub fn from_xorb(xorb: RawXorbData, serialize_footer: bool) -> Result<Self, XorbObjectError> {
+        let compression_scheme = CompressionScheme::from_policy_str(&xet_config().xorb.compression_policy)?;
+        Self::from_xorb_with_compression(xorb, compression_scheme, serialize_footer)
+    }
+
+    /// Builds the xorb from raw xorb data with an explicit compression scheme override.
+    pub fn from_xorb_with_compression(
         xorb: RawXorbData,
         compression_scheme: Option<CompressionScheme>,
         serialize_footer: bool,
@@ -1546,7 +1555,8 @@ pub mod test_utils {
         xorb: RawXorbData,
         compression_scheme: Option<CompressionScheme>,
     ) -> SerializedXorbObject {
-        let xorb_obj = SerializedXorbObject::from_xorb(xorb.clone(), compression_scheme, true).unwrap();
+        let xorb_obj =
+            SerializedXorbObject::from_xorb_with_compression(xorb.clone(), compression_scheme, true).unwrap();
 
         verify_serialized_xorb_object(&xorb, compression_scheme, &xorb_obj);
 

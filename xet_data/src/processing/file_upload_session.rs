@@ -16,7 +16,7 @@ use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
 use xet_core_structures::xorb_object::SerializedXorbObject;
 use xet_runtime::core::{XetRuntime, xet_config};
 
-use super::configurations::*;
+use super::configurations::TranslatorConfig;
 use super::errors::*;
 use super::file_cleaner::{Sha256Policy, SingleFileCleaner};
 use super::remote_client_interface::create_remote_client;
@@ -37,12 +37,8 @@ use crate::progress_tracking::{NoOpProgressUpdater, TrackingProgressUpdater};
 /// that succeeds or fails as a unit;  i.e. all files get uploaded on finalization, and all shards
 /// and xorbs needed to reconstruct those files are properly uploaded and registered.
 pub struct FileUploadSession {
-    // The parts of this that manage the
     pub(crate) client: Arc<dyn Client + Send + Sync>,
     pub(crate) shard_interface: SessionShardInterface,
-
-    /// The configuration settings, if needed.
-    pub(crate) config: Arc<TranslatorConfig>,
 
     /// Tracking upload completion between xorbs and files.
     pub(crate) completion_tracker: Arc<CompletionTracker>,
@@ -85,6 +81,7 @@ impl FileUploadSession {
         dry_run: bool,
     ) -> Result<Arc<FileUploadSession>> {
         let session_id = config
+            .session
             .session_id
             .as_ref()
             .map(Cow::Borrowed)
@@ -94,7 +91,10 @@ impl FileUploadSession {
             match upload_progress_updater {
                 Some(updater) => {
                     let flush_interval = xet_config().data.progress_update_interval;
-                    if !flush_interval.is_zero() && config.progress_config.aggregate {
+                    if !flush_interval.is_zero()
+                        && xet_config().data.aggregate_progress
+                        && !config.force_disable_progress_aggregation
+                    {
                         let aggregator = AggregatingProgressUpdater::new(
                             updater,
                             flush_interval,
@@ -127,7 +127,6 @@ impl FileUploadSession {
         Ok(Arc::new(Self {
             shard_interface,
             client,
-            config,
             completion_tracker,
             progress_aggregator,
             current_session_data: Mutex::new(DataAggregator::default()),
@@ -320,14 +319,13 @@ impl FileUploadSession {
 
         // Serialize the object; this can be relatively expensive, so run it on a compute thread.
         // XORBs are sent without footer - the server/client reconstructs it from chunk data.
-        let compression_scheme = self.config.data_config.compression;
         let xorb_obj = XetRuntime::current()
-            .spawn_blocking(move || SerializedXorbObject::from_xorb(xorb, compression_scheme, false))
+            .spawn_blocking(move || SerializedXorbObject::from_xorb(xorb, false))
             .await??;
 
         let session = self.clone();
         let upload_permit = self.client.acquire_upload_permit().await?;
-        let cas_prefix = session.config.data_config.prefix.clone();
+        let cas_prefix = xet_config().data.default_prefix.clone();
         let completion_tracker = self.completion_tracker.clone();
         let xorb_hash = xorb_obj.hash;
         let raw_num_bytes = xorb_obj.raw_num_bytes;

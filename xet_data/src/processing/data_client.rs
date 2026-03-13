@@ -6,16 +6,14 @@ use std::sync::Arc;
 use bytes::Bytes;
 use http::header::HeaderMap;
 use itertools::multizip;
-use tracing::{Instrument, Span, info, info_span, instrument};
+use tracing::{Instrument, Span, info_span, instrument};
 use ulid::Ulid;
 use xet_client::cas_client::auth::{AuthConfig, TokenRefresher};
-use xet_client::cas_client::remote_client::PREFIX_DEFAULT;
 use xet_core_structures::merklehash::MerkleHash;
-use xet_core_structures::xorb_object::CompressionScheme;
 use xet_runtime::core::par_utils::run_constrained_with_semaphore;
-use xet_runtime::core::{XetRuntime, check_sigint_shutdown, xet_cache_root, xet_config};
+use xet_runtime::core::{XetRuntime, check_sigint_shutdown, xet_config};
 
-use super::configurations::*;
+use super::configurations::{SessionContext, TranslatorConfig};
 use super::errors::DataProcessingError;
 use super::file_cleaner::Sha256Policy;
 use super::file_download_session::FileDownloadSession;
@@ -25,70 +23,22 @@ use crate::progress_tracking::TrackingProgressUpdater;
 
 pub fn default_config(
     endpoint: String,
-    xorb_compression: Option<CompressionScheme>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     custom_headers: Option<Arc<HeaderMap>>,
 ) -> errors::Result<TranslatorConfig> {
-    // Intercept local:// to run a simulated CAS server in a specified directory.
-    // This is useful for testing and development.
-    if endpoint.starts_with("local://") {
-        let local_path = endpoint.strip_prefix("local://").unwrap();
-        let local_path = PathBuf::from(local_path);
-        std::fs::create_dir_all(&local_path)?;
-        return TranslatorConfig::local_config(local_path);
-    }
-
-    let cache_root_path = xet_cache_root();
-    info!("Using cache path {cache_root_path:?}.");
-
     let (token, token_expiration) = token_info.unzip();
     let auth_cfg = AuthConfig::maybe_new(token, token_expiration, token_refresher);
 
-    // Calculate a fingerprint of the current endpoint to make sure caches stay separated.
-    let endpoint_tag = {
-        let endpoint_prefix = endpoint
-            .chars()
-            .take(16)
-            .map(|c| if c.is_alphanumeric() { c } else { '_' })
-            .collect::<String>();
-
-        // If more gets added
-        let endpoint_hash = xet_core_structures::merklehash::compute_data_hash(endpoint.as_bytes()).base64();
-
-        format!("{endpoint_prefix}-{}", &endpoint_hash[..16])
-    };
-
-    let cache_path = cache_root_path.join(endpoint_tag);
-    std::fs::create_dir_all(&cache_path)?;
-
-    let staging_root = cache_path.join("staging");
-    std::fs::create_dir_all(&staging_root)?;
-
-    let translator_config = TranslatorConfig {
-        data_config: DataConfig {
-            endpoint: Endpoint::Server(endpoint.clone()),
-            compression: xorb_compression,
-            auth: auth_cfg.clone(),
-            prefix: PREFIX_DEFAULT.into(),
-            staging_directory: None,
-            custom_headers,
-        },
-        shard_config: ShardConfig {
-            prefix: PREFIX_DEFAULT.into(),
-            cache_directory: cache_path.join("shard-cache"),
-            session_directory: staging_root.join("shard-session"),
-            global_dedup_policy: Default::default(),
-        },
-        repo_info: Some(RepoInfo {
-            repo_paths: vec!["".into()],
-        }),
+    let session = SessionContext {
+        endpoint,
+        auth: auth_cfg,
+        custom_headers,
+        repo_paths: vec!["".into()],
         session_id: Some(Ulid::new().to_string()),
-        progress_config: ProgressConfig { aggregate: true },
     };
 
-    // Return the temp dir so that it's not dropped and thus the directory deleted.
-    Ok(translator_config)
+    TranslatorConfig::new(session)
 }
 
 #[instrument(skip_all, name = "data_client::upload_bytes", fields(session_id = tracing::field::Empty, num_files=file_contents.len()))]
@@ -111,13 +61,12 @@ pub async fn upload_bytes_async(
 
     let config = default_config(
         endpoint.unwrap_or_else(|| xet_config().data.default_cas_endpoint.clone()),
-        None,
         token_info,
         token_refresher,
         custom_headers,
     )?;
 
-    Span::current().record("session_id", &config.session_id);
+    Span::current().record("session_id", &config.session.session_id);
 
     let semaphore = XetRuntime::current().common().file_ingestion_semaphore.clone();
     let upload_session = FileUploadSession::new(config.into(), progress_updater).await?;
@@ -168,7 +117,6 @@ pub async fn upload_async(
     // for each file, return the filehash
     let config = default_config(
         endpoint.unwrap_or_else(|| xet_config().data.default_cas_endpoint.clone()),
-        None,
         token_info,
         token_refresher,
         custom_headers,
@@ -176,7 +124,7 @@ pub async fn upload_async(
 
     let span = Span::current();
 
-    span.record("session_id", &config.session_id);
+    span.record("session_id", &config.session.session_id);
 
     let upload_session = FileUploadSession::new(config.into(), progress_updater).await?;
 
@@ -215,14 +163,13 @@ pub async fn download_async(
     }
     let config: Arc<TranslatorConfig> = default_config(
         endpoint.unwrap_or_else(|| xet_config().data.default_cas_endpoint.clone()),
-        None,
         token_info,
         token_refresher,
         custom_headers,
     )?
     .into();
 
-    Span::current().record("session_id", &config.session_id);
+    Span::current().record("session_id", &config.session.session_id);
 
     let updaters = match progress_updaters {
         None => vec![None; file_infos.len()],
@@ -424,11 +371,11 @@ mod tests {
         let _hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None, None);
+        let result = default_config(endpoint, None, None, None);
 
         assert!(result.is_ok());
         let config = result.unwrap();
-        assert!(config.shard_config.cache_directory.starts_with(temp_dir.path()));
+        assert!(config.shard_cache_directory.starts_with(temp_dir.path()));
     }
 
     #[test]
@@ -441,11 +388,11 @@ mod tests {
         let hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir_hf_home.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None, None);
+        let result = default_config(endpoint, None, None, None);
 
         assert!(result.is_ok());
         let config = result.unwrap();
-        assert!(config.shard_config.cache_directory.starts_with(temp_dir_xet_cache.path()));
+        assert!(config.shard_cache_directory.starts_with(temp_dir_xet_cache.path()));
 
         drop(hf_xet_cache_guard);
         drop(hf_home_guard);
@@ -454,11 +401,11 @@ mod tests {
         let _hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None, None);
+        let result = default_config(endpoint, None, None, None);
 
         assert!(result.is_ok());
         let config = result.unwrap();
-        assert!(config.shard_config.cache_directory.starts_with(temp_dir.path()));
+        assert!(config.shard_cache_directory.starts_with(temp_dir.path()));
     }
 
     #[test]
@@ -468,24 +415,24 @@ mod tests {
         let _hf_xet_cache_guard = EnvVarGuard::set("HF_XET_CACHE", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None, None);
+        let result = default_config(endpoint, None, None, None);
 
         assert!(result.is_ok());
         let config = result.unwrap();
-        assert!(config.shard_config.cache_directory.starts_with(temp_dir.path()));
+        assert!(config.shard_cache_directory.starts_with(temp_dir.path()));
     }
 
     #[test]
     #[serial(default_config_env)]
     fn test_default_config_without_env_vars() {
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None, None);
+        let result = default_config(endpoint, None, None, None);
 
         let expected = home_dir().unwrap().join(".cache").join("huggingface").join("xet");
 
         assert!(result.is_ok());
         let config = result.unwrap();
-        let test_cache_dir = &config.shard_config.cache_directory;
+        let test_cache_dir = &config.shard_cache_directory;
         assert!(
             test_cache_dir.starts_with(&expected),
             "cache dir = {test_cache_dir:?}; does not start with {expected:?}",

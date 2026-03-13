@@ -32,7 +32,6 @@ pub struct SessionShardInterface {
     cache_shard_manager: Arc<ShardFileManager>,
 
     client: Arc<dyn Client + Send + Sync>,
-    config: Arc<TranslatorConfig>,
 
     dry_run: bool,
 
@@ -60,17 +59,17 @@ impl SessionShardInterface {
         dry_run: bool,
     ) -> Result<Self> {
         // Create a temporary session directory where we hold all the shards before upload.
-        std::fs::create_dir_all(&config.shard_config.session_directory)?;
-        let shard_session_tempdir = TempDir::new_in(&config.shard_config.session_directory)?;
+        std::fs::create_dir_all(&config.shard_session_directory)?;
+        let shard_session_tempdir = TempDir::new_in(&config.shard_session_directory)?;
 
         let session_dir = shard_session_tempdir.path().to_owned();
 
         // Set up the cache dir.
-        let cache_dir = &config.shard_config.cache_directory;
+        let cache_dir = &config.shard_cache_directory;
         std::fs::create_dir_all(cache_dir)?;
 
         // Set up the shard session directory.
-        let xorb_metadata_staging_dir = config.shard_config.session_directory.join("xorb_metadata");
+        let xorb_metadata_staging_dir = config.shard_session_directory.join("xorb_metadata");
         std::fs::create_dir_all(&xorb_metadata_staging_dir)?;
 
         // To allow resume from previous session attempts, merge and copy all the valid shards in the xorb metadata
@@ -129,7 +128,6 @@ impl SessionShardInterface {
             staged_shards_to_remove_on_success,
             xorb_metadata_staging: Mutex::new((SystemTime::now(), MDBInMemoryShard::default())),
             resumed_session_shard_manager,
-            config,
             dry_run,
             _shard_session_dir: shard_session_tempdir,
             client,
@@ -140,7 +138,7 @@ impl SessionShardInterface {
     pub async fn query_dedup_shard_by_chunk(&self, chunk_hash: &MerkleHash) -> Result<bool> {
         let Ok(Some(new_shard)) = self
             .client
-            .query_for_global_dedup_shard(&self.config.shard_config.prefix, chunk_hash)
+            .query_for_global_dedup_shard(&xet_config().data.default_prefix, chunk_hash)
             .await
             .info_error("Error attempting to query global dedup lookup.")
         else {
