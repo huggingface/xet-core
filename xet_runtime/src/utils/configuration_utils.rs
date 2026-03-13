@@ -77,7 +77,7 @@ impl FromStrParseable for ByteSize {}
 
 /// Special handling for bool:
 /// - true: "1","true","yes","y","on"  -> true
-/// - false: "0","false","no","n","off","" -> false
+/// - false: "0","false","no","n","off" -> false
 fn parse_bool_value(value: &str) -> Option<bool> {
     let t = value.trim().to_ascii_lowercase();
 
@@ -439,6 +439,12 @@ mod tests {
         assert_eq!(Option::<String>::parse_user_value(""), Some(None));
         assert_eq!(Option::<String>::parse_user_value("   "), Some(None));
         assert_eq!(Option::<usize>::parse_user_value(""), Some(None));
+    }
+
+    #[test]
+    fn test_parse_bool_empty_string_as_none() {
+        assert_eq!(bool::parse_user_value(""), None);
+        assert_eq!(bool::parse_user_value("   "), None);
     }
 
     #[cfg(not(target_family = "wasm"))]

@@ -276,7 +276,7 @@ macro_rules! config_group {
 
             $(
                 #[getter]
-                fn $name(&self, py: pyo3::Python<'_>) -> pyo3::Py<pyo3::PyAny> {
+                fn $name(&self, py: pyo3::Python<'_>) -> pyo3::PyResult<pyo3::Py<pyo3::PyAny>> {
                     <$type as PythonConfigValue>::to_python(&self.inner.$name, py)
                 }
             )+

@@ -144,40 +144,23 @@ mod tests {
     }
 
     #[test]
-    fn test_with_config_integer() {
+    fn test_with_config_sets_multiple_field_types() {
         let config = XetConfig::default()
             .with_config("data.max_concurrent_file_ingestion", 64)
-            .unwrap();
-        assert_eq!(config.data.max_concurrent_file_ingestion, 64);
-    }
-
-    #[test]
-    fn test_with_config_duration_field() {
-        let config = XetConfig::default()
+            .unwrap()
             .with_config("data.progress_update_interval", "500ms")
-            .unwrap();
-        assert_eq!(config.data.progress_update_interval, std::time::Duration::from_millis(500));
-    }
-
-    #[test]
-    fn test_with_config_byte_size_field() {
-        let config = XetConfig::default().with_config("data.ingestion_block_size", "16MB").unwrap();
-        assert_eq!(config.data.ingestion_block_size.as_u64(), 16_000_000);
-    }
-
-    #[test]
-    fn test_with_config_bool_field() {
-        let config = XetConfig::default()
+            .unwrap()
+            .with_config("data.ingestion_block_size", "16MB")
+            .unwrap()
             .with_config("client.enable_adaptive_concurrency", "false")
-            .unwrap();
-        assert!(!config.client.enable_adaptive_concurrency);
-    }
-
-    #[test]
-    fn test_with_config_string_field() {
-        let config = XetConfig::default()
+            .unwrap()
             .with_config("data.default_cas_endpoint", "http://example.com:9090")
             .unwrap();
+
+        assert_eq!(config.data.max_concurrent_file_ingestion, 64);
+        assert_eq!(config.data.progress_update_interval, std::time::Duration::from_millis(500));
+        assert_eq!(config.data.ingestion_block_size.as_u64(), 16_000_000);
+        assert!(!config.client.enable_adaptive_concurrency);
         assert_eq!(config.data.default_cas_endpoint, "http://example.com:9090");
     }
 

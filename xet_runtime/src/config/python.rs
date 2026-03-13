@@ -15,7 +15,7 @@ use crate::utils::TemplatedPathBuf;
 /// - ByteSize <-> Python int (bytes)
 /// - Option<T> <-> Optional[T]
 pub trait PythonConfigValue {
-    fn to_python(&self, py: Python<'_>) -> Py<PyAny>;
+    fn to_python(&self, py: Python<'_>) -> PyResult<Py<PyAny>>;
     fn from_python(obj: &Bound<'_, PyAny>) -> PyResult<Self>
     where
         Self: Sized;
@@ -25,8 +25,8 @@ macro_rules! impl_python_extract {
     ($($ty:ty),+) => {
         $(
             impl PythonConfigValue for $ty {
-                fn to_python(&self, py: Python<'_>) -> Py<PyAny> {
-                    self.into_py_any(py).expect("Python conversion")
+                fn to_python(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+                    self.into_py_any(py)
                 }
                 fn from_python(obj: &Bound<'_, PyAny>) -> PyResult<Self> {
                     obj.extract()
@@ -39,8 +39,8 @@ macro_rules! impl_python_extract {
 impl_python_extract!(usize, u8, u16, u32, u64, isize, i8, i16, i32, i64, f32, f64, bool, String, std::time::Duration);
 
 impl PythonConfigValue for ByteSize {
-    fn to_python(&self, py: Python<'_>) -> Py<PyAny> {
-        self.as_u64().into_py_any(py).expect("Python conversion")
+    fn to_python(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.as_u64().into_py_any(py)
     }
 
     fn from_python(obj: &Bound<'_, PyAny>) -> PyResult<Self> {
@@ -56,10 +56,10 @@ impl PythonConfigValue for ByteSize {
 }
 
 impl<T: PythonConfigValue> PythonConfigValue for Option<T> {
-    fn to_python(&self, py: Python<'_>) -> Py<PyAny> {
+    fn to_python(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match self {
             Some(v) => v.to_python(py),
-            None => py.None(),
+            None => Ok(py.None()),
         }
     }
 
@@ -74,8 +74,8 @@ impl<T: PythonConfigValue> PythonConfigValue for Option<T> {
 
 #[cfg(not(target_family = "wasm"))]
 impl PythonConfigValue for TemplatedPathBuf {
-    fn to_python(&self, py: Python<'_>) -> Py<PyAny> {
-        self.template_string().into_py_any(py).expect("Python conversion")
+    fn to_python(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.template_string().into_py_any(py)
     }
 
     fn from_python(obj: &Bound<'_, PyAny>) -> PyResult<Self> {
