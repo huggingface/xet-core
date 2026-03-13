@@ -7,7 +7,9 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use xet::xet_session::{FileMetadata, TaskStatus, UploadTaskHandle, XetFileInfo, XetSessionBuilder};
+use xet::xet_session::{
+    DownloadTaskHandle, FileMetadata, TaskStatus, UploadTaskHandle, XetFileInfo, XetSessionBuilder,
+};
 
 #[derive(Parser)]
 #[clap(name = "session-demo-async", about = "XetSession async API demo")]
@@ -54,7 +56,7 @@ async fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<(
     if let Some(ep) = endpoint {
         builder = builder.with_endpoint(ep);
     }
-    let session = builder.build()?;
+    let session = builder.build_async().await?;
     let commit = session.new_upload_commit().await?;
 
     // Enqueue all uploads; each starts immediately in the background.
@@ -105,12 +107,12 @@ async fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: O
     if let Some(ep) = endpoint {
         builder = builder.with_endpoint(ep);
     }
-    let session = builder.build()?;
+    let session = builder.build_async().await?;
     let group = session.new_download_group().await?;
 
     // Enqueue all downloads; each starts immediately in the background.
     let n_files = metadata.len();
-    let mut handles = Vec::with_capacity(n_files);
+    let mut handles: Vec<DownloadTaskHandle> = Vec::with_capacity(n_files);
     for m in &metadata {
         let dest = output_dir.join(m.tracking_name.as_deref().unwrap_or("file"));
         handles.push(group.download_file_to_path(
@@ -119,7 +121,7 @@ async fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: O
                 file_size: m.file_size,
             },
             dest,
-        ).await?);
+        )?);
     }
 
     // Spawn a task to print progress while the main task awaits finish().

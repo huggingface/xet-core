@@ -27,7 +27,7 @@ use super::super::upload_commit::{UploadCommit, UploadResult};
 /// All clones share the same upload session and task state.
 #[derive(Clone)]
 pub struct UploadCommitSync {
-    pub(crate) inner: UploadCommit,
+    pub(in super::super) inner: UploadCommit,
 }
 
 impl UploadCommitSync {
@@ -37,9 +37,8 @@ impl UploadCommitSync {
     ///
     /// Panics if called from within an async runtime — use
     /// [`XetSession::new_upload_commit`] instead.
-    pub(crate) fn new(session: XetSession) -> Result<Self, SessionError> {
-        let runtime = session.runtime.clone();
-        let commit = runtime.external_run_async_task(UploadCommit::new(session.clone()))??;
+    pub(in super::super) fn new(session: XetSession) -> Result<Self, SessionError> {
+        let commit = session.runtime.external_run_async_task(UploadCommit::new(session.clone()))??;
         Ok(Self { inner: commit })
     }
 
@@ -112,7 +111,9 @@ mod tests {
 
     fn local_session(temp: &TempDir) -> Result<XetSession, Box<dyn std::error::Error>> {
         let cas_path = temp.path().join("cas");
-        Ok(XetSession::new(Some(format!("local://{}", cas_path.display())), None, None, None)?)
+        Ok(XetSessionBuilder::new()
+            .with_endpoint(format!("local://{}", cas_path.display()))
+            .build()?)
     }
 
     // ── Round-trip tests ─────────────────────────────────────────────────────
@@ -249,15 +250,60 @@ mod tests {
         Ok(())
     }
 
-    // ── Async-context panic guard ─────────────────────────────────────────────
+    // ── Non-tokio executor (no-panic + round-trip) ────────────────────────────
+    //
+    // smol, async-std, and futures::executor do not set tokio's thread-local
+    // runtime context, so Handle::block_on inside external_run_async_task does
+    // not panic — it just blocks the calling executor thread.
 
-    #[tokio::test]
-    // new_upload_commit_blocking panics when called from inside a tokio runtime.
-    async fn test_new_upload_commit_blocking_panics_in_async_context() {
-        let session = XetSessionBuilder::new().build().unwrap();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = session.new_upload_commit_blocking();
-        }));
-        assert!(result.is_err(), "expected panic from _blocking inside async");
+    #[test]
+    // new_upload_commit_blocking completes a full upload round-trip inside smol.
+    fn test_upload_blocking_round_trip_in_smol() {
+        let temp = tempdir().unwrap();
+        let session = local_session(&temp).unwrap();
+
+        smol::block_on(async {
+            let data = b"upload from smol executor";
+            let commit = session.new_upload_commit_blocking().unwrap();
+            let handle = commit.upload_bytes(data.to_vec(), Some("test.bin".into())).unwrap();
+            let results = commit.commit().unwrap();
+            let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
+            assert_eq!(meta.file_size, data.len() as u64);
+            assert!(!meta.hash.is_empty());
+        });
+    }
+
+    #[test]
+    // new_upload_commit_blocking completes a full upload round-trip inside futures::executor.
+    fn test_upload_blocking_round_trip_in_futures_executor() {
+        let temp = tempdir().unwrap();
+        let session = local_session(&temp).unwrap();
+
+        futures::executor::block_on(async {
+            let data = b"upload from futures executor";
+            let commit = session.new_upload_commit_blocking().unwrap();
+            let handle = commit.upload_bytes(data.to_vec(), Some("test.bin".into())).unwrap();
+            let results = commit.commit().unwrap();
+            let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
+            assert_eq!(meta.file_size, data.len() as u64);
+            assert!(!meta.hash.is_empty());
+        });
+    }
+
+    #[test]
+    // new_upload_commit_blocking completes a full upload round-trip inside async-std.
+    fn test_upload_blocking_round_trip_in_async_std() {
+        let temp = tempdir().unwrap();
+        let session = local_session(&temp).unwrap();
+
+        async_std::task::block_on(async {
+            let data = b"upload from async-std executor";
+            let commit = session.new_upload_commit_blocking().unwrap();
+            let handle = commit.upload_bytes(data.to_vec(), Some("test.bin".into())).unwrap();
+            let results = commit.commit().unwrap();
+            let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
+            assert_eq!(meta.file_size, data.len() as u64);
+            assert!(!meta.hash.is_empty());
+        });
     }
 }

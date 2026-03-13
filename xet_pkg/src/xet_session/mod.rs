@@ -4,12 +4,12 @@
 //! file operations:
 //!
 //! ```text
-//! XetSession          — owns the tokio runtime and authentication credentials
+//! XetSession          — holds runtime context and authentication credentials
 //!   ├── UploadCommit  — groups related uploads; finalised with commit()
 //!   └── DownloadGroup — groups related downloads; finalised with finish()
 //! ```
 //!
-//! Each [`XetSession`] owns its own tokio runtime and configuration, so
+//! Each [`XetSession`] holds its own runtime context and configuration, so
 //! multiple sessions with different endpoints or credentials can coexist in
 //! the same process.  Cloning a session, commit, or group is cheap — all
 //! clones share the same underlying state via `Arc`.
@@ -69,7 +69,8 @@
 //! ```rust,no_run
 //! use xet::xet_session::{XetFileInfo, XetSessionBuilder};
 //!
-//! // 1. Build a session (sync or async context)
+//! // 1. Build a session — sync (non-async) context only.
+//! //    For async code call build_async().await instead.
 //! let session = XetSessionBuilder::new()
 //!     .with_endpoint("https://cas.example.com".into())
 //!     .with_token_info("my-token".into(), 1_700_000_000)
@@ -102,11 +103,14 @@
 //! use xet::xet_session::{XetFileInfo, XetSessionBuilder};
 //!
 //! # async fn example() -> Result<(), xet::xet_session::SessionError> {
-//! // 1. Build a session (sync or async context)
+//! // 1. Build a session. build_async() auto-detects the executor:
+//! //    - tokio (multi-thread): wraps the caller's handle, no second thread pool.
+//! //    - non-tokio (smol, async-std, etc.): creates an owned thread pool.
 //! let session = XetSessionBuilder::new()
 //!     .with_endpoint("https://cas.example.com".into())
 //!     .with_token_info("my-token".into(), 1_700_000_000)
-//!     .build()?;
+//!     .build_async()
+//!     .await?;
 //!
 //! // 2. Upload — use the async factory; returns UploadCommit
 //! let commit = session.new_upload_commit().await?;

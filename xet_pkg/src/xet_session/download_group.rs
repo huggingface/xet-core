@@ -12,7 +12,7 @@ use xet_runtime::core::XetRuntime;
 use super::common::{GroupState, create_translator_config};
 use super::errors::SessionError;
 use super::progress::{DownloadTaskHandle, GroupProgress, ProgressSnapshot, TaskHandle, TaskStatus};
-use super::session::XetSession;
+use super::session::{RuntimeMode, XetSession};
 
 /// Async API for grouping related file downloads into a single unit of work.
 ///
@@ -39,7 +39,7 @@ use super::session::XetSession;
 /// [`DownloadGroupSync`]: crate::xet_session::sync::DownloadGroupSync
 #[derive(Clone)]
 pub struct DownloadGroup {
-    pub(crate) inner: Arc<DownloadGroupInner>,
+    inner: Arc<DownloadGroupInner>,
 }
 
 impl std::ops::Deref for DownloadGroup {
@@ -52,7 +52,7 @@ impl std::ops::Deref for DownloadGroup {
 impl DownloadGroup {
     /// Create a new download group from an **async** context. Initialisation logic shared by the sync and async
     /// constructors.
-    pub(crate) async fn new(session: XetSession) -> Result<Self, SessionError> {
+    pub(super) async fn new(session: XetSession) -> Result<Self, SessionError> {
         let group_id = Ulid::new();
         let progress = Arc::new(GroupProgress::new());
         let config = create_translator_config(&session)?;
@@ -72,17 +72,17 @@ impl DownloadGroup {
     }
 
     /// Get the group ID.
-    pub(crate) fn id(&self) -> Ulid {
+    pub(super) fn id(&self) -> Ulid {
         self.group_id
     }
 
     /// Abort this download group.
-    pub(crate) fn abort(&self) -> Result<(), SessionError> {
+    pub(super) fn abort(&self) -> Result<(), SessionError> {
         self.inner.abort()
     }
 
     /// Returns the runtime used by this group.
-    pub(crate) fn runtime(&self) -> &XetRuntime {
+    pub(super) fn runtime(&self) -> &XetRuntime {
         &self.inner.session.runtime
     }
 
@@ -135,7 +135,14 @@ impl DownloadGroup {
     /// Consumes `self` — subsequent calls on any clone will return
     /// [`SessionError::AlreadyFinished`].
     pub async fn finish(self) -> Result<HashMap<Ulid, DownloadResult>, SessionError> {
-        self.inner.handle_finish().await
+        if matches!(self.session.runtime_mode, RuntimeMode::External) {
+            return self.inner.handle_finish().await;
+        }
+        let inner = self.inner.clone();
+        self.session
+            .runtime
+            .bridge_to_owned("finish", async move { inner.handle_finish().await })
+            .await?
     }
 
     /// Returns `true` if [`finish`](Self::finish) has been called and completed.
@@ -221,7 +228,11 @@ impl DownloadGroupInner {
             } else {
                 TaskStatus::Failed
             };
-            *status.lock()? = new_status;
+            // Only overwrite if still Running — abort() may have set Cancelled concurrently.
+            let mut s = status.lock()?;
+            if matches!(*s, TaskStatus::Running) {
+                *s = new_status;
+            }
 
             Ok(XetFileInfo {
                 hash: file_info.hash,
@@ -360,6 +371,7 @@ pub struct DownloadedFile {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
     use std::time::Duration;
 
     use tempfile::{TempDir, tempdir};
@@ -367,9 +379,12 @@ mod tests {
     use super::*;
     use crate::xet_session::session::{XetSession, XetSessionBuilder};
 
-    fn local_session(temp: &TempDir) -> Result<XetSession, Box<dyn std::error::Error>> {
+    async fn local_session(temp: &TempDir) -> Result<XetSession, Box<dyn std::error::Error>> {
         let cas_path = temp.path().join("cas");
-        Ok(XetSession::new(Some(format!("local://{}", cas_path.display())), None, None, None)?)
+        Ok(XetSessionBuilder::new()
+            .with_endpoint(format!("local://{}", cas_path.display()))
+            .build_async()
+            .await?)
     }
 
     async fn upload_bytes(
@@ -398,10 +413,7 @@ mod tests {
     #[test]
     // finish() must block while download_file_to_path() holds the state lock.
     fn test_finish_blocked_while_download_registration_holds_state_lock() -> Result<(), Box<dyn std::error::Error>> {
-        use std::sync::mpsc;
-        use std::time::Duration;
-
-        let session = XetSession::new(None, None, None, None)?;
+        let session = XetSessionBuilder::new().build()?;
         let runtime = session.runtime.clone();
         // Create DownloadGroup directly so we can access its private state field
         // (accessible here because mod tests is a submodule of download_group).
@@ -433,10 +445,10 @@ mod tests {
 
     // ── Identity ─────────────────────────────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     // Two download groups created from the same session have distinct IDs.
     async fn test_group_has_unique_id() {
-        let session = XetSessionBuilder::new().build().unwrap();
+        let session = XetSessionBuilder::new().build_async().await.unwrap();
         let g1 = session.new_download_group().await.unwrap();
         let g2 = session.new_download_group().await.unwrap();
         assert_ne!(g1.id(), g2.id());
@@ -444,10 +456,10 @@ mod tests {
 
     // ── Initial state ────────────────────────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     // A fresh group has all-zero aggregate progress.
     async fn test_get_progress_empty_initially() {
-        let session = XetSessionBuilder::new().build().unwrap();
+        let session = XetSessionBuilder::new().build_async().await.unwrap();
         let group = session.new_download_group().await.unwrap();
         let snapshot = group.get_progress().unwrap();
         let total = snapshot.total();
@@ -457,29 +469,29 @@ mod tests {
 
     // ── Finish lifecycle ─────────────────────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     // An empty finish succeeds and returns an empty result set.
     async fn test_finish_empty_succeeds() {
-        let session = XetSessionBuilder::new().build().unwrap();
+        let session = XetSessionBuilder::new().build_async().await.unwrap();
         let group = session.new_download_group().await.unwrap();
         let results = group.finish().await.unwrap();
         assert!(results.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     // finish() transitions the group into the Finished state.
     async fn test_finish_marks_as_finished() {
-        let session = XetSessionBuilder::new().build().unwrap();
+        let session = XetSessionBuilder::new().build_async().await.unwrap();
         let group = session.new_download_group().await.unwrap();
         let group_clone = group.clone();
         group.finish().await.unwrap();
         assert!(group_clone.is_finished());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     // A second finish() call on any clone returns AlreadyFinished.
     async fn test_second_finish_fails() {
-        let session = XetSessionBuilder::new().build().unwrap();
+        let session = XetSessionBuilder::new().build_async().await.unwrap();
         let g1 = session.new_download_group().await.unwrap();
         let g2 = g1.clone();
         g1.finish().await.unwrap();
@@ -487,10 +499,10 @@ mod tests {
         assert!(matches!(err, SessionError::AlreadyFinished | SessionError::Internal(_)));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     // finish() unregisters the group from the session's active set.
     async fn test_finish_unregisters_from_session() {
-        let session = XetSessionBuilder::new().build().unwrap();
+        let session = XetSessionBuilder::new().build_async().await.unwrap();
         let group = session.new_download_group().await.unwrap();
         assert_eq!(session.active_download_groups.lock().unwrap().len(), 1);
         group.finish().await.unwrap();
@@ -499,10 +511,10 @@ mod tests {
 
     // ── Guards ───────────────────────────────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     // download_file_to_path returns Aborted when the parent session has been aborted.
     async fn test_download_file_on_aborted_session_returns_error() {
-        let session = XetSessionBuilder::new().build().unwrap();
+        let session = XetSessionBuilder::new().build_async().await.unwrap();
         let group = session.new_download_group().await.unwrap();
         session.abort().unwrap();
         let err = group
@@ -517,10 +529,10 @@ mod tests {
         assert!(matches!(err, SessionError::Aborted));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     // download_file_to_path after finish returns AlreadyFinished.
     async fn test_download_file_after_finish_fails() {
-        let session = XetSessionBuilder::new().build().unwrap();
+        let session = XetSessionBuilder::new().build_async().await.unwrap();
         let g1 = session.new_download_group().await.unwrap();
         let g2 = g1.clone();
         g1.finish().await.unwrap();
@@ -536,10 +548,10 @@ mod tests {
         assert!(matches!(err, SessionError::AlreadyFinished));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     // download_file_to_path on a directly-aborted group returns Aborted.
     async fn test_download_file_on_aborted_group_returns_aborted() {
-        let session = XetSessionBuilder::new().build().unwrap();
+        let session = XetSessionBuilder::new().build_async().await.unwrap();
         let group = session.new_download_group().await.unwrap();
         group.abort().unwrap();
         let err = group
@@ -556,10 +568,10 @@ mod tests {
 
     // ── Independence ─────────────────────────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     // Finishing one group does not affect the state of another from the same session.
     async fn test_two_groups_are_independent() {
-        let session = XetSessionBuilder::new().build().unwrap();
+        let session = XetSessionBuilder::new().build_async().await.unwrap();
         let g1 = session.new_download_group().await.unwrap();
         let g2 = session.new_download_group().await.unwrap();
         g1.finish().await.unwrap();
@@ -568,11 +580,11 @@ mod tests {
 
     // ── Round-trip tests ─────────────────────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     // Downloading a previously uploaded file produces byte-identical content at the destination.
     async fn test_download_file_round_trip() {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).unwrap();
+        let session = local_session(&temp).await.unwrap();
         let original = b"Hello, download round-trip!";
         let file_info = upload_bytes(&session, original, "payload.bin").await.unwrap();
 
@@ -584,11 +596,11 @@ mod tests {
         assert_eq!(std::fs::read(&dest).unwrap(), original);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     // Downloading multiple files from a single group produces correct content for each.
     async fn test_download_multiple_files() {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).unwrap();
+        let session = local_session(&temp).await.unwrap();
 
         let data_a = b"First file content";
         let data_b = b"Second file content - different";
@@ -617,11 +629,11 @@ mod tests {
         assert_eq!(std::fs::read(&dest_b).unwrap(), data_b);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     // After a successful finish the aggregate download progress reflects bytes received.
     async fn test_download_progress_reflects_bytes_after_finish() {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).unwrap();
+        let session = local_session(&temp).await.unwrap();
         let original = b"download progress tracking data";
         let file_info = upload_bytes(&session, original, "prog.bin").await.unwrap();
 
@@ -646,11 +658,11 @@ mod tests {
 
     // ── Per-task result access patterns ──────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     // Pattern 1: per-task result is accessible via task_id in the finish() HashMap.
     async fn test_download_result_accessible_via_task_id_in_finish_map() {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).unwrap();
+        let session = local_session(&temp).await.unwrap();
         let data = b"result via task_id in finish map";
         let file_info = upload_bytes(&session, data, "file.bin").await.unwrap();
         let dest = temp.path().join("out.bin");
@@ -661,11 +673,11 @@ mod tests {
         assert_eq!(result.as_ref().as_ref().unwrap().file_info.file_size, data.len() as u64);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     // DownloadTaskHandle::result() returns None before finish() is called.
     async fn test_download_result_none_before_finish() {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).unwrap();
+        let session = local_session(&temp).await.unwrap();
         let file_info = upload_bytes(&session, b"some data", "file.bin").await.unwrap();
         let dest = temp.path().join("out.bin");
         let group = session.new_download_group().await.unwrap();
@@ -674,11 +686,11 @@ mod tests {
         group.finish().await.unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     // DownloadTaskHandle::result() returns Some after finish() completes.
     async fn test_download_result_some_after_finish() {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).unwrap();
+        let session = local_session(&temp).await.unwrap();
         let data = b"download result test data";
         let file_info = upload_bytes(&session, data, "file.bin").await.unwrap();
         let dest = temp.path().join("out.bin");
@@ -689,5 +701,90 @@ mod tests {
         let dl = result.as_ref().as_ref().unwrap();
         assert_eq!(dl.file_info.file_size, data.len() as u64);
         assert_eq!(dl.file_info.hash, file_info.hash);
+    }
+
+    // ── Non-tokio executor (Owned-mode bridge) ────────────────────────────────
+
+    #[test]
+    // build_async() falls back to Owned mode from a futures executor, and the
+    // bridge correctly routes download through the owned thread pool while the
+    // future is driven by the caller's executor (futures::block_on).
+    fn test_async_bridge_works_from_futures_executor() {
+        let temp = tempdir().unwrap();
+
+        futures::executor::block_on(async {
+            let session = local_session(&temp).await.unwrap();
+            assert_eq!(session.runtime_mode, RuntimeMode::Owned);
+
+            let data = b"hello from futures executor";
+            let commit = session.new_upload_commit().await.unwrap();
+            let handle = commit.upload_bytes(data.to_vec(), Some("test.bin".into())).await.unwrap();
+            let results = commit.commit().await.unwrap();
+            let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
+            let file_info = XetFileInfo {
+                hash: meta.hash.clone(),
+                file_size: meta.file_size,
+            };
+
+            let dest = temp.path().join("out_futures.bin");
+            let group = session.new_download_group().await.unwrap();
+            group.download_file_to_path(file_info, dest.clone()).unwrap();
+            group.finish().await.unwrap();
+            assert_eq!(std::fs::read(&dest).unwrap(), data);
+        });
+    }
+
+    #[test]
+    // Same as above but driven by the smol executor.
+    fn test_async_bridge_works_from_smol_executor() {
+        let temp = tempdir().unwrap();
+
+        smol::block_on(async {
+            let session = local_session(&temp).await.unwrap();
+            assert_eq!(session.runtime_mode, RuntimeMode::Owned);
+
+            let data = b"hello from smol executor";
+            let commit = session.new_upload_commit().await.unwrap();
+            let handle = commit.upload_bytes(data.to_vec(), Some("test.bin".into())).await.unwrap();
+            let results = commit.commit().await.unwrap();
+            let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
+            let file_info = XetFileInfo {
+                hash: meta.hash.clone(),
+                file_size: meta.file_size,
+            };
+
+            let dest = temp.path().join("out_smol.bin");
+            let group = session.new_download_group().await.unwrap();
+            group.download_file_to_path(file_info, dest.clone()).unwrap();
+            group.finish().await.unwrap();
+            assert_eq!(std::fs::read(&dest).unwrap(), data);
+        });
+    }
+
+    #[test]
+    // Same as above but driven by the async-std executor.
+    fn test_async_bridge_works_from_async_std_executor() {
+        let temp = tempdir().unwrap();
+
+        async_std::task::block_on(async {
+            let session = local_session(&temp).await.unwrap();
+            assert_eq!(session.runtime_mode, RuntimeMode::Owned);
+
+            let data = b"hello from async-std executor";
+            let commit = session.new_upload_commit().await.unwrap();
+            let handle = commit.upload_bytes(data.to_vec(), Some("test.bin".into())).await.unwrap();
+            let results = commit.commit().await.unwrap();
+            let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
+            let file_info = XetFileInfo {
+                hash: meta.hash.clone(),
+                file_size: meta.file_size,
+            };
+
+            let dest = temp.path().join("out_async_std.bin");
+            let group = session.new_download_group().await.unwrap();
+            group.download_file_to_path(file_info, dest.clone()).unwrap();
+            group.finish().await.unwrap();
+            assert_eq!(std::fs::read(&dest).unwrap(), data);
+        });
     }
 }
