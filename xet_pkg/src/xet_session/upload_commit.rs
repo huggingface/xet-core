@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use tokio::task::JoinHandle;
 use ulid::Ulid;
@@ -15,12 +15,16 @@ use super::errors::SessionError;
 use super::progress::{GroupProgress, ProgressSnapshot, TaskHandle, TaskStatus, UploadTaskHandle};
 use super::session::XetSession;
 
-/// Groups related file uploads into a single atomic commit.
+/// Async API for grouping related file uploads into a single atomic commit.
+///
+/// Obtain via [`XetSession::new_upload_commit`] from an `async` context.
+/// For sync / non-async code use [`UploadCommitSync`] from
+/// [`XetSession::new_upload_commit_blocking`] instead.
 ///
 /// Enqueue files with [`upload_from_path`](Self::upload_from_path) or stream
 /// bytes with [`upload_file`](Self::upload_file) — transfers start immediately
 /// in the background.  Poll progress with [`get_progress`](Self::get_progress),
-/// then call [`commit`](Self::commit) to wait for all uploads to finish and
+/// then `await` [`commit`](Self::commit) to wait for all uploads to finish and
 /// push the final metadata to the CAS server.
 ///
 /// # Cloning
@@ -33,9 +37,11 @@ use super::session::XetSession;
 /// Methods return [`SessionError::Aborted`] if the parent session has been
 /// aborted, and [`SessionError::AlreadyCommitted`] if [`commit`](Self::commit)
 /// has already been called.
+///
+/// [`UploadCommitSync`]: crate::xet_session::sync::UploadCommitSync
 #[derive(Clone)]
 pub struct UploadCommit {
-    inner: Arc<UploadCommitInner>,
+    pub(super) inner: Arc<UploadCommitInner>,
 }
 
 impl std::ops::Deref for UploadCommit {
@@ -46,17 +52,14 @@ impl std::ops::Deref for UploadCommit {
 }
 
 impl UploadCommit {
-    /// Create a new upload commit
-    pub(crate) fn new(session: XetSession) -> Result<Self, SessionError> {
+    /// Create a new upload commit from an **async** context. Initialisation logic shared by the sync and async
+    /// constructors.
+    pub(super) async fn new(session: XetSession) -> Result<Self, SessionError> {
         let commit_id = Ulid::new();
-
         let progress = Arc::new(GroupProgress::new());
-        let progress_clone = progress.clone();
         let config = create_translator_config(&session)?;
-        let upload_session = session.runtime.external_run_async_task(async move {
-            let progress_updater = progress_clone as Arc<dyn xet_data::progress_tracking::TrackingProgressUpdater>;
-            FileUploadSession::new(Arc::new(config), Some(progress_updater)).await
-        })??;
+        let progress_updater = progress.clone() as Arc<dyn xet_data::progress_tracking::TrackingProgressUpdater>;
+        let upload_session = FileUploadSession::new(Arc::new(config), Some(progress_updater)).await?;
 
         let inner = Arc::new(UploadCommitInner {
             commit_id,
@@ -64,23 +67,26 @@ impl UploadCommit {
             active_tasks: RwLock::new(HashMap::new()),
             progress,
             upload_session: Mutex::new(Some(upload_session)),
-            state: Mutex::new(GroupState::Alive),
+            state: tokio::sync::Mutex::new(GroupState::Alive),
         });
 
         Ok(Self { inner })
     }
 
     /// Get the commit ID.
-    pub(crate) fn id(&self) -> Ulid {
+    pub(super) fn id(&self) -> Ulid {
         self.commit_id
     }
 
     /// Abort this upload commit.
-    pub(crate) fn abort(&self) -> Result<(), SessionError> {
+    pub(super) fn abort(&self) -> Result<(), SessionError> {
         self.inner.abort()
     }
 
-    // ===== Public synchronous methods =====
+    /// Returns the runtime used by this commit.
+    pub(super) fn runtime(&self) -> &XetRuntime {
+        &self.inner.session.runtime
+    }
 
     /// Queue a file for upload, starting the transfer immediately if system resource permits.
     ///
@@ -92,13 +98,17 @@ impl UploadCommit {
     /// Returns [`SessionError::Aborted`] if the session has been aborted, or
     /// [`SessionError::AlreadyCommitted`] if [`commit`](Self::commit) has
     /// already been called.
-    pub fn upload_from_path(&self, file_path: PathBuf) -> Result<UploadTaskHandle, SessionError> {
+    pub async fn upload_from_path(&self, file_path: PathBuf) -> Result<UploadTaskHandle, SessionError> {
         self.session.check_alive()?;
 
         // Use the absolute path in case the process current working directory changes
         // while the task is queued.
         let absolute_path = std::path::absolute(file_path)?;
-        self.inner.start_upload_file_from_path(absolute_path)
+
+        let inner = self.inner.clone();
+        self.session
+            .dispatch("upload_from_path", async move { inner.start_upload_file_from_path(absolute_path).await })
+            .await?
     }
 
     /// Begin an incremental file upload, returning a [`SingleFileCleaner`] that the
@@ -111,7 +121,7 @@ impl UploadCommit {
     /// # use std::io::Read;
     /// # use xet::xet_session::SessionError;
     /// # async fn example(commit: xet::xet_session::UploadCommit, filename: &str, filesize: u64) -> Result<(), Box<dyn std::error::Error>> {
-    /// let (task_id, mut cleaner) = commit.upload_file(Some(filename.into()), filesize)?;
+    /// let (handle, mut cleaner) = commit.upload_file(Some(filename.into()), filesize).await?;
     /// let mut reader = File::open(&filename)?;
     /// let mut buffer = vec![0u8; 65536];
     /// loop {
@@ -132,35 +142,33 @@ impl UploadCommit {
     /// - `file_size`: expected size in bytes (used for progress tracking; `0` is valid if unknown).
     /// # Returns [`TaskHandle`] because the handle isn't expected to hold any result, and instead
     /// the user is expected to get upload result from the returned [`SingleFileCleaner`].
-    pub fn upload_file(
+    pub async fn upload_file(
         &self,
         file_name: Option<String>,
         file_size: u64,
     ) -> Result<(TaskHandle, SingleFileCleaner), SessionError> {
         self.session.check_alive()?;
 
-        self.inner.start_upload_file(file_name, file_size)
+        let inner = self.inner.clone();
+        self.session
+            .dispatch("upload_file", async move { inner.start_upload_file(file_name, file_size).await })
+            .await?
     }
 
     /// Queue raw bytes for upload, starting the transfer immediately if system resource permits.
     ///
     /// Returns an [`UploadTaskHandle`]. See [`upload_from_path`](Self::upload_from_path) for details.
-    pub fn upload_bytes(
+    pub async fn upload_bytes(
         &self,
         bytes: Vec<u8>,
         tracking_name: Option<String>,
     ) -> Result<UploadTaskHandle, SessionError> {
         self.session.check_alive()?;
-        self.inner.start_upload_bytes(bytes, tracking_name)
-    }
 
-    /// Returns `true` if [`commit`](Self::commit) has been called and completed.
-    #[cfg(test)]
-    fn is_committed(&self) -> bool {
-        match self.state.lock() {
-            Ok(state) => *state == GroupState::Finished,
-            Err(_) => false,
-        }
+        let inner = self.inner.clone();
+        self.session
+            .dispatch("upload_bytes", async move { inner.start_upload_bytes(bytes, tracking_name).await })
+            .await?
     }
 
     /// Return a snapshot of progress for every queued upload.
@@ -170,19 +178,23 @@ impl UploadCommit {
 
     /// Wait for all uploads to complete and push metadata to the CAS server.
     ///
-    /// Blocks until every queued upload finishes (or fails), then finalises
-    /// the upload session.  Returns a `HashMap` keyed by task ID where each
-    /// value is [`UploadResult`] (= `Arc<Result<`[`FileMetadata`]`,
-    /// `[`SessionError`]`>>`).  A single failed upload does not prevent the
-    /// others from being collected.
+    /// Returns a `HashMap` keyed by task ID where each value is
+    /// [`UploadResult`] (= `Arc<Result<`[`FileMetadata`]`, [`SessionError`]`>>`).
+    /// A single failed upload does not prevent the others from being collected.
     ///
     /// Consumes `self` — subsequent calls on any clone will return
     /// [`SessionError::AlreadyCommitted`].
-    pub fn commit(self) -> Result<HashMap<Ulid, UploadResult>, SessionError> {
+    pub async fn commit(self) -> Result<HashMap<Ulid, UploadResult>, SessionError> {
         let inner = self.inner.clone();
         self.session
-            .runtime
-            .external_run_async_task(async move { inner.handle_commit().await })?
+            .dispatch("commit", async move { inner.handle_commit().await })
+            .await?
+    }
+
+    /// Returns `true` if [`commit`](Self::commit) has been called and completed.
+    #[cfg(test)]
+    async fn is_committed(&self) -> bool {
+        *self.state.lock().await == GroupState::Finished
     }
 }
 
@@ -194,7 +206,7 @@ impl UploadCommit {
 pub type UploadResult = Arc<Result<FileMetadata, SessionError>>;
 
 /// Handle for a single upload task tracked internally by UploadCommit.
-pub(crate) struct InnerUploadTaskHandle {
+struct InnerUploadTaskHandle {
     status: Arc<Mutex<TaskStatus>>,
     tracking_name: Option<String>,
     join_handle: JoinHandle<Result<XetFileInfo, SessionError>>,
@@ -206,7 +218,7 @@ pub(crate) struct InnerUploadTaskHandle {
 #[doc(hidden)]
 pub struct UploadCommitInner {
     commit_id: Ulid,
-    session: XetSession,
+    pub(super) session: XetSession,
 
     // Active upload tasks for this commit
     active_tasks: RwLock<HashMap<Ulid, InnerUploadTaskHandle>>,
@@ -217,16 +229,18 @@ pub struct UploadCommitInner {
     // Shared upload session (FileUploadSession from data crate)
     upload_session: Mutex<Option<Arc<FileUploadSession>>>,
 
-    // State
-    state: Mutex<GroupState>,
+    // tokio::sync::Mutex (not std) because registration methods hold this lock across
+    // .await points (e.g. start_clean in start_upload_file) to serialise with commit.
+    // DownloadGroupInner uses std::sync::Mutex because its registration is synchronous.
+    state: tokio::sync::Mutex<GroupState>,
 }
 
 impl UploadCommitInner {
     // ===== State helpers =====
 
     /// Check whether the commit is still accepting new tasks.
-    fn check_accepting_tasks(state: &MutexGuard<GroupState>) -> Result<(), SessionError> {
-        match **state {
+    fn check_accepting_tasks(state: &GroupState) -> Result<(), SessionError> {
+        match *state {
             GroupState::Finished => Err(SessionError::AlreadyCommitted),
             GroupState::Aborted => Err(SessionError::Aborted),
             GroupState::Alive => Ok(()),
@@ -258,7 +272,11 @@ impl UploadCommitInner {
             } else {
                 TaskStatus::Failed
             };
-            *status.lock()? = new_status;
+            // Only overwrite if still Running — abort() may have set Cancelled concurrently.
+            let mut s = status.lock()?;
+            if matches!(*s, TaskStatus::Running) {
+                *s = new_status;
+            }
 
             result
         })
@@ -289,16 +307,23 @@ impl UploadCommitInner {
             } else {
                 TaskStatus::Failed
             };
-            *status.lock()? = new_status;
+            // Only overwrite if still Running — abort() may have set Cancelled concurrently.
+            let mut s = status.lock()?;
+            if matches!(*s, TaskStatus::Running) {
+                *s = new_status;
+            }
 
             result
         })
     }
 
-    fn start_upload_file_from_path(&self, file_path: PathBuf) -> Result<UploadTaskHandle, SessionError> {
-        // Hold the state lock guard for the duration of this function so commit() will not run
+    pub(super) async fn start_upload_file_from_path(
+        &self,
+        file_path: PathBuf,
+    ) -> Result<UploadTaskHandle, SessionError> {
+        // Hold the state lock for the duration of this function so commit() will not run
         // when an upload task is registering.
-        let state = self.state.lock()?;
+        let state = self.state.lock().await;
         Self::check_accepting_tasks(&state)?;
 
         let tracking_id = Ulid::new();
@@ -332,48 +357,49 @@ impl UploadCommitInner {
         Ok(task_handle)
     }
 
-    /// Handle a `StartClean` command: initialise the upload session and return a
-    /// [`SingleFileCleaner`] that the caller drives incrementally.
-    fn start_upload_file(
+    /// Begin a streaming upload: check state, then await `start_clean` on the upload session
+    /// and return a [`SingleFileCleaner`] that the caller drives incrementally.
+    ///
+    /// The state lock is held across `start_clean(...).await` so that a concurrent
+    /// `handle_commit` cannot finalise the upload session between the state check and the
+    /// creation of the cleaner.
+    pub(super) async fn start_upload_file(
         &self,
         tracking_name: Option<String>,
         file_size: u64,
     ) -> Result<(TaskHandle, SingleFileCleaner), SessionError> {
-        // Hold the state lock guard for the duration of this function so commit() will not run
-        // when an upload task is registering.
-        let state = self.state.lock()?;
-        Self::check_accepting_tasks(&state)?;
-
         let tracking_id = Ulid::new();
-        let task_handle = TaskHandle {
-            status: None, // upload directly managed by user - not internally managed
-            group_progress: self.progress.clone(),
-            task_id: tracking_id,
-        };
+        // Hold the state lock across start_clean so handle_commit cannot finalise
+        // the session between the state check and the creation of the cleaner.
+        let state = self.state.lock().await;
+        Self::check_accepting_tasks(&state)?;
 
         let Some(upload_session) = self.upload_session.lock()?.clone() else {
             return Err(SessionError::other("Upload session not initialized"));
         };
 
+        let task_handle = TaskHandle {
+            status: None, // upload directly managed by user - not internally managed
+            group_progress: self.progress.clone(),
+            task_id: tracking_id,
+        };
         let tracking_name: Option<Arc<str>> = tracking_name.as_deref().map(Arc::from);
-        let cleaner = self.runtime().external_run_async_task(async move {
-            upload_session
-                .start_clean(tracking_name, file_size, Sha256Policy::Compute, tracking_id)
-                .await
-        })?;
+        let cleaner = upload_session
+            .start_clean(tracking_name, file_size, Sha256Policy::Compute, tracking_id)
+            .await;
 
         Ok((task_handle, cleaner))
     }
 
-    /// Handle an `UploadBytes` command from the public API.
-    fn start_upload_bytes(
+    /// Enqueue a bytes upload task, spawning it on the runtime immediately.
+    pub(super) async fn start_upload_bytes(
         &self,
         bytes: Vec<u8>,
         tracking_name: Option<String>,
     ) -> Result<UploadTaskHandle, SessionError> {
-        // Hold the state lock guard for the duration of this function so commit() will not run
+        // Hold the state lock for the duration of this function so commit() will not run
         // when an upload task is registering.
-        let state = self.state.lock()?;
+        let state = self.state.lock().await;
         Self::check_accepting_tasks(&state)?;
 
         let tracking_id = Ulid::new();
@@ -406,25 +432,25 @@ impl UploadCommitInner {
         Ok(task_handle)
     }
 
-    /// Handle a `Commit` command from the public API.
+    /// Join all active upload tasks and finalise the upload session.
     async fn handle_commit(&self) -> Result<HashMap<Ulid, UploadResult>, SessionError> {
-        // Mark as not accepting new tasks
+        // Mark as not accepting new tasks. The tokio state lock serialises this
+        // against all three registration methods, including start_upload_file
+        // which holds it across the start_clean await.
         {
-            let mut state_guard = self.state.lock()?;
+            let mut state_guard = self.state.lock().await;
             if *state_guard == GroupState::Finished {
                 return Err(SessionError::AlreadyCommitted);
             }
             *state_guard = GroupState::Aborted; // stop new tasks while draining
         }
 
-        // Wait for all uploads to complete
-        // Swap out the task map atomically while holding the write lock.
-        // The guard is dropped immediately so the lock is not held across any `.await`.
+        // Swap out the task map while holding the write lock (guard dropped before any `.await`),
+        // then await each task and collect results; propagate the first join error after all tasks complete.
         let active_tasks = std::mem::take(&mut *self.active_tasks.write()?);
 
         let mut results = HashMap::new();
         let mut join_err = None;
-        // Join all tasks first and then propogate errors.
         for (task_id, handle) in active_tasks {
             match handle.join_handle.await.map_err(SessionError::from) {
                 Ok(Ok(file_info)) => {
@@ -463,7 +489,7 @@ impl UploadCommitInner {
         }
 
         // Mark as committed
-        *self.state.lock()? = GroupState::Finished;
+        *self.state.lock().await = GroupState::Finished;
 
         // Unregister from session
         self.session.finish_upload_commit(self.commit_id)?;
@@ -475,9 +501,29 @@ impl UploadCommitInner {
         &self.session.runtime
     }
 
-    /// Cancle all tasks and set task status to "Cancelled"
+    /// Cancel all tasks and set task status to "Cancelled".
+    ///
+    /// Called only from [`XetSession::abort`], which always calls
+    /// `perform_sigint_shutdown()` first — so the runtime is already shutting
+    /// down when this runs.
+    ///
+    /// The state flag update uses `try_lock` on the tokio state mutex and is
+    /// best-effort: if a registration method currently holds the lock, the flag
+    /// is left unchanged.  This is safe because `upload_session` is
+    /// unconditionally cleared (set to `None`) and all active task handles are
+    /// aborted, so the commit is effectively dead regardless of the state flag
+    /// value.  A `blocking_lock()` is not used because `abort()` can be called
+    /// from within a tokio async context (e.g. tests), where it would panic.
+    ///
+    /// Clearing `upload_session` prevents future `start_upload_file` calls from
+    /// obtaining a session and prevents `handle_commit` from calling `finalize`.
+    /// It does not invalidate any `SingleFileCleaner` already in the caller's hands,
+    /// since the cleaner holds its own `Arc` to the session.
     fn abort(&self) -> Result<(), SessionError> {
-        *self.state.lock()? = GroupState::Aborted;
+        if let Ok(mut guard) = self.state.try_lock() {
+            *guard = GroupState::Aborted;
+        }
+        self.upload_session.lock()?.take();
         let active_tasks = std::mem::take(&mut *self.active_tasks.write()?);
         for (_tracking_id, inner_task_handle) in active_tasks {
             inner_task_handle.join_handle.abort();
@@ -501,365 +547,62 @@ pub struct FileMetadata {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
     use tempfile::{TempDir, tempdir};
 
     use super::*;
-    use crate::xet_session::session::XetSession;
+    use crate::xet_session::progress::TaskStatus;
+    use crate::xet_session::session::{RuntimeMode, XetSession, XetSessionBuilder};
 
-    fn local_session(temp: &TempDir) -> Result<XetSession, Box<dyn std::error::Error>> {
+    async fn local_session(temp: &TempDir) -> Result<XetSession, Box<dyn std::error::Error>> {
         let cas_path = temp.path().join("cas");
-        Ok(XetSession::new(Some(format!("local://{}", cas_path.display())), None, None, None)?)
-    }
-
-    // ── Identity ─────────────────────────────────────────────────────────────
-
-    #[test]
-    // Two separate commits from the same session have distinct IDs.
-    fn test_commit_has_unique_id() -> Result<(), Box<dyn std::error::Error>> {
-        let session = XetSession::new(None, None, None, None)?;
-        let c1 = session.new_upload_commit()?;
-        let c2 = session.new_upload_commit()?;
-        assert_ne!(c1.id(), c2.id());
-        Ok(())
-    }
-
-    #[test]
-    // A clone refers to the same inner Arc, so their IDs must match.
-    fn test_commit_clone_shares_id() -> Result<(), Box<dyn std::error::Error>> {
-        let session = XetSession::new(None, None, None, None)?;
-        let commit = session.new_upload_commit()?;
-        let commit2 = commit.clone();
-        assert_eq!(commit.id(), commit2.id());
-        Ok(())
-    }
-
-    // ── Initial state ────────────────────────────────────────────────────────
-
-    #[test]
-    // A fresh commit has all-zero aggregate progress.
-    fn test_get_progress_empty_initially() -> Result<(), Box<dyn std::error::Error>> {
-        let session = XetSession::new(None, None, None, None)?;
-        let commit = session.new_upload_commit()?;
-        let snapshot = commit.get_progress()?;
-        let total = snapshot.total();
-        assert_eq!(total.total_bytes, 0);
-        assert_eq!(total.total_bytes_completed, 0);
-        Ok(())
-    }
-
-    // ── Commit lifecycle ─────────────────────────────────────────────────────
-
-    #[test]
-    // An empty commit succeeds and returns an empty result set.
-    fn test_commit_empty_succeeds() -> Result<(), Box<dyn std::error::Error>> {
-        let session = XetSession::new(None, None, None, None)?;
-        let results = session.new_upload_commit()?.commit()?;
-        assert!(results.is_empty());
-        Ok(())
-    }
-
-    #[test]
-    // commit() transitions the commit into the Finished state.
-    fn test_commit_marks_as_committed() -> Result<(), Box<dyn std::error::Error>> {
-        let session = XetSession::new(None, None, None, None)?;
-        let commit = session.new_upload_commit()?;
-        let commit_clone = commit.clone();
-        commit.commit().unwrap();
-        assert!(commit_clone.is_committed());
-        Ok(())
-    }
-
-    #[test]
-    // A second commit() call on any clone returns AlreadyCommitted.
-    fn test_second_commit_fails() -> Result<(), Box<dyn std::error::Error>> {
-        let session = XetSession::new(None, None, None, None)?;
-        let c1 = session.new_upload_commit()?;
-        let c2 = c1.clone();
-        c1.commit()?;
-        let err = c2.commit().unwrap_err();
-        assert!(matches!(err, SessionError::AlreadyCommitted | SessionError::Internal(_)));
-        Ok(())
-    }
-
-    #[test]
-    // commit() unregisters the commit from the session's active set.
-    fn test_commit_unregisters_from_session() -> Result<(), Box<dyn std::error::Error>> {
-        let session = XetSession::new(None, None, None, None)?;
-        let commit = session.new_upload_commit()?;
-        assert_eq!(session.active_upload_commits.lock().unwrap().len(), 1);
-        commit.commit().unwrap();
-        assert_eq!(session.active_upload_commits.lock().unwrap().len(), 0);
-        Ok(())
-    }
-
-    // ── Session-abort guards ─────────────────────────────────────────────────
-
-    #[test]
-    // upload_from_path returns Aborted when the parent session has been aborted.
-    fn test_upload_file_on_aborted_session_returns_error() -> Result<(), Box<dyn std::error::Error>> {
-        let session = XetSession::new(None, None, None, None)?;
-        let commit = session.new_upload_commit()?;
-        session.abort().unwrap();
-        let err = commit.upload_from_path(PathBuf::from("nonexistent.bin")).unwrap_err();
-        assert!(matches!(err, SessionError::Aborted));
-        Ok(())
-    }
-
-    #[test]
-    // upload_bytes returns Aborted when the parent session has been aborted.
-    fn test_upload_bytes_on_aborted_session_returns_error() -> Result<(), Box<dyn std::error::Error>> {
-        let session = XetSession::new(None, None, None, None)?;
-        let commit = session.new_upload_commit()?;
-        session.abort().unwrap();
-        let err = commit.upload_bytes(b"data".to_vec(), Some("bytes 1".into())).unwrap_err();
-        assert!(matches!(err, SessionError::Aborted));
-        Ok(())
-    }
-
-    // ── Post-commit guards (AlreadyCommitted) ────────────────────────────────
-
-    #[test]
-    // upload_from_path after commit returns AlreadyCommitted (synchronous path).
-    fn test_upload_from_path_after_commit_fails() -> Result<(), Box<dyn std::error::Error>> {
-        let session = XetSession::new(None, None, None, None)?;
-        let c1 = session.new_upload_commit()?;
-        let c2 = c1.clone();
-        c1.commit()?;
-        let err = c2.upload_from_path(PathBuf::from("any.bin")).unwrap_err();
-        assert!(matches!(err, SessionError::AlreadyCommitted));
-        Ok(())
-    }
-
-    #[test]
-    // upload_bytes after commit returns AlreadyCommitted (via external_run_async_task).
-    fn test_upload_bytes_after_commit_fails() -> Result<(), Box<dyn std::error::Error>> {
-        let session = XetSession::new(None, None, None, None)?;
-        let c1 = session.new_upload_commit()?;
-        let c2 = c1.clone();
-        c1.commit()?;
-        let err = c2.upload_bytes(b"hello".to_vec(), None).unwrap_err();
-        assert!(matches!(err, SessionError::AlreadyCommitted));
-        Ok(())
-    }
-
-    // ── API coverage & abort ─────────────────────────────────────────────────
-
-    #[test]
-    // upload_file returns a (TaskHandle, SingleFileCleaner) pair; the handle has no internal status.
-    fn test_upload_file_returns_handle_and_cleaner() -> Result<(), Box<dyn std::error::Error>> {
-        let session = XetSession::new(None, None, None, None)?;
-        let commit = session.new_upload_commit()?;
-        let (handle, _cleaner) = commit.upload_file(Some("stream.bin".into()), 1024)?;
-        // Streaming uploads have no internally-managed status; status() returns an error.
-        assert!(handle.status().is_err());
-        Ok(())
-    }
-
-    #[test]
-    // abort() drains active_tasks and sets each task's status to Cancelled.
-    fn test_abort_marks_queued_task_as_cancelled() -> Result<(), Box<dyn std::error::Error>> {
-        let session = XetSession::new(None, None, None, None)?;
-        let commit = session.new_upload_commit()?;
-        let handle = commit.upload_bytes(b"data".to_vec(), None)?;
-        commit.abort()?;
-        assert!(matches!(handle.status()?, TaskStatus::Cancelled));
-        Ok(())
-    }
-
-    #[test]
-    // Committing one commit does not affect the state of another from the same session.
-    fn test_two_commits_are_independent() -> Result<(), Box<dyn std::error::Error>> {
-        let session = XetSession::new(None, None, None, None)?;
-        let c1 = session.new_upload_commit()?;
-        let c2 = session.new_upload_commit()?;
-        c1.commit()?;
-        assert!(!c2.is_committed());
-        Ok(())
-    }
-
-    // ── Round-trip tests ─────────────────────────────────────────────────────
-
-    #[test]
-    // Uploading raw bytes and committing returns a non-empty hash and the correct file size.
-    fn test_upload_bytes_round_trip() -> Result<(), Box<dyn std::error::Error>> {
-        let temp = tempdir()?;
-        let session = local_session(&temp)?;
-        let data = b"Hello, upload commit round-trip!";
-        let commit = session.new_upload_commit()?;
-        let task_handle = commit.upload_bytes(data.to_vec(), Some("hello.bin".into()))?;
-        let results = commit.commit()?;
-        assert_eq!(results.len(), 1);
-        let meta = results.get(&task_handle.task_id).unwrap().as_ref().as_ref().unwrap();
-        assert_eq!(meta.file_size, data.len() as u64);
-        assert!(!meta.hash.is_empty());
-        Ok(())
-    }
-
-    #[test]
-    // Uploading a file from disk and committing returns the correct file size.
-    fn test_upload_from_path_round_trip() -> Result<(), Box<dyn std::error::Error>> {
-        let temp = tempdir()?;
-        let session = local_session(&temp)?;
-        let src = temp.path().join("data.bin");
-        let data = b"file path upload content";
-        std::fs::write(&src, data)?;
-        let commit = session.new_upload_commit()?;
-        let handle = commit.upload_from_path(src)?;
-        commit.commit()?;
-        let meta = handle.result().unwrap();
-        let meta = meta.as_ref().as_ref().unwrap();
-        assert_eq!(meta.file_size, data.len() as u64);
-        assert!(!meta.hash.is_empty());
-        Ok(())
-    }
-
-    // ── Per-task result access patterns ──────────────────────────────────────
-    //
-    // After commit() completes there are two equivalent ways to retrieve a
-    // per-task FileMetadata result:
-    //
-    //   1. HashMap lookup:  `commit_results.get(&handle.task_id)`
-    //   2. Direct handle:   `handle.result()` (only on UploadTaskHandle, not the plain TaskHandle returned by
-    //      upload_file)
-    //
-    // Both patterns are exercised by the tests below.
-
-    #[test]
-    // UploadTaskHandle::result() returns None before commit() is called.
-    fn test_upload_result_none_before_commit() -> Result<(), Box<dyn std::error::Error>> {
-        let temp = tempdir()?;
-        let session = local_session(&temp)?;
-        let src = temp.path().join("data.bin");
-        std::fs::write(&src, b"content")?;
-        let commit = session.new_upload_commit()?;
-        let handle = commit.upload_from_path(src)?;
-        assert!(handle.result().is_none(), "result must be None before commit()");
-        commit.commit()?;
-        Ok(())
-    }
-
-    #[test]
-    // Pattern 1: per-task result is accessible via task_id in the commit() HashMap.
-    fn test_upload_result_accessible_via_task_id_in_commit_map() -> Result<(), Box<dyn std::error::Error>> {
-        let temp = tempdir()?;
-        let session = local_session(&temp)?;
-        let data = b"result via task_id";
-        let src = temp.path().join("data.bin");
-        std::fs::write(&src, data)?;
-        let commit = session.new_upload_commit()?;
-        let handle = commit.upload_from_path(src)?;
-        let results = commit.commit()?;
-        let result = results.get(&handle.task_id).expect("task_id must be present in results");
-        assert_eq!(result.as_ref().as_ref().unwrap().file_size, data.len() as u64);
-        Ok(())
-    }
-
-    #[test]
-    // Pattern 2: per-task result is accessible directly from the UploadTaskHandle after commit().
-    fn test_upload_result_accessible_via_handle_after_commit() -> Result<(), Box<dyn std::error::Error>> {
-        let temp = tempdir()?;
-        let session = local_session(&temp)?;
-        let data = b"result via handle";
-        let src = temp.path().join("data.bin");
-        std::fs::write(&src, data)?;
-        let commit = session.new_upload_commit()?;
-        let handle = commit.upload_from_path(src)?;
-        commit.commit()?;
-        // handle.result() is populated by commit() via the shared Arc.
-        let result = handle.result().expect("result must be set after commit");
-        assert_eq!(result.as_ref().as_ref().unwrap().file_size, data.len() as u64);
-        Ok(())
-    }
-
-    #[test]
-    // Streaming upload via upload_file + SingleFileCleaner: the caller receives XetFileInfo
-    // directly from cleaner.finish(); commit() returns no entry for user-managed uploads.
-    fn test_upload_streaming_round_trip() -> Result<(), Box<dyn std::error::Error>> {
-        let temp = tempdir()?;
-        let session = local_session(&temp)?;
-        let data = b"streamed upload bytes";
-        let runtime = session.runtime.clone();
-        let commit = session.new_upload_commit()?;
-        let (_handle, mut cleaner) = commit.upload_file(Some("stream.bin".into()), data.len() as u64)?;
-        // Drive the cleaner and extract only Send + 'static fields from XetFileInfo.
-        let (hash, file_size) = runtime.external_run_async_task(async move {
-            cleaner.add_data(data).await.unwrap();
-            let (xfi, _) = cleaner.finish().await.unwrap();
-            (xfi.hash, xfi.file_size)
-        })?;
-        // Streaming uploads are user-managed; commit() returns results only for internally
-        // tracked tasks (upload_from_path / upload_bytes).
-        let results = commit.commit()?;
-        assert!(results.is_empty());
-        assert_eq!(file_size, data.len() as u64);
-        assert!(!hash.is_empty());
-        Ok(())
-    }
-
-    #[test]
-    // Uploading multiple blobs in one commit returns one result per upload.
-    fn test_upload_multiple_files_in_one_commit() -> Result<(), Box<dyn std::error::Error>> {
-        let temp = tempdir()?;
-        let session = local_session(&temp)?;
-        let commit = session.new_upload_commit()?;
-        commit.upload_bytes(b"file one".to_vec(), Some("a.bin".into()))?;
-        commit.upload_bytes(b"file two".to_vec(), Some("b.bin".into()))?;
-        commit.upload_bytes(b"file three".to_vec(), Some("c.bin".into()))?;
-        let results = commit.commit()?;
-        assert_eq!(results.len(), 3);
-        Ok(())
-    }
-
-    #[test]
-    // After a successful commit the aggregate progress reflects bytes processed.
-    fn test_upload_progress_reflects_bytes_after_commit() -> Result<(), Box<dyn std::error::Error>> {
-        let temp = tempdir()?;
-        let session = local_session(&temp)?;
-        let data = b"progress tracking upload data";
-        let commit = session.new_upload_commit()?;
-        let progress_observer = commit.clone();
-        commit.upload_bytes(data.to_vec(), Some("prog.bin".into()))?;
-        commit.commit()?;
-        let snapshot = progress_observer.get_progress()?;
-        assert!(snapshot.total().total_bytes_completed > 0);
-        Ok(())
+        Ok(XetSessionBuilder::new()
+            .with_endpoint(format!("local://{}", cas_path.display()))
+            .build_async()
+            .await?)
     }
 
     // ── Mutex guard / concurrency test ───────────────────────────────────────
     //
-    // All three enqueue methods (upload_from_path, upload_bytes, upload_file)
-    // hold `self.state` for their entire execution so that commit() cannot
-    // race against an in-progress registration.  Because they all share the
-    // same mutex, a single test covers all three: we lock the mutex directly
-    // from the test thread (valid because `mod tests` is a descendant of
-    // `upload_commit` and can access private fields), which simulates any of
-    // the three methods being mid-registration.
+    // All three registration methods (upload_from_path, upload_bytes,
+    // start_upload_file) hold `self.state` (a tokio::sync::Mutex) for
+    // their entire execution so that commit() cannot race against an
+    // in-progress registration.
+    //
+    // We verify this by locking the same mutex directly from the test thread
+    // (valid because `mod tests` is a descendant of `upload_commit` and can
+    // access private fields), simulating a method being mid-registration.
 
     #[test]
     // commit() must block while any enqueue method holds the state lock.
     fn test_commit_blocked_while_upload_registration_holds_state_lock() -> Result<(), Box<dyn std::error::Error>> {
-        use std::sync::mpsc;
-        use std::time::Duration;
-
         let temp = tempdir()?;
-        let session = local_session(&temp)?;
-        let commit = session.new_upload_commit()?;
+        let cas_path = temp.path().join("cas");
+        let session = XetSessionBuilder::new()
+            .with_endpoint(format!("local://{}", cas_path.display()))
+            .build()?;
+        let runtime = session.runtime.clone();
+        // Create UploadCommit directly so we can access its private state field
+        // (accessible here because mod tests is a submodule of upload_commit).
+        let commit = runtime.external_run_async_task(UploadCommit::new(session.clone()))??;
         let commit_for_thread = commit.clone();
+        let runtime_for_thread = runtime.clone();
 
-        // Simulate an enqueue method (upload_from_path / upload_bytes /
-        // upload_file) holding the state lock mid-registration.
-        let guard = commit.inner.state.lock().unwrap();
+        // Simulate an enqueue method holding the state lock mid-registration.
+        let guard = commit.inner.state.blocking_lock();
 
         let (done_tx, done_rx) = mpsc::channel::<()>();
         let join_handle = std::thread::spawn(move || {
-            let _ = commit_for_thread.commit();
+            let _ = runtime_for_thread.external_run_async_task(async move { commit_for_thread.commit().await });
             let _ = done_tx.send(());
         });
 
         std::thread::sleep(Duration::from_millis(50));
         assert!(done_rx.try_recv().is_err(), "commit() should be blocked while state lock is held");
 
-        // Release the lock — simulates the enqueue method completing its registration.
         drop(guard);
 
         assert!(
@@ -868,5 +611,373 @@ mod tests {
         );
         let _ = join_handle.join();
         Ok(())
+    }
+
+    // ── Identity ─────────────────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    // Two separate commits from the same session have distinct IDs.
+    async fn test_commit_has_unique_id() {
+        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let c1 = session.new_upload_commit().await.unwrap();
+        let c2 = session.new_upload_commit().await.unwrap();
+        assert_ne!(c1.id(), c2.id());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    // A clone refers to the same inner Arc, so their IDs must match.
+    async fn test_commit_clone_shares_id() {
+        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let commit = session.new_upload_commit().await.unwrap();
+        let commit2 = commit.clone();
+        assert_eq!(commit.id(), commit2.id());
+    }
+
+    // ── Initial state ────────────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    // A fresh commit has all-zero aggregate progress.
+    async fn test_get_progress_empty_initially() {
+        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let commit = session.new_upload_commit().await.unwrap();
+        let snapshot = commit.get_progress().unwrap();
+        let total = snapshot.total();
+        assert_eq!(total.total_bytes, 0);
+        assert_eq!(total.total_bytes_completed, 0);
+    }
+
+    // ── Commit lifecycle ─────────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    // An empty commit succeeds and returns an empty result set.
+    async fn test_commit_empty_succeeds() {
+        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let results = session.new_upload_commit().await.unwrap().commit().await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    // commit() transitions the commit into the Finished state.
+    async fn test_commit_marks_as_committed() {
+        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let commit = session.new_upload_commit().await.unwrap();
+        let commit_clone = commit.clone();
+        commit.commit().await.unwrap();
+        assert!(commit_clone.is_committed().await);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    // A second commit() call on any clone returns AlreadyCommitted.
+    async fn test_second_commit_fails() {
+        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let c1 = session.new_upload_commit().await.unwrap();
+        let c2 = c1.clone();
+        c1.commit().await.unwrap();
+        let err = c2.commit().await.unwrap_err();
+        assert!(matches!(err, SessionError::AlreadyCommitted | SessionError::Internal(_)));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    // commit() unregisters the commit from the session's active set.
+    async fn test_commit_unregisters_from_session() {
+        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let commit = session.new_upload_commit().await.unwrap();
+        assert_eq!(session.active_upload_commits.lock().unwrap().len(), 1);
+        commit.commit().await.unwrap();
+        assert_eq!(session.active_upload_commits.lock().unwrap().len(), 0);
+    }
+
+    // ── Session-abort guards ─────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    // upload_from_path returns Aborted when the parent session has been aborted.
+    async fn test_upload_file_on_aborted_session_returns_error() {
+        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let commit = session.new_upload_commit().await.unwrap();
+        session.abort().unwrap();
+        let err = commit.upload_from_path(PathBuf::from("nonexistent.bin")).await.unwrap_err();
+        assert!(matches!(err, SessionError::Aborted));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    // upload_bytes returns Aborted when the parent session has been aborted.
+    async fn test_upload_bytes_on_aborted_session_returns_error() {
+        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let commit = session.new_upload_commit().await.unwrap();
+        session.abort().unwrap();
+        let err = commit.upload_bytes(b"data".to_vec(), Some("bytes 1".into())).await.unwrap_err();
+        assert!(matches!(err, SessionError::Aborted));
+    }
+
+    // ── Post-commit guards (AlreadyCommitted) ────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    // upload_from_path after commit returns AlreadyCommitted.
+    async fn test_upload_from_path_after_commit_fails() {
+        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let c1 = session.new_upload_commit().await.unwrap();
+        let c2 = c1.clone();
+        c1.commit().await.unwrap();
+        let err = c2.upload_from_path(PathBuf::from("any.bin")).await.unwrap_err();
+        assert!(matches!(err, SessionError::AlreadyCommitted));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    // upload_bytes after commit returns AlreadyCommitted.
+    async fn test_upload_bytes_after_commit_fails() {
+        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let c1 = session.new_upload_commit().await.unwrap();
+        let c2 = c1.clone();
+        c1.commit().await.unwrap();
+        let err = c2.upload_bytes(b"hello".to_vec(), None).await.unwrap_err();
+        assert!(matches!(err, SessionError::AlreadyCommitted));
+    }
+
+    // ── API coverage & abort ─────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    // upload_file returns a (TaskHandle, SingleFileCleaner) pair; the handle has no internal status.
+    async fn test_upload_file_returns_handle_and_cleaner() {
+        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let commit = session.new_upload_commit().await.unwrap();
+        let (handle, _cleaner) = commit.upload_file(Some("stream.bin".into()), 1024).await.unwrap();
+        assert!(handle.status().is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    // abort() drains active_tasks and sets each task's status to Cancelled.
+    async fn test_abort_marks_queued_task_as_cancelled() {
+        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let commit = session.new_upload_commit().await.unwrap();
+        let handle = commit.upload_bytes(b"data".to_vec(), None).await.unwrap();
+        commit.inner.abort().unwrap();
+        assert!(matches!(handle.status().unwrap(), TaskStatus::Cancelled));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    // abort() uses try_lock on the state mutex, so it does not deadlock or return an
+    // error when a concurrent registration holds the lock.  In that case the state flag
+    // is silently left as Alive — the runtime shutdown cancels the in-flight task.
+    // abort() still drains active_tasks and marks already-queued tasks Cancelled.
+    async fn test_abort_while_state_lock_held_skips_state_update_but_drains_tasks() {
+        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let commit = session.new_upload_commit().await.unwrap();
+
+        // Queue a task so we can verify active_tasks draining still happens.
+        let handle = commit.upload_bytes(b"data".to_vec(), None).await.unwrap();
+
+        // Hold the state lock — simulates a registration method mid-execution.
+        let guard = commit.inner.state.try_lock().expect("lock should be free before abort");
+
+        // abort() must succeed (no deadlock, no error) even though try_lock will fail.
+        commit.inner.abort().unwrap();
+
+        // State was NOT updated — abort() skipped the state flag when lock was held.
+        assert!(matches!(*guard, GroupState::Alive), "state must remain Alive when lock was contended");
+        drop(guard);
+
+        // active_tasks are always drained; already-queued tasks are Cancelled.
+        assert!(matches!(handle.status().unwrap(), TaskStatus::Cancelled));
+
+        // upload_session is always cleared, preventing future start_upload_file calls
+        // from obtaining a session and preventing handle_commit from calling finalize.
+        assert!(commit.inner.upload_session.lock().unwrap().is_none());
+    }
+
+    // ── Independence ─────────────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    // Committing one commit does not affect the state of another from the same session.
+    async fn test_two_commits_are_independent() {
+        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let c1 = session.new_upload_commit().await.unwrap();
+        let c2 = session.new_upload_commit().await.unwrap();
+        c1.commit().await.unwrap();
+        assert!(!c2.is_committed().await);
+    }
+
+    // ── Round-trip tests ─────────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    // Uploading raw bytes and committing returns a non-empty hash and the correct file size.
+    async fn test_upload_bytes_round_trip() {
+        let temp = tempdir().unwrap();
+        let session = local_session(&temp).await.unwrap();
+        let data = b"Hello, upload commit round-trip!";
+        let commit = session.new_upload_commit().await.unwrap();
+        let task_handle = commit.upload_bytes(data.to_vec(), Some("hello.bin".into())).await.unwrap();
+        let results = commit.commit().await.unwrap();
+        assert_eq!(results.len(), 1);
+        let meta = results.get(&task_handle.task_id).unwrap().as_ref().as_ref().unwrap();
+        assert_eq!(meta.file_size, data.len() as u64);
+        assert!(!meta.hash.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    // Uploading a file from disk and committing returns the correct file size.
+    async fn test_upload_from_path_round_trip() {
+        let temp = tempdir().unwrap();
+        let session = local_session(&temp).await.unwrap();
+        let src = temp.path().join("data.bin");
+        let data = b"file path upload content";
+        std::fs::write(&src, data).unwrap();
+        let commit = session.new_upload_commit().await.unwrap();
+        let handle = commit.upload_from_path(src).await.unwrap();
+        commit.commit().await.unwrap();
+        let meta = handle.result().unwrap();
+        let meta = meta.as_ref().as_ref().unwrap();
+        assert_eq!(meta.file_size, data.len() as u64);
+        assert!(!meta.hash.is_empty());
+    }
+
+    // ── Per-task result access patterns ──────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    // UploadTaskHandle::result() returns None before commit() is called.
+    async fn test_upload_result_none_before_commit() {
+        let temp = tempdir().unwrap();
+        let session = local_session(&temp).await.unwrap();
+        let src = temp.path().join("data.bin");
+        std::fs::write(&src, b"content").unwrap();
+        let commit = session.new_upload_commit().await.unwrap();
+        let handle = commit.upload_from_path(src).await.unwrap();
+        assert!(handle.result().is_none(), "result must be None before commit()");
+        commit.commit().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    // Pattern 1: per-task result is accessible via task_id in the commit() HashMap.
+    async fn test_upload_result_accessible_via_task_id_in_commit_map() {
+        let temp = tempdir().unwrap();
+        let session = local_session(&temp).await.unwrap();
+        let data = b"result via task_id";
+        let src = temp.path().join("data.bin");
+        std::fs::write(&src, data).unwrap();
+        let commit = session.new_upload_commit().await.unwrap();
+        let handle = commit.upload_from_path(src).await.unwrap();
+        let results = commit.commit().await.unwrap();
+        let result = results.get(&handle.task_id).expect("task_id must be present in results");
+        assert_eq!(result.as_ref().as_ref().unwrap().file_size, data.len() as u64);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    // Pattern 2: per-task result is accessible directly from the UploadTaskHandle after commit().
+    async fn test_upload_result_accessible_via_handle_after_commit() {
+        let temp = tempdir().unwrap();
+        let session = local_session(&temp).await.unwrap();
+        let data = b"result via handle";
+        let src = temp.path().join("data.bin");
+        std::fs::write(&src, data).unwrap();
+        let commit = session.new_upload_commit().await.unwrap();
+        let handle = commit.upload_from_path(src).await.unwrap();
+        commit.commit().await.unwrap();
+        let result = handle.result().expect("result must be set after commit");
+        assert_eq!(result.as_ref().as_ref().unwrap().file_size, data.len() as u64);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    // Streaming upload via upload_file + SingleFileCleaner.
+    async fn test_upload_streaming_round_trip() {
+        let temp = tempdir().unwrap();
+        let session = local_session(&temp).await.unwrap();
+        let data = b"streamed upload bytes";
+        let commit = session.new_upload_commit().await.unwrap();
+        let (_handle, mut cleaner) = commit.upload_file(Some("stream.bin".into()), data.len() as u64).await.unwrap();
+        cleaner.add_data(data).await.unwrap();
+        let (xfi, _) = cleaner.finish().await.unwrap();
+        let results = commit.commit().await.unwrap();
+        assert!(results.is_empty());
+        assert_eq!(xfi.file_size, data.len() as u64);
+        assert!(!xfi.hash.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    // Uploading multiple blobs in one commit returns one result per upload.
+    async fn test_upload_multiple_files_in_one_commit() {
+        let temp = tempdir().unwrap();
+        let session = local_session(&temp).await.unwrap();
+        let commit = session.new_upload_commit().await.unwrap();
+        commit.upload_bytes(b"file one".to_vec(), Some("a.bin".into())).await.unwrap();
+        commit.upload_bytes(b"file two".to_vec(), Some("b.bin".into())).await.unwrap();
+        commit.upload_bytes(b"file three".to_vec(), Some("c.bin".into())).await.unwrap();
+        let results = commit.commit().await.unwrap();
+        assert_eq!(results.len(), 3);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    // After a successful commit the aggregate progress reflects bytes processed.
+    async fn test_upload_progress_reflects_bytes_after_commit() {
+        let temp = tempdir().unwrap();
+        let session = local_session(&temp).await.unwrap();
+        let data = b"progress tracking upload data";
+        let commit = session.new_upload_commit().await.unwrap();
+        let progress_observer = commit.clone();
+        commit.upload_bytes(data.to_vec(), Some("prog.bin".into())).await.unwrap();
+        commit.commit().await.unwrap();
+        let snapshot = progress_observer.get_progress().unwrap();
+        assert!(snapshot.total().total_bytes_completed > 0);
+    }
+
+    // ── Non-tokio executor (Owned-mode bridge) ────────────────────────────────
+
+    #[test]
+    // build_async() falls back to Owned mode from a futures executor, and the
+    // bridge correctly routes all async method calls to the hf-xet-* thread pool
+    // while the futures are driven by the caller's executor (futures::block_on).
+    fn test_async_bridge_works_from_futures_executor() {
+        let temp = tempdir().unwrap();
+
+        futures::executor::block_on(async {
+            // Outside tokio → try_current() fails → build_async() picks Owned mode.
+            let session = local_session(&temp).await.unwrap();
+            assert_eq!(session.runtime_mode, RuntimeMode::Owned);
+
+            // Exercise every bridge: new_upload_commit, upload_bytes, commit.
+            let data = b"hello from non-tokio executor";
+            let commit = session.new_upload_commit().await.unwrap();
+            let handle = commit.upload_bytes(data.to_vec(), Some("test.bin".into())).await.unwrap();
+            let results = commit.commit().await.unwrap();
+
+            let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
+            assert_eq!(meta.file_size, data.len() as u64);
+        });
+    }
+
+    #[test]
+    // Same as above but driven by the smol executor.
+    fn test_async_bridge_works_from_smol_executor() {
+        let temp = tempdir().unwrap();
+
+        smol::block_on(async {
+            let session = local_session(&temp).await.unwrap();
+            assert_eq!(session.runtime_mode, RuntimeMode::Owned);
+
+            let data = b"hello from smol executor";
+            let commit = session.new_upload_commit().await.unwrap();
+            let handle = commit.upload_bytes(data.to_vec(), Some("test.bin".into())).await.unwrap();
+            let results = commit.commit().await.unwrap();
+
+            let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
+            assert_eq!(meta.file_size, data.len() as u64);
+        });
+    }
+
+    #[test]
+    // Same as above but driven by the async-std executor.
+    fn test_async_bridge_works_from_async_std_executor() {
+        let temp = tempdir().unwrap();
+
+        async_std::task::block_on(async {
+            let session = local_session(&temp).await.unwrap();
+            assert_eq!(session.runtime_mode, RuntimeMode::Owned);
+
+            let data = b"hello from async-std executor";
+            let commit = session.new_upload_commit().await.unwrap();
+            let handle = commit.upload_bytes(data.to_vec(), Some("test.bin".into())).await.unwrap();
+            let results = commit.commit().await.unwrap();
+
+            let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
+            assert_eq!(meta.file_size, data.len() as u64);
+        });
     }
 }

@@ -4,46 +4,57 @@
 //! file operations:
 //!
 //! ```text
-//! XetSession          — owns the tokio runtime and authentication credentials
+//! XetSession          — holds runtime context and authentication credentials
 //!   ├── UploadCommit  — groups related uploads; finalised with commit()
 //!   └── DownloadGroup — groups related downloads; finalised with finish()
 //! ```
 //!
-//! Each [`XetSession`] owns its own tokio runtime and configuration, so
+//! Each [`XetSession`] holds its own runtime context and configuration, so
 //! multiple sessions with different endpoints or credentials can coexist in
 //! the same process.  Cloning a session, commit, or group is cheap — all
 //! clones share the same underlying state via `Arc`.
 //!
 //! ## Uploads
 //!
-//! Create an [`UploadCommit`] with [`XetSession::new_upload_commit`], queue
-//! files with [`upload_from_path`](UploadCommit::upload_from_path) or
-//! [`upload_bytes`](UploadCommit::upload_bytes), then call
-//! [`commit`](UploadCommit::commit) to wait for all transfers to finish and
-//! receive a `HashMap<Ulid, `[`UploadResult`]`>` keyed by task ID
-//! (`UploadResult` = `Arc<Result<`[`FileMetadata`]`, `[`SessionError`]`>>`).
-//! Per-task results can also be read directly from the returned
-//! [`UploadTaskHandle`] via [`result`](UploadTaskHandle::result) after
-//! `commit()` returns.
+//! For **sync** callers: create an [`UploadCommitSync`] with
+//! [`XetSession::new_upload_commit_blocking`], queue files with
+//! [`upload_from_path`](UploadCommitSync::upload_from_path) or
+//! [`upload_bytes`](UploadCommitSync::upload_bytes), then call
+//! [`commit`](UploadCommitSync::commit) to block until all transfers finish and
+//! receive a `HashMap<Ulid, `[`UploadResult`]`>` keyed by task ID.
+//!
+//! For **async** callers: create an [`UploadCommit`] with
+//! [`XetSession::new_upload_commit`], queue files the same way, then
+//! `await` [`commit`](UploadCommit::commit).
+//!
+//! `UploadResult` = `Arc<Result<`[`FileMetadata`]`, `[`SessionError`]`>>`.
+//! Per-task results can also be read from the returned [`UploadTaskHandle`]
+//! via [`result`](UploadTaskHandle::result) after `commit()` returns.
 //!
 //! ## Downloads
 //!
-//! Create a [`DownloadGroup`] with [`XetSession::new_download_group`], queue
-//! files with [`download_file_to_path`](DownloadGroup::download_file_to_path),
-//! then call [`finish`](DownloadGroup::finish) to wait for all transfers and
-//! receive a `HashMap<Ulid, `[`DownloadResult`]`>` keyed by task ID
-//! (`DownloadResult` = `Arc<Result<`[`DownloadedFile`]`, `[`SessionError`]`>>`).
-//! Per-task results can also be read directly from the returned
-//! [`DownloadTaskHandle`] via [`result`](DownloadTaskHandle::result) after
-//! `finish()` returns.
+//! For **sync** callers: create a [`DownloadGroupSync`] with
+//! [`XetSession::new_download_group_blocking`], queue files with
+//! [`download_file_to_path`](DownloadGroupSync::download_file_to_path), then
+//! call [`finish`](DownloadGroupSync::finish) to block until all transfers
+//! complete and receive a `HashMap<Ulid, `[`DownloadResult`]`>` keyed by task ID.
+//!
+//! For **async** callers: create a [`DownloadGroup`] with
+//! [`XetSession::new_download_group`], queue files the same way, then
+//! `await` [`finish`](DownloadGroup::finish).
+//!
+//! `DownloadResult` = `Arc<Result<`[`DownloadedFile`]`, `[`SessionError`]`>>`.
+//! Per-task results can also be read from the returned [`DownloadTaskHandle`]
+//! via [`result`](DownloadTaskHandle::result) after `finish()` returns.
 //!
 //! ## Progress tracking
 //!
-//! Both [`UploadCommit`] and [`DownloadGroup`] expose
-//! [`get_progress`](UploadCommit::get_progress), which returns a
+//! All four types ([`UploadCommit`], [`UploadCommitSync`], [`DownloadGroup`],
+//! [`DownloadGroupSync`]) expose `get_progress()`, which returns a
 //! [`ProgressSnapshot`] without acquiring a lock on the calling thread
 //! (useful for Python bindings that must release the GIL).  Poll it from a
-//! background thread while the main thread blocks in `commit()` / `finish()`.
+//! background thread/task while the main thread/task blocks in
+//! `commit()` / `finish()`.
 //!
 //! ## Error handling
 //!
@@ -53,43 +64,73 @@
 //! `HashMap<Ulid, `[`DownloadResult`]`>` keyed by task ID, so a single failed
 //! file does not discard all others.
 //!
-//! # Quick start
+//! # Quick start — sync API
 //!
 //! ```rust,no_run
 //! use xet::xet_session::{XetFileInfo, XetSessionBuilder};
 //!
-//! // 1. Build a session
+//! // 1. Build a session — sync (non-async) context only.
+//! //    For async code call build_async().await instead.
 //! let session = XetSessionBuilder::new()
 //!     .with_endpoint("https://cas.example.com".into())
 //!     .with_token_info("my-token".into(), 1_700_000_000)
 //!     .build()?;
 //!
-//! // 2. Upload
-//! let commit = session.new_upload_commit()?;
+//! // 2. Upload — use the _blocking factory; returns UploadCommitSync
+//! let commit = session.new_upload_commit_blocking()?;
 //! let handle = commit.upload_from_path("file.bin".into())?;
-//! commit.commit()?;
-//! // Access result directly from the handle (populated by commit())
 //! // UploadResult = Arc<Result<FileMetadata, SessionError>>
-//! let m = handle.result().unwrap(); // Option<UploadResult>
-//! let m = m.as_ref().as_ref().unwrap(); // &FileMetadata
+//! let results = commit.commit()?;
+//! let m = results.values().next().unwrap().as_ref().as_ref().unwrap();
 //!
-//! // 3. Download
-//! let group = session.new_download_group()?;
+//! // 3. Download — use the _blocking factory; returns DownloadGroupSync
+//! let group = session.new_download_group_blocking()?;
 //! let info = XetFileInfo {
 //!     hash: m.hash.clone(),
 //!     file_size: m.file_size,
 //! };
 //! let dl_handle = group.download_file_to_path(info, "out/file.bin".into())?;
 //! let finish_results = group.finish()?;
-//! // Pattern 1: look up by task ID in the returned HashMap
 //! // DownloadResult = Arc<Result<DownloadedFile, SessionError>>
-//! let r1 = finish_results.get(&dl_handle.task_id).unwrap(); // &DownloadResult
-//! let r1 = r1.as_ref().as_ref().unwrap(); // &DownloadedFile
-//! // Pattern 2: read directly from the handle (populated by finish())
-//! let r2 = dl_handle.result().unwrap(); // DownloadResult
-//! let r2 = r2.as_ref().as_ref().unwrap(); // &DownloadedFile
+//! let r = finish_results.get(&dl_handle.task_id).unwrap().as_ref().as_ref().unwrap();
 //!
 //! # Ok::<(), xet::xet_session::SessionError>(())
+//! ```
+//!
+//! # Quick start — async API
+//!
+//! ```rust,no_run
+//! use xet::xet_session::{XetFileInfo, XetSessionBuilder};
+//!
+//! # async fn example() -> Result<(), xet::xet_session::SessionError> {
+//! // 1. Build a session. build_async() auto-detects the executor:
+//! //    - tokio (multi-thread): wraps the caller's handle, no second thread pool.
+//! //    - non-tokio (smol, async-std, etc.): creates an owned thread pool.
+//! let session = XetSessionBuilder::new()
+//!     .with_endpoint("https://cas.example.com".into())
+//!     .with_token_info("my-token".into(), 1_700_000_000)
+//!     .build_async()
+//!     .await?;
+//!
+//! // 2. Upload — use the async factory; returns UploadCommit
+//! let commit = session.new_upload_commit().await?;
+//! let handle = commit.upload_from_path("file.bin".into()).await?;
+//! // UploadResult = Arc<Result<FileMetadata, SessionError>>
+//! let results = commit.commit().await?;
+//! let m = results.values().next().unwrap().as_ref().as_ref().unwrap();
+//!
+//! // 3. Download — use the async factory; returns DownloadGroup
+//! let group = session.new_download_group().await?;
+//! let info = XetFileInfo {
+//!     hash: m.hash.clone(),
+//!     file_size: m.file_size,
+//! };
+//! let dl_handle = group.download_file_to_path(info, "out/file.bin".into())?;
+//! let finish_results = group.finish().await?;
+//! // DownloadResult = Arc<Result<DownloadedFile, SessionError>>
+//! let r = finish_results.get(&dl_handle.task_id).unwrap().as_ref().as_ref().unwrap();
+//! # Ok(())
+//! # }
 //! ```
 
 mod common;
@@ -97,6 +138,7 @@ mod download_group;
 mod errors;
 mod progress;
 mod session;
+pub mod sync;
 mod upload_commit;
 
 pub use download_group::{DownloadGroup, DownloadResult, DownloadedFile};
@@ -105,6 +147,7 @@ pub use progress::{
     DownloadTaskHandle, FileProgress, ProgressSnapshot, TaskHandle, TaskStatus, TotalProgressSnapshot, UploadTaskHandle,
 };
 pub use session::{XetSession, XetSessionBuilder};
+pub use sync::{DownloadGroupSync, UploadCommitSync};
 pub use upload_commit::{FileMetadata, UploadCommit, UploadResult};
 pub use xet_data::processing::XetFileInfo;
 // Re-export XetConfig for convenience
