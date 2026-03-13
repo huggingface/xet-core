@@ -36,7 +36,6 @@ pub struct ReconstructionTermManager {
     progress_updater: Option<Arc<DownloadTaskUpdater>>,
     total_bytes_reported: u64,
     total_transfer_bytes_reported: u64,
-    logged_domain: bool,
 }
 
 impl ReconstructionTermManager {
@@ -66,7 +65,6 @@ impl ReconstructionTermManager {
             progress_updater,
             total_bytes_reported: 0,
             total_transfer_bytes_reported: 0,
-            logged_domain: false,
         };
 
         // Start things by prefetching two smaller blocks to get things started.  This way,
@@ -125,20 +123,16 @@ impl ReconstructionTermManager {
             .map_err(|e| FileReconstructionError::InternalError(format!("Join error: {e}")))??;
 
         if let Some((file_terms, new_bytes, new_transfer_bytes)) = maybe_next_block {
-            // Log the download domain once per file using the first block's first URL.
-            if !self.logged_domain {
-                self.logged_domain = true;
-                let domain = file_terms
-                    .first()
-                    .and_then(|t| t.url_info.xorb_block_retrieval_urls.try_read().ok())
-                    .and_then(|urls| {
-                        urls.1
-                            .first()
-                            .and_then(|(url, _)| url::Url::parse(url).ok())
-                            .and_then(|u| u.host_str().map(str::to_owned))
-                    });
-                debug!(file_hash = %self.file_hash, domain = domain.as_deref().unwrap_or("unknown"), "Downloading file");
-            }
+            // Extract the download domain from the first file term's URL.
+            let domain = file_terms
+                .first()
+                .and_then(|t| t.url_info.xorb_block_retrieval_urls.try_read().ok())
+                .and_then(|urls| {
+                    urls.1
+                        .first()
+                        .and_then(|(url, _)| url::Url::parse(url).ok())
+                        .and_then(|u| u.host_str().map(str::to_owned))
+                });
 
             // Calculate the byte range of this block from the file terms.
             let block_start = file_terms.first().map(|t| t.byte_range.start).unwrap_or(0);
@@ -152,6 +146,7 @@ impl ReconstructionTermManager {
 
             info!(
                 file_hash = %self.file_hash,
+                domain = domain.as_deref().unwrap_or("unknown"),
                 block_start = block_start,
                 block_end = block_end,
                 block_size = file_terms.len(),
