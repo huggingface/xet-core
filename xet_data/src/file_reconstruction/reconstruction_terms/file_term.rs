@@ -5,7 +5,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use tokio::sync::RwLock;
 use xet_client::cas_client::Client;
-use xet_client::cas_types::{ChunkRange, FileRange, HttpRange};
+use xet_client::cas_types::{ChunkRange, FileRange, HttpRange, XorbMultiRangeFetch};
 use xet_core_structures::merklehash::MerkleHash;
 use xet_runtime::core::xet_config;
 use xet_runtime::utils::UniqueId;
@@ -98,6 +98,66 @@ struct FileTermEntry {
     xorb_block_start_index: usize,
 }
 
+/// A fetch block resolved from splitting a `XorbMultiRangeFetch` entry based on
+/// range size thresholds. Each resolved block becomes one `XorbBlock` and one
+/// HTTP request (single-range or multi-range).
+struct SizeGroupedFetchBlock {
+    url: String,
+    chunk_ranges: Vec<ChunkRange>,
+    http_ranges: Vec<HttpRange>,
+}
+
+impl SizeGroupedFetchBlock {
+    /// Splits a multi-range fetch entry into resolved blocks:
+    ///
+    /// 1. Ranges whose compressed byte size exceeds `max_single_range_bytes` are each placed in their own block
+    ///    (individual single-range HTTP requests).
+    /// 2. Remaining small ranges are grouped into one multirange block if there are at least `min_group_size` of them;
+    ///    otherwise each is split into its own single-range block.
+    fn resolve(entry: &XorbMultiRangeFetch, max_single_range_bytes: u64, min_group_size: usize) -> Vec<Self> {
+        let mut blocks = Vec::new();
+        let mut small_chunk_ranges = Vec::new();
+        let mut small_http_ranges = Vec::new();
+
+        for range in &entry.ranges {
+            if range.bytes.length() > max_single_range_bytes {
+                blocks.push(SizeGroupedFetchBlock {
+                    url: entry.url.clone(),
+                    chunk_ranges: vec![range.chunks],
+                    http_ranges: vec![range.bytes],
+                });
+            } else {
+                small_chunk_ranges.push(range.chunks);
+                small_http_ranges.push(range.bytes);
+            }
+        }
+
+        if small_chunk_ranges.len() >= min_group_size {
+            blocks.push(SizeGroupedFetchBlock {
+                url: entry.url.clone(),
+                chunk_ranges: small_chunk_ranges,
+                http_ranges: small_http_ranges,
+            });
+        } else {
+            for (chunks, bytes) in small_chunk_ranges.into_iter().zip(small_http_ranges) {
+                blocks.push(SizeGroupedFetchBlock {
+                    url: entry.url.clone(),
+                    chunk_ranges: vec![chunks],
+                    http_ranges: vec![bytes],
+                });
+            }
+        }
+
+        blocks
+    }
+
+    fn contains_term(&self, term_range: ChunkRange) -> bool {
+        self.chunk_ranges
+            .iter()
+            .any(|r| r.start <= term_range.start && term_range.end <= r.end)
+    }
+}
+
 /// Retrieve file terms from the client for a given file hash and byte range.
 /// Returns None if the requested byte range is past the end of the file.
 /// Returns the actual retrieved range and the number of bytes required for the
@@ -137,7 +197,9 @@ pub async fn retrieve_file_term_block(
     // Track the current byte offset in the output file as we process terms sequentially.
     let mut cur_file_byte_offset = query_file_byte_range.start;
 
-    let prefer_multirange = xet_config().client.prefer_multirange_fetching;
+    let config = xet_config();
+    let max_multirange_term_size = config.client.max_multirange_term_size.as_u64();
+    let min_multirange_group_size = config.client.min_multirange_group_size;
 
     for (local_term_index, term) in raw_reconstruction.terms.iter().enumerate() {
         let xorb_hash: MerkleHash = term.hash.into();
@@ -148,45 +210,36 @@ pub async fn retrieve_file_term_block(
             )));
         };
 
-        // Find the XorbBlock for this term's chunk range. The behavior depends on the
-        // prefer_multirange_fetching config:
-        //
-        // - When true: one XorbBlock per XorbMultiRangeFetch entry, preserving all ranges in a single block
-        //   (multi-range HTTP request).
-        // - When false (default): one XorbBlock per individual XorbRangeDescriptor, so each range is fetched as a
-        //   separate single-range HTTP request in parallel.
+        // Find the XorbBlock for this term's chunk range. Each XorbMultiRangeFetch entry
+        // is resolved into one or more blocks based on the multirange size thresholds:
+        // large ranges get their own single-range blocks; remaining small ranges are
+        // grouped into a multirange block only if there are enough of them.
         let xorb_block_index = 'find_xorb_block: {
             for fetch_entry in xorb_descriptor.iter() {
-                if prefer_multirange {
-                    let term_contained = fetch_entry
-                        .ranges
-                        .iter()
-                        .any(|r| r.chunks.start <= term.range.start && term.range.end <= r.chunks.end);
-
-                    if !term_contained {
+                for resolved in
+                    SizeGroupedFetchBlock::resolve(fetch_entry, max_multirange_term_size, min_multirange_group_size)
+                {
+                    if !resolved.contains_term(term.range) {
                         continue;
                     }
 
-                    let first_chunk_start = fetch_entry.ranges[0].chunks.start;
+                    let first_chunk_start = resolved.chunk_ranges[0].start;
 
                     let index = match xorb_index_lookup.entry((xorb_hash, first_chunk_start)) {
                         Entry::Occupied(entry) => *entry.get(),
                         Entry::Vacant(entry) => {
                             let new_index = xorb_blocks.len();
 
-                            let chunk_ranges: Vec<ChunkRange> = fetch_entry.ranges.iter().map(|r| r.chunks).collect();
-                            let http_ranges: Vec<HttpRange> = fetch_entry.ranges.iter().map(|r| r.bytes).collect();
-
                             xorb_blocks.push(XorbBlock {
                                 xorb_hash,
-                                chunk_ranges,
+                                chunk_ranges: resolved.chunk_ranges,
                                 xorb_block_index: new_index,
                                 references: vec![],
                                 uncompressed_size_if_known: None,
                                 data: RwLock::new(None),
                             });
 
-                            xorb_block_retrieval_urls.push((fetch_entry.url.clone(), http_ranges));
+                            xorb_block_retrieval_urls.push((resolved.url, resolved.http_ranges));
 
                             entry.insert(new_index);
                             new_index
@@ -194,33 +247,6 @@ pub async fn retrieve_file_term_block(
                     };
 
                     break 'find_xorb_block index;
-                } else {
-                    for range in &fetch_entry.ranges {
-                        if range.chunks.start <= term.range.start && term.range.end <= range.chunks.end {
-                            let index = match xorb_index_lookup.entry((xorb_hash, range.chunks.start)) {
-                                Entry::Occupied(entry) => *entry.get(),
-                                Entry::Vacant(entry) => {
-                                    let new_index = xorb_blocks.len();
-
-                                    xorb_blocks.push(XorbBlock {
-                                        xorb_hash,
-                                        chunk_ranges: vec![range.chunks],
-                                        xorb_block_index: new_index,
-                                        references: vec![],
-                                        uncompressed_size_if_known: None,
-                                        data: RwLock::new(None),
-                                    });
-
-                                    xorb_block_retrieval_urls.push((fetch_entry.url.clone(), vec![range.bytes]));
-
-                                    entry.insert(new_index);
-                                    new_index
-                                },
-                            };
-
-                            break 'find_xorb_block index;
-                        }
-                    }
                 }
             }
             return Err(FileReconstructionError::CorruptedReconstruction(format!(

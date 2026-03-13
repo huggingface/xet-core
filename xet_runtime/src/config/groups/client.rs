@@ -261,15 +261,22 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_CLIENT_RECONSTRUCTION_API_VERSION` to set this value.
     ref reconstruction_api_version: Option<u32> = None;
 
-    /// Whether to use multi-range HTTP requests when fetching xorb data.
-    /// When false (default), V2 multi-range fetch entries are split into
-    /// individual single-range requests executed in parallel, which avoids
-    /// slow server-side multirange processing.
-    /// When true, multi-range requests are sent as-is.
+    /// Ranges within a V2 multi-range fetch entry whose compressed byte size
+    /// exceeds this threshold are split into individual single-range HTTP
+    /// requests instead of being grouped into a multirange request.
     ///
-    /// The default value is false.
+    /// The default value is 2MB.
     ///
-    /// Use the environment variable `HF_XET_CLIENT_PREFER_MULTIRANGE_FETCHING` to set this value.
-    ref prefer_multirange_fetching: bool = false;
+    /// Use the environment variable `HF_XET_CLIENT_MAX_MULTIRANGE_TERM_SIZE` to set this value.
+    ref max_multirange_term_size: ByteSize = ByteSize::from("2mb");
+
+    /// The minimum number of small ranges required for them to be grouped
+    /// into a single multirange HTTP request. If fewer small ranges remain
+    /// after large-range splitting, they are fetched individually instead.
+    ///
+    /// The default value is 8.
+    ///
+    /// Use the environment variable `HF_XET_CLIENT_MIN_MULTIRANGE_GROUP_SIZE` to set this value.
+    ref min_multirange_group_size: usize = 8;
 
 });

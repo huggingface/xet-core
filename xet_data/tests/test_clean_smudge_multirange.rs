@@ -1,11 +1,13 @@
-//! Clean/smudge integration tests with `prefer_multirange_fetching = true`.
+//! Clean/smudge integration tests with forced multirange fetching.
 //!
 //! This test binary is a separate copy of a subset of the clean/smudge tests
-//! that runs with `prefer_multirange_fetching` enabled, exercising the
-//! multirange HTTP request path rather than the default single-range splitting.
+//! that runs with multirange fetching forced on (max_multirange_term_size=1PB,
+//! min_multirange_group_size=1), exercising the multirange HTTP request path
+//! rather than the default single-range splitting.
 
 use xet_data::deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS, TARGET_CHUNK_SIZE};
 use xet_data::processing::test_utils::*;
+use xet_runtime::utils::ByteSize;
 use xet_runtime::{test_set_config, test_set_constants};
 
 test_set_constants! {
@@ -16,7 +18,8 @@ test_set_constants! {
 
 test_set_config! {
     client {
-        prefer_multirange_fetching = true;
+        max_multirange_term_size = ByteSize::from("1pb");
+        min_multirange_group_size = 1usize;
     }
 }
 
@@ -27,7 +30,7 @@ mod testing_clean_smudge_multirange {
     pub async fn check_clean_smudge_files(file_list: &[(impl AsRef<str> + Clone, usize)]) {
         for &mode in HydrationMode::all() {
             for sequential in [true, false] {
-                eprintln!("Testing mode={mode}, sequential={sequential} (prefer_multirange_fetching=true)");
+                eprintln!("Testing mode={mode}, sequential={sequential} (forced multirange)");
 
                 let mut ts = HydrateDehydrateTest::for_mode(mode);
                 create_random_files(&ts.src_dir, file_list, 0);

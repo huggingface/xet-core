@@ -415,8 +415,8 @@ pub async fn fetch_term(State(state): State<ServerState>, uri: axum::http::Uri, 
         // If the client sends a single-range HTTP Range header, serve just that range.
         // This simulates S3/CDN behavior where the Range header controls the response
         // regardless of what ranges are encoded in the presigned URL. This is the
-        // common path when prefer_multirange_fetching is disabled and V2 URLs are
-        // used with individual single-range requests.
+        // common path when ranges are split into single-range requests based on
+        // the multirange thresholds (V2 URLs with individual requests).
         if let Ok(Some(FileRangeVariant::Normal(range))) = parse_range_header(headers.get(RANGE)) {
             return match state.client.get_xorb_raw_bytes(&decoded.hash, Some(range)).await {
                 Ok(data) => (StatusCode::PARTIAL_CONTENT, data).into_response(),
