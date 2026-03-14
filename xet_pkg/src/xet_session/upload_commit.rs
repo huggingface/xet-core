@@ -473,7 +473,7 @@ impl UploadCommitInner {
     }
 
     /// Join all active upload tasks and finalise the upload session.
-    async fn handle_commit(&self) -> Result<HashMap<Ulid, UploadResult>, SessionError> {
+    pub(super) async fn handle_commit(&self) -> Result<HashMap<Ulid, UploadResult>, SessionError> {
         // Mark as not accepting new tasks. The tokio state lock serialises this
         // against all three registration methods, including start_upload_file
         // which holds it across the start_clean await.

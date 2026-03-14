@@ -18,7 +18,7 @@ use super::super::session::XetSession;
 /// Sync-context handle for grouping related file downloads.
 ///
 /// Obtained from [`XetSession::new_download_group_blocking`]. All methods block
-/// the calling thread — **do not use from within an async runtime** (it will panic).
+/// the calling thread — **do not use from within a tokio async runtime** (it will panic).
 /// For async Rust code use [`DownloadGroup`] from [`XetSession::new_download_group`].
 ///
 /// # Cloning
@@ -35,14 +35,26 @@ impl DownloadGroupSync {
     ///
     /// # Panics
     ///
-    /// Panics if called from within an async runtime — use
+    /// Panics if called from within a tokio async runtime — use
     /// [`XetSession::new_download_group`] instead.
     pub(in super::super) fn new(session: XetSession) -> Result<Self, SessionError> {
         let group = session.runtime.external_run_async_task(DownloadGroup::new(session.clone()))??;
         Ok(Self { inner: group })
     }
 
-    /// Queue a file for download. See [`DownloadGroup::download_file_to_path`] for full documentation.
+    /// Queue a file for download, starting the transfer immediately if system resource permits.
+    ///
+    /// This is the sync-context equivalent of [`DownloadGroup::download_file_to_path`].
+    ///
+    /// # Parameters
+    ///
+    /// - `file_info`: identifies the file to download (hash and size).
+    /// - `dest_path`: path where the downloaded content will be written.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::Aborted`] if the session has been aborted, or
+    /// [`SessionError::AlreadyFinished`] if [`finish`](Self::finish) has already been called.
     pub fn download_file_to_path(
         &self,
         file_info: XetFileInfo,
@@ -58,14 +70,21 @@ impl DownloadGroupSync {
 
     /// Wait for all downloads to complete and return their results.
     ///
-    /// See [`DownloadGroup::finish`] for full documentation.
+    /// Returns a `HashMap` keyed by task ID where each value is
+    /// [`DownloadResult`] (= `Arc<Result<`[`DownloadMetadata`](xet_data::processing::DownloadMetadata)`,
+    /// [`SessionError`]`>>`). A single failed download does not prevent the others from being collected.
+    ///
+    /// Consumes `self` — subsequent calls on any clone will return
+    /// [`SessionError::AlreadyFinished`].
     ///
     /// # Panics
     ///
-    /// Panics if called from within an async runtime. Use [`DownloadGroup::finish`] instead.
+    /// Panics if called from within a tokio async runtime. Use [`DownloadGroup::finish`] instead.
     pub fn finish(self) -> Result<HashMap<Ulid, DownloadResult>, SessionError> {
-        let group = self.inner.clone();
-        self.inner.runtime().external_run_async_task(group.finish())?
+        let group_inner = self.inner.inner.clone();
+        self.inner
+            .runtime()
+            .external_run_async_task(async move { group_inner.handle_finish().await })?
     }
 }
 

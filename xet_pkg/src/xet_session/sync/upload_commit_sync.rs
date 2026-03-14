@@ -18,7 +18,7 @@ use super::super::upload_commit::{UploadCommit, UploadResult};
 /// Sync-context handle for grouping related file uploads.
 ///
 /// Obtained from [`XetSession::new_upload_commit_blocking`]. All methods block
-/// the calling thread — **do not use from within an async runtime** (it will panic).
+/// the calling thread — **do not use from within a tokio async runtime** (it will panic).
 /// For async Rust code use [`UploadCommit`] from [`XetSession::new_upload_commit`].
 ///
 /// # Cloning
@@ -35,7 +35,7 @@ impl UploadCommitSync {
     ///
     /// # Panics
     ///
-    /// Panics if called from within an async runtime — use
+    /// Panics if called from within a tokio async runtime — use
     /// [`XetSession::new_upload_commit`] instead.
     pub(in super::super) fn new(session: XetSession) -> Result<Self, SessionError> {
         let commit = session.runtime.external_run_async_task(UploadCommit::new(session.clone()))??;
@@ -60,7 +60,7 @@ impl UploadCommitSync {
     ///
     /// # Panics
     ///
-    /// Panics if called from within an async runtime. Use [`UploadCommit::upload_from_path`] instead.
+    /// Panics if called from within a tokio async runtime. Use [`UploadCommit::upload_from_path`] instead.
     pub fn upload_from_path(&self, file_path: PathBuf, sha256: Sha256Policy) -> Result<UploadTaskHandle, SessionError> {
         self.inner.session.check_alive()?;
 
@@ -89,7 +89,7 @@ impl UploadCommitSync {
     ///
     /// # Panics
     ///
-    /// Panics if called from within an async runtime. Use [`UploadCommit::upload_bytes`] instead.
+    /// Panics if called from within a tokio async runtime. Use [`UploadCommit::upload_bytes`] instead.
     pub fn upload_bytes(
         &self,
         bytes: Vec<u8>,
@@ -124,7 +124,7 @@ impl UploadCommitSync {
     ///
     /// # Panics
     ///
-    /// Panics if called from within an async runtime. Use [`UploadCommit::upload_file`] instead.
+    /// Panics if called from within a tokio async runtime. Use [`UploadCommit::upload_file`] instead.
     pub fn upload_file(
         &self,
         file_name: Option<String>,
@@ -150,10 +150,12 @@ impl UploadCommitSync {
     ///
     /// # Panics
     ///
-    /// Panics if called from within an async runtime. Use [`UploadCommit::commit`] instead.
+    /// Panics if called from within a tokio async runtime. Use [`UploadCommit::commit`] instead.
     pub fn commit(self) -> Result<HashMap<Ulid, UploadResult>, SessionError> {
-        let commit = self.inner.clone();
-        self.inner.runtime().external_run_async_task(commit.commit())?
+        let commit_inner = self.inner.inner.clone();
+        self.inner
+            .runtime()
+            .external_run_async_task(async move { commit_inner.handle_commit().await })?
     }
 }
 

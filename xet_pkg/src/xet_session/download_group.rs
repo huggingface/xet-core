@@ -39,7 +39,7 @@ use super::session::XetSession;
 /// [`DownloadGroupSync`]: crate::xet_session::sync::DownloadGroupSync
 #[derive(Clone)]
 pub struct DownloadGroup {
-    inner: Arc<DownloadGroupInner>,
+    pub(super) inner: Arc<DownloadGroupInner>,
 }
 
 impl std::ops::Deref for DownloadGroup {
@@ -285,7 +285,7 @@ impl DownloadGroupInner {
     }
 
     /// Join all active download tasks and mark the group as finished.
-    async fn handle_finish(&self) -> Result<HashMap<Ulid, DownloadResult>, SessionError> {
+    pub(super) async fn handle_finish(&self) -> Result<HashMap<Ulid, DownloadResult>, SessionError> {
         // Mark as not accepting new tasks
         {
             let mut state_guard = self.state.lock()?;
