@@ -67,7 +67,7 @@
 //! # Quick start — sync API
 //!
 //! ```rust,no_run
-//! use xet::xet_session::{XetFileInfo, XetSessionBuilder};
+//! use xet::xet_session::{Sha256Policy, XetFileInfo, XetSessionBuilder};
 //!
 //! // 1. Build a session — sync (non-async) context only.
 //! //    For async code call build_async().await instead.
@@ -78,7 +78,7 @@
 //!
 //! // 2. Upload — use the _blocking factory; returns UploadCommitSync
 //! let commit = session.new_upload_commit_blocking()?;
-//! let handle = commit.upload_from_path("file.bin".into())?;
+//! let handle = commit.upload_from_path("file.bin".into(), Sha256Policy::Compute)?;
 //! // UploadResult = Arc<Result<FileMetadata, SessionError>>
 //! let results = commit.commit()?;
 //! let m = results.values().next().unwrap().as_ref().as_ref().unwrap();
@@ -100,7 +100,7 @@
 //! # Quick start — async API
 //!
 //! ```rust,no_run
-//! use xet::xet_session::{XetFileInfo, XetSessionBuilder};
+//! use xet::xet_session::{Sha256Policy, XetFileInfo, XetSessionBuilder};
 //!
 //! # async fn example() -> Result<(), xet::xet_session::SessionError> {
 //! // 1. Build a session. build_async() auto-detects the executor:
@@ -114,7 +114,7 @@
 //!
 //! // 2. Upload — use the async factory; returns UploadCommit
 //! let commit = session.new_upload_commit().await?;
-//! let handle = commit.upload_from_path("file.bin".into()).await?;
+//! let handle = commit.upload_from_path("file.bin".into(), Sha256Policy::Compute).await?;
 //! // UploadResult = Arc<Result<FileMetadata, SessionError>>
 //! let results = commit.commit().await?;
 //! let m = results.values().next().unwrap().as_ref().as_ref().unwrap();
@@ -149,6 +149,6 @@ pub use progress::{
 pub use session::{XetSession, XetSessionBuilder};
 pub use sync::{DownloadGroupSync, UploadCommitSync};
 pub use upload_commit::{FileMetadata, UploadCommit, UploadResult};
-pub use xet_data::processing::XetFileInfo;
-// Re-export XetConfig for convenience
+// Re-export for convenience
+pub use xet_data::processing::{Sha256Policy, XetFileInfo};
 pub use xet_runtime::config::XetConfig;
