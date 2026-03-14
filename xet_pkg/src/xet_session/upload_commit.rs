@@ -93,6 +93,13 @@ impl UploadCommit {
     /// Returns an [`UploadTaskHandle`] that can be used to poll status and per-file
     /// progress without taking the GIL.
     ///
+    /// # Parameters
+    ///
+    /// - `file_path`: path to the file on disk. Resolved to an absolute path internally so the upload is not affected
+    ///   by subsequent changes to the process working directory.
+    /// - `sha256`: controls SHA-256 handling during upload. Use [`Sha256Policy::Compute`] to compute it from the data,
+    ///   [`Sha256Policy::Provided`] to supply a pre-computed digest, or [`Sha256Policy::Skip`] to omit it entirely.
+    ///
     /// # Errors
     ///
     /// Returns [`SessionError::Aborted`] if the session has been aborted, or
@@ -143,11 +150,19 @@ impl UploadCommit {
     ///
     /// # Parameters
     ///
-    /// - `file_name`: optional name used for progress/telemetry reporting.
-    /// - `file_size`: expected size in bytes (used for progress tracking; `0` is valid if unknown).
-    /// - `sha256`: whether to compute a SHA-256 digest during upload.
-    /// # Returns [`TaskHandle`] because the handle isn't expected to hold any result, and instead
-    /// the user is expected to get upload result from the returned [`SingleFileCleaner`].
+    /// - `file_name`: optional display name used for progress and telemetry reporting; does not affect the upload
+    ///   itself.
+    /// - `file_size`: expected total size in bytes, used for progress tracking. Pass `0` when the size is not known in
+    ///   advance.
+    /// - `sha256`: controls SHA-256 handling during upload. Use [`Sha256Policy::Compute`] to compute it from the data,
+    ///   [`Sha256Policy::Provided`] to supply a pre-computed digest, or [`Sha256Policy::Skip`] to omit it entirely.
+    ///
+    /// # Returns
+    ///
+    /// A `(`[`TaskHandle`]`, `[`SingleFileCleaner`]`)` pair. The [`TaskHandle`] tracks task
+    /// lifecycle but carries no upload result — call [`SingleFileCleaner::finish`] on the cleaner
+    /// to obtain the [`FileMetadata`](xet_data::processing::FileMetadata) once all bytes have
+    /// been streamed.
     pub async fn upload_file(
         &self,
         file_name: Option<String>,
@@ -164,7 +179,21 @@ impl UploadCommit {
 
     /// Queue raw bytes for upload, starting the transfer immediately if system resource permits.
     ///
-    /// Returns an [`UploadTaskHandle`]. See [`upload_from_path`](Self::upload_from_path) for details.
+    /// Returns an [`UploadTaskHandle`] that can be used to poll status and retrieve the per-file
+    /// result after [`commit`](Self::commit) completes.
+    ///
+    /// # Parameters
+    ///
+    /// - `bytes`: the raw byte content to upload.
+    /// - `sha256`: controls SHA-256 handling during upload. Use [`Sha256Policy::Compute`] to compute it from the data,
+    ///   [`Sha256Policy::Provided`] to supply a pre-computed digest, or [`Sha256Policy::Skip`] to omit it entirely.
+    /// - `tracking_name`: optional display name used for progress and telemetry reporting; does not affect the upload
+    ///   itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::Aborted`] if the session has been aborted, or
+    /// [`SessionError::AlreadyCommitted`] if [`commit`](Self::commit) has already been called.
     pub async fn upload_bytes(
         &self,
         bytes: Vec<u8>,
@@ -175,7 +204,7 @@ impl UploadCommit {
 
         let inner = self.inner.clone();
         self.session
-            .dispatch("upload_bytes", async move { inner.start_upload_bytes(bytes, tracking_name, sha256).await })
+            .dispatch("upload_bytes", async move { inner.start_upload_bytes(bytes, sha256, tracking_name).await })
             .await?
     }
 
@@ -405,8 +434,8 @@ impl UploadCommitInner {
     pub(super) async fn start_upload_bytes(
         &self,
         bytes: Vec<u8>,
-        tracking_name: Option<String>,
         sha256: Sha256Policy,
+        tracking_name: Option<String>,
     ) -> Result<UploadTaskHandle, SessionError> {
         // Hold the state lock for the duration of this function so commit() will not run
         // when an upload task is registering.
