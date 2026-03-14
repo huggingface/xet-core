@@ -37,6 +37,10 @@ pub struct FileReconstructor {
     /// When cancelled, reconstruction stops at its next check point. Long waits
     /// (such as semaphore acquisition) use `tokio::select!` so they abort promptly.
     cancellation_token: CancellationToken,
+
+    /// Known file size used to bound the reconstruction range for full-file downloads.
+    /// Prevents speculative prefetch blocks from requesting ranges beyond EOF.
+    file_size: Option<u64>,
 }
 
 impl FileReconstructor {
@@ -49,12 +53,20 @@ impl FileReconstructor {
             config: Arc::new(xet_config().reconstruction.clone()),
             custom_buffer_semaphore: None,
             cancellation_token: CancellationToken::new(),
+            file_size: None,
         }
     }
 
     pub fn with_byte_range(self, byte_range: FileRange) -> Self {
         Self {
             byte_range: Some(byte_range),
+            ..self
+        }
+    }
+
+    pub fn with_file_size(self, file_size: u64) -> Self {
+        Self {
+            file_size: Some(file_size),
             ..self
         }
     }
@@ -192,13 +204,17 @@ impl FileReconstructor {
             byte_range,
             config,
             custom_buffer_semaphore,
+            file_size,
             ..
         } = self;
 
         run_state.check_run_state()?;
 
         let file_hash = *run_state.file_hash();
-        let requested_range = byte_range.unwrap_or_else(FileRange::full);
+        let requested_range = byte_range.unwrap_or_else(|| match file_size {
+            Some(size) => FileRange::new(0, size),
+            None => FileRange::full(),
+        });
 
         let mut term_manager = ReconstructionTermManager::new(
             config.clone(),
