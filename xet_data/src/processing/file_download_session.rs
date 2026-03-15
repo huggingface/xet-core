@@ -205,11 +205,8 @@ impl FileDownloadSession {
             task
         });
 
-        let mut reconstructor = FileReconstructor::new(&self.client, file_id).with_file_size(file_info.file_size());
-
-        if let Some(range) = range {
-            reconstructor = reconstructor.with_byte_range(range);
-        }
+        let effective_range = range.unwrap_or_else(|| FileRange::new(0, file_info.file_size()));
+        let mut reconstructor = FileReconstructor::new(&self.client, file_id).with_byte_range(effective_range);
 
         if let Some(tracker) = task_updater {
             reconstructor = reconstructor.with_progress_updater(tracker);
