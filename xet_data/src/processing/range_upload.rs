@@ -141,7 +141,11 @@ pub async fn upload_ranges(
         // Remember the truncation point for composition (step 6).
         // We keep chunk_offsets and original_chunks unmodified for boundary downloads.
     }
-    // If the file grew, the region beyond original_size is always dirty.
+    // If the file grew, ensure the dirty region starts at original_size so the appended
+    // bytes are read from the staging file. The last original chunk (EOF-terminated) will
+    // be included via a first_chunk adjustment below, and its bytes will come from CAS
+    // via the boundary prefix mechanism (not from the staging file, which is sparse).
+    //
     // Scenario: file grew from 450 bytes to 550 bytes
     //
     //   Before:
@@ -149,17 +153,19 @@ pub async fn upload_ranges(
     //   bytes:  0               100                       300               450
     //
     //   After (append 100 bytes):
-    //   file:   [====chunk[0]====][========chunk[1]========][====chunk[2]====][====NEW====]
-    //   bytes:  0               100                       300               450           550
-    //                                                                        ^             ^
-    //                                                                        append_start  total_size
-    //
-    //   The region [450, 550) is added to effective_ranges for re-upload.
+    //   dirty_start = 450 (original_size), first_chunk backed up to include chunk[2]
+    //   boundary downloads [300, 450) from CAS  ← last chunk data
+    //   prefix feeds [300, 450) from CAS        ← boundary prefix mechanism
+    //   dirty reads [450, 550) from staging     ← appended data
+    //   cleaner re-chunks [300, 550) together   ← canonical CDC boundaries
     if total_size > original_size {
         let append_start = original_size;
-        // Merge with last dirty range if they touch, otherwise add a new range.
+        // Merge with last dirty range if they overlap/touch, otherwise add a new range.
+        // Pull start backward to original_size if needed (e.g. caller passed a dirty range
+        // starting after original_size, like a seek-past-EOF write).
         if let Some(last) = effective_ranges.last_mut() {
             if last.1 >= append_start {
+                last.0 = last.0.min(append_start);
                 last.1 = last.1.max(total_size);
             } else {
                 effective_ranges.push((append_start, total_size));
@@ -209,7 +215,16 @@ pub async fn upload_ranges(
         let mut raw = Vec::with_capacity(effective_ranges.len());
         for &(dirty_start, dirty_end) in &effective_ranges {
             // Find the first chunk whose end offset exceeds dirty_start.
-            let first_chunk = chunk_offsets[1..].partition_point(|&o| o <= dirty_start).min(num_chunks);
+            let mut first_chunk = chunk_offsets[1..].partition_point(|&o| o <= dirty_start).min(num_chunks);
+
+            // For append regions (dirty_start >= original_size), include the last original
+            // chunk so it gets re-chunked with the appended data. The last chunk was
+            // terminated by EOF (not by the rolling hash), so its boundary is artificial.
+            // The boundary prefix mechanism will download its bytes from CAS.
+            if total_size > original_size && dirty_start >= original_size && first_chunk > 0 {
+                first_chunk -= 1;
+            }
+
             // Find the last chunk (exclusive) that starts before dirty_end.
             let last_chunk = (0..num_chunks)
                 .rev()
@@ -287,8 +302,9 @@ pub async fn upload_ranges(
 
         // Stream boundary prefix + dirty bytes + boundary suffix into the cleaner.
         // middle_end must cover both the boundary region and the dirty bytes
-        // (dirty_end may extend past boundary_end for truncation or appends).
-        let middle_end = boundary_end.max(region.dirty_end);
+        // (dirty_end may extend past boundary_end for appends), but never exceed
+        // total_size (truncation must not include original bytes past the cut).
+        let middle_end = boundary_end.max(region.dirty_end).min(total_size);
         let middle_size = middle_end.saturating_sub(boundary_start);
 
         // The cleaner processes a "middle" file that spans [boundary_start, middle_end).
@@ -338,16 +354,19 @@ pub async fn upload_ranges(
 
         // c) Boundary bytes AFTER the dirty range.
         // If the dirty range doesn't extend to boundary_end, include the stable suffix.
-        let post_dirty_start = region.dirty_end.min(boundary_end);
-        if post_dirty_start < boundary_end {
+        // Cap at total_size so truncation doesn't leak original bytes beyond the cut point.
+        let effective_boundary_end = boundary_end.min(total_size);
+        let post_dirty_start = region.dirty_end.min(effective_boundary_end);
+        if post_dirty_start < effective_boundary_end {
             let offset = (post_dirty_start - boundary_start) as usize;
+            let end = (effective_boundary_end - boundary_start) as usize;
             debug_assert!(
-                offset < boundary_data.len(),
-                "boundary suffix offset ({offset}) out of range ({} bytes)",
+                end <= boundary_data.len(),
+                "boundary suffix end ({end}) out of range ({} bytes)",
                 boundary_data.len()
             );
             if offset < boundary_data.len() {
-                cleaner.add_data(&boundary_data[offset..]).await?;
+                cleaner.add_data(&boundary_data[offset..end.min(boundary_data.len())]).await?;
             }
         }
 
@@ -360,12 +379,13 @@ pub async fn upload_ranges(
     let middle_file_infos = session.file_info_list().await?;
 
     // Pair each uploaded region with its MDBFileInfo from the session.
-    // Match by content hash. Note: if two regions produce identical content after CDC,
-    // they will have the same hash. We use a Vec to handle this, matching them in order
-    // of their file info discovery to preserve uploaded_regions order.
-    let mut mdb_by_hash: HashMap<MerkleHash, Vec<MDBFileInfo>> = HashMap::new();
+    // Match by content hash. The shard manager deduplicates by file_hash (BTreeMap),
+    // so two regions with identical content produce only ONE MDBFileInfo entry.
+    // This is correct: same hash = same bytes = same chunks = same segments,
+    // so we clone the same MDBFileInfo for all regions sharing that hash.
+    let mut mdb_by_hash: HashMap<MerkleHash, MDBFileInfo> = HashMap::new();
     for mdb in middle_file_infos {
-        mdb_by_hash.entry(mdb.metadata.file_hash).or_default().push(mdb);
+        mdb_by_hash.insert(mdb.metadata.file_hash, mdb);
     }
 
     struct ComposedRegion {
@@ -377,10 +397,9 @@ pub async fn upload_ranges(
     let mut composed_regions: Vec<ComposedRegion> = Vec::new();
     for uploaded in uploaded_regions {
         let middle_hash = MerkleHash::from_hex(uploaded.info.hash())?;
-        let mdb_list = mdb_by_hash.get_mut(&middle_hash).ok_or_else(|| {
+        let mdb = mdb_by_hash.get(&middle_hash).cloned().ok_or_else(|| {
             DataProcessingError::InternalError(format!("no MDBFileInfo for middle hash {}", middle_hash.hex()))
         })?;
-        let mdb = mdb_list.remove(0);
         composed_regions.push(ComposedRegion {
             region: uploaded.region,
             mdb,
@@ -603,6 +622,10 @@ mod tests {
 
         assert_eq!(downloaded.len(), modified_data.len());
         assert_eq!(downloaded, modified_data);
+
+        // Hash must match a clean upload of the same content.
+        let clean_hash = upload_file(&config, &modified_data).await;
+        assert_eq!(result.hash(), clean_hash.hex(), "hash mismatch with clean upload");
     }
 
     /// Helper to upload a file and return its hash.
@@ -660,6 +683,9 @@ mod tests {
         let downloaded = download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), truncated_size).await;
         assert_eq!(downloaded.len(), truncated_size as usize);
         assert_eq!(downloaded, &original_data[..truncated_size as usize]);
+
+        let clean_hash = upload_file(&config, &original_data[..truncated_size as usize]).await;
+        assert_eq!(result.hash(), clean_hash.hex(), "hash mismatch with clean upload");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -696,6 +722,9 @@ mod tests {
 
         let downloaded = download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), total_size).await;
         assert_eq!(downloaded, full_data);
+
+        let clean_hash = upload_file(&config, &full_data).await;
+        assert_eq!(result.hash(), clean_hash.hex(), "hash mismatch with clean upload");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -733,6 +762,9 @@ mod tests {
         let downloaded = download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), total_size).await;
         assert_eq!(downloaded.len(), modified_data.len());
         assert_eq!(downloaded, modified_data);
+
+        let clean_hash = upload_file(&config, &modified_data).await;
+        assert_eq!(result.hash(), clean_hash.hex(), "hash mismatch with clean upload");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -771,6 +803,9 @@ mod tests {
         let downloaded = download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), total_size).await;
         assert_eq!(downloaded.len(), modified_data.len());
         assert_eq!(downloaded, modified_data);
+
+        let clean_hash = upload_file(&config, &modified_data).await;
+        assert_eq!(result.hash(), clean_hash.hex(), "hash mismatch with clean upload");
     }
 
     // ── Data integrity regression tests ──────────────────────────────
@@ -778,7 +813,8 @@ mod tests {
     // All corruption scenarios share a single LocalTestServer to keep
     // test runtime reasonable (~2s total instead of ~1s per scenario).
 
-    /// Helper: upload original, apply modifications via upload_ranges, download composed, verify.
+    /// Helper: upload original, apply modifications via upload_ranges, download composed, verify
+    /// both content and hash equality with a clean upload of the expected data.
     async fn assert_range_edit(
         config: &Arc<TranslatorConfig>,
         cas_client: &Arc<dyn Client>,
@@ -805,50 +841,258 @@ mod tests {
         let downloaded = download_file(config, MerkleHash::from_hex(result.hash()).unwrap(), total_size).await;
         assert_eq!(downloaded.len(), expected.len(), "downloaded length mismatch");
         assert_eq!(&downloaded[..], &expected[..], "content mismatch");
+
+        // Hash must match a clean upload of the same content.
+        let clean_hash = upload_file(config, expected).await;
+        assert_eq!(result.hash(), clean_hash.hex(), "hash mismatch with clean upload");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_two_regions_identical_hash_collision() {
         // Regression test: Two dirty regions that produce the same content (and thus the same hash)
         // must not collide in the mdb_by_hash mapping. Before the fix, the second region would
-        // incorrectly use the MDBFileInfo from the first region, causing silent corruption.
+        // panic on remove(0) from an empty Vec because the shard manager deduplicates MDBFileInfo
+        // entries by file_hash (BTreeMap<MerkleHash, MDBFileInfo>).
+        //
+        // To guarantee a hash collision we use chunk-aligned dirty ranges with identical content:
+        // both regions span the same chunk boundaries (relative to their CDC context) and contain
+        // the same bytes, so the cleaner produces identical hashes.
         let server = LocalTestServerBuilder::new().start().await;
         let base_dir = TempDir::new().unwrap();
         let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
-        // Create an original file: 300 KB of 0xAA.
+        // Create an original file of uniform bytes so CDC produces predictable chunks.
         let original_data = vec![0xAAu8; 300 * 1024];
         let original_hash = upload_file(&config, &original_data).await;
         let original_size = original_data.len() as u64;
 
-        // Create modified data with two identical "dirty" regions:
-        //   Region 1: bytes [50_000, 60_000) filled with 0xBB
-        //   Region 2: bytes [150_000, 160_000) also filled with 0xBB
-        // If both regions produce identical CDC chunks, they will have the same hash.
-        // The bug would cause the second region to incorrectly use Region 1's MDBFileInfo.
-        let mut modified_data = original_data.clone();
-        modified_data[50_000..60_000].fill(0xBB);
-        modified_data[150_000..160_000].fill(0xBB);
+        // Get chunk boundaries to align our dirty ranges.
+        let chunks = cas_client.get_file_chunk_hashes(&original_hash).await.unwrap();
+        // We need at least 4 chunks so we can place two non-adjacent dirty regions
+        // that each span exactly one chunk (guaranteed identical CDC input).
+        if chunks.len() >= 4 {
+            let mut offsets = vec![0u64];
+            for (_, size) in &chunks {
+                offsets.push(offsets.last().unwrap() + size);
+            }
 
-        let mut source = Cursor::new(&modified_data);
+            // Region 1: overwrite chunk[1] entirely. Region 2: overwrite chunk[3] entirely.
+            // Both get the same 0xBB fill, and since each spans exactly one full chunk
+            // boundary, the cleaner input is byte-identical -> same hash.
+            let r1_start = offsets[1] as usize;
+            let r1_end = offsets[2] as usize;
+            let r2_start = offsets[3] as usize;
+            let r2_end = offsets[4].min(original_size) as usize;
+
+            let mut modified_data = original_data.clone();
+            modified_data[r1_start..r1_end].fill(0xBB);
+            modified_data[r2_start..r2_end].fill(0xBB);
+
+            let mut source = Cursor::new(&modified_data);
+            let result = upload_ranges(
+                config.clone(),
+                cas_client.clone(),
+                original_hash,
+                original_size,
+                &[(r1_start as u64, r1_end as u64), (r2_start as u64, r2_end as u64)],
+                &mut source,
+                modified_data.len() as u64,
+            )
+            .await
+            .unwrap();
+
+            let downloaded =
+                download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), modified_data.len() as u64).await;
+            assert_eq!(downloaded.len(), modified_data.len(), "downloaded length mismatch");
+            assert_eq!(&downloaded[..], &modified_data[..], "content mismatch: file was corrupted");
+
+            let clean_hash = upload_file(&config, &modified_data).await;
+            assert_eq!(result.hash(), clean_hash.hex(), "hash mismatch with clean upload");
+        }
+    }
+
+    /// Regression test: truncation must produce the exact same hash as a clean upload
+    /// of the truncated content. Before the fix, boundary bytes beyond total_size leaked
+    /// into the cleaner, producing extra chunks and a wrong file hash.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_truncation_hash_matches_clean_upload() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let cas_client: Arc<dyn Client> = Arc::new(server);
+
+        // Upload a 256 KB file, then truncate to 100 KB via upload_ranges.
+        let original_data = vec![0xCCu8; 256 * 1024];
+        let original_hash = upload_file(&config, &original_data).await;
+        let original_size = original_data.len() as u64;
+
+        let truncated_size = 100_000u64;
+        let truncated_data = &original_data[..truncated_size as usize];
+
+        // upload_ranges with truncation
+        let mut source = Cursor::new(truncated_data);
+        let range_result = upload_ranges(
+            config.clone(),
+            cas_client.clone(),
+            original_hash,
+            original_size,
+            &[],
+            &mut source,
+            truncated_size,
+        )
+        .await
+        .unwrap();
+
+        // Clean upload of the same truncated content
+        let clean_hash = upload_file(&config, truncated_data).await;
+
+        assert_eq!(
+            range_result.hash(),
+            clean_hash.hex(),
+            "truncation hash ({}) does not match clean upload hash ({})",
+            range_result.hash(),
+            clean_hash.hex()
+        );
+    }
+
+    /// Regression test: append must produce the exact same hash as a clean upload
+    /// of the full content. Before the fix, the last original chunk (EOF-terminated)
+    /// was reused verbatim instead of being re-chunked with the appended data.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_append_hash_matches_clean_upload() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let cas_client: Arc<dyn Client> = Arc::new(server);
+
+        let original_data = vec![0xDDu8; 100 * 1024];
+        let original_hash = upload_file(&config, &original_data).await;
+        let original_size = original_data.len() as u64;
+
+        let mut full_data = original_data.clone();
+        full_data.extend(vec![0xEEu8; 50 * 1024]);
+        let total_size = full_data.len() as u64;
+
+        let mut source = Cursor::new(&full_data);
+        let range_result = upload_ranges(
+            config.clone(),
+            cas_client.clone(),
+            original_hash,
+            original_size,
+            &[(original_size, total_size)],
+            &mut source,
+            total_size,
+        )
+        .await
+        .unwrap();
+
+        let clean_hash = upload_file(&config, &full_data).await;
+
+        assert_eq!(
+            range_result.hash(),
+            clean_hash.hex(),
+            "append hash ({}) does not match clean upload hash ({})",
+            range_result.hash(),
+            clean_hash.hex()
+        );
+    }
+
+    /// Regression test: a dirty range starting after original_size must not lose the
+    /// gap bytes [original_size, dirty_start). This simulates a seek-past-EOF write.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_append_with_gap_before_dirty_range() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let cas_client: Arc<dyn Client> = Arc::new(server);
+
+        let original_data = vec![0xAAu8; 100 * 1024];
+        let original_hash = upload_file(&config, &original_data).await;
+        let original_size = original_data.len() as u64;
+
+        // Simulate: seek to original_size + 500, write 4096 bytes of 0xBB.
+        // The gap [original_size, original_size + 500) contains zeros from the sparse file.
+        let gap = 500u64;
+        let write_len = 4096u64;
+        let total_size = original_size + gap + write_len;
+
+        let mut full_data = original_data.clone();
+        full_data.extend(vec![0x00u8; gap as usize]); // sparse hole = zeros
+        full_data.extend(vec![0xBBu8; write_len as usize]);
+
+        let dirty_start = original_size + gap;
+        let dirty_end = total_size;
+
+        let mut source = Cursor::new(&full_data);
         let result = upload_ranges(
             config.clone(),
             cas_client.clone(),
             original_hash,
             original_size,
-            &[(50_000, 60_000), (150_000, 160_000)],
+            &[(dirty_start, dirty_end)],
             &mut source,
-            modified_data.len() as u64,
+            total_size,
         )
         .await
         .unwrap();
 
-        // Verify the composed file matches our expected modifications.
-        let downloaded =
-            download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), modified_data.len() as u64).await;
-        assert_eq!(downloaded.len(), modified_data.len(), "downloaded length mismatch");
-        assert_eq!(&downloaded[..], &modified_data[..], "content mismatch: file was corrupted");
+        assert_eq!(result.file_size(), total_size);
+
+        let downloaded = download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), total_size).await;
+        assert_eq!(downloaded.len(), full_data.len(), "size mismatch");
+        assert_eq!(&downloaded[..], &full_data[..], "content mismatch: gap bytes were lost");
+
+        let clean_hash = upload_file(&config, &full_data).await;
+        assert_eq!(result.hash(), clean_hash.hex(), "hash mismatch with clean upload");
+    }
+
+    /// Regression test: append with a sparse staging file (zeros where CAS data should be).
+    /// This simulates the real hf-mount scenario where the staging file is created with
+    /// set_len(original_size) and only appended bytes are written. The boundary prefix
+    /// mechanism must fetch the last chunk from CAS, not read zeros from the staging file.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_append_sparse_staging_file() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let cas_client: Arc<dyn Client> = Arc::new(server);
+
+        let original_data = vec![0xDDu8; 100 * 1024];
+        let original_hash = upload_file(&config, &original_data).await;
+        let original_size = original_data.len() as u64;
+
+        let append_data = vec![0xEEu8; 50 * 1024];
+        let total_size = original_size + append_data.len() as u64;
+
+        // Build a sparse staging file: zeros for [0, original_size), real data after.
+        // This is what hf-mount produces (sparse hole + appended bytes).
+        let mut sparse_staging = vec![0u8; total_size as usize];
+        sparse_staging[original_size as usize..].copy_from_slice(&append_data);
+
+        let mut source = Cursor::new(&sparse_staging);
+        let result = upload_ranges(
+            config.clone(),
+            cas_client.clone(),
+            original_hash,
+            original_size,
+            &[(original_size, total_size)],
+            &mut source,
+            total_size,
+        )
+        .await
+        .unwrap();
+
+        // Expected: original data + appended data (not zeros + appended data).
+        let mut expected = original_data.clone();
+        expected.extend(&append_data);
+
+        let downloaded = download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), total_size).await;
+        assert_eq!(downloaded.len(), expected.len(), "size mismatch");
+        assert_eq!(&downloaded[..], &expected[..], "content mismatch: CAS data replaced by zeros from sparse file");
+
+        let clean_hash = upload_file(&config, &expected).await;
+        assert_eq!(result.hash(), clean_hash.hex(), "hash mismatch with clean upload");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -932,6 +1176,9 @@ mod tests {
                 .unwrap();
                 let downloaded = download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), size).await;
                 assert_eq!(downloaded, expected, "chunk-boundary edit mismatch");
+
+                let clean_hash = upload_file(&config, &expected).await;
+                assert_eq!(result.hash(), clean_hash.hex(), "hash mismatch with clean upload");
             }
         }
     }
