@@ -404,13 +404,19 @@ pub struct PyXetUploadInfo {
     pub hash: String,
     #[pyo3(get)]
     pub file_size: u64,
+    #[pyo3(get)]
+    pub sha256: Option<String>,
 }
 
 #[pymethods]
 impl PyXetUploadInfo {
     #[new]
     pub fn new(hash: String, file_size: u64) -> Self {
-        Self { hash, file_size }
+        Self {
+            hash,
+            file_size,
+            sha256: None,
+        }
     }
 
     fn __str__(&self) -> String {
@@ -418,7 +424,7 @@ impl PyXetUploadInfo {
     }
 
     fn __repr__(&self) -> String {
-        format!("PyXetUploadInfo({}, {})", self.hash, self.file_size)
+        format!("PyXetUploadInfo({}, {}, {:?})", self.hash, self.file_size, self.sha256)
     }
 
     /// TODO: Remove these getters in the next major version update.
@@ -435,6 +441,7 @@ impl From<XetFileInfo> for PyXetUploadInfo {
         Self {
             hash: xf.hash().to_owned(),
             file_size: xf.file_size(),
+            sha256: xf.sha256().map(str::to_owned),
         }
     }
 }

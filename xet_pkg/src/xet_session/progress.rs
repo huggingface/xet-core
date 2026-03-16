@@ -401,6 +401,7 @@ mod tests {
             tracking_name: Some("file.bin".to_string()),
             hash: "abc123".to_string(),
             file_size: 42,
+            sha256: None,
         }));
         result_arc.set(metadata).unwrap();
 
@@ -451,6 +452,7 @@ mod tests {
             file_info: XetFileInfo {
                 hash: "def456".to_string(),
                 file_size: 99,
+                sha256: None,
             },
         }));
         result_arc.set(download_result).unwrap();

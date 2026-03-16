@@ -119,6 +119,7 @@ async fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: O
             XetFileInfo {
                 hash: m.hash.clone(),
                 file_size: m.file_size,
+                sha256: m.sha256.clone(),
             },
             dest,
         )?);
