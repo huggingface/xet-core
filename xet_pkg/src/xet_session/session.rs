@@ -16,7 +16,6 @@ use xet_runtime::core::XetRuntime;
 
 use super::download_group::DownloadGroup;
 use super::errors::SessionError;
-use super::sync::{DownloadGroupSync, UploadCommitSync};
 use super::upload_commit::UploadCommit;
 
 /// Session state
@@ -387,9 +386,13 @@ impl XetSession {
 
     /// Create a new [`UploadCommit`] from a **sync** (non-async) context.
     ///
+    /// The returned [`UploadCommit`] supports both async methods (`upload_from_path`,
+    /// `commit`) and blocking methods (`upload_from_path_blocking`, `commit_blocking`).
+    ///
     /// Returns `Err(SessionError::Aborted)` if the session has been aborted.
-    /// Returns `Err(SessionError::WrongRuntimeMode)` if the session was built with
-    /// [`XetSessionBuilder::with_tokio_handle`] / [`XetSessionBuilder::build_async`].
+    /// Returns `Err(SessionError::WrongRuntimeMode)` if the session uses an external
+    /// tokio runtime (from [`XetSessionBuilder::with_tokio_handle`] or tokio-detected
+    /// [`XetSessionBuilder::build_async`]).
     ///
     /// # Panics
     ///
@@ -398,11 +401,12 @@ impl XetSession {
     /// async-std, `futures::executor`) do not set this context, so calling from those is
     /// safe — it blocks the executor thread until the task completes. Use
     /// [`new_upload_commit`](Self::new_upload_commit) from async contexts instead.
-    pub fn new_upload_commit_blocking(&self) -> Result<UploadCommitSync, SessionError> {
+    pub fn new_upload_commit_blocking(&self) -> Result<UploadCommit, SessionError> {
         if matches!(self.runtime_mode, RuntimeMode::External) {
             return Err(SessionError::wrong_mode(
-                "new_upload_commit_blocking() cannot be called on a session built with \
-                 with_tokio_handle() / build_async(); use new_upload_commit().await instead",
+                "new_upload_commit_blocking() cannot be called on a session using an \
+                 external tokio runtime (with_tokio_handle() or tokio build_async()); \
+                 use new_upload_commit().await instead",
             ));
         }
         {
@@ -412,11 +416,9 @@ impl XetSession {
             }
         }
 
-        let sync_commit = UploadCommitSync::new(self.clone())?;
-        self.active_upload_commits
-            .lock()?
-            .insert(sync_commit.inner.id(), sync_commit.inner.clone());
-        Ok(sync_commit)
+        let commit = self.runtime.external_run_async_task(UploadCommit::new(self.clone()))??;
+        self.active_upload_commits.lock()?.insert(commit.id(), commit.clone());
+        Ok(commit)
     }
 
     /// Create a new [`DownloadGroup`] that groups related file downloads.
@@ -449,9 +451,13 @@ impl XetSession {
 
     /// Create a new [`DownloadGroup`] from a **sync** (non-async) context.
     ///
+    /// The returned [`DownloadGroup`] supports both the async [`finish`](DownloadGroup::finish)
+    /// and blocking [`finish_blocking`](DownloadGroup::finish_blocking) methods.
+    ///
     /// Returns `Err(SessionError::Aborted)` if the session has been aborted.
-    /// Returns `Err(SessionError::WrongRuntimeMode)` if the session was built with
-    /// [`XetSessionBuilder::with_tokio_handle`] / [`XetSessionBuilder::build_async`].
+    /// Returns `Err(SessionError::WrongRuntimeMode)` if the session uses an external
+    /// tokio runtime (from [`XetSessionBuilder::with_tokio_handle`] or tokio-detected
+    /// [`XetSessionBuilder::build_async`]).
     ///
     /// # Panics
     ///
@@ -460,11 +466,12 @@ impl XetSession {
     /// async-std, `futures::executor`) do not set this context, so calling from those is
     /// safe — it blocks the executor thread until the task completes. Use
     /// [`new_download_group`](Self::new_download_group) from async contexts instead.
-    pub fn new_download_group_blocking(&self) -> Result<DownloadGroupSync, SessionError> {
+    pub fn new_download_group_blocking(&self) -> Result<DownloadGroup, SessionError> {
         if matches!(self.runtime_mode, RuntimeMode::External) {
             return Err(SessionError::wrong_mode(
-                "new_download_group_blocking() cannot be called on a session built with \
-                 with_tokio_handle() / build_async(); use new_download_group().await instead",
+                "new_download_group_blocking() cannot be called on a session using an \
+                 external tokio runtime (with_tokio_handle() or tokio build_async()); \
+                 use new_download_group().await instead",
             ));
         }
         {
@@ -474,11 +481,9 @@ impl XetSession {
             }
         }
 
-        let sync_group = DownloadGroupSync::new(self.clone())?;
-        self.active_download_groups
-            .lock()?
-            .insert(sync_group.inner.id(), sync_group.inner.clone());
-        Ok(sync_group)
+        let group = self.runtime.external_run_async_task(DownloadGroup::new(self.clone()))??;
+        self.active_download_groups.lock()?.insert(group.id(), group.clone());
+        Ok(group)
     }
 
     /// Abort the session - cancel all currently running tasks
@@ -621,7 +626,7 @@ mod tests {
         let c1 = session.new_upload_commit_blocking().unwrap();
         let _c2 = session.new_upload_commit_blocking().unwrap();
         assert_eq!(session.active_upload_commits.lock().unwrap().len(), 2);
-        session.finish_upload_commit(c1.inner.id()).unwrap();
+        session.finish_upload_commit(c1.id()).unwrap();
         assert_eq!(session.active_upload_commits.lock().unwrap().len(), 1);
     }
 
@@ -632,7 +637,7 @@ mod tests {
         let g1 = session.new_download_group_blocking().unwrap();
         let _g2 = session.new_download_group_blocking().unwrap();
         assert_eq!(session.active_download_groups.lock().unwrap().len(), 2);
-        session.finish_download_group(g1.inner.id()).unwrap();
+        session.finish_download_group(g1.id()).unwrap();
         assert_eq!(session.active_download_groups.lock().unwrap().len(), 1);
     }
 

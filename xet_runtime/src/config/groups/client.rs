@@ -217,7 +217,7 @@ crate::config_group!({
     /// The default value is 2.
     ///
     /// Use the environment variable `HF_XET_CLIENT_AC_INITIAL_UPLOAD_CONCURRENCY` to set this value.
-    ref ac_initial_upload_concurrency: usize = 1;
+    ref ac_initial_upload_concurrency: usize = 2;
 
     /// The maximum number of simultaneous download streams permitted by
     /// the adaptive concurrency control.
@@ -238,10 +238,10 @@ crate::config_group!({
     /// The starting number of concurrent download streams, which will increase up to max_concurrent_downloads
     /// on successful completions.
     ///
-    /// The default value is 1.
+    /// The default value is 4.
     ///
     /// Use the environment variable `HF_XET_CLIENT_AC_INITIAL_DOWNLOAD_CONCURRENCY` to set this value.
-    ref ac_initial_download_concurrency: usize = 1;
+    ref ac_initial_download_concurrency: usize = 4;
 
     /// Path to Unix domain socket for CAS HTTP connections.
     /// When set, all CAS HTTP traffic uses this socket instead of TCP.
@@ -251,5 +251,25 @@ crate::config_group!({
     ///
     /// Use the environment variable `HF_XET_CLIENT_UNIX_SOCKET_PATH` to set this value.
     ref unix_socket_path: Option<String> = None;
+
+    /// The reconstruction API version to request from the CAS server.
+    /// When set to 1 or 2, forces that version with no fallback.
+    /// When unset, auto-detects by trying V2 first, falling back to V1 on 404 or 501.
+    ///
+    /// The default value is None (auto-detect).
+    ///
+    /// Use the environment variable `HF_XET_CLIENT_RECONSTRUCTION_API_VERSION` to set this value.
+    ref reconstruction_api_version: Option<u32> = None;
+
+    /// Whether to use multi-range HTTP requests when fetching xorb data.
+    /// When false (default), V2 multi-range fetch entries are split into
+    /// individual single-range requests executed in parallel, which avoids
+    /// slow server-side multirange processing.
+    /// When true, multi-range requests are sent as-is.
+    ///
+    /// The default value is false.
+    ///
+    /// Use the environment variable `HF_XET_CLIENT_ENABLE_MULTIRANGE_FETCHING` to set this value.
+    ref enable_multirange_fetching: bool = false;
 
 });

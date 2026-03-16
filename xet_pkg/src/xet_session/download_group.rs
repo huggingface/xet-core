@@ -14,16 +14,17 @@ use super::errors::SessionError;
 use super::progress::{DownloadTaskHandle, GroupProgress, ProgressSnapshot, TaskHandle, TaskStatus};
 use super::session::XetSession;
 
-/// Async API for grouping related file downloads into a single unit of work.
+/// API for grouping related file downloads into a single unit of work.
 ///
-/// Obtain via [`XetSession::new_download_group`] from an `async` context.
-/// For sync / non-async code use [`DownloadGroupSync`] from
-/// [`XetSession::new_download_group_blocking`] instead.
+/// Obtain via [`XetSession::new_download_group`] (async) or
+/// [`XetSession::new_download_group_blocking`] (sync).
 ///
 /// Queue files with [`download_file_to_path`](Self::download_file_to_path) (they start
 /// downloading immediately in the background), poll progress with
-/// [`get_progress`](Self::get_progress), then `await`
-/// [`finish`](Self::finish) to wait for all downloads to complete.
+/// [`get_progress`](Self::get_progress), then call
+/// [`finish`](Self::finish) (async) or
+/// [`finish_blocking`](Self::finish_blocking) (sync) to wait for all
+/// downloads to complete.
 ///
 /// # Cloning
 ///
@@ -35,8 +36,6 @@ use super::session::XetSession;
 /// Methods return [`SessionError::Aborted`] if the parent session has been
 /// aborted, and [`SessionError::AlreadyFinished`] if
 /// [`finish`](Self::finish) has already been called.
-///
-/// [`DownloadGroupSync`]: crate::xet_session::sync::DownloadGroupSync
 #[derive(Clone)]
 pub struct DownloadGroup {
     pub(super) inner: Arc<DownloadGroupInner>,
@@ -149,6 +148,16 @@ impl DownloadGroup {
             Err(_) => false,
         }
     }
+
+    /// Blocking version of [`finish`](Self::finish).
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async runtime.
+    pub fn finish_blocking(self) -> Result<HashMap<Ulid, DownloadResult>, SessionError> {
+        let group = self.clone();
+        self.runtime().external_run_async_task(group.finish())?
+    }
 }
 
 /// Per-file result type returned by [`DownloadGroup::finish`].
@@ -209,10 +218,16 @@ impl DownloadGroupInner {
     ) -> JoinHandle<Result<XetFileInfo, SessionError>> {
         let semaphore = self.runtime().common().file_download_semaphore.clone();
         self.runtime().spawn(async move {
-            // Update status from "Queued" to "Running" once a semaphore permit is acquired.
             let _permit = semaphore.acquire().await?;
 
-            *status.lock()? = TaskStatus::Running;
+            // Only transition Queued → Running; bail if abort() already set Cancelled.
+            {
+                let mut s = status.lock()?;
+                if !matches!(*s, TaskStatus::Queued) {
+                    return Err(SessionError::Aborted);
+                }
+                *s = TaskStatus::Running;
+            }
 
             let result: Result<_, SessionError> = download_session
                 .download_file(&file_info, &dest_path, tracking_id)
@@ -809,5 +824,164 @@ mod tests {
             group.finish().await.unwrap();
             assert_eq!(std::fs::read(&dest).unwrap(), data);
         });
+    }
+
+    // ── Blocking API tests ────────────────────────────────────────────────────
+
+    fn local_session_sync(temp: &TempDir) -> Result<XetSession, Box<dyn std::error::Error>> {
+        let cas_path = temp.path().join("cas");
+        Ok(XetSessionBuilder::new()
+            .with_endpoint(format!("local://{}", cas_path.display()))
+            .build()?)
+    }
+
+    fn upload_bytes_blocking(
+        session: &XetSession,
+        data: &[u8],
+        name: &str,
+    ) -> Result<XetFileInfo, Box<dyn std::error::Error>> {
+        let commit = session.new_upload_commit_blocking()?;
+        let handle = commit.upload_bytes_blocking(data.to_vec(), Sha256Policy::Compute, Some(name.into()))?;
+        let results = commit.commit_blocking()?;
+        let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
+        Ok(XetFileInfo {
+            hash: meta.hash.clone(),
+            file_size: meta.file_size,
+        })
+    }
+
+    #[test]
+    fn test_blocking_download_file_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let session = local_session_sync(&temp)?;
+        let original = b"Hello, download round-trip!";
+        let file_info = upload_bytes_blocking(&session, original, "payload.bin")?;
+
+        let dest = temp.path().join("downloaded.bin");
+        let group = session.new_download_group_blocking()?;
+        group.download_file_to_path(file_info, dest.clone())?;
+        group.finish_blocking()?;
+
+        assert_eq!(std::fs::read(&dest)?, original);
+        Ok(())
+    }
+
+    #[test]
+    fn test_blocking_download_multiple_files() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let session = local_session_sync(&temp)?;
+
+        let data_a = b"First file content";
+        let data_b = b"Second file content - different";
+
+        let commit = session.new_upload_commit_blocking()?;
+        let handle_a = commit.upload_bytes_blocking(data_a.to_vec(), Sha256Policy::Compute, Some("a.bin".into()))?;
+        let handle_b = commit.upload_bytes_blocking(data_b.to_vec(), Sha256Policy::Compute, Some("b.bin".into()))?;
+        let results = commit.commit_blocking()?;
+
+        let to_file_info = |handle: &crate::xet_session::progress::UploadTaskHandle| -> XetFileInfo {
+            let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
+            XetFileInfo {
+                hash: meta.hash.clone(),
+                file_size: meta.file_size,
+            }
+        };
+
+        let dest_a = temp.path().join("a_out.bin");
+        let dest_b = temp.path().join("b_out.bin");
+        let group = session.new_download_group_blocking()?;
+        group.download_file_to_path(to_file_info(&handle_a), dest_a.clone())?;
+        group.download_file_to_path(to_file_info(&handle_b), dest_b.clone())?;
+        group.finish_blocking()?;
+
+        assert_eq!(std::fs::read(&dest_a)?, data_a);
+        assert_eq!(std::fs::read(&dest_b)?, data_b);
+        Ok(())
+    }
+
+    #[test]
+    fn test_blocking_download_progress_reflects_bytes_after_finish() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let session = local_session_sync(&temp)?;
+        let original = b"download progress tracking data";
+        let file_info = upload_bytes_blocking(&session, original, "prog.bin")?;
+
+        let dest = temp.path().join("out.bin");
+        let group = session.new_download_group_blocking()?;
+        let progress_observer = group.clone();
+        group.download_file_to_path(file_info, dest)?;
+        group.finish_blocking()?;
+
+        std::thread::sleep(
+            session
+                .runtime
+                .config()
+                .data
+                .progress_update_interval
+                .saturating_add(Duration::from_secs(1)),
+        );
+        let snapshot = progress_observer.get_progress()?;
+        assert!(snapshot.total().total_bytes_completed > 0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_blocking_download_result_access_patterns() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let session = local_session_sync(&temp)?;
+        let data = b"download result access patterns";
+        let file_info = upload_bytes_blocking(&session, data, "file.bin")?;
+        let dest = temp.path().join("out.bin");
+        let group = session.new_download_group_blocking()?;
+        let handle = group.download_file_to_path(file_info.clone(), dest)?;
+
+        // Before finish, per-task result is not available yet.
+        assert!(handle.result().is_none());
+
+        let results = group.finish_blocking()?;
+
+        // Result should be available in the finish map by task id.
+        let map_result = results.get(&handle.task_id).expect("task_id must be present in results");
+        assert_eq!(map_result.as_ref().as_ref().unwrap().file_info.file_size, data.len() as u64);
+
+        // Result should also be available via the task handle.
+        let result = handle.result().expect("result must be set after finish");
+        let dl = result.as_ref().as_ref().unwrap();
+        assert_eq!(dl.file_info.file_size, data.len() as u64);
+        assert_eq!(dl.file_info.hash, file_info.hash);
+        Ok(())
+    }
+
+    fn assert_blocking_download_round_trip<R>(run: R)
+    where
+        R: FnOnce(std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>),
+    {
+        let temp = tempdir().unwrap();
+        let session = local_session_sync(&temp).unwrap();
+
+        run(Box::pin(async move {
+            let data = b"download from smol executor";
+            let file_info = upload_bytes_blocking(&session, data, "test.bin").unwrap();
+            let dest = temp.path().join("out_smol.bin");
+            let group = session.new_download_group_blocking().unwrap();
+            group.download_file_to_path(file_info, dest.clone()).unwrap();
+            group.finish_blocking().unwrap();
+            assert_eq!(std::fs::read(&dest).unwrap(), data);
+        }));
+    }
+
+    #[test]
+    fn test_blocking_download_round_trip_in_smol() {
+        assert_blocking_download_round_trip(|fut| smol::block_on(fut));
+    }
+
+    #[test]
+    fn test_blocking_download_round_trip_in_futures_executor() {
+        assert_blocking_download_round_trip(|fut| futures::executor::block_on(fut));
+    }
+
+    #[test]
+    fn test_blocking_download_round_trip_in_async_std() {
+        assert_blocking_download_round_trip(|fut| async_std::task::block_on(fut));
     }
 }

@@ -7,6 +7,7 @@ use tokio::sync::OnceCell;
 use xet_client::cas_client::Client;
 use xet_client::cas_types::{ChunkRange, FileRange, HttpRange};
 use xet_core_structures::merklehash::MerkleHash;
+use xet_runtime::core::xet_config;
 use xet_runtime::utils::UniqueId;
 
 use super::super::FileReconstructionError;
@@ -19,17 +20,28 @@ use crate::progress_tracking::download_tracking::DownloadTaskUpdater;
 /// in the output file that maps to a chunk range within a xorb block.
 #[derive(Clone)]
 pub struct FileTerm {
+    // The byte range in the file of this term.
     pub byte_range: FileRange,
+
+    // Absolute chunk range within the full xorb.  Doesn't account for only a partial xorb being downloaded.
     pub xorb_chunk_range: ChunkRange,
+
+    // The index of the (chunk index, byte offset) pair in the xorb block that starts this file term.
+    pub xorb_block_start_index: usize,
+
+    // The byte offset into the first range of the xorb block should this term not start on a chunk boundary.
     pub offset_into_first_range: u64,
+
+    // The xorb block that sourced this file term.
     pub xorb_block: Arc<XorbBlock>,
+
+    // The retrieval URL information for this file term.
     pub url_info: Arc<TermBlockRetrievalURLs>,
 }
 
 impl FileTerm {
     pub fn extract_bytes(&self, xorb_block_data: &XorbBlockData) -> Bytes {
-        let local_start_chunk = (self.xorb_chunk_range.start - self.xorb_block.chunk_range.start) as usize;
-        let start_byte_offset = xorb_block_data.chunk_offsets[local_start_chunk];
+        let (_, start_byte_offset) = xorb_block_data.chunk_offsets[self.xorb_block_start_index];
         let start_byte_offset = start_byte_offset + self.offset_into_first_range as usize;
         let expected_size = (self.byte_range.end - self.byte_range.start) as usize;
         let end_byte_offset = start_byte_offset + expected_size;
@@ -67,6 +79,25 @@ impl FileTerm {
     }
 }
 
+/// Intermediate data for a single file term, collected during the first pass of
+/// `retrieve_file_term_block` before the final `FileTerm` structs are built.
+///
+/// We need this because `FileTerm` requires `Arc<XorbBlock>` and `Arc<TermBlockRetrievalURLs>`,
+/// which can't be constructed until all terms have been processed.
+struct FileTermEntry {
+    /// The byte range in the output file that this term covers.
+    byte_range: FileRange,
+    /// The chunk range within the xorb that sources this term's data.
+    xorb_chunk_range: ChunkRange,
+    /// Byte offset into the first chunk's data, non-zero only for the first term
+    /// when the query range starts mid-chunk.
+    offset_into_first_range: u64,
+    /// Index into the `xorb_blocks` / `xorb_block_retrieval_urls` vectors.
+    xorb_block_index: usize,
+    /// Flattened index into the xorb block's `chunk_offsets` for this term's start chunk.
+    xorb_block_start_index: usize,
+}
+
 /// Retrieve file terms from the client for a given file hash and byte range.
 /// Returns None if the requested byte range is past the end of the file.
 /// Returns the actual retrieved range and the number of bytes required for the
@@ -77,170 +108,233 @@ pub async fn retrieve_file_term_block(
     file_hash: MerkleHash,
     query_file_byte_range: FileRange,
 ) -> Result<Option<(FileRange, u64, Vec<FileTerm>)>> {
-    // First, get the raw reconstruction.
+    // get_reconstruction always returns V2 format (the client converts V1 internally).
     let Some(raw_reconstruction) = client.get_reconstruction(&file_hash, Some(query_file_byte_range)).await? else {
         // None means we've requested a byte range beyond the end of the file.
         return Ok(None);
     };
 
-    // Set a new url acquisition id to ensure that we don't double up the url acquisitions.
+    // Each acquisition gets a unique ID used for single-flight URL refresh dedup.
     let acquisition_id = UniqueId::new();
 
-    // Intermediate storage for file term data before we create the actual FileTerm structs.
-    // (byte_range, xorb_chunk_range, offset_into_first_range, index into xorb_blocks)
-    let mut file_term_data = Vec::<(FileRange, ChunkRange, u64, usize)>::with_capacity(raw_reconstruction.terms.len());
+    // First pass: iterate through the reconstruction terms and build up intermediate
+    // FileTermEntry data, XorbBlock objects, and retrieval URL info.  We can't construct
+    // the final FileTerm structs yet because they need Arc<XorbBlock> and Arc<TermBlockRetrievalURLs>,
+    // which require all terms to be processed first.
+    let mut file_term_data = Vec::<FileTermEntry>::with_capacity(raw_reconstruction.terms.len());
 
-    let n_xorb_terms = raw_reconstruction.fetch_info.values().map(|v| v.len()).sum();
+    // Parallel vectors indexed by xorb_block_index:
+    // - xorb_blocks: the block metadata (hash, chunk ranges, references)
+    // - xorb_block_retrieval_urls: the download URL and byte ranges for each block
+    let mut xorb_blocks: Vec<XorbBlock> = Vec::new();
+    let mut xorb_block_retrieval_urls = Vec::<(String, Vec<HttpRange>)>::new();
 
-    // Keep track of the xorb blocks we've created, keyed by (xorb_hash, first chunk index).
-    let mut xorb_blocks: Vec<XorbBlock> = Vec::with_capacity(n_xorb_terms);
+    // Dedup map: (xorb_hash, first_range_chunk_start) -> xorb_block_index.
+    // Multiple terms may reference the same xorb block; this ensures we create
+    // each block only once and share it across terms.
+    let mut xorb_index_lookup = HashMap::<(MerkleHash, u32), usize>::new();
 
-    // Keep track of the URLs for each.
-    let mut xorb_block_retrieval_urls = Vec::<(String, HttpRange)>::with_capacity(n_xorb_terms);
-
-    // Get a hash map so we can reindex the xorb terms; map of (xorb_hash, first chunk index) -> xorb block index.
-    let mut xorb_index_lookup = HashMap::<(MerkleHash, u64), usize>::with_capacity(n_xorb_terms);
-
-    // Keep track of where we are so as to map the file terms to the byte range within the file.
+    // Track the current byte offset in the output file as we process terms sequentially.
     let mut cur_file_byte_offset = query_file_byte_range.start;
 
-    // We'll create the URL info after processing all terms, once we know the actual range.
+    let enable_multirange = xet_config().client.enable_multirange_fetching;
 
-    // Iterate over the terms and build the file terms and xorb terms.
     for (local_term_index, term) in raw_reconstruction.terms.iter().enumerate() {
         let xorb_hash: MerkleHash = term.hash.into();
 
-        // Get the xorb info here.
-        let Some(xorb_info) = raw_reconstruction.fetch_info.get(&term.hash) else {
+        let Some(xorb_descriptor) = raw_reconstruction.xorbs.get(&term.hash) else {
             return Err(FileReconstructionError::CorruptedReconstruction(format!(
                 "Xorb info not found for xorb hash {xorb_hash:?}"
             )));
         };
 
-        // Get the xorb block index that this term belongs to.
+        // Find the XorbBlock for this term's chunk range. The behavior depends on the
+        // enable_multirange_fetching config:
+        //
+        // - When true: one XorbBlock per XorbMultiRangeFetch entry, preserving all ranges in a single block
+        //   (multi-range HTTP request).
+        // - When false (default): one XorbBlock per individual XorbRangeDescriptor, so each range is fetched as a
+        //   separate single-range HTTP request in parallel.
         let xorb_block_index = 'find_xorb_block: {
-            for raw_xorb_block_info in xorb_info.iter() {
-                let chunk_range = raw_xorb_block_info.range;
+            for fetch_entry in xorb_descriptor.iter() {
+                if enable_multirange {
+                    let term_contained = fetch_entry
+                        .ranges
+                        .iter()
+                        .any(|r| r.chunks.start <= term.range.start && term.range.end <= r.chunks.end);
 
-                if chunk_range.start <= term.range.start && term.range.start <= chunk_range.end {
-                    // Verify that the term range is contained within the xorb block.
-                    if term.range.end > chunk_range.end {
-                        return Err(FileReconstructionError::CorruptedReconstruction(format!(
-                            "Term range extends beyond xorb block range for xorb hash {xorb_hash:?}"
-                        )));
+                    if !term_contained {
+                        continue;
                     }
 
-                    // Reuse the previous one if it exists, otherwise insert a new one.
-                    let index = match xorb_index_lookup.entry((xorb_hash, chunk_range.start as u64)) {
+                    let first_chunk_start = fetch_entry.ranges[0].chunks.start;
+
+                    let index = match xorb_index_lookup.entry((xorb_hash, first_chunk_start)) {
                         Entry::Occupied(entry) => *entry.get(),
                         Entry::Vacant(entry) => {
                             let new_index = xorb_blocks.len();
+
+                            let chunk_ranges: Vec<ChunkRange> = fetch_entry.ranges.iter().map(|r| r.chunks).collect();
+                            let http_ranges: Vec<HttpRange> = fetch_entry.ranges.iter().map(|r| r.bytes).collect();
+
                             xorb_blocks.push(XorbBlock {
                                 xorb_hash,
-                                chunk_range,
+                                chunk_ranges,
                                 xorb_block_index: new_index,
                                 references: vec![],
                                 uncompressed_size_if_known: None,
                                 data: OnceCell::new(),
                             });
 
-                            // Store the retrieval URL and range for this xorb block.
-                            xorb_block_retrieval_urls
-                                .push((raw_xorb_block_info.url.clone(), raw_xorb_block_info.url_range));
+                            xorb_block_retrieval_urls.push((fetch_entry.url.clone(), http_ranges));
 
-                            // Store the index.
                             entry.insert(new_index);
                             new_index
                         },
                     };
 
                     break 'find_xorb_block index;
+                } else {
+                    for range in &fetch_entry.ranges {
+                        if range.chunks.start <= term.range.start && term.range.end <= range.chunks.end {
+                            let index = match xorb_index_lookup.entry((xorb_hash, range.chunks.start)) {
+                                Entry::Occupied(entry) => *entry.get(),
+                                Entry::Vacant(entry) => {
+                                    let new_index = xorb_blocks.len();
+
+                                    xorb_blocks.push(XorbBlock {
+                                        xorb_hash,
+                                        chunk_ranges: vec![range.chunks],
+                                        xorb_block_index: new_index,
+                                        references: vec![],
+                                        uncompressed_size_if_known: None,
+                                        data: OnceCell::new(),
+                                    });
+
+                                    xorb_block_retrieval_urls.push((fetch_entry.url.clone(), vec![range.bytes]));
+
+                                    entry.insert(new_index);
+                                    new_index
+                                },
+                            };
+
+                            break 'find_xorb_block index;
+                        }
+                    }
                 }
             }
             return Err(FileReconstructionError::CorruptedReconstruction(format!(
-                "No xorb chunk range found for file term {local_term_index:?} in xorb info for xorb hash {xorb_hash:?}"
+                "No xorb fetch entry found for file term {local_term_index:?} in xorb info for xorb hash {xorb_hash:?}"
             )));
         };
 
-        // Do we need to adjust for an offset into the first range?
-        let offset_into_first_range = {
-            if local_term_index == 0 {
-                raw_reconstruction.offset_into_first_range
-            } else {
-                0
-            }
+        // Only the first term can have a non-zero offset into its first chunk,
+        // which happens when the query byte range starts mid-chunk.
+        let offset_into_first_range = if local_term_index == 0 {
+            raw_reconstruction.offset_into_first_range
+        } else {
+            0
         };
 
-        // The effective size of this term in the file.
+        // The term's contribution to the output file is its full uncompressed size
+        // minus any offset into the first chunk.
         let term_byte_size = term.unpacked_length as u64 - offset_into_first_range;
 
-        // Update the references term on the XorbBlock to track where the xorb gets used.
+        // Record this term as a reference on its xorb block (used later to determine
+        // whether the block's total uncompressed size can be inferred).
         xorb_blocks[xorb_block_index].references.push(XorbReference {
             term_chunks: term.range,
             uncompressed_size: term.unpacked_length as usize,
         });
 
-        // Store the file term data (byte_range, xorb_chunk_range, offset_into_first_range, xorb_block_index).
-        // We'll create the FileTerm structs after we know the actual range.
-        file_term_data.push((
-            FileRange::new(cur_file_byte_offset, cur_file_byte_offset + term_byte_size),
-            term.range,
+        // Compute the flattened index into the block's chunk_offsets for this term's
+        // starting chunk. This accounts for disjoint chunk ranges in multi-range blocks.
+        //
+        // The term_contained check above guarantees term.range.start falls within one of
+        // the block's chunk_ranges, so this loop always finds a match.
+        let xorb_block_start_index = {
+            let chunk_start = term.range.start;
+            let chunk_ranges = &xorb_blocks[xorb_block_index].chunk_ranges;
+            let mut idx = 0;
+            let mut found = false;
+            for range in chunk_ranges {
+                if chunk_start >= range.start && chunk_start < range.end {
+                    idx += (chunk_start - range.start) as usize;
+                    found = true;
+                    break;
+                }
+                idx += (range.end - range.start) as usize;
+            }
+            if !found {
+                return Err(FileReconstructionError::CorruptedReconstruction(format!(
+                    "chunk_start {chunk_start} not found in chunk_ranges {chunk_ranges:?} for file term {local_term_index}"
+                )));
+            }
+            idx
+        };
+
+        file_term_data.push(FileTermEntry {
+            byte_range: FileRange::new(cur_file_byte_offset, cur_file_byte_offset + term_byte_size),
+            xorb_chunk_range: term.range,
             offset_into_first_range,
             xorb_block_index,
-        ));
+            xorb_block_start_index,
+        });
 
         cur_file_byte_offset += term_byte_size;
     }
 
-    // Sort the block references so that we can easily scan the terms to figure out how many references
-    // a particular chunk may have.
+    // Sort each block's references by chunk start so that determine_size_if_possible
+    // can use its forward-chaining DP to check coverage.
     for block in &mut xorb_blocks {
         block.references.sort_by_key(|r| r.term_chunks.start);
-        block.uncompressed_size_if_known = XorbBlock::determine_size_if_possible(block.chunk_range, &block.references);
+        block.uncompressed_size_if_known =
+            XorbBlock::determine_size_if_possible(&block.chunk_ranges, &block.references);
     }
 
-    // Now, it's possible that we have to shrink the byte range of the last term, as we may have retrieved more
-    // due to chunk offsets.
+    // The last term in the reconstruction may extend beyond the requested range
+    // (e.g. when the query ends mid-chunk). Trim it to the query boundary.
     if cur_file_byte_offset > query_file_byte_range.end {
         let last_term_shrinkage = cur_file_byte_offset - query_file_byte_range.end;
 
         debug_assert!(!file_term_data.is_empty());
 
-        if let Some(fi) = file_term_data.last_mut() {
-            fi.0.end -= last_term_shrinkage;
+        if let Some(entry) = file_term_data.last_mut() {
+            entry.byte_range.end -= last_term_shrinkage;
         }
     }
 
-    // Calculate the actual retrieved range from the file terms.
+    // The actual range covered, which may be smaller than requested if the file
+    // ends before the requested range.
     let actual_range = FileRange::new(
-        file_term_data.first().map(|(br, _, _, _)| br.start).unwrap_or(0),
-        file_term_data.last().map(|(br, _, _, _)| br.end).unwrap_or(0),
+        file_term_data.first().map(|e| e.byte_range.start).unwrap_or(0),
+        file_term_data.last().map(|e| e.byte_range.end).unwrap_or(0),
     );
 
-    // Now, calculate the total number of bytes that needs to be downloaded given dedup and compression savings.
-    let total_transfer_bytes = xorb_block_retrieval_urls
+    // Total compressed bytes that will be transferred across all xorb block downloads.
+    let total_transfer_bytes: u64 = xorb_block_retrieval_urls
         .iter()
-        .map(|(_, http_range)| {
-            let file_range = FileRange::from(*http_range);
-            file_range.end.saturating_sub(file_range.start)
-        })
+        .flat_map(|(_, ranges)| ranges)
+        .map(|r| r.length())
         .sum();
 
-    // Now create the URL info with the actual range and retrieval URLs.
+    // Wrap the retrieval URLs in a shared struct so all file terms can share them
+    // and coordinate URL refreshes through a single lock.
     let url_info =
         Arc::new(TermBlockRetrievalURLs::new(file_hash, actual_range, acquisition_id, xorb_block_retrieval_urls));
 
-    // Convert xorb_blocks to Arc<XorbBlock> for use in FileTerms.
+    // Second pass: convert the intermediate FileTermEntry data into final FileTerm
+    // structs, now that we can wrap xorb blocks in Arc and share the url_info.
     let xorb_blocks_arc: Vec<Arc<XorbBlock>> = xorb_blocks.into_iter().map(Arc::new).collect();
 
-    // Convert the intermediate data to FileTerm structs with the shared url_info.
     let file_terms: Vec<FileTerm> = file_term_data
         .into_iter()
-        .map(|(byte_range, xorb_chunk_range, offset_into_first_range, xorb_block_index)| FileTerm {
-            byte_range,
-            xorb_chunk_range,
-            offset_into_first_range,
-            xorb_block: xorb_blocks_arc[xorb_block_index].clone(),
+        .map(|entry| FileTerm {
+            byte_range: entry.byte_range,
+            xorb_chunk_range: entry.xorb_chunk_range,
+            xorb_block_start_index: entry.xorb_block_start_index,
+            offset_into_first_range: entry.offset_into_first_range,
+            xorb_block: xorb_blocks_arc[entry.xorb_block_index].clone(),
             url_info: url_info.clone(),
         })
         .collect();
@@ -252,7 +346,7 @@ pub async fn retrieve_file_term_block(
 mod tests {
     use std::sync::Arc;
 
-    use more_asserts::{assert_ge, assert_le};
+    use more_asserts::assert_le;
     use xet_client::cas_client::{ClientTestingUtils, LocalClient, RandomFileContents};
     use xet_client::cas_types::{ChunkRange, FileRange};
     use xet_runtime::utils::UniqueId;
@@ -351,10 +445,18 @@ mod tests {
             // Track xorb block index
             seen_xorb_indices.insert(file_term.xorb_block.xorb_block_index);
 
-            // Verify chunk range is within xorb block boundaries.
+            // Verify chunk range is within xorb block boundaries: the term's chunk range
+            // must be contained within at least one of the block's chunk ranges.
             let xorb_block = &file_term.xorb_block;
-            assert_ge!(file_term.xorb_chunk_range.start, xorb_block.chunk_range.start);
-            assert_le!(file_term.xorb_chunk_range.end, xorb_block.chunk_range.end);
+            let term_in_some_range = xorb_block
+                .chunk_ranges
+                .iter()
+                .any(|cr| file_term.xorb_chunk_range.start >= cr.start && file_term.xorb_chunk_range.end <= cr.end);
+            assert!(
+                term_in_some_range,
+                "term chunk range {:?} not within any block chunk range {:?}",
+                file_term.xorb_chunk_range, xorb_block.chunk_ranges
+            );
 
             // Cross-reference with known file contents.
             if expected_term_idx < file_contents.terms.len() {
@@ -365,7 +467,7 @@ mod tests {
 
                 // Verify chunk range matches (accounting for partial first term).
                 if file_term_data_offset == 0 {
-                    assert_eq!(file_term.xorb_chunk_range.start as u32, expected_term.chunk_start);
+                    assert_eq!(file_term.xorb_chunk_range.start, expected_term.chunk_start);
                 }
             }
 
@@ -549,10 +651,11 @@ mod tests {
         // Get the first file term's xorb block to test URL retrieval
         let file_term = &file_terms[0];
         let xorb_block_index = file_term.xorb_block.xorb_block_index;
-        let (unique_id, url, http_range) = file_term.url_info.get_retrieval_url(xorb_block_index).await;
+        let (unique_id, url, http_ranges) = file_term.url_info.get_retrieval_url(xorb_block_index).await;
 
         assert!(!url.is_empty());
-        assert!(http_range.start < http_range.end);
+        assert!(!http_ranges.is_empty());
+        assert!(http_ranges[0].start <= http_ranges[0].end);
         assert!(unique_id != UniqueId::null());
     }
 
@@ -591,87 +694,136 @@ mod tests {
 
     #[tokio::test]
     async fn test_range_few_bytes_before_end() {
-        // Test requesting a range that ends just a few bytes before the file end,
-        // within the same chunk as the file end.
         let (client, file_contents) = setup_test_file(&[(1, (0, 5))]).await;
         let file_len = file_contents.data.len() as u64;
 
-        // Request range ending 3 bytes before the end
         let range = FileRange::new(0, file_len - 3);
         retrieve_and_verify(&client, &file_contents, Some(range)).await;
 
-        // Request range ending 1 byte before the end
         let range = FileRange::new(0, file_len - 1);
         retrieve_and_verify(&client, &file_contents, Some(range)).await;
     }
 
     #[tokio::test]
     async fn test_range_few_bytes_after_start() {
-        // Test requesting a range that starts just a few bytes after the file start,
-        // within the same chunk as the file start.
         let (client, file_contents) = setup_test_file(&[(1, (0, 5))]).await;
         let file_len = file_contents.data.len() as u64;
 
-        // Request range starting 3 bytes after the start
         let range = FileRange::new(3, file_len);
         retrieve_and_verify(&client, &file_contents, Some(range)).await;
 
-        // Request range starting 1 byte after the start
         let range = FileRange::new(1, file_len);
         retrieve_and_verify(&client, &file_contents, Some(range)).await;
     }
 
     #[tokio::test]
     async fn test_range_few_bytes_offset_both_ends() {
-        // Test requesting a range with small offsets at both ends within the same chunk.
         let (client, file_contents) = setup_test_file(&[(1, (0, 5))]).await;
         let file_len = file_contents.data.len() as u64;
 
-        // Request range with 2 bytes trimmed from start and 2 bytes from end
         let range = FileRange::new(2, file_len - 2);
         retrieve_and_verify(&client, &file_contents, Some(range)).await;
 
-        // Request just the middle byte of a small range
         let range = FileRange::new(file_len / 2 - 1, file_len / 2 + 1);
         retrieve_and_verify(&client, &file_contents, Some(range)).await;
     }
 
     #[tokio::test]
     async fn test_range_single_byte_at_various_positions() {
-        // Test requesting single bytes at various positions in the file.
         let (client, file_contents) = setup_test_file(&[(1, (0, 5))]).await;
         let file_len = file_contents.data.len() as u64;
 
-        // First byte
         retrieve_and_verify(&client, &file_contents, Some(FileRange::new(0, 1))).await;
 
-        // Last byte
         retrieve_and_verify(&client, &file_contents, Some(FileRange::new(file_len - 1, file_len))).await;
 
-        // Middle byte
         let mid = file_len / 2;
         retrieve_and_verify(&client, &file_contents, Some(FileRange::new(mid, mid + 1))).await;
     }
 
     #[tokio::test]
     async fn test_multi_term_range_ends_mid_chunk() {
-        // Test with multiple terms where the requested range ends in the middle of the last term's chunk.
         let (client, file_contents) = setup_test_file(&[(1, (0, 3)), (2, (0, 3)), (3, (0, 3))]).await;
         let file_len = file_contents.data.len() as u64;
 
-        // End a few bytes before the file end
         let range = FileRange::new(0, file_len - 5);
         retrieve_and_verify(&client, &file_contents, Some(range)).await;
     }
 
     #[tokio::test]
     async fn test_multi_term_range_starts_mid_chunk() {
-        // Test with multiple terms where the requested range starts in the middle of the first term's chunk.
         let (client, file_contents) = setup_test_file(&[(1, (0, 3)), (2, (0, 3)), (3, (0, 3))]).await;
         let file_len = file_contents.data.len() as u64;
 
-        // Start a few bytes after the file start
         let range = FileRange::new(5, file_len);
         retrieve_and_verify(&client, &file_contents, Some(range)).await;
+    }
+
+    // ==================== Multi-Disjoint Range Edge Cases ====================
+
+    /// Single xorb with three disjoint chunk ranges.
+    /// This creates one XorbBlock with chunk_ranges = [(0,2), (4,6), (8,10)].
+    #[tokio::test]
+    async fn test_triple_disjoint_same_xorb() {
+        let (client, file_contents) = setup_test_file(&[(1, (0, 2)), (1, (4, 6)), (1, (8, 10))]).await;
+        retrieve_and_verify(&client, &file_contents, None).await;
+    }
+
+    /// Triple disjoint ranges with a partial byte range spanning the gap.
+    #[tokio::test]
+    async fn test_triple_disjoint_partial_range_across_gap() {
+        let (client, file_contents) = setup_test_file(&[(1, (0, 2)), (1, (4, 6)), (1, (8, 10))]).await;
+        let file_len = file_contents.data.len() as u64;
+        let range = FileRange::new(file_len / 4, file_len * 3 / 4);
+        retrieve_and_verify(&client, &file_contents, Some(range)).await;
+    }
+
+    /// Two xorbs, each with two disjoint ranges, interleaved in file order.
+    #[tokio::test]
+    async fn test_two_xorbs_interleaved_disjoint() {
+        let term_spec = &[(1, (0, 2)), (2, (0, 2)), (1, (4, 6)), (2, (4, 6))];
+        let (client, file_contents) = setup_test_file(term_spec).await;
+        retrieve_and_verify(&client, &file_contents, None).await;
+    }
+
+    /// Two xorbs interleaved with disjoint ranges, partial byte range.
+    #[tokio::test]
+    async fn test_two_xorbs_interleaved_disjoint_partial() {
+        let term_spec = &[(1, (0, 2)), (2, (0, 2)), (1, (4, 6)), (2, (4, 6))];
+        let (client, file_contents) = setup_test_file(term_spec).await;
+        let file_len = file_contents.data.len() as u64;
+        retrieve_and_verify(&client, &file_contents, Some(FileRange::new(file_len / 3, file_len * 2 / 3))).await;
+    }
+
+    /// Single xorb with four disjoint ranges, each a single chunk wide.
+    #[tokio::test]
+    async fn test_four_single_chunk_disjoint() {
+        let term_spec = &[(1, (0, 1)), (1, (3, 4)), (1, (6, 7)), (1, (9, 10))];
+        let (client, file_contents) = setup_test_file(term_spec).await;
+        retrieve_and_verify(&client, &file_contents, None).await;
+    }
+
+    /// Mix of contiguous and disjoint ranges from the same xorb.
+    /// Chunks 0-4 are contiguous, then a gap, then chunk 8-10.
+    #[tokio::test]
+    async fn test_contiguous_then_disjoint() {
+        let term_spec = &[(1, (0, 2)), (1, (2, 4)), (1, (8, 10))];
+        let (client, file_contents) = setup_test_file(term_spec).await;
+        retrieve_and_verify(&client, &file_contents, None).await;
+    }
+
+    /// Three xorbs with complex disjoint access patterns.
+    #[tokio::test]
+    async fn test_three_xorbs_complex_disjoint() {
+        let term_spec = &[
+            (1, (0, 2)),
+            (2, (0, 3)),
+            (3, (2, 5)),
+            (1, (5, 8)),
+            (2, (6, 8)),
+            (3, (0, 2)),
+        ];
+        let (client, file_contents) = setup_test_file(term_spec).await;
+        retrieve_and_verify(&client, &file_contents, None).await;
     }
 }
