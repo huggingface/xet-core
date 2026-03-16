@@ -528,13 +528,13 @@ impl FileUploadSession {
     /// Register a pre-composed file reconstruction plan (MDBFileInfo) with this session.
     /// Used for append-aware writes where the caller builds the reconstruction plan
     /// from existing segments + newly uploaded segments.
-    pub async fn register_composed_file(self: &Arc<Self>, file_info: MDBFileInfo) -> Result<()> {
+    pub(crate) async fn register_composed_file(self: &Arc<Self>, file_info: MDBFileInfo) -> Result<()> {
         self.shard_interface.add_file_reconstruction_info(file_info).await
     }
 
     /// Returns a list of all file reconstruction infos currently registered in this session.
     /// Call after all cleaners have finished and after `checkpoint()` to ensure data is flushed.
-    pub async fn file_info_list(self: &Arc<Self>) -> Result<Vec<MDBFileInfo>> {
+    pub(crate) async fn file_info_list(self: &Arc<Self>) -> Result<Vec<MDBFileInfo>> {
         self.shard_interface.session_file_info_list().await
     }
 

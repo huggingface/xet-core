@@ -26,6 +26,28 @@ impl<T: Read + Seek + Send> ReadSeek for T {}
 /// Size of blocks read from the dirty source and fed to the cleaner.
 const STREAM_BLOCK_SIZE: usize = 4 * 1024 * 1024; // 4 MB
 
+/// A dirty byte range expanded to chunk-aligned boundaries.
+struct DirtyRegion {
+    dirty_start: u64,
+    dirty_end: u64,
+    first_chunk: usize, // inclusive
+    last_chunk: usize,  // exclusive
+}
+
+/// Result of uploading a single dirty region through the cleaner.
+struct UploadedRegion {
+    region: DirtyRegion,
+    info: XetFileInfo,
+    chunks: ChunkHashList,
+}
+
+/// A dirty region paired with its MDBFileInfo and chunk hashes.
+struct ComposedRegion {
+    region: DirtyRegion,
+    mdb: MDBFileInfo,
+    chunks: ChunkHashList,
+}
+
 /// Upload modified ranges of an existing file, composing the result with
 /// the original file's CAS segments. Only the dirty regions (plus CDC boundary
 /// chunks) are re-uploaded; stable regions between and around dirty ranges are
@@ -186,26 +208,8 @@ pub async fn upload_ranges(
     // Note: if effective_ranges is empty here, it means pure truncation (no dirty ranges,
     // file shrunk). We still proceed to compose a new file from the truncated chunk set.
 
-    // 4. Build the composition plan: alternating stable/dirty regions. A Region is either Stable (reuse segments) or
-    //    Dirty (re-upload through cleaner).
+    // 4. Map dirty byte ranges to chunk-aligned boundaries, then coalesce overlapping regions.
     //
-    // For each dirty byte range, find which chunks it spans. We need this mapping to decide
-    // which chunks to re-upload and which to reuse from the original file.
-    /// A dirty byte range expanded to chunk-aligned boundaries.
-    struct DirtyRegion {
-        dirty_start: u64,   // byte offset where this dirty region starts
-        dirty_end: u64,     // byte offset where this dirty region ends
-        first_chunk: usize, // first chunk index affected (inclusive)
-        last_chunk: usize,  // last chunk index affected (exclusive)
-    }
-
-    /// Result of uploading a single dirty region through the cleaner.
-    struct UploadedRegion {
-        region: DirtyRegion,
-        info: XetFileInfo,
-        chunks: ChunkHashList,
-    }
-
     // Example: dirty range [150, 350), chunks [0..3] with offsets [0, 100, 300, 450]
     //   dirty_start = 150, dirty_end = 350
     //   150 falls in chunk[1] (offset 100..300), so first_chunk = 1
@@ -336,8 +340,8 @@ pub async fn upload_ranges(
         }
 
         // b) Dirty bytes from source, streamed in blocks.
-        // Read the modified bytes from [read_start, read_end) and feed them to the cleaner.
-        // We stream this in STREAM_BLOCK_SIZE chunks to avoid buffering the entire dirty region.
+        // TODO: seek/read_exact are blocking I/O in an async context. Acceptable for local
+        // files (<1ms per 4MB block) but consider block_in_place for network-backed sources.
         let read_start = region.dirty_start.max(boundary_start);
         let read_end = region.dirty_end.min(total_size);
         if read_end > read_start {
@@ -388,12 +392,6 @@ pub async fn upload_ranges(
         mdb_by_hash.insert(mdb.metadata.file_hash, mdb);
     }
 
-    struct ComposedRegion {
-        region: DirtyRegion,
-        mdb: MDBFileInfo,
-        chunks: ChunkHashList,
-    }
-
     let mut composed_regions: Vec<ComposedRegion> = Vec::new();
     for uploaded in uploaded_regions {
         let middle_hash = MerkleHash::from_hex(uploaded.info.hash())?;
@@ -423,12 +421,11 @@ pub async fn upload_ranges(
     let mut all_chunks: Vec<(MerkleHash, u64)> = Vec::new();
     let mut all_segments: Vec<FileDataSequenceEntry> = Vec::new();
     let mut all_verification = Vec::new();
-    let mut chunk_cursor = 0usize; // current chunk position in the original file
-    let mut seg_cursor = 0usize; // current segment position (passed to extract_segments for O(S) total)
+    let mut chunk_cursor = 0usize;
+    let mut seg_cursor = 0usize;
 
     for cr in &composed_regions {
-        // Stable region before this dirty region: chunks [chunk_cursor, first_chunk).
-        // These chunks are reused directly from the original file's segments.
+        // Stable region before this dirty region.
         if cr.region.first_chunk > chunk_cursor {
             let (segs, vers) =
                 extract_segments(&original_mdb, &original_chunks, chunk_cursor, cr.region.first_chunk, &mut seg_cursor);
@@ -437,8 +434,7 @@ pub async fn upload_ranges(
             all_verification.extend(vers);
         }
 
-        // Middle (dirty) region: these chunks were re-uploaded and cleaner'd by the session.
-        // We insert the new chunks and segments from the cleaner output.
+        // Middle (dirty) region.
         all_chunks.extend_from_slice(&cr.chunks);
         all_segments.extend_from_slice(&cr.mdb.segments);
         all_verification.extend_from_slice(&cr.mdb.verification);
@@ -447,7 +443,6 @@ pub async fn upload_ranges(
     }
 
     // Stable suffix after the last dirty region.
-    // If there are chunks after the last dirty region, reuse them from the original.
     if chunk_cursor < compose_num_chunks {
         let (segs, vers) =
             extract_segments(&original_mdb, &original_chunks, chunk_cursor, compose_num_chunks, &mut seg_cursor);
@@ -566,6 +561,16 @@ mod tests {
     use crate::processing::file_download_session::FileDownloadSession;
     use crate::processing::file_upload_session::FileUploadSession;
 
+    /// Generate pseudo-random data that produces multiple CDC chunks.
+    fn random_data(seed: u64, len: usize) -> Vec<u8> {
+        (0..len)
+            .map(|i| {
+                let x = (i as u64).wrapping_add(seed).wrapping_mul(2654435761);
+                (x >> 16) as u8
+            })
+            .collect()
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_upload_ranges_mid_file_edit() {
         let server = LocalTestServerBuilder::new().start().await;
@@ -576,8 +581,8 @@ mod tests {
         // Use the server directly as the CAS client (bypasses HTTP for get_file_chunk_hashes).
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
-        // 1. Upload an original file: 256 KB of 0xAA bytes.
-        let original_data = vec![0xAAu8; 256 * 1024];
+        // 1. Upload an original file: 256 KB of pseudo-random bytes.
+        let original_data = random_data(42, 256 * 1024);
         let original_hash = {
             let upload_session = FileUploadSession::new(config.clone(), None).await.unwrap();
             let mut cleaner = upload_session
@@ -658,7 +663,7 @@ mod tests {
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
         // Upload 256 KB file.
-        let original_data = vec![0xCCu8; 256 * 1024];
+        let original_data = random_data(43, 256 * 1024);
         let original_hash = upload_file(&config, &original_data).await;
         let original_size = original_data.len() as u64;
 
@@ -696,13 +701,13 @@ mod tests {
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
         // Upload 100 KB file.
-        let original_data = vec![0xDDu8; 100 * 1024];
+        let original_data = random_data(44, 100 * 1024);
         let original_hash = upload_file(&config, &original_data).await;
         let original_size = original_data.len() as u64;
 
-        // Append 50 KB of 0xEE.
+        // Append 50 KB of pseudo-random data.
         let mut full_data = original_data.clone();
-        full_data.extend(vec![0xEEu8; 50 * 1024]);
+        full_data.extend(random_data(99, 50 * 1024));
         let total_size = full_data.len() as u64;
 
         let mut source = Cursor::new(&full_data);
@@ -735,7 +740,7 @@ mod tests {
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
         // Upload 256 KB file.
-        let original_data = vec![0xAAu8; 256 * 1024];
+        let original_data = random_data(45, 256 * 1024);
         let original_hash = upload_file(&config, &original_data).await;
         let original_size = original_data.len() as u64;
 
@@ -775,7 +780,7 @@ mod tests {
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
         // Upload 256 KB file.
-        let original_data = vec![0xAAu8; 256 * 1024];
+        let original_data = random_data(46, 256 * 1024);
         let original_hash = upload_file(&config, &original_data).await;
         let original_size = original_data.len() as u64;
 
@@ -862,54 +867,52 @@ mod tests {
         let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
-        // Create an original file of uniform bytes so CDC produces predictable chunks.
-        let original_data = vec![0xAAu8; 300 * 1024];
+        // Create an original file of pseudo-random bytes so CDC produces multiple chunks.
+        // 512 KB of random data to reliably produce >= 4 CDC chunks.
+        let original_data = random_data(47, 512 * 1024);
         let original_hash = upload_file(&config, &original_data).await;
         let original_size = original_data.len() as u64;
 
-        // Get chunk boundaries to align our dirty ranges.
         let chunks = cas_client.get_file_chunk_hashes(&original_hash).await.unwrap();
-        // We need at least 4 chunks so we can place two non-adjacent dirty regions
-        // that each span exactly one chunk (guaranteed identical CDC input).
-        if chunks.len() >= 4 {
-            let mut offsets = vec![0u64];
-            for (_, size) in &chunks {
-                offsets.push(offsets.last().unwrap() + size);
-            }
+        assert!(chunks.len() >= 4, "expected at least 4 chunks, got {}", chunks.len());
 
-            // Region 1: overwrite chunk[1] entirely. Region 2: overwrite chunk[3] entirely.
-            // Both get the same 0xBB fill, and since each spans exactly one full chunk
-            // boundary, the cleaner input is byte-identical -> same hash.
-            let r1_start = offsets[1] as usize;
-            let r1_end = offsets[2] as usize;
-            let r2_start = offsets[3] as usize;
-            let r2_end = offsets[4].min(original_size) as usize;
-
-            let mut modified_data = original_data.clone();
-            modified_data[r1_start..r1_end].fill(0xBB);
-            modified_data[r2_start..r2_end].fill(0xBB);
-
-            let mut source = Cursor::new(&modified_data);
-            let result = upload_ranges(
-                config.clone(),
-                cas_client.clone(),
-                original_hash,
-                original_size,
-                &[(r1_start as u64, r1_end as u64), (r2_start as u64, r2_end as u64)],
-                &mut source,
-                modified_data.len() as u64,
-            )
-            .await
-            .unwrap();
-
-            let downloaded =
-                download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), modified_data.len() as u64).await;
-            assert_eq!(downloaded.len(), modified_data.len(), "downloaded length mismatch");
-            assert_eq!(&downloaded[..], &modified_data[..], "content mismatch: file was corrupted");
-
-            let clean_hash = upload_file(&config, &modified_data).await;
-            assert_eq!(result.hash(), clean_hash.hex(), "hash mismatch with clean upload");
+        let mut offsets = vec![0u64];
+        for (_, size) in &chunks {
+            offsets.push(offsets.last().unwrap() + size);
         }
+
+        // Region 1: overwrite chunk[1] entirely. Region 2: overwrite chunk[3] entirely.
+        // Both get the same 0xBB fill, and since each spans exactly one full chunk
+        // boundary, the cleaner input is byte-identical -> same hash.
+        let r1_start = offsets[1] as usize;
+        let r1_end = offsets[2] as usize;
+        let r2_start = offsets[3] as usize;
+        let r2_end = offsets[4].min(original_size) as usize;
+
+        let mut modified_data = original_data.clone();
+        modified_data[r1_start..r1_end].fill(0xBB);
+        modified_data[r2_start..r2_end].fill(0xBB);
+
+        let mut source = Cursor::new(&modified_data);
+        let result = upload_ranges(
+            config.clone(),
+            cas_client.clone(),
+            original_hash,
+            original_size,
+            &[(r1_start as u64, r1_end as u64), (r2_start as u64, r2_end as u64)],
+            &mut source,
+            modified_data.len() as u64,
+        )
+        .await
+        .unwrap();
+
+        let downloaded =
+            download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), modified_data.len() as u64).await;
+        assert_eq!(downloaded.len(), modified_data.len(), "downloaded length mismatch");
+        assert_eq!(&downloaded[..], &modified_data[..], "content mismatch: file was corrupted");
+
+        let clean_hash = upload_file(&config, &modified_data).await;
+        assert_eq!(result.hash(), clean_hash.hex(), "hash mismatch with clean upload");
     }
 
     /// Regression test: truncation must produce the exact same hash as a clean upload
@@ -923,7 +926,7 @@ mod tests {
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
         // Upload a 256 KB file, then truncate to 100 KB via upload_ranges.
-        let original_data = vec![0xCCu8; 256 * 1024];
+        let original_data = random_data(48, 256 * 1024);
         let original_hash = upload_file(&config, &original_data).await;
         let original_size = original_data.len() as u64;
 
@@ -966,12 +969,12 @@ mod tests {
         let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
-        let original_data = vec![0xDDu8; 100 * 1024];
+        let original_data = random_data(49, 100 * 1024);
         let original_hash = upload_file(&config, &original_data).await;
         let original_size = original_data.len() as u64;
 
         let mut full_data = original_data.clone();
-        full_data.extend(vec![0xEEu8; 50 * 1024]);
+        full_data.extend(random_data(100, 50 * 1024));
         let total_size = full_data.len() as u64;
 
         let mut source = Cursor::new(&full_data);
@@ -1007,19 +1010,20 @@ mod tests {
         let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
-        let original_data = vec![0xAAu8; 100 * 1024];
+        let original_data = random_data(50, 100 * 1024);
         let original_hash = upload_file(&config, &original_data).await;
         let original_size = original_data.len() as u64;
 
-        // Simulate: seek to original_size + 500, write 4096 bytes of 0xBB.
+        // Simulate: seek to original_size + 500, write 4096 bytes of pseudo-random data.
         // The gap [original_size, original_size + 500) contains zeros from the sparse file.
         let gap = 500u64;
-        let write_len = 4096u64;
+        let write_data = random_data(101, 4096);
+        let write_len = write_data.len() as u64;
         let total_size = original_size + gap + write_len;
 
         let mut full_data = original_data.clone();
         full_data.extend(vec![0x00u8; gap as usize]); // sparse hole = zeros
-        full_data.extend(vec![0xBBu8; write_len as usize]);
+        full_data.extend(&write_data);
 
         let dirty_start = original_size + gap;
         let dirty_end = total_size;
