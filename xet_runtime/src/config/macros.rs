@@ -117,8 +117,8 @@ macro_rules! config_group {
                 &[$(stringify!($name)),+]
             }
 
-            /// Set a configuration field by name, accepting any value that implements `ToString`.
-            pub fn set(&mut self, name: &str, value: impl ToString) -> Result<(), $crate::config::ConfigError> {
+            // Internal: used by XetConfig::with_config to apply field updates by name.
+            pub(crate) fn update_field(&mut self, name: &str, value: impl ToString) -> Result<(), $crate::config::ConfigError> {
                 let value_string = value.to_string();
                 match name {
                     $(
@@ -145,9 +145,9 @@ macro_rules! config_group {
                 }
             }
 
-            /// Set a configuration field by name from a Python value.
+            // Internal: used by PyXetConfig::with_config to apply field updates from Python values.
             #[cfg(feature = "python")]
-            pub fn set_from_python(
+            pub(crate) fn update_field_from_python(
                 &mut self,
                 name: &str,
                 value: &pyo3::Bound<'_, pyo3::PyAny>,
@@ -163,9 +163,9 @@ macro_rules! config_group {
                 }
             }
 
-            /// Get a configuration field as a native Python object by name.
+            // Internal: used by PyXetConfig to return field values as native Python objects.
             #[cfg(feature = "python")]
-            pub fn get_to_python(
+            pub(crate) fn get_to_python(
                 &self,
                 name: &str,
                 py: pyo3::Python<'_>,
@@ -180,9 +180,9 @@ macro_rules! config_group {
                 }
             }
 
-            /// Return all (field_name, value) pairs as Python objects.
+            // Internal: used by PyXetConfig iteration to yield all (field, value) pairs.
             #[cfg(feature = "python")]
-            pub fn items_to_python(
+            pub(crate) fn items_to_python(
                 &self,
                 py: pyo3::Python<'_>,
             ) -> pyo3::PyResult<Vec<(&'static str, pyo3::Py<pyo3::PyAny>)>> {

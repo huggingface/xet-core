@@ -28,19 +28,21 @@ macro_rules! impl_xet_config_group_dispatch {
                 self
             }
 
-            fn set_field(&mut self, path: &str, value: impl ToString) -> Result<(), ConfigError> {
+            // Internal: dispatches with_config field updates to the correct group.
+            fn update_field(&mut self, path: &str, value: impl ToString) -> Result<(), ConfigError> {
                 let (group, field) =
                     path.split_once('.').ok_or_else(|| ConfigError::InvalidPath(path.to_owned()))?;
                 match group {
-                    $(stringify!($group) => self.$group.set(field, value),)*
+                    $(stringify!($group) => self.$group.update_field(field, value),)*
                     #[cfg(not(target_family = "wasm"))]
-                    "system_monitor" => self.system_monitor.set(field, value),
+                    "system_monitor" => self.system_monitor.update_field(field, value),
                     _ => Err(ConfigError::UnknownGroup(group.to_owned())),
                 }
             }
 
+            // Internal: dispatches Python with_config field updates to the correct group.
             #[cfg(feature = "python")]
-            fn set_field_from_python(
+            fn update_field_from_python(
                 &mut self,
                 path: &str,
                 value: &pyo3::Bound<'_, pyo3::PyAny>,
@@ -51,15 +53,16 @@ macro_rules! impl_xet_config_group_dispatch {
                     )
                 })?;
                 match group {
-                    $(stringify!($group) => self.$group.set_from_python(field, value),)*
+                    $(stringify!($group) => self.$group.update_field_from_python(field, value),)*
                     #[cfg(not(target_family = "wasm"))]
-                    "system_monitor" => self.system_monitor.set_from_python(field, value),
+                    "system_monitor" => self.system_monitor.update_field_from_python(field, value),
                     _ => Err(pyo3::exceptions::PyValueError::new_err(
                         ConfigError::UnknownGroup(group.to_owned()).to_string(),
                     )),
                 }
             }
 
+            // Internal: dispatches Python get/item access to the correct group.
             #[cfg(feature = "python")]
             fn get_field_to_python(
                 &self,
@@ -109,9 +112,9 @@ macro_rules! impl_xet_config_group_dispatch {
                 keys
             }
 
-            /// Return all (dotted_key, python_value) pairs across all groups.
+            // Internal: collects all (key, value) pairs for Python iteration.
             #[cfg(feature = "python")]
-            pub fn all_items_to_python(
+            fn all_items_to_python(
                 &self,
                 py: pyo3::Python<'_>,
             ) -> pyo3::PyResult<Vec<(String, pyo3::Py<pyo3::PyAny>)>> {
@@ -180,7 +183,7 @@ impl XetConfig {
     /// Return a new config with the value at the given dotted path updated
     /// (e.g. "data.max_concurrent_file_ingestion").
     pub fn with_config(mut self, path: &str, value: impl ToString) -> Result<Self, ConfigError> {
-        self.set_field(path, value)?;
+        self.update_field(path, value)?;
         Ok(self)
     }
 }
@@ -390,14 +393,14 @@ pub mod py_xet_config {
                 }
                 for (key, val) in dict.iter() {
                     let key_str: String = key.extract()?;
-                    new_inner.set_field_from_python(&key_str, &val)?;
+                    new_inner.update_field_from_python(&key_str, &val)?;
                 }
             } else {
                 let name: String = name_or_dict.extract()?;
                 let val = value.ok_or_else(|| {
                     pyo3::exceptions::PyTypeError::new_err("with_config(name, value) requires a value argument")
                 })?;
-                new_inner.set_field_from_python(&name, val)?;
+                new_inner.update_field_from_python(&name, val)?;
             }
 
             Ok(Self { inner: new_inner })
