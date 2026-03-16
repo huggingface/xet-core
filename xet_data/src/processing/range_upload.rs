@@ -275,68 +275,32 @@ pub async fn upload_ranges(
         let boundary_start = chunk_offsets.get(region.first_chunk).copied().unwrap_or(original_size);
         let boundary_end = chunk_offsets.get(region.last_chunk).copied().unwrap_or(original_size);
 
-        // Download boundary bytes from CAS into memory.
+        // The cleaner processes a "middle" file that spans [boundary_start, middle_end).
+        // We stream it in three parts directly, without buffering boundary data:
         //
-        // NOTE: FileReconstructor is heavier than needed for small boundary downloads
-        // (~256KB): it spawns prefetch tasks, manages buffer semaphores, etc. A direct
-        // byte-range fetch via presigned URLs would be lighter but would require
-        // reimplementing xorb decompression and chunk extraction. Acceptable for now
-        // since boundary regions are typically 1-2 CDC chunks.
+        //   a) Prefix:  CAS stream [boundary_start, dirty_start)  ← stable bytes before edit
+        //   b) Dirty:   staging file [dirty_start, dirty_end)     ← modified bytes
+        //   c) Suffix:  CAS stream [dirty_end, boundary_end)      ← stable bytes after edit
         //
-        // NOTE: boundary_data is fully buffered before being fed to the cleaner. Streaming
-        // it directly (CAS async stream -> cleaner) would avoid the buffer, but requires
-        // interleaving async CAS reads with sync dirty_source reads in a single ordered
-        // stream, which adds significant complexity. The buffer is bounded by the boundary
-        // size (typically a few hundred KB), so memory impact is negligible.
-        let mut boundary_data = Vec::new();
-        if boundary_start < boundary_end && boundary_end <= original_size {
-            let reconstructor = FileReconstructor::new(&cas_client, original_hash)
-                .with_byte_range(FileRange::new(boundary_start, boundary_end));
-            let mut stream = reconstructor.reconstruct_to_stream();
-            while let Some(chunk) = stream.next().await? {
-                boundary_data.extend_from_slice(&chunk);
-            }
-            debug!(
-                "upload_ranges: downloaded boundary ({} bytes) for dirty [{}, {})",
-                boundary_data.len(),
-                region.dirty_start,
-                region.dirty_end
-            );
-        }
-
-        // Stream boundary prefix + dirty bytes + boundary suffix into the cleaner.
-        // middle_end must cover both the boundary region and the dirty bytes
-        // (dirty_end may extend past boundary_end for appends), but never exceed
-        // total_size (truncation must not include original bytes past the cut).
-        let middle_end = boundary_end.max(region.dirty_end).min(total_size);
+        // Example: dirty region [200, 400), boundary [100, 500)
+        //   a) CAS stream [100..200)   → cleaner
+        //   b) staging    [200..400)   → cleaner (in 4MB blocks)
+        //   c) CAS stream [400..500)   → cleaner
+        let effective_boundary_end = boundary_end.min(total_size);
+        let middle_end = effective_boundary_end.max(region.dirty_end).min(total_size);
         let middle_size = middle_end.saturating_sub(boundary_start);
 
-        // The cleaner processes a "middle" file that spans [boundary_start, middle_end).
-        // We feed it in three parts:
-        //   a) Prefix:  stable bytes from the downloaded boundary
-        //   b) Dirty:   modified bytes from dirty_source
-        //   c) Suffix:  stable bytes from the downloaded boundary
-        //
-        // Example: dirty region [200, 400), boundary [100, 500) (5 chunks spanning this)
-        //   Downloaded boundary_data = bytes [100..500) from CAS
-        //   We feed the cleaner:
-        //     [100..200)  from boundary_data  (prefix, not modified)
-        //     [200..400)  from dirty_source   (modified by caller)
-        //     [400..500)  from boundary_data  (suffix, not modified)
-        //   The cleaner runs CDC + compression on this [100, 500) stream and produces new chunks.
         let mut cleaner = session.start_clean(None, middle_size, Sha256Policy::Skip, Ulid::new()).await;
 
-        // a) Boundary bytes BEFORE the dirty range.
-        // If the dirty range doesn't start at boundary_start, we need to include the stable prefix.
-        let pre_dirty_end = region.dirty_start.max(boundary_start);
-        if pre_dirty_end > boundary_start {
-            let len = (pre_dirty_end - boundary_start) as usize;
-            debug_assert!(
-                len <= boundary_data.len(),
-                "boundary prefix ({len} bytes) exceeds downloaded boundary data ({} bytes)",
-                boundary_data.len()
-            );
-            cleaner.add_data(&boundary_data[..len.min(boundary_data.len())]).await?;
+        // a) Stream boundary prefix directly from CAS to cleaner.
+        let prefix_end = region.dirty_start.max(boundary_start);
+        if prefix_end > boundary_start && boundary_end <= original_size {
+            let reconstructor = FileReconstructor::new(&cas_client, original_hash)
+                .with_byte_range(FileRange::new(boundary_start, prefix_end));
+            let mut stream = reconstructor.reconstruct_to_stream();
+            while let Some(chunk) = stream.next().await? {
+                cleaner.add_data(&chunk).await?;
+            }
         }
 
         // b) Dirty bytes from source, streamed in blocks.
@@ -356,21 +320,14 @@ pub async fn upload_ranges(
             }
         }
 
-        // c) Boundary bytes AFTER the dirty range.
-        // If the dirty range doesn't extend to boundary_end, include the stable suffix.
-        // Cap at total_size so truncation doesn't leak original bytes beyond the cut point.
-        let effective_boundary_end = boundary_end.min(total_size);
-        let post_dirty_start = region.dirty_end.min(effective_boundary_end);
-        if post_dirty_start < effective_boundary_end {
-            let offset = (post_dirty_start - boundary_start) as usize;
-            let end = (effective_boundary_end - boundary_start) as usize;
-            debug_assert!(
-                end <= boundary_data.len(),
-                "boundary suffix end ({end}) out of range ({} bytes)",
-                boundary_data.len()
-            );
-            if offset < boundary_data.len() {
-                cleaner.add_data(&boundary_data[offset..end.min(boundary_data.len())]).await?;
+        // c) Stream boundary suffix directly from CAS to cleaner.
+        let suffix_start = region.dirty_end.min(effective_boundary_end);
+        if suffix_start < effective_boundary_end && boundary_end <= original_size {
+            let reconstructor = FileReconstructor::new(&cas_client, original_hash)
+                .with_byte_range(FileRange::new(suffix_start, effective_boundary_end));
+            let mut stream = reconstructor.reconstruct_to_stream();
+            while let Some(chunk) = stream.next().await? {
+                cleaner.add_data(&chunk).await?;
             }
         }
 
