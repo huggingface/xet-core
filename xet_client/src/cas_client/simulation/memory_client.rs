@@ -11,7 +11,7 @@ use tokio::sync::RwLock;
 use tokio::time::{Duration, Instant};
 use tracing::{error, info};
 use xet_core_structures::MerkleHashMap;
-use xet_core_structures::merklehash::MerkleHash;
+use xet_core_structures::merklehash::{ChunkHashList, MerkleHash};
 use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::metadata_shard::streaming_shard::MDBMinimalShard;
@@ -896,6 +896,46 @@ impl Client for MemoryClient {
             cb(total_transfer, total_transfer, total_transfer);
         }
         Ok((Bytes::from(all_decompressed), all_chunk_indices))
+    }
+
+    async fn get_file_chunk_hashes(&self, file_id: &MerkleHash) -> Result<ChunkHashList> {
+        self.apply_api_delay().await;
+
+        let file_info = {
+            let shard = self.shard.read().await;
+            shard
+                .get_file_reconstruction_info(file_id)
+                .ok_or(CasClientError::FileNotFound(*file_id))?
+        };
+
+        let xorbs = self.xorbs.read().await;
+        let mut result = Vec::new();
+
+        for segment in &file_info.segments {
+            let storage = xorbs
+                .get(&segment.xorb_hash)
+                .ok_or(CasClientError::XORBNotFound(segment.xorb_hash))?;
+
+            let xorb_obj = match storage {
+                XorbStorage::Materialized(entry) => &entry.xorb_object,
+                XorbStorage::Random(xorb) => {
+                    // RandomXorb doesn't store a reference we can borrow, so build inline
+                    let obj = xorb.get_xorb_object();
+                    let pairs = obj
+                        .chunk_hash_sizes(segment.chunk_index_start, segment.chunk_index_end)
+                        .map_err(|err| CasClientError::Other(format!("chunk_hash_sizes error: {err}")))?;
+                    result.extend(pairs);
+                    continue;
+                },
+            };
+
+            let pairs = xorb_obj
+                .chunk_hash_sizes(segment.chunk_index_start, segment.chunk_index_end)
+                .map_err(|err| CasClientError::Other(format!("chunk_hash_sizes error: {err}")))?;
+            result.extend(pairs);
+        }
+
+        Ok(result)
     }
 }
 

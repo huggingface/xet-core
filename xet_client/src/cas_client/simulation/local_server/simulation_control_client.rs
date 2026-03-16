@@ -5,7 +5,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use http::header::HeaderMap;
-use xet_core_structures::merklehash::MerkleHash;
+use xet_core_structures::merklehash::{ChunkHashList, MerkleHash};
 use xet_core_structures::xorb_object::XorbObject;
 
 use super::simulation_types::{
@@ -151,6 +151,10 @@ impl Client for SimulationControlClient {
         self.remote_client
             .upload_xorb(prefix, serialized_xorb_object, progress_callback, upload_permit)
             .await
+    }
+
+    async fn get_file_chunk_hashes(&self, file_id: &MerkleHash) -> Result<ChunkHashList> {
+        self.remote_client.get_file_chunk_hashes(file_id).await
     }
 }
 

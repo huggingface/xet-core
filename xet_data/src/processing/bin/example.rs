@@ -106,7 +106,7 @@ async fn clean(mut reader: impl Read, mut writer: impl Write, size: u64) -> Resu
 
     debug_assert_eq!(size_read, size);
 
-    let (file_info, _) = handle.finish().await?;
+    let (file_info, _chunk_hashes, _metrics) = handle.finish().await?;
 
     translator.finalize().await?;
 

@@ -21,7 +21,7 @@ mod tests {
             .start_clean(Some(name.into()), data.len() as u64, Sha256Policy::Compute, Ulid::new())
             .await;
         cleaner.add_data(data).await.unwrap();
-        let (xfi, _metrics) = cleaner.finish().await.unwrap();
+        let (xfi, _chunk_hashes, _metrics) = cleaner.finish().await.unwrap();
         xfi
     }
 
