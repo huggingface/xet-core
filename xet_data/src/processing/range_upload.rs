@@ -71,18 +71,20 @@ pub async fn upload_ranges(
     dirty_source: &mut dyn ReadSeek,
     total_size: u64,
 ) -> Result<XetFileInfo> {
-    // Precondition: dirty_ranges must be sorted, non-overlapping, and non-empty intervals.
-    debug_assert!(
-        dirty_ranges.windows(2).all(|w| w[0].1 <= w[1].0),
-        "dirty_ranges must be sorted and non-overlapping, got: {dirty_ranges:?}"
-    );
-    debug_assert!(
-        dirty_ranges.iter().all(|&(s, e)| s < e),
-        "dirty_ranges must be non-empty intervals, got: {dirty_ranges:?}"
-    );
-
+    // No changes: return original file as-is.
     if dirty_ranges.is_empty() && total_size == original_size {
         return Ok(XetFileInfo::new(original_hash.hex(), original_size));
+    }
+
+    if !dirty_ranges.windows(2).all(|w| w[0].1 <= w[1].0) {
+        return Err(DataProcessingError::InternalError(format!(
+            "dirty_ranges must be sorted and non-overlapping, got: {dirty_ranges:?}"
+        )));
+    }
+    if !dirty_ranges.iter().all(|&(s, e)| s < e) {
+        return Err(DataProcessingError::InternalError(format!(
+            "dirty_ranges must be non-empty intervals, got: {dirty_ranges:?}"
+        )));
     }
 
     // 1. Fetch chunk hashes and reconstruction info in parallel.
@@ -1142,5 +1144,53 @@ mod tests {
                 assert_eq!(result.hash(), clean_hash.hex(), "hash mismatch with clean upload");
             }
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_rejects_overlapping_dirty_ranges() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let cas_client: Arc<dyn Client> = Arc::new(server);
+
+        let data = random_data(60, 256 * 1024);
+        let hash = upload_file(&config, &data).await;
+        let size = data.len() as u64;
+
+        let mut source = Cursor::new(&data);
+        let err = upload_ranges(config, cas_client, hash, size, &[(100, 300), (200, 400)], &mut source, size).await;
+        assert!(err.is_err(), "overlapping ranges should be rejected");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_rejects_empty_dirty_range() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let cas_client: Arc<dyn Client> = Arc::new(server);
+
+        let data = random_data(61, 256 * 1024);
+        let hash = upload_file(&config, &data).await;
+        let size = data.len() as u64;
+
+        let mut source = Cursor::new(&data);
+        let err = upload_ranges(config, cas_client, hash, size, &[(100, 100)], &mut source, size).await;
+        assert!(err.is_err(), "empty range (start == end) should be rejected");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_rejects_unsorted_dirty_ranges() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let cas_client: Arc<dyn Client> = Arc::new(server);
+
+        let data = random_data(62, 256 * 1024);
+        let hash = upload_file(&config, &data).await;
+        let size = data.len() as u64;
+
+        let mut source = Cursor::new(&data);
+        let err = upload_ranges(config, cas_client, hash, size, &[(300, 400), (100, 200)], &mut source, size).await;
+        assert!(err.is_err(), "unsorted ranges should be rejected");
     }
 }
