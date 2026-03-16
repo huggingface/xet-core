@@ -209,10 +209,16 @@ impl DownloadGroupInner {
     ) -> JoinHandle<Result<XetFileInfo, SessionError>> {
         let semaphore = self.runtime().common().file_download_semaphore.clone();
         self.runtime().spawn(async move {
-            // Update status from "Queued" to "Running" once a semaphore permit is acquired.
             let _permit = semaphore.acquire().await?;
 
-            *status.lock()? = TaskStatus::Running;
+            // Only transition Queued → Running; bail if abort() already set Cancelled.
+            {
+                let mut s = status.lock()?;
+                if !matches!(*s, TaskStatus::Queued) {
+                    return Err(SessionError::Aborted);
+                }
+                *s = TaskStatus::Running;
+            }
 
             let result: Result<_, SessionError> = download_session
                 .download_file(&file_info, &dest_path, tracking_id)
