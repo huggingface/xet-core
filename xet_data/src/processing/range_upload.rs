@@ -365,7 +365,7 @@ pub async fn upload_ranges(
     // of their file info discovery to preserve uploaded_regions order.
     let mut mdb_by_hash: HashMap<MerkleHash, Vec<MDBFileInfo>> = HashMap::new();
     for mdb in middle_file_infos {
-        mdb_by_hash.entry(mdb.metadata.file_hash).or_insert_with(Vec::new).push(mdb);
+        mdb_by_hash.entry(mdb.metadata.file_hash).or_default().push(mdb);
     }
 
     struct ComposedRegion {
