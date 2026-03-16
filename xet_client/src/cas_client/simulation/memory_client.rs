@@ -917,16 +917,8 @@ impl Client for MemoryClient {
                 .ok_or(CasClientError::XORBNotFound(segment.xorb_hash))?;
 
             let xorb_obj = match storage {
-                XorbStorage::Materialized(entry) => &entry.xorb_object,
-                XorbStorage::Random(xorb) => {
-                    // RandomXorb doesn't store a reference we can borrow, so build inline
-                    let obj = xorb.get_xorb_object();
-                    let pairs = obj
-                        .chunk_hash_sizes(segment.chunk_index_start, segment.chunk_index_end)
-                        .map_err(|err| CasClientError::Other(format!("chunk_hash_sizes error: {err}")))?;
-                    result.extend(pairs);
-                    continue;
-                },
+                XorbStorage::Materialized(entry) => std::borrow::Cow::Borrowed(&entry.xorb_object),
+                XorbStorage::Random(xorb) => std::borrow::Cow::Owned(xorb.get_xorb_object()),
             };
 
             let pairs = xorb_obj

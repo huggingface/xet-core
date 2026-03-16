@@ -745,15 +745,7 @@ impl Client for RemoteClient {
             .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
             .await?;
 
-        let chunks = response
-            .chunks
-            .into_iter()
-            .map(|entry| {
-                let hash = MerkleHash::from_hex(&entry.hash)
-                    .map_err(|e| CasClientError::Other(format!("invalid chunk hash: {e}")))?;
-                Ok((hash, entry.size))
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let chunks = response.chunks.into_iter().map(|entry| (entry.hash, entry.size)).collect();
 
         Ok(chunks)
     }
@@ -769,8 +761,17 @@ struct FileChunkHashesResponse {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ChunkHashEntry {
-    hash: String,
+    #[serde(deserialize_with = "deserialize_merkle_hash")]
+    hash: MerkleHash,
     size: u64,
+}
+
+fn deserialize_merkle_hash<'de, D>(deserializer: D) -> std::result::Result<MerkleHash, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    MerkleHash::from_hex(&s).map_err(serde::de::Error::custom)
 }
 
 #[cfg(test)]
