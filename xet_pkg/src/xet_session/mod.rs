@@ -16,16 +16,16 @@
 //!
 //! ## Uploads
 //!
-//! For **sync** callers: create an [`UploadCommitSync`] with
-//! [`XetSession::new_upload_commit_blocking`], queue files with
-//! [`upload_from_path`](UploadCommitSync::upload_from_path) or
-//! [`upload_bytes`](UploadCommitSync::upload_bytes), then call
-//! [`commit`](UploadCommitSync::commit) to block until all transfers finish and
-//! receive a `HashMap<Ulid, `[`UploadResult`]`>` keyed by task ID.
-//!
-//! For **async** callers: create an [`UploadCommit`] with
-//! [`XetSession::new_upload_commit`], queue files the same way, then
-//! `await` [`commit`](UploadCommit::commit).
+//! Create an [`UploadCommit`] with [`XetSession::new_upload_commit`] (async)
+//! or [`XetSession::new_upload_commit_blocking`] (sync), queue files with
+//! [`upload_from_path`](UploadCommit::upload_from_path) /
+//! [`upload_from_path_blocking`](UploadCommit::upload_from_path_blocking) or
+//! [`upload_bytes`](UploadCommit::upload_bytes) /
+//! [`upload_bytes_blocking`](UploadCommit::upload_bytes_blocking), then call
+//! [`commit`](UploadCommit::commit) or
+//! [`commit_blocking`](UploadCommit::commit_blocking) to wait for all
+//! transfers to finish and receive a `HashMap<Ulid, `[`UploadResult`]`>`
+//! keyed by task ID.
 //!
 //! `UploadResult` = `Arc<Result<`[`FileMetadata`]`, `[`SessionError`]`>>`.
 //! Per-task results can also be read from the returned [`UploadTaskHandle`]
@@ -33,15 +33,13 @@
 //!
 //! ## Downloads
 //!
-//! For **sync** callers: create a [`DownloadGroupSync`] with
-//! [`XetSession::new_download_group_blocking`], queue files with
-//! [`download_file_to_path`](DownloadGroupSync::download_file_to_path), then
-//! call [`finish`](DownloadGroupSync::finish) to block until all transfers
-//! complete and receive a `HashMap<Ulid, `[`DownloadResult`]`>` keyed by task ID.
-//!
-//! For **async** callers: create a [`DownloadGroup`] with
-//! [`XetSession::new_download_group`], queue files the same way, then
-//! `await` [`finish`](DownloadGroup::finish).
+//! Create a [`DownloadGroup`] with [`XetSession::new_download_group`] (async)
+//! or [`XetSession::new_download_group_blocking`] (sync), queue files with
+//! [`download_file_to_path`](DownloadGroup::download_file_to_path), then call
+//! [`finish`](DownloadGroup::finish) (async) or
+//! [`finish_blocking`](DownloadGroup::finish_blocking) (sync) to wait for all
+//! transfers to complete and receive a `HashMap<Ulid, `[`DownloadResult`]`>`
+//! keyed by task ID.
 //!
 //! `DownloadResult` = `Arc<Result<`[`DownloadedFile`]`, `[`SessionError`]`>>`.
 //! Per-task results can also be read from the returned [`DownloadTaskHandle`]
@@ -49,12 +47,11 @@
 //!
 //! ## Progress tracking
 //!
-//! All four types ([`UploadCommit`], [`UploadCommitSync`], [`DownloadGroup`],
-//! [`DownloadGroupSync`]) expose `get_progress()`, which returns a
-//! [`ProgressSnapshot`] without acquiring a lock on the calling thread
-//! (useful for Python bindings that must release the GIL).  Poll it from a
-//! background thread/task while the main thread/task blocks in
-//! `commit()` / `finish()`.
+//! Both [`UploadCommit`] and [`DownloadGroup`] expose `get_progress()`,
+//! which returns a [`ProgressSnapshot`] without acquiring a lock on the
+//! calling thread (useful for Python bindings that must release the GIL).
+//! Poll it from a background thread/task while the main thread/task blocks
+//! in `commit()` / `finish()`.
 //!
 //! ## Error handling
 //!
@@ -76,21 +73,21 @@
 //!     .with_token_info("my-token".into(), 1_700_000_000)
 //!     .build()?;
 //!
-//! // 2. Upload — use the _blocking factory; returns UploadCommitSync
+//! // 2. Upload — use the _blocking factory and _blocking methods
 //! let commit = session.new_upload_commit_blocking()?;
-//! let handle = commit.upload_from_path("file.bin".into(), Sha256Policy::Compute)?;
+//! let handle = commit.upload_from_path_blocking("file.bin".into(), Sha256Policy::Compute)?;
 //! // UploadResult = Arc<Result<FileMetadata, SessionError>>
-//! let results = commit.commit()?;
+//! let results = commit.commit_blocking()?;
 //! let m = results.values().next().unwrap().as_ref().as_ref().unwrap();
 //!
-//! // 3. Download — use the _blocking factory; returns DownloadGroupSync
+//! // 3. Download — use the _blocking factory and finish_blocking
 //! let group = session.new_download_group_blocking()?;
 //! let info = XetFileInfo {
 //!     hash: m.hash.clone(),
 //!     file_size: m.file_size,
 //! };
 //! let dl_handle = group.download_file_to_path(info, "out/file.bin".into())?;
-//! let finish_results = group.finish()?;
+//! let finish_results = group.finish_blocking()?;
 //! // DownloadResult = Arc<Result<DownloadedFile, SessionError>>
 //! let r = finish_results.get(&dl_handle.task_id).unwrap().as_ref().as_ref().unwrap();
 //!
@@ -112,14 +109,14 @@
 //!     .build_async()
 //!     .await?;
 //!
-//! // 2. Upload — use the async factory; returns UploadCommit
+//! // 2. Upload — use the async factory and async methods
 //! let commit = session.new_upload_commit().await?;
 //! let handle = commit.upload_from_path("file.bin".into(), Sha256Policy::Compute).await?;
 //! // UploadResult = Arc<Result<FileMetadata, SessionError>>
 //! let results = commit.commit().await?;
 //! let m = results.values().next().unwrap().as_ref().as_ref().unwrap();
 //!
-//! // 3. Download — use the async factory; returns DownloadGroup
+//! // 3. Download — use the async factory and async finish
 //! let group = session.new_download_group().await?;
 //! let info = XetFileInfo {
 //!     hash: m.hash.clone(),
@@ -138,7 +135,6 @@ mod download_group;
 mod errors;
 mod progress;
 mod session;
-pub mod sync;
 mod upload_commit;
 
 pub use download_group::{DownloadGroup, DownloadResult, DownloadedFile};
@@ -147,8 +143,6 @@ pub use progress::{
     DownloadTaskHandle, FileProgress, ProgressSnapshot, TaskHandle, TaskStatus, TotalProgressSnapshot, UploadTaskHandle,
 };
 pub use session::{XetSession, XetSessionBuilder};
-pub use sync::{DownloadGroupSync, UploadCommitSync};
 pub use upload_commit::{FileMetadata, UploadCommit, UploadResult};
-// Re-export for convenience
 pub use xet_data::processing::{Sha256Policy, XetFileInfo};
 pub use xet_runtime::config::XetConfig;

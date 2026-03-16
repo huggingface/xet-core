@@ -60,7 +60,7 @@ fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<()> {
     let n_files = files.len();
     let mut handles = Vec::with_capacity(n_files);
     for f in &files {
-        handles.push(commit.upload_from_path(f.clone(), Sha256Policy::Compute)?);
+        handles.push(commit.upload_from_path_blocking(f.clone(), Sha256Policy::Compute)?);
     }
 
     // Spawn a task to print progress; the main thread blocks in commit() below.
@@ -80,7 +80,7 @@ fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<()> {
     });
 
     // Block until all uploads finish and metadata is finalized.
-    let results = commit.commit()?;
+    let results = commit.commit_blocking()?;
 
     for m in results.values().filter_map(|m| m.as_ref().as_ref().ok()) {
         println!("  {} -> {} ({} bytes)", m.tracking_name.as_deref().unwrap_or("?"), m.hash, m.file_size);
@@ -138,7 +138,7 @@ fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: Option<
     });
 
     // Block until all downloads finish.
-    let results = group.finish()?;
+    let results = group.finish_blocking()?;
 
     for (_task_id, result) in &results {
         if let Ok(r) = result.as_ref() {

@@ -4202,6 +4202,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "ulid",
+ "url",
  "walkdir",
  "xet-client",
  "xet-core-structures",
