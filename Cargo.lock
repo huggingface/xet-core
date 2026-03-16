@@ -6285,6 +6285,7 @@ dependencies = [
  "tracing",
  "tracing-test",
  "ulid",
+ "url",
  "walkdir",
  "xet-client",
  "xet-core-structures",
