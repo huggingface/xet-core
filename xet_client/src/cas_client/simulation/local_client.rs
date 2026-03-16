@@ -1061,6 +1061,10 @@ impl Client for LocalClient {
         // Should not reach here, but return error if we do.
         Err(CasClientError::PresignedUrlExpirationError)
     }
+
+    async fn get_file_chunk_hashes(&self, _file_id: &MerkleHash) -> Result<Vec<(MerkleHash, u64)>> {
+        Err(CasClientError::Other("get_file_chunk_hashes not implemented for simulation client".into()))
+    }
 }
 
 fn map_heed_db_error(e: heed::Error) -> CasClientError {

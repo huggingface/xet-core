@@ -584,6 +584,44 @@ impl Client for RemoteClient {
 
         Ok(n_upload_bytes)
     }
+
+    #[instrument(skip_all, name = "RemoteClient::get_file_chunk_hashes", fields(file.hash = file_id.hex()))]
+    async fn get_file_chunk_hashes(&self, file_id: &MerkleHash) -> Result<Vec<(MerkleHash, u64)>> {
+        let url = Url::parse(&format!("{}/v2/file-chunk-hashes/{}", self.endpoint, file_id.hex()))?;
+
+        let api_tag = "cas::get_file_chunk_hashes";
+        let client = self.authenticated_http_client.clone();
+
+        let response: FileChunkHashesResponse = RetryWrapper::new(api_tag)
+            .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
+            .await?;
+
+        let chunks = response
+            .chunks
+            .into_iter()
+            .map(|entry| {
+                let hash = MerkleHash::from_hex(&entry.hash)
+                    .map_err(|e| CasClientError::Other(format!("invalid chunk hash: {e}")))?;
+                Ok((hash, entry.size))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(chunks)
+    }
+}
+
+/// Response from `GET /v2/file-chunk-hashes/{file_id}`.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FileChunkHashesResponse {
+    chunks: Vec<ChunkHashEntry>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChunkHashEntry {
+    hash: String,
+    size: u64,
 }
 
 #[cfg(test)]

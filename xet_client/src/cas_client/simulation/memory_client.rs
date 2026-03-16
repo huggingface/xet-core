@@ -920,6 +920,10 @@ impl Client for MemoryClient {
         }
         Ok((Bytes::from(decompressed_data), chunk_byte_indices))
     }
+
+    async fn get_file_chunk_hashes(&self, _file_id: &MerkleHash) -> Result<Vec<(MerkleHash, u64)>> {
+        Err(CasClientError::Other("get_file_chunk_hashes not implemented for simulation client".into()))
+    }
 }
 
 fn generate_fetch_url(hash: &MerkleHash, byte_range: &FileRange, timestamp: Instant) -> String {

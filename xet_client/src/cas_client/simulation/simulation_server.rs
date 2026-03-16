@@ -16,7 +16,7 @@ use tempfile::TempDir;
 use tokio::sync::oneshot;
 
 use super::super::RemoteClient;
-use super::super::error::Result;
+use super::super::error::{CasClientError, Result};
 use super::super::interface::Client;
 use super::super::progress_tracked_streams::ProgressCallback;
 use super::local_server::{LocalServer, ServerLatencyProfile};
@@ -499,6 +499,13 @@ impl Client for LocalTestServer {
         self.remote_simulation_client
             .upload_xorb(prefix, serialized_xorb_object, progress_callback, upload_permit)
             .await
+    }
+
+    async fn get_file_chunk_hashes(
+        &self,
+        _file_id: &xet_core_structures::merklehash::MerkleHash,
+    ) -> Result<Vec<(xet_core_structures::merklehash::MerkleHash, u64)>> {
+        Err(CasClientError::Other("get_file_chunk_hashes not implemented for simulation client".into()))
     }
 }
 

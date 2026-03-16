@@ -186,4 +186,11 @@ impl Client for RemoteSimulationClient {
             .upload_xorb(prefix, serialized_xorb_object, progress_callback, upload_permit)
             .await
     }
+
+    async fn get_file_chunk_hashes(
+        &self,
+        file_id: &xet_core_structures::merklehash::MerkleHash,
+    ) -> Result<Vec<(xet_core_structures::merklehash::MerkleHash, u64)>> {
+        self.inner.get_file_chunk_hashes(file_id).await
+    }
 }

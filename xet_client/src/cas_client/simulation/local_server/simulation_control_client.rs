@@ -152,6 +152,10 @@ impl Client for SimulationControlClient {
             .upload_xorb(prefix, serialized_xorb_object, progress_callback, upload_permit)
             .await
     }
+
+    async fn get_file_chunk_hashes(&self, _file_id: &MerkleHash) -> Result<Vec<(MerkleHash, u64)>> {
+        Err(CasClientError::Other("get_file_chunk_hashes not implemented for simulation client".into()))
+    }
 }
 
 #[async_trait]

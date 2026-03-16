@@ -529,6 +529,13 @@ impl FileUploadSession {
         Ok(())
     }
 
+    /// Register a pre-composed file reconstruction plan (MDBFileInfo) with this session.
+    /// Used for append-aware writes where the caller builds the reconstruction plan
+    /// from existing segments + newly uploaded segments.
+    pub async fn register_composed_file(self: &Arc<Self>, file_info: MDBFileInfo) -> Result<()> {
+        self.shard_interface.add_file_reconstruction_info(file_info).await
+    }
+
     pub async fn finalize(self: Arc<Self>) -> Result<DeduplicationMetrics> {
         Ok(self.finalize_impl(false).await?.0)
     }
