@@ -265,7 +265,11 @@ pub async fn retrieve_file_term_block(
                 }
                 idx += (range.end - range.start) as usize;
             }
-            debug_assert!(found, "chunk_start {chunk_start} not found in chunk_ranges {chunk_ranges:?}");
+            if !found {
+                return Err(FileReconstructionError::CorruptedReconstruction(format!(
+                    "chunk_start {chunk_start} not found in chunk_ranges {chunk_ranges:?} for file term {local_term_index}"
+                )));
+            }
             idx
         };
 
