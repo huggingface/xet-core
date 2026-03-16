@@ -440,7 +440,7 @@ impl Client for LocalTestServer {
         &self,
         file_id: &xet_core_structures::merklehash::MerkleHash,
         bytes_range: Option<crate::cas_types::FileRange>,
-    ) -> Result<Option<crate::cas_types::QueryReconstructionResponse>> {
+    ) -> Result<Option<crate::cas_types::QueryReconstructionResponseV2>> {
         self.remote_simulation_client.get_reconstruction(file_id, bytes_range).await
     }
 
@@ -510,6 +510,30 @@ impl DirectAccessClient for LocalTestServer {
 
     fn set_api_delay_range(&self, delay_range: Option<std::ops::Range<std::time::Duration>>) {
         self.client.set_api_delay_range(delay_range);
+    }
+
+    fn set_max_ranges_per_fetch(&self, max_ranges: usize) {
+        self.client.set_max_ranges_per_fetch(max_ranges);
+    }
+
+    fn disable_v2_reconstruction(&self, status_code: u16) {
+        self.client.disable_v2_reconstruction(status_code);
+    }
+
+    async fn get_reconstruction_v1(
+        &self,
+        file_id: &xet_core_structures::merklehash::MerkleHash,
+        bytes_range: Option<crate::cas_types::FileRange>,
+    ) -> Result<Option<crate::cas_types::QueryReconstructionResponse>> {
+        self.client.get_reconstruction_v1(file_id, bytes_range).await
+    }
+
+    async fn get_reconstruction_v2(
+        &self,
+        file_id: &xet_core_structures::merklehash::MerkleHash,
+        bytes_range: Option<crate::cas_types::FileRange>,
+    ) -> Result<Option<crate::cas_types::QueryReconstructionResponseV2>> {
+        self.client.get_reconstruction_v2(file_id, bytes_range).await
     }
 
     async fn apply_api_delay(&self) {
@@ -690,31 +714,22 @@ mod tests {
 
         // Fetch term endpoint - verify URLs are HTTP and data can be fetched
         let http_client = reqwest::Client::new();
-        for fetch_infos in remote_recon.fetch_info.values() {
-            for fi in fetch_infos {
-                assert!(fi.url.starts_with("http://"));
-                assert!(fi.url.contains("/fetch_term?term="));
-                let response = http_client.get(&fi.url).send().await.unwrap();
+        for multi_range_fetches in remote_recon.xorbs.values() {
+            for mrf in multi_range_fetches {
+                assert!(mrf.url.starts_with("http://"));
+                assert!(mrf.url.contains("/fetch_term?term="));
+                let response = http_client.get(&mrf.url).send().await.unwrap();
                 assert!(response.status().is_success());
                 assert!(!response.bytes().await.unwrap().is_empty());
             }
         }
 
-        // Fetch term with range request
-        let first_fi = &remote_recon.fetch_info.values().next().unwrap()[0];
-        let full_data = http_client.get(&first_fi.url).send().await.unwrap().bytes().await.unwrap();
-        if full_data.len() > 100 {
-            let range_resp = http_client
-                .get(&first_fi.url)
-                .header(reqwest::header::RANGE, "bytes=0-99")
-                .send()
-                .await
-                .unwrap();
-            assert!(range_resp.status().is_success());
-            let range_data = range_resp.bytes().await.unwrap();
-            assert_eq!(range_data.len(), 100);
-            assert_eq!(&range_data[..], &full_data[..100]);
-        }
+        // Verify V2 fetch URLs return consistent data across multiple requests.
+        let first_mrf = &remote_recon.xorbs.values().next().unwrap()[0];
+        let data_1 = http_client.get(&first_mrf.url).send().await.unwrap().bytes().await.unwrap();
+        let data_2 = http_client.get(&first_mrf.url).send().await.unwrap().bytes().await.unwrap();
+        assert_eq!(data_1, data_2);
+        assert!(!data_1.is_empty());
     }
 
     /// Tests that invalid requests return appropriate error responses.
@@ -762,16 +777,16 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        for (hash, fetch_infos) in &recon1.fetch_info {
-            for fi in fetch_infos {
+        for (hash, multi_range_fetches) in &recon1.xorbs {
+            for mrf in multi_range_fetches {
                 assert!(
-                    fi.url.starts_with("http://") || fi.url.starts_with("https://"),
+                    mrf.url.starts_with("http://") || mrf.url.starts_with("https://"),
                     "URL for hash {} should be HTTP, got: {}",
                     hash,
-                    fi.url
+                    mrf.url
                 );
-                assert!(fi.url.contains("/fetch_term?term="));
-                assert!(!fi.url.contains("\":"));
+                assert!(mrf.url.contains("/fetch_term?term="));
+                assert!(!mrf.url.contains("\":"));
             }
         }
 
@@ -782,10 +797,10 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(multi_recon.fetch_info.len() >= 2);
-        for fetch_infos in multi_recon.fetch_info.values() {
-            for fi in fetch_infos {
-                assert!(fi.url.starts_with("http://"));
+        assert!(multi_recon.xorbs.len() >= 2);
+        for multi_range_fetches in multi_recon.xorbs.values() {
+            for mrf in multi_range_fetches {
+                assert!(mrf.url.starts_with("http://"));
             }
         }
 
@@ -798,18 +813,18 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        for fetch_infos in range_recon.fetch_info.values() {
-            for fi in fetch_infos {
-                assert!(fi.url.starts_with("http://"));
-                assert!(fi.url.contains("/fetch_term?term="));
+        for multi_range_fetches in range_recon.xorbs.values() {
+            for mrf in multi_range_fetches {
+                assert!(mrf.url.starts_with("http://"));
+                assert!(mrf.url.contains("/fetch_term?term="));
             }
         }
 
         // Verify all term URLs are fetchable
         for term in &recon1.terms {
-            let fetch_infos = recon1.fetch_info.get(&term.hash).unwrap();
-            for fi in fetch_infos {
-                let response = http_client.get(&fi.url).send().await.unwrap();
+            let multi_range_fetches = recon1.xorbs.get(&term.hash).unwrap();
+            for mrf in multi_range_fetches {
+                let response = http_client.get(&mrf.url).send().await.unwrap();
                 assert!(response.status().is_success());
                 assert!(!response.bytes().await.unwrap().is_empty());
             }
@@ -860,9 +875,9 @@ mod tests {
             let expected_term = &file.terms[term_idx];
             assert_eq!(recon_term.hash.0, expected_term.xorb_hash);
 
-            // Verify fetch_info exists for each XORB
-            let fetch_infos = recon.fetch_info.get(&recon_term.hash).unwrap();
-            assert!(!fetch_infos.is_empty());
+            // Verify xorbs has entry for each term
+            let multi_range_fetches = recon.xorbs.get(&recon_term.hash).unwrap();
+            assert!(!multi_range_fetches.is_empty());
         }
 
         // Verify the complete file can be retrieved correctly via LocalClient

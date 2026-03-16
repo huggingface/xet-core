@@ -7,8 +7,8 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use http::header::{self, HeaderMap, HeaderValue};
 use walkdir::WalkDir;
+use xet_client::cas_client::RemoteClient;
 use xet_client::cas_client::auth::TokenRefresher;
-use xet_client::cas_client::{Client, RemoteClient};
 use xet_client::cas_types::{FileRange, QueryReconstructionResponse};
 use xet_client::hub_client::{BearerCredentialHelper, HubClient, Operation, RepoInfo};
 use xet_core_structures::merklehash::MerkleHash;
@@ -230,8 +230,9 @@ async fn query_reconstruction(
         cas_storage_config.custom_headers.clone(),
     );
 
+    // Use V1 directly so the query tool returns the raw QueryReconstructionResponse for inspection.
     remote_client
-        .get_reconstruction(&file_hash, bytes_range)
+        .get_reconstruction_v1(&file_hash, bytes_range)
         .await
         .map_err(anyhow::Error::from)
 }
