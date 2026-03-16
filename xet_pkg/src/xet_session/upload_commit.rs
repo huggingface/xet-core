@@ -15,17 +15,20 @@ use super::errors::SessionError;
 use super::progress::{GroupProgress, ProgressSnapshot, TaskHandle, TaskStatus, UploadTaskHandle};
 use super::session::XetSession;
 
-/// Async API for grouping related file uploads into a single atomic commit.
+/// API for grouping related file uploads into a single atomic commit.
 ///
-/// Obtain via [`XetSession::new_upload_commit`] from an `async` context.
-/// For sync / non-async code use [`UploadCommitSync`] from
-/// [`XetSession::new_upload_commit_blocking`] instead.
+/// Obtain via [`XetSession::new_upload_commit`] (async) or
+/// [`XetSession::new_upload_commit_blocking`] (sync).
 ///
-/// Enqueue files with [`upload_from_path`](Self::upload_from_path) or stream
-/// bytes with [`upload_file`](Self::upload_file) — transfers start immediately
-/// in the background.  Poll progress with [`get_progress`](Self::get_progress),
-/// then `await` [`commit`](Self::commit) to wait for all uploads to finish and
-/// push the final metadata to the CAS server.
+/// Enqueue files with [`upload_from_path`](Self::upload_from_path) /
+/// [`upload_from_path_blocking`](Self::upload_from_path_blocking) or stream
+/// bytes with [`upload_file`](Self::upload_file) /
+/// [`upload_file_blocking`](Self::upload_file_blocking) — transfers start
+/// immediately in the background.  Poll progress with
+/// [`get_progress`](Self::get_progress), then call
+/// [`commit`](Self::commit) (async) or
+/// [`commit_blocking`](Self::commit_blocking) (sync) to wait for all uploads
+/// to finish and push the final metadata to the CAS server.
 ///
 /// # Cloning
 ///
@@ -37,8 +40,6 @@ use super::session::XetSession;
 /// Methods return [`SessionError::Aborted`] if the parent session has been
 /// aborted, and [`SessionError::AlreadyCommitted`] if [`commit`](Self::commit)
 /// has already been called.
-///
-/// [`UploadCommitSync`]: crate::xet_session::sync::UploadCommitSync
 #[derive(Clone)]
 pub struct UploadCommit {
     pub(super) inner: Arc<UploadCommitInner>,
@@ -232,6 +233,79 @@ impl UploadCommit {
     #[cfg(test)]
     async fn is_committed(&self) -> bool {
         *self.state.lock().await == GroupState::Finished
+    }
+
+    // ===== Blocking (sync) variants =====
+    //
+    // These methods block the calling thread via `external_run_async_task`.
+    // **Do not call from within a tokio runtime** — it will panic.
+    // Use the async counterparts instead.
+
+    /// Blocking version of [`upload_from_path`](Self::upload_from_path).
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async runtime.
+    pub fn upload_from_path_blocking(
+        &self,
+        file_path: PathBuf,
+        sha256: Sha256Policy,
+    ) -> Result<UploadTaskHandle, SessionError> {
+        self.session.check_alive()?;
+
+        let absolute_path = std::path::absolute(file_path)?;
+        let commit_inner = self.inner.clone();
+        self.runtime().external_run_async_task(async move {
+            commit_inner.start_upload_file_from_path(absolute_path, sha256).await
+        })?
+    }
+
+    /// Blocking version of [`upload_bytes`](Self::upload_bytes).
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async runtime.
+    pub fn upload_bytes_blocking(
+        &self,
+        bytes: Vec<u8>,
+        sha256: Sha256Policy,
+        tracking_name: Option<String>,
+    ) -> Result<UploadTaskHandle, SessionError> {
+        self.session.check_alive()?;
+
+        let commit_inner = self.inner.clone();
+        self.runtime().external_run_async_task(async move {
+            commit_inner.start_upload_bytes(bytes, sha256, tracking_name).await
+        })?
+    }
+
+    /// Blocking version of [`upload_file`](Self::upload_file).
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async runtime.
+    pub fn upload_file_blocking(
+        &self,
+        file_name: Option<String>,
+        file_size: u64,
+        sha256: Sha256Policy,
+    ) -> Result<(TaskHandle, SingleFileCleaner), SessionError> {
+        self.session.check_alive()?;
+
+        let commit_inner = self.inner.clone();
+        self.runtime().external_run_async_task(async move {
+            commit_inner.start_upload_file(file_name, file_size, sha256).await
+        })?
+    }
+
+    /// Blocking version of [`commit`](Self::commit).
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async runtime.
+    pub fn commit_blocking(self) -> Result<HashMap<Ulid, UploadResult>, SessionError> {
+        let commit = self.clone();
+        self.runtime().external_run_async_task(commit.commit())?
     }
 }
 
@@ -1067,5 +1141,155 @@ mod tests {
             let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
             assert_eq!(meta.file_size, data.len() as u64);
         });
+    }
+
+    // ── Blocking API tests ────────────────────────────────────────────────────
+
+    fn local_session_sync(temp: &TempDir) -> Result<XetSession, Box<dyn std::error::Error>> {
+        let cas_path = temp.path().join("cas");
+        Ok(XetSessionBuilder::new()
+            .with_endpoint(format!("local://{}", cas_path.display()))
+            .build()?)
+    }
+
+    #[test]
+    fn test_blocking_upload_bytes_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let session = local_session_sync(&temp)?;
+        let data = b"Hello, upload commit round-trip!";
+        let commit = session.new_upload_commit_blocking()?;
+        let task_handle =
+            commit.upload_bytes_blocking(data.to_vec(), Sha256Policy::Compute, Some("hello.bin".into()))?;
+        let results = commit.commit_blocking()?;
+        assert_eq!(results.len(), 1);
+        let meta = results.get(&task_handle.task_id).unwrap().as_ref().as_ref().unwrap();
+        assert_eq!(meta.file_size, data.len() as u64);
+        assert!(!meta.hash.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_blocking_upload_from_path_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let session = local_session_sync(&temp)?;
+        let src = temp.path().join("data.bin");
+        let data = b"file path upload content";
+        std::fs::write(&src, data)?;
+        let commit = session.new_upload_commit_blocking()?;
+        let handle = commit.upload_from_path_blocking(src, Sha256Policy::Compute)?;
+        commit.commit_blocking()?;
+        let meta = handle.result().unwrap();
+        let meta = meta.as_ref().as_ref().unwrap();
+        assert_eq!(meta.file_size, data.len() as u64);
+        assert!(!meta.hash.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_blocking_upload_result_access_patterns() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let session = local_session_sync(&temp)?;
+        let data = b"result access patterns";
+        let src = temp.path().join("data.bin");
+        std::fs::write(&src, data)?;
+        let commit = session.new_upload_commit_blocking()?;
+        let handle = commit.upload_from_path_blocking(src, Sha256Policy::Compute)?;
+
+        // Before commit, per-task result is not available yet.
+        assert!(handle.result().is_none());
+
+        let results = commit.commit_blocking()?;
+
+        // Result should be available in the commit map by task id.
+        let map_result = results.get(&handle.task_id).expect("task_id must be present in results");
+        assert_eq!(map_result.as_ref().as_ref().unwrap().file_size, data.len() as u64);
+
+        // Result should also be available via the task handle.
+        let handle_result = handle.result().expect("result must be set after commit");
+        assert_eq!(handle_result.as_ref().as_ref().unwrap().file_size, data.len() as u64);
+        Ok(())
+    }
+
+    #[test]
+    fn test_blocking_upload_streaming_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let session = local_session_sync(&temp)?;
+        let data = b"streamed upload bytes";
+        let runtime = session.runtime.clone();
+        let commit = session.new_upload_commit_blocking()?;
+        let (_handle, mut cleaner) =
+            commit.upload_file_blocking(Some("stream.bin".into()), data.len() as u64, Sha256Policy::Compute)?;
+        let (hash, file_size) = runtime.external_run_async_task(async move {
+            cleaner.add_data(data).await.unwrap();
+            let (xfi, _) = cleaner.finish().await.unwrap();
+            (xfi.hash, xfi.file_size)
+        })?;
+        let results = commit.commit_blocking()?;
+        assert!(results.is_empty());
+        assert_eq!(file_size, data.len() as u64);
+        assert!(!hash.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_blocking_upload_multiple_files_in_one_commit() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let session = local_session_sync(&temp)?;
+        let commit = session.new_upload_commit_blocking()?;
+        commit.upload_bytes_blocking(b"file one".to_vec(), Sha256Policy::Compute, Some("a.bin".into()))?;
+        commit.upload_bytes_blocking(b"file two".to_vec(), Sha256Policy::Compute, Some("b.bin".into()))?;
+        commit.upload_bytes_blocking(b"file three".to_vec(), Sha256Policy::Compute, Some("c.bin".into()))?;
+        let results = commit.commit_blocking()?;
+        assert_eq!(results.len(), 3);
+        Ok(())
+    }
+
+    #[test]
+    fn test_blocking_upload_progress_reflects_bytes_after_commit() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let session = local_session_sync(&temp)?;
+        let data = b"progress tracking upload data";
+        let commit = session.new_upload_commit_blocking()?;
+        let progress_observer = commit.clone();
+        commit.upload_bytes_blocking(data.to_vec(), Sha256Policy::Compute, Some("prog.bin".into()))?;
+        commit.commit_blocking()?;
+        let snapshot = progress_observer.get_progress()?;
+        assert!(snapshot.total().total_bytes_completed > 0);
+        Ok(())
+    }
+
+    fn assert_blocking_upload_round_trip<R>(run: R)
+    where
+        R: FnOnce(std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>),
+    {
+        let temp = tempdir().unwrap();
+        let session = local_session_sync(&temp).unwrap();
+
+        run(Box::pin(async move {
+            let data = b"upload from smol executor";
+            let commit = session.new_upload_commit_blocking().unwrap();
+            let handle = commit
+                .upload_bytes_blocking(data.to_vec(), Sha256Policy::Compute, Some("test.bin".into()))
+                .unwrap();
+            let results = commit.commit_blocking().unwrap();
+            let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
+            assert_eq!(meta.file_size, data.len() as u64);
+            assert!(!meta.hash.is_empty());
+        }));
+    }
+
+    #[test]
+    fn test_blocking_upload_round_trip_in_smol() {
+        assert_blocking_upload_round_trip(|fut| smol::block_on(fut));
+    }
+
+    #[test]
+    fn test_blocking_upload_round_trip_in_futures_executor() {
+        assert_blocking_upload_round_trip(|fut| futures::executor::block_on(fut));
+    }
+
+    #[test]
+    fn test_blocking_upload_round_trip_in_async_std() {
+        assert_blocking_upload_round_trip(|fut| async_std::task::block_on(fut));
     }
 }
