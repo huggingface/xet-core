@@ -60,6 +60,27 @@ macro_rules! impl_xet_config_group_dispatch {
                 }
             }
 
+            #[cfg(feature = "python")]
+            fn get_field_to_python(
+                &self,
+                path: &str,
+                py: pyo3::Python<'_>,
+            ) -> pyo3::PyResult<pyo3::Py<pyo3::PyAny>> {
+                let (group, field) = path.split_once('.').ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err(
+                        ConfigError::InvalidPath(path.to_owned()).to_string(),
+                    )
+                })?;
+                match group {
+                    $(stringify!($group) => self.$group.get_to_python(field, py),)*
+                    #[cfg(not(target_family = "wasm"))]
+                    "system_monitor" => self.system_monitor.get_to_python(field, py),
+                    _ => Err(pyo3::exceptions::PyValueError::new_err(
+                        ConfigError::UnknownGroup(group.to_owned()).to_string(),
+                    )),
+                }
+            }
+
             /// Get a configuration value's string representation by dotted path
             /// (e.g. "data.max_concurrent_file_ingestion").
             pub fn get(&self, path: &str) -> Result<String, ConfigError> {
@@ -71,6 +92,40 @@ macro_rules! impl_xet_config_group_dispatch {
                     "system_monitor" => self.system_monitor.get(field),
                     _ => Err(ConfigError::UnknownGroup(group.to_owned())),
                 }
+            }
+
+            /// Return all dotted-path keys across all groups.
+            pub fn all_keys(&self) -> Vec<String> {
+                let mut keys = Vec::new();
+                $(
+                    for &field in groups::$group::ConfigValueGroup::field_names() {
+                        keys.push(format!("{}.{field}", stringify!($group)));
+                    }
+                )*
+                #[cfg(not(target_family = "wasm"))]
+                for &field in groups::system_monitor::ConfigValueGroup::field_names() {
+                    keys.push(format!("system_monitor.{field}"));
+                }
+                keys
+            }
+
+            /// Return all (dotted_key, python_value) pairs across all groups.
+            #[cfg(feature = "python")]
+            pub fn all_items_to_python(
+                &self,
+                py: pyo3::Python<'_>,
+            ) -> pyo3::PyResult<Vec<(String, pyo3::Py<pyo3::PyAny>)>> {
+                let mut items = Vec::new();
+                $(
+                    for (field, val) in self.$group.items_to_python(py)? {
+                        items.push((format!("{}.{field}", stringify!($group)), val));
+                    }
+                )*
+                #[cfg(not(target_family = "wasm"))]
+                for (field, val) in self.system_monitor.items_to_python(py)? {
+                    items.push((format!("system_monitor.{field}"), val));
+                }
+                Ok(items)
             }
         }
     };
@@ -284,34 +339,10 @@ mod tests {
     }
 }
 
-/// Generates `#[pymethods]` getters on `PyXetConfig` for each config group.
-/// Defined here (before the `py_xet_config` child module) so it is visible inside it.
-#[allow(unused_macros)]
-macro_rules! impl_py_xet_config_getters {
-    ($($group:ident),*) => {
-        /// Group getters return snapshot copies for inspection.
-        /// To create a modified config, use `with_config("group.field", value)`.
-        #[pymethods]
-        impl PyXetConfig {
-            $(
-                #[getter]
-                fn $group(&self) -> groups::$group::PyConfigValueGroup {
-                    self.inner.$group.clone().into()
-                }
-            )*
-
-            #[cfg(not(target_family = "wasm"))]
-            #[getter]
-            fn system_monitor(&self) -> groups::system_monitor::PyConfigValueGroup {
-                self.inner.system_monitor.clone().into()
-            }
-        }
-    };
-}
-
 #[cfg(feature = "python")]
 pub mod py_xet_config {
     use pyo3::prelude::*;
+    use pyo3::types::PyDict;
 
     use super::*;
 
@@ -344,13 +375,11 @@ pub mod py_xet_config {
         /// Return a new XetConfig with one or more values updated.
         ///
         /// Can be called in two ways:
-        ///   config.with_config("group.field", value)          – single update
-        ///   config.with_config({"group.field": value, ...})   – batch update
+        ///   config.with_config("group.field", value)          -- single update
+        ///   config.with_config({"group.field": value, ...})   -- batch update
         #[pyo3(name = "with_config")]
         #[pyo3(signature = (name_or_dict, value=None))]
         fn py_with_config(&self, name_or_dict: &Bound<'_, PyAny>, value: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
-            use pyo3::types::PyDict;
-
             let mut new_inner = self.inner.clone();
 
             if let Ok(dict) = name_or_dict.downcast::<PyDict>() {
@@ -374,12 +403,37 @@ pub mod py_xet_config {
             Ok(Self { inner: new_inner })
         }
 
-        /// Get a configuration value's string representation by dotted path.
+        /// Get a configuration value as its native Python type by dotted path
+        /// (e.g. "data.max_concurrent_file_ingestion").
         #[pyo3(name = "get")]
-        fn py_get(&self, path: &str) -> PyResult<String> {
+        fn py_get(&self, py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
+            self.inner.get_field_to_python(path, py)
+        }
+
+        fn __getitem__(&self, py: Python<'_>, key: &str) -> PyResult<Py<PyAny>> {
             self.inner
-                .get(path)
-                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+                .get_field_to_python(key, py)
+                .map_err(|_| pyo3::exceptions::PyKeyError::new_err(key.to_owned()))
+        }
+
+        /// Return all (key, value) pairs as a list of tuples.
+        /// Keys are dotted paths like "data.max_concurrent_file_ingestion".
+        fn items(&self, py: Python<'_>) -> PyResult<Vec<(String, Py<PyAny>)>> {
+            self.inner.all_items_to_python(py)
+        }
+
+        /// Return all dotted-path keys.
+        fn keys(&self) -> Vec<String> {
+            self.inner.all_keys()
+        }
+
+        fn __len__(&self) -> usize {
+            self.inner.all_keys().len()
+        }
+
+        fn __iter__(slf: PyRef<'_, Self>, py: Python<'_>) -> PyResult<Py<PyXetConfigIter>> {
+            let items = slf.inner.all_items_to_python(py)?;
+            Py::new(py, PyXetConfigIter { items, index: 0 })
         }
 
         fn __repr__(&self) -> String {
@@ -391,5 +445,26 @@ pub mod py_xet_config {
         }
     }
 
-    crate::all_config_groups!(impl_py_xet_config_getters);
+    #[pyclass]
+    struct PyXetConfigIter {
+        items: Vec<(String, Py<PyAny>)>,
+        index: usize,
+    }
+
+    #[pymethods]
+    impl PyXetConfigIter {
+        fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+            slf
+        }
+
+        fn __next__(&mut self) -> Option<(String, Py<PyAny>)> {
+            if self.index < self.items.len() {
+                let item = self.items[self.index].clone();
+                self.index += 1;
+                Some(item)
+            } else {
+                None
+            }
+        }
+    }
 }

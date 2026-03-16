@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::utils::ByteSize;
 
-crate::config_group!("XetLogConfig", {
+crate::config_group!({
 
     /// The log destination.  By default, logs to the logs/ subdirectory in the huggingface xet cache directory.
     ///

@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::utils::ByteSize;
 
-crate::config_group!("XetDataConfig", {
+crate::config_group!({
 
     /// Gives the minimum spacing in number of chunks between global dedup queries
     /// sent to the server to limit the number of simultaneous queries.

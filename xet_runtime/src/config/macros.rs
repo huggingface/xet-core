@@ -16,21 +16,10 @@ macro_rules! all_config_groups {
 /// ```rust,no_run
 /// use xet_runtime::config_group;
 ///
-/// // Without Python class name:
 /// mod basic_group {
 ///     use xet_runtime::config_group;
 ///
 ///     config_group!({
-///         ref TEST_INT: usize = 42;
-///         ref TEST_STRING: String = "default".to_string();
-///     });
-/// }
-///
-/// // With Python class name (enables PyO3 bindings when "python" feature is active):
-/// mod python_named_group {
-///     use xet_runtime::config_group;
-///
-///     config_group!("MyConfig", {
 ///         ref TEST_INT: usize = 42;
 ///         ref TEST_STRING: String = "default".to_string();
 ///     });
@@ -40,51 +29,10 @@ macro_rules! all_config_groups {
 /// This creates a `ConfigValueGroup` struct with the specified fields, default values,
 /// environment variable overrides, and string-based accessors.
 ///
-/// When a Python class name is provided and the `python` feature is enabled, the macro
-/// also generates `#[pyclass]` and `#[pymethods]` implementations with typed getters
-/// for each field. Group structs are read-only from Python; use `XetConfig.with_config()`
-/// to create modified copies.
+/// Python bindings are provided at the `XetConfig` level, not per-group.
 #[macro_export]
 macro_rules! config_group {
-    // Arm without Python class name -- no PyO3 bindings
     ({
-        $(
-            $(#[$meta:meta])*
-            ref $name:ident : $type:ty = $value:expr;
-        )+
-    }) => {
-        $crate::config_group!(@impl, {
-            $(
-                $(#[$meta])*
-                ref $name : $type = $value;
-            )+
-        });
-    };
-
-    // Arm with Python class name -- generates PyO3 bindings when "python" feature is active
-    ($py_name:literal, {
-        $(
-            $(#[$meta:meta])*
-            ref $name:ident : $type:ty = $value:expr;
-        )+
-    }) => {
-        $crate::config_group!(@impl, {
-            $(
-                $(#[$meta])*
-                ref $name : $type = $value;
-            )+
-        });
-
-        #[cfg(feature = "python")]
-        $crate::config_group!(@python_impl $py_name, {
-            $(
-                ref $name : $type;
-            )+
-        });
-    };
-
-    // Internal arm: core struct definition, Default, set/get, etc.
-    (@impl, {
         $(
             $(#[$meta:meta])*
             ref $name:ident : $type:ty = $value:expr;
@@ -214,74 +162,40 @@ macro_rules! config_group {
                     _ => Err(pyo3::exceptions::PyValueError::new_err(format!("Unknown config field: '{name}'"))),
                 }
             }
+
+            /// Get a configuration field as a native Python object by name.
+            #[cfg(feature = "python")]
+            pub fn get_to_python(
+                &self,
+                name: &str,
+                py: pyo3::Python<'_>,
+            ) -> pyo3::PyResult<pyo3::Py<pyo3::PyAny>> {
+                match name {
+                    $(
+                        stringify!($name) => {
+                            <$type as $crate::config::python::PythonConfigValue>::to_python(&self.$name, py)
+                        }
+                    )+
+                    _ => Err(pyo3::exceptions::PyValueError::new_err(format!("Unknown config field: '{name}'"))),
+                }
+            }
+
+            /// Return all (field_name, value) pairs as Python objects.
+            #[cfg(feature = "python")]
+            pub fn items_to_python(
+                &self,
+                py: pyo3::Python<'_>,
+            ) -> pyo3::PyResult<Vec<(&'static str, pyo3::Py<pyo3::PyAny>)>> {
+                Ok(vec![
+                    $(
+                        (stringify!($name),
+                         <$type as $crate::config::python::PythonConfigValue>::to_python(&self.$name, py)?),
+                    )+
+                ])
+            }
         }
 
         /// Type alias for easier reference in config aggregation macros
         pub(crate) type ConfigValues = ConfigValueGroup;
-    };
-
-    // Internal arm: Python bindings generation
-    (@python_impl $py_name:literal, {
-        $(
-            ref $name:ident : $type:ty;
-        )+
-    }) => {
-        use $crate::config::python::PythonConfigValue;
-
-        #[pyo3::pyclass(name = $py_name)]
-        pub struct PyConfigValueGroup {
-            inner: ConfigValueGroup,
-        }
-
-        impl From<ConfigValueGroup> for PyConfigValueGroup {
-            fn from(inner: ConfigValueGroup) -> Self {
-                Self { inner }
-            }
-        }
-
-        impl From<PyConfigValueGroup> for ConfigValueGroup {
-            fn from(wrapper: PyConfigValueGroup) -> Self {
-                wrapper.inner
-            }
-        }
-
-        impl PyConfigValueGroup {
-            pub fn inner(&self) -> &ConfigValueGroup {
-                &self.inner
-            }
-        }
-
-        #[pyo3::pymethods]
-        impl PyConfigValueGroup {
-            /// Get a field's string representation by name.
-            #[pyo3(name = "get")]
-            fn py_get(&self, name: &str) -> pyo3::PyResult<String> {
-                self.inner.get(name)
-                    .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
-            }
-
-            /// Return the list of field names.
-            #[staticmethod]
-            fn field_names() -> Vec<&'static str> {
-                ConfigValueGroup::field_names().to_vec()
-            }
-
-            fn __repr__(&self) -> String {
-                format!("{}({:?})", $py_name, self.inner)
-            }
-
-            fn __str__(&self) -> String {
-                format!("{:?}", self.inner)
-            }
-
-            $(
-                #[getter]
-                fn $name(&self, py: pyo3::Python<'_>) -> pyo3::PyResult<pyo3::Py<pyo3::PyAny>> {
-                    <$type as PythonConfigValue>::to_python(&self.inner.$name, py)
-                }
-            )+
-        }
-
-        pub type PyConfigValues = PyConfigValueGroup;
     };
 }
