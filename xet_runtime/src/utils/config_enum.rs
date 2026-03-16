@@ -40,9 +40,11 @@ impl ConfigEnum {
         }
     }
 
-    /// Creates a ConfigEnum with a string value and no validation constraints.
-    /// Used by deserialization paths (e.g. Python) where the value has already
-    /// been validated or will be validated by the caller.
+    /// Creates a ConfigEnum with a string value and an empty `valid_values` list.
+    /// Because `valid_values` is empty, `try_set` will reject every value on the
+    /// resulting instance.  This is intended only for deserialization paths
+    /// (e.g. Python's `from_python`) where the caller validates through the
+    /// *existing* field value's `try_set` rather than through this instance.
     pub fn new_unchecked(value: impl Into<String>) -> Self {
         ConfigEnum {
             value: value.into().to_lowercase(),

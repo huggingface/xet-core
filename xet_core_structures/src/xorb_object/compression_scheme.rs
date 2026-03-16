@@ -26,7 +26,6 @@ pub enum CompressionScheme {
     #[default]
     Auto = 99,
 }
-pub const NUM_COMPRESSION_SCHEMES: usize = 4;
 
 impl Display for CompressionScheme {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

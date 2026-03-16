@@ -63,6 +63,16 @@ fn test_environment_variable_aliases() {
         assert_eq!(XetConfig::new().data.session_xorb_metadata_flush_max_count, 128);
     }
 
+    // Xorb aliases (old HF_XET_DATA_XORB_* names)
+    {
+        let _guard = EnvVarGuard::set("HF_XET_DATA_XORB_COMPRESSION_SCHEME_RETEST_INTERVAL", "64");
+        assert_eq!(XetConfig::new().xorb.compression_scheme_retest_interval, 64);
+    }
+    {
+        let _guard = EnvVarGuard::set("HF_XET_DATA_XORB_COMPRESSION_POLICY", "lz4");
+        assert_eq!(XetConfig::new().xorb.compression_policy.as_str(), "lz4");
+    }
+
     // Shard aliases
     {
         let _guard = EnvVarGuard::set("HF_XET_MDB_SHARD_CACHE_SIZE_LIMIT", "24gb");

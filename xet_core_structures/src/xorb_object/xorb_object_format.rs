@@ -2542,4 +2542,12 @@ mod tests {
         let deserialized = XorbObject::deserialize(&mut reader).unwrap();
         assert_eq!(deserialized.info.num_chunks, 1);
     }
+
+    #[test]
+    fn test_from_xorb_uses_default_config() {
+        let raw = build_raw_xorb(4, ChunkSize::Fixed(1024));
+        let serialized = SerializedXorbObject::from_xorb(raw, false).unwrap();
+        assert_eq!(serialized.num_chunks, 4);
+        assert!(serialized.serialized_data.len() > 0);
+    }
 }
