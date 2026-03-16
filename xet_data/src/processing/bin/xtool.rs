@@ -233,8 +233,8 @@ fn main() -> Result<()> {
             anyhow::anyhow!("Invalid compression value {c}; expected one of: 0 (none), 1 (lz4), 2 (bg4-lz4), 99 (auto)")
         })?;
         config
-            .data
-            .xorb_compression_policy
+            .xorb
+            .compression_policy
             .try_set(<&str>::from(scheme))
             .map_err(|e| anyhow::anyhow!(e))?;
     }

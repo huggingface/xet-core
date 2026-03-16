@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::utils::{ByteSize, ConfigEnum};
+use crate::utils::ByteSize;
 
 crate::config_group!({
 
@@ -102,25 +102,5 @@ crate::config_group!({
     ///
     /// Use the environment variable `HF_XET_DATA_STAGING_SUBDIR` to set this value.
     ref staging_subdir: String = "staging".to_string();
-
-    /// How often should we retest the compression scheme?
-    /// Determining the optimal compression scheme takes time, but
-    /// it also minimizes the storage costs of the data.
-    ///
-    /// If set to zero, it's set once per file block per xorb.
-    ///
-    /// The default value is 32.
-    ///
-    /// Use the environment variable `HF_XET_DATA_XORB_COMPRESSION_SCHEME_RETEST_INTERVAL` to set this value.
-    ref xorb_compression_scheme_retest_interval : usize = 32;
-
-    /// Compression policy for xorb data.
-    /// Valid values: "" or "auto" for automatic detection, "none", "lz4", "bg4-lz4".
-    /// When set to "" or "auto", the best compression scheme is chosen based on data analysis.
-    ///
-    /// The default value is "auto" (auto-detect).
-    ///
-    /// Use the environment variable `HF_XET_DATA_XORB_COMPRESSION_POLICY` to set this value.
-    ref xorb_compression_policy: ConfigEnum = ConfigEnum::new("auto", &["", "auto", "none", "lz4", "bg4-lz4"]);
 
 });

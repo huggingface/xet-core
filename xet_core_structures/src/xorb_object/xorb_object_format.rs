@@ -1283,10 +1283,10 @@ pub struct SerializedXorbObject {
 impl SerializedXorbObject {
     /// Builds the xorb from raw xorb data.
     ///
-    /// The compression scheme is determined by `HF_XET_DATA_XORB_COMPRESSION_POLICY`:
+    /// The compression scheme is determined by `HF_XET_XORB_COMPRESSION_POLICY`:
     /// auto-detect (default) or an explicit scheme (none, lz4, bg4-lz4).
     pub fn from_xorb(xorb: RawXorbData, serialize_footer: bool) -> Result<Self, XorbObjectError> {
-        let compression_scheme: CompressionScheme = xet_config().data.xorb_compression_policy.parse()?;
+        let compression_scheme: CompressionScheme = xet_config().xorb.compression_policy.parse()?;
         Self::from_xorb_with_compression(xorb, compression_scheme, serialize_footer)
     }
 
@@ -1323,8 +1323,8 @@ impl SerializedXorbObject {
         let mut serialized_data = Vec::with_capacity(size_upper_bound);
 
         // Set the periodic retesting interval
-        let retest_interval = if xet_config().data.xorb_compression_scheme_retest_interval > 0 {
-            xet_config().data.xorb_compression_scheme_retest_interval
+        let retest_interval = if xet_config().xorb.compression_scheme_retest_interval > 0 {
+            xet_config().xorb.compression_scheme_retest_interval
         } else {
             num_chunks
         };

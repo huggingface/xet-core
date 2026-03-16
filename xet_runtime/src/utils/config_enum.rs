@@ -40,6 +40,16 @@ impl ConfigEnum {
         }
     }
 
+    /// Creates a ConfigEnum with a string value and no validation constraints.
+    /// Used by deserialization paths (e.g. Python) where the value has already
+    /// been validated or will be validated by the caller.
+    pub fn new_unchecked(value: impl Into<String>) -> Self {
+        ConfigEnum {
+            value: value.into().to_lowercase(),
+            valid_values: &[],
+        }
+    }
+
     pub fn as_str(&self) -> &str {
         &self.value
     }
@@ -128,6 +138,14 @@ impl Eq for ConfigEnum {}
 impl ParsableConfigValue for ConfigEnum {
     fn parse_user_value(_value: &str) -> Option<Self> {
         None
+    }
+
+    fn to_config_string(&self) -> String {
+        self.value.clone()
+    }
+
+    fn try_update_in_place(&mut self, value: &str) -> bool {
+        self.try_set(value).is_ok()
     }
 
     fn parse_config_value(variable_name: &str, value: Option<String>, default: Self) -> Self {
