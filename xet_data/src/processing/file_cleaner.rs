@@ -213,7 +213,11 @@ impl SingleFileCleaner {
         let (file_hash, remaining_file_data, deduplication_metrics) =
             self.dedup_manager_fut.await?.finalize(metadata_ext);
 
-        let file_info = XetFileInfo::new(file_hash.hex(), deduplication_metrics.total_bytes);
+        let file_info = XetFileInfo {
+            hash: file_hash.hex(),
+            file_size: deduplication_metrics.total_bytes,
+            sha256: sha256.map(|s| s.hex()),
+        };
 
         // Let's check some things that should be invariants
         #[cfg(debug_assertions)]

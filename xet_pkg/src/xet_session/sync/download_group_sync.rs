@@ -114,6 +114,7 @@ mod tests {
         Ok(XetFileInfo {
             hash: meta.hash.clone(),
             file_size: meta.file_size,
+            sha256: meta.sha256.clone(),
         })
     }
 
@@ -155,6 +156,7 @@ mod tests {
             XetFileInfo {
                 hash: meta.hash.clone(),
                 file_size: meta.file_size,
+                sha256: meta.sha256.clone(),
             }
         };
 

@@ -88,6 +88,7 @@
 //! let info = XetFileInfo {
 //!     hash: m.hash.clone(),
 //!     file_size: m.file_size,
+//!     sha256: m.sha256.clone(),
 //! };
 //! let dl_handle = group.download_file_to_path(info, "out/file.bin".into())?;
 //! let finish_results = group.finish()?;
@@ -124,6 +125,7 @@
 //! let info = XetFileInfo {
 //!     hash: m.hash.clone(),
 //!     file_size: m.file_size,
+//!     sha256: m.sha256.clone(),
 //! };
 //! let dl_handle = group.download_file_to_path(info, "out/file.bin".into())?;
 //! let finish_results = group.finish().await?;

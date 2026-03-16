@@ -498,6 +498,7 @@ impl UploadCommitInner {
                         tracking_name: handle.tracking_name,
                         hash: file_info.hash().to_string(),
                         file_size: file_info.file_size(),
+                        sha256: file_info.sha256().map(str::to_owned),
                     }));
                     results.insert(task_id, result.clone());
                     // Update result to the external task handle, this is the only place setting
@@ -583,6 +584,9 @@ pub struct FileMetadata {
     pub hash: String,
     /// File size in bytes.
     pub file_size: u64,
+    /// SHA-256 hash of the file content, if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 #[cfg(test)]
@@ -875,6 +879,8 @@ mod tests {
         let meta = results.get(&task_handle.task_id).unwrap().as_ref().as_ref().unwrap();
         assert_eq!(meta.file_size, data.len() as u64);
         assert!(!meta.hash.is_empty());
+        assert!(meta.sha256.is_some());
+        assert_eq!(meta.sha256.as_deref().unwrap().len(), 64);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -892,6 +898,42 @@ mod tests {
         let meta = meta.as_ref().as_ref().unwrap();
         assert_eq!(meta.file_size, data.len() as u64);
         assert!(!meta.hash.is_empty());
+        assert!(meta.sha256.is_some());
+        assert_eq!(meta.sha256.as_deref().unwrap().len(), 64);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    // SHA-256 metadata follows policy: Compute/Provided populate it, Skip omits it.
+    async fn test_upload_bytes_sha256_policy_metadata() {
+        let temp = tempdir().unwrap();
+        let session = local_session(&temp).await.unwrap();
+        let commit = session.new_upload_commit().await.unwrap();
+        let provided_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
+
+        let compute_handle = commit
+            .upload_bytes(b"compute".to_vec(), Sha256Policy::Compute, Some("compute.bin".into()))
+            .await
+            .unwrap();
+        let provided_handle = commit
+            .upload_bytes(b"provided".to_vec(), Sha256Policy::from_hex(&provided_sha256), Some("provided.bin".into()))
+            .await
+            .unwrap();
+        let skip_handle = commit
+            .upload_bytes(b"skip".to_vec(), Sha256Policy::Skip, Some("skip.bin".into()))
+            .await
+            .unwrap();
+
+        let results = commit.commit().await.unwrap();
+
+        let compute_meta = results.get(&compute_handle.task_id).unwrap().as_ref().as_ref().unwrap();
+        assert!(compute_meta.sha256.is_some());
+        assert_eq!(compute_meta.sha256.as_deref().unwrap().len(), 64);
+
+        let provided_meta = results.get(&provided_handle.task_id).unwrap().as_ref().as_ref().unwrap();
+        assert_eq!(provided_meta.sha256.as_deref(), Some(provided_sha256.as_str()));
+
+        let skip_meta = results.get(&skip_handle.task_id).unwrap().as_ref().as_ref().unwrap();
+        assert!(skip_meta.sha256.is_none());
     }
 
     // ── Per-task result access patterns ──────────────────────────────────────

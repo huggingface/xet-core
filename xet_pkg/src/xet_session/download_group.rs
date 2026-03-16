@@ -233,6 +233,7 @@ impl DownloadGroupInner {
             Ok(XetFileInfo {
                 hash: file_info.hash,
                 file_size: result?,
+                sha256: None,
             })
         })
     }
@@ -398,6 +399,7 @@ mod tests {
         Ok(XetFileInfo {
             hash: meta.hash.clone(),
             file_size: meta.file_size,
+            sha256: meta.sha256.clone(),
         })
     }
 
@@ -521,6 +523,7 @@ mod tests {
                 XetFileInfo {
                     hash: "abc123".to_string(),
                     file_size: 1024,
+                    sha256: None,
                 },
                 std::path::PathBuf::from("dest.bin"),
             )
@@ -540,6 +543,7 @@ mod tests {
                 XetFileInfo {
                     hash: "abc123".to_string(),
                     file_size: 1024,
+                    sha256: None,
                 },
                 std::path::PathBuf::from("dest.bin"),
             )
@@ -558,6 +562,7 @@ mod tests {
                 XetFileInfo {
                     hash: "abc123".to_string(),
                     file_size: 1024,
+                    sha256: None,
                 },
                 std::path::PathBuf::from("dest.bin"),
             )
@@ -620,6 +625,7 @@ mod tests {
             XetFileInfo {
                 hash: meta.hash.clone(),
                 file_size: meta.file_size,
+                sha256: meta.sha256.clone(),
             }
         };
 
@@ -732,6 +738,7 @@ mod tests {
             let file_info = XetFileInfo {
                 hash: meta.hash.clone(),
                 file_size: meta.file_size,
+                sha256: meta.sha256.clone(),
             };
 
             let dest = temp.path().join("out_futures.bin");
@@ -762,6 +769,7 @@ mod tests {
             let file_info = XetFileInfo {
                 hash: meta.hash.clone(),
                 file_size: meta.file_size,
+                sha256: meta.sha256.clone(),
             };
 
             let dest = temp.path().join("out_smol.bin");
@@ -792,6 +800,7 @@ mod tests {
             let file_info = XetFileInfo {
                 hash: meta.hash.clone(),
                 file_size: meta.file_size,
+                sha256: meta.sha256.clone(),
             };
 
             let dest = temp.path().join("out_async_std.bin");
