@@ -230,6 +230,7 @@ async fn query_reconstruction(
         cas_storage_config.custom_headers.clone(),
     );
 
+    // Use V1 directly so the query tool returns the raw QueryReconstructionResponse for inspection.
     remote_client
         .get_reconstruction_v1(&file_hash, bytes_range)
         .await
