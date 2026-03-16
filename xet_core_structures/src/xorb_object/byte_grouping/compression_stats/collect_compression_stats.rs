@@ -73,19 +73,15 @@ fn kl_divergence(pv: &[f64], qv: &[f64]) -> f64 {
 }
 
 fn lz4_compress_size(data: &[u8]) -> usize {
-    serialize_chunk(
-        data,
-        &mut std::io::Empty::default(),
-        Some(xet_core_structures::xorb_object::CompressionScheme::LZ4),
-    )
-    .unwrap()
+    serialize_chunk(data, &mut std::io::Empty::default(), xet_core_structures::xorb_object::CompressionScheme::LZ4)
+        .unwrap()
 }
 
 fn bg4_lz4_compress_size(data: &[u8]) -> usize {
     serialize_chunk(
         data,
         &mut std::io::Empty::default(),
-        Some(xet_core_structures::xorb_object::CompressionScheme::ByteGrouping4LZ4),
+        xet_core_structures::xorb_object::CompressionScheme::ByteGrouping4LZ4,
     )
     .unwrap()
 }

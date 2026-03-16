@@ -20,9 +20,21 @@ pub trait ParsableConfigValue: std::fmt::Debug + Sized {
     /// Serialize this value to a string that can be parsed back via `parse_user_value`.
     fn to_config_string(&self) -> String;
 
+    /// Try to update this value in place from a string. Returns true on success.
+    /// The default implementation delegates to `parse_user_value`, but types like
+    /// `ConfigEnum` override this to use context-aware validation.
+    fn try_update_in_place(&mut self, value: &str) -> bool {
+        if let Some(v) = Self::parse_user_value(value) {
+            *self = v;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Parse the value, returning the default if it can't be parsed or the string is empty.  
     /// Issue a warning if it can't be parsed.
-    fn parse(variable_name: &str, value: Option<String>, default: Self) -> Self {
+    fn parse_config_value(variable_name: &str, value: Option<String>, default: Self) -> Self {
         match value {
             Some(v) => match Self::parse_user_value(&v) {
                 Some(v) => {
@@ -170,7 +182,7 @@ macro_rules! test_configurable_constants {
                     {
                         let default_value = $value;
                         let maybe_env_value = std::env::var(concat!("HF_XET_",stringify!($name))).ok();
-                        <$type>::parse(stringify!($name), maybe_env_value, default_value)
+                        <$type>::parse_config_value(stringify!($name), maybe_env_value, default_value)
                     }
                     #[cfg(not(debug_assertions))]
                     {

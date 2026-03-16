@@ -1,9 +1,9 @@
 use pyo3::conversion::IntoPyObjectExt;
 use pyo3::prelude::*;
 
-use crate::utils::ByteSize;
 #[cfg(not(target_family = "wasm"))]
 use crate::utils::TemplatedPathBuf;
+use crate::utils::{ByteSize, ConfigEnum};
 
 /// Trait for converting config values to/from Python objects.
 ///
@@ -19,6 +19,17 @@ pub trait PythonConfigValue {
     fn from_python(obj: &Bound<'_, PyAny>) -> PyResult<Self>
     where
         Self: Sized;
+
+    /// Update the value in place from a Python object. The default delegates to
+    /// `from_python`, but types like `ConfigEnum` override this to perform
+    /// context-aware validation using the existing value's metadata.
+    fn update_from_python(&mut self, obj: &Bound<'_, PyAny>) -> PyResult<()>
+    where
+        Self: Sized,
+    {
+        *self = Self::from_python(obj)?;
+        Ok(())
+    }
 }
 
 macro_rules! impl_python_extract {
@@ -69,6 +80,22 @@ impl<T: PythonConfigValue> PythonConfigValue for Option<T> {
         } else {
             T::from_python(obj).map(Some)
         }
+    }
+}
+
+impl PythonConfigValue for ConfigEnum {
+    fn to_python(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.as_str().into_py_any(py)
+    }
+
+    fn from_python(obj: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let s: String = obj.extract()?;
+        Ok(ConfigEnum::new_unchecked(s))
+    }
+
+    fn update_from_python(&mut self, obj: &Bound<'_, PyAny>) -> PyResult<()> {
+        let s: String = obj.extract()?;
+        self.try_set(&s).map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
     }
 }
 

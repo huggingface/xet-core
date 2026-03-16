@@ -1071,6 +1071,7 @@ fn generate_v2_fetch_url(hash: &MerkleHash, ranges: &[XorbRangeDescriptor], time
 }
 #[cfg(test)]
 mod tests {
+    use xet_core_structures::xorb_object::CompressionScheme;
     use xet_core_structures::xorb_object::xorb_format_test_utils::{
         ChunkSize, build_and_verify_xorb_object, build_raw_xorb,
     };
@@ -1094,7 +1095,7 @@ mod tests {
     async fn test_download_fetch_term_data_validation() {
         // Setup: Create a client and upload a xorb
         let xorb = build_raw_xorb(3, ChunkSize::Fixed(2048));
-        let xorb_obj = build_and_verify_xorb_object(xorb, None);
+        let xorb_obj = build_and_verify_xorb_object(xorb, CompressionScheme::Auto);
         let hash = xorb_obj.hash;
 
         let client = LocalClient::temporary().await.unwrap();

@@ -6,7 +6,7 @@
 #[macro_export]
 macro_rules! all_config_groups {
     ($mac:ident) => {
-        $mac!(data, shard, deduplication, chunk_cache, client, log, reconstruction, xorb);
+        $mac!(data, shard, deduplication, chunk_cache, client, log, reconstruction, xorb, session);
     };
 }
 
@@ -107,7 +107,7 @@ macro_rules! config_group {
                     }
 
                     let default_value: $type = $value;
-                    self.$name = <$type>::parse(stringify!($name), maybe_env_value, default_value);
+                    self.$name = <$type>::parse_config_value(stringify!($name), maybe_env_value, default_value);
                 }
                 )+
             }
@@ -123,11 +123,12 @@ macro_rules! config_group {
                 match name {
                     $(
                         stringify!($name) => {
-                            self.$name = <$type>::parse_user_value(&value_string)
-                                .ok_or_else(|| $crate::config::ConfigError::ParseError {
+                            if !self.$name.try_update_in_place(&value_string) {
+                                return Err($crate::config::ConfigError::ParseError {
                                     field: name.to_owned(),
                                     value: value_string,
-                                })?;
+                                });
+                            }
                             Ok(())
                         }
                     )+
@@ -155,7 +156,7 @@ macro_rules! config_group {
                 match name {
                     $(
                         stringify!($name) => {
-                            self.$name = <$type as $crate::config::python::PythonConfigValue>::from_python(value)?;
+                            <$type as $crate::config::python::PythonConfigValue>::update_from_python(&mut self.$name, value)?;
                             Ok(())
                         }
                     )+

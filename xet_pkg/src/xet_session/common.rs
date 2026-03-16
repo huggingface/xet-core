@@ -9,14 +9,19 @@ pub(super) fn create_translator_config(session: &XetSession) -> Result<Translato
         .clone()
         .unwrap_or_else(|| session.config.data.default_cas_endpoint.clone());
 
-    Ok(xet_data::processing::data_client::default_config(
+    let mut config = xet_data::processing::data_client::default_config(
         endpoint,
-        None, // xorb_compression
         session.token_info.clone(),
         session.token_refresher.clone(),
         session.custom_headers.clone(),
-    )?
-    .with_session_id(&session.id.to_string()))
+    )?;
+
+    let session_id = session.id.to_string();
+    if !session_id.is_empty() {
+        config.session.session_id = Some(session_id);
+    }
+
+    Ok(config)
 }
 
 /// State of the upload commit and download group

@@ -26,7 +26,7 @@ crate::config_group!({
     ///
     /// The default value is 16gb.
     ///
-    /// Use the environment variable `HF_XET_METADATA_SHARD_CACHE_SIZE_LIMIT` to set this value.
+    /// Use the environment variable `HF_XET_SHARD_CACHE_SIZE_LIMIT` to set this value.
     ref cache_size_limit : ByteSize = ByteSize::from("16gb");
 
     /// The maximum size of the chunk index table that's stored in memory.  After this,
@@ -36,4 +36,12 @@ crate::config_group!({
     ///
     /// Use the environment variable `HF_XET_SHARD_CHUNK_INDEX_TABLE_MAX_SIZE` to set this value.
     ref chunk_index_table_max_size: usize = 64 * 1024 * 1024;
+
+    /// Subdirectory name for shard cache within the endpoint cache directory.
+    ///
+    /// The default value is "shard-cache".
+    ///
+    /// Use the environment variable `HF_XET_SHARD_CACHE_SUBDIR` to set this value.
+    ref cache_subdir: String = "shard-cache".to_string();
+
 });

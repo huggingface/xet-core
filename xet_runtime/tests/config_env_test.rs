@@ -63,7 +63,21 @@ fn test_environment_variable_aliases() {
         assert_eq!(XetConfig::new().data.session_xorb_metadata_flush_max_count, 128);
     }
 
-    // MDB shard aliases
+    // Xorb aliases (old HF_XET_DATA_XORB_* names)
+    {
+        let _guard = EnvVarGuard::set("HF_XET_DATA_XORB_COMPRESSION_SCHEME_RETEST_INTERVAL", "64");
+        assert_eq!(XetConfig::new().xorb.compression_scheme_retest_interval, 64);
+    }
+    {
+        let _guard = EnvVarGuard::set("HF_XET_DATA_XORB_COMPRESSION_POLICY", "lz4");
+        assert_eq!(XetConfig::new().xorb.compression_policy.as_str(), "lz4");
+    }
+
+    // Shard aliases
+    {
+        let _guard = EnvVarGuard::set("HF_XET_MDB_SHARD_CACHE_SIZE_LIMIT", "24gb");
+        assert_eq!(*XetConfig::new().shard.cache_size_limit, 24_000_000_000);
+    }
     {
         let _guard = EnvVarGuard::set("HF_XET_SHARD_CACHE_SIZE_LIMIT", "32gb");
         assert_eq!(*XetConfig::new().shard.cache_size_limit, 32_000_000_000);
@@ -71,6 +85,31 @@ fn test_environment_variable_aliases() {
     {
         let _guard = EnvVarGuard::set("HF_XET_CHUNK_INDEX_TABLE_MAX_SIZE", "128000000");
         assert_eq!(XetConfig::new().shard.chunk_index_table_max_size, 128_000_000);
+    }
+}
+
+#[test]
+#[serial(config_env)]
+fn test_new_config_env_overrides() {
+    {
+        let _guard = EnvVarGuard::set("HF_XET_DATA_AGGREGATE_PROGRESS", "false");
+        assert!(!XetConfig::new().data.aggregate_progress);
+    }
+    {
+        let _guard = EnvVarGuard::set("HF_XET_DATA_DEFAULT_PREFIX", "test-prefix");
+        assert_eq!(XetConfig::new().data.default_prefix, "test-prefix");
+    }
+    {
+        let _guard = EnvVarGuard::set("HF_XET_DATA_STAGING_SUBDIR", "tmp-stage");
+        assert_eq!(XetConfig::new().data.staging_subdir, "tmp-stage");
+    }
+    {
+        let _guard = EnvVarGuard::set("HF_XET_SESSION_DIR_NAME", "tmp-session");
+        assert_eq!(XetConfig::new().session.dir_name, "tmp-session");
+    }
+    {
+        let _guard = EnvVarGuard::set("HF_XET_DEDUPLICATION_GLOBAL_DEDUP_QUERY_ENABLED", "false");
+        assert!(!XetConfig::new().deduplication.global_dedup_query_enabled);
     }
 }
 

@@ -17,13 +17,11 @@ crate::all_config_groups!(define_xet_config);
 macro_rules! impl_xet_config_group_dispatch {
     ($($group:ident),*) => {
         impl XetConfig {
-            // Internal: parse a dotted config path into (group, field).
             fn split_path(path: &str) -> Result<(&str, &str), ConfigError> {
                 path.split_once('.')
                     .ok_or_else(|| ConfigError::InvalidPath(path.to_owned()))
             }
 
-            // Internal: parse a dotted config path and convert parse errors to Python exceptions.
             #[cfg(feature = "python")]
             fn split_path_for_python(path: &str) -> pyo3::PyResult<(&str, &str)> {
                 Self::split_path(path).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
@@ -40,7 +38,6 @@ macro_rules! impl_xet_config_group_dispatch {
                 self
             }
 
-            // Internal: dispatches with_config field updates to the correct group.
             fn update_field(&mut self, path: &str, value: impl ToString) -> Result<(), ConfigError> {
                 let (group, field) = Self::split_path(path)?;
                 match group {
@@ -51,7 +48,6 @@ macro_rules! impl_xet_config_group_dispatch {
                 }
             }
 
-            // Internal: dispatches Python with_config field updates to the correct group.
             #[cfg(feature = "python")]
             fn update_field_from_python(
                 &mut self,
@@ -69,7 +65,6 @@ macro_rules! impl_xet_config_group_dispatch {
                 }
             }
 
-            // Internal: dispatches Python get/item access to the correct group.
             #[cfg(feature = "python")]
             fn get_field_to_python(
                 &self,
@@ -114,7 +109,6 @@ macro_rules! impl_xet_config_group_dispatch {
                 keys
             }
 
-            // Internal: collects all (key, value) pairs for Python iteration.
             #[cfg(feature = "python")]
             fn all_items_to_python(
                 &self,

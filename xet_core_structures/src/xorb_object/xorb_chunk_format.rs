@@ -59,6 +59,7 @@ impl XorbChunkHeader {
     }
 
     pub fn set_compression_scheme(&mut self, compression_scheme: CompressionScheme) {
+        debug_assert_ne!(compression_scheme, CompressionScheme::Auto);
         self.compression_scheme = compression_scheme as u8;
     }
 
@@ -114,9 +115,13 @@ fn convert_three_byte_num(buf: &[u8; 3]) -> u32 {
 pub fn serialize_chunk<W: Write>(
     chunk: &[u8],
     w: &mut W,
-    compression_scheme: Option<CompressionScheme>,
+    compression_scheme: CompressionScheme,
 ) -> Result<usize, XorbObjectError> {
-    let compression_scheme = compression_scheme.unwrap_or_else(|| CompressionScheme::choose_from_data(chunk));
+    let compression_scheme = compression_scheme.resolve_for_data(chunk);
+    debug_assert_ne!(compression_scheme, CompressionScheme::Auto);
+    if compression_scheme == CompressionScheme::Auto {
+        return Err(XorbObjectError::Format(anyhow!("CompressionScheme::Auto cannot be serialized into xorb chunks")));
+    }
 
     let compressed = compression_scheme.compress_from_slice(chunk)?;
 
@@ -307,6 +312,16 @@ mod tests {
 
         let (data_copy, _, _) = deserialize_chunk(&mut Cursor::new(buf)).unwrap();
         assert_eq!(data_copy.as_slice(), data);
+    }
+
+    #[test]
+    fn test_auto_scheme_never_serialized_in_chunk_header() {
+        let chunk = vec![0u8; 4096];
+        let mut serialized = Vec::new();
+        let _ = serialize_chunk(&chunk, &mut serialized, CompressionScheme::Auto).unwrap();
+
+        let header = deserialize_chunk_header(&mut Cursor::new(serialized)).unwrap();
+        assert_ne!(header.get_compression_scheme().unwrap(), CompressionScheme::Auto);
     }
 
     const CASES: &[(u32, ChunkSize, CompressionScheme)] = &[

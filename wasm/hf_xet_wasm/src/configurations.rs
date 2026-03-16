@@ -6,7 +6,7 @@ use xet_core_structures::xorb_object::CompressionScheme;
 #[derive(Debug)]
 pub struct DataConfig {
     pub endpoint: String,
-    pub compression: Option<CompressionScheme>,
+    pub compression: CompressionScheme,
     pub auth: Option<AuthConfig>,
     pub prefix: String,
     pub user_agent: String,

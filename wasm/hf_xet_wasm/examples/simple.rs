@@ -164,7 +164,7 @@ pub async fn clean_file(file: web_sys::File, endpoint: String, jwt_token: String
     let config = TranslatorConfig {
         data_config: DataConfig {
             endpoint,
-            compression: Some(CompressionScheme::LZ4),
+            compression: CompressionScheme::LZ4,
             auth: AuthConfig::maybe_new(Some(jwt_token), Some(expiration), None),
             prefix: "default".to_owned(),
             user_agent: USER_AGENT.to_string(),

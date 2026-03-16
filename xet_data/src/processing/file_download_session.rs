@@ -36,6 +36,7 @@ impl FileDownloadSession {
         progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
     ) -> Result<Arc<Self>> {
         let session_id = config
+            .session
             .session_id
             .as_ref()
             .map(Cow::Borrowed)
