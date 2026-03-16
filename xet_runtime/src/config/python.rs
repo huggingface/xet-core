@@ -1,9 +1,9 @@
 use pyo3::conversion::IntoPyObjectExt;
 use pyo3::prelude::*;
 
-use crate::utils::{ByteSize, ConfigEnum};
 #[cfg(not(target_family = "wasm"))]
 use crate::utils::TemplatedPathBuf;
+use crate::utils::{ByteSize, ConfigEnum};
 
 /// Trait for converting config values to/from Python objects.
 ///
@@ -95,8 +95,7 @@ impl PythonConfigValue for ConfigEnum {
 
     fn update_from_python(&mut self, obj: &Bound<'_, PyAny>) -> PyResult<()> {
         let s: String = obj.extract()?;
-        self.try_set(&s)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
+        self.try_set(&s).map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
     }
 }
 

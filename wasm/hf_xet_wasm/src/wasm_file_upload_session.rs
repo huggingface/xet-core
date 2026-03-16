@@ -126,11 +126,8 @@ impl FileUploadSession {
         }
 
         // XORBs are sent without footer - the server/client reconstructs it from chunk data.
-        let xorb_obj = SerializedXorbObject::from_xorb_with_compression(
-            xorb,
-            self.config.data_config.compression,
-            false,
-        )?;
+        let xorb_obj =
+            SerializedXorbObject::from_xorb_with_compression(xorb, self.config.data_config.compression, false)?;
 
         let Some(ref mut xorb_uploader) = *self.xorb_uploader.lock().await else {
             return Err(DataProcessingError::internal("register xorb after drop"));
