@@ -17,6 +17,18 @@ crate::all_config_groups!(define_xet_config);
 macro_rules! impl_xet_config_group_dispatch {
     ($($group:ident),*) => {
         impl XetConfig {
+            // Internal: parse a dotted config path into (group, field).
+            fn split_path(path: &str) -> Result<(&str, &str), ConfigError> {
+                path.split_once('.')
+                    .ok_or_else(|| ConfigError::InvalidPath(path.to_owned()))
+            }
+
+            // Internal: parse a dotted config path and convert parse errors to Python exceptions.
+            #[cfg(feature = "python")]
+            fn split_path_for_python(path: &str) -> pyo3::PyResult<(&str, &str)> {
+                Self::split_path(path).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+            }
+
             /// Apply environment variable overrides to all configuration sections.
             /// Returns a new `XetConfig` instance with overrides applied.
             /// The group name for each section is derived from its module name.
@@ -30,8 +42,7 @@ macro_rules! impl_xet_config_group_dispatch {
 
             // Internal: dispatches with_config field updates to the correct group.
             fn update_field(&mut self, path: &str, value: impl ToString) -> Result<(), ConfigError> {
-                let (group, field) =
-                    path.split_once('.').ok_or_else(|| ConfigError::InvalidPath(path.to_owned()))?;
+                let (group, field) = Self::split_path(path)?;
                 match group {
                     $(stringify!($group) => self.$group.update_field(field, value),)*
                     #[cfg(not(target_family = "wasm"))]
@@ -47,11 +58,7 @@ macro_rules! impl_xet_config_group_dispatch {
                 path: &str,
                 value: &pyo3::Bound<'_, pyo3::PyAny>,
             ) -> pyo3::PyResult<()> {
-                let (group, field) = path.split_once('.').ok_or_else(|| {
-                    pyo3::exceptions::PyValueError::new_err(
-                        ConfigError::InvalidPath(path.to_owned()).to_string(),
-                    )
-                })?;
+                let (group, field) = Self::split_path_for_python(path)?;
                 match group {
                     $(stringify!($group) => self.$group.update_field_from_python(field, value),)*
                     #[cfg(not(target_family = "wasm"))]
@@ -69,11 +76,7 @@ macro_rules! impl_xet_config_group_dispatch {
                 path: &str,
                 py: pyo3::Python<'_>,
             ) -> pyo3::PyResult<pyo3::Py<pyo3::PyAny>> {
-                let (group, field) = path.split_once('.').ok_or_else(|| {
-                    pyo3::exceptions::PyValueError::new_err(
-                        ConfigError::InvalidPath(path.to_owned()).to_string(),
-                    )
-                })?;
+                let (group, field) = Self::split_path_for_python(path)?;
                 match group {
                     $(stringify!($group) => self.$group.get_to_python(field, py),)*
                     #[cfg(not(target_family = "wasm"))]
@@ -87,8 +90,7 @@ macro_rules! impl_xet_config_group_dispatch {
             /// Get a configuration value's string representation by dotted path
             /// (e.g. "data.max_concurrent_file_ingestion").
             pub fn get(&self, path: &str) -> Result<String, ConfigError> {
-                let (group, field) =
-                    path.split_once('.').ok_or_else(|| ConfigError::InvalidPath(path.to_owned()))?;
+                let (group, field) = Self::split_path(path)?;
                 match group {
                     $(stringify!($group) => self.$group.get(field),)*
                     #[cfg(not(target_family = "wasm"))]
@@ -340,6 +342,57 @@ mod tests {
             .unwrap();
         assert_eq!(config.log.dest, None);
     }
+
+    #[test]
+    fn test_all_keys_contains_expected_entries_and_count() {
+        let keys = XetConfig::default().all_keys();
+        let expected_samples = [
+            "data.max_concurrent_file_ingestion",
+            "shard.target_size",
+            "deduplication.min_n_chunks_per_range",
+            "chunk_cache.size_bytes",
+            "client.retry_max_attempts",
+            "log.dest",
+            "reconstruction.target_block_completion_time",
+            "xorb.compression_scheme_retest_interval",
+        ];
+        for key in expected_samples {
+            assert!(keys.contains(&key.to_owned()));
+        }
+
+        let mut expected_count = 0usize;
+        macro_rules! add_group_field_counts {
+            ($($group:ident),*) => {
+                $(
+                    expected_count += groups::$group::ConfigValueGroup::field_names().len();
+                )*
+            };
+        }
+        crate::all_config_groups!(add_group_field_counts);
+        #[cfg(not(target_family = "wasm"))]
+        {
+            expected_count += groups::system_monitor::ConfigValueGroup::field_names().len();
+            assert!(keys.contains(&"system_monitor.enabled".to_owned()));
+        }
+        assert_eq!(keys.len(), expected_count);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn test_with_config_and_get_system_monitor() {
+        let config = XetConfig::default()
+            .with_config("system_monitor.enabled", "true")
+            .unwrap()
+            .with_config("system_monitor.sample_interval", "2s")
+            .unwrap()
+            .with_config("system_monitor.log_path", "~/logs/monitor_{PID}.log")
+            .unwrap();
+
+        assert!(config.system_monitor.enabled);
+        assert_eq!(config.get("system_monitor.enabled").unwrap(), "true");
+        assert_eq!(config.get("system_monitor.sample_interval").unwrap(), "2s");
+        assert_eq!(config.get("system_monitor.log_path").unwrap(), "~/logs/monitor_{PID}.log");
+    }
 }
 
 #[cfg(feature = "python")]
@@ -460,11 +513,11 @@ pub mod py_xet_config {
             slf
         }
 
-        fn __next__(&mut self) -> Option<(String, Py<PyAny>)> {
+        fn __next__(&mut self, py: Python<'_>) -> Option<(String, Py<PyAny>)> {
             if self.index < self.items.len() {
-                let item = self.items[self.index].clone();
+                let (key, value) = &self.items[self.index];
                 self.index += 1;
-                Some(item)
+                Some((key.clone(), value.clone_ref(py)))
             } else {
                 None
             }
