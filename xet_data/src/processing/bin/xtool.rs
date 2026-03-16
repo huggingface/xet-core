@@ -230,7 +230,7 @@ fn main() -> Result<()> {
         && let Some(c) = arg.compression
     {
         let scheme = CompressionScheme::try_from(c).map_err(|_| {
-            anyhow::anyhow!("Invalid compression value {c}; expected one of: 0 (auto), 1 (lz4), 2 (bg4-lz4), 3 (none)")
+            anyhow::anyhow!("Invalid compression value {c}; expected one of: 0 (none), 1 (lz4), 2 (bg4-lz4), 99 (auto)")
         })?;
         config
             .data

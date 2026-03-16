@@ -1343,6 +1343,7 @@ impl SerializedXorbObject {
 
                     // Choose the compression scheme for this block.
                     let compression_scheme = CompressionScheme::choose_from_data(&xorb.data[s_idx]);
+                    debug_assert_ne!(compression_scheme, CompressionScheme::Auto);
 
                     for chunk in &xorb.data[s_idx..n_idx] {
                         serialize_chunk(chunk, &mut serialized_data, compression_scheme)?;

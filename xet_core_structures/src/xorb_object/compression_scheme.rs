@@ -20,11 +20,11 @@ pub static mut BG4_LZ4_DECOMPRESS_RUNTIME: f64 = 0.;
 #[repr(u8)]
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum CompressionScheme {
-    #[default]
-    Auto = 0,
+    None = 0,
     LZ4 = 1,
     ByteGrouping4LZ4 = 2, // 4 byte groups
-    None = 3,
+    #[default]
+    Auto = 99,
 }
 pub const NUM_COMPRESSION_SCHEMES: usize = 4;
 
@@ -55,10 +55,10 @@ impl TryFrom<u8> for CompressionScheme {
 
     fn try_from(value: u8) -> Result<Self> {
         match value {
-            0 => Ok(CompressionScheme::Auto),
+            0 => Ok(CompressionScheme::None),
             1 => Ok(CompressionScheme::LZ4),
             2 => Ok(CompressionScheme::ByteGrouping4LZ4),
-            3 => Ok(CompressionScheme::None),
+            99 => Ok(CompressionScheme::Auto),
             _ => Err(XorbObjectError::Format(anyhow!("cannot convert value {value} to CompressionScheme"))),
         }
     }
@@ -256,10 +256,11 @@ mod tests {
 
     #[test]
     fn test_from_u8() {
-        assert_eq!(CompressionScheme::try_from(0u8), Ok(CompressionScheme::Auto));
+        assert_eq!(CompressionScheme::try_from(0u8), Ok(CompressionScheme::None));
         assert_eq!(CompressionScheme::try_from(1u8), Ok(CompressionScheme::LZ4));
         assert_eq!(CompressionScheme::try_from(2u8), Ok(CompressionScheme::ByteGrouping4LZ4));
-        assert_eq!(CompressionScheme::try_from(3u8), Ok(CompressionScheme::None));
+        assert_eq!(CompressionScheme::try_from(99u8), Ok(CompressionScheme::Auto));
+        assert!(CompressionScheme::try_from(3u8).is_err());
         assert!(CompressionScheme::try_from(4u8).is_err());
     }
 
