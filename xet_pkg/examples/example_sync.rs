@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use xet::xet_session::{FileMetadata, TaskStatus, XetFileInfo, XetSessionBuilder};
+use xet::xet_session::{FileMetadata, Sha256Policy, TaskStatus, XetFileInfo, XetSessionBuilder};
 
 #[derive(Parser)]
 #[clap(name = "session-demo", about = "XetSession API demo")]
@@ -60,7 +60,7 @@ fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<()> {
     let n_files = files.len();
     let mut handles = Vec::with_capacity(n_files);
     for f in &files {
-        handles.push(commit.upload_from_path(f.clone())?);
+        handles.push(commit.upload_from_path(f.clone(), Sha256Policy::Compute)?);
     }
 
     // Spawn a task to print progress; the main thread blocks in commit() below.
