@@ -295,10 +295,16 @@ impl UploadCommitInner {
     ) -> JoinHandle<Result<XetFileInfo, SessionError>> {
         let semaphore = self.runtime().common().file_ingestion_semaphore.clone();
         self.runtime().spawn(async move {
-            // Update status from "Queued" to "Running" once a semaphore permit is acquired.
             let _permit = semaphore.acquire().await?;
 
-            *status.lock()? = TaskStatus::Running;
+            // Only transition Queued → Running; bail if abort() already set Cancelled.
+            {
+                let mut s = status.lock()?;
+                if !matches!(*s, TaskStatus::Queued) {
+                    return Err(SessionError::Aborted);
+                }
+                *s = TaskStatus::Running;
+            }
 
             let result = clean_file(upload_session, &file_path, sha256, Some(tracking_id))
                 .await
@@ -331,10 +337,16 @@ impl UploadCommitInner {
     ) -> JoinHandle<Result<XetFileInfo, SessionError>> {
         let semaphore = self.runtime().common().file_ingestion_semaphore.clone();
         self.runtime().spawn(async move {
-            // Update status from "Queued" to "Running" once a semaphore permit is acquired.
             let _permit = semaphore.acquire().await?;
 
-            *status.lock()? = TaskStatus::Running;
+            // Only transition Queued → Running; bail if abort() already set Cancelled.
+            {
+                let mut s = status.lock()?;
+                if !matches!(*s, TaskStatus::Queued) {
+                    return Err(SessionError::Aborted);
+                }
+                *s = TaskStatus::Running;
+            }
 
             let result = clean_bytes(upload_session, bytes, Some(tracking_id), sha256)
                 .await
