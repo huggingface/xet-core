@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::fmt::Display;
 use std::io::{Cursor, Read, Write, copy};
+use std::str::FromStr;
 use std::time::Instant;
 
 use anyhow::anyhow;
@@ -20,11 +21,12 @@ pub static mut BG4_LZ4_DECOMPRESS_RUNTIME: f64 = 0.;
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum CompressionScheme {
     #[default]
-    None = 0,
+    Auto = 0,
     LZ4 = 1,
     ByteGrouping4LZ4 = 2, // 4 byte groups
+    None = 3,
 }
-pub const NUM_COMPRESSION_SCHEMES: usize = 3;
+pub const NUM_COMPRESSION_SCHEMES: usize = 4;
 
 impl Display for CompressionScheme {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -34,9 +36,10 @@ impl Display for CompressionScheme {
 impl From<&CompressionScheme> for &'static str {
     fn from(value: &CompressionScheme) -> Self {
         match value {
-            CompressionScheme::None => "none",
+            CompressionScheme::Auto => "auto",
             CompressionScheme::LZ4 => "lz4",
             CompressionScheme::ByteGrouping4LZ4 => "bg4-lz4",
+            CompressionScheme::None => "none",
         }
     }
 }
@@ -52,31 +55,44 @@ impl TryFrom<u8> for CompressionScheme {
 
     fn try_from(value: u8) -> Result<Self> {
         match value {
-            0 => Ok(CompressionScheme::None),
+            0 => Ok(CompressionScheme::Auto),
             1 => Ok(CompressionScheme::LZ4),
             2 => Ok(CompressionScheme::ByteGrouping4LZ4),
+            3 => Ok(CompressionScheme::None),
             _ => Err(XorbObjectError::Format(anyhow!("cannot convert value {value} to CompressionScheme"))),
         }
     }
 }
 
-impl CompressionScheme {
-    /// Parses a compression policy string into an `Option<CompressionScheme>`.
-    /// Returns `None` for auto-detect (empty or "auto"), or `Some(scheme)` for explicit values.
-    pub fn from_policy_str(policy: &str) -> Result<Option<Self>> {
-        match policy.trim().to_lowercase().as_str() {
-            "" | "auto" => Ok(None),
-            "none" => Ok(Some(CompressionScheme::None)),
-            "lz4" => Ok(Some(CompressionScheme::LZ4)),
-            "bg4-lz4" => Ok(Some(CompressionScheme::ByteGrouping4LZ4)),
+impl FromStr for CompressionScheme {
+    type Err = XorbObjectError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.trim().to_lowercase().as_str() {
+            "" | "auto" => Ok(CompressionScheme::Auto),
+            "none" => Ok(CompressionScheme::None),
+            "lz4" => Ok(CompressionScheme::LZ4),
+            "bg4-lz4" => Ok(CompressionScheme::ByteGrouping4LZ4),
             _ => Err(XorbObjectError::Format(anyhow!(
-                "Invalid compression policy value '{policy}'. Valid values are: auto, none, lz4, bg4-lz4."
+                "Invalid compression scheme '{s}'. Valid values are: auto, none, lz4, bg4-lz4."
             ))),
+        }
+    }
+}
+
+impl CompressionScheme {
+    /// Resolves `Auto` to a concrete scheme by analyzing the data.
+    pub fn resolve_for_data(&self, data: &[u8]) -> Self {
+        if *self == CompressionScheme::Auto {
+            CompressionScheme::choose_from_data(data)
+        } else {
+            *self
         }
     }
 
     pub fn compress_from_slice<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, [u8]>> {
         Ok(match self {
+            CompressionScheme::Auto => return self.resolve_for_data(data).compress_from_slice(data),
             CompressionScheme::None => data.into(),
             CompressionScheme::LZ4 => lz4_compress_from_slice(data).map(Cow::from)?,
             CompressionScheme::ByteGrouping4LZ4 => bg4_lz4_compress_from_slice(data).map(Cow::from)?,
@@ -85,6 +101,9 @@ impl CompressionScheme {
 
     pub fn decompress_from_slice<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, [u8]>> {
         Ok(match self {
+            CompressionScheme::Auto => {
+                return Err(XorbObjectError::Format(anyhow!("Cannot decompress with Auto scheme")));
+            },
             CompressionScheme::None => data.into(),
             CompressionScheme::LZ4 => lz4_decompress_from_slice(data).map(Cow::from)?,
             CompressionScheme::ByteGrouping4LZ4 => bg4_lz4_decompress_from_slice(data).map(Cow::from)?,
@@ -93,6 +112,9 @@ impl CompressionScheme {
 
     pub fn decompress_from_reader<R: Read, W: Write>(&self, reader: &mut R, writer: &mut W) -> Result<u64> {
         Ok(match self {
+            CompressionScheme::Auto => {
+                return Err(XorbObjectError::Format(anyhow!("Cannot decompress with Auto scheme")));
+            },
             CompressionScheme::None => copy(reader, writer)?,
             CompressionScheme::LZ4 => lz4_decompress_from_reader(reader, writer)?,
             CompressionScheme::ByteGrouping4LZ4 => bg4_lz4_decompress_from_reader(reader, writer)?,
@@ -184,29 +206,71 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_default_is_auto() {
+        assert_eq!(CompressionScheme::default(), CompressionScheme::Auto);
+    }
+
+    #[test]
     fn test_to_str() {
+        assert_eq!(Into::<&str>::into(CompressionScheme::Auto), "auto");
         assert_eq!(Into::<&str>::into(CompressionScheme::None), "none");
         assert_eq!(Into::<&str>::into(CompressionScheme::LZ4), "lz4");
         assert_eq!(Into::<&str>::into(CompressionScheme::ByteGrouping4LZ4), "bg4-lz4");
     }
 
     #[test]
-    fn test_from_policy_str() {
-        assert_eq!(CompressionScheme::from_policy_str("").unwrap(), None);
-        assert_eq!(CompressionScheme::from_policy_str("auto").unwrap(), None);
-        assert_eq!(CompressionScheme::from_policy_str("none").unwrap(), Some(CompressionScheme::None));
-        assert_eq!(CompressionScheme::from_policy_str("lz4").unwrap(), Some(CompressionScheme::LZ4));
-        assert_eq!(CompressionScheme::from_policy_str("bg4-lz4").unwrap(), Some(CompressionScheme::ByteGrouping4LZ4));
-        assert_eq!(CompressionScheme::from_policy_str("  LZ4 ").unwrap(), Some(CompressionScheme::LZ4));
-        assert!(CompressionScheme::from_policy_str("zstd").is_err());
+    fn test_from_str() {
+        assert_eq!("".parse::<CompressionScheme>().unwrap(), CompressionScheme::Auto);
+        assert_eq!("auto".parse::<CompressionScheme>().unwrap(), CompressionScheme::Auto);
+        assert_eq!("none".parse::<CompressionScheme>().unwrap(), CompressionScheme::None);
+        assert_eq!("lz4".parse::<CompressionScheme>().unwrap(), CompressionScheme::LZ4);
+        assert_eq!("bg4-lz4".parse::<CompressionScheme>().unwrap(), CompressionScheme::ByteGrouping4LZ4);
+        assert_eq!("  LZ4 ".parse::<CompressionScheme>().unwrap(), CompressionScheme::LZ4);
+        assert!("zstd".parse::<CompressionScheme>().is_err());
+    }
+
+    #[test]
+    fn test_display() {
+        assert_eq!(format!("{}", CompressionScheme::Auto), "auto");
+        assert_eq!(format!("{}", CompressionScheme::None), "none");
+        assert_eq!(format!("{}", CompressionScheme::LZ4), "lz4");
+        assert_eq!(format!("{}", CompressionScheme::ByteGrouping4LZ4), "bg4-lz4");
+    }
+
+    #[test]
+    fn test_parse_with_config_enum() {
+        use xet_runtime::utils::ConfigEnum;
+
+        let ce = ConfigEnum::new("auto", &["", "auto", "none", "lz4", "bg4-lz4"]);
+        let scheme: CompressionScheme = ce.parse().unwrap();
+        assert_eq!(scheme, CompressionScheme::Auto);
+
+        let ce = ConfigEnum::new("lz4", &["", "auto", "none", "lz4", "bg4-lz4"]);
+        let scheme: CompressionScheme = ce.parse().unwrap();
+        assert_eq!(scheme, CompressionScheme::LZ4);
+
+        let ce = ConfigEnum::new("none", &["", "auto", "none", "lz4", "bg4-lz4"]);
+        let scheme: CompressionScheme = ce.parse().unwrap();
+        assert_eq!(scheme, CompressionScheme::None);
     }
 
     #[test]
     fn test_from_u8() {
-        assert_eq!(CompressionScheme::try_from(0u8), Ok(CompressionScheme::None));
+        assert_eq!(CompressionScheme::try_from(0u8), Ok(CompressionScheme::Auto));
         assert_eq!(CompressionScheme::try_from(1u8), Ok(CompressionScheme::LZ4));
         assert_eq!(CompressionScheme::try_from(2u8), Ok(CompressionScheme::ByteGrouping4LZ4));
-        assert!(CompressionScheme::try_from(3u8).is_err());
+        assert_eq!(CompressionScheme::try_from(3u8), Ok(CompressionScheme::None));
+        assert!(CompressionScheme::try_from(4u8).is_err());
+    }
+
+    #[test]
+    fn test_resolve_for_data() {
+        let data = vec![0u8; 1024];
+        let resolved = CompressionScheme::Auto.resolve_for_data(&data);
+        assert_ne!(resolved, CompressionScheme::Auto);
+
+        assert_eq!(CompressionScheme::LZ4.resolve_for_data(&data), CompressionScheme::LZ4);
+        assert_eq!(CompressionScheme::None.resolve_for_data(&data), CompressionScheme::None);
     }
 
     #[test]

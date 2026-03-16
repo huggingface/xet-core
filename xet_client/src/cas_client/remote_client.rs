@@ -609,7 +609,7 @@ mod tests {
         let threadpool = XetRuntime::new().unwrap();
         let client = RemoteClient::new(CAS_ENDPOINT, &None, "", false, None);
 
-        let xorb_obj = build_and_verify_xorb_object(raw_xorb, Some(CompressionScheme::LZ4));
+        let xorb_obj = build_and_verify_xorb_object(raw_xorb, CompressionScheme::LZ4);
 
         // Act
         let result = threadpool

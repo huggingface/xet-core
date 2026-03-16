@@ -230,9 +230,13 @@ fn main() -> Result<()> {
         && let Some(c) = arg.compression
     {
         let scheme = CompressionScheme::try_from(c).map_err(|_| {
-            anyhow::anyhow!("Invalid compression value {c}; expected one of: 0 (none), 1 (lz4), 2 (bg4-lz4)")
+            anyhow::anyhow!("Invalid compression value {c}; expected one of: 0 (auto), 1 (lz4), 2 (bg4-lz4), 3 (none)")
         })?;
-        config.xorb.compression_policy = <&str>::from(scheme).to_string();
+        config
+            .data
+            .xorb_compression_policy
+            .try_set(<&str>::from(scheme))
+            .map_err(|e| anyhow::anyhow!(e))?;
     }
 
     let threadpool = XetRuntime::new_with_config(config)?;

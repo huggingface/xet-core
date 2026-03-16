@@ -8,4 +8,3 @@ pub mod session;
 pub mod shard;
 #[cfg(not(target_family = "wasm"))]
 pub mod system_monitor;
-pub mod xorb;

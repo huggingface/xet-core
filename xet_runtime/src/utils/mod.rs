@@ -3,6 +3,9 @@ pub mod adjustable_semaphore;
 pub mod byte_size;
 pub use byte_size::ByteSize;
 
+pub mod config_enum;
+pub use config_enum::ConfigEnum;
+
 pub mod configuration_utils;
 pub use configuration_utils::is_high_performance;
 

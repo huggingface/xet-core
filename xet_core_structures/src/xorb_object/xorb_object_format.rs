@@ -1283,17 +1283,17 @@ pub struct SerializedXorbObject {
 impl SerializedXorbObject {
     /// Builds the xorb from raw xorb data.
     ///
-    /// The compression scheme is determined by `HF_XET_XORB_COMPRESSION_POLICY`:
+    /// The compression scheme is determined by `HF_XET_DATA_XORB_COMPRESSION_POLICY`:
     /// auto-detect (default) or an explicit scheme (none, lz4, bg4-lz4).
     pub fn from_xorb(xorb: RawXorbData, serialize_footer: bool) -> Result<Self, XorbObjectError> {
-        let compression_scheme = CompressionScheme::from_policy_str(&xet_config().xorb.compression_policy)?;
+        let compression_scheme: CompressionScheme = xet_config().data.xorb_compression_policy.parse()?;
         Self::from_xorb_with_compression(xorb, compression_scheme, serialize_footer)
     }
 
     /// Builds the xorb from raw xorb data with an explicit compression scheme override.
     pub fn from_xorb_with_compression(
         xorb: RawXorbData,
-        compression_scheme: Option<CompressionScheme>,
+        compression_scheme: CompressionScheme,
         serialize_footer: bool,
     ) -> Result<Self, XorbObjectError> {
         let mut xorb_object_info = XorbObjectInfoV1::default();
@@ -1323,13 +1323,13 @@ impl SerializedXorbObject {
         let mut serialized_data = Vec::with_capacity(size_upper_bound);
 
         // Set the periodic retesting interval
-        let retest_interval = if xet_config().xorb.compression_scheme_retest_interval > 0 {
-            xet_config().xorb.compression_scheme_retest_interval
+        let retest_interval = if xet_config().data.xorb_compression_scheme_retest_interval > 0 {
+            xet_config().data.xorb_compression_scheme_retest_interval
         } else {
             num_chunks
         };
 
-        if compression_scheme.is_none() && num_chunks != 0 {
+        if compression_scheme == CompressionScheme::Auto && num_chunks != 0 {
             debug_assert!(xorb.file_boundaries.is_sorted());
             debug_assert_ge!(xorb.file_boundaries.len(), 0);
             debug_assert_lt!(*xorb.file_boundaries.last().unwrap(), xorb.data.len());
@@ -1345,8 +1345,7 @@ impl SerializedXorbObject {
                     let compression_scheme = CompressionScheme::choose_from_data(&xorb.data[s_idx]);
 
                     for chunk in &xorb.data[s_idx..n_idx] {
-                        // now serialize chunk directly to writer (since chunks come first!)
-                        serialize_chunk(chunk, &mut serialized_data, Some(compression_scheme))?;
+                        serialize_chunk(chunk, &mut serialized_data, compression_scheme)?;
                         xorb_object_info.chunk_boundary_offsets.push(serialized_data.len() as u32);
                     }
                     s_idx = n_idx;
@@ -1354,7 +1353,6 @@ impl SerializedXorbObject {
             }
         } else {
             for chunk in xorb.data {
-                // now serialize chunk directly to writer (since chunks come first!)
                 serialize_chunk(&chunk, &mut serialized_data, compression_scheme)?;
                 xorb_object_info.chunk_boundary_offsets.push(serialized_data.len() as u32);
             }
@@ -1396,7 +1394,7 @@ pub mod test_utils {
         hash: &MerkleHash,
         data: &[u8],
         chunk_and_boundaries: &[(MerkleHash, u32)],
-        compression_scheme: Option<CompressionScheme>,
+        compression_scheme: CompressionScheme,
     ) -> Result<(XorbObject, usize, u64), XorbObjectError> {
         let mut xorb = XorbObject::default();
         xorb.info.xorb_hash = *hash;
@@ -1446,7 +1444,7 @@ pub mod test_utils {
         hash: &MerkleHash,
         data: Vec<u8>,
         chunk_and_boundaries: Vec<(MerkleHash, u32)>,
-        compression: Option<CompressionScheme>,
+        compression: CompressionScheme,
     ) -> Result<SerializedXorbObject, XorbObjectError> {
         let mut writer = Cursor::new(Vec::new());
 
@@ -1464,7 +1462,7 @@ pub mod test_utils {
 
     pub fn verify_serialized_xorb_object(
         xorb: &RawXorbData,
-        compression_scheme: Option<CompressionScheme>,
+        compression_scheme: CompressionScheme,
         xorb_obj: &SerializedXorbObject,
     ) {
         let xorb_hash = xorb.hash();
@@ -1553,7 +1551,7 @@ pub mod test_utils {
 
     pub fn build_and_verify_xorb_object(
         xorb: RawXorbData,
-        compression_scheme: Option<CompressionScheme>,
+        compression_scheme: CompressionScheme,
     ) -> SerializedXorbObject {
         let xorb_obj =
             SerializedXorbObject::from_xorb_with_compression(xorb.clone(), compression_scheme, true).unwrap();
@@ -1600,7 +1598,7 @@ pub mod test_utils {
 
             // build chunk, create ChunkInfo and keep going
 
-            let bytes_written = serialize_chunk(&bytes, &mut writer, Some(compression_scheme)).unwrap();
+            let bytes_written = serialize_chunk(&bytes, &mut writer, compression_scheme).unwrap();
 
             total_bytes += bytes_written as u32;
 
@@ -1842,7 +1840,7 @@ mod tests {
                 &c.info.xorb_hash,
                 &raw_data,
                 &raw_chunk_boundaries,
-                Some(CompressionScheme::LZ4)
+                CompressionScheme::LZ4
             )
             .is_ok()
         );
@@ -1862,7 +1860,7 @@ mod tests {
                 &c.info.xorb_hash,
                 &c_bytes,
                 &raw_chunk_boundaries,
-                Some(CompressionScheme::None)
+                CompressionScheme::None
             )
             .is_ok()
         );
@@ -1900,7 +1898,7 @@ mod tests {
                 &c.info.xorb_hash,
                 &raw_data,
                 &raw_chunk_boundaries,
-                Some(CompressionScheme::LZ4)
+                CompressionScheme::LZ4
             )
             .is_ok()
         );
@@ -1924,7 +1922,7 @@ mod tests {
                 &c.info.xorb_hash,
                 &raw_data,
                 &raw_chunk_boundaries,
-                Some(CompressionScheme::None)
+                CompressionScheme::None
             )
             .is_ok()
         );
@@ -1945,7 +1943,7 @@ mod tests {
                 &c.info.xorb_hash,
                 &raw_data,
                 &raw_chunk_boundaries,
-                Some(CompressionScheme::None)
+                CompressionScheme::None
             )
             .is_ok()
         );
@@ -1978,7 +1976,7 @@ mod tests {
                 &c.info.xorb_hash,
                 &raw_data,
                 &raw_chunk_boundaries,
-                Some(CompressionScheme::None)
+                CompressionScheme::None
             )
             .is_ok()
         );
@@ -2010,7 +2008,7 @@ mod tests {
                 &c.info.xorb_hash,
                 &raw_data,
                 &raw_chunk_boundaries,
-                Some(CompressionScheme::None)
+                CompressionScheme::None
             )
             .is_ok()
         );
@@ -2042,7 +2040,7 @@ mod tests {
                 &c.info.xorb_hash,
                 &raw_data,
                 &raw_chunk_boundaries,
-                Some(CompressionScheme::LZ4)
+                CompressionScheme::LZ4
             )
             .is_ok()
         );
@@ -2073,7 +2071,7 @@ mod tests {
                 &c.info.xorb_hash,
                 &raw_data,
                 &raw_chunk_boundaries,
-                Some(CompressionScheme::LZ4)
+                CompressionScheme::LZ4
             )
             .is_ok()
         );
@@ -2106,7 +2104,7 @@ mod tests {
                 &c.info.xorb_hash,
                 &raw_data,
                 &raw_chunk_boundaries,
-                Some(CompressionScheme::LZ4)
+                CompressionScheme::LZ4
             )
             .is_ok()
         );
@@ -2138,7 +2136,7 @@ mod tests {
                 &c.info.xorb_hash,
                 &raw_data,
                 &raw_chunk_boundaries,
-                Some(CompressionScheme::LZ4)
+                CompressionScheme::LZ4
             )
             .is_ok()
         );
@@ -2168,7 +2166,7 @@ mod tests {
                 &c.info.xorb_hash,
                 &raw_data,
                 &raw_chunk_boundaries,
-                Some(CompressionScheme::LZ4)
+                CompressionScheme::LZ4
             )
             .is_ok()
         );
@@ -2200,7 +2198,7 @@ mod tests {
                 &c.info.xorb_hash,
                 &raw_data,
                 &raw_chunk_boundaries,
-                Some(CompressionScheme::LZ4)
+                CompressionScheme::LZ4
             )
             .is_ok()
         );
@@ -2266,7 +2264,7 @@ mod tests {
                 &c.info.xorb_hash,
                 &raw_data,
                 &raw_chunk_boundaries,
-                Some(CompressionScheme::LZ4),
+                CompressionScheme::LZ4,
             )
             .is_ok()
         );
@@ -2367,7 +2365,7 @@ mod tests {
                     &c.info.xorb_hash,
                     &raw_data,
                     &raw_chunk_boundaries,
-                    Some(COMPRESSION_SCHEME)
+                    COMPRESSION_SCHEME
                 )
                 .is_ok()
             );
@@ -2428,7 +2426,7 @@ mod tests {
             let bytes = gen_random_bytes(*size);
             let chunk_hash = crate::merklehash::compute_data_hash(&bytes);
             chunk_hashes_and_sizes.push((chunk_hash, bytes.len() as u64));
-            serialize_chunk(&bytes, &mut raw_data, Some(compression)).unwrap();
+            serialize_chunk(&bytes, &mut raw_data, compression).unwrap();
         }
 
         let expected_hash = crate::merklehash::xorb_hash(&chunk_hashes_and_sizes);
@@ -2480,7 +2478,7 @@ mod tests {
                 let bytes = gen_random_bytes(*size);
                 let chunk_hash = crate::merklehash::compute_data_hash(&bytes);
                 chunk_hashes_and_sizes.push((chunk_hash, bytes.len() as u64));
-                serialize_chunk(&bytes, &mut raw_data, Some(compression)).unwrap();
+                serialize_chunk(&bytes, &mut raw_data, compression).unwrap();
             }
 
             let expected_hash = crate::merklehash::xorb_hash(&chunk_hashes_and_sizes);
@@ -2505,7 +2503,7 @@ mod tests {
             let bytes = gen_random_bytes(*size);
             let chunk_hash = crate::merklehash::compute_data_hash(&bytes);
             chunk_hashes_and_sizes.push((chunk_hash, bytes.len() as u64));
-            serialize_chunk(&bytes, &mut raw_data, Some(compression)).unwrap();
+            serialize_chunk(&bytes, &mut raw_data, compression).unwrap();
         }
 
         let mut output = Vec::new();
@@ -2526,7 +2524,7 @@ mod tests {
         let mut raw_data = Vec::new();
         let bytes = gen_random_bytes(1024);
         let chunk_hash = crate::merklehash::compute_data_hash(&bytes);
-        serialize_chunk(&bytes, &mut raw_data, Some(CompressionScheme::LZ4)).unwrap();
+        serialize_chunk(&bytes, &mut raw_data, CompressionScheme::LZ4).unwrap();
 
         let expected_hash = crate::merklehash::xorb_hash(&[(chunk_hash, 1024)]);
 

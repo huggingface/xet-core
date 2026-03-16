@@ -114,9 +114,9 @@ fn convert_three_byte_num(buf: &[u8; 3]) -> u32 {
 pub fn serialize_chunk<W: Write>(
     chunk: &[u8],
     w: &mut W,
-    compression_scheme: Option<CompressionScheme>,
+    compression_scheme: CompressionScheme,
 ) -> Result<usize, XorbObjectError> {
-    let compression_scheme = compression_scheme.unwrap_or_else(|| CompressionScheme::choose_from_data(chunk));
+    let compression_scheme = compression_scheme.resolve_for_data(chunk);
 
     let compressed = compression_scheme.compress_from_slice(chunk)?;
 

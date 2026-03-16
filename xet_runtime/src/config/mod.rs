@@ -19,4 +19,3 @@ pub type DeduplicationConfig = groups::deduplication::ConfigValues;
 pub type ChunkCacheConfig = groups::chunk_cache::ConfigValues;
 pub type ClientConfig = groups::client::ConfigValues;
 pub type LogConfig = groups::log::ConfigValues;
-pub type XorbConfig = groups::xorb::ConfigValues;

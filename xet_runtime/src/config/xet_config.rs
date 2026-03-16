@@ -12,7 +12,6 @@ pub struct XetConfig {
     pub log: groups::log::ConfigValues,
     pub reconstruction: groups::reconstruction::ConfigValues,
     pub session: groups::session::ConfigValues,
-    pub xorb: groups::xorb::ConfigValues,
     #[cfg(not(target_family = "wasm"))]
     pub system_monitor: groups::system_monitor::ConfigValues,
 }
@@ -44,7 +43,6 @@ impl XetConfig {
         self.log.apply_env_overrides();
         self.reconstruction.apply_env_overrides();
         self.session.apply_env_overrides();
-        self.xorb.apply_env_overrides();
         #[cfg(not(target_family = "wasm"))]
         self.system_monitor.apply_env_overrides();
         self

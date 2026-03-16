@@ -55,7 +55,7 @@ impl XetSession {
         let config = TranslatorConfig {
             data_config: DataConfig {
                 endpoint,
-                compression: Some(CompressionScheme::LZ4),
+                compression: CompressionScheme::LZ4,
                 auth: Some(auth),
                 prefix: "default".to_owned(),
                 user_agent: USER_AGENT.to_string(),

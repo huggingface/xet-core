@@ -97,7 +97,7 @@ macro_rules! config_group {
                     }
 
                     let default_value: $type = $value;
-                    self.$name = <$type>::parse(stringify!($name), maybe_env_value, default_value);
+                    self.$name = <$type>::parse_config_value(stringify!($name), maybe_env_value, default_value);
                 }
                 )+
             }
