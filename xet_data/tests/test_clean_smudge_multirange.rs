@@ -1,13 +1,11 @@
-//! Clean/smudge integration tests with forced multirange fetching.
+//! Clean/smudge integration tests with `enable_multirange_fetching = true`.
 //!
 //! This test binary is a separate copy of a subset of the clean/smudge tests
-//! that runs with multirange fetching forced on (max_multirange_term_size=1PB,
-//! min_multirange_group_size=1), exercising the multirange HTTP request path
-//! rather than the default single-range splitting.
+//! that runs with `enable_multirange_fetching` enabled, exercising the
+//! multirange HTTP request path rather than the default single-range splitting.
 
 use xet_data::deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS, TARGET_CHUNK_SIZE};
 use xet_data::processing::test_utils::*;
-use xet_runtime::utils::ByteSize;
 use xet_runtime::{test_set_config, test_set_constants};
 
 test_set_constants! {
@@ -18,8 +16,7 @@ test_set_constants! {
 
 test_set_config! {
     client {
-        max_multirange_term_size = ByteSize::from("1pb");
-        min_multirange_group_size = 1usize;
+        enable_multirange_fetching = true;
     }
 }
 

@@ -1739,28 +1739,27 @@ mod tests {
 
     // ==================== Multirange Fetching Tests ====================
     //
-    // These tests verify that reconstruction works correctly across multirange
-    // fetch configurations. Tests exercise both extremes: forcing all multirange
-    // (max_multirange_term_size=MAX, min_multirange_group_size=1) and forcing
-    // all single-range (min_multirange_group_size=MAX).
+    // These tests verify that reconstruction works correctly with both values
+    // of `enable_multirange_fetching`. When true, V2 multi-range fetch entries
+    // are used as-is (multirange HTTP requests). When false (default), each
+    // range is split into its own XorbBlock and fetched via a separate
+    // single-range request in parallel.
+    //
+    // Uses XetRuntime::new_with_config() to override the config per-test,
+    // following the pattern from test_dynamic_buffer_scaling_noop_increment_preserves_total_permits.
 
-    fn with_multirange_config(force_multirange: bool) -> Arc<XetRuntime> {
+    fn with_multirange_config(enable: bool) -> Arc<XetRuntime> {
         let mut config = xet_runtime::config::XetConfig::new();
-        if force_multirange {
-            config.client.max_multirange_term_size = xet_runtime::utils::ByteSize::new(u64::MAX);
-            config.client.min_multirange_group_size = 1;
-        } else {
-            config.client.min_multirange_group_size = usize::MAX;
-        }
+        config.client.enable_multirange_fetching = enable;
         XetRuntime::new_with_config(config).unwrap()
     }
 
     /// Exercises multiple disjoint-range scenarios through LocalClient with both
-    /// forced multirange and forced single-range configs.
+    /// enable_multirange_fetching=true and =false.
     #[test]
     fn test_multirange_local_client() {
-        for prefer in [false, true] {
-            let rt = with_multirange_config(prefer);
+        for enable in [false, true] {
+            let rt = with_multirange_config(enable);
             rt.external_run_async_task(async move {
                 let scenarios: Vec<Vec<(u64, (u64, u64))>> = vec![
                     vec![(1, (0, 2)), (1, (4, 6)), (1, (8, 10))],
@@ -1795,11 +1794,11 @@ mod tests {
         }
     }
 
-    /// LocalClient with max_ranges_per_fetch constraint, both multirange configs.
+    /// LocalClient with max_ranges_per_fetch constraint, both enable settings.
     #[test]
     fn test_multirange_max_ranges() {
-        for prefer in [false, true] {
-            let rt = with_multirange_config(prefer);
+        for enable in [false, true] {
+            let rt = with_multirange_config(enable);
             rt.external_run_async_task(async {
                 let client = LocalClient::temporary().await.unwrap();
                 client.set_max_ranges_per_fetch(2);
@@ -1816,11 +1815,11 @@ mod tests {
     }
 
     /// Exercises HTTP server path with full, max-ranges-split, and partial-range
-    /// reconstruction, both multirange configs.
+    /// reconstruction, both enable_multirange_fetching values.
     #[test]
     fn test_multirange_via_server() {
-        for prefer in [false, true] {
-            let rt = with_multirange_config(prefer);
+        for enable in [false, true] {
+            let rt = with_multirange_config(enable);
             rt.external_run_async_task(async {
                 let config = test_config();
 

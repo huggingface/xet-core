@@ -261,41 +261,15 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_CLIENT_RECONSTRUCTION_API_VERSION` to set this value.
     ref reconstruction_api_version: Option<u32> = None;
 
-    /// Ranges within a V2 multi-range fetch entry whose compressed byte size
-    /// exceeds this threshold are split into individual single-range HTTP
-    /// requests instead of being grouped into a multirange request.
+    /// Whether to use multi-range HTTP requests when fetching xorb data.
+    /// When false (default), V2 multi-range fetch entries are split into
+    /// individual single-range requests executed in parallel, which avoids
+    /// slow server-side multirange processing.
+    /// When true, multi-range requests are sent as-is.
     ///
-    /// The default value is 2MB.
+    /// The default value is false.
     ///
-    /// Use the environment variable `HF_XET_CLIENT_MAX_MULTIRANGE_TERM_SIZE` to set this value.
-    ref max_multirange_term_size: ByteSize = ByteSize::from("2mb");
-
-    /// The minimum number of small ranges required for them to be grouped
-    /// into a single multirange HTTP request. If fewer small ranges remain
-    /// after large-range splitting, they are fetched individually instead.
-    ///
-    /// The default value is 4.
-    ///
-    /// Use the environment variable `HF_XET_CLIENT_MIN_MULTIRANGE_GROUP_SIZE` to set this value.
-    ref min_multirange_group_size: usize = 4;
-
-    /// The maximum number of ranges allowed in a single multirange HTTP
-    /// request. Groups exceeding this limit are split into multiple requests
-    /// to avoid head-of-line blocking from gateway serialization.
-    /// Set to 1 to disable multirange entirely (all single-range requests).
-    ///
-    /// The default value is 8.
-    ///
-    /// Use the environment variable `HF_XET_CLIENT_MAX_MULTIRANGE_GROUP_SIZE` to set this value.
-    ref max_multirange_group_size: usize = 8;
-
-    /// The maximum byte gap between consecutive ranges for them to be
-    /// grouped into a single multirange HTTP request. Ranges further apart
-    /// are placed into separate requests to avoid costly seeks at the gateway.
-    ///
-    /// The default value is 8MB.
-    ///
-    /// Use the environment variable `HF_XET_CLIENT_MAX_MULTIRANGE_GAP` to set this value.
-    ref max_multirange_gap: ByteSize = ByteSize::from("8mb");
+    /// Use the environment variable `HF_XET_CLIENT_ENABLE_MULTIRANGE_FETCHING` to set this value.
+    ref enable_multirange_fetching: bool = false;
 
 });
