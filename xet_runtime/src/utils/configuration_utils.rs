@@ -12,11 +12,13 @@ pub const INFORMATION_LOG_LEVEL: Level = Level::DEBUG;
 pub const INFORMATION_LOG_LEVEL: Level = Level::INFO;
 
 /// A trait to control how a value is parsed from an environment string or other config source
-/// if it's present.
-///
-/// The main reason to do things like this is to
+/// if it's present. Also provides serialization back to a string representation that
+/// roundtrips with `parse_user_value`.
 pub trait ParsableConfigValue: std::fmt::Debug + Sized {
     fn parse_user_value(value: &str) -> Option<Self>;
+
+    /// Serialize this value to a string that can be parsed back via `parse_user_value`.
+    fn to_config_string(&self) -> String;
 
     /// Parse the value, returning the default if it can't be parsed or the string is empty.  
     /// Issue a warning if it can't be parsed.
@@ -45,12 +47,15 @@ pub trait ParsableConfigValue: std::fmt::Debug + Sized {
 
 /// Most values work with the FromStr implementation, but we want to override the behavior for some types
 /// (e.g. Option<T> and bool) to have custom parsing behavior.
-pub trait FromStrParseable: FromStr + std::fmt::Debug {}
+pub trait FromStrParseable: FromStr + std::fmt::Debug + std::fmt::Display {}
 
 impl<T: FromStrParseable> ParsableConfigValue for T {
     fn parse_user_value(value: &str) -> Option<Self> {
-        // Just wrap the base FromStr parser.
         value.parse::<T>().ok()
+    }
+
+    fn to_config_string(&self) -> String {
+        self.to_string()
     }
 }
 
@@ -72,7 +77,7 @@ impl FromStrParseable for ByteSize {}
 
 /// Special handling for bool:
 /// - true: "1","true","yes","y","on"  -> true
-/// - false: "0","false","no","n","off","" -> false
+/// - false: "0","false","no","n","off" -> false
 fn parse_bool_value(value: &str) -> Option<bool> {
     let t = value.trim().to_ascii_lowercase();
 
@@ -87,13 +92,27 @@ impl ParsableConfigValue for bool {
     fn parse_user_value(value: &str) -> Option<Self> {
         parse_bool_value(value)
     }
+
+    fn to_config_string(&self) -> String {
+        if *self { "true" } else { "false" }.to_owned()
+    }
 }
 
 /// Enable Option<T> to allow the default value to be None if nothing is set and appear as
 /// Some(Value) if the user specifies the value.
 impl<T: ParsableConfigValue> ParsableConfigValue for Option<T> {
     fn parse_user_value(value: &str) -> Option<Self> {
+        if value.trim().is_empty() {
+            return Some(None);
+        }
         T::parse_user_value(value).map(Some)
+    }
+
+    fn to_config_string(&self) -> String {
+        match self {
+            Some(v) => v.to_config_string(),
+            None => String::new(),
+        }
     }
 }
 
@@ -105,12 +124,29 @@ impl ParsableConfigValue for std::time::Duration {
     fn parse_user_value(value: &str) -> Option<Self> {
         duration_str::parse(value).ok()
     }
+
+    fn to_config_string(&self) -> String {
+        let total_ms = self.as_millis();
+        if self.subsec_nanos() == 0 {
+            format!("{}s", self.as_secs())
+        } else if self.subsec_nanos().is_multiple_of(1_000_000) {
+            format!("{total_ms}ms")
+        } else if self.subsec_nanos().is_multiple_of(1_000) {
+            format!("{}us", self.as_micros())
+        } else {
+            format!("{}ns", self.as_nanos())
+        }
+    }
 }
 
 #[cfg(not(target_family = "wasm"))]
 impl ParsableConfigValue for TemplatedPathBuf {
     fn parse_user_value(value: &str) -> Option<Self> {
         Some(Self::new(value))
+    }
+
+    fn to_config_string(&self) -> String {
+        self.template_string()
     }
 }
 
@@ -300,4 +336,124 @@ lazy_static! {
 #[inline]
 pub fn is_high_performance() -> bool {
     *HIGH_PERFORMANCE
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    fn assert_roundtrip<T: ParsableConfigValue + PartialEq + std::fmt::Debug>(value: T) {
+        let s = value.to_config_string();
+        let restored = T::parse_user_value(&s).unwrap_or_else(|| {
+            panic!("Failed to parse config string '{s}' back into {:?}", std::any::type_name::<T>())
+        });
+        assert_eq!(value, restored);
+    }
+
+    macro_rules! assert_roundtrips {
+        ($($value:expr),+ $(,)?) => {
+            $(assert_roundtrip($value);)+
+        };
+    }
+
+    #[test]
+    fn test_roundtrip_numeric_primitives() {
+        assert_roundtrips!(
+            0usize,
+            42usize,
+            usize::MAX,
+            0u8,
+            255u8,
+            0u16,
+            65535u16,
+            0u32,
+            123456u32,
+            0u64,
+            u64::MAX,
+            0isize,
+            -42isize,
+            isize::MAX,
+            -128i8,
+            127i8,
+            -32768i16,
+            32767i16,
+            0i32,
+            -123456i32,
+            0i64,
+            i64::MIN,
+            0.0f32,
+            3.14f32,
+            -1.5f32,
+            0.0f64,
+            std::f64::consts::PI,
+            -1e10f64
+        );
+    }
+
+    #[test]
+    fn test_roundtrip_bool_and_string() {
+        assert_roundtrips!(true, false, String::new(), "hello world".to_owned(), "http://localhost:8080".to_owned());
+    }
+
+    #[test]
+    fn test_roundtrip_byte_size() {
+        assert_roundtrips!(
+            ByteSize::new(0),
+            ByteSize::new(1000),
+            ByteSize::new(1_000_000),
+            ByteSize::new(8_000_000),
+            ByteSize::new(10_000_000_000)
+        );
+    }
+
+    #[test]
+    fn test_roundtrip_duration() {
+        assert_roundtrips!(
+            Duration::from_secs(0),
+            Duration::from_secs(60),
+            Duration::from_secs(120),
+            Duration::from_millis(200),
+            Duration::from_millis(3000),
+            Duration::from_secs(360),
+            Duration::from_micros(123),
+            Duration::from_nanos(123)
+        );
+    }
+
+    #[test]
+    fn test_roundtrip_option_some() {
+        assert_roundtrips!(Some(42usize), Some("hello".to_owned()));
+    }
+
+    #[test]
+    fn test_roundtrip_option_none_string() {
+        let none_val: Option<String> = None;
+        let s = none_val.to_config_string();
+        assert_eq!(s, "");
+    }
+
+    #[test]
+    fn test_parse_option_empty_string_as_none() {
+        assert_eq!(Option::<String>::parse_user_value(""), Some(None));
+        assert_eq!(Option::<String>::parse_user_value("   "), Some(None));
+        assert_eq!(Option::<usize>::parse_user_value(""), Some(None));
+    }
+
+    #[test]
+    fn test_parse_bool_empty_string_as_none() {
+        assert_eq!(bool::parse_user_value(""), None);
+        assert_eq!(bool::parse_user_value("   "), None);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn test_roundtrip_templated_path_buf() {
+        let path = TemplatedPathBuf::new("/some/simple/path");
+        let s = path.to_config_string();
+        assert_eq!(s, "/some/simple/path");
+        let restored = TemplatedPathBuf::parse_user_value(&s).unwrap();
+        assert_eq!(path.template_string(), restored.template_string());
+    }
 }
