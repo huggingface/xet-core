@@ -3,7 +3,7 @@ use xet_data::processing::configurations::TranslatorConfig;
 use super::{SessionError, XetSession};
 
 // Helper function to create TranslatorConfig
-pub(crate) fn create_translator_config(session: &XetSession) -> Result<TranslatorConfig, SessionError> {
+pub(super) fn create_translator_config(session: &XetSession) -> Result<TranslatorConfig, SessionError> {
     let endpoint = session
         .endpoint
         .clone()
@@ -21,7 +21,7 @@ pub(crate) fn create_translator_config(session: &XetSession) -> Result<Translato
 
 /// State of the upload commit and download group
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum GroupState {
+pub(super) enum GroupState {
     Alive,
     Finished,
     Aborted,
