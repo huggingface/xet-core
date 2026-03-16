@@ -73,7 +73,8 @@ jobs:
         with:
           targets: riscv64gc-unknown-linux-gnu
       - name: Install cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        run: |
+          curl -sL https://github.com/cross-rs/cross/releases/latest/download/cross-x86_64-unknown-linux-gnu.tar.gz | tar xz -C /usr/local/bin
       - name: Build and Test
         run: |
           cross test --target riscv64gc-unknown-linux-gnu --verbose --no-fail-fast
