@@ -30,7 +30,7 @@ is omitted from JSON when `None`, and absent keys deserialise as `None`.
 ### New constructor
 
 ```rust
-pub fn with_sha256(hash: String, file_size: u64, sha256: String) -> Self
+pub fn new_with_sha256(hash: String, file_size: u64, sha256: String) -> Self
 ```
 
 ### New accessor

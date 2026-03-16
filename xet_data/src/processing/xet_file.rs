@@ -32,7 +32,7 @@ impl XetFileInfo {
     }
 
     /// Creates a new `XetFileInfo` instance with a SHA-256 hash.
-    pub fn with_sha256(hash: String, file_size: u64, sha256: String) -> Self {
+    pub fn new_with_sha256(hash: String, file_size: u64, sha256: String) -> Self {
         Self {
             hash,
             file_size,
