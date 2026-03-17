@@ -1,9 +1,10 @@
 use xet_data::processing::configurations::TranslatorConfig;
 
-use super::{SessionError, XetSession};
+use super::session::XetSession;
+use crate::error::XetError;
 
 // Helper function to create TranslatorConfig
-pub(super) fn create_translator_config(session: &XetSession) -> Result<TranslatorConfig, SessionError> {
+pub(super) fn create_translator_config(session: &XetSession) -> Result<TranslatorConfig, XetError> {
     let endpoint = session
         .endpoint
         .clone()

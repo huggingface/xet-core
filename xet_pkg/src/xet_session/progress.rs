@@ -9,9 +9,9 @@ use async_trait::async_trait;
 use ulid::Ulid;
 use xet_data::progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
 
-use super::SessionError;
 use super::download_group::DownloadResult;
 use super::upload_commit::UploadResult;
+use crate::error::XetError;
 
 /// Lifecycle state of a single upload or download task.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,15 +65,15 @@ impl Deref for DownloadTaskHandle {
 }
 
 impl TaskHandle {
-    pub fn status(&self) -> Result<TaskStatus, SessionError> {
+    pub fn status(&self) -> Result<TaskStatus, XetError> {
         if let Some(status) = &self.status {
             Ok(*status.lock()?)
         } else {
-            Err(SessionError::other("status not available"))
+            Err(XetError::other("status not available"))
         }
     }
 
-    pub fn progress(&self) -> Result<FileProgress, SessionError> {
+    pub fn progress(&self) -> Result<FileProgress, XetError> {
         self.group_progress.file(self.task_id)
     }
 }
@@ -102,8 +102,8 @@ impl ProgressSnapshot {
         &self.total
     }
 
-    pub fn file(&self, task_id: Ulid) -> Result<&FileProgress, SessionError> {
-        self.files.get(&task_id).ok_or(SessionError::InvalidTaskID(task_id))
+    pub fn file(&self, task_id: Ulid) -> Result<&FileProgress, XetError> {
+        self.files.get(&task_id).ok_or(XetError::InvalidTaskID(task_id))
     }
 }
 
@@ -177,7 +177,7 @@ impl GroupProgress {
     }
 
     /// Return a combined snapshot of aggregate and per-file progress.
-    pub fn snapshot(&self) -> Result<ProgressSnapshot, SessionError> {
+    pub fn snapshot(&self) -> Result<ProgressSnapshot, XetError> {
         let total = self.total();
         let files = self.files.lock()?.clone();
         Ok(ProgressSnapshot { total, files })
@@ -199,12 +199,12 @@ impl GroupProgress {
         }
     }
 
-    fn file(&self, tracking_id: Ulid) -> Result<FileProgressSnapshot, SessionError> {
+    fn file(&self, tracking_id: Ulid) -> Result<FileProgressSnapshot, XetError> {
         self.files
             .lock()?
             .get(&tracking_id)
             .cloned()
-            .ok_or(SessionError::InvalidTaskID(tracking_id))
+            .ok_or(XetError::InvalidTaskID(tracking_id))
     }
 }
 
@@ -281,7 +281,7 @@ mod tests {
         let snapshot = p.snapshot().unwrap();
         let unknown_id = Ulid::new();
         let result = snapshot.file(unknown_id);
-        assert!(matches!(result, Err(SessionError::InvalidTaskID(_))));
+        assert!(matches!(result, Err(XetError::InvalidTaskID(_))));
     }
 
     #[tokio::test]
@@ -348,7 +348,7 @@ mod tests {
             group_progress: progress,
             task_id: Ulid::new(), // not registered in GroupProgress
         };
-        assert!(matches!(handle.progress(), Err(SessionError::InvalidTaskID(_))));
+        assert!(matches!(handle.progress(), Err(XetError::InvalidTaskID(_))));
     }
 
     // ── UploadTaskHandle unit tests ──────────────────────────────────────────
@@ -356,7 +356,7 @@ mod tests {
     // `UploadTaskHandle` wraps a `TaskHandle` and adds a `result` Arc that is
     // shared with the internal `InnerUploadTaskHandle` inside `UploadCommit`.
     // After `commit()` completes, the internal handle writes the per-file
-    // `UploadResult` (= `Arc<Result<FileMetadata, SessionError>>`) into that
+    // `UploadResult` (= `Arc<Result<FileMetadata, XetError>>`) into that
     // shared Arc so callers can read it directly from the task handle without
     // touching the `commit()` return value.
     //
@@ -415,7 +415,7 @@ mod tests {
     //
     // `DownloadTaskHandle` follows the same Arc-sharing pattern as
     // `UploadTaskHandle`.  Its `result` field holds a `DownloadResult`
-    // (= `Arc<Result<DownloadedFile, SessionError>>`), populated by `finish()`.
+    // (= `Arc<Result<DownloadedFile, XetError>>`), populated by `finish()`.
 
     #[test]
     // DownloadTaskHandle::result() returns None before finish() populates the result Arc.

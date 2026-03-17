@@ -11,9 +11,9 @@ use xet_data::processing::{FileUploadSession, Sha256Policy, SingleFileCleaner, X
 use xet_runtime::core::XetRuntime;
 
 use super::common::{GroupState, create_translator_config};
-use super::errors::SessionError;
 use super::progress::{GroupProgress, ProgressSnapshot, TaskHandle, TaskStatus, UploadTaskHandle};
 use super::session::XetSession;
+use crate::error::XetError;
 
 /// API for grouping related file uploads into a single atomic commit.
 ///
@@ -37,8 +37,8 @@ use super::session::XetSession;
 ///
 /// # Errors
 ///
-/// Methods return [`SessionError::Aborted`] if the parent session has been
-/// aborted, and [`SessionError::AlreadyCommitted`] if [`commit`](Self::commit)
+/// Methods return [`XetError::Aborted`] if the parent session has been
+/// aborted, and [`XetError::AlreadyCommitted`] if [`commit`](Self::commit)
 /// has already been called.
 #[derive(Clone)]
 pub struct UploadCommit {
@@ -55,7 +55,7 @@ impl std::ops::Deref for UploadCommit {
 impl UploadCommit {
     /// Create a new upload commit from an **async** context. Initialisation logic shared by the sync and async
     /// constructors.
-    pub(super) async fn new(session: XetSession) -> Result<Self, SessionError> {
+    pub(super) async fn new(session: XetSession) -> Result<Self, XetError> {
         let commit_id = Ulid::new();
         let progress = Arc::new(GroupProgress::new());
         let config = create_translator_config(&session)?;
@@ -80,7 +80,7 @@ impl UploadCommit {
     }
 
     /// Abort this upload commit.
-    pub(super) fn abort(&self) -> Result<(), SessionError> {
+    pub(super) fn abort(&self) -> Result<(), XetError> {
         self.inner.abort()
     }
 
@@ -103,14 +103,14 @@ impl UploadCommit {
     ///
     /// # Errors
     ///
-    /// Returns [`SessionError::Aborted`] if the session has been aborted, or
-    /// [`SessionError::AlreadyCommitted`] if [`commit`](Self::commit) has
+    /// Returns [`XetError::Aborted`] if the session has been aborted, or
+    /// [`XetError::AlreadyCommitted`] if [`commit`](Self::commit) has
     /// already been called.
     pub async fn upload_from_path(
         &self,
         file_path: PathBuf,
         sha256: Sha256Policy,
-    ) -> Result<UploadTaskHandle, SessionError> {
+    ) -> Result<UploadTaskHandle, XetError> {
         self.session.check_alive()?;
 
         // Use the absolute path in case the process current working directory changes
@@ -131,7 +131,7 @@ impl UploadCommit {
     /// ```rust,no_run
     /// # use std::fs::File;
     /// # use std::io::Read;
-    /// # use xet::xet_session::SessionError;
+    /// # use xet::XetError;
     /// # async fn example(commit: xet::xet_session::UploadCommit, filename: &str, filesize: u64) -> Result<(), Box<dyn std::error::Error>> {
     /// # use xet::xet_session::Sha256Policy;
     /// let (handle, mut cleaner) = commit.upload_file(Some(filename.into()), filesize, Sha256Policy::Compute).await?;
@@ -169,7 +169,7 @@ impl UploadCommit {
         file_name: Option<String>,
         file_size: u64,
         sha256: Sha256Policy,
-    ) -> Result<(TaskHandle, SingleFileCleaner), SessionError> {
+    ) -> Result<(TaskHandle, SingleFileCleaner), XetError> {
         self.session.check_alive()?;
 
         let inner = self.inner.clone();
@@ -193,14 +193,14 @@ impl UploadCommit {
     ///
     /// # Errors
     ///
-    /// Returns [`SessionError::Aborted`] if the session has been aborted, or
-    /// [`SessionError::AlreadyCommitted`] if [`commit`](Self::commit) has already been called.
+    /// Returns [`XetError::Aborted`] if the session has been aborted, or
+    /// [`XetError::AlreadyCommitted`] if [`commit`](Self::commit) has already been called.
     pub async fn upload_bytes(
         &self,
         bytes: Vec<u8>,
         sha256: Sha256Policy,
         tracking_name: Option<String>,
-    ) -> Result<UploadTaskHandle, SessionError> {
+    ) -> Result<UploadTaskHandle, XetError> {
         self.session.check_alive()?;
 
         let inner = self.inner.clone();
@@ -210,19 +210,19 @@ impl UploadCommit {
     }
 
     /// Return a snapshot of progress for every queued upload.
-    pub fn get_progress(&self) -> Result<ProgressSnapshot, SessionError> {
+    pub fn get_progress(&self) -> Result<ProgressSnapshot, XetError> {
         self.progress.snapshot()
     }
 
     /// Wait for all uploads to complete and push metadata to the CAS server.
     ///
     /// Returns a `HashMap` keyed by task ID where each value is
-    /// [`UploadResult`] (= `Arc<Result<`[`FileMetadata`]`, [`SessionError`]`>>`).
+    /// [`UploadResult`] (= `Arc<Result<`[`FileMetadata`]`, [`XetError`]`>>`).
     /// A single failed upload does not prevent the others from being collected.
     ///
     /// Consumes `self` — subsequent calls on any clone will return
-    /// [`SessionError::AlreadyCommitted`].
-    pub async fn commit(self) -> Result<HashMap<Ulid, UploadResult>, SessionError> {
+    /// [`XetError::AlreadyCommitted`].
+    pub async fn commit(self) -> Result<HashMap<Ulid, UploadResult>, XetError> {
         let inner = self.inner.clone();
         self.session
             .dispatch("commit", async move { inner.handle_commit().await })
@@ -250,7 +250,7 @@ impl UploadCommit {
         &self,
         file_path: PathBuf,
         sha256: Sha256Policy,
-    ) -> Result<UploadTaskHandle, SessionError> {
+    ) -> Result<UploadTaskHandle, XetError> {
         self.session.check_alive()?;
 
         let absolute_path = std::path::absolute(file_path)?;
@@ -270,7 +270,7 @@ impl UploadCommit {
         bytes: Vec<u8>,
         sha256: Sha256Policy,
         tracking_name: Option<String>,
-    ) -> Result<UploadTaskHandle, SessionError> {
+    ) -> Result<UploadTaskHandle, XetError> {
         self.session.check_alive()?;
 
         let commit_inner = self.inner.clone();
@@ -289,7 +289,7 @@ impl UploadCommit {
         file_name: Option<String>,
         file_size: u64,
         sha256: Sha256Policy,
-    ) -> Result<(TaskHandle, SingleFileCleaner), SessionError> {
+    ) -> Result<(TaskHandle, SingleFileCleaner), XetError> {
         self.session.check_alive()?;
 
         let commit_inner = self.inner.clone();
@@ -303,7 +303,7 @@ impl UploadCommit {
     /// # Panics
     ///
     /// Panics if called from within a tokio async runtime.
-    pub fn commit_blocking(self) -> Result<HashMap<Ulid, UploadResult>, SessionError> {
+    pub fn commit_blocking(self) -> Result<HashMap<Ulid, UploadResult>, XetError> {
         let commit = self.clone();
         self.runtime().external_run_async_task(commit.commit())?
     }
@@ -314,13 +314,13 @@ impl UploadCommit {
 /// The `Arc` lets the same value be stored in both the `commit()` return map
 /// and the per-task [`UploadTaskHandle`] without requiring the inner
 /// `Result` to be `Clone`.
-pub type UploadResult = Arc<Result<FileMetadata, SessionError>>;
+pub type UploadResult = Arc<Result<FileMetadata, XetError>>;
 
 /// Handle for a single upload task tracked internally by UploadCommit.
 struct InnerUploadTaskHandle {
     status: Arc<Mutex<TaskStatus>>,
     tracking_name: Option<String>,
-    join_handle: JoinHandle<Result<XetFileInfo, SessionError>>,
+    join_handle: JoinHandle<Result<XetFileInfo, XetError>>,
     result: Arc<OnceLock<UploadResult>>,
 }
 
@@ -350,10 +350,10 @@ impl UploadCommitInner {
     // ===== State helpers =====
 
     /// Check whether the commit is still accepting new tasks.
-    fn check_accepting_tasks(state: &GroupState) -> Result<(), SessionError> {
+    fn check_accepting_tasks(state: &GroupState) -> Result<(), XetError> {
         match *state {
-            GroupState::Finished => Err(SessionError::AlreadyCommitted),
-            GroupState::Aborted => Err(SessionError::Aborted),
+            GroupState::Finished => Err(XetError::AlreadyCommitted),
+            GroupState::Aborted => Err(XetError::Aborted),
             GroupState::Alive => Ok(()),
         }
     }
@@ -366,7 +366,7 @@ impl UploadCommitInner {
         status: Arc<Mutex<TaskStatus>>,
         tracking_id: Ulid,
         sha256: Sha256Policy,
-    ) -> JoinHandle<Result<XetFileInfo, SessionError>> {
+    ) -> JoinHandle<Result<XetFileInfo, XetError>> {
         let semaphore = self.runtime().common().file_ingestion_semaphore.clone();
         self.runtime().spawn(async move {
             let _permit = semaphore.acquire().await?;
@@ -375,14 +375,14 @@ impl UploadCommitInner {
             {
                 let mut s = status.lock()?;
                 if !matches!(*s, TaskStatus::Queued) {
-                    return Err(SessionError::Aborted);
+                    return Err(XetError::Aborted);
                 }
                 *s = TaskStatus::Running;
             }
 
             let result = clean_file(upload_session, &file_path, sha256, Some(tracking_id))
                 .await
-                .map_err(SessionError::from)
+                .map_err(XetError::from)
                 .map(|(file_info, _metrics)| file_info);
 
             let new_status = if result.is_ok() {
@@ -408,7 +408,7 @@ impl UploadCommitInner {
         status: Arc<Mutex<TaskStatus>>,
         tracking_id: Ulid,
         sha256: Sha256Policy,
-    ) -> JoinHandle<Result<XetFileInfo, SessionError>> {
+    ) -> JoinHandle<Result<XetFileInfo, XetError>> {
         let semaphore = self.runtime().common().file_ingestion_semaphore.clone();
         self.runtime().spawn(async move {
             let _permit = semaphore.acquire().await?;
@@ -417,14 +417,14 @@ impl UploadCommitInner {
             {
                 let mut s = status.lock()?;
                 if !matches!(*s, TaskStatus::Queued) {
-                    return Err(SessionError::Aborted);
+                    return Err(XetError::Aborted);
                 }
                 *s = TaskStatus::Running;
             }
 
             let result = clean_bytes(upload_session, bytes, Some(tracking_id), sha256)
                 .await
-                .map_err(SessionError::from)
+                .map_err(XetError::from)
                 .map(|(file_info, _metrics)| file_info);
 
             let new_status = if result.is_ok() {
@@ -446,7 +446,7 @@ impl UploadCommitInner {
         &self,
         file_path: PathBuf,
         sha256: Sha256Policy,
-    ) -> Result<UploadTaskHandle, SessionError> {
+    ) -> Result<UploadTaskHandle, XetError> {
         // Hold the state lock for the duration of this function so commit() will not run
         // when an upload task is registering.
         let state = self.state.lock().await;
@@ -465,7 +465,7 @@ impl UploadCommitInner {
         };
 
         let Some(upload_session) = self.upload_session.lock()?.clone() else {
-            return Err(SessionError::other("Upload session not initialized"));
+            return Err(XetError::other("Upload session not initialized"));
         };
 
         let join_handle =
@@ -494,7 +494,7 @@ impl UploadCommitInner {
         tracking_name: Option<String>,
         file_size: u64,
         sha256: Sha256Policy,
-    ) -> Result<(TaskHandle, SingleFileCleaner), SessionError> {
+    ) -> Result<(TaskHandle, SingleFileCleaner), XetError> {
         let tracking_id = Ulid::new();
         // Hold the state lock across start_clean so handle_commit cannot finalise
         // the session between the state check and the creation of the cleaner.
@@ -502,7 +502,7 @@ impl UploadCommitInner {
         Self::check_accepting_tasks(&state)?;
 
         let Some(upload_session) = self.upload_session.lock()?.clone() else {
-            return Err(SessionError::other("Upload session not initialized"));
+            return Err(XetError::other("Upload session not initialized"));
         };
 
         let task_handle = TaskHandle {
@@ -522,7 +522,7 @@ impl UploadCommitInner {
         bytes: Vec<u8>,
         sha256: Sha256Policy,
         tracking_name: Option<String>,
-    ) -> Result<UploadTaskHandle, SessionError> {
+    ) -> Result<UploadTaskHandle, XetError> {
         // Hold the state lock for the duration of this function so commit() will not run
         // when an upload task is registering.
         let state = self.state.lock().await;
@@ -541,7 +541,7 @@ impl UploadCommitInner {
         };
 
         let Some(upload_session) = self.upload_session.lock()?.clone() else {
-            return Err(SessionError::other("Upload session not initialized"));
+            return Err(XetError::other("Upload session not initialized"));
         };
 
         let join_handle = self.spawn_upload_bytes_task(upload_session, bytes, status.clone(), tracking_id, sha256);
@@ -559,14 +559,14 @@ impl UploadCommitInner {
     }
 
     /// Join all active upload tasks and finalise the upload session.
-    pub(super) async fn handle_commit(&self) -> Result<HashMap<Ulid, UploadResult>, SessionError> {
+    pub(super) async fn handle_commit(&self) -> Result<HashMap<Ulid, UploadResult>, XetError> {
         // Mark as not accepting new tasks. The tokio state lock serialises this
         // against all three registration methods, including start_upload_file
         // which holds it across the start_clean await.
         {
             let mut state_guard = self.state.lock().await;
             if *state_guard == GroupState::Finished {
-                return Err(SessionError::AlreadyCommitted);
+                return Err(XetError::AlreadyCommitted);
             }
             *state_guard = GroupState::Aborted; // stop new tasks while draining
         }
@@ -578,7 +578,7 @@ impl UploadCommitInner {
         let mut results = HashMap::new();
         let mut join_err = None;
         for (task_id, handle) in active_tasks {
-            match handle.join_handle.await.map_err(SessionError::from) {
+            match handle.join_handle.await.map_err(XetError::from) {
                 Ok(Ok(file_info)) => {
                     let result = Arc::new(Ok(FileMetadata {
                         tracking_name: handle.tracking_name,
@@ -646,7 +646,7 @@ impl UploadCommitInner {
     /// obtaining a session and prevents `handle_commit` from calling `finalize`.
     /// It does not invalidate any `SingleFileCleaner` already in the caller's hands,
     /// since the cleaner holds its own `Arc` to the session.
-    fn abort(&self) -> Result<(), SessionError> {
+    fn abort(&self) -> Result<(), XetError> {
         if let Ok(mut guard) = self.state.try_lock() {
             *guard = GroupState::Aborted;
         }
@@ -804,7 +804,7 @@ mod tests {
         let c2 = c1.clone();
         c1.commit().await.unwrap();
         let err = c2.commit().await.unwrap_err();
-        assert!(matches!(err, SessionError::AlreadyCommitted | SessionError::Internal(_)));
+        assert!(matches!(err, XetError::AlreadyCommitted | XetError::Internal(_)));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -829,7 +829,7 @@ mod tests {
             .upload_from_path(PathBuf::from("nonexistent.bin"), Sha256Policy::Compute)
             .await
             .unwrap_err();
-        assert!(matches!(err, SessionError::Aborted));
+        assert!(matches!(err, XetError::Aborted));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -842,7 +842,7 @@ mod tests {
             .upload_bytes(b"data".to_vec(), Sha256Policy::Compute, Some("bytes 1".into()))
             .await
             .unwrap_err();
-        assert!(matches!(err, SessionError::Aborted));
+        assert!(matches!(err, XetError::Aborted));
     }
 
     // ── Post-commit guards (AlreadyCommitted) ────────────────────────────────
@@ -858,7 +858,7 @@ mod tests {
             .upload_from_path(PathBuf::from("any.bin"), Sha256Policy::Compute)
             .await
             .unwrap_err();
-        assert!(matches!(err, SessionError::AlreadyCommitted));
+        assert!(matches!(err, XetError::AlreadyCommitted));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -872,7 +872,7 @@ mod tests {
             .upload_bytes(b"hello".to_vec(), Sha256Policy::Compute, None)
             .await
             .unwrap_err();
-        assert!(matches!(err, SessionError::AlreadyCommitted));
+        assert!(matches!(err, XetError::AlreadyCommitted));
     }
 
     // ── API coverage & abort ─────────────────────────────────────────────────

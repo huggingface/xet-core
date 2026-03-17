@@ -471,6 +471,8 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // huggingface_hub.
     m.add_class::<PyPointerFile>()?;
 
+    xet::register_exceptions(m)?;
+
     // Make sure the logger is set up.
     init_logging(py);
 

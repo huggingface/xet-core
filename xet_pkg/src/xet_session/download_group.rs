@@ -10,9 +10,9 @@ use xet_data::processing::{FileDownloadSession, XetFileInfo};
 use xet_runtime::core::XetRuntime;
 
 use super::common::{GroupState, create_translator_config};
-use super::errors::SessionError;
 use super::progress::{DownloadTaskHandle, GroupProgress, ProgressSnapshot, TaskHandle, TaskStatus};
 use super::session::XetSession;
+use crate::error::XetError;
 
 /// API for grouping related file downloads into a single unit of work.
 ///
@@ -33,8 +33,8 @@ use super::session::XetSession;
 ///
 /// # Errors
 ///
-/// Methods return [`SessionError::Aborted`] if the parent session has been
-/// aborted, and [`SessionError::AlreadyFinished`] if
+/// Methods return [`XetError::Aborted`] if the parent session has been
+/// aborted, and [`XetError::AlreadyFinished`] if
 /// [`finish`](Self::finish) has already been called.
 #[derive(Clone)]
 pub struct DownloadGroup {
@@ -51,7 +51,7 @@ impl std::ops::Deref for DownloadGroup {
 impl DownloadGroup {
     /// Create a new download group from an **async** context. Initialisation logic shared by the sync and async
     /// constructors.
-    pub(super) async fn new(session: XetSession) -> Result<Self, SessionError> {
+    pub(super) async fn new(session: XetSession) -> Result<Self, XetError> {
         let group_id = Ulid::new();
         let progress = Arc::new(GroupProgress::new());
         let config = create_translator_config(&session)?;
@@ -76,7 +76,7 @@ impl DownloadGroup {
     }
 
     /// Abort this download group.
-    pub(super) fn abort(&self) -> Result<(), SessionError> {
+    pub(super) fn abort(&self) -> Result<(), XetError> {
         self.inner.abort()
     }
 
@@ -99,14 +99,14 @@ impl DownloadGroup {
     ///
     /// # Errors
     ///
-    /// Returns [`SessionError::Aborted`] if the session has been aborted, or
-    /// [`SessionError::AlreadyFinished`] if [`finish`](Self::finish) has already
+    /// Returns [`XetError::Aborted`] if the session has been aborted, or
+    /// [`XetError::AlreadyFinished`] if [`finish`](Self::finish) has already
     /// been called.
     pub fn download_file_to_path(
         &self,
         file_info: XetFileInfo,
         dest_path: PathBuf,
-    ) -> Result<DownloadTaskHandle, SessionError> {
+    ) -> Result<DownloadTaskHandle, XetError> {
         self.session.check_alive()?;
 
         // Use the absolute path in case the process current working directory changes
@@ -116,7 +116,7 @@ impl DownloadGroup {
     }
 
     /// Return a snapshot of progress for every queued download.
-    pub fn get_progress(&self) -> Result<ProgressSnapshot, SessionError> {
+    pub fn get_progress(&self) -> Result<ProgressSnapshot, XetError> {
         self.progress.snapshot()
     }
 
@@ -124,7 +124,7 @@ impl DownloadGroup {
     ///
     /// Returns a `HashMap` keyed by task ID where each value is
     /// [`DownloadResult`] (= `Arc<Result<`[`DownloadedFile`]`,
-    /// [`SessionError`](crate::SessionError)`>>`). A single failed download
+    /// [`XetError`](crate::XetError)`>>`). A single failed download
     /// does not prevent the others from being collected.
     ///
     /// Per-task results can also be read directly from the
@@ -132,8 +132,8 @@ impl DownloadGroup {
     /// [`result`](DownloadTaskHandle::result) after this method returns.
     ///
     /// Consumes `self` — subsequent calls on any clone will return
-    /// [`SessionError::AlreadyFinished`].
-    pub async fn finish(self) -> Result<HashMap<Ulid, DownloadResult>, SessionError> {
+    /// [`XetError::AlreadyFinished`].
+    pub async fn finish(self) -> Result<HashMap<Ulid, DownloadResult>, XetError> {
         let inner = self.inner.clone();
         self.session
             .dispatch("finish", async move { inner.handle_finish().await })
@@ -154,7 +154,7 @@ impl DownloadGroup {
     /// # Panics
     ///
     /// Panics if called from within a tokio async runtime.
-    pub fn finish_blocking(self) -> Result<HashMap<Ulid, DownloadResult>, SessionError> {
+    pub fn finish_blocking(self) -> Result<HashMap<Ulid, DownloadResult>, XetError> {
         let group = self.clone();
         self.runtime().external_run_async_task(group.finish())?
     }
@@ -165,13 +165,13 @@ impl DownloadGroup {
 /// The `Arc` lets the same value be stored in both the `finish()` return map
 /// and the per-task [`DownloadTaskHandle`] without requiring the inner
 /// `Result` to be `Clone`.
-pub type DownloadResult = Arc<Result<DownloadedFile, SessionError>>;
+pub type DownloadResult = Arc<Result<DownloadedFile, XetError>>;
 
 /// Handle for a single download task tracked internally by DownloadGroup.
 struct InnerDownloadTaskHandle {
     status: Arc<Mutex<TaskStatus>>,
     dest_path: PathBuf,
-    join_handle: JoinHandle<Result<XetFileInfo, SessionError>>,
+    join_handle: JoinHandle<Result<XetFileInfo, XetError>>,
     result: Arc<OnceLock<DownloadResult>>,
 }
 
@@ -199,10 +199,10 @@ impl DownloadGroupInner {
     // ===== State helpers =====
 
     /// Check whether the group is still accepting new tasks.
-    fn check_accepting_tasks(state: &MutexGuard<GroupState>) -> Result<(), SessionError> {
+    fn check_accepting_tasks(state: &MutexGuard<GroupState>) -> Result<(), XetError> {
         match **state {
-            GroupState::Finished => Err(SessionError::AlreadyFinished),
-            GroupState::Aborted => Err(SessionError::Aborted),
+            GroupState::Finished => Err(XetError::AlreadyFinished),
+            GroupState::Aborted => Err(XetError::Aborted),
             GroupState::Alive => Ok(()),
         }
     }
@@ -215,7 +215,7 @@ impl DownloadGroupInner {
         dest_path: PathBuf,
         status: Arc<Mutex<TaskStatus>>,
         tracking_id: Ulid,
-    ) -> JoinHandle<Result<XetFileInfo, SessionError>> {
+    ) -> JoinHandle<Result<XetFileInfo, XetError>> {
         let semaphore = self.runtime().common().file_download_semaphore.clone();
         self.runtime().spawn(async move {
             let _permit = semaphore.acquire().await?;
@@ -224,15 +224,15 @@ impl DownloadGroupInner {
             {
                 let mut s = status.lock()?;
                 if !matches!(*s, TaskStatus::Queued) {
-                    return Err(SessionError::Aborted);
+                    return Err(XetError::Aborted);
                 }
                 *s = TaskStatus::Running;
             }
 
-            let result: Result<_, SessionError> = download_session
+            let result: Result<_, XetError> = download_session
                 .download_file(&file_info, &dest_path, tracking_id)
                 .await
-                .map_err(SessionError::from);
+                .map_err(XetError::from);
 
             let new_status = if result.is_ok() {
                 TaskStatus::Completed
@@ -257,7 +257,7 @@ impl DownloadGroupInner {
         self: &Arc<Self>,
         file_info: XetFileInfo,
         dest_path: PathBuf,
-    ) -> Result<DownloadTaskHandle, SessionError> {
+    ) -> Result<DownloadTaskHandle, XetError> {
         // Hold the state lock guard for the duration of this function so finish() will not run
         // when a download task is registering.
         let state = self.state.lock()?;
@@ -277,7 +277,7 @@ impl DownloadGroupInner {
         };
 
         let Some(download_session) = self.download_session.lock()?.clone() else {
-            return Err(SessionError::other("Download session not initialized"));
+            return Err(XetError::other("Download session not initialized"));
         };
 
         let join_handle = self.spawn_download_task(
@@ -301,12 +301,12 @@ impl DownloadGroupInner {
     }
 
     /// Join all active download tasks and mark the group as finished.
-    pub(super) async fn handle_finish(&self) -> Result<HashMap<Ulid, DownloadResult>, SessionError> {
+    pub(super) async fn handle_finish(&self) -> Result<HashMap<Ulid, DownloadResult>, XetError> {
         // Mark as not accepting new tasks
         {
             let mut state_guard = self.state.lock()?;
             if *state_guard == GroupState::Finished {
-                return Err(SessionError::AlreadyFinished);
+                return Err(XetError::AlreadyFinished);
             }
             *state_guard = GroupState::Aborted; // stop new tasks while draining
         }
@@ -318,7 +318,7 @@ impl DownloadGroupInner {
         let mut join_err = None;
         // Join all tasks first and then propogate errors.
         for (task_id, handle) in active_tasks {
-            match handle.join_handle.await.map_err(SessionError::from) {
+            match handle.join_handle.await.map_err(XetError::from) {
                 Ok(Ok(file_info)) => {
                     let result = Arc::new(Ok(DownloadedFile {
                         dest_path: handle.dest_path,
@@ -330,7 +330,7 @@ impl DownloadGroupInner {
                     let _ = handle.result.set(result);
                 },
                 Ok(Err(task_err)) => {
-                    let result: Arc<Result<DownloadedFile, SessionError>> = Arc::new(Err(task_err));
+                    let result: Arc<Result<DownloadedFile, XetError>> = Arc::new(Err(task_err));
                     results.insert(task_id, result.clone());
                     // Update result to the external task handle, this is the only place setting
                     // the result, so no error will happen.
@@ -360,7 +360,7 @@ impl DownloadGroupInner {
         &self.session.runtime
     }
 
-    fn abort(&self) -> Result<(), SessionError> {
+    fn abort(&self) -> Result<(), XetError> {
         *self.state.lock()? = GroupState::Aborted;
         let active_tasks = std::mem::take(&mut *self.active_tasks.write()?);
         for (_tracking_id, inner_task_handle) in active_tasks {
@@ -512,7 +512,7 @@ mod tests {
         let g2 = g1.clone();
         g1.finish().await.unwrap();
         let err = g2.finish().await.unwrap_err();
-        assert!(matches!(err, SessionError::AlreadyFinished | SessionError::Internal(_)));
+        assert!(matches!(err, XetError::AlreadyFinished | XetError::Internal(_)));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -543,7 +543,7 @@ mod tests {
                 std::path::PathBuf::from("dest.bin"),
             )
             .unwrap_err();
-        assert!(matches!(err, SessionError::Aborted));
+        assert!(matches!(err, XetError::Aborted));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -563,7 +563,7 @@ mod tests {
                 std::path::PathBuf::from("dest.bin"),
             )
             .unwrap_err();
-        assert!(matches!(err, SessionError::AlreadyFinished));
+        assert!(matches!(err, XetError::AlreadyFinished));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -582,7 +582,7 @@ mod tests {
                 std::path::PathBuf::from("dest.bin"),
             )
             .unwrap_err();
-        assert!(matches!(err, SessionError::Aborted));
+        assert!(matches!(err, XetError::Aborted));
     }
 
     // ── Independence ─────────────────────────────────────────────────────────

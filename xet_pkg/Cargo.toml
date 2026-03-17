@@ -25,9 +25,10 @@ ulid = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+pyo3 = { workspace = true, optional = true }
 
 [features]
-python = ["xet-runtime/python"]
+python = ["xet-runtime/python", "dep:pyo3"]
 
 [dev-dependencies]
 async-std = { workspace = true }

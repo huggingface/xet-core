@@ -1878,6 +1878,7 @@ dependencies = [
  "clap",
  "futures",
  "http",
+ "pyo3",
  "serde",
  "serde_json",
  "serial_test",
