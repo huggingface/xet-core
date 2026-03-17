@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use more_asserts::debug_assert_le;
 
-use super::unique_id::UniqueID;
+use super::UniqueID;
 use super::upload_tracking::CompletionTracker;
 
 /// Per-item atomic progress counters. Created by `GroupProgress::new_item()`.
@@ -165,7 +165,7 @@ impl GroupProgress {
     /// Snapshot of all per-item progress.
     pub fn item_reports(&self) -> HashMap<UniqueID, ItemProgressReport> {
         let items = self.items.lock().unwrap();
-        items.iter().map(|(&id, item)| (id, item.report())).collect()
+        items.iter().map(|(id, item)| (*id, item.report())).collect()
     }
 
     /// Snapshot of one item's progress.

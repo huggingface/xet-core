@@ -960,6 +960,38 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    // A task that returns an upload error transitions to Failed status.
+    async fn test_upload_task_status_failed_for_task_error() {
+        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let commit = session.new_upload_commit().await.unwrap();
+
+        let task_id = UniqueID::new();
+        let status = Arc::new(Mutex::new(TaskStatus::Running));
+        let result: Arc<OnceLock<UploadResult>> = Arc::new(OnceLock::new());
+        let synthetic_handle = UploadTaskHandle {
+            inner: TaskHandle {
+                status: Some(status.clone()),
+                task_id,
+            },
+            result: result.clone(),
+        };
+        let failing_join =
+            tokio::spawn(async { Err(DataError::InternalError("synthetic upload failure".to_string())) });
+        let failing_inner = InnerUploadTaskHandle {
+            status,
+            tracking_name: Some("synthetic".to_string()),
+            join_handle: failing_join,
+            result,
+        };
+        commit.inner.active_tasks.write().unwrap().insert(task_id, failing_inner);
+
+        let results = commit.commit().await.unwrap();
+        let task_result = results.get(&task_id).expect("task_id must be present in results");
+        assert!(task_result.is_err());
+        assert!(matches!(synthetic_handle.status().unwrap(), TaskStatus::Failed));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     // SHA-256 metadata follows policy: Compute/Provided populate it, Skip omits it.
     async fn test_upload_bytes_sha256_policy_metadata() {
         let temp = tempdir().unwrap();
@@ -1286,6 +1318,16 @@ mod tests {
         assert_eq!(snapshot.total_bytes_completed, data.len() as u64);
         assert_eq!(snapshot.total_transfer_bytes, snapshot.total_transfer_bytes_completed);
         assert!(snapshot.total_transfer_bytes_completed <= data.len() as u64);
+        Ok(())
+    }
+
+    #[test]
+    fn test_blocking_upload_file_returns_handle_without_status() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let session = local_session_sync(&temp)?;
+        let commit = session.new_upload_commit_blocking()?;
+        let (handle, _cleaner) = commit.upload_file_blocking(Some("stream.bin".into()), 1024, Sha256Policy::Compute)?;
+        assert!(handle.status().is_err());
         Ok(())
     }
 

@@ -11,8 +11,7 @@ use xet_data::processing::{FileDownloadSession, FileUploadSession, Sha256Policy,
 use xet_runtime::core::par_utils::run_constrained_with_semaphore;
 use xet_runtime::core::{XetRuntime, xet_config};
 
-use super::callback_bridge::CallbackBridge;
-use super::progress_tracking::TrackingProgressUpdater;
+use super::progress_tracking::{GroupProgressCallbackUpdater, ItemProgressCallbackUpdater, TrackingProgressUpdater};
 use crate::legacy::data_client::errors::Result;
 
 mod errors {
@@ -49,7 +48,7 @@ pub async fn upload_bytes_async(
     let semaphore = XetRuntime::current().common().file_ingestion_semaphore.clone();
     let upload_session = FileUploadSession::new(config.into()).await?;
 
-    let bridge = progress_updater.map(|updater| CallbackBridge::start(upload_session.clone(), updater));
+    let bridge = progress_updater.map(|updater| GroupProgressCallbackUpdater::start(upload_session.clone(), updater));
 
     let clean_futures = file_contents.into_iter().zip(sha256_policies).map(|(blob, policy)| {
         let upload_session = upload_session.clone();
@@ -107,7 +106,7 @@ pub async fn upload_async(
 
     let upload_session = FileUploadSession::new(config.into()).await?;
 
-    let bridge = progress_updater.map(|updater| CallbackBridge::start(upload_session.clone(), updater));
+    let bridge = progress_updater.map(|updater| GroupProgressCallbackUpdater::start(upload_session.clone(), updater));
 
     let files_and_sha256 = file_paths.into_iter().zip(sha256_policies.into_iter());
 
@@ -161,13 +160,13 @@ pub async fn download_async(
     let session = FileDownloadSession::new(config).await?;
 
     let mut tasks = Vec::with_capacity(file_infos.len());
-    let mut bridges: Vec<Option<CallbackBridge>> = Vec::with_capacity(file_infos.len());
+    let mut bridges: Vec<Option<ItemProgressCallbackUpdater>> = Vec::with_capacity(file_infos.len());
 
     for ((file_info, file_path), updater) in file_infos.into_iter().zip(updaters) {
         let path = PathBuf::from(&file_path);
         let (id, handle) = session.download_file_background(file_info, path).await?;
 
-        let bridge = updater.map(|u| CallbackBridge::start_for_item(session.clone(), id, u));
+        let bridge = updater.map(|u| ItemProgressCallbackUpdater::start(session.clone(), id, u));
 
         tasks.push((file_path, handle));
         bridges.push(bridge);

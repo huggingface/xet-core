@@ -6,8 +6,7 @@ use async_trait::async_trait;
 use http::header;
 use xet_client::cas_client::auth::TokenRefresher;
 use xet_client::hub_client::Operation;
-use xet_pkg::legacy::callback_bridge::CallbackBridge;
-use xet_pkg::legacy::progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
+use xet_pkg::legacy::progress_tracking::{GroupProgressCallbackUpdater, ProgressUpdate, TrackingProgressUpdater};
 use xet_pkg::legacy::{FileUploadSession, Sha256Policy, clean_file, default_config};
 
 use crate::constants::{
@@ -138,7 +137,7 @@ impl TransferAgent for XetAgent {
             config.session.session_id = Some(session_id.to_owned());
         }
         let session = FileUploadSession::new(config.into()).await?;
-        let bridge = CallbackBridge::start(session.clone(), xet_updater);
+        let bridge = GroupProgressCallbackUpdater::start(session.clone(), xet_updater);
 
         let Some(file_path) = &req.path else {
             return Err(GitLFSProtocolError::bad_syntax("file path not provided for upload request").into());

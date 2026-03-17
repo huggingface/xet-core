@@ -8,8 +8,8 @@ use more_asserts::{debug_assert_ge, debug_assert_le};
 use xet_core_structures::MerkleHashMap;
 use xet_core_structures::merklehash::MerkleHash;
 
+use super::UniqueID;
 use super::progress_types::{GroupProgress, ItemProgressUpdater};
-use super::unique_id::UniqueID;
 
 pub struct FileXorbDependency {
     pub file_id: u64,

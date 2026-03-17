@@ -6,7 +6,7 @@ use more_asserts::{assert_ge, assert_le};
 use tokio::sync::Mutex;
 use xet_data::progress_tracking::UniqueID;
 
-use super::progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
+use super::{ProgressUpdate, TrackingProgressUpdater};
 
 /// Internal structure to track and validate progress data for one item.
 #[derive(Debug)]
@@ -190,7 +190,7 @@ impl TrackingProgressUpdater for ProgressUpdaterVerificationWrapper {
 
 #[cfg(test)]
 mod tests {
-    use super::super::progress_tracking::ItemProgressUpdate;
+    use super::super::ItemProgressUpdate;
     use super::*;
 
     #[derive(Debug, Default)]

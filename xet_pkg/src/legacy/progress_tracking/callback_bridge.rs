@@ -5,12 +5,12 @@ use std::time::Duration;
 use tokio::sync::Notify;
 use xet_data::progress_tracking::{GroupProgressReport, ItemProgressReport, UniqueID};
 
-use super::progress_tracking::{ItemProgressUpdate, ProgressUpdate, TrackingProgressUpdater};
+use super::{ItemProgressUpdate, ProgressUpdate, TrackingProgressUpdater};
 
 /// Trait for types that can produce progress reports via polling.
 ///
 /// Both `FileDownloadSession` and `FileUploadSession` implement this trait,
-/// enabling the `CallbackBridge` to poll them and forward updates to
+/// enabling the callback updaters to poll them and forward updates to
 /// legacy `TrackingProgressUpdater` callbacks.
 pub trait ProgressReporter: Send + Sync {
     fn report(&self) -> GroupProgressReport;
@@ -152,41 +152,40 @@ impl ItemBridgeState {
     }
 }
 
-// === CallbackBridge ===
+// === Shared finalization logic ===
 
-/// Bridges the new polling-based progress model to the old callback-based model.
+#[cfg(debug_assertions)]
+fn wrap_updater(
+    updater: Arc<dyn TrackingProgressUpdater>,
+) -> (Arc<dyn TrackingProgressUpdater>, Option<Arc<super::ProgressUpdaterVerificationWrapper>>) {
+    let v = super::ProgressUpdaterVerificationWrapper::new(updater);
+    (v.clone(), Some(v))
+}
+
+#[cfg(not(debug_assertions))]
+fn wrap_updater(updater: Arc<dyn TrackingProgressUpdater>) -> (Arc<dyn TrackingProgressUpdater>, Option<()>) {
+    (updater, None)
+}
+
+// === GroupProgressCallbackUpdater ===
+
+/// Bridges the new polling-based progress model to the old callback-based model
+/// at the group level.
 ///
 /// Spawns a background task that polls a `ProgressReporter` every 250ms,
-/// computes incremental diffs, and sends `ProgressUpdate` structs to a
-/// `TrackingProgressUpdater`.
-pub struct CallbackBridge {
+/// computes incremental diffs across all items, and sends `ProgressUpdate`
+/// structs to a `TrackingProgressUpdater`.
+pub struct GroupProgressCallbackUpdater {
     stop_signal: Arc<Notify>,
     handle: tokio::task::JoinHandle<()>,
     #[cfg(debug_assertions)]
-    verifier: Option<Arc<super::progress_verification_wrapper::ProgressUpdaterVerificationWrapper>>,
+    verifier: Option<Arc<super::ProgressUpdaterVerificationWrapper>>,
 }
 
-impl CallbackBridge {
-    #[cfg(debug_assertions)]
-    fn wrap(
-        updater: Arc<dyn TrackingProgressUpdater>,
-    ) -> (
-        Arc<dyn TrackingProgressUpdater>,
-        Option<Arc<super::progress_verification_wrapper::ProgressUpdaterVerificationWrapper>>,
-    ) {
-        let v = super::progress_verification_wrapper::ProgressUpdaterVerificationWrapper::new(updater);
-        (v.clone(), Some(v))
-    }
-
-    #[cfg(not(debug_assertions))]
-    fn wrap(updater: Arc<dyn TrackingProgressUpdater>) -> (Arc<dyn TrackingProgressUpdater>, Option<()>) {
-        (updater, None)
-    }
-
-    /// Start a bridge that polls `reporter` every 250ms and sends group-level
-    /// diffs to `updater`. Used for uploads where one updater receives all progress.
+impl GroupProgressCallbackUpdater {
+    /// Start polling `reporter` every 250ms and send group-level diffs to `updater`.
     pub fn start(reporter: Arc<dyn ProgressReporter>, updater: Arc<dyn TrackingProgressUpdater>) -> Self {
-        let (updater, _verifier) = Self::wrap(updater);
+        let (updater, _verifier) = wrap_updater(updater);
 
         let stop_signal = Arc::new(Notify::new());
         let stop = stop_signal.clone();
@@ -228,14 +227,42 @@ impl CallbackBridge {
         }
     }
 
-    /// Start a bridge that polls a single item from `reporter` every 250ms and sends
-    /// per-item diffs to `updater`. Used for downloads where each file has its own updater.
-    pub fn start_for_item(
+    /// Stop the polling loop, send a final update, and in debug mode verify completeness.
+    pub async fn finalize(self) {
+        self.stop_signal.notify_one();
+        let _ = self.handle.await;
+
+        #[cfg(debug_assertions)]
+        if let Some(v) = self.verifier {
+            v.assert_complete().await;
+        }
+    }
+}
+
+// === ItemProgressCallbackUpdater ===
+
+/// Bridges the new polling-based progress model to the old callback-based model
+/// for a single item.
+///
+/// Spawns a background task that polls a single item from a `ProgressReporter`
+/// every 250ms, computes incremental diffs, and sends `ProgressUpdate` structs
+/// to a `TrackingProgressUpdater`.
+pub struct ItemProgressCallbackUpdater {
+    stop_signal: Arc<Notify>,
+    handle: tokio::task::JoinHandle<()>,
+    #[cfg(debug_assertions)]
+    verifier: Option<Arc<super::ProgressUpdaterVerificationWrapper>>,
+}
+
+impl ItemProgressCallbackUpdater {
+    /// Start polling a single item from `reporter` every 250ms and send per-item
+    /// diffs to `updater`.
+    pub fn start(
         reporter: Arc<dyn ProgressReporter>,
         item_id: UniqueID,
         updater: Arc<dyn TrackingProgressUpdater>,
     ) -> Self {
-        let (updater, _verifier) = Self::wrap(updater);
+        let (updater, _verifier) = wrap_updater(updater);
 
         let stop_signal = Arc::new(Notify::new());
         let stop = stop_signal.clone();
