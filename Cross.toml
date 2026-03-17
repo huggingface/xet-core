@@ -1,6 +1,0 @@
-[target.riscv64gc-unknown-linux-gnu]
-pre-build = [
-    "dpkg --add-architecture $CROSS_DEB_ARCH",
-    "apt-get update && apt-get --assume-yes install libssl-dev:$CROSS_DEB_ARCH pkg-config",
-]
-image = "ghcr.io/cross-rs/riscv64gc-unknown-linux-gnu:edge"
