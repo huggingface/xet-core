@@ -443,7 +443,7 @@ mod tests {
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
-                let mut stream = session.download_stream(&xfi, Ulid::new()).unwrap();
+                let mut stream = session.download_stream(&xfi, None, Ulid::new()).unwrap();
 
                 let mut collected = Vec::new();
                 while let Some(chunk) = stream.next().await.unwrap() {
@@ -470,7 +470,7 @@ mod tests {
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
-                let stream = session.download_stream(&xfi, Ulid::new()).unwrap();
+                let stream = session.download_stream(&xfi, None, Ulid::new()).unwrap();
 
                 let collected = tokio::task::spawn_blocking(move || {
                     let mut stream = stream;
@@ -503,7 +503,7 @@ mod tests {
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
-                let mut stream = session.download_stream(&xfi, Ulid::new()).unwrap();
+                let mut stream = session.download_stream(&xfi, None, Ulid::new()).unwrap();
 
                 // Drain all data
                 while stream.next().await.unwrap().is_some() {}
@@ -533,8 +533,8 @@ mod tests {
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
-                let mut stream_a = session.download_stream(&xfi_a, Ulid::new()).unwrap();
-                let mut stream_b = session.download_stream(&xfi_b, Ulid::new()).unwrap();
+                let mut stream_a = session.download_stream(&xfi_a, None, Ulid::new()).unwrap();
+                let mut stream_b = session.download_stream(&xfi_b, None, Ulid::new()).unwrap();
 
                 let task_a = tokio::spawn(async move {
                     let mut buf = Vec::new();
@@ -577,7 +577,7 @@ mod tests {
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 // Create and drop a stream without ever reading from it.
-                let stream = session.download_stream(&xfi, Ulid::new()).unwrap();
+                let stream = session.download_stream(&xfi, None, Ulid::new()).unwrap();
                 drop(stream);
                 tokio::task::yield_now().await;
 
@@ -606,7 +606,7 @@ mod tests {
 
                 // Repeatedly create, start, optionally read, and drop streams.
                 for i in 0..5u32 {
-                    let mut stream = session.download_stream(&xfi, Ulid::new()).unwrap();
+                    let mut stream = session.download_stream(&xfi, None, Ulid::new()).unwrap();
                     if i % 3 == 0 {
                         let _ = stream.next().await;
                     }
@@ -638,7 +638,7 @@ mod tests {
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 // Read one chunk via blocking next() in a spawn_blocking, then drop.
-                let stream = session.download_stream(&xfi, Ulid::new()).unwrap();
+                let stream = session.download_stream(&xfi, None, Ulid::new()).unwrap();
 
                 tokio::task::spawn_blocking(move || {
                     let mut stream = stream;
@@ -674,7 +674,7 @@ mod tests {
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
-                let mut stream = session.download_stream(&xfi, Ulid::new()).unwrap();
+                let mut stream = session.download_stream(&xfi, None, Ulid::new()).unwrap();
                 stream.cancel();
                 assert!(stream.next().await.unwrap().is_none());
                 assert!(stream.next().await.unwrap().is_none());
@@ -697,7 +697,7 @@ mod tests {
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
-                let mut stream = session.download_stream(&xfi, Ulid::new()).unwrap();
+                let mut stream = session.download_stream(&xfi, None, Ulid::new()).unwrap();
                 let _ = stream.next().await.unwrap();
                 stream.cancel();
                 assert!(stream.next().await.unwrap().is_none());
