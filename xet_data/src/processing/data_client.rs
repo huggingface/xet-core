@@ -176,7 +176,7 @@ pub async fn download_async(
         Some(updaters) => updaters.into_iter().map(Some).collect(),
     };
 
-    let session = FileDownloadSession::new(config, None).await?;
+    let session = FileDownloadSession::new(config, None, None).await?;
 
     let mut tasks = Vec::with_capacity(file_infos.len());
 
@@ -216,7 +216,7 @@ pub async fn clean_bytes(
     #[allow(clippy::unwrap_or_default)] // Ulid::default is Ulid::nil
     let tracking_id = tracking_id.unwrap_or_else(Ulid::new);
     let mut handle = processor
-        .start_clean(None, bytes.len() as u64, sha256_policy, tracking_id)
+        .start_clean(None, Some(bytes.len() as u64), sha256_policy, tracking_id)
         .await;
     handle.add_data(&bytes).await?;
     let (info, _chunk_hashes, metrics) = handle.finish().await?;
@@ -241,7 +241,7 @@ pub async fn clean_file(
     let mut buffer = vec![0u8; u64::min(filesize, *xet_config().data.ingestion_block_size) as usize];
 
     let mut handle = processor
-        .start_clean(Some(filename.as_ref().to_string_lossy().into()), filesize, sha256_policy, tracking_id)
+        .start_clean(Some(filename.as_ref().to_string_lossy().into()), Some(filesize), sha256_policy, tracking_id)
         .await;
 
     loop {

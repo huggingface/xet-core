@@ -5,6 +5,7 @@ use bytes::Bytes;
 use tokio::sync::{Mutex, OnceCell};
 use xet_client::cas_client::{Client, ProgressCallback};
 use xet_client::cas_types::ChunkRange;
+use xet_client::chunk_cache::ChunkCache;
 use xet_core_structures::merklehash::MerkleHash;
 use xet_runtime::utils::UniqueId;
 
@@ -77,11 +78,15 @@ impl XorbBlock {
     /// the data; concurrent callers wait on the same result without acquiring permits or
     /// duplicating work. If the download fails, the cell remains empty and a later caller
     /// can retry.
+    ///
+    /// If a `chunk_cache` is provided, it is checked before making an HTTP request
+    /// and populated after a successful download.
     pub async fn retrieve_data(
         self: Arc<Self>,
         client: Arc<dyn Client>,
         url_info: Arc<TermBlockRetrievalURLs>,
         progress_updater: Option<Arc<DownloadTaskUpdater>>,
+        _chunk_cache: Option<Arc<dyn ChunkCache>>,
     ) -> Result<Arc<XorbBlockData>> {
         let xorb_block_index = self.xorb_block_index;
         let uncompressed_size_if_known = self.uncompressed_size_if_known;
@@ -89,7 +94,9 @@ impl XorbBlock {
 
         self.data
             .get_or_try_init(|| async {
-                // Acquire a CAS download permit only when actually downloading.
+                let _permit = client.acquire_download_permit().await?;
+
+                // Cache miss - acquire a CAS download permit now that we actually need the network.
                 let permit = client.acquire_download_permit().await?;
 
                 let url_provider = XorbURLProvider {

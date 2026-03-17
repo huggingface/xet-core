@@ -56,7 +56,7 @@ impl DownloadGroup {
         let progress = Arc::new(GroupProgress::new());
         let config = create_translator_config(&session)?;
         let progress_updater = progress.clone() as Arc<dyn xet_data::progress_tracking::TrackingProgressUpdater>;
-        let download_session = FileDownloadSession::new(Arc::new(config), Some(progress_updater)).await?;
+        let download_session = FileDownloadSession::new(Arc::new(config), Some(progress_updater), None).await?;
 
         let inner = Arc::new(DownloadGroupInner {
             group_id,

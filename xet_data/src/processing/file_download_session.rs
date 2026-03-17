@@ -8,6 +8,7 @@ use tracing::instrument;
 use ulid::Ulid;
 use xet_client::cas_client::Client;
 use xet_client::cas_types::FileRange;
+use xet_client::chunk_cache::ChunkCache;
 use xet_runtime::core::xet_config;
 
 use super::configurations::TranslatorConfig;
@@ -28,12 +29,14 @@ pub struct FileDownloadSession {
     client: Arc<dyn Client>,
     progress_tracker: Option<Arc<DownloadProgressTracker>>,
     progress_aggregator: Option<Arc<AggregatingProgressUpdater>>,
+    chunk_cache: Option<Arc<dyn ChunkCache>>,
 }
 
 impl FileDownloadSession {
     pub async fn new(
         config: Arc<TranslatorConfig>,
         progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
+        chunk_cache: Option<Arc<dyn ChunkCache>>,
     ) -> Result<Arc<Self>> {
         let session_id = config
             .session
@@ -51,6 +54,7 @@ impl FileDownloadSession {
             client,
             progress_tracker,
             progress_aggregator,
+            chunk_cache,
         }))
     }
 
@@ -61,6 +65,7 @@ impl FileDownloadSession {
     pub fn from_client(
         client: Arc<dyn Client>,
         progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
+        chunk_cache: Option<Arc<dyn ChunkCache>>,
     ) -> Arc<Self> {
         let (progress_updater, progress_aggregator) = Self::maybe_wrap_in_aggregator(progress_updater);
         let progress_tracker = progress_updater.map(DownloadProgressTracker::new);
@@ -68,6 +73,7 @@ impl FileDownloadSession {
             client,
             progress_tracker,
             progress_aggregator,
+            chunk_cache,
         })
     }
 
@@ -149,6 +155,20 @@ impl FileDownloadSession {
         Ok(reconstructor.reconstruct_to_stream())
     }
 
+    /// Like [`download_stream`](Self::download_stream), but starts at the given byte offset
+    /// instead of the beginning of the file. Only fetches terms covering `offset..file_size`.
+    #[instrument(skip_all, name = "FileDownloadSession::download_stream_from_offset", fields(hash = file_info.hash(), offset))]
+    pub fn download_stream_from_offset(
+        &self,
+        file_info: &XetFileInfo,
+        offset: u64,
+        tracking_id: Ulid,
+    ) -> Result<DownloadStream> {
+        let range = FileRange::new(offset, file_info.file_size());
+        let reconstructor = self.setup_reconstructor(file_info, Some(range), tracking_id, None, None)?;
+        Ok(reconstructor.reconstruct_to_stream())
+    }
+
     fn tracker_name(&self, write_path: Option<&Path>) -> Arc<str> {
         write_path
             .map(|path| Arc::from(path.to_string_lossy().as_ref()))
@@ -213,6 +233,10 @@ impl FileDownloadSession {
             reconstructor = reconstructor.with_progress_updater(tracker);
         }
 
+        if let Some(ref cache) = self.chunk_cache {
+            reconstructor = reconstructor.with_chunk_cache(cache.clone());
+        }
+
         Ok(reconstructor)
     }
 }
@@ -244,7 +268,7 @@ mod tests {
             .unwrap();
 
         let mut cleaner = upload_session
-            .start_clean(Some("test".into()), data.len() as u64, Sha256Policy::Compute, Ulid::new())
+            .start_clean(Some("test".into()), Some(data.len() as u64), Sha256Policy::Compute, Ulid::new())
             .await;
         cleaner.add_data(data).await.unwrap();
         let (xfi, _chunk_hashes, _metrics) = cleaner.finish().await.unwrap();
@@ -265,7 +289,7 @@ mod tests {
                 let xfi = upload_data(&cas_path, original_data).await;
 
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+                let session = FileDownloadSession::new(config.into(), None, None).await.unwrap();
 
                 let out_path = temp.path().join("output.txt");
                 let n_bytes = session.download_file(&xfi, &out_path, Ulid::new()).await.unwrap();
@@ -289,7 +313,7 @@ mod tests {
                 let xfi = upload_data(&cas_path, original_data).await;
 
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+                let session = FileDownloadSession::new(config.into(), None, None).await.unwrap();
 
                 let out_path = temp.path().join("deep").join("nested").join("dir").join("output.txt");
                 assert!(!out_path.parent().unwrap().exists());
@@ -314,7 +338,7 @@ mod tests {
                 let xfi = upload_data(&cas_path, original_data).await;
 
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+                let session = FileDownloadSession::new(config.into(), None, None).await.unwrap();
 
                 let out_path = temp.path().join("partial_writer.txt");
                 write(&out_path, vec![0u8; original_data.len()]).unwrap();
@@ -343,7 +367,7 @@ mod tests {
 
                 let xfi = upload_data(&cas_path, original_data).await;
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+                let session = FileDownloadSession::new(config.into(), None, None).await.unwrap();
 
                 let out_path = temp.path().join("partitioned.txt");
                 write(&out_path, vec![0u8; original_data.len()]).unwrap();
@@ -395,7 +419,7 @@ mod tests {
                 let xfi_b = upload_data(&cas_path, data_b).await;
 
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+                let session = FileDownloadSession::new(config.into(), None, None).await.unwrap();
 
                 let out_a = temp.path().join("out_a.txt");
                 let out_b = temp.path().join("out_b.txt");
@@ -436,7 +460,7 @@ mod tests {
                 let xfi = upload_data(&cas_path, original_data).await;
 
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+                let session = FileDownloadSession::new(config.into(), None, None).await.unwrap();
 
                 let mut stream = session.download_stream(&xfi, Ulid::new()).unwrap();
 
@@ -463,7 +487,7 @@ mod tests {
                 let xfi = upload_data(&cas_path, original_data).await;
 
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+                let session = FileDownloadSession::new(config.into(), None, None).await.unwrap();
 
                 let stream = session.download_stream(&xfi, Ulid::new()).unwrap();
 
@@ -496,7 +520,7 @@ mod tests {
                 let xfi = upload_data(&cas_path, original_data).await;
 
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+                let session = FileDownloadSession::new(config.into(), None, None).await.unwrap();
 
                 let mut stream = session.download_stream(&xfi, Ulid::new()).unwrap();
 
@@ -526,7 +550,7 @@ mod tests {
                 let xfi_b = upload_data(&cas_path, data_b).await;
 
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+                let session = FileDownloadSession::new(config.into(), None, None).await.unwrap();
 
                 let mut stream_a = session.download_stream(&xfi_a, Ulid::new()).unwrap();
                 let mut stream_b = session.download_stream(&xfi_b, Ulid::new()).unwrap();
@@ -569,7 +593,7 @@ mod tests {
                 let xfi = upload_data(&cas_path, original_data).await;
 
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+                let session = FileDownloadSession::new(config.into(), None, None).await.unwrap();
 
                 // Create and drop a stream without ever reading from it.
                 let stream = session.download_stream(&xfi, Ulid::new()).unwrap();
@@ -597,7 +621,7 @@ mod tests {
                 let xfi = upload_data(&cas_path, original_data).await;
 
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+                let session = FileDownloadSession::new(config.into(), None, None).await.unwrap();
 
                 // Repeatedly create, start, optionally read, and drop streams.
                 for i in 0..5u32 {
@@ -630,7 +654,7 @@ mod tests {
                 let xfi = upload_data(&cas_path, original_data).await;
 
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+                let session = FileDownloadSession::new(config.into(), None, None).await.unwrap();
 
                 // Read one chunk via blocking next() in a spawn_blocking, then drop.
                 let stream = session.download_stream(&xfi, Ulid::new()).unwrap();
@@ -667,7 +691,7 @@ mod tests {
                 let xfi = upload_data(&cas_path, original_data).await;
 
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+                let session = FileDownloadSession::new(config.into(), None, None).await.unwrap();
 
                 let mut stream = session.download_stream(&xfi, Ulid::new()).unwrap();
                 stream.cancel();
@@ -690,7 +714,7 @@ mod tests {
                 let xfi = upload_data(&cas_path, original_data).await;
 
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+                let session = FileDownloadSession::new(config.into(), None, None).await.unwrap();
 
                 let mut stream = session.download_stream(&xfi, Ulid::new()).unwrap();
                 let _ = stream.next().await.unwrap();

@@ -248,7 +248,7 @@ pub async fn upload_ranges(
         let middle_end = effective_boundary_end.max(region.dirty_end).min(total_size);
         let middle_size = middle_end.saturating_sub(boundary_start);
 
-        let mut cleaner = session.start_clean(None, middle_size, Sha256Policy::Skip, Ulid::new()).await;
+        let mut cleaner = session.start_clean(None, Some(middle_size), Sha256Policy::Skip, Ulid::new()).await;
 
         // a) Boundary prefix: stable bytes before the dirty range.
         if region.dirty_start > boundary_start && boundary_end <= original_size {

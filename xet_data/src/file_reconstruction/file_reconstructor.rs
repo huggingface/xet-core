@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 use xet_client::cas_client::Client;
 use xet_client::cas_types::FileRange;
+use xet_client::chunk_cache::ChunkCache;
 use xet_core_structures::merklehash::MerkleHash;
 use xet_runtime::config::ReconstructionConfig;
 use xet_runtime::core::{XetRuntime, xet_config};
@@ -37,6 +38,13 @@ pub struct FileReconstructor {
     /// When cancelled, reconstruction stops at its next check point. Long waits
     /// (such as semaphore acquisition) use `tokio::select!` so they abort promptly.
     cancellation_token: CancellationToken,
+
+    /// Optional on-disk chunk cache for xorb data deduplication across files.
+    chunk_cache: Option<Arc<dyn ChunkCache>>,
+
+    /// Known file size used to bound the reconstruction range for full-file downloads.
+    /// Prevents speculative prefetch blocks from requesting ranges beyond EOF.
+    file_size: Option<u64>,
 }
 
 impl FileReconstructor {
@@ -49,6 +57,22 @@ impl FileReconstructor {
             config: Arc::new(xet_config().reconstruction.clone()),
             custom_buffer_semaphore: None,
             cancellation_token: CancellationToken::new(),
+            chunk_cache: None,
+            file_size: None,
+        }
+    }
+
+    pub fn with_file_size(self, file_size: u64) -> Self {
+        Self {
+            file_size: Some(file_size),
+            ..self
+        }
+    }
+
+    pub fn with_chunk_cache(self, cache: Arc<dyn ChunkCache>) -> Self {
+        Self {
+            chunk_cache: Some(cache),
+            ..self
         }
     }
 
@@ -190,15 +214,20 @@ impl FileReconstructor {
         let Self {
             client,
             byte_range,
+            file_size,
             config,
             custom_buffer_semaphore,
+            chunk_cache,
             ..
         } = self;
 
         run_state.check_run_state()?;
 
         let file_hash = *run_state.file_hash();
-        let requested_range = byte_range.unwrap_or_else(FileRange::full);
+        let requested_range = byte_range.unwrap_or_else(|| match file_size {
+            Some(s) => FileRange::new(0, s),
+            None => FileRange::full(),
+        });
 
         let mut term_manager = ReconstructionTermManager::new(
             config.clone(),
@@ -306,7 +335,7 @@ impl FileReconstructor {
                 };
 
                 let data_future = file_term
-                    .get_data_task(client.clone(), run_state.progress_updater().cloned())
+                    .get_data_task(client.clone(), run_state.progress_updater().cloned(), chunk_cache.clone())
                     .await?;
 
                 #[cfg(debug_assertions)]
