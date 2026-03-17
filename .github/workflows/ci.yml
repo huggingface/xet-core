@@ -64,10 +64,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: riscv64
       - name: Install Rust 1.89
         uses: dtolnay/rust-toolchain@1.89.0
         with:
