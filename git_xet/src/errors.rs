@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 use xet_client::ClientError;
-use xet_data::processing::errors::DataProcessingError;
+use xet_pkg::legacy::DataProcessingError;
 
 use crate::lfs_agent_protocol::GitLFSProtocolError;
 

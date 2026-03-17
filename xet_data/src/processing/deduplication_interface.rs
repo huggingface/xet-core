@@ -88,6 +88,6 @@ impl DeduplicationDataInterface for UploadSessionDataManager {
 
     /// Periodically registers xorb dependencies; used for progress tracking.
     async fn register_xorb_dependencies(&mut self, dependencies: &[FileXorbDependency]) {
-        self.session.register_xorb_dependencies(dependencies).await;
+        self.session.register_xorb_dependencies(dependencies);
     }
 }

@@ -1,12 +1,24 @@
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use ulid::Ulid;
+use async_trait::async_trait;
+use xet_data::progress_tracking::UniqueID;
+
+/// The trait that a progress updater that reports per-item progress completion.
+#[async_trait]
+pub trait TrackingProgressUpdater: Send + Sync {
+    /// Register a set of updates as a list of ProgressUpdate instances, which
+    /// contain the name and progress information.    
+    async fn register_updates(&self, updates: ProgressUpdate);
+
+    /// Flush any updates out, if needed
+    async fn flush(&self) {}
+}
 
 /// A class to make all the bookkeeping clear with progress updating.
 #[derive(Clone, Debug)]
 pub struct ItemProgressUpdate {
-    pub tracking_id: Ulid,
+    pub tracking_id: UniqueID,
     pub item_name: Arc<str>,
 
     // The total bytes in this item, independent from the total bytes of all items.

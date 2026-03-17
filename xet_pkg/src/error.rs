@@ -1,8 +1,8 @@
 use thiserror::Error;
-use ulid::Ulid;
 use xet_client::ClientError;
 use xet_core_structures::FormatError;
 use xet_data::DataError;
+use xet_data::progress_tracking::UniqueID;
 use xet_runtime::RuntimeError;
 
 /// Unified error type for the Xet public API.
@@ -28,7 +28,7 @@ pub enum XetError {
 
     /// A task ID that doesn't correspond to any queued file.
     #[error("Invalid task ID: {0}")]
-    InvalidTaskID(Ulid),
+    InvalidTaskID(UniqueID),
 
     // -- User-facing error categories ------------------------------------
     /// Token refresh or credential failures.
@@ -137,6 +137,7 @@ impl XetError {
             | DataError::DeprecatedError(_) => XetError::Configuration(de.to_string()),
             DataError::HashNotFound => XetError::NotFound(de.to_string()),
             DataError::HashStringParsingFailure(_) => XetError::DataIntegrity(de.to_string()),
+            DataError::InvalidOperation(_) => XetError::Configuration(de.to_string()),
             _ => XetError::Internal(de.to_string()),
         }
     }

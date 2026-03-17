@@ -6,7 +6,7 @@ use tracing::{info, warn};
 use xet_core_structures::merklehash::MerkleHash;
 
 use super::error::{FileReconstructionError, Result};
-use crate::progress_tracking::download_tracking::DownloadTaskUpdater;
+use crate::progress_tracking::ItemProgressUpdater;
 
 /// Internal error type for the reconstruction run loop. Separates cancellation
 /// (which maps to `Ok(0)`) from real errors (which propagate as `Err`).
@@ -34,7 +34,7 @@ pub(crate) struct RunState {
     stored_error: Mutex<Option<FileReconstructionError>>,
 
     file_hash: MerkleHash,
-    progress_updater: Option<Arc<DownloadTaskUpdater>>,
+    progress_updater: Option<Arc<ItemProgressUpdater>>,
 
     total_terms_processed: AtomicU64,
     total_bytes_scheduled: AtomicU64,
@@ -45,7 +45,7 @@ impl RunState {
     pub(crate) fn new(
         cancellation_token: CancellationToken,
         file_hash: MerkleHash,
-        progress_updater: Option<Arc<DownloadTaskUpdater>>,
+        progress_updater: Option<Arc<ItemProgressUpdater>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             cancellation_token,
@@ -119,7 +119,7 @@ impl RunState {
         &self.file_hash
     }
 
-    pub(crate) fn progress_updater(&self) -> Option<&Arc<DownloadTaskUpdater>> {
+    pub(crate) fn progress_updater(&self) -> Option<&Arc<ItemProgressUpdater>> {
         self.progress_updater.as_ref()
     }
 

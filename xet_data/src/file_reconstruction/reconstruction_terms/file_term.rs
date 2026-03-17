@@ -15,7 +15,7 @@ use super::super::data_writer::DataFuture;
 use super::super::error::Result;
 use super::retrieval_urls::TermBlockRetrievalURLs;
 use super::xorb_block::{XorbBlock, XorbBlockData, XorbReference};
-use crate::progress_tracking::download_tracking::DownloadTaskUpdater;
+use crate::progress_tracking::ItemProgressUpdater;
 /// A single term in a file reconstruction, representing a contiguous byte range
 /// in the output file that maps to a chunk range within a xorb block.
 #[derive(Clone)]
@@ -58,7 +58,7 @@ impl FileTerm {
     pub async fn get_data_task(
         &self,
         client: Arc<dyn Client>,
-        progress_updater: Option<Arc<DownloadTaskUpdater>>,
+        progress_updater: Option<Arc<ItemProgressUpdater>>,
     ) -> Result<DataFuture> {
         // Fast path: data already cached, no need to spawn a task.
         if let Some(xorb_block_data) = self.xorb_block.data.get() {

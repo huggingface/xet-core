@@ -8,8 +8,8 @@ use std::task::{Context, Waker};
 
 use http::HeaderMap;
 use tracing::info;
-use ulid::Ulid;
 use xet_client::cas_client::auth::TokenRefresher;
+use xet_data::progress_tracking::UniqueID;
 use xet_runtime::RuntimeError;
 use xet_runtime::config::XetConfig;
 use xet_runtime::core::XetRuntime;
@@ -60,12 +60,12 @@ pub struct XetSessionInner {
     pub(super) custom_headers: Option<Arc<HeaderMap>>,
 
     // Track active upload commits and download groups.
-    pub(super) active_upload_commits: Mutex<HashMap<Ulid, UploadCommit>>,
-    pub(super) active_download_groups: Mutex<HashMap<Ulid, DownloadGroup>>,
+    pub(super) active_upload_commits: Mutex<HashMap<UniqueID, UploadCommit>>,
+    pub(super) active_download_groups: Mutex<HashMap<UniqueID, DownloadGroup>>,
 
     // Session state
     state: Mutex<SessionState>,
-    pub(super) id: Ulid,
+    pub(super) id: UniqueID,
 }
 
 /// Probe whether a tokio runtime handle meets the requirements for External mode.
@@ -335,7 +335,7 @@ impl XetSession {
                 active_upload_commits: Mutex::new(HashMap::new()),
                 active_download_groups: Mutex::new(HashMap::new()),
                 state: Mutex::new(SessionState::Alive),
-                id: Ulid::new(),
+                id: UniqueID::new(),
             }),
         }
     }
@@ -518,12 +518,12 @@ impl XetSession {
         Ok(())
     }
 
-    pub(super) fn finish_upload_commit(&self, commit_id: Ulid) -> Result<(), SessionError> {
+    pub(super) fn finish_upload_commit(&self, commit_id: UniqueID) -> Result<(), SessionError> {
         self.active_upload_commits.lock()?.remove(&commit_id);
         Ok(())
     }
 
-    pub(super) fn finish_download_group(&self, group_id: Ulid) -> Result<(), SessionError> {
+    pub(super) fn finish_download_group(&self, group_id: UniqueID) -> Result<(), SessionError> {
         self.active_download_groups.lock()?.remove(&group_id);
         Ok(())
     }
@@ -646,7 +646,7 @@ mod tests {
     fn test_finish_upload_commit_with_unknown_id_is_noop() {
         let session = XetSessionBuilder::new().build().unwrap();
         let _c1 = session.new_upload_commit_blocking().unwrap();
-        let unknown_id = ulid::Ulid::new();
+        let unknown_id = UniqueID::new();
         assert!(session.finish_upload_commit(unknown_id).is_ok());
         assert_eq!(session.active_upload_commits.lock().unwrap().len(), 1);
     }

@@ -67,13 +67,12 @@ fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<()> {
     let commit_for_progress = commit.clone();
     std::thread::spawn(move || {
         loop {
-            if let Ok(snapshot) = commit_for_progress.get_progress() {
-                let p = snapshot.total();
+            if let Ok(report) = commit_for_progress.get_progress_blocking() {
                 let done = handles
                     .iter()
                     .filter(|h| matches!(h.status(), Ok(TaskStatus::Completed)))
                     .count();
-                println!("{}/{} files | {}/{} bytes", done, n_files, p.total_bytes_completed, p.total_bytes);
+                println!("{}/{} files | {}/{} bytes", done, n_files, report.total_bytes_completed, report.total_bytes);
             }
             std::thread::sleep(Duration::from_millis(100));
         }
@@ -112,7 +111,7 @@ fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: Option<
     let mut handles = Vec::with_capacity(n_files);
     for m in &metadata {
         let dest = output_dir.join(m.tracking_name.as_deref().unwrap_or("file"));
-        handles.push(group.download_file_to_path(
+        handles.push(group.download_file_to_path_blocking(
             XetFileInfo {
                 hash: m.hash.clone(),
                 file_size: m.file_size,
@@ -126,13 +125,12 @@ fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: Option<
     let group_for_progress = group.clone();
     std::thread::spawn(move || {
         loop {
-            if let Ok(snapshot) = group_for_progress.get_progress() {
-                let p = snapshot.total();
+            if let Ok(report) = group_for_progress.get_progress_blocking() {
                 let done = handles
                     .iter()
                     .filter(|h| matches!(h.status(), Ok(TaskStatus::Completed)))
                     .count();
-                println!("{}/{} files | {}/{} bytes", done, n_files, p.total_bytes_completed, p.total_bytes);
+                println!("{}/{} files | {}/{} bytes", done, n_files, report.total_bytes_completed, report.total_bytes);
             }
             std::thread::sleep(Duration::from_millis(100));
         }

@@ -4,9 +4,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use more_asserts::{assert_ge, assert_le};
 use tokio::sync::Mutex;
-use ulid::Ulid;
+use xet_data::progress_tracking::UniqueID;
 
-use super::{ProgressUpdate, TrackingProgressUpdater};
+use super::progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
 
 /// Internal structure to track and validate progress data for one item.
 #[derive(Debug)]
@@ -17,7 +17,7 @@ struct ItemProgressData {
 
 #[derive(Debug, Default)]
 pub struct ProgressUpdaterVerificationWrapperImpl {
-    items: HashMap<Ulid, (Arc<str>, ItemProgressData)>,
+    items: HashMap<UniqueID, (Arc<str>, ItemProgressData)>,
     total_transfer_bytes: u64,
     total_transfer_bytes_completed: u64,
     total_bytes: u64,
@@ -66,7 +66,6 @@ impl ProgressUpdaterVerificationWrapper {
 #[async_trait]
 impl TrackingProgressUpdater for ProgressUpdaterVerificationWrapper {
     async fn register_updates(&self, update: ProgressUpdate) {
-        // First, capture and validate
         let mut tr = self.tr.lock().await;
 
         for up in update.item_updates.iter() {
@@ -78,8 +77,6 @@ impl TrackingProgressUpdater for ProgressUpdaterVerificationWrapper {
                 },
             ));
 
-            // Record the total_count for this item, allowing it to grow monotonically
-            // (e.g. when the file size is not known upfront and is updated incrementally).
             if entry.1.total_count == 0 {
                 entry.1.total_count = up.total_bytes;
             } else {
@@ -94,8 +91,6 @@ impl TrackingProgressUpdater for ProgressUpdaterVerificationWrapper {
                 entry.1.total_count = up.total_bytes;
             }
 
-            // Check increments:
-            // 1) `completed_count` should never go down
             assert!(
                 up.bytes_completed >= entry.1.last_completed,
                 "Item '{}' completed_count went backwards: old={}, new={}",
@@ -104,7 +99,6 @@ impl TrackingProgressUpdater for ProgressUpdaterVerificationWrapper {
                 up.bytes_completed
             );
 
-            // 2) `completed_count` must not exceed `total_count`
             assert!(
                 up.bytes_completed <= up.total_bytes,
                 "Item '{}' completed_count {} exceeds total {}",
@@ -113,7 +107,6 @@ impl TrackingProgressUpdater for ProgressUpdaterVerificationWrapper {
                 up.total_bytes
             );
 
-            // 3) The increment must match the difference
             let expected_new = entry.1.last_completed + up.bytes_completion_increment;
             assert_eq!(
                 up.bytes_completed, expected_new,
@@ -121,7 +114,6 @@ impl TrackingProgressUpdater for ProgressUpdaterVerificationWrapper {
                 up.item_name, entry.1.last_completed, up.bytes_completion_increment, up.bytes_completed
             );
 
-            // Update item record
             entry.1.last_completed = up.bytes_completed;
         }
 
@@ -189,7 +181,6 @@ impl TrackingProgressUpdater for ProgressUpdaterVerificationWrapper {
             update.total_bytes_completed, tr.total_process_bytes_completed
         );
 
-        // Now forward them to the inner updater
         self.inner.register_updates(update).await;
     }
     async fn flush(&self) {
@@ -199,13 +190,9 @@ impl TrackingProgressUpdater for ProgressUpdaterVerificationWrapper {
 
 #[cfg(test)]
 mod tests {
-    use ulid::Ulid;
-
+    use super::super::progress_tracking::ItemProgressUpdate;
     use super::*;
-    use crate::progress_tracking::ItemProgressUpdate;
 
-    /// A trivial `TrackingProgressUpdater` for testing, which just stores all updates.
-    /// In real code, this could log to a file, update a UI, etc.
     #[derive(Debug, Default)]
     struct DummyLogger {
         pub all_updates: Mutex<Vec<ItemProgressUpdate>>,
@@ -221,16 +208,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_verification_wrapper() {
-        // Create an actual inner logger or progress sink
         let logger = Arc::new(DummyLogger::default());
-
-        // Wrap it with our verification wrapper
         let wrapper = ProgressUpdaterVerificationWrapper::new(logger.clone());
 
-        let file_a = (Ulid::new(), "fileA");
-        let file_b = (Ulid::new(), "fileB");
+        let file_a = (UniqueID::new(), "fileA");
+        let file_b = (UniqueID::new(), "fileB");
 
-        // Let's register some progress updates
         wrapper
             .register_updates(ProgressUpdate {
                 item_updates: vec![
@@ -261,7 +244,6 @@ mod tests {
             })
             .await;
 
-        // Shouldn't be complete yet. We'll do one more set of updates to finalize.
         wrapper
             .register_updates(ProgressUpdate {
                 item_updates: vec![
@@ -292,11 +274,9 @@ mod tests {
             })
             .await;
 
-        // Now all items should be fully complete
         wrapper.assert_complete().await;
 
-        // We can also inspect the inner logger's captured updates:
         let final_updates = logger.all_updates.lock().await;
-        assert_eq!(final_updates.len(), 4, "We sent 4 updates total");
+        assert_eq!(final_updates.len(), 4);
     }
 }

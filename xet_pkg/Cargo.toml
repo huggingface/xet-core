@@ -20,8 +20,8 @@ xet-data = { version = "1.4.0", path = "../xet_data" }
 
 async-trait = { workspace = true }
 http = { workspace = true }
-tokio = { workspace = true, features = ["net"] }
-ulid = { workspace = true }
+more-asserts = { workspace = true }
+tokio = { workspace = true, features = ["net", "time"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -32,8 +32,10 @@ python = ["xet-runtime/python"]
 [dev-dependencies]
 async-std = { workspace = true }
 futures = { workspace = true }
+more-asserts = { workspace = true }
 smol = { workspace = true }
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "rt", "time", "macros"] }
 serial_test = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive"] }

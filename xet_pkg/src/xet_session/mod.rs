@@ -24,7 +24,7 @@
 //! [`upload_bytes_blocking`](UploadCommit::upload_bytes_blocking), then call
 //! [`commit`](UploadCommit::commit) or
 //! [`commit_blocking`](UploadCommit::commit_blocking) to wait for all
-//! transfers to finish and receive a `HashMap<Ulid, `[`UploadResult`]`>`
+//! transfers to finish and receive a `HashMap<`[`UniqueID`]`, `[`UploadResult`]`>`
 //! keyed by task ID.
 //!
 //! `UploadResult` = `Arc<Result<`[`FileMetadata`]`, `[`SessionError`]`>>`.
@@ -35,10 +35,11 @@
 //!
 //! Create a [`DownloadGroup`] with [`XetSession::new_download_group`] (async)
 //! or [`XetSession::new_download_group_blocking`] (sync), queue files with
-//! [`download_file_to_path`](DownloadGroup::download_file_to_path), then call
-//! [`finish`](DownloadGroup::finish) (async) or
+//! [`download_file_to_path`](DownloadGroup::download_file_to_path) /
+//! [`download_file_to_path_blocking`](DownloadGroup::download_file_to_path_blocking),
+//! then call [`finish`](DownloadGroup::finish) (async) or
 //! [`finish_blocking`](DownloadGroup::finish_blocking) (sync) to wait for all
-//! transfers to complete and receive a `HashMap<Ulid, `[`DownloadResult`]`>`
+//! transfers to complete and receive a `HashMap<`[`UniqueID`]`, `[`DownloadResult`]`>`
 //! keyed by task ID.
 //!
 //! `DownloadResult` = `Arc<Result<`[`DownloadedFile`]`, `[`SessionError`]`>>`.
@@ -48,7 +49,7 @@
 //! ## Progress tracking
 //!
 //! Both [`UploadCommit`] and [`DownloadGroup`] expose `get_progress()`,
-//! which returns a [`ProgressSnapshot`] without acquiring a lock on the
+//! which returns a [`GroupProgressReport`] without acquiring a lock on the
 //! calling thread (useful for Python bindings that must release the GIL).
 //! Poll it from a background thread/task while the main thread/task blocks
 //! in `commit()` / `finish()`.
@@ -56,9 +57,9 @@
 //! ## Error handling
 //!
 //! All public methods return `Result<_, `[`SessionError`]`>`.
-//! [`commit`](UploadCommit::commit) returns `HashMap<Ulid, `[`UploadResult`]`>`
+//! [`commit`](UploadCommit::commit) returns `HashMap<`[`UniqueID`]`, `[`UploadResult`]`>`
 //! keyed by task ID, and [`finish`](DownloadGroup::finish) returns
-//! `HashMap<Ulid, `[`DownloadResult`]`>` keyed by task ID, so a single failed
+//! `HashMap<`[`UniqueID`]`, `[`DownloadResult`]`>` keyed by task ID, so a single failed
 //! file does not discard all others.
 //!
 //! # Quick start — sync API
@@ -87,7 +88,7 @@
 //!     file_size: m.file_size,
 //!     sha256: m.sha256.clone(),
 //! };
-//! let dl_handle = group.download_file_to_path(info, "out/file.bin".into())?;
+//! let dl_handle = group.download_file_to_path_blocking(info, "out/file.bin".into())?;
 //! let finish_results = group.finish_blocking()?;
 //! // DownloadResult = Arc<Result<DownloadedFile, SessionError>>
 //! let r = finish_results.get(&dl_handle.task_id).unwrap().as_ref().as_ref().unwrap();
@@ -124,7 +125,7 @@
 //!     file_size: m.file_size,
 //!     sha256: m.sha256.clone(),
 //! };
-//! let dl_handle = group.download_file_to_path(info, "out/file.bin".into())?;
+//! let dl_handle = group.download_file_to_path(info, "out/file.bin".into()).await?;
 //! let finish_results = group.finish().await?;
 //! // DownloadResult = Arc<Result<DownloadedFile, SessionError>>
 //! let r = finish_results.get(&dl_handle.task_id).unwrap().as_ref().as_ref().unwrap();
@@ -135,16 +136,15 @@
 mod common;
 mod download_group;
 mod errors;
-mod progress;
 mod session;
+mod tasks;
 mod upload_commit;
 
 pub use download_group::{DownloadGroup, DownloadResult, DownloadedFile};
 pub use errors::SessionError;
-pub use progress::{
-    DownloadTaskHandle, FileProgress, ProgressSnapshot, TaskHandle, TaskStatus, TotalProgressSnapshot, UploadTaskHandle,
-};
 pub use session::{XetSession, XetSessionBuilder};
+pub use tasks::{DownloadTaskHandle, TaskHandle, TaskStatus, UploadTaskHandle};
 pub use upload_commit::{FileMetadata, UploadCommit, UploadResult};
 pub use xet_data::processing::{Sha256Policy, XetFileInfo};
+pub use xet_data::progress_tracking::{GroupProgressReport, ItemProgressReport, UniqueID};
 pub use xet_runtime::config::XetConfig;
