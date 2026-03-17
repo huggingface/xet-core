@@ -143,8 +143,14 @@ impl FileDownloadSession {
     ///
     /// This path does not acquire the session-level file download semaphore.
     #[instrument(skip_all, name = "FileDownloadSession::download_stream", fields(hash = file_info.hash()))]
-    pub fn download_stream(&self, file_info: &XetFileInfo, tracking_id: Ulid) -> Result<DownloadStream> {
-        let reconstructor = self.setup_reconstructor(file_info, None, tracking_id, None, None)?;
+    pub fn download_stream(
+        &self,
+        file_info: &XetFileInfo,
+        source_range: Option<Range<u64>>,
+        tracking_id: Ulid,
+    ) -> Result<DownloadStream> {
+        let file_range = source_range.map(|r| FileRange::new(r.start, r.end));
+        let reconstructor = self.setup_reconstructor(file_info, file_range, tracking_id, None, None)?;
         Ok(reconstructor.reconstruct_to_stream())
     }
 
