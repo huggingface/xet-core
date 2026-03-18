@@ -71,6 +71,21 @@ impl FileDownloadSession {
         })
     }
 
+    /// Sets an optional on-disk chunk cache for cross-file xorb deduplication.
+    pub fn with_chunk_cache(
+        client: Arc<dyn Client>,
+        cache: Arc<dyn ChunkCache>,
+    ) -> Arc<Self> {
+        let progress = GroupProgress::new();
+        Arc::new(Self {
+            client,
+            chunk_cache: Some(cache),
+            progress,
+            active_stream_abort_callbacks: Mutex::new(Vec::new()),
+            finalized: AtomicBool::new(false),
+        })
+    }
+
     pub fn report(&self) -> crate::progress_tracking::GroupProgressReport {
         self.progress.report()
     }
