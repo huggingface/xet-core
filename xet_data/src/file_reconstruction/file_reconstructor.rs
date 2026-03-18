@@ -14,7 +14,7 @@ use xet_runtime::core::{XetRuntime, xet_config};
 use xet_runtime::utils::ClosureGuard;
 use xet_runtime::utils::adjustable_semaphore::AdjustableSemaphore;
 
-use super::data_writer::{DataWriter, DownloadStream, SequentialWriter};
+use super::data_writer::{DataWriter, DownloadStream, SequentialWriter, UnorderedDownloadStream};
 use super::error::{FileReconstructionError, Result};
 use super::reconstruction_terms::ReconstructionTermManager;
 use super::run_state::{RunError, RunState};
@@ -147,13 +147,39 @@ impl FileReconstructor {
     /// Reconstructs the file as a stream, returning a [`DownloadStream`] that
     /// yields data chunks as they become available.
     ///
-    /// The reconstruction task is **not** started immediately. It begins when
-    /// [`DownloadStream::start`] is called, or automatically on the first call
-    /// to [`DownloadStream::next`] / [`DownloadStream::blocking_next`].
+    /// The reconstruction task is spawned immediately but pauses on an
+    /// internal [`tokio::sync::Notify`] until [`DownloadStream::start`] is
+    /// called (or the first [`DownloadStream::next`] /
+    /// [`DownloadStream::blocking_next`]).
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside a tokio runtime context (the constructor
+    /// uses [`tokio::spawn`]).
     pub fn reconstruct_to_stream(self) -> DownloadStream {
         let run_state = RunState::new(self.cancellation_token.clone(), self.file_hash, self.progress_updater.clone());
 
         DownloadStream::new(self, run_state)
+    }
+
+    /// Reconstructs the file as an unordered stream, returning an
+    /// [`UnorderedDownloadStream`] that yields `(offset, Bytes)` chunks
+    /// in whatever order they complete.
+    ///
+    /// The reconstruction task is spawned immediately but pauses on an
+    /// internal [`tokio::sync::Notify`] until
+    /// [`UnorderedDownloadStream::start`] is called (or the first
+    /// [`UnorderedDownloadStream::next`] /
+    /// [`UnorderedDownloadStream::blocking_next`]).
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside a tokio runtime context (the constructor
+    /// uses [`tokio::spawn`]).
+    pub fn reconstruct_to_unordered_stream(self) -> UnorderedDownloadStream {
+        let run_state = RunState::new(self.cancellation_token.clone(), self.file_hash, self.progress_updater.clone());
+
+        UnorderedDownloadStream::new(self, run_state)
     }
 
     /// Runs the file reconstruction with error handling and cancellation support.

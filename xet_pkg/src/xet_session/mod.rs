@@ -6,7 +6,7 @@
 //! ```text
 //! XetSession          — holds runtime context and authentication credentials
 //!   ├── UploadCommit  — groups related uploads; finalised with commit()
-//!   └── DownloadGroup — groups related downloads; finalised with finish()
+//!   └── FileDownloadGroup — groups related file downloads; finalised with finish()
 //! ```
 //!
 //! Each [`XetSession`] holds its own runtime context and configuration, so
@@ -33,12 +33,12 @@
 //!
 //! ## Downloads
 //!
-//! Create a [`DownloadGroup`] with [`XetSession::new_download_group`] (async)
-//! or [`XetSession::new_download_group_blocking`] (sync), queue files with
-//! [`download_file_to_path`](DownloadGroup::download_file_to_path) /
-//! [`download_file_to_path_blocking`](DownloadGroup::download_file_to_path_blocking),
-//! then call [`finish`](DownloadGroup::finish) (async) or
-//! [`finish_blocking`](DownloadGroup::finish_blocking) (sync) to wait for all
+//! Create a [`FileDownloadGroup`] with [`XetSession::new_file_download_group`] (async)
+//! or [`XetSession::new_file_download_group_blocking`] (sync), queue files with
+//! [`download_file_to_path`](FileDownloadGroup::download_file_to_path) /
+//! [`download_file_to_path_blocking`](FileDownloadGroup::download_file_to_path_blocking),
+//! then call [`finish`](FileDownloadGroup::finish) (async) or
+//! [`finish_blocking`](FileDownloadGroup::finish_blocking) (sync) to wait for all
 //! transfers to complete and receive a `HashMap<`[`UniqueID`]`, `[`DownloadResult`]`>`
 //! keyed by task ID.
 //!
@@ -48,7 +48,7 @@
 //!
 //! ## Progress tracking
 //!
-//! Both [`UploadCommit`] and [`DownloadGroup`] expose `get_progress()`,
+//! Both [`UploadCommit`] and [`FileDownloadGroup`] expose `get_progress()`,
 //! which returns a [`GroupProgressReport`] without acquiring a lock on the
 //! calling thread (useful for Python bindings that must release the GIL).
 //! Poll it from a background thread/task while the main thread/task blocks
@@ -58,7 +58,7 @@
 //!
 //! All public methods return `Result<_, `[`SessionError`]`>`.
 //! [`commit`](UploadCommit::commit) returns `HashMap<`[`UniqueID`]`, `[`UploadResult`]`>`
-//! keyed by task ID, and [`finish`](DownloadGroup::finish) returns
+//! keyed by task ID, and [`finish`](FileDownloadGroup::finish) returns
 //! `HashMap<`[`UniqueID`]`, `[`DownloadResult`]`>` keyed by task ID, so a single failed
 //! file does not discard all others.
 //!
@@ -82,7 +82,7 @@
 //! let m = results.values().next().unwrap().as_ref().as_ref().unwrap();
 //!
 //! // 3. Download — use the _blocking factory and finish_blocking
-//! let group = session.new_download_group_blocking()?;
+//! let group = session.new_file_download_group_blocking()?;
 //! let info = XetFileInfo {
 //!     hash: m.hash.clone(),
 //!     file_size: m.file_size,
@@ -119,7 +119,7 @@
 //! let m = results.values().next().unwrap().as_ref().as_ref().unwrap();
 //!
 //! // 3. Download — use the async factory and async finish
-//! let group = session.new_download_group().await?;
+//! let group = session.new_file_download_group().await?;
 //! let info = XetFileInfo {
 //!     hash: m.hash.clone(),
 //!     file_size: m.file_size,
@@ -134,14 +134,16 @@
 //! ```
 
 mod common;
-mod download_group;
+mod download_streams;
 mod errors;
+mod file_download_group;
 mod session;
 mod tasks;
 mod upload_commit;
 
-pub use download_group::{DownloadGroup, DownloadResult, DownloadedFile};
+pub use download_streams::{XetDownloadStream, XetUnorderedDownloadStream};
 pub use errors::SessionError;
+pub use file_download_group::{DownloadResult, DownloadedFile, FileDownloadGroup};
 pub use session::{XetSession, XetSessionBuilder};
 pub use tasks::{DownloadTaskHandle, TaskHandle, TaskStatus, UploadTaskHandle};
 pub use upload_commit::{FileMetadata, UploadCommit, UploadResult};

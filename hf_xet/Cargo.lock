@@ -1236,6 +1236,7 @@ name = "hf-xet"
 version = "1.4.0"
 dependencies = [
  "async-trait",
+ "bytes",
  "http",
  "more-asserts",
  "serde",

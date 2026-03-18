@@ -15,7 +15,7 @@ use super::configurations::TranslatorConfig;
 use super::errors::*;
 use super::remote_client_interface::create_remote_client;
 use super::{XetFileInfo, prometheus_metrics};
-use crate::file_reconstruction::{DownloadStream, FileReconstructor};
+use crate::file_reconstruction::{DownloadStream, FileReconstructor, UnorderedDownloadStream};
 use crate::progress_tracking::{GroupProgress, ItemProgressUpdater, UniqueID};
 
 /// Manages the downloading of files from CAS storage.
@@ -140,21 +140,59 @@ impl FileDownloadSession {
         Ok((id, n_bytes))
     }
 
-    /// Creates a streaming download of a file.
+    /// Creates a streaming download of a file, optionally restricted to a
+    /// byte range.
     ///
     /// Returns a [`DownloadStream`] that yields data chunks as the file is
     /// reconstructed. Reconstruction starts lazily on first
     /// [`DownloadStream::next`] / [`DownloadStream::blocking_next`] call
     /// (or when `start()` is called explicitly).
     ///
+    /// If `source_range` is `Some`, only the specified byte range of the
+    /// file is reconstructed.
+    ///
     /// This path does not acquire the session-level file download semaphore.
     #[instrument(skip_all, name = "FileDownloadSession::download_stream", fields(hash = file_info.hash()))]
-    pub async fn download_stream(&self, file_info: &XetFileInfo) -> Result<(UniqueID, DownloadStream)> {
+    pub async fn download_stream(
+        &self,
+        file_info: &XetFileInfo,
+        source_range: Option<Range<u64>>,
+    ) -> Result<(UniqueID, DownloadStream)> {
         self.check_not_finalized()?;
         let id = UniqueID::new();
         let progress_updater = self.progress.new_item(id, "stream");
-        let reconstructor = self.setup_reconstructor(file_info, None, Some(progress_updater))?;
+        let range = source_range.map(|r| FileRange::new(r.start, r.end));
+        let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater))?;
         Ok((id, reconstructor.reconstruct_to_stream()))
+    }
+
+    /// Creates an unordered streaming download of a file, optionally
+    /// restricted to a byte range.
+    ///
+    /// Returns an [`UnorderedDownloadStream`] that yields `(offset, Bytes)`
+    /// chunks in whatever order they complete. The total expected size is
+    /// set from the range length (or `file_info.file_size()` when no range
+    /// is given).
+    ///
+    /// If `source_range` is `Some`, only the specified byte range of the
+    /// file is reconstructed.
+    ///
+    /// This path does not acquire the session-level file download semaphore.
+    #[instrument(skip_all, name = "FileDownloadSession::download_unordered_stream", fields(hash = file_info.hash()))]
+    pub async fn download_unordered_stream(
+        &self,
+        file_info: &XetFileInfo,
+        source_range: Option<Range<u64>>,
+    ) -> Result<(UniqueID, UnorderedDownloadStream)> {
+        self.check_not_finalized()?;
+        let id = UniqueID::new();
+        let progress_updater = self.progress.new_item(id, "unordered_stream");
+        let range = source_range.map(|r| FileRange::new(r.start, r.end));
+        let expected_bytes = range.as_ref().map_or(file_info.file_size(), |r| r.end - r.start);
+        let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater))?;
+        let mut stream = reconstructor.reconstruct_to_unordered_stream();
+        stream.set_total_bytes_expected(expected_bytes);
+        Ok((id, stream))
     }
 
     fn check_not_finalized(&self) -> Result<()> {
@@ -413,7 +451,7 @@ mod tests {
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into()).await.unwrap();
 
-                let (_id, mut stream) = session.download_stream(&xfi).await.unwrap();
+                let (_id, mut stream) = session.download_stream(&xfi, None).await.unwrap();
 
                 let mut collected = Vec::new();
                 while let Some(chunk) = stream.next().await.unwrap() {
@@ -440,7 +478,7 @@ mod tests {
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into()).await.unwrap();
 
-                let (_id, stream) = session.download_stream(&xfi).await.unwrap();
+                let (_id, stream) = session.download_stream(&xfi, None).await.unwrap();
 
                 let collected = tokio::task::spawn_blocking(move || {
                     let mut stream = stream;
@@ -473,7 +511,7 @@ mod tests {
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into()).await.unwrap();
 
-                let (_id, mut stream) = session.download_stream(&xfi).await.unwrap();
+                let (_id, mut stream) = session.download_stream(&xfi, None).await.unwrap();
 
                 while stream.next().await.unwrap().is_some() {}
 
@@ -502,8 +540,8 @@ mod tests {
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into()).await.unwrap();
 
-                let (_id_a, mut stream_a) = session.download_stream(&xfi_a).await.unwrap();
-                let (_id_b, mut stream_b) = session.download_stream(&xfi_b).await.unwrap();
+                let (_id_a, mut stream_a) = session.download_stream(&xfi_a, None).await.unwrap();
+                let (_id_b, mut stream_b) = session.download_stream(&xfi_b, None).await.unwrap();
 
                 let task_a = tokio::spawn(async move {
                     let mut buf = Vec::new();
@@ -545,7 +583,7 @@ mod tests {
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into()).await.unwrap();
 
-                let (_id, stream) = session.download_stream(&xfi).await.unwrap();
+                let (_id, stream) = session.download_stream(&xfi, None).await.unwrap();
                 drop(stream);
                 tokio::task::yield_now().await;
 
@@ -572,7 +610,7 @@ mod tests {
                 let session = FileDownloadSession::new(config.into()).await.unwrap();
 
                 for i in 0..5u32 {
-                    let (_id, mut stream) = session.download_stream(&xfi).await.unwrap();
+                    let (_id, mut stream) = session.download_stream(&xfi, None).await.unwrap();
                     if i % 3 == 0 {
                         let _ = stream.next().await;
                     }
@@ -602,7 +640,7 @@ mod tests {
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into()).await.unwrap();
 
-                let (_id, stream) = session.download_stream(&xfi).await.unwrap();
+                let (_id, stream) = session.download_stream(&xfi, None).await.unwrap();
 
                 tokio::task::spawn_blocking(move || {
                     let mut stream = stream;
@@ -635,7 +673,7 @@ mod tests {
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into()).await.unwrap();
 
-                let (_id, mut stream) = session.download_stream(&xfi).await.unwrap();
+                let (_id, mut stream) = session.download_stream(&xfi, None).await.unwrap();
                 stream.cancel();
                 assert!(stream.next().await.unwrap().is_none());
                 assert!(stream.next().await.unwrap().is_none());
@@ -658,7 +696,7 @@ mod tests {
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into()).await.unwrap();
 
-                let (_id, mut stream) = session.download_stream(&xfi).await.unwrap();
+                let (_id, mut stream) = session.download_stream(&xfi, None).await.unwrap();
                 let _ = stream.next().await.unwrap();
                 stream.cancel();
                 assert!(stream.next().await.unwrap().is_none());
