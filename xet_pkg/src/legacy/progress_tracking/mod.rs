@@ -1,7 +1,12 @@
+mod callback_bridge;
+mod progress_verification_wrapper;
+
 use std::fmt::Debug;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+pub use callback_bridge::{GroupProgressCallbackUpdater, ItemProgressCallbackUpdater, ProgressReporter};
+pub use progress_verification_wrapper::ProgressUpdaterVerificationWrapper;
 use xet_data::progress_tracking::UniqueID;
 
 /// The trait that a progress updater that reports per-item progress completion.

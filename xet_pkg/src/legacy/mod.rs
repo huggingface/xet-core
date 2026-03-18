@@ -1,7 +1,5 @@
-pub mod callback_bridge;
 pub mod data_client;
 pub mod progress_tracking;
-pub mod progress_verification_wrapper;
 
 // Re-exports from xet_data so external consumers (hf_xet, git_xet) don't need
 // a direct xet_data dependency.

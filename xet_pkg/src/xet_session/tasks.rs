@@ -24,6 +24,30 @@ pub enum TaskStatus {
     Cancelled,
 }
 
+impl TaskStatus {
+    pub(super) fn mark_running(status: &Arc<Mutex<TaskStatus>>) {
+        if let Ok(mut current) = status.lock()
+            && matches!(*current, TaskStatus::Queued)
+        {
+            *current = TaskStatus::Running;
+        }
+    }
+
+    pub(super) fn mark_terminal(status: &Arc<Mutex<TaskStatus>>, terminal_status: TaskStatus) {
+        if let Ok(mut current) = status.lock()
+            && !matches!(*current, TaskStatus::Cancelled)
+        {
+            *current = terminal_status;
+        }
+    }
+
+    pub(super) fn mark_cancelled(status: &Arc<Mutex<TaskStatus>>) {
+        if let Ok(mut current) = status.lock() {
+            *current = TaskStatus::Cancelled;
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct TaskHandle {
     pub(super) status: Option<Arc<Mutex<TaskStatus>>>,
