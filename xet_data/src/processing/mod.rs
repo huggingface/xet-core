@@ -25,7 +25,7 @@ pub use xet_core_structures::merklehash::ChunkHashList;
 pub use xet_file::XetFileInfo;
 
 pub use crate::deduplication::RawXorbData;
-pub use crate::file_reconstruction::DownloadStream;
+pub use crate::file_reconstruction::{DownloadStream, UnorderedDownloadStream};
 
 #[cfg(debug_assertions)]
 pub mod test_utils;

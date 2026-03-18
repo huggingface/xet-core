@@ -389,7 +389,7 @@ impl HydrateDehydrateTest {
             let out_filename = self.dest_dir.join(entry.file_name());
 
             let xf: XetFileInfo = serde_json::from_reader(File::open(entry.path()).unwrap()).unwrap();
-            let mut stream = session.download_stream(&xf, Ulid::new()).unwrap();
+            let mut stream = session.download_stream(&xf, None, Ulid::new()).unwrap();
 
             let mut file = File::create(&out_filename).unwrap();
             while let Some(chunk) = stream.next().await.unwrap() {

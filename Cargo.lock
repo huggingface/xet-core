@@ -1875,6 +1875,7 @@ dependencies = [
  "anyhow",
  "async-std",
  "async-trait",
+ "bytes",
  "clap",
  "futures",
  "http",

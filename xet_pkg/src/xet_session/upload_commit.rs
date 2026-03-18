@@ -342,7 +342,7 @@ pub struct UploadCommitInner {
 
     // tokio::sync::Mutex (not std) because registration methods hold this lock across
     // .await points (e.g. start_clean in start_upload_file) to serialise with commit.
-    // DownloadGroupInner uses std::sync::Mutex because its registration is synchronous.
+    // FileDownloadGroupInner uses std::sync::Mutex because its registration is synchronous.
     state: tokio::sync::Mutex<GroupState>,
 }
 

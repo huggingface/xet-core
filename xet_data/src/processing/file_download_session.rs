@@ -15,7 +15,7 @@ use super::configurations::TranslatorConfig;
 use super::errors::*;
 use super::remote_client_interface::create_remote_client;
 use super::{XetFileInfo, prometheus_metrics};
-use crate::file_reconstruction::{DownloadStream, FileReconstructor};
+use crate::file_reconstruction::{DownloadStream, FileReconstructor, UnorderedDownloadStream};
 use crate::progress_tracking::TrackingProgressUpdater;
 use crate::progress_tracking::aggregator::AggregatingProgressUpdater;
 use crate::progress_tracking::download_tracking::DownloadProgressTracker;
@@ -141,32 +141,55 @@ impl FileDownloadSession {
         Ok(n_bytes)
     }
 
-    /// Creates a streaming download of a file.
+    /// Creates a streaming download of a file, optionally restricted to a
+    /// byte range.
     ///
     /// Returns a [`DownloadStream`] that yields data chunks as the file is
     /// reconstructed. Reconstruction starts lazily on first
     /// [`DownloadStream::next`] / [`DownloadStream::blocking_next`] call
     /// (or when `start()` is called explicitly).
     ///
+    /// If `source_range` is `Some`, only the specified byte range of the
+    /// file is reconstructed.
+    ///
     /// This path does not acquire the session-level file download semaphore.
     #[instrument(skip_all, name = "FileDownloadSession::download_stream", fields(hash = file_info.hash()))]
-    pub fn download_stream(&self, file_info: &XetFileInfo, tracking_id: Ulid) -> Result<DownloadStream> {
-        let reconstructor = self.setup_reconstructor(file_info, None, tracking_id, None, None)?;
+    pub fn download_stream(
+        &self,
+        file_info: &XetFileInfo,
+        source_range: Option<Range<u64>>,
+        tracking_id: Ulid,
+    ) -> Result<DownloadStream> {
+        let range = source_range.map(|r| FileRange::new(r.start, r.end));
+        let reconstructor = self.setup_reconstructor(file_info, range, tracking_id, None, None)?;
         Ok(reconstructor.reconstruct_to_stream())
     }
 
-    /// Like [`download_stream`](Self::download_stream), but starts at the given byte offset
-    /// instead of the beginning of the file. Only fetches terms covering `offset..file_size`.
-    #[instrument(skip_all, name = "FileDownloadSession::download_stream_from_offset", fields(hash = file_info.hash(), offset))]
-    pub fn download_stream_from_offset(
+    /// Creates an unordered streaming download of a file, optionally
+    /// restricted to a byte range.
+    ///
+    /// Returns an [`UnorderedDownloadStream`] that yields `(offset, Bytes)`
+    /// chunks in whatever order they complete. The total expected size is
+    /// set from the range length (or `file_info.file_size()` when no range
+    /// is given).
+    ///
+    /// If `source_range` is `Some`, only the specified byte range of the
+    /// file is reconstructed.
+    ///
+    /// This path does not acquire the session-level file download semaphore.
+    #[instrument(skip_all, name = "FileDownloadSession::download_unordered_stream", fields(hash = file_info.hash()))]
+    pub fn download_unordered_stream(
         &self,
         file_info: &XetFileInfo,
-        offset: u64,
+        source_range: Option<Range<u64>>,
         tracking_id: Ulid,
-    ) -> Result<DownloadStream> {
-        let range = FileRange::new(offset, file_info.file_size());
-        let reconstructor = self.setup_reconstructor(file_info, Some(range), tracking_id, None, None)?;
-        Ok(reconstructor.reconstruct_to_stream())
+    ) -> Result<UnorderedDownloadStream> {
+        let range = source_range.map(|r| FileRange::new(r.start, r.end));
+        let expected_bytes = range.as_ref().map_or(file_info.file_size(), |r| r.end - r.start);
+        let reconstructor = self.setup_reconstructor(file_info, range, tracking_id, None, None)?;
+        let mut stream = reconstructor.reconstruct_to_unordered_stream();
+        stream.set_total_bytes_expected(expected_bytes);
+        Ok(stream)
     }
 
     fn tracker_name(&self, write_path: Option<&Path>) -> Arc<str> {
@@ -462,7 +485,7 @@ mod tests {
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None, None).await.unwrap();
 
-                let mut stream = session.download_stream(&xfi, Ulid::new()).unwrap();
+                let mut stream = session.download_stream(&xfi, None, Ulid::new()).unwrap();
 
                 let mut collected = Vec::new();
                 while let Some(chunk) = stream.next().await.unwrap() {
@@ -489,7 +512,7 @@ mod tests {
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None, None).await.unwrap();
 
-                let stream = session.download_stream(&xfi, Ulid::new()).unwrap();
+                let stream = session.download_stream(&xfi, None, Ulid::new()).unwrap();
 
                 let collected = tokio::task::spawn_blocking(move || {
                     let mut stream = stream;
@@ -522,7 +545,7 @@ mod tests {
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None, None).await.unwrap();
 
-                let mut stream = session.download_stream(&xfi, Ulid::new()).unwrap();
+                let mut stream = session.download_stream(&xfi, None, Ulid::new()).unwrap();
 
                 // Drain all data
                 while stream.next().await.unwrap().is_some() {}
@@ -552,8 +575,8 @@ mod tests {
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None, None).await.unwrap();
 
-                let mut stream_a = session.download_stream(&xfi_a, Ulid::new()).unwrap();
-                let mut stream_b = session.download_stream(&xfi_b, Ulid::new()).unwrap();
+                let mut stream_a = session.download_stream(&xfi_a, None, Ulid::new()).unwrap();
+                let mut stream_b = session.download_stream(&xfi_b, None, Ulid::new()).unwrap();
 
                 let task_a = tokio::spawn(async move {
                     let mut buf = Vec::new();
@@ -596,7 +619,7 @@ mod tests {
                 let session = FileDownloadSession::new(config.into(), None, None).await.unwrap();
 
                 // Create and drop a stream without ever reading from it.
-                let stream = session.download_stream(&xfi, Ulid::new()).unwrap();
+                let stream = session.download_stream(&xfi, None, Ulid::new()).unwrap();
                 drop(stream);
                 tokio::task::yield_now().await;
 
@@ -625,7 +648,7 @@ mod tests {
 
                 // Repeatedly create, start, optionally read, and drop streams.
                 for i in 0..5u32 {
-                    let mut stream = session.download_stream(&xfi, Ulid::new()).unwrap();
+                    let mut stream = session.download_stream(&xfi, None, Ulid::new()).unwrap();
                     if i % 3 == 0 {
                         let _ = stream.next().await;
                     }
@@ -657,7 +680,7 @@ mod tests {
                 let session = FileDownloadSession::new(config.into(), None, None).await.unwrap();
 
                 // Read one chunk via blocking next() in a spawn_blocking, then drop.
-                let stream = session.download_stream(&xfi, Ulid::new()).unwrap();
+                let stream = session.download_stream(&xfi, None, Ulid::new()).unwrap();
 
                 tokio::task::spawn_blocking(move || {
                     let mut stream = stream;
@@ -693,7 +716,7 @@ mod tests {
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None, None).await.unwrap();
 
-                let mut stream = session.download_stream(&xfi, Ulid::new()).unwrap();
+                let mut stream = session.download_stream(&xfi, None, Ulid::new()).unwrap();
                 stream.cancel();
                 assert!(stream.next().await.unwrap().is_none());
                 assert!(stream.next().await.unwrap().is_none());
@@ -716,7 +739,7 @@ mod tests {
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None, None).await.unwrap();
 
-                let mut stream = session.download_stream(&xfi, Ulid::new()).unwrap();
+                let mut stream = session.download_stream(&xfi, None, Ulid::new()).unwrap();
                 let _ = stream.next().await.unwrap();
                 stream.cancel();
                 assert!(stream.next().await.unwrap().is_none());

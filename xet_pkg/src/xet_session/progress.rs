@@ -10,7 +10,7 @@ use ulid::Ulid;
 use xet_data::progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
 
 use super::SessionError;
-use super::download_group::DownloadResult;
+use super::file_download_group::DownloadResult;
 use super::upload_commit::UploadResult;
 
 /// Lifecycle state of a single upload or download task.
