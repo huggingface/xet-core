@@ -5,7 +5,6 @@ use std::time::{Duration, SystemTime};
 use xet_client::cas_types::{ChunkRange, Key};
 use xet_client::chunk_cache::{CacheConfig, ChunkCache, DiskCache, RandomEntryIterator};
 use clap::{Args, Parser, Subcommand};
-use tempdir::TempDir;
 
 #[derive(Parser, Debug)]
 #[command(about)]
@@ -56,7 +55,7 @@ async fn main() {
 async fn parent_main(args: ParentArgs) {
     let binary = std::env::current_exe().unwrap();
     let binary_str = binary.to_str().unwrap();
-    let cache_root = TempDir::new("resilience").unwrap();
+    let cache_root = tempfile::Builder::new().prefix("resilience").tempdir().unwrap();
     let cache_root_path = cache_root.into_path();
     let cache_root_str = cache_root_path.to_str().unwrap();
     let capacity_str = format!("{}", args.capacity);
