@@ -132,7 +132,7 @@ impl UploadCommit {
     /// # use xet::XetError;
     /// # async fn example(commit: xet::xet_session::UploadCommit, filename: &str, filesize: u64) -> anyhow::Result<()> {
     /// # use xet::xet_session::Sha256Policy;
-    /// let (handle, mut cleaner) = commit.upload_file(Some(filename.into()), filesize, Sha256Policy::Compute).await?;
+    /// let (handle, mut cleaner) = commit.upload_file(Some(filename.into()), Some(filesize), Sha256Policy::Compute).await?;
     /// let mut reader = File::open(&filename)?;
     /// let mut buffer = vec![0u8; 65536];
     /// loop {
@@ -151,8 +151,8 @@ impl UploadCommit {
     ///
     /// - `file_name`: optional display name used for progress and telemetry reporting; does not affect the upload
     ///   itself.
-    /// - `file_size`: expected total size in bytes, used for progress tracking. Pass `0` when the size is not known in
-    ///   advance.
+    /// - `file_size`: expected total size in bytes, used for progress tracking. Pass `None` when the size is not known
+    ///   in advance.
     /// - `sha256`: controls SHA-256 handling during upload. Use [`Sha256Policy::Compute`] to compute it from the data,
     ///   [`Sha256Policy::Provided`] to supply a pre-computed digest, or [`Sha256Policy::Skip`] to omit it entirely.
     ///
@@ -164,7 +164,7 @@ impl UploadCommit {
     pub async fn upload_file(
         &self,
         file_name: Option<String>,
-        file_size: u64,
+        file_size: Option<u64>,
         sha256: Sha256Policy,
     ) -> Result<(TaskHandle, SingleFileCleaner), XetError> {
         self.session.check_alive()?;
@@ -323,7 +323,7 @@ impl UploadCommit {
     pub fn upload_file_blocking(
         &self,
         file_name: Option<String>,
-        file_size: u64,
+        file_size: Option<u64>,
         sha256: Sha256Policy,
     ) -> Result<(TaskHandle, SingleFileCleaner), XetError> {
         if matches!(self.session.runtime_mode, RuntimeMode::External) {
@@ -455,7 +455,7 @@ impl UploadCommitInner {
     pub(super) async fn start_upload_file(
         &self,
         tracking_name: Option<String>,
-        file_size: u64,
+        file_size: Option<u64>,
         sha256: Sha256Policy,
     ) -> Result<(TaskHandle, SingleFileCleaner), XetError> {
         let state = self.state.lock().await;
@@ -466,7 +466,7 @@ impl UploadCommitInner {
         };
 
         let tracking_name: Option<Arc<str>> = tracking_name.as_deref().map(Arc::from);
-        let (id, cleaner) = upload_session.start_clean(tracking_name, Some(file_size), sha256)?;
+        let (id, cleaner) = upload_session.start_clean(tracking_name, file_size, sha256)?;
 
         let task_handle = TaskHandle {
             status: None,
@@ -843,7 +843,7 @@ mod tests {
         let session = XetSessionBuilder::new().build_async().await.unwrap();
         let commit = session.new_upload_commit().await.unwrap();
         let (handle, _cleaner) = commit
-            .upload_file(Some("stream.bin".into()), 1024, Sha256Policy::Compute)
+            .upload_file(Some("stream.bin".into()), Some(1024), Sha256Policy::Compute)
             .await
             .unwrap();
         assert!(handle.status().is_err());
@@ -1097,7 +1097,7 @@ mod tests {
         let data = b"streamed upload bytes";
         let commit = session.new_upload_commit().await.unwrap();
         let (_handle, mut cleaner) = commit
-            .upload_file(Some("stream.bin".into()), data.len() as u64, Sha256Policy::Compute)
+            .upload_file(Some("stream.bin".into()), Some(data.len() as u64), Sha256Policy::Compute)
             .await
             .unwrap();
         cleaner.add_data(data).await.unwrap();
@@ -1297,7 +1297,7 @@ mod tests {
         let runtime = session.runtime.clone();
         let commit = session.new_upload_commit_blocking()?;
         let (_handle, mut cleaner) =
-            commit.upload_file_blocking(Some("stream.bin".into()), data.len() as u64, Sha256Policy::Compute)?;
+            commit.upload_file_blocking(Some("stream.bin".into()), Some(data.len() as u64), Sha256Policy::Compute)?;
         let (hash, file_size) = runtime.external_run_async_task(async move {
             cleaner.add_data(data).await.unwrap();
             let (xfi, _) = cleaner.finish().await.unwrap();
