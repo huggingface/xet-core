@@ -208,7 +208,7 @@ impl FileUploadSession {
     pub fn start_clean(
         self: &Arc<Self>,
         tracking_name: Option<Arc<str>>,
-        size: u64,
+        size: Option<u64>,
         sha256: Sha256Policy,
     ) -> Result<(UniqueID, SingleFileCleaner)> {
         self.check_not_finalized()?;
@@ -221,11 +221,11 @@ impl FileUploadSession {
         self: &Arc<Self>,
         id: UniqueID,
         tracking_name: Option<Arc<str>>,
-        size: u64,
+        size: Option<u64>,
         sha256: Sha256Policy,
     ) -> SingleFileCleaner {
         let updater = self.progress.new_item(id, tracking_name.clone().unwrap_or_default());
-        let file_id = self.completion_tracker.register_new_file(updater, Some(size));
+        let file_id = self.completion_tracker.register_new_file(updater, size);
         SingleFileCleaner::new(tracking_name, file_id, sha256, self.clone())
     }
 
@@ -240,7 +240,7 @@ impl FileUploadSession {
         self.check_not_finalized()?;
         let file_size = std::fs::metadata(&file_path)?.len();
         let tracking_name: Arc<str> = Arc::from(file_path.to_string_lossy().as_ref());
-        let (id, cleaner) = self.start_clean(Some(tracking_name), file_size, sha256)?;
+        let (id, cleaner) = self.start_clean(Some(tracking_name), Some(file_size), sha256)?;
 
         let rt = XetRuntime::current();
         let semaphore = rt.common().file_ingestion_semaphore.clone();
@@ -262,7 +262,7 @@ impl FileUploadSession {
         tracking_name: Option<Arc<str>>,
     ) -> Result<(UniqueID, JoinHandle<Result<XetFileInfo>>)> {
         self.check_not_finalized()?;
-        let (id, mut cleaner) = self.start_clean(tracking_name, bytes.len() as u64, sha256)?;
+        let (id, mut cleaner) = self.start_clean(tracking_name, Some(bytes.len() as u64), sha256)?;
 
         let rt = XetRuntime::current();
         let semaphore = rt.common().file_ingestion_semaphore.clone();
@@ -613,7 +613,7 @@ mod tests {
             .unwrap();
 
         let (_id, mut cleaner) = upload_session
-            .start_clean(Some("test".into()), read_data.len() as u64, Sha256Policy::Compute)
+            .start_clean(Some("test".into()), Some(read_data.len() as u64), Sha256Policy::Compute)
             .unwrap();
 
         // Read blocks from the source file and hand them to the cleaning handle
@@ -699,7 +699,7 @@ mod tests {
                     .unwrap();
 
                 let (_id, mut cleaner) = upload_session
-                    .start_clean(Some("test".into()), data.len() as u64, Sha256Policy::Skip)
+                    .start_clean(Some("test".into()), Some(data.len() as u64), Sha256Policy::Skip)
                     .unwrap();
                 cleaner.add_data(data).await.unwrap();
                 cleaner.finish().await.unwrap();
