@@ -139,12 +139,6 @@ impl UnorderedDownloadStream {
             return self.process_term(result);
         }
 
-        if self.progress.is_finished() && self.progress.terms_in_progress() == 0 {
-            self.finished = true;
-            self.run_state.check_error()?;
-            return Ok(None);
-        }
-
         match self.receiver.blocking_recv() {
             Some(result) => self.process_term(result),
             None => {
@@ -167,12 +161,6 @@ impl UnorderedDownloadStream {
 
         if let Ok(result) = self.receiver.try_recv() {
             return self.process_term(result);
-        }
-
-        if self.progress.is_finished() && self.progress.terms_in_progress() == 0 {
-            self.finished = true;
-            self.run_state.check_error()?;
-            return Ok(None);
         }
 
         let next_item = tokio::select! {

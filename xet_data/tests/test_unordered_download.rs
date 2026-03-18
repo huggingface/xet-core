@@ -312,4 +312,212 @@ mod tests {
         assert_eq!(sequential_result, unordered_result);
         assert_eq!(sequential_result, original_data);
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn stress_test_repeated_blocking_downloads() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+
+        let original_data: Vec<u8> = (0..65536u32).map(|i| (i % 251) as u8).collect();
+
+        let upload_session = FileUploadSession::new(config.clone()).await.unwrap();
+        let xfi = upload_bytes(&upload_session, "stress_blocking", &original_data).await;
+        upload_session.finalize().await.unwrap();
+
+        let download_session = FileDownloadSession::new(config.clone()).await.unwrap();
+
+        for _ in 0..30 {
+            let (_id, stream) = download_session.download_unordered_stream(&xfi, None).await.unwrap();
+            let expected_len = original_data.len();
+            let result = tokio::task::spawn_blocking(move || {
+                let mut stream = stream;
+                let mut chunks = Vec::new();
+                while let Some((offset, chunk)) = stream.blocking_next().unwrap() {
+                    chunks.push((offset, chunk));
+                }
+                reassemble(chunks, expected_len)
+            })
+            .await
+            .unwrap();
+            assert_eq!(result, original_data);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn stress_test_repeated_async_downloads() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+
+        let original_data: Vec<u8> = (0..65536u32).map(|i| (i % 251) as u8).collect();
+
+        let upload_session = FileUploadSession::new(config.clone()).await.unwrap();
+        let xfi = upload_bytes(&upload_session, "stress_async", &original_data).await;
+        upload_session.finalize().await.unwrap();
+
+        let download_session = FileDownloadSession::new(config.clone()).await.unwrap();
+
+        for _ in 0..30 {
+            let (_id, mut stream) = download_session.download_unordered_stream(&xfi, None).await.unwrap();
+            let mut chunks = Vec::new();
+            while let Some((offset, chunk)) = stream.next().await.unwrap() {
+                chunks.push((offset, chunk));
+            }
+            let result = reassemble(chunks, original_data.len());
+            assert_eq!(result, original_data);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn stress_test_concurrent_blocking_downloads() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+
+        let original_data: Vec<u8> = (0..65536u32).map(|i| (i % 251) as u8).collect();
+
+        let upload_session = FileUploadSession::new(config.clone()).await.unwrap();
+        let xfi = upload_bytes(&upload_session, "stress_concurrent", &original_data).await;
+        upload_session.finalize().await.unwrap();
+
+        let download_session = FileDownloadSession::new(config.clone()).await.unwrap();
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let (_id, stream) = download_session.download_unordered_stream(&xfi, None).await.unwrap();
+            let expected_len = original_data.len();
+            handles.push(tokio::task::spawn_blocking(move || {
+                let mut stream = stream;
+                let mut chunks = Vec::new();
+                while let Some((offset, chunk)) = stream.blocking_next().unwrap() {
+                    chunks.push((offset, chunk));
+                }
+                reassemble(chunks, expected_len)
+            }));
+        }
+
+        for handle in handles {
+            let result = handle.await.unwrap();
+            assert_eq!(result, original_data);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn stress_test_large_file_download() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+
+        let original_data: Vec<u8> = (0..262144u32)
+            .map(|i| ((i.wrapping_mul(7919) ^ (i >> 3)) % 256) as u8)
+            .collect();
+
+        let upload_session = FileUploadSession::new(config.clone()).await.unwrap();
+        let xfi = upload_bytes(&upload_session, "stress_large", &original_data).await;
+        upload_session.finalize().await.unwrap();
+
+        let download_session = FileDownloadSession::new(config.clone()).await.unwrap();
+
+        {
+            let (_id, mut stream) = download_session.download_unordered_stream(&xfi, None).await.unwrap();
+            let mut chunks = Vec::new();
+            while let Some((offset, chunk)) = stream.next().await.unwrap() {
+                chunks.push((offset, chunk));
+            }
+            assert_eq!(reassemble(chunks, original_data.len()), original_data);
+        }
+
+        {
+            let (_id, stream) = download_session.download_unordered_stream(&xfi, None).await.unwrap();
+            let expected_len = original_data.len();
+            let expected_data = original_data.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                let mut stream = stream;
+                let mut chunks = Vec::new();
+                while let Some((offset, chunk)) = stream.blocking_next().unwrap() {
+                    chunks.push((offset, chunk));
+                }
+                reassemble(chunks, expected_len)
+            })
+            .await
+            .unwrap();
+            assert_eq!(result, expected_data);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn stress_test_mixed_concurrent_async_and_blocking() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+
+        let original_data: Vec<u8> = (0..65536u32).map(|i| (i % 251) as u8).collect();
+
+        let upload_session = FileUploadSession::new(config.clone()).await.unwrap();
+        let xfi = upload_bytes(&upload_session, "stress_mixed", &original_data).await;
+        upload_session.finalize().await.unwrap();
+
+        let download_session = FileDownloadSession::new(config.clone()).await.unwrap();
+
+        let mut handles: Vec<tokio::task::JoinHandle<Vec<u8>>> = Vec::new();
+
+        for i in 0..8 {
+            if i % 2 == 0 {
+                let (_id, mut stream) = download_session.download_unordered_stream(&xfi, None).await.unwrap();
+                let expected_len = original_data.len();
+                handles.push(tokio::spawn(async move {
+                    let mut chunks = Vec::new();
+                    while let Some((offset, chunk)) = stream.next().await.unwrap() {
+                        chunks.push((offset, chunk));
+                    }
+                    reassemble(chunks, expected_len)
+                }));
+            } else {
+                let (_id, stream) = download_session.download_unordered_stream(&xfi, None).await.unwrap();
+                let expected_len = original_data.len();
+                handles.push(tokio::task::spawn_blocking(move || {
+                    let mut stream = stream;
+                    let mut chunks = Vec::new();
+                    while let Some((offset, chunk)) = stream.blocking_next().unwrap() {
+                        chunks.push((offset, chunk));
+                    }
+                    reassemble(chunks, expected_len)
+                }));
+            }
+        }
+
+        for handle in handles {
+            let result = handle.await.unwrap();
+            assert_eq!(result, original_data);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn stress_test_rapid_create_and_drop() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+
+        let original_data: Vec<u8> = (0..32768u32).map(|i| (i % 199) as u8).collect();
+
+        let upload_session = FileUploadSession::new(config.clone()).await.unwrap();
+        let xfi = upload_bytes(&upload_session, "stress_drop", &original_data).await;
+        upload_session.finalize().await.unwrap();
+
+        let download_session = FileDownloadSession::new(config.clone()).await.unwrap();
+
+        for _ in 0..20 {
+            let (_id, mut stream) = download_session.download_unordered_stream(&xfi, None).await.unwrap();
+            let _ = stream.next().await;
+            drop(stream);
+        }
+
+        let (_id, mut stream) = download_session.download_unordered_stream(&xfi, None).await.unwrap();
+        let mut chunks = Vec::new();
+        while let Some((offset, chunk)) = stream.next().await.unwrap() {
+            chunks.push((offset, chunk));
+        }
+        assert_eq!(reassemble(chunks, original_data.len()), original_data);
+    }
 }

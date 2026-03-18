@@ -214,34 +214,14 @@ mod tests {
     }
 
     /// Drains all results from the receiver, returning data sorted by offset.
-    /// Requires `finish()` to have been called on the writer before calling.
-    async fn drain_sorted(
-        rx: &mut UnboundedReceiver<Result<CompletedTerm>>,
-        progress: &UnorderedWriterProgress,
-    ) -> Result<Vec<(u64, Bytes)>> {
-        assert!(progress.is_finished(), "finish() must be called before drain_sorted");
+    /// The writer must have been dropped (after calling `finish()`) so that
+    /// the channel closes naturally when all spawned tasks complete.
+    async fn drain_sorted(rx: &mut UnboundedReceiver<Result<CompletedTerm>>) -> Result<Vec<(u64, Bytes)>> {
         let mut items = Vec::new();
-        loop {
-            match rx.try_recv() {
-                Ok(Ok(term)) => {
-                    items.push((term.byte_range.start, term.data));
-                    drop(term.permit);
-                },
-                Ok(Err(e)) => return Err(e),
-                Err(_) => {
-                    if progress.terms_in_progress() == 0 {
-                        break;
-                    }
-                    match rx.recv().await {
-                        Some(Ok(term)) => {
-                            items.push((term.byte_range.start, term.data));
-                            drop(term.permit);
-                        },
-                        Some(Err(e)) => return Err(e),
-                        None => break,
-                    }
-                },
-            }
+        while let Some(result) = rx.recv().await {
+            let term = result?;
+            items.push((term.byte_range.start, term.data));
+            drop(term.permit);
         }
         items.sort_by_key(|(offset, _)| *offset);
         Ok(items)
@@ -250,7 +230,7 @@ mod tests {
     #[tokio::test]
     async fn test_basic_unordered_writes() {
         let run_state = RunState::new_for_test();
-        let (writer, mut rx, progress) = UnorderedWriter::new_streaming(run_state);
+        let (writer, mut rx, _progress) = UnorderedWriter::new_streaming(run_state);
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
@@ -266,8 +246,9 @@ mod tests {
             .unwrap();
 
         writer.finish().await.unwrap();
+        drop(writer);
 
-        let items = drain_sorted(&mut rx, &progress).await.unwrap();
+        let items = drain_sorted(&mut rx).await.unwrap();
         let assembled: Vec<u8> = items.into_iter().flat_map(|(_, data)| data.to_vec()).collect();
         assert_eq!(&assembled, b"Hello World");
     }
@@ -275,7 +256,7 @@ mod tests {
     #[tokio::test]
     async fn test_delayed_futures_complete_out_of_order() {
         let run_state = RunState::new_for_test();
-        let (writer, mut rx, progress) = UnorderedWriter::new_streaming(run_state);
+        let (writer, mut rx, _progress) = UnorderedWriter::new_streaming(run_state);
 
         writer
             .set_next_term_data_source(
@@ -299,8 +280,9 @@ mod tests {
             .unwrap();
 
         writer.finish().await.unwrap();
+        drop(writer);
 
-        let items = drain_sorted(&mut rx, &progress).await.unwrap();
+        let items = drain_sorted(&mut rx).await.unwrap();
         let assembled: Vec<u8> = items.into_iter().flat_map(|(_, data)| data.to_vec()).collect();
         assert_eq!(&assembled, b"Hello World");
     }
@@ -368,7 +350,7 @@ mod tests {
     #[tokio::test]
     async fn test_semaphore_permit_released_after_consumption() {
         let run_state = RunState::new_for_test();
-        let (writer, mut rx, progress) = UnorderedWriter::new_streaming(run_state);
+        let (writer, mut rx, _progress) = UnorderedWriter::new_streaming(run_state);
         let semaphore = AdjustableSemaphore::new(2, (0, 2));
 
         let permit1 = semaphore.acquire().await.unwrap();
@@ -385,8 +367,9 @@ mod tests {
             .unwrap();
 
         writer.finish().await.unwrap();
+        drop(writer);
 
-        let items = drain_sorted(&mut rx, &progress).await.unwrap();
+        let items = drain_sorted(&mut rx).await.unwrap();
         drop(items);
 
         assert_eq!(semaphore.available_permits(), 2);
@@ -417,8 +400,9 @@ mod tests {
         assert_eq!(progress.bytes_completed(), 0);
 
         writer.finish().await.unwrap();
+        drop(writer);
 
-        let _items = drain_sorted(&mut rx, &progress).await.unwrap();
+        let _items = drain_sorted(&mut rx).await.unwrap();
 
         assert_eq!(progress.bytes_completed(), 11);
         assert_eq!(progress.bytes_in_progress(), 0);
@@ -442,7 +426,7 @@ mod tests {
     #[tokio::test]
     async fn test_finish_returns_accumulated_when_total_unknown() {
         let run_state = RunState::new_for_test();
-        let (writer, mut rx, progress) = UnorderedWriter::new_streaming(run_state);
+        let (writer, mut rx, _progress) = UnorderedWriter::new_streaming(run_state);
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
@@ -454,12 +438,10 @@ mod tests {
             .unwrap();
 
         let total = writer.finish().await.unwrap();
-        // finish() returns bytes_in_progress + bytes_completed when
-        // total_bytes_expected is 0. At finish time, both terms are still
-        // in progress (11 bytes total), so finish captures that.
+        drop(writer);
         assert_eq!(total, 11);
 
-        let _items = drain_sorted(&mut rx, &progress).await.unwrap();
+        let _items = drain_sorted(&mut rx).await.unwrap();
     }
 
     #[tokio::test]
@@ -482,5 +464,112 @@ mod tests {
             .set_next_term_data_source(FileRange::new(5, 10), None, immediate_future(Bytes::from("World")))
             .await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn stress_test_many_concurrent_terms() {
+        let run_state = RunState::new_for_test();
+        let (writer, mut rx, _progress) = UnorderedWriter::new_streaming(run_state);
+
+        let num_terms: usize = 100;
+        let mut expected: Vec<(u64, Vec<u8>)> = Vec::new();
+        let mut offset = 0u64;
+
+        for i in 0..num_terms {
+            let size = 100 + (i % 50) * 10;
+            let data: Vec<u8> = (0..size).map(|j| ((i * 7 + j * 13) % 256) as u8).collect();
+            let bytes = Bytes::from(data.clone());
+            expected.push((offset, data));
+
+            let delay = Duration::from_micros((i % 10) as u64 * 100);
+            writer
+                .set_next_term_data_source(
+                    FileRange::new(offset, offset + size as u64),
+                    None,
+                    delayed_future(bytes, delay),
+                )
+                .await
+                .unwrap();
+
+            offset += size as u64;
+        }
+
+        writer.finish().await.unwrap();
+        drop(writer);
+
+        let items = drain_sorted(&mut rx).await.unwrap();
+        assert_eq!(items.len(), num_terms);
+
+        for ((exp_offset, exp_data), (act_offset, act_data)) in expected.iter().zip(items.iter()) {
+            assert_eq!(*exp_offset, *act_offset);
+            assert_eq!(exp_data.as_slice(), act_data.as_ref());
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn stress_test_rapid_finish_after_writes() {
+        for _ in 0..50 {
+            let run_state = RunState::new_for_test();
+            let (writer, mut rx, _progress) = UnorderedWriter::new_streaming(run_state);
+
+            for i in 0..10u64 {
+                let data = Bytes::from(vec![i as u8; 100]);
+                writer
+                    .set_next_term_data_source(FileRange::new(i * 100, (i + 1) * 100), None, immediate_future(data))
+                    .await
+                    .unwrap();
+            }
+
+            writer.finish().await.unwrap();
+            drop(writer);
+
+            let items = drain_sorted(&mut rx).await.unwrap();
+            assert_eq!(items.len(), 10);
+
+            let total_bytes: usize = items.iter().map(|(_, data)| data.len()).sum();
+            assert_eq!(total_bytes, 1000);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn stress_test_mixed_immediate_and_delayed() {
+        for _ in 0..20 {
+            let run_state = RunState::new_for_test();
+            let (writer, mut rx, progress) = UnorderedWriter::new_streaming(run_state);
+
+            let mut offset = 0u64;
+            let mut total_size = 0u64;
+            let num_terms = 30usize;
+
+            for i in 0..num_terms {
+                let size = ((i + 1) * 50) as u64;
+                let data = Bytes::from(vec![(i % 256) as u8; size as usize]);
+                total_size += size;
+
+                let future = if i % 3 == 0 {
+                    delayed_future(data, Duration::from_millis((i % 5) as u64))
+                } else {
+                    immediate_future(data)
+                };
+
+                writer
+                    .set_next_term_data_source(FileRange::new(offset, offset + size), None, future)
+                    .await
+                    .unwrap();
+                offset += size;
+            }
+
+            progress.set_total_bytes_expected(total_size);
+            writer.finish().await.unwrap();
+            drop(writer);
+
+            let items = drain_sorted(&mut rx).await.unwrap();
+            assert_eq!(items.len(), num_terms);
+
+            let received_bytes: u64 = items.iter().map(|(_, data)| data.len() as u64).sum();
+            assert_eq!(received_bytes, total_size);
+            assert_eq!(progress.bytes_completed(), total_size);
+            assert_eq!(progress.terms_in_progress(), 0);
+        }
     }
 }
