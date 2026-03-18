@@ -18,8 +18,7 @@ use runtime::async_run;
 use token_refresh::WrappedTokenRefresher;
 use tracing::debug;
 use xet_pkg::legacy::progress_tracking::TrackingProgressUpdater;
-use xet_pkg::legacy::{DataProcessingError, Sha256Policy, XetFileInfo};
-use xet_pkg::legacy::data_client;
+use xet_pkg::legacy::{DataProcessingError, Sha256Policy, XetFileInfo, data_client};
 use xet_runtime::core::file_handle_limits;
 
 use crate::logging::init_logging;
