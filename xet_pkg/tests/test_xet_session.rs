@@ -1022,6 +1022,24 @@ async fn async_stream_aborted_session() {
     assert!(matches!(result, Err(SessionError::Aborted)));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn async_stream_abort_cancels_active_stream() {
+    let temp = tempdir().unwrap();
+    let session = async_session(&temp).await;
+    let data: Vec<u8> = (0..65536u64).map(|i| (i % 251) as u8).collect();
+    let file_info = upload_bytes_async(&session, &data, "abort_stream.bin").await;
+
+    let mut stream = session.download_stream(file_info, None).await.unwrap();
+    session.abort().unwrap();
+
+    let first = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(first.is_none());
+    assert!(stream.next().await.unwrap().is_none());
+}
+
 #[test]
 fn blocking_stream_roundtrip() {
     let temp = tempdir().unwrap();
@@ -1251,6 +1269,24 @@ async fn async_unordered_stream_aborted_session() {
         )
         .await;
     assert!(matches!(result, Err(SessionError::Aborted)));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn async_unordered_stream_abort_cancels_active_stream() {
+    let temp = tempdir().unwrap();
+    let session = async_session(&temp).await;
+    let data: Vec<u8> = (0..65536u64).map(|i| (i % 251) as u8).collect();
+    let file_info = upload_bytes_async(&session, &data, "abort_unordered_stream.bin").await;
+
+    let mut stream = session.download_unordered_stream(file_info, None).await.unwrap();
+    session.abort().unwrap();
+
+    let first = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(first.is_none());
+    assert!(stream.next().await.unwrap().is_none());
 }
 
 #[test]

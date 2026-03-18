@@ -667,6 +667,9 @@ impl XetSession {
         for (_id, task) in active_file_download_groups {
             task.abort()?;
         }
+        if let Some(streaming_download_session) = self.streaming_download_session.get() {
+            streaming_download_session.abort_active_streams();
+        }
         Ok(())
     }
 

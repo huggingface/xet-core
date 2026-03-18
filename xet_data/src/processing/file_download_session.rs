@@ -1,9 +1,10 @@
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::io::Write;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use tokio::task::JoinHandle;
 use tracing::instrument;
@@ -25,6 +26,7 @@ use crate::progress_tracking::{GroupProgress, ItemProgressUpdater, UniqueID};
 pub struct FileDownloadSession {
     client: Arc<dyn Client>,
     progress: Arc<GroupProgress>,
+    active_stream_abort_callbacks: Mutex<Vec<Box<dyn Fn() + Send + Sync>>>,
     finalized: AtomicBool,
 }
 
@@ -46,6 +48,7 @@ impl FileDownloadSession {
         Ok(Arc::new(Self {
             client,
             progress,
+            active_stream_abort_callbacks: Mutex::new(Vec::new()),
             finalized: AtomicBool::new(false),
         }))
     }
@@ -59,6 +62,7 @@ impl FileDownloadSession {
         Arc::new(Self {
             client,
             progress,
+            active_stream_abort_callbacks: Mutex::new(Vec::new()),
             finalized: AtomicBool::new(false),
         })
     }
@@ -71,8 +75,19 @@ impl FileDownloadSession {
         self.progress.item_report(id)
     }
 
-    pub fn item_reports(&self) -> std::collections::HashMap<UniqueID, crate::progress_tracking::ItemProgressReport> {
+    pub fn item_reports(&self) -> HashMap<UniqueID, crate::progress_tracking::ItemProgressReport> {
         self.progress.item_reports()
+    }
+
+    fn register_stream_abort_callback(&self, callback: Box<dyn Fn() + Send + Sync>) {
+        self.active_stream_abort_callbacks.lock().unwrap().push(callback);
+    }
+
+    pub fn abort_active_streams(&self) {
+        let callbacks = self.active_stream_abort_callbacks.lock().unwrap();
+        for callback in callbacks.iter() {
+            callback();
+        }
     }
 
     /// Spawns a download task that writes `file_info` to `write_path`.
@@ -163,7 +178,9 @@ impl FileDownloadSession {
         let progress_updater = self.progress.new_item(id, "stream");
         let range = source_range.map(|r| FileRange::new(r.start, r.end));
         let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater))?;
-        Ok((id, reconstructor.reconstruct_to_stream()))
+        let stream = reconstructor.reconstruct_to_stream();
+        self.register_stream_abort_callback(stream.abort_callback());
+        Ok((id, stream))
     }
 
     /// Creates an unordered streaming download of a file, optionally
@@ -192,6 +209,7 @@ impl FileDownloadSession {
         let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater))?;
         let mut stream = reconstructor.reconstruct_to_unordered_stream();
         stream.set_total_bytes_expected(expected_bytes);
+        self.register_stream_abort_callback(stream.abort_callback());
         Ok((id, stream))
     }
 

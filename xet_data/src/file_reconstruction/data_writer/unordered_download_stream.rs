@@ -73,6 +73,17 @@ impl UnorderedDownloadStream {
         }
     }
 
+    pub(crate) fn abort_callback(&self) -> Box<dyn Fn() + Send + Sync> {
+        let run_state = self.run_state.clone();
+        let start_signal = self.start_signal.clone();
+        Box::new(move || {
+            run_state.cancel();
+            if let Some(signal) = start_signal.as_ref() {
+                signal.notify_one();
+            }
+        })
+    }
+
     /// Unblocks the reconstruction task so it begins producing data.
     ///
     /// If already started, this is a no-op. Called automatically on the first
@@ -88,6 +99,13 @@ impl UnorderedDownloadStream {
     fn ensure_started(&mut self) {
         if self.start_signal.is_some() {
             self.start();
+        }
+    }
+
+    fn cancel_reconstruction(&self) {
+        self.run_state.cancel();
+        if let Some(signal) = self.start_signal.as_ref() {
+            signal.notify_one();
         }
     }
 
@@ -152,7 +170,12 @@ impl UnorderedDownloadStream {
             return Ok(None);
         }
 
-        match self.receiver.recv().await {
+        let next_item = tokio::select! {
+            recv = self.receiver.recv() => recv,
+            _ = self.run_state.cancelled() => None,
+        };
+
+        match next_item {
             Some(result) => self.process_term(result),
             None => {
                 self.finished = true;
@@ -178,10 +201,8 @@ impl UnorderedDownloadStream {
     /// [`blocking_next`](Self::blocking_next) / [`next`](Self::next) will
     /// return `Ok(None)`.
     pub fn cancel(&mut self) {
-        self.run_state.cancel();
-        if let Some(signal) = self.start_signal.take() {
-            signal.notify_one();
-        }
+        self.cancel_reconstruction();
+        let _ = self.start_signal.take();
         self.receiver.close();
         self.finished = true;
     }
@@ -218,10 +239,7 @@ impl UnorderedDownloadStream {
 
 impl Drop for UnorderedDownloadStream {
     fn drop(&mut self) {
-        self.run_state.cancel();
-        if let Some(ref signal) = self.start_signal {
-            signal.notify_one();
-        }
+        self.cancel_reconstruction();
         self.receiver.close();
     }
 }
