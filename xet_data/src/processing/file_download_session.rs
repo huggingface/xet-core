@@ -244,7 +244,7 @@ mod tests {
             .unwrap();
 
         let mut cleaner = upload_session
-            .start_clean(Some("test".into()), data.len() as u64, Sha256Policy::Compute, Ulid::new())
+            .start_clean(Some("test".into()), Some(data.len() as u64), Sha256Policy::Compute, Ulid::new())
             .await;
         cleaner.add_data(data).await.unwrap();
         let (xfi, _metrics) = cleaner.finish().await.unwrap();

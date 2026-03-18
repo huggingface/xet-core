@@ -18,7 +18,7 @@ mod tests {
 
     async fn upload_bytes(upload_session: &Arc<FileUploadSession>, name: &str, data: &[u8]) -> XetFileInfo {
         let mut cleaner = upload_session
-            .start_clean(Some(name.into()), data.len() as u64, Sha256Policy::Compute, Ulid::new())
+            .start_clean(Some(name.into()), Some(data.len() as u64), Sha256Policy::Compute, Ulid::new())
             .await;
         cleaner.add_data(data).await.unwrap();
         let (xfi, _metrics) = cleaner.finish().await.unwrap();
