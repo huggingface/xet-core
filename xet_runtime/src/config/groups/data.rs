@@ -51,12 +51,24 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_DATA_PROGRESS_UPDATE_INTERVAL` to set this value.
     ref progress_update_interval : Duration = Duration::from_millis(200);
 
-    /// How large of a time window to use for aggregating the progress speed results.
+    /// Half-life duration for the exponentially weighted moving average used
+    /// to estimate progress completion speed. Older rate observations are
+    /// exponentially decayed with this half-life.
     ///
     /// The default value is 10sec.
     ///
     /// Use the environment variable `HF_XET_DATA_PROGRESS_UPDATE_SPEED_SAMPLING_WINDOW` to set this value.
     ref progress_update_speed_sampling_window: Duration = Duration::from_secs(10);
+
+    /// Minimum number of speed observations before reporting a rate.
+    /// Until this many updates have been recorded, the completion rate
+    /// is reported as unknown (None). This avoids displaying noisy
+    /// initial estimates.
+    ///
+    /// The default value is 4.
+    ///
+    /// Use the environment variable `HF_XET_DATA_PROGRESS_UPDATE_SPEED_MIN_OBSERVATIONS` to set this value.
+    ref progress_update_speed_min_observations: u32 = 4;
 
     /// How often do we flush new xorb data to disk on a long running upload session?
     ///

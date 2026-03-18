@@ -9,7 +9,7 @@ use tokio::task::JoinHandle;
 use tracing::instrument;
 use xet_client::cas_client::Client;
 use xet_client::cas_types::FileRange;
-use xet_runtime::core::XetRuntime;
+use xet_runtime::core::{XetRuntime, xet_config};
 
 use super::configurations::TranslatorConfig;
 use super::errors::*;
@@ -38,7 +38,10 @@ impl FileDownloadSession {
             .unwrap_or_else(|| Cow::Owned(UniqueID::new().to_string()));
 
         let client = create_remote_client(&config, &session_id, false).await?;
-        let progress = GroupProgress::new();
+        let progress = GroupProgress::with_speed_config(
+            xet_config().data.progress_update_speed_sampling_window,
+            xet_config().data.progress_update_speed_min_observations,
+        );
 
         Ok(Arc::new(Self {
             client,
@@ -47,6 +50,10 @@ impl FileDownloadSession {
         }))
     }
 
+    /// Construct a download session from an existing CAS client.
+    ///
+    /// This path uses default progress speed settings. Use [`Self::new`] when the
+    /// session should inherit the configured speed parameters from `xet_config`.
     pub fn from_client(client: Arc<dyn Client>) -> Arc<Self> {
         let progress = GroupProgress::new();
         Arc::new(Self {

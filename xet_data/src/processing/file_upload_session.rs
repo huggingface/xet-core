@@ -75,7 +75,10 @@ impl FileUploadSession {
             .map(Cow::Borrowed)
             .unwrap_or_else(|| Cow::Owned(UniqueID::new().to_string()));
 
-        let progress = GroupProgress::new();
+        let progress = GroupProgress::with_speed_config(
+            xet_config().data.progress_update_speed_sampling_window,
+            xet_config().data.progress_update_speed_min_observations,
+        );
         let completion_tracker = Arc::new(CompletionTracker::new(progress.clone()));
 
         let client = create_remote_client(&config, &session_id, dry_run).await?;

@@ -1,11 +1,12 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::Duration;
 
 use more_asserts::debug_assert_le;
 
 use super::UniqueID;
+use super::speed_tracker::{DEFAULT_MIN_OBSERVATIONS_FOR_RATE, DEFAULT_SPEED_HALF_LIFE, SpeedTracker};
 use super::upload_tracking::CompletionTracker;
 
 /// Per-item atomic progress counters. Created by `GroupProgress::new_item()`.
@@ -62,12 +63,6 @@ impl std::fmt::Debug for ItemProgress {
     }
 }
 
-struct SpeedSample {
-    timestamp: Instant,
-    bytes_completed: u64,
-    transfer_bytes_completed: u64,
-}
-
 /// Aggregate progress across all items, with an item registry.
 /// Owns the atomic group-level counters and a map of per-item progress.
 pub struct GroupProgress {
@@ -76,18 +71,24 @@ pub struct GroupProgress {
     pub total_transfer_bytes: AtomicU64,
     pub total_transfer_bytes_completed: AtomicU64,
     items: Mutex<HashMap<UniqueID, Arc<ItemProgress>>>,
-    speed_window: Mutex<VecDeque<SpeedSample>>,
+    speed_tracker: Mutex<SpeedTracker>,
 }
 
 impl GroupProgress {
+    /// Create a group progress tracker using default speed estimation parameters.
     pub fn new() -> Arc<Self> {
+        Self::with_speed_config(DEFAULT_SPEED_HALF_LIFE, DEFAULT_MIN_OBSERVATIONS_FOR_RATE)
+    }
+
+    /// Create a group progress tracker with explicit speed estimation parameters.
+    pub fn with_speed_config(half_life: Duration, min_observations: u32) -> Arc<Self> {
         Arc::new(Self {
             total_bytes: AtomicU64::new(0),
             total_bytes_completed: AtomicU64::new(0),
             total_transfer_bytes: AtomicU64::new(0),
             total_transfer_bytes_completed: AtomicU64::new(0),
             items: Mutex::new(HashMap::new()),
-            speed_window: Mutex::new(VecDeque::new()),
+            speed_tracker: Mutex::new(SpeedTracker::new(half_life).with_min_observations(min_observations)),
         })
     }
 
@@ -109,6 +110,13 @@ impl GroupProgress {
 
     /// Snapshot of aggregate progress. Reads completions first (Acquire), then totals
     /// to reduce transient sampling skew.
+    ///
+    /// Speed is estimated via [`SpeedTracker`], which uses an exponentially-weighted
+    /// moving average to produce smoothed bytes-per-second rates.
+    ///
+    /// This call updates internal speed-estimation state, so repeated calls are
+    /// not strictly idempotent. Rate fields remain `None` until enough speed
+    /// observations have been collected.
     pub fn report(&self) -> GroupProgressReport {
         let total_bytes_completed = self.total_bytes_completed.load(Ordering::Acquire);
         let total_transfer_bytes_completed = self.total_transfer_bytes_completed.load(Ordering::Acquire);
@@ -118,39 +126,9 @@ impl GroupProgress {
         debug_assert_le!(total_bytes_completed, total_bytes);
         debug_assert_le!(total_transfer_bytes_completed, total_transfer_bytes);
 
-        let now = Instant::now();
-        let mut window = self.speed_window.lock().unwrap();
-
-        window.push_back(SpeedSample {
-            timestamp: now,
-            bytes_completed: total_bytes_completed,
-            transfer_bytes_completed: total_transfer_bytes_completed,
-        });
-
-        // Keep only samples from the last 10 seconds
-        while window.len() > 1 {
-            if let Some(front) = window.front() {
-                if now.duration_since(front.timestamp).as_secs_f64() > 10.0 {
-                    window.pop_front();
-                } else {
-                    break;
-                }
-            }
-        }
-
-        let (bytes_rate, transfer_rate) = if window.len() >= 2 {
-            let oldest = window.front().unwrap();
-            let elapsed = now.duration_since(oldest.timestamp).as_secs_f64();
-            if elapsed > 0.0 {
-                let br = (total_bytes_completed - oldest.bytes_completed) as f64 / elapsed;
-                let tr = (total_transfer_bytes_completed - oldest.transfer_bytes_completed) as f64 / elapsed;
-                (Some(br), Some(tr))
-            } else {
-                (None, None)
-            }
-        } else {
-            (None, None)
-        };
+        let mut tracker = self.speed_tracker.lock().unwrap();
+        tracker.update(total_bytes_completed, total_transfer_bytes_completed);
+        let (bytes_rate, transfer_rate) = tracker.rates();
 
         GroupProgressReport {
             total_bytes,
@@ -215,7 +193,9 @@ impl Default for GroupProgress {
             total_transfer_bytes: AtomicU64::new(0),
             total_transfer_bytes_completed: AtomicU64::new(0),
             items: Mutex::new(HashMap::new()),
-            speed_window: Mutex::new(VecDeque::new()),
+            speed_tracker: Mutex::new(
+                SpeedTracker::new(DEFAULT_SPEED_HALF_LIFE).with_min_observations(DEFAULT_MIN_OBSERVATIONS_FOR_RATE),
+            ),
         }
     }
 }
@@ -404,6 +384,8 @@ pub struct ItemProgressReport {
 
 #[cfg(test)]
 mod tests {
+    use tokio::time::{Duration, advance, pause};
+
     use super::*;
 
     #[test]
@@ -553,5 +535,48 @@ mod tests {
         updater.report_bytes_written(50);
 
         assert_eq!(updater.total_bytes_completed(), 50);
+    }
+
+    #[test]
+    fn test_report_transfer_progress_alias() {
+        let group = GroupProgress::new();
+        let updater = group.new_item(UniqueID::new(), "test.bin");
+        updater.update_item_size(100, true);
+        updater.update_transfer_size(90);
+        updater.report_transfer_progress(40);
+
+        assert_eq!(updater.item().transfer_bytes_completed.load(Ordering::Relaxed), 40);
+        assert_eq!(group.total_transfer_bytes_completed.load(Ordering::Relaxed), 40);
+    }
+
+    #[tokio::test]
+    async fn test_report_rates_none_until_min_observations_then_some() {
+        pause();
+
+        let group = GroupProgress::with_speed_config(Duration::from_secs(10), 3);
+        let updater = group.new_item(UniqueID::new(), "test.bin");
+        updater.update_item_size(10_000, true);
+        updater.update_transfer_size(10_000);
+
+        advance(Duration::from_millis(200)).await;
+        updater.report_bytes_completed(1_000);
+        updater.report_transfer_progress(800);
+        let report = group.report();
+        assert!(report.total_bytes_completion_rate.is_none());
+        assert!(report.total_transfer_bytes_completion_rate.is_none());
+
+        advance(Duration::from_millis(200)).await;
+        updater.report_bytes_completed(1_000);
+        updater.report_transfer_progress(800);
+        let report = group.report();
+        assert!(report.total_bytes_completion_rate.is_none());
+        assert!(report.total_transfer_bytes_completion_rate.is_none());
+
+        advance(Duration::from_millis(200)).await;
+        updater.report_bytes_completed(1_000);
+        updater.report_transfer_progress(800);
+        let report = group.report();
+        assert!(report.total_bytes_completion_rate.is_some());
+        assert!(report.total_transfer_bytes_completion_rate.is_some());
     }
 }

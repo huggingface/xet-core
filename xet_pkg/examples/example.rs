@@ -1,6 +1,6 @@
 //! Async session-based upload/download example.
 //!
-//! Mirror of `example.rs` using the async API (`UploadCommit` / `DownloadGroup`).
+//! Mirror of `example_sync.rs` using the async API (`UploadCommit` / `DownloadGroup`).
 //! Requires an async runtime — here provided by `#[tokio::main]`.
 
 use std::path::PathBuf;
