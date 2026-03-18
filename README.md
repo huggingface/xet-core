@@ -43,179 +43,33 @@ Please join us in making xet-core better. We value everyone's contributions. Cod
 
 ## Issues, Diagnostics & Debugging
 
-If you encounter an issue when using `hf-xet` please help us fix the issue by collecting diagnostic information and attaching that when creating a [new Issue](https://github.com/huggingface/xet-core/issues/new/choose). Download the [hf-xet-diag-linux.sh](hf-xet-diag-linux.sh), [hf-xet-diag-macos.sh](hf-xet-diag-macos.sh), or [hf-xet-diag-windows.sh](hf-xet-diag-windows.sh) script based on your operating system and then re-run the python command that resulted in the issue. The diagnostic scripts will download and install debug symbols, setup up logging, and take periodic stack traces throughout process execution in a diagnostics directory that is easy to analyze, package, and upload.
+If you encounter an issue with `hf-xet`, please collect diagnostic information
+and attach it when creating a [new Issue](https://github.com/huggingface/xet-core/issues/new/choose).
 
-### Diagnostics - Linux (`hf-xet-diag-linux.sh`)
+The [`scripts/diag/`](scripts/diag/) directory contains platform-specific scripts
+that download debug symbols, configure logging, and capture periodic stack traces
+and core dumps:
 
-* Uses `gdb` + `gcore` to periodically snapshot stacks and produce core dumps.
-* Supports optional ptrace preload helper for debugging.
-* Downloads and installs the appropriate `hf_xet-*.dbg` symbol file automatically.
-
-**Requirements:**
-
-```bash
-sudo apt-get install gdb build-essential
-```
-
-**Example usage:**
+| OS | Script |
+|----|--------|
+| Linux | [`scripts/diag/hf-xet-diag-linux.sh`](scripts/diag/hf-xet-diag-linux.sh) |
+| macOS | [`scripts/diag/hf-xet-diag-macos.sh`](scripts/diag/hf-xet-diag-macos.sh) |
+| Windows (Git-Bash) | [`scripts/diag/hf-xet-diag-windows.sh`](scripts/diag/hf-xet-diag-windows.sh) |
 
 ```bash
-./hf-xet-diag-linux.sh -- python hf-download.py "Qwen/Qwen2.5-VL-3B-Instruct"
+# prefix your failing command with the script for your OS, e.g.:
+./scripts/diag/hf-xet-diag-macos.sh -- python my-script.py
 ```
 
-### Windows (Git-Bash) (`hf-xet-diag-windows.sh`)
+See [**scripts/diag/README.md**](scripts/diag/README.md) for full usage, output layout, dump analysis instructions, and how to install debug symbols manually.
 
-* Runs in **Git-Bash**, keeping usage consistent with Linux.
-* Uses **Sysinternals ProcDump** for periodic mini dumps (`-mp`).
-* Auto-downloads `procdump.exe` if not found.
-* Downloads and installs the matching `hf_xet.pdb` debug symbol into the package directory.
-
-**Requirements:**
-
-* Git-Bash (from [Git for Windows](https://gitforwindows.org/))
-* Python installed
-* Internet access (first run downloads ProcDump and debug symbols)
-
-**Example usage:**
+Quick debugging environment variables:
 
 ```bash
-./hf-xet-diag-windows.sh -- python hf-download.py "Qwen/Qwen2.5-VL-3B-Instruct"
+RUST_BACKTRACE=full          # full Rust backtraces on panic
+RUST_LOG=info                # enable hf-xet logging
+HF_XET_LOG_FILE=/tmp/xet.log # write logs to a file (defaults to stdout)
 ```
-
-### Diagnostics - MacOS (`hf-xet-diag-macos.sh`)
-
-* Uses `sample` + `lldb` to periodically snapshot stacks and produce core dumps.
-* Downloads and installs the appropriate `hf_xet-*.dbg` symbol file automatically.
-
-**Requirements:**
-
-```bash
-sudo xcode-select --install
-```
-
-**Example usage:**
-
-```bash
-./hf-xet-diag-macos.sh -- python hf-download.py "Qwen/Qwen2.5-VL-3B-Instruct"
-```
-
----
-
-### Output Layout
-
-The diagnostic scripts produce a diagnostics directory named:
-
-```
-diag_<command>_<timestamp>/
-  ├── console.log   # Combined stdout/stderr of the process
-  ├── env.log       # System/environment info
-  ├── pid           # Child PID file
-  ├── stacks/       # Periodic stack traces / dumps
-  └── dumps/        # (Linux only) full gcore dumps
-```
-
-This unified layout makes it easier to compare diagnostics across platforms.
-
----
-
-### Analyzing Dumps
-
-Use the [hf-xet-diag-analyze-latest.sh](hf-xet-diag-analyze-latest.sh) script to automatically find and open the most recent dump in the appropriate debugger for your platform.
-
-**Usage:**
-
-```bash
-./hf-xet-diag-analyze-latest.sh
-```
-
-* Auto-detects your OS (Linux, macOS, or Windows)
-* Finds the most recent `diag_*` directory
-* Opens the latest dump in the platform-appropriate debugger:
-  * **Linux:** `gdb` with core dumps from `dumps/`
-  * **macOS:** `lldb` with `.core` files from `dumps/`
-  * **Windows (Git-Bash):** `windbg` with `.dmp` files from `stacks/`
-
-You can also specify a diagnostics directory:
-
-```bash
-./hf-xet-diag-analyze-latest.sh diag_python_hfxet_test_20250127120000
-```
-
-**Manual Analysis**
-
-If you prefer to analyze dumps manually:
-
-**Linux**
-* Stack traces: `stacks/*.txt` (plain text, captured periodically)
-* Core dumps: `dumps/core_*`
-* Analysis:
-  ```bash
-  gdb python dumps/core_<timestamp>.<pid>
-  (gdb) bt                    # backtrace of current thread
-  (gdb) thread apply all bt   # backtrace of all threads
-  (gdb) info threads          # list all threads
-  ```
-* Ensure debug symbols (`hf_xet-*.so.dbg`) are in the `hf_xet` package directory
-
-**macOS**
-* Stack traces: `stacks/*.txt` (from `sample` command)
-* Core dumps: `dumps/dump_<pid>_<timestamp>.core`
-* Analysis:
-  ```bash
-  lldb -c dumps/dump_<pid>_<timestamp>.core python3
-  (lldb) bt                    # backtrace of current thread
-  (lldb) thread backtrace all  # backtrace of all threads
-  (lldb) thread list           # list all threads
-  ```
-* Ensure debug symbols (`hf_xet-*.dylib.dSYM`) are in the `hf_xet` package directory
-
-**Windows**
-* Dumps: `stacks/dump_<timestamp>.dmp`
-* Install [WinDbg via Windows SDK](https://developer.microsoft.com/en-us/windows/downloads/windows-sdk/)
-* Analysis:
-  ```cmd
-  windbg -z stacks\dump_<timestamp>.dmp
-  ```
-* Common WinDbg commands:
-  ```
-  !analyze -v     # automatic analysis
-  ~* kb           # backtrace of all threads
-  ~               # list all threads
-  lm              # list loaded modules (verify hf_xet.pdb loaded)
-  ```
-* Ensure debug symbols (`hf_xet.pdb`) are in the `hf_xet` package directory
-
----
-
-⚠️ **Tip:** Share the full `diag_<command>_<timestamp>/` directory when reporting issues — it contains logs, environment info, and dumps needed to reproduce and diagnose problems.
-
-
-### Debugging
-
-To limit the size our our built binaries, we are releasing python wheels with binaries that are stripped of debugging symbols. If you encounter a panic while running hf-xet, you can use the debug symbols to help identify the part of the library that failed. 
-
-Here are the recommended steps:
-
-1. Download and unzip our [debug symbols package](https://github.com/huggingface/xet-core/releases/download/latest/dbg-symbols.zip).
-2. Determine the location of the hf-xet package using `pip show hf-xet`. The `Location` field will show the location of all the site packages. The `hf_xet` package will be within that directory.
-3. Determine the symbols to copy based on the system you are running:
-   * Windows: use `hf_xet.pdb`
-   * Mac: use `libhf_xet-macosx-x86_64.dylib.dSYM` for Intel based Macs and `libhf_xet-macosx-aarch64.dylib.dSYM` for Apple Silicon.
-   * Linux: the choice will depend on the architecture and wheel distribution used. To get this information, `cat` the `WHEEL` file name within the `hf_xet.dist-info` directory in your site packages. The wheel file will have the linux build and architecture in the file name. Eg: `cat /home/ubuntu/.venv/lib/python3.12/site-packages/hf_xet-*.dist-info/WHEEL`. You will use the file named `hf_xet-<manylinux | musllinux>-<x86_64 | arm64>.abi3.so.dbg` choosing the distribution and platform that matches your wheel. Eg: `hf_xet-manylinux-x86_64.abi3.so.dbg`.
-4. Copy the symbols to the site package path from step 2 above + `hf_xet`. Eg: `cp -r hf_xet-1.1.2-manylinux-x86_64.abi3.so.dbg /home/ubuntu/.venv/lib/python3.12/site-packages/hf_xet`
-5. Run your python binary with `RUST_BACKTRACE=full` and recreate your failure.
-
-#### Debugging Environment Variables
-
-To enable logging and see more debugging / diagnostics information, set the following:
-
-```
-RUST_BACKTRACE=full
-RUST_LOG=info
-HF_XET_LOG_FILE=/tmp/xet.log
-```
-
-Note: HF_XET_LOG_FILE expects a full writable path. If one isn't found it will use stdout console for logging.
 
 ## Local Development
 
