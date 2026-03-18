@@ -1,6 +1,6 @@
 //! Async session-based upload/download example.
 //!
-//! Mirror of `example.rs` using the async API (`UploadCommit` / `DownloadGroup`).
+//! Mirror of `example.rs` using the async API (`UploadCommit` / `FileDownloadGroup`).
 //! Requires an async runtime — here provided by `#[tokio::main]`.
 
 use std::path::PathBuf;
@@ -70,13 +70,12 @@ async fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<(
     let commit_for_progress = commit.clone();
     tokio::spawn(async move {
         loop {
-            if let Ok(snapshot) = commit_for_progress.get_progress() {
-                let p = snapshot.total();
+            if let Ok(report) = commit_for_progress.get_progress() {
                 let done = handles
                     .iter()
                     .filter(|h: &&UploadTaskHandle| matches!(h.status(), Ok(TaskStatus::Completed)))
                     .count();
-                println!("{}/{} files | {}/{} bytes", done, n_files, p.total_bytes_completed, p.total_bytes);
+                println!("{}/{} files | {}/{} bytes", done, n_files, report.total_bytes_completed, report.total_bytes);
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
@@ -108,34 +107,37 @@ async fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: O
         builder = builder.with_endpoint(ep);
     }
     let session = builder.build_async().await?;
-    let group = session.new_download_group().await?;
+    let group = session.new_file_download_group().await?;
 
     // Enqueue all downloads; each starts immediately in the background.
     let n_files = metadata.len();
     let mut handles: Vec<DownloadTaskHandle> = Vec::with_capacity(n_files);
     for m in &metadata {
         let dest = output_dir.join(m.tracking_name.as_deref().unwrap_or("file"));
-        handles.push(group.download_file_to_path(
-            XetFileInfo {
-                hash: m.hash.clone(),
-                file_size: m.file_size,
-                sha256: m.sha256.clone(),
-            },
-            dest,
-        )?);
+        handles.push(
+            group
+                .download_file_to_path(
+                    XetFileInfo {
+                        hash: m.hash.clone(),
+                        file_size: m.file_size,
+                        sha256: m.sha256.clone(),
+                    },
+                    dest,
+                )
+                .await?,
+        );
     }
 
     // Spawn a task to print progress while the main task awaits finish().
     let group_for_progress = group.clone();
     tokio::spawn(async move {
         loop {
-            if let Ok(snapshot) = group_for_progress.get_progress() {
-                let p = snapshot.total();
+            if let Ok(report) = group_for_progress.get_progress() {
                 let done = handles
                     .iter()
                     .filter(|h| matches!(h.status(), Ok(TaskStatus::Completed)))
                     .count();
-                println!("{}/{} files | {}/{} bytes", done, n_files, p.total_bytes_completed, p.total_bytes);
+                println!("{}/{} files | {}/{} bytes", done, n_files, report.total_bytes_completed, report.total_bytes);
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }

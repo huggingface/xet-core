@@ -90,9 +90,9 @@ pub async fn migrate_files_impl(
         XetRuntime::current().num_worker_threads()
     };
     let processor = if dry_run {
-        FileUploadSession::dry_run(config.into(), None).await?
+        FileUploadSession::dry_run(config.into()).await?
     } else {
-        FileUploadSession::new(config.into(), None).await?
+        FileUploadSession::new(config.into()).await?
     };
 
     let sha256_policies: Vec<Sha256Policy> = match sha256s {
@@ -108,7 +108,7 @@ pub async fn migrate_files_impl(
     let clean_futs = file_paths.into_iter().zip(sha256_policies).map(|(file_path, policy)| {
         let proc = processor.clone();
         async move {
-            let (pf, metrics) = clean_file(proc, file_path, policy, None).await?;
+            let (pf, metrics) = clean_file(proc, file_path, policy).await?;
             Ok::<(XetFileInfo, u64), DataProcessingError>((pf, metrics.new_bytes))
         }
         .instrument(info_span!("clean_file"))

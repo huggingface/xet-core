@@ -12,7 +12,7 @@ use xet_runtime::utils::UniqueId;
 
 use super::super::error::Result;
 use super::retrieval_urls::{TermBlockRetrievalURLs, XorbURLProvider};
-use crate::progress_tracking::download_tracking::DownloadTaskUpdater;
+use crate::progress_tracking::ItemProgressUpdater;
 
 /// Downloaded and decompressed data for a xorb block, including chunk boundary offsets.
 ///
@@ -96,7 +96,7 @@ impl XorbBlock {
         self: Arc<Self>,
         client: Arc<dyn Client>,
         url_info: Arc<TermBlockRetrievalURLs>,
-        progress_updater: Option<Arc<DownloadTaskUpdater>>,
+        progress_updater: Option<Arc<ItemProgressUpdater>>,
         chunk_cache: Option<Arc<dyn ChunkCache>>,
     ) -> Result<Arc<XorbBlockData>> {
         let xorb_block_index = self.xorb_block_index;

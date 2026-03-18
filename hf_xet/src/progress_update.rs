@@ -7,7 +7,7 @@ use pyo3::prelude::PyAnyMethods;
 use pyo3::types::{IntoPyDict, PyList, PyString};
 use pyo3::{IntoPyObjectExt, Py, PyAny, PyResult, Python, pyclass};
 use tracing::error;
-use xet_data::progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
+use xet_pkg::legacy::progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
 use xet_runtime::core::XetRuntime;
 use xet_runtime::error_printer::ErrorPrinter;
 
@@ -77,7 +77,7 @@ pub struct PyTotalProgressUpdate {
     #[pyo3(get)]
     pub total_bytes: u64,
 
-    /// How much total_bytes has changed from the last update..
+    /// How much total_bytes has changed from the last update.
     #[pyo3(get)]
     pub total_bytes_increment: u64,
 

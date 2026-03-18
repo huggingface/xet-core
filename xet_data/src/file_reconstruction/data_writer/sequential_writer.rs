@@ -14,7 +14,7 @@ use xet_runtime::utils::adjustable_semaphore::AdjustableSemaphorePermit;
 use super::super::data_writer::{DataFuture, DataWriter};
 use super::super::run_state::RunState;
 use super::super::{FileReconstructionError, Result};
-use crate::progress_tracking::download_tracking::DownloadTaskUpdater;
+use crate::progress_tracking::ItemProgressUpdater;
 
 // On macOS and Linux, writev(int fildes, const struct iovec *iov, int iovcnt) may return EINVAL if
 // - the sum of the iov_len values in the iov array overflows a 32-bit integer (macOS) or an ssize_t value (Linux);
@@ -46,7 +46,7 @@ type PendingWrite = (Bytes, Option<AdjustableSemaphorePermit>);
 struct SyncWriterThread {
     rx: UnboundedReceiver<SequentialRetrievalItem>,
     bytes_written: Arc<AtomicU64>,
-    progress_updater: Option<Arc<DownloadTaskUpdater>>,
+    progress_updater: Option<Arc<ItemProgressUpdater>>,
     pending: Option<SequentialRetrievalItem>,
     finished: bool,
 }
@@ -55,7 +55,7 @@ impl SyncWriterThread {
     fn new(
         rx: UnboundedReceiver<SequentialRetrievalItem>,
         bytes_written: Arc<AtomicU64>,
-        progress_updater: Option<Arc<DownloadTaskUpdater>>,
+        progress_updater: Option<Arc<ItemProgressUpdater>>,
     ) -> Self {
         Self {
             rx,

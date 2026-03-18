@@ -6,14 +6,12 @@ use std::sync::Arc;
 use itertools::multizip;
 use rand::prelude::*;
 use tempfile::TempDir;
-use ulid::Ulid;
 use xet_client::cas_client::{Client, LocalClient, LocalTestServer, LocalTestServerBuilder};
 
 use super::configurations::TranslatorConfig;
 use super::data_client::clean_file;
 use super::file_cleaner::Sha256Policy;
 use super::{FileDownloadSession, FileUploadSession, XetFileInfo};
-use crate::progress_tracking::TrackingProgressUpdater;
 
 /// Describes how hydration (download/smudge) should be performed during a test.
 ///
@@ -267,12 +265,9 @@ impl HydrateDehydrateTest {
         }
     }
 
-    pub async fn new_upload_session(
-        &self,
-        progress_tracker: Option<Arc<dyn TrackingProgressUpdater>>,
-    ) -> Arc<FileUploadSession> {
+    pub async fn new_upload_session(&self) -> Arc<FileUploadSession> {
         let config = Arc::new(TranslatorConfig::local_config(&self.cas_dir).unwrap());
-        FileUploadSession::new(config.clone(), progress_tracker).await.unwrap()
+        FileUploadSession::new(config.clone()).await.unwrap()
     }
 
     pub async fn clean_all_files(&self, upload_session: &Arc<FileUploadSession>, sequential: bool) {
@@ -285,7 +280,7 @@ impl HydrateDehydrateTest {
                 let upload_session = upload_session.clone();
 
                 if sequential {
-                    let (pf, metrics) = clean_file(upload_session.clone(), entry.path(), Sha256Policy::Compute, None)
+                    let (pf, metrics) = clean_file(upload_session.clone(), entry.path(), Sha256Policy::Compute)
                         .await
                         .unwrap();
                     assert_eq!({ metrics.total_bytes }, entry.metadata().unwrap().len());
@@ -301,13 +296,9 @@ impl HydrateDehydrateTest {
                 .map(|entry| self.src_dir.join(entry.unwrap().file_name()))
                 .collect();
 
-            let files_sha256_and_tracking_ids = multizip((
-                files.iter(),
-                std::iter::repeat_with(|| Sha256Policy::Compute),
-                std::iter::repeat_with(Ulid::new),
-            ));
+            let files_and_sha256 = multizip((files.iter(), std::iter::repeat_with(|| Sha256Policy::Compute)));
 
-            let clean_results = upload_session.upload_files(files_sha256_and_tracking_ids).await.unwrap();
+            let clean_results = upload_session.upload_files(files_and_sha256).await.unwrap();
 
             for (i, xf) in clean_results.into_iter().enumerate() {
                 std::fs::write(self.ptr_dir.join(files[i].file_name().unwrap()), serde_json::to_string(&xf).unwrap())
@@ -317,7 +308,7 @@ impl HydrateDehydrateTest {
     }
 
     pub async fn dehydrate(&mut self, sequential: bool) {
-        let upload_session = self.new_upload_session(None).await;
+        let upload_session = self.new_upload_session().await;
         self.clean_all_files(&upload_session, sequential).await;
 
         upload_session.finalize().await.unwrap();
@@ -325,20 +316,20 @@ impl HydrateDehydrateTest {
 
     pub async fn hydrate(&mut self) {
         let client = self.get_or_create_client().await;
-        let session = FileDownloadSession::from_client(client, None, None);
+        let session = FileDownloadSession::from_client(client);
 
         for entry in read_dir(&self.ptr_dir).unwrap() {
             let entry = entry.unwrap();
             let out_filename = self.dest_dir.join(entry.file_name());
 
             let xf: XetFileInfo = serde_json::from_reader(File::open(entry.path()).unwrap()).unwrap();
-            session.download_file(&xf, &out_filename, Ulid::new()).await.unwrap();
+            let (_id, _) = session.download_file(&xf, &out_filename).await.unwrap();
         }
     }
 
     pub async fn hydrate_partitioned_writers(&mut self, partitions: usize) {
         let client = self.get_or_create_client().await;
-        let session = FileDownloadSession::from_client(client, None, None);
+        let session = FileDownloadSession::from_client(client);
 
         for entry in read_dir(&self.ptr_dir).unwrap() {
             let entry = entry.unwrap();
@@ -370,7 +361,7 @@ impl HydrateDehydrateTest {
                 tasks.push(tokio::spawn(async move {
                     let mut writer = std::fs::OpenOptions::new().write(true).open(out_filename).unwrap();
                     writer.seek(SeekFrom::Start(start)).unwrap();
-                    session.download_to_writer(&xf, start..end, writer, Ulid::new()).await
+                    session.download_to_writer(&xf, start..end, writer).await
                 }));
             }
 
@@ -382,14 +373,14 @@ impl HydrateDehydrateTest {
 
     pub async fn hydrate_stream(&mut self) {
         let client = self.get_or_create_client().await;
-        let session = FileDownloadSession::from_client(client, None, None);
+        let session = FileDownloadSession::from_client(client);
 
         for entry in read_dir(&self.ptr_dir).unwrap() {
             let entry = entry.unwrap();
             let out_filename = self.dest_dir.join(entry.file_name());
 
             let xf: XetFileInfo = serde_json::from_reader(File::open(entry.path()).unwrap()).unwrap();
-            let mut stream = session.download_stream(&xf, Ulid::new()).unwrap();
+            let (_id, mut stream) = session.download_stream(&xf, None).await.unwrap();
 
             let mut file = File::create(&out_filename).unwrap();
             while let Some(chunk) = stream.next().await.unwrap() {

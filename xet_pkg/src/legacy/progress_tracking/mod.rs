@@ -1,12 +1,29 @@
+mod callback_bridge;
+mod progress_verification_wrapper;
+
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use ulid::Ulid;
+use async_trait::async_trait;
+pub use callback_bridge::{GroupProgressCallbackUpdater, ItemProgressCallbackUpdater, ProgressReporter};
+pub use progress_verification_wrapper::ProgressUpdaterVerificationWrapper;
+use xet_data::progress_tracking::UniqueID;
+
+/// The trait that a progress updater that reports per-item progress completion.
+#[async_trait]
+pub trait TrackingProgressUpdater: Send + Sync {
+    /// Register a set of updates as a list of ProgressUpdate instances, which
+    /// contain the name and progress information.
+    async fn register_updates(&self, updates: ProgressUpdate);
+
+    /// Flush any updates out, if needed
+    async fn flush(&self) {}
+}
 
 /// A class to make all the bookkeeping clear with progress updating.
 #[derive(Clone, Debug)]
 pub struct ItemProgressUpdate {
-    pub tracking_id: Ulid,
+    pub tracking_id: UniqueID,
     pub item_name: Arc<str>,
 
     // The total bytes in this item, independent from the total bytes of all items.
@@ -50,13 +67,13 @@ pub struct ProgressUpdate {
     /// The total bytes that have been processed.
     pub total_bytes_completed: u64,
 
-    /// How much this update adjusts the total bytes..
+    /// How much this update adjusts the total bytes.
     pub total_bytes_completion_increment: u64,
 
-    /// The rate at which the total bytes are being processed, if known.  
+    /// The rate at which the total bytes are being processed, if known.
     pub total_bytes_completion_rate: Option<f64>,
 
-    /// Total bytes known that need to be uploaded or downloaded.  
+    /// Total bytes known that need to be uploaded or downloaded.
     pub total_transfer_bytes: u64,
 
     /// The change in total transfer bytes known from the last update.
@@ -68,7 +85,7 @@ pub struct ProgressUpdate {
     /// How much this update adjusts the total transfer bytes.
     pub total_transfer_bytes_completion_increment: u64,
 
-    /// The total bytes that have been processed
+    /// The transfer-byte completion rate, if known.
     pub total_transfer_bytes_completion_rate: Option<f64>,
 }
 

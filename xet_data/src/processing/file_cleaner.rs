@@ -151,8 +151,7 @@ impl SingleFileCleaner {
         // how much data we know about.
         self.session
             .completion_tracker
-            .increment_file_size(self.file_id, data.len() as u64)
-            .await;
+            .increment_file_size(self.file_id, data.len() as u64);
 
         // Put the chunking on a compute thread so it doesn't tie up the async schedulers
         let chunk_data_jh = {

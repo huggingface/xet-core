@@ -15,11 +15,11 @@ use xet_runtime::core::{XetRuntime, xet_config};
 use xet_runtime::utils::ClosureGuard;
 use xet_runtime::utils::adjustable_semaphore::AdjustableSemaphore;
 
-use super::data_writer::{DataWriter, DownloadStream, SequentialWriter};
+use super::data_writer::{DataWriter, DownloadStream, SequentialWriter, UnorderedDownloadStream};
 use super::error::{FileReconstructionError, Result};
 use super::reconstruction_terms::ReconstructionTermManager;
 use super::run_state::{RunError, RunState};
-use crate::progress_tracking::download_tracking::DownloadTaskUpdater;
+use crate::progress_tracking::ItemProgressUpdater;
 
 /// Reconstructs a file from its content-addressed chunks by downloading xorb blocks
 /// and writing the reassembled data to an output. Supports byte range requests and
@@ -28,7 +28,7 @@ pub struct FileReconstructor {
     client: Arc<dyn Client>,
     file_hash: MerkleHash,
     byte_range: Option<FileRange>,
-    progress_updater: Option<Arc<DownloadTaskUpdater>>,
+    progress_updater: Option<Arc<ItemProgressUpdater>>,
     config: Arc<ReconstructionConfig>,
 
     /// Optional on-disk chunk cache for cross-file deduplication.
@@ -64,7 +64,7 @@ impl FileReconstructor {
         }
     }
 
-    pub fn with_progress_updater(self, progress_updater: Arc<DownloadTaskUpdater>) -> Self {
+    pub fn with_progress_updater(self, progress_updater: Arc<ItemProgressUpdater>) -> Self {
         Self {
             progress_updater: Some(progress_updater),
             ..self
@@ -159,13 +159,39 @@ impl FileReconstructor {
     /// Reconstructs the file as a stream, returning a [`DownloadStream`] that
     /// yields data chunks as they become available.
     ///
-    /// The reconstruction task is **not** started immediately. It begins when
-    /// [`DownloadStream::start`] is called, or automatically on the first call
-    /// to [`DownloadStream::next`] / [`DownloadStream::blocking_next`].
+    /// The reconstruction task is spawned immediately but pauses on an
+    /// internal [`tokio::sync::Notify`] until [`DownloadStream::start`] is
+    /// called (or the first [`DownloadStream::next`] /
+    /// [`DownloadStream::blocking_next`]).
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside a tokio runtime context (the constructor
+    /// uses [`tokio::spawn`]).
     pub fn reconstruct_to_stream(self) -> DownloadStream {
         let run_state = RunState::new(self.cancellation_token.clone(), self.file_hash, self.progress_updater.clone());
 
         DownloadStream::new(self, run_state)
+    }
+
+    /// Reconstructs the file as an unordered stream, returning an
+    /// [`UnorderedDownloadStream`] that yields `(offset, Bytes)` chunks
+    /// in whatever order they complete.
+    ///
+    /// The reconstruction task is spawned immediately but pauses on an
+    /// internal [`tokio::sync::Notify`] until
+    /// [`UnorderedDownloadStream::start`] is called (or the first
+    /// [`UnorderedDownloadStream::next`] /
+    /// [`UnorderedDownloadStream::blocking_next`]).
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside a tokio runtime context (the constructor
+    /// uses [`tokio::spawn`]).
+    pub fn reconstruct_to_unordered_stream(self) -> UnorderedDownloadStream {
+        let run_state = RunState::new(self.cancellation_token.clone(), self.file_hash, self.progress_updater.clone());
+
+        UnorderedDownloadStream::new(self, run_state)
     }
 
     /// Runs the file reconstruction with error handling and cancellation support.
@@ -368,12 +394,12 @@ impl FileReconstructor {
 }
 
 #[cfg(debug_assertions)]
-fn default_progress_updater() -> Option<Arc<DownloadTaskUpdater>> {
-    Some(DownloadTaskUpdater::correctness_verification_tracker())
+fn default_progress_updater() -> Option<Arc<ItemProgressUpdater>> {
+    Some(ItemProgressUpdater::new_standalone("test"))
 }
 
 #[cfg(not(debug_assertions))]
-fn default_progress_updater() -> Option<Arc<DownloadTaskUpdater>> {
+fn default_progress_updater() -> Option<Arc<ItemProgressUpdater>> {
     None
 }
 
@@ -385,14 +411,12 @@ mod tests {
     use std::time::Duration;
 
     use tokio_util::sync::CancellationToken;
-    use ulid::Ulid;
     use xet_client::cas_client::{ClientTestingUtils, DirectAccessClient, LocalClient, RandomFileContents};
     use xet_client::cas_types::FileRange;
     use xet_runtime::core::XetRuntime;
 
     use super::*;
-    use crate::progress_tracking::NoOpProgressUpdater;
-    use crate::progress_tracking::download_tracking::DownloadProgressTracker;
+    use crate::progress_tracking::ItemProgressUpdater;
 
     const TEST_CHUNK_SIZE: usize = 101;
 
@@ -654,8 +678,7 @@ mod tests {
         let buffer = Arc::new(std::sync::Mutex::new(Cursor::new(Vec::new())));
         let writer = StaticCursorWriter(buffer.clone());
 
-        let progress_updater =
-            DownloadProgressTracker::new(NoOpProgressUpdater::new()).new_download_task(Ulid::new(), Arc::from("file"));
+        let progress_updater = ItemProgressUpdater::new_standalone("file");
         let bytes_written = FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_contents.file_hash)
             .with_config(&config)
             .with_progress_updater(progress_updater.clone())
@@ -677,8 +700,7 @@ mod tests {
         let buffer = Arc::new(std::sync::Mutex::new(Cursor::new(Vec::new())));
         let writer = StaticCursorWriter(buffer.clone());
 
-        let progress_updater =
-            DownloadProgressTracker::new(NoOpProgressUpdater::new()).new_download_task(Ulid::new(), Arc::from("file"));
+        let progress_updater = ItemProgressUpdater::new_standalone("file");
         let bytes_written = FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_contents.file_hash)
             .with_config(&config)
             .with_byte_range(range)
@@ -698,8 +720,7 @@ mod tests {
         let (client, file_contents) = setup_test_file(&term_spec).await;
         let config = test_config();
 
-        let tracker = DownloadProgressTracker::new(NoOpProgressUpdater::new());
-        let task = tracker.new_download_task(Ulid::new(), Arc::from("test_file.bin"));
+        let task = ItemProgressUpdater::new_standalone("test_file.bin");
 
         let buffer = Arc::new(std::sync::Mutex::new(Cursor::new(Vec::new())));
         let writer = StaticCursorWriter(buffer.clone());
@@ -715,8 +736,6 @@ mod tests {
 
         task.assert_complete();
         assert_eq!(task.total_bytes_completed(), file_contents.data.len() as u64);
-
-        tracker.assert_complete();
     }
 
     /// Verifies the data_client.rs flow: file size is known upfront (is_final=true),
@@ -729,10 +748,8 @@ mod tests {
         let config = test_config();
         let file_size = file_contents.data.len() as u64;
 
-        let tracker = DownloadProgressTracker::new(NoOpProgressUpdater::new());
-        let task = tracker.new_download_task(Ulid::new(), Arc::from("test_file.bin"));
+        let task = ItemProgressUpdater::new_standalone("test_file.bin");
 
-        // Simulate data_client.rs: set final size before reconstruction.
         task.update_item_size(file_size, true);
 
         let buffer = Arc::new(std::sync::Mutex::new(Cursor::new(Vec::new())));
@@ -747,11 +764,9 @@ mod tests {
 
         assert_eq!(bytes_written, file_size);
 
-        // item_bytes should still be file_size (manager's update_item_size calls were ignored).
         assert_eq!(task.total_bytes_completed(), file_size);
 
         task.assert_complete();
-        tracker.assert_complete();
     }
 
     // ==================== Byte Range Reconstruction Tests ====================
