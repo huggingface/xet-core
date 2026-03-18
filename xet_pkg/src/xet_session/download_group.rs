@@ -226,28 +226,6 @@ impl DownloadGroupInner {
         }
     }
 
-    fn mark_running(status: &Arc<Mutex<TaskStatus>>) {
-        if let Ok(mut current) = status.lock()
-            && matches!(*current, TaskStatus::Queued)
-        {
-            *current = TaskStatus::Running;
-        }
-    }
-
-    fn mark_terminal(status: &Arc<Mutex<TaskStatus>>, terminal_status: TaskStatus) {
-        if let Ok(mut current) = status.lock()
-            && !matches!(*current, TaskStatus::Cancelled)
-        {
-            *current = terminal_status;
-        }
-    }
-
-    fn mark_cancelled(status: &Arc<Mutex<TaskStatus>>) {
-        if let Ok(mut current) = status.lock() {
-            *current = TaskStatus::Cancelled;
-        }
-    }
-
     async fn start_download_file_to_path(
         self: &Arc<Self>,
         file_info: XetFileInfo,
@@ -300,7 +278,7 @@ impl DownloadGroupInner {
             result,
         };
 
-        Self::mark_running(&handle.status);
+        TaskStatus::mark_running(&handle.status);
         self.active_tasks.write()?.insert(task_id, handle);
 
         Ok(task_handle)
@@ -326,7 +304,7 @@ impl DownloadGroupInner {
         for (task_id, handle) in active_tasks {
             match handle.join_handle.await {
                 Ok(Ok(n_bytes)) => {
-                    Self::mark_terminal(&handle.status, TaskStatus::Completed);
+                    TaskStatus::mark_terminal(&handle.status, TaskStatus::Completed);
                     let result = Arc::new(Ok(DownloadedFile {
                         dest_path: handle.dest_path,
                         file_info: XetFileInfo {
@@ -339,16 +317,16 @@ impl DownloadGroupInner {
                     let _ = handle.result.set(result);
                 },
                 Ok(Err(data_err)) => {
-                    Self::mark_terminal(&handle.status, TaskStatus::Failed);
+                    TaskStatus::mark_terminal(&handle.status, TaskStatus::Failed);
                     let result: DownloadResult = Arc::new(Err(data_err.into()));
                     results.insert(task_id, result.clone());
                     let _ = handle.result.set(result);
                 },
                 Err(e) => {
                     if e.is_cancelled() {
-                        Self::mark_cancelled(&handle.status);
+                        TaskStatus::mark_cancelled(&handle.status);
                     } else {
-                        Self::mark_terminal(&handle.status, TaskStatus::Failed);
+                        TaskStatus::mark_terminal(&handle.status, TaskStatus::Failed);
                     }
                     if join_err.is_none() {
                         join_err = Some(SessionError::from(e));
@@ -373,7 +351,7 @@ impl DownloadGroupInner {
         *self.state.lock()? = GroupState::Aborted;
         let active_tasks = std::mem::take(&mut *self.active_tasks.write()?);
         for (_tracking_id, inner_task_handle) in active_tasks {
-            Self::mark_cancelled(&inner_task_handle.status);
+            TaskStatus::mark_cancelled(&inner_task_handle.status);
             inner_task_handle.join_handle.abort();
         }
 

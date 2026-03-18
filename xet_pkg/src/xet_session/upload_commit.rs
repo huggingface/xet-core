@@ -367,28 +367,6 @@ impl UploadCommitInner {
         }
     }
 
-    fn mark_running(status: &Arc<Mutex<TaskStatus>>) {
-        if let Ok(mut current) = status.lock()
-            && matches!(*current, TaskStatus::Queued)
-        {
-            *current = TaskStatus::Running;
-        }
-    }
-
-    fn mark_terminal(status: &Arc<Mutex<TaskStatus>>, terminal_status: TaskStatus) {
-        if let Ok(mut current) = status.lock()
-            && !matches!(*current, TaskStatus::Cancelled)
-        {
-            *current = terminal_status;
-        }
-    }
-
-    fn mark_cancelled(status: &Arc<Mutex<TaskStatus>>) {
-        if let Ok(mut current) = status.lock() {
-            *current = TaskStatus::Cancelled;
-        }
-    }
-
     pub(super) async fn start_upload_file_from_path(
         &self,
         file_path: PathBuf,
@@ -423,7 +401,7 @@ impl UploadCommitInner {
             result,
         };
 
-        Self::mark_running(&handle.status);
+        TaskStatus::mark_running(&handle.status);
         self.active_tasks.write()?.insert(task_id, handle);
 
         Ok(task_handle)
@@ -495,7 +473,7 @@ impl UploadCommitInner {
             result,
         };
 
-        Self::mark_running(&handle.status);
+        TaskStatus::mark_running(&handle.status);
         self.active_tasks.write()?.insert(task_id, handle);
 
         Ok(task_handle)
@@ -523,7 +501,7 @@ impl UploadCommitInner {
         for (task_id, handle) in active_tasks {
             match handle.join_handle.await.map_err(SessionError::from) {
                 Ok(Ok(file_info)) => {
-                    Self::mark_terminal(&handle.status, TaskStatus::Completed);
+                    TaskStatus::mark_terminal(&handle.status, TaskStatus::Completed);
                     let result = Arc::new(Ok(FileMetadata {
                         tracking_name: handle.tracking_name,
                         hash: file_info.hash().to_string(),
@@ -534,16 +512,16 @@ impl UploadCommitInner {
                     let _ = handle.result.set(result);
                 },
                 Ok(Err(data_err)) => {
-                    Self::mark_terminal(&handle.status, TaskStatus::Failed);
+                    TaskStatus::mark_terminal(&handle.status, TaskStatus::Failed);
                     let result = Arc::new(Err(SessionError::from(data_err)));
                     results.insert(task_id, result.clone());
                     let _ = handle.result.set(result);
                 },
                 Err(e) => {
                     if matches!(e, SessionError::Cancelled(_)) {
-                        Self::mark_cancelled(&handle.status);
+                        TaskStatus::mark_cancelled(&handle.status);
                     } else {
-                        Self::mark_terminal(&handle.status, TaskStatus::Failed);
+                        TaskStatus::mark_terminal(&handle.status, TaskStatus::Failed);
                     }
                     if join_err.is_none() {
                         join_err = Some(e);
@@ -596,7 +574,7 @@ impl UploadCommitInner {
         self.upload_session.lock()?.take();
         let active_tasks = std::mem::take(&mut *self.active_tasks.write()?);
         for (_tracking_id, inner_task_handle) in active_tasks {
-            Self::mark_cancelled(&inner_task_handle.status);
+            TaskStatus::mark_cancelled(&inner_task_handle.status);
             inner_task_handle.join_handle.abort();
         }
 

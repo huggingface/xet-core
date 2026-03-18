@@ -127,14 +127,20 @@ impl ItemBridgeState {
         let bytes_increment = report.bytes_completed.saturating_sub(prev_completed);
         let total_increment = report.total_bytes.saturating_sub(prev_total);
 
-        let update = ProgressUpdate {
-            item_updates: vec![ItemProgressUpdate {
+        let item_updates = if bytes_increment > 0 || self.prev.is_none() {
+            vec![ItemProgressUpdate {
                 tracking_id: item_id,
                 item_name: Arc::from(report.item_name.as_str()),
                 total_bytes: report.total_bytes,
                 bytes_completed: report.bytes_completed,
                 bytes_completion_increment: bytes_increment,
-            }],
+            }]
+        } else {
+            Vec::new()
+        };
+
+        let update = ProgressUpdate {
+            item_updates,
             total_bytes: report.total_bytes,
             total_bytes_increment: total_increment,
             total_bytes_completed: report.bytes_completed,
@@ -313,5 +319,171 @@ impl ItemProgressCallbackUpdater {
         if let Some(v) = self.verifier {
             v.assert_complete().await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_group_report(
+        total_bytes: u64,
+        total_bytes_completed: u64,
+        total_transfer_bytes: u64,
+        total_transfer_bytes_completed: u64,
+    ) -> GroupProgressReport {
+        GroupProgressReport {
+            total_bytes,
+            total_bytes_completed,
+            total_bytes_completion_rate: None,
+            total_transfer_bytes,
+            total_transfer_bytes_completed,
+            total_transfer_bytes_completion_rate: None,
+        }
+    }
+
+    fn make_item_report(name: &str, total_bytes: u64, bytes_completed: u64) -> ItemProgressReport {
+        ItemProgressReport {
+            item_name: name.to_string(),
+            total_bytes,
+            bytes_completed,
+        }
+    }
+
+    #[test]
+    fn test_group_bridge_first_diff() {
+        let mut state = GroupBridgeState::new();
+        let id = UniqueID::new();
+
+        let group = make_group_report(1000, 200, 800, 100);
+        let items = HashMap::from([(id, make_item_report("a.bin", 1000, 200))]);
+
+        let update = state.compute_diff(group, items);
+
+        assert_eq!(update.total_bytes, 1000);
+        assert_eq!(update.total_bytes_increment, 1000);
+        assert_eq!(update.total_bytes_completed, 200);
+        assert_eq!(update.total_bytes_completion_increment, 200);
+        assert_eq!(update.total_transfer_bytes, 800);
+        assert_eq!(update.total_transfer_bytes_increment, 800);
+        assert_eq!(update.total_transfer_bytes_completed, 100);
+        assert_eq!(update.total_transfer_bytes_completion_increment, 100);
+        assert_eq!(update.item_updates.len(), 1);
+        assert_eq!(update.item_updates[0].total_bytes, 1000);
+        assert_eq!(update.item_updates[0].bytes_completed, 200);
+        assert_eq!(update.item_updates[0].bytes_completion_increment, 200);
+    }
+
+    #[test]
+    fn test_group_bridge_incremental_diff() {
+        let mut state = GroupBridgeState::new();
+        let id = UniqueID::new();
+
+        let group1 = make_group_report(1000, 200, 800, 100);
+        let items1 = HashMap::from([(id, make_item_report("a.bin", 1000, 200))]);
+        state.compute_diff(group1, items1);
+
+        let group2 = make_group_report(1000, 600, 800, 400);
+        let items2 = HashMap::from([(id, make_item_report("a.bin", 1000, 600))]);
+        let update = state.compute_diff(group2, items2);
+
+        assert_eq!(update.total_bytes_increment, 0);
+        assert_eq!(update.total_bytes_completion_increment, 400);
+        assert_eq!(update.total_transfer_bytes_increment, 0);
+        assert_eq!(update.total_transfer_bytes_completion_increment, 300);
+        assert_eq!(update.item_updates.len(), 1);
+        assert_eq!(update.item_updates[0].bytes_completion_increment, 400);
+    }
+
+    #[test]
+    fn test_group_bridge_no_change_is_empty() {
+        let mut state = GroupBridgeState::new();
+        let id = UniqueID::new();
+
+        let group = make_group_report(1000, 500, 800, 300);
+        let items = HashMap::from([(id, make_item_report("a.bin", 1000, 500))]);
+        state.compute_diff(group.clone(), items.clone());
+
+        let update = state.compute_diff(group, items);
+
+        assert!(update.is_empty());
+    }
+
+    #[test]
+    fn test_group_bridge_new_item_appears() {
+        let mut state = GroupBridgeState::new();
+        let id1 = UniqueID::new();
+        let id2 = UniqueID::new();
+
+        let group1 = make_group_report(100, 50, 0, 0);
+        let items1 = HashMap::from([(id1, make_item_report("a.bin", 100, 50))]);
+        state.compute_diff(group1, items1);
+
+        let group2 = make_group_report(300, 50, 0, 0);
+        let items2 = HashMap::from([
+            (id1, make_item_report("a.bin", 100, 50)),
+            (id2, make_item_report("b.bin", 200, 0)),
+        ]);
+        let update = state.compute_diff(group2, items2);
+
+        assert_eq!(update.total_bytes_increment, 200);
+        assert_eq!(update.item_updates.len(), 1);
+        assert_eq!(update.item_updates[0].tracking_id, id2);
+        assert_eq!(update.item_updates[0].bytes_completion_increment, 0);
+    }
+
+    #[test]
+    fn test_item_bridge_first_diff() {
+        let mut state = ItemBridgeState::new();
+        let id = UniqueID::new();
+        let report = make_item_report("file.bin", 500, 100);
+
+        let update = state.compute_diff(id, report);
+
+        assert_eq!(update.total_bytes, 500);
+        assert_eq!(update.total_bytes_increment, 500);
+        assert_eq!(update.total_bytes_completed, 100);
+        assert_eq!(update.total_bytes_completion_increment, 100);
+        assert_eq!(update.item_updates.len(), 1);
+        assert_eq!(update.item_updates[0].bytes_completion_increment, 100);
+    }
+
+    #[test]
+    fn test_item_bridge_incremental_diff() {
+        let mut state = ItemBridgeState::new();
+        let id = UniqueID::new();
+
+        state.compute_diff(id, make_item_report("file.bin", 500, 100));
+
+        let update = state.compute_diff(id, make_item_report("file.bin", 500, 350));
+
+        assert_eq!(update.total_bytes_increment, 0);
+        assert_eq!(update.total_bytes_completion_increment, 250);
+        assert_eq!(update.item_updates[0].bytes_completion_increment, 250);
+    }
+
+    #[test]
+    fn test_item_bridge_no_change_is_empty() {
+        let mut state = ItemBridgeState::new();
+        let id = UniqueID::new();
+
+        state.compute_diff(id, make_item_report("file.bin", 500, 200));
+        let update = state.compute_diff(id, make_item_report("file.bin", 500, 200));
+
+        assert!(update.is_empty());
+    }
+
+    #[test]
+    fn test_item_bridge_total_grows() {
+        let mut state = ItemBridgeState::new();
+        let id = UniqueID::new();
+
+        state.compute_diff(id, make_item_report("file.bin", 500, 100));
+        let update = state.compute_diff(id, make_item_report("file.bin", 800, 100));
+
+        assert_eq!(update.total_bytes, 800);
+        assert_eq!(update.total_bytes_increment, 300);
+        assert_eq!(update.total_bytes_completion_increment, 0);
+        assert!(update.item_updates.is_empty());
     }
 }
