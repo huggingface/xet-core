@@ -345,7 +345,7 @@ impl HydrateDehydrateTest {
 
     pub async fn hydrate(&mut self) {
         let client = self.get_or_create_client().await;
-        let session = FileDownloadSession::from_client(client);
+        let session = FileDownloadSession::from_client(client, None);
 
         for entry in read_dir(&self.ptr_dir).unwrap() {
             let entry = entry.unwrap();
@@ -358,7 +358,7 @@ impl HydrateDehydrateTest {
 
     pub async fn hydrate_partitioned_writers(&mut self, partitions: usize) {
         let client = self.get_or_create_client().await;
-        let session = FileDownloadSession::from_client(client);
+        let session = FileDownloadSession::from_client(client, None);
 
         for entry in read_dir(&self.ptr_dir).unwrap() {
             let entry = entry.unwrap();
@@ -402,7 +402,7 @@ impl HydrateDehydrateTest {
 
     pub async fn hydrate_stream(&mut self) {
         let client = self.get_or_create_client().await;
-        let session = FileDownloadSession::from_client(client);
+        let session = FileDownloadSession::from_client(client, None);
 
         for entry in read_dir(&self.ptr_dir).unwrap() {
             let entry = entry.unwrap();

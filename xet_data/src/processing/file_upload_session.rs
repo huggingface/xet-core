@@ -641,7 +641,7 @@ mod tests {
         let xet_file = serde_json::from_str::<XetFileInfo>(&input).unwrap();
 
         let config = TranslatorConfig::local_config(cas_path).unwrap();
-        let session = FileDownloadSession::new(config.into()).await.unwrap();
+        let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
         let (_id, _n_bytes) = session.download_file(&xet_file, output_path).await.unwrap();
     }
