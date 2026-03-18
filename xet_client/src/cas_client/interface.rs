@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use xet_core_structures::merklehash::MerkleHash;
+use xet_core_structures::merklehash::{ChunkHashList, MerkleHash};
 use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
 use xet_core_structures::xorb_object::SerializedXorbObject;
 
@@ -70,4 +70,8 @@ pub trait Client: Send + Sync {
         progress_callback: Option<ProgressCallback>,
         upload_permit: ConnectionPermit,
     ) -> Result<u64>;
+
+    /// Retrieve the chunk hashes and sizes for a file stored in CAS.
+    /// Returns a list of (chunk_hash, chunk_uncompressed_size) pairs.
+    async fn get_file_chunk_hashes(&self, file_id: &MerkleHash) -> Result<ChunkHashList>;
 }

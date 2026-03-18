@@ -91,7 +91,7 @@ mod tests {
 
             // Add all the data.  Roughly the first half should dedup.
             cleaner.add_data(&data).await.unwrap();
-            cleaner.finish().await.unwrap();
+            let _ = cleaner.finish().await.unwrap();
 
             // Finalize everything
             file_upload_session.finalize().await.unwrap();
@@ -178,7 +178,7 @@ mod tests {
 
             // Add all the data.  Roughly the first half should dedup.
             cleaner.add_data(&data).await.unwrap();
-            cleaner.finish().await.unwrap();
+            let _ = cleaner.finish().await.unwrap();
 
             // Finalize everything
             file_upload_session.finalize().await.unwrap();

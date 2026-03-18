@@ -257,7 +257,7 @@ mod tests {
             .start_clean(Some("test".into()), Some(data.len() as u64), Sha256Policy::Compute, Ulid::new())
             .await;
         cleaner.add_data(data).await.unwrap();
-        let (xfi, _metrics) = cleaner.finish().await.unwrap();
+        let (xfi, _chunk_hashes, _metrics) = cleaner.finish().await.unwrap();
         upload_session.finalize().await.unwrap();
         xfi
     }

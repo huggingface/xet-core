@@ -214,7 +214,7 @@ impl FileUploadSession {
                     }
 
                     // Finish and return the result.
-                    let (xfi, metrics) = cleaner.finish().await?;
+                    let (xfi, _chunk_hashes, metrics) = cleaner.finish().await?;
 
                     // Record dedup information.
                     let span = Span::current();
@@ -527,6 +527,19 @@ impl FileUploadSession {
         Ok(())
     }
 
+    /// Register a pre-composed file reconstruction plan (MDBFileInfo) with this session.
+    /// Used for append-aware writes where the caller builds the reconstruction plan
+    /// from existing segments + newly uploaded segments.
+    pub(crate) async fn register_composed_file(self: &Arc<Self>, file_info: MDBFileInfo) -> Result<()> {
+        self.shard_interface.add_file_reconstruction_info(file_info).await
+    }
+
+    /// Returns a list of all file reconstruction infos currently registered in this session.
+    /// Call after all cleaners have finished and after `checkpoint()` to ensure data is flushed.
+    pub(crate) async fn file_info_list(self: &Arc<Self>) -> Result<Vec<MDBFileInfo>> {
+        self.shard_interface.session_file_info_list().await
+    }
+
     pub async fn finalize(self: Arc<Self>) -> Result<DeduplicationMetrics> {
         Ok(self.finalize_impl(false).await?.0)
     }
@@ -582,7 +595,7 @@ mod tests {
         // Read blocks from the source file and hand them to the cleaning handle
         cleaner.add_data(&read_data[..]).await.unwrap();
 
-        let (xet_file_info, _metrics) = cleaner.finish().await.unwrap();
+        let (xet_file_info, _chunk_hashes, _metrics) = cleaner.finish().await.unwrap();
         upload_session.finalize().await.unwrap();
 
         pf_out
@@ -666,7 +679,7 @@ mod tests {
                     .start_clean(Some("test".into()), Some(data.len() as u64), Sha256Policy::Skip, Ulid::new())
                     .await;
                 cleaner.add_data(data).await.unwrap();
-                cleaner.finish().await.unwrap();
+                let _ = cleaner.finish().await.unwrap();
 
                 // Verify that the shard has no metadata_ext (no SHA-256).
                 let (_metrics, file_infos) = upload_session.finalize_with_file_info().await.unwrap();

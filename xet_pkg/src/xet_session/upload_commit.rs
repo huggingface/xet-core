@@ -144,7 +144,7 @@ impl UploadCommit {
     ///     }
     ///     cleaner.add_data(&buffer[0..bytes]).await?;
     /// }
-    /// let (file_info, _metrics) = cleaner.finish().await?;
+    /// let (file_info, _chunk_hashes, _metrics) = cleaner.finish().await?;
     /// # Ok(())
     /// # }
     /// ```
@@ -1081,7 +1081,7 @@ mod tests {
             .await
             .unwrap();
         cleaner.add_data(data).await.unwrap();
-        let (xfi, _) = cleaner.finish().await.unwrap();
+        let (xfi, _chunk_hashes, _metrics) = cleaner.finish().await.unwrap();
         let results = commit.commit().await.unwrap();
         assert!(results.is_empty());
         assert_eq!(xfi.file_size, data.len() as u64);
@@ -1277,7 +1277,7 @@ mod tests {
             commit.upload_file_blocking(Some("stream.bin".into()), data.len() as u64, Sha256Policy::Compute)?;
         let (hash, file_size) = runtime.external_run_async_task(async move {
             cleaner.add_data(data).await.unwrap();
-            let (xfi, _) = cleaner.finish().await.unwrap();
+            let (xfi, _chunk_hashes, _metrics) = cleaner.finish().await.unwrap();
             (xfi.hash, xfi.file_size)
         })?;
         let results = commit.commit_blocking()?;
