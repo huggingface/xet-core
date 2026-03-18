@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 use xet_client::cas_client::Client;
 use xet_client::cas_types::FileRange;
+use xet_client::chunk_cache::ChunkCache;
 use xet_core_structures::merklehash::MerkleHash;
 use xet_runtime::config::ReconstructionConfig;
 use xet_runtime::core::{XetRuntime, xet_config};
@@ -30,6 +31,9 @@ pub struct FileReconstructor {
     progress_updater: Option<Arc<DownloadTaskUpdater>>,
     config: Arc<ReconstructionConfig>,
 
+    /// Optional on-disk chunk cache for cross-file deduplication.
+    chunk_cache: Option<Arc<dyn ChunkCache>>,
+
     /// Custom buffer semaphore for testing or specialized use cases.
     custom_buffer_semaphore: Option<Arc<AdjustableSemaphore>>,
 
@@ -47,6 +51,7 @@ impl FileReconstructor {
             byte_range: None,
             progress_updater: default_progress_updater(),
             config: Arc::new(xet_config().reconstruction.clone()),
+            chunk_cache: None,
             custom_buffer_semaphore: None,
             cancellation_token: CancellationToken::new(),
         }
@@ -62,6 +67,13 @@ impl FileReconstructor {
     pub fn with_progress_updater(self, progress_updater: Arc<DownloadTaskUpdater>) -> Self {
         Self {
             progress_updater: Some(progress_updater),
+            ..self
+        }
+    }
+
+    pub fn with_chunk_cache(self, cache: Arc<dyn ChunkCache>) -> Self {
+        Self {
+            chunk_cache: Some(cache),
             ..self
         }
     }
@@ -191,6 +203,7 @@ impl FileReconstructor {
             client,
             byte_range,
             config,
+            chunk_cache,
             custom_buffer_semaphore,
             ..
         } = self;
@@ -306,7 +319,7 @@ impl FileReconstructor {
                 };
 
                 let data_future = file_term
-                    .get_data_task(client.clone(), run_state.progress_updater().cloned())
+                    .get_data_task(client.clone(), run_state.progress_updater().cloned(), chunk_cache.clone())
                     .await?;
 
                 #[cfg(debug_assertions)]
