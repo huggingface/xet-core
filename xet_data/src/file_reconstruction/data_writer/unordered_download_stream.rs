@@ -9,7 +9,7 @@ use super::super::data_writer::DataWriter;
 use super::super::error::Result;
 use super::super::file_reconstructor::FileReconstructor;
 use super::super::run_state::RunState;
-use super::unordered_writer::{CompletedTerm, UnorderedWriter};
+use super::unordered_writer::{CompletedTerm, UnorderedWriterProgress};
 
 /// A streaming download handle that yields data chunks in completion order,
 /// each tagged with its byte offset in the output file.
@@ -24,10 +24,13 @@ use super::unordered_writer::{CompletedTerm, UnorderedWriter};
 /// Unlike [`DownloadStream`](super::download_stream::DownloadStream), data
 /// chunks may arrive out of order. Each chunk is returned as `(offset, Bytes)`
 /// so the consumer knows where it belongs. Progress can be monitored via
-/// the tracking methods which read atomic counters from the underlying writer.
+/// the tracking methods which read shared atomic counters.
+///
+/// Holds only `Arc<WriterProgress>`, not the writer itself, so the channel
+/// sender is dropped naturally when the reconstruction task finishes.
 pub struct UnorderedDownloadStream {
-    /// The underlying unordered writer. Exposes atomic progress counters.
-    writer: Arc<UnorderedWriter>,
+    /// Shared atomic progress counters (also held by the writer and its tasks).
+    progress: Arc<UnorderedWriterProgress>,
 
     /// Channel receiver for completed terms from spawned tasks.
     receiver: UnboundedReceiver<Result<CompletedTerm>>,
@@ -52,11 +55,13 @@ impl UnorderedDownloadStream {
     ///
     /// Panics if called outside a tokio runtime context.
     pub(crate) fn new(reconstructor: FileReconstructor, run_state: Arc<RunState>) -> Self {
-        let (writer, receiver) = UnorderedWriter::new_streaming(run_state.clone());
+        use super::unordered_writer::UnorderedWriter;
+
+        let (writer, receiver, progress) = UnorderedWriter::new_streaming(run_state.clone());
         let start_signal = Arc::new(Notify::new());
 
         let signal = start_signal.clone();
-        let data_writer: Arc<dyn DataWriter> = writer.clone();
+        let data_writer: Arc<dyn DataWriter> = writer;
         let rs = run_state.clone();
         tokio::spawn(async move {
             signal.notified().await;
@@ -65,7 +70,7 @@ impl UnorderedDownloadStream {
         });
 
         Self {
-            writer,
+            progress,
             receiver,
             finished: false,
             run_state,
@@ -111,7 +116,7 @@ impl UnorderedDownloadStream {
 
     /// Sets the total expected output size in bytes.
     pub fn set_total_bytes_expected(&mut self, size: u64) {
-        self.writer.set_total_bytes_expected(size);
+        self.progress.set_total_bytes_expected(size);
     }
 
     /// Returns the next chunk of downloaded data with its byte offset,
@@ -134,7 +139,7 @@ impl UnorderedDownloadStream {
             return self.process_term(result);
         }
 
-        if self.writer.is_finished() && self.writer.terms_in_progress() == 0 {
+        if self.progress.is_finished() && self.progress.terms_in_progress() == 0 {
             self.finished = true;
             self.run_state.check_error()?;
             return Ok(None);
@@ -164,7 +169,7 @@ impl UnorderedDownloadStream {
             return self.process_term(result);
         }
 
-        if self.writer.is_finished() && self.writer.terms_in_progress() == 0 {
+        if self.progress.is_finished() && self.progress.terms_in_progress() == 0 {
             self.finished = true;
             self.run_state.check_error()?;
             return Ok(None);
@@ -212,28 +217,28 @@ impl UnorderedDownloadStream {
     /// Total bytes expected for the reconstruction (set from file size).
     /// Returns 0 if not yet known.
     pub fn total_bytes_expected(&self) -> u64 {
-        self.writer.total_bytes_expected()
+        self.progress.total_bytes_expected()
     }
 
     /// Bytes currently being fetched by in-progress tasks.
     pub fn bytes_in_progress(&self) -> u64 {
-        self.writer.bytes_in_progress()
+        self.progress.bytes_in_progress()
     }
 
     /// Bytes that have been fetched and sent through the channel (may or
     /// may not have been consumed by the caller yet).
     pub fn bytes_completed(&self) -> u64 {
-        self.writer.bytes_completed()
+        self.progress.bytes_completed()
     }
 
     /// Number of tasks currently resolving data futures.
     pub fn terms_in_progress(&self) -> u64 {
-        self.writer.terms_in_progress()
+        self.progress.terms_in_progress()
     }
 
     /// Returns `true` if all data has been fetched and the writer has finished.
     pub fn is_complete(&self) -> bool {
-        self.writer.is_finished() && self.writer.terms_in_progress() == 0
+        self.progress.is_finished() && self.progress.terms_in_progress() == 0
     }
 }
 
