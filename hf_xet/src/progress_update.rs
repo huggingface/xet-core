@@ -77,7 +77,7 @@ pub struct PyTotalProgressUpdate {
     #[pyo3(get)]
     pub total_bytes: u64,
 
-    /// How much total_bytes has changed from the last update..
+    /// How much total_bytes has changed from the last update.
     #[pyo3(get)]
     pub total_bytes_increment: u64,
 

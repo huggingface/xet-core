@@ -13,7 +13,7 @@ use xet_data::progress_tracking::UniqueID;
 #[async_trait]
 pub trait TrackingProgressUpdater: Send + Sync {
     /// Register a set of updates as a list of ProgressUpdate instances, which
-    /// contain the name and progress information.    
+    /// contain the name and progress information.
     async fn register_updates(&self, updates: ProgressUpdate);
 
     /// Flush any updates out, if needed
@@ -67,13 +67,13 @@ pub struct ProgressUpdate {
     /// The total bytes that have been processed.
     pub total_bytes_completed: u64,
 
-    /// How much this update adjusts the total bytes..
+    /// How much this update adjusts the total bytes.
     pub total_bytes_completion_increment: u64,
 
-    /// The rate at which the total bytes are being processed, if known.  
+    /// The rate at which the total bytes are being processed, if known.
     pub total_bytes_completion_rate: Option<f64>,
 
-    /// Total bytes known that need to be uploaded or downloaded.  
+    /// Total bytes known that need to be uploaded or downloaded.
     pub total_transfer_bytes: u64,
 
     /// The change in total transfer bytes known from the last update.
@@ -85,7 +85,7 @@ pub struct ProgressUpdate {
     /// How much this update adjusts the total transfer bytes.
     pub total_transfer_bytes_completion_increment: u64,
 
-    /// The total bytes that have been processed
+    /// The transfer-byte completion rate, if known.
     pub total_transfer_bytes_completion_rate: Option<f64>,
 }
 
