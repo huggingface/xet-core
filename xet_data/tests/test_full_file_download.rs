@@ -40,7 +40,7 @@ mod tests {
             ("larger", &vec![0xCD; 64 * 1024]),
         ];
 
-        let download_session = FileDownloadSession::new(config.clone(), None).await.unwrap();
+        let download_session = FileDownloadSession::new(config.clone(), None, None).await.unwrap();
 
         for (name, data) in test_cases {
             let upload_session = FileUploadSession::new(config.clone(), None).await.unwrap();

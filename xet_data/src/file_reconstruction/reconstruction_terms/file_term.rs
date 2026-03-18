@@ -6,6 +6,7 @@ use bytes::Bytes;
 use tokio::sync::OnceCell;
 use xet_client::cas_client::Client;
 use xet_client::cas_types::{ChunkRange, FileRange, HttpRange};
+use xet_client::chunk_cache::ChunkCache;
 use xet_core_structures::merklehash::MerkleHash;
 use xet_runtime::core::xet_config;
 use xet_runtime::utils::UniqueId;
@@ -59,6 +60,7 @@ impl FileTerm {
         &self,
         client: Arc<dyn Client>,
         progress_updater: Option<Arc<DownloadTaskUpdater>>,
+        chunk_cache: Option<Arc<dyn ChunkCache>>,
     ) -> Result<DataFuture> {
         // Fast path: data already cached, no need to spawn a task.
         if let Some(xorb_block_data) = self.xorb_block.data.get() {
@@ -71,7 +73,9 @@ impl FileTerm {
         let xorb_block = self.xorb_block.clone();
 
         let task = tokio::task::spawn(async move {
-            let xorb_block_data = xorb_block.retrieve_data(client, url_info, progress_updater).await?;
+            let xorb_block_data = xorb_block
+                .retrieve_data(client, url_info, progress_updater, chunk_cache)
+                .await?;
             Ok(file_term.extract_bytes(&xorb_block_data))
         });
 
@@ -475,7 +479,7 @@ mod tests {
             assert!(file_contents.xorbs.contains_key(&file_term.xorb_block.xorb_hash));
 
             // Get the data task and await it.
-            let data_future = file_term.get_data_task(dyn_client.clone(), None).await.unwrap();
+            let data_future = file_term.get_data_task(dyn_client.clone(), None, None).await.unwrap();
             let data = data_future.await.unwrap();
 
             // Verify the data size matches the byte range.
