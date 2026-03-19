@@ -6,6 +6,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use http::header::HeaderMap;
 use tracing::{Instrument, Span, info_span, instrument};
+use ulid::Ulid;
 use xet_client::cas_client::auth::{AuthConfig, TokenRefresher};
 use xet_core_structures::merklehash::MerkleHash;
 use xet_runtime::core::par_utils::run_constrained_with_semaphore;
@@ -16,7 +17,6 @@ use super::file_cleaner::Sha256Policy;
 use super::{FileUploadSession, XetFileInfo};
 use crate::deduplication::{Chunker, DeduplicationMetrics};
 use crate::error::Result;
-use crate::progress_tracking::UniqueID;
 
 pub fn default_config(
     endpoint: String,
@@ -32,7 +32,7 @@ pub fn default_config(
         auth: auth_cfg,
         custom_headers,
         repo_paths: vec!["".into()],
-        session_id: Some(UniqueID::new().to_string()),
+        session_id: Some(Ulid::new().to_string()),
     };
 
     TranslatorConfig::new(session)
