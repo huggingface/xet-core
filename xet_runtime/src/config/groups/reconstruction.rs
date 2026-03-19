@@ -80,17 +80,8 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_RECONSTRUCTION_USE_VECTORED_WRITE` to set this value.
     ref use_vectored_write: bool = true;
 
-    /// Whether to use io_uring for file writes during reconstruction on Linux.
-    /// When true and io_uring is available on the system, file writes use the
-    /// io_uring interface for asynchronous positioned writes. Falls back to
-    /// sequential writes if io_uring is not supported by the kernel.
-    ///
-    /// The default value is true.
-    ///
-    /// Use the environment variable `HF_XET_RECONSTRUCTION_USE_IO_URING` to set this value.
-    ref use_io_uring: bool = true;
-
     /// The size of the io_uring submission/completion queue ring buffer.
+    /// Only used when `data.enable_io_uring` is true.
     /// Larger values allow more in-flight I/O operations before backpressure
     /// kicks in, at the cost of more kernel memory. Benchmarks show ring=128
     /// provides a consistent improvement over ring=64 for typical 64KB terms.

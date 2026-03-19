@@ -128,11 +128,12 @@ impl FileReconstructor {
         let run_state = RunState::new(self.cancellation_token.clone(), self.file_hash, self.progress_updater.clone());
 
         #[cfg(target_os = "linux")]
-        let data_writer: Box<dyn DataWriter> = if self.config.use_io_uring && io_uring_available() {
-            UnorderedWriter::new_io_uring(self.config.io_uring_ring_size, file, run_state.clone())?
-        } else {
-            SequentialWriter::new(file, self.config.use_vectored_write, run_state.clone())
-        };
+        let data_writer: Box<dyn DataWriter> =
+            if XetRuntime::current().config().data.enable_io_uring && io_uring_available() {
+                UnorderedWriter::new_io_uring(self.config.io_uring_ring_size, file, run_state.clone())?
+            } else {
+                SequentialWriter::new(file, self.config.use_vectored_write, run_state.clone())
+            };
 
         #[cfg(not(target_os = "linux"))]
         let data_writer = SequentialWriter::new(file, self.config.use_vectored_write, run_state.clone());

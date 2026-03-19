@@ -34,7 +34,6 @@ fn bench_sequential_non_vectored(c: &mut Criterion) {
 
     let mut config = ReconstructionConfig::default();
     config.use_vectored_write = false;
-    config.use_io_uring = false;
 
     c.bench_with_input(
         BenchmarkId::new("reconstruct/sequential_write", format!("{}MB", fixture._file_size / (1024 * 1024))),
@@ -64,7 +63,6 @@ fn bench_sequential_vectored(c: &mut Criterion) {
 
     let mut config = ReconstructionConfig::default();
     config.use_vectored_write = true;
-    config.use_io_uring = false;
 
     c.bench_with_input(
         BenchmarkId::new("reconstruct/vectored_write", format!("{}MB", fixture._file_size / (1024 * 1024))),
@@ -90,11 +88,11 @@ fn bench_sequential_vectored(c: &mut Criterion) {
 
 #[cfg(target_os = "linux")]
 fn bench_io_uring(c: &mut Criterion) {
+    unsafe { std::env::set_var("HF_XET_DATA_ENABLE_IO_URING", "true") };
     let rt = Runtime::new().unwrap();
     let fixture = rt.block_on(create_fixture(4, 256, 65_536));
 
-    let mut config = ReconstructionConfig::default();
-    config.use_io_uring = true;
+    let config = ReconstructionConfig::default();
 
     c.bench_with_input(
         BenchmarkId::new("reconstruct/io_uring", format!("{}MB", fixture._file_size / (1024 * 1024))),
@@ -116,6 +114,7 @@ fn bench_io_uring(c: &mut Criterion) {
             });
         },
     );
+    unsafe { std::env::remove_var("HF_XET_DATA_ENABLE_IO_URING") };
 }
 
 #[cfg(target_os = "linux")]

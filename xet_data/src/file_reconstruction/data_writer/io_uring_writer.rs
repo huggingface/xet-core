@@ -519,12 +519,7 @@ mod tests {
         }
     }
 
-    async fn run_trial(
-        file_size: usize,
-        writer_kind: WriterKind,
-        chunk_size: usize,
-        max_delay_ms: u64,
-    ) -> f64 {
+    async fn run_trial(file_size: usize, writer_kind: WriterKind, chunk_size: usize, max_delay_ms: u64) -> f64 {
         let num_chunks = file_size / chunk_size;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("bench.bin");
@@ -534,9 +529,7 @@ mod tests {
         let writer: Box<dyn DataWriter> = match writer_kind {
             WriterKind::Sequential => SequentialWriter::new(file, false, run_state),
             WriterKind::Vectored => SequentialWriter::new(file, true, run_state),
-            WriterKind::IoUring(ring_size) => {
-                UnorderedWriter::new_io_uring(ring_size, file, run_state).unwrap()
-            },
+            WriterKind::IoUring(ring_size) => UnorderedWriter::new_io_uring(ring_size, file, run_state).unwrap(),
         };
 
         let start = Instant::now();
@@ -545,11 +538,7 @@ mod tests {
             let data = Bytes::from(vec![(i & 0xff) as u8; chunk_size]);
             let end = offset + chunk_size as u64;
             writer
-                .set_next_term_data_source(
-                    FileRange::new(offset, end),
-                    None,
-                    make_data_future(data, max_delay_ms),
-                )
+                .set_next_term_data_source(FileRange::new(offset, end), None, make_data_future(data, max_delay_ms))
                 .await
                 .unwrap();
             offset = end;
@@ -585,10 +574,7 @@ mod tests {
                 String::new()
             };
             let label = format!("{}{}", cfg.label, delay_str);
-            println!(
-                "  {:<35} {:>10.1} {:>10.1}",
-                label, avg, mbs
-            );
+            println!("  {:<35} {:>10.1} {:>10.1}", label, avg, mbs);
 
             results.push(BenchResult {
                 label,
@@ -612,11 +598,7 @@ mod tests {
 
         for &file_size in &[512 * MB, 1024 * MB] {
             println!("\n{}", "=".repeat(72));
-            println!(
-                "  io_uring benchmark: {} MB, {} iterations",
-                file_size / MB,
-                iterations
-            );
+            println!("  io_uring benchmark: {} MB, {} iterations", file_size / MB, iterations);
             println!("{}", "=".repeat(72));
 
             // ── Phase 1: Immediate delivery (no delay) ──────────────────
@@ -624,36 +606,123 @@ mod tests {
             println!("  {:<35} {:>10} {:>10}", "Config", "Avg(ms)", "MB/s");
 
             let immediate_configs = vec![
-                BenchConfig { label: "seq 64K", writer: WriterKind::Sequential, chunk_size: 64 * KB, max_delay_ms: 0 },
-                BenchConfig { label: "vec 64K", writer: WriterKind::Vectored, chunk_size: 64 * KB, max_delay_ms: 0 },
-                BenchConfig { label: "uring 64K r=128", writer: WriterKind::IoUring(128), chunk_size: 64 * KB, max_delay_ms: 0 },
-                BenchConfig { label: "seq 1M", writer: WriterKind::Sequential, chunk_size: 1 * MB, max_delay_ms: 0 },
-                BenchConfig { label: "vec 1M", writer: WriterKind::Vectored, chunk_size: 1 * MB, max_delay_ms: 0 },
-                BenchConfig { label: "uring 1M r=128", writer: WriterKind::IoUring(128), chunk_size: 1 * MB, max_delay_ms: 0 },
-                BenchConfig { label: "seq 4M", writer: WriterKind::Sequential, chunk_size: 4 * MB, max_delay_ms: 0 },
-                BenchConfig { label: "vec 4M", writer: WriterKind::Vectored, chunk_size: 4 * MB, max_delay_ms: 0 },
-                BenchConfig { label: "uring 4M r=128", writer: WriterKind::IoUring(128), chunk_size: 4 * MB, max_delay_ms: 0 },
+                BenchConfig {
+                    label: "seq 64K",
+                    writer: WriterKind::Sequential,
+                    chunk_size: 64 * KB,
+                    max_delay_ms: 0,
+                },
+                BenchConfig {
+                    label: "vec 64K",
+                    writer: WriterKind::Vectored,
+                    chunk_size: 64 * KB,
+                    max_delay_ms: 0,
+                },
+                BenchConfig {
+                    label: "uring 64K r=128",
+                    writer: WriterKind::IoUring(128),
+                    chunk_size: 64 * KB,
+                    max_delay_ms: 0,
+                },
+                BenchConfig {
+                    label: "seq 1M",
+                    writer: WriterKind::Sequential,
+                    chunk_size: 1 * MB,
+                    max_delay_ms: 0,
+                },
+                BenchConfig {
+                    label: "vec 1M",
+                    writer: WriterKind::Vectored,
+                    chunk_size: 1 * MB,
+                    max_delay_ms: 0,
+                },
+                BenchConfig {
+                    label: "uring 1M r=128",
+                    writer: WriterKind::IoUring(128),
+                    chunk_size: 1 * MB,
+                    max_delay_ms: 0,
+                },
+                BenchConfig {
+                    label: "seq 4M",
+                    writer: WriterKind::Sequential,
+                    chunk_size: 4 * MB,
+                    max_delay_ms: 0,
+                },
+                BenchConfig {
+                    label: "vec 4M",
+                    writer: WriterKind::Vectored,
+                    chunk_size: 4 * MB,
+                    max_delay_ms: 0,
+                },
+                BenchConfig {
+                    label: "uring 4M r=128",
+                    writer: WriterKind::IoUring(128),
+                    chunk_size: 4 * MB,
+                    max_delay_ms: 0,
+                },
             ];
             run_bench_suite(&immediate_configs, file_size, iterations).await;
 
             // ── Phase 2: Random delay (simulates out-of-order network arrival) ──
             for &max_delay in &[5u64, 20, 50] {
-                println!(
-                    "\n  ── Random delay 0..{}ms (out-of-order arrival) ──",
-                    max_delay
-                );
+                println!("\n  ── Random delay 0..{}ms (out-of-order arrival) ──", max_delay);
                 println!("  {:<35} {:>10} {:>10}", "Config", "Avg(ms)", "MB/s");
 
                 let delay_configs = vec![
-                    BenchConfig { label: "seq 64K", writer: WriterKind::Sequential, chunk_size: 64 * KB, max_delay_ms: max_delay },
-                    BenchConfig { label: "vec 64K", writer: WriterKind::Vectored, chunk_size: 64 * KB, max_delay_ms: max_delay },
-                    BenchConfig { label: "uring 64K r=128", writer: WriterKind::IoUring(128), chunk_size: 64 * KB, max_delay_ms: max_delay },
-                    BenchConfig { label: "seq 1M", writer: WriterKind::Sequential, chunk_size: 1 * MB, max_delay_ms: max_delay },
-                    BenchConfig { label: "vec 1M", writer: WriterKind::Vectored, chunk_size: 1 * MB, max_delay_ms: max_delay },
-                    BenchConfig { label: "uring 1M r=128", writer: WriterKind::IoUring(128), chunk_size: 1 * MB, max_delay_ms: max_delay },
-                    BenchConfig { label: "seq 4M", writer: WriterKind::Sequential, chunk_size: 4 * MB, max_delay_ms: max_delay },
-                    BenchConfig { label: "vec 4M", writer: WriterKind::Vectored, chunk_size: 4 * MB, max_delay_ms: max_delay },
-                    BenchConfig { label: "uring 4M r=128", writer: WriterKind::IoUring(128), chunk_size: 4 * MB, max_delay_ms: max_delay },
+                    BenchConfig {
+                        label: "seq 64K",
+                        writer: WriterKind::Sequential,
+                        chunk_size: 64 * KB,
+                        max_delay_ms: max_delay,
+                    },
+                    BenchConfig {
+                        label: "vec 64K",
+                        writer: WriterKind::Vectored,
+                        chunk_size: 64 * KB,
+                        max_delay_ms: max_delay,
+                    },
+                    BenchConfig {
+                        label: "uring 64K r=128",
+                        writer: WriterKind::IoUring(128),
+                        chunk_size: 64 * KB,
+                        max_delay_ms: max_delay,
+                    },
+                    BenchConfig {
+                        label: "seq 1M",
+                        writer: WriterKind::Sequential,
+                        chunk_size: 1 * MB,
+                        max_delay_ms: max_delay,
+                    },
+                    BenchConfig {
+                        label: "vec 1M",
+                        writer: WriterKind::Vectored,
+                        chunk_size: 1 * MB,
+                        max_delay_ms: max_delay,
+                    },
+                    BenchConfig {
+                        label: "uring 1M r=128",
+                        writer: WriterKind::IoUring(128),
+                        chunk_size: 1 * MB,
+                        max_delay_ms: max_delay,
+                    },
+                    BenchConfig {
+                        label: "seq 4M",
+                        writer: WriterKind::Sequential,
+                        chunk_size: 4 * MB,
+                        max_delay_ms: max_delay,
+                    },
+                    BenchConfig {
+                        label: "vec 4M",
+                        writer: WriterKind::Vectored,
+                        chunk_size: 4 * MB,
+                        max_delay_ms: max_delay,
+                    },
+                    BenchConfig {
+                        label: "uring 4M r=128",
+                        writer: WriterKind::IoUring(128),
+                        chunk_size: 4 * MB,
+                        max_delay_ms: max_delay,
+                    },
                 ];
                 run_bench_suite(&delay_configs, file_size, iterations).await;
             }
