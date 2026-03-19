@@ -219,7 +219,7 @@ struct WritingQueueState {
 /// blocking writes, allowing out-of-order future resolution with in-order writes.
 pub struct SequentialWriter {
     queue_state: Mutex<WritingQueueState>,
-    background_handle: Mutex<Option<JoinHandle<()>>>,
+    background_handle: Option<JoinHandle<()>>,
     run_state: Arc<RunState>,
     bytes_written: Arc<AtomicU64>,
     active_tasks: Arc<Mutex<JoinSet<Result<()>>>>,
@@ -329,7 +329,7 @@ impl DataWriter for SequentialWriter {
 
     /// Wait for the background writer to finish and all tasks to complete.
     /// Returns the number of bytes written.
-    async fn finish(&self) -> Result<u64> {
+    async fn finish(mut self: Box<Self>) -> Result<u64> {
         self.run_state.check_error()?;
 
         let expected_bytes = {
@@ -360,7 +360,7 @@ impl DataWriter for SequentialWriter {
             }
         }
 
-        match self.background_handle.lock().await.take() {
+        match self.background_handle.take() {
             Some(handle) => {
                 handle.await.map_err(|e| {
                     FileReconstructionError::InternalWriterError(format!("Background writer task failed: {e}"))
@@ -395,7 +395,7 @@ impl SequentialWriter {
     /// values that the caller (typically a `DownloadStream`) consumes directly.
     pub(crate) fn new_streaming(
         run_state: Arc<RunState>,
-    ) -> (Arc<dyn DataWriter>, UnboundedReceiver<SequentialRetrievalItem>) {
+    ) -> (Box<dyn DataWriter>, UnboundedReceiver<SequentialRetrievalItem>) {
         let (tx, rx) = unbounded_channel::<SequentialRetrievalItem>();
         let bytes_written = Arc::new(AtomicU64::new(0));
 
@@ -407,13 +407,13 @@ impl SequentialWriter {
 
         let writer = Self {
             queue_state: Mutex::new(writing_queue_state),
-            background_handle: Mutex::new(None),
+            background_handle: None,
             run_state,
             bytes_written,
             active_tasks: Arc::new(Mutex::new(JoinSet::new())),
         };
 
-        (Arc::new(writer), rx)
+        (Box::new(writer), rx)
     }
 
     /// Creates a sequential writer backed by the given `Write` impl.
@@ -426,7 +426,7 @@ impl SequentialWriter {
         writer: W,
         use_vectorized: bool,
         run_state: Arc<RunState>,
-    ) -> Arc<dyn DataWriter> {
+    ) -> Box<dyn DataWriter> {
         let (tx, rx) = unbounded_channel::<SequentialRetrievalItem>();
         let bytes_written = Arc::new(AtomicU64::new(0));
 
@@ -452,9 +452,9 @@ impl SequentialWriter {
             finished: false,
         };
 
-        Arc::new(Self {
+        Box::new(Self {
             queue_state: Mutex::new(writing_queue_state),
-            background_handle: Mutex::new(Some(handle)),
+            background_handle: Some(handle),
             run_state,
             bytes_written,
             active_tasks: Arc::new(Mutex::new(JoinSet::new())),
@@ -720,30 +720,6 @@ mod tests {
 
         assert!(result.is_err());
         assert!(matches!(result, Err(FileReconstructionError::IoError(_))));
-    }
-
-    #[tokio::test]
-    async fn test_finish_twice_returns_error() {
-        let buffer = std::io::Cursor::new(Vec::new());
-        let writer = SequentialWriter::new(Box::new(buffer), false, RunState::new_for_test());
-
-        writer.finish().await.unwrap();
-        let result = writer.finish().await;
-        assert!(result.is_err());
-        assert!(matches!(result, Err(FileReconstructionError::InternalWriterError(_))));
-    }
-
-    #[tokio::test]
-    async fn test_write_after_finish_returns_error() {
-        let buffer = std::io::Cursor::new(Vec::new());
-        let writer = SequentialWriter::new(Box::new(buffer), false, RunState::new_for_test());
-
-        writer.finish().await.unwrap();
-        let result = writer
-            .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
-            .await;
-        assert!(result.is_err());
-        assert!(matches!(result, Err(FileReconstructionError::InternalWriterError(_))));
     }
 
     #[tokio::test]

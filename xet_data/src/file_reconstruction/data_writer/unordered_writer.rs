@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use bytes::Bytes;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::task::JoinHandle;
 use xet_client::cas_types::FileRange;
 use xet_runtime::utils::adjustable_semaphore::AdjustableSemaphorePermit;
 
@@ -64,13 +65,14 @@ impl UnorderedWriterProgress {
 /// (typically an [`UnorderedDownloadStream`](super::unordered_download_stream::UnorderedDownloadStream))
 /// reads from the receiver end and gets items in whatever order tasks complete.
 ///
-/// The consumer stream holds only `Arc<WriterProgress>`, not `Arc<UnorderedWriter>`,
+/// The consumer stream holds only `Arc<WriterProgress>`, not the writer itself,
 /// so the writer's channel sender is dropped naturally when the reconstruction
-/// task finishes and releases its `Arc<dyn DataWriter>`.
+/// task finishes and consumes the writer via [`finish()`](DataWriter::finish).
 pub struct UnorderedWriter {
     result_tx: UnboundedSender<Result<CompletedTerm>>,
     run_state: Arc<RunState>,
     progress: Arc<UnorderedWriterProgress>,
+    background_handle: Option<JoinHandle<Result<u64>>>,
 }
 
 impl Drop for UnorderedWriter {
@@ -145,35 +147,48 @@ impl DataWriter for UnorderedWriter {
         Ok(())
     }
 
-    async fn finish(&self) -> Result<u64> {
+    async fn finish(mut self: Box<Self>) -> Result<u64> {
         self.run_state.check_error()?;
 
-        if self.progress.finished.swap(true, Ordering::Release) {
-            return Err(FileReconstructionError::InternalWriterError("Writer has already finished".to_string()));
-        }
+        self.progress.finished.store(true, Ordering::Release);
 
-        let total = self.progress.total_bytes_expected.load(Ordering::Acquire);
-        if total > 0 {
-            Ok(total)
-        } else {
-            Ok(self.progress.bytes_in_progress.load(Ordering::Relaxed)
-                + self.progress.bytes_completed.load(Ordering::Relaxed))
+        match self.background_handle.take() {
+            Some(handle) => {
+                // Drop the sender so the channel closes once all spawned tasks
+                // complete and drop their clones. The background thread will
+                // finish processing all remaining messages and io_uring ops,
+                // then exit, resolving the JoinHandle.
+                drop(self);
+                handle.await.map_err(|e| {
+                    FileReconstructionError::InternalWriterError(format!("Background writer task failed: {e}"))
+                })?
+            },
+            None => {
+                // Streaming mode: no background writer. Return expected bytes.
+                let total = self.progress.total_bytes_expected.load(Ordering::Acquire);
+                if total > 0 {
+                    Ok(total)
+                } else {
+                    Ok(self.progress.bytes_in_progress.load(Ordering::Relaxed)
+                        + self.progress.bytes_completed.load(Ordering::Relaxed))
+                }
+            },
         }
     }
 }
 
 impl UnorderedWriter {
     /// Creates an unordered writer for streaming use. Returns the writer (to be
-    /// passed to the reconstruction task as `Arc<dyn DataWriter>`), the receiver
+    /// passed to the reconstruction task as `Box<dyn DataWriter>`), the receiver
     /// end of the channel, and the shared progress counters for the consumer.
     ///
     /// The consumer stream should hold only the `Arc<WriterProgress>`, **not**
     /// the writer itself. This way the channel sender is dropped naturally when
-    /// the reconstruction task finishes, closing the channel without explicit
-    /// lifetime management.
+    /// the reconstruction task finishes (consuming the writer via `finish()`),
+    /// closing the channel without explicit lifetime management.
     pub(crate) fn new_streaming(
         run_state: Arc<RunState>,
-    ) -> (Arc<UnorderedWriter>, UnboundedReceiver<Result<CompletedTerm>>, Arc<UnorderedWriterProgress>) {
+    ) -> (Box<dyn DataWriter>, UnboundedReceiver<Result<CompletedTerm>>, Arc<UnorderedWriterProgress>) {
         let (tx, rx) = unbounded_channel();
 
         let progress = Arc::new(UnorderedWriterProgress {
@@ -184,13 +199,49 @@ impl UnorderedWriter {
             finished: AtomicBool::new(false),
         });
 
-        let writer = Arc::new(UnorderedWriter {
+        let writer = Box::new(UnorderedWriter {
             result_tx: tx,
             run_state,
             progress: progress.clone(),
+            background_handle: None,
         });
 
         (writer, rx, progress)
+    }
+
+    /// Creates an unordered writer backed by io_uring for positioned writes to
+    /// `file`. A background thread receives completed terms via the channel and
+    /// submits pwrite operations through the io_uring ring.
+    ///
+    /// `finish()` drops the channel sender, waits for all spawned tasks to
+    /// complete (closing the channel), then awaits the background thread's
+    /// `JoinHandle` to guarantee all data is on disk before returning.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn new_io_uring(
+        ring_size: u32,
+        file: std::fs::File,
+        run_state: Arc<RunState>,
+    ) -> Result<Box<dyn DataWriter>> {
+        let (tx, rx) = unbounded_channel();
+
+        let progress = Arc::new(UnorderedWriterProgress {
+            terms_in_progress: AtomicU64::new(0),
+            bytes_in_progress: AtomicU64::new(0),
+            bytes_completed: AtomicU64::new(0),
+            total_bytes_expected: AtomicU64::new(0),
+            finished: AtomicBool::new(false),
+        });
+
+        let handle = super::io_uring_writer::spawn_io_uring_writer(ring_size, file, rx, run_state.clone())?;
+
+        let writer = Box::new(UnorderedWriter {
+            result_tx: tx,
+            run_state,
+            progress: progress.clone(),
+            background_handle: Some(handle),
+        });
+
+        Ok(writer)
     }
 }
 
@@ -246,7 +297,6 @@ mod tests {
             .unwrap();
 
         writer.finish().await.unwrap();
-        drop(writer);
 
         let items = drain_sorted(&mut rx).await.unwrap();
         let assembled: Vec<u8> = items.into_iter().flat_map(|(_, data)| data.to_vec()).collect();
@@ -280,7 +330,6 @@ mod tests {
             .unwrap();
 
         writer.finish().await.unwrap();
-        drop(writer);
 
         let items = drain_sorted(&mut rx).await.unwrap();
         let assembled: Vec<u8> = items.into_iter().flat_map(|(_, data)| data.to_vec()).collect();
@@ -300,30 +349,6 @@ mod tests {
         writer.finish().await.unwrap();
 
         let result = rx.recv().await.unwrap();
-        assert!(result.is_err());
-        assert!(matches!(result, Err(FileReconstructionError::InternalWriterError(_))));
-    }
-
-    #[tokio::test]
-    async fn test_finish_twice_returns_error() {
-        let run_state = RunState::new_for_test();
-        let (writer, _rx, _progress) = UnorderedWriter::new_streaming(run_state);
-
-        writer.finish().await.unwrap();
-        let result = writer.finish().await;
-        assert!(result.is_err());
-        assert!(matches!(result, Err(FileReconstructionError::InternalWriterError(_))));
-    }
-
-    #[tokio::test]
-    async fn test_write_after_finish_returns_error() {
-        let run_state = RunState::new_for_test();
-        let (writer, _rx, _progress) = UnorderedWriter::new_streaming(run_state);
-
-        writer.finish().await.unwrap();
-        let result = writer
-            .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
-            .await;
         assert!(result.is_err());
         assert!(matches!(result, Err(FileReconstructionError::InternalWriterError(_))));
     }
@@ -367,7 +392,6 @@ mod tests {
             .unwrap();
 
         writer.finish().await.unwrap();
-        drop(writer);
 
         let items = drain_sorted(&mut rx).await.unwrap();
         drop(items);
@@ -400,7 +424,6 @@ mod tests {
         assert_eq!(progress.bytes_completed(), 0);
 
         writer.finish().await.unwrap();
-        drop(writer);
 
         let _items = drain_sorted(&mut rx).await.unwrap();
 
@@ -438,7 +461,6 @@ mod tests {
             .unwrap();
 
         let total = writer.finish().await.unwrap();
-        drop(writer);
         assert_eq!(total, 11);
 
         let _items = drain_sorted(&mut rx).await.unwrap();
@@ -495,7 +517,6 @@ mod tests {
         }
 
         writer.finish().await.unwrap();
-        drop(writer);
 
         let items = drain_sorted(&mut rx).await.unwrap();
         assert_eq!(items.len(), num_terms);
@@ -521,7 +542,6 @@ mod tests {
             }
 
             writer.finish().await.unwrap();
-            drop(writer);
 
             let items = drain_sorted(&mut rx).await.unwrap();
             assert_eq!(items.len(), 10);
@@ -561,7 +581,6 @@ mod tests {
 
             progress.set_total_bytes_expected(total_size);
             writer.finish().await.unwrap();
-            drop(writer);
 
             let items = drain_sorted(&mut rx).await.unwrap();
             assert_eq!(items.len(), num_terms);

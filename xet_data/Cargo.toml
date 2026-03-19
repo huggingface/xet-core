@@ -51,6 +51,9 @@ sha2 = { workspace = true, features = ["asm"] }
 [target.'cfg(target_os = "windows")'.dependencies]
 sha2 = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring = "0.7"
+
 [[bin]]
 name = "x"
 path = "src/processing/bin/example.rs"
@@ -72,12 +75,17 @@ name = "xorb-check"
 path = "examples/xorb-check/main.rs"
 
 [dev-dependencies]
+criterion = { version = "0.4", features = ["async_tokio"] }
 ctor = { workspace = true }
 dirs = { workspace = true }
 rand = { workspace = true }
 serial_test = { workspace = true }
 tempfile = { workspace = true }
 tracing-test = { workspace = true }
+
+[[bench]]
+name = "reconstruction_bench"
+harness = false
 
 [features]
 strict = []

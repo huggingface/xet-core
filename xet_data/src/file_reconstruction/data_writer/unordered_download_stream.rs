@@ -5,7 +5,6 @@ use tokio::sync::Notify;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::info;
 
-use super::super::data_writer::DataWriter;
 use super::super::error::Result;
 use super::super::file_reconstructor::FileReconstructor;
 use super::super::run_state::RunState;
@@ -61,12 +60,11 @@ impl UnorderedDownloadStream {
         let start_signal = Arc::new(Notify::new());
 
         let signal = start_signal.clone();
-        let data_writer: Arc<dyn DataWriter> = writer;
         let rs = run_state.clone();
         tokio::spawn(async move {
             signal.notified().await;
             info!(file_hash = %rs.file_hash(), "Starting unordered download stream");
-            let _ = reconstructor.run(data_writer, rs, true).await;
+            let _ = reconstructor.run(writer, rs, true).await;
         });
 
         Self {
