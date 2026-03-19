@@ -92,10 +92,12 @@ crate::config_group!({
 
     /// The size of the io_uring submission/completion queue ring buffer.
     /// Larger values allow more in-flight I/O operations before backpressure
-    /// kicks in, at the cost of more kernel memory.
+    /// kicks in, at the cost of more kernel memory. Benchmarks show ring=128
+    /// provides a consistent improvement over ring=64 for typical 64KB terms.
     ///
-    /// The default value is 64.
+    /// The default value is 128.
     ///
     /// Use the environment variable `HF_XET_RECONSTRUCTION_IO_URING_RING_SIZE` to set this value.
-    ref io_uring_ring_size: u32 = 64;
+    ref io_uring_ring_size: u32 = 128;
+
 });

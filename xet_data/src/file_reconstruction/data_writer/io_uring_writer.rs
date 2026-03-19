@@ -475,4 +475,198 @@ mod tests {
         assert_eq!(bytes_written as usize, num_terms * chunk_size);
         assert_eq!(read_file(&path), expected);
     }
+
+    // ── Tuning benchmark ───────────────────────────────────────────────
+
+    use std::time::Instant;
+
+    use rand::Rng;
+
+    use super::super::sequential_writer::SequentialWriter;
+
+    const KB: usize = 1024;
+    const MB: usize = 1024 * KB;
+
+    struct BenchConfig {
+        label: &'static str,
+        writer: WriterKind,
+        chunk_size: usize,
+        max_delay_ms: u64,
+    }
+
+    #[derive(Clone, Copy)]
+    enum WriterKind {
+        Sequential,
+        Vectored,
+        IoUring(u32),
+    }
+
+    struct BenchResult {
+        label: String,
+        avg_ms: f64,
+        throughput_mbs: f64,
+    }
+
+    fn make_data_future(data: Bytes, max_delay_ms: u64) -> DataFuture {
+        if max_delay_ms == 0 {
+            Box::pin(async move { Ok(data) })
+        } else {
+            Box::pin(async move {
+                let delay_ms = rand::rng().random_range(0..=max_delay_ms);
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                Ok(data)
+            })
+        }
+    }
+
+    async fn run_trial(
+        file_size: usize,
+        writer_kind: WriterKind,
+        chunk_size: usize,
+        max_delay_ms: u64,
+    ) -> f64 {
+        let num_chunks = file_size / chunk_size;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bench.bin");
+        let file = std::fs::File::create(&path).unwrap();
+        let run_state = RunState::new_for_test();
+
+        let writer: Box<dyn DataWriter> = match writer_kind {
+            WriterKind::Sequential => SequentialWriter::new(file, false, run_state),
+            WriterKind::Vectored => SequentialWriter::new(file, true, run_state),
+            WriterKind::IoUring(ring_size) => {
+                UnorderedWriter::new_io_uring(ring_size, file, run_state).unwrap()
+            },
+        };
+
+        let start = Instant::now();
+        let mut offset = 0u64;
+        for i in 0..num_chunks {
+            let data = Bytes::from(vec![(i & 0xff) as u8; chunk_size]);
+            let end = offset + chunk_size as u64;
+            writer
+                .set_next_term_data_source(
+                    FileRange::new(offset, end),
+                    None,
+                    make_data_future(data, max_delay_ms),
+                )
+                .await
+                .unwrap();
+            offset = end;
+        }
+        writer.finish().await.unwrap();
+        start.elapsed().as_secs_f64() * 1000.0
+    }
+
+    fn bench_trials(times: &mut Vec<f64>, iterations: usize) -> f64 {
+        times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let trimmed = if iterations > 4 {
+            &times[1..iterations - 1]
+        } else {
+            &times[..]
+        };
+        trimmed.iter().sum::<f64>() / trimmed.len() as f64
+    }
+
+    async fn run_bench_suite(configs: &[BenchConfig], file_size: usize, iterations: usize) -> Vec<BenchResult> {
+        let mut results = Vec::new();
+
+        for cfg in configs {
+            let mut times = Vec::new();
+            for _ in 0..iterations {
+                times.push(run_trial(file_size, cfg.writer, cfg.chunk_size, cfg.max_delay_ms).await);
+            }
+            let avg = bench_trials(&mut times, iterations);
+            let mbs = (file_size as f64 / MB as f64) / (avg / 1000.0);
+
+            let delay_str = if cfg.max_delay_ms > 0 {
+                format!(" d={}ms", cfg.max_delay_ms)
+            } else {
+                String::new()
+            };
+            let label = format!("{}{}", cfg.label, delay_str);
+            println!(
+                "  {:<35} {:>10.1} {:>10.1}",
+                label, avg, mbs
+            );
+
+            results.push(BenchResult {
+                label,
+                avg_ms: avg,
+                throughput_mbs: mbs,
+            });
+        }
+        results
+    }
+
+    /// Comprehensive io_uring benchmark including large writes and out-of-order delivery.
+    ///
+    /// Run with:
+    /// ```sh
+    /// cargo test -p xet-data --release --lib io_uring_writer::tests::tuning_benchmark -- --ignored --nocapture
+    /// ```
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    #[ignore]
+    async fn tuning_benchmark() {
+        let iterations = 7;
+
+        for &file_size in &[512 * MB, 1024 * MB] {
+            println!("\n{}", "=".repeat(72));
+            println!(
+                "  io_uring benchmark: {} MB, {} iterations",
+                file_size / MB,
+                iterations
+            );
+            println!("{}", "=".repeat(72));
+
+            // ── Phase 1: Immediate delivery (no delay) ──────────────────
+            println!("\n  ── Immediate delivery (no random delay) ──");
+            println!("  {:<35} {:>10} {:>10}", "Config", "Avg(ms)", "MB/s");
+
+            let immediate_configs = vec![
+                BenchConfig { label: "seq 64K", writer: WriterKind::Sequential, chunk_size: 64 * KB, max_delay_ms: 0 },
+                BenchConfig { label: "vec 64K", writer: WriterKind::Vectored, chunk_size: 64 * KB, max_delay_ms: 0 },
+                BenchConfig { label: "uring 64K r=128", writer: WriterKind::IoUring(128), chunk_size: 64 * KB, max_delay_ms: 0 },
+                BenchConfig { label: "seq 1M", writer: WriterKind::Sequential, chunk_size: 1 * MB, max_delay_ms: 0 },
+                BenchConfig { label: "vec 1M", writer: WriterKind::Vectored, chunk_size: 1 * MB, max_delay_ms: 0 },
+                BenchConfig { label: "uring 1M r=128", writer: WriterKind::IoUring(128), chunk_size: 1 * MB, max_delay_ms: 0 },
+                BenchConfig { label: "seq 4M", writer: WriterKind::Sequential, chunk_size: 4 * MB, max_delay_ms: 0 },
+                BenchConfig { label: "vec 4M", writer: WriterKind::Vectored, chunk_size: 4 * MB, max_delay_ms: 0 },
+                BenchConfig { label: "uring 4M r=128", writer: WriterKind::IoUring(128), chunk_size: 4 * MB, max_delay_ms: 0 },
+            ];
+            run_bench_suite(&immediate_configs, file_size, iterations).await;
+
+            // ── Phase 2: Random delay (simulates out-of-order network arrival) ──
+            for &max_delay in &[5u64, 20, 50] {
+                println!(
+                    "\n  ── Random delay 0..{}ms (out-of-order arrival) ──",
+                    max_delay
+                );
+                println!("  {:<35} {:>10} {:>10}", "Config", "Avg(ms)", "MB/s");
+
+                let delay_configs = vec![
+                    BenchConfig { label: "seq 64K", writer: WriterKind::Sequential, chunk_size: 64 * KB, max_delay_ms: max_delay },
+                    BenchConfig { label: "vec 64K", writer: WriterKind::Vectored, chunk_size: 64 * KB, max_delay_ms: max_delay },
+                    BenchConfig { label: "uring 64K r=128", writer: WriterKind::IoUring(128), chunk_size: 64 * KB, max_delay_ms: max_delay },
+                    BenchConfig { label: "seq 1M", writer: WriterKind::Sequential, chunk_size: 1 * MB, max_delay_ms: max_delay },
+                    BenchConfig { label: "vec 1M", writer: WriterKind::Vectored, chunk_size: 1 * MB, max_delay_ms: max_delay },
+                    BenchConfig { label: "uring 1M r=128", writer: WriterKind::IoUring(128), chunk_size: 1 * MB, max_delay_ms: max_delay },
+                    BenchConfig { label: "seq 4M", writer: WriterKind::Sequential, chunk_size: 4 * MB, max_delay_ms: max_delay },
+                    BenchConfig { label: "vec 4M", writer: WriterKind::Vectored, chunk_size: 4 * MB, max_delay_ms: max_delay },
+                    BenchConfig { label: "uring 4M r=128", writer: WriterKind::IoUring(128), chunk_size: 4 * MB, max_delay_ms: max_delay },
+                ];
+                run_bench_suite(&delay_configs, file_size, iterations).await;
+            }
+        }
+    }
+
+    fn format_size(bytes: usize) -> String {
+        if bytes >= MB {
+            format!("{}M", bytes / MB)
+        } else if bytes >= KB {
+            format!("{}K", bytes / KB)
+        } else {
+            format!("{}B", bytes)
+        }
+    }
 }
