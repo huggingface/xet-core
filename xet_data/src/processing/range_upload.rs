@@ -422,6 +422,7 @@ pub async fn upload_ranges(
     let mut all_verification = Vec::new();
     let mut chunk_cursor = 0usize;
     let mut seg_cursor = 0usize;
+    let mut seg_chunk_cursor = 0usize;
 
     for composed in &composed_regions {
         // Stable region before this dirty region.
@@ -432,6 +433,7 @@ pub async fn upload_ranges(
                 chunk_cursor,
                 composed.region.first_chunk,
                 &mut seg_cursor,
+                &mut seg_chunk_cursor,
             );
             all_chunks.extend_from_slice(&original_chunks[chunk_cursor..composed.region.first_chunk]);
             all_segments.extend(segments);
@@ -449,7 +451,7 @@ pub async fn upload_ranges(
     // Stable suffix after the last dirty region.
     if chunk_cursor < compose_num_chunks {
         let (segments, verification_hashes) =
-            extract_segments(&original_mdb, &original_chunks, chunk_cursor, compose_num_chunks, &mut seg_cursor);
+            extract_segments(&original_mdb, &original_chunks, chunk_cursor, compose_num_chunks, &mut seg_cursor, &mut seg_chunk_cursor);
         all_chunks.extend_from_slice(&original_chunks[chunk_cursor..compose_num_chunks]);
         all_segments.extend(segments);
         all_verification.extend(verification_hashes);
@@ -550,15 +552,12 @@ fn build_dirty_regions(
         // Find the last chunk (exclusive) that starts before dirty_end.
         debug_assert!(dirty_end <= total_size, "dirty_end ({dirty_end}) exceeds total_size ({total_size})");
         let clamped_end = dirty_end.min(original_size);
-        let last_chunk = (0..num_chunks)
-            .rev()
-            .find(|&i| chunk_offsets[i] < clamped_end)
-            .map(|i| i + 1)
-            .ok_or_else(|| {
-                DataProcessingError::InternalError(format!(
-                    "no chunk starts before clamped_end ({clamped_end}), chunks may be inconsistent"
-                ))
-            })?;
+        let last_chunk = chunk_offsets[..num_chunks].partition_point(|&o| o < clamped_end);
+        if last_chunk == 0 {
+            return Err(DataProcessingError::InternalError(format!(
+                "no chunk starts before clamped_end ({clamped_end}), chunks may be inconsistent"
+            )));
+        }
         raw.push(DirtyRegion {
             dirty_start,
             dirty_end,
@@ -596,15 +595,12 @@ fn extract_segments(
     chunk_start: usize,
     chunk_end: usize,
     seg_cursor: &mut usize,
+    seg_chunk_cursor: &mut usize,
 ) -> (Vec<FileDataSequenceEntry>, Vec<FileVerificationEntry>) {
     let mut segments = Vec::new();
     let mut verification = Vec::new();
 
-    // Compute the chunk-level cursor from the segment cursor.
-    let mut chunk_cursor: usize = original_mdb.segments[..*seg_cursor]
-        .iter()
-        .map(|s| (s.chunk_index_end - s.chunk_index_start) as usize)
-        .sum();
+    let mut chunk_cursor = *seg_chunk_cursor;
 
     // Walk segments starting from seg_cursor, extracting the overlap with [chunk_start, chunk_end).
     //
@@ -650,6 +646,7 @@ fn extract_segments(
         // If it extends beyond chunk_end, a later call may need its suffix.
         if seg_end <= chunk_end {
             *seg_cursor += 1;
+            *seg_chunk_cursor = seg_end;
         }
     }
 
@@ -1391,12 +1388,9 @@ mod tests {
     // dirty:          [SPARSE]        (bytes [5, 11))
     // expected: b"AAAA_SPARSE_AAAA|"  (17 bytes)
     //
-    // Regression test for a bug where boundary_end (chunk size) > original_size
-    // caused the prefix/suffix CAS streams to be skipped entirely. In production
-    // CAS, a 17-byte file is stored in a padded xorb (e.g. 4096 bytes), making
-    // boundary_end=4096 > original_size=17. The LocalTestServer doesn't pad, so
-    // this test verifies the fix works for the non-padded case. The padded case
-    // was verified manually against the real CAS.
+    // Tests mid-file edit on a very small file (single chunk, smaller than
+    // typical CDC minimum). See test_truncate_then_mid_edit for the regression
+    // test that reproduces the real production bug.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_upload_ranges_small_file_mid_edit() {
         let server = LocalTestServerBuilder::new().start().await;
