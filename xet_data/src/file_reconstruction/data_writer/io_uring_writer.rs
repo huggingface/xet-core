@@ -44,6 +44,7 @@ struct InFlightOp {
 struct IoUringWriterThread {
     ring: IoUring,
     fd: RawFd,
+    base_offset: u64,
     rx: UnboundedReceiver<Result<CompletedTerm>>,
     in_flight: HashMap<u64, InFlightOp>,
     next_user_data: u64,
@@ -54,6 +55,7 @@ struct IoUringWriterThread {
 impl IoUringWriterThread {
     fn new(
         ring_size: u32,
+        base_offset: u64,
         file: &impl AsRawFd,
         rx: UnboundedReceiver<Result<CompletedTerm>>,
         bytes_written: Arc<AtomicU64>,
@@ -65,6 +67,7 @@ impl IoUringWriterThread {
         Ok(Self {
             ring,
             fd: file.as_raw_fd(),
+            base_offset,
             rx,
             in_flight: HashMap::new(),
             next_user_data: 0,
@@ -74,7 +77,7 @@ impl IoUringWriterThread {
     }
 
     fn submit_write(&mut self, term: CompletedTerm) -> Result<()> {
-        let offset = term.byte_range.start;
+        let offset = self.base_offset + term.byte_range.start;
         let data = term.data;
         let len = data.len();
 
@@ -196,12 +199,13 @@ impl IoUringWriterThread {
 /// resolves to the total bytes written on success.
 pub(crate) fn spawn_io_uring_writer(
     ring_size: u32,
+    base_offset: u64,
     file: std::fs::File,
     rx: UnboundedReceiver<Result<CompletedTerm>>,
     run_state: Arc<RunState>,
 ) -> Result<tokio::task::JoinHandle<Result<u64>>> {
     let bytes_written = Arc::new(AtomicU64::new(0));
-    let writer = IoUringWriterThread::new(ring_size, &file, rx, bytes_written, run_state.clone())?;
+    let writer = IoUringWriterThread::new(ring_size, base_offset, &file, rx, bytes_written, run_state.clone())?;
 
     // Keep the File alive for the duration of the background thread so the
     // fd stays valid.
@@ -262,7 +266,7 @@ mod tests {
         let file = std::fs::File::create(&path).unwrap();
 
         let run_state = RunState::new_for_test();
-        let writer = UnorderedWriter::new_io_uring(64, file, run_state).unwrap();
+        let writer = UnorderedWriter::new_io_uring(64, 0, file, run_state).unwrap();
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
@@ -289,7 +293,7 @@ mod tests {
         let file = std::fs::File::create(&path).unwrap();
 
         let run_state = RunState::new_for_test();
-        let writer = UnorderedWriter::new_io_uring(64, file, run_state).unwrap();
+        let writer = UnorderedWriter::new_io_uring(64, 0, file, run_state).unwrap();
 
         writer
             .set_next_term_data_source(
@@ -320,7 +324,7 @@ mod tests {
         let file = std::fs::File::create(&path).unwrap();
 
         let run_state = RunState::new_for_test();
-        let writer = UnorderedWriter::new_io_uring(64, file, run_state).unwrap();
+        let writer = UnorderedWriter::new_io_uring(64, 0, file, run_state).unwrap();
 
         let f0: DataFuture = Box::pin(async {
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -348,7 +352,7 @@ mod tests {
         let file = std::fs::File::create(&path).unwrap();
 
         let run_state = RunState::new_for_test();
-        let writer = UnorderedWriter::new_io_uring(64, file, run_state).unwrap();
+        let writer = UnorderedWriter::new_io_uring(64, 0, file, run_state).unwrap();
 
         writer
             .set_next_term_data_source(FileRange::new(0, 10), None, immediate_future(Bytes::from("Hello")))
@@ -366,7 +370,7 @@ mod tests {
         let file = std::fs::File::create(&path).unwrap();
 
         let run_state = RunState::new_for_test();
-        let writer = UnorderedWriter::new_io_uring(64, file, run_state).unwrap();
+        let writer = UnorderedWriter::new_io_uring(64, 0, file, run_state).unwrap();
 
         let failing: DataFuture =
             Box::pin(async { Err(FileReconstructionError::InternalError("test error".to_string())) });
@@ -387,7 +391,7 @@ mod tests {
         let file = std::fs::File::create(&path).unwrap();
 
         let run_state = RunState::new_for_test();
-        let writer = UnorderedWriter::new_io_uring(64, file, run_state).unwrap();
+        let writer = UnorderedWriter::new_io_uring(64, 0, file, run_state).unwrap();
         let semaphore = AdjustableSemaphore::new(2, (0, 2));
 
         let p1 = semaphore.acquire().await.unwrap();
@@ -414,7 +418,7 @@ mod tests {
         let file = std::fs::File::create(&path).unwrap();
 
         let run_state = RunState::new_for_test();
-        let writer = UnorderedWriter::new_io_uring(64, file, run_state).unwrap();
+        let writer = UnorderedWriter::new_io_uring(64, 0, file, run_state).unwrap();
 
         let num_terms: usize = 200;
         let mut expected = vec![0u8; 0];
@@ -450,7 +454,7 @@ mod tests {
         let file = std::fs::File::create(&path).unwrap();
 
         let run_state = RunState::new_for_test();
-        let writer = UnorderedWriter::new_io_uring(64, file, run_state).unwrap();
+        let writer = UnorderedWriter::new_io_uring(64, 0, file, run_state).unwrap();
 
         // Submit more writes than RING_SIZE (64) to exercise SQ backpressure.
         let num_terms: usize = 200;
@@ -474,6 +478,40 @@ mod tests {
         let bytes_written = writer.finish().await.unwrap();
         assert_eq!(bytes_written as usize, num_terms * chunk_size);
         assert_eq!(read_file(&path), expected);
+    }
+
+    #[tokio::test]
+    async fn test_nonzero_base_offset() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("offset.bin");
+        let file = std::fs::File::create(&path).unwrap();
+        let run_state = RunState::new_for_test();
+
+        let base_offset = 4096u64;
+        let writer = UnorderedWriter::new_io_uring(64, base_offset, file, run_state).unwrap();
+
+        let chunks: &[&[u8]] = &[b"AAAA", b"BBBB", b"CCCC"];
+        for (i, chunk) in chunks.iter().enumerate() {
+            let start = (i * chunk.len()) as u64;
+            let end = start + chunk.len() as u64;
+            writer
+                .set_next_term_data_source(
+                    FileRange::new(start, end),
+                    None,
+                    immediate_future(Bytes::from(chunk.to_vec())),
+                )
+                .await
+                .unwrap();
+        }
+        writer.finish().await.unwrap();
+
+        let contents = read_file(&path);
+        let expected_len = base_offset as usize + chunks.iter().map(|c| c.len()).sum::<usize>();
+        assert_eq!(contents.len(), expected_len);
+        assert!(contents[..base_offset as usize].iter().all(|&b| b == 0));
+        assert_eq!(&contents[base_offset as usize..base_offset as usize + 4], b"AAAA");
+        assert_eq!(&contents[base_offset as usize + 4..base_offset as usize + 8], b"BBBB");
+        assert_eq!(&contents[base_offset as usize + 8..base_offset as usize + 12], b"CCCC");
     }
 
     // ── Tuning benchmark ───────────────────────────────────────────────
@@ -529,7 +567,7 @@ mod tests {
         let writer: Box<dyn DataWriter> = match writer_kind {
             WriterKind::Sequential => SequentialWriter::new(file, false, run_state),
             WriterKind::Vectored => SequentialWriter::new(file, true, run_state),
-            WriterKind::IoUring(ring_size) => UnorderedWriter::new_io_uring(ring_size, file, run_state).unwrap(),
+            WriterKind::IoUring(ring_size) => UnorderedWriter::new_io_uring(ring_size, 0, file, run_state).unwrap(),
         };
 
         let start = Instant::now();

@@ -219,6 +219,7 @@ impl UnorderedWriter {
     #[cfg(target_os = "linux")]
     pub(crate) fn new_io_uring(
         ring_size: u32,
+        base_offset: u64,
         file: std::fs::File,
         run_state: Arc<RunState>,
     ) -> Result<Box<dyn DataWriter>> {
@@ -232,7 +233,8 @@ impl UnorderedWriter {
             finished: AtomicBool::new(false),
         });
 
-        let handle = super::io_uring_writer::spawn_io_uring_writer(ring_size, file, rx, run_state.clone())?;
+        let handle =
+            super::io_uring_writer::spawn_io_uring_writer(ring_size, base_offset, file, rx, run_state.clone())?;
 
         let writer = Box::new(UnorderedWriter {
             result_tx: tx,

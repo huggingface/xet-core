@@ -26,7 +26,7 @@ use crate::progress_tracking::{GroupProgress, ItemProgressUpdater, UniqueID};
 pub struct FileDownloadSession {
     client: Arc<dyn Client>,
     progress: Arc<GroupProgress>,
-    active_stream_abort_callbacks: Mutex<Vec<Box<dyn Fn() + Send + Sync>>>,
+    active_stream_abort_callbacks: Mutex<HashMap<UniqueID, Box<dyn Fn() + Send + Sync>>>,
     finalized: AtomicBool,
 }
 
@@ -48,7 +48,7 @@ impl FileDownloadSession {
         Ok(Arc::new(Self {
             client,
             progress,
-            active_stream_abort_callbacks: Mutex::new(Vec::new()),
+            active_stream_abort_callbacks: Mutex::new(HashMap::new()),
             finalized: AtomicBool::new(false),
         }))
     }
@@ -62,7 +62,7 @@ impl FileDownloadSession {
         Arc::new(Self {
             client,
             progress,
-            active_stream_abort_callbacks: Mutex::new(Vec::new()),
+            active_stream_abort_callbacks: Mutex::new(HashMap::new()),
             finalized: AtomicBool::new(false),
         })
     }
@@ -79,13 +79,17 @@ impl FileDownloadSession {
         self.progress.item_reports()
     }
 
-    fn register_stream_abort_callback(&self, callback: Box<dyn Fn() + Send + Sync>) {
-        self.active_stream_abort_callbacks.lock().unwrap().push(callback);
+    fn register_stream_abort_callback(&self, id: UniqueID, callback: Box<dyn Fn() + Send + Sync>) {
+        self.active_stream_abort_callbacks.lock().unwrap().insert(id, callback);
+    }
+
+    pub fn unregister_stream_abort_callback(&self, id: UniqueID) {
+        self.active_stream_abort_callbacks.lock().unwrap().remove(&id);
     }
 
     pub fn abort_active_streams(&self) {
         let callbacks = self.active_stream_abort_callbacks.lock().unwrap();
-        for callback in callbacks.iter() {
+        for callback in callbacks.values() {
             callback();
         }
     }
@@ -179,7 +183,7 @@ impl FileDownloadSession {
         let range = source_range.map(|r| FileRange::new(r.start, r.end));
         let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater))?;
         let stream = reconstructor.reconstruct_to_stream();
-        self.register_stream_abort_callback(stream.abort_callback());
+        self.register_stream_abort_callback(id, stream.abort_callback());
         Ok((id, stream))
     }
 
@@ -209,7 +213,7 @@ impl FileDownloadSession {
         let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater))?;
         let mut stream = reconstructor.reconstruct_to_unordered_stream();
         stream.set_total_bytes_expected(expected_bytes);
-        self.register_stream_abort_callback(stream.abort_callback());
+        self.register_stream_abort_callback(id, stream.abort_callback());
         Ok((id, stream))
     }
 

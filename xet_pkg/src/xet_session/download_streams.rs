@@ -81,7 +81,13 @@ impl XetDownloadStream {
     pub fn get_progress(&self) -> ItemProgressReport {
         self.download_session
             .item_report(self.id)
-            .expect("item was registered when stream was created")
+            .expect("progress item was registered at stream creation and is never removed")
+    }
+}
+
+impl Drop for XetDownloadStream {
+    fn drop(&mut self) {
+        self.download_session.unregister_stream_abort_callback(self.id);
     }
 }
 
@@ -165,6 +171,12 @@ impl XetUnorderedDownloadStream {
     pub fn get_progress(&self) -> ItemProgressReport {
         self.download_session
             .item_report(self.id)
-            .expect("item was registered when stream was created")
+            .expect("progress item was registered at stream creation and is never removed")
+    }
+}
+
+impl Drop for XetUnorderedDownloadStream {
+    fn drop(&mut self) {
+        self.download_session.unregister_stream_abort_callback(self.id);
     }
 }
