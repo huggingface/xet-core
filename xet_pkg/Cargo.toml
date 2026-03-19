@@ -27,6 +27,7 @@ tracing = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 
 [features]
+smoke-test = []
 python = ["xet-runtime/python"]
 
 [dev-dependencies]

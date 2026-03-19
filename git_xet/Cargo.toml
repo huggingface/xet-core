@@ -35,6 +35,7 @@ tokio = { workspace = true }
 serial_test = { workspace = true }
 
 [features]
+smoke-test = []
 git-xet-for-integration-test = []
 git2-vendored-openssl = ["git2/vendored-openssl"]
 

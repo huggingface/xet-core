@@ -28,10 +28,11 @@ async fn test_shard_upload_succeeds_with_no_server_delay() {
 }
 
 #[tokio::test]
+#[cfg_attr(feature = "smoke-test", ignore)]
 async fn test_shard_upload_succeeds_with_slow_server() {
     let server = LocalTestServerBuilder::new().start().await;
 
-    // Server takes 3s to respond — shard upload client has no read_timeout so this should succeed
+    // Keep this meaningfully slow to protect no-read-timeout behavior.
     server.set_api_delay_range(Some(Duration::from_secs(3)..Duration::from_secs(3)));
 
     let result = server.remote_client().upload_random_file(&[(1, (0, 5))], CHUNK_SIZE).await;
