@@ -1,10 +1,7 @@
 use std::time::Instant;
 
-use byte_grouping::bg4::bg4_split_separate;
 use rand::Rng;
-use xorb_object::*;
-
-use crate::byte_grouping::bg4;
+use xet_core_structures::xorb_object::byte_grouping::bg4;
 
 // Benchmark results on Apple M2 Max
 
@@ -16,14 +13,14 @@ use crate::byte_grouping::bg4;
 // regroup_together_cw_8 speed: 13925.35 MB/s
 
 fn main() {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     let n = 64 * 1024 + 123; // 64 KiB data
-    let random_u8s: Vec<_> = (0..n).map(|_| rng.gen_range(0..255)).collect();
+    let random_u8s: Vec<_> = (0..n).map(|_| rng.random_range(0..255)).collect();
 
     bench_split_separate(random_u8s.clone());
 
-    let groups = bg4_split_separate(&random_u8s);
+    let groups = bg4::bg4_split_separate(&random_u8s);
     bench_regroup_separate(groups);
 
     bench_split_together(random_u8s.clone());

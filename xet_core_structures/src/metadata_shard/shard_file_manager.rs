@@ -1329,6 +1329,7 @@ mod tests {
 
                         // Turn off the typical verification checks on this shard, so it isn't verified
                         // on loading from the cache.
+                        #[cfg(debug_assertions)]
                         sfi.disable_verifications.store(true, std::sync::atomic::Ordering::Relaxed);
 
                         // Replace the file with an empty file.  On read, this will error, and should skip.
