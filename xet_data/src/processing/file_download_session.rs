@@ -110,6 +110,8 @@ impl FileDownloadSession {
         let progress_updater = self.progress.new_item(id, name);
         let reconstructor = self.setup_reconstructor(file_info, None, Some(progress_updater))?;
         let n_bytes = reconstructor.reconstruct_to_file(write_path, None).await?;
+        // Caller is responsible for cleaning up the file on error (consistent
+        // with other error paths); see download_group.rs error handling.
         if let Some(expected_size) = file_info.file_size()
             && n_bytes != expected_size
         {
@@ -129,7 +131,8 @@ impl FileDownloadSession {
     /// `4..12`, `5..`, `..100`, or `..` (full file).
     ///
     /// This path does not acquire the session-level file download semaphore.
-    #[instrument(skip_all, name = "FileDownloadSession::download_to_writer", fields(hash = file_info.hash()))]
+    #[instrument(skip_all, name = "FileDownloadSession::download_to_writer",
+        fields(hash = file_info.hash(), range_start = tracing::field::Empty, range_end = tracing::field::Empty))]
     pub async fn download_to_writer<W: Write + Send + 'static>(
         &self,
         file_info: &XetFileInfo,
@@ -137,7 +140,12 @@ impl FileDownloadSession {
         writer: W,
     ) -> Result<(UniqueID, u64)> {
         self.check_not_finalized()?;
-        let range = range_bounds_to_file_range(&source_range);
+        let range = range_bounds_to_file_range(&source_range)?;
+        if let Some(ref r) = range {
+            let span = tracing::Span::current();
+            span.record("range_start", r.start);
+            span.record("range_end", r.end);
+        }
         let id = UniqueID::new();
         let name = Arc::from("");
         let progress_updater = self.progress.new_item(id, name);
@@ -173,7 +181,7 @@ impl FileDownloadSession {
         range: impl RangeBounds<u64>,
     ) -> Result<(UniqueID, DownloadStream)> {
         self.check_not_finalized()?;
-        let file_range = range_bounds_to_file_range(&range);
+        let file_range = range_bounds_to_file_range(&range)?;
         let id = UniqueID::new();
         let progress_updater = self.progress.new_item(id, "stream");
         let reconstructor = self.setup_reconstructor(file_info, file_range, Some(progress_updater))?;
@@ -222,13 +230,12 @@ impl FileDownloadSession {
                 reconstructor = reconstructor.with_byte_range(range);
             },
             None if file_info.file_size().is_some() => {
-                // Full file with caller-provided size hint.
-                //
-                // We intentionally avoid constraining reconstruction to that size
-                // and avoid finalizing progress totals up front.  This lets the
-                // reconstructor discover actual EOF, keeps debug assertions valid,
-                // and allows download_file_with_id to return SizeMismatch when the
-                // provided size does not match reconstructed bytes.
+                // Full file with caller-provided size. Set progress upfront so
+                // UI consumers get percentage-based progress. SizeMismatch is
+                // validated after reconstruction in download_file_with_id.
+                if let Some(ref updater) = progress_updater {
+                    updater.update_item_size(file_info.file_size().unwrap(), true);
+                }
             },
             None => {
                 // Full file with unknown size: the reconstructor uses
@@ -249,7 +256,9 @@ impl FileDownloadSession {
 /// Returns `None` for the unbounded range `..` (equivalent to full file),
 /// and `Some(FileRange)` otherwise. Open-ended ranges use `u64::MAX` as
 /// the end sentinel (matching `FileRange::full()`).
-fn range_bounds_to_file_range(range: &impl RangeBounds<u64>) -> Option<FileRange> {
+///
+/// Returns an error for inverted ranges where `start > end`.
+fn range_bounds_to_file_range(range: &impl RangeBounds<u64>) -> Result<Option<FileRange>> {
     let start = match range.start_bound() {
         Bound::Included(&s) => s,
         Bound::Excluded(&s) => s.saturating_add(1),
@@ -260,10 +269,13 @@ fn range_bounds_to_file_range(range: &impl RangeBounds<u64>) -> Option<FileRange
         Bound::Excluded(&e) => e,
         Bound::Unbounded => u64::MAX,
     };
+    if start > end {
+        return Err(DataProcessingError::InvalidOperation(format!("Invalid range: start ({start}) > end ({end})")));
+    }
     if start == 0 && end == u64::MAX {
-        None
+        Ok(None)
     } else {
-        Some(FileRange::new(start, end))
+        Ok(Some(FileRange::new(start, end)))
     }
 }
 
@@ -984,6 +996,7 @@ mod tests {
             .unwrap();
     }
 
+    #[cfg(not(debug_assertions))]
     #[test]
     fn test_download_file_size_mismatch_error() {
         let runtime = get_threadpool();
@@ -1017,10 +1030,92 @@ mod tests {
     fn test_range_bounds_conversion() {
         use super::range_bounds_to_file_range;
 
-        assert_eq!(range_bounds_to_file_range(&(..)), None);
-        assert_eq!(range_bounds_to_file_range(&(0..100)), Some(FileRange::new(0, 100)));
-        assert_eq!(range_bounds_to_file_range(&(5..)), Some(FileRange::new(5, u64::MAX)));
-        assert_eq!(range_bounds_to_file_range(&(..50)), Some(FileRange::new(0, 50)));
-        assert_eq!(range_bounds_to_file_range(&(10..=19)), Some(FileRange::new(10, 20)));
+        assert_eq!(range_bounds_to_file_range(&(..)).unwrap(), None);
+        assert_eq!(range_bounds_to_file_range(&(0..100)).unwrap(), Some(FileRange::new(0, 100)));
+        assert_eq!(range_bounds_to_file_range(&(5..)).unwrap(), Some(FileRange::new(5, u64::MAX)));
+        assert_eq!(range_bounds_to_file_range(&(..50)).unwrap(), Some(FileRange::new(0, 50)));
+        assert_eq!(range_bounds_to_file_range(&(10..=19)).unwrap(), Some(FileRange::new(10, 20)));
+    }
+
+    #[test]
+    fn test_range_bounds_inverted_range_errors() {
+        use super::range_bounds_to_file_range;
+
+        let result = range_bounds_to_file_range(&(10..5));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_download_to_writer_empty_range() {
+        let runtime = get_threadpool();
+        runtime
+            .clone()
+            .external_run_async_task(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = b"0123456789abcdef";
+
+                let xfi = upload_data(&cas_path, original_data).await;
+
+                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
+
+                let out_path = temp.path().join("empty_range.bin");
+                let file = std::fs::File::create(&out_path).unwrap();
+                let (_id, n_bytes) = session.download_to_writer(&xfi, 5..5, file).await.unwrap();
+
+                assert_eq!(n_bytes, 0);
+                assert_eq!(read(&out_path).unwrap(), &[] as &[u8]);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_download_to_writer_inverted_range_errors() {
+        let runtime = get_threadpool();
+        runtime
+            .clone()
+            .external_run_async_task(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = b"0123456789abcdef";
+
+                let xfi = upload_data(&cas_path, original_data).await;
+
+                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
+
+                let out_path = temp.path().join("inverted_range.bin");
+                let file = std::fs::File::create(&out_path).unwrap();
+                let result = session.download_to_writer(&xfi, 10..5, file).await;
+
+                assert!(result.is_err());
+            })
+            .unwrap();
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn test_download_to_writer_range_start_beyond_file_size_errors() {
+        let runtime = get_threadpool();
+        runtime
+            .clone()
+            .external_run_async_task(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = b"0123456789abcdef";
+
+                let xfi = upload_data(&cas_path, original_data).await;
+
+                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
+
+                let out_path = temp.path().join("beyond_size.bin");
+                let file = std::fs::File::create(&out_path).unwrap();
+                let result = session.download_to_writer(&xfi, 100000.., file).await;
+
+                assert!(result.is_err());
+            })
+            .unwrap();
     }
 }

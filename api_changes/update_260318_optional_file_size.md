@@ -14,6 +14,7 @@ Downstream API surfaces that consume `XetFileInfo` were updated accordingly:
   with `file_size: Some(size)` when known.
 - `hf_xet::PyXetDownloadInfo.file_size` is now `Option<u64>`, and converting
   from Python download metadata supports hash-only downloads.
+- `hf_xet::PyPointerFile.filesize` getter also returns `Option<u64>` now.
 - `hf_xet::PyXetUploadInfo` still exposes `file_size: u64`; upload metadata is
   expected to always provide a known size.
 

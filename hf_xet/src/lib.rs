@@ -355,7 +355,8 @@ impl PyXetDownloadInfo {
     }
 
     fn __repr__(&self) -> String {
-        format!("PyXetDownloadInfo({}, {}, {:?})", self.destination_path, self.hash, self.file_size)
+        let size_str = self.file_size.map_or("None".to_string(), |s| s.to_string());
+        format!("PyXetDownloadInfo({}, {}, {})", self.destination_path, self.hash, size_str)
     }
 }
 
@@ -378,7 +379,8 @@ impl PyPointerFile {
 
     fn __repr__(self_: PyRef<'_, Self>) -> String {
         let super_ = self_.as_super();
-        format!("PyPointerFile({}, {}, {:?})", super_.destination_path, super_.hash, super_.file_size)
+        let size_str = super_.file_size.map_or("None".to_string(), |s| s.to_string());
+        format!("PyPointerFile({}, {}, {})", super_.destination_path, super_.hash, size_str)
     }
 
     #[getter]
