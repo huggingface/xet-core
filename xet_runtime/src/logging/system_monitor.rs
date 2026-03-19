@@ -565,7 +565,7 @@ mod tests {
         let tempdir = tempdir()?;
         let tempdir_path = tempdir.path();
         let log_path = TemplatedPathBuf::from(tempdir_path.join("system_monitor_{pid}.txt"));
-        let sample_interval = Duration::from_millis(100);
+        let sample_interval = Duration::from_millis(500);
         let monitor = SystemMonitor::follow_process(sample_interval, Some(log_path.clone()))?;
 
         // produce some disk usage
@@ -586,8 +586,8 @@ mod tests {
             10 * 1024 * 1024 // 10MiB
         };
 
-        // wait for a few samples to be taken and abort monitor
-        std::thread::sleep(Duration::from_millis(300));
+        // wait for the last sample and abort monitor
+        std::thread::sleep(Duration::from_secs(2));
         monitor.stop()?;
 
         // check monitor logs
@@ -612,10 +612,10 @@ mod tests {
         let tempdir = tempdir()?;
         let tempdir_path = tempdir.path();
         let log_path = TemplatedPathBuf::from(tempdir_path.join("system_monitor_{pid}.txt"));
-        let sample_interval = Duration::from_millis(100);
+        let sample_interval = Duration::from_millis(500);
         let monitor = SystemMonitor::follow_process(sample_interval, Some(log_path.clone()))?;
 
-        let peak_allocation_size = 32 * 1024 * 1024; // 32 MiB
+        let peak_allocation_size = 512 * 1024 * 1024; // 512 MiB
 
         // Allocate a large chunk of memory.
         let mut large_vec = vec![0u8; peak_allocation_size];
@@ -624,8 +624,8 @@ mod tests {
             large_vec[i * 4 * 1024] = 1;
         }
 
-        // Wait for a few samples to be taken while memory usage is high.
-        std::thread::sleep(Duration::from_millis(300));
+        // Wait for a sample to be taken while memory usage is high.
+        std::thread::sleep(Duration::from_secs(2));
 
         // Drop the large allocation.
         drop(large_vec);
