@@ -12,7 +12,7 @@ use xet_runtime::core::XetRuntime;
 
 use super::common::{GroupState, create_translator_config};
 use super::errors::SessionError;
-use super::session::XetSession;
+use super::session::{RuntimeMode, XetSession};
 use super::tasks::{DownloadTaskHandle, TaskHandle, TaskStatus};
 
 /// API for grouping related file downloads into a single unit of work.
@@ -152,14 +152,28 @@ impl DownloadGroup {
 
     /// Blocking version of [`download_file_to_path`](Self::download_file_to_path).
     ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::WrongRuntimeMode`] if the session was created with an external
+    /// tokio runtime ([`XetSessionBuilder::with_tokio_handle`] / [`XetSessionBuilder::build_async`]
+    /// inside a tokio context). Use [`download_file_to_path`](Self::download_file_to_path)`.await`
+    /// instead.
+    ///
     /// # Panics
     ///
-    /// Panics if called from within a tokio async runtime.
+    /// Panics if called from within a tokio async runtime on an Owned-mode session.
     pub fn download_file_to_path_blocking(
         &self,
         file_info: XetFileInfo,
         dest_path: PathBuf,
     ) -> Result<DownloadTaskHandle, SessionError> {
+        if matches!(self.session.runtime_mode, RuntimeMode::External) {
+            return Err(SessionError::wrong_mode(
+                "download_file_to_path_blocking() cannot be called on a session using an \
+                 external tokio runtime (with_tokio_handle() or tokio build_async()); \
+                 use download_file_to_path().await instead",
+            ));
+        }
         let group = self.clone();
         self.runtime()
             .external_run_async_task(async move { group.download_file_to_path(file_info, dest_path).await })?
@@ -370,6 +384,7 @@ pub struct DownloadedFile {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -1039,5 +1054,47 @@ mod tests {
     #[test]
     fn test_blocking_download_round_trip_in_async_std() {
         assert_blocking_download_round_trip(|fut| async_std::task::block_on(fut));
+    }
+
+    // ── RuntimeMode checks ────────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    // download_file_to_path_blocking returns WrongRuntimeMode on an External-mode session.
+    async fn test_download_file_to_path_blocking_errors_in_external_mode() {
+        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        assert_eq!(session.runtime_mode, RuntimeMode::External);
+        let group = session.new_download_group().await.unwrap();
+        let file_info = XetFileInfo {
+            hash: String::new(),
+            file_size: 0,
+            sha256: None,
+        };
+        let err = group
+            .download_file_to_path_blocking(file_info, PathBuf::from("/nonexistent"))
+            .err()
+            .unwrap();
+        assert!(matches!(err, SessionError::WrongRuntimeMode(_)));
+    }
+
+    // ── Owned-mode _blocking panic guard ─────────────────────────────────────
+
+    #[test]
+    // download_file_to_path_blocking panics when called from within a tokio runtime on an
+    // Owned-mode session: external_run_async_task calls handle.block_on(), which panics
+    // because tokio sets a thread-local runtime context that it detects and rejects.
+    fn test_download_file_to_path_blocking_panics_in_async_context() {
+        let session = XetSessionBuilder::new().build().unwrap();
+        assert_eq!(session.runtime_mode, RuntimeMode::Owned);
+        let group = session.new_download_group_blocking().unwrap();
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let file_info = XetFileInfo {
+            hash: String::new(),
+            file_size: 0,
+            sha256: None,
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rt.block_on(async { group.download_file_to_path_blocking(file_info, PathBuf::from("/nonexistent")) })
+        }));
+        assert!(result.is_err(), "download_file_to_path_blocking() must panic when called from async");
     }
 }

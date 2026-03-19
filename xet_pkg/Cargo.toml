@@ -25,9 +25,9 @@ serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["net", "time"] }
 tracing = { workspace = true }
+ulid = { workspace = true }
 
 [features]
-smoke-test = []
 python = ["xet-runtime/python"]
 
 [dev-dependencies]

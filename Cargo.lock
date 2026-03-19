@@ -1888,6 +1888,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "ulid",
  "xet-client",
  "xet-core-structures",
  "xet-data",
