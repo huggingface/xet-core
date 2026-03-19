@@ -104,6 +104,10 @@ impl ClientError {
         ClientError::InternalError(format!("{value:?}"))
     }
 
+    pub fn credential_helper_error(e: impl std::fmt::Display) -> Self {
+        ClientError::CredentialHelper(e.to_string())
+    }
+
     pub fn status(&self) -> Option<StatusCode> {
         match self {
             ClientError::ReqwestMiddlewareError(e) => e.status(),

@@ -15,7 +15,6 @@ use xet_runtime::core::xet_config;
 
 use super::adaptive_concurrency::{AdaptiveConcurrencyController, ConnectionPermit};
 use super::auth::AuthConfig;
-use super::error::{CasClientError, Result};
 use super::http_client::{self, Api};
 use super::interface::URLProvider;
 use super::progress_tracked_streams::{
@@ -27,6 +26,7 @@ use crate::cas_types::{
     BatchQueryReconstructionResponse, FileRange, HttpRange, Key, QueryReconstructionResponse,
     QueryReconstructionResponseV2, UploadShardResponse, UploadShardResponseType, UploadXorbResponse,
 };
+use crate::error::{ClientError, Result};
 
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
@@ -187,7 +187,7 @@ impl RemoteClient {
             "v1" => "cas::get_reconstruction_v1",
             "v2" => "cas::get_reconstruction_v2",
             _ => {
-                return Err(CasClientError::internal(format!("unsupported reconstruction API version: {api_version}")));
+                return Err(ClientError::internal(format!("unsupported reconstruction API version: {api_version}")));
             },
         };
 
@@ -224,7 +224,7 @@ impl RemoteClient {
                 );
                 Ok(Some(response))
             },
-            Err(CasClientError::ReqwestError(ref e, _)) if e.status() == Some(StatusCode::RANGE_NOT_SATISFIABLE) => {
+            Err(ClientError::ReqwestError(ref e, _)) if e.status() == Some(StatusCode::RANGE_NOT_SATISFIABLE) => {
                 Ok(None)
             },
             Err(e) => Err(e),
@@ -286,7 +286,7 @@ impl RemoteClient {
                 Err(e) => Err(e),
             },
             1 => Ok(self.get_reconstruction_v1(file_id, bytes_range).await?.map(Into::into)),
-            other => Err(CasClientError::internal(format!("unsupported reconstruction API version: {other}"))),
+            other => Err(ClientError::internal(format!("unsupported reconstruction API version: {other}"))),
         }
     }
 }
@@ -424,7 +424,7 @@ impl Client for RemoteClient {
                             let body = resp
                                 .bytes()
                                 .await
-                                .map_err(|e| RetryableReqwestError::RetryableError(CasClientError::from(e)))?;
+                                .map_err(|e| RetryableReqwestError::RetryableError(ClientError::from(e)))?;
 
                             let multipart_parts = crate::cas_client::multipart::parse_multipart_byteranges(&content_type, body)
                                 .map_err(RetryableReqwestError::FatalError)?;
@@ -439,7 +439,7 @@ impl Client for RemoteClient {
                                 let (data, chunk_indices) =
                                     xet_core_structures::xorb_object::deserialize_chunks(&mut std::io::Cursor::new(part.data.as_ref()))
                                         .map_err(|e| {
-                                            RetryableReqwestError::RetryableError(CasClientError::FormatError(e))
+                                            RetryableReqwestError::RetryableError(ClientError::FormatError(e))
                                         })?;
 
                                 xet_core_structures::xorb_object::append_chunk_segment(
@@ -455,7 +455,7 @@ impl Client for RemoteClient {
                             if let Some(expected) = uncompressed_size_if_known
                                 && expected != all_decompressed.len()
                             {
-                                return Err(RetryableReqwestError::RetryableError(CasClientError::Other(format!(
+                                return Err(RetryableReqwestError::RetryableError(ClientError::Other(format!(
                                     "get_file_term_data: expected {expected} uncompressed bytes, got {}",
                                     all_decompressed.len()
                                 ))));
@@ -482,14 +482,14 @@ impl Client for RemoteClient {
                                     if let Some(expected) = uncompressed_size_if_known
                                         && expected != buffer.len()
                                     {
-                                        return Err(RetryableReqwestError::RetryableError(CasClientError::Other(format!(
+                                        return Err(RetryableReqwestError::RetryableError(ClientError::Other(format!(
                                             "get_file_term_data: expected {expected} uncompressed bytes, got {}",
                                             buffer.len()
                                         ))));
                                     }
                                     Ok((Bytes::from(buffer), chunk_byte_indices))
                                 },
-                                Err(e) => Err(RetryableReqwestError::RetryableError(CasClientError::FormatError(e))),
+                                Err(e) => Err(RetryableReqwestError::RetryableError(ClientError::FormatError(e))),
                             }
                         }
                     }

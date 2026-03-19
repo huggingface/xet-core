@@ -11,12 +11,12 @@ use tracing::{debug, error, info, warn};
 
 use super::MDBShardFileFooter;
 use super::constants::MDB_SHARD_EXPIRATION_BUFFER;
-use super::error::{MDBShardError, Result};
 use super::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use super::shard_file::current_timestamp;
 use super::shard_format::MDBShardInfo;
 use super::utils::{parse_shard_filename, shard_file_name, temp_shard_file_name, truncate_hash};
 use super::xorb_structs::XorbChunkSequenceHeader;
+use crate::error::{FormatError, Result};
 use crate::merklehash::{HMACKey, HashedWrite, MerkleHash, compute_data_hash};
 
 /// When a specific implementation of the  
@@ -179,7 +179,7 @@ impl MDBShardFile {
         if let Some(shard_hash) = parse_shard_filename(path.to_str().unwrap()) {
             Self::load_from_hash_and_path(shard_hash, path)
         } else {
-            Err(MDBShardError::BadFilename(format!("{path:?} not a valid MerkleDB filename.")))
+            Err(FormatError::BadFilename(format!("{path:?} not a valid MerkleDB filename.")))
         }
     }
 
@@ -315,7 +315,7 @@ impl MDBShardFile {
         } else if let Some(h) = path.file_name().and_then(parse_shard_filename) {
             load_file(h, path)?;
         } else {
-            return Err(MDBShardError::BadFilename(format!("Filename {path:?} not valid shard file name.")));
+            return Err(FormatError::BadFilename(format!("Filename {path:?} not valid shard file name.")));
         }
 
         Ok(())
@@ -365,11 +365,11 @@ impl MDBShardFile {
     pub fn get_reader_if_present(&self) -> Result<Option<BufReader<std::fs::File>>> {
         match self.get_reader() {
             Ok(v) => Ok(Some(v)),
-            Err(MDBShardError::Io(e)) => {
+            Err(FormatError::Io(e)) => {
                 if e.kind() == ErrorKind::NotFound {
                     Ok(None)
                 } else {
-                    Err(MDBShardError::Io(e))
+                    Err(FormatError::Io(e))
                 }
             },
             Err(other_err) => Err(other_err),

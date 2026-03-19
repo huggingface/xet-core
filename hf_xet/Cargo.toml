@@ -10,6 +10,7 @@ name = "hf_xet"
 crate-type = ["cdylib", "lib"]
 
 [dependencies]
+xet-data = { path = "../xet_data" }
 xet-runtime = { path = "../xet_runtime" }
 xet-client = { path = "../xet_client" }
 xet-pkg = { package = "hf-xet", path = "../xet_pkg" }

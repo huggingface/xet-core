@@ -14,10 +14,10 @@ use super::simulation_types::{
     XorbRawLengthResponse,
 };
 use crate::cas_client::RemoteClient;
-use crate::cas_client::error::{CasClientError, Result};
 use crate::cas_client::interface::Client;
 use crate::cas_client::simulation::{DeletionControlableClient, DirectAccessClient};
 use crate::cas_types::{FileRange, HexMerkleHash, QueryReconstructionResponseV2, XorbReconstructionFetchInfo};
+use crate::error::{ClientError, Result};
 
 /// A client that connects to a `LocalTestServer` via HTTP and provides access
 /// to both `DirectAccessClient` and `DeletionControlableClient` operations
@@ -50,26 +50,26 @@ impl SimulationControlClient {
         format!("{}/simulation{}", self.endpoint, path)
     }
 
-    /// Checks an HTTP response status, mapping errors to `CasClientError`.
+    /// Checks an HTTP response status, mapping errors to `ClientError`.
     async fn check_status(response: reqwest::Response) -> Result<reqwest::Response> {
         let status = response.status();
         if status.is_success() {
             Ok(response)
         } else if status == reqwest::StatusCode::NOT_IMPLEMENTED {
-            Err(CasClientError::Other("Deletion controls not available for this server backend".to_string()))
+            Err(ClientError::Other("Deletion controls not available for this server backend".to_string()))
         } else if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
-            Err(CasClientError::InvalidRange)
+            Err(ClientError::InvalidRange)
         } else {
             let body = response.text().await.unwrap_or_default();
-            Err(CasClientError::Other(format!("HTTP {status}: {body}")))
+            Err(ClientError::Other(format!("HTTP {status}: {body}")))
         }
     }
 
-    /// Like `check_status`, but maps 404 to `CasClientError::XORBNotFound` for XORB endpoints.
+    /// Like `check_status`, but maps 404 to `ClientError::XORBNotFound` for XORB endpoints.
     async fn check_xorb_status(response: reqwest::Response, hash: &MerkleHash) -> Result<reqwest::Response> {
         let status = response.status();
         if status == reqwest::StatusCode::NOT_FOUND {
-            Err(CasClientError::XORBNotFound(*hash))
+            Err(ClientError::XORBNotFound(*hash))
         } else {
             Self::check_status(response).await
         }
@@ -222,9 +222,9 @@ impl DirectAccessClient for SimulationControlClient {
             .get(self.sim_url("/xorbs"))
             .send()
             .await
-            .map_err(|e| CasClientError::Other(e.to_string()))?;
+            .map_err(|e| ClientError::Other(e.to_string()))?;
         let resp = Self::check_status(resp).await?;
-        resp.json().await.map_err(|e| CasClientError::Other(e.to_string()))
+        resp.json().await.map_err(|e| ClientError::Other(e.to_string()))
     }
 
     /// Deletes a XORB by hash via the `/simulation/xorbs/{hash}` endpoint.
@@ -243,9 +243,9 @@ impl DirectAccessClient for SimulationControlClient {
             .get(&url)
             .send()
             .await
-            .map_err(|e| CasClientError::Other(e.to_string()))?;
+            .map_err(|e| ClientError::Other(e.to_string()))?;
         let resp = Self::check_xorb_status(resp, hash).await?;
-        resp.bytes().await.map_err(|e| CasClientError::Other(e.to_string()))
+        resp.bytes().await.map_err(|e| ClientError::Other(e.to_string()))
     }
 
     /// Retrieves specific chunk ranges from a XORB via the `/simulation/xorbs/{hash}/ranges` endpoint.
@@ -259,9 +259,9 @@ impl DirectAccessClient for SimulationControlClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| CasClientError::Other(e.to_string()))?;
+            .map_err(|e| ClientError::Other(e.to_string()))?;
         let resp = Self::check_xorb_status(resp, hash).await?;
-        let result: XorbRangesResponse = resp.json().await.map_err(|e| CasClientError::Other(e.to_string()))?;
+        let result: XorbRangesResponse = resp.json().await.map_err(|e| ClientError::Other(e.to_string()))?;
         Ok(result.data.into_iter().map(Bytes::from).collect())
     }
 
@@ -274,9 +274,9 @@ impl DirectAccessClient for SimulationControlClient {
             .get(&url)
             .send()
             .await
-            .map_err(|e| CasClientError::Other(e.to_string()))?;
+            .map_err(|e| ClientError::Other(e.to_string()))?;
         let resp = Self::check_xorb_status(resp, hash).await?;
-        let result: XorbLengthResponse = resp.json().await.map_err(|e| CasClientError::Other(e.to_string()))?;
+        let result: XorbLengthResponse = resp.json().await.map_err(|e| ClientError::Other(e.to_string()))?;
         Ok(result.length)
     }
 
@@ -289,9 +289,9 @@ impl DirectAccessClient for SimulationControlClient {
             .get(&url)
             .send()
             .await
-            .map_err(|e| CasClientError::Other(e.to_string()))?;
+            .map_err(|e| ClientError::Other(e.to_string()))?;
         let resp = Self::check_status(resp).await?;
-        let result: XorbExistsResponse = resp.json().await.map_err(|e| CasClientError::Other(e.to_string()))?;
+        let result: XorbExistsResponse = resp.json().await.map_err(|e| ClientError::Other(e.to_string()))?;
         Ok(result.exists)
     }
 
@@ -299,7 +299,7 @@ impl DirectAccessClient for SimulationControlClient {
     async fn xorb_footer(&self, hash: &MerkleHash) -> Result<XorbObject> {
         let raw_bytes = self.get_xorb_raw_bytes(hash, None).await?;
         XorbObject::deserialize(&mut std::io::Cursor::new(raw_bytes))
-            .map_err(|e| CasClientError::Other(format!("Failed to deserialize XorbObject footer: {e}")))
+            .map_err(|e| ClientError::Other(format!("Failed to deserialize XorbObject footer: {e}")))
     }
 
     /// Returns the file size via the `/simulation/files/{hash}/size` endpoint.
@@ -311,9 +311,9 @@ impl DirectAccessClient for SimulationControlClient {
             .get(&url)
             .send()
             .await
-            .map_err(|e| CasClientError::Other(e.to_string()))?;
+            .map_err(|e| ClientError::Other(e.to_string()))?;
         let resp = Self::check_status(resp).await?;
-        let result: FileSizeResponse = resp.json().await.map_err(|e| CasClientError::Other(e.to_string()))?;
+        let result: FileSizeResponse = resp.json().await.map_err(|e| ClientError::Other(e.to_string()))?;
         Ok(result.size)
     }
 
@@ -325,9 +325,9 @@ impl DirectAccessClient for SimulationControlClient {
         if let Some(range) = byte_range {
             req = req.header(reqwest::header::RANGE, format!("bytes={}-{}", range.start, range.end.saturating_sub(1)));
         }
-        let resp = req.send().await.map_err(|e| CasClientError::Other(e.to_string()))?;
+        let resp = req.send().await.map_err(|e| ClientError::Other(e.to_string()))?;
         let resp = Self::check_status(resp).await?;
-        resp.bytes().await.map_err(|e| CasClientError::Other(e.to_string()))
+        resp.bytes().await.map_err(|e| ClientError::Other(e.to_string()))
     }
 
     /// Retrieves raw XORB bytes, optionally with a byte range, via the `/simulation/xorbs/{hash}/raw` endpoint.
@@ -338,9 +338,9 @@ impl DirectAccessClient for SimulationControlClient {
         if let Some(range) = byte_range {
             req = req.header(reqwest::header::RANGE, format!("bytes={}-{}", range.start, range.end.saturating_sub(1)));
         }
-        let resp = req.send().await.map_err(|e| CasClientError::Other(e.to_string()))?;
+        let resp = req.send().await.map_err(|e| ClientError::Other(e.to_string()))?;
         let resp = Self::check_xorb_status(resp, hash).await?;
-        resp.bytes().await.map_err(|e| CasClientError::Other(e.to_string()))
+        resp.bytes().await.map_err(|e| ClientError::Other(e.to_string()))
     }
 
     /// Returns the raw byte length of a XORB via the `/simulation/xorbs/{hash}/raw_length` endpoint.
@@ -352,9 +352,9 @@ impl DirectAccessClient for SimulationControlClient {
             .get(&url)
             .send()
             .await
-            .map_err(|e| CasClientError::Other(e.to_string()))?;
+            .map_err(|e| ClientError::Other(e.to_string()))?;
         let resp = Self::check_xorb_status(resp, hash).await?;
-        let result: XorbRawLengthResponse = resp.json().await.map_err(|e| CasClientError::Other(e.to_string()))?;
+        let result: XorbRawLengthResponse = resp.json().await.map_err(|e| ClientError::Other(e.to_string()))?;
         Ok(result.length)
     }
 
@@ -372,9 +372,9 @@ impl DirectAccessClient for SimulationControlClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| CasClientError::Other(e.to_string()))?;
+            .map_err(|e| ClientError::Other(e.to_string()))?;
         let resp = Self::check_status(resp).await?;
-        let result: FetchTermDataResponse = resp.json().await.map_err(|e| CasClientError::Other(e.to_string()))?;
+        let result: FetchTermDataResponse = resp.json().await.map_err(|e| ClientError::Other(e.to_string()))?;
         Ok((Bytes::from(result.data), result.chunk_byte_indices))
     }
 }
@@ -388,9 +388,9 @@ impl DeletionControlableClient for SimulationControlClient {
             .get(self.sim_url("/shards"))
             .send()
             .await
-            .map_err(|e| CasClientError::Other(e.to_string()))?;
+            .map_err(|e| ClientError::Other(e.to_string()))?;
         let resp = Self::check_status(resp).await?;
-        resp.json().await.map_err(|e| CasClientError::Other(e.to_string()))
+        resp.json().await.map_err(|e| ClientError::Other(e.to_string()))
     }
 
     /// Retrieves raw shard bytes by hash via the `/simulation/shards/{hash}` endpoint.
@@ -402,9 +402,9 @@ impl DeletionControlableClient for SimulationControlClient {
             .get(&url)
             .send()
             .await
-            .map_err(|e| CasClientError::Other(e.to_string()))?;
+            .map_err(|e| ClientError::Other(e.to_string()))?;
         let resp = Self::check_status(resp).await?;
-        resp.bytes().await.map_err(|e| CasClientError::Other(e.to_string()))
+        resp.bytes().await.map_err(|e| ClientError::Other(e.to_string()))
     }
 
     /// Deletes a shard entry by hash via the `/simulation/shards/{hash}` endpoint.
@@ -416,7 +416,7 @@ impl DeletionControlableClient for SimulationControlClient {
             .delete(&url)
             .send()
             .await
-            .map_err(|e| CasClientError::Other(e.to_string()))?;
+            .map_err(|e| ClientError::Other(e.to_string()))?;
         Self::check_status(resp).await?;
         Ok(())
     }
@@ -428,9 +428,9 @@ impl DeletionControlableClient for SimulationControlClient {
             .get(self.sim_url("/file_entries"))
             .send()
             .await
-            .map_err(|e| CasClientError::Other(e.to_string()))?;
+            .map_err(|e| ClientError::Other(e.to_string()))?;
         let resp = Self::check_status(resp).await?;
-        let entries: Vec<FileShardsEntry> = resp.json().await.map_err(|e| CasClientError::Other(e.to_string()))?;
+        let entries: Vec<FileShardsEntry> = resp.json().await.map_err(|e| ClientError::Other(e.to_string()))?;
         Ok(entries.into_iter().map(|e| (e.file_hash, e.shard_hash)).collect())
     }
 
@@ -443,7 +443,7 @@ impl DeletionControlableClient for SimulationControlClient {
             .delete(&url)
             .send()
             .await
-            .map_err(|e| CasClientError::Other(e.to_string()))?;
+            .map_err(|e| ClientError::Other(e.to_string()))?;
         Self::check_status(resp).await?;
         Ok(())
     }
@@ -455,7 +455,7 @@ impl DeletionControlableClient for SimulationControlClient {
             .post(self.sim_url("/verify_integrity"))
             .send()
             .await
-            .map_err(|e| CasClientError::Other(e.to_string()))?;
+            .map_err(|e| ClientError::Other(e.to_string()))?;
         Self::check_status(resp).await?;
         Ok(())
     }

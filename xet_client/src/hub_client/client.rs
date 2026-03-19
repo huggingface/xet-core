@@ -4,11 +4,11 @@ use http::header::HeaderMap;
 use urlencoding::encode;
 
 use super::auth::CredentialHelper;
-use super::errors::*;
 use super::types::{CasJWTInfo, RepoInfo};
 use crate::cas_client::exports::ClientWithMiddleware;
 use crate::cas_client::retry_wrapper::RetryWrapper;
 use crate::cas_client::{Api, build_http_client};
+use crate::error::Result;
 
 /// The type of operation to perform, either to upload files or to download files.
 /// Different operations lead to CAS access token with different authorization levels.
@@ -114,9 +114,9 @@ mod tests {
 
     use http::header::{self, HeaderMap, HeaderValue};
 
-    use super::super::errors::Result;
     use super::super::{BearerCredentialHelper, HFRepoType, Operation, RepoInfo};
     use super::HubClient;
+    use crate::error::Result;
 
     #[tokio::test]
     #[ignore = "need valid write token"]

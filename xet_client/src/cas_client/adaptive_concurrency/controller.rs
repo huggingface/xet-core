@@ -14,9 +14,9 @@ use xet_core_structures::ExpWeightedMovingAvg;
 use xet_runtime::core::xet_config;
 use xet_runtime::utils::adjustable_semaphore::{AdjustableSemaphore, AdjustableSemaphorePermit};
 
-use super::super::error::CasClientError;
 use super::super::progress_tracked_streams::ProgressCallback;
 use super::rtt_prediction::RTTPredictor;
+use crate::error::Result;
 
 const MIN_PARTIAL_REPORT_INTERVAL_MS: u64 = 200;
 const PARTIAL_REPORT_WEIGHT_RATIO: f64 = 0.2;
@@ -361,7 +361,7 @@ impl AdaptiveConcurrencyController {
         )
     }
 
-    pub async fn acquire_connection_permit(self: &Arc<Self>) -> Result<ConnectionPermit, CasClientError> {
+    pub async fn acquire_connection_permit(self: &Arc<Self>) -> Result<ConnectionPermit> {
         let _permit = self.concurrency_semaphore.acquire().await?;
 
         let info = Arc::new(ConnectionPermitInfo {

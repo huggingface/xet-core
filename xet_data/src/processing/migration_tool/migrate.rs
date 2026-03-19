@@ -9,9 +9,9 @@ use xet_runtime::core::XetRuntime;
 use xet_runtime::core::par_utils::run_constrained;
 
 use super::super::data_client::{clean_file, default_config};
-use super::super::errors::{DataProcessingError, Result};
 use super::super::{FileUploadSession, Sha256Policy, XetFileInfo};
 use super::hub_client_token_refresher::HubClientTokenRefresher;
+use crate::error::{DataError, Result};
 
 const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
@@ -97,7 +97,7 @@ pub async fn migrate_files_impl(
     let sha256_policies: Vec<Sha256Policy> = match sha256s {
         Some(v) => {
             if v.len() != file_paths.len() {
-                return Err(DataProcessingError::ParameterError(
+                return Err(DataError::ParameterError(
                     "mismatched length of the file list and the sha256 list".to_string(),
                 ));
             }
@@ -110,7 +110,7 @@ pub async fn migrate_files_impl(
         let proc = processor.clone();
         async move {
             let (pf, metrics) = clean_file(proc, file_path, policy).await?;
-            Ok::<(XetFileInfo, u64), DataProcessingError>((pf, metrics.new_bytes))
+            Ok::<(XetFileInfo, u64), DataError>((pf, metrics.new_bytes))
         }
         .instrument(info_span!("clean_file"))
     });

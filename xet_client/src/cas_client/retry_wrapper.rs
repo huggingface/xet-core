@@ -12,13 +12,13 @@ use tracing::{error, info};
 use xet_runtime::core::xet_config;
 
 use super::adaptive_concurrency::ConnectionPermit;
-use super::error::CasClientError;
 use super::http_client::request_id_from_response;
+use crate::error::{ClientError, Result};
 
 #[derive(Debug)]
 pub enum RetryableReqwestError {
-    FatalError(CasClientError),
-    RetryableError(CasClientError),
+    FatalError(ClientError),
+    RetryableError(ClientError),
 }
 
 struct ConnectionPermitInfo {
@@ -102,7 +102,7 @@ impl RetryWrapper {
                 error!("{msg}");
             }
 
-            CasClientError::from(err)
+            ClientError::from(err)
         };
 
         // Here's the retry logic.
@@ -122,7 +122,11 @@ impl RetryWrapper {
         }
     }
 
-    fn process_ok_response(&self, try_idx: usize, resp: Response) -> Result<Response, RetryableReqwestError> {
+    fn process_ok_response(
+        &self,
+        try_idx: usize,
+        resp: Response,
+    ) -> std::result::Result<Response, RetryableReqwestError> {
         let request_id = request_id_from_response(&resp).to_owned();
 
         let retry_str = if try_idx == 0 {
@@ -140,7 +144,7 @@ impl RetryWrapper {
             } else {
                 error!("{context}: {api:?} api call failed (request id {request_id}{retry_str}): {err}");
             }
-            CasClientError::from(err)
+            ClientError::from(err)
         };
 
         let retriability = default_on_request_success(&resp);
@@ -206,12 +210,12 @@ impl RetryWrapper {
         self,
         make_request: ReqFn,
         process_fn: ProcFn,
-    ) -> Result<T, CasClientError>
+    ) -> Result<T>
     where
         ReqFn: Fn() -> ReqFut + Send + Sync + 'static,
-        ReqFut: std::future::Future<Output = Result<Response, reqwest_middleware::Error>> + 'static,
+        ReqFut: std::future::Future<Output = std::result::Result<Response, reqwest_middleware::Error>> + 'static,
         ProcFn: Fn(Response) -> ProcFut + Send + 'static,
-        ProcFut: Future<Output = Result<T, RetryableReqwestError>> + 'static,
+        ProcFut: Future<Output = std::result::Result<T, RetryableReqwestError>> + 'static,
     {
         let strategy = ExponentialBackoff::from_millis(self.base_delay.as_millis().min(u64::MAX as u128) as u64)
             .map(jitter)
@@ -338,19 +342,16 @@ impl RetryWrapper {
     ///
     /// This functions acts just like the json() function on a client response, but retries the entire connection on
     /// transient errors.
-    pub async fn run_and_extract_json<JsonDest, ReqFn, ReqFut>(
-        self,
-        make_request: ReqFn,
-    ) -> Result<JsonDest, CasClientError>
+    pub async fn run_and_extract_json<JsonDest, ReqFn, ReqFut>(self, make_request: ReqFn) -> Result<JsonDest>
     where
         JsonDest: for<'de> serde::Deserialize<'de>,
         ReqFn: Fn() -> ReqFut + Send + Sync + 'static,
-        ReqFut: std::future::Future<Output = Result<Response, reqwest_middleware::Error>> + 'static,
+        ReqFut: std::future::Future<Output = std::result::Result<Response, reqwest_middleware::Error>> + 'static,
     {
         self.run_and_process(make_request, |resp: Response| {
             async move {
                 // Extract the json from the final result.
-                let r: Result<JsonDest, reqwest::Error> = resp.json().await;
+                let r: std::result::Result<JsonDest, reqwest::Error> = resp.json().await;
 
                 match r {
                     Ok(v) => Ok(v),
@@ -383,15 +384,15 @@ impl RetryWrapper {
     ///
     /// This functions acts just like the bytes() function on a client response, but retries the entire connection on
     /// transient errors.
-    pub async fn run_and_extract_bytes<ReqFut, ReqFn>(self, make_request: ReqFn) -> Result<Bytes, CasClientError>
+    pub async fn run_and_extract_bytes<ReqFut, ReqFn>(self, make_request: ReqFn) -> Result<Bytes>
     where
         ReqFn: Fn() -> ReqFut + Send + Sync + 'static,
-        ReqFut: std::future::Future<Output = Result<Response, reqwest_middleware::Error>> + 'static,
+        ReqFut: std::future::Future<Output = std::result::Result<Response, reqwest_middleware::Error>> + 'static,
     {
         self.run_and_process(make_request, |resp: Response| {
             async move {
                 // Extract the bytes from the final result.
-                let r: Result<Bytes, reqwest::Error> = resp.bytes().await;
+                let r: std::result::Result<Bytes, reqwest::Error> = resp.bytes().await;
 
                 match r {
                     Ok(v) => Ok(v),
@@ -432,12 +433,12 @@ impl RetryWrapper {
         self,
         make_request: ReqFn,
         parse: Parse,
-    ) -> Result<Dest, CasClientError>
+    ) -> Result<Dest>
     where
         ReqFn: Fn() -> ReqFut + Send + Sync + 'static,
-        ReqFut: std::future::Future<Output = Result<Response, reqwest_middleware::Error>> + 'static,
+        ReqFut: std::future::Future<Output = std::result::Result<Response, reqwest_middleware::Error>> + 'static,
         Parse: Fn(Response) -> ParseFut + Send + Sync + 'static,
-        ParseFut: std::future::Future<Output = Result<Dest, RetryableReqwestError>> + 'static,
+        ParseFut: std::future::Future<Output = std::result::Result<Dest, RetryableReqwestError>> + 'static,
     {
         self.run_and_process(make_request, parse).await
     }
@@ -447,10 +448,10 @@ impl RetryWrapper {
     /// The `make_request` function returns a future that resolves to a Result<Response> object as is returned by the
     /// client middleware.  For example, `|| client.clone().get(url).send()` returns a future (as `send()` is async)
     /// that will then be evaluated to get the response.
-    pub async fn run<ReqFut, ReqFn>(self, make_request: ReqFn) -> Result<Response, CasClientError>
+    pub async fn run<ReqFut, ReqFn>(self, make_request: ReqFn) -> Result<Response>
     where
         ReqFn: Fn() -> ReqFut + Send + Sync + 'static,
-        ReqFut: std::future::Future<Output = Result<Response, reqwest_middleware::Error>> + 'static,
+        ReqFut: std::future::Future<Output = std::result::Result<Response, reqwest_middleware::Error>> + 'static,
     {
         // Just have the process_fn pass through the response.
         self.run_and_process(make_request, |resp| async move { Ok(resp) }).await

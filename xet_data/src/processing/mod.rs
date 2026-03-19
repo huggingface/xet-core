@@ -1,7 +1,6 @@
 pub mod configurations;
 pub mod data_client;
 mod deduplication_interface;
-pub mod errors;
 mod file_cleaner;
 mod file_download_session;
 mod file_upload_session;

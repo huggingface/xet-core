@@ -49,7 +49,6 @@ use tower_http::cors::CorsLayer;
 
 #[cfg(test)]
 use super::super::super::RemoteClient;
-use super::super::super::error::{CasClientError, Result};
 #[cfg(test)]
 use super::super::super::interface::Client;
 #[cfg(test)]
@@ -58,6 +57,7 @@ use super::super::socket_proxy::UnixSocketProxy;
 use super::super::{DeletionControlableClient, DirectAccessClient, LocalClient, MemoryClient};
 use super::handlers;
 use super::latency_simulation::LatencySimulation;
+use crate::error::{ClientError, Result};
 
 /// Configuration for the local CAS server.
 #[derive(Debug, Clone)]
@@ -204,11 +204,11 @@ impl LocalServer {
         let addr: SocketAddr = self
             .addr()
             .parse()
-            .map_err(|e| CasClientError::Other(format!("Failed to parse address: {e}")))?;
+            .map_err(|e| ClientError::Other(format!("Failed to parse address: {e}")))?;
 
         let listener = TcpListener::bind(addr)
             .await
-            .map_err(|e| CasClientError::Other(format!("Failed to bind to {addr}: {e}")))?;
+            .map_err(|e| ClientError::Other(format!("Failed to bind to {addr}: {e}")))?;
 
         tracing::info!("Local CAS server listening on {}", addr);
 
@@ -217,7 +217,7 @@ impl LocalServer {
         axum::serve(listener, router.into_make_service())
             .with_graceful_shutdown(shutdown_signal())
             .await
-            .map_err(|e| CasClientError::Other(format!("Server error: {e}")))
+            .map_err(|e| ClientError::Other(format!("Server error: {e}")))
     }
 
     /// Runs the server until a shutdown signal is received on the provided channel.
@@ -227,11 +227,11 @@ impl LocalServer {
         let addr: SocketAddr = self
             .addr()
             .parse()
-            .map_err(|e| CasClientError::Other(format!("Failed to parse address: {e}")))?;
+            .map_err(|e| ClientError::Other(format!("Failed to parse address: {e}")))?;
 
         let listener = TcpListener::bind(addr)
             .await
-            .map_err(|e| CasClientError::Other(format!("Failed to bind to {addr}: {e}")))?;
+            .map_err(|e| ClientError::Other(format!("Failed to bind to {addr}: {e}")))?;
 
         tracing::info!("Local CAS server listening on {}", addr);
 
@@ -242,7 +242,7 @@ impl LocalServer {
                 let _ = shutdown_rx.await;
             })
             .await
-            .map_err(|e| CasClientError::Other(format!("Server error: {e}")))
+            .map_err(|e| ClientError::Other(format!("Server error: {e}")))
     }
 }
 

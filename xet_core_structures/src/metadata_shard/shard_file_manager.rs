@@ -10,13 +10,13 @@ use xet_runtime::core::{XetRuntime, xet_config};
 use xet_runtime::utils::RwTaskLock;
 
 use super::constants::MDB_SHARD_EXPIRATION_BUFFER;
-use super::error::{MDBShardError, Result};
 use super::file_structs::*;
 use super::shard_file_handle::MDBShardFile;
 use super::shard_file_reconstructor::FileReconstructor;
 use super::shard_in_memory::MDBInMemoryShard;
 use super::utils::truncate_hash;
 use super::xorb_structs::*;
+use crate::error::{FormatError, Result};
 use crate::merklehash::{HMACKey, MerkleHash};
 use crate::{MerkleHashMap, TruncatedMerkleHashMap};
 
@@ -74,7 +74,7 @@ impl ShardBookkeeper {
 }
 
 pub struct ShardFileManager {
-    shard_bookkeeper: RwTaskLock<ShardBookkeeper, MDBShardError>,
+    shard_bookkeeper: RwTaskLock<ShardBookkeeper, FormatError>,
     current_state: RwLock<MDBInMemoryShard>,
     shard_directory: PathBuf,
     target_shard_max_size: u64,
@@ -367,7 +367,7 @@ impl ShardFileManager {
 
 #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
-impl FileReconstructor<MDBShardError> for ShardFileManager {
+impl FileReconstructor<FormatError> for ShardFileManager {
     // Given a file pointer, returns the information needed to reconstruct the file.
     // The information is stored in the destination vector dest_results.  The function
     // returns true if the file hash was found, and false otherwise.
@@ -572,13 +572,13 @@ mod tests {
     use rand::prelude::*;
     use tempfile::TempDir;
 
-    use super::super::error::Result;
     use super::super::file_structs::FileDataSequenceHeader;
     use super::super::session_directory::{consolidate_shards_in_directory, merge_shards};
     use super::super::shard_format::test_routines::{gen_random_file_info, rng_hash, simple_hash};
     use super::super::utils::parse_shard_filename;
     use super::super::xorb_structs::{XorbChunkSequenceEntry, XorbChunkSequenceHeader};
     use super::*;
+    use crate::error::Result;
 
     #[allow(clippy::type_complexity)]
     pub async fn fill_with_specific_shard(

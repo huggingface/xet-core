@@ -1,7 +1,7 @@
 use bytes::Bytes;
 
-use crate::cas_client::error::{CasClientError, Result};
 use crate::cas_types::HttpRange;
+use crate::error::{ClientError, Result};
 
 /// A single part from a multipart/byteranges HTTP response.
 pub struct MultipartPart {
@@ -23,7 +23,7 @@ pub fn parse_multipart_byteranges(content_type: &str, body: Bytes) -> Result<Vec
 
     let first_delim = format!("--{boundary}");
     let Some(start) = find_subsequence(body_slice, first_delim.as_bytes()) else {
-        return Err(CasClientError::Other("No boundary found in multipart body".to_string()));
+        return Err(ClientError::Other("No boundary found in multipart body".to_string()));
     };
 
     let mut remaining = &body_slice[start + first_delim.len()..];
@@ -42,7 +42,7 @@ pub fn parse_multipart_byteranges(content_type: &str, body: Bytes) -> Result<Vec
         };
 
         let Some(header_end) = find_subsequence(part_data, b"\r\n\r\n") else {
-            return Err(CasClientError::Other("Malformed multipart part: missing header/data separator".to_string()));
+            return Err(ClientError::Other("Malformed multipart part: missing header/data separator".to_string()));
         };
 
         let headers = &part_data[..header_end];
@@ -80,12 +80,12 @@ fn extract_boundary(content_type: &str) -> Result<String> {
             return Ok(boundary.to_string());
         }
     }
-    Err(CasClientError::Other(format!("No boundary found in Content-Type: {content_type}")))
+    Err(ClientError::Other(format!("No boundary found in Content-Type: {content_type}")))
 }
 
 fn parse_content_range(headers: &[u8]) -> Result<HttpRange> {
-    let headers_str = std::str::from_utf8(headers)
-        .map_err(|e| CasClientError::Other(format!("Invalid UTF-8 in part headers: {e}")))?;
+    let headers_str =
+        std::str::from_utf8(headers).map_err(|e| ClientError::Other(format!("Invalid UTF-8 in part headers: {e}")))?;
 
     for line in headers_str.split("\r\n") {
         let line_lower = line.to_ascii_lowercase();
@@ -96,24 +96,24 @@ fn parse_content_range(headers: &[u8]) -> Result<HttpRange> {
                 let original_value = range_spec.trim();
                 let slash_pos = original_value
                     .find('/')
-                    .ok_or_else(|| CasClientError::Other(format!("Invalid Content-Range: {line}")))?;
+                    .ok_or_else(|| ClientError::Other(format!("Invalid Content-Range: {line}")))?;
                 let range_part = &original_value[..slash_pos];
                 let dash_pos = range_part
                     .find('-')
-                    .ok_or_else(|| CasClientError::Other(format!("Invalid Content-Range: {line}")))?;
+                    .ok_or_else(|| ClientError::Other(format!("Invalid Content-Range: {line}")))?;
                 let start: u64 = range_part[..dash_pos]
                     .parse()
-                    .map_err(|e| CasClientError::Other(format!("Invalid Content-Range start: {e}")))?;
+                    .map_err(|e| ClientError::Other(format!("Invalid Content-Range start: {e}")))?;
                 let end: u64 = range_part[dash_pos + 1..]
                     .parse()
-                    .map_err(|e| CasClientError::Other(format!("Invalid Content-Range end: {e}")))?;
+                    .map_err(|e| ClientError::Other(format!("Invalid Content-Range end: {e}")))?;
                 // RFC 7233 Content-Range uses an inclusive end, which matches HttpRange.
                 return Ok(HttpRange::new(start, end));
             }
         }
     }
 
-    Err(CasClientError::Other("No Content-Range header found in multipart part".to_string()))
+    Err(ClientError::Other("No Content-Range header found in multipart part".to_string()))
 }
 
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {

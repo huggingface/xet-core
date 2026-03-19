@@ -10,9 +10,9 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
-use super::super::error::CasClientError;
 use super::{ClientTestingUtils, DirectAccessClient};
 use crate::cas_types::FileRange;
+use crate::error::ClientError;
 
 /// Runs all common Client trait tests using a factory that creates fresh clients.
 pub async fn test_client_functionality<Fut>(factory: impl Fn() -> Fut)
@@ -535,15 +535,15 @@ pub async fn test_missing_xorb(client: Arc<dyn DirectAccessClient>) {
 
     // get_full_xorb should return XORBNotFound
     let result = client.get_full_xorb(&fake_hash).await;
-    assert!(matches!(result, Err(CasClientError::XORBNotFound(_))));
+    assert!(matches!(result, Err(ClientError::XORBNotFound(_))));
 
     // xorb_length should return XORBNotFound
     let result = client.xorb_length(&fake_hash).await;
-    assert!(matches!(result, Err(CasClientError::XORBNotFound(_))));
+    assert!(matches!(result, Err(ClientError::XORBNotFound(_))));
 
     // get_xorb_ranges should return XORBNotFound
     let result = client.get_xorb_ranges(&fake_hash, vec![(0, 1)]).await;
-    assert!(matches!(result, Err(CasClientError::XORBNotFound(_))));
+    assert!(matches!(result, Err(ClientError::XORBNotFound(_))));
 }
 
 /// Tests list_xorbs and delete_xorb operations.
@@ -620,13 +620,13 @@ pub async fn test_get_file_data_with_ranges(client: Arc<dyn DirectAccessClient>)
     let result = client
         .get_file_data(&file.file_hash, Some(FileRange::new(file_size + 100, file_size + 1000)))
         .await;
-    assert!(matches!(result.unwrap_err(), CasClientError::InvalidRange));
+    assert!(matches!(result.unwrap_err(), ClientError::InvalidRange));
 
     // Start equals file size returns error
     let result = client
         .get_file_data(&file.file_hash, Some(FileRange::new(file_size, file_size + 100)))
         .await;
-    assert!(matches!(result.unwrap_err(), CasClientError::InvalidRange));
+    assert!(matches!(result.unwrap_err(), ClientError::InvalidRange));
 }
 
 /// Tests get_file_size returns correct size.
@@ -756,7 +756,7 @@ async fn test_url_expiration_after_window(client: Arc<dyn DirectAccessClient>) {
     // The fetch should fail with expiration error
     let result = client.fetch_term_data(xorb_hash, fetch_info).await;
     assert!(result.is_err(), "URL should be expired after expiration window");
-    assert!(matches!(result.unwrap_err(), CasClientError::PresignedUrlExpirationError));
+    assert!(matches!(result.unwrap_err(), ClientError::PresignedUrlExpirationError));
 }
 
 /// Tests that default URL expiration is effectively infinite.
@@ -813,7 +813,7 @@ async fn test_url_expiration_exact_boundary(client: Arc<dyn DirectAccessClient>)
 
     let result = client.fetch_term_data(xorb_hash, fetch_info).await;
     assert!(result.is_err(), "URL should be expired past boundary");
-    assert!(matches!(result.unwrap_err(), CasClientError::PresignedUrlExpirationError));
+    assert!(matches!(result.unwrap_err(), ClientError::PresignedUrlExpirationError));
 }
 
 // =============================================================================

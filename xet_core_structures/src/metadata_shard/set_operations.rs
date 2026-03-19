@@ -6,7 +6,6 @@ use std::path::Path;
 
 use uuid::Uuid;
 
-use super::error::Result;
 use super::file_structs::{
     FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, FileVerificationEntry, SupersetResult,
 };
@@ -14,6 +13,7 @@ use super::shard_file::MDB_FILE_INFO_ENTRY_SIZE;
 use super::shard_format::{MDBShardFileFooter, MDBShardFileHeader, MDBShardInfo};
 use super::utils::truncate_hash;
 use super::xorb_structs::{XorbChunkSequenceEntry, XorbChunkSequenceHeader};
+use crate::error::Result;
 use crate::merklehash::{HashedWrite, MerkleHash};
 use crate::serialization_utils::*;
 
@@ -462,10 +462,10 @@ mod tests {
     use itertools::iproduct;
     use tempfile::TempDir;
 
-    use super::super::error::Result;
     use super::super::shard_format::test_routines::*;
     use super::super::shard_in_memory::MDBInMemoryShard;
     use super::*;
+    use crate::error::Result;
     use crate::merklehash::compute_data_hash;
 
     fn test_operations(mem_shard_1: &MDBInMemoryShard, mem_shard_2: &MDBInMemoryShard) -> Result<()> {

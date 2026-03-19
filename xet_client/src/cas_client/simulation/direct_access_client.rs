@@ -12,11 +12,11 @@ use bytes::Bytes;
 use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::xorb_object::XorbObject;
 
-use super::super::error::Result;
 use super::super::interface::Client;
 use crate::cas_types::{
     FileRange, QueryReconstructionResponse, QueryReconstructionResponseV2, XorbReconstructionFetchInfo,
 };
+use crate::error::Result;
 
 /// A Client with direct access to XORB and file storage.
 ///

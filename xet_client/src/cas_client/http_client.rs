@@ -10,8 +10,8 @@ use xet_runtime::core::{XetRuntime, xet_config};
 use xet_runtime::error_printer::{ErrorPrinter, OptionPrinter};
 
 use super::auth::{AuthConfig, TokenProvider};
-use super::{CasClientError, error};
 use crate::cas_types::{REQUEST_ID_HEADER, SESSION_ID_HEADER};
+use crate::error::{ClientError, Result};
 
 /// Middleware that rewrites https:// URLs to http:// when using Unix socket.
 /// This allows the proxy to parse plain HTTP and upgrade to HTTPS when forwarding.
@@ -26,7 +26,7 @@ impl Middleware for HttpsToHttpMiddleware {
         mut req: Request,
         extensions: &mut Extensions,
         next: Next<'_>,
-    ) -> Result<Response, reqwest_middleware::Error> {
+    ) -> std::result::Result<Response, reqwest_middleware::Error> {
         let url = req.url_mut();
         if url.scheme() == "https" {
             let original_scheme = url.scheme().to_string();
@@ -52,10 +52,7 @@ fn redact_headers(headers: &HeaderMap) -> HeaderMap {
 
 #[allow(unused_variables)]
 #[cfg(not(target_family = "wasm"))]
-fn reqwest_client(
-    unix_socket_path: Option<&str>,
-    custom_headers: Option<Arc<HeaderMap>>,
-) -> Result<reqwest::Client, CasClientError> {
+fn reqwest_client(unix_socket_path: Option<&str>, custom_headers: Option<Arc<HeaderMap>>) -> Result<reqwest::Client> {
     // Check config if explicit socket path is not provided
     let socket_path = unix_socket_path
         .map(|s| s.to_string())
@@ -115,7 +112,7 @@ fn reqwest_client(
 fn reqwest_client_no_read_timeout(
     unix_socket_path: Option<&str>,
     custom_headers: Option<Arc<HeaderMap>>,
-) -> Result<reqwest::Client, CasClientError> {
+) -> Result<reqwest::Client> {
     let socket_path = unix_socket_path
         .map(|s| s.to_string())
         .or_else(|| xet_config().client.unix_socket_path.clone());
@@ -148,10 +145,7 @@ fn reqwest_client_no_read_timeout(
 }
 
 #[cfg(target_family = "wasm")]
-fn reqwest_client(
-    _unix_socket_path: Option<&str>,
-    custom_headers: Option<Arc<HeaderMap>>,
-) -> Result<reqwest::Client, CasClientError> {
+fn reqwest_client(_unix_socket_path: Option<&str>, custom_headers: Option<Arc<HeaderMap>>) -> Result<reqwest::Client> {
     // For WASM, create a new client with the specified headers, including the user-agent.
     // Note: we could cache this, but user_agent can vary, so we create per-call
     // Unix socket path is ignored on WASM
@@ -169,7 +163,7 @@ pub fn build_auth_http_client(
     session_id: &str,
     unix_socket_path: Option<&str>,
     custom_headers: Option<Arc<HeaderMap>>,
-) -> Result<ClientWithMiddleware, CasClientError> {
+) -> Result<ClientWithMiddleware> {
     let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
@@ -200,7 +194,7 @@ pub fn build_auth_http_client_no_read_timeout(
     session_id: &str,
     unix_socket_path: Option<&str>,
     custom_headers: Option<Arc<HeaderMap>>,
-) -> Result<ClientWithMiddleware, CasClientError> {
+) -> Result<ClientWithMiddleware> {
     let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
@@ -225,7 +219,7 @@ pub fn build_http_client(
     session_id: &str,
     unix_socket_path: Option<&str>,
     custom_headers: Option<Arc<HeaderMap>>,
-) -> Result<ClientWithMiddleware, CasClientError> {
+) -> Result<ClientWithMiddleware> {
     build_auth_http_client(&None, session_id, unix_socket_path, custom_headers)
 }
 
@@ -289,14 +283,14 @@ impl AuthMiddleware {
     /// (e.g. to a remote service). During this time, no other CAS requests can proceed
     /// from this client until the token has been fetched. This is expected/ok since we
     /// don't have a valid token and thus any calls would fail.
-    async fn get_token(&self) -> Result<String, CasClientError> {
+    async fn get_token(&self) -> Result<String> {
         let mut provider = self.token_provider.lock().await;
         provider
             .get_valid_token()
             .await
             .map_err(|err| {
                 warn!(?err, "Token refresh failed");
-                CasClientError::InternalError(format!("couldn't get token: {err:?}"))
+                ClientError::InternalError(format!("couldn't get token: {err:?}"))
             })
             .inspect(|_token| {
                 info!("Token refresh successful for CAS authentication");
@@ -364,16 +358,14 @@ pub trait ResponseErrorLogger<T> {
 /// This logs an error if one occurred before receiving a response or
 /// if the status code indicates a failure.
 /// As a result of these checks, the response is also transformed into a
-/// cas_client::error::Result instead of the raw reqwest_middleware::Result.
-impl ResponseErrorLogger<error::Result<Response>> for reqwest_middleware::Result<Response> {
-    fn process_error(self, api: &str) -> error::Result<Response> {
-        let res = self
-            .map_err(CasClientError::from)
-            .log_error(format!("error invoking {api} api"))?;
+/// crate::error::Result instead of the raw reqwest_middleware::Result.
+impl ResponseErrorLogger<Result<Response>> for reqwest_middleware::Result<Response> {
+    fn process_error(self, api: &str) -> Result<Response> {
+        let res = self.map_err(ClientError::from).log_error(format!("error invoking {api} api"))?;
         let request_id = request_id_from_response(&res);
         let error_message = format!("{api} api failed: request id: {request_id}");
         let status = res.status();
-        let res = res.error_for_status().map_err(CasClientError::from);
+        let res = res.error_for_status().map_err(ClientError::from);
         match (api, status) {
             ("get_reconstruction", StatusCode::RANGE_NOT_SATISFIABLE) => res.debug_error(&error_message),
             // not all status codes mean fatal error

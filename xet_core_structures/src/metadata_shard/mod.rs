@@ -1,6 +1,5 @@
 pub mod chunk_verification;
 pub mod constants;
-pub mod error;
 pub mod file_structs;
 pub mod interpolation_search;
 pub mod session_directory;

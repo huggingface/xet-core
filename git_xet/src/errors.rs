@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 use xet_client::ClientError;
-use xet_pkg::legacy::DataProcessingError;
+use xet_data::DataError;
 
 use crate::lfs_agent_protocol::GitLFSProtocolError;
 
@@ -40,7 +40,7 @@ pub enum GitXetError {
     Internal(String),
 
     #[error("Transfer agent error: {0}")]
-    TransferAgent(#[from] DataProcessingError),
+    TransferAgent(#[from] DataError),
 
     #[error("Client error: {0}")]
     Client(#[from] ClientError),

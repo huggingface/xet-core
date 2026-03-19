@@ -17,8 +17,9 @@ use rand::Rng;
 use runtime::async_run;
 use token_refresh::WrappedTokenRefresher;
 use tracing::debug;
+use xet_data::DataError;
 use xet_pkg::legacy::progress_tracking::TrackingProgressUpdater;
-use xet_pkg::legacy::{DataProcessingError, Sha256Policy, XetFileInfo, data_client};
+use xet_pkg::legacy::{Sha256Policy, XetFileInfo, data_client};
 use xet_runtime::core::file_handle_limits;
 
 use crate::logging::init_logging;
@@ -71,7 +72,7 @@ fn build_headers_with_user_agent(request_headers: Option<HashMap<String, String>
     Ok(Some(Arc::new(map)))
 }
 
-fn convert_data_processing_error(e: DataProcessingError) -> PyErr {
+fn convert_data_processing_error(e: DataError) -> PyErr {
     if cfg!(debug_assertions) {
         PyRuntimeError::new_err(format!("Data processing error: {e:?}"))
     } else {
