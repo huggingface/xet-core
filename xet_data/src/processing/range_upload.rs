@@ -282,7 +282,16 @@ pub async fn upload_ranges(
 
         // a) Boundary prefix: stable bytes before the dirty range.
         if region.dirty_start > boundary_start && boundary_end <= original_size {
+            debug!(
+                "upload_ranges: prefix CAS [{boundary_start}, {}) for region dirty=[{}, {}), boundary=[{boundary_start}, {boundary_end})",
+                region.dirty_start, region.dirty_start, region.dirty_end
+            );
             stream_cas_range(&cas_client, original_hash, boundary_start, region.dirty_start, &mut cleaner).await?;
+        } else {
+            debug!(
+                "upload_ranges: no prefix for region dirty=[{}, {}), boundary=[{boundary_start}, {boundary_end}), original_size={original_size}",
+                region.dirty_start, region.dirty_end
+            );
         }
 
         // b) Dirty bytes from async readers.
@@ -314,6 +323,9 @@ pub async fn upload_ranges(
 
             // Stream bytes from the async reader.
             let bytes_to_read = (input_end - input_start) as usize;
+            debug!(
+                "upload_ranges: dirty input [{input_start}, {input_end}) = {bytes_to_read} bytes from reader"
+            );
             let mut remaining = bytes_to_read;
             let mut buf = vec![0u8; STREAM_BLOCK_SIZE.min(remaining)];
             while remaining > 0 {
@@ -340,7 +352,16 @@ pub async fn upload_ranges(
         // c) Boundary suffix: stable bytes after the dirty range.
         let suffix_start = region.dirty_end.min(effective_boundary_end);
         if suffix_start < effective_boundary_end && boundary_end <= original_size {
+            debug!(
+                "upload_ranges: suffix CAS [{suffix_start}, {effective_boundary_end}) for region dirty=[{}, {})",
+                region.dirty_start, region.dirty_end
+            );
             stream_cas_range(&cas_client, original_hash, suffix_start, effective_boundary_end, &mut cleaner).await?;
+        } else {
+            debug!(
+                "upload_ranges: no suffix for region dirty=[{}, {}), suffix_start={suffix_start}, eff_boundary_end={effective_boundary_end}, boundary_end={boundary_end}, original_size={original_size}",
+                region.dirty_start, region.dirty_end
+            );
         }
 
         let (info, chunks, _metrics) = cleaner.finish().await?;
@@ -472,8 +493,22 @@ async fn stream_cas_range(
 ) -> Result<()> {
     let reconstructor = FileReconstructor::new(cas_client, file_hash).with_byte_range(FileRange::new(start, end));
     let mut stream = reconstructor.reconstruct_to_stream();
+    let mut total_bytes = 0u64;
     while let Some(chunk) = stream.next().await? {
+        total_bytes += chunk.len() as u64;
         cleaner.add_data(&chunk).await?;
+    }
+    let expected = end - start;
+    if total_bytes != expected {
+        tracing::error!(
+            "stream_cas_range: file_hash={} range=[{start}, {end}) expected {expected} bytes but got {total_bytes}",
+            file_hash.hex()
+        );
+    } else {
+        tracing::debug!(
+            "stream_cas_range: file_hash={} range=[{start}, {end}) streamed {total_bytes} bytes OK",
+            file_hash.hex()
+        );
     }
     Ok(())
 }
