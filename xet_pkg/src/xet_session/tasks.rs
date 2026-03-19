@@ -187,7 +187,7 @@ mod tests {
             dest_path: PathBuf::from("out/file.bin"),
             file_info: XetFileInfo {
                 hash: "def456".to_string(),
-                file_size: 99,
+                file_size: Some(99),
                 sha256: None,
             },
         }));
@@ -195,7 +195,7 @@ mod tests {
 
         let result = handle.result().unwrap();
         let dl = result.as_ref().as_ref().unwrap();
-        assert_eq!(dl.file_info.file_size, 99);
+        assert_eq!(dl.file_info.file_size, Some(99));
         assert_eq!(dl.dest_path, PathBuf::from("out/file.bin"));
     }
 }

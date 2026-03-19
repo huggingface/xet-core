@@ -85,7 +85,7 @@
 //! let group = session.new_download_group_blocking()?;
 //! let info = XetFileInfo {
 //!     hash: m.hash.clone(),
-//!     file_size: m.file_size,
+//!     file_size: Some(m.file_size),
 //!     sha256: m.sha256.clone(),
 //! };
 //! let dl_handle = group.download_file_to_path_blocking(info, "out/file.bin".into())?;
@@ -122,7 +122,7 @@
 //! let group = session.new_download_group().await?;
 //! let info = XetFileInfo {
 //!     hash: m.hash.clone(),
-//!     file_size: m.file_size,
+//!     file_size: Some(m.file_size),
 //!     sha256: m.sha256.clone(),
 //! };
 //! let dl_handle = group.download_file_to_path(info, "out/file.bin".into()).await?;

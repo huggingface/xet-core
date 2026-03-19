@@ -167,6 +167,10 @@ impl ReconstructionTermManager {
             self.known_final_byte_position
                 .store(self.prefetched_byte_position, Ordering::Relaxed);
 
+            if let Some(progress_updater) = &self.progress_updater {
+                progress_updater.update_item_size(self.total_bytes_reported, true);
+            }
+
             info!(
                 file_hash = %self.file_hash,
                 prefetched_byte_position = self.prefetched_byte_position,

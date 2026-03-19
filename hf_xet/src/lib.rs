@@ -335,13 +335,14 @@ pub struct PyXetDownloadInfo {
     #[pyo3(get)]
     hash: String,
     #[pyo3(get)]
-    file_size: u64,
+    file_size: Option<u64>,
 }
 
 #[pymethods]
 impl PyXetDownloadInfo {
     #[new]
-    pub fn new(destination_path: String, hash: String, file_size: u64) -> Self {
+    #[pyo3(signature = (destination_path, hash, file_size=None))]
+    pub fn new(destination_path: String, hash: String, file_size: Option<u64>) -> Self {
         Self {
             destination_path,
             hash,
@@ -354,7 +355,7 @@ impl PyXetDownloadInfo {
     }
 
     fn __repr__(&self) -> String {
-        format!("PyXetDownloadInfo({}, {}, {})", self.destination_path, self.hash, self.file_size)
+        format!("PyXetDownloadInfo({}, {}, {:?})", self.destination_path, self.hash, self.file_size)
     }
 }
 
@@ -368,7 +369,7 @@ pub struct PyPointerFile {}
 impl PyPointerFile {
     #[new]
     pub fn new(path: String, hash: String, filesize: u64) -> (Self, PyXetDownloadInfo) {
-        (PyPointerFile {}, PyXetDownloadInfo::new(path, hash, filesize))
+        (PyPointerFile {}, PyXetDownloadInfo::new(path, hash, Some(filesize)))
     }
 
     fn __str__(&self) -> String {
@@ -377,7 +378,7 @@ impl PyPointerFile {
 
     fn __repr__(self_: PyRef<'_, Self>) -> String {
         let super_ = self_.as_super();
-        format!("PyPointerFile({}, {}, {})", super_.destination_path, super_.hash, super_.file_size)
+        format!("PyPointerFile({}, {}, {:?})", super_.destination_path, super_.hash, super_.file_size)
     }
 
     #[getter]
@@ -391,7 +392,7 @@ impl PyPointerFile {
     }
 
     #[getter]
-    fn filesize(self_: PyRef<'_, Self>) -> u64 {
+    fn filesize(self_: PyRef<'_, Self>) -> Option<u64> {
         self_.as_super().file_size
     }
 }
@@ -439,7 +440,9 @@ impl From<XetFileInfo> for PyXetUploadInfo {
     fn from(xf: XetFileInfo) -> Self {
         Self {
             hash: xf.hash().to_owned(),
-            file_size: xf.file_size(),
+            file_size: xf
+                .file_size()
+                .expect("upload metadata must always include a known file size"),
             sha256: xf.sha256().map(str::to_owned),
         }
     }
@@ -447,7 +450,11 @@ impl From<XetFileInfo> for PyXetUploadInfo {
 
 impl From<PyXetDownloadInfo> for (XetFileInfo, DestinationPath) {
     fn from(pf: PyXetDownloadInfo) -> Self {
-        (XetFileInfo::new(pf.hash, pf.file_size), pf.destination_path)
+        let file_info = match pf.file_size {
+            Some(size) => XetFileInfo::new(pf.hash, size),
+            None => XetFileInfo::new_hash_only(pf.hash),
+        };
+        (file_info, pf.destination_path)
     }
 }
 

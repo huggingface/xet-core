@@ -345,7 +345,9 @@ impl FileReconstructor {
         #[cfg(debug_assertions)]
         if !_is_streaming && let Some(updater) = run_state.progress_updater() {
             updater.assert_complete();
-            if let Some(byte_range) = byte_range {
+            if let Some(byte_range) = byte_range
+                && byte_range.end < u64::MAX
+            {
                 assert_eq!(updater.total_bytes_completed(), byte_range.end - byte_range.start);
             }
         }

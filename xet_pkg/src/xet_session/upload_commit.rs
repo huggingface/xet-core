@@ -505,7 +505,7 @@ impl UploadCommitInner {
                     let result = Arc::new(Ok(FileMetadata {
                         tracking_name: handle.tracking_name,
                         hash: file_info.hash().to_string(),
-                        file_size: file_info.file_size(),
+                        file_size: file_info.file_size().expect("upload always produces a known file size"),
                         sha256: file_info.sha256().map(str::to_owned),
                     }));
                     results.insert(task_id, result.clone());
@@ -1063,7 +1063,7 @@ mod tests {
         let (xfi, _) = cleaner.finish().await.unwrap();
         let results = commit.commit().await.unwrap();
         assert!(results.is_empty());
-        assert_eq!(xfi.file_size, data.len() as u64);
+        assert_eq!(xfi.file_size, Some(data.len() as u64));
         assert!(!xfi.hash.is_empty());
     }
 
@@ -1264,7 +1264,7 @@ mod tests {
         })?;
         let results = commit.commit_blocking()?;
         assert!(results.is_empty());
-        assert_eq!(file_size, data.len() as u64);
+        assert_eq!(file_size, Some(data.len() as u64));
         assert!(!hash.is_empty());
         Ok(())
     }
