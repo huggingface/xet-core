@@ -35,9 +35,13 @@ pub enum XetError {
     #[error("Authentication error: {0}")]
     Authentication(String),
 
-    /// Network-level failures: DNS, timeouts, HTTP 5xx, etc.
+    /// Network-level failures: DNS, HTTP 5xx, connection reset, etc.
     #[error("Network error: {0}")]
     Network(String),
+
+    /// A network request timed out.
+    #[error("Timeout: {0}")]
+    Timeout(String),
 
     /// A requested resource (file, XORB, shard) does not exist.
     #[error("Not found: {0}")]
@@ -105,10 +109,13 @@ impl XetError {
 
     fn from_client_error_ref(ce: &ClientError) -> Self {
         match ce {
-            ClientError::AuthError(_) => XetError::Authentication(ce.to_string()),
-            ClientError::ReqwestError(_, _)
-            | ClientError::ReqwestMiddlewareError(_)
-            | ClientError::PresignedUrlExpirationError => XetError::Network(ce.to_string()),
+            ClientError::AuthError(_) | ClientError::PresignedUrlExpirationError => {
+                XetError::Authentication(ce.to_string())
+            },
+            ClientError::ReqwestError(e, _) if e.is_timeout() => XetError::Timeout(ce.to_string()),
+            ClientError::ReqwestError(_, _) | ClientError::ReqwestMiddlewareError(_) => {
+                XetError::Network(ce.to_string())
+            },
             ClientError::FileNotFound(_) | ClientError::XORBNotFound(_) => XetError::NotFound(ce.to_string()),
             ClientError::ConfigurationError(_)
             | ClientError::InvalidArguments
@@ -211,6 +218,58 @@ impl<T> From<std::sync::PoisonError<std::sync::RwLockReadGuard<'_, T>>> for XetE
     }
 }
 
+// -- Python exception classes & conversion --------------------------------
+
+#[cfg(feature = "python")]
+mod py_exceptions {
+    // Inherits from Python's PermissionError so `except PermissionError` still catches it.
+    pyo3::create_exception!(hf_xet, XetAuthenticationError, pyo3::exceptions::PyPermissionError);
+
+    // Inherits from Python's FileNotFoundError so `except FileNotFoundError` still catches it.
+    pyo3::create_exception!(hf_xet, XetObjectNotFoundError, pyo3::exceptions::PyFileNotFoundError);
+
+    /// Register the custom exception classes on a Python module.
+    ///
+    /// Call this from the `#[pymodule]` init function so that the exceptions
+    /// are importable as `hf_xet.XetAuthenticationError`, etc.
+    pub fn register_exceptions(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()> {
+        use pyo3::types::PyModuleMethods;
+
+        m.add("XetAuthenticationError", m.py().get_type::<XetAuthenticationError>())?;
+        m.add("XetObjectNotFoundError", m.py().get_type::<XetObjectNotFoundError>())?;
+        Ok(())
+    }
+}
+
+#[cfg(feature = "python")]
+pub use py_exceptions::{XetAuthenticationError, XetObjectNotFoundError, register_exceptions};
+
+#[cfg(feature = "python")]
+impl From<XetError> for pyo3::PyErr {
+    fn from(err: XetError) -> pyo3::PyErr {
+        use pyo3::exceptions::{PyConnectionError, PyOSError, PyRuntimeError, PyTimeoutError, PyValueError};
+
+        let msg = err.to_string();
+        #[allow(unreachable_patterns)] // XetError is #[non_exhaustive]
+        match err {
+            XetError::Authentication(_) => XetAuthenticationError::new_err(msg),
+            XetError::NotFound(_) => XetObjectNotFoundError::new_err(msg),
+            XetError::Network(_) => PyConnectionError::new_err(msg),
+            XetError::Timeout(_) => PyTimeoutError::new_err(msg),
+            XetError::Io(_) => PyOSError::new_err(msg),
+            XetError::Configuration(_) | XetError::InvalidTaskID(_) => PyValueError::new_err(msg),
+            XetError::DataIntegrity(_)
+            | XetError::Internal(_)
+            | XetError::WrongRuntimeMode(_)
+            | XetError::AlreadyCommitted
+            | XetError::AlreadyFinished
+            | XetError::Aborted
+            | XetError::Cancelled(_) => PyRuntimeError::new_err(msg),
+            _ => PyRuntimeError::new_err(msg),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use xet_client::cas_client::auth::AuthError;
@@ -258,5 +317,11 @@ mod tests {
     fn data_runtime_cancelled_maps_to_cancelled() {
         let err = XetError::from(DataError::RuntimeError(RuntimeError::TaskCanceled("cancelled".to_string())));
         assert!(matches!(err, XetError::Cancelled(_)));
+    }
+
+    #[test]
+    fn presigned_url_expiration_maps_to_authentication() {
+        let err = XetError::from(ClientError::PresignedUrlExpirationError);
+        assert!(matches!(err, XetError::Authentication(_)));
     }
 }

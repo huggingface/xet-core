@@ -1878,6 +1878,7 @@ dependencies = [
  "futures",
  "http",
  "more-asserts",
+ "pyo3",
  "serde",
  "serde_json",
  "serial_test",
