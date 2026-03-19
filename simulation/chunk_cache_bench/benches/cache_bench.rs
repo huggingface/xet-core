@@ -8,7 +8,6 @@ use chunk_cache_bench::ChunkCacheExt;
 use criterion::{criterion_group, BenchmarkId, Criterion};
 use rand::rngs::StdRng;
 use rand::{thread_rng, SeedableRng};
-use tempdir::TempDir;
 use tokio::task::JoinSet;
 
 const SEED: u64 = 42;
@@ -18,7 +17,7 @@ const CAPACITY: u64 = 1 << 30; // 1 GB
 const NUM_CONCURRENT_TASKS: u8 = 8;
 
 fn benchmark_cache_get<T: ChunkCacheExt>(c: &mut Criterion) {
-    let cache_root = TempDir::new(format!("benchmark_cache_get_{}", T::name()).as_str()).unwrap();
+    let cache_root = tempfile::Builder::new().prefix(format!("benchmark_cache_get_{}", T::name()).as_str()).tempdir().unwrap();
     let cache = T::_initialize(cache_root.path().to_path_buf(), CAPACITY).unwrap();
 
     let mut rng = StdRng::seed_from_u64(SEED);
@@ -39,7 +38,7 @@ fn benchmark_cache_get<T: ChunkCacheExt>(c: &mut Criterion) {
 }
 
 fn benchmark_cache_get_mt<T: ChunkCacheExt + 'static>(c: &mut Criterion) {
-    let cache_root = TempDir::new(format!("benchmark_cache_get_mt_{}", T::name()).as_str()).unwrap();
+    let cache_root = tempfile::Builder::new().prefix(format!("benchmark_cache_get_mt_{}", T::name()).as_str()).tempdir().unwrap();
     let cache = T::_initialize(cache_root.path().to_path_buf(), CAPACITY).unwrap();
 
     let mut it: RandomEntryIterator<StdRng> = RandomEntryIterator::from_seed(SEED).with_range_len(RANGE_LEN);
@@ -69,7 +68,7 @@ fn benchmark_cache_get_mt<T: ChunkCacheExt + 'static>(c: &mut Criterion) {
 }
 
 fn benchmark_cache_put_mt<T: ChunkCacheExt + 'static>(c: &mut Criterion) {
-    let cache_root = TempDir::new(format!("benchmark_cache_put_mt_{}", T::name()).as_str()).unwrap();
+    let cache_root = tempfile::Builder::new().prefix(format!("benchmark_cache_put_mt_{}", T::name()).as_str()).tempdir().unwrap();
     let cache = T::_initialize(cache_root.path().to_path_buf(), CAPACITY).unwrap();
     let mut it: RandomEntryIterator<StdRng> = RandomEntryIterator::from_seed(SEED);
     let mut total_bytes = 0;
@@ -98,7 +97,7 @@ fn benchmark_cache_put_mt<T: ChunkCacheExt + 'static>(c: &mut Criterion) {
 }
 
 fn benchmark_cache_put<T: ChunkCacheExt + 'static>(c: &mut Criterion) {
-    let cache_root = TempDir::new(format!("benchmark_cache_put_{}", T::name()).as_str()).unwrap();
+    let cache_root = tempfile::Builder::new().prefix(format!("benchmark_cache_put_{}", T::name()).as_str()).tempdir().unwrap();
     let cache = T::_initialize(cache_root.path().to_path_buf(), CAPACITY).unwrap();
 
     let mut it: RandomEntryIterator<StdRng> = RandomEntryIterator::from_seed(SEED);
@@ -119,7 +118,7 @@ fn benchmark_cache_put<T: ChunkCacheExt + 'static>(c: &mut Criterion) {
 }
 
 fn benchmark_cache_get_hits<T: ChunkCacheExt + 'static>(c: &mut Criterion) {
-    let cache_root = TempDir::new(format!("benchmark_cache_get_hits_{}", T::name()).as_str()).unwrap();
+    let cache_root = tempfile::Builder::new().prefix(format!("benchmark_cache_get_hits_{}", T::name()).as_str()).tempdir().unwrap();
     let cache = T::_initialize(cache_root.path().to_path_buf(), CAPACITY).unwrap();
 
     let mut it: RandomEntryIterator<StdRng> = RandomEntryIterator::from_seed(SEED).with_range_len(RANGE_LEN);
