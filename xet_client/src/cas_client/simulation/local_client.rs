@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
 
+use anyhow::anyhow;
 use async_trait::async_trait;
 use bytes::Bytes;
 use heed::types::*;
@@ -499,7 +500,9 @@ impl DirectAccessClient for LocalClient {
         };
 
         if !md.is_file() {
-            return Err(ClientError::internal(format!("Attempting to write to {file_path:?}, but it is not a file")));
+            return Err(ClientError::InternalError(anyhow!(
+                "Attempting to write to {file_path:?}, but it is not a file"
+            )));
         }
 
         let Ok(file) = File::open(&file_path) else {

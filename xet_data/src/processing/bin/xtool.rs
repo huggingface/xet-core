@@ -3,10 +3,8 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
-use xet_runtime::GenericError;
-
-type Result<T> = std::result::Result<T, GenericError>;
 use http::header::{self, HeaderMap, HeaderValue};
 use walkdir::WalkDir;
 use xet_client::cas_client::RemoteClient;

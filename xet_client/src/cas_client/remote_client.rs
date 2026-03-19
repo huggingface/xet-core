@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+use anyhow::anyhow;
 use bytes::Bytes;
 use futures::TryStreamExt;
 use http::HeaderValue;
@@ -187,7 +188,9 @@ impl RemoteClient {
             "v1" => "cas::get_reconstruction_v1",
             "v2" => "cas::get_reconstruction_v2",
             _ => {
-                return Err(ClientError::internal(format!("unsupported reconstruction API version: {api_version}")));
+                return Err(ClientError::InternalError(anyhow!(
+                    "unsupported reconstruction API version: {api_version}"
+                )));
             },
         };
 
@@ -286,7 +289,7 @@ impl RemoteClient {
                 Err(e) => Err(e),
             },
             1 => Ok(self.get_reconstruction_v1(file_id, bytes_range).await?.map(Into::into)),
-            other => Err(ClientError::internal(format!("unsupported reconstruction API version: {other}"))),
+            other => Err(ClientError::InternalError(anyhow!("unsupported reconstruction API version: {other}"))),
         }
     }
 }

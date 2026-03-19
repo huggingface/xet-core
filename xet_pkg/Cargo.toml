@@ -18,6 +18,7 @@ xet-core-structures = { version = "1.4.0", path = "../xet_core_structures" }
 xet-client = { version = "1.4.0", path = "../xet_client" }
 xet-data = { version = "1.4.0", path = "../xet_data" }
 
+anyhow = { workspace = true }
 async-trait = { workspace = true }
 http = { workspace = true }
 more-asserts = { workspace = true }

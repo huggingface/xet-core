@@ -11,10 +11,10 @@ use std::process::Command;
 use std::sync::{Arc, mpsc};
 use std::thread;
 
+use anyhow::{Result, anyhow, bail};
 use clap::Parser;
 use simulation::scenario::VALID_SCENARIOS;
 use simulation::upload_concurrency::generate_summary_csv;
-use xet_runtime::GenericError;
 
 /// Blocking semaphore (limits how many scenario processes run at once).
 struct StdSemaphore {
@@ -122,7 +122,7 @@ fn scenario_binary() -> PathBuf {
     dir.join(name)
 }
 
-fn main() -> Result<(), GenericError> {
+fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .with_ansi(false)
@@ -145,7 +145,7 @@ fn main() -> Result<(), GenericError> {
     };
     for s in &scenarios {
         if !VALID_SCENARIOS.contains(&s.as_str()) {
-            return Err(format!("Unknown scenario: {}. Valid: {:?}", s, VALID_SCENARIOS).into());
+            bail!("Unknown scenario: {}. Valid: {:?}", s, VALID_SCENARIOS);
         }
     }
 
@@ -180,11 +180,10 @@ fn main() -> Result<(), GenericError> {
 
     let bin = args.scenario_bin.unwrap_or_else(scenario_binary);
     if !bin.exists() {
-        return Err(format!(
+        bail!(
             "run_upload_scenario binary not found at {}; build with cargo build --release -p simulation",
             bin.display()
-        )
-        .into());
+        );
     }
 
     let total_runs =
@@ -323,7 +322,7 @@ fn main() -> Result<(), GenericError> {
     );
 
     for h in handles {
-        h.join().map_err(|_| "scenario thread panicked")?;
+        h.join().map_err(|_| anyhow!("scenario thread panicked"))?;
     }
 
     generate_summary_csv(&results_base)?;

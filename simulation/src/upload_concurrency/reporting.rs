@@ -4,8 +4,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
 
+use anyhow::{Result, anyhow, bail};
 use serde::Deserialize;
-use xet_runtime::GenericError;
 
 use super::upload_simulation_client::ClientMetrics;
 use crate::scenario::NetworkStats;
@@ -19,7 +19,7 @@ struct ClientTimelineData {
     stats_by_timestamp: BTreeMap<u64, ClientMetrics>,
 }
 
-fn load_json_lines<T>(file_path: &Path) -> Result<Vec<T>, GenericError>
+fn load_json_lines<T>(file_path: &Path) -> Result<Vec<T>>
 where
     T: for<'de> Deserialize<'de>,
 {
@@ -35,7 +35,7 @@ where
 }
 
 /// Generates timeline.csv in the given scenario directory from client_stats_*.json files.
-pub fn generate_timeline_csv(scenario_dir: &Path) -> Result<(), GenericError> {
+pub fn generate_timeline_csv(scenario_dir: &Path) -> Result<()> {
     let mut client_timelines: HashMap<u64, ClientTimelineData> = HashMap::new();
 
     for entry in fs::read_dir(scenario_dir)? {
@@ -65,7 +65,7 @@ pub fn generate_timeline_csv(scenario_dir: &Path) -> Result<(), GenericError> {
     }
 
     if client_timelines.is_empty() {
-        return Err("No client_stats_*.json found".into());
+        bail!("No client_stats_*.json found");
     }
 
     let mut sorted_clients: Vec<_> = client_timelines.values().collect();
@@ -74,7 +74,7 @@ pub fn generate_timeline_csv(scenario_dir: &Path) -> Result<(), GenericError> {
     let start_time = sorted_clients.iter().map(|c| c.first_timestamp).min().unwrap_or(0);
     let end_time = sorted_clients.iter().map(|c| c.last_timestamp).max().unwrap_or(0);
     if start_time == 0 || end_time == 0 || end_time <= start_time {
-        return Err("Invalid time window".into());
+        bail!("Invalid time window");
     }
 
     let mut csv = String::new();
@@ -169,15 +169,11 @@ struct ScenarioSummaryRow {
     average_round_trip_time_ms: f64,
 }
 
-fn process_timeline_csv(
-    timeline_path: &Path,
-    scenario_dir: &Path,
-    scenario_name: &str,
-) -> Result<ScenarioSummaryRow, GenericError> {
+fn process_timeline_csv(timeline_path: &Path, scenario_dir: &Path, scenario_name: &str) -> Result<ScenarioSummaryRow> {
     let content = fs::read_to_string(timeline_path)?;
     let lines: Vec<&str> = content.lines().collect();
     if lines.is_empty() {
-        return Err("Empty timeline.csv".into());
+        bail!("Empty timeline.csv");
     }
 
     let header = lines[0];
@@ -185,20 +181,23 @@ fn process_timeline_csv(
     let total_bytes_idx = header_cols
         .iter()
         .position(|&s| s == "total_bytes")
-        .ok_or("total_bytes column")?;
-    let elapsed_ms_idx = header_cols.iter().position(|&s| s == "elapsed_ms").ok_or("elapsed_ms column")?;
+        .ok_or_else(|| anyhow!("total_bytes column"))?;
+    let elapsed_ms_idx = header_cols
+        .iter()
+        .position(|&s| s == "elapsed_ms")
+        .ok_or_else(|| anyhow!("elapsed_ms column"))?;
     let total_retries_idx = header_cols
         .iter()
         .position(|&s| s == "total_retries")
-        .ok_or("total_retries column")?;
+        .ok_or_else(|| anyhow!("total_retries column"))?;
     let total_concurrency_idx = header_cols
         .iter()
         .position(|&s| s == "total_concurrency")
-        .ok_or("total_concurrency column")?;
+        .ok_or_else(|| anyhow!("total_concurrency column"))?;
     let average_concurrency_idx = header_cols
         .iter()
         .position(|&s| s == "average_concurrency")
-        .ok_or("average_concurrency column")?;
+        .ok_or_else(|| anyhow!("average_concurrency column"))?;
 
     let client_concurrency_indices: Vec<usize> = header_cols
         .iter()
@@ -264,7 +263,7 @@ fn process_timeline_csv(
     }
 
     if row_count == 0 {
-        return Err("No data rows in timeline.csv".into());
+        bail!("No data rows in timeline.csv");
     }
 
     let avg_total_concurrency = total_concurrency_sum / row_count as f64;
@@ -297,11 +296,7 @@ fn process_timeline_csv(
 /// Computes network utilization as (bytes_sent / max_possible_bytes) * 100, capped at 100%.
 /// max_possible_bytes = sum over segments of (bandwidth_bytes_per_sec * segment_sec) from network_stats.json,
 /// using elapsed_sec for segment boundaries so we don't mix absolute timestamps with duration.
-fn calculate_network_utilization(
-    scenario_dir: &Path,
-    total_bytes: f64,
-    duration_sec: f64,
-) -> Result<f64, GenericError> {
+fn calculate_network_utilization(scenario_dir: &Path, total_bytes: f64, duration_sec: f64) -> Result<f64> {
     let network_stats_path = scenario_dir.join("network_stats.json");
     if !network_stats_path.exists() || duration_sec <= 0.0 {
         return Ok(0.0);
@@ -339,7 +334,7 @@ fn calculate_network_utilization(
     }
 }
 
-fn calculate_average_rtt(scenario_dir: &Path) -> Result<f64, GenericError> {
+fn calculate_average_rtt(scenario_dir: &Path) -> Result<f64> {
     let mut all_rtts = Vec::new();
     for entry in fs::read_dir(scenario_dir)? {
         let entry = entry?;
@@ -364,7 +359,7 @@ fn calculate_average_rtt(scenario_dir: &Path) -> Result<f64, GenericError> {
 }
 
 /// Generates summary.csv in the given results directory from all scenario subdirectories that have timeline.csv.
-pub fn generate_summary_csv(results_dir: &Path) -> Result<(), GenericError> {
+pub fn generate_summary_csv(results_dir: &Path) -> Result<()> {
     let mut scenario_dirs = Vec::new();
     for entry in fs::read_dir(results_dir)? {
         let entry = entry?;
@@ -374,7 +369,7 @@ pub fn generate_summary_csv(results_dir: &Path) -> Result<(), GenericError> {
         }
     }
     if scenario_dirs.is_empty() {
-        return Err("No scenario directories with timeline.csv found".into());
+        bail!("No scenario directories with timeline.csv found");
     }
 
     let mut scenario_data = Vec::new();
@@ -393,7 +388,7 @@ pub fn generate_summary_csv(results_dir: &Path) -> Result<(), GenericError> {
         }
     }
     if scenario_data.is_empty() {
-        return Err("No valid timeline.csv files".into());
+        bail!("No valid timeline.csv files");
     }
 
     scenario_data.sort_by(|a, b| a.scenario_name.cmp(&b.scenario_name));

@@ -3,10 +3,8 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
+use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
-use xet_runtime::GenericError;
-
-type Result<T> = std::result::Result<T, GenericError>;
 use xet_data::processing::configurations::TranslatorConfig;
 use xet_data::processing::{FileUploadSession, Sha256Policy, XetFileInfo};
 use xet_runtime::core::XetRuntime;

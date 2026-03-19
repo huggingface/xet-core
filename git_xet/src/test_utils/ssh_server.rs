@@ -1,13 +1,13 @@
 use std::io;
 use std::sync::Arc;
 
+use anyhow::Result;
 use rand_core::OsRng;
 use russh::keys::{Certificate, *};
 use russh::server::{Msg, Server as _, Session};
 use russh::*;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
-use xet_runtime::GenericError;
 
 pub use crate::auth::{GitLFSAuthentationResponseHeader, GitLFSAuthenticateResponse};
 
@@ -154,7 +154,7 @@ impl server::Handler for ServerImpl {
 }
 
 impl ServerImpl {
-    fn git_lfs_authenticate(&self, request: Vec<&str>) -> Result<String, GenericError> {
+    fn git_lfs_authenticate(&self, request: Vec<&str>) -> Result<String> {
         let Some(repo_id) = request.get(1) else {
             return Err(
                 std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid request, missing repo id").into()

@@ -1,10 +1,8 @@
 #![cfg(test)]
 use std::path::{Path, PathBuf};
 
+use anyhow::Result;
 use tempfile::TempDir;
-use xet_runtime::GenericError;
-
-type Result<T> = std::result::Result<T, GenericError>;
 
 use crate::test_utils::TempHome;
 use crate::utils::process_wrapping::run_git_captured;

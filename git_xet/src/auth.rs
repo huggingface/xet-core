@@ -135,10 +135,8 @@ pub fn get_credential(repo: &GitRepo, remote_url: &GitUrl, operation: Operation)
 
 #[cfg(test)]
 mod test_access_mode {
+    use anyhow::Result;
     use serial_test::serial;
-    use xet_runtime::GenericError;
-
-    type Result<T> = std::result::Result<T, GenericError>;
 
     use super::AccessMode;
     use crate::git_repo::GitRepo;
@@ -173,11 +171,9 @@ mod test_access_mode {
 mod test_cred_helpers {
     use std::io::Write;
 
+    use anyhow::Result;
     use serial_test::serial;
     use tempfile::NamedTempFile;
-    use xet_runtime::GenericError;
-
-    type Result<T> = std::result::Result<T, GenericError>;
     use xet_client::hub_client::Operation;
     use xet_runtime::utils::EnvVarGuard;
 

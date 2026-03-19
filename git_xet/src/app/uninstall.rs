@@ -57,11 +57,9 @@ fn uninstall_impl(location: ConfigLocation) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use anyhow::Result;
     use serial_test::serial;
-    use xet_runtime::GenericError;
     use xet_runtime::utils::CwdGuard;
-
-    type Result<T> = std::result::Result<T, GenericError>;
 
     use super::{all, local};
     use crate::app::install;

@@ -243,12 +243,13 @@ mod test {
     use std::os::unix::fs::MetadataExt;
     use std::path::Path;
 
+    use anyhow::Result;
+
     use super::{PrivilegedExecutionContext, WARNING_PRINTED};
-    use crate::GenericError;
 
     #[test]
     #[ignore = "run manually"]
-    fn test_create_dir_all() -> Result<(), GenericError> {
+    fn test_create_dir_all() -> Result<()> {
         // Run this test manually, steps:
 
         /* For Unix
@@ -274,7 +275,7 @@ mod test {
 
     #[test]
     #[ignore = "run manually"]
-    fn test_create_dir_all_sudo() -> Result<(), GenericError> {
+    fn test_create_dir_all_sudo() -> Result<()> {
         // Run this test manually, steps:
 
         /* For Unix
@@ -310,7 +311,7 @@ mod test {
 
     #[test]
     #[ignore = "run manually"]
-    fn test_create_file() -> Result<(), GenericError> {
+    fn test_create_file() -> Result<()> {
         // Run this test manually, steps:
 
         /* For Unix
@@ -344,7 +345,7 @@ mod test {
 
     #[test]
     #[ignore = "run manually"]
-    fn test_create_file_sudo() -> Result<(), GenericError> {
+    fn test_create_file_sudo() -> Result<()> {
         // Run this test manually, steps:
 
         /* For Unix

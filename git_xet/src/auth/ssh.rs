@@ -75,10 +75,7 @@ impl SSHCredentialHelper {
 #[async_trait]
 impl CredentialHelper for SSHCredentialHelper {
     async fn fill_credential(&self, req: RequestBuilder) -> std::result::Result<RequestBuilder, ClientError> {
-        let authenticated = self
-            .authenticate()
-            .await
-            .map_err(|e| ClientError::CredentialHelper(e.to_string()))?;
+        let authenticated = self.authenticate().await.map_err(ClientError::credential_helper_error)?;
         Ok(req.header(header::AUTHORIZATION, authenticated.header.authorization))
     }
 
@@ -89,10 +86,8 @@ impl CredentialHelper for SSHCredentialHelper {
 
 #[cfg(test)]
 mod tests {
+    use anyhow::Result;
     use xet_client::hub_client::Operation;
-    use xet_runtime::GenericError;
-
-    type Result<T> = std::result::Result<T, GenericError>;
 
     use super::SSHCredentialHelper;
     use crate::git_repo::GitRepo;
