@@ -24,9 +24,13 @@ pub trait DeletionControlableClient: Send + Sync {
     /// Returns (file_hash, shard_hash) tuples for all files across all shards.
     async fn list_file_shard_entries(&self) -> Result<Vec<(MerkleHash, MerkleHash)>>;
 
-    /// Deletes a file entry from all shards that contain it.
-    /// Shards that become empty are removed entirely.
+    /// Soft-deletes a file entry by hash.
+    /// The file is hidden from reconstruction and listing paths without rewriting shard files.
     async fn delete_file_entry(&self, file_hash: &MerkleHash) -> Result<()>;
+
+    /// Removes all global-dedup table entries contributed by the given shard.
+    /// Called by GC Stage 4 before replacing or discarding a shard.
+    async fn remove_shard_dedup_entries(&self, shard_hash: &MerkleHash) -> Result<()>;
 
     /// Verifies referential integrity of all shards on disk.
     async fn verify_integrity(&self) -> Result<()>;
