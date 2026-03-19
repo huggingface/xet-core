@@ -21,23 +21,24 @@ xet-data = { version = "1.4.0", path = "../xet_data" }
 async-trait = { workspace = true }
 http = { workspace = true }
 more-asserts = { workspace = true }
-tokio = { workspace = true, features = ["net", "time"] }
-thiserror = { workspace = true }
-tracing = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["net", "time"] }
+tracing = { workspace = true }
+ulid = { workspace = true }
 
 [features]
 python = ["xet-runtime/python"]
 
 [dev-dependencies]
+anyhow = { workspace = true }
 async-std = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
 futures = { workspace = true }
 more-asserts = { workspace = true }
+serde_json = { workspace = true }
+serial_test = { workspace = true }
 smol = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "rt", "time", "macros"] }
-serial_test = { workspace = true }
-anyhow = { workspace = true }
-clap = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
 tracing-subscriber = { workspace = true }
