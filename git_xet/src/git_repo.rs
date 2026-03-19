@@ -123,8 +123,9 @@ impl GitRepo {
 #[cfg(test)]
 mod tests {
     use serial_test::serial;
+    use xet_runtime::GenericError;
 
-    type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+    type Result<T> = std::result::Result<T, GenericError>;
 
     use crate::git_repo::GitRepo;
     use crate::test_utils::TestRepo;

@@ -4,6 +4,7 @@ use std::process::Command;
 
 use tempfile::TempDir;
 use tracing::info;
+use xet_runtime::GenericError;
 
 /// Set this to true to see the output of the tests on success.
 const DEBUG: bool = false;
@@ -33,7 +34,7 @@ impl IntegrationTest {
         self.assets.push((name.to_owned(), arg));
     }
 
-    fn run(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    fn run(&self) -> Result<(), GenericError> {
         // Create a temporary directory
         let tmp_repo_dest = TempDir::new().unwrap();
         let tmp_path_path = tmp_repo_dest.path().to_path_buf();
@@ -109,7 +110,7 @@ impl IntegrationTest {
 mod git_integration_tests {
     use super::*;
     #[test]
-    fn test_basic_read() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    fn test_basic_read() -> Result<(), GenericError> {
         IntegrationTest::new(include_str!("integration_tests/test_basic_clean_smudge.sh")).run()
     }
 }

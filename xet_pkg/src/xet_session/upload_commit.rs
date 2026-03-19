@@ -130,7 +130,8 @@ impl UploadCommit {
     /// # use std::fs::File;
     /// # use std::io::Read;
     /// # use xet::XetError;
-    /// # async fn example(commit: xet::xet_session::UploadCommit, filename: &str, filesize: u64) -> Result<(), Box<dyn std::error::Error>> {
+    /// # use xet_runtime::GenericError;
+    /// # async fn example(commit: xet::xet_session::UploadCommit, filename: &str, filesize: u64) -> Result<(), GenericError> {
     /// # use xet::xet_session::Sha256Policy;
     /// let (handle, mut cleaner) = commit.upload_file(Some(filename.into()), filesize, Sha256Policy::Compute).await?;
     /// let mut reader = File::open(&filename)?;
@@ -603,11 +604,12 @@ mod tests {
     use std::time::Duration;
 
     use tempfile::{TempDir, tempdir};
+    use xet_runtime::GenericError;
 
     use super::*;
     use crate::xet_session::session::{RuntimeMode, XetSession, XetSessionBuilder};
 
-    async fn local_session(temp: &TempDir) -> Result<XetSession, Box<dyn std::error::Error>> {
+    async fn local_session(temp: &TempDir) -> Result<XetSession, GenericError> {
         let cas_path = temp.path().join("cas");
         Ok(XetSessionBuilder::new()
             .with_endpoint(format!("local://{}", cas_path.display()))
@@ -628,7 +630,7 @@ mod tests {
 
     #[test]
     // commit() must block while any enqueue method holds the state lock.
-    fn test_commit_blocked_while_upload_registration_holds_state_lock() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_commit_blocked_while_upload_registration_holds_state_lock() -> Result<(), GenericError> {
         let temp = tempdir()?;
         let cas_path = temp.path().join("cas");
         let session = XetSessionBuilder::new()
@@ -1183,7 +1185,7 @@ mod tests {
 
     // ── Blocking API tests ────────────────────────────────────────────────────
 
-    fn local_session_sync(temp: &TempDir) -> Result<XetSession, Box<dyn std::error::Error>> {
+    fn local_session_sync(temp: &TempDir) -> Result<XetSession, GenericError> {
         let cas_path = temp.path().join("cas");
         Ok(XetSessionBuilder::new()
             .with_endpoint(format!("local://{}", cas_path.display()))
@@ -1191,7 +1193,7 @@ mod tests {
     }
 
     #[test]
-    fn test_blocking_upload_bytes_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_blocking_upload_bytes_round_trip() -> Result<(), GenericError> {
         let temp = tempdir()?;
         let session = local_session_sync(&temp)?;
         let data = b"Hello, upload commit round-trip!";
@@ -1207,7 +1209,7 @@ mod tests {
     }
 
     #[test]
-    fn test_blocking_upload_from_path_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_blocking_upload_from_path_round_trip() -> Result<(), GenericError> {
         let temp = tempdir()?;
         let session = local_session_sync(&temp)?;
         let src = temp.path().join("data.bin");
@@ -1224,7 +1226,7 @@ mod tests {
     }
 
     #[test]
-    fn test_blocking_upload_result_access_patterns() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_blocking_upload_result_access_patterns() -> Result<(), GenericError> {
         let temp = tempdir()?;
         let session = local_session_sync(&temp)?;
         let data = b"result access patterns";
@@ -1249,7 +1251,7 @@ mod tests {
     }
 
     #[test]
-    fn test_blocking_upload_streaming_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_blocking_upload_streaming_round_trip() -> Result<(), GenericError> {
         let temp = tempdir()?;
         let session = local_session_sync(&temp)?;
         let data = b"streamed upload bytes";
@@ -1270,7 +1272,7 @@ mod tests {
     }
 
     #[test]
-    fn test_blocking_upload_multiple_files_in_one_commit() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_blocking_upload_multiple_files_in_one_commit() -> Result<(), GenericError> {
         let temp = tempdir()?;
         let session = local_session_sync(&temp)?;
         let commit = session.new_upload_commit_blocking()?;
@@ -1283,7 +1285,7 @@ mod tests {
     }
 
     #[test]
-    fn test_blocking_upload_progress_reflects_bytes_after_commit() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_blocking_upload_progress_reflects_bytes_after_commit() -> Result<(), GenericError> {
         let temp = tempdir()?;
         let session = local_session_sync(&temp)?;
         let data = b"progress tracking upload data";
@@ -1300,7 +1302,7 @@ mod tests {
     }
 
     #[test]
-    fn test_blocking_upload_file_returns_handle_without_status() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_blocking_upload_file_returns_handle_without_status() -> Result<(), GenericError> {
         let temp = tempdir()?;
         let session = local_session_sync(&temp)?;
         let commit = session.new_upload_commit_blocking()?;

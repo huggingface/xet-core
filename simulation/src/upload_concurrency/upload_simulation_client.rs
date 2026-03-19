@@ -20,6 +20,7 @@ use xet_client::cas_client::adaptive_concurrency::{
 use xet_client::cas_client::http_client::build_http_client;
 use xet_client::cas_client::progress_tracked_streams::UploadProgressStream;
 use xet_client::cas_client::retry_wrapper::RetryWrapper;
+use xet_runtime::GenericError;
 use xet_runtime::core::xet_config;
 
 use crate::scenario::base_url;
@@ -80,7 +81,7 @@ pub async fn run_upload_clients_until_cancelled(
     min_data_kb: u64,
     max_data_kb: u64,
     cancel: CancellationToken,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(), GenericError> {
     run_upload_clients_impl(server_addr, output_dir, min_data_kb, max_data_kb, None, Some(cancel)).await
 }
 
@@ -92,7 +93,7 @@ pub async fn run_upload_clients(
     min_data_kb: u64,
     max_data_kb: u64,
     repeat_duration_seconds: u64,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(), GenericError> {
     run_upload_clients_impl(server_addr, output_dir, min_data_kb, max_data_kb, Some(repeat_duration_seconds), None)
         .await
 }
@@ -304,7 +305,7 @@ async fn run_upload_clients_impl(
     max_data_kb: u64,
     repeat_duration_seconds: Option<u64>,
     cancel: Option<CancellationToken>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(), GenericError> {
     let min_data_size = min_data_kb * 1024;
     let max_data_size = max_data_kb * 1024;
     let client_id = rand::rng().random_range(0..1000000000_u64);

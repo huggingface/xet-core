@@ -15,7 +15,7 @@
 //! use xet_client::cas_client::{LocalServer, LocalServerConfig};
 //!
 //! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+//! async fn main() -> Result<(), xet_runtime::GenericError> {
 //!     let config = LocalServerConfig {
 //!         data_directory: "./data".into(),
 //!         host: "127.0.0.1".to_string(),

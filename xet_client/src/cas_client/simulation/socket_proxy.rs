@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UnixListener, UnixStream};
 use tokio::sync::oneshot;
+use xet_runtime::GenericError;
 
 /// A simple Unix socket proxy that forwards connections to a TCP server.
 ///
@@ -23,7 +24,7 @@ use tokio::sync::oneshot;
 ///
 /// use xet_client::cas_client::simulation::socket_proxy::UnixSocketProxy;
 ///
-/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// # async fn example() -> Result<(), GenericError> {
 /// let socket_path = PathBuf::from("/tmp/test_socket.sock");
 /// let proxy = UnixSocketProxy::new(socket_path, "127.0.0.1:8080".to_string()).await?;
 /// // Proxy is now listening on the Unix socket and forwarding to TCP
@@ -45,7 +46,7 @@ impl UnixSocketProxy {
     ///
     /// # Errors
     /// Returns an error if the socket file cannot be created or bound.
-    pub async fn new(socket_path: PathBuf, tcp_endpoint: String) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn new(socket_path: PathBuf, tcp_endpoint: String) -> Result<Self, GenericError> {
         // Remove socket file if it exists
         if socket_path.exists() {
             std::fs::remove_file(&socket_path)?;
@@ -97,7 +98,7 @@ impl UnixSocketProxy {
     }
 
     /// Handles a single connection by proxying data between Unix socket and TCP.
-    async fn handle_connection(unix_stream: UnixStream, tcp_endpoint: &str) -> Result<(), Box<dyn std::error::Error>> {
+    async fn handle_connection(unix_stream: UnixStream, tcp_endpoint: &str) -> Result<(), GenericError> {
         let tcp_stream = TcpStream::connect(tcp_endpoint).await?;
 
         // Use tokio::io::split to get owned halves that can be moved into tasks

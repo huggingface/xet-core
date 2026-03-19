@@ -50,7 +50,9 @@ impl LFSAgentState {
 
 #[cfg(test)]
 mod tests {
-    type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+    use xet_runtime::GenericError;
+
+    type Result<T> = std::result::Result<T, GenericError>;
 
     use super::LFSAgentState;
     use crate::lfs_agent_protocol::errors::GitLFSProtocolError;

@@ -16,7 +16,7 @@ use super::shard_file_reconstructor::FileReconstructor;
 use super::shard_in_memory::MDBInMemoryShard;
 use super::utils::truncate_hash;
 use super::xorb_structs::*;
-use crate::error::{FormatError, Result};
+use crate::error::{CoreError, Result};
 use crate::merklehash::{HMACKey, MerkleHash};
 use crate::{MerkleHashMap, TruncatedMerkleHashMap};
 
@@ -74,7 +74,7 @@ impl ShardBookkeeper {
 }
 
 pub struct ShardFileManager {
-    shard_bookkeeper: RwTaskLock<ShardBookkeeper, FormatError>,
+    shard_bookkeeper: RwTaskLock<ShardBookkeeper, CoreError>,
     current_state: RwLock<MDBInMemoryShard>,
     shard_directory: PathBuf,
     target_shard_max_size: u64,
@@ -367,7 +367,7 @@ impl ShardFileManager {
 
 #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
-impl FileReconstructor<FormatError> for ShardFileManager {
+impl FileReconstructor<CoreError> for ShardFileManager {
     // Given a file pointer, returns the information needed to reconstruct the file.
     // The information is stored in the destination vector dest_results.  The function
     // returns true if the file hash was found, and false otherwise.

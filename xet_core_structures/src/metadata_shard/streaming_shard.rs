@@ -13,7 +13,7 @@ use super::shard_file::{MDB_FILE_INFO_ENTRY_SIZE, current_timestamp};
 use super::xorb_structs::{MDBXorbInfoView, XorbChunkSequenceEntry, XorbChunkSequenceHeader};
 use super::{MDBShardFileFooter, MDBShardFileHeader};
 use crate::MerkleHashMap;
-use crate::error::{FormatError, Result};
+use crate::error::{CoreError, Result};
 use crate::merklehash::MerkleHash;
 
 /// Runs through a shard file info section, calling the specified callback function for each entry.
@@ -243,7 +243,7 @@ impl MDBMinimalShard {
         // if only some files have verification, then we consider this shard invalid
         // either all files have verification or no files have verification
         if !file_info_views.is_empty() && !file_info_views.iter().map(|fiv| fiv.contains_verification()).all_equal() {
-            return Err(FormatError::invalid_shard("only some files contain verification"));
+            return Err(CoreError::invalid_shard("only some files contain verification"));
         }
 
         // XORB stuff

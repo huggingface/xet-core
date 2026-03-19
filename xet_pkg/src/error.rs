@@ -1,6 +1,6 @@
 use thiserror::Error;
 use xet_client::ClientError;
-use xet_core_structures::FormatError;
+use xet_core_structures::CoreError;
 use xet_data::DataError;
 use xet_data::progress_tracking::UniqueID;
 use xet_runtime::RuntimeError;
@@ -88,21 +88,21 @@ impl XetError {
         }
     }
 
-    fn from_format_error_ref(fe: &FormatError) -> Self {
+    fn from_format_error_ref(fe: &CoreError) -> Self {
         match fe {
-            FormatError::Io(_) => XetError::Io(fe.to_string()),
-            FormatError::ShardNotFound(_) | FormatError::FileNotFound(_) => XetError::NotFound(fe.to_string()),
-            FormatError::HashMismatch
-            | FormatError::TruncatedHashCollision(_)
-            | FormatError::InvalidShard(_)
-            | FormatError::ShardVersion(_)
-            | FormatError::ChunkHeaderParse
-            | FormatError::FormatError(_)
-            | FormatError::Compression(_) => XetError::DataIntegrity(fe.to_string()),
-            FormatError::InvalidRange | FormatError::InvalidArguments | FormatError::BadFilename(_) => {
+            CoreError::Io(_) => XetError::Io(fe.to_string()),
+            CoreError::ShardNotFound(_) | CoreError::FileNotFound(_) => XetError::NotFound(fe.to_string()),
+            CoreError::HashMismatch
+            | CoreError::TruncatedHashCollision(_)
+            | CoreError::InvalidShard(_)
+            | CoreError::ShardVersion(_)
+            | CoreError::ChunkHeaderParse
+            | CoreError::MalformedData(_)
+            | CoreError::CompressionError(_) => XetError::DataIntegrity(fe.to_string()),
+            CoreError::InvalidRange | CoreError::InvalidArguments | CoreError::BadFilename(_) => {
                 XetError::Configuration(fe.to_string())
             },
-            FormatError::Runtime(re) => XetError::from_runtime_error_ref(re),
+            CoreError::RuntimeError(re) => XetError::from_runtime_error_ref(re),
             _ => XetError::Internal(fe.to_string()),
         }
     }
@@ -158,8 +158,8 @@ impl From<RuntimeError> for XetError {
     }
 }
 
-impl From<FormatError> for XetError {
-    fn from(e: FormatError) -> Self {
+impl From<CoreError> for XetError {
+    fn from(e: CoreError) -> Self {
         XetError::from_format_error_ref(&e)
     }
 }
@@ -285,13 +285,13 @@ mod tests {
 
     #[test]
     fn format_not_found_maps_to_not_found() {
-        let err = XetError::from(FormatError::ShardNotFound(MerkleHash::default()));
+        let err = XetError::from(CoreError::ShardNotFound(MerkleHash::default()));
         assert!(matches!(err, XetError::NotFound(_)));
     }
 
     #[test]
     fn format_invalid_args_maps_to_configuration() {
-        let err = XetError::from(FormatError::InvalidArguments);
+        let err = XetError::from(CoreError::InvalidArguments);
         assert!(matches!(err, XetError::Configuration(_)));
     }
 
@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn client_nested_format_maps_using_format_rules() {
-        let err = XetError::from(ClientError::FormatError(FormatError::InvalidRange));
+        let err = XetError::from(ClientError::FormatError(CoreError::InvalidRange));
         assert!(matches!(err, XetError::Configuration(_)));
     }
 

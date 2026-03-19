@@ -5,6 +5,7 @@ use std::fs;
 use std::path::Path;
 
 use serde::Deserialize;
+use xet_runtime::GenericError;
 
 use super::upload_simulation_client::ClientMetrics;
 use crate::scenario::NetworkStats;
@@ -18,7 +19,7 @@ struct ClientTimelineData {
     stats_by_timestamp: BTreeMap<u64, ClientMetrics>,
 }
 
-fn load_json_lines<T>(file_path: &Path) -> Result<Vec<T>, Box<dyn std::error::Error + Send + Sync>>
+fn load_json_lines<T>(file_path: &Path) -> Result<Vec<T>, GenericError>
 where
     T: for<'de> Deserialize<'de>,
 {
@@ -34,7 +35,7 @@ where
 }
 
 /// Generates timeline.csv in the given scenario directory from client_stats_*.json files.
-pub fn generate_timeline_csv(scenario_dir: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub fn generate_timeline_csv(scenario_dir: &Path) -> Result<(), GenericError> {
     let mut client_timelines: HashMap<u64, ClientTimelineData> = HashMap::new();
 
     for entry in fs::read_dir(scenario_dir)? {
@@ -172,7 +173,7 @@ fn process_timeline_csv(
     timeline_path: &Path,
     scenario_dir: &Path,
     scenario_name: &str,
-) -> Result<ScenarioSummaryRow, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<ScenarioSummaryRow, GenericError> {
     let content = fs::read_to_string(timeline_path)?;
     let lines: Vec<&str> = content.lines().collect();
     if lines.is_empty() {
@@ -300,7 +301,7 @@ fn calculate_network_utilization(
     scenario_dir: &Path,
     total_bytes: f64,
     duration_sec: f64,
-) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<f64, GenericError> {
     let network_stats_path = scenario_dir.join("network_stats.json");
     if !network_stats_path.exists() || duration_sec <= 0.0 {
         return Ok(0.0);
@@ -338,7 +339,7 @@ fn calculate_network_utilization(
     }
 }
 
-fn calculate_average_rtt(scenario_dir: &Path) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
+fn calculate_average_rtt(scenario_dir: &Path) -> Result<f64, GenericError> {
     let mut all_rtts = Vec::new();
     for entry in fs::read_dir(scenario_dir)? {
         let entry = entry?;
@@ -363,7 +364,7 @@ fn calculate_average_rtt(scenario_dir: &Path) -> Result<f64, Box<dyn std::error:
 }
 
 /// Generates summary.csv in the given results directory from all scenario subdirectories that have timeline.csv.
-pub fn generate_summary_csv(results_dir: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub fn generate_summary_csv(results_dir: &Path) -> Result<(), GenericError> {
     let mut scenario_dirs = Vec::new();
     for entry in fs::read_dir(results_dir)? {
         let entry = entry?;

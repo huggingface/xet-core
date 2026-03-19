@@ -375,11 +375,12 @@ mod tests {
 
     use tempfile::{TempDir, tempdir};
     use xet_data::processing::Sha256Policy;
+    use xet_runtime::GenericError;
 
     use super::*;
     use crate::xet_session::session::{RuntimeMode, XetSession, XetSessionBuilder};
 
-    async fn local_session(temp: &TempDir) -> Result<XetSession, Box<dyn std::error::Error>> {
+    async fn local_session(temp: &TempDir) -> Result<XetSession, GenericError> {
         let cas_path = temp.path().join("cas");
         Ok(XetSessionBuilder::new()
             .with_endpoint(format!("local://{}", cas_path.display()))
@@ -387,11 +388,7 @@ mod tests {
             .await?)
     }
 
-    async fn upload_bytes(
-        session: &XetSession,
-        data: &[u8],
-        name: &str,
-    ) -> Result<XetFileInfo, Box<dyn std::error::Error>> {
+    async fn upload_bytes(session: &XetSession, data: &[u8], name: &str) -> Result<XetFileInfo, GenericError> {
         let commit = session.new_upload_commit().await?;
         let handle = commit
             .upload_bytes(data.to_vec(), Sha256Policy::Compute, Some(name.into()))
@@ -415,7 +412,7 @@ mod tests {
 
     #[test]
     // finish() must block while download_file_to_path() holds the state lock.
-    fn test_finish_blocked_while_download_registration_holds_state_lock() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_finish_blocked_while_download_registration_holds_state_lock() -> Result<(), GenericError> {
         let session = XetSessionBuilder::new().build()?;
         let runtime = session.runtime.clone();
         // Create DownloadGroup directly so we can access its private state field
@@ -879,18 +876,14 @@ mod tests {
 
     // ── Blocking API tests ────────────────────────────────────────────────────
 
-    fn local_session_sync(temp: &TempDir) -> Result<XetSession, Box<dyn std::error::Error>> {
+    fn local_session_sync(temp: &TempDir) -> Result<XetSession, GenericError> {
         let cas_path = temp.path().join("cas");
         Ok(XetSessionBuilder::new()
             .with_endpoint(format!("local://{}", cas_path.display()))
             .build()?)
     }
 
-    fn upload_bytes_blocking(
-        session: &XetSession,
-        data: &[u8],
-        name: &str,
-    ) -> Result<XetFileInfo, Box<dyn std::error::Error>> {
+    fn upload_bytes_blocking(session: &XetSession, data: &[u8], name: &str) -> Result<XetFileInfo, GenericError> {
         let commit = session.new_upload_commit_blocking()?;
         let handle = commit.upload_bytes_blocking(data.to_vec(), Sha256Policy::Compute, Some(name.into()))?;
         let results = commit.commit_blocking()?;
@@ -903,7 +896,7 @@ mod tests {
     }
 
     #[test]
-    fn test_blocking_download_file_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_blocking_download_file_round_trip() -> Result<(), GenericError> {
         let temp = tempdir()?;
         let session = local_session_sync(&temp)?;
         let original = b"Hello, download round-trip!";
@@ -919,7 +912,7 @@ mod tests {
     }
 
     #[test]
-    fn test_blocking_download_multiple_files() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_blocking_download_multiple_files() -> Result<(), GenericError> {
         let temp = tempdir()?;
         let session = local_session_sync(&temp)?;
 
@@ -953,7 +946,7 @@ mod tests {
     }
 
     #[test]
-    fn test_blocking_download_progress_reflects_bytes_after_finish() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_blocking_download_progress_reflects_bytes_after_finish() -> Result<(), GenericError> {
         let temp = tempdir()?;
         let session = local_session_sync(&temp)?;
         let original = b"download progress tracking data";
@@ -982,7 +975,7 @@ mod tests {
     }
 
     #[test]
-    fn test_blocking_download_result_access_patterns() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_blocking_download_result_access_patterns() -> Result<(), GenericError> {
         let temp = tempdir()?;
         let session = local_session_sync(&temp)?;
         let data = b"download result access patterns";

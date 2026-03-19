@@ -14,6 +14,7 @@ use std::thread;
 use clap::Parser;
 use simulation::scenario::VALID_SCENARIOS;
 use simulation::upload_concurrency::generate_summary_csv;
+use xet_runtime::GenericError;
 
 /// Blocking semaphore (limits how many scenario processes run at once).
 struct StdSemaphore {
@@ -121,7 +122,7 @@ fn scenario_binary() -> PathBuf {
     dir.join(name)
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn main() -> Result<(), GenericError> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .with_ansi(false)

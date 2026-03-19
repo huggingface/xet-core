@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use xet::xet_session::{FileMetadata, Sha256Policy, TaskStatus, XetFileInfo, XetSessionBuilder};
+use xet_runtime::GenericError;
 
 #[derive(Parser)]
 #[clap(name = "session-demo", about = "XetSession API demo")]
@@ -34,7 +35,7 @@ enum Command {
     },
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn main() -> Result<(), GenericError> {
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();
     match cli.command {
@@ -47,7 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 }
 
-fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<(), GenericError> {
     let mut builder = XetSessionBuilder::new();
     if let Some(ep) = endpoint {
         builder = builder.with_endpoint(ep);
@@ -94,11 +95,7 @@ fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<(), Box
     Ok(())
 }
 
-fn download_files(
-    metadata_file: PathBuf,
-    output_dir: PathBuf,
-    endpoint: Option<String>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: Option<String>) -> Result<(), GenericError> {
     let metadata: Vec<FileMetadata> = serde_json::from_str(&std::fs::read_to_string(metadata_file)?)?;
     std::fs::create_dir_all(&output_dir)?;
 

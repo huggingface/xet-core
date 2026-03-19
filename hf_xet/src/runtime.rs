@@ -3,9 +3,10 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use lazy_static::lazy_static;
-use pyo3::exceptions::{PyKeyboardInterrupt, PyRuntimeError};
+use pyo3::exceptions::PyKeyboardInterrupt;
 use pyo3::prelude::*;
 use tracing::info;
+use xet_pkg::XetError;
 use xet_runtime::RuntimeError;
 use xet_runtime::core::XetRuntime;
 use xet_runtime::core::sync_primatives::spawn_os_thread;
@@ -207,8 +208,8 @@ fn get_threadpool() -> Result<Arc<XetRuntime>, RuntimeError> {
     init_threadpool()
 }
 
-pub fn convert_multithreading_error(e: impl Into<RuntimeError> + std::fmt::Display) -> PyErr {
-    PyRuntimeError::new_err(format!("Xet Runtime Error: {e}"))
+pub fn convert_multithreading_error(e: impl Into<RuntimeError>) -> PyErr {
+    PyErr::from(XetError::from(e.into()))
 }
 
 pub fn async_run<Out, F>(py: Python, execution_call: F) -> PyResult<Out>

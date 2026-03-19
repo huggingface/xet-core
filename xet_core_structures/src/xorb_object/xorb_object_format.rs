@@ -13,7 +13,7 @@ use xet_runtime::core::xet_config;
 use super::constants::{TARGET_CHUNK_SIZE, XORB_BLOCK_SIZE};
 use super::xorb_chunk_format::{deserialize_chunk, deserialize_chunk_header, serialize_chunk, write_chunk_header};
 use super::{CompressionScheme, RawXorbData, XorbChunkHeader};
-use crate::error::{FormatError, Validate};
+use crate::error::{CoreError, Validate};
 use crate::merklehash::{DataHash, MerkleHash};
 use crate::metadata_shard::chunk_verification::range_hash_from_chunks;
 use crate::serialization_utils::*;
@@ -99,11 +99,11 @@ impl XorbObjectInfoV0 {
     ///
     /// Assumes caller has set position of Writer to appropriate location for serialization.
     #[deprecated]
-    pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<usize, FormatError> {
+    pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<usize, CoreError> {
         let mut total_bytes_written = 0;
 
         // Helper function to write data and update the byte count
-        let mut write_bytes = |data: &[u8]| -> Result<(), FormatError> {
+        let mut write_bytes = |data: &[u8]| -> Result<(), CoreError> {
             writer.write_all(data)?;
             total_bytes_written += data.len();
             Ok(())
@@ -133,11 +133,11 @@ impl XorbObjectInfoV0 {
     ///
     /// Expects metadata struct is found at end of Reader, written out in struct order.
     #[deprecated]
-    pub fn deserialize<R: Read>(reader: &mut R) -> Result<(Self, u32), FormatError> {
+    pub fn deserialize<R: Read>(reader: &mut R) -> Result<(Self, u32), CoreError> {
         let mut total_bytes_read: u32 = 0;
 
         // Helper function to read data and update the byte count
-        let mut read_bytes = |data: &mut [u8]| -> Result<(), FormatError> {
+        let mut read_bytes = |data: &mut [u8]| -> Result<(), CoreError> {
             reader.read_exact(data)?;
             total_bytes_read += data.len() as u32;
             Ok(())
@@ -147,14 +147,14 @@ impl XorbObjectInfoV0 {
         read_bytes(&mut ident)?;
 
         if ident != XORB_OBJECT_FORMAT_IDENT {
-            return Err(FormatError::FormatError("Xorb Invalid Ident".to_string()));
+            return Err(CoreError::MalformedData("Xorb Invalid Ident".to_string()));
         }
 
         let mut version = [0u8; 1];
         read_bytes(&mut version)?;
 
         if version[0] != XORB_OBJECT_FORMAT_VERSION_V0 {
-            return Err(FormatError::FormatError("Xorb Invalid Format Version".to_string()));
+            return Err(CoreError::MalformedData("Xorb Invalid Format Version".to_string()));
         }
 
         let (s, bytes_read_v0) = Self::deserialize_v0(reader)?;
@@ -162,11 +162,11 @@ impl XorbObjectInfoV0 {
         Ok((s, total_bytes_read + bytes_read_v0))
     }
 
-    pub fn deserialize_v0<R: Read>(reader: &mut R) -> Result<(Self, u32), FormatError> {
+    pub fn deserialize_v0<R: Read>(reader: &mut R) -> Result<(Self, u32), CoreError> {
         let mut total_bytes_read: u32 = 0;
 
         // Helper function to read data and update the byte count
-        let mut read_bytes = |data: &mut [u8]| -> Result<(), FormatError> {
+        let mut read_bytes = |data: &mut [u8]| -> Result<(), CoreError> {
             reader.read_exact(data)?;
             total_bytes_read += data.len() as u32;
             Ok(())
@@ -218,7 +218,7 @@ impl XorbObjectInfoV0 {
     pub async fn deserialize_async<R: futures::io::AsyncRead + Unpin>(
         reader: &mut R,
         version: u8,
-    ) -> Result<(Self, u32), FormatError> {
+    ) -> Result<(Self, u32), CoreError> {
         // already read 8 bytes (ident + version)
         let mut total_bytes_read: u32 = (size_of::<XorbObjectIdent>() + size_of::<u8>()) as u32;
 
@@ -227,7 +227,7 @@ impl XorbObjectInfoV0 {
             reader: &mut R,
             total_bytes_read: &mut u32,
             buf: &mut [u8],
-        ) -> Result<(), FormatError> {
+        ) -> Result<(), CoreError> {
             reader.read_exact(buf).await?;
             *total_bytes_read += buf.len() as u32;
             Ok(())
@@ -398,7 +398,7 @@ impl XorbObjectInfoV1 {
     /// Serialize XorbObjectInfoV1 to provided Writer.
     ///
     /// Assumes caller has set position of Writer to appropriate location for serialization.
-    pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<usize, FormatError> {
+    pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<usize, CoreError> {
         let mut counting_writer = countio::Counter::new(writer);
         let w = &mut counting_writer;
 
@@ -421,7 +421,7 @@ impl XorbObjectInfoV1 {
 
         if self.num_chunks as usize != self.chunk_hashes.len() {
             debug_assert_eq!(self.num_chunks as usize, self.chunk_hashes.len());
-            return Err(FormatError::FormatError(format!(
+            return Err(CoreError::MalformedData(format!(
                 "Chunk hash vector not correct length on serialization. ({}, expected {})",
                 self.chunk_hashes.len(),
                 self.num_chunks
@@ -442,7 +442,7 @@ impl XorbObjectInfoV1 {
         // write variable field: chunk boundaries
         if self.num_chunks as usize != self.chunk_boundary_offsets.len() {
             debug_assert_eq!(self.num_chunks as usize, self.chunk_boundary_offsets.len());
-            return Err(FormatError::FormatError(format!(
+            return Err(CoreError::MalformedData(format!(
                 "Chunk boundary offset vector not correct length on serialization. ({}, expected {})",
                 self.chunk_boundary_offsets.len(),
                 self.num_chunks
@@ -453,7 +453,7 @@ impl XorbObjectInfoV1 {
         // write variable field: unpacked chunk data offsets
         if self.num_chunks as usize != self.unpacked_chunk_offsets.len() {
             debug_assert_eq!(self.num_chunks as usize, self.unpacked_chunk_offsets.len());
-            return Err(FormatError::FormatError(format!(
+            return Err(CoreError::MalformedData(format!(
                 "Unpacked chunk offset vector not correct length on serialization. ({}, expected {})",
                 self.unpacked_chunk_offsets.len(),
                 self.num_chunks
@@ -480,7 +480,7 @@ impl XorbObjectInfoV1 {
     /// Construct XorbObjectInfo object from Reader + Seek.
     ///
     /// Expects metadata struct is found at end of Reader, written out in struct order.
-    pub fn deserialize<R: Read>(reader: &mut R) -> Result<(Self, u32), FormatError> {
+    pub fn deserialize<R: Read>(reader: &mut R) -> Result<(Self, u32), CoreError> {
         let mut counting_reader = countio::Counter::new(reader);
         let r = &mut counting_reader;
 
@@ -492,7 +492,7 @@ impl XorbObjectInfoV1 {
         read_bytes(r, &mut s.ident)?;
 
         if s.ident != XORB_OBJECT_FORMAT_IDENT {
-            return Err(FormatError::FormatError("Xorb Invalid Ident".to_string()));
+            return Err(CoreError::MalformedData("Xorb Invalid Ident".to_string()));
         }
 
         s.version = read_u8(r)?;
@@ -502,7 +502,7 @@ impl XorbObjectInfoV1 {
             // we don't have the missing info (unpacked_chunk_offsets), it's OK
             return Ok((Self::from_v0(sv0), r.reader_bytes() as u32));
         } else if s.version != XORB_OBJECT_FORMAT_VERSION {
-            return Err(FormatError::FormatError("Xorb Invalid Format Version".to_string()));
+            return Err(CoreError::MalformedData("Xorb Invalid Format Version".to_string()));
         }
 
         s.xorb_hash = read_hash(r)?;
@@ -515,13 +515,13 @@ impl XorbObjectInfoV1 {
         read_bytes(r, &mut s.ident_hash_section)?;
 
         if s.ident_hash_section != XORB_OBJECT_FORMAT_IDENT_HASHES {
-            return Err(FormatError::FormatError("Xorb Invalid Ident for Hash Metadata Section".to_string()));
+            return Err(CoreError::MalformedData("Xorb Invalid Ident for Hash Metadata Section".to_string()));
         }
 
         s.hashes_version = read_u8(r)?;
 
         if s.hashes_version != XORB_OBJECT_FORMAT_HASHES_VERSION {
-            return Err(FormatError::FormatError("Xorb Invalid Format Version for Hash Metadata Section".to_string()));
+            return Err(CoreError::MalformedData("Xorb Invalid Format Version for Hash Metadata Section".to_string()));
         }
 
         let num_chunks_2 = read_u32(r)?;
@@ -540,13 +540,13 @@ impl XorbObjectInfoV1 {
         read_bytes(r, &mut s.ident_boundary_section)?;
 
         if s.ident_boundary_section != XORB_OBJECT_FORMAT_IDENT_BOUNDARIES {
-            return Err(FormatError::FormatError("Xorb Invalid Ident for Boundary Metadata Section".to_string()));
+            return Err(CoreError::MalformedData("Xorb Invalid Ident for Boundary Metadata Section".to_string()));
         }
 
         s.boundaries_version = read_u8(r)?;
 
         if s.boundaries_version != XORB_OBJECT_FORMAT_BOUNDARIES_VERSION {
-            return Err(FormatError::FormatError(
+            return Err(CoreError::MalformedData(
                 "Xorb Invalid Format Version for Boundaries Metadata Section".to_string(),
             ));
         }
@@ -554,7 +554,7 @@ impl XorbObjectInfoV1 {
         let num_chunks_3 = read_u32(r)?;
 
         if num_chunks_2 != num_chunks_3 {
-            return Err(FormatError::FormatError(
+            return Err(CoreError::MalformedData(
                 "Xorb Invalid: inconsistent num_chunks between hashes and boundaries section.".to_string(),
             ));
         }
@@ -573,7 +573,7 @@ impl XorbObjectInfoV1 {
         s.num_chunks = read_u32(r)?;
 
         if s.num_chunks != num_chunks_2 {
-            return Err(FormatError::FormatError(
+            return Err(CoreError::MalformedData(
                 "Xorb Invalid: inconsistent num_chunks between metadata and hashes section.".to_string(),
             ));
         }
@@ -586,13 +586,13 @@ impl XorbObjectInfoV1 {
         let end_byte_offset = r.reader_bytes();
 
         if end_byte_offset - hash_section_begin_byte_offset != s.hashes_section_offset_from_end as usize {
-            return Err(FormatError::FormatError(
+            return Err(CoreError::MalformedData(
                 "Xorb Invalid: incorrect hashes_section_offset_from_end.".to_string(),
             ));
         }
 
         if end_byte_offset - boundary_section_begin_byte_offset != s.boundary_section_offset_from_end as usize {
-            return Err(FormatError::FormatError(
+            return Err(CoreError::MalformedData(
                 "Xorb Invalid: incorrect boundary_section_offset_from_end.".to_string(),
             ));
         }
@@ -603,7 +603,7 @@ impl XorbObjectInfoV1 {
     /// Construct XorbObjectInfo object from Reader + Seek.
     ///
     /// Expects metadata struct is found at end of Reader, written out in struct order.
-    pub fn deserialize_only_boundaries_section<R: Read + Seek>(reader: &mut R) -> Result<(Self, u32), FormatError> {
+    pub fn deserialize_only_boundaries_section<R: Read + Seek>(reader: &mut R) -> Result<(Self, u32), CoreError> {
         let mut s = Self::default();
 
         // info_length + size of _buffer + size of u32 for offset field
@@ -625,13 +625,13 @@ impl XorbObjectInfoV1 {
         read_bytes(r, &mut s.ident_boundary_section)?;
 
         if s.ident_boundary_section != XORB_OBJECT_FORMAT_IDENT_BOUNDARIES {
-            return Err(FormatError::FormatError("Xorb Invalid Ident for Boundary Metadata Section".to_string()));
+            return Err(CoreError::MalformedData("Xorb Invalid Ident for Boundary Metadata Section".to_string()));
         }
 
         s.boundaries_version = read_u8(r)?;
 
         if s.boundaries_version != XORB_OBJECT_FORMAT_BOUNDARIES_VERSION {
-            return Err(FormatError::FormatError(
+            return Err(CoreError::MalformedData(
                 "Xorb Invalid Format Version for Boundaries Metadata Section".to_string(),
             ));
         }
@@ -648,7 +648,7 @@ impl XorbObjectInfoV1 {
         s.num_chunks = read_u32(r)?;
 
         if s.num_chunks != num_chunks_boundaries_section {
-            return Err(FormatError::FormatError(
+            return Err(CoreError::MalformedData(
                 "Xorb Invalid: inconsistent num_chunks between metadata and hashes section.".to_string(),
             ));
         }
@@ -661,7 +661,7 @@ impl XorbObjectInfoV1 {
         let end_byte_offset = r.reader_bytes();
 
         if end_byte_offset != s.boundary_section_offset_from_end as usize {
-            return Err(FormatError::FormatError(
+            return Err(CoreError::MalformedData(
                 "Xorb Invalid: incorrect boundary_section_offset_from_end.".to_string(),
             ));
         }
@@ -674,7 +674,7 @@ impl XorbObjectInfoV1 {
     #[cfg(not(target_family = "wasm"))]
     pub async fn deserialize_async_v1<R: futures::io::AsyncRead + Unpin>(
         reader: &mut R,
-    ) -> Result<(Self, u32), FormatError> {
+    ) -> Result<(Self, u32), CoreError> {
         // already read 8 bytes (ident + version)
         let total_bytes_read: u32 = (size_of::<XorbObjectIdent>() + size_of::<u8>()) as u32;
 
@@ -697,13 +697,13 @@ impl XorbObjectInfoV1 {
         read_bytes_async(r, &mut s.ident_hash_section).await?;
 
         if s.ident_hash_section != XORB_OBJECT_FORMAT_IDENT_HASHES {
-            return Err(FormatError::FormatError("Xorb Invalid Ident for Hash Metadata Section".to_string()));
+            return Err(CoreError::MalformedData("Xorb Invalid Ident for Hash Metadata Section".to_string()));
         }
 
         s.hashes_version = read_u8_async(r).await?;
 
         if s.hashes_version != XORB_OBJECT_FORMAT_HASHES_VERSION {
-            return Err(FormatError::FormatError("Xorb Invalid Format Version for Hash Metadata Section".to_string()));
+            return Err(CoreError::MalformedData("Xorb Invalid Format Version for Hash Metadata Section".to_string()));
         }
 
         let num_chunks_2 = read_u32_async(r).await?;
@@ -722,13 +722,13 @@ impl XorbObjectInfoV1 {
         read_bytes_async(r, &mut s.ident_boundary_section).await?;
 
         if s.ident_boundary_section != XORB_OBJECT_FORMAT_IDENT_BOUNDARIES {
-            return Err(FormatError::FormatError("Xorb Invalid Ident for Boundary Metadata Section".to_string()));
+            return Err(CoreError::MalformedData("Xorb Invalid Ident for Boundary Metadata Section".to_string()));
         }
 
         s.boundaries_version = read_u8_async(r).await?;
 
         if s.boundaries_version != XORB_OBJECT_FORMAT_BOUNDARIES_VERSION {
-            return Err(FormatError::FormatError(
+            return Err(CoreError::MalformedData(
                 "Xorb Invalid Format Version for Boundaries Metadata Section".to_string(),
             ));
         }
@@ -736,7 +736,7 @@ impl XorbObjectInfoV1 {
         let num_chunks_3 = read_u32_async(r).await?;
 
         if num_chunks_2 != num_chunks_3 {
-            return Err(FormatError::FormatError(
+            return Err(CoreError::MalformedData(
                 "Xorb Invalid: inconsistent num_chunks between hashes and boundaries section.".to_string(),
             ));
         }
@@ -754,7 +754,7 @@ impl XorbObjectInfoV1 {
         s.num_chunks = read_u32_async(r).await?;
 
         if s.num_chunks != num_chunks_2 {
-            return Err(FormatError::FormatError(
+            return Err(CoreError::MalformedData(
                 "Xorb Invalid: inconsistent num_chunks between metadata and hashes section.".to_string(),
             ));
         }
@@ -767,13 +767,13 @@ impl XorbObjectInfoV1 {
         let end_byte_offset = r.reader_bytes();
 
         if end_byte_offset - hash_section_begin_byte_offset != s.hashes_section_offset_from_end as usize {
-            return Err(FormatError::FormatError(
+            return Err(CoreError::MalformedData(
                 "Xorb Invalid: incorrect hashes_section_offset_from_end.".to_string(),
             ));
         }
 
         if end_byte_offset - boundary_section_begin_byte_offset != s.boundary_section_offset_from_end as usize {
-            return Err(FormatError::FormatError(
+            return Err(CoreError::MalformedData(
                 "Xorb Invalid: incorrect boundary_section_offset_from_end.".to_string(),
             ));
         }
@@ -788,7 +788,7 @@ impl XorbObjectInfoV1 {
     pub async fn deserialize_async<R: futures::io::AsyncRead + Unpin>(
         reader: &mut R,
         version: u8,
-    ) -> Result<(Self, u32), FormatError> {
+    ) -> Result<(Self, u32), CoreError> {
         if version == 0 {
             let (s, n) = XorbObjectInfoV0::deserialize_async(reader, 0).await?;
             // we don't have the missing info (unpacked_chunk_offsets), it's OK
@@ -796,7 +796,7 @@ impl XorbObjectInfoV1 {
         } else if version == 1 {
             Self::deserialize_async_v1(reader).await
         } else {
-            Err(FormatError::FormatError(format!(
+            Err(CoreError::MalformedData(format!(
                 "Xorb Format Error: Version {version} not supported by this code version."
             )))
         }
@@ -917,7 +917,7 @@ impl XorbObject {
     /// make up the info portion of the xorb.
     ///
     /// Assumes reader has at least size_of::<u32>() bytes, otherwise returns an error.
-    pub fn get_info_length<R: Read + Seek>(reader: &mut R) -> Result<u32, FormatError> {
+    pub fn get_info_length<R: Read + Seek>(reader: &mut R) -> Result<u32, CoreError> {
         // Go to end of Reader and get length, then jump back to it, and read sequentially
         // read last 4 bytes to get length
         reader.seek(SeekFrom::End(-(size_of::<u32>() as i64)))?;
@@ -931,7 +931,7 @@ impl XorbObject {
     /// Deserialize the XorbObjectInfo struct, the metadata for this Xorb.
     ///
     /// This allows the XorbObject to be partially constructed, allowing for range reads inside the XorbObject.
-    pub fn deserialize<R: Read + Seek>(reader: &mut R) -> Result<Self, FormatError> {
+    pub fn deserialize<R: Read + Seek>(reader: &mut R) -> Result<Self, CoreError> {
         let info_length = Self::get_info_length(reader)?;
 
         // now seek back that many bytes + size of length (u32) and read sequentially.
@@ -941,7 +941,7 @@ impl XorbObject {
 
         // validate that info_length matches what we read off of header
         if total_bytes_read != info_length {
-            return Err(FormatError::FormatError("Xorb Info Format Error".to_string()));
+            return Err(CoreError::MalformedData("Xorb Info Format Error".to_string()));
         }
 
         Ok(Self { info, info_length })
@@ -953,7 +953,7 @@ impl XorbObject {
     pub async fn deserialize_async<R: futures::io::AsyncRead + Unpin>(
         reader: &mut R,
         version: u8,
-    ) -> Result<Self, FormatError> {
+    ) -> Result<Self, CoreError> {
         let (info, total_bytes_read) = XorbObjectInfoV1::deserialize_async(reader, version).await?;
 
         let mut info_length_buf = [0u8; size_of::<u32>()];
@@ -963,12 +963,12 @@ impl XorbObject {
         let info_length = u32::from_le_bytes(info_length_buf);
 
         if info_length != total_bytes_read {
-            return Err(FormatError::FormatError("Xorb Info Format Error".to_string()));
+            return Err(CoreError::MalformedData("Xorb Info Format Error".to_string()));
         }
 
         // verify we've read to the end
         if reader.read(&mut [0u8; 8]).await? != 0 {
-            return Err(FormatError::FormatError(
+            return Err(CoreError::MalformedData(
                 "Xorb Reader has content past the end of serialized xorb".to_string(),
             ));
         }
@@ -976,7 +976,7 @@ impl XorbObject {
         Ok(Self { info, info_length })
     }
 
-    pub fn serialize_given_info<W: Write>(w: &mut W, info: XorbObjectInfoV1) -> Result<(Self, usize), FormatError> {
+    pub fn serialize_given_info<W: Write>(w: &mut W, info: XorbObjectInfoV1) -> Result<(Self, usize), CoreError> {
         let mut total_written_bytes: usize = 0;
         let info_length = info.serialize(w)? as u32;
         total_written_bytes += info_length as usize;
@@ -1004,7 +1004,7 @@ impl XorbObject {
     pub fn validate_xorb_object<R: Read + Seek>(
         reader: &mut R,
         hash: &MerkleHash,
-    ) -> Result<Option<XorbObject>, FormatError> {
+    ) -> Result<Option<XorbObject>, CoreError> {
         // 1. deserialize to get Info
         // Errors can occur if either
         // - the object doesn't have at least 4 bytes for the "info_length";
@@ -1103,11 +1103,11 @@ impl XorbObject {
         &self,
         chunk_start_index: u32,
         chunk_end_index: u32,
-    ) -> Result<DataHash, FormatError> {
+    ) -> Result<DataHash, CoreError> {
         self.validate_xorb_object_info()?;
 
         if chunk_end_index <= chunk_start_index || chunk_end_index > self.info.num_chunks {
-            return Err(FormatError::InvalidArguments);
+            return Err(CoreError::InvalidArguments);
         }
 
         // Collect relevant hashes
@@ -1117,11 +1117,11 @@ impl XorbObject {
     }
 
     /// Return end offset of all physical chunk contents (byte index at the beginning of footer)
-    pub fn get_contents_length(&self) -> Result<u32, FormatError> {
+    pub fn get_contents_length(&self) -> Result<u32, CoreError> {
         self.validate_xorb_object_info()?;
         match self.info.chunk_boundary_offsets.last() {
             Some(c) => Ok(*c),
-            None => Err(FormatError::FormatError("Cannot retrieve content length".to_string())),
+            None => Err(CoreError::MalformedData("Cannot retrieve content length".to_string())),
         }
     }
 
@@ -1130,14 +1130,9 @@ impl XorbObject {
     /// start and end are byte indices into the physical layout of a xorb.
     ///
     /// The start and end parameters are required to align with chunk boundaries.
-    fn get_range<R: Read + Seek>(
-        &self,
-        reader: &mut R,
-        byte_start: u32,
-        byte_end: u32,
-    ) -> Result<Vec<u8>, FormatError> {
+    fn get_range<R: Read + Seek>(&self, reader: &mut R, byte_start: u32, byte_end: u32) -> Result<Vec<u8>, CoreError> {
         if byte_end < byte_start {
-            return Err(FormatError::InvalidRange);
+            return Err(CoreError::InvalidRange);
         }
 
         self.validate_xorb_object_info()?;
@@ -1156,7 +1151,7 @@ impl XorbObject {
     }
 
     /// Get all the content bytes from a Xorb
-    pub fn get_all_bytes<R: Read + Seek>(&self, reader: &mut R) -> Result<Vec<u8>, FormatError> {
+    pub fn get_all_bytes<R: Read + Seek>(&self, reader: &mut R) -> Result<Vec<u8>, CoreError> {
         self.validate_xorb_object_info()?;
         self.get_range(reader, 0, self.get_contents_length()?)
     }
@@ -1167,14 +1162,14 @@ impl XorbObject {
         reader: &mut R,
         chunk_index_start: u32,
         chunk_index_end: u32,
-    ) -> Result<Vec<u8>, FormatError> {
+    ) -> Result<Vec<u8>, CoreError> {
         let (byte_start, byte_end) = self.get_byte_offset(chunk_index_start, chunk_index_end)?;
 
         self.get_range(reader, byte_start, byte_end)
     }
 
     /// Assumes chunk_data is 1+ complete chunks. Processes them sequentially and returns them as Vec<u8>.
-    fn get_chunk_contents(&self, chunk_data: &[u8]) -> Result<Vec<u8>, FormatError> {
+    fn get_chunk_contents(&self, chunk_data: &[u8]) -> Result<Vec<u8>, CoreError> {
         // walk chunk_data, deserialize into Chunks, and then get_bytes() from each of them.
         let mut reader = Cursor::new(chunk_data);
         let mut res = Vec::<u8>::new();
@@ -1187,10 +1182,10 @@ impl XorbObject {
     }
 
     /// Helper function to translate a range of chunk indices to physical byte offset range.
-    pub fn get_byte_offset(&self, chunk_index_start: u32, chunk_index_end: u32) -> Result<(u32, u32), FormatError> {
+    pub fn get_byte_offset(&self, chunk_index_start: u32, chunk_index_end: u32) -> Result<(u32, u32), CoreError> {
         self.validate_xorb_object_info()?;
         if chunk_index_end <= chunk_index_start || chunk_index_end > self.info.num_chunks {
-            return Err(FormatError::InvalidArguments);
+            return Err(CoreError::InvalidArguments);
         }
 
         let byte_offset_start = match chunk_index_start {
@@ -1204,11 +1199,11 @@ impl XorbObject {
 
     /// given a valid chunk_index, returns the uncompressed chunk length for the chunk
     /// at the given index, chunk_index must be less than the number of chunks in the xorb
-    pub fn uncompressed_chunk_length(&self, chunk_index: u32) -> Result<u32, FormatError> {
+    pub fn uncompressed_chunk_length(&self, chunk_index: u32) -> Result<u32, CoreError> {
         self.validate_xorb_object_info()?;
         let chunk_index = chunk_index as usize;
         if chunk_index >= self.info.unpacked_chunk_offsets.len() {
-            return Err(FormatError::InvalidArguments);
+            return Err(CoreError::InvalidArguments);
         }
         let cumulative_sum = self.info.unpacked_chunk_offsets[chunk_index];
         let before = match chunk_index {
@@ -1224,13 +1219,13 @@ impl XorbObject {
     ///     chunk_index_start <= chunk_index_end &&
     ///     chunk_index_end <= num_chunks &&
     ///     chunk_index_start < num_chunks
-    pub fn uncompressed_range_length(&self, chunk_index_start: u32, chunk_index_end: u32) -> Result<u32, FormatError> {
+    pub fn uncompressed_range_length(&self, chunk_index_start: u32, chunk_index_end: u32) -> Result<u32, CoreError> {
         self.validate_xorb_object_info()?;
         if chunk_index_start > chunk_index_end
             || chunk_index_end > self.info.num_chunks
             || chunk_index_start >= self.info.num_chunks
         {
-            return Err(FormatError::InvalidArguments);
+            return Err(CoreError::InvalidArguments);
         }
 
         // this check is important if chunk_index_end is 0
@@ -1247,9 +1242,9 @@ impl XorbObject {
     }
 
     /// Helper method to verify that info object is complete
-    fn validate_xorb_object_info(&self) -> Result<(), FormatError> {
+    fn validate_xorb_object_info(&self) -> Result<(), CoreError> {
         if self.info.num_chunks == 0 {
-            return Err(FormatError::FormatError("Invalid XorbObjectInfo, no chunks in XorbObject.".to_string()));
+            return Err(CoreError::MalformedData("Invalid XorbObjectInfo, no chunks in XorbObject.".to_string()));
         }
 
         if self.info.num_chunks != self.info.chunk_boundary_offsets.len() as u32
@@ -1257,13 +1252,13 @@ impl XorbObject {
             || (self.info.boundaries_version == XORB_OBJECT_FORMAT_BOUNDARIES_VERSION
                 && self.info.num_chunks != self.info.unpacked_chunk_offsets.len() as u32)
         {
-            return Err(FormatError::FormatError(
+            return Err(CoreError::MalformedData(
                 "Invalid XorbObjectInfo, num chunks not matching boundaries or hashes.".to_string(),
             ));
         }
 
         if self.info.xorb_hash == MerkleHash::default() {
-            return Err(FormatError::FormatError("Invalid XorbObjectInfo, Missing xorb_hash.".to_string()));
+            return Err(CoreError::MalformedData("Invalid XorbObjectInfo, Missing xorb_hash.".to_string()));
         }
 
         Ok(())
@@ -1292,7 +1287,7 @@ impl SerializedXorbObject {
     ///
     /// The compression scheme is determined by `HF_XET_XORB_COMPRESSION_POLICY`:
     /// auto-detect (default) or an explicit scheme (none, lz4, bg4-lz4).
-    pub fn from_xorb(xorb: RawXorbData, serialize_footer: bool) -> Result<Self, FormatError> {
+    pub fn from_xorb(xorb: RawXorbData, serialize_footer: bool) -> Result<Self, CoreError> {
         let compression_scheme: CompressionScheme = xet_config().xorb.compression_policy.parse()?;
         Self::from_xorb_with_compression(xorb, compression_scheme, serialize_footer)
     }
@@ -1302,7 +1297,7 @@ impl SerializedXorbObject {
         xorb: RawXorbData,
         compression_scheme: CompressionScheme,
         serialize_footer: bool,
-    ) -> Result<Self, FormatError> {
+    ) -> Result<Self, CoreError> {
         let mut xorb_object_info = XorbObjectInfoV1::default();
 
         let hash = xorb.hash();
@@ -1403,7 +1398,7 @@ pub mod test_utils {
         data: &[u8],
         chunk_and_boundaries: &[(MerkleHash, u32)],
         compression_scheme: CompressionScheme,
-    ) -> Result<(XorbObject, usize, u64), FormatError> {
+    ) -> Result<(XorbObject, usize, u64), CoreError> {
         let mut xorb = XorbObject::default();
         xorb.info.xorb_hash = *hash;
         xorb.info.num_chunks = chunk_and_boundaries.len() as u32;
@@ -1453,7 +1448,7 @@ pub mod test_utils {
         data: Vec<u8>,
         chunk_and_boundaries: Vec<(MerkleHash, u32)>,
         compression: CompressionScheme,
-    ) -> Result<SerializedXorbObject, FormatError> {
+    ) -> Result<SerializedXorbObject, CoreError> {
         let mut writer = Cursor::new(Vec::new());
 
         let (_, _, footer_start) =
@@ -1654,7 +1649,7 @@ pub mod test_utils {
 pub fn reconstruct_xorb_with_footer(
     writer: &mut impl Write,
     raw_data: &[u8],
-) -> Result<(XorbObject, MerkleHash), FormatError> {
+) -> Result<(XorbObject, MerkleHash), CoreError> {
     let mut reader = Cursor::new(raw_data);
     let mut chunk_hash_and_size: Vec<(MerkleHash, u64)> = Vec::new();
     let mut info = XorbObjectInfoV1::default();
@@ -1662,7 +1657,7 @@ pub fn reconstruct_xorb_with_footer(
     while (reader.position() as usize) < raw_data.len() {
         let chunk_header = match deserialize_chunk_header(&mut reader) {
             Ok(header) => header,
-            Err(FormatError::ChunkHeaderParse) => {
+            Err(CoreError::ChunkHeaderParse) => {
                 // Hit footer identifier, stop processing chunks
                 break;
             },
@@ -1673,12 +1668,12 @@ pub fn reconstruct_xorb_with_footer(
         let mut compressed_buf = vec![0u8; compressed_len];
         reader
             .read_exact(&mut compressed_buf)
-            .map_err(|e| FormatError::FormatError(format!("Failed to read chunk data: {e}")))?;
+            .map_err(|e| CoreError::MalformedData(format!("Failed to read chunk data: {e}")))?;
 
         let uncompressed_data = chunk_header
             .get_compression_scheme()?
             .decompress_from_slice(&compressed_buf)
-            .map_err(|e| FormatError::FormatError(format!("Failed to decompress chunk: {e}")))?;
+            .map_err(|e| CoreError::MalformedData(format!("Failed to decompress chunk: {e}")))?;
 
         let chunk_hash = crate::merklehash::compute_data_hash(&uncompressed_data);
         chunk_hash_and_size.push((chunk_hash, uncompressed_data.len() as u64));
@@ -1797,9 +1792,9 @@ mod tests {
             build_xorb_object(5, ChunkSize::Fixed(100), CompressionScheme::None);
 
         // Act & Assert
-        assert_eq!(c.generate_chunk_range_hash(1, 6), Err(FormatError::InvalidArguments));
-        assert_eq!(c.generate_chunk_range_hash(100, 10), Err(FormatError::InvalidArguments));
-        assert_eq!(c.generate_chunk_range_hash(0, 0), Err(FormatError::InvalidArguments));
+        assert_eq!(c.generate_chunk_range_hash(1, 6), Err(CoreError::InvalidArguments));
+        assert_eq!(c.generate_chunk_range_hash(100, 10), Err(CoreError::InvalidArguments));
+        assert_eq!(c.generate_chunk_range_hash(0, 0), Err(CoreError::InvalidArguments));
     }
 
     #[test]
@@ -1815,7 +1810,7 @@ mod tests {
         let result = c.validate_xorb_object_info();
         assert_eq!(
             result,
-            Err(FormatError::FormatError("Invalid XorbObjectInfo, no chunks in XorbObject.".to_string()))
+            Err(CoreError::MalformedData("Invalid XorbObjectInfo, no chunks in XorbObject.".to_string()))
         );
 
         // num_chunks doesn't match chunk_boundaries.len()
@@ -1824,7 +1819,7 @@ mod tests {
         let result = c.validate_xorb_object_info();
         assert_eq!(
             result,
-            Err(FormatError::FormatError(
+            Err(CoreError::MalformedData(
                 "Invalid XorbObjectInfo, num chunks not matching boundaries or hashes.".to_string(),
             ))
         );
@@ -1834,7 +1829,7 @@ mod tests {
             build_xorb_object(1, ChunkSize::Fixed(100), CompressionScheme::None);
         c.info.xorb_hash = MerkleHash::default();
         let result = c.validate_xorb_object_info();
-        assert_eq!(result, Err(FormatError::FormatError("Invalid XorbObjectInfo, Missing xorb_hash.".to_string())));
+        assert_eq!(result, Err(CoreError::MalformedData("Invalid XorbObjectInfo, Missing xorb_hash.".to_string())));
     }
 
     #[test]

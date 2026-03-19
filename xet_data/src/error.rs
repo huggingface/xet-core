@@ -6,7 +6,7 @@ use tokio::sync::AcquireError;
 use tracing::error;
 use xet_client::ClientError;
 use xet_client::cas_client::auth::AuthError;
-use xet_core_structures::FormatError;
+use xet_core_structures::CoreError;
 use xet_core_structures::merklehash::DataHashHexParseError;
 use xet_runtime::RuntimeError;
 use xet_runtime::core::par_utils::ParutilsError;
@@ -45,7 +45,7 @@ pub enum DataError {
     ChannelRecvError(#[from] RecvError),
 
     #[error("Format error: {0}")]
-    FormatError(#[from] FormatError),
+    FormatError(#[from] CoreError),
 
     #[error("Client error: {0}")]
     ClientError(#[from] ClientError),

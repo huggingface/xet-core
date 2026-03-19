@@ -14,7 +14,7 @@ use crate::cas_client::auth::AuthError;
 #[derive(Error, Debug)]
 pub enum ClientError {
     #[error("Format error: {0}")]
-    FormatError(#[from] xet_core_structures::FormatError),
+    FormatError(#[from] xet_core_structures::CoreError),
 
     #[error("Configuration error: {0}")]
     ConfigurationError(String),

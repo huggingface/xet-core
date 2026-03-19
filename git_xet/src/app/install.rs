@@ -122,8 +122,9 @@ pub mod tests {
     use std::path::{Path, PathBuf};
 
     use serial_test::serial;
+    use xet_runtime::GenericError;
 
-    type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+    type Result<T> = std::result::Result<T, GenericError>;
 
     use super::{global, local};
     use crate::git_repo::GitRepo;

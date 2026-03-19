@@ -30,3 +30,5 @@ impl From<tokio::task::JoinError> for RuntimeError {
 }
 
 pub type Result<T> = std::result::Result<T, RuntimeError>;
+
+pub type GenericError = Box<dyn std::error::Error + Send + Sync + 'static>;
