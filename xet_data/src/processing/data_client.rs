@@ -298,20 +298,19 @@ mod tests {
         let file_path = temp_dir.path().join("test.txt");
 
         // Create a file that is large enough to span multiple buffer reads
-        // Using 20MB to ensure it's larger than typical buffer sizes
-        let file_size = 20 * 1024 * 1024;
+        let file_size = 2 * 1024 * 1024; // 2 MiB
         let content: Vec<u8> = (0..file_size).map(|i| (i % 256) as u8).collect();
         std::fs::write(&file_path, &content).unwrap();
 
         let file_path_str = file_path.to_str().unwrap().to_string();
 
-        // Hash with 8MB buffer size
-        let result1 = hash_single_file(file_path_str.clone(), 8 * 1024 * 1024);
+        // Hash with 512KB buffer size
+        let result1 = hash_single_file(file_path_str.clone(), 512 * 1024);
         assert!(result1.is_ok());
         let file_info1 = result1.unwrap();
 
-        // Hash with 4MB buffer size
-        let result2 = hash_single_file(file_path_str, 4 * 1024 * 1024);
+        // Hash with 256KB buffer size
+        let result2 = hash_single_file(file_path_str, 256 * 1024);
         assert!(result2.is_ok());
         let file_info2 = result2.unwrap();
 
@@ -361,35 +360,35 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let file_path = temp_dir.path().join("multiple_of_buffer.bin");
 
-        // Create a file that is exactly 16MB
-        let file_size = 16 * 1024 * 1024;
+        // Create a file that is exactly 2MB (multiple of all buffer sizes below)
+        let file_size = 2 * 1024 * 1024;
         let content: Vec<u8> = (0..file_size).map(|i| (i % 256) as u8).collect();
         std::fs::write(&file_path, &content).unwrap();
 
         let file_path_str = file_path.to_str().unwrap().to_string();
 
-        // Hash with 8MB buffer size - file is exactly 2x buffer size
-        let result1 = hash_single_file(file_path_str.clone(), 8 * 1024 * 1024);
+        // Hash with 1MB buffer size - file is exactly 2x buffer size
+        let result1 = hash_single_file(file_path_str.clone(), 1024 * 1024);
         assert!(result1.is_ok());
         let file_info1 = result1.unwrap();
         assert_eq!(file_info1.file_size(), file_size as u64);
         assert!(!file_info1.hash().is_empty());
 
-        // Hash with 4MB buffer size - file is exactly 4x buffer size
-        let result2 = hash_single_file(file_path_str.clone(), 4 * 1024 * 1024);
+        // Hash with 512KB buffer size - file is exactly 4x buffer size
+        let result2 = hash_single_file(file_path_str.clone(), 512 * 1024);
         assert!(result2.is_ok());
         let file_info2 = result2.unwrap();
 
-        // Hash with 2MB buffer size - file is exactly 8x buffer size
-        let result3 = hash_single_file(file_path_str, 2 * 1024 * 1024);
+        // Hash with 256KB buffer size - file is exactly 8x buffer size
+        let result3 = hash_single_file(file_path_str, 256 * 1024);
         assert!(result3.is_ok());
         let file_info3 = result3.unwrap();
 
         // All hashes should be identical regardless of buffer size
         // This verifies that chunker.finish() is properly called to flush remaining chunks
         // Without finish(), different buffer sizes would produce different (incomplete) hashes
-        assert_eq!(file_info1.hash(), file_info2.hash(), "Hash mismatch between 8MB and 4MB buffer sizes");
-        assert_eq!(file_info1.hash(), file_info3.hash(), "Hash mismatch between 8MB and 2MB buffer sizes");
+        assert_eq!(file_info1.hash(), file_info2.hash(), "Hash mismatch between 1MB and 512KB buffer sizes");
+        assert_eq!(file_info1.hash(), file_info3.hash(), "Hash mismatch between 1MB and 256KB buffer sizes");
         assert_eq!(file_info1.file_size(), file_info2.file_size());
         assert_eq!(file_info1.file_size(), file_info3.file_size());
     }

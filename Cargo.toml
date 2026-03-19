@@ -30,6 +30,9 @@ inherits = "dev"
 opt-level = 3
 debug = 1
 
+[profile.smoke-test]
+inherits = "dev"
+
 [workspace.dependencies]
 anyhow = "1"
 async-std = "1"

@@ -2,3 +2,6 @@
 # the following is necessary when compiling rand & getrandom for wasm
 # https://github.com/rust-random/getrandom/blob/master/README.md#webassembly-support
 rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
+
+[alias]
+smoke-test = "test --profile smoke-test --features xet-runtime/smoke-test,xet-core-structures/smoke-test,xet-client/smoke-test,xet-data/smoke-test,hf-xet/smoke-test,git_xet/smoke-test,simulation/smoke-test"

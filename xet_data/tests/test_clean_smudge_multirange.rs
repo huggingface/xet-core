@@ -25,8 +25,18 @@ mod testing_clean_smudge_multirange {
     use super::*;
 
     pub async fn check_clean_smudge_files(file_list: &[(impl AsRef<str> + Clone, usize)]) {
-        for &mode in HydrationMode::all() {
-            for sequential in [true, false] {
+        #[cfg(feature = "smoke-test")]
+        let modes: &[HydrationMode] = &[HydrationMode::DirectClient, HydrationMode::ServerV2];
+        #[cfg(not(feature = "smoke-test"))]
+        let modes: &[HydrationMode] = HydrationMode::all();
+
+        #[cfg(feature = "smoke-test")]
+        let sequential_options: &[bool] = &[false];
+        #[cfg(not(feature = "smoke-test"))]
+        let sequential_options: &[bool] = &[true, false];
+
+        for &mode in modes {
+            for &sequential in sequential_options {
                 eprintln!("Testing mode={mode}, sequential={sequential} (forced multirange)");
 
                 let mut ts = HydrateDehydrateTest::for_mode(mode);

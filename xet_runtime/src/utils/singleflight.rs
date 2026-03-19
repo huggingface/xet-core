@@ -422,7 +422,7 @@ pub(crate) mod tests {
     }
 
     async fn expensive_fn(x: Arc<AtomicU32>, resp: usize) -> Result<usize, ()> {
-        tokio::time::sleep(Duration::new(1, 0)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
         x.fetch_add(1, Ordering::SeqCst);
         Ok(resp)
     }
@@ -515,7 +515,7 @@ pub(crate) mod tests {
         let times_called = Arc::new(AtomicU32::new(0));
 
         async fn expensive_error_fn(x: Arc<AtomicU32>) -> Result<usize, &'static str> {
-            tokio::time::sleep(Duration::new(1, 500)).await;
+            tokio::time::sleep(Duration::from_millis(150)).await;
             x.fetch_add(1, Ordering::SeqCst);
             Err("Error")
         }

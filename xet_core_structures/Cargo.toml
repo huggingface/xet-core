@@ -86,3 +86,4 @@ name = "bg4_prediction_benchmark"
 
 [features]
 strict = []
+smoke-test = []

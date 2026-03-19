@@ -28,6 +28,7 @@ tracing = { workspace = true }
 ulid = { workspace = true }
 
 [features]
+smoke-test = []
 python = ["xet-runtime/python"]
 
 [dev-dependencies]

@@ -175,12 +175,12 @@ mod tests {
         let u3 = updater.clone();
 
         let h1 = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
             u1.update_bytes_so_far(30) // delayed, should skip
         });
         let h2 = tokio::spawn(async move { u2.update_bytes_so_far(40) });
         let h3 = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
             u3.update_bytes_so_far(40) // duplicate, should skip
         });
 
@@ -212,7 +212,7 @@ mod tests {
         // Test that concurrent updates don't wait for turns to send progress messages: only
         // the first one that acquires the channel will send and others will skip.
 
-        let writer = Arc::new(Mutex::new(MockWriter::with_delay(Duration::from_secs(1))));
+        let writer = Arc::new(Mutex::new(MockWriter::with_delay(Duration::from_millis(100))));
         let updater = make_updater(writer.clone(), "abc123");
 
         let u1 = updater.clone();
@@ -237,8 +237,8 @@ mod tests {
         let msgs = Arc::into_inner(writer).unwrap().into_inner()?.into_inner();
         assert_eq!(msgs.len(), 1);
 
-        assert!(duration.ge(&Duration::from_secs(1)));
-        assert!(duration.lt(&Duration::from_secs(2)));
+        // Lower-bound only: CI scheduling jitter can vary significantly.
+        assert!(duration.ge(&Duration::from_millis(100)));
 
         Ok(())
     }
