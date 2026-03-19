@@ -71,6 +71,9 @@ pub enum DataError {
     #[error("Deprecated feature: {0}")]
     DeprecatedError(String),
 
+    #[error("Invalid operation: {0}")]
+    InvalidOperation(String),
+
     #[error("Auth error: {0}")]
     AuthError(#[from] AuthError),
 

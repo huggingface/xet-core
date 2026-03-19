@@ -6,9 +6,8 @@ use async_trait::async_trait;
 use http::header;
 use xet_client::cas_client::auth::TokenRefresher;
 use xet_client::hub_client::Operation;
-use xet_data::processing::data_client::{clean_file, default_config};
-use xet_data::processing::{FileUploadSession, Sha256Policy};
-use xet_data::progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
+use xet_pkg::legacy::progress_tracking::{GroupProgressCallbackUpdater, ProgressUpdate, TrackingProgressUpdater};
+use xet_pkg::legacy::{FileUploadSession, Sha256Policy, clean_file, default_config};
 
 use crate::constants::{
     HF_ENDPOINT_ENV, XET_ACCESS_TOKEN_HEADER, XET_CAS_URL, XET_SESSION_ID, XET_TOKEN_EXPIRATION_HEADER,
@@ -105,9 +104,9 @@ impl TransferAgent for XetAgent {
         // and https://github.com/git-lfs/git-lfs/blob/2c7de1f90cbe13bf9c1ed43b84dda88bb32f2ba4/tq/custom.go#L304
         progress_updater.update_bytes_so_far(1)?;
 
-        let xet_updater = XetProgressUpdaterWrapper {
+        let xet_updater = Arc::new(XetProgressUpdaterWrapper {
             updater: progress_updater,
-        };
+        });
 
         let cas_url = req
             .action
@@ -137,26 +136,34 @@ impl TransferAgent for XetAgent {
         if !session_id.is_empty() {
             config.session.session_id = Some(session_id.to_owned());
         }
-        let session = FileUploadSession::new(config.into(), Some(Arc::new(xet_updater))).await?;
+        let session = FileUploadSession::new(config.into()).await?;
+        let bridge = GroupProgressCallbackUpdater::start(session.clone(), xet_updater);
 
         let Some(file_path) = &req.path else {
             return Err(GitLFSProtocolError::bad_syntax("file path not provided for upload request").into());
         };
 
-        clean_file(session.clone(), file_path, Sha256Policy::from_hex(&req.oid), None).await?;
+        let upload_result = async {
+            clean_file(session.clone(), file_path, Sha256Policy::from_hex(&req.oid)).await?;
 
-        // We need to actually upload the shard after each file upload to have the files registered, because
-        //
-        // 1. LFS custom transfer protocol is sequential: git-lfs waits for the upload/download result of the one file
-        //    before sending the request to process the next one;
-        // 2. git-lfs doesn't tell agents how many files to upload/download at the initiation phase;
-        // 3. After sending a termination signal, git-lfs waits for 30s and sends SIGKILL to the agent. SIGKILL is not
-        //    like SIGINT, it can't be intercepted or ignored by a process.
-        // 4. Xet system is not a real-time system that guarantees response within any duration. Batching and thus
-        //    effectively delaying shard upload means we risk data loss.
-        //
-        // See https://github.com/git-lfs/git-lfs/blob/2c7de1f90cbe13bf9c1ed43b84dda88bb32f2ba4/tq/custom.go#L233
-        session.finalize().await?;
+            // We need to actually upload the shard after each file upload to have the files registered, because
+            //
+            // 1. LFS custom transfer protocol is sequential: git-lfs waits for the upload/download result of the one
+            //    file before sending the request to process the next one;
+            // 2. git-lfs doesn't tell agents how many files to upload/download at the initiation phase;
+            // 3. After sending a termination signal, git-lfs waits for 30s and sends SIGKILL to the agent. SIGKILL is
+            //    not like SIGINT, it can't be intercepted or ignored by a process.
+            // 4. Xet system is not a real-time system that guarantees response within any duration. Batching and thus
+            //    effectively delaying shard upload means we risk data loss.
+            //
+            // See https://github.com/git-lfs/git-lfs/blob/2c7de1f90cbe13bf9c1ed43b84dda88bb32f2ba4/tq/custom.go#L233
+            session.finalize().await?;
+            Ok::<(), GitXetError>(())
+        }
+        .await;
+
+        bridge.finalize().await;
+        upload_result?;
 
         Ok(())
     }

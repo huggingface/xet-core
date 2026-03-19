@@ -58,14 +58,14 @@ impl ExpWeightedMovingAvg {
                 let now = Instant::now();
                 let dt_secs = (now - *last_update).as_secs_f64();
 
-                // decay = 2^(-Δt / T½)
-                let decay = ((-dt_secs * weight) / *half_life_secs).exp2();
+                // decay = 2^(-Δt / T½); independent of sample weight
+                let decay = (-dt_secs / *half_life_secs).exp2();
                 *last_update = now;
                 decay
             },
             ExpWeightedMovingAvgMode::CountDecay { half_life_count } => {
-                // For count-based decay, we apply decay based on the number of samples.
-                // Each update applies decay = 2^(-1 / T½) where 1 is the count increment.
+                // For count-based decay, sample weight is treated as the count increment.
+                // Decay is therefore 2^(-weight / T½_count).
                 (-weight / *half_life_count).exp2()
             },
         };
@@ -181,6 +181,50 @@ mod tests {
         // The mean should now be strictly between 0 and 8.
         let m = avg.value();
         assert!(m > 0.0 && m < 8.0);
+    }
+
+    /// Verifies that time-based decay with update_with_weight correctly
+    /// computes rate = Σ(decayed bytes) / Σ(decayed time).
+    #[tokio::test]
+    async fn ewma_time_decay_weighted_rate() {
+        pause();
+
+        let half_life = Duration::from_secs(10);
+        let mut avg = ExpWeightedMovingAvg::new_time_decay(half_life);
+
+        advance(Duration::from_millis(200)).await;
+        avg.update_with_weight(2000.0, 0.2);
+        assert!((avg.value() - 10_000.0).abs() < 1.0);
+
+        advance(Duration::from_millis(200)).await;
+        avg.update_with_weight(2000.0, 0.2);
+        assert!((avg.value() - 10_000.0).abs() < 1.0);
+
+        advance(Duration::from_millis(200)).await;
+        avg.update_with_weight(0.0, 0.2);
+        assert!(avg.value() < 10_000.0);
+    }
+
+    /// Verifies that time-decay does not couple weight into the decay exponent.
+    /// After one half-life of wall time, the decayed weight of the first observation
+    /// should be halved, regardless of the sample weight used.
+    #[tokio::test]
+    async fn ewma_time_decay_half_life_independent_of_weight() {
+        pause();
+
+        let half_life = Duration::from_secs(10);
+        let mut avg = ExpWeightedMovingAvg::new_time_decay(half_life);
+
+        avg.update_with_weight(100.0, 0.5);
+
+        advance(half_life).await;
+        avg.update_with_weight(0.0, 0.5);
+
+        // After one half-life: weight = 0.5*0.5 + 0.5 = 0.75, value = 100*0.5 = 50
+        // mean = 50/0.75 ≈ 66.67
+        let epsilon = 1e-6;
+        let expected = 50.0 / 0.75;
+        assert!((avg.value() - expected).abs() < epsilon);
     }
 
     /// Verifies that after exactly half_life_count samples, the value is approximately halved.

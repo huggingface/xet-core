@@ -15,7 +15,7 @@ use xet_runtime::config::ReconstructionConfig;
 use super::super::FileReconstructionError;
 use super::super::error::Result;
 use super::file_term::{FileTerm, retrieve_file_term_block};
-use crate::progress_tracking::download_tracking::DownloadTaskUpdater;
+use crate::progress_tracking::ItemProgressUpdater;
 
 type RawFetchedFileTerms = Result<Option<(Vec<FileTerm>, u64, u64)>>;
 
@@ -33,7 +33,7 @@ pub struct ReconstructionTermManager {
     current_active_byte_position: u64,
     prefetch_queue: VecDeque<JoinHandle<RawFetchedFileTerms>>,
     completion_rate_estimator: ExpWeightedMovingAvg,
-    progress_updater: Option<Arc<DownloadTaskUpdater>>,
+    progress_updater: Option<Arc<ItemProgressUpdater>>,
     total_bytes_reported: u64,
     total_transfer_bytes_reported: u64,
 }
@@ -44,7 +44,7 @@ impl ReconstructionTermManager {
         client: Arc<dyn Client>,
         file_hash: MerkleHash,
         file_byte_range: FileRange,
-        progress_updater: Option<Arc<DownloadTaskUpdater>>,
+        progress_updater: Option<Arc<ItemProgressUpdater>>,
     ) -> Result<Self> {
         let completion_rate_estimator =
             ExpWeightedMovingAvg::new_count_decay(config.completion_rate_estimator_half_life);

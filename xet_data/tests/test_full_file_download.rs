@@ -11,15 +11,14 @@ mod tests {
     use std::sync::Arc;
 
     use tempfile::TempDir;
-    use ulid::Ulid;
     use xet_client::cas_client::LocalTestServerBuilder;
     use xet_data::processing::configurations::TranslatorConfig;
     use xet_data::processing::{FileDownloadSession, FileUploadSession, Sha256Policy, XetFileInfo};
 
     async fn upload_bytes(upload_session: &Arc<FileUploadSession>, name: &str, data: &[u8]) -> XetFileInfo {
-        let mut cleaner = upload_session
-            .start_clean(Some(name.into()), data.len() as u64, Sha256Policy::Compute, Ulid::new())
-            .await;
+        let (_id, mut cleaner) = upload_session
+            .start_clean(Some(name.into()), data.len() as u64, Sha256Policy::Compute)
+            .unwrap();
         cleaner.add_data(data).await.unwrap();
         let (xfi, _metrics) = cleaner.finish().await.unwrap();
         xfi
@@ -40,15 +39,15 @@ mod tests {
             ("larger", &vec![0xCD; 64 * 1024]),
         ];
 
-        let download_session = FileDownloadSession::new(config.clone(), None).await.unwrap();
+        let download_session = FileDownloadSession::new(config.clone()).await.unwrap();
 
         for (name, data) in test_cases {
-            let upload_session = FileUploadSession::new(config.clone(), None).await.unwrap();
+            let upload_session = FileUploadSession::new(config.clone()).await.unwrap();
             let xfi = upload_bytes(&upload_session, name, data).await;
             upload_session.finalize().await.unwrap();
 
             let out_path = base_dir.path().join(format!("out_{name}"));
-            let n_bytes = download_session.download_file(&xfi, &out_path, Ulid::new()).await.unwrap();
+            let (_id, n_bytes) = download_session.download_file(&xfi, &out_path).await.unwrap();
 
             assert_eq!(n_bytes, data.len() as u64, "size mismatch for {name}");
             assert_eq!(fs::read(&out_path).unwrap(), *data, "content mismatch for {name}");
