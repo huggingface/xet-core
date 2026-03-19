@@ -12,7 +12,7 @@ use xet_runtime::core::XetRuntime;
 
 use super::common::{GroupState, create_translator_config};
 use super::errors::SessionError;
-use super::session::{RuntimeMode, XetSession};
+use super::session::XetSession;
 use super::tasks::{TaskHandle, TaskStatus, UploadTaskHandle};
 
 /// API for grouping related file uploads into a single atomic commit.
@@ -247,27 +247,14 @@ impl UploadCommit {
 
     /// Blocking version of [`upload_from_path`](Self::upload_from_path).
     ///
-    /// # Errors
-    ///
-    /// Returns [`SessionError::WrongRuntimeMode`] if the session was created with an external
-    /// tokio runtime ([`XetSessionBuilder::with_tokio_handle`] / [`XetSessionBuilder::build_async`]
-    /// inside a tokio context). Use [`upload_from_path`](Self::upload_from_path)`.await` instead.
-    ///
     /// # Panics
     ///
-    /// Panics if called from within a tokio async runtime on an Owned-mode session.
+    /// Panics if called from within a tokio async runtime.
     pub fn upload_from_path_blocking(
         &self,
         file_path: PathBuf,
         sha256: Sha256Policy,
     ) -> Result<UploadTaskHandle, SessionError> {
-        if matches!(self.session.runtime_mode, RuntimeMode::External) {
-            return Err(SessionError::wrong_mode(
-                "upload_from_path_blocking() cannot be called on a session using an \
-                 external tokio runtime (with_tokio_handle() or tokio build_async()); \
-                 use upload_from_path().await instead",
-            ));
-        }
         self.session.check_alive()?;
 
         let absolute_path = std::path::absolute(file_path)?;
@@ -279,28 +266,15 @@ impl UploadCommit {
 
     /// Blocking version of [`upload_bytes`](Self::upload_bytes).
     ///
-    /// # Errors
-    ///
-    /// Returns [`SessionError::WrongRuntimeMode`] if the session was created with an external
-    /// tokio runtime ([`XetSessionBuilder::with_tokio_handle`] / [`XetSessionBuilder::build_async`]
-    /// inside a tokio context). Use [`upload_bytes`](Self::upload_bytes)`.await` instead.
-    ///
     /// # Panics
     ///
-    /// Panics if called from within a tokio async runtime on an Owned-mode session.
+    /// Panics if called from within a tokio async runtime.
     pub fn upload_bytes_blocking(
         &self,
         bytes: Vec<u8>,
         sha256: Sha256Policy,
         tracking_name: Option<String>,
     ) -> Result<UploadTaskHandle, SessionError> {
-        if matches!(self.session.runtime_mode, RuntimeMode::External) {
-            return Err(SessionError::wrong_mode(
-                "upload_bytes_blocking() cannot be called on a session using an \
-                 external tokio runtime (with_tokio_handle() or tokio build_async()); \
-                 use upload_bytes().await instead",
-            ));
-        }
         self.session.check_alive()?;
 
         let commit_inner = self.inner.clone();
@@ -311,28 +285,15 @@ impl UploadCommit {
 
     /// Blocking version of [`upload_file`](Self::upload_file).
     ///
-    /// # Errors
-    ///
-    /// Returns [`SessionError::WrongRuntimeMode`] if the session was created with an external
-    /// tokio runtime ([`XetSessionBuilder::with_tokio_handle`] / [`XetSessionBuilder::build_async`]
-    /// inside a tokio context). Use [`upload_file`](Self::upload_file)`.await` instead.
-    ///
     /// # Panics
     ///
-    /// Panics if called from within a tokio async runtime on an Owned-mode session.
+    /// Panics if called from within a tokio async runtime.
     pub fn upload_file_blocking(
         &self,
         file_name: Option<String>,
         file_size: u64,
         sha256: Sha256Policy,
     ) -> Result<(TaskHandle, SingleFileCleaner), SessionError> {
-        if matches!(self.session.runtime_mode, RuntimeMode::External) {
-            return Err(SessionError::wrong_mode(
-                "upload_file_blocking() cannot be called on a session using an \
-                 external tokio runtime (with_tokio_handle() or tokio build_async()); \
-                 use upload_file().await instead",
-            ));
-        }
         self.session.check_alive()?;
 
         let commit_inner = self.inner.clone();
@@ -1381,87 +1342,5 @@ mod tests {
     #[test]
     fn test_blocking_upload_round_trip_in_async_std() {
         assert_blocking_upload_round_trip(|fut| async_std::task::block_on(fut));
-    }
-
-    // ── RuntimeMode checks ────────────────────────────────────────────────────
-
-    #[tokio::test(flavor = "multi_thread")]
-    // upload_from_path_blocking returns WrongRuntimeMode on an External-mode session.
-    async fn test_upload_from_path_blocking_errors_in_external_mode() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
-        assert_eq!(session.runtime_mode, RuntimeMode::External);
-        let commit = session.new_upload_commit().await.unwrap();
-        let err = commit
-            .upload_from_path_blocking(PathBuf::from("/nonexistent"), Sha256Policy::Compute)
-            .err()
-            .unwrap();
-        assert!(matches!(err, SessionError::WrongRuntimeMode(_)));
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    // upload_bytes_blocking returns WrongRuntimeMode on an External-mode session.
-    async fn test_upload_bytes_blocking_errors_in_external_mode() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
-        assert_eq!(session.runtime_mode, RuntimeMode::External);
-        let commit = session.new_upload_commit().await.unwrap();
-        let err = commit.upload_bytes_blocking(vec![], Sha256Policy::Compute, None).err().unwrap();
-        assert!(matches!(err, SessionError::WrongRuntimeMode(_)));
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    // upload_file_blocking returns WrongRuntimeMode on an External-mode session.
-    async fn test_upload_file_blocking_errors_in_external_mode() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
-        assert_eq!(session.runtime_mode, RuntimeMode::External);
-        let commit = session.new_upload_commit().await.unwrap();
-        let err = commit.upload_file_blocking(None, 0, Sha256Policy::Compute).err().unwrap();
-        assert!(matches!(err, SessionError::WrongRuntimeMode(_)));
-    }
-
-    // ── Owned-mode _blocking panic guard ─────────────────────────────────────
-
-    #[test]
-    // upload_from_path_blocking panics when called from within a tokio runtime on an
-    // Owned-mode session: external_run_async_task calls handle.block_on(), which panics
-    // because tokio sets a thread-local runtime context that it detects and rejects.
-    fn test_upload_from_path_blocking_panics_in_async_context() {
-        let session = XetSessionBuilder::new().build().unwrap();
-        assert_eq!(session.runtime_mode, RuntimeMode::Owned);
-        let commit = session.new_upload_commit_blocking().unwrap();
-        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            rt.block_on(async {
-                commit.upload_from_path_blocking(PathBuf::from("/nonexistent"), Sha256Policy::Compute)
-            })
-        }));
-        assert!(result.is_err(), "upload_from_path_blocking() must panic when called from async");
-    }
-
-    #[test]
-    // upload_bytes_blocking panics when called from within a tokio runtime on an
-    // Owned-mode session: same mechanism as the path variant above.
-    fn test_upload_bytes_blocking_panics_in_async_context() {
-        let session = XetSessionBuilder::new().build().unwrap();
-        assert_eq!(session.runtime_mode, RuntimeMode::Owned);
-        let commit = session.new_upload_commit_blocking().unwrap();
-        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            rt.block_on(async { commit.upload_bytes_blocking(vec![], Sha256Policy::Compute, None) })
-        }));
-        assert!(result.is_err(), "upload_bytes_blocking() must panic when called from async");
-    }
-
-    #[test]
-    // upload_file_blocking panics when called from within a tokio runtime on an
-    // Owned-mode session: same mechanism as the path variant above.
-    fn test_upload_file_blocking_panics_in_async_context() {
-        let session = XetSessionBuilder::new().build().unwrap();
-        assert_eq!(session.runtime_mode, RuntimeMode::Owned);
-        let commit = session.new_upload_commit_blocking().unwrap();
-        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            rt.block_on(async { commit.upload_file_blocking(None, 0, Sha256Policy::Compute) })
-        }));
-        assert!(result.is_err(), "upload_file_blocking() must panic when called from async");
     }
 }
