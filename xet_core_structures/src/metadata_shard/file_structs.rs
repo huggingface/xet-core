@@ -5,7 +5,6 @@ use std::mem::size_of;
 use bytes::Bytes;
 use serde::Serialize;
 
-use super::error::MDBShardError;
 use super::shard_file::MDB_FILE_INFO_ENTRY_SIZE;
 use super::xorb_structs::{XorbChunkSequenceEntry, XorbChunkSequenceHeader};
 use crate::merklehash::data_hash::hex;
@@ -435,7 +434,7 @@ impl MDBFileInfo {
     /// Merges the content of other into the content of self if needed.
     /// After this call, self will have the verification info and metadata
     /// extension if they exist in the other object but not this one.
-    pub fn merge_from(&mut self, other: &Self) -> Result<(), MDBShardError> {
+    pub fn merge_from(&mut self, other: &Self) -> crate::error::Result<()> {
         FileDataSequenceHeader::verify_same_file(&self.metadata, &other.metadata);
         if self.contains_verification() != other.contains_verification() && other.contains_verification() {
             // self doesn't have verification. Copy from other

@@ -6,17 +6,12 @@ use tracing::{Instrument, Span, info_span, instrument};
 use xet_client::cas_client::auth::TokenRefresher;
 pub use xet_data::processing::data_client::hash_files_async;
 use xet_data::processing::data_client::{clean_bytes, default_config};
-use xet_data::processing::errors::DataProcessingError;
 use xet_data::processing::{FileDownloadSession, FileUploadSession, Sha256Policy, XetFileInfo};
+use xet_data::{DataError, Result};
 use xet_runtime::core::par_utils::run_constrained_with_semaphore;
 use xet_runtime::core::{XetRuntime, xet_config};
 
 use super::progress_tracking::{GroupProgressCallbackUpdater, ItemProgressCallbackUpdater, TrackingProgressUpdater};
-use crate::legacy::data_client::errors::Result;
-
-mod errors {
-    pub use xet_data::processing::errors::Result;
-}
 
 #[instrument(skip_all, name = "data_client::upload_bytes", fields(session_id = tracing::field::Empty, num_files=file_contents.len()))]
 pub async fn upload_bytes_async(
@@ -29,7 +24,7 @@ pub async fn upload_bytes_async(
     custom_headers: Option<Arc<HeaderMap>>,
 ) -> Result<Vec<XetFileInfo>> {
     if sha256_policies.len() != file_contents.len() {
-        return Err(DataProcessingError::ParameterError(format!(
+        return Err(DataError::ParameterError(format!(
             "sha256_policies length ({}) must match file_contents length ({})",
             sha256_policies.len(),
             file_contents.len()
@@ -86,7 +81,7 @@ pub async fn upload_async(
     custom_headers: Option<Arc<HeaderMap>>,
 ) -> Result<Vec<XetFileInfo>> {
     if sha256_policies.len() != file_paths.len() {
-        return Err(DataProcessingError::ParameterError(format!(
+        return Err(DataError::ParameterError(format!(
             "sha256_policies length ({}) must match file_paths length ({})",
             sha256_policies.len(),
             file_paths.len()
@@ -140,7 +135,7 @@ pub async fn download_async(
     if let Some(updaters) = &progress_updaters
         && updaters.len() != file_infos.len()
     {
-        return Err(DataProcessingError::ParameterError("updaters are not same length as pointer_files".to_string()));
+        return Err(DataError::ParameterError("updaters are not same length as pointer_files".to_string()));
     }
     let config: Arc<_> = default_config(
         endpoint.unwrap_or_else(|| xet_config().data.default_cas_endpoint.clone()),

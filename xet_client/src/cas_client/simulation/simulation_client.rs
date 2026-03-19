@@ -14,13 +14,13 @@ use reqwest::{Body, Url};
 use serde_json;
 
 use super::super::adaptive_concurrency::ConnectionPermit;
-use super::super::error::{CasClientError, Result};
 use super::super::http_client::Api;
 use super::super::interface::Client;
 use super::super::progress_tracked_streams::{ProgressCallback, UploadProgressStream};
 use super::super::remote_client::RemoteClient;
 use super::super::retry_wrapper::RetryWrapper;
 use super::local_server::ServerLatencyProfile;
+use crate::error::{ClientError, Result};
 
 /// A wrapper around `RemoteClient` that provides simulation-specific methods for controlling
 /// latency profiles and uploading dummy data for benchmarking and simulation purposes.
@@ -43,7 +43,7 @@ impl RemoteSimulationClient {
         let client = self.inner.http_client();
 
         let json_body = serde_json::to_vec(&profile)
-            .map_err(|e| CasClientError::Other(format!("Failed to serialize ServerLatencyProfile: {e}")))?;
+            .map_err(|e| ClientError::Other(format!("Failed to serialize ServerLatencyProfile: {e}")))?;
 
         let response = client
             .post(url)
@@ -52,12 +52,12 @@ impl RemoteSimulationClient {
             .body(json_body)
             .send()
             .await
-            .map_err(|e| CasClientError::Other(format!("Failed to send set_config request: {e}")))?;
+            .map_err(|e| ClientError::Other(format!("Failed to send set_config request: {e}")))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(CasClientError::Other(format!(
+            return Err(ClientError::Other(format!(
                 "set_config request failed with status {}: {}",
                 status, error_text
             )));
@@ -98,7 +98,7 @@ impl RemoteSimulationClient {
                     .send()
             })
             .await
-            .map_err(|e| CasClientError::Other(format!("Failed to upload dummy data: {e}")))?;
+            .map_err(|e| ClientError::Other(format!("Failed to upload dummy data: {e}")))?;
 
         Ok(n_upload_bytes)
     }

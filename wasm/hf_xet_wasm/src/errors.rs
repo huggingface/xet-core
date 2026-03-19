@@ -2,7 +2,7 @@ use std::fmt::Debug;
 
 use thiserror::Error;
 use xet_client::ClientError;
-use xet_core_structures::FormatError;
+use xet_core_structures::CoreError;
 use xet_core_structures::merklehash::DataHashHexParseError;
 
 #[non_exhaustive]
@@ -17,8 +17,8 @@ pub enum DataProcessingError {
     #[error("Client error: {0}")]
     ClientError(#[from] ClientError),
 
-    #[error("Format error: {0}")]
-    FormatError(#[from] FormatError),
+    #[error("Core structures error: {0}")]
+    CoreError(#[from] CoreError),
 }
 
 impl DataProcessingError {

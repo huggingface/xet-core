@@ -18,9 +18,8 @@ use std::path::PathBuf;
 use std::pin::Pin;
 
 use tempfile::{TempDir, tempdir};
-use xet::xet_session::{
-    FileMetadata, SessionError, Sha256Policy, TaskStatus, XetFileInfo, XetSession, XetSessionBuilder,
-};
+use xet::XetError;
+use xet::xet_session::{FileMetadata, Sha256Policy, TaskStatus, XetFileInfo, XetSession, XetSessionBuilder};
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -794,14 +793,14 @@ fn blocking_in_non_tokio_executor_upload_from_path() {
 async fn external_mode_blocking_upload_returns_wrong_mode() {
     let session = XetSessionBuilder::new().build_async().await.unwrap();
     let err = session.new_upload_commit_blocking().err().unwrap();
-    assert!(matches!(err, SessionError::WrongRuntimeMode(_)));
+    assert!(matches!(err, XetError::WrongRuntimeMode(_)));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_mode_blocking_download_returns_wrong_mode() {
     let session = XetSessionBuilder::new().build_async().await.unwrap();
     let err = session.new_download_group_blocking().err().unwrap();
-    assert!(matches!(err, SessionError::WrongRuntimeMode(_)));
+    assert!(matches!(err, XetError::WrongRuntimeMode(_)));
 }
 
 // ── 7. Abort behavior ───────────────────────────────────────────────────
@@ -811,7 +810,7 @@ async fn async_abort_prevents_new_commits() {
     let session = XetSessionBuilder::new().build_async().await.unwrap();
     session.abort().unwrap();
     let err = session.new_upload_commit().await.err().unwrap();
-    assert!(matches!(err, SessionError::Aborted));
+    assert!(matches!(err, XetError::Aborted));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -819,7 +818,7 @@ async fn async_abort_prevents_new_groups() {
     let session = XetSessionBuilder::new().build_async().await.unwrap();
     session.abort().unwrap();
     let err = session.new_download_group().await.err().unwrap();
-    assert!(matches!(err, SessionError::Aborted));
+    assert!(matches!(err, XetError::Aborted));
 }
 
 #[test]
@@ -827,7 +826,7 @@ fn blocking_abort_prevents_new_commits() {
     let session = XetSessionBuilder::new().build().unwrap();
     session.abort().unwrap();
     let err = session.new_upload_commit_blocking().err().unwrap();
-    assert!(matches!(err, SessionError::Aborted));
+    assert!(matches!(err, XetError::Aborted));
 }
 
 #[test]
@@ -835,7 +834,7 @@ fn blocking_abort_prevents_new_groups() {
     let session = XetSessionBuilder::new().build().unwrap();
     session.abort().unwrap();
     let err = session.new_download_group_blocking().err().unwrap();
-    assert!(matches!(err, SessionError::Aborted));
+    assert!(matches!(err, XetError::Aborted));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -848,7 +847,7 @@ async fn async_abort_rejects_upload_on_existing_commit() {
         .await
         .err()
         .unwrap();
-    assert!(matches!(err, SessionError::Aborted));
+    assert!(matches!(err, XetError::Aborted));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -868,7 +867,7 @@ async fn async_abort_rejects_download_on_existing_group() {
         .await
         .err()
         .unwrap();
-    assert!(matches!(err, SessionError::Aborted));
+    assert!(matches!(err, XetError::Aborted));
 }
 
 // ── 8. Deduplication (same content uploaded twice) ───────────────────────

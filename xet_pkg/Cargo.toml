@@ -18,6 +18,7 @@ xet-core-structures = { version = "1.4.0", path = "../xet_core_structures" }
 xet-client = { version = "1.4.0", path = "../xet_client" }
 xet-data = { version = "1.4.0", path = "../xet_data" }
 
+anyhow = { workspace = true }
 async-trait = { workspace = true }
 http = { workspace = true }
 more-asserts = { workspace = true }
@@ -26,9 +27,10 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["net", "time"] }
 tracing = { workspace = true }
 ulid = { workspace = true }
+pyo3 = { workspace = true, optional = true }
 
 [features]
-python = ["xet-runtime/python"]
+python = ["xet-runtime/python", "dep:pyo3"]
 
 [dev-dependencies]
 anyhow = { workspace = true }

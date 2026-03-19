@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use xet_core_structures::merklehash::MerkleHash;
 
-use super::super::error::Result;
+use crate::error::Result;
 
 /// Trait for clients that support deletion and integrity operations on shards and file entries.
 ///

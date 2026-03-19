@@ -7,7 +7,7 @@ use thiserror::Error;
 #[derive(Error, Debug, Clone)]
 pub enum FileReconstructionError {
     #[error("CAS Client Error: {0}")]
-    CasClientError(Arc<xet_client::cas_client::CasClientError>),
+    ClientError(Arc<xet_client::ClientError>),
 
     #[error("IO Error: {0}")]
     IoError(Arc<std::io::Error>),
@@ -31,7 +31,7 @@ pub enum FileReconstructionError {
     TaskJoinError(Arc<tokio::task::JoinError>),
 
     #[error("Runtime Error: {0}")]
-    RuntimeError(Arc<xet_runtime::core::errors::MultithreadedRuntimeError>),
+    RuntimeError(Arc<xet_runtime::RuntimeError>),
 }
 
 pub type Result<T> = std::result::Result<T, FileReconstructionError>;
@@ -42,9 +42,9 @@ impl From<std::io::Error> for FileReconstructionError {
     }
 }
 
-impl From<xet_client::cas_client::CasClientError> for FileReconstructionError {
-    fn from(err: xet_client::cas_client::CasClientError) -> Self {
-        FileReconstructionError::CasClientError(Arc::new(err))
+impl From<xet_client::ClientError> for FileReconstructionError {
+    fn from(err: xet_client::ClientError) -> Self {
+        FileReconstructionError::ClientError(Arc::new(err))
     }
 }
 
@@ -60,8 +60,8 @@ impl From<tokio::task::JoinError> for FileReconstructionError {
     }
 }
 
-impl From<xet_runtime::core::errors::MultithreadedRuntimeError> for FileReconstructionError {
-    fn from(err: xet_runtime::core::errors::MultithreadedRuntimeError) -> Self {
+impl From<xet_runtime::RuntimeError> for FileReconstructionError {
+    fn from(err: xet_runtime::RuntimeError) -> Self {
         FileReconstructionError::RuntimeError(Arc::new(err))
     }
 }

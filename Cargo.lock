@@ -1655,6 +1655,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "xet-client",
+ "xet-data",
  "xet-runtime",
 ]
 
@@ -1879,6 +1880,7 @@ dependencies = [
  "futures",
  "http",
  "more-asserts",
+ "pyo3",
  "serde",
  "serde_json",
  "serial_test",
@@ -4541,6 +4543,7 @@ checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 name = "simulation"
 version = "1.4.0"
 dependencies = [
+ "anyhow",
  "bytes",
  "chrono",
  "clap",
@@ -6220,7 +6223,6 @@ dependencies = [
 name = "xet-core-structures"
 version = "1.4.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "base64 0.22.1",
  "bincode",

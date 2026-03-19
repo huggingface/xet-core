@@ -7,13 +7,13 @@ use crate::merklehash::MerkleHash;
 
 #[non_exhaustive]
 #[derive(Error, Debug)]
-pub enum FormatError {
+pub enum CoreError {
     // -- Common ----------------------------------------------------------
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
     #[error("Internal error: {0}")]
-    Internal(anyhow::Error),
+    InternalError(String),
 
     #[error("{0}")]
     Other(String),
@@ -50,14 +50,14 @@ pub enum FormatError {
     #[error("Invalid arguments")]
     InvalidArguments,
 
-    #[error("Format error: {0}")]
-    Format(anyhow::Error),
+    #[error("Malformed data: {0}")]
+    MalformedData(String),
 
     #[error("Hash mismatch")]
     HashMismatch,
 
     #[error("Compression error: {0}")]
-    Compression(#[from] lz4_flex::frame::Error),
+    CompressionError(#[from] lz4_flex::frame::Error),
 
     #[error("Hash parsing error: {0}")]
     HashParsing(#[from] Infallible),
@@ -67,7 +67,7 @@ pub enum FormatError {
 
     // -- Runtime ---------------------------------------------------------
     #[error("Runtime error: {0}")]
-    Runtime(#[from] xet_runtime::RuntimeError),
+    RuntimeError(#[from] xet_runtime::RuntimeError),
 
     #[error("Task lock error: {0}")]
     TaskRuntime(#[from] xet_runtime::utils::RwTaskLockError),
@@ -76,15 +76,15 @@ pub enum FormatError {
     TaskJoin(#[from] tokio::task::JoinError),
 }
 
-pub type Result<T> = std::result::Result<T, FormatError>;
+pub type Result<T> = std::result::Result<T, CoreError>;
 
-impl PartialEq for FormatError {
-    fn eq(&self, other: &FormatError) -> bool {
+impl PartialEq for CoreError {
+    fn eq(&self, other: &CoreError) -> bool {
         std::mem::discriminant(self) == std::mem::discriminant(other)
     }
 }
 
-impl FormatError {
+impl CoreError {
     pub fn other(inner: impl ToString) -> Self {
         Self::Other(inner.to_string())
     }
@@ -103,7 +103,7 @@ impl<T> Validate<T> for Result<T> {
     fn ok_for_format_error(self) -> Result<Option<T>> {
         match self {
             Ok(v) => Ok(Some(v)),
-            Err(FormatError::Format(e)) => {
+            Err(CoreError::MalformedData(e)) => {
                 warn!("XORB Validation: {e}");
                 Ok(None)
             },
@@ -112,14 +112,14 @@ impl<T> Validate<T> for Result<T> {
     }
 }
 
-impl From<crate::merklehash::DataHashHexParseError> for FormatError {
+impl From<crate::merklehash::DataHashHexParseError> for CoreError {
     fn from(_: crate::merklehash::DataHashHexParseError) -> Self {
-        FormatError::Other("Invalid hex input for DataHash".to_string())
+        CoreError::Other("Invalid hex input for DataHash".to_string())
     }
 }
 
-impl From<crate::merklehash::DataHashBytesParseError> for FormatError {
+impl From<crate::merklehash::DataHashBytesParseError> for CoreError {
     fn from(_: crate::merklehash::DataHashBytesParseError) -> Self {
-        FormatError::Other("Invalid bytes input for DataHash".to_string())
+        CoreError::Other("Invalid bytes input for DataHash".to_string())
     }
 }
