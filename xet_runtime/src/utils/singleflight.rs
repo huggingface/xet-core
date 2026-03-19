@@ -422,7 +422,7 @@ pub(crate) mod tests {
     }
 
     async fn expensive_fn(x: Arc<AtomicU32>, resp: usize) -> Result<usize, ()> {
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::new(1, 0)).await;
         x.fetch_add(1, Ordering::SeqCst);
         Ok(resp)
     }
@@ -448,6 +448,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     fn test_multiple_threads_with_threadpool() {
         let times_called = Arc::new(AtomicU32::new(0));
         let threadpool = Arc::new(XetRuntime::new().unwrap());
@@ -482,6 +483,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_multiple_threads() {
         let times_called = Arc::new(AtomicU32::new(0));
         let g: Arc<Group<usize, ()>> = Arc::new(Group::new());
@@ -511,11 +513,12 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_error() {
         let times_called = Arc::new(AtomicU32::new(0));
 
         async fn expensive_error_fn(x: Arc<AtomicU32>) -> Result<usize, &'static str> {
-            tokio::time::sleep(Duration::from_millis(150)).await;
+            tokio::time::sleep(Duration::new(1, 500)).await;
             x.fetch_add(1, Ordering::SeqCst);
             Err("Error")
         }
@@ -540,6 +543,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_multiple_keys() {
         let times_called_x = Arc::new(AtomicU32::new(0));
         let times_called_y = Arc::new(AtomicU32::new(0));

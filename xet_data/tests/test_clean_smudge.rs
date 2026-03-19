@@ -20,20 +20,8 @@ test_set_constants! {
 /// - ServerV1Fallback: LocalTestServer with V2 disabled (tests V1-to-V2 conversion)
 /// - ServerMaxRanges2: LocalTestServer with max_ranges_per_fetch=2 (tests fetch splitting)
 pub async fn check_clean_smudge_files(file_list: &[(impl AsRef<str> + Clone, usize)]) {
-    // In smoke-test mode, only test DirectClient + ServerV2 with sequential=false
-    // to keep the test suite fast while still covering the key code paths.
-    #[cfg(feature = "smoke-test")]
-    let modes: &[HydrationMode] = &[HydrationMode::DirectClient, HydrationMode::ServerV2];
-    #[cfg(not(feature = "smoke-test"))]
-    let modes: &[HydrationMode] = HydrationMode::all();
-
-    #[cfg(feature = "smoke-test")]
-    let sequential_options: &[bool] = &[false];
-    #[cfg(not(feature = "smoke-test"))]
-    let sequential_options: &[bool] = &[true, false];
-
-    for &mode in modes {
-        for &sequential in sequential_options {
+    for &mode in HydrationMode::all() {
+        for sequential in [true, false] {
             eprintln!("Testing mode={mode}, sequential={sequential}");
 
             let mut ts = HydrateDehydrateTest::for_mode(mode);
@@ -57,18 +45,8 @@ pub async fn check_clean_smudge_files(file_list: &[(impl AsRef<str> + Clone, usi
 ///
 /// Exercises all hydration modes just like `check_clean_smudge_files`.
 async fn check_clean_smudge_files_multipart(file_specs: &[(String, Vec<(usize, u64)>)]) {
-    #[cfg(feature = "smoke-test")]
-    let modes: &[HydrationMode] = &[HydrationMode::DirectClient, HydrationMode::ServerV2];
-    #[cfg(not(feature = "smoke-test"))]
-    let modes: &[HydrationMode] = HydrationMode::all();
-
-    #[cfg(feature = "smoke-test")]
-    let sequential_options: &[bool] = &[false];
-    #[cfg(not(feature = "smoke-test"))]
-    let sequential_options: &[bool] = &[true, false];
-
-    for &mode in modes {
-        for &sequential in sequential_options {
+    for &mode in HydrationMode::all() {
+        for sequential in [true, false] {
             eprintln!("Testing mode={mode}, sequential={sequential}");
 
             let mut ts = HydrateDehydrateTest::for_mode(mode);
@@ -89,7 +67,7 @@ async fn check_clean_smudge_files_multipart(file_specs: &[(String, Vec<(usize, u
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "smoke-test")))]
 mod testing_clean_smudge {
     use super::*;
 

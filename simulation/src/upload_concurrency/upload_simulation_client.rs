@@ -386,11 +386,11 @@ mod tests {
     use super::run_upload_clients_until_cancelled;
     use crate::scenario::{ScenarioError, SimulationScenarioBuilder};
 
-    /// Runs a full scenario: start server, add upload client, run 1s, shutdown, then verify
+    /// Runs a full scenario: start server, add upload client, run 3s, shutdown, then verify
     /// output directory has network_stats.json, timeline.csv, client_parameters_*.json, client_stats_*.json.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[cfg_attr(feature = "smoke-test", ignore)]
-    async fn scenario_run_1_second_shutdown_verify_output() {
+    async fn scenario_run_3_seconds_shutdown_verify_output() {
         let temp = tempfile::tempdir().unwrap();
         let out_dir = temp.path().to_path_buf();
         let latency_profile = ServerLatencyProfile::from_name("none").unwrap();
@@ -417,7 +417,7 @@ mod tests {
                     .map_err(|e| ScenarioError::Client(e.to_string()))
             })
         });
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
         let result = scenario.finish().await;
         assert!(result.is_ok(), "finish() should succeed: {:?}", result.err());
 
