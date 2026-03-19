@@ -5,18 +5,17 @@ use std::ops::Add;
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
-use anyhow::anyhow;
 use futures::AsyncReadExt;
 use static_assertions::const_assert;
 use tracing::debug;
 
-use super::error::{MDBShardError, Result};
 use super::file_structs::*;
 use super::interpolation_search::search_on_sorted_u64s;
 use super::shard_in_memory::MDBInMemoryShard;
 use super::streaming_shard::MDBMinimalShard;
 use super::utils::{shard_expiry_time, truncate_hash};
 use super::xorb_structs::*;
+use crate::error::{CoreError, Result};
 use crate::merklehash::{HMACKey, MerkleHash};
 use crate::serialization_utils::*;
 
@@ -87,7 +86,7 @@ impl MDBShardFileHeader {
         reader.read_exact(&mut tag)?;
 
         if tag != MDB_SHARD_HEADER_TAG {
-            return Err(MDBShardError::ShardVersion(
+            return Err(CoreError::ShardVersion(
                 "File does not appear to be a valid Merkle DB Shard file (Wrong Magic Number).".to_owned(),
             ));
         }
@@ -187,7 +186,7 @@ impl MDBShardFileFooter {
 
         // Do a version check as a simple guard against using this in an old repository
         if version != MDB_SHARD_FOOTER_VERSION {
-            return Err(MDBShardError::ShardVersion(format!(
+            return Err(CoreError::ShardVersion(format!(
                 "Error: Expected footer version {MDB_SHARD_FOOTER_VERSION}, got {version}"
             )));
         }
@@ -494,7 +493,7 @@ impl MDBShardInfo {
         if num_indices < dest_indices.len() {
             Ok(num_indices)
         } else {
-            Err(MDBShardError::TruncatedHashCollision(truncate_hash(file_hash)))
+            Err(CoreError::TruncatedHashCollision(truncate_hash(file_hash)))
         }
     }
 
@@ -517,7 +516,7 @@ impl MDBShardInfo {
         if num_indices < dest_indices.len() {
             Ok(num_indices)
         } else {
-            Err(MDBShardError::TruncatedHashCollision(truncate_hash(xorb_hash)))
+            Err(CoreError::TruncatedHashCollision(truncate_hash(xorb_hash)))
         }
     }
 
@@ -556,7 +555,7 @@ impl MDBShardInfo {
         ))?;
 
         let Some(mdb_file) = MDBFileInfo::deserialize(reader)? else {
-            return Err(MDBShardError::Internal(anyhow!("invalid file entry index")));
+            return Err(CoreError::InternalError("invalid file entry index".to_string()));
         };
 
         Ok(mdb_file)
@@ -1213,13 +1212,13 @@ pub mod test_routines {
     use rand::rngs::{SmallRng, StdRng};
     use rand::{Rng, SeedableRng};
 
-    use super::super::error::Result;
     use super::super::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, MDBFileInfo};
     use super::super::shard_format::MDBShardInfo;
     use super::super::shard_in_memory::MDBInMemoryShard;
     use super::super::streaming_shard::MDBMinimalShard;
     use super::super::xorb_structs::{MDBXorbInfo, XorbChunkSequenceEntry, XorbChunkSequenceHeader};
     use super::FileVerificationEntry;
+    use crate::error::Result;
     use crate::merklehash::MerkleHash;
 
     pub fn simple_hash(n: u64) -> MerkleHash {
@@ -1694,8 +1693,8 @@ pub mod test_routines {
 #[cfg(test)]
 mod tests {
 
-    use super::super::error::Result;
     use super::test_routines::*;
+    use crate::error::Result;
 
     #[test]
     fn test_simple() -> Result<()> {

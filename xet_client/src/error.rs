@@ -1,7 +1,6 @@
-use std::fmt::Debug;
 use std::num::TryFromIntError;
 
-use anyhow::anyhow;
+use anyhow::Error as AnyhowError;
 use http::StatusCode;
 use thiserror::Error;
 use tokio::sync::AcquireError;
@@ -15,7 +14,7 @@ use crate::cas_client::auth::AuthError;
 #[derive(Error, Debug)]
 pub enum ClientError {
     #[error("Format error: {0}")]
-    FormatError(#[from] xet_core_structures::FormatError),
+    FormatError(#[from] xet_core_structures::CoreError),
 
     #[error("Configuration error: {0}")]
     ConfigurationError(String),
@@ -36,7 +35,7 @@ pub enum ClientError {
     InvalidShardKey(String),
 
     #[error("Internal error: {0}")]
-    InternalError(#[from] anyhow::Error),
+    InternalError(AnyhowError),
 
     #[error("{0}")]
     Other(String),
@@ -66,7 +65,7 @@ pub enum ClientError {
     AuthError(#[from] AuthError),
 
     #[error("Credential helper error: {0}")]
-    CredentialHelper(anyhow::Error),
+    CredentialHelper(AnyhowError),
 
     #[error("Invalid repo type: {0}")]
     InvalidRepoType(String),
@@ -101,8 +100,12 @@ impl From<reqwest::Error> for ClientError {
 }
 
 impl ClientError {
-    pub fn internal<T: Debug>(value: T) -> Self {
-        ClientError::InternalError(anyhow!("{value:?}"))
+    pub fn internal(value: impl std::error::Error + Send + Sync + 'static) -> Self {
+        ClientError::InternalError(AnyhowError::new(value))
+    }
+
+    pub fn credential_helper_error(e: impl std::error::Error + Send + Sync + 'static) -> Self {
+        ClientError::CredentialHelper(AnyhowError::new(e))
     }
 
     pub fn status(&self) -> Option<StatusCode> {
@@ -135,7 +138,7 @@ impl From<xet_runtime::utils::singleflight::SingleflightError<ClientError>> for 
     }
 }
 
-impl<T> From<std::sync::PoisonError<T>> for ClientError {
+impl<T: Send + Sync + 'static> From<std::sync::PoisonError<T>> for ClientError {
     fn from(value: std::sync::PoisonError<T>) -> Self {
         Self::internal(value)
     }
@@ -147,7 +150,7 @@ impl From<AcquireError> for ClientError {
     }
 }
 
-impl<T> From<SendError<T>> for ClientError {
+impl<T: Send + Sync + 'static> From<SendError<T>> for ClientError {
     fn from(value: SendError<T>) -> Self {
         Self::internal(value)
     }

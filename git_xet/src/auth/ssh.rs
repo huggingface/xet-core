@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use reqwest::header;
 use reqwest_middleware::RequestBuilder;
 use serde::{Deserialize, Serialize};
+use xet_client::error::ClientError;
 use xet_client::hub_client::{CredentialHelper, Operation};
 
 use crate::errors::{GitXetError, Result};
@@ -73,8 +74,8 @@ impl SSHCredentialHelper {
 
 #[async_trait]
 impl CredentialHelper for SSHCredentialHelper {
-    async fn fill_credential(&self, req: RequestBuilder) -> anyhow::Result<RequestBuilder> {
-        let authenticated = self.authenticate().await?;
+    async fn fill_credential(&self, req: RequestBuilder) -> std::result::Result<RequestBuilder, ClientError> {
+        let authenticated = self.authenticate().await.map_err(ClientError::credential_helper_error)?;
         Ok(req.header(header::AUTHORIZATION, authenticated.header.authorization))
     }
 

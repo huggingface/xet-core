@@ -128,8 +128,9 @@ async fn smudge(_name: Arc<str>, mut reader: impl Read, output_path: PathBuf) ->
     let mut input = String::new();
     reader.read_to_string(&mut input)?;
 
-    let xet_file: XetFileInfo = serde_json::from_str(&input)
-        .map_err(|_| anyhow::anyhow!("Failed to parse xet file info. Please check the format."))?;
+    let xet_file: XetFileInfo = serde_json::from_str(&input).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "Failed to parse xet file info. Please check the format.")
+    })?;
 
     // Use local config pointing to current directory
     let cas_path = std::env::current_dir()?;

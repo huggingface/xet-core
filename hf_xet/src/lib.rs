@@ -10,15 +10,16 @@ use std::sync::Arc;
 
 use http::header::{self, HeaderMap, HeaderName, HeaderValue};
 use itertools::Itertools;
-use pyo3::exceptions::{PyKeyboardInterrupt, PyRuntimeError};
+use pyo3::exceptions::{PyKeyboardInterrupt, PyValueError};
 use pyo3::prelude::*;
 use pyo3::pyfunction;
 use rand::Rng;
 use runtime::async_run;
 use token_refresh::WrappedTokenRefresher;
 use tracing::debug;
+use xet_pkg::XetError;
 use xet_pkg::legacy::progress_tracking::TrackingProgressUpdater;
-use xet_pkg::legacy::{DataProcessingError, Sha256Policy, XetFileInfo, data_client};
+use xet_pkg::legacy::{Sha256Policy, XetFileInfo, data_client};
 use xet_runtime::core::file_handle_limits;
 
 use crate::logging::init_logging;
@@ -40,9 +41,9 @@ fn build_headers_with_user_agent(request_headers: Option<HashMap<String, String>
             let mut map = HeaderMap::new();
             for (key, value) in headers {
                 let name = HeaderName::from_bytes(key.as_bytes())
-                    .map_err(|e| PyRuntimeError::new_err(format!("Invalid header name '{}': {}", key, e)))?;
+                    .map_err(|e| PyValueError::new_err(format!("Invalid header name '{}': {}", key, e)))?;
                 let value = HeaderValue::from_str(&value)
-                    .map_err(|e| PyRuntimeError::new_err(format!("Invalid header value for '{}': {}", key, e)))?;
+                    .map_err(|e| PyValueError::new_err(format!("Invalid header value for '{}': {}", key, e)))?;
                 map.insert(name, value);
             }
             Ok::<_, PyErr>(map)
@@ -71,12 +72,8 @@ fn build_headers_with_user_agent(request_headers: Option<HashMap<String, String>
     Ok(Some(Arc::new(map)))
 }
 
-fn convert_data_processing_error(e: DataProcessingError) -> PyErr {
-    if cfg!(debug_assertions) {
-        PyRuntimeError::new_err(format!("Data processing error: {e:?}"))
-    } else {
-        PyRuntimeError::new_err(format!("Data processing error: {e}"))
-    }
+fn convert_xet_error(e: impl Into<XetError>) -> PyErr {
+    PyErr::from(e.into())
 }
 
 #[pyfunction]
@@ -95,13 +92,13 @@ pub fn upload_bytes(
     skip_sha256: bool,
 ) -> PyResult<Vec<PyXetUploadInfo>> {
     if skip_sha256 && sha256s.is_some() {
-        return Err(PyRuntimeError::new_err("skip_sha256=True and sha256s are mutually exclusive"));
+        return Err(PyValueError::new_err("skip_sha256=True and sha256s are mutually exclusive"));
     }
 
     if let Some(ref s) = sha256s
         && s.len() != file_contents.len()
     {
-        return Err(PyRuntimeError::new_err(format!(
+        return Err(PyValueError::new_err(format!(
             "sha256s length ({}) must match file_contents length ({})",
             s.len(),
             file_contents.len()
@@ -138,7 +135,7 @@ pub fn upload_bytes(
             header_map,
         )
         .await
-        .map_err(convert_data_processing_error)?
+        .map_err(convert_xet_error)?
         .into_iter()
         .map(PyXetUploadInfo::from)
         .collect();
@@ -165,13 +162,13 @@ pub fn upload_files(
     skip_sha256: bool,
 ) -> PyResult<Vec<PyXetUploadInfo>> {
     if skip_sha256 && sha256s.is_some() {
-        return Err(PyRuntimeError::new_err("skip_sha256=True and sha256s are mutually exclusive"));
+        return Err(PyValueError::new_err("skip_sha256=True and sha256s are mutually exclusive"));
     }
 
     if let Some(ref s) = sha256s
         && s.len() != file_paths.len()
     {
-        return Err(PyRuntimeError::new_err(format!(
+        return Err(PyValueError::new_err(format!(
             "sha256s length ({}) must match file_paths length ({})",
             s.len(),
             file_paths.len()
@@ -212,7 +209,7 @@ pub fn upload_files(
             header_map,
         )
         .await
-        .map_err(convert_data_processing_error)?
+        .map_err(convert_xet_error)?
         .into_iter()
         .map(PyXetUploadInfo::from)
         .collect();
@@ -254,7 +251,7 @@ pub fn hash_files(py: Python, file_paths: Vec<String>) -> PyResult<Vec<PyXetUplo
     async_run(py, async move {
         let out: Vec<PyXetUploadInfo> = data_client::hash_files_async(file_paths)
             .await
-            .map_err(convert_data_processing_error)?
+            .map_err(convert_xet_error)?
             .into_iter()
             .map(PyXetUploadInfo::from)
             .collect();
@@ -302,7 +299,7 @@ pub fn download_files(
             header_map,
         )
         .await
-        .map_err(convert_data_processing_error)?;
+        .map_err(convert_xet_error)?;
 
         debug!("Download call {x:x}: Completed.");
 
@@ -468,7 +465,6 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(force_sigint_shutdown, m)?)?;
     m.add_class::<PyXetUploadInfo>()?;
     m.add_class::<PyXetDownloadInfo>()?;
-    m.add_class::<PyXetUploadInfo>()?;
     m.add_class::<progress_update::PyItemProgressUpdate>()?;
     m.add_class::<progress_update::PyTotalProgressUpdate>()?;
 
@@ -476,6 +472,8 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // This supports backward compatibility for PyPointerFile with old versions
     // huggingface_hub.
     m.add_class::<PyPointerFile>()?;
+
+    xet_pkg::register_exceptions(m)?;
 
     // Make sure the logger is set up.
     init_logging(py);

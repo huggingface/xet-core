@@ -5,9 +5,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use xet_data::progress_tracking::UniqueID;
 
-use super::SessionError;
 use super::download_group::DownloadResult;
 use super::upload_commit::UploadResult;
+use crate::error::XetError;
 
 /// Lifecycle state of a single upload or download task.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,11 +84,11 @@ impl Deref for DownloadTaskHandle {
 }
 
 impl TaskHandle {
-    pub fn status(&self) -> Result<TaskStatus, SessionError> {
+    pub fn status(&self) -> Result<TaskStatus, XetError> {
         if let Some(status) = &self.status {
             Ok(*status.lock()?)
         } else {
-            Err(SessionError::other("status not available"))
+            Err(XetError::other("status not available"))
         }
     }
 }

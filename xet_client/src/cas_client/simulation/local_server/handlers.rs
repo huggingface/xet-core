@@ -28,13 +28,13 @@ use futures_util::StreamExt;
 use http::header::RANGE;
 use xet_core_structures::merklehash::MerkleHash;
 
-use super::super::super::error::CasClientError;
 use super::super::super::{DeletionControlableClient, DirectAccessClient};
 use super::latency_simulation::{LatencySimulation, ServerLatencyProfile};
 use crate::cas_types::{
     FileRange, HexKey, HexMerkleHash, QueryReconstructionResponseV2, UploadShardResponse, UploadShardResponseType,
     UploadXorbResponse, XorbRangeDescriptor, XorbReconstructionFetchInfo,
 };
+use crate::error::ClientError;
 
 /// Server state passed to all handlers.
 #[derive(Clone)]
@@ -117,12 +117,12 @@ pub(super) fn parse_range_header(
     }
 }
 
-/// Maps CasClientError to appropriate HTTP status codes.
-pub(super) fn error_to_response(e: CasClientError) -> Response {
+/// Maps ClientError to appropriate HTTP status codes.
+pub(super) fn error_to_response(e: ClientError) -> Response {
     let status = match &e {
-        CasClientError::XORBNotFound(_) | CasClientError::FileNotFound(_) => StatusCode::NOT_FOUND,
-        CasClientError::InvalidRange => StatusCode::RANGE_NOT_SATISFIABLE,
-        CasClientError::InvalidArguments => StatusCode::BAD_REQUEST,
+        ClientError::XORBNotFound(_) | ClientError::FileNotFound(_) => StatusCode::NOT_FOUND,
+        ClientError::InvalidRange => StatusCode::RANGE_NOT_SATISFIABLE,
+        ClientError::InvalidArguments => StatusCode::BAD_REQUEST,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (status, e.to_string()).into_response()

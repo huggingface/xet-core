@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use human_bandwidth::parse_bandwidth as parse_bandwidth_str;
 
-use super::super::super::error::{CasClientError, Result};
+use crate::error::{ClientError, Result};
 
 /// What the proxy applies: bandwidth (bytes/sec), latency, jitter, drop probability.
 /// Only `bandwidth_bytes_per_sec` is optional (None = no limit); the rest default to zero.
@@ -82,11 +82,11 @@ impl NetworkProfileOptions {
     /// Stored as bytes per second internally.
     pub fn with_bandwidth_str(mut self, s: &str) -> Result<Self> {
         let bw = parse_bandwidth_str(s.trim())
-            .map_err(|e| CasClientError::Other(format!("invalid bandwidth {:?}: {}", s, e)))?;
+            .map_err(|e| ClientError::Other(format!("invalid bandwidth {:?}: {}", s, e)))?;
         let bps = bw.as_bps();
         let bps = u64::try_from(bps).unwrap_or(u64::MAX);
         if bps == 0 {
-            return Err(CasClientError::Other(format!("invalid bandwidth: {:?}", s)));
+            return Err(ClientError::Other(format!("invalid bandwidth: {:?}", s)));
         }
         self.max_bandwidth_bytes_per_sec = Some(bps / 8);
         Ok(self)
@@ -129,7 +129,7 @@ impl NetworkProfileOptions {
                 bandwidth_scale: 0.7,
             }),
             _ => {
-                return Err(CasClientError::Other(format!(
+                return Err(ClientError::Other(format!(
                     "unknown congestion profile {:?}; valid: {:?}",
                     name, VALID_CONGESTION_PROFILE_NAMES
                 )));

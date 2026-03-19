@@ -1,3 +1,5 @@
+[workspace]
+
 [package]
 name = "chunk_cache_bench"
 version = "1.4.0"
@@ -12,7 +14,7 @@ clap = { version = "4", features = ["derive"] }
 r2d2 = "0.8.10"
 r2d2_postgres = "0.18.1"
 sccache = "0.8"
-tempdir = "0.3"
+tempfile = "3"
 tokio = { version = "1.44", features = ["full"] }
 
 [[bench]]

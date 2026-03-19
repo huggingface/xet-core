@@ -12,9 +12,9 @@ use xet_client::cas_types::FileRange;
 use xet_runtime::core::{XetRuntime, xet_config};
 
 use super::configurations::TranslatorConfig;
-use super::errors::*;
 use super::remote_client_interface::create_remote_client;
 use super::{XetFileInfo, prometheus_metrics};
+use crate::error::{DataError, Result};
 use crate::file_reconstruction::{DownloadStream, FileReconstructor};
 use crate::progress_tracking::{GroupProgress, ItemProgressUpdater, UniqueID};
 
@@ -203,7 +203,7 @@ impl FileDownloadSession {
     }
     fn check_not_finalized(&self) -> Result<()> {
         if self.finalized.load(Ordering::Acquire) {
-            return Err(DataProcessingError::InvalidOperation("FileDownloadSession already finalized".to_string()));
+            return Err(DataError::InvalidOperation("FileDownloadSession already finalized".to_string()));
         }
         Ok(())
     }
@@ -211,7 +211,7 @@ impl FileDownloadSession {
     /// Finalizes the session; in debug builds, asserts all items are complete.
     pub async fn finalize(&self) -> Result<()> {
         if self.finalized.swap(true, Ordering::AcqRel) {
-            return Err(DataProcessingError::InvalidOperation("FileDownloadSession already finalized".to_string()));
+            return Err(DataError::InvalidOperation("FileDownloadSession already finalized".to_string()));
         }
         #[cfg(debug_assertions)]
         self.progress.assert_complete();

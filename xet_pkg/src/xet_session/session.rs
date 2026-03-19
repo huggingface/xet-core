@@ -8,6 +8,7 @@ use std::task::{Context, Waker};
 
 use http::HeaderMap;
 use tracing::info;
+use ulid::Ulid;
 use xet_client::cas_client::auth::TokenRefresher;
 use xet_data::progress_tracking::UniqueID;
 use xet_runtime::RuntimeError;
@@ -15,8 +16,8 @@ use xet_runtime::config::XetConfig;
 use xet_runtime::core::XetRuntime;
 
 use super::download_group::DownloadGroup;
-use super::errors::SessionError;
 use super::upload_commit::UploadCommit;
+use crate::error::XetError;
 
 /// Session state
 enum SessionState {
@@ -33,7 +34,7 @@ enum SessionState {
 ///
 /// - **`External`**: session wraps a caller-provided tokio handle via [`XetSessionBuilder::with_tokio_handle`] or
 ///   [`XetSessionBuilder::build_async`] (tokio context). Only async methods may be called; `_blocking` methods return
-///   [`SessionError::WrongRuntimeMode`]. No second thread pool is created.
+///   [`XetError::WrongRuntimeMode`]. No second thread pool is created.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum RuntimeMode {
     Owned,
@@ -65,7 +66,8 @@ pub struct XetSessionInner {
 
     // Session state
     state: Mutex<SessionState>,
-    pub(super) id: UniqueID,
+    // "id" is used to identity a group of activities on our server, and so need to be globally unique
+    pub(super) id: Ulid,
 }
 
 /// Probe whether a tokio runtime handle meets the requirements for External mode.
@@ -126,12 +128,12 @@ fn handle_meets_session_requirements(handle: &tokio::runtime::Handle) -> bool {
 ///     .with_endpoint("https://cas.example.com".into())
 ///     .with_token_info("my-token".into(), 1_700_000_000)
 ///     .build()?;
-/// # Ok::<(), xet::xet_session::SessionError>(())
+/// # Ok::<(), xet::XetError>(())
 /// ```
 ///
 /// ```rust,no_run
 /// # use xet::xet_session::XetSessionBuilder;
-/// # async fn example() -> Result<(), xet::xet_session::SessionError> {
+/// # async fn example() -> Result<(), xet::XetError> {
 /// // Async context — wraps the caller's tokio handle (External mode) if inside tokio,
 /// // or creates an owned runtime (Owned mode) if called from a non-tokio executor:
 /// let session = XetSessionBuilder::new()
@@ -219,7 +221,7 @@ impl XetSessionBuilder {
     /// If the handle meets session requirements (multi-thread flavor, time driver, IO driver),
     /// the session will wrap it — no second thread pool is created (External mode). Only async
     /// methods (`new_upload_commit`, `new_download_group`) may be called; `_blocking` variants
-    /// will return [`SessionError::WrongRuntimeMode`].
+    /// will return [`XetError::WrongRuntimeMode`].
     ///
     /// If the handle does **not** meet requirements (e.g. `current_thread` flavor or missing
     /// drivers), it is silently ignored and [`build`](Self::build) will fall back to creating
@@ -251,7 +253,7 @@ impl XetSessionBuilder {
     ///   `with_tokio_handle`; falls back to an owned thread pool — Owned mode.
     /// - **Non-tokio context** (smol, async-std, etc.): creates an owned thread pool — Owned mode; async methods use an
     ///   internal bridge compatible with any executor.
-    pub async fn build_async(self) -> Result<XetSession, SessionError> {
+    pub async fn build_async(self) -> Result<XetSession, XetError> {
         match tokio::runtime::Handle::try_current() {
             Ok(handle) => self.with_tokio_handle(handle).build(),
             Err(_) => self.build(),
@@ -266,7 +268,7 @@ impl XetSessionBuilder {
     ///   executor, and `_blocking` methods are available.
     ///
     /// For async contexts, prefer [`build_async`](Self::build_async).
-    pub fn build(self) -> Result<XetSession, SessionError> {
+    pub fn build(self) -> Result<XetSession, XetError> {
         let (runtime, mode) = match self.tokio_handle {
             Some(handle) => (XetRuntime::from_external_with_config(handle, self.config.clone()), RuntimeMode::External),
             None => (XetRuntime::new_with_config(self.config.clone())?, RuntimeMode::Owned),
@@ -335,7 +337,7 @@ impl XetSession {
                 active_upload_commits: Mutex::new(HashMap::new()),
                 active_download_groups: Mutex::new(HashMap::new()),
                 state: Mutex::new(SessionState::Alive),
-                id: UniqueID::new(),
+                id: Ulid::new(),
             }),
         }
     }
@@ -358,18 +360,18 @@ impl XetSession {
 
     /// Create a new [`UploadCommit`] that groups related file uploads.
     ///
-    /// Returns `Err(SessionError::Aborted)` if the session has been aborted.
+    /// Returns `Err(XetError::Aborted)` if the session has been aborted.
     ///
     /// # Note
     ///
     /// This is an `async fn` and must be `.await`ed. For sync Rust or Python (PyO3) callers,
     /// use [`new_upload_commit_blocking`](Self::new_upload_commit_blocking).
-    pub async fn new_upload_commit(&self) -> Result<UploadCommit, SessionError> {
+    pub async fn new_upload_commit(&self) -> Result<UploadCommit, XetError> {
         // Check state before the async init; drop the guard so it is not held across .await.
         {
             let state = self.state.lock()?;
             if matches!(*state, SessionState::Aborted) {
-                return Err(SessionError::Aborted);
+                return Err(XetError::Aborted);
             }
         }
 
@@ -389,8 +391,8 @@ impl XetSession {
     /// The returned [`UploadCommit`] supports both async methods (`upload_from_path`,
     /// `commit`) and blocking methods (`upload_from_path_blocking`, `commit_blocking`).
     ///
-    /// Returns `Err(SessionError::Aborted)` if the session has been aborted.
-    /// Returns `Err(SessionError::WrongRuntimeMode)` if the session uses an external
+    /// Returns `Err(XetError::Aborted)` if the session has been aborted.
+    /// Returns `Err(XetError::WrongRuntimeMode)` if the session uses an external
     /// tokio runtime (from [`XetSessionBuilder::with_tokio_handle`] or tokio-detected
     /// [`XetSessionBuilder::build_async`]).
     ///
@@ -401,9 +403,9 @@ impl XetSession {
     /// async-std, `futures::executor`) do not set this context, so calling from those is
     /// safe — it blocks the executor thread until the task completes. Use
     /// [`new_upload_commit`](Self::new_upload_commit) from async contexts instead.
-    pub fn new_upload_commit_blocking(&self) -> Result<UploadCommit, SessionError> {
+    pub fn new_upload_commit_blocking(&self) -> Result<UploadCommit, XetError> {
         if matches!(self.runtime_mode, RuntimeMode::External) {
-            return Err(SessionError::wrong_mode(
+            return Err(XetError::wrong_mode(
                 "new_upload_commit_blocking() cannot be called on a session using an \
                  external tokio runtime (with_tokio_handle() or tokio build_async()); \
                  use new_upload_commit().await instead",
@@ -412,7 +414,7 @@ impl XetSession {
         {
             let state = self.state.lock()?;
             if matches!(*state, SessionState::Aborted) {
-                return Err(SessionError::Aborted);
+                return Err(XetError::Aborted);
             }
         }
 
@@ -423,18 +425,18 @@ impl XetSession {
 
     /// Create a new [`DownloadGroup`] that groups related file downloads.
     ///
-    /// Returns `Err(SessionError::Aborted)` if the session has been aborted.
+    /// Returns `Err(XetError::Aborted)` if the session has been aborted.
     ///
     /// # Note
     ///
     /// This is an `async fn` and must be `.await`ed. For sync Rust or Python (PyO3) callers,
     /// use [`new_download_group_blocking`](Self::new_download_group_blocking).
-    pub async fn new_download_group(&self) -> Result<DownloadGroup, SessionError> {
+    pub async fn new_download_group(&self) -> Result<DownloadGroup, XetError> {
         // Check state before the async init; drop the guard so it is not held across .await.
         {
             let state = self.state.lock()?;
             if matches!(*state, SessionState::Aborted) {
-                return Err(SessionError::Aborted);
+                return Err(XetError::Aborted);
             }
         }
 
@@ -454,8 +456,8 @@ impl XetSession {
     /// The returned [`DownloadGroup`] supports both the async [`finish`](DownloadGroup::finish)
     /// and blocking [`finish_blocking`](DownloadGroup::finish_blocking) methods.
     ///
-    /// Returns `Err(SessionError::Aborted)` if the session has been aborted.
-    /// Returns `Err(SessionError::WrongRuntimeMode)` if the session uses an external
+    /// Returns `Err(XetError::Aborted)` if the session has been aborted.
+    /// Returns `Err(XetError::WrongRuntimeMode)` if the session uses an external
     /// tokio runtime (from [`XetSessionBuilder::with_tokio_handle`] or tokio-detected
     /// [`XetSessionBuilder::build_async`]).
     ///
@@ -466,9 +468,9 @@ impl XetSession {
     /// async-std, `futures::executor`) do not set this context, so calling from those is
     /// safe — it blocks the executor thread until the task completes. Use
     /// [`new_download_group`](Self::new_download_group) from async contexts instead.
-    pub fn new_download_group_blocking(&self) -> Result<DownloadGroup, SessionError> {
+    pub fn new_download_group_blocking(&self) -> Result<DownloadGroup, XetError> {
         if matches!(self.runtime_mode, RuntimeMode::External) {
-            return Err(SessionError::wrong_mode(
+            return Err(XetError::wrong_mode(
                 "new_download_group_blocking() cannot be called on a session using an \
                  external tokio runtime (with_tokio_handle() or tokio build_async()); \
                  use new_download_group().await instead",
@@ -477,7 +479,7 @@ impl XetSession {
         {
             let state = self.state.lock()?;
             if matches!(*state, SessionState::Aborted) {
-                return Err(SessionError::Aborted);
+                return Err(XetError::Aborted);
             }
         }
 
@@ -490,7 +492,7 @@ impl XetSession {
     ///
     /// This performs a SIGINT-style shutdown, aborting all active upload and download tasks.
     /// Use this when a Ctrl+C signal is detected or when you need to immediately stop all operations.
-    pub fn abort(&self) -> Result<(), SessionError> {
+    pub fn abort(&self) -> Result<(), XetError> {
         // Mark as not accepting new work, hold the lock so no new task can be created when aborting
         let mut state = self.state.lock()?;
         *state = SessionState::Aborted;
@@ -511,19 +513,19 @@ impl XetSession {
         Ok(())
     }
 
-    pub(super) fn check_alive(&self) -> Result<(), SessionError> {
+    pub(super) fn check_alive(&self) -> Result<(), XetError> {
         if matches!(*self.state.lock()?, SessionState::Aborted) {
-            return Err(SessionError::Aborted);
+            return Err(XetError::Aborted);
         }
         Ok(())
     }
 
-    pub(super) fn finish_upload_commit(&self, commit_id: UniqueID) -> Result<(), SessionError> {
+    pub(super) fn finish_upload_commit(&self, commit_id: UniqueID) -> Result<(), XetError> {
         self.active_upload_commits.lock()?.remove(&commit_id);
         Ok(())
     }
 
-    pub(super) fn finish_download_group(&self, group_id: UniqueID) -> Result<(), SessionError> {
+    pub(super) fn finish_download_group(&self, group_id: UniqueID) -> Result<(), XetError> {
         self.active_download_groups.lock()?.remove(&group_id);
         Ok(())
     }
@@ -551,6 +553,13 @@ mod tests {
         assert_ne!(s1.id, s2.id);
     }
 
+    #[test]
+    // Session ID is a Ulid, to guard future regressions.
+    fn test_session_id_is_ulid() {
+        let s = XetSessionBuilder::new().build().unwrap();
+        assert!(Ulid::from_string(&s.id.to_string()).is_ok())
+    }
+
     // ── Abort behavior ───────────────────────────────────────────────────────
 
     #[test]
@@ -559,7 +568,7 @@ mod tests {
         let session = XetSessionBuilder::new().build().unwrap();
         session.abort().unwrap();
         let err = session.check_alive().unwrap_err();
-        assert!(matches!(err, SessionError::Aborted));
+        assert!(matches!(err, XetError::Aborted));
     }
 
     #[test]
@@ -568,7 +577,7 @@ mod tests {
         let session = XetSessionBuilder::new().build().unwrap();
         session.abort().unwrap();
         let err = session.new_upload_commit_blocking().err().unwrap();
-        assert!(matches!(err, SessionError::Aborted));
+        assert!(matches!(err, XetError::Aborted));
     }
 
     #[test]
@@ -577,7 +586,7 @@ mod tests {
         let session = XetSessionBuilder::new().build().unwrap();
         session.abort().unwrap();
         let err = session.new_download_group_blocking().err().unwrap();
-        assert!(matches!(err, SessionError::Aborted));
+        assert!(matches!(err, XetError::Aborted));
     }
 
     #[test]
@@ -660,8 +669,8 @@ mod tests {
         session.abort().unwrap();
         let commit_err = session.new_upload_commit().await.err().unwrap();
         let group_err = session.new_download_group().await.err().unwrap();
-        assert!(matches!(commit_err, SessionError::Aborted));
-        assert!(matches!(group_err, SessionError::Aborted));
+        assert!(matches!(commit_err, XetError::Aborted));
+        assert!(matches!(group_err, XetError::Aborted));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -754,7 +763,7 @@ mod tests {
         let session = XetSessionBuilder::new().build_async().await.unwrap();
         assert_eq!(session.runtime_mode, RuntimeMode::External);
         let err = session.new_upload_commit_blocking().err().unwrap();
-        assert!(matches!(err, SessionError::WrongRuntimeMode(_)));
+        assert!(matches!(err, XetError::WrongRuntimeMode(_)));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -763,7 +772,7 @@ mod tests {
         let session = XetSessionBuilder::new().build_async().await.unwrap();
         assert_eq!(session.runtime_mode, RuntimeMode::External);
         let err = session.new_download_group_blocking().err().unwrap();
-        assert!(matches!(err, SessionError::WrongRuntimeMode(_)));
+        assert!(matches!(err, XetError::WrongRuntimeMode(_)));
     }
 
     // ── Owned-mode _blocking panic guard ─────────────────────────────────────
