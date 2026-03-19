@@ -74,8 +74,29 @@ struct ComposedRegion {
 /// * `original_size` - Size of the original file in bytes.
 /// * `dirty_ranges` - Sorted, non-overlapping `(start, end)` byte ranges that were modified. Must not overlap and must
 ///   be in ascending order. Can be empty for pure size changes.
-/// * `dirty_source` - Seekable reader positioned over the full modified file (e.g. a staging file). Only bytes within
-///   dirty ranges (and the append region) are read.
+/// * `dirty_source` - Seekable reader over the modified file (e.g. a staging file). Read in two
+///   situations: (1) bytes within caller-provided `dirty_ranges`, and (2) the append region
+///   `[original_size, total_size)` when `total_size > original_size` (including sparse gaps).
+///   Bytes in the original range `[0, original_size)` outside `dirty_ranges` are never read from
+///   `dirty_source`; they are reconstructed from CAS instead.
+///
+/// # Important invariant
+///
+/// `dirty_source` is only read for byte ranges explicitly listed in `dirty_ranges` plus the
+/// append region beyond `original_size`. Internally needed ranges (e.g. truncation boundary
+/// chunks within `[0, original_size)`) are always reconstructed from CAS. This means callers
+/// do not need to populate `dirty_source` with original file content for regions they did not
+/// modify.
+///
+/// // TODO: the current API cannot enforce this invariant at the type level. `dirty_source` is a
+/// // `ReadSeek` over the full file, but only a subset of it contains valid data. A safer API
+/// // would accept a callback `Fn(Range<u64>) -> impl AsyncRead` (or a stream of byte chunks)
+/// // that is called only for caller dirty ranges, making it impossible to accidentally read
+/// // stale staging bytes. Returning a stream rather than `Vec<u8>` avoids buffering large
+/// // ranges in memory. This would also remove the need for the `truncation_boundary` injection
+/// // logic. Deferred because it would change the public API and impact existing callers
+/// // (hf-mount, etc.).
+///
 /// * `total_size` - Total size of the modified file. Compared to `original_size` to detect append (`total_size >
 ///   original_size`) or truncation (`total_size < original_size`).
 ///
@@ -149,12 +170,17 @@ pub async fn upload_ranges(
         chunk_offsets.push(offset);
     }
 
-    // 3. Build effective dirty ranges: start from caller's ranges, then handle truncation/append.
+    // 3. Build effective dirty ranges: start from caller's ranges, then handle append.
+    //
+    // INVARIANT: effective_ranges must only contain ranges whose bytes are valid in
+    // dirty_source. Internally needed ranges (truncation boundary) are handled via
+    // injected DirtyRegions with empty dirty spans, so CAS provides the bytes.
     let mut effective_ranges: Vec<(u64, u64)> = dirty_ranges.to_vec();
 
     let num_chunks = original_chunks.len();
     // Number of original chunks to keep in the final composition.
     let mut compose_num_chunks = num_chunks;
+    let mut truncation_boundary: Option<(u64, usize)> = None;
 
     if total_size < original_size {
         // Truncation: when the cut point falls mid-chunk, we can't reuse that chunk
@@ -173,10 +199,11 @@ pub async fn upload_ranges(
         compose_num_chunks = last_full;
         let boundary = chunk_offsets[last_full];
         if boundary < total_size {
-            // Cut falls mid-chunk: re-upload [boundary, total_size) from the dirty source.
-            // If boundary == total_size, the cut is exactly on a chunk boundary and
-            // all kept chunks are complete, so no re-upload is needed.
-            merge_or_push(&mut effective_ranges, (boundary, total_size));
+            // Cut falls mid-chunk: the partial chunk [boundary, total_size) must be
+            // re-uploaded. We track it here and inject a DirtyRegion after
+            // build_dirty_regions, rather than adding it to effective_ranges,
+            // because the bytes live in CAS (not in the caller's staging file).
+            truncation_boundary = Some((boundary, last_full));
         }
     }
     if total_size > original_size {
@@ -207,7 +234,26 @@ pub async fn upload_ranges(
     //                 +------- inside chunk[1]
     //
     //   -> expand to chunks [1, 3)  (chunks 1 and 2 must be re-uploaded)
-    let dirty_regions = build_dirty_regions(&effective_ranges, &chunk_offsets, num_chunks, original_size, total_size)?;
+    let mut dirty_regions =
+        build_dirty_regions(&effective_ranges, &chunk_offsets, num_chunks, original_size, total_size)?;
+
+    // If truncation cuts mid-chunk and no caller dirty range already covers that
+    // chunk, inject a DirtyRegion with an empty dirty range. The processing loop's
+    // suffix logic will read [boundary, total_size) from CAS automatically.
+    if let Some((boundary, trunc_chunk)) = truncation_boundary {
+        let already_covered = dirty_regions
+            .iter()
+            .any(|r| r.first_chunk <= trunc_chunk && trunc_chunk < r.last_chunk);
+        if !already_covered {
+            dirty_regions.push(DirtyRegion {
+                dirty_start: boundary,
+                dirty_end: boundary, // empty: no staging bytes needed
+                first_chunk: trunc_chunk,
+                last_chunk: trunc_chunk + 1,
+            });
+            dirty_regions.sort_by_key(|r| r.first_chunk);
+        }
+    }
 
     // 5. Process each dirty region: download boundary, stream dirty bytes, upload. Collect the resulting middle file
     //    infos and chunk hashes. A single upload session is shared across all dirty regions.
@@ -1265,6 +1311,107 @@ mod tests {
         let ranges = vec![(0u64, 100)];
         let result = build_dirty_regions(&ranges, &chunk_offsets, num_chunks, original_size, total_size);
         assert!(result.is_err(), "should fail with inconsistent/empty chunk data");
+    }
+
+    // original: [=========================== 256 KB ===========================]
+    // staging:  [0000000000000000000000000000] (all zeros, file never opened for write)
+    // result:   [====== 100 KB from CAS =====]
+    //                                         ^ cut here (mid-chunk)
+    //
+    // The boundary chunk bytes must come from CAS, not from the zero-filled staging.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_upload_ranges_truncation_empty_staging() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let cas_client: Arc<dyn Client> = Arc::new(server);
+
+        let original_data = random_data(77, 256 * 1024);
+        let original_hash = upload_file(&config, &original_data).await;
+        let original_size = original_data.len() as u64;
+
+        let truncated_size = 100_000u64;
+
+        let zeros = vec![0u8; truncated_size as usize];
+        let mut source = Cursor::new(&zeros);
+
+        let result = upload_ranges(
+            config.clone(),
+            cas_client.clone(),
+            original_hash,
+            original_size,
+            &[],
+            &mut source,
+            truncated_size,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.file_size(), truncated_size);
+
+        let downloaded = download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), truncated_size).await;
+        assert_eq!(downloaded.len(), truncated_size as usize);
+        assert_eq!(
+            &downloaded[..],
+            &original_data[..truncated_size as usize],
+            "truncated content should match original CAS data, not staging zeros"
+        );
+
+        let clean_hash = upload_file(&config, &original_data[..truncated_size as usize]).await;
+        assert_eq!(result.hash(), clean_hash.hex(), "hash mismatch with clean upload");
+    }
+
+    // original: [=========================== 256 KB ===========================]
+    // staging:  [000000000000][0xBB][0000000] (zeros except the dirty range)
+    //                          ^  ^
+    //                       90K  95K (dirty from caller)
+    // result:   [==CAS==][stg][===CAS===]
+    //                                    ^ cut at 100K (mid-chunk)
+    //
+    // Dirty bytes [90K,95K) come from staging; boundary bytes from CAS.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_upload_ranges_truncation_with_overlapping_dirty() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let cas_client: Arc<dyn Client> = Arc::new(server);
+
+        let original_data = random_data(88, 256 * 1024);
+        let original_hash = upload_file(&config, &original_data).await;
+        let original_size = original_data.len() as u64;
+
+        let truncated_size = 100_000u64;
+
+        let dirty_start = 90_000u64;
+        let dirty_end = 95_000u64;
+
+        let mut expected = original_data[..truncated_size as usize].to_vec();
+        expected[dirty_start as usize..dirty_end as usize].fill(0xBB);
+
+        let mut staging = vec![0u8; truncated_size as usize];
+        staging[dirty_start as usize..dirty_end as usize].fill(0xBB);
+
+        let mut source = Cursor::new(&staging);
+        let result = upload_ranges(
+            config.clone(),
+            cas_client.clone(),
+            original_hash,
+            original_size,
+            &[(dirty_start, dirty_end)],
+            &mut source,
+            truncated_size,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.file_size(), truncated_size);
+
+        let downloaded = download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), truncated_size).await;
+        assert_eq!(downloaded.len(), expected.len());
+        assert_eq!(&downloaded[..], &expected[..], "dirty bytes should come from staging, boundary bytes from CAS");
+
+        let clean_hash = upload_file(&config, &expected).await;
+        assert_eq!(result.hash(), clean_hash.hex(), "hash mismatch with clean upload");
     }
 
     // ── Helpers ──────────────────────────────────────────────────────
