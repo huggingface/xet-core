@@ -281,12 +281,17 @@ pub async fn upload_ranges(
         let (_id, mut cleaner) = session.start_clean(None, Some(middle_size), Sha256Policy::Skip)?;
 
         // a) Boundary prefix: stable bytes before the dirty range.
-        if region.dirty_start > boundary_start && boundary_end <= original_size {
+        //
+        // We clamp the CAS read to original_size because the last CAS chunk may
+        // be larger than the logical file (e.g. a 17-byte file stored in a
+        // 4096-byte xorb has boundary_end=4096 but original_size=17).
+        if region.dirty_start > boundary_start && boundary_start < original_size {
+            let prefix_end = region.dirty_start.min(original_size);
             debug!(
-                "upload_ranges: prefix CAS [{boundary_start}, {}) for region dirty=[{}, {}), boundary=[{boundary_start}, {boundary_end})",
-                region.dirty_start, region.dirty_start, region.dirty_end
+                "upload_ranges: prefix CAS [{boundary_start}, {prefix_end}) for region dirty=[{}, {}), boundary=[{boundary_start}, {boundary_end})",
+                region.dirty_start, region.dirty_end
             );
-            stream_cas_range(&cas_client, original_hash, boundary_start, region.dirty_start, &mut cleaner).await?;
+            stream_cas_range(&cas_client, original_hash, boundary_start, prefix_end, &mut cleaner).await?;
         } else {
             debug!(
                 "upload_ranges: no prefix for region dirty=[{}, {}), boundary=[{boundary_start}, {boundary_end}), original_size={original_size}",
@@ -350,13 +355,16 @@ pub async fn upload_ranges(
         }
 
         // c) Boundary suffix: stable bytes after the dirty range.
+        //
+        // Same clamping as prefix: CAS chunk may extend past original_size.
         let suffix_start = region.dirty_end.min(effective_boundary_end);
-        if suffix_start < effective_boundary_end && boundary_end <= original_size {
+        if suffix_start < effective_boundary_end && suffix_start < original_size {
+            let suffix_end = effective_boundary_end.min(original_size);
             debug!(
-                "upload_ranges: suffix CAS [{suffix_start}, {effective_boundary_end}) for region dirty=[{}, {})",
+                "upload_ranges: suffix CAS [{suffix_start}, {suffix_end}) for region dirty=[{}, {})",
                 region.dirty_start, region.dirty_end
             );
-            stream_cas_range(&cas_client, original_hash, suffix_start, effective_boundary_end, &mut cleaner).await?;
+            stream_cas_range(&cas_client, original_hash, suffix_start, suffix_end, &mut cleaner).await?;
         } else {
             debug!(
                 "upload_ranges: no suffix for region dirty=[{}, {}), suffix_start={suffix_start}, eff_boundary_end={effective_boundary_end}, boundary_end={boundary_end}, original_size={original_size}",
