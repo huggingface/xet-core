@@ -151,8 +151,22 @@ impl FileDownloadSession {
         let progress_updater = self.progress.new_item(id, name);
         let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater))?;
         let n_bytes = reconstructor.reconstruct_to_writer(writer).await?;
-        prometheus_metrics::FILTER_BYTES_SMUDGED.inc_by(n_bytes);
 
+        let expected_size = match range {
+            Some(r) if r.end < u64::MAX => Some(r.end - r.start),
+            None => file_info.file_size(),
+            _ => None,
+        };
+        if let Some(expected) = expected_size
+            && n_bytes != expected
+        {
+            return Err(DataProcessingError::SizeMismatch {
+                expected,
+                actual: n_bytes,
+            });
+        }
+
+        prometheus_metrics::FILTER_BYTES_SMUDGED.inc_by(n_bytes);
         Ok((id, n_bytes))
     }
 
