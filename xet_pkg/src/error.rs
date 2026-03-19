@@ -2,6 +2,7 @@ use thiserror::Error;
 use xet_client::ClientError;
 use xet_core_structures::CoreError;
 use xet_data::DataError;
+use xet_data::file_reconstruction::FileReconstructionError;
 use xet_data::progress_tracking::UniqueID;
 use xet_runtime::RuntimeError;
 
@@ -129,6 +130,21 @@ impl XetError {
         }
     }
 
+    fn from_file_reconstruction_error_ref(fre: &FileReconstructionError) -> Self {
+        match fre {
+            FileReconstructionError::ClientError(ce) => XetError::from_client_error_ref(ce),
+            FileReconstructionError::IoError(_) => XetError::Io(fre.to_string()),
+            FileReconstructionError::RuntimeError(re) => XetError::from_runtime_error_ref(re),
+            FileReconstructionError::TaskJoinError(je) if je.is_cancelled() => {
+                XetError::Cancelled(format!("Task cancelled: {je}"))
+            },
+            FileReconstructionError::TaskJoinError(je) => XetError::Internal(format!("Task join error: {je}")),
+            FileReconstructionError::ConfigurationError(_) => XetError::Configuration(fre.to_string()),
+            FileReconstructionError::CorruptedReconstruction(_) => XetError::DataIntegrity(fre.to_string()),
+            _ => XetError::Internal(fre.to_string()),
+        }
+    }
+
     fn from_data_error_ref(de: &DataError) -> Self {
         match de {
             DataError::AuthError(_) => XetError::Authentication(de.to_string()),
@@ -145,6 +161,7 @@ impl XetError {
             DataError::HashNotFound => XetError::NotFound(de.to_string()),
             DataError::HashStringParsingFailure(_) => XetError::DataIntegrity(de.to_string()),
             DataError::InvalidOperation(_) => XetError::Configuration(de.to_string()),
+            DataError::FileReconstructionError(fre) => XetError::from_file_reconstruction_error_ref(fre),
             _ => XetError::Internal(de.to_string()),
         }
     }
@@ -173,6 +190,12 @@ impl From<ClientError> for XetError {
 impl From<DataError> for XetError {
     fn from(e: DataError) -> Self {
         XetError::from_data_error_ref(&e)
+    }
+}
+
+impl From<FileReconstructionError> for XetError {
+    fn from(e: FileReconstructionError) -> Self {
+        XetError::from_file_reconstruction_error_ref(&e)
     }
 }
 
