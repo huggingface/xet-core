@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
 
-use anyhow::anyhow;
 use async_trait::async_trait;
 use bytes::Bytes;
 use heed::types::*;
@@ -541,7 +540,7 @@ impl DirectAccessClient for LocalClient {
             .shard_manager
             .get_file_reconstruction_info(hash)
             .await
-            .map_err(|e| anyhow!("{e}"))?
+            .map_err(CasClientError::internal)?
         else {
             return Err(CasClientError::FileNotFound(*hash));
         };

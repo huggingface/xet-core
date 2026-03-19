@@ -489,11 +489,11 @@ mod tests {
     use std::collections::{HashMap, HashSet};
     use std::io::Cursor;
 
-    use anyhow::Result;
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
 
     use super::super::MDBShardInfo;
+    use super::super::error::Result;
     use super::super::file_structs::MDBFileInfo;
     use super::super::shard_file::test_routines::{
         convert_to_file, gen_random_shard, gen_random_shard_with_xorb_references,

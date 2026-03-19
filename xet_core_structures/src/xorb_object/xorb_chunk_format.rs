@@ -1,8 +1,6 @@
 use std::io::{Read, Write};
 use std::mem::size_of;
 
-use anyhow::anyhow;
-
 use super::CompressionScheme;
 use super::constants::MAX_CHUNK_SIZE;
 use super::error::XorbObjectError;
@@ -66,14 +64,13 @@ impl XorbChunkHeader {
     fn validate(&self) -> Result<(), XorbObjectError> {
         let _ = self.get_compression_scheme()?;
         if self.version > CURRENT_VERSION {
-            return Err(XorbObjectError::Format(anyhow!(
+            return Err(XorbObjectError::FormatError(format!(
                 "chunk header version too high at {}, current version is {}",
-                self.version,
-                CURRENT_VERSION
+                self.version, CURRENT_VERSION
             )));
         }
         if self.get_compressed_length() as usize > *MAX_CHUNK_SIZE * 2 {
-            return Err(XorbObjectError::Format(anyhow!(
+            return Err(XorbObjectError::FormatError(format!(
                 "chunk header compressed length too large at {}, maximum: {}",
                 self.get_compressed_length(),
                 *MAX_CHUNK_SIZE
@@ -81,7 +78,7 @@ impl XorbChunkHeader {
         }
         // the max chunk size is strictly enforced
         if self.get_uncompressed_length() as usize > *MAX_CHUNK_SIZE {
-            return Err(XorbObjectError::Format(anyhow!(
+            return Err(XorbObjectError::FormatError(format!(
                 "chunk header uncompressed length too large at {}, maximum: {}",
                 self.get_uncompressed_length(),
                 *MAX_CHUNK_SIZE
@@ -120,7 +117,9 @@ pub fn serialize_chunk<W: Write>(
     let compression_scheme = compression_scheme.resolve_for_data(chunk);
     debug_assert_ne!(compression_scheme, CompressionScheme::Auto);
     if compression_scheme == CompressionScheme::Auto {
-        return Err(XorbObjectError::Format(anyhow!("CompressionScheme::Auto cannot be serialized into xorb chunks")));
+        return Err(XorbObjectError::FormatError(
+            "CompressionScheme::Auto cannot be serialized into xorb chunks".to_string(),
+        ));
     }
 
     let compressed = compression_scheme.compress_from_slice(chunk)?;
@@ -183,9 +182,9 @@ fn deserialize_chunk_with_header_to_writer<R: Read, W: Write>(
         .decompress_from_reader(&mut compressed_data_reader, writer)?;
 
     if uncompressed_len != header.get_uncompressed_length() as u64 {
-        return Err(XorbObjectError::Format(anyhow!(
-            "chunk is corrupted, uncompressed bytes len doesn't agree with chunk header"
-        )));
+        return Err(XorbObjectError::FormatError(
+            "chunk is corrupted, uncompressed bytes len doesn't agree with chunk header".to_string(),
+        ));
     }
 
     Ok((header.get_compressed_length() as usize + XORB_CHUNK_HEADER_LENGTH, uncompressed_len as u32))

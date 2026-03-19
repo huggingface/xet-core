@@ -2,8 +2,9 @@
 use std::path::Path;
 use std::rc::Rc;
 
-use anyhow::Result;
 use tempfile::{TempDir, tempdir};
+
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 use xet_runtime::utils::EnvVarGuard;
 
 use crate::utils::process_wrapping::run_git_captured;

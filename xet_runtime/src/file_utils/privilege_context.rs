@@ -247,7 +247,7 @@ mod test {
 
     #[test]
     #[ignore = "run manually"]
-    fn test_create_dir_all() -> anyhow::Result<()> {
+    fn test_create_dir_all() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Run this test manually, steps:
 
         /* For Unix
@@ -273,7 +273,7 @@ mod test {
 
     #[test]
     #[ignore = "run manually"]
-    fn test_create_dir_all_sudo() -> anyhow::Result<()> {
+    fn test_create_dir_all_sudo() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Run this test manually, steps:
 
         /* For Unix
@@ -309,7 +309,7 @@ mod test {
 
     #[test]
     #[ignore = "run manually"]
-    fn test_create_file() -> anyhow::Result<()> {
+    fn test_create_file() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Run this test manually, steps:
 
         /* For Unix
@@ -343,7 +343,7 @@ mod test {
 
     #[test]
     #[ignore = "run manually"]
-    fn test_create_file_sudo() -> anyhow::Result<()> {
+    fn test_create_file_sudo() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Run this test manually, steps:
 
         /* For Unix

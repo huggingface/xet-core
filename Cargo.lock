@@ -1635,7 +1635,6 @@ dependencies = [
 name = "git_xet"
 version = "0.2.1"
 dependencies = [
- "anyhow",
  "async-trait",
  "clap",
  "git-url-parse",
@@ -1872,7 +1871,6 @@ checksum = "6fe2267d4ed49bc07b63801559be28c718ea06c4738b7a03c94df7386d2cde46"
 name = "hf-xet"
 version = "1.4.0"
 dependencies = [
- "anyhow",
  "async-std",
  "async-trait",
  "clap",
@@ -6156,7 +6154,6 @@ checksum = "9edde0db4769d2dc68579893f2306b26c6ecfbe0ef499b013d731b7b9247e0b9"
 name = "xet-client"
 version = "1.4.0"
 dependencies = [
- "anyhow",
  "approx",
  "async-trait",
  "axum",
@@ -6209,7 +6206,6 @@ dependencies = [
 name = "xet-core-structures"
 version = "1.4.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "base64 0.22.1",
  "bincode",
@@ -6249,7 +6245,6 @@ dependencies = [
 name = "xet-data"
 version = "1.4.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "bytes",
  "chrono",
@@ -6286,7 +6281,6 @@ dependencies = [
 name = "xet-runtime"
 version = "1.4.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "bytes",
  "chrono",

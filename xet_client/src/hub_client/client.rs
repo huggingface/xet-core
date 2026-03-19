@@ -98,7 +98,7 @@ impl HubClient {
                     let req = cred_helper
                         .fill_credential(req)
                         .await
-                        .map_err(reqwest_middleware::Error::Middleware)?;
+                        .map_err(reqwest_middleware::Error::middleware)?;
                     req.send().await
                 }
             })

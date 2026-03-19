@@ -5,7 +5,6 @@ use std::ops::Add;
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
-use anyhow::anyhow;
 use futures::AsyncReadExt;
 use static_assertions::const_assert;
 use tracing::debug;
@@ -556,7 +555,7 @@ impl MDBShardInfo {
         ))?;
 
         let Some(mdb_file) = MDBFileInfo::deserialize(reader)? else {
-            return Err(MDBShardError::Internal(anyhow!("invalid file entry index")));
+            return Err(MDBShardError::InternalError("invalid file entry index".to_string()));
         };
 
         Ok(mdb_file)

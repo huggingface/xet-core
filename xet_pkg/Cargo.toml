@@ -37,7 +37,6 @@ smol = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "rt", "time", "macros"] }
 serial_test = { workspace = true }
-anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tracing-subscriber = { workspace = true }

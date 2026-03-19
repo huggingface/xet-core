@@ -93,7 +93,7 @@ impl XetError {
             | FormatError::InvalidShard(_)
             | FormatError::ShardVersion(_)
             | FormatError::ChunkHeaderParse
-            | FormatError::Format(_)
+            | FormatError::FormatError(_)
             | FormatError::Compression(_) => XetError::DataIntegrity(fe.to_string()),
             FormatError::InvalidRange | FormatError::InvalidArguments | FormatError::BadFilename(_) => {
                 XetError::Configuration(fe.to_string())

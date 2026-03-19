@@ -84,8 +84,9 @@ impl GitCredentialHelper {
 mod test_cred_helpers {
     use std::io::Write;
 
-    use anyhow::Result;
     use serial_test::serial;
+
+    type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
     use super::GitCredentialHelper;
     use crate::git_url::GitUrl;

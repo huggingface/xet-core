@@ -13,7 +13,7 @@ pub enum FormatError {
     Io(#[from] std::io::Error),
 
     #[error("Internal error: {0}")]
-    Internal(anyhow::Error),
+    InternalError(String),
 
     #[error("{0}")]
     Other(String),
@@ -51,7 +51,7 @@ pub enum FormatError {
     InvalidArguments,
 
     #[error("Format error: {0}")]
-    Format(anyhow::Error),
+    FormatError(String),
 
     #[error("Hash mismatch")]
     HashMismatch,
@@ -103,7 +103,7 @@ impl<T> Validate<T> for Result<T> {
     fn ok_for_format_error(self) -> Result<Option<T>> {
         match self {
             Ok(v) => Ok(Some(v)),
-            Err(FormatError::Format(e)) => {
+            Err(FormatError::FormatError(e)) => {
                 warn!("XORB Validation: {e}");
                 Ok(None)
             },

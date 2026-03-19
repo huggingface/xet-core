@@ -1,7 +1,6 @@
 use std::fmt::Debug;
 use std::num::TryFromIntError;
 
-use anyhow::anyhow;
 use http::StatusCode;
 use thiserror::Error;
 use tokio::sync::AcquireError;
@@ -36,7 +35,7 @@ pub enum ClientError {
     InvalidShardKey(String),
 
     #[error("Internal error: {0}")]
-    InternalError(#[from] anyhow::Error),
+    InternalError(String),
 
     #[error("{0}")]
     Other(String),
@@ -66,7 +65,7 @@ pub enum ClientError {
     AuthError(#[from] AuthError),
 
     #[error("Credential helper error: {0}")]
-    CredentialHelper(anyhow::Error),
+    CredentialHelper(String),
 
     #[error("Invalid repo type: {0}")]
     InvalidRepoType(String),
@@ -101,8 +100,8 @@ impl From<reqwest::Error> for ClientError {
 }
 
 impl ClientError {
-    pub fn internal<T: Debug>(value: T) -> Self {
-        ClientError::InternalError(anyhow!("{value:?}"))
+    pub fn internal(value: impl Debug) -> Self {
+        ClientError::InternalError(format!("{value:?}"))
     }
 
     pub fn status(&self) -> Option<StatusCode> {

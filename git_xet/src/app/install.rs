@@ -121,8 +121,9 @@ pub mod tests {
     use std::io::{BufRead, BufReader, Cursor};
     use std::path::{Path, PathBuf};
 
-    use anyhow::Result;
     use serial_test::serial;
+
+    type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
     use super::{global, local};
     use crate::git_repo::GitRepo;

@@ -1,7 +1,6 @@
 use std::io::Write;
 use std::mem::size_of;
 
-use anyhow::anyhow;
 use futures::io::{AsyncRead, AsyncReadExt};
 use futures::{Stream, TryStreamExt};
 
@@ -37,9 +36,9 @@ async fn deserialize_chunk_with_header_to_writer<R: AsyncRead + Unpin, W: Write>
     let uncompressed_len = uncompressed_data.len();
 
     if uncompressed_len != header.get_uncompressed_length() as usize {
-        return Err(XorbObjectError::Format(anyhow!(
-            "chunk is corrupted, uncompressed bytes len doesn't agree with chunk header"
-        )));
+        return Err(XorbObjectError::FormatError(
+            "chunk is corrupted, uncompressed bytes len doesn't agree with chunk header".to_string(),
+        ));
     }
 
     writer.write_all(&uncompressed_data)?;

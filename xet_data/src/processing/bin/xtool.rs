@@ -3,7 +3,7 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Result;
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 use clap::{Args, Parser, Subcommand};
 use http::header::{self, HeaderMap, HeaderValue};
 use walkdir::WalkDir;
@@ -220,7 +220,7 @@ async fn query_reconstruction(
     remote_client
         .get_reconstruction_v1(&file_hash, bytes_range)
         .await
-        .map_err(anyhow::Error::from)
+        .map_err(Into::into)
 }
 
 fn main() -> Result<()> {
@@ -231,13 +231,16 @@ fn main() -> Result<()> {
         && let Some(c) = arg.compression
     {
         let scheme = CompressionScheme::try_from(c).map_err(|_| {
-            anyhow::anyhow!("Invalid compression value {c}; expected one of: 0 (none), 1 (lz4), 2 (bg4-lz4), 99 (auto)")
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Invalid compression value {c}; expected one of: 0 (none), 1 (lz4), 2 (bg4-lz4), 99 (auto)"),
+            )
         })?;
         config
             .xorb
             .compression_policy
             .try_set(<&str>::from(scheme))
-            .map_err(|e| anyhow::anyhow!(e))?;
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
     }
 
     let threadpool = XetRuntime::new_with_config(config)?;

@@ -5,7 +5,6 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::Result;
 use clap::{Parser, Subcommand};
 use xet::xet_session::{FileMetadata, Sha256Policy, TaskStatus, XetFileInfo, XetSessionBuilder};
 
@@ -35,7 +34,7 @@ enum Command {
     },
 }
 
-fn main() -> Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();
     match cli.command {
@@ -48,7 +47,7 @@ fn main() -> Result<()> {
     }
 }
 
-fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<()> {
+fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut builder = XetSessionBuilder::new();
     if let Some(ep) = endpoint {
         builder = builder.with_endpoint(ep);
@@ -95,7 +94,11 @@ fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<()> {
     Ok(())
 }
 
-fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: Option<String>) -> Result<()> {
+fn download_files(
+    metadata_file: PathBuf,
+    output_dir: PathBuf,
+    endpoint: Option<String>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let metadata: Vec<FileMetadata> = serde_json::from_str(&std::fs::read_to_string(metadata_file)?)?;
     std::fs::create_dir_all(&output_dir)?;
 

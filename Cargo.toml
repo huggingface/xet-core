@@ -31,7 +31,6 @@ opt-level = 3
 debug = 1
 
 [workspace.dependencies]
-anyhow = "1"
 async-std = "1"
 async-trait = "0.1"
 axum = "0.8"

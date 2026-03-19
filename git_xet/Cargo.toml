@@ -13,7 +13,6 @@ xet-runtime = { path = "../xet_runtime" }
 xet-client = { path = "../xet_client" }
 xet-pkg = { package = "hf-xet", path = "../xet_pkg" }
 
-anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true }
 git-url-parse = { workspace = true }

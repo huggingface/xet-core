@@ -16,7 +16,6 @@ xet-runtime = { version = "1.4.0", path = "../xet_runtime" }
 xet-core-structures = { version = "1.4.0", path = "../xet_core_structures" }
 xet-client = { version = "1.4.0", path = "../xet_client" }
 
-anyhow = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }

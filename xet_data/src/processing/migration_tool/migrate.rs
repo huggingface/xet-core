@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use anyhow::{Result, anyhow};
 use http::header;
 use tracing::{Instrument, Span, info_span, instrument};
 use xet_client::cas_client::auth::TokenRefresher;
@@ -10,7 +9,7 @@ use xet_runtime::core::XetRuntime;
 use xet_runtime::core::par_utils::run_constrained;
 
 use super::super::data_client::{clean_file, default_config};
-use super::super::errors::DataProcessingError;
+use super::super::errors::{DataProcessingError, Result};
 use super::super::{FileUploadSession, Sha256Policy, XetFileInfo};
 use super::hub_client_token_refresher::HubClientTokenRefresher;
 
@@ -98,7 +97,9 @@ pub async fn migrate_files_impl(
     let sha256_policies: Vec<Sha256Policy> = match sha256s {
         Some(v) => {
             if v.len() != file_paths.len() {
-                return Err(anyhow!("mismatched length of the file list and the sha256 list"));
+                return Err(DataProcessingError::ParameterError(
+                    "mismatched length of the file list and the sha256 list".to_string(),
+                ));
             }
             v.iter().map(|s| Sha256Policy::from_hex(s)).collect()
         },

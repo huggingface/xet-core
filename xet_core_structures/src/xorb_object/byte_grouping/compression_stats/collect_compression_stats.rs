@@ -9,7 +9,6 @@ use std::io::{Read, Seek, SeekFrom};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
-use anyhow::Result;
 use clap::Parser;
 use csv::Writer;
 use rand::rngs::StdRng;
@@ -161,7 +160,7 @@ async fn main() {
 
 #[cfg(not(target_family = "wasm"))]
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Parse command-line arguments
     let args = Args::parse();
 

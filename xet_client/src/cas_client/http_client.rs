@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use anyhow::anyhow;
 use http::{Extensions, HeaderMap, StatusCode};
 use reqwest::header::{AUTHORIZATION, COOKIE, HeaderValue, SET_COOKIE};
 use reqwest::{Request, Response};
@@ -290,14 +289,14 @@ impl AuthMiddleware {
     /// (e.g. to a remote service). During this time, no other CAS requests can proceed
     /// from this client until the token has been fetched. This is expected/ok since we
     /// don't have a valid token and thus any calls would fail.
-    async fn get_token(&self) -> Result<String, anyhow::Error> {
+    async fn get_token(&self) -> Result<String, CasClientError> {
         let mut provider = self.token_provider.lock().await;
         provider
             .get_valid_token()
             .await
             .map_err(|err| {
                 warn!(?err, "Token refresh failed");
-                anyhow!("couldn't get token: {err:?}")
+                CasClientError::InternalError(format!("couldn't get token: {err:?}"))
             })
             .inspect(|_token| {
                 info!("Token refresh successful for CAS authentication");
@@ -322,7 +321,7 @@ impl Middleware for AuthMiddleware {
         extensions: &mut http::Extensions,
         next: Next<'_>,
     ) -> reqwest_middleware::Result<Response> {
-        let token = self.get_token().await.map_err(reqwest_middleware::Error::Middleware)?;
+        let token = self.get_token().await.map_err(reqwest_middleware::Error::middleware)?;
 
         let headers = req.headers_mut();
         headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {token}")).unwrap());

@@ -93,7 +93,7 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Initialize tracing with environment filter (respects RUST_LOG)
     tracing_subscriber::fmt().with_env_filter(EnvFilter::from_default_env()).init();
 

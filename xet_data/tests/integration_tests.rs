@@ -2,7 +2,6 @@ use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
-use anyhow::anyhow;
 use tempfile::TempDir;
 use tracing::info;
 
@@ -34,7 +33,7 @@ impl IntegrationTest {
         self.assets.push((name.to_owned(), arg));
     }
 
-    fn run(&self) -> anyhow::Result<()> {
+    fn run(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Create a temporary directory
         let tmp_repo_dest = TempDir::new().unwrap();
         let tmp_path_path = tmp_repo_dest.path().to_path_buf();
@@ -94,9 +93,13 @@ impl IntegrationTest {
             let captures = error_re.captures(stderr_out);
 
             if let Some(captured_text) = captures {
-                Err(anyhow!("Test failed: {}", captured_text.get(1).unwrap().as_str()))
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Test failed: {}", captured_text.get(1).unwrap().as_str()),
+                )
+                .into())
             } else {
-                Err(anyhow!("Test failed: Unknown Error."))
+                Err(std::io::Error::new(std::io::ErrorKind::Other, "Test failed: Unknown Error.").into())
             }
         }
     }
@@ -106,7 +109,7 @@ impl IntegrationTest {
 mod git_integration_tests {
     use super::*;
     #[test]
-    fn test_basic_read() -> anyhow::Result<()> {
+    fn test_basic_read() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         IntegrationTest::new(include_str!("integration_tests/test_basic_clean_smudge.sh")).run()
     }
 }
