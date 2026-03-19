@@ -354,12 +354,12 @@ impl FileReconstructor {
     }
 }
 
-#[cfg(debug_assertions)]
+#[cfg(test)]
 fn default_progress_updater() -> Option<Arc<ItemProgressUpdater>> {
     Some(ItemProgressUpdater::new_standalone("test"))
 }
 
-#[cfg(not(debug_assertions))]
+#[cfg(not(test))]
 fn default_progress_updater() -> Option<Arc<ItemProgressUpdater>> {
     None
 }
