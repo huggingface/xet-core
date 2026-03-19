@@ -111,6 +111,7 @@ tracing = "0.1"
 tracing-appender = "0.2"
 tracing-log = "0.2"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+ulid = "1.2"
 url = "2.5"
 urlencoding = "2.1"
 uuid = "1"
