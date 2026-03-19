@@ -23,6 +23,7 @@ use xet_runtime::GenericError;
 /// use std::path::PathBuf;
 ///
 /// use xet_client::cas_client::simulation::socket_proxy::UnixSocketProxy;
+/// use xet_runtime::GenericError;
 ///
 /// # async fn example() -> Result<(), GenericError> {
 /// let socket_path = PathBuf::from("/tmp/test_socket.sock");

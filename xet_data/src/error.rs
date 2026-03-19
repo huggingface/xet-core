@@ -44,7 +44,7 @@ pub enum DataError {
     #[error("Channel error: {0}")]
     ChannelRecvError(#[from] RecvError),
 
-    #[error("Format error: {0}")]
+    #[error("Core structures error: {0}")]
     FormatError(#[from] CoreError),
 
     #[error("Client error: {0}")]

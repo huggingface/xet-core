@@ -1,4 +1,4 @@
-# API Update: Anyhow Removal and Legacy Error Alias Cleanup (2026-03-18)
+# API Update: Anyhow Removal and Error Alias Cleanup (2026-03-18)
 
 ## Overview
 
@@ -8,6 +8,8 @@ package-level error types.
 Main impact:
 - public legacy error alias modules were removed;
 - several public error enum variants changed payload types;
+- `SessionError` alias usage was removed in favor of `xet::XetError`;
+- Python exception mapping was tightened for `hf_xet`;
 - downstream imports should now use canonical error paths directly.
 
 This is an API-breaking cleanup for callers still importing old alias paths.
@@ -16,7 +18,7 @@ This is an API-breaking cleanup for callers still importing old alias paths.
 
 Use these types directly:
 - `xet_client::ClientError`
-- `xet_core_structures::FormatError`
+- `xet_core_structures::CoreError`
 - `xet_data::DataError`
 - `xet::XetError`
 - `xet_runtime::RuntimeError`
@@ -39,9 +41,15 @@ The following compatibility modules were removed:
 - `InternalError(anyhow::Error)` -> `InternalError(String)`
 - `CredentialHelper(anyhow::Error)` -> `CredentialHelper(String)`
 
-### `xet_core_structures::FormatError`
+### `xet_core_structures::CoreError` (renamed from `FormatError`)
 - `Internal(anyhow::Error)` -> `InternalError(String)`
-- `Format(anyhow::Error)` -> `FormatError(String)`
+- `Format(anyhow::Error)` -> `MalformedData(String)` (or a more specific `CoreError` variant)
+
+### `xet::xet_session` / `xet::XetError`
+- `xet::xet_session::SessionError` alias was removed.
+- Public session APIs now return `Result<_, xet::XetError>`.
+- `ClientError::PresignedUrlExpirationError` now maps to `XetError::Authentication`.
+- `XetError::Timeout(String)` is used for timeout-class network failures.
 
 Code matching old variant names or payload types must be updated.
 
@@ -71,8 +79,17 @@ use xet::XetError;
 use xet_runtime::RuntimeError;
 ```
 
+## Python (`hf_xet`) behavior
+
+`From<XetError> for PyErr` now maps:
+- `Authentication` -> `hf_xet.XetAuthenticationError` (inherits `PermissionError`)
+- `NotFound` -> `hf_xet.XetObjectNotFoundError` (inherits `FileNotFoundError`)
+- `Network` -> `ConnectionError`
+- `Timeout` -> `TimeoutError`
+- `Cancelled` -> `RuntimeError`
+
 For constructors that previously accepted `anyhow::Error`, construct string-backed variants
-instead (`InternalError`, `CredentialHelper`, `FormatError`).
+instead (`InternalError`, `CredentialHelper`, `MalformedData`, and related `CoreError` variants).
 
 ## Behavior Notes
 

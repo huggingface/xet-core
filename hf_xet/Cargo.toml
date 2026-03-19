@@ -71,3 +71,5 @@ debug = true
 opt-level = 3
 
 # cargo-machete has detected the below unused dependency incorrectly
+[package.metadata.cargo-machete]
+ignored = ["xet-data"]

@@ -88,7 +88,7 @@ impl XetError {
         }
     }
 
-    fn from_format_error_ref(fe: &CoreError) -> Self {
+    fn from_core_error_ref(fe: &CoreError) -> Self {
         match fe {
             CoreError::Io(_) => XetError::Io(fe.to_string()),
             CoreError::ShardNotFound(_) | CoreError::FileNotFound(_) => XetError::NotFound(fe.to_string()),
@@ -124,7 +124,7 @@ impl XetError {
             | ClientError::InvalidKey(_)
             | ClientError::InvalidRepoType(_) => XetError::Configuration(ce.to_string()),
             ClientError::IOError(_) => XetError::Io(ce.to_string()),
-            ClientError::FormatError(fe) => XetError::from_format_error_ref(fe),
+            ClientError::FormatError(fe) => XetError::from_core_error_ref(fe),
             _ => XetError::Internal(ce.to_string()),
         }
     }
@@ -133,7 +133,7 @@ impl XetError {
         match de {
             DataError::AuthError(_) => XetError::Authentication(de.to_string()),
             DataError::ClientError(ce) => XetError::from_client_error_ref(ce),
-            DataError::FormatError(fe) => XetError::from_format_error_ref(fe),
+            DataError::FormatError(fe) => XetError::from_core_error_ref(fe),
             DataError::IOError(_) => XetError::Io(de.to_string()),
             DataError::RuntimeError(re) => XetError::from_runtime_error_ref(re),
             DataError::FileQueryPolicyError(_)
@@ -160,7 +160,7 @@ impl From<RuntimeError> for XetError {
 
 impl From<CoreError> for XetError {
     fn from(e: CoreError) -> Self {
-        XetError::from_format_error_ref(&e)
+        XetError::from_core_error_ref(&e)
     }
 }
 

@@ -50,7 +50,7 @@ pub enum CoreError {
     #[error("Invalid arguments")]
     InvalidArguments,
 
-    #[error("Format error: {0}")]
+    #[error("Malformed data: {0}")]
     MalformedData(String),
 
     #[error("Hash mismatch")]
