@@ -110,7 +110,7 @@ impl XetError {
 
     fn from_client_error_ref(ce: &ClientError) -> Self {
         match ce {
-            ClientError::AuthError(_) | ClientError::PresignedUrlExpirationError => {
+            ClientError::AuthError(_) | ClientError::PresignedUrlExpirationError | ClientError::CredentialHelper(_) => {
                 XetError::Authentication(ce.to_string())
             },
             ClientError::ReqwestError(e, _) if e.is_timeout() => XetError::Timeout(ce.to_string()),
@@ -346,5 +346,32 @@ mod tests {
     fn presigned_url_expiration_maps_to_authentication() {
         let err = XetError::from(ClientError::PresignedUrlExpirationError);
         assert!(matches!(err, XetError::Authentication(_)));
+    }
+
+    #[test]
+    fn credential_helper_maps_to_authentication() {
+        let err = XetError::from(ClientError::credential_helper_error(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "cred fail",
+        )));
+        assert!(matches!(err, XetError::Authentication(_)));
+    }
+
+    #[test]
+    fn client_not_found_maps_to_not_found() {
+        let err = XetError::from(ClientError::FileNotFound(MerkleHash::default()));
+        assert!(matches!(err, XetError::NotFound(_)));
+    }
+
+    #[test]
+    fn client_xorb_not_found_maps_to_not_found() {
+        let err = XetError::from(ClientError::XORBNotFound(MerkleHash::default()));
+        assert!(matches!(err, XetError::NotFound(_)));
+    }
+
+    #[test]
+    fn client_io_maps_to_io() {
+        let err = XetError::from(ClientError::IOError(std::io::Error::new(std::io::ErrorKind::NotFound, "gone")));
+        assert!(matches!(err, XetError::Io(_)));
     }
 }

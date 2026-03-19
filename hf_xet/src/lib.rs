@@ -72,7 +72,7 @@ fn build_headers_with_user_agent(request_headers: Option<HashMap<String, String>
     Ok(Some(Arc::new(map)))
 }
 
-fn convert_data_processing_error(e: impl Into<XetError>) -> PyErr {
+fn convert_xet_error(e: impl Into<XetError>) -> PyErr {
     PyErr::from(e.into())
 }
 
@@ -135,7 +135,7 @@ pub fn upload_bytes(
             header_map,
         )
         .await
-        .map_err(convert_data_processing_error)?
+        .map_err(convert_xet_error)?
         .into_iter()
         .map(PyXetUploadInfo::from)
         .collect();
@@ -209,7 +209,7 @@ pub fn upload_files(
             header_map,
         )
         .await
-        .map_err(convert_data_processing_error)?
+        .map_err(convert_xet_error)?
         .into_iter()
         .map(PyXetUploadInfo::from)
         .collect();
@@ -251,7 +251,7 @@ pub fn hash_files(py: Python, file_paths: Vec<String>) -> PyResult<Vec<PyXetUplo
     async_run(py, async move {
         let out: Vec<PyXetUploadInfo> = data_client::hash_files_async(file_paths)
             .await
-            .map_err(convert_data_processing_error)?
+            .map_err(convert_xet_error)?
             .into_iter()
             .map(PyXetUploadInfo::from)
             .collect();
@@ -299,7 +299,7 @@ pub fn download_files(
             header_map,
         )
         .await
-        .map_err(convert_data_processing_error)?;
+        .map_err(convert_xet_error)?;
 
         debug!("Download call {x:x}: Completed.");
 

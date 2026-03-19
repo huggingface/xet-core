@@ -1,7 +1,7 @@
 use std::io;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use rand_core::OsRng;
 use russh::keys::{Certificate, *};
 use russh::server::{Msg, Server as _, Session};
@@ -156,21 +156,13 @@ impl server::Handler for ServerImpl {
 impl ServerImpl {
     fn git_lfs_authenticate(&self, request: Vec<&str>) -> Result<String> {
         let Some(repo_id) = request.get(1) else {
-            return Err(
-                std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid request, missing repo id").into()
-            );
+            bail!("invalid request, missing repo id");
         };
         let Some(operation) = request.get(2) else {
-            return Err(
-                std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid request, missing operation").into()
-            );
+            bail!("invalid request, missing operation");
         };
         if !matches!(*operation, "upload" | "download") {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "invalid request, unrecognized operation",
-            )
-            .into());
+            bail!("invalid request, unrecognized operation");
         }
         let response = GitLFSAuthenticateResponse {
             header: GitLFSAuthentationResponseHeader {

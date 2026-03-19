@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use anyhow::Error as AnyhowError;
 use http::{Extensions, HeaderMap, StatusCode};
 use reqwest::header::{AUTHORIZATION, COOKIE, HeaderValue, SET_COOKIE};
 use reqwest::{Request, Response};
@@ -291,7 +290,7 @@ impl AuthMiddleware {
             .await
             .map_err(|err| {
                 warn!(?err, "Token refresh failed");
-                ClientError::InternalError(AnyhowError::new(err).context("couldn't get token"))
+                ClientError::AuthError(err)
             })
             .inspect(|_token| {
                 info!("Token refresh successful for CAS authentication");
