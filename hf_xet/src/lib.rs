@@ -440,9 +440,7 @@ impl From<XetFileInfo> for PyXetUploadInfo {
     fn from(xf: XetFileInfo) -> Self {
         Self {
             hash: xf.hash().to_owned(),
-            file_size: xf
-                .file_size()
-                .expect("upload metadata must always include a known file size"),
+            file_size: xf.file_size().expect("upload metadata must always include a known file size"),
             sha256: xf.sha256().map(str::to_owned),
         }
     }
