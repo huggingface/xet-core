@@ -17,7 +17,7 @@ mod xet_file;
 pub use file_cleaner::{Sha256Policy, SingleFileCleaner};
 pub use file_download_session::FileDownloadSession;
 pub use file_upload_session::FileUploadSession;
-pub use range_upload::upload_ranges;
+pub use range_upload::{DirtyInput, upload_ranges};
 pub use xet_core_structures::merklehash::ChunkHashList;
 pub use xet_file::XetFileInfo;
 

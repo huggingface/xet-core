@@ -1,7 +1,9 @@
 use std::collections::HashMap;
-use std::io::{Read, Seek, SeekFrom};
+use std::ops::Range;
+use std::pin::Pin;
 use std::sync::Arc;
 
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tracing::{debug, info};
 use ulid::Ulid;
 use xet_client::cas_client::Client;
@@ -19,9 +21,14 @@ use super::file_cleaner::Sha256Policy;
 use super::file_upload_session::FileUploadSession;
 use crate::file_reconstruction::FileReconstructor;
 
-/// Trait alias for a seekable byte source (e.g. `std::fs::File`).
-pub trait ReadSeek: Read + Seek + Send {}
-impl<T: Read + Seek + Send> ReadSeek for T {}
+/// A dirty byte range paired with an async reader that provides the modified bytes.
+///
+/// Each `DirtyInput` represents a contiguous region of the file that was modified by the
+/// caller. The `reader` must yield exactly `range.end - range.start` bytes.
+pub struct DirtyInput {
+    pub range: Range<u64>,
+    pub reader: Pin<Box<dyn AsyncRead + Send>>,
+}
 
 /// Size of blocks read from the dirty source and fed to the cleaner.
 const STREAM_BLOCK_SIZE: usize = 4 * 1024 * 1024; // 4 MB
@@ -55,16 +62,13 @@ struct ComposedRegion {
 ///
 /// # When to use
 ///
-/// - **Mid-file edit**: pass the modified byte ranges in `dirty_ranges`, same `total_size`.
-/// - **Append**: pass `dirty_ranges` covering the written bytes (or empty), `total_size > original_size`. The last
-///   original chunk is automatically re-chunked with the appended data.
-/// - **Truncation**: pass `dirty_ranges = &[]`, `total_size < original_size`. The boundary chunk at the cut point is
-///   automatically re-uploaded.
-/// - **No change**: pass `dirty_ranges = &[]`, `total_size == original_size`. Returns the original hash immediately (no
-///   CAS calls).
-///
-/// `dirty_ranges` can be empty when only the file size changed (truncation or
-/// append via ftruncate). The function adds implicit dirty ranges as needed.
+/// - **Mid-file edit**: pass modified byte ranges in `dirty_inputs`, same `total_size`.
+/// - **Append**: include `[original_size, total_size)` in `dirty_inputs` with a reader for the new bytes (including
+///   sparse gaps). The last original chunk is automatically re-chunked.
+/// - **Truncation**: pass `dirty_inputs = vec![]`, `total_size < original_size`. The boundary chunk at the cut point is
+///   re-uploaded from CAS automatically.
+/// - **No change**: pass `dirty_inputs = vec![]`, `total_size == original_size`. Returns the original hash immediately
+///   (no CAS calls).
 ///
 /// # Arguments
 ///
@@ -72,33 +76,10 @@ struct ComposedRegion {
 /// * `cas_client` - CAS client for fetching original file metadata and downloading boundary chunks.
 /// * `original_hash` - Merkle hash of the original file in CAS.
 /// * `original_size` - Size of the original file in bytes.
-/// * `dirty_ranges` - Sorted, non-overlapping `(start, end)` byte ranges that were modified. Must not overlap and must
-///   be in ascending order. Can be empty for pure size changes.
-/// * `dirty_source` - Seekable reader over the modified file (e.g. a staging file). Read in two
-///   situations: (1) bytes within caller-provided `dirty_ranges`, and (2) the append region
-///   `[original_size, total_size)` when `total_size > original_size` (including sparse gaps).
-///   Bytes in the original range `[0, original_size)` outside `dirty_ranges` are never read from
-///   `dirty_source`; they are reconstructed from CAS instead.
-///
-/// # Important invariant
-///
-/// `dirty_source` is only read for byte ranges explicitly listed in `dirty_ranges` plus the
-/// append region beyond `original_size`. Internally needed ranges (e.g. truncation boundary
-/// chunks within `[0, original_size)`) are always reconstructed from CAS. This means callers
-/// do not need to populate `dirty_source` with original file content for regions they did not
-/// modify.
-///
-/// // TODO: the current API cannot enforce this invariant at the type level. `dirty_source` is a
-/// // `ReadSeek` over the full file, but only a subset of it contains valid data. A safer API
-/// // would accept a callback `Fn(Range<u64>) -> impl AsyncRead` (or a stream of byte chunks)
-/// // that is called only for caller dirty ranges, making it impossible to accidentally read
-/// // stale staging bytes. Returning a stream rather than `Vec<u8>` avoids buffering large
-/// // ranges in memory. This would also remove the need for the `truncation_boundary` injection
-/// // logic. Deferred because it would change the public API and impact existing callers
-/// // (hf-mount, etc.).
-///
-/// * `total_size` - Total size of the modified file. Compared to `original_size` to detect append (`total_size >
-///   original_size`) or truncation (`total_size < original_size`).
+/// * `dirty_inputs` - Sorted, non-overlapping dirty ranges, each paired with an async reader that yields exactly the
+///   bytes for that range. Bytes outside these ranges within `[0, original_size)` are reconstructed from CAS. Each
+///   reader is consumed exactly once.
+/// * `total_size` - Total size of the modified file.
 ///
 /// # Limitations
 ///
@@ -111,34 +92,43 @@ pub async fn upload_ranges(
     cas_client: Arc<dyn Client>,
     original_hash: MerkleHash,
     original_size: u64,
-    dirty_ranges: &[(u64, u64)],
-    dirty_source: &mut dyn ReadSeek,
+    dirty_inputs: Vec<DirtyInput>,
     total_size: u64,
 ) -> Result<XetFileInfo> {
-    // No changes: return original file as-is.
-    if dirty_ranges.is_empty() && total_size == original_size {
+    if dirty_inputs.is_empty() && total_size == original_size {
         return Ok(XetFileInfo::new(original_hash.hex(), original_size));
     }
 
-    // Ranges must be in ascending order with no overlaps.
+    // Extract ranges for validation and build_dirty_regions.
+    let dirty_ranges: Vec<(u64, u64)> = dirty_inputs.iter().map(|d| (d.range.start, d.range.end)).collect();
+
     if !dirty_ranges.windows(2).all(|w| w[0].1 <= w[1].0) {
         return Err(DataProcessingError::InternalError(format!(
             "dirty_ranges must be sorted and non-overlapping, got: {dirty_ranges:?}"
         )));
     }
-    // Each range must cover at least one byte.
     if !dirty_ranges.iter().all(|&(s, e)| s < e) {
         return Err(DataProcessingError::InternalError(format!(
             "dirty_ranges must be non-empty intervals, got: {dirty_ranges:?}"
         )));
     }
-    // No range may extend past the end of the file.
     if let Some(&(_, last_end)) = dirty_ranges.last()
         && last_end > total_size
     {
         return Err(DataProcessingError::InternalError(format!(
             "dirty_range end ({last_end}) exceeds total_size ({total_size})"
         )));
+    }
+
+    // Appended bytes must be covered by dirty_inputs (CAS has no data beyond original_size).
+    if total_size > original_size {
+        let last_input_end = dirty_ranges.last().map_or(0, |&(_, e)| e);
+        if last_input_end < total_size {
+            return Err(DataProcessingError::InternalError(format!(
+                "total_size ({total_size}) > original_size ({original_size}) but dirty_inputs \
+                 only cover up to byte {last_input_end} (must reach total_size)"
+            )));
+        }
     }
 
     // 1. Fetch chunk hashes and reconstruction info in parallel.
@@ -170,12 +160,12 @@ pub async fn upload_ranges(
         chunk_offsets.push(offset);
     }
 
-    // 3. Build effective dirty ranges: start from caller's ranges, then handle append.
+    // 3. Build effective dirty ranges.
     //
-    // INVARIANT: effective_ranges must only contain ranges whose bytes are valid in
-    // dirty_source. Internally needed ranges (truncation boundary) are handled via
+    // INVARIANT: dirty_ranges only contains ranges whose bytes are provided by
+    // dirty_inputs. Internally needed ranges (truncation boundary) are handled via
     // injected DirtyRegions with empty dirty spans, so CAS provides the bytes.
-    let mut effective_ranges: Vec<(u64, u64)> = dirty_ranges.to_vec();
+    // For appends, the caller must include the appended region in dirty_inputs.
 
     let num_chunks = original_chunks.len();
     // Number of original chunks to keep in the final composition.
@@ -201,23 +191,17 @@ pub async fn upload_ranges(
         if boundary < total_size {
             // Cut falls mid-chunk: the partial chunk [boundary, total_size) must be
             // re-uploaded. We track it here and inject a DirtyRegion after
-            // build_dirty_regions, rather than adding it to effective_ranges,
+            // build_dirty_regions, rather than adding it to dirty_ranges,
             // because the bytes live in CAS (not in the caller's staging file).
             truncation_boundary = Some((boundary, last_full));
         }
     }
-    if total_size > original_size {
-        // Append: add an implicit dirty range for the new bytes. The last original chunk
-        // (EOF-terminated) will be included via a first_chunk adjustment below, and its
-        // bytes will come from CAS via the boundary prefix mechanism.
-        //
-        // Example: file grew from 450 to 550 bytes.
-        //   The last chunk [300,450) gets re-chunked together with appended bytes [450,550).
-        //   Boundary prefix downloads [300,450) from CAS, dirty reads [450,550) from staging.
-        merge_or_push(&mut effective_ranges, (original_size, total_size));
-    }
+    // For appends (total_size > original_size), the caller must include the appended bytes
+    // in dirty_inputs. The last original chunk is re-chunked automatically via the
+    // first_chunk adjustment in build_dirty_regions, with its bytes read from CAS via
+    // the boundary prefix mechanism.
 
-    // Note: if effective_ranges is empty here, it means pure truncation (no dirty ranges,
+    // Note: if dirty_ranges is empty here, it means pure truncation (no dirty ranges,
     // file shrunk). We still proceed to compose a new file from the truncated chunk set.
 
     // 4. Expand dirty byte ranges to chunk-aligned boundaries.
@@ -234,8 +218,7 @@ pub async fn upload_ranges(
     //                 +------- inside chunk[1]
     //
     //   -> expand to chunks [1, 3)  (chunks 1 and 2 must be re-uploaded)
-    let mut dirty_regions =
-        build_dirty_regions(&effective_ranges, &chunk_offsets, num_chunks, original_size, total_size)?;
+    let mut dirty_regions = build_dirty_regions(&dirty_ranges, &chunk_offsets, num_chunks, original_size, total_size)?;
 
     // If truncation cuts mid-chunk and no caller dirty range already covers that
     // chunk, inject a DirtyRegion with an empty dirty range. The processing loop's
@@ -260,6 +243,8 @@ pub async fn upload_ranges(
     let session = FileUploadSession::new(config.clone(), None).await?;
 
     let mut uploaded_regions: Vec<UploadedRegion> = Vec::with_capacity(dirty_regions.len());
+    let mut dirty_inputs = dirty_inputs;
+    let mut input_idx = 0usize;
 
     for region in dirty_regions {
         let boundary_start = *chunk_offsets.get(region.first_chunk).ok_or_else(|| {
@@ -301,18 +286,55 @@ pub async fn upload_ranges(
             stream_cas_range(&cas_client, original_hash, boundary_start, region.dirty_start, &mut cleaner).await?;
         }
 
-        // b) Dirty bytes from source, streamed in blocks.
-        // TODO: seek/read_exact are blocking I/O in an async context. Acceptable for local
-        // files (<1ms per 4MB block) but consider block_in_place for network-backed sources.
-        if region.dirty_end > region.dirty_start {
-            dirty_source.seek(SeekFrom::Start(region.dirty_start))?;
-            let mut remaining = (region.dirty_end - region.dirty_start) as usize;
+        // b) Dirty bytes from async readers.
+        //
+        // A merged DirtyRegion may span multiple inputs (when adjacent dirty ranges
+        // touch the same chunks). We consume readers in order, filling CAS gaps
+        // between them if the gap falls within the original file.
+        let mut cursor = region.dirty_start;
+        while input_idx < dirty_inputs.len() && dirty_inputs[input_idx].range.start < region.dirty_end {
+            let input = &mut dirty_inputs[input_idx];
+            let input_start = input.range.start.max(region.dirty_start);
+            let input_end = input.range.end.min(region.dirty_end);
+
+            // CAS gap before this input (within the original file).
+            if cursor < input_start {
+                if cursor < original_size {
+                    let gap_end = input_start.min(original_size);
+                    stream_cas_range(&cas_client, original_hash, cursor, gap_end, &mut cleaner).await?;
+                }
+                // Gap beyond original_size means the caller didn't provide bytes
+                // for part of the appended region. This would produce a corrupted file.
+                if input_start > original_size && cursor < input_start {
+                    return Err(DataProcessingError::InternalError(format!(
+                        "gap in dirty_inputs: no data for bytes [{cursor}, {input_start}) \
+                         (beyond original_size {original_size})"
+                    )));
+                }
+            }
+
+            // Stream bytes from the async reader.
+            let bytes_to_read = (input_end - input_start) as usize;
+            let mut remaining = bytes_to_read;
             let mut buf = vec![0u8; STREAM_BLOCK_SIZE.min(remaining)];
             while remaining > 0 {
                 let to_read = buf.len().min(remaining);
-                dirty_source.read_exact(&mut buf[..to_read])?;
+                input.reader.read_exact(&mut buf[..to_read]).await.map_err(|err| {
+                    DataProcessingError::InternalError(format!(
+                        "failed to read dirty input [{}, {}): {err}",
+                        input.range.start, input.range.end
+                    ))
+                })?;
                 cleaner.add_data(&buf[..to_read]).await?;
                 remaining -= to_read;
+            }
+
+            cursor = input_end;
+            // Only advance to next input if we fully consumed this one within the region.
+            if input.range.end <= region.dirty_end {
+                input_idx += 1;
+            } else {
+                break;
             }
         }
 
@@ -428,7 +450,7 @@ pub async fn upload_ranges(
     session.register_composed_file(composed_mdb).await?;
     session.finalize().await?;
 
-    let total_dirty: u64 = effective_ranges.iter().map(|(s, e)| e - s).sum();
+    let total_dirty: u64 = dirty_ranges.iter().map(|(s, e)| e - s).sum();
     info!(
         "upload_ranges: hash={} size={} (original={}, {} dirty regions, {} dirty bytes)",
         combined_hash.hex(),
@@ -463,14 +485,14 @@ async fn stream_cas_range(
 /// then adjacent/overlapping chunk ranges are merged to avoid uploading the same
 /// boundary chunks twice.
 fn build_dirty_regions(
-    effective_ranges: &[(u64, u64)],
+    dirty_ranges: &[(u64, u64)],
     chunk_offsets: &[u64],
     num_chunks: usize,
     original_size: u64,
     total_size: u64,
 ) -> Result<Vec<DirtyRegion>> {
-    let mut raw = Vec::with_capacity(effective_ranges.len());
-    for &(dirty_start, dirty_end) in effective_ranges {
+    let mut raw = Vec::with_capacity(dirty_ranges.len());
+    for &(dirty_start, dirty_end) in dirty_ranges {
         // Find the first chunk whose end offset exceeds dirty_start.
         let mut first_chunk = chunk_offsets[1..].partition_point(|&o| o <= dirty_start);
         debug_assert!(first_chunk <= num_chunks, "first_chunk {first_chunk} out of bounds ({num_chunks} chunks)");
@@ -517,36 +539,6 @@ fn build_dirty_regions(
         merged.push(region);
     }
     Ok(merged)
-}
-
-/// Merge `range` with the last element of `ranges` if they overlap or touch,
-/// otherwise append it.
-///
-/// Three cases:
-/// - **Overlap** (last.1 >= range.0): last and range share bytes
-/// - **Touch** (last.1 == range.0): last ends exactly where range starts
-/// - **Gap**: last ends before range starts, keep both separate
-///
-/// ```text
-/// overlap:  last [=====]        touch:  last [=====]
-///          range    [=====]            range       [=====]
-///         result [=========]          result [===========]
-///
-/// gap:      last [=====]
-///          range          [=====]
-///         result [=====]  [=====]   (two separate entries)
-/// ```
-fn merge_or_push(ranges: &mut Vec<(u64, u64)>, range: (u64, u64)) {
-    if let Some(last) = ranges.last_mut() {
-        // Overlap or touch: merge by expanding last's bounds
-        if last.1 >= range.0 {
-            last.0 = last.0.min(range.0);
-            last.1 = last.1.max(range.1);
-            return;
-        }
-    }
-    // Gap: append as separate entry
-    ranges.push(range);
 }
 
 /// Extract segments and verification entries for chunks `[chunk_start, chunk_end)`
@@ -638,6 +630,33 @@ mod tests {
     use crate::processing::file_download_session::FileDownloadSession;
     use crate::processing::file_upload_session::FileUploadSession;
 
+    /// Build `DirtyInput`s from a source buffer and range list. Each input gets
+    /// a `Cursor` over the corresponding slice of `data`.
+    fn make_dirty_inputs(ranges: &[(u64, u64)], data: &[u8]) -> Vec<DirtyInput> {
+        ranges
+            .iter()
+            .map(|&(start, end)| {
+                let slice = data[start as usize..end as usize].to_vec();
+                DirtyInput {
+                    range: start..end,
+                    reader: Box::pin(Cursor::new(slice)),
+                }
+            })
+            .collect()
+    }
+
+    /// Build `DirtyInput`s with dummy readers (for validation error tests where
+    /// the reader is never consumed).
+    fn make_dummy_inputs(ranges: &[(u64, u64)]) -> Vec<DirtyInput> {
+        ranges
+            .iter()
+            .map(|&(start, end)| DirtyInput {
+                range: start..end,
+                reader: Box::pin(Cursor::new(Vec::new())),
+            })
+            .collect()
+    }
+
     // original: [=========================== 256 KB ===========================]
     // dirty:                  [== 1 KB ===]
     // result:   [===stable===][re-uploaded][============stable=================]
@@ -671,15 +690,12 @@ mod tests {
         let dirty_end = 101_000usize;
         modified_data[dirty_start..dirty_end].fill(0xBB);
         let total_size = modified_data.len() as u64;
-
-        let mut dirty_source = Cursor::new(&modified_data);
         let result = upload_ranges(
             config.clone(),
             cas_client.clone(),
             original_hash,
             original_size,
-            &[(dirty_start as u64, dirty_end as u64)],
-            &mut dirty_source,
+            make_dirty_inputs(&[(dirty_start as u64, dirty_end as u64)], &modified_data),
             total_size,
         )
         .await
@@ -720,18 +736,10 @@ mod tests {
 
         // Truncate to 100 KB (no dirty ranges, pure truncation).
         let truncated_size = 100_000u64;
-        let mut source = Cursor::new(&original_data[..truncated_size as usize]);
-        let result = upload_ranges(
-            config.clone(),
-            cas_client.clone(),
-            original_hash,
-            original_size,
-            &[], // no dirty ranges, just truncation
-            &mut source,
-            truncated_size,
-        )
-        .await
-        .unwrap();
+        let result =
+            upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, vec![], truncated_size)
+                .await
+                .unwrap();
 
         assert_eq!(result.file_size(), truncated_size);
 
@@ -763,15 +771,12 @@ mod tests {
         let mut full_data = original_data.clone();
         full_data.extend(random_data(99, 50 * 1024));
         let total_size = full_data.len() as u64;
-
-        let mut source = Cursor::new(&full_data);
         let result = upload_ranges(
             config.clone(),
             cas_client.clone(),
             original_hash,
             original_size,
-            &[(original_size, total_size)], // appended region is dirty
-            &mut source,
+            make_dirty_inputs(&[(original_size, total_size)], &full_data),
             total_size,
         )
         .await
@@ -806,15 +811,12 @@ mod tests {
         let mut modified_data = original_data.clone();
         modified_data[..4096].fill(0xBB);
         let total_size = modified_data.len() as u64;
-
-        let mut source = Cursor::new(&modified_data);
         let result = upload_ranges(
             config.clone(),
             cas_client.clone(),
             original_hash,
             original_size,
-            &[(0, 4096)],
-            &mut source,
+            make_dirty_inputs(&[(0, 4096)], &modified_data),
             total_size,
         )
         .await
@@ -850,15 +852,12 @@ mod tests {
         modified_data[10_000..12_000].fill(0xBB); // first dirty range
         modified_data[200_000..202_000].fill(0xCC); // second dirty range
         let total_size = modified_data.len() as u64;
-
-        let mut source = Cursor::new(&modified_data);
         let result = upload_ranges(
             config.clone(),
             cas_client.clone(),
             original_hash,
             original_size,
-            &[(10_000, 12_000), (200_000, 202_000)],
-            &mut source,
+            make_dirty_inputs(&[(10_000, 12_000), (200_000, 202_000)], &modified_data),
             total_size,
         )
         .await
@@ -915,15 +914,12 @@ mod tests {
         let mut modified_data = original_data.clone();
         modified_data[r1_start..r1_end].fill(0xBB);
         modified_data[r2_start..r2_end].fill(0xBB);
-
-        let mut source = Cursor::new(&modified_data);
         let result = upload_ranges(
             config.clone(),
             cas_client.clone(),
             original_hash,
             original_size,
-            &[(r1_start as u64, r1_end as u64), (r2_start as u64, r2_end as u64)],
-            &mut source,
+            make_dirty_inputs(&[(r1_start as u64, r1_end as u64), (r2_start as u64, r2_end as u64)], &modified_data),
             modified_data.len() as u64,
         )
         .await
@@ -959,18 +955,10 @@ mod tests {
         let truncated_size: u64 = chunks[0].1;
         let truncated_data = &original_data[..truncated_size as usize];
 
-        let mut source = Cursor::new(truncated_data);
-        let result = upload_ranges(
-            config.clone(),
-            cas_client.clone(),
-            original_hash,
-            original_size,
-            &[],
-            &mut source,
-            truncated_size,
-        )
-        .await
-        .unwrap();
+        let result =
+            upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, vec![], truncated_size)
+                .await
+                .unwrap();
 
         assert_eq!(result.file_size(), truncated_size);
 
@@ -982,8 +970,11 @@ mod tests {
     }
 
     // original: [======== 100 KB ========]
-    // staging:  [======== 100 KB ========][000][=4K written=]
+    // inputs:   [======== 100 KB ========][000][=4K written=]
     //                                     ^ gap (zeros from seek past EOF)
+    //
+    // With the new API, the caller provides the full append region [original_size, total_size)
+    // as a single DirtyInput, including the sparse gap.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_append_with_gap_before_dirty_range() {
         let server = LocalTestServerBuilder::new().start().await;
@@ -995,28 +986,21 @@ mod tests {
         let original_hash = upload_file(&config, &original_data).await;
         let original_size = original_data.len() as u64;
 
-        // Simulate: seek to original_size + 500, write 4096 bytes of pseudo-random data.
-        // The gap [original_size, original_size + 500) contains zeros from the sparse file.
         let gap = 500u64;
         let write_data = random_data(101, 4096);
-        let write_len = write_data.len() as u64;
-        let total_size = original_size + gap + write_len;
+        let total_size = original_size + gap + write_data.len() as u64;
 
         let mut full_data = original_data.clone();
-        full_data.extend(vec![0x00u8; gap as usize]); // sparse hole = zeros
+        full_data.extend(vec![0x00u8; gap as usize]);
         full_data.extend(&write_data);
 
-        let dirty_start = original_size + gap;
-        let dirty_end = total_size;
-
-        let mut source = Cursor::new(&full_data);
+        // The caller provides the entire append region (including the sparse gap).
         let result = upload_ranges(
             config.clone(),
             cas_client.clone(),
             original_hash,
             original_size,
-            &[(dirty_start, dirty_end)],
-            &mut source,
+            make_dirty_inputs(&[(original_size, total_size)], &full_data),
             total_size,
         )
         .await
@@ -1054,15 +1038,12 @@ mod tests {
         // This is what hf-mount produces (sparse hole + appended bytes).
         let mut sparse_staging = vec![0u8; total_size as usize];
         sparse_staging[original_size as usize..].copy_from_slice(&append_data);
-
-        let mut source = Cursor::new(&sparse_staging);
         let result = upload_ranges(
             config.clone(),
             cas_client.clone(),
             original_hash,
             original_size,
-            &[(original_size, total_size)],
-            &mut source,
+            make_dirty_inputs(&[(original_size, total_size)], &sparse_staging),
             total_size,
         )
         .await
@@ -1158,14 +1139,12 @@ mod tests {
                 let mut expected = original.clone();
                 expected[boundary as usize..dirty_end as usize].fill(0xFF);
                 let size = original.len() as u64;
-                let mut source = Cursor::new(&expected);
                 let result = upload_ranges(
                     config.clone(),
                     cas_client.clone(),
                     original_hash,
                     size,
-                    &[(boundary, dirty_end)],
-                    &mut source,
+                    make_dirty_inputs(&[(boundary, dirty_end)], &expected),
                     size,
                 )
                 .await
@@ -1190,11 +1169,7 @@ mod tests {
         let data = random_data(70, 256 * 1024);
         let hash = upload_file(&config, &data).await;
         let size = data.len() as u64;
-
-        let mut source = Cursor::new(&data);
-        let result = upload_ranges(config, cas_client, hash, size, &[], &mut source, size)
-            .await
-            .unwrap();
+        let result = upload_ranges(config, cas_client, hash, size, vec![], size).await.unwrap();
 
         assert_eq!(result.hash(), hash.hex());
         assert_eq!(result.file_size(), size);
@@ -1211,9 +1186,7 @@ mod tests {
         let data = random_data(71, 256 * 1024);
         let hash = upload_file(&config, &data).await;
         let size = data.len() as u64;
-
-        let mut source = Cursor::new(&data);
-        let err = upload_ranges(config, cas_client, hash, size, &[(100, size + 1)], &mut source, size).await;
+        let err = upload_ranges(config, cas_client, hash, size, make_dummy_inputs(&[(100, size + 1)]), size).await;
         assert!(err.is_err(), "dirty range past total_size should be rejected");
     }
 
@@ -1227,9 +1200,8 @@ mod tests {
         let data = random_data(60, 256 * 1024);
         let hash = upload_file(&config, &data).await;
         let size = data.len() as u64;
-
-        let mut source = Cursor::new(&data);
-        let err = upload_ranges(config, cas_client, hash, size, &[(100, 300), (200, 400)], &mut source, size).await;
+        let err =
+            upload_ranges(config, cas_client, hash, size, make_dummy_inputs(&[(100, 300), (200, 400)]), size).await;
         assert!(err.is_err(), "overlapping ranges should be rejected");
     }
 
@@ -1243,9 +1215,7 @@ mod tests {
         let data = random_data(61, 256 * 1024);
         let hash = upload_file(&config, &data).await;
         let size = data.len() as u64;
-
-        let mut source = Cursor::new(&data);
-        let err = upload_ranges(config, cas_client, hash, size, &[(100, 100)], &mut source, size).await;
+        let err = upload_ranges(config, cas_client, hash, size, make_dummy_inputs(&[(100, 100)]), size).await;
         assert!(err.is_err(), "empty range (start == end) should be rejected");
     }
 
@@ -1259,10 +1229,32 @@ mod tests {
         let data = random_data(62, 256 * 1024);
         let hash = upload_file(&config, &data).await;
         let size = data.len() as u64;
-
-        let mut source = Cursor::new(&data);
-        let err = upload_ranges(config, cas_client, hash, size, &[(300, 400), (100, 200)], &mut source, size).await;
+        let err =
+            upload_ranges(config, cas_client, hash, size, make_dummy_inputs(&[(300, 400), (100, 200)]), size).await;
         assert!(err.is_err(), "unsorted ranges should be rejected");
+    }
+
+    // total_size > original_size but dirty_inputs don't cover appended region -> rejected.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_rejects_append_without_dirty_inputs() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let cas_client: Arc<dyn Client> = Arc::new(server);
+
+        let data = random_data(63, 256 * 1024);
+        let hash = upload_file(&config, &data).await;
+        let size = data.len() as u64;
+        let bigger = size + 1000;
+
+        // No dirty inputs but total_size > original_size.
+        let err = upload_ranges(config.clone(), cas_client.clone(), hash, size, vec![], bigger).await;
+        assert!(err.is_err(), "append without dirty_inputs covering appended bytes should be rejected");
+
+        // Dirty input stops before total_size.
+        let partial = make_dirty_inputs(&[(size, size + 500)], &vec![0xEEu8; bigger as usize]);
+        let err = upload_ranges(config, cas_client, hash, size, partial, bigger).await;
+        assert!(err.is_err(), "append with partial coverage should be rejected");
     }
 
     #[test]
@@ -1313,6 +1305,47 @@ mod tests {
         assert!(result.is_err(), "should fail with inconsistent/empty chunk data");
     }
 
+    // original: [chunk0][chunk1][chunk2][chunk3][...more chunks...]
+    // input:              [========= single large write ==========]
+    //
+    // A single DirtyInput that spans many chunks. Verifies that the reader is
+    // consumed correctly even when build_dirty_regions merges multiple chunk
+    // ranges into one DirtyRegion.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_single_input_spanning_many_chunks() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let cas_client: Arc<dyn Client> = Arc::new(server);
+
+        let original_data = random_data(99, 256 * 1024);
+        let original_hash = upload_file(&config, &original_data).await;
+        let original_size = original_data.len() as u64;
+
+        // Overwrite a large middle section (likely spans many CDC chunks).
+        let mut modified = original_data.clone();
+        let dirty_start = 10_000u64;
+        let dirty_end = 200_000u64;
+        modified[dirty_start as usize..dirty_end as usize].fill(0xFF);
+
+        let result = upload_ranges(
+            config.clone(),
+            cas_client.clone(),
+            original_hash,
+            original_size,
+            make_dirty_inputs(&[(dirty_start, dirty_end)], &modified),
+            original_size,
+        )
+        .await
+        .unwrap();
+
+        let downloaded = download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), original_size).await;
+        assert_eq!(downloaded, modified, "large spanning input produced wrong content");
+
+        let clean_hash = upload_file(&config, &modified).await;
+        assert_eq!(result.hash(), clean_hash.hex(), "hash mismatch with clean upload");
+    }
+
     // original: [=========================== 256 KB ===========================]
     // staging:  [0000000000000000000000000000] (all zeros, file never opened for write)
     // result:   [====== 100 KB from CAS =====]
@@ -1332,20 +1365,10 @@ mod tests {
 
         let truncated_size = 100_000u64;
 
-        let zeros = vec![0u8; truncated_size as usize];
-        let mut source = Cursor::new(&zeros);
-
-        let result = upload_ranges(
-            config.clone(),
-            cas_client.clone(),
-            original_hash,
-            original_size,
-            &[],
-            &mut source,
-            truncated_size,
-        )
-        .await
-        .unwrap();
+        let result =
+            upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, vec![], truncated_size)
+                .await
+                .unwrap();
 
         assert_eq!(result.file_size(), truncated_size);
 
@@ -1390,15 +1413,12 @@ mod tests {
 
         let mut staging = vec![0u8; truncated_size as usize];
         staging[dirty_start as usize..dirty_end as usize].fill(0xBB);
-
-        let mut source = Cursor::new(&staging);
         let result = upload_ranges(
             config.clone(),
             cas_client.clone(),
             original_hash,
             original_size,
-            &[(dirty_start, dirty_end)],
-            &mut source,
+            make_dirty_inputs(&[(dirty_start, dirty_end)], &staging),
             truncated_size,
         )
         .await
@@ -1454,18 +1474,28 @@ mod tests {
         total_size: u64,
     ) {
         let original_hash = upload_file(config, original_data).await;
-        let mut source = Cursor::new(expected);
-        let result = upload_ranges(
-            config.clone(),
-            cas_client.clone(),
-            original_hash,
-            original_data.len() as u64,
-            dirty_ranges,
-            &mut source,
-            total_size,
-        )
-        .await
-        .unwrap();
+        let original_size = original_data.len() as u64;
+
+        // Build dirty inputs from the caller's ranges.
+        let mut inputs = make_dirty_inputs(dirty_ranges, expected);
+
+        // For appends, ensure the appended region is included as a dirty input.
+        if total_size > original_size {
+            let append_start = original_size;
+            let already_covered = dirty_ranges.iter().any(|&(s, _)| s <= append_start);
+            if !already_covered {
+                inputs.push(DirtyInput {
+                    range: append_start..total_size,
+                    reader: Box::pin(Cursor::new(expected[append_start as usize..total_size as usize].to_vec())),
+                });
+                inputs.sort_by_key(|d| d.range.start);
+            }
+        }
+
+        let result =
+            upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, inputs, total_size)
+                .await
+                .unwrap();
 
         assert_eq!(result.file_size(), total_size, "file size mismatch");
         let downloaded = download_file(config, MerkleHash::from_hex(result.hash()).unwrap(), total_size).await;
