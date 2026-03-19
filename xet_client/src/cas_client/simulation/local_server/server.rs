@@ -489,7 +489,7 @@ impl Client for LocalTestServer {
         &self,
         file_id: &xet_core_structures::merklehash::MerkleHash,
     ) -> Result<xet_core_structures::merklehash::ChunkHashList> {
-        self.remote_client.get_file_chunk_hashes(file_id).await
+        self.client.get_file_chunk_hashes(file_id).await
     }
 }
 

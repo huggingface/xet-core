@@ -1387,6 +1387,64 @@ mod tests {
         assert_eq!(result.hash(), clean_hash.hex(), "hash mismatch with clean upload");
     }
 
+    // original: b"AAAA_HEADER_AAAA|" (17 bytes, single CAS chunk)
+    // dirty:          [SPARSE]        (bytes [5, 11))
+    // expected: b"AAAA_SPARSE_AAAA|"  (17 bytes)
+    //
+    // Regression test for a bug where boundary_end (chunk size) > original_size
+    // caused the prefix/suffix CAS streams to be skipped entirely. In production
+    // CAS, a 17-byte file is stored in a padded xorb (e.g. 4096 bytes), making
+    // boundary_end=4096 > original_size=17. The LocalTestServer doesn't pad, so
+    // this test verifies the fix works for the non-padded case. The padded case
+    // was verified manually against the real CAS.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_upload_ranges_small_file_mid_edit() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = Arc::new(
+            TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap(),
+        );
+        let cas_client: Arc<dyn Client> = Arc::new(server);
+
+        let original_data = b"AAAA_HEADER_AAAA|";
+        let original_hash = upload_file(&config, original_data).await;
+        let original_size = original_data.len() as u64;
+
+        let dirty_data = b"SPARSE";
+        let dirty_inputs = vec![DirtyInput {
+            range: 5..11,
+            reader: Box::pin(Cursor::new(dirty_data.to_vec())),
+        }];
+
+        let result = upload_ranges(
+            config.clone(),
+            cas_client.clone(),
+            original_hash,
+            original_size,
+            dirty_inputs,
+            original_size,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.file_size(), original_size);
+
+        let downloaded = download_file(
+            &config,
+            MerkleHash::from_hex(result.hash()).unwrap(),
+            original_size,
+        )
+        .await;
+        assert_eq!(downloaded.len(), original_size as usize, "reconstructed size mismatch");
+        assert_eq!(&downloaded[..5], b"AAAA_", "prefix from CAS");
+        assert_eq!(&downloaded[5..11], b"SPARSE", "dirty range");
+        assert_eq!(&downloaded[11..], b"_AAAA|", "suffix from CAS");
+
+        let expected = b"AAAA_SPARSE_AAAA|";
+        let clean_hash = upload_file(&config, expected).await;
+        assert_eq!(result.hash(), clean_hash.hex(), "hash mismatch with clean upload");
+    }
+
     // original: [=========================== 256 KB ===========================]
     // staging:  [0000000000000000000000000000] (all zeros, file never opened for write)
     // result:   [====== 100 KB from CAS =====]
