@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::io::{IoSlice, Write};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use bytes::Bytes;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -223,11 +223,14 @@ pub struct SequentialWriter {
     run_state: Arc<RunState>,
     bytes_written: Arc<AtomicU64>,
     active_tasks: Arc<Mutex<JoinSet<Result<()>>>>,
+    finished: AtomicBool,
 }
 
 impl Drop for SequentialWriter {
     fn drop(&mut self) {
-        self.run_state.cancel();
+        if !self.finished.load(Ordering::Acquire) {
+            self.run_state.cancel();
+        }
     }
 }
 
@@ -340,6 +343,7 @@ impl DataWriter for SequentialWriter {
             }
 
             state.finished = true;
+            self.finished.store(true, Ordering::Release);
 
             if state.sender.send(SequentialRetrievalItem::Finish).is_err() {
                 drop(state);
@@ -411,6 +415,7 @@ impl SequentialWriter {
             run_state,
             bytes_written,
             active_tasks: Arc::new(Mutex::new(JoinSet::new())),
+            finished: AtomicBool::new(false),
         };
 
         (Box::new(writer), rx)
@@ -458,6 +463,7 @@ impl SequentialWriter {
             run_state,
             bytes_written,
             active_tasks: Arc::new(Mutex::new(JoinSet::new())),
+            finished: AtomicBool::new(false),
         })
     }
 }

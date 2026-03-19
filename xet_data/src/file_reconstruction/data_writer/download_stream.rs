@@ -141,14 +141,23 @@ impl DownloadStream {
 
     /// Returns the next chunk of downloaded data asynchronously.
     ///
-    /// Returns `Ok(None)` when the download is complete.
+    /// Returns `Ok(None)` when the download is complete or cancelled.
     pub async fn next(&mut self) -> Result<Option<Bytes>> {
         if self.finished {
             return Ok(None);
         }
         self.ensure_started();
 
-        match self.receiver.recv().await {
+        let item = if let Ok(item) = self.receiver.try_recv() {
+            Some(item)
+        } else {
+            tokio::select! {
+                recv = self.receiver.recv() => recv,
+                _ = self.run_state.cancelled() => None,
+            }
+        };
+
+        match item {
             Some(SequentialRetrievalItem::Data { receiver, permit }) => {
                 let data = receiver.await.map_err(|_| {
                     FileReconstructionError::InternalWriterError(
