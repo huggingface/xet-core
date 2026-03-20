@@ -6,7 +6,7 @@
 //! - **Tokio async** (External mode): standard `#[tokio::test]` tests.
 //! - **Blocking** (Owned mode): sync `build()` + `_blocking` methods.
 //! - **Non-tokio async bridge** (Owned mode): `futures::executor`, `smol`, `async-std` driving async methods via
-//!   `bridge_to_owned`.
+//!   `XetRuntime::bridge_async`.
 //! - **Deficient tokio runtime** (fallback to Owned mode): tokio runtimes missing IO/time drivers or using
 //!   `current_thread` flavor.
 //! - **Blocking from non-tokio executors**: `_blocking` methods called from within smol/async-std/futures executor
@@ -28,12 +28,8 @@ fn local_endpoint(temp: &TempDir) -> String {
     format!("local://{}", cas_path.display())
 }
 
-async fn async_session(temp: &TempDir) -> XetSession {
-    XetSessionBuilder::new()
-        .with_endpoint(local_endpoint(temp))
-        .build_async()
-        .await
-        .unwrap()
+fn async_session(temp: &TempDir) -> XetSession {
+    XetSessionBuilder::new().with_endpoint(local_endpoint(temp)).build().unwrap()
 }
 
 fn sync_session(temp: &TempDir) -> XetSession {
@@ -210,14 +206,14 @@ fn deficient_runtime_cases() -> Vec<(&'static str, RuntimeBuilder)> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_upload_bytes_roundtrip() {
     let temp = tempdir().unwrap();
-    let session = async_session(&temp).await;
+    let session = async_session(&temp);
     assert_roundtrip_async(&session, &temp, b"async upload bytes test", "bytes").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_upload_from_path_roundtrip() {
     let temp = tempdir().unwrap();
-    let session = async_session(&temp).await;
+    let session = async_session(&temp);
 
     let src = temp.path().join("source.bin");
     let data = b"upload from path integration test content";
@@ -240,7 +236,7 @@ async fn async_upload_from_path_roundtrip() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_multiple_files_in_one_commit() {
     let temp = tempdir().unwrap();
-    let session = async_session(&temp).await;
+    let session = async_session(&temp);
 
     let files: Vec<(&str, &[u8])> = vec![
         ("alpha.bin", b"alpha content"),
@@ -278,7 +274,7 @@ async fn async_multiple_files_in_one_commit() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_sha256_policy_variants() {
     let temp = tempdir().unwrap();
-    let session = async_session(&temp).await;
+    let session = async_session(&temp);
     let provided_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
 
     let commit = session.new_upload_commit().await.unwrap();
@@ -312,7 +308,7 @@ async fn async_sha256_policy_variants() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_large_file_roundtrip() {
     let temp = tempdir().unwrap();
-    let session = async_session(&temp).await;
+    let session = async_session(&temp);
     let data: Vec<u8> = (0..65536u64).map(|i| (i % 251) as u8).collect();
     assert_roundtrip_async(&session, &temp, &data, "large").await;
 }
@@ -320,7 +316,7 @@ async fn async_large_file_roundtrip() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_multiple_commits_and_groups() {
     let temp = tempdir().unwrap();
-    let session = async_session(&temp).await;
+    let session = async_session(&temp);
 
     let info_a = upload_bytes_async(&session, b"commit A data", "a.bin").await;
     let info_b = upload_bytes_async(&session, b"commit B data", "b.bin").await;
@@ -343,7 +339,7 @@ async fn async_multiple_commits_and_groups() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_task_status_transitions() {
     let temp = tempdir().unwrap();
-    let session = async_session(&temp).await;
+    let session = async_session(&temp);
 
     let commit = session.new_upload_commit().await.unwrap();
     let handle = commit
@@ -364,7 +360,7 @@ async fn async_task_status_transitions() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_progress_tracking() {
     let temp = tempdir().unwrap();
-    let session = async_session(&temp).await;
+    let session = async_session(&temp);
     let data = b"progress tracking integration test data";
 
     let commit = session.new_upload_commit().await.unwrap();
@@ -385,7 +381,7 @@ async fn async_progress_tracking() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_download_unknown_size_roundtrip() {
     let temp = tempdir().unwrap();
-    let session = async_session(&temp).await;
+    let session = async_session(&temp);
     let data = b"download with unknown size via xet_pkg";
     let file_info = upload_bytes_async(&session, data, "unknown_size.bin").await;
 
@@ -405,7 +401,7 @@ async fn async_download_unknown_size_roundtrip() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_download_invalid_hash_fails() {
     let temp = tempdir().unwrap();
-    let session = async_session(&temp).await;
+    let session = async_session(&temp);
 
     let group = session.new_download_group().await.unwrap();
     let handle = group
@@ -427,7 +423,7 @@ async fn async_download_invalid_hash_fails() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_upload_from_path_multiple_files() {
     let temp = tempdir().unwrap();
-    let session = async_session(&temp).await;
+    let session = async_session(&temp);
 
     let src_a = temp.path().join("src_a.bin");
     let src_b = temp.path().join("src_b.bin");
@@ -573,8 +569,8 @@ fn blocking_multiple_commits_and_groups() {
 
 // ── 3. Non-tokio async bridge tests (Owned mode) ────────────────────────
 //
-// build_async() from a non-tokio executor falls back to Owned mode.
-// Async methods use bridge_to_owned: the future runs on the owned tokio
+// build() from a non-tokio executor creates an Owned-mode runtime.
+// Async methods use XetRuntime::bridge_async: the future runs on the owned tokio
 // pool while the caller's executor polls the oneshot receiver.
 
 #[test]
@@ -583,7 +579,7 @@ fn bridge_upload_download_roundtrip() {
         let temp = tempdir().unwrap();
         let tag = executor.label().to_string();
         Box::pin(async move {
-            let session = async_session(&temp).await;
+            let session = async_session(&temp);
             let payload = format!("{tag} executor roundtrip");
             assert_roundtrip_async(&session, &temp, payload.as_bytes(), &tag).await;
         })
@@ -596,7 +592,7 @@ fn bridge_multiple_files() {
         let temp = tempdir().unwrap();
         let tag = executor.label().to_string();
         Box::pin(async move {
-            let session = async_session(&temp).await;
+            let session = async_session(&temp);
 
             let files: Vec<(String, Vec<u8>)> = vec![
                 (format!("{tag}_a.bin"), format!("{tag} A").into_bytes()),
@@ -639,7 +635,7 @@ fn bridge_upload_from_path_roundtrip() {
         let temp = tempdir().unwrap();
         let tag = executor.label().to_string();
         Box::pin(async move {
-            let session = async_session(&temp).await;
+            let session = async_session(&temp);
             let payload = format!("{tag} upload from path");
             assert_upload_from_path_roundtrip_async(
                 &session,
@@ -659,7 +655,7 @@ fn bridge_large_file_roundtrip() {
         let temp = tempdir().unwrap();
         let tag = executor.label().to_string();
         Box::pin(async move {
-            let session = async_session(&temp).await;
+            let session = async_session(&temp);
             let data: Vec<u8> = (0..65536u64).map(|i| (i % 251) as u8).collect();
             assert_roundtrip_async(&session, &temp, &data, &format!("large_{tag}")).await;
         })
@@ -668,11 +664,11 @@ fn bridge_large_file_roundtrip() {
 
 // ── 4. Deficient tokio runtime tests ─────────────────────────────────────
 //
-// When build_async() is called from within a tokio runtime that lacks IO
+// When build() is called from within a tokio runtime that lacks IO
 // and/or time drivers (or uses current_thread), the handle fails
-// handle_meets_session_requirements and the session falls back to Owned
-// mode with its own full-featured runtime. The async bridge routes all
-// work to that owned pool.
+// handle_meets_requirements and the session falls back to Owned mode
+// with its own full-featured runtime. The async bridge routes all work
+// to that owned pool.
 
 #[test]
 fn deficient_tokio_async_roundtrip_matrix() {
@@ -680,7 +676,7 @@ fn deficient_tokio_async_roundtrip_matrix() {
         let rt = builder();
         let temp = tempdir().unwrap();
         rt.block_on(async {
-            let session = async_session(&temp).await;
+            let session = async_session(&temp);
             let payload = format!("{label} async roundtrip");
             assert_roundtrip_async(&session, &temp, payload.as_bytes(), label).await;
         });
@@ -692,7 +688,7 @@ fn deficient_tokio_no_drivers_multiple_files() {
     let rt = tokio::runtime::Builder::new_multi_thread().build().unwrap();
     let temp = tempdir().unwrap();
     rt.block_on(async {
-        let session = async_session(&temp).await;
+        let session = async_session(&temp);
 
         let commit = session.new_upload_commit().await.unwrap();
         let ha = commit
@@ -726,7 +722,7 @@ fn deficient_tokio_no_drivers_upload_from_path() {
     let rt = build_rt_no_drivers();
     let temp = tempdir().unwrap();
     rt.block_on(async {
-        let session = async_session(&temp).await;
+        let session = async_session(&temp);
         assert_upload_from_path_roundtrip_async(
             &session,
             &temp,
@@ -743,16 +739,16 @@ fn deficient_tokio_no_drivers_large_file() {
     let rt = build_rt_no_drivers();
     let temp = tempdir().unwrap();
     rt.block_on(async {
-        let session = async_session(&temp).await;
+        let session = async_session(&temp);
         let data: Vec<u8> = (0..65536u64).map(|i| (i % 251) as u8).collect();
         assert_roundtrip_async(&session, &temp, &data, "large_deficient").await;
     });
 }
 
-// Blocking API still works from a sync context even when the session was built
-// with a deficient tokio handle (falls back to Owned mode).
+// build() inside a deficient tokio runtime auto-falls-back to Owned mode;
+// blocking API still works from a sync context afterward.
 #[test]
-fn deficient_tokio_handle_blocking_roundtrip() {
+fn deficient_tokio_handle_auto_fallback_blocking_roundtrip() {
     for (label, builder) in [
         ("deficient", build_rt_no_drivers as RuntimeBuilder),
         ("no_io", build_rt_no_io as RuntimeBuilder),
@@ -760,11 +756,8 @@ fn deficient_tokio_handle_blocking_roundtrip() {
     ] {
         let rt = builder();
         let temp = tempdir().unwrap();
-        let session = XetSessionBuilder::new()
-            .with_endpoint(local_endpoint(&temp))
-            .with_tokio_handle(rt.handle().clone())
-            .build()
-            .unwrap();
+        let session =
+            rt.block_on(async { XetSessionBuilder::new().with_endpoint(local_endpoint(&temp)).build().unwrap() });
 
         let payload = format!("{label} handle blocking roundtrip");
         assert_roundtrip_sync(&session, &temp, payload.as_bytes(), &format!("{label}_blocking"));
@@ -773,7 +766,7 @@ fn deficient_tokio_handle_blocking_roundtrip() {
 
 // ── 5. Blocking from non-tokio executor contexts ─────────────────────────
 //
-// _blocking methods use external_run_async_task (handle.block_on) on the
+// _blocking methods use bridge_sync (handle.block_on) on the
 // owned pool. Non-tokio executors (smol, async-std, futures) do not set a
 // tokio thread-local context, so block_on does not panic.
 
@@ -813,14 +806,14 @@ fn blocking_in_non_tokio_executor_upload_from_path() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_mode_blocking_upload_returns_wrong_mode() {
-    let session = XetSessionBuilder::new().build_async().await.unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
     let err = session.new_upload_commit_blocking().err().unwrap();
     assert!(matches!(err, XetError::WrongRuntimeMode(_)));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_mode_blocking_download_returns_wrong_mode() {
-    let session = XetSessionBuilder::new().build_async().await.unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
     let err = session.new_download_group_blocking().err().unwrap();
     assert!(matches!(err, XetError::WrongRuntimeMode(_)));
 }
@@ -829,7 +822,7 @@ async fn external_mode_blocking_download_returns_wrong_mode() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_abort_prevents_new_commits() {
-    let session = XetSessionBuilder::new().build_async().await.unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
     session.abort().unwrap();
     let err = session.new_upload_commit().await.err().unwrap();
     assert!(matches!(err, XetError::Aborted));
@@ -837,7 +830,7 @@ async fn async_abort_prevents_new_commits() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_abort_prevents_new_groups() {
-    let session = XetSessionBuilder::new().build_async().await.unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
     session.abort().unwrap();
     let err = session.new_download_group().await.err().unwrap();
     assert!(matches!(err, XetError::Aborted));
@@ -861,7 +854,7 @@ fn blocking_abort_prevents_new_groups() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_abort_rejects_upload_on_existing_commit() {
-    let session = XetSessionBuilder::new().build_async().await.unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
     let commit = session.new_upload_commit().await.unwrap();
     session.abort().unwrap();
     let err = commit
@@ -874,7 +867,7 @@ async fn async_abort_rejects_upload_on_existing_commit() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_abort_rejects_download_on_existing_group() {
-    let session = XetSessionBuilder::new().build_async().await.unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
     let group = session.new_download_group().await.unwrap();
     session.abort().unwrap();
     let err = group
@@ -897,7 +890,7 @@ async fn async_abort_rejects_download_on_existing_group() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_duplicate_content_produces_same_hash() {
     let temp = tempdir().unwrap();
-    let session = async_session(&temp).await;
+    let session = async_session(&temp);
     let data = b"deduplication test content";
 
     let info1 = upload_bytes_async(&session, data, "first.bin").await;
@@ -913,8 +906,8 @@ async fn async_duplicate_content_produces_same_hash() {
 async fn async_separate_sessions_are_isolated() {
     let temp1 = tempdir().unwrap();
     let temp2 = tempdir().unwrap();
-    let session1 = async_session(&temp1).await;
-    let session2 = async_session(&temp2).await;
+    let session1 = async_session(&temp1);
+    let session2 = async_session(&temp2);
 
     let info1 = upload_bytes_async(&session1, b"session 1 data", "s1.bin").await;
 

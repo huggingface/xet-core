@@ -56,7 +56,7 @@ async fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<(
     if let Some(ep) = endpoint {
         builder = builder.with_endpoint(ep);
     }
-    let session = builder.build_async().await?;
+    let session = builder.build()?;
     let commit = session.new_upload_commit().await?;
 
     // Enqueue all uploads; each starts immediately in the background.
@@ -106,7 +106,7 @@ async fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: O
     if let Some(ep) = endpoint {
         builder = builder.with_endpoint(ep);
     }
-    let session = builder.build_async().await?;
+    let session = builder.build()?;
     let group = session.new_download_group().await?;
 
     // Enqueue all downloads; each starts immediately in the background.
