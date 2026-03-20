@@ -335,7 +335,7 @@ impl HydrateDehydrateTest {
             let entry = entry.unwrap();
             let out_filename = self.dest_dir.join(entry.file_name());
             let xf: XetFileInfo = serde_json::from_reader(File::open(entry.path()).unwrap()).unwrap();
-            let file_size = xf.file_size();
+            let file_size = xf.file_size().expect("file size required for partitioned hydration");
 
             let out_file = File::create(&out_filename).unwrap();
             out_file.set_len(file_size).unwrap();

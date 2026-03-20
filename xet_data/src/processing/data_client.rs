@@ -273,7 +273,7 @@ mod tests {
         assert!(result.is_ok());
 
         let file_info = result.unwrap();
-        assert_eq!(file_info.file_size(), 0);
+        assert_eq!(file_info.file_size(), Some(0));
         assert!(!file_info.hash().is_empty());
     }
 
@@ -289,7 +289,7 @@ mod tests {
         assert!(result.is_ok());
 
         let file_info = result.unwrap();
-        assert_eq!(file_info.file_size(), content.len() as u64);
+        assert_eq!(file_info.file_size(), Some(content.len() as u64));
         assert!(!file_info.hash().is_empty());
     }
 
@@ -349,8 +349,8 @@ mod tests {
 
         let file_infos = result.unwrap();
         assert_eq!(file_infos.len(), 2);
-        assert_eq!(file_infos[0].file_size(), 18);
-        assert_eq!(file_infos[1].file_size(), 19);
+        assert_eq!(file_infos[0].file_size(), Some(18));
+        assert_eq!(file_infos[1].file_size(), Some(19));
         assert_ne!(file_infos[0].hash(), file_infos[1].hash());
     }
 
@@ -373,7 +373,7 @@ mod tests {
         let result1 = hash_single_file(file_path_str.clone(), 8 * 1024 * 1024);
         assert!(result1.is_ok());
         let file_info1 = result1.unwrap();
-        assert_eq!(file_info1.file_size(), file_size as u64);
+        assert_eq!(file_info1.file_size(), Some(file_size as u64));
         assert!(!file_info1.hash().is_empty());
 
         // Hash with 4MB buffer size - file is exactly 4x buffer size

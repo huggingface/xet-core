@@ -323,7 +323,7 @@ impl DownloadGroupInner {
                         dest_path: handle.dest_path,
                         file_info: XetFileInfo {
                             hash: handle.file_info.hash,
-                            file_size: n_bytes,
+                            file_size: Some(n_bytes),
                             sha256: None,
                         },
                     }));
@@ -412,7 +412,7 @@ mod tests {
         let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
         Ok(XetFileInfo {
             hash: meta.hash.clone(),
-            file_size: meta.file_size,
+            file_size: Some(meta.file_size),
             sha256: meta.sha256.clone(),
         })
     }
@@ -535,7 +535,7 @@ mod tests {
             .download_file_to_path(
                 XetFileInfo {
                     hash: "abc123".to_string(),
-                    file_size: 1024,
+                    file_size: Some(1024),
                     sha256: None,
                 },
                 std::path::PathBuf::from("dest.bin"),
@@ -556,7 +556,7 @@ mod tests {
             .download_file_to_path(
                 XetFileInfo {
                     hash: "abc123".to_string(),
-                    file_size: 1024,
+                    file_size: Some(1024),
                     sha256: None,
                 },
                 std::path::PathBuf::from("dest.bin"),
@@ -576,7 +576,7 @@ mod tests {
             .download_file_to_path(
                 XetFileInfo {
                     hash: "abc123".to_string(),
-                    file_size: 1024,
+                    file_size: Some(1024),
                     sha256: None,
                 },
                 std::path::PathBuf::from("dest.bin"),
@@ -628,7 +628,7 @@ mod tests {
             .download_file_to_path(
                 XetFileInfo {
                     hash: "abc123".to_string(),
-                    file_size: 123,
+                    file_size: Some(123),
                     sha256: None,
                 },
                 temp.path().join("missing.bin"),
@@ -693,7 +693,7 @@ mod tests {
             let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
             XetFileInfo {
                 hash: meta.hash.clone(),
-                file_size: meta.file_size,
+                file_size: Some(meta.file_size),
                 sha256: meta.sha256.clone(),
             }
         };
@@ -759,7 +759,7 @@ mod tests {
         let handle = group.download_file_to_path(file_info, dest).await.unwrap();
         let results = group.finish().await.unwrap();
         let result = results.get(&handle.task_id).expect("task_id must be present in results");
-        assert_eq!(result.as_ref().as_ref().unwrap().file_info.file_size, data.len() as u64);
+        assert_eq!(result.as_ref().as_ref().unwrap().file_info.file_size, Some(data.len() as u64));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -788,7 +788,7 @@ mod tests {
         group.finish().await.unwrap();
         let result = handle.result().expect("result must be set after finish()");
         let dl = result.as_ref().as_ref().unwrap();
-        assert_eq!(dl.file_info.file_size, data.len() as u64);
+        assert_eq!(dl.file_info.file_size, Some(data.len() as u64));
         assert_eq!(dl.file_info.hash, file_info.hash);
     }
 
@@ -815,7 +815,7 @@ mod tests {
             let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
             let file_info = XetFileInfo {
                 hash: meta.hash.clone(),
-                file_size: meta.file_size,
+                file_size: Some(meta.file_size),
                 sha256: meta.sha256.clone(),
             };
 
@@ -846,7 +846,7 @@ mod tests {
             let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
             let file_info = XetFileInfo {
                 hash: meta.hash.clone(),
-                file_size: meta.file_size,
+                file_size: Some(meta.file_size),
                 sha256: meta.sha256.clone(),
             };
 
@@ -877,7 +877,7 @@ mod tests {
             let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
             let file_info = XetFileInfo {
                 hash: meta.hash.clone(),
-                file_size: meta.file_size,
+                file_size: Some(meta.file_size),
                 sha256: meta.sha256.clone(),
             };
 
@@ -905,7 +905,7 @@ mod tests {
         let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
         Ok(XetFileInfo {
             hash: meta.hash.clone(),
-            file_size: meta.file_size,
+            file_size: Some(meta.file_size),
             sha256: meta.sha256.clone(),
         })
     }
@@ -943,7 +943,7 @@ mod tests {
             let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
             XetFileInfo {
                 hash: meta.hash.clone(),
-                file_size: meta.file_size,
+                file_size: Some(meta.file_size),
                 sha256: meta.sha256.clone(),
             }
         };
@@ -1006,12 +1006,12 @@ mod tests {
 
         // Result should be available in the finish map by task id.
         let map_result = results.get(&handle.task_id).expect("task_id must be present in results");
-        assert_eq!(map_result.as_ref().as_ref().unwrap().file_info.file_size, data.len() as u64);
+        assert_eq!(map_result.as_ref().as_ref().unwrap().file_info.file_size, Some(data.len() as u64));
 
         // Result should also be available via the task handle.
         let result = handle.result().expect("result must be set after finish");
         let dl = result.as_ref().as_ref().unwrap();
-        assert_eq!(dl.file_info.file_size, data.len() as u64);
+        assert_eq!(dl.file_info.file_size, Some(data.len() as u64));
         assert_eq!(dl.file_info.hash, file_info.hash);
         Ok(())
     }
@@ -1059,7 +1059,7 @@ mod tests {
         let group = session.new_download_group().await.unwrap();
         let file_info = XetFileInfo {
             hash: String::new(),
-            file_size: 0,
+            file_size: Some(0),
             sha256: None,
         };
         let err = group
@@ -1082,7 +1082,7 @@ mod tests {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         let file_info = XetFileInfo {
             hash: String::new(),
-            file_size: 0,
+            file_size: Some(0),
             sha256: None,
         };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

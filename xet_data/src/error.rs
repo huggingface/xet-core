@@ -74,6 +74,8 @@ pub enum DataError {
     #[error("Invalid operation: {0}")]
     InvalidOperation(String),
 
+    #[error("File size mismatch: expected {expected} bytes but downloaded {actual} bytes")]
+    SizeMismatch { expected: u64, actual: u64 },
     #[error("Auth error: {0}")]
     AuthError(#[from] AuthError),
 

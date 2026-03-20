@@ -214,7 +214,7 @@ impl SingleFileCleaner {
 
         let file_info = XetFileInfo {
             hash: file_hash.hex(),
-            file_size: deduplication_metrics.total_bytes,
+            file_size: Some(deduplication_metrics.total_bytes),
             sha256: sha256.map(|s| s.hex()),
         };
 
