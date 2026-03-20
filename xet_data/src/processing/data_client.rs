@@ -44,7 +44,7 @@ pub async fn clean_bytes(
     bytes: Vec<u8>,
     sha256_policy: Sha256Policy,
 ) -> Result<(XetFileInfo, DeduplicationMetrics)> {
-    let (_id, mut handle) = processor.start_clean(None, bytes.len() as u64, sha256_policy)?;
+    let (_id, mut handle) = processor.start_clean(None, Some(bytes.len() as u64), sha256_policy)?;
     handle.add_data(&bytes).await?;
     handle.finish().await
 }
@@ -64,7 +64,7 @@ pub async fn clean_file(
     let mut buffer = vec![0u8; u64::min(filesize, *xet_config().data.ingestion_block_size) as usize];
 
     let (_id, mut handle) =
-        processor.start_clean(Some(filename.as_ref().to_string_lossy().into()), filesize, sha256_policy)?;
+        processor.start_clean(Some(filename.as_ref().to_string_lossy().into()), Some(filesize), sha256_policy)?;
 
     loop {
         let bytes = reader.read(&mut buffer)?;
