@@ -6,7 +6,7 @@ use tokio::sync::AcquireError;
 use tracing::error;
 use xet_client::ClientError;
 use xet_client::cas_client::auth::AuthError;
-use xet_core_structures::FormatError;
+use xet_core_structures::CoreError;
 use xet_core_structures::merklehash::DataHashHexParseError;
 use xet_runtime::RuntimeError;
 use xet_runtime::core::par_utils::ParutilsError;
@@ -44,8 +44,8 @@ pub enum DataError {
     #[error("Channel error: {0}")]
     ChannelRecvError(#[from] RecvError),
 
-    #[error("Format error: {0}")]
-    FormatError(#[from] FormatError),
+    #[error("Core structures error: {0}")]
+    FormatError(#[from] CoreError),
 
     #[error("Client error: {0}")]
     ClientError(#[from] ClientError),
@@ -71,6 +71,11 @@ pub enum DataError {
     #[error("Deprecated feature: {0}")]
     DeprecatedError(String),
 
+    #[error("Invalid operation: {0}")]
+    InvalidOperation(String),
+
+    #[error("File size mismatch: expected {expected} bytes but downloaded {actual} bytes")]
+    SizeMismatch { expected: u64, actual: u64 },
     #[error("Auth error: {0}")]
     AuthError(#[from] AuthError),
 

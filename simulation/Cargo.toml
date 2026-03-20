@@ -19,6 +19,7 @@ path = "src/bin/run_upload_simulations.rs"
 xet-runtime = { path = "../xet_runtime" }
 xet-client = { path = "../xet_client" }
 
+anyhow = { workspace = true }
 chrono = { workspace = true }
 duration-str = { workspace = true }
 clap = { workspace = true }

@@ -13,8 +13,8 @@ use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
 use xet_core_structures::xorb_object::XorbObject;
 
-use crate::cas_client::error::{CasClientError, Result};
 use crate::cas_types::{ChunkRange, FileRange, HttpRange, XorbRangeDescriptor, XorbReconstructionTerm};
+use crate::error::{ClientError, Result};
 
 lazy_static::lazy_static! {
     /// Reference instant for URL timestamps. Initialized far in the past to allow
@@ -76,7 +76,7 @@ pub(crate) fn compute_reconstruction_ranges(
 
     loop {
         if s_idx >= file_info.segments.len() {
-            return Err(CasClientError::InvalidRange);
+            return Err(ClientError::InvalidRange);
         }
 
         let n = file_info.segments[s_idx].unpacked_segment_bytes as u64;
@@ -202,16 +202,16 @@ pub(crate) fn generate_v2_fetch_url(hash: &MerkleHash, ranges: &[XorbRangeDescri
 
 /// Parses a V2 fetch URL back into (hash, timestamp, byte ranges).
 pub(crate) fn parse_v2_fetch_url(url: &str) -> Result<(MerkleHash, Instant, Vec<HttpRange>)> {
-    let bytes = URL_SAFE_NO_PAD.decode(url).map_err(|_| CasClientError::InvalidArguments)?;
-    let payload = String::from_utf8(bytes).map_err(|_| CasClientError::InvalidArguments)?;
+    let bytes = URL_SAFE_NO_PAD.decode(url).map_err(|_| ClientError::InvalidArguments)?;
+    let payload = String::from_utf8(bytes).map_err(|_| ClientError::InvalidArguments)?;
 
     let mut parts = payload.splitn(3, ':');
-    let hash_hex = parts.next().ok_or(CasClientError::InvalidArguments)?;
-    let ts_str = parts.next().ok_or(CasClientError::InvalidArguments)?;
-    let ranges_str = parts.next().ok_or(CasClientError::InvalidArguments)?;
+    let hash_hex = parts.next().ok_or(ClientError::InvalidArguments)?;
+    let ts_str = parts.next().ok_or(ClientError::InvalidArguments)?;
+    let ranges_str = parts.next().ok_or(ClientError::InvalidArguments)?;
 
-    let hash = MerkleHash::from_hex(hash_hex).map_err(|_| CasClientError::InvalidArguments)?;
-    let timestamp_ms: u64 = ts_str.parse().map_err(|_| CasClientError::InvalidArguments)?;
+    let hash = MerkleHash::from_hex(hash_hex).map_err(|_| ClientError::InvalidArguments)?;
+    let timestamp_ms: u64 = ts_str.parse().map_err(|_| ClientError::InvalidArguments)?;
     let timestamp = *REFERENCE_INSTANT + Duration::from_millis(timestamp_ms);
 
     let mut ranges = Vec::new();
@@ -219,14 +219,14 @@ pub(crate) fn parse_v2_fetch_url(url: &str) -> Result<(MerkleHash, Instant, Vec<
         let mut parts = r.splitn(2, '-');
         let start: u64 = parts
             .next()
-            .ok_or(CasClientError::InvalidArguments)?
+            .ok_or(ClientError::InvalidArguments)?
             .parse()
-            .map_err(|_| CasClientError::InvalidArguments)?;
+            .map_err(|_| ClientError::InvalidArguments)?;
         let end: u64 = parts
             .next()
-            .ok_or(CasClientError::InvalidArguments)?
+            .ok_or(ClientError::InvalidArguments)?
             .parse()
-            .map_err(|_| CasClientError::InvalidArguments)?;
+            .map_err(|_| ClientError::InvalidArguments)?;
         ranges.push(HttpRange::new(start, end));
     }
 
@@ -451,7 +451,7 @@ mod tests {
             } else if *hash == hash_b {
                 Ok(obj_b.clone())
             } else {
-                Err(CasClientError::XORBNotFound(*hash))
+                Err(ClientError::XORBNotFound(*hash))
             }
         })
         .unwrap();

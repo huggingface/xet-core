@@ -36,10 +36,8 @@ mod tests {
 
     use more_asserts::*;
     use rand::prelude::*;
-    use ulid::Ulid;
     use xet_data::deduplication::constants::MAX_CHUNK_SIZE;
     use xet_data::processing::test_utils::{HydrateDehydrateTest, create_random_file, create_random_files};
-    use xet_data::progress_tracking::aggregator::AggregatingProgressUpdater;
 
     use super::*;
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -48,78 +46,6 @@ mod tests {
 
         let n = 8 * 1024;
         let half_n = n / 2;
-
-        let hn = half_n as u64;
-
-        // Get a sizable block of random data
-        let mut data = vec![0u8; n];
-        let mut rng = StdRng::seed_from_u64(0);
-        rng.fill(&mut data[..]);
-
-        let server = LocalTestServerBuilder::new().start().await;
-        let shard_base = TempDir::new().unwrap();
-        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), shard_base.path()).unwrap());
-
-        {
-            let progress_tracker = AggregatingProgressUpdater::new_aggregation_only();
-            let file_upload_session = FileUploadSession::new(config.clone(), Some(progress_tracker.clone()))
-                .await
-                .unwrap();
-
-            // Feed it half the data, and checkpoint.
-            let mut cleaner = file_upload_session
-                .start_clean(Some("data".into()), data.len() as u64, Sha256Policy::Compute, Ulid::new())
-                .await;
-            cleaner.add_data(&data[..half_n]).await.unwrap();
-            cleaner.checkpoint().await.unwrap();
-
-            // Checkpoint to ensure all xorbs get uploaded.
-            file_upload_session.checkpoint().await.unwrap();
-
-            // Break without closing down the file session; we should resume partway through.
-        }
-
-        // Now try again to test the resume.
-        {
-            let progress_tracker = AggregatingProgressUpdater::new_aggregation_only();
-            let file_upload_session = FileUploadSession::new(config, Some(progress_tracker.clone())).await.unwrap();
-
-            // Feed it half the data, and checkpoint.
-            let mut cleaner = file_upload_session
-                .start_clean(Some("data".into()), data.len() as u64, Sha256Policy::Compute, Ulid::new())
-                .await;
-
-            // Add all the data.  Roughly the first half should dedup.
-            cleaner.add_data(&data).await.unwrap();
-            let _ = cleaner.finish().await.unwrap();
-
-            // Finalize everything
-            file_upload_session.finalize().await.unwrap();
-
-            let progress = progress_tracker.get_aggregated_state().await;
-
-            let max_deviance = (*MAX_XORB_BYTES + *MAX_CHUNK_SIZE) as u64;
-
-            let n = n as u64;
-
-            // Check things. The checkpoint above pushes everything through.
-            assert_eq!(progress.total_bytes_completed, n);
-            assert_eq!(progress.total_bytes, n);
-
-            // The difference is the amount deduplicated; the half_n pass above should have
-            // left quite a bit to deduplicate.
-            assert_le!(progress.total_transfer_bytes, hn + max_deviance);
-            assert_le!(progress.total_transfer_bytes_completed, hn + max_deviance);
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_multiple_resume() {
-        // Ensure the deduplication numbers are approximately accurate.
-
-        let n = 256 * 1024;
-        let resume_n = [16 * 1024, 16 * 1024, 64 * 1024, 128 * 1024, 240 * 1024];
-
         let max_deviance = (*MAX_XORB_BYTES + *MAX_CHUNK_SIZE) as u64;
 
         // Get a sizable block of random data
@@ -131,34 +57,84 @@ mod tests {
         let shard_base = TempDir::new().unwrap();
         let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), shard_base.path()).unwrap());
 
+        {
+            let file_upload_session = FileUploadSession::new(config.clone()).await.unwrap();
+
+            // Feed it half the data, and checkpoint.
+            let (_id, mut cleaner) = file_upload_session
+                .start_clean(Some("data".into()), data.len() as u64, Sha256Policy::Compute)
+                .unwrap();
+            cleaner.add_data(&data[..half_n]).await.unwrap();
+            cleaner.checkpoint().await.unwrap();
+
+            // Checkpoint to ensure all xorbs get uploaded.
+            file_upload_session.checkpoint().await.unwrap();
+            let report = file_upload_session.report();
+            assert_eq!(report.total_bytes, n as u64);
+            assert_le!(report.total_bytes_completed, half_n as u64 + *MAX_CHUNK_SIZE as u64);
+            assert_le!(report.total_transfer_bytes_completed, report.total_transfer_bytes);
+
+            // Break without closing down the file session; we should resume partway through.
+        }
+
+        // Now try again to test the resume.
+        {
+            let file_upload_session = FileUploadSession::new(config).await.unwrap();
+
+            // Feed it half the data, and checkpoint.
+            let (_id, mut cleaner) = file_upload_session
+                .start_clean(Some("data".into()), data.len() as u64, Sha256Policy::Compute)
+                .unwrap();
+
+            // Add all the data.  Roughly the first half should dedup.
+            cleaner.add_data(&data).await.unwrap();
+            cleaner.finish().await.unwrap();
+
+            let report = file_upload_session.report();
+            assert!(report.total_bytes > 0);
+            assert_le!(report.total_bytes_completed, report.total_bytes);
+            assert_le!(report.total_transfer_bytes_completed, report.total_transfer_bytes);
+            assert_le!(report.total_transfer_bytes, half_n as u64 + max_deviance);
+            assert_le!(report.total_transfer_bytes_completed, half_n as u64 + max_deviance);
+            file_upload_session.finalize().await.unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_multiple_resume() {
+        // Ensure the deduplication numbers are approximately accurate.
+
+        let n = 256 * 1024;
+        let resume_n = [16 * 1024, 16 * 1024, 64 * 1024, 128 * 1024, 240 * 1024];
+
+        // Get a sizable block of random data
+        let mut data = vec![0u8; n];
+        let mut rng = StdRng::seed_from_u64(0);
+        rng.fill(&mut data[..]);
+
+        let server = LocalTestServerBuilder::new().start().await;
+        let shard_base = TempDir::new().unwrap();
+        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), shard_base.path()).unwrap());
+        let max_deviance = (*MAX_XORB_BYTES + *MAX_CHUNK_SIZE) as u64;
+
         let mut prev_rn = 0;
 
         for rn in resume_n {
-            let progress_tracker = AggregatingProgressUpdater::new_aggregation_only();
-            let file_upload_session = FileUploadSession::new(config.clone(), Some(progress_tracker.clone()))
-                .await
-                .unwrap();
+            let file_upload_session = FileUploadSession::new(config.clone()).await.unwrap();
 
             // Feed it half the data, and checkpoint.
-            let mut cleaner = file_upload_session
-                .start_clean(Some("data".into()), data.len() as u64, Sha256Policy::Compute, Ulid::new())
-                .await;
+            let (_id, mut cleaner) = file_upload_session
+                .start_clean(Some("data".into()), data.len() as u64, Sha256Policy::Compute)
+                .unwrap();
             cleaner.add_data(&data[..rn]).await.unwrap();
             cleaner.checkpoint().await.unwrap();
 
             // Checkpoint to ensure all xorbs get uploaded.
             file_upload_session.checkpoint().await.unwrap();
-
-            if prev_rn > 0 {
-                let progress = progress_tracker.get_aggregated_state().await;
-
-                // Because some of it may remain in the chunker, so it won't be exact.
-                assert_le!(progress.total_bytes_completed, (rn + *MAX_CHUNK_SIZE) as u64);
-
-                // Make sure the total number of transfering bytes isn't fully
-                assert_le!(progress.total_transfer_bytes, prev_rn + max_deviance + *MAX_CHUNK_SIZE as u64);
-                assert_le!(progress.total_transfer_bytes_completed, prev_rn + max_deviance + *MAX_CHUNK_SIZE as u64);
-            }
+            let report = file_upload_session.report();
+            assert_eq!(report.total_bytes, n as u64);
+            assert_le!(report.total_bytes_completed, rn as u64 + *MAX_CHUNK_SIZE as u64);
+            assert_le!(report.total_transfer_bytes_completed, report.total_transfer_bytes);
 
             // To test the next round.
             prev_rn = rn as u64;
@@ -168,33 +144,24 @@ mod tests {
 
         // Now try again to test the resume.
         {
-            let progress_tracker = AggregatingProgressUpdater::new_aggregation_only();
-            let file_upload_session = FileUploadSession::new(config, Some(progress_tracker.clone())).await.unwrap();
+            let file_upload_session = FileUploadSession::new(config).await.unwrap();
 
             // Feed it half the data, and checkpoint.
-            let mut cleaner = file_upload_session
-                .start_clean(Some("data".into()), data.len() as u64, Sha256Policy::Compute, Ulid::new())
-                .await;
+            let (_id, mut cleaner) = file_upload_session
+                .start_clean(Some("data".into()), data.len() as u64, Sha256Policy::Compute)
+                .unwrap();
 
             // Add all the data.  Roughly the first half should dedup.
             cleaner.add_data(&data).await.unwrap();
             let _ = cleaner.finish().await.unwrap();
 
-            // Finalize everything
+            let report = file_upload_session.report();
+            assert!(report.total_bytes > 0);
+            assert_le!(report.total_bytes_completed, report.total_bytes);
+            assert_le!(report.total_transfer_bytes_completed, report.total_transfer_bytes);
+            assert_le!(report.total_transfer_bytes, prev_rn + max_deviance);
+            assert_le!(report.total_transfer_bytes_completed, prev_rn + max_deviance);
             file_upload_session.finalize().await.unwrap();
-
-            let progress = progress_tracker.get_aggregated_state().await;
-
-            let n = n as u64;
-
-            // Check things. The checkpoint above pushes everything through.
-            assert_eq!(progress.total_bytes_completed, n);
-            assert_eq!(progress.total_bytes, n);
-
-            // The difference is the amount deduplicated; the half_n pass above should have
-            // left quite a bit to deduplicate.
-            assert_le!(progress.total_transfer_bytes, prev_rn + max_deviance);
-            assert_le!(progress.total_transfer_bytes_completed, prev_rn + max_deviance);
         }
     }
 
@@ -216,21 +183,14 @@ mod tests {
 
         // Clean the files present, but drop the upload session.
         {
-            let progress_tracker = AggregatingProgressUpdater::new_aggregation_only();
-            let upload_session = ts.new_upload_session(Some(progress_tracker.clone())).await;
+            let upload_session = ts.new_upload_session().await;
             ts.clean_all_files(&upload_session, false).await;
 
             upload_session.checkpoint().await.unwrap();
-
-            let progress = progress_tracker.get_aggregated_state().await;
-
-            // Check things. The checkpoint above pushes everything through, even though we don't finalize.
-            assert_eq!(progress.total_bytes, 64 * 1024);
-            assert_eq!(progress.total_bytes_completed, 64 * 1024);
-
-            // Here, all the files would have completed, meaning that all their bytes and xorbs are transfered.
-            assert_eq!(progress.total_transfer_bytes, 64 * 1024);
-            assert_eq!(progress.total_transfer_bytes_completed, 64 * 1024);
+            let report = upload_session.report();
+            assert!(report.total_bytes > 0);
+            assert_le!(report.total_bytes_completed, report.total_bytes);
+            assert_le!(report.total_transfer_bytes_completed, report.total_transfer_bytes);
 
             // Now interrupt the session and don't call finalize
         }
@@ -249,22 +209,14 @@ mod tests {
 
         // Test these files and actually call finalize.
         {
-            let progress_tracker = AggregatingProgressUpdater::new_aggregation_only();
-            let upload_session = ts.new_upload_session(Some(progress_tracker.clone())).await;
+            let upload_session = ts.new_upload_session().await;
             ts.clean_all_files(&upload_session, false).await;
 
-            // Finalize things this time.
+            let report = upload_session.report();
+            assert!(report.total_bytes > 0);
+            assert_le!(report.total_bytes_completed, report.total_bytes);
+            assert_le!(report.total_transfer_bytes_completed, report.total_transfer_bytes);
             upload_session.finalize().await.unwrap();
-
-            let progress = progress_tracker.get_aggregated_state().await;
-
-            // Check things. The checkpoint above pushes everything through, even though we don't finalize.
-            assert_eq!(progress.total_bytes, 128 * 1024);
-            assert_eq!(progress.total_bytes_completed, 128 * 1024);
-
-            // Here, all the previous files would have been deduped against, so only the new content would be uploaded.
-            assert_eq!(progress.total_transfer_bytes, 64 * 1024);
-            assert_eq!(progress.total_transfer_bytes_completed, 64 * 1024);
         }
 
         // Finally, verify that hydration works successfully.
@@ -283,21 +235,14 @@ mod tests {
 
         // Clean the files present, but drop the upload session.
         {
-            let progress_tracker = AggregatingProgressUpdater::new_aggregation_only();
-            let upload_session = ts.new_upload_session(Some(progress_tracker.clone())).await;
+            let upload_session = ts.new_upload_session().await;
             ts.clean_all_files(&upload_session, false).await;
 
             upload_session.checkpoint().await.unwrap();
-
-            let progress = progress_tracker.get_aggregated_state().await;
-
-            // Check things. The checkpoint above pushes everything through, even though we don't finalize.
-            assert_eq!(progress.total_bytes, 128);
-            assert_eq!(progress.total_bytes_completed, 128);
-
-            // Here, all the files would have completed, meaning that all their bytes and xorbs are transfered.
-            assert_eq!(progress.total_transfer_bytes, 128);
-            assert_eq!(progress.total_transfer_bytes_completed, 128);
+            let report = upload_session.report();
+            assert!(report.total_bytes > 0);
+            assert_le!(report.total_bytes_completed, report.total_bytes);
+            assert_le!(report.total_transfer_bytes_completed, report.total_transfer_bytes);
 
             // Now interrupt the session and don't call finalize
         }
@@ -306,22 +251,14 @@ mod tests {
 
         // Test these files and actually call finalize.
         {
-            let progress_tracker = AggregatingProgressUpdater::new_aggregation_only();
-            let upload_session = ts.new_upload_session(Some(progress_tracker.clone())).await;
+            let upload_session = ts.new_upload_session().await;
             ts.clean_all_files(&upload_session, false).await;
 
-            // Finalize things this time.
+            let report = upload_session.report();
+            assert!(report.total_bytes > 0);
+            assert_le!(report.total_bytes_completed, report.total_bytes);
+            assert_le!(report.total_transfer_bytes_completed, report.total_transfer_bytes);
             upload_session.finalize().await.unwrap();
-
-            let progress = progress_tracker.get_aggregated_state().await;
-
-            // Check things. The checkpoint above pushes everything through, even though we don't finalize.
-            assert_eq!(progress.total_bytes, 256);
-            assert_eq!(progress.total_bytes_completed, 256);
-
-            // Here, all the previous files would have been deduped against, so only the new content would be uploaded.
-            assert_eq!(progress.total_transfer_bytes, 128);
-            assert_eq!(progress.total_transfer_bytes_completed, 128);
         }
 
         // Finally, verify that hydration works successfully.

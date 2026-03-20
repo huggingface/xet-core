@@ -1,138 +1,173 @@
 use std::borrow::Cow;
 use std::io::Write;
-use std::ops::Range;
-use std::path::Path;
+use std::ops::{Bound, RangeBounds};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
+use tokio::task::JoinHandle;
 use tracing::instrument;
-use ulid::Ulid;
 use xet_client::cas_client::Client;
 use xet_client::cas_types::FileRange;
-use xet_runtime::core::xet_config;
+use xet_runtime::core::{XetRuntime, xet_config};
 
 use super::configurations::TranslatorConfig;
-use super::errors::*;
 use super::remote_client_interface::create_remote_client;
 use super::{XetFileInfo, prometheus_metrics};
+use crate::error::{DataError, Result};
 use crate::file_reconstruction::{DownloadStream, FileReconstructor};
-use crate::progress_tracking::TrackingProgressUpdater;
-use crate::progress_tracking::aggregator::AggregatingProgressUpdater;
-use crate::progress_tracking::download_tracking::DownloadProgressTracker;
+use crate::progress_tracking::{GroupProgress, ItemProgressUpdater, UniqueID};
 
 /// Manages the downloading of files from CAS storage.
 ///
 /// This struct parallels `FileUploadSession` for the download path. It holds the
-/// CAS client, a shared progress tracker for all downloads in the session, and
-/// gates concurrent downloads with a semaphore.
+/// CAS client and a shared progress group for all downloads in the session.
 pub struct FileDownloadSession {
     client: Arc<dyn Client>,
-    progress_tracker: Option<Arc<DownloadProgressTracker>>,
-    progress_aggregator: Option<Arc<AggregatingProgressUpdater>>,
+    progress: Arc<GroupProgress>,
+    finalized: AtomicBool,
 }
 
 impl FileDownloadSession {
-    pub async fn new(
-        config: Arc<TranslatorConfig>,
-        progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
-    ) -> Result<Arc<Self>> {
+    pub async fn new(config: Arc<TranslatorConfig>) -> Result<Arc<Self>> {
         let session_id = config
             .session
             .session_id
             .as_ref()
             .map(Cow::Borrowed)
-            .unwrap_or_else(|| Cow::Owned(Ulid::new().to_string()));
+            .unwrap_or_else(|| Cow::Owned(UniqueID::new().to_string()));
 
         let client = create_remote_client(&config, &session_id, false).await?;
-
-        let (progress_updater, progress_aggregator) = Self::maybe_wrap_in_aggregator(progress_updater);
-        let progress_tracker = progress_updater.map(DownloadProgressTracker::new);
+        let progress = GroupProgress::with_speed_config(
+            xet_config().data.progress_update_speed_sampling_window,
+            xet_config().data.progress_update_speed_min_observations,
+        );
 
         Ok(Arc::new(Self {
             client,
-            progress_tracker,
-            progress_aggregator,
+            progress,
+            finalized: AtomicBool::new(false),
         }))
     }
 
-    /// Creates a new download session from an existing CAS client.
+    /// Construct a download session from an existing CAS client.
     ///
-    /// This is useful for tests or contexts where a client has already been created
-    /// outside of the normal config-based flow.
-    pub fn from_client(
-        client: Arc<dyn Client>,
-        progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
-    ) -> Arc<Self> {
-        let (progress_updater, progress_aggregator) = Self::maybe_wrap_in_aggregator(progress_updater);
-        let progress_tracker = progress_updater.map(DownloadProgressTracker::new);
+    /// This path uses default progress speed settings. Use [`Self::new`] when the
+    /// session should inherit the configured speed parameters from `xet_config`.
+    pub fn from_client(client: Arc<dyn Client>) -> Arc<Self> {
+        let progress = GroupProgress::new();
         Arc::new(Self {
             client,
-            progress_tracker,
-            progress_aggregator,
+            progress,
+            finalized: AtomicBool::new(false),
         })
     }
 
-    /// Downloads a complete file to the given path.
-    ///
-    /// If `tracking_id` is provided, it is used as the progress item name;
-    /// otherwise the write path is used.
-    #[instrument(skip_all, name = "FileDownloadSession::download_file", fields(hash = file_info.hash()))]
-    pub async fn download_file(&self, file_info: &XetFileInfo, write_path: &Path, tracking_id: Ulid) -> Result<u64> {
-        // download concurrency controlled outside
-        let reconstructor = self.setup_reconstructor(file_info, None, tracking_id, Some(write_path), None)?;
-        let n_bytes = reconstructor.reconstruct_to_file(write_path, None).await?;
-        prometheus_metrics::FILTER_BYTES_SMUDGED.inc_by(n_bytes);
+    pub fn report(&self) -> crate::progress_tracking::GroupProgressReport {
+        self.progress.report()
+    }
 
+    pub fn item_report(&self, id: UniqueID) -> Option<crate::progress_tracking::ItemProgressReport> {
+        self.progress.item_report(id)
+    }
+
+    pub fn item_reports(&self) -> std::collections::HashMap<UniqueID, crate::progress_tracking::ItemProgressReport> {
+        self.progress.item_reports()
+    }
+
+    /// Spawns a download task that writes `file_info` to `write_path`.
+    ///
+    /// Acquires a permit from the global download semaphore before starting.
+    /// Returns the tracking ID and the join handle for the spawned task.
+    pub async fn download_file_background(
+        self: &Arc<Self>,
+        file_info: XetFileInfo,
+        write_path: PathBuf,
+    ) -> Result<(UniqueID, JoinHandle<Result<u64>>)> {
+        self.check_not_finalized()?;
+        let id = UniqueID::new();
+        let session = self.clone();
+        let rt = XetRuntime::current();
+        let semaphore = rt.common().file_download_semaphore.clone();
+        let handle = rt.spawn(async move {
+            let _permit = semaphore.acquire().await?;
+            session.download_file_with_id(&file_info, &write_path, id).await
+        });
+        Ok((id, handle))
+    }
+
+    /// Downloads a complete file to the given path.
+    #[instrument(skip_all, name = "FileDownloadSession::download_file", fields(hash = file_info.hash()))]
+    pub async fn download_file(&self, file_info: &XetFileInfo, write_path: &Path) -> Result<(UniqueID, u64)> {
+        self.check_not_finalized()?;
+        let id = UniqueID::new();
+        let n_bytes = self.download_file_with_id(file_info, write_path, id).await?;
+        Ok((id, n_bytes))
+    }
+
+    async fn download_file_with_id(&self, file_info: &XetFileInfo, write_path: &Path, id: UniqueID) -> Result<u64> {
+        let name = Arc::from(write_path.to_string_lossy().as_ref());
+        let progress_updater = self.progress.new_item(id, name);
+        let reconstructor = self.setup_reconstructor(file_info, None, Some(progress_updater))?;
+        let n_bytes = reconstructor.reconstruct_to_file(write_path, None).await?;
+        // Caller is responsible for cleaning up the file on error (consistent
+        // with other error paths); see download_group.rs error handling.
+        if let Some(expected_size) = file_info.file_size()
+            && n_bytes != expected_size
+        {
+            return Err(DataError::SizeMismatch {
+                expected: expected_size,
+                actual: n_bytes,
+            });
+        }
+        prometheus_metrics::FILTER_BYTES_SMUDGED.inc_by(n_bytes);
         Ok(n_bytes)
     }
 
     /// Downloads a byte range of a file and writes it to the provided writer.
     ///
     /// The provided `source_range` is interpreted against the original file; output
-    /// starts at the writer's current position.
+    /// starts at the writer's current position. Accepts any `RangeBounds<u64>`:
+    /// `4..12`, `5..`, `..100`, or `..` (full file).
     ///
     /// This path does not acquire the session-level file download semaphore.
     #[instrument(skip_all, name = "FileDownloadSession::download_to_writer",
-        fields(hash = file_info.hash(), range_start = source_range.start, range_end = source_range.end))]
+        fields(hash = file_info.hash(), range_start = tracing::field::Empty, range_end = tracing::field::Empty))]
     pub async fn download_to_writer<W: Write + Send + 'static>(
         &self,
         file_info: &XetFileInfo,
-        source_range: Range<u64>,
+        source_range: impl RangeBounds<u64>,
         writer: W,
-        tracking_id: Ulid,
-    ) -> Result<u64> {
-        // download concurrency controlled outside
-        let range = FileRange::new(source_range.start, source_range.end);
-        let reconstructor = self.setup_reconstructor(file_info, Some(range), tracking_id, None, None)?;
+    ) -> Result<(UniqueID, u64)> {
+        self.check_not_finalized()?;
+        let range = range_bounds_to_file_range(&source_range)?;
+        if let Some(ref r) = range {
+            let span = tracing::Span::current();
+            span.record("range_start", r.start);
+            span.record("range_end", r.end);
+        }
+        let id = UniqueID::new();
+        let name = Arc::from("");
+        let progress_updater = self.progress.new_item(id, name);
+        let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater))?;
         let n_bytes = reconstructor.reconstruct_to_writer(writer).await?;
-        prometheus_metrics::FILTER_BYTES_SMUDGED.inc_by(n_bytes);
 
-        Ok(n_bytes)
-    }
-
-    /// Downloads a complete file to the given path, using a caller-provided progress updater
-    /// instead of the session's shared progress tracker.
-    #[instrument(skip_all, name = "FileDownloadSession::download_file_with_updater", fields(hash = file_info.hash()))]
-    pub async fn download_file_with_updater(
-        self: &Arc<Self>,
-        file_info: &XetFileInfo,
-        write_path: &Path,
-        progress_updater: Arc<dyn TrackingProgressUpdater>,
-    ) -> Result<u64> {
-        // download concurrency controlled outside
-
-        let (wrapped_updater, aggregator) = Self::maybe_wrap_in_aggregator(Some(progress_updater));
-        let tracker = wrapped_updater.map(DownloadProgressTracker::new);
-
-        let reconstructor =
-            self.setup_reconstructor(file_info, None, Ulid::new(), Some(write_path), tracker.as_ref())?;
-        let n_bytes = reconstructor.reconstruct_to_file(write_path, None).await?;
-        prometheus_metrics::FILTER_BYTES_SMUDGED.inc_by(n_bytes);
-
-        if let Some(agg) = aggregator {
-            agg.finalize().await;
+        let expected_size = match range {
+            Some(r) if r.end < u64::MAX => Some(r.end - r.start),
+            None => file_info.file_size(),
+            _ => None,
+        };
+        if let Some(expected) = expected_size
+            && n_bytes != expected
+        {
+            return Err(DataError::SizeMismatch {
+                expected,
+                actual: n_bytes,
+            });
         }
 
-        Ok(n_bytes)
+        prometheus_metrics::FILTER_BYTES_SMUDGED.inc_by(n_bytes);
+        Ok((id, n_bytes))
     }
 
     /// Creates a streaming download of a file.
@@ -144,76 +179,117 @@ impl FileDownloadSession {
     ///
     /// This path does not acquire the session-level file download semaphore.
     #[instrument(skip_all, name = "FileDownloadSession::download_stream", fields(hash = file_info.hash()))]
-    pub fn download_stream(&self, file_info: &XetFileInfo, tracking_id: Ulid) -> Result<DownloadStream> {
-        let reconstructor = self.setup_reconstructor(file_info, None, tracking_id, None, None)?;
-        Ok(reconstructor.reconstruct_to_stream())
+    pub async fn download_stream(&self, file_info: &XetFileInfo) -> Result<(UniqueID, DownloadStream)> {
+        self.download_stream_range(file_info, ..).await
     }
 
-    fn tracker_name(&self, write_path: Option<&Path>) -> Arc<str> {
-        write_path
-            .map(|path| Arc::from(path.to_string_lossy().as_ref()))
-            .unwrap_or_else(|| Arc::from(""))
-    }
-
-    fn maybe_wrap_in_aggregator(
-        updater: Option<Arc<dyn TrackingProgressUpdater>>,
-    ) -> (Option<Arc<dyn TrackingProgressUpdater>>, Option<Arc<AggregatingProgressUpdater>>) {
-        match updater {
-            Some(updater) => {
-                let flush_interval = xet_config().data.progress_update_interval;
-                let sampling_window = xet_config().data.progress_update_speed_sampling_window;
-                if !flush_interval.is_zero() {
-                    let agg = AggregatingProgressUpdater::new(updater, flush_interval, sampling_window);
-                    (Some(agg.clone() as Arc<dyn TrackingProgressUpdater>), Some(agg))
-                } else {
-                    (Some(updater), None)
-                }
-            },
-            None => (None, None),
-        }
-    }
-
-    /// Finalizes the session-level progress aggregator, flushing any remaining
-    /// updates and stopping its background task.
-    pub async fn finalize(&self) {
-        if let Some(agg) = &self.progress_aggregator {
-            agg.finalize().await;
-        }
-    }
-
-    /// Common setup: builds a `FileReconstructor` with the given options.
+    /// Creates a streaming download of a byte range of a file.
     ///
-    /// When `progress_override` is provided, it is used instead of the session's
-    /// shared `progress_tracker`.
+    /// Accepts any `RangeBounds<u64>`: `4..12`, `5..`, `..100`, or `..` (full file).
+    ///
+    /// This path does not acquire the session-level file download semaphore.
+    #[instrument(skip_all, name = "FileDownloadSession::download_stream_range", fields(hash = file_info.hash()))]
+    pub async fn download_stream_range(
+        &self,
+        file_info: &XetFileInfo,
+        range: impl RangeBounds<u64>,
+    ) -> Result<(UniqueID, DownloadStream)> {
+        self.check_not_finalized()?;
+        let file_range = range_bounds_to_file_range(&range)?;
+        let id = UniqueID::new();
+        let progress_updater = self.progress.new_item(id, "stream");
+        let reconstructor = self.setup_reconstructor(file_info, file_range, Some(progress_updater))?;
+        Ok((id, reconstructor.reconstruct_to_stream()))
+    }
+    fn check_not_finalized(&self) -> Result<()> {
+        if self.finalized.load(Ordering::Acquire) {
+            return Err(DataError::InvalidOperation("FileDownloadSession already finalized".to_string()));
+        }
+        Ok(())
+    }
+
+    /// Finalizes the session; in debug builds, asserts all items are complete.
+    pub async fn finalize(&self) -> Result<()> {
+        if self.finalized.swap(true, Ordering::AcqRel) {
+            return Err(DataError::InvalidOperation("FileDownloadSession already finalized".to_string()));
+        }
+        #[cfg(debug_assertions)]
+        self.progress.assert_complete();
+        Ok(())
+    }
+
     fn setup_reconstructor(
         &self,
         file_info: &XetFileInfo,
         range: Option<FileRange>,
-        tracking_id: Ulid,
-        write_path: Option<&Path>,
-        progress_override: Option<&Arc<DownloadProgressTracker>>,
+        progress_updater: Option<Arc<ItemProgressUpdater>>,
     ) -> Result<FileReconstructor> {
         let file_id = file_info.merkle_hash()?;
 
-        let tracker = progress_override.or(self.progress_tracker.as_ref());
-        let task_updater = tracker.map(|tracker| {
-            let tracking_name = self.tracker_name(write_path);
-            let task = tracker.new_download_task(tracking_id, tracking_name);
-            let size = range
-                .map(|r| r.end.saturating_sub(r.start))
-                .unwrap_or_else(|| file_info.file_size());
-            task.update_item_size(size, true);
-            task
-        });
+        let mut reconstructor = FileReconstructor::new(&self.client, file_id);
 
-        let effective_range = range.unwrap_or_else(|| FileRange::new(0, file_info.file_size()));
-        let mut reconstructor = FileReconstructor::new(&self.client, file_id).with_byte_range(effective_range);
-
-        if let Some(tracker) = task_updater {
-            reconstructor = reconstructor.with_progress_updater(tracker);
+        match range {
+            Some(range) if range.end < u64::MAX => {
+                // Fully bounded range: we know the exact download size upfront.
+                let size = range.end - range.start;
+                if let Some(ref updater) = progress_updater {
+                    updater.update_item_size(size, true);
+                }
+                reconstructor = reconstructor.with_byte_range(range);
+            },
+            Some(range) => {
+                // Open-ended range (end == u64::MAX): pass the range to set the
+                // start position, but let ReconstructionTermManager discover
+                // the actual end and finalize progress incrementally.
+                reconstructor = reconstructor.with_byte_range(range);
+            },
+            None if file_info.file_size().is_some() => {
+                // Full file with caller-provided size. Set progress upfront so
+                // UI consumers get percentage-based progress. SizeMismatch is
+                // validated after reconstruction in download_file_with_id.
+                if let Some(ref updater) = progress_updater {
+                    updater.update_item_size(file_info.file_size().unwrap(), true);
+                }
+            },
+            None => {
+                // Full file with unknown size: the reconstructor uses
+                // FileRange::full() internally and ReconstructionTermManager
+                // discovers the size incrementally.
+            },
         }
 
+        if let Some(updater) = progress_updater {
+            reconstructor = reconstructor.with_progress_updater(updater);
+        }
         Ok(reconstructor)
+    }
+}
+
+/// Converts any `RangeBounds<u64>` into an `Option<FileRange>`.
+///
+/// Returns `None` for the unbounded range `..` (equivalent to full file),
+/// and `Some(FileRange)` otherwise. Open-ended ranges use `u64::MAX` as
+/// the end sentinel (matching `FileRange::full()`).
+///
+/// Returns an error for inverted ranges where `start > end`.
+fn range_bounds_to_file_range(range: &impl RangeBounds<u64>) -> Result<Option<FileRange>> {
+    let start = match range.start_bound() {
+        Bound::Included(&s) => s,
+        Bound::Excluded(&s) => s.saturating_add(1),
+        Bound::Unbounded => 0,
+    };
+    let end = match range.end_bound() {
+        Bound::Included(&e) => e.saturating_add(1),
+        Bound::Excluded(&e) => e,
+        Bound::Unbounded => u64::MAX,
+    };
+    if start > end {
+        return Err(DataError::InvalidOperation(format!("Invalid range: start ({start}) > end ({end})")));
+    }
+    if start == 0 && end == u64::MAX {
+        Ok(None)
+    } else {
+        Ok(Some(FileRange::new(start, end)))
     }
 }
 
@@ -239,13 +315,13 @@ mod tests {
     }
 
     async fn upload_data(cas_path: &Path, data: &[u8]) -> XetFileInfo {
-        let upload_session = FileUploadSession::new(TranslatorConfig::local_config(cas_path).unwrap().into(), None)
+        let upload_session = FileUploadSession::new(TranslatorConfig::local_config(cas_path).unwrap().into())
             .await
             .unwrap();
 
-        let mut cleaner = upload_session
-            .start_clean(Some("test".into()), data.len() as u64, Sha256Policy::Compute, Ulid::new())
-            .await;
+        let (_id, mut cleaner) = upload_session
+            .start_clean(Some("test".into()), data.len() as u64, Sha256Policy::Compute)
+            .unwrap();
         cleaner.add_data(data).await.unwrap();
         let (xfi, _chunk_hashes, _metrics) = cleaner.finish().await.unwrap();
         upload_session.finalize().await.unwrap();
@@ -265,10 +341,10 @@ mod tests {
                 let xfi = upload_data(&cas_path, original_data).await;
 
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
 
                 let out_path = temp.path().join("output.txt");
-                let n_bytes = session.download_file(&xfi, &out_path, Ulid::new()).await.unwrap();
+                let (_id, n_bytes) = session.download_file(&xfi, &out_path).await.unwrap();
 
                 assert_eq!(n_bytes, original_data.len() as u64);
                 assert_eq!(read(&out_path).unwrap(), original_data);
@@ -289,12 +365,12 @@ mod tests {
                 let xfi = upload_data(&cas_path, original_data).await;
 
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
 
                 let out_path = temp.path().join("deep").join("nested").join("dir").join("output.txt");
                 assert!(!out_path.parent().unwrap().exists());
 
-                session.download_file(&xfi, &out_path, Ulid::new()).await.unwrap();
+                session.download_file(&xfi, &out_path).await.unwrap();
 
                 assert_eq!(read(&out_path).unwrap(), original_data);
             })
@@ -314,7 +390,7 @@ mod tests {
                 let xfi = upload_data(&cas_path, original_data).await;
 
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
 
                 let out_path = temp.path().join("partial_writer.txt");
                 write(&out_path, vec![0u8; original_data.len()]).unwrap();
@@ -322,7 +398,7 @@ mod tests {
                 let mut file = std::fs::OpenOptions::new().write(true).open(&out_path).unwrap();
                 file.seek(SeekFrom::Start(4)).unwrap();
 
-                let n_bytes = session.download_to_writer(&xfi, 4..12, file, Ulid::new()).await.unwrap();
+                let (_id, n_bytes) = session.download_to_writer(&xfi, 4..12, file).await.unwrap();
 
                 assert_eq!(n_bytes, 8);
                 let result = read(&out_path).unwrap();
@@ -343,7 +419,7 @@ mod tests {
 
                 let xfi = upload_data(&cas_path, original_data).await;
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
 
                 let out_path = temp.path().join("partitioned.txt");
                 write(&out_path, vec![0u8; original_data.len()]).unwrap();
@@ -365,7 +441,7 @@ mod tests {
                     tasks.push(tokio::spawn(async move {
                         let mut writer = std::fs::OpenOptions::new().write(true).open(out_path).unwrap();
                         writer.seek(SeekFrom::Start(start)).unwrap();
-                        session.download_to_writer(&xfi, start..end, writer, Ulid::new()).await
+                        session.download_to_writer(&xfi, start..end, writer).await
                     }));
                 }
 
@@ -395,7 +471,7 @@ mod tests {
                 let xfi_b = upload_data(&cas_path, data_b).await;
 
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
 
                 let out_a = temp.path().join("out_a.txt");
                 let out_b = temp.path().join("out_b.txt");
@@ -403,14 +479,12 @@ mod tests {
                 let session_a = session.clone();
                 let xfi_a_clone = xfi_a.clone();
                 let out_a_clone = out_a.clone();
-                let task_a =
-                    tokio::spawn(async move { session_a.download_file(&xfi_a_clone, &out_a_clone, Ulid::new()).await });
+                let task_a = tokio::spawn(async move { session_a.download_file(&xfi_a_clone, &out_a_clone).await });
 
                 let session_b = session.clone();
                 let xfi_b_clone = xfi_b.clone();
                 let out_b_clone = out_b.clone();
-                let task_b =
-                    tokio::spawn(async move { session_b.download_file(&xfi_b_clone, &out_b_clone, Ulid::new()).await });
+                let task_b = tokio::spawn(async move { session_b.download_file(&xfi_b_clone, &out_b_clone).await });
 
                 task_a.await.unwrap().unwrap();
                 task_b.await.unwrap().unwrap();
@@ -436,9 +510,9 @@ mod tests {
                 let xfi = upload_data(&cas_path, original_data).await;
 
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
 
-                let mut stream = session.download_stream(&xfi, Ulid::new()).unwrap();
+                let (_id, mut stream) = session.download_stream(&xfi).await.unwrap();
 
                 let mut collected = Vec::new();
                 while let Some(chunk) = stream.next().await.unwrap() {
@@ -463,9 +537,9 @@ mod tests {
                 let xfi = upload_data(&cas_path, original_data).await;
 
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
 
-                let stream = session.download_stream(&xfi, Ulid::new()).unwrap();
+                let (_id, stream) = session.download_stream(&xfi).await.unwrap();
 
                 let collected = tokio::task::spawn_blocking(move || {
                     let mut stream = stream;
@@ -496,11 +570,10 @@ mod tests {
                 let xfi = upload_data(&cas_path, original_data).await;
 
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
 
-                let mut stream = session.download_stream(&xfi, Ulid::new()).unwrap();
+                let (_id, mut stream) = session.download_stream(&xfi).await.unwrap();
 
-                // Drain all data
                 while stream.next().await.unwrap().is_some() {}
 
                 // Subsequent calls should return Ok(None)
@@ -526,10 +599,10 @@ mod tests {
                 let xfi_b = upload_data(&cas_path, data_b).await;
 
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
 
-                let mut stream_a = session.download_stream(&xfi_a, Ulid::new()).unwrap();
-                let mut stream_b = session.download_stream(&xfi_b, Ulid::new()).unwrap();
+                let (_id_a, mut stream_a) = session.download_stream(&xfi_a).await.unwrap();
+                let (_id_b, mut stream_b) = session.download_stream(&xfi_b).await.unwrap();
 
                 let task_a = tokio::spawn(async move {
                     let mut buf = Vec::new();
@@ -569,16 +642,14 @@ mod tests {
                 let xfi = upload_data(&cas_path, original_data).await;
 
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
 
-                // Create and drop a stream without ever reading from it.
-                let stream = session.download_stream(&xfi, Ulid::new()).unwrap();
+                let (_id, stream) = session.download_stream(&xfi).await.unwrap();
                 drop(stream);
                 tokio::task::yield_now().await;
 
-                // A subsequent file download must succeed, proving no resources leaked.
                 let out_path = temp.path().join("after_drop.txt");
-                session.download_file(&xfi, &out_path, Ulid::new()).await.unwrap();
+                session.download_file(&xfi, &out_path).await.unwrap();
                 assert_eq!(read(&out_path).unwrap(), original_data);
             })
             .unwrap();
@@ -597,11 +668,10 @@ mod tests {
                 let xfi = upload_data(&cas_path, original_data).await;
 
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
 
-                // Repeatedly create, start, optionally read, and drop streams.
                 for i in 0..5u32 {
-                    let mut stream = session.download_stream(&xfi, Ulid::new()).unwrap();
+                    let (_id, mut stream) = session.download_stream(&xfi).await.unwrap();
                     if i % 3 == 0 {
                         let _ = stream.next().await;
                     }
@@ -609,9 +679,8 @@ mod tests {
                     tokio::task::yield_now().await;
                 }
 
-                // After many create/drop cycles, a full download must still work.
                 let out_path = temp.path().join("after_cycles.txt");
-                session.download_file(&xfi, &out_path, Ulid::new()).await.unwrap();
+                session.download_file(&xfi, &out_path).await.unwrap();
                 assert_eq!(read(&out_path).unwrap(), original_data);
             })
             .unwrap();
@@ -630,25 +699,21 @@ mod tests {
                 let xfi = upload_data(&cas_path, original_data).await;
 
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
 
-                // Read one chunk via blocking next() in a spawn_blocking, then drop.
-                let stream = session.download_stream(&xfi, Ulid::new()).unwrap();
+                let (_id, stream) = session.download_stream(&xfi).await.unwrap();
 
                 tokio::task::spawn_blocking(move || {
                     let mut stream = stream;
                     let _chunk = stream.blocking_next().unwrap();
-                    // stream is dropped here at the end of the closure
                 })
                 .await
                 .unwrap();
 
-                // Yield to let the runtime process the cancellation.
                 tokio::task::yield_now().await;
 
-                // A subsequent download must succeed.
                 let out_path = temp.path().join("after_blocking_drop.txt");
-                session.download_file(&xfi, &out_path, Ulid::new()).await.unwrap();
+                session.download_file(&xfi, &out_path).await.unwrap();
                 assert_eq!(read(&out_path).unwrap(), original_data);
             })
             .unwrap();
@@ -667,9 +732,9 @@ mod tests {
                 let xfi = upload_data(&cas_path, original_data).await;
 
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
 
-                let mut stream = session.download_stream(&xfi, Ulid::new()).unwrap();
+                let (_id, mut stream) = session.download_stream(&xfi).await.unwrap();
                 stream.cancel();
                 assert!(stream.next().await.unwrap().is_none());
                 assert!(stream.next().await.unwrap().is_none());
@@ -690,17 +755,380 @@ mod tests {
                 let xfi = upload_data(&cas_path, original_data).await;
 
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
-                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
 
-                let mut stream = session.download_stream(&xfi, Ulid::new()).unwrap();
+                let (_id, mut stream) = session.download_stream(&xfi).await.unwrap();
                 let _ = stream.next().await.unwrap();
                 stream.cancel();
                 assert!(stream.next().await.unwrap().is_none());
                 assert!(stream.next().await.unwrap().is_none());
 
                 let out_path = temp.path().join("after_cancel.txt");
-                session.download_file(&xfi, &out_path, Ulid::new()).await.unwrap();
+                session.download_file(&xfi, &out_path).await.unwrap();
                 assert_eq!(read(&out_path).unwrap(), original_data);
+            })
+            .unwrap();
+    }
+
+    // ==================== Range Download Tests ====================
+
+    #[test]
+    fn test_download_to_writer_range_from() {
+        let runtime = get_threadpool();
+        runtime
+            .clone()
+            .external_run_async_task(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = b"0123456789abcdef";
+
+                let xfi = upload_data(&cas_path, original_data).await;
+
+                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
+
+                let out_path = temp.path().join("range_from.bin");
+                let file = std::fs::File::create(&out_path).unwrap();
+                let (_id, n_bytes) = session.download_to_writer(&xfi, 4.., file).await.unwrap();
+
+                assert_eq!(n_bytes, 12);
+                assert_eq!(read(&out_path).unwrap(), &original_data[4..]);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_download_to_writer_range_to() {
+        let runtime = get_threadpool();
+        runtime
+            .clone()
+            .external_run_async_task(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = b"0123456789abcdef";
+
+                let xfi = upload_data(&cas_path, original_data).await;
+
+                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
+
+                let out_path = temp.path().join("range_to.bin");
+                let file = std::fs::File::create(&out_path).unwrap();
+                let (_id, n_bytes) = session.download_to_writer(&xfi, ..8, file).await.unwrap();
+
+                assert_eq!(n_bytes, 8);
+                assert_eq!(read(&out_path).unwrap(), &original_data[..8]);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_download_to_writer_full_range() {
+        let runtime = get_threadpool();
+        runtime
+            .clone()
+            .external_run_async_task(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = b"0123456789abcdef";
+
+                let xfi = upload_data(&cas_path, original_data).await;
+
+                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
+
+                let out_path = temp.path().join("full_range.bin");
+                let file = std::fs::File::create(&out_path).unwrap();
+                let (_id, n_bytes) = session.download_to_writer(&xfi, .., file).await.unwrap();
+
+                assert_eq!(n_bytes, original_data.len() as u64);
+                assert_eq!(read(&out_path).unwrap(), original_data);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_download_to_writer_range_inclusive() {
+        let runtime = get_threadpool();
+        runtime
+            .clone()
+            .external_run_async_task(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = b"0123456789abcdef";
+
+                let xfi = upload_data(&cas_path, original_data).await;
+
+                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
+
+                let out_path = temp.path().join("range_incl.bin");
+                let file = std::fs::File::create(&out_path).unwrap();
+                let (_id, n_bytes) = session.download_to_writer(&xfi, 2..=5, file).await.unwrap();
+
+                assert_eq!(n_bytes, 4);
+                assert_eq!(read(&out_path).unwrap(), &original_data[2..=5]);
+            })
+            .unwrap();
+    }
+
+    // ==================== Range Stream Tests ====================
+
+    #[test]
+    fn test_download_stream_range_bounded() {
+        let runtime = get_threadpool();
+        runtime
+            .clone()
+            .external_run_async_task(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = b"0123456789abcdef";
+
+                let xfi = upload_data(&cas_path, original_data).await;
+
+                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
+
+                let (_id, mut stream) = session.download_stream_range(&xfi, 4..12).await.unwrap();
+
+                let mut collected = Vec::new();
+                while let Some(chunk) = stream.next().await.unwrap() {
+                    collected.extend_from_slice(&chunk);
+                }
+
+                assert_eq!(collected, &original_data[4..12]);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_download_stream_range_from() {
+        let runtime = get_threadpool();
+        runtime
+            .clone()
+            .external_run_async_task(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = b"0123456789abcdef";
+
+                let xfi = upload_data(&cas_path, original_data).await;
+
+                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
+
+                let (_id, mut stream) = session.download_stream_range(&xfi, 10..).await.unwrap();
+
+                let mut collected = Vec::new();
+                while let Some(chunk) = stream.next().await.unwrap() {
+                    collected.extend_from_slice(&chunk);
+                }
+
+                assert_eq!(collected, &original_data[10..]);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_download_stream_range_to() {
+        let runtime = get_threadpool();
+        runtime
+            .clone()
+            .external_run_async_task(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = b"0123456789abcdef";
+
+                let xfi = upload_data(&cas_path, original_data).await;
+
+                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
+
+                let (_id, mut stream) = session.download_stream_range(&xfi, ..6).await.unwrap();
+
+                let mut collected = Vec::new();
+                while let Some(chunk) = stream.next().await.unwrap() {
+                    collected.extend_from_slice(&chunk);
+                }
+
+                assert_eq!(collected, &original_data[..6]);
+            })
+            .unwrap();
+    }
+
+    // ==================== Download with unknown file size ====================
+
+    #[test]
+    fn test_download_file_unknown_size() {
+        let runtime = get_threadpool();
+        runtime
+            .clone()
+            .external_run_async_task(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = b"File with unknown size test";
+
+                let xfi = upload_data(&cas_path, original_data).await;
+                let xfi_no_size = XetFileInfo::new_hash_only(xfi.hash().to_string());
+
+                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
+
+                let out_path = temp.path().join("output_unknown.txt");
+                let (_id, n_bytes) = session.download_file(&xfi_no_size, &out_path).await.unwrap();
+
+                assert_eq!(n_bytes, original_data.len() as u64);
+                assert_eq!(read(&out_path).unwrap(), original_data);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_download_stream_unknown_size() {
+        let runtime = get_threadpool();
+        runtime
+            .clone()
+            .external_run_async_task(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = b"Stream with unknown size test";
+
+                let xfi = upload_data(&cas_path, original_data).await;
+                let xfi_no_size = XetFileInfo::new_hash_only(xfi.hash().to_string());
+
+                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
+
+                let (_id, mut stream) = session.download_stream(&xfi_no_size).await.unwrap();
+
+                let mut collected = Vec::new();
+                while let Some(chunk) = stream.next().await.unwrap() {
+                    collected.extend_from_slice(&chunk);
+                }
+
+                assert_eq!(collected, original_data);
+            })
+            .unwrap();
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn test_download_file_size_mismatch_error() {
+        let runtime = get_threadpool();
+        runtime
+            .clone()
+            .external_run_async_task(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = b"Size mismatch test data";
+
+                let xfi = upload_data(&cas_path, original_data).await;
+                let wrong_size_xfi = XetFileInfo::new(xfi.hash().to_string(), 999);
+
+                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
+
+                let out_path = temp.path().join("output_mismatch.txt");
+                let err = session.download_file(&wrong_size_xfi, &out_path).await.unwrap_err();
+
+                assert!(
+                    matches!(err, DataError::SizeMismatch { expected: 999, .. }),
+                    "Expected SizeMismatch error, got: {err:?}"
+                );
+            })
+            .unwrap();
+    }
+
+    // ==================== range_bounds_to_file_range unit tests ====================
+
+    #[test]
+    fn test_range_bounds_conversion() {
+        use super::range_bounds_to_file_range;
+
+        assert_eq!(range_bounds_to_file_range(&(..)).unwrap(), None);
+        assert_eq!(range_bounds_to_file_range(&(0..100)).unwrap(), Some(FileRange::new(0, 100)));
+        assert_eq!(range_bounds_to_file_range(&(5..)).unwrap(), Some(FileRange::new(5, u64::MAX)));
+        assert_eq!(range_bounds_to_file_range(&(..50)).unwrap(), Some(FileRange::new(0, 50)));
+        assert_eq!(range_bounds_to_file_range(&(10..=19)).unwrap(), Some(FileRange::new(10, 20)));
+    }
+
+    #[test]
+    fn test_range_bounds_inverted_range_errors() {
+        use super::range_bounds_to_file_range;
+
+        let result = range_bounds_to_file_range(&(10..5));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_download_to_writer_empty_range() {
+        let runtime = get_threadpool();
+        runtime
+            .clone()
+            .external_run_async_task(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = b"0123456789abcdef";
+
+                let xfi = upload_data(&cas_path, original_data).await;
+
+                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
+
+                let out_path = temp.path().join("empty_range.bin");
+                let file = std::fs::File::create(&out_path).unwrap();
+                let (_id, n_bytes) = session.download_to_writer(&xfi, 5..5, file).await.unwrap();
+
+                assert_eq!(n_bytes, 0);
+                assert_eq!(read(&out_path).unwrap(), &[] as &[u8]);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_download_to_writer_inverted_range_errors() {
+        let runtime = get_threadpool();
+        runtime
+            .clone()
+            .external_run_async_task(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = b"0123456789abcdef";
+
+                let xfi = upload_data(&cas_path, original_data).await;
+
+                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
+
+                let out_path = temp.path().join("inverted_range.bin");
+                let file = std::fs::File::create(&out_path).unwrap();
+                let result = session.download_to_writer(&xfi, 10..5, file).await;
+
+                assert!(result.is_err());
+            })
+            .unwrap();
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn test_download_to_writer_range_start_beyond_file_size_errors() {
+        let runtime = get_threadpool();
+        runtime
+            .clone()
+            .external_run_async_task(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = b"0123456789abcdef";
+
+                let xfi = upload_data(&cas_path, original_data).await;
+
+                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let session = FileDownloadSession::new(config.into()).await.unwrap();
+
+                let out_path = temp.path().join("beyond_size.bin");
+                let file = std::fs::File::create(&out_path).unwrap();
+                let result = session.download_to_writer(&xfi, 100000.., file).await;
+
+                assert!(result.is_err());
             })
             .unwrap();
     }

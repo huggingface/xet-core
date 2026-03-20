@@ -2,7 +2,6 @@ pub mod byte_grouping;
 mod chunk;
 mod compression_scheme;
 pub mod constants;
-pub mod error;
 mod raw_xorb_data;
 mod xorb_chunk_format;
 mod xorb_object_format;

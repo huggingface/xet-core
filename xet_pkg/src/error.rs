@@ -1,8 +1,9 @@
 use thiserror::Error;
-use ulid::Ulid;
 use xet_client::ClientError;
-use xet_core_structures::FormatError;
+use xet_core_structures::CoreError;
 use xet_data::DataError;
+use xet_data::file_reconstruction::FileReconstructionError;
+use xet_data::progress_tracking::UniqueID;
 use xet_runtime::RuntimeError;
 
 /// Unified error type for the Xet public API.
@@ -28,16 +29,20 @@ pub enum XetError {
 
     /// A task ID that doesn't correspond to any queued file.
     #[error("Invalid task ID: {0}")]
-    InvalidTaskID(Ulid),
+    InvalidTaskID(UniqueID),
 
     // -- User-facing error categories ------------------------------------
     /// Token refresh or credential failures.
     #[error("Authentication error: {0}")]
     Authentication(String),
 
-    /// Network-level failures: DNS, timeouts, HTTP 5xx, etc.
+    /// Network-level failures: DNS, HTTP 5xx, connection reset, etc.
     #[error("Network error: {0}")]
     Network(String),
+
+    /// A network request timed out.
+    #[error("Timeout: {0}")]
+    Timeout(String),
 
     /// A requested resource (file, XORB, shard) does not exist.
     #[error("Not found: {0}")]
@@ -84,31 +89,34 @@ impl XetError {
         }
     }
 
-    fn from_format_error_ref(fe: &FormatError) -> Self {
+    fn from_core_error_ref(fe: &CoreError) -> Self {
         match fe {
-            FormatError::Io(_) => XetError::Io(fe.to_string()),
-            FormatError::ShardNotFound(_) | FormatError::FileNotFound(_) => XetError::NotFound(fe.to_string()),
-            FormatError::HashMismatch
-            | FormatError::TruncatedHashCollision(_)
-            | FormatError::InvalidShard(_)
-            | FormatError::ShardVersion(_)
-            | FormatError::ChunkHeaderParse
-            | FormatError::Format(_)
-            | FormatError::Compression(_) => XetError::DataIntegrity(fe.to_string()),
-            FormatError::InvalidRange | FormatError::InvalidArguments | FormatError::BadFilename(_) => {
+            CoreError::Io(_) => XetError::Io(fe.to_string()),
+            CoreError::ShardNotFound(_) | CoreError::FileNotFound(_) => XetError::NotFound(fe.to_string()),
+            CoreError::HashMismatch
+            | CoreError::TruncatedHashCollision(_)
+            | CoreError::InvalidShard(_)
+            | CoreError::ShardVersion(_)
+            | CoreError::ChunkHeaderParse
+            | CoreError::MalformedData(_)
+            | CoreError::CompressionError(_) => XetError::DataIntegrity(fe.to_string()),
+            CoreError::InvalidRange | CoreError::InvalidArguments | CoreError::BadFilename(_) => {
                 XetError::Configuration(fe.to_string())
             },
-            FormatError::Runtime(re) => XetError::from_runtime_error_ref(re),
+            CoreError::RuntimeError(re) => XetError::from_runtime_error_ref(re),
             _ => XetError::Internal(fe.to_string()),
         }
     }
 
     fn from_client_error_ref(ce: &ClientError) -> Self {
         match ce {
-            ClientError::AuthError(_) => XetError::Authentication(ce.to_string()),
-            ClientError::ReqwestError(_, _)
-            | ClientError::ReqwestMiddlewareError(_)
-            | ClientError::PresignedUrlExpirationError => XetError::Network(ce.to_string()),
+            ClientError::AuthError(_) | ClientError::PresignedUrlExpirationError | ClientError::CredentialHelper(_) => {
+                XetError::Authentication(ce.to_string())
+            },
+            ClientError::ReqwestError(e, _) if e.is_timeout() => XetError::Timeout(ce.to_string()),
+            ClientError::ReqwestError(_, _) | ClientError::ReqwestMiddlewareError(_) => {
+                XetError::Network(ce.to_string())
+            },
             ClientError::FileNotFound(_) | ClientError::XORBNotFound(_) => XetError::NotFound(ce.to_string()),
             ClientError::ConfigurationError(_)
             | ClientError::InvalidArguments
@@ -117,8 +125,23 @@ impl XetError {
             | ClientError::InvalidKey(_)
             | ClientError::InvalidRepoType(_) => XetError::Configuration(ce.to_string()),
             ClientError::IOError(_) => XetError::Io(ce.to_string()),
-            ClientError::FormatError(fe) => XetError::from_format_error_ref(fe),
+            ClientError::FormatError(fe) => XetError::from_core_error_ref(fe),
             _ => XetError::Internal(ce.to_string()),
+        }
+    }
+
+    fn from_file_reconstruction_error_ref(fre: &FileReconstructionError) -> Self {
+        match fre {
+            FileReconstructionError::ClientError(ce) => XetError::from_client_error_ref(ce),
+            FileReconstructionError::IoError(_) => XetError::Io(fre.to_string()),
+            FileReconstructionError::RuntimeError(re) => XetError::from_runtime_error_ref(re),
+            FileReconstructionError::TaskJoinError(je) if je.is_cancelled() => {
+                XetError::Cancelled(format!("Task cancelled: {je}"))
+            },
+            FileReconstructionError::TaskJoinError(je) => XetError::Internal(format!("Task join error: {je}")),
+            FileReconstructionError::ConfigurationError(_) => XetError::Configuration(fre.to_string()),
+            FileReconstructionError::CorruptedReconstruction(_) => XetError::DataIntegrity(fre.to_string()),
+            _ => XetError::Internal(fre.to_string()),
         }
     }
 
@@ -126,7 +149,7 @@ impl XetError {
         match de {
             DataError::AuthError(_) => XetError::Authentication(de.to_string()),
             DataError::ClientError(ce) => XetError::from_client_error_ref(ce),
-            DataError::FormatError(fe) => XetError::from_format_error_ref(fe),
+            DataError::FormatError(fe) => XetError::from_core_error_ref(fe),
             DataError::IOError(_) => XetError::Io(de.to_string()),
             DataError::RuntimeError(re) => XetError::from_runtime_error_ref(re),
             DataError::FileQueryPolicyError(_)
@@ -137,6 +160,8 @@ impl XetError {
             | DataError::DeprecatedError(_) => XetError::Configuration(de.to_string()),
             DataError::HashNotFound => XetError::NotFound(de.to_string()),
             DataError::HashStringParsingFailure(_) => XetError::DataIntegrity(de.to_string()),
+            DataError::InvalidOperation(_) => XetError::Configuration(de.to_string()),
+            DataError::FileReconstructionError(fre) => XetError::from_file_reconstruction_error_ref(fre),
             _ => XetError::Internal(de.to_string()),
         }
     }
@@ -150,9 +175,9 @@ impl From<RuntimeError> for XetError {
     }
 }
 
-impl From<FormatError> for XetError {
-    fn from(e: FormatError) -> Self {
-        XetError::from_format_error_ref(&e)
+impl From<CoreError> for XetError {
+    fn from(e: CoreError) -> Self {
+        XetError::from_core_error_ref(&e)
     }
 }
 
@@ -165,6 +190,12 @@ impl From<ClientError> for XetError {
 impl From<DataError> for XetError {
     fn from(e: DataError) -> Self {
         XetError::from_data_error_ref(&e)
+    }
+}
+
+impl From<FileReconstructionError> for XetError {
+    fn from(e: FileReconstructionError) -> Self {
+        XetError::from_file_reconstruction_error_ref(&e)
     }
 }
 
@@ -210,6 +241,58 @@ impl<T> From<std::sync::PoisonError<std::sync::RwLockReadGuard<'_, T>>> for XetE
     }
 }
 
+// -- Python exception classes & conversion --------------------------------
+
+#[cfg(feature = "python")]
+mod py_exceptions {
+    // Inherits from Python's PermissionError so `except PermissionError` still catches it.
+    pyo3::create_exception!(hf_xet, XetAuthenticationError, pyo3::exceptions::PyPermissionError);
+
+    // Inherits from Python's FileNotFoundError so `except FileNotFoundError` still catches it.
+    pyo3::create_exception!(hf_xet, XetObjectNotFoundError, pyo3::exceptions::PyFileNotFoundError);
+
+    /// Register the custom exception classes on a Python module.
+    ///
+    /// Call this from the `#[pymodule]` init function so that the exceptions
+    /// are importable as `hf_xet.XetAuthenticationError`, etc.
+    pub fn register_exceptions(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()> {
+        use pyo3::types::PyModuleMethods;
+
+        m.add("XetAuthenticationError", m.py().get_type::<XetAuthenticationError>())?;
+        m.add("XetObjectNotFoundError", m.py().get_type::<XetObjectNotFoundError>())?;
+        Ok(())
+    }
+}
+
+#[cfg(feature = "python")]
+pub use py_exceptions::{XetAuthenticationError, XetObjectNotFoundError, register_exceptions};
+
+#[cfg(feature = "python")]
+impl From<XetError> for pyo3::PyErr {
+    fn from(err: XetError) -> pyo3::PyErr {
+        use pyo3::exceptions::{PyConnectionError, PyOSError, PyRuntimeError, PyTimeoutError, PyValueError};
+
+        let msg = err.to_string();
+        #[allow(unreachable_patterns)] // XetError is #[non_exhaustive]
+        match err {
+            XetError::Authentication(_) => XetAuthenticationError::new_err(msg),
+            XetError::NotFound(_) => XetObjectNotFoundError::new_err(msg),
+            XetError::Network(_) => PyConnectionError::new_err(msg),
+            XetError::Timeout(_) => PyTimeoutError::new_err(msg),
+            XetError::Io(_) => PyOSError::new_err(msg),
+            XetError::Configuration(_) | XetError::InvalidTaskID(_) => PyValueError::new_err(msg),
+            XetError::DataIntegrity(_)
+            | XetError::Internal(_)
+            | XetError::WrongRuntimeMode(_)
+            | XetError::AlreadyCommitted
+            | XetError::AlreadyFinished
+            | XetError::Aborted
+            | XetError::Cancelled(_) => PyRuntimeError::new_err(msg),
+            _ => PyRuntimeError::new_err(msg),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use xet_client::cas_client::auth::AuthError;
@@ -225,13 +308,13 @@ mod tests {
 
     #[test]
     fn format_not_found_maps_to_not_found() {
-        let err = XetError::from(FormatError::ShardNotFound(MerkleHash::default()));
+        let err = XetError::from(CoreError::ShardNotFound(MerkleHash::default()));
         assert!(matches!(err, XetError::NotFound(_)));
     }
 
     #[test]
     fn format_invalid_args_maps_to_configuration() {
-        let err = XetError::from(FormatError::InvalidArguments);
+        let err = XetError::from(CoreError::InvalidArguments);
         assert!(matches!(err, XetError::Configuration(_)));
     }
 
@@ -243,7 +326,7 @@ mod tests {
 
     #[test]
     fn client_nested_format_maps_using_format_rules() {
-        let err = XetError::from(ClientError::FormatError(FormatError::InvalidRange));
+        let err = XetError::from(ClientError::FormatError(CoreError::InvalidRange));
         assert!(matches!(err, XetError::Configuration(_)));
     }
 
@@ -257,5 +340,38 @@ mod tests {
     fn data_runtime_cancelled_maps_to_cancelled() {
         let err = XetError::from(DataError::RuntimeError(RuntimeError::TaskCanceled("cancelled".to_string())));
         assert!(matches!(err, XetError::Cancelled(_)));
+    }
+
+    #[test]
+    fn presigned_url_expiration_maps_to_authentication() {
+        let err = XetError::from(ClientError::PresignedUrlExpirationError);
+        assert!(matches!(err, XetError::Authentication(_)));
+    }
+
+    #[test]
+    fn credential_helper_maps_to_authentication() {
+        let err = XetError::from(ClientError::credential_helper_error(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "cred fail",
+        )));
+        assert!(matches!(err, XetError::Authentication(_)));
+    }
+
+    #[test]
+    fn client_not_found_maps_to_not_found() {
+        let err = XetError::from(ClientError::FileNotFound(MerkleHash::default()));
+        assert!(matches!(err, XetError::NotFound(_)));
+    }
+
+    #[test]
+    fn client_xorb_not_found_maps_to_not_found() {
+        let err = XetError::from(ClientError::XORBNotFound(MerkleHash::default()));
+        assert!(matches!(err, XetError::NotFound(_)));
+    }
+
+    #[test]
+    fn client_io_maps_to_io() {
+        let err = XetError::from(ClientError::IOError(std::io::Error::new(std::io::ErrorKind::NotFound, "gone")));
+        assert!(matches!(err, XetError::Io(_)));
     }
 }

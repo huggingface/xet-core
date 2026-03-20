@@ -6,9 +6,9 @@ use tracing::Instrument;
 use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::metadata_shard::file_structs::FileDataSequenceEntry;
 
-use super::errors::Result;
 use super::file_upload_session::FileUploadSession;
 use crate::deduplication::{DeduplicationDataInterface, RawXorbData};
+use crate::error::{DataError, Result};
 use crate::progress_tracking::upload_tracking::FileXorbDependency;
 
 pub struct UploadSessionDataManager {
@@ -31,7 +31,7 @@ impl UploadSessionDataManager {
 
 #[async_trait]
 impl DeduplicationDataInterface for UploadSessionDataManager {
-    type ErrorType = super::errors::DataProcessingError;
+    type ErrorType = DataError;
 
     /// Query for possible shards that may dedup some chunks.
     async fn chunk_hash_dedup_query(
@@ -88,6 +88,6 @@ impl DeduplicationDataInterface for UploadSessionDataManager {
 
     /// Periodically registers xorb dependencies; used for progress tracking.
     async fn register_xorb_dependencies(&mut self, dependencies: &[FileXorbDependency]) {
-        self.session.register_xorb_dependencies(dependencies).await;
+        self.session.register_xorb_dependencies(dependencies);
     }
 }

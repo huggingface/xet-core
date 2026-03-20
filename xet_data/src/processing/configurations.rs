@@ -6,7 +6,7 @@ use tracing::info;
 use xet_client::cas_client::auth::AuthConfig;
 use xet_runtime::core::{xet_cache_root, xet_config};
 
-use super::errors::Result;
+use crate::error::Result;
 
 /// Session-specific configuration that varies per upload/download session.
 /// These are runtime values that cannot be configured via environment variables.

@@ -4,12 +4,11 @@ use std::io::{Cursor, Read, Write, copy};
 use std::str::FromStr;
 use std::time::Instant;
 
-use anyhow::anyhow;
 use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 
 use super::byte_grouping::BG4Predictor;
 use super::byte_grouping::bg4::{bg4_regroup, bg4_split};
-use super::error::{Result, XorbObjectError};
+use crate::error::{CoreError, Result};
 
 pub static mut BG4_SPLIT_RUNTIME: f64 = 0.;
 pub static mut BG4_REGROUP_RUNTIME: f64 = 0.;
@@ -50,7 +49,7 @@ impl From<CompressionScheme> for &'static str {
 }
 
 impl TryFrom<u8> for CompressionScheme {
-    type Error = XorbObjectError;
+    type Error = CoreError;
 
     fn try_from(value: u8) -> Result<Self> {
         match value {
@@ -58,13 +57,13 @@ impl TryFrom<u8> for CompressionScheme {
             1 => Ok(CompressionScheme::LZ4),
             2 => Ok(CompressionScheme::ByteGrouping4LZ4),
             99 => Ok(CompressionScheme::Auto),
-            _ => Err(XorbObjectError::Format(anyhow!("cannot convert value {value} to CompressionScheme"))),
+            _ => Err(CoreError::MalformedData(format!("cannot convert value {value} to CompressionScheme"))),
         }
     }
 }
 
 impl FromStr for CompressionScheme {
-    type Err = XorbObjectError;
+    type Err = CoreError;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s.trim().to_lowercase().as_str() {
@@ -72,7 +71,7 @@ impl FromStr for CompressionScheme {
             "none" => Ok(CompressionScheme::None),
             "lz4" => Ok(CompressionScheme::LZ4),
             "bg4-lz4" => Ok(CompressionScheme::ByteGrouping4LZ4),
-            _ => Err(XorbObjectError::Format(anyhow!(
+            _ => Err(CoreError::MalformedData(format!(
                 "Invalid compression scheme '{s}'. Valid values are: auto, none, lz4, bg4-lz4."
             ))),
         }
@@ -101,7 +100,7 @@ impl CompressionScheme {
     pub fn decompress_from_slice<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, [u8]>> {
         Ok(match self {
             CompressionScheme::Auto => {
-                return Err(XorbObjectError::Format(anyhow!("Cannot decompress with Auto scheme")));
+                return Err(CoreError::MalformedData("Cannot decompress with Auto scheme".to_string()));
             },
             CompressionScheme::None => data.into(),
             CompressionScheme::LZ4 => lz4_decompress_from_slice(data).map(Cow::from)?,
@@ -112,7 +111,7 @@ impl CompressionScheme {
     pub fn decompress_from_reader<R: Read, W: Write>(&self, reader: &mut R, writer: &mut W) -> Result<u64> {
         Ok(match self {
             CompressionScheme::Auto => {
-                return Err(XorbObjectError::Format(anyhow!("Cannot decompress with Auto scheme")));
+                return Err(CoreError::MalformedData("Cannot decompress with Auto scheme".to_string()));
             },
             CompressionScheme::None => copy(reader, writer)?,
             CompressionScheme::LZ4 => lz4_decompress_from_reader(reader, writer)?,

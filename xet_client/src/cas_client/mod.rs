@@ -1,4 +1,3 @@
-pub use error::CasClientError;
 pub use http_client::{Api, ResponseErrorLogger, build_auth_http_client, build_http_client};
 pub use interface::{Client, URLProvider};
 pub use remote_client::RemoteClient;
@@ -12,7 +11,6 @@ use tracing::Level;
 
 pub mod adaptive_concurrency;
 pub mod auth;
-mod error;
 pub mod exports;
 pub mod http_client;
 mod interface;

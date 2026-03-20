@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tracing::{debug, info};
-use ulid::Ulid;
 use xet_client::cas_client::Client;
 use xet_client::cas_types::FileRange;
 use xet_core_structures::merklehash::{ChunkHashList, MerkleHash, file_hash};
@@ -16,9 +15,9 @@ use xet_core_structures::metadata_shard::file_structs::{
 
 use super::XetFileInfo;
 use super::configurations::TranslatorConfig;
-use super::errors::{DataProcessingError, Result};
 use super::file_cleaner::Sha256Policy;
 use super::file_upload_session::FileUploadSession;
+use crate::error::{DataError, Result};
 use crate::file_reconstruction::FileReconstructor;
 
 /// A dirty byte range paired with an async reader that provides the modified bytes.
@@ -103,19 +102,19 @@ pub async fn upload_ranges(
     let dirty_ranges: Vec<(u64, u64)> = dirty_inputs.iter().map(|d| (d.range.start, d.range.end)).collect();
 
     if !dirty_ranges.windows(2).all(|w| w[0].1 <= w[1].0) {
-        return Err(DataProcessingError::InternalError(format!(
+        return Err(DataError::InternalError(format!(
             "dirty_ranges must be sorted and non-overlapping, got: {dirty_ranges:?}"
         )));
     }
     if !dirty_ranges.iter().all(|&(s, e)| s < e) {
-        return Err(DataProcessingError::InternalError(format!(
+        return Err(DataError::InternalError(format!(
             "dirty_ranges must be non-empty intervals, got: {dirty_ranges:?}"
         )));
     }
     if let Some(&(_, last_end)) = dirty_ranges.last()
         && last_end > total_size
     {
-        return Err(DataProcessingError::InternalError(format!(
+        return Err(DataError::InternalError(format!(
             "dirty_range end ({last_end}) exceeds total_size ({total_size})"
         )));
     }
@@ -124,7 +123,7 @@ pub async fn upload_ranges(
     if total_size > original_size {
         let last_input_end = dirty_ranges.last().map_or(0, |&(_, e)| e);
         if last_input_end < total_size {
-            return Err(DataProcessingError::InternalError(format!(
+            return Err(DataError::InternalError(format!(
                 "total_size ({total_size}) > original_size ({original_size}) but dirty_inputs \
                  only cover up to byte {last_input_end} (must reach total_size)"
             )));
@@ -138,7 +137,7 @@ pub async fn upload_ranges(
     )?;
     let original_mdb = recon_result
         .map(|(mdb, _)| mdb)
-        .ok_or_else(|| DataProcessingError::InternalError("no reconstruction info for original file".into()))?;
+        .ok_or_else(|| DataError::InternalError("no reconstruction info for original file".into()))?;
 
     // 2. Map chunks to cumulative byte offsets.
     // This builds a sorted array of byte boundaries, where chunk_offsets[i] is the
@@ -240,7 +239,7 @@ pub async fn upload_ranges(
 
     // 5. Process each dirty region: download boundary, stream dirty bytes, upload. Collect the resulting middle file
     //    infos and chunk hashes. A single upload session is shared across all dirty regions.
-    let session = FileUploadSession::new(config.clone(), None).await?;
+    let session = FileUploadSession::new(config.clone()).await?;
 
     let mut uploaded_regions: Vec<UploadedRegion> = Vec::with_capacity(dirty_regions.len());
     let mut dirty_inputs = dirty_inputs;
@@ -248,14 +247,14 @@ pub async fn upload_ranges(
 
     for region in dirty_regions {
         let boundary_start = *chunk_offsets.get(region.first_chunk).ok_or_else(|| {
-            DataProcessingError::InternalError(format!(
+            DataError::InternalError(format!(
                 "first_chunk {} out of bounds ({})",
                 region.first_chunk,
                 chunk_offsets.len()
             ))
         })?;
         let boundary_end = *chunk_offsets.get(region.last_chunk).ok_or_else(|| {
-            DataProcessingError::InternalError(format!(
+            DataError::InternalError(format!(
                 "last_chunk {} out of bounds ({})",
                 region.last_chunk,
                 chunk_offsets.len()
@@ -279,7 +278,7 @@ pub async fn upload_ranges(
         let middle_end = effective_boundary_end.max(region.dirty_end).min(total_size);
         let middle_size = middle_end.saturating_sub(boundary_start);
 
-        let mut cleaner = session.start_clean(None, middle_size, Sha256Policy::Skip, Ulid::new()).await;
+        let (_id, mut cleaner) = session.start_clean(None, middle_size, Sha256Policy::Skip)?;
 
         // a) Boundary prefix: stable bytes before the dirty range.
         //
@@ -311,7 +310,7 @@ pub async fn upload_ranges(
                 // Gap beyond original_size means the caller didn't provide bytes
                 // for part of the appended region. This would produce a corrupted file.
                 if input_start > original_size && cursor < input_start {
-                    return Err(DataProcessingError::InternalError(format!(
+                    return Err(DataError::InternalError(format!(
                         "gap in dirty_inputs: no data for bytes [{cursor}, {input_start}) \
                          (beyond original_size {original_size})"
                     )));
@@ -325,7 +324,7 @@ pub async fn upload_ranges(
             while remaining > 0 {
                 let to_read = buf.len().min(remaining);
                 input.reader.read_exact(&mut buf[..to_read]).await.map_err(|err| {
-                    DataProcessingError::InternalError(format!(
+                    DataError::InternalError(format!(
                         "failed to read dirty input [{}, {}): {err}",
                         input.range.start, input.range.end
                     ))
@@ -374,9 +373,10 @@ pub async fn upload_ranges(
     let mut composed_regions: Vec<ComposedRegion> = Vec::with_capacity(uploaded_regions.len());
     for uploaded in uploaded_regions {
         let middle_hash = MerkleHash::from_hex(uploaded.info.hash())?;
-        let mdb = mdb_by_hash.get(&middle_hash).cloned().ok_or_else(|| {
-            DataProcessingError::InternalError(format!("no MDBFileInfo for middle hash {}", middle_hash.hex()))
-        })?;
+        let mdb = mdb_by_hash
+            .get(&middle_hash)
+            .cloned()
+            .ok_or_else(|| DataError::InternalError(format!("no MDBFileInfo for middle hash {}", middle_hash.hex())))?;
         composed_regions.push(ComposedRegion {
             region: uploaded.region,
             mdb,
@@ -526,7 +526,7 @@ fn build_dirty_regions(
         let clamped_end = dirty_end.min(original_size);
         let last_chunk = chunk_offsets[..num_chunks].partition_point(|&o| o < clamped_end);
         if last_chunk == 0 {
-            return Err(DataProcessingError::InternalError(format!(
+            return Err(DataError::InternalError(format!(
                 "no chunk starts before clamped_end ({clamped_end}), chunks may be inconsistent"
             )));
         }
@@ -631,7 +631,6 @@ mod tests {
     use std::sync::Arc;
 
     use tempfile::TempDir;
-    use ulid::Ulid;
     use xet_client::cas_client::{Client, LocalTestServerBuilder};
     use xet_core_structures::merklehash::MerkleHash;
 
@@ -684,10 +683,10 @@ mod tests {
         // 1. Upload an original file: 256 KB of pseudo-random bytes.
         let original_data = random_data(42, 256 * 1024);
         let original_hash = {
-            let upload_session = FileUploadSession::new(config.clone(), None).await.unwrap();
-            let mut cleaner = upload_session
-                .start_clean(Some("original".into()), original_data.len() as u64, Sha256Policy::Skip, Ulid::new())
-                .await;
+            let upload_session = FileUploadSession::new(config.clone()).await.unwrap();
+            let (_id, mut cleaner) = upload_session
+                .start_clean(Some("original".into()), original_data.len() as u64, Sha256Policy::Skip)
+                .unwrap();
             cleaner.add_data(&original_data).await.unwrap();
             let (xfi, _chunks, _metrics) = cleaner.finish().await.unwrap();
             upload_session.finalize().await.unwrap();
@@ -719,7 +718,7 @@ mod tests {
         let session = FileDownloadSession::new(config.clone(), None).await.unwrap();
         let file_info = crate::processing::XetFileInfo::new(composed_hash.hex(), total_size);
         let out_path = base_dir.path().join("output");
-        session.download_file(&file_info, &out_path, Ulid::new()).await.unwrap();
+        session.download_file(&file_info, &out_path).await.unwrap();
         let downloaded = std::fs::read(&out_path).unwrap();
 
         assert_eq!(downloaded.len(), modified_data.len());
@@ -1505,10 +1504,10 @@ mod tests {
     }
 
     async fn upload_file(config: &Arc<TranslatorConfig>, data: &[u8]) -> MerkleHash {
-        let session = FileUploadSession::new(config.clone(), None).await.unwrap();
-        let mut cleaner = session
-            .start_clean(Some("test".into()), data.len() as u64, Sha256Policy::Skip, Ulid::new())
-            .await;
+        let session = FileUploadSession::new(config.clone()).await.unwrap();
+        let (_id, mut cleaner) = session
+            .start_clean(Some("test".into()), data.len() as u64, Sha256Policy::Skip)
+            .unwrap();
         cleaner.add_data(data).await.unwrap();
         let (xfi, _chunks, _metrics) = cleaner.finish().await.unwrap();
         session.finalize().await.unwrap();
@@ -1520,7 +1519,7 @@ mod tests {
         let xfi = crate::processing::XetFileInfo::new(hash.hex(), size);
         let dir = TempDir::new().unwrap();
         let out = dir.path().join("out");
-        session.download_file(&xfi, &out, Ulid::new()).await.unwrap();
+        session.download_file(&xfi, &out).await.unwrap();
         std::fs::read(&out).unwrap()
     }
 

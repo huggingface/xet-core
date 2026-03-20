@@ -4,9 +4,9 @@ use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
 use xet_core_structures::xorb_object::SerializedXorbObject;
 
 use super::adaptive_concurrency::ConnectionPermit;
-use super::error::Result;
 use super::progress_tracked_streams::ProgressCallback;
 use crate::cas_types::{BatchQueryReconstructionResponse, FileRange, HttpRange, QueryReconstructionResponseV2};
+use crate::error::Result;
 
 #[async_trait::async_trait]
 pub trait URLProvider: Send + Sync {

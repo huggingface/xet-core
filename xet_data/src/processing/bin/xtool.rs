@@ -144,7 +144,12 @@ impl Command {
 
                 eprintln!("\n\nClean results:");
                 for (xf, new_bytes) in clean_ret {
-                    println!("{}: {} bytes -> {} bytes", xf.hash(), xf.file_size(), new_bytes);
+                    println!(
+                        "{}: {} bytes -> {} bytes",
+                        xf.hash(),
+                        xf.file_size().map_or("?".to_string(), |s| s.to_string()),
+                        new_bytes
+                    );
                 }
 
                 eprintln!("Transmitted {total_bytes_trans} bytes in total.");
@@ -220,7 +225,7 @@ async fn query_reconstruction(
     remote_client
         .get_reconstruction_v1(&file_hash, bytes_range)
         .await
-        .map_err(anyhow::Error::from)
+        .map_err(Into::into)
 }
 
 fn main() -> Result<()> {
@@ -231,13 +236,16 @@ fn main() -> Result<()> {
         && let Some(c) = arg.compression
     {
         let scheme = CompressionScheme::try_from(c).map_err(|_| {
-            anyhow::anyhow!("Invalid compression value {c}; expected one of: 0 (none), 1 (lz4), 2 (bg4-lz4), 99 (auto)")
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Invalid compression value {c}; expected one of: 0 (none), 1 (lz4), 2 (bg4-lz4), 99 (auto)"),
+            )
         })?;
         config
             .xorb
             .compression_policy
             .try_set(<&str>::from(scheme))
-            .map_err(|e| anyhow::anyhow!(e))?;
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
     }
 
     let threadpool = XetRuntime::new_with_config(config)?;

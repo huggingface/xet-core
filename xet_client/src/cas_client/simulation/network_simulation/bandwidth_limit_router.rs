@@ -17,8 +17,8 @@ use tokio::sync::{Mutex, Semaphore};
 use tokio::time::{Instant, interval, sleep, sleep_until};
 use xet_runtime::utils::ClosureGuard;
 
-use super::super::super::error::{CasClientError, Result};
 use super::network_profile::{NetworkConfig, NetworkProfile};
+use crate::error::{ClientError, Result};
 
 const BUF_SIZE: usize = 65536;
 const REFILL_INTERVAL_MS: u64 = 50;
@@ -144,7 +144,7 @@ impl NetworkSimulationProxy {
             let mut guard = self.listener.lock().await;
             guard
                 .take()
-                .ok_or_else(|| CasClientError::Other("accept loop already started or listener taken".into()))?
+                .ok_or_else(|| ClientError::Other("accept loop already started or listener taken".into()))?
         };
         loop {
             if self.shutdown_flag.load(Ordering::Relaxed) {
@@ -331,8 +331,8 @@ where
     Ok(total)
 }
 
-fn map_proxy_err(e: impl std::fmt::Display) -> CasClientError {
-    CasClientError::Other(format!("Proxy error: {}", e))
+fn map_proxy_err(e: impl std::fmt::Display) -> ClientError {
+    ClientError::Other(format!("Proxy error: {}", e))
 }
 
 #[cfg(test)]

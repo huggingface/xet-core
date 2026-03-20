@@ -173,8 +173,9 @@ fn format_for_shell_execution(command: &str, args: &[String]) -> Result<(String,
 
 #[cfg(test)]
 mod tests {
-    use anyhow::{Ok, Result};
     use serial_test::serial;
+
+    type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
     use xet_runtime::utils::EnvVarGuard;
 
     use super::*;

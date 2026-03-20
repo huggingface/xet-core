@@ -3,7 +3,7 @@ use std::sync::Arc;
 use xet_client::cas_client::{Client, RemoteClient};
 
 use super::configurations::TranslatorConfig;
-use super::errors::Result;
+use crate::error::Result;
 
 pub(crate) async fn create_remote_client(
     config: &TranslatorConfig,

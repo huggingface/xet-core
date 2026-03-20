@@ -5,7 +5,6 @@ use std::sync::{Arc, OnceLock};
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
-use ulid::Ulid;
 use xet_data::processing::configurations::TranslatorConfig;
 use xet_data::processing::{FileUploadSession, Sha256Policy, XetFileInfo};
 use xet_runtime::core::XetRuntime;
@@ -88,11 +87,10 @@ async fn clean(mut reader: impl Read, mut writer: impl Write, size: u64) -> Resu
 
     let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
 
-    let translator =
-        FileUploadSession::new(TranslatorConfig::local_config(std::env::current_dir()?)?.into(), None).await?;
+    let translator = FileUploadSession::new(TranslatorConfig::local_config(std::env::current_dir()?)?.into()).await?;
 
     let mut size_read = 0;
-    let mut handle = translator.start_clean(None, size, Sha256Policy::Compute, Ulid::new()).await;
+    let (_id, mut handle) = translator.start_clean(None, size, Sha256Policy::Compute)?;
 
     loop {
         let bytes = reader.read(&mut read_buf)?;
@@ -130,15 +128,16 @@ async fn smudge(_name: Arc<str>, mut reader: impl Read, output_path: PathBuf) ->
     let mut input = String::new();
     reader.read_to_string(&mut input)?;
 
-    let xet_file: XetFileInfo = serde_json::from_str(&input)
-        .map_err(|_| anyhow::anyhow!("Failed to parse xet file info. Please check the format."))?;
+    let xet_file: XetFileInfo = serde_json::from_str(&input).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "Failed to parse xet file info. Please check the format.")
+    })?;
 
     // Use local config pointing to current directory
     let cas_path = std::env::current_dir()?;
     let config = TranslatorConfig::local_config(cas_path)?;
-    let session = xet_data::processing::FileDownloadSession::new(config.into(), None).await?;
+    let session = xet_data::processing::FileDownloadSession::new(config.into()).await?;
 
-    session.download_file(&xet_file, &output_path, Ulid::new()).await?;
+    let (_id, _n_bytes) = session.download_file(&xet_file, &output_path).await?;
 
     Ok(())
 }

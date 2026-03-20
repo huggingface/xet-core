@@ -1,7 +1,7 @@
 use std::io;
 use std::sync::Arc;
 
-use anyhow::anyhow;
+use anyhow::{Result, bail};
 use rand_core::OsRng;
 use russh::keys::{Certificate, *};
 use russh::server::{Msg, Server as _, Session};
@@ -154,15 +154,15 @@ impl server::Handler for ServerImpl {
 }
 
 impl ServerImpl {
-    fn git_lfs_authenticate(&self, request: Vec<&str>) -> anyhow::Result<String> {
+    fn git_lfs_authenticate(&self, request: Vec<&str>) -> Result<String> {
         let Some(repo_id) = request.get(1) else {
-            return Err(anyhow!("invalid request, missing repo id"));
+            bail!("invalid request, missing repo id");
         };
         let Some(operation) = request.get(2) else {
-            return Err(anyhow!("invalid request, missing operation"));
+            bail!("invalid request, missing operation");
         };
         if !matches!(*operation, "upload" | "download") {
-            return Err(anyhow!("invalid request, unrecognized operation"));
+            bail!("invalid request, unrecognized operation");
         }
         let response = GitLFSAuthenticateResponse {
             header: GitLFSAuthentationResponseHeader {

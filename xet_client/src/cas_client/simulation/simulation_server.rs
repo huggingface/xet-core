@@ -16,7 +16,6 @@ use tempfile::TempDir;
 use tokio::sync::oneshot;
 
 use super::super::RemoteClient;
-use super::super::error::Result;
 use super::super::interface::Client;
 use super::super::progress_tracked_streams::ProgressCallback;
 use super::local_server::{LocalServer, ServerLatencyProfile};
@@ -24,6 +23,7 @@ use super::network_simulation::{NetworkProfile, NetworkSimulationProxy};
 #[cfg(unix)]
 use super::socket_proxy::UnixSocketProxy;
 use super::{DirectAccessClient, LocalClient, MemoryClient, RemoteSimulationClient};
+use crate::error::Result;
 
 /// Builder for creating a `LocalTestServer` with various configuration options.
 ///
