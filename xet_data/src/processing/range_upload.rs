@@ -119,7 +119,8 @@ pub async fn upload_ranges(
         )));
     }
 
-    // Appended bytes must be covered by dirty_inputs (CAS has no data beyond original_size).
+    // Appended bytes must be fully covered by dirty_inputs (CAS has no data beyond original_size).
+    // Check that: (1) inputs reach total_size, and (2) no gap exists beyond original_size.
     if total_size > original_size {
         let last_input_end = dirty_ranges.last().map_or(0, |&(_, e)| e);
         if last_input_end < total_size {
@@ -127,6 +128,19 @@ pub async fn upload_ranges(
                 "total_size ({total_size}) > original_size ({original_size}) but dirty_inputs \
                  only cover up to byte {last_input_end} (must reach total_size)"
             )));
+        }
+
+        // Verify no gaps beyond original_size between inputs. Walk the append region
+        // [original_size, total_size) and ensure it is fully covered.
+        let mut covered_up_to = original_size;
+        for &(start, end) in &dirty_ranges {
+            if start > covered_up_to && covered_up_to >= original_size {
+                return Err(DataError::InternalError(format!(
+                    "gap in append region: bytes [{covered_up_to}, {start}) are beyond \
+                     original_size ({original_size}) and not covered by any dirty input"
+                )));
+            }
+            covered_up_to = covered_up_to.max(end);
         }
     }
 
@@ -1263,8 +1277,51 @@ mod tests {
 
         // Dirty input stops before total_size.
         let partial = make_dirty_inputs(&[(size, size + 500)], &vec![0xEEu8; bigger as usize]);
-        let err = upload_ranges(config, cas_client, hash, size, partial, bigger).await;
+        let err = upload_ranges(config.clone(), cas_client.clone(), hash, size, partial, bigger).await;
         assert!(err.is_err(), "append with partial coverage should be rejected");
+
+        // Dirty input covers end but leaves gap after original_size.
+        let gap_start = make_dirty_inputs(&[(size + 100, bigger)], &vec![0xEEu8; bigger as usize]);
+        let err = upload_ranges(config, cas_client, hash, size, gap_start, bigger).await;
+        assert!(err.is_err(), "append with gap at start of append region should be rejected");
+    }
+
+    // Regression: dirty_inputs = [(original_size + 100, total_size)] passes the old
+    // "last input reaches total_size" check, but leaves a gap [original_size, original_size + 100)
+    // that is beyond original_size (CAS can't fill it) and not covered by any input.
+    // Without validation, the cleaner silently skips those bytes → corrupted file.
+    //
+    // Original: [################]  (256 KB)
+    // Append:                    [--gap--][=====dirty=====]
+    //                            ^        ^                ^
+    //                       original   +100          total_size
+    //                       = 256KB   = 256KB+100    = 256KB+50KB
+    //
+    // The gap [256KB, 256KB+100) has no source: CAS stops at 256KB, no input covers it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_rejects_append_with_gap_after_original_size() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let cas_client: Arc<dyn Client> = Arc::new(server);
+
+        let original_data = random_data(42, 256 * 1024);
+        let original_hash = upload_file(&config, &original_data).await;
+        let original_size = original_data.len() as u64;
+        let total_size = original_size + 50_000;
+        let gap = 100u64;
+
+        // Input starts at original_size + gap, leaving [original_size, original_size + gap) uncovered.
+        let append_data = vec![0xBBu8; (total_size - original_size - gap) as usize];
+        let inputs = vec![DirtyInput {
+            range: (original_size + gap)..total_size,
+            reader: Box::pin(std::io::Cursor::new(append_data)),
+        }];
+
+        let err = upload_ranges(config, cas_client, original_hash, original_size, inputs, total_size).await;
+        assert!(err.is_err());
+        let msg = format!("{}", err.unwrap_err());
+        assert!(msg.contains("gap in append region"), "expected gap-in-append-region error, got: {msg}");
     }
 
     #[test]
