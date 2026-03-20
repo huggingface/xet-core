@@ -112,6 +112,7 @@ mod git_integration_tests {
 
     use super::*;
     #[test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     fn test_basic_read() -> Result<()> {
         IntegrationTest::new(include_str!("integration_tests/test_basic_clean_smudge.sh")).run()
     }

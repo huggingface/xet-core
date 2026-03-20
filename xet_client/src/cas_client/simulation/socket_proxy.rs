@@ -357,6 +357,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_client_functionality_through_socket_proxy() {
         use std::sync::Arc;
 

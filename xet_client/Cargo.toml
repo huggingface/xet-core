@@ -60,6 +60,7 @@ warp = { workspace = true }
 
 [features]
 strict = []
+smoke-test = []
 default = ["rustls-tls"]
 elevated_information_level = []
 rustls-tls = ["reqwest/rustls"]

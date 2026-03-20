@@ -558,6 +558,7 @@ mod tests {
 
     #[test]
     #[serial(monitor_process)]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     fn test_monitor_self_disk_usage() -> Result<()> {
         // Verifies that the system monitor correctly tracks and reports disk usage of this process
 
@@ -605,6 +606,7 @@ mod tests {
 
     #[test]
     #[serial(monitor_process)]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     fn test_monitor_self_memory_usage() -> Result<()> {
         // Verifies that the system monitor correctly tracks and reports peak memory usage.
         let tempdir = tempdir()?;

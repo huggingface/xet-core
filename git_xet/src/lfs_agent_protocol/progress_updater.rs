@@ -163,6 +163,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_send_monotonic_increasing_updates() -> Result<()> {
         // Test that progress updates should be monotonic increasing, regardless of
         // reordering of tasks calling into the `update_bytes_so_far` function.
@@ -208,6 +209,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_concurrent_updates() -> Result<()> {
         // Test that concurrent updates don't wait for turns to send progress messages: only
         // the first one that acquires the channel will send and others will skip.

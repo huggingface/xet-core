@@ -87,5 +87,6 @@ harness = false
 
 [features]
 strict = []
+smoke-test = []
 expensive_tests = []
 python = ["dep:pyo3"]
