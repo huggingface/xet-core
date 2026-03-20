@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use bytes::Bytes;
 use tokio::sync::Notify;
@@ -112,11 +113,6 @@ impl UnorderedDownloadStream {
         }
     }
 
-    /// Sets the total expected output size in bytes.
-    pub fn set_total_bytes_expected(&mut self, size: u64) {
-        self.progress.set_total_bytes_expected(size);
-    }
-
     /// Returns the next chunk of downloaded data with its byte offset,
     /// blocking the current thread until data is available.
     ///
@@ -200,10 +196,13 @@ impl UnorderedDownloadStream {
 
     // ── Tracking methods ─────────────────────────────────────────────────
 
-    /// Total bytes expected for the reconstruction (set from file size).
-    /// Returns 0 if not yet known.
+    /// Total bytes expected for the reconstruction, read from the progress
+    /// updater. Returns 0 if not yet known or no progress updater is set.
     pub fn total_bytes_expected(&self) -> u64 {
-        self.progress.total_bytes_expected()
+        self.run_state
+            .progress_updater()
+            .map(|u| u.item().total_bytes.load(Ordering::Acquire))
+            .unwrap_or(0)
     }
 
     /// Bytes currently being fetched by in-progress tasks.
@@ -211,10 +210,13 @@ impl UnorderedDownloadStream {
         self.progress.bytes_in_progress()
     }
 
-    /// Bytes that have been fetched and sent through the channel (may or
-    /// may not have been consumed by the caller yet).
+    /// Bytes that have been delivered through the progress updater.
+    /// Returns 0 if no progress updater is set.
     pub fn bytes_completed(&self) -> u64 {
-        self.progress.bytes_completed()
+        self.run_state
+            .progress_updater()
+            .map(|u| u.total_bytes_completed())
+            .unwrap_or(0)
     }
 
     /// Number of tasks currently resolving data futures.

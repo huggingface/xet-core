@@ -11,7 +11,7 @@ use super::super::Result;
 pub type DataFuture = Pin<Box<dyn Future<Output = Result<Bytes>> + Send + 'static>>;
 
 #[async_trait::async_trait]
-pub trait DataWriter: Send + Sync + 'static {
+pub trait DataWriter: Send + 'static {
     /// Sets the data source for the next sequential term.
     ///
     /// The byte range must be sequential - its start must match the end of the
@@ -23,7 +23,7 @@ pub trait DataWriter: Send + Sync + 'static {
     /// An optional semaphore permit can be passed for rate limiting. The permit
     /// will be released by the background writer after the data has been written.
     async fn set_next_term_data_source(
-        &self,
+        &mut self,
         byte_range: FileRange,
         permit: Option<AdjustableSemaphorePermit>,
         data_future: DataFuture,
@@ -32,5 +32,5 @@ pub trait DataWriter: Send + Sync + 'static {
     /// Consumes the writer, waits until all data has been written, and returns the
     /// number of bytes written. Dropping the writer without calling `finish` cancels
     /// the reconstruction via the shared run state.
-    async fn finish(self: Box<Self>) -> Result<u64>;
+    async fn finish(mut self: Box<Self>) -> Result<u64>;
 }

@@ -211,7 +211,7 @@ impl FileReconstructor {
 
     async fn run_impl(
         self,
-        data_writer: Box<dyn DataWriter>,
+        mut data_writer: Box<dyn DataWriter>,
         run_state: &RunState,
         _is_streaming: bool,
     ) -> std::result::Result<u64, RunError> {

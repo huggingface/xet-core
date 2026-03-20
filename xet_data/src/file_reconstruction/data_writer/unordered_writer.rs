@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use bytes::Bytes;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::task::JoinSet;
 use xet_client::cas_types::FileRange;
 use xet_runtime::utils::adjustable_semaphore::AdjustableSemaphorePermit;
 
@@ -25,20 +26,10 @@ pub(crate) struct CompletedTerm {
 pub(crate) struct UnorderedWriterProgress {
     pub terms_in_progress: AtomicU64,
     pub bytes_in_progress: AtomicU64,
-    pub bytes_completed: AtomicU64,
-    pub total_bytes_expected: AtomicU64,
     pub finished: AtomicBool,
 }
 
 impl UnorderedWriterProgress {
-    pub fn set_total_bytes_expected(&self, size: u64) {
-        self.total_bytes_expected.store(size, Ordering::Release);
-    }
-
-    pub fn total_bytes_expected(&self) -> u64 {
-        self.total_bytes_expected.load(Ordering::Acquire)
-    }
-
     pub fn terms_in_progress(&self) -> u64 {
         self.terms_in_progress.load(Ordering::Acquire)
     }
@@ -47,35 +38,35 @@ impl UnorderedWriterProgress {
         self.bytes_in_progress.load(Ordering::Relaxed)
     }
 
-    pub fn bytes_completed(&self) -> u64 {
-        self.bytes_completed.load(Ordering::Relaxed)
-    }
-
     pub fn is_finished(&self) -> bool {
         self.finished.load(Ordering::Acquire)
     }
 }
 
-/// Lock-free writer that delivers completed data terms in arbitrary order.
+/// Writer that delivers completed data terms in arbitrary order.
 ///
 /// Each call to [`set_next_term_data_source`](DataWriter::set_next_term_data_source)
-/// spawns an independent tokio task that resolves the data future and sends the
-/// result through an [`mpsc`](tokio::sync::mpsc) channel. The consumer
+/// spawns a task (tracked via a [`JoinSet`]) that resolves the data future and
+/// sends the result through an [`mpsc`](tokio::sync::mpsc) channel. The consumer
 /// (typically an [`UnorderedDownloadStream`](super::unordered_download_stream::UnorderedDownloadStream))
 /// reads from the receiver end and gets items in whatever order tasks complete.
 ///
-/// The consumer stream holds only `Arc<WriterProgress>`, not the writer itself,
-/// so the writer's channel sender is dropped naturally when the reconstruction
-/// task finishes and consumes the writer via [`finish()`](DataWriter::finish).
+/// The consumer stream holds only `Arc<UnorderedWriterProgress>`, not the writer
+/// itself, so the writer's channel sender is dropped naturally when the
+/// reconstruction task finishes and consumes the writer via
+/// [`finish()`](DataWriter::finish).
 pub struct UnorderedWriter {
     result_tx: UnboundedSender<Result<CompletedTerm>>,
     run_state: Arc<RunState>,
     progress: Arc<UnorderedWriterProgress>,
+    task_set: JoinSet<Result<u64>>,
+    total_bytes_sent: u64,
+    finished: bool,
 }
 
 impl Drop for UnorderedWriter {
     fn drop(&mut self) {
-        if !self.progress.is_finished() {
+        if !self.finished {
             self.run_state.cancel();
         }
     }
@@ -84,14 +75,19 @@ impl Drop for UnorderedWriter {
 #[async_trait::async_trait]
 impl DataWriter for UnorderedWriter {
     async fn set_next_term_data_source(
-        &self,
+        &mut self,
         byte_range: FileRange,
         permit: Option<AdjustableSemaphorePermit>,
         data_future: DataFuture,
     ) -> Result<()> {
         self.run_state.check_error()?;
 
-        if self.progress.is_finished() {
+        while let Some(result) = self.task_set.try_join_next() {
+            self.total_bytes_sent +=
+                result.map_err(|e| FileReconstructionError::InternalError(format!("Task join error: {e}")))??;
+        }
+
+        if self.finished {
             return Err(FileReconstructionError::InternalWriterError("Writer has already finished".to_string()));
         }
 
@@ -103,7 +99,7 @@ impl DataWriter for UnorderedWriter {
         let run_state = self.run_state.clone();
         let progress = self.progress.clone();
 
-        tokio::spawn(async move {
+        self.task_set.spawn(async move {
             let result = async {
                 run_state.check_error()?;
 
@@ -131,32 +127,34 @@ impl DataWriter for UnorderedWriter {
 
             let completed_bytes = result.as_ref().map(|t| t.data.len() as u64).unwrap_or(0);
 
-            // Send through channel FIRST so data is available before we
-            // signal completion via counter updates.
             let _ = result_tx.send(result);
 
             progress.bytes_in_progress.fetch_sub(expected_size, Ordering::Relaxed);
-            progress.bytes_completed.fetch_add(completed_bytes, Ordering::Relaxed);
-            // Release on this decrement pairs with Acquire in the consumer's
-            // completion check, ensuring bytes_completed is visible.
             progress.terms_in_progress.fetch_sub(1, Ordering::Release);
+
+            if completed_bytes > 0 {
+                Ok(completed_bytes)
+            } else {
+                run_state.check_error()?;
+                Ok(0)
+            }
         });
 
         Ok(())
     }
 
-    async fn finish(self: Box<Self>) -> Result<u64> {
+    async fn finish(mut self: Box<Self>) -> Result<u64> {
         self.run_state.check_error()?;
 
+        self.finished = true;
         self.progress.finished.store(true, Ordering::Release);
 
-        let total = self.progress.total_bytes_expected.load(Ordering::Acquire);
-        if total > 0 {
-            Ok(total)
-        } else {
-            Ok(self.progress.bytes_in_progress.load(Ordering::Relaxed)
-                + self.progress.bytes_completed.load(Ordering::Relaxed))
+        while let Some(result) = self.task_set.join_next().await {
+            self.total_bytes_sent +=
+                result.map_err(|e| FileReconstructionError::InternalError(format!("Task join error: {e}")))??;
         }
+
+        Ok(self.total_bytes_sent)
     }
 }
 
@@ -165,10 +163,10 @@ impl UnorderedWriter {
     /// passed to the reconstruction task as `Box<dyn DataWriter>`), the receiver
     /// end of the channel, and the shared progress counters for the consumer.
     ///
-    /// The consumer stream should hold only the `Arc<WriterProgress>`, **not**
-    /// the writer itself. This way the channel sender is dropped naturally when
-    /// the reconstruction task finishes (consuming the writer via `finish()`),
-    /// closing the channel without explicit lifetime management.
+    /// The consumer stream should hold only the `Arc<UnorderedWriterProgress>`,
+    /// **not** the writer itself. This way the channel sender is dropped
+    /// naturally when the reconstruction task finishes (consuming the writer
+    /// via `finish()`), closing the channel without explicit lifetime management.
     pub(crate) fn new_streaming(
         run_state: Arc<RunState>,
     ) -> (Box<dyn DataWriter>, UnboundedReceiver<Result<CompletedTerm>>, Arc<UnorderedWriterProgress>) {
@@ -177,8 +175,6 @@ impl UnorderedWriter {
         let progress = Arc::new(UnorderedWriterProgress {
             terms_in_progress: AtomicU64::new(0),
             bytes_in_progress: AtomicU64::new(0),
-            bytes_completed: AtomicU64::new(0),
-            total_bytes_expected: AtomicU64::new(0),
             finished: AtomicBool::new(false),
         });
 
@@ -186,6 +182,9 @@ impl UnorderedWriter {
             result_tx: tx,
             run_state,
             progress: progress.clone(),
+            task_set: JoinSet::new(),
+            total_bytes_sent: 0,
+            finished: false,
         });
 
         (writer, rx, progress)
@@ -228,7 +227,7 @@ mod tests {
     #[tokio::test]
     async fn test_basic_unordered_writes() {
         let run_state = RunState::new_for_test();
-        let (writer, mut rx, _progress) = UnorderedWriter::new_streaming(run_state);
+        let (mut writer, mut rx, _progress) = UnorderedWriter::new_streaming(run_state);
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
@@ -243,7 +242,8 @@ mod tests {
             .await
             .unwrap();
 
-        writer.finish().await.unwrap();
+        let total = writer.finish().await.unwrap();
+        assert_eq!(total, 11);
 
         let items = drain_sorted(&mut rx).await.unwrap();
         let assembled: Vec<u8> = items.into_iter().flat_map(|(_, data)| data.to_vec()).collect();
@@ -253,7 +253,7 @@ mod tests {
     #[tokio::test]
     async fn test_delayed_futures_complete_out_of_order() {
         let run_state = RunState::new_for_test();
-        let (writer, mut rx, _progress) = UnorderedWriter::new_streaming(run_state);
+        let (mut writer, mut rx, _progress) = UnorderedWriter::new_streaming(run_state);
 
         writer
             .set_next_term_data_source(
@@ -276,7 +276,8 @@ mod tests {
             .await
             .unwrap();
 
-        writer.finish().await.unwrap();
+        let total = writer.finish().await.unwrap();
+        assert_eq!(total, 11);
 
         let items = drain_sorted(&mut rx).await.unwrap();
         let assembled: Vec<u8> = items.into_iter().flat_map(|(_, data)| data.to_vec()).collect();
@@ -286,14 +287,15 @@ mod tests {
     #[tokio::test]
     async fn test_size_mismatch_error() {
         let run_state = RunState::new_for_test();
-        let (writer, mut rx, _progress) = UnorderedWriter::new_streaming(run_state);
+        let (mut writer, mut rx, _progress) = UnorderedWriter::new_streaming(run_state);
 
         writer
             .set_next_term_data_source(FileRange::new(0, 10), None, immediate_future(Bytes::from("Hello")))
             .await
             .unwrap();
 
-        writer.finish().await.unwrap();
+        let result = writer.finish().await;
+        assert!(result.is_err());
 
         let result = rx.recv().await.unwrap();
         assert!(result.is_err());
@@ -303,7 +305,7 @@ mod tests {
     #[tokio::test]
     async fn test_future_error_propagates() {
         let run_state = RunState::new_for_test();
-        let (writer, mut rx, _progress) = UnorderedWriter::new_streaming(run_state);
+        let (mut writer, mut rx, _progress) = UnorderedWriter::new_streaming(run_state);
 
         let failing_future: DataFuture =
             Box::pin(async { Err(FileReconstructionError::InternalError("Simulated error".to_string())) });
@@ -313,7 +315,8 @@ mod tests {
             .await
             .unwrap();
 
-        writer.finish().await.unwrap();
+        let result = writer.finish().await;
+        assert!(result.is_err());
 
         let result = rx.recv().await.unwrap();
         assert!(result.is_err());
@@ -322,7 +325,7 @@ mod tests {
     #[tokio::test]
     async fn test_semaphore_permit_released_after_consumption() {
         let run_state = RunState::new_for_test();
-        let (writer, mut rx, _progress) = UnorderedWriter::new_streaming(run_state);
+        let (mut writer, mut rx, _progress) = UnorderedWriter::new_streaming(run_state);
         let semaphore = AdjustableSemaphore::new(2, (0, 2));
 
         let permit1 = semaphore.acquire().await.unwrap();
@@ -347,9 +350,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_atomic_counter_accuracy() {
+    async fn test_counter_accuracy() {
         let run_state = RunState::new_for_test();
-        let (writer, mut rx, progress) = UnorderedWriter::new_streaming(run_state);
+        let (mut writer, mut rx, progress) = UnorderedWriter::new_streaming(run_state);
 
         writer
             .set_next_term_data_source(
@@ -368,35 +371,19 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(progress.bytes_completed(), 0);
-
-        writer.finish().await.unwrap();
+        let total = writer.finish().await.unwrap();
+        assert_eq!(total, 11);
 
         let _items = drain_sorted(&mut rx).await.unwrap();
 
-        assert_eq!(progress.bytes_completed(), 11);
         assert_eq!(progress.bytes_in_progress(), 0);
         assert_eq!(progress.terms_in_progress(), 0);
     }
 
     #[tokio::test]
-    async fn test_total_bytes_expected() {
+    async fn test_finish_returns_total_bytes() {
         let run_state = RunState::new_for_test();
-        let (writer, _rx, progress) = UnorderedWriter::new_streaming(run_state);
-
-        assert_eq!(progress.total_bytes_expected(), 0);
-
-        progress.set_total_bytes_expected(1024);
-        assert_eq!(progress.total_bytes_expected(), 1024);
-
-        let total = writer.finish().await.unwrap();
-        assert_eq!(total, 1024);
-    }
-
-    #[tokio::test]
-    async fn test_finish_returns_accumulated_when_total_unknown() {
-        let run_state = RunState::new_for_test();
-        let (writer, mut rx, _progress) = UnorderedWriter::new_streaming(run_state);
+        let (mut writer, mut rx, _progress) = UnorderedWriter::new_streaming(run_state);
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
@@ -416,7 +403,7 @@ mod tests {
     #[tokio::test]
     async fn test_error_propagation_prevents_subsequent_writes() {
         let run_state = RunState::new_for_test();
-        let (writer, mut _rx, _progress) = UnorderedWriter::new_streaming(run_state);
+        let (mut writer, mut _rx, _progress) = UnorderedWriter::new_streaming(run_state);
 
         let failing_future: DataFuture =
             Box::pin(async { Err(FileReconstructionError::InternalError("fail".to_string())) });
@@ -438,7 +425,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn stress_test_many_concurrent_terms() {
         let run_state = RunState::new_for_test();
-        let (writer, mut rx, _progress) = UnorderedWriter::new_streaming(run_state);
+        let (mut writer, mut rx, _progress) = UnorderedWriter::new_streaming(run_state);
 
         let num_terms: usize = 100;
         let mut expected: Vec<(u64, Vec<u8>)> = Vec::new();
@@ -463,7 +450,8 @@ mod tests {
             offset += size as u64;
         }
 
-        writer.finish().await.unwrap();
+        let total = writer.finish().await.unwrap();
+        assert_eq!(total, offset);
 
         let items = drain_sorted(&mut rx).await.unwrap();
         assert_eq!(items.len(), num_terms);
@@ -478,7 +466,7 @@ mod tests {
     async fn stress_test_rapid_finish_after_writes() {
         for _ in 0..50 {
             let run_state = RunState::new_for_test();
-            let (writer, mut rx, _progress) = UnorderedWriter::new_streaming(run_state);
+            let (mut writer, mut rx, _progress) = UnorderedWriter::new_streaming(run_state);
 
             for i in 0..10u64 {
                 let data = Bytes::from(vec![i as u8; 100]);
@@ -488,7 +476,8 @@ mod tests {
                     .unwrap();
             }
 
-            writer.finish().await.unwrap();
+            let total = writer.finish().await.unwrap();
+            assert_eq!(total, 1000);
 
             let items = drain_sorted(&mut rx).await.unwrap();
             assert_eq!(items.len(), 10);
@@ -502,7 +491,7 @@ mod tests {
     async fn stress_test_mixed_immediate_and_delayed() {
         for _ in 0..20 {
             let run_state = RunState::new_for_test();
-            let (writer, mut rx, progress) = UnorderedWriter::new_streaming(run_state);
+            let (mut writer, mut rx, progress) = UnorderedWriter::new_streaming(run_state);
 
             let mut offset = 0u64;
             let mut total_size = 0u64;
@@ -526,15 +515,14 @@ mod tests {
                 offset += size;
             }
 
-            progress.set_total_bytes_expected(total_size);
-            writer.finish().await.unwrap();
+            let total = writer.finish().await.unwrap();
+            assert_eq!(total, total_size);
 
             let items = drain_sorted(&mut rx).await.unwrap();
             assert_eq!(items.len(), num_terms);
 
             let received_bytes: u64 = items.iter().map(|(_, data)| data.len() as u64).sum();
             assert_eq!(received_bytes, total_size);
-            assert_eq!(progress.bytes_completed(), total_size);
             assert_eq!(progress.terms_in_progress(), 0);
         }
     }
