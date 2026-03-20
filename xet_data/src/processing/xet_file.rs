@@ -8,8 +8,9 @@ pub struct XetFileInfo {
     /// The Merkle hash of the file
     pub hash: String,
 
-    /// The size of the file
-    pub file_size: u64,
+    /// The size of the file, if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_size: Option<u64>,
 
     /// The SHA-256 hash of the file, if available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -17,7 +18,7 @@ pub struct XetFileInfo {
 }
 
 impl XetFileInfo {
-    /// Creates a new `XetFileInfo` instance.
+    /// Creates a new `XetFileInfo` instance with a known size.
     ///
     /// # Arguments
     ///
@@ -26,17 +27,26 @@ impl XetFileInfo {
     pub fn new(hash: String, file_size: u64) -> Self {
         Self {
             hash,
-            file_size,
+            file_size: Some(file_size),
             sha256: None,
         }
     }
 
-    /// Creates a new `XetFileInfo` instance with a SHA-256 hash.
+    /// Creates a new `XetFileInfo` instance with a SHA-256 hash and known size.
     pub fn new_with_sha256(hash: String, file_size: u64, sha256: String) -> Self {
         Self {
             hash,
-            file_size,
+            file_size: Some(file_size),
             sha256: Some(sha256),
+        }
+    }
+
+    /// Creates a new `XetFileInfo` with only a hash and no known size.
+    pub fn new_hash_only(hash: String) -> Self {
+        Self {
+            hash,
+            file_size: None,
+            sha256: None,
         }
     }
 
@@ -50,8 +60,8 @@ impl XetFileInfo {
         MerkleHash::from_hex(&self.hash).log_error("Error parsing hash value for file info")
     }
 
-    /// Returns the size of the file.
-    pub fn file_size(&self) -> u64 {
+    /// Returns the size of the file, if known.
+    pub fn file_size(&self) -> Option<u64> {
         self.file_size
     }
 

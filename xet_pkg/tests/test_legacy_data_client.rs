@@ -53,7 +53,7 @@ mod tests {
         assert_eq!(file_infos.len(), 3);
         for info in &file_infos {
             assert!(!info.hash.is_empty());
-            assert!(info.file_size > 0);
+            assert!(info.file_size.unwrap_or(0) > 0);
         }
 
         let download_dir = TempDir::new().unwrap();
@@ -256,7 +256,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(file_infos.len(), 1);
-        assert_eq!(file_infos[0].file_size, large_data.len() as u64);
+        assert_eq!(file_infos[0].file_size, Some(large_data.len() as u64));
 
         let download_dir = TempDir::new().unwrap();
         let out_path = download_dir.path().join("large_out.bin");
