@@ -664,6 +664,7 @@ mod tests {
     // ── Concurrent stress test ───────────────────────────────────
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_concurrent_stress() {
         const TASKS: usize = 50;
         const OPS_PER_TASK: usize = 1000;
@@ -717,6 +718,7 @@ mod tests {
     // ── Concurrent stress with acquire_many ──────────────────────
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_concurrent_stress_acquire_many() {
         const TASKS: usize = 30;
         const OPS_PER_TASK: usize = 500;

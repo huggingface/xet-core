@@ -193,12 +193,15 @@ mod tests {
         File::open(&dest_path).unwrap().read_to_string(&mut contents).unwrap();
         assert_eq!(contents.trim(), "Hello, world!");
 
-        // Verify file permissions
+        // Verify file permissions: owner should have read/write.
+        // Group/other bits depend on host umask and may vary (e.g. 0o600 vs 0o644).
         #[cfg(unix)]
         {
             let metadata = std::fs::metadata(&dest_path).unwrap();
             let permissions = metadata.permissions();
-            assert_eq!(permissions.mode() & 0o777, 0o644); // Assuming default creation mode
+            let mode = permissions.mode() & 0o777;
+            // Default creation mode is 0o666 masked by umask.
+            assert!(mode & 0o600 == 0o600, "Owner should have rw permissions, got {mode:#o}");
         }
     }
 
@@ -222,12 +225,15 @@ mod tests {
         File::open(&dest_path).unwrap().read_to_string(&mut contents).unwrap();
         assert_eq!(contents.trim(), "Hello, world!");
 
-        // Verify file permissions
+        // Verify file permissions: owner should have read/write.
+        // Group/other bits depend on host umask and may vary (e.g. 0o600 vs 0o644).
         #[cfg(unix)]
         {
             let metadata = std::fs::metadata(&dest_path).unwrap();
             let permissions = metadata.permissions();
-            assert_eq!(permissions.mode() & 0o777, 0o644); // Assuming default creation mode
+            let mode = permissions.mode() & 0o777;
+            // Default creation mode is 0o666 masked by umask.
+            assert!(mode & 0o600 == 0o600, "Owner should have rw permissions, got {mode:#o}");
         }
     }
 

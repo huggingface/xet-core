@@ -294,6 +294,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_hash_determinism() {
         let temp_dir = tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
@@ -355,6 +356,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_hash_file_size_multiple_of_buffer() {
         // Regression test for bug where final chunk wasn't produced when file size
         // is exactly a multiple of buffer_size. This test verifies that

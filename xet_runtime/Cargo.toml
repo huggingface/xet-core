@@ -61,6 +61,7 @@ libc = { workspace = true }
 
 [features]
 strict = []
+smoke-test = []
 elevated_information_level = []
 no-default-cache = []
 python = ["dep:pyo3"]
