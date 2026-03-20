@@ -18,13 +18,13 @@ use xet_core_structures::xorb_object::SerializedXorbObject;
 use xet_runtime::core::{XetRuntime, xet_config};
 
 use super::configurations::TranslatorConfig;
-use super::errors::*;
 use super::file_cleaner::{Sha256Policy, SingleFileCleaner};
 use super::remote_client_interface::create_remote_client;
 use super::shard_interface::SessionShardInterface;
 use super::{XetFileInfo, prometheus_metrics};
 use crate::deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use crate::deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
+use crate::error::{DataError, Result};
 use crate::progress_tracking::upload_tracking::{CompletionTracker, FileXorbDependency};
 use crate::progress_tracking::{GroupProgress, GroupProgressReport, ItemProgressReport, UniqueID};
 
@@ -472,7 +472,7 @@ impl FileUploadSession {
         return_files: bool,
     ) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>, GroupProgressReport)> {
         if self.finalized.swap(true, Ordering::AcqRel) {
-            return Err(DataProcessingError::InvalidOperation("FileUploadSession already finalized".to_string()));
+            return Err(DataError::InvalidOperation("FileUploadSession already finalized".to_string()));
         }
 
         // Register the remaining xorbs for upload.
@@ -537,7 +537,7 @@ impl FileUploadSession {
 
     fn check_not_finalized(&self) -> Result<()> {
         if self.finalized.load(Ordering::Acquire) {
-            return Err(DataProcessingError::InvalidOperation("FileUploadSession already finalized".to_string()));
+            return Err(DataError::InvalidOperation("FileUploadSession already finalized".to_string()));
         }
         Ok(())
     }

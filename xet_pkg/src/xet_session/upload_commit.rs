@@ -11,9 +11,9 @@ use xet_data::progress_tracking::{GroupProgressReport, UniqueID};
 use xet_runtime::core::XetRuntime;
 
 use super::common::{GroupState, create_translator_config};
-use super::errors::SessionError;
 use super::session::{RuntimeMode, XetSession};
 use super::tasks::{TaskHandle, TaskStatus, UploadTaskHandle};
+use crate::error::XetError;
 
 /// API for grouping related file uploads into a single atomic commit.
 ///
@@ -37,8 +37,8 @@ use super::tasks::{TaskHandle, TaskStatus, UploadTaskHandle};
 ///
 /// # Errors
 ///
-/// Methods return [`SessionError::Aborted`] if the parent session has been
-/// aborted, and [`SessionError::AlreadyCommitted`] if [`commit`](Self::commit)
+/// Methods return [`XetError::Aborted`] if the parent session has been
+/// aborted, and [`XetError::AlreadyCommitted`] if [`commit`](Self::commit)
 /// has already been called.
 #[derive(Clone)]
 pub struct UploadCommit {
@@ -55,7 +55,7 @@ impl std::ops::Deref for UploadCommit {
 impl UploadCommit {
     /// Create a new upload commit from an **async** context. Initialisation logic shared by the sync and async
     /// constructors.
-    pub(super) async fn new(session: XetSession) -> Result<Self, SessionError> {
+    pub(super) async fn new(session: XetSession) -> Result<Self, XetError> {
         let commit_id = UniqueID::new();
         let config = create_translator_config(&session)?;
         let upload_session = FileUploadSession::new(Arc::new(config)).await?;
@@ -78,7 +78,7 @@ impl UploadCommit {
     }
 
     /// Abort this upload commit.
-    pub(super) fn abort(&self) -> Result<(), SessionError> {
+    pub(super) fn abort(&self) -> Result<(), XetError> {
         self.inner.abort()
     }
 
@@ -101,14 +101,14 @@ impl UploadCommit {
     ///
     /// # Errors
     ///
-    /// Returns [`SessionError::Aborted`] if the session has been aborted, or
-    /// [`SessionError::AlreadyCommitted`] if [`commit`](Self::commit) has
+    /// Returns [`XetError::Aborted`] if the session has been aborted, or
+    /// [`XetError::AlreadyCommitted`] if [`commit`](Self::commit) has
     /// already been called.
     pub async fn upload_from_path(
         &self,
         file_path: PathBuf,
         sha256: Sha256Policy,
-    ) -> Result<UploadTaskHandle, SessionError> {
+    ) -> Result<UploadTaskHandle, XetError> {
         self.session.check_alive()?;
 
         // Use the absolute path in case the process current working directory changes
@@ -129,8 +129,8 @@ impl UploadCommit {
     /// ```rust,no_run
     /// # use std::fs::File;
     /// # use std::io::Read;
-    /// # use xet::xet_session::SessionError;
-    /// # async fn example(commit: xet::xet_session::UploadCommit, filename: &str, filesize: u64) -> Result<(), Box<dyn std::error::Error>> {
+    /// # use xet::XetError;
+    /// # async fn example(commit: xet::xet_session::UploadCommit, filename: &str, filesize: u64) -> anyhow::Result<()> {
     /// # use xet::xet_session::Sha256Policy;
     /// let (handle, mut cleaner) = commit.upload_file(Some(filename.into()), filesize, Sha256Policy::Compute).await?;
     /// let mut reader = File::open(&filename)?;
@@ -166,7 +166,7 @@ impl UploadCommit {
         file_name: Option<String>,
         file_size: u64,
         sha256: Sha256Policy,
-    ) -> Result<(TaskHandle, SingleFileCleaner), SessionError> {
+    ) -> Result<(TaskHandle, SingleFileCleaner), XetError> {
         self.session.check_alive()?;
 
         let inner = self.inner.clone();
@@ -190,14 +190,14 @@ impl UploadCommit {
     ///
     /// # Errors
     ///
-    /// Returns [`SessionError::Aborted`] if the session has been aborted, or
-    /// [`SessionError::AlreadyCommitted`] if [`commit`](Self::commit) has already been called.
+    /// Returns [`XetError::Aborted`] if the session has been aborted, or
+    /// [`XetError::AlreadyCommitted`] if [`commit`](Self::commit) has already been called.
     pub async fn upload_bytes(
         &self,
         bytes: Vec<u8>,
         sha256: Sha256Policy,
         tracking_name: Option<String>,
-    ) -> Result<UploadTaskHandle, SessionError> {
+    ) -> Result<UploadTaskHandle, XetError> {
         self.session.check_alive()?;
 
         let inner = self.inner.clone();
@@ -207,7 +207,7 @@ impl UploadCommit {
     }
 
     /// Return a snapshot of progress for every queued upload.
-    pub fn get_progress(&self) -> Result<GroupProgressReport, SessionError> {
+    pub fn get_progress(&self) -> Result<GroupProgressReport, XetError> {
         let session_opt = self.upload_session.lock()?.clone();
         if let Some(upload_session) = session_opt {
             return Ok(upload_session.report());
@@ -221,12 +221,12 @@ impl UploadCommit {
     /// Wait for all uploads to complete and push metadata to the CAS server.
     ///
     /// Returns a `HashMap` keyed by task ID where each value is
-    /// [`UploadResult`] (= `Arc<Result<`[`FileMetadata`]`, [`SessionError`]`>>`).
+    /// [`UploadResult`] (= `Arc<Result<`[`FileMetadata`]`, [`XetError`]`>>`).
     /// A single failed upload does not prevent the others from being collected.
     ///
     /// Consumes `self` — subsequent calls on any clone will return
-    /// [`SessionError::AlreadyCommitted`].
-    pub async fn commit(self) -> Result<HashMap<UniqueID, UploadResult>, SessionError> {
+    /// [`XetError::AlreadyCommitted`].
+    pub async fn commit(self) -> Result<HashMap<UniqueID, UploadResult>, XetError> {
         let inner = self.inner.clone();
         self.session
             .dispatch("commit", async move { inner.handle_commit().await })
@@ -249,7 +249,7 @@ impl UploadCommit {
     ///
     /// # Errors
     ///
-    /// Returns [`SessionError::WrongRuntimeMode`] if the session was created with an external
+    /// Returns [`XetError::WrongRuntimeMode`] if the session was created with an external
     /// tokio runtime ([`XetSessionBuilder::with_tokio_handle`] / [`XetSessionBuilder::build_async`]
     /// inside a tokio context). Use [`upload_from_path`](Self::upload_from_path)`.await` instead.
     ///
@@ -260,9 +260,9 @@ impl UploadCommit {
         &self,
         file_path: PathBuf,
         sha256: Sha256Policy,
-    ) -> Result<UploadTaskHandle, SessionError> {
+    ) -> Result<UploadTaskHandle, XetError> {
         if matches!(self.session.runtime_mode, RuntimeMode::External) {
-            return Err(SessionError::wrong_mode(
+            return Err(XetError::wrong_mode(
                 "upload_from_path_blocking() cannot be called on a session using an \
                  external tokio runtime (with_tokio_handle() or tokio build_async()); \
                  use upload_from_path().await instead",
@@ -281,7 +281,7 @@ impl UploadCommit {
     ///
     /// # Errors
     ///
-    /// Returns [`SessionError::WrongRuntimeMode`] if the session was created with an external
+    /// Returns [`XetError::WrongRuntimeMode`] if the session was created with an external
     /// tokio runtime ([`XetSessionBuilder::with_tokio_handle`] / [`XetSessionBuilder::build_async`]
     /// inside a tokio context). Use [`upload_bytes`](Self::upload_bytes)`.await` instead.
     ///
@@ -293,9 +293,9 @@ impl UploadCommit {
         bytes: Vec<u8>,
         sha256: Sha256Policy,
         tracking_name: Option<String>,
-    ) -> Result<UploadTaskHandle, SessionError> {
+    ) -> Result<UploadTaskHandle, XetError> {
         if matches!(self.session.runtime_mode, RuntimeMode::External) {
-            return Err(SessionError::wrong_mode(
+            return Err(XetError::wrong_mode(
                 "upload_bytes_blocking() cannot be called on a session using an \
                  external tokio runtime (with_tokio_handle() or tokio build_async()); \
                  use upload_bytes().await instead",
@@ -313,7 +313,7 @@ impl UploadCommit {
     ///
     /// # Errors
     ///
-    /// Returns [`SessionError::WrongRuntimeMode`] if the session was created with an external
+    /// Returns [`XetError::WrongRuntimeMode`] if the session was created with an external
     /// tokio runtime ([`XetSessionBuilder::with_tokio_handle`] / [`XetSessionBuilder::build_async`]
     /// inside a tokio context). Use [`upload_file`](Self::upload_file)`.await` instead.
     ///
@@ -325,9 +325,9 @@ impl UploadCommit {
         file_name: Option<String>,
         file_size: u64,
         sha256: Sha256Policy,
-    ) -> Result<(TaskHandle, SingleFileCleaner), SessionError> {
+    ) -> Result<(TaskHandle, SingleFileCleaner), XetError> {
         if matches!(self.session.runtime_mode, RuntimeMode::External) {
-            return Err(SessionError::wrong_mode(
+            return Err(XetError::wrong_mode(
                 "upload_file_blocking() cannot be called on a session using an \
                  external tokio runtime (with_tokio_handle() or tokio build_async()); \
                  use upload_file().await instead",
@@ -342,7 +342,7 @@ impl UploadCommit {
     }
 
     /// Blocking version of [`get_progress`](Self::get_progress).
-    pub fn get_progress_blocking(&self) -> Result<GroupProgressReport, SessionError> {
+    pub fn get_progress_blocking(&self) -> Result<GroupProgressReport, XetError> {
         self.get_progress()
     }
 
@@ -351,7 +351,7 @@ impl UploadCommit {
     /// # Panics
     ///
     /// Panics if called from within a tokio async runtime.
-    pub fn commit_blocking(self) -> Result<HashMap<UniqueID, UploadResult>, SessionError> {
+    pub fn commit_blocking(self) -> Result<HashMap<UniqueID, UploadResult>, XetError> {
         let commit = self.clone();
         self.runtime().external_run_async_task(commit.commit())?
     }
@@ -362,7 +362,7 @@ impl UploadCommit {
 /// The `Arc` lets the same value be stored in both the `commit()` return map
 /// and the per-task [`UploadTaskHandle`] without requiring the inner
 /// `Result` to be `Clone`.
-pub type UploadResult = Arc<Result<FileMetadata, SessionError>>;
+pub type UploadResult = Arc<Result<FileMetadata, XetError>>;
 
 /// Handle for a single upload task tracked internally by UploadCommit.
 struct InnerUploadTaskHandle {
@@ -398,10 +398,10 @@ impl UploadCommitInner {
     // ===== State helpers =====
 
     /// Check whether the commit is still accepting new tasks.
-    fn check_accepting_tasks(state: &GroupState) -> Result<(), SessionError> {
+    fn check_accepting_tasks(state: &GroupState) -> Result<(), XetError> {
         match *state {
-            GroupState::Finished => Err(SessionError::AlreadyCommitted),
-            GroupState::Aborted => Err(SessionError::Aborted),
+            GroupState::Finished => Err(XetError::AlreadyCommitted),
+            GroupState::Aborted => Err(XetError::Aborted),
             GroupState::Alive => Ok(()),
         }
     }
@@ -410,13 +410,13 @@ impl UploadCommitInner {
         &self,
         file_path: PathBuf,
         sha256: Sha256Policy,
-    ) -> Result<UploadTaskHandle, SessionError> {
+    ) -> Result<UploadTaskHandle, XetError> {
         let upload_session = {
             let state = self.state.lock().await;
             Self::check_accepting_tasks(&state)?;
 
             let Some(upload_session) = self.upload_session.lock()?.clone() else {
-                return Err(SessionError::other("Upload session not initialized"));
+                return Err(XetError::other("Upload session not initialized"));
             };
             upload_session
         };
@@ -457,12 +457,12 @@ impl UploadCommitInner {
         tracking_name: Option<String>,
         file_size: u64,
         sha256: Sha256Policy,
-    ) -> Result<(TaskHandle, SingleFileCleaner), SessionError> {
+    ) -> Result<(TaskHandle, SingleFileCleaner), XetError> {
         let state = self.state.lock().await;
         Self::check_accepting_tasks(&state)?;
 
         let Some(upload_session) = self.upload_session.lock()?.clone() else {
-            return Err(SessionError::other("Upload session not initialized"));
+            return Err(XetError::other("Upload session not initialized"));
         };
 
         let tracking_name: Option<Arc<str>> = tracking_name.as_deref().map(Arc::from);
@@ -481,13 +481,13 @@ impl UploadCommitInner {
         bytes: Vec<u8>,
         sha256: Sha256Policy,
         tracking_name: Option<String>,
-    ) -> Result<UploadTaskHandle, SessionError> {
+    ) -> Result<UploadTaskHandle, XetError> {
         let upload_session = {
             let state = self.state.lock().await;
             Self::check_accepting_tasks(&state)?;
 
             let Some(upload_session) = self.upload_session.lock()?.clone() else {
-                return Err(SessionError::other("Upload session not initialized"));
+                return Err(XetError::other("Upload session not initialized"));
             };
             upload_session
         };
@@ -519,14 +519,14 @@ impl UploadCommitInner {
     }
 
     /// Join all active upload tasks and finalise the upload session.
-    pub(super) async fn handle_commit(&self) -> Result<HashMap<UniqueID, UploadResult>, SessionError> {
+    pub(super) async fn handle_commit(&self) -> Result<HashMap<UniqueID, UploadResult>, XetError> {
         // Mark as not accepting new tasks. The tokio state lock serialises this
         // against all three registration methods, including start_upload_file
         // which holds it across the start_clean await.
         {
             let mut state_guard = self.state.lock().await;
             if *state_guard == GroupState::Finished {
-                return Err(SessionError::AlreadyCommitted);
+                return Err(XetError::AlreadyCommitted);
             }
             *state_guard = GroupState::Aborted; // stop new tasks while draining
         }
@@ -538,7 +538,7 @@ impl UploadCommitInner {
         let mut results = HashMap::new();
         let mut join_err = None;
         for (task_id, handle) in active_tasks {
-            match handle.join_handle.await.map_err(SessionError::from) {
+            match handle.join_handle.await.map_err(XetError::from) {
                 Ok(Ok(file_info)) => {
                     TaskStatus::mark_terminal(&handle.status, TaskStatus::Completed);
                     let result = Arc::new(Ok(FileMetadata {
@@ -552,12 +552,12 @@ impl UploadCommitInner {
                 },
                 Ok(Err(data_err)) => {
                     TaskStatus::mark_terminal(&handle.status, TaskStatus::Failed);
-                    let result = Arc::new(Err(SessionError::from(data_err)));
+                    let result = Arc::new(Err(XetError::from(data_err)));
                     results.insert(task_id, result.clone());
                     let _ = handle.result.set(result);
                 },
                 Err(e) => {
-                    if matches!(e, SessionError::Cancelled(_)) {
+                    if matches!(e, XetError::Cancelled(_)) {
                         TaskStatus::mark_cancelled(&handle.status);
                     } else {
                         TaskStatus::mark_terminal(&handle.status, TaskStatus::Failed);
@@ -606,7 +606,7 @@ impl UploadCommitInner {
     /// obtaining a session and prevents `handle_commit` from calling `finalize`.
     /// It does not invalidate any `SingleFileCleaner` already in the caller's hands,
     /// since the cleaner holds its own `Arc` to the session.
-    fn abort(&self) -> Result<(), SessionError> {
+    fn abort(&self) -> Result<(), XetError> {
         if let Ok(mut guard) = self.state.try_lock() {
             *guard = GroupState::Aborted;
         }
@@ -641,12 +641,13 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
+    use anyhow::Result;
     use tempfile::{TempDir, tempdir};
 
     use super::*;
     use crate::xet_session::session::{RuntimeMode, XetSession, XetSessionBuilder};
 
-    async fn local_session(temp: &TempDir) -> Result<XetSession, Box<dyn std::error::Error>> {
+    async fn local_session(temp: &TempDir) -> Result<XetSession> {
         let cas_path = temp.path().join("cas");
         Ok(XetSessionBuilder::new()
             .with_endpoint(format!("local://{}", cas_path.display()))
@@ -667,7 +668,7 @@ mod tests {
 
     #[test]
     // commit() must block while any enqueue method holds the state lock.
-    fn test_commit_blocked_while_upload_registration_holds_state_lock() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_commit_blocked_while_upload_registration_holds_state_lock() -> Result<()> {
         let temp = tempdir()?;
         let cas_path = temp.path().join("cas");
         let session = XetSessionBuilder::new()
@@ -762,7 +763,7 @@ mod tests {
         let c2 = c1.clone();
         c1.commit().await.unwrap();
         let err = c2.commit().await.unwrap_err();
-        assert!(matches!(err, SessionError::AlreadyCommitted | SessionError::Internal(_)));
+        assert!(matches!(err, XetError::AlreadyCommitted | XetError::Internal(_)));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -787,7 +788,7 @@ mod tests {
             .upload_from_path(PathBuf::from("nonexistent.bin"), Sha256Policy::Compute)
             .await
             .unwrap_err();
-        assert!(matches!(err, SessionError::Aborted));
+        assert!(matches!(err, XetError::Aborted));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -800,7 +801,7 @@ mod tests {
             .upload_bytes(b"data".to_vec(), Sha256Policy::Compute, Some("bytes 1".into()))
             .await
             .unwrap_err();
-        assert!(matches!(err, SessionError::Aborted));
+        assert!(matches!(err, XetError::Aborted));
     }
 
     // ── Post-commit guards (AlreadyCommitted) ────────────────────────────────
@@ -816,7 +817,7 @@ mod tests {
             .upload_from_path(PathBuf::from("any.bin"), Sha256Policy::Compute)
             .await
             .unwrap_err();
-        assert!(matches!(err, SessionError::AlreadyCommitted));
+        assert!(matches!(err, XetError::AlreadyCommitted));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -830,7 +831,7 @@ mod tests {
             .upload_bytes(b"hello".to_vec(), Sha256Policy::Compute, None)
             .await
             .unwrap_err();
-        assert!(matches!(err, SessionError::AlreadyCommitted));
+        assert!(matches!(err, XetError::AlreadyCommitted));
     }
 
     // ── API coverage & abort ─────────────────────────────────────────────────
@@ -1222,7 +1223,7 @@ mod tests {
 
     // ── Blocking API tests ────────────────────────────────────────────────────
 
-    fn local_session_sync(temp: &TempDir) -> Result<XetSession, Box<dyn std::error::Error>> {
+    fn local_session_sync(temp: &TempDir) -> Result<XetSession> {
         let cas_path = temp.path().join("cas");
         Ok(XetSessionBuilder::new()
             .with_endpoint(format!("local://{}", cas_path.display()))
@@ -1230,7 +1231,7 @@ mod tests {
     }
 
     #[test]
-    fn test_blocking_upload_bytes_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_blocking_upload_bytes_round_trip() -> Result<()> {
         let temp = tempdir()?;
         let session = local_session_sync(&temp)?;
         let data = b"Hello, upload commit round-trip!";
@@ -1246,7 +1247,7 @@ mod tests {
     }
 
     #[test]
-    fn test_blocking_upload_from_path_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_blocking_upload_from_path_round_trip() -> Result<()> {
         let temp = tempdir()?;
         let session = local_session_sync(&temp)?;
         let src = temp.path().join("data.bin");
@@ -1263,7 +1264,7 @@ mod tests {
     }
 
     #[test]
-    fn test_blocking_upload_result_access_patterns() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_blocking_upload_result_access_patterns() -> Result<()> {
         let temp = tempdir()?;
         let session = local_session_sync(&temp)?;
         let data = b"result access patterns";
@@ -1288,7 +1289,7 @@ mod tests {
     }
 
     #[test]
-    fn test_blocking_upload_streaming_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_blocking_upload_streaming_round_trip() -> Result<()> {
         let temp = tempdir()?;
         let session = local_session_sync(&temp)?;
         let data = b"streamed upload bytes";
@@ -1309,7 +1310,7 @@ mod tests {
     }
 
     #[test]
-    fn test_blocking_upload_multiple_files_in_one_commit() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_blocking_upload_multiple_files_in_one_commit() -> Result<()> {
         let temp = tempdir()?;
         let session = local_session_sync(&temp)?;
         let commit = session.new_upload_commit_blocking()?;
@@ -1322,7 +1323,7 @@ mod tests {
     }
 
     #[test]
-    fn test_blocking_upload_progress_reflects_bytes_after_commit() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_blocking_upload_progress_reflects_bytes_after_commit() -> Result<()> {
         let temp = tempdir()?;
         let session = local_session_sync(&temp)?;
         let data = b"progress tracking upload data";
@@ -1339,7 +1340,7 @@ mod tests {
     }
 
     #[test]
-    fn test_blocking_upload_file_returns_handle_without_status() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_blocking_upload_file_returns_handle_without_status() -> Result<()> {
         let temp = tempdir()?;
         let session = local_session_sync(&temp)?;
         let commit = session.new_upload_commit_blocking()?;
@@ -1395,7 +1396,7 @@ mod tests {
             .upload_from_path_blocking(PathBuf::from("/nonexistent"), Sha256Policy::Compute)
             .err()
             .unwrap();
-        assert!(matches!(err, SessionError::WrongRuntimeMode(_)));
+        assert!(matches!(err, XetError::WrongRuntimeMode(_)));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1405,7 +1406,7 @@ mod tests {
         assert_eq!(session.runtime_mode, RuntimeMode::External);
         let commit = session.new_upload_commit().await.unwrap();
         let err = commit.upload_bytes_blocking(vec![], Sha256Policy::Compute, None).err().unwrap();
-        assert!(matches!(err, SessionError::WrongRuntimeMode(_)));
+        assert!(matches!(err, XetError::WrongRuntimeMode(_)));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1415,7 +1416,7 @@ mod tests {
         assert_eq!(session.runtime_mode, RuntimeMode::External);
         let commit = session.new_upload_commit().await.unwrap();
         let err = commit.upload_file_blocking(None, 0, Sha256Policy::Compute).err().unwrap();
-        assert!(matches!(err, SessionError::WrongRuntimeMode(_)));
+        assert!(matches!(err, XetError::WrongRuntimeMode(_)));
     }
 
     // ── Owned-mode _blocking panic guard ─────────────────────────────────────

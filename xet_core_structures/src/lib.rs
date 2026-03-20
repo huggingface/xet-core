@@ -1,7 +1,7 @@
 #![cfg_attr(feature = "strict", deny(warnings))]
 
 pub mod error;
-pub use error::FormatError;
+pub use error::CoreError;
 
 pub mod data_structures;
 pub mod merklehash;

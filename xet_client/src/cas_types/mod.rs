@@ -9,7 +9,6 @@ use serde_repr::{Deserialize_repr, Serialize_repr};
 use thiserror::Error;
 use xet_core_structures::merklehash::MerkleHash;
 
-mod error;
 mod key;
 pub use key::*;
 

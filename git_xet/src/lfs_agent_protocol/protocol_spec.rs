@@ -220,15 +220,13 @@ pub fn to_line_delimited_json_string(value: impl Serialize) -> Result<String> {
 mod tests {
     use std::path::Path;
 
-    use anyhow::Result;
-
     use super::*;
 
     #[test]
     fn test_protocol_serde_unknown_event() -> Result<()> {
         let message = r#"
             { "event": "other", "operation": "upload", "remote": "origin", "concurrent": false }"#;
-        let parsed: Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message.parse();
+        let parsed: std::result::Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message.parse();
 
         assert!(matches!(parsed, Err(GitLFSProtocolError::Syntax(_))));
 
@@ -269,21 +267,21 @@ mod tests {
         // init event with invalid operation
         let message1 = r#"
             { "event": "init", "operation": "other", "remote": "origin", "concurrent": false }"#;
-        let parsed1: Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message1.parse();
+        let parsed1: std::result::Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message1.parse();
 
         assert!(matches!(parsed1, Err(GitLFSProtocolError::Syntax(_))));
 
         // init event missing required field
         let message2 = r#"
             { "event": "init", "operation": "upload", "remote": "origin" }"#;
-        let parsed2: Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message2.parse();
+        let parsed2: std::result::Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message2.parse();
 
         assert!(matches!(parsed2, Err(GitLFSProtocolError::Syntax(_))));
 
         // init event with invalid remote
         let message2 = r#"
             { "event": "init", "operation": "upload", "remote": "", "concurrent": false }"#;
-        let parsed2: Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message2.parse();
+        let parsed2: std::result::Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message2.parse();
 
         assert!(matches!(parsed2, Err(GitLFSProtocolError::Argument(_))));
 
@@ -354,7 +352,7 @@ mod tests {
         let message1 = r#"
             { "event": "upload", "oid": "bf3e3e2af9366a3b704ae0c31de5afa64193ebabffde2091936ad2e7510bc03a", "size": 346232,
             "path": "/path/to/file.png" }"#;
-        let parsed1: Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message1.parse();
+        let parsed1: std::result::Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message1.parse();
 
         assert!(matches!(parsed1, Err(GitLFSProtocolError::Syntax(_))));
 
@@ -362,7 +360,7 @@ mod tests {
         let message2 = r#"
             { "event": "upload", "oid": "bf3e3e2af9366abc03a", "size": 346232,
             "path": "/path/to/file.png", "action": { "href": "nfs://server/path", "header": { "key": "value" } } }"#;
-        let parsed2: Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message2.parse();
+        let parsed2: std::result::Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message2.parse();
 
         assert!(matches!(parsed2, Err(GitLFSProtocolError::Argument(_))));
 
@@ -370,7 +368,7 @@ mod tests {
         let message3 = r#"
             { "event": "upload", "oid": "bf3e3e2af9366a3b704ae0c31de5afa64193ebabffde2091936ad2e7510bc03a", "size": 0,
             "path": "/path/to/file.png", "action": { "href": "nfs://server/path", "header": { "key": "value" } } }"#;
-        let parsed3: Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message3.parse();
+        let parsed3: std::result::Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message3.parse();
 
         assert!(matches!(parsed3, Err(GitLFSProtocolError::Argument(_))));
 
@@ -378,7 +376,7 @@ mod tests {
         let message4 = r#"
             { "event": "upload", "oid": "bf3e3e2af9366a3b704ae0c31de5afa64193ebabffde2091936ad2e7510bc03a", "size": 346232,
             "action": { "href": "nfs://server/path", "header": { "key": "value" } } }"#;
-        let parsed4: Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message4.parse();
+        let parsed4: std::result::Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message4.parse();
 
         assert!(matches!(parsed4, Err(GitLFSProtocolError::Syntax(_))));
 
@@ -386,7 +384,7 @@ mod tests {
         let message5 = r#"
             { "event": "download", "oid": "bf3e3e2af9366a3b704ae0c31de5afa64193ebabffde2091936ad2e7510bc03a", "size": 12514,
             "path": "/path/to/file.png", "action": { "href": "https://server/path", "header": { "k1": "v1", "k2": "v2" } } }"#;
-        let parsed5: Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message5.parse();
+        let parsed5: std::result::Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message5.parse();
 
         assert!(matches!(parsed5, Err(GitLFSProtocolError::Syntax(_))));
 

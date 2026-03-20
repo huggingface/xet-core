@@ -31,12 +31,12 @@ use super::direct_access_client::DirectAccessClient;
 use super::xorb_utils::{self, REFERENCE_INSTANT};
 use crate::cas_client::Client;
 use crate::cas_client::adaptive_concurrency::AdaptiveConcurrencyController;
-use crate::cas_client::error::{CasClientError, Result};
 use crate::cas_client::progress_tracked_streams::ProgressCallback;
 use crate::cas_types::{
     BatchQueryReconstructionResponse, FileRange, HexMerkleHash, HttpRange, QueryReconstructionResponse,
     QueryReconstructionResponseV2, XorbMultiRangeFetch, XorbRangeDescriptor, XorbReconstructionFetchInfo,
 };
+use crate::error::{ClientError, Result};
 
 pub struct LocalClient {
     // Note: Field order matters for Drop! heed::Env must be dropped before _tmp_dir
@@ -121,7 +121,7 @@ impl LocalClient {
                 }
             }
             result.ok_or_else(|| {
-                CasClientError::Other(format!(
+                ClientError::Other(format!(
                     "Error opening db at {global_dedup_dir:?} after 5 attempts: {}",
                     last_err.unwrap()
                 ))
@@ -130,13 +130,13 @@ impl LocalClient {
 
         let mut write_txn = global_dedup_db_env
             .write_txn()
-            .map_err(|e| CasClientError::Other(format!("Error opening heed write transaction: {e}")))?;
+            .map_err(|e| ClientError::Other(format!("Error opening heed write transaction: {e}")))?;
         let global_dedup_table = global_dedup_db_env
             .create_database(&mut write_txn, None)
-            .map_err(|e| CasClientError::Other(format!("Error opening heed table: {e}")))?;
+            .map_err(|e| ClientError::Other(format!("Error opening heed table: {e}")))?;
         write_txn
             .commit()
-            .map_err(|e| CasClientError::Other(format!("Error committing heed database: {e}")))?;
+            .map_err(|e| ClientError::Other(format!("Error committing heed database: {e}")))?;
 
         // Open / set up the shard lookup
         let shard_manager = ShardFileManager::new_in_session_directory(shard_dir.clone(), true).await?;
@@ -164,8 +164,8 @@ impl LocalClient {
     /// Returns all shard files in the shard directory as (shard_hash, path) pairs.
     fn shard_file_paths(&self) -> Result<Vec<(MerkleHash, PathBuf)>> {
         let mut result = Vec::new();
-        for entry in std::fs::read_dir(&self.shard_dir).map_err(CasClientError::internal)? {
-            let entry = entry.map_err(CasClientError::internal)?;
+        for entry in std::fs::read_dir(&self.shard_dir).map_err(ClientError::internal)? {
+            let entry = entry.map_err(ClientError::internal)?;
             let path = entry.path();
             if let Some(hash) = parse_shard_filename(&path)
                 && path.is_file()
@@ -182,7 +182,7 @@ impl LocalClient {
         if path.exists() {
             Ok(path)
         } else {
-            Err(CasClientError::Other(format!("Shard file not found for hash {}", hash.hex())))
+            Err(ClientError::Other(format!("Shard file not found for hash {}", hash.hex())))
         }
     }
 
@@ -281,7 +281,7 @@ impl super::DeletionControlableClient for LocalClient {
             for xorb_hash in &xorb_hashes {
                 let xorb_path = self.get_path_for_entry(xorb_hash);
                 if !xorb_path.exists() {
-                    return Err(CasClientError::Other(format!(
+                    return Err(ClientError::Other(format!(
                         "Integrity error: shard {} references non-existent XORB {}",
                         shard_hash.hex(),
                         xorb_hash.hex()
@@ -297,7 +297,7 @@ impl super::DeletionControlableClient for LocalClient {
                     let segment = file_view.entry(seg_idx);
 
                     let chunk_count = xorb_chunk_counts.get(&segment.xorb_hash).ok_or_else(|| {
-                        CasClientError::Other(format!(
+                        ClientError::Other(format!(
                             "Integrity error: file {} references XORB block {} not present in shard {}",
                             fh.hex(),
                             segment.xorb_hash.hex(),
@@ -306,7 +306,7 @@ impl super::DeletionControlableClient for LocalClient {
                     })?;
 
                     if segment.chunk_index_end as usize > *chunk_count {
-                        return Err(CasClientError::Other(format!(
+                        return Err(ClientError::Other(format!(
                             "Integrity error: file {} references chunk range {}..{} but XORB block {} only has {} chunks",
                             fh.hex(),
                             segment.chunk_index_start,
@@ -408,7 +408,7 @@ impl DirectAccessClient for LocalClient {
         let mut ret = Vec::new();
         self.xorb_dir
             .read_dir()
-            .map_err(CasClientError::internal)?
+            .map_err(ClientError::internal)?
             .filter_map(|x| x.ok())
             .filter_map(|x| x.file_name().into_string().ok())
             .for_each(|x| {
@@ -443,7 +443,7 @@ impl DirectAccessClient for LocalClient {
         let file_path = self.get_path_for_entry(hash);
         let file = File::open(&file_path).map_err(|_| {
             error!("Unable to find file in local CAS {:?}", file_path);
-            CasClientError::XORBNotFound(*hash)
+            ClientError::XORBNotFound(*hash)
         })?;
 
         let mut reader = BufReader::new(file);
@@ -460,7 +460,7 @@ impl DirectAccessClient for LocalClient {
         let file_path = self.get_path_for_entry(hash);
         let file = File::open(&file_path).map_err(|_| {
             error!("Unable to find file in local CAS {:?}", file_path);
-            CasClientError::XORBNotFound(*hash)
+            ClientError::XORBNotFound(*hash)
         })?;
 
         let mut reader = BufReader::new(file);
@@ -488,7 +488,7 @@ impl DirectAccessClient for LocalClient {
                 let length = xorb_obj.get_all_bytes(&mut reader)?.len();
                 Ok(length as u32)
             },
-            Err(_) => Err(CasClientError::XORBNotFound(*hash)),
+            Err(_) => Err(ClientError::XORBNotFound(*hash)),
         }
     }
 
@@ -500,13 +500,13 @@ impl DirectAccessClient for LocalClient {
         };
 
         if !md.is_file() {
-            return Err(CasClientError::internal(format!(
+            return Err(ClientError::InternalError(anyhow!(
                 "Attempting to write to {file_path:?}, but it is not a file"
             )));
         }
 
         let Ok(file) = File::open(&file_path) else {
-            return Err(CasClientError::XORBNotFound(*hash));
+            return Err(ClientError::XORBNotFound(*hash));
         };
 
         let mut reader = BufReader::new(file);
@@ -518,7 +518,7 @@ impl DirectAccessClient for LocalClient {
         let file_path = self.get_path_for_entry(hash);
         let mut file = File::open(&file_path).map_err(|_| {
             error!("Unable to find xorb in local CAS {:?}", file_path);
-            CasClientError::XORBNotFound(*hash)
+            ClientError::XORBNotFound(*hash)
         })?;
 
         file.seek(SeekFrom::End(-(size_of::<u32>() as i64)))?;
@@ -541,9 +541,9 @@ impl DirectAccessClient for LocalClient {
             .shard_manager
             .get_file_reconstruction_info(hash)
             .await
-            .map_err(|e| anyhow!("{e}"))?
+            .map_err(ClientError::internal)?
         else {
-            return Err(CasClientError::FileNotFound(*hash));
+            return Err(ClientError::FileNotFound(*hash));
         };
 
         let mut file_vec = Vec::new();
@@ -561,7 +561,7 @@ impl DirectAccessClient for LocalClient {
         let start = byte_range.as_ref().map(|range| range.start as usize).unwrap_or(0);
 
         if byte_range.is_some() && start >= file_size {
-            return Err(CasClientError::InvalidRange);
+            return Err(ClientError::InvalidRange);
         }
 
         let end = byte_range
@@ -575,7 +575,7 @@ impl DirectAccessClient for LocalClient {
 
     async fn get_xorb_raw_bytes(&self, hash: &MerkleHash, byte_range: Option<FileRange>) -> Result<Bytes> {
         let file_path = self.get_path_for_entry(hash);
-        let data = std::fs::read(&file_path).map_err(|_| CasClientError::XORBNotFound(*hash))?;
+        let data = std::fs::read(&file_path).map_err(|_| ClientError::XORBNotFound(*hash))?;
 
         let start = byte_range.as_ref().map(|r| r.start as usize).unwrap_or(0);
         let end = byte_range
@@ -585,7 +585,7 @@ impl DirectAccessClient for LocalClient {
             .min(data.len());
 
         if start >= data.len() {
-            return Err(CasClientError::InvalidRange);
+            return Err(ClientError::InvalidRange);
         }
 
         Ok(Bytes::from(data[start..end].to_vec()))
@@ -593,7 +593,7 @@ impl DirectAccessClient for LocalClient {
 
     async fn xorb_raw_length(&self, hash: &MerkleHash) -> Result<u64> {
         let file_path = self.get_path_for_entry(hash);
-        let metadata = std::fs::metadata(&file_path).map_err(|_| CasClientError::XORBNotFound(*hash))?;
+        let metadata = std::fs::metadata(&file_path).map_err(|_| ClientError::XORBNotFound(*hash))?;
         Ok(metadata.len())
     }
 
@@ -609,7 +609,7 @@ impl DirectAccessClient for LocalClient {
         let expiration_ms = self.url_expiration_ms.load(Ordering::Relaxed);
         let elapsed_ms = Instant::now().saturating_duration_since(url_timestamp).as_millis() as u64;
         if elapsed_ms > expiration_ms {
-            return Err(CasClientError::PresignedUrlExpirationError);
+            return Err(ClientError::PresignedUrlExpirationError);
         }
 
         // Validate byte range matches url_range
@@ -617,11 +617,11 @@ impl DirectAccessClient for LocalClient {
         // We convert url_range to FileRange for comparison
         let fetch_byte_range = FileRange::from(fetch_term.url_range);
         if url_byte_range.start != fetch_byte_range.start || url_byte_range.end != fetch_byte_range.end {
-            return Err(CasClientError::InvalidArguments);
+            return Err(ClientError::InvalidArguments);
         }
         let file = File::open(&file_path).map_err(|_| {
             error!("Unable to find xorb in local CAS {:?}", file_path);
-            CasClientError::XORBNotFound(hash)
+            ClientError::XORBNotFound(hash)
         })?;
 
         let mut reader = BufReader::new(file);
@@ -638,7 +638,7 @@ impl DirectAccessClient for LocalClient {
             for chunk_idx in fetch_term.range.start..fetch_term.range.end {
                 let chunk_len = xorb_obj
                     .uncompressed_chunk_length(chunk_idx)
-                    .map_err(|e| CasClientError::Other(format!("Failed to get chunk length: {e}")))?;
+                    .map_err(|e| ClientError::Other(format!("Failed to get chunk length: {e}")))?;
                 cumulative += chunk_len;
                 indices.push(cumulative);
             }
@@ -666,7 +666,7 @@ impl LocalClient {
         let file_path = self.get_path_for_entry(hash);
         let mut file = File::open(&file_path).map_err(|_| {
             error!("Unable to find file in local CAS {:?}", file_path);
-            CasClientError::XORBNotFound(*hash)
+            ClientError::XORBNotFound(*hash)
         })?;
         XorbObject::deserialize(&mut file).map_err(Into::into)
     }
@@ -784,7 +784,7 @@ impl Client for LocalClient {
         let env = self
             .global_dedup_db_env
             .as_ref()
-            .ok_or_else(|| CasClientError::Other("LocalClient has been closed".to_string()))?;
+            .ok_or_else(|| ClientError::Other("LocalClient has been closed".to_string()))?;
         let read_txn = env.read_txn().map_err(map_heed_db_error)?;
 
         if let Some(shard) = self.global_dedup_table.get(&read_txn, chunk_hash).map_err(map_heed_db_error)? {
@@ -838,7 +838,7 @@ impl Client for LocalClient {
         let env = self
             .global_dedup_db_env
             .as_ref()
-            .ok_or_else(|| CasClientError::Other("LocalClient has been closed".to_string()))?;
+            .ok_or_else(|| ClientError::Other("LocalClient has been closed".to_string()))?;
         let mut write_txn = env.write_txn().map_err(map_heed_db_error)?;
 
         for chunk in chunk_hashes {
@@ -878,7 +878,7 @@ impl Client for LocalClient {
                 &serialized_data,
             )?;
             if computed_hash != hash {
-                return Err(CasClientError::Other(format!(
+                return Err(ClientError::Other(format!(
                     "XORB hash mismatch: expected {}, got {}",
                     hash.hex(),
                     computed_hash.hex(),
@@ -985,11 +985,11 @@ impl Client for LocalClient {
                     url_info.refresh_url().await?;
                     continue;
                 }
-                return Err(CasClientError::PresignedUrlExpirationError);
+                return Err(ClientError::PresignedUrlExpirationError);
             }
 
             // Read each byte range from the serialized file and deserialize the chunks.
-            let mut file = File::open(&file_path).map_err(|_| CasClientError::XORBNotFound(MerkleHash::default()))?;
+            let mut file = File::open(&file_path).map_err(|_| ClientError::XORBNotFound(MerkleHash::default()))?;
 
             let mut all_decompressed = Vec::new();
             let mut all_chunk_indices = Vec::<u32>::new();
@@ -1031,14 +1031,14 @@ impl Client for LocalClient {
         }
 
         // Should not reach here, but return error if we do.
-        Err(CasClientError::PresignedUrlExpirationError)
+        Err(ClientError::PresignedUrlExpirationError)
     }
 }
 
-fn map_heed_db_error(e: heed::Error) -> CasClientError {
+fn map_heed_db_error(e: heed::Error) -> ClientError {
     let msg = format!("Global shard dedup database error: {e:?}");
     warn!("{msg}");
-    CasClientError::Other(msg)
+    ClientError::Other(msg)
 }
 
 fn generate_fetch_url(file_path: &Path, byte_range: &FileRange, timestamp: Instant) -> String {
@@ -1051,13 +1051,13 @@ fn parse_fetch_url(url: &str) -> Result<(PathBuf, FileRange, Instant)> {
     parts.reverse();
 
     if parts.len() != 4 {
-        return Err(CasClientError::InvalidArguments);
+        return Err(ClientError::InvalidArguments);
     }
 
     let file_path_str = parts[0];
-    let start_pos: u64 = parts[1].parse().map_err(|_| CasClientError::InvalidArguments)?;
-    let end_pos: u64 = parts[2].parse().map_err(|_| CasClientError::InvalidArguments)?;
-    let timestamp_ms: u64 = parts[3].parse().map_err(|_| CasClientError::InvalidArguments)?;
+    let start_pos: u64 = parts[1].parse().map_err(|_| ClientError::InvalidArguments)?;
+    let end_pos: u64 = parts[2].parse().map_err(|_| ClientError::InvalidArguments)?;
+    let timestamp_ms: u64 = parts[3].parse().map_err(|_| ClientError::InvalidArguments)?;
 
     let file_path: PathBuf = file_path_str.trim_matches('"').into();
     let byte_range = FileRange::new(start_pos, end_pos);
@@ -1133,7 +1133,7 @@ mod tests {
         };
         let result = client.fetch_term_data(hash, invalid_fetch_term).await;
         assert!(result.is_err(), "URL with too few parts should fail");
-        assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
+        assert!(matches!(result.unwrap_err(), ClientError::InvalidArguments));
 
         // Test 3: Invalid start_pos - doesn't match url_range.start
         let wrong_byte_range = FileRange::new(fetch_byte_start as u64 + 1, fetch_byte_end as u64);
@@ -1145,7 +1145,7 @@ mod tests {
         };
         let result = client.fetch_term_data(hash, invalid_fetch_term).await;
         assert!(result.is_err(), "Wrong start_pos should fail");
-        assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
+        assert!(matches!(result.unwrap_err(), ClientError::InvalidArguments));
 
         // Test 4: Invalid end_pos - doesn't match url_range.end
         let wrong_byte_range = FileRange::new(fetch_byte_start as u64, fetch_byte_end as u64 + 1);
@@ -1157,7 +1157,7 @@ mod tests {
         };
         let result = client.fetch_term_data(hash, invalid_fetch_term).await;
         assert!(result.is_err(), "Wrong end_pos should fail");
-        assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
+        assert!(matches!(result.unwrap_err(), ClientError::InvalidArguments));
 
         // Test 5: Invalid start_pos - non-numeric
         let timestamp_ms = timestamp.saturating_duration_since(*REFERENCE_INSTANT).as_millis() as u64;
@@ -1169,7 +1169,7 @@ mod tests {
         };
         let result = client.fetch_term_data(hash, invalid_fetch_term).await;
         assert!(result.is_err(), "Non-numeric start_pos should fail");
-        assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
+        assert!(matches!(result.unwrap_err(), ClientError::InvalidArguments));
 
         // Test 6: Invalid end_pos - non-numeric
         let non_numeric_end = format!("{:?}:{}:not_a_number:{}", file_path, fetch_byte_start, timestamp_ms);
@@ -1180,7 +1180,7 @@ mod tests {
         };
         let result = client.fetch_term_data(hash, invalid_fetch_term).await;
         assert!(result.is_err(), "Non-numeric end_pos should fail");
-        assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
+        assert!(matches!(result.unwrap_err(), ClientError::InvalidArguments));
 
         // Test 7: Empty URL
         let invalid_fetch_term = XorbReconstructionFetchInfo {
@@ -1190,7 +1190,7 @@ mod tests {
         };
         let result = client.fetch_term_data(hash, invalid_fetch_term).await;
         assert!(result.is_err(), "Empty URL should fail");
-        assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
+        assert!(matches!(result.unwrap_err(), ClientError::InvalidArguments));
 
         // Test 8: Invalid timestamp - non-numeric
         let non_numeric_timestamp = format!("{:?}:{}:{}:not_a_number", file_path, fetch_byte_start, fetch_byte_end);
@@ -1201,7 +1201,7 @@ mod tests {
         };
         let result = client.fetch_term_data(hash, invalid_fetch_term).await;
         assert!(result.is_err(), "Non-numeric timestamp should fail");
-        assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
+        assert!(matches!(result.unwrap_err(), ClientError::InvalidArguments));
 
         // Test 9: Non-existent file path
         let non_existent_path = PathBuf::from("/nonexistent/path/file.xorb");

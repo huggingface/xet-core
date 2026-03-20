@@ -1,7 +1,7 @@
 #![cfg_attr(feature = "strict", deny(warnings))]
 
 pub mod error;
-pub use error::DataError;
+pub use error::{DataError, Result};
 
 pub mod deduplication;
 #[cfg(not(target_family = "wasm"))]

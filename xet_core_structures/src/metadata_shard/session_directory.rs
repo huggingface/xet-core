@@ -8,10 +8,10 @@ use tokio::task::JoinHandle;
 use tracing::{error, info};
 use xet_runtime::core::{XetRuntime, check_sigint_shutdown};
 
-use super::error::Result;
 use super::set_operations::shard_set_union;
 use super::shard_file_handle::MDBShardFile;
 use super::{MDBShardFileFooter, MDBShardFileHeader, MDBShardInfo};
+use crate::error::Result;
 
 /// Merge a collection of shards, deleting the old ones.
 /// After calling this, the passed in shards may be invalid -- i.e. may refer to a shard that doesn't exist.

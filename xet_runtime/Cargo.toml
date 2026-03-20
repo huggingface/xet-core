@@ -11,6 +11,7 @@ name = "xet_runtime"
 path = "src/lib.rs"
 
 [dependencies]
+anyhow = { workspace = true }
 chrono = { workspace = true }
 colored = { workspace = true }
 const-str = "1.1"
@@ -71,7 +72,6 @@ name = "log_test_executable"
 path = "tests/bin/log_test_executable.rs"
 
 [dev-dependencies]
-anyhow = { workspace = true }
 xet-core-structures = { version = "1.4.0", path = "../xet_core_structures" }
 
 rand = { workspace = true }

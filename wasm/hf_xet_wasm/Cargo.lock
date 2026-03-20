@@ -4141,7 +4141,6 @@ dependencies = [
 name = "xet-core-structures"
 version = "1.4.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "base64",
  "bincode",
@@ -4213,6 +4212,7 @@ dependencies = [
 name = "xet-runtime"
 version = "1.4.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "bytes",
  "chrono",

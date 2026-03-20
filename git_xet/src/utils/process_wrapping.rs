@@ -187,10 +187,11 @@ impl CapturedCommand {
 #[cfg(test)]
 mod tests {
     use std::io::Write;
+    use std::process::Command;
 
     use anyhow::Result;
 
-    use super::*;
+    use super::{CapturedCommand, run_program_captured, run_program_captured_with_input_and_output};
 
     #[test]
     fn test_run_program_captured() -> Result<()> {

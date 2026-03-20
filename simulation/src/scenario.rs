@@ -35,7 +35,7 @@ pub enum ScenarioError {
     #[error("Scenario error: {0}")]
     Scenario(String),
     #[error(transparent)]
-    CasClient(#[from] xet_client::cas_client::CasClientError),
+    CasClient(#[from] xet_client::ClientError),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
