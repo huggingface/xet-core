@@ -30,6 +30,7 @@ ulid = { workspace = true }
 pyo3 = { workspace = true, optional = true }
 
 [features]
+smoke-test = []
 python = ["xet-runtime/python", "dep:pyo3"]
 
 [dev-dependencies]
