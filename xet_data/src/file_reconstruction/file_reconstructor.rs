@@ -1173,7 +1173,7 @@ mod tests {
 
         let rt = XetRuntime::new_with_config(runtime_config).unwrap();
 
-        rt.external_run_async_task(async move {
+        rt.bridge_sync(async move {
             let (client, file_contents) = setup_test_file(&[(1, (0, 2)), (2, (0, 2)), (3, (0, 2))]).await;
             let sem = XetRuntime::current().common().reconstruction_download_buffer.clone();
 
@@ -1779,7 +1779,7 @@ mod tests {
     fn test_multirange_local_client() {
         for enable in [false, true] {
             let rt = with_multirange_config(enable);
-            rt.external_run_async_task(async move {
+            rt.bridge_sync(async move {
                 let scenarios: Vec<Vec<(u64, (u64, u64))>> = vec![
                     vec![(1, (0, 2)), (1, (4, 6)), (1, (8, 10))],
                     vec![
@@ -1818,7 +1818,7 @@ mod tests {
     fn test_multirange_max_ranges() {
         for enable in [false, true] {
             let rt = with_multirange_config(enable);
-            rt.external_run_async_task(async {
+            rt.bridge_sync(async {
                 let client = LocalClient::temporary().await.unwrap();
                 client.set_max_ranges_per_fetch(2);
 
@@ -1839,7 +1839,7 @@ mod tests {
     fn test_multirange_via_server() {
         for enable in [false, true] {
             let rt = with_multirange_config(enable);
-            rt.external_run_async_task(async {
+            rt.bridge_sync(async {
                 let config = test_config();
 
                 // Full reconstruction with disjoint ranges

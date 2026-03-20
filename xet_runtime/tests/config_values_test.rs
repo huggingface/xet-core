@@ -56,7 +56,7 @@ fn test_basic_configuration() {
     config.apply_env_overrides();
     assert_eq!(config.TEST_INT, 42);
     assert_eq!(config.TEST_STRING, "default");
-    assert_eq!(config.TEST_BOOL, false);
+    assert!(!config.TEST_BOOL);
     assert_eq!(config.TEST_DURATION, Duration::from_secs(60));
     assert_eq!(config.TEST_BYTE_SIZE.as_u64(), 1_000_000);
     assert_eq!(config.TEST_RELEASE_FIXED, 100);
@@ -78,7 +78,7 @@ fn test_environment_override() {
 
     assert_eq!(config.TEST_INT, 100);
     assert_eq!(config.TEST_STRING, "override");
-    assert_eq!(config.TEST_BOOL, true);
+    assert!(config.TEST_BOOL);
     assert_eq!(config.TEST_DURATION, Duration::from_secs(120));
     assert_eq!(config.TEST_BYTE_SIZE.as_u64(), 2_000_000);
 }

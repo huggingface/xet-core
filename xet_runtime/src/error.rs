@@ -6,6 +6,9 @@ pub enum RuntimeError {
     #[error("Error initializing runtime: {0:?}")]
     RuntimeInit(std::io::Error),
 
+    #[error("Invalid runtime: {0}")]
+    InvalidRuntime(String),
+
     #[error("Task panic: {0:?}")]
     TaskPanic(String),
 
