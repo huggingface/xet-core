@@ -104,6 +104,23 @@ jobs:
       - name: Check benchmarks compile
         run: |
           cargo bench --no-run
+  build-ios:
+    name: Check iOS target compiles (aarch64-apple-ios)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Install Rust 1.89 + iOS target
+        uses: dtolnay/rust-toolchain@1.89.0
+        with:
+          targets: aarch64-apple-ios
+      - uses: ./.github/actions/cache-rust-build
+      - name: Cargo check for aarch64-apple-ios
+        # `cargo check` resolves all symbols without needing an iOS SDK for linking.
+        # This is sufficient to catch the SCDynamicStoreCopyComputerName linker error
+        # that previously occurred when whoami pulled in objc2-system-configuration.
+        run: cargo check -p xet-runtime --target aarch64-apple-ios
+
   build_and_test-wasm:
     name: Build WASM
     runs-on: ubuntu-latest

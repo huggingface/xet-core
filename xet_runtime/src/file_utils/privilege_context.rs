@@ -243,6 +243,24 @@ fn permission_warning(path: &Path, recursive: bool) {
     };
 }
 
+#[cfg(test)]
+mod test_permission_warning {
+    use super::permission_warning;
+    use std::path::Path;
+
+    /// Regression test: `permission_warning` must not reference `whoami` (and
+    /// therefore `objc2-system-configuration` / `SCDynamicStoreCopyComputerName`)
+    /// on iOS/tvOS/watchOS targets.  If the cfg gates are correct, this test
+    /// compiles and runs on every platform — the interesting guarantee is that
+    /// it also *compiles* for `aarch64-apple-ios` (checked in CI).
+    #[test]
+    fn permission_warning_does_not_panic() {
+        // Just verify the function is callable without panicking on the host platform.
+        permission_warning(Path::new("/tmp/test-xet-path"), false);
+        permission_warning(Path::new("/tmp/test-xet-path"), true);
+    }
+}
+
 #[cfg(all(test, unix))]
 mod test {
     use std::os::unix::fs::MetadataExt;
