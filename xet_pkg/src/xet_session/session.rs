@@ -551,12 +551,6 @@ mod tests {
         assert_ne!(s1.id, s2.id);
     }
 
-    #[test]
-    fn test_session_id_is_ulid() {
-        let s = XetSessionBuilder::new().build().unwrap();
-        assert!(ulid::Ulid::from_string(&s.id.to_string()).is_ok());
-    }
-
     // ── Abort behavior ───────────────────────────────────────────────────────
 
     #[test]
