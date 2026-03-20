@@ -211,17 +211,22 @@ pub fn create_file(path: impl AsRef<Path>) -> std::io::Result<File> {
 
 #[allow(unused_variables)]
 fn permission_warning(path: &Path, recursive: bool) {
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "ios"), not(target_os = "tvos"), not(target_os = "watchos")))]
     {
         let username = whoami::username().unwrap_or_else(|_| "unknown".to_string());
         let message = format!(
-            "The process doesn't have correct read-write permission into path {path:?}, please resets 
+            "The process doesn't have correct read-write permission into path {path:?}, please resets
         ownership by 'sudo chown{}{} {path:?}'.",
             if recursive { " -R " } else { " " },
             username
         );
 
         eprintln!("{}", message.bright_blue());
+    }
+
+    #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "watchos"))]
+    {
+        eprintln!("Permission denied for path {path:?}");
     }
 
     #[cfg(windows)]
