@@ -224,7 +224,7 @@ pub struct ItemProgressUpdater {
 impl ItemProgressUpdater {
     /// Create a standalone updater for debug/testing purposes.
     /// Creates its own throwaway GroupProgress.
-    #[cfg(test)]
+    #[cfg(any(debug_assertions, test))]
     pub fn new_standalone(name: &str) -> Arc<Self> {
         let group = GroupProgress::new();
         let item = Arc::new(ItemProgress::new(UniqueID::new(), Arc::from(name)));

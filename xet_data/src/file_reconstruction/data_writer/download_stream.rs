@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
+use tokio::sync::Notify;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::info;
 
@@ -11,10 +12,12 @@ use super::sequential_writer::{SequentialRetrievalItem, SequentialWriter};
 
 /// A streaming download handle that yields data chunks as they are reconstructed.
 ///
-/// Created by [`FileReconstructor::reconstruct_to_stream`]. The reconstruction
-/// task is **not** started until [`start`](Self::start) is called explicitly, or
-/// automatically on the first call to [`next`](Self::next) /
-/// [`blocking_next`](Self::blocking_next).
+/// Created by [`FileReconstructor::reconstruct_to_stream`].  The reconstruction
+/// task is spawned immediately but pauses until [`start`](Self::start) is
+/// called (or the first [`next`](Self::next) / [`blocking_next`](Self::blocking_next)).
+/// Because the `tokio::spawn` happens at construction time, subsequent calls to
+/// `start()`, `next()`, and `blocking_next()` do **not** require a tokio runtime
+/// context.
 ///
 /// Data is delivered by pulling items directly from the sequential writer's
 /// internal queue, bypassing the synchronous writer thread entirely. Each call
@@ -23,49 +26,80 @@ use super::sequential_writer::{SequentialRetrievalItem, SequentialWriter};
 /// reconstruction error is surfaced on the call that would have returned the
 /// next chunk (or on the final `None` boundary) via the shared run state.
 pub struct DownloadStream {
-    /// The `FileReconstructor` to start when `start()` is called.
-    /// `None` once the reconstruction has been started (or cancelled before start).
-    reconstructor: Option<FileReconstructor>,
-    /// Channel receiver for sequential retrieval items from the writer queue (set after start).
-    receiver: Option<UnboundedReceiver<SequentialRetrievalItem>>,
+    /// Channel receiver for sequential retrieval items from the writer queue.
+    receiver: UnboundedReceiver<SequentialRetrievalItem>,
     /// Whether the stream has finished (no more data).
     finished: bool,
     /// Shared run state with the `FileReconstructor`. When cancelled,
     /// the reconstruction loop aborts promptly at its next check point or
     /// `select!` branch. Also used for progress reporting and error propagation.
     run_state: Arc<RunState>,
+    /// Signal to unblock the spawned reconstruction task. `Some` means
+    /// `start()` has not yet been called; the spawned task is waiting.
+    start_signal: Option<Arc<Notify>>,
 }
 
 impl DownloadStream {
+    /// Creates a new `DownloadStream`, immediately spawning the reconstruction
+    /// task on the current tokio runtime.  The task blocks on an internal
+    /// [`Notify`] until [`start`](Self::start) is called.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside a tokio runtime context.
     pub(crate) fn new(reconstructor: FileReconstructor, run_state: Arc<RunState>) -> Self {
+        let (data_writer, receiver) = SequentialWriter::new_streaming(run_state.clone());
+        let start_signal = Arc::new(Notify::new());
+
+        let signal = start_signal.clone();
+        let rs = run_state.clone();
+        tokio::spawn(async move {
+            signal.notified().await;
+            info!(file_hash = %rs.file_hash(), "Starting download stream");
+            let _ = reconstructor.run(data_writer, rs, true).await;
+        });
+
         Self {
-            reconstructor: Some(reconstructor),
-            receiver: None,
+            receiver,
             finished: false,
             run_state,
+            start_signal: Some(start_signal),
         }
     }
 
-    /// Starts the reconstruction task in the background. If already started,
-    /// this is a no-op. Called automatically on the first [`next`](Self::next) /
-    /// [`blocking_next`](Self::blocking_next).
+    pub(crate) fn abort_callback(&self) -> Box<dyn Fn() + Send + Sync> {
+        let run_state = self.run_state.clone();
+        let start_signal = self.start_signal.clone();
+        Box::new(move || {
+            run_state.cancel();
+            if let Some(signal) = start_signal.as_ref() {
+                signal.notify_one();
+            }
+        })
+    }
+
+    /// Unblocks the reconstruction task so it begins producing data.
+    ///
+    /// If already started, this is a no-op. Called automatically on the first
+    /// [`next`](Self::next) / [`blocking_next`](Self::blocking_next).
+    ///
+    /// This method is non-async and does not require a tokio runtime context.
     pub fn start(&mut self) {
-        if let Some(reconstructor) = self.reconstructor.take() {
-            info!(file_hash = %self.run_state.file_hash(), "Starting download stream");
-
-            let (data_writer, receiver) = SequentialWriter::new_streaming(self.run_state.clone());
-            let run_state = self.run_state.clone();
-
-            tokio::spawn(async move {
-                let _ = reconstructor.run(data_writer, run_state, true).await;
-            });
-            self.receiver = Some(receiver);
+        if let Some(signal) = self.start_signal.take() {
+            signal.notify_one();
         }
     }
 
     fn ensure_started(&mut self) {
-        if self.reconstructor.is_some() {
+        if self.start_signal.is_some() {
             self.start();
+        }
+    }
+
+    fn cancel_reconstruction(&self) {
+        self.run_state.cancel();
+        if let Some(signal) = self.start_signal.as_ref() {
+            signal.notify_one();
         }
     }
 
@@ -85,9 +119,8 @@ impl DownloadStream {
             return Ok(None);
         }
         self.ensure_started();
-        let receiver = self.receiver.as_mut().expect("receiver must exist after start");
 
-        match receiver.blocking_recv() {
+        match self.receiver.blocking_recv() {
             Some(SequentialRetrievalItem::Data { receiver, permit }) => {
                 let data = receiver.blocking_recv().map_err(|_| {
                     FileReconstructionError::InternalWriterError(
@@ -108,15 +141,24 @@ impl DownloadStream {
 
     /// Returns the next chunk of downloaded data asynchronously.
     ///
-    /// Returns `Ok(None)` when the download is complete.
+    /// Returns `Ok(None)` when the download is complete or cancelled.
     pub async fn next(&mut self) -> Result<Option<Bytes>> {
         if self.finished {
             return Ok(None);
         }
         self.ensure_started();
-        let receiver = self.receiver.as_mut().expect("receiver must exist after start");
 
-        match receiver.recv().await {
+        let item = if let Ok(item) = self.receiver.try_recv() {
+            Some(item)
+        } else {
+            tokio::select! {
+                biased;
+                recv = self.receiver.recv() => recv,
+                _ = self.run_state.cancelled() => None,
+            }
+        };
+
+        match item {
             Some(SequentialRetrievalItem::Data { receiver, permit }) => {
                 let data = receiver.await.map_err(|_| {
                     FileReconstructionError::InternalWriterError(
@@ -142,20 +184,16 @@ impl DownloadStream {
     /// After calling this, subsequent calls to [`blocking_next`](Self::blocking_next)
     /// / [`next`](Self::next) will return `Ok(None)`.
     pub fn cancel(&mut self) {
-        self.run_state.cancel();
-        self.reconstructor.take();
-        if let Some(ref mut receiver) = self.receiver {
-            receiver.close();
-        }
+        self.cancel_reconstruction();
+        let _ = self.start_signal.take();
+        self.receiver.close();
         self.finished = true;
     }
 }
 
 impl Drop for DownloadStream {
     fn drop(&mut self) {
-        self.run_state.cancel();
-        if let Some(ref mut receiver) = self.receiver {
-            receiver.close();
-        }
+        self.cancel_reconstruction();
+        self.receiver.close();
     }
 }
