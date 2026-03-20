@@ -22,7 +22,7 @@ use super::local_server::{LocalServer, ServerLatencyProfile};
 use super::network_simulation::{NetworkProfile, NetworkSimulationProxy};
 #[cfg(unix)]
 use super::socket_proxy::UnixSocketProxy;
-use super::{DirectAccessClient, LocalClient, MemoryClient, RemoteSimulationClient};
+use super::{DeletionControlableClient, DirectAccessClient, LocalClient, MemoryClient, RemoteSimulationClient};
 use crate::error::Result;
 
 /// Builder for creating a `LocalTestServer` with various configuration options.
@@ -183,20 +183,27 @@ impl LocalTestServerBuilder {
         #[cfg(not(unix))]
         let _socket_path = if self.ephemeral_socket { None } else { self.socket_path };
 
-        let client: Arc<dyn DirectAccessClient> = if let Some(client) = self.client {
-            client
-        } else if self.in_memory {
-            MemoryClient::new()
-        } else if self.ephemeral_disk {
-            LocalClient::temporary()
-                .await
-                .expect("Failed to create LocalClient with temporary directory")
-        } else {
-            let disk_path = self.disk_location.unwrap_or_else(|| {
-                panic!("with_disk_location must be called when in_memory is false and no client is provided")
-            });
-            LocalClient::new(&disk_path).await.expect("Failed to create LocalClient")
-        };
+        // Build client + optional deletion_client. LocalClient supports both interfaces;
+        // MemoryClient and pre-supplied clients only support DirectAccessClient.
+        let (client, deletion_client): (Arc<dyn DirectAccessClient>, Option<Arc<dyn DeletionControlableClient>>) =
+            if let Some(client) = self.client {
+                (client, None)
+            } else if self.in_memory {
+                (MemoryClient::new(), None)
+            } else if self.ephemeral_disk {
+                let lc = LocalClient::temporary()
+                    .await
+                    .expect("Failed to create LocalClient with temporary directory");
+                let dc: Arc<dyn DeletionControlableClient> = lc.clone();
+                (lc, Some(dc))
+            } else {
+                let disk_path = self.disk_location.unwrap_or_else(|| {
+                    panic!("with_disk_location must be called when in_memory is false and no client is provided")
+                });
+                let lc = LocalClient::new(&disk_path).await.expect("Failed to create LocalClient");
+                let dc: Arc<dyn DeletionControlableClient> = lc.clone();
+                (lc, Some(dc))
+            };
 
         let port = LocalTestServer::find_available_port();
         let host = "127.0.0.1".to_string();
@@ -223,7 +230,7 @@ impl LocalTestServerBuilder {
                 (None, tcp_endpoint.clone())
             };
 
-        let server = LocalServer::from_client(client.clone(), None, host, port);
+        let server = LocalServer::from_client(client.clone(), deletion_client, host, port);
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         tokio::spawn(async move {
             let _ = server.run_until_stopped(shutdown_rx).await;

@@ -38,6 +38,7 @@ pub fn simulation_routes() -> Router<ServerState> {
         // DeletionControlableClient routes
         .route("/shards", get(list_shard_entries))
         .route("/shards/{hash}", get(get_shard_bytes).delete(delete_shard_entry))
+        .route("/shards/{hash}/dedup_entries", delete(remove_shard_dedup_entries))
         .route("/file_entries", get(list_file_shard_entries))
         .route("/file_entries/{hash}", delete(delete_file_entry))
         .route("/verify_integrity", post(verify_integrity))
@@ -251,6 +252,19 @@ async fn delete_file_entry(
         return not_implemented();
     };
     match dc.delete_file_entry(&hash).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => error_to_response(e),
+    }
+}
+
+async fn remove_shard_dedup_entries(
+    State(state): State<ServerState>,
+    Path(HexMerkleHash(hash)): Path<HexMerkleHash>,
+) -> Response {
+    let Some(dc) = &state.deletion_client else {
+        return not_implemented();
+    };
+    match dc.remove_shard_dedup_entries(&hash).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => error_to_response(e),
     }

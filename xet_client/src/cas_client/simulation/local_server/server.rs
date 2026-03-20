@@ -1352,4 +1352,51 @@ mod tests {
                 .is_err()
         );
     }
+
+    /// Tests that LocalTestServerBuilder with ephemeral disk correctly wires the deletion client,
+    /// so deletion-control routes work through the HTTP layer (not 501).
+    #[tokio::test]
+    async fn test_builder_ephemeral_disk_deletion_wired() {
+        use crate::cas_client::simulation::LocalTestServerBuilder;
+
+        let server = LocalTestServerBuilder::new().with_ephemeral_disk().start().await;
+        let sc = SimulationControlClient::new(server.http_endpoint());
+
+        let file = sc.upload_random_file(&[(1, (0, 3))], 2048).await.unwrap();
+
+        let shards = DeletionControlableClient::list_shard_entries(&sc).await.unwrap();
+        assert!(!shards.is_empty(), "list_shard_entries should work, not return 501");
+
+        let file_entries = DeletionControlableClient::list_file_shard_entries(&sc).await.unwrap();
+        assert_eq!(file_entries.len(), 1);
+        assert_eq!(file_entries[0].0, file.file_hash);
+        let shard_hash = file_entries[0].1;
+
+        DeletionControlableClient::verify_integrity(&sc).await.unwrap();
+
+        let first_chunk = file.terms[0].chunk_hashes[0];
+        assert!(
+            Client::query_for_global_dedup_shard(&sc, "default", &first_chunk)
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        DeletionControlableClient::remove_shard_dedup_entries(&sc, &shard_hash)
+            .await
+            .unwrap();
+        assert!(
+            Client::query_for_global_dedup_shard(&sc, "default", &first_chunk)
+                .await
+                .unwrap()
+                .is_none(),
+            "dedup entries for the shard should be removable through builder-wired HTTP routes"
+        );
+
+        DeletionControlableClient::delete_file_entry(&sc, &file.file_hash)
+            .await
+            .unwrap();
+        let file_entries_after = DeletionControlableClient::list_file_shard_entries(&sc).await.unwrap();
+        assert!(file_entries_after.is_empty(), "Deleted file should be hidden");
+    }
 }

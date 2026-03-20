@@ -448,6 +448,20 @@ impl DeletionControlableClient for SimulationControlClient {
         Ok(())
     }
 
+    /// Removes all global-dedup table entries for a shard via `/simulation/shards/{hash}/dedup_entries`.
+    async fn remove_shard_dedup_entries(&self, shard_hash: &MerkleHash) -> Result<()> {
+        let hex = HexMerkleHash::from(*shard_hash);
+        let url = self.sim_url(&format!("/shards/{hex}/dedup_entries"));
+        let resp = self
+            .http_client
+            .delete(&url)
+            .send()
+            .await
+            .map_err(|e| ClientError::Other(e.to_string()))?;
+        Self::check_status(resp).await?;
+        Ok(())
+    }
+
     /// Triggers server-side integrity verification via the `/simulation/verify_integrity` endpoint.
     async fn verify_integrity(&self) -> Result<()> {
         let resp = self
