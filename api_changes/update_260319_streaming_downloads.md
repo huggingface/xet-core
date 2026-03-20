@@ -1,11 +1,10 @@
-# Streaming download APIs + io_uring write path
+# Streaming download APIs
 
 **Date**: 2026-03-19
 
 ## Summary
 
-This update adds first-class stream download APIs in `xet_pkg::xet_session` and
-adds an optional Linux `io_uring` write path in `xet_data` reconstruction.
+This update adds first-class stream download APIs in `xet_pkg::xet_session`.
 
 It also renames the session download group type from `DownloadGroup` to
 `FileDownloadGroup` and renames the corresponding session constructors.
@@ -53,23 +52,6 @@ accumulation in long-lived sessions.
 
 - `finish` now consumes the writer:
   - `async fn finish(self: Box<Self>) -> Result<u64>`
-
-### Optional Linux io_uring write path
-
-New config values:
-
-- `data.enable_io_uring: bool`  
-  Env: `HF_XET_DATA_ENABLE_IO_URING`
-- `reconstruction.io_uring_ring_size: u32`  
-  Env: `HF_XET_RECONSTRUCTION_IO_URING_RING_SIZE`
-
-Behavior:
-
-- On Linux, when `data.enable_io_uring=true` and kernel support is available,
-  `FileReconstructor::reconstruct_to_file` can use an unordered `io_uring`
-  background writer for positioned writes.
-- On non-Linux (or unsupported kernels), behavior falls back to the existing
-  sequential writer path.
 
 ### Stream abort callback API
 

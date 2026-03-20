@@ -115,18 +115,4 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_DATA_STAGING_SUBDIR` to set this value.
     ref staging_subdir: String = "staging".to_string();
 
-    /// Whether to use Linux io_uring for file writes during reconstruction.
-    /// When enabled and io_uring is supported by the kernel, file writes use
-    /// asynchronous positioned writes via io_uring instead of the sequential
-    /// writer. This can improve write throughput when data arrives out of order,
-    /// but in many environments (especially containerized deployments where
-    /// io_uring may be blocked by seccomp) performance is comparable to the
-    /// default sequential vectored writer. Falls back to the sequential writer
-    /// automatically if io_uring is unavailable at runtime.
-    ///
-    /// The default value is false.
-    ///
-    /// Use the environment variable `HF_XET_DATA_ENABLE_IO_URING` to set this value.
-    ref enable_io_uring: bool = false;
-
 });

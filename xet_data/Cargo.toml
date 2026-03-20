@@ -51,9 +51,6 @@ sha2 = { workspace = true, features = ["asm"] }
 [target.'cfg(target_os = "windows")'.dependencies]
 sha2 = { workspace = true }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-io-uring = "0.7"
-
 [[bin]]
 name = "x"
 path = "src/processing/bin/example.rs"

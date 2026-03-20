@@ -3,7 +3,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use bytes::Bytes;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tokio::task::JoinHandle;
 use xet_client::cas_types::FileRange;
 use xet_runtime::utils::adjustable_semaphore::AdjustableSemaphorePermit;
 
@@ -72,7 +71,6 @@ pub struct UnorderedWriter {
     result_tx: UnboundedSender<Result<CompletedTerm>>,
     run_state: Arc<RunState>,
     progress: Arc<UnorderedWriterProgress>,
-    background_handle: Option<JoinHandle<Result<u64>>>,
 }
 
 impl Drop for UnorderedWriter {
@@ -147,32 +145,17 @@ impl DataWriter for UnorderedWriter {
         Ok(())
     }
 
-    async fn finish(mut self: Box<Self>) -> Result<u64> {
+    async fn finish(self: Box<Self>) -> Result<u64> {
         self.run_state.check_error()?;
 
         self.progress.finished.store(true, Ordering::Release);
 
-        match self.background_handle.take() {
-            Some(handle) => {
-                // Drop the sender so the channel closes once all spawned tasks
-                // complete and drop their clones. The background thread will
-                // finish processing all remaining messages and io_uring ops,
-                // then exit, resolving the JoinHandle.
-                drop(self);
-                handle.await.map_err(|e| {
-                    FileReconstructionError::InternalWriterError(format!("Background writer task failed: {e}"))
-                })?
-            },
-            None => {
-                // Streaming mode: no background writer. Return expected bytes.
-                let total = self.progress.total_bytes_expected.load(Ordering::Acquire);
-                if total > 0 {
-                    Ok(total)
-                } else {
-                    Ok(self.progress.bytes_in_progress.load(Ordering::Relaxed)
-                        + self.progress.bytes_completed.load(Ordering::Relaxed))
-                }
-            },
+        let total = self.progress.total_bytes_expected.load(Ordering::Acquire);
+        if total > 0 {
+            Ok(total)
+        } else {
+            Ok(self.progress.bytes_in_progress.load(Ordering::Relaxed)
+                + self.progress.bytes_completed.load(Ordering::Relaxed))
         }
     }
 }
@@ -203,47 +186,9 @@ impl UnorderedWriter {
             result_tx: tx,
             run_state,
             progress: progress.clone(),
-            background_handle: None,
         });
 
         (writer, rx, progress)
-    }
-
-    /// Creates an unordered writer backed by io_uring for positioned writes to
-    /// `file`. A background thread receives completed terms via the channel and
-    /// submits pwrite operations through the io_uring ring.
-    ///
-    /// `finish()` drops the channel sender, waits for all spawned tasks to
-    /// complete (closing the channel), then awaits the background thread's
-    /// `JoinHandle` to guarantee all data is on disk before returning.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn new_io_uring(
-        ring_size: u32,
-        base_offset: u64,
-        file: std::fs::File,
-        run_state: Arc<RunState>,
-    ) -> Result<Box<dyn DataWriter>> {
-        let (tx, rx) = unbounded_channel();
-
-        let progress = Arc::new(UnorderedWriterProgress {
-            terms_in_progress: AtomicU64::new(0),
-            bytes_in_progress: AtomicU64::new(0),
-            bytes_completed: AtomicU64::new(0),
-            total_bytes_expected: AtomicU64::new(0),
-            finished: AtomicBool::new(false),
-        });
-
-        let handle =
-            super::io_uring_writer::spawn_io_uring_writer(ring_size, base_offset, file, rx, run_state.clone())?;
-
-        let writer = Box::new(UnorderedWriter {
-            result_tx: tx,
-            run_state,
-            progress: progress.clone(),
-            background_handle: Some(handle),
-        });
-
-        Ok(writer)
     }
 }
 

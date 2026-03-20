@@ -80,15 +80,4 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_RECONSTRUCTION_USE_VECTORED_WRITE` to set this value.
     ref use_vectored_write: bool = true;
 
-    /// The size of the io_uring submission/completion queue ring buffer.
-    /// Only used when `data.enable_io_uring` is true.
-    /// Larger values allow more in-flight I/O operations before backpressure
-    /// kicks in, at the cost of more kernel memory. Benchmarks show ring=128
-    /// provides a consistent improvement over ring=64 for typical 64KB terms.
-    ///
-    /// The default value is 128.
-    ///
-    /// Use the environment variable `HF_XET_RECONSTRUCTION_IO_URING_RING_SIZE` to set this value.
-    ref io_uring_ring_size: u32 = 128;
-
 });

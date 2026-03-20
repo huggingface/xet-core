@@ -15,8 +15,6 @@ use xet_runtime::utils::ClosureGuard;
 use xet_runtime::utils::adjustable_semaphore::AdjustableSemaphore;
 
 use super::data_writer::{DataWriter, DownloadStream, SequentialWriter, UnorderedDownloadStream};
-#[cfg(target_os = "linux")]
-use super::data_writer::{UnorderedWriter, io_uring_available};
 use super::error::{FileReconstructionError, Result};
 use super::reconstruction_terms::ReconstructionTermManager;
 use super::run_state::{RunError, RunState};
@@ -127,15 +125,6 @@ impl FileReconstructor {
 
         let run_state = RunState::new(self.cancellation_token.clone(), self.file_hash, self.progress_updater.clone());
 
-        #[cfg(target_os = "linux")]
-        let data_writer: Box<dyn DataWriter> =
-            if XetRuntime::current().config().data.enable_io_uring && io_uring_available() {
-                UnorderedWriter::new_io_uring(self.config.io_uring_ring_size, seek_position, file, run_state.clone())?
-            } else {
-                SequentialWriter::new(file, self.config.use_vectored_write, run_state.clone())
-            };
-
-        #[cfg(not(target_os = "linux"))]
         let data_writer = SequentialWriter::new(file, self.config.use_vectored_write, run_state.clone());
 
         self.run(data_writer, run_state, false).await
