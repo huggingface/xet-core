@@ -679,6 +679,12 @@ fn bridge_large_file_roundtrip() {
 }
 
 // ── 4. Deficient tokio runtime tests ─────────────────────────────────────
+//
+// When build() is called from within a tokio runtime that lacks IO
+// and/or time drivers (or uses current_thread), the handle fails
+// handle_meets_requirements and the session falls back to Owned mode
+// with its own full-featured runtime. The async bridge routes all work
+// to that owned pool.
 
 #[test]
 fn deficient_tokio_async_roundtrip_matrix() {
@@ -757,6 +763,8 @@ fn deficient_tokio_no_drivers_large_file() {
     });
 }
 
+// build() inside a deficient tokio runtime auto-falls-back to Owned mode;
+// blocking API still works from a sync context afterward.
 #[test]
 fn deficient_tokio_handle_blocking_roundtrip() {
     for (label, builder) in [
@@ -778,6 +786,10 @@ fn deficient_tokio_handle_blocking_roundtrip() {
 }
 
 // ── 5. Blocking from non-tokio executor contexts ─────────────────────────
+//
+// _blocking methods use bridge_sync (handle.block_on) on the
+// owned pool. Non-tokio executors (smol, async-std, futures) do not set a
+// tokio thread-local context, so block_on does not panic.
 
 #[test]
 fn blocking_in_non_tokio_executor_roundtrip() {
