@@ -2071,9 +2071,9 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "lz4_flex"
-version = "0.12.1"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98c23545df7ecf1b16c303910a69b079e8e251d60f7dd2cc9b4177f2afaf1746"
+checksum = "db9a0d582c2874f68138a16ce1867e0ffde6c0bb0a0df85e1f36d04146db488a"
 dependencies = [
  "twox-hash 2.1.2",
 ]
@@ -4191,9 +4191,9 @@ dependencies = [
 
 [[package]]
 name = "tar"
-version = "0.4.44"
+version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d863878d212c87a19c1a610eb53bb01fe12951c0501cf5a0d65f724914a667a"
+checksum = "22692a6476a21fa75fdfc11d452fda482af402c008cdbaf3476414e122040973"
 dependencies = [
  "filetime",
  "libc",
@@ -5736,7 +5736,6 @@ dependencies = [
 name = "xet-core-structures"
 version = "1.4.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "base64 0.22.1",
  "bincode",
@@ -5775,6 +5774,7 @@ dependencies = [
 name = "xet-runtime"
 version = "1.4.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "bytes",
  "chrono",
