@@ -11,10 +11,10 @@ use xet_runtime::core::{XetRuntime, xet_config};
 
 use super::XetFileInfo;
 use super::deduplication_interface::UploadSessionDataManager;
-use super::errors::Result;
 use super::file_upload_session::FileUploadSession;
 use super::sha256::Sha256Generator;
 use crate::deduplication::{Chunk, Chunker, DeduplicationMetrics, FileDeduper};
+use crate::error::Result;
 use crate::progress_tracking::upload_tracking::CompletionTrackerFileId;
 
 /// Controls how SHA-256 is handled during file cleaning.
@@ -214,7 +214,7 @@ impl SingleFileCleaner {
 
         let file_info = XetFileInfo {
             hash: file_hash.hex(),
-            file_size: deduplication_metrics.total_bytes,
+            file_size: Some(deduplication_metrics.total_bytes),
             sha256: sha256.map(|s| s.hex()),
         };
 

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use http::header::HeaderMap;
 use tracing::{Instrument, Span, info_span, instrument};
+use ulid::Ulid;
 use xet_client::cas_client::auth::{AuthConfig, TokenRefresher};
 use xet_core_structures::merklehash::MerkleHash;
 use xet_runtime::core::par_utils::run_constrained_with_semaphore;
@@ -13,16 +14,16 @@ use xet_runtime::core::{XetRuntime, check_sigint_shutdown, xet_config};
 
 use super::configurations::{SessionContext, TranslatorConfig};
 use super::file_cleaner::Sha256Policy;
-use super::{FileUploadSession, XetFileInfo, errors};
+use super::{FileUploadSession, XetFileInfo};
 use crate::deduplication::{Chunker, DeduplicationMetrics};
-use crate::progress_tracking::UniqueID;
+use crate::error::Result;
 
 pub fn default_config(
     endpoint: String,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     custom_headers: Option<Arc<HeaderMap>>,
-) -> errors::Result<TranslatorConfig> {
+) -> Result<TranslatorConfig> {
     let (token, token_expiration) = token_info.unzip();
     let auth_cfg = AuthConfig::maybe_new(token, token_expiration, token_refresher);
 
@@ -31,7 +32,7 @@ pub fn default_config(
         auth: auth_cfg,
         custom_headers,
         repo_paths: vec!["".into()],
-        session_id: Some(UniqueID::new().to_string()),
+        session_id: Some(Ulid::new().to_string()),
     };
 
     TranslatorConfig::new(session)
@@ -42,7 +43,7 @@ pub async fn clean_bytes(
     processor: Arc<FileUploadSession>,
     bytes: Vec<u8>,
     sha256_policy: Sha256Policy,
-) -> errors::Result<(XetFileInfo, DeduplicationMetrics)> {
+) -> Result<(XetFileInfo, DeduplicationMetrics)> {
     let (_id, mut handle) = processor.start_clean(None, bytes.len() as u64, sha256_policy)?;
     handle.add_data(&bytes).await?;
     handle.finish().await
@@ -53,7 +54,7 @@ pub async fn clean_file(
     processor: Arc<FileUploadSession>,
     filename: impl AsRef<Path>,
     sha256_policy: Sha256Policy,
-) -> errors::Result<(XetFileInfo, DeduplicationMetrics)> {
+) -> Result<(XetFileInfo, DeduplicationMetrics)> {
     let mut reader = File::open(&filename)?;
 
     let filesize = reader.metadata()?.len();
@@ -98,7 +99,7 @@ pub async fn clean_file(
 /// - Verify that downloaded files are correctly reassembled
 /// - Check if a file needs to be uploaded (by comparing hashes)
 /// - Generate cache keys for local file operations
-fn hash_single_file(filename: String, buffer_size: usize) -> errors::Result<XetFileInfo> {
+fn hash_single_file(filename: String, buffer_size: usize) -> Result<XetFileInfo> {
     let mut reader = File::open(&filename)?;
     let filesize = reader.metadata()?.len();
 
@@ -157,7 +158,7 @@ fn hash_single_file(filename: String, buffer_size: usize) -> errors::Result<XetF
 /// - No authentication or server connection required
 /// - Pure local computation
 #[instrument(skip_all, name = "data_client::hash_files", fields(num_files=file_paths.len()))]
-pub async fn hash_files_async(file_paths: Vec<String>) -> errors::Result<Vec<XetFileInfo>> {
+pub async fn hash_files_async(file_paths: Vec<String>) -> Result<Vec<XetFileInfo>> {
     let rt = XetRuntime::current();
     let semaphore = rt.common().file_ingestion_semaphore.clone();
     let buffer_size = *xet_config().data.ingestion_block_size as usize;
@@ -272,7 +273,7 @@ mod tests {
         assert!(result.is_ok());
 
         let file_info = result.unwrap();
-        assert_eq!(file_info.file_size(), 0);
+        assert_eq!(file_info.file_size(), Some(0));
         assert!(!file_info.hash().is_empty());
     }
 
@@ -288,7 +289,7 @@ mod tests {
         assert!(result.is_ok());
 
         let file_info = result.unwrap();
-        assert_eq!(file_info.file_size(), content.len() as u64);
+        assert_eq!(file_info.file_size(), Some(content.len() as u64));
         assert!(!file_info.hash().is_empty());
     }
 
@@ -348,8 +349,8 @@ mod tests {
 
         let file_infos = result.unwrap();
         assert_eq!(file_infos.len(), 2);
-        assert_eq!(file_infos[0].file_size(), 18);
-        assert_eq!(file_infos[1].file_size(), 19);
+        assert_eq!(file_infos[0].file_size(), Some(18));
+        assert_eq!(file_infos[1].file_size(), Some(19));
         assert_ne!(file_infos[0].hash(), file_infos[1].hash());
     }
 
@@ -372,7 +373,7 @@ mod tests {
         let result1 = hash_single_file(file_path_str.clone(), 8 * 1024 * 1024);
         assert!(result1.is_ok());
         let file_info1 = result1.unwrap();
-        assert_eq!(file_info1.file_size(), file_size as u64);
+        assert_eq!(file_info1.file_size(), Some(file_size as u64));
         assert!(!file_info1.hash().is_empty());
 
         // Hash with 4MB buffer size - file is exactly 4x buffer size

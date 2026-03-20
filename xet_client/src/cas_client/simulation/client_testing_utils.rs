@@ -8,8 +8,8 @@ use xet_core_structures::metadata_shard::file_structs::{FileDataSequenceEntry, F
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::xorb_object::{Chunk, RawXorbData, SerializedXorbObject};
 
-use super::super::error::Result;
 use super::super::interface::Client;
+use crate::error::Result;
 
 /// Information about a term (segment) in the file, referencing an XORB and chunk range.
 #[derive(Clone, Debug)]

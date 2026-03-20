@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use anyhow::Result;
 use async_trait::async_trait;
 use reqwest_middleware::RequestBuilder;
 
 use super::CredentialHelper;
+use crate::error::ClientError;
 
 pub struct NoopCredentialHelper {}
 
@@ -16,7 +16,7 @@ impl NoopCredentialHelper {
 
 #[async_trait]
 impl CredentialHelper for NoopCredentialHelper {
-    async fn fill_credential(&self, req: RequestBuilder) -> Result<RequestBuilder> {
+    async fn fill_credential(&self, req: RequestBuilder) -> Result<RequestBuilder, ClientError> {
         Ok(req)
     }
 
@@ -42,7 +42,7 @@ impl BearerCredentialHelper {
 
 #[async_trait]
 impl CredentialHelper for BearerCredentialHelper {
-    async fn fill_credential(&self, req: RequestBuilder) -> Result<RequestBuilder> {
+    async fn fill_credential(&self, req: RequestBuilder) -> Result<RequestBuilder, ClientError> {
         Ok(req.bearer_auth(&self.hf_token))
     }
 

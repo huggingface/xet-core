@@ -23,7 +23,6 @@ bench = true
 [dependencies]
 xet-runtime = { version = "1.4.0", path = "../xet_runtime" }
 
-anyhow = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true }
 blake3 = { workspace = true }

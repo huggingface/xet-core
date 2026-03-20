@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::merklehash::data_hash::hex;
 
-use super::error::CasTypesError;
+use crate::error::ClientError;
 
 /// A Key indicates a prefixed merkle hash for some data stored in the CAS DB.
 #[derive(Debug, PartialEq, Default, Serialize, Deserialize, Ord, PartialOrd, Eq, Hash, Clone)]
@@ -21,15 +21,15 @@ impl Display for Key {
 }
 
 impl FromStr for Key {
-    type Err = CasTypesError;
+    type Err = ClientError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let parts = s.rsplit_once('/');
         let Some((prefix, hash)) = parts else {
-            return Err(CasTypesError::InvalidKey(s.to_owned()));
+            return Err(ClientError::InvalidKey(s.to_owned()));
         };
 
-        let hash = MerkleHash::from_hex(hash).map_err(|_| CasTypesError::InvalidKey(s.to_owned()))?;
+        let hash = MerkleHash::from_hex(hash).map_err(|_| ClientError::InvalidKey(s.to_owned()))?;
 
         Ok(Key {
             prefix: prefix.to_owned(),

@@ -25,7 +25,7 @@ use xet_runtime::core::xet_config;
 use xet_runtime::error_printer::ErrorPrinter;
 
 use super::configurations::TranslatorConfig;
-use super::errors::Result;
+use crate::error::Result;
 
 pub struct SessionShardInterface {
     session_shard_manager: Arc<ShardFileManager>,

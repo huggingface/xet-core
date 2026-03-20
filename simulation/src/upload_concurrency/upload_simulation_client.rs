@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use anyhow::Result;
 use bytes::Bytes;
 use http::HeaderValue;
 use http::header::CONTENT_LENGTH;
@@ -80,7 +81,7 @@ pub async fn run_upload_clients_until_cancelled(
     min_data_kb: u64,
     max_data_kb: u64,
     cancel: CancellationToken,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<()> {
     run_upload_clients_impl(server_addr, output_dir, min_data_kb, max_data_kb, None, Some(cancel)).await
 }
 
@@ -92,7 +93,7 @@ pub async fn run_upload_clients(
     min_data_kb: u64,
     max_data_kb: u64,
     repeat_duration_seconds: u64,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<()> {
     run_upload_clients_impl(server_addr, output_dir, min_data_kb, max_data_kb, Some(repeat_duration_seconds), None)
         .await
 }
@@ -304,12 +305,12 @@ async fn run_upload_clients_impl(
     max_data_kb: u64,
     repeat_duration_seconds: Option<u64>,
     cancel: Option<CancellationToken>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<()> {
     let min_data_size = min_data_kb * 1024;
     let max_data_size = max_data_kb * 1024;
     let client_id = rand::rng().random_range(0..1000000000_u64);
 
-    let http_client = build_http_client("test_session", None, None).map_err(|e| e.to_string())?;
+    let http_client = build_http_client("test_session", None, None)?;
 
     let duration_sec = repeat_duration_seconds.unwrap_or(u64::MAX);
     let client_params = serde_json::json!({

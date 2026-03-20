@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use anyhow::{Ok, Result, anyhow};
 use clap::Parser;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -54,7 +53,7 @@ async fn run_shard_benchmark(
     contiguity: usize,
     block_hit_proportion: f64,
     dir: &Path,
-) -> Result<()> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut seed = 0u64;
 
     eprintln!("Creating shards.");
@@ -145,14 +144,14 @@ async fn run_shard_benchmark(
     Ok(())
 }
 
-fn parse_arg(arg: &str) -> Result<(u64, u64)> {
+fn parse_arg(arg: &str) -> Result<(u64, u64), String> {
     let parts: Vec<&str> = arg.split(':').collect();
     if parts.len() != 2 {
-        return Err(anyhow!("Failed to parse argument: {arg}"));
+        return Err(format!("Failed to parse argument: {arg}"));
     }
 
-    let size1 = u64::from_str(parts[0]).map_err(|e| anyhow!("Failed to parse size1: {e:?}"))?;
-    let size2 = u64::from_str(parts[1]).map_err(|e| anyhow!("Failed to parse size2: {e:?}"))?;
+    let size1 = u64::from_str(parts[0]).map_err(|e| format!("Failed to parse size1: {e:?}"))?;
+    let size2 = u64::from_str(parts[1]).map_err(|e| format!("Failed to parse size2: {e:?}"))?;
 
     Ok((size1, size2))
 }

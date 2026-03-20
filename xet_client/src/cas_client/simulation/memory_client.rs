@@ -20,7 +20,6 @@ use xet_core_structures::xorb_object::{SerializedXorbObject, XorbObject};
 
 use super::super::Client;
 use super::super::adaptive_concurrency::AdaptiveConcurrencyController;
-use super::super::error::{CasClientError, Result};
 use super::super::progress_tracked_streams::ProgressCallback;
 use super::client_testing_utils::{FileTermReference, RandomFileContents};
 use super::direct_access_client::DirectAccessClient;
@@ -30,6 +29,7 @@ use crate::cas_types::{
     BatchQueryReconstructionResponse, FileRange, HexMerkleHash, HttpRange, QueryReconstructionResponse,
     QueryReconstructionResponseV2, XorbMultiRangeFetch, XorbRangeDescriptor, XorbReconstructionFetchInfo,
 };
+use crate::error::{ClientError, Result};
 
 /// Stored XORB data: the serialized data and the deserialized XorbObject (header/footer).
 struct MaterializedXorb {
@@ -308,7 +308,7 @@ impl DirectAccessClient for MemoryClient {
         let xorbs = self.xorbs.read().await;
         let storage = xorbs.get(hash).ok_or_else(|| {
             error!("Unable to find xorb in memory CAS {:?}", hash);
-            CasClientError::XORBNotFound(*hash)
+            ClientError::XORBNotFound(*hash)
         })?;
 
         match storage {
@@ -320,7 +320,7 @@ impl DirectAccessClient for MemoryClient {
             },
             XorbStorage::Random(xorb) => xorb
                 .get_chunk_range_data(0, xorb.num_chunks())
-                .ok_or(CasClientError::XORBNotFound(*hash)),
+                .ok_or(ClientError::XORBNotFound(*hash)),
         }
     }
 
@@ -332,7 +332,7 @@ impl DirectAccessClient for MemoryClient {
         let xorbs = self.xorbs.read().await;
         let storage = xorbs.get(hash).ok_or_else(|| {
             error!("Unable to find xorb in memory CAS {:?}", hash);
-            CasClientError::XORBNotFound(*hash)
+            ClientError::XORBNotFound(*hash)
         })?;
 
         match storage {
@@ -358,7 +358,7 @@ impl DirectAccessClient for MemoryClient {
                         ret.push(Bytes::new());
                         continue;
                     }
-                    let data = xorb.get_chunk_range_data(r.0, r.1).ok_or(CasClientError::XORBNotFound(*hash))?;
+                    let data = xorb.get_chunk_range_data(r.0, r.1).ok_or(ClientError::XORBNotFound(*hash))?;
                     ret.push(data);
                 }
                 Ok(ret)
@@ -379,7 +379,7 @@ impl DirectAccessClient for MemoryClient {
         let xorbs = self.xorbs.read().await;
         let storage = xorbs.get(hash).ok_or_else(|| {
             error!("Unable to find xorb in memory CAS {:?}", hash);
-            CasClientError::XORBNotFound(*hash)
+            ClientError::XORBNotFound(*hash)
         })?;
 
         match storage {
@@ -392,7 +392,7 @@ impl DirectAccessClient for MemoryClient {
         let shard = self.shard.read().await;
         let file_info = shard
             .get_file_reconstruction_info(hash)
-            .ok_or(CasClientError::FileNotFound(*hash))?;
+            .ok_or(ClientError::FileNotFound(*hash))?;
         Ok(file_info.file_size())
     }
 
@@ -401,7 +401,7 @@ impl DirectAccessClient for MemoryClient {
             let shard = self.shard.read().await;
             shard
                 .get_file_reconstruction_info(hash)
-                .ok_or(CasClientError::FileNotFound(*hash))?
+                .ok_or(ClientError::FileNotFound(*hash))?
         };
 
         let mut file_vec = Vec::new();
@@ -419,7 +419,7 @@ impl DirectAccessClient for MemoryClient {
         let start = byte_range.as_ref().map(|range| range.start as usize).unwrap_or(0);
 
         if byte_range.is_some() && start >= file_size {
-            return Err(CasClientError::InvalidRange);
+            return Err(ClientError::InvalidRange);
         }
 
         let end = byte_range
@@ -433,7 +433,7 @@ impl DirectAccessClient for MemoryClient {
 
     async fn get_xorb_raw_bytes(&self, hash: &MerkleHash, byte_range: Option<FileRange>) -> Result<Bytes> {
         let xorbs = self.xorbs.read().await;
-        let storage = xorbs.get(hash).ok_or(CasClientError::XORBNotFound(*hash))?;
+        let storage = xorbs.get(hash).ok_or(ClientError::XORBNotFound(*hash))?;
 
         match storage {
             XorbStorage::Materialized(entry) => {
@@ -447,7 +447,7 @@ impl DirectAccessClient for MemoryClient {
                     .min(data.len());
 
                 if start >= data.len() {
-                    return Err(CasClientError::InvalidRange);
+                    return Err(ClientError::InvalidRange);
                 }
 
                 Ok(data.slice(start..end))
@@ -458,7 +458,7 @@ impl DirectAccessClient for MemoryClient {
                 let end = byte_range.as_ref().map(|r| r.end).unwrap_or(total_len).min(total_len);
 
                 if start >= total_len {
-                    return Err(CasClientError::InvalidRange);
+                    return Err(ClientError::InvalidRange);
                 }
 
                 Ok(xorb.get_serialized_range(start, end))
@@ -468,7 +468,7 @@ impl DirectAccessClient for MemoryClient {
 
     async fn xorb_raw_length(&self, hash: &MerkleHash) -> Result<u64> {
         let xorbs = self.xorbs.read().await;
-        let storage = xorbs.get(hash).ok_or(CasClientError::XORBNotFound(*hash))?;
+        let storage = xorbs.get(hash).ok_or(ClientError::XORBNotFound(*hash))?;
 
         match storage {
             XorbStorage::Materialized(entry) => Ok(entry.serialized_data.len() as u64),
@@ -488,7 +488,7 @@ impl DirectAccessClient for MemoryClient {
         let expiration_ms = self.url_expiration_ms.load(Ordering::Relaxed);
         let elapsed_ms = Instant::now().saturating_duration_since(url_timestamp).as_millis() as u64;
         if elapsed_ms > expiration_ms {
-            return Err(CasClientError::PresignedUrlExpirationError);
+            return Err(ClientError::PresignedUrlExpirationError);
         }
 
         // Validate byte range matches url_range
@@ -496,13 +496,13 @@ impl DirectAccessClient for MemoryClient {
         // We convert url_range to FileRange for comparison
         let fetch_byte_range = FileRange::from(fetch_term.url_range);
         if url_byte_range.start != fetch_byte_range.start || url_byte_range.end != fetch_byte_range.end {
-            return Err(CasClientError::InvalidArguments);
+            return Err(ClientError::InvalidArguments);
         }
 
         let xorbs = self.xorbs.read().await;
         let storage = xorbs.get(&xorb_hash).ok_or_else(|| {
             error!("Unable to find xorb in memory CAS {:?}", hash);
-            CasClientError::XORBNotFound(hash)
+            ClientError::XORBNotFound(hash)
         })?;
 
         let (data, xorb_obj) = match storage {
@@ -516,7 +516,7 @@ impl DirectAccessClient for MemoryClient {
             XorbStorage::Random(xorb) => {
                 let data = xorb
                     .get_chunk_range_data(fetch_term.range.start, fetch_term.range.end)
-                    .ok_or(CasClientError::XORBNotFound(hash))?;
+                    .ok_or(ClientError::XORBNotFound(hash))?;
                 let xorb_obj = xorb.get_xorb_object();
                 (data, xorb_obj)
             },
@@ -529,7 +529,7 @@ impl DirectAccessClient for MemoryClient {
             for chunk_idx in fetch_term.range.start..fetch_term.range.end {
                 let chunk_len = xorb_obj
                     .uncompressed_chunk_length(chunk_idx)
-                    .map_err(|e| CasClientError::Other(format!("Failed to get chunk length: {e}")))?;
+                    .map_err(|e| ClientError::Other(format!("Failed to get chunk length: {e}")))?;
                 cumulative += chunk_len;
                 indices.push(cumulative);
             }
@@ -558,7 +558,7 @@ impl MemoryClient {
         xorb_utils::compute_reconstruction_ranges(&file_info, bytes_range, &mut |hash| {
             let storage = xorbs.get(hash).ok_or_else(|| {
                 error!("Unable to find xorb in memory CAS {:?}", hash);
-                CasClientError::XORBNotFound(*hash)
+                ClientError::XORBNotFound(*hash)
             })?;
             Ok(match storage {
                 XorbStorage::Materialized(entry) => entry.xorb_object.clone(),
@@ -764,7 +764,7 @@ impl Client for MemoryClient {
                 &serialized_data,
             )?;
             if computed_hash != hash {
-                return Err(CasClientError::Other(format!(
+                return Err(ClientError::Other(format!(
                     "XORB hash mismatch: expected {}, got {}",
                     hash.hex(),
                     computed_hash.hex(),
@@ -847,11 +847,11 @@ impl Client for MemoryClient {
         let expiration_ms = self.url_expiration_ms.load(Ordering::Relaxed);
         let elapsed_ms = Instant::now().saturating_duration_since(url_timestamp).as_millis() as u64;
         if elapsed_ms > expiration_ms {
-            return Err(CasClientError::PresignedUrlExpirationError);
+            return Err(ClientError::PresignedUrlExpirationError);
         }
 
         let xorbs = self.xorbs.read().await;
-        let storage = xorbs.get(&xorb_hash).ok_or(CasClientError::XORBNotFound(xorb_hash))?;
+        let storage = xorbs.get(&xorb_hash).ok_or(ClientError::XORBNotFound(xorb_hash))?;
 
         // Extract each byte range from the serialized data and deserialize
         let mut all_decompressed = Vec::new();
@@ -909,13 +909,13 @@ fn parse_fetch_url(url: &str) -> Result<(MerkleHash, FileRange, Instant)> {
     parts.reverse();
 
     if parts.len() != 4 {
-        return Err(CasClientError::InvalidArguments);
+        return Err(ClientError::InvalidArguments);
     }
 
-    let hash = MerkleHash::from_hex(parts[0]).map_err(|_| CasClientError::InvalidArguments)?;
-    let start_pos: u64 = parts[1].parse().map_err(|_| CasClientError::InvalidArguments)?;
-    let end_pos: u64 = parts[2].parse().map_err(|_| CasClientError::InvalidArguments)?;
-    let timestamp_ms: u64 = parts[3].parse().map_err(|_| CasClientError::InvalidArguments)?;
+    let hash = MerkleHash::from_hex(parts[0]).map_err(|_| ClientError::InvalidArguments)?;
+    let start_pos: u64 = parts[1].parse().map_err(|_| ClientError::InvalidArguments)?;
+    let end_pos: u64 = parts[2].parse().map_err(|_| ClientError::InvalidArguments)?;
+    let timestamp_ms: u64 = parts[3].parse().map_err(|_| ClientError::InvalidArguments)?;
 
     let byte_range = FileRange::new(start_pos, end_pos);
     let timestamp = *REFERENCE_INSTANT + Duration::from_millis(timestamp_ms);

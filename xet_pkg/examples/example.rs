@@ -119,7 +119,7 @@ async fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: O
                 .download_file_to_path(
                     XetFileInfo {
                         hash: m.hash.clone(),
-                        file_size: m.file_size,
+                        file_size: Some(m.file_size),
                         sha256: m.sha256.clone(),
                     },
                     dest,
@@ -148,7 +148,7 @@ async fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: O
 
     for (_task_id, result) in &results {
         if let Ok(r) = result.as_ref() {
-            println!("  {} ({} bytes)", r.dest_path.display(), r.file_info.file_size);
+            println!("  {} ({:?} bytes)", r.dest_path.display(), r.file_info.file_size);
         }
     }
 

@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use tokio_with_wasm::alias as wasmtokio;
-use xet_client::cas_client::{CasClientError, Client};
+use xet_client::cas_client::Client;
+use xet_client::ClientError;
 use xet_core_structures::xorb_object::SerializedXorbObject;
 
 use crate::errors::*;
@@ -49,7 +50,7 @@ impl XorbUploader for XorbUploaderLocalSequential {
 pub struct XorbUploaderSpawnParallel {
     client: Arc<dyn Client + Send + Sync>,
     cas_prefix: String,
-    tasks: wasmtokio::task::JoinSet<stdResult<u64, CasClientError>>,
+    tasks: wasmtokio::task::JoinSet<stdResult<u64, ClientError>>,
 }
 
 impl XorbUploaderSpawnParallel {

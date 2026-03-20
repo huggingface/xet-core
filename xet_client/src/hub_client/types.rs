@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use serde::Deserialize;
 
-use super::errors::{HubClientError, Result};
+use crate::error::{ClientError, Result};
 
 /// This defines the response format from the Huggingface Hub Xet CAS access token API.
 #[derive(Deserialize, Debug)]
@@ -23,7 +23,7 @@ pub enum HFRepoType {
 }
 
 impl FromStr for HFRepoType {
-    type Err = HubClientError;
+    type Err = ClientError;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
@@ -31,7 +31,7 @@ impl FromStr for HFRepoType {
             "model" | "models" => Ok(HFRepoType::Model),
             "dataset" | "datasets" => Ok(HFRepoType::Dataset),
             "space" | "spaces" => Ok(HFRepoType::Space),
-            t => Err(HubClientError::InvalidRepoType(t.to_owned())),
+            t => Err(ClientError::InvalidRepoType(t.to_owned())),
         }
     }
 }

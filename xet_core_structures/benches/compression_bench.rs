@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use half::prelude::*;
 use rand::Rng;
-use xorb_object::*;
+use xet_core_structures::xorb_object::*;
 
 // Benchmark results on Apple M2 Max
 
@@ -39,54 +39,54 @@ use xorb_object::*;
 // bf16s_0_2    3%              17%
 
 fn main() {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     let n = 64 * 1024; // 64 KiB data
     let all_zeros = vec![0u8; n];
     let all_ones = vec![1u8; n];
     let all_0xff = vec![0xFF; n];
-    let u8s: Vec<_> = (0..n).map(|_| rng.gen_range(0..255)).collect();
+    let u8s: Vec<_> = (0..n).map(|_| rng.random_range(0..255)).collect();
     let f32s_ng1_1: Vec<_> = (0..n / size_of::<f32>())
-        .map(|_| rng.gen_range(-1.0f32..=1.0))
+        .map(|_| rng.random_range(-1.0f32..=1.0))
         .map(|f| f.to_le_bytes())
         .flatten()
         .collect();
     let f32s_0_2: Vec<_> = (0..n / size_of::<f32>())
-        .map(|_| rng.gen_range(0f32..=2.0))
+        .map(|_| rng.random_range(0f32..=2.0))
         .map(|f| f.to_le_bytes())
         .flatten()
         .collect();
     let f64s_ng1_1: Vec<_> = (0..n / size_of::<f64>())
-        .map(|_| rng.gen_range(-1.0f64..=1.0))
+        .map(|_| rng.random_range(-1.0f64..=1.0))
         .map(|f| f.to_le_bytes())
         .flatten()
         .collect();
     let f64s_0_2: Vec<_> = (0..n / size_of::<f64>())
-        .map(|_| rng.gen_range(0f64..=2.0))
+        .map(|_| rng.random_range(0f64..=2.0))
         .map(|f| f.to_le_bytes())
         .flatten()
         .collect();
 
     // f16, a.k.a binary16 format: sign (1 bit), exponent (5 bit), mantissa (10 bit)
     let f16s_ng1_1: Vec<_> = (0..n / size_of::<f16>())
-        .map(|_| f16::from_f32(rng.gen_range(-1.0f32..=1.0)))
+        .map(|_| f16::from_f32(rng.random_range(-1.0f32..=1.0)))
         .map(|f| f.to_le_bytes())
         .flatten()
         .collect();
     let f16s_0_2: Vec<_> = (0..n / size_of::<f16>())
-        .map(|_| f16::from_f32(rng.gen_range(0f32..=2.0)))
+        .map(|_| f16::from_f32(rng.random_range(0f32..=2.0)))
         .map(|f| f.to_le_bytes())
         .flatten()
         .collect();
 
     // bf16 format: sign (1 bit), exponent (8 bit), mantissa (7 bit)
     let bf16s_ng1_1: Vec<_> = (0..n / size_of::<bf16>())
-        .map(|_| bf16::from_f32(rng.gen_range(-1.0f32..=1.0)))
+        .map(|_| bf16::from_f32(rng.random_range(-1.0f32..=1.0)))
         .map(|f| f.to_le_bytes())
         .flatten()
         .collect();
     let bf16s_0_2: Vec<_> = (0..n / size_of::<bf16>())
-        .map(|_| bf16::from_f32(rng.gen_range(0f32..=2.0)))
+        .map(|_| bf16::from_f32(rng.random_range(0f32..=2.0)))
         .map(|f| f.to_le_bytes())
         .flatten()
         .collect();
@@ -147,6 +147,7 @@ fn main() {
             data.len() as f64 / 1e6 / lz4_decompress_time * ITER as f64
         );
 
+        #[allow(static_mut_refs)]
         unsafe {
             println!(
                 "{BG4_SPLIT_RUNTIME} s, {BG4_LZ4_COMPRESS_RUNTIME} s , {BG4_LZ4_DECOMPRESS_RUNTIME} s, {BG4_REGROUP_RUNTIME} s"
@@ -154,6 +155,7 @@ fn main() {
         }
 
         // For CSV exporting
+        #[allow(static_mut_refs)]
         unsafe {
             eprintln!(
                 "{:.2}, {:.2}, {:.2}, {:.2}, {}, {}, {}, {}",
