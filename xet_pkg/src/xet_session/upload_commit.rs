@@ -1345,7 +1345,8 @@ mod tests {
         let temp = tempdir()?;
         let session = local_session_sync(&temp)?;
         let commit = session.new_upload_commit_blocking()?;
-        let (handle, _cleaner) = commit.upload_file_blocking(Some("stream.bin".into()), 1024, Sha256Policy::Compute)?;
+        let (handle, _cleaner) =
+            commit.upload_file_blocking(Some("stream.bin".into()), Some(1024), Sha256Policy::Compute)?;
         assert!(handle.status().is_err());
         Ok(())
     }
@@ -1416,7 +1417,7 @@ mod tests {
         let session = XetSessionBuilder::new().build_async().await.unwrap();
         assert_eq!(session.runtime_mode, RuntimeMode::External);
         let commit = session.new_upload_commit().await.unwrap();
-        let err = commit.upload_file_blocking(None, 0, Sha256Policy::Compute).err().unwrap();
+        let err = commit.upload_file_blocking(None, Some(0), Sha256Policy::Compute).err().unwrap();
         assert!(matches!(err, XetError::WrongRuntimeMode(_)));
     }
 
@@ -1462,7 +1463,7 @@ mod tests {
         let commit = session.new_upload_commit_blocking().unwrap();
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            rt.block_on(async { commit.upload_file_blocking(None, 0, Sha256Policy::Compute) })
+            rt.block_on(async { commit.upload_file_blocking(None, Some(0), Sha256Policy::Compute) })
         }));
         assert!(result.is_err(), "upload_file_blocking() must panic when called from async");
     }
