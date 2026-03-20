@@ -1,8 +1,9 @@
 pub use http_client::{Api, ResponseErrorLogger, build_auth_http_client, build_http_client};
 pub use interface::{Client, URLProvider};
 pub use remote_client::RemoteClient;
+#[cfg(feature = "simulation")]
 pub use simulation::{ClientTestingUtils, DirectAccessClient, MemoryClient, RandomFileContents, RandomXorb};
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(feature = "simulation", not(target_family = "wasm")))]
 pub use simulation::{
     DeletionControlableClient, LocalClient, LocalServer, LocalServerConfig, LocalTestServer, LocalTestServerBuilder,
     RemoteSimulationClient, SimulationControlClient,
@@ -18,6 +19,7 @@ pub mod multipart;
 pub mod progress_tracked_streams;
 pub mod remote_client;
 pub mod retry_wrapper;
+#[cfg(feature = "simulation")]
 pub mod simulation;
 
 pub use progress_tracked_streams::{

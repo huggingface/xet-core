@@ -366,7 +366,7 @@ fn default_progress_updater() -> Option<Arc<ItemProgressUpdater>> {
     None
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "simulation"))]
 mod tests {
     use std::io::{Cursor, Write};
     use std::sync::Arc;

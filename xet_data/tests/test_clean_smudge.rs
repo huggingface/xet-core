@@ -1,3 +1,5 @@
+#![cfg(feature = "simulation")]
+
 use xet_data::deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS, TARGET_CHUNK_SIZE};
 use xet_data::processing::test_utils::*;
 use xet_runtime::test_set_constants;

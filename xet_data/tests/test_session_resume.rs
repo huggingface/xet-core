@@ -1,3 +1,5 @@
+#![cfg(feature = "simulation")]
+
 use std::time::Duration;
 
 // Run tests that determine deduplication, especially across different test subjects.

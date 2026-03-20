@@ -342,7 +342,7 @@ pub async fn retrieve_file_term_block(
     Ok(Some((actual_range, total_transfer_bytes, file_terms)))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "simulation"))]
 mod tests {
     use std::sync::Arc;
 

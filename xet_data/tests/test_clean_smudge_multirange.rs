@@ -1,3 +1,4 @@
+#![cfg(feature = "simulation")]
 //! Clean/smudge integration tests with `enable_multirange_fetching = true`.
 //!
 //! This test binary is a separate copy of a subset of the clean/smudge tests

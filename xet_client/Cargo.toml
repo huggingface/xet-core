@@ -47,14 +47,14 @@ tokio = { workspace = true, features = ["sync", "macros", "io-util", "rt", "time
 web-time = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-axum = { workspace = true }
-duration-str = { workspace = true }
-futures-util = { workspace = true }
-heed = { workspace = true }
-human-bandwidth = { workspace = true }
+axum = { workspace = true, optional = true }
+humantime = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
+heed = { workspace = true, optional = true }
+human-bandwidth = { workspace = true, optional = true }
 hyper = { workspace = true }
 tokio = { workspace = true }
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.6", features = ["cors"], optional = true }
 
 [features]
 strict = []
@@ -64,10 +64,12 @@ rustls-tls = ["reqwest/rustls"]
 native-tls = ["reqwest/native-tls"]
 native-tls-vendored = ["reqwest/native-tls-vendored"]
 analysis = []
+simulation = ["dep:axum", "dep:humantime", "dep:futures-util", "dep:heed", "dep:human-bandwidth", "dep:tower-http"]
 
 [[bin]]
 name = "local_cas_server"
 path = "src/cas_client/simulation/local_server/main.rs"
+required-features = ["simulation"]
 
 [[bin]]
 name = "cache_analysis"

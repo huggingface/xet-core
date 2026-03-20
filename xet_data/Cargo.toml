@@ -84,3 +84,4 @@ tracing-test = { workspace = true }
 strict = []
 expensive_tests = []
 python = ["dep:pyo3"]
+simulation = ["xet-client/simulation"]
