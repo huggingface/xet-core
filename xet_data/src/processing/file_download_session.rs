@@ -115,7 +115,7 @@ impl FileDownloadSession {
         if let Some(expected_size) = file_info.file_size()
             && n_bytes != expected_size
         {
-            return Err(DataProcessingError::SizeMismatch {
+            return Err(DataError::SizeMismatch {
                 expected: expected_size,
                 actual: n_bytes,
             });
@@ -160,7 +160,7 @@ impl FileDownloadSession {
         if let Some(expected) = expected_size
             && n_bytes != expected
         {
-            return Err(DataProcessingError::SizeMismatch {
+            return Err(DataError::SizeMismatch {
                 expected,
                 actual: n_bytes,
             });
@@ -284,7 +284,7 @@ fn range_bounds_to_file_range(range: &impl RangeBounds<u64>) -> Result<Option<Fi
         Bound::Unbounded => u64::MAX,
     };
     if start > end {
-        return Err(DataProcessingError::InvalidOperation(format!("Invalid range: start ({start}) > end ({end})")));
+        return Err(DataError::InvalidOperation(format!("Invalid range: start ({start}) > end ({end})")));
     }
     if start == 0 && end == u64::MAX {
         Ok(None)
@@ -1031,7 +1031,7 @@ mod tests {
                 let err = session.download_file(&wrong_size_xfi, &out_path).await.unwrap_err();
 
                 assert!(
-                    matches!(err, DataProcessingError::SizeMismatch { expected: 999, .. }),
+                    matches!(err, DataError::SizeMismatch { expected: 999, .. }),
                     "Expected SizeMismatch error, got: {err:?}"
                 );
             })

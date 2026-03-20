@@ -1059,7 +1059,7 @@ mod tests {
         let group = session.new_download_group().await.unwrap();
         let file_info = XetFileInfo {
             hash: String::new(),
-            file_size: 0,
+            file_size: Some(0),
             sha256: None,
         };
         let err = group
@@ -1082,7 +1082,7 @@ mod tests {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         let file_info = XetFileInfo {
             hash: String::new(),
-            file_size: 0,
+            file_size: Some(0),
             sha256: None,
         };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
