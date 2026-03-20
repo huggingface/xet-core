@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::{File, metadata};
 use std::io::{BufReader, Cursor, Seek, SeekFrom, Write};
 use std::mem::size_of;
@@ -44,6 +44,10 @@ pub struct LocalClient {
     // We use Option<heed::Env> so we can take() it in Drop to properly close via prepare_for_closing.
     global_dedup_db_env: Option<heed::Env>,
     global_dedup_table: heed::Database<SerdeBincode<MerkleHash>, SerdeBincode<MerkleHash>>,
+    /// Disk-backed file deletion status. Maps file_hash -> is_deleted (bool).
+    /// Files marked `true` are logically deleted without rewriting shard files,
+    /// preserving shard hash stability across GC epochs.
+    file_status_table: heed::Database<SerdeBincode<MerkleHash>, SerdeBincode<bool>>,
     shard_manager: Arc<ShardFileManager>,
     xorb_dir: PathBuf,
     shard_dir: PathBuf,
@@ -103,7 +107,7 @@ impl LocalClient {
             let mut last_err = None;
             let mut result = None;
             for attempt in 0..5 {
-                match unsafe { heed::EnvOpenOptions::new().open(&global_dedup_dir) } {
+                match unsafe { heed::EnvOpenOptions::new().max_dbs(2).open(&global_dedup_dir) } {
                     Ok(env) => {
                         result = Some(env);
                         break;
@@ -132,8 +136,11 @@ impl LocalClient {
             .write_txn()
             .map_err(|e| ClientError::Other(format!("Error opening heed write transaction: {e}")))?;
         let global_dedup_table = global_dedup_db_env
-            .create_database(&mut write_txn, None)
+            .create_database(&mut write_txn, Some("global_dedup"))
             .map_err(|e| ClientError::Other(format!("Error opening heed table: {e}")))?;
+        let file_status_table = global_dedup_db_env
+            .create_database(&mut write_txn, Some("file_status"))
+            .map_err(|e| ClientError::Other(format!("Error opening heed file_status table: {e}")))?;
         write_txn
             .commit()
             .map_err(|e| ClientError::Other(format!("Error committing heed database: {e}")))?;
@@ -144,6 +151,7 @@ impl LocalClient {
         Ok(Self {
             global_dedup_db_env: Some(global_dedup_db_env),
             global_dedup_table,
+            file_status_table,
             shard_manager,
             xorb_dir,
             shard_dir,
@@ -159,6 +167,19 @@ impl LocalClient {
     /// Internal function to get the path for a given hash entry
     fn get_path_for_entry(&self, hash: &MerkleHash) -> PathBuf {
         self.xorb_dir.join(format!("default.{hash:?}"))
+    }
+
+    fn is_file_deleted(&self, file_hash: &MerkleHash) -> bool {
+        let Some(env) = self.global_dedup_db_env.as_ref() else {
+            return false;
+        };
+        let Ok(read_txn) = env.read_txn() else {
+            return false;
+        };
+        self.file_status_table
+            .get(&read_txn, file_hash)
+            .unwrap_or(None)
+            .unwrap_or(false)
     }
 
     /// Returns all shard files in the shard directory as (shard_hash, path) pairs.
@@ -187,6 +208,7 @@ impl LocalClient {
     }
 
     /// Loads all shard data from disk into an in-memory shard.
+    #[cfg(test)]
     fn load_all_shard_data(&self) -> Result<MDBInMemoryShard> {
         let mut in_memory = MDBInMemoryShard::default();
         for (_, path) in self.shard_file_paths()? {
@@ -205,6 +227,7 @@ impl LocalClient {
 
     /// Clears shard files from disk, writes the given in-memory shard, and
     /// registers the new shard file with the shard manager.
+    #[cfg(test)]
     async fn write_shard_data_and_register(&self, in_memory: &MDBInMemoryShard) -> Result<()> {
         for (_, path) in self.shard_file_paths()? {
             std::fs::remove_file(&path)?;
@@ -246,40 +269,101 @@ impl super::DeletionControlableClient for LocalClient {
 
             for i in 0..minimal_shard.num_files() {
                 let file_view = minimal_shard.file(i).unwrap();
-                entries.push((file_view.file_hash(), shard_hash));
+                let fh = file_view.file_hash();
+                if !self.is_file_deleted(&fh) {
+                    entries.push((fh, shard_hash));
+                }
             }
         }
         Ok(entries)
     }
 
     async fn delete_file_entry(&self, file_hash: &MerkleHash) -> Result<()> {
-        let mut in_memory = self.load_all_shard_data()?;
-        in_memory.file_content.remove(file_hash);
-        self.write_shard_data_and_register(&in_memory).await
+        let env = self
+            .global_dedup_db_env
+            .as_ref()
+            .ok_or_else(|| ClientError::Other("LocalClient has been closed".to_string()))?;
+        let mut write_txn = env.write_txn().map_err(map_heed_db_error)?;
+        self.file_status_table
+            .put(&mut write_txn, file_hash, &true)
+            .map_err(map_heed_db_error)?;
+        write_txn.commit().map_err(map_heed_db_error)?;
+        Ok(())
+    }
+
+    async fn remove_shard_dedup_entries(&self, shard_hash: &MerkleHash) -> Result<()> {
+        let env = self
+            .global_dedup_db_env
+            .as_ref()
+            .ok_or_else(|| ClientError::Other("LocalClient has been closed".to_string()))?;
+
+        // Retry a few cleanup passes to tolerate interleaved writes.
+        // In the common single-writer GC path this exits after one pass.
+        for _ in 0..4 {
+            let to_delete: Vec<MerkleHash> = {
+                let read_txn = env.read_txn().map_err(map_heed_db_error)?;
+                self.global_dedup_table
+                    .iter(&read_txn)
+                    .map_err(map_heed_db_error)?
+                    .filter_map(|entry| entry.ok())
+                    .filter(|(_, v)| v == shard_hash)
+                    .map(|(k, _)| k)
+                    .collect()
+            };
+
+            if to_delete.is_empty() {
+                return Ok(());
+            }
+
+            let mut write_txn = env.write_txn().map_err(map_heed_db_error)?;
+            for chunk_hash in &to_delete {
+                self.global_dedup_table
+                    .delete(&mut write_txn, chunk_hash)
+                    .map_err(map_heed_db_error)?;
+            }
+            write_txn.commit().map_err(map_heed_db_error)?;
+        }
+
+        // If entries still remain after retries, signal a concurrent-update issue.
+        let still_present = {
+            let read_txn = env.read_txn().map_err(map_heed_db_error)?;
+            self.global_dedup_table
+                .iter(&read_txn)
+                .map_err(map_heed_db_error)?
+                .filter_map(|entry| entry.ok())
+                .any(|(_, v)| v == *shard_hash)
+        };
+
+        if still_present {
+            return Err(ClientError::Other(format!(
+                "Unable to fully remove dedup entries for shard {} due to concurrent updates",
+                shard_hash.hex()
+            )));
+        }
+
+        Ok(())
     }
 
     /// Verifies referential integrity of all shards on disk:
-    /// 1. For each CAS block in each shard, the corresponding XORB must exist.
-    /// 2. For each file entry, every segment's CAS hash must reference a CAS block present in the shard, and the chunk
-    ///    range must be valid for that CAS block.
+    /// 1. For each XORB entry listed in any shard, the corresponding XORB file must exist on disk.
+    /// 2. For each file entry in any shard, every referenced XORB must exist on disk. (Global-dedup allows file entries
+    ///    to reference XORBs described in a different shard, so we do a cross-shard check against disk rather than a
+    ///    within-shard check.)
     async fn verify_integrity(&self) -> Result<()> {
-        for (shard_hash, path) in self.shard_file_paths()? {
-            let shard_bytes = std::fs::read(&path)?;
+        let shard_files = self.shard_file_paths()?;
+
+        // Pass 1: collect all XORB hashes listed across all shards and build
+        // a global chunk-count index.  Also verify each listed XORB file exists.
+        let mut global_xorb_chunk_counts: HashMap<MerkleHash, usize> = HashMap::new();
+        for (shard_hash, path) in &shard_files {
+            let shard_bytes = std::fs::read(path)?;
             let minimal_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&shard_bytes), true, true)?;
 
-            let xorb_hashes: HashSet<MerkleHash> = (0..minimal_shard.num_xorb())
-                .map(|i| minimal_shard.xorb(i).unwrap().xorb_hash())
-                .collect();
+            for i in 0..minimal_shard.num_xorb() {
+                let xorb_view = minimal_shard.xorb(i).unwrap();
+                let xorb_hash = xorb_view.xorb_hash();
 
-            let xorb_chunk_counts: HashMap<MerkleHash, usize> = (0..minimal_shard.num_xorb())
-                .map(|i| {
-                    let xorb_view = minimal_shard.xorb(i).unwrap();
-                    (xorb_view.xorb_hash(), xorb_view.num_entries())
-                })
-                .collect();
-
-            for xorb_hash in &xorb_hashes {
-                let xorb_path = self.get_path_for_entry(xorb_hash);
+                let xorb_path = self.get_path_for_entry(&xorb_hash);
                 if !xorb_path.exists() {
                     return Err(ClientError::Other(format!(
                         "Integrity error: shard {} references non-existent XORB {}",
@@ -287,32 +371,54 @@ impl super::DeletionControlableClient for LocalClient {
                         xorb_hash.hex()
                     )));
                 }
+
+                global_xorb_chunk_counts.entry(xorb_hash).or_insert(xorb_view.num_entries());
             }
+        }
+
+        // Pass 2: validate every file entry across all shards.
+        // A file may reference an XORB described in a different shard (global dedup).
+        // We accept the reference if (a) the XORB is in the global index, or
+        // (b) the XORB file exists on disk (dedup case: chunk-count validation is skipped).
+        for (shard_hash, path) in &shard_files {
+            let shard_bytes = std::fs::read(path)?;
+            let minimal_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&shard_bytes), true, true)?;
 
             for i in 0..minimal_shard.num_files() {
                 let file_view = minimal_shard.file(i).unwrap();
                 let fh = file_view.file_hash();
 
+                // Skip soft-deleted files.
+                if self.is_file_deleted(&fh) {
+                    continue;
+                }
+
                 for seg_idx in 0..file_view.num_entries() {
                     let segment = file_view.entry(seg_idx);
+                    let xorb_path = self.get_path_for_entry(&segment.xorb_hash);
 
-                    let chunk_count = xorb_chunk_counts.get(&segment.xorb_hash).ok_or_else(|| {
-                        ClientError::Other(format!(
-                            "Integrity error: file {} references XORB block {} not present in shard {}",
-                            fh.hex(),
-                            segment.xorb_hash.hex(),
-                            shard_hash.hex()
-                        ))
-                    })?;
-
-                    if segment.chunk_index_end as usize > *chunk_count {
+                    if let Some(&chunk_count) = global_xorb_chunk_counts.get(&segment.xorb_hash) {
+                        // XORB is indexed in some shard — validate chunk range.
+                        if segment.chunk_index_end as usize > chunk_count {
+                            return Err(ClientError::Other(format!(
+                                "Integrity error: file {} references chunk range {}..{} \
+                                 but XORB block {} only has {} chunks",
+                                fh.hex(),
+                                segment.chunk_index_start,
+                                segment.chunk_index_end,
+                                segment.xorb_hash.hex(),
+                                chunk_count
+                            )));
+                        }
+                    } else if xorb_path.exists() {
+                        // XORB not in any shard index but file exists — dedup reference, OK.
+                    } else {
                         return Err(ClientError::Other(format!(
-                            "Integrity error: file {} references chunk range {}..{} but XORB block {} only has {} chunks",
+                            "Integrity error: file {} in shard {} references XORB {} \
+                             that has no shard index entry and no XORB file on disk",
                             fh.hex(),
-                            segment.chunk_index_start,
-                            segment.chunk_index_end,
-                            segment.xorb_hash.hex(),
-                            chunk_count
+                            shard_hash.hex(),
+                            segment.xorb_hash.hex()
                         )));
                     }
                 }
@@ -532,11 +638,19 @@ impl DirectAccessClient for LocalClient {
     }
 
     async fn get_file_size(&self, hash: &MerkleHash) -> Result<u64> {
-        let file_info = self.shard_manager.get_file_reconstruction_info(hash).await?;
-        Ok(file_info.unwrap().0.file_size())
+        if self.is_file_deleted(hash) {
+            return Err(ClientError::FileNotFound(*hash));
+        }
+        let Some((file_info, _)) = self.shard_manager.get_file_reconstruction_info(hash).await? else {
+            return Err(ClientError::FileNotFound(*hash));
+        };
+        Ok(file_info.file_size())
     }
 
     async fn get_file_data(&self, hash: &MerkleHash, byte_range: Option<FileRange>) -> Result<Bytes> {
+        if self.is_file_deleted(hash) {
+            return Err(ClientError::FileNotFound(*hash));
+        }
         let Some((file_info, _)) = self
             .shard_manager
             .get_file_reconstruction_info(hash)
@@ -655,6 +769,10 @@ impl LocalClient {
         file_id: &MerkleHash,
         bytes_range: Option<FileRange>,
     ) -> Result<xorb_utils::ReconstructionRangesResult> {
+        if self.is_file_deleted(file_id) {
+            return Ok(None);
+        }
+
         let Some((file_info, _)) = self.shard_manager.get_file_reconstruction_info(file_id).await? else {
             return Ok(None);
         };
@@ -776,6 +894,9 @@ impl Client for LocalClient {
         file_hash: &MerkleHash,
     ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
         self.apply_api_delay().await;
+        if self.is_file_deleted(file_hash) {
+            return Ok(None);
+        }
         Ok(self.shard_manager.get_file_reconstruction_info(file_hash).await?)
     }
 
@@ -844,6 +965,13 @@ impl Client for LocalClient {
         for chunk in chunk_hashes {
             self.global_dedup_table
                 .put(&mut write_txn, &chunk, &shard_hash)
+                .map_err(map_heed_db_error)?;
+        }
+
+        for i in 0..minimal_shard.num_files() {
+            let file_hash = minimal_shard.file(i).unwrap().file_hash();
+            self.file_status_table
+                .put(&mut write_txn, &file_hash, &false)
                 .map_err(map_heed_db_error)?;
         }
 
@@ -1250,6 +1378,7 @@ mod tests {
         let mut in_memory = client.load_all_shard_data().unwrap();
         let removed_hash = *in_memory.xorb_content.keys().next().unwrap();
         in_memory.xorb_content.remove(&removed_hash);
+        client.delete_xorb(&removed_hash).await;
         client.write_shard_data_and_register(&in_memory).await.unwrap();
 
         assert!(client.verify_integrity().await.is_err());
@@ -1269,5 +1398,101 @@ mod tests {
         client.write_shard_data_and_register(&in_memory).await.unwrap();
 
         assert!(client.verify_integrity().await.is_err());
+    }
+
+    /// Verifies that delete_file_entry does not rewrite shard files (shard hashes remain stable).
+    #[tokio::test]
+    async fn test_delete_file_entry_does_not_rewrite_shards() {
+        let client = LocalClient::temporary().await.unwrap();
+        client.upload_random_file(&[(1, (0, 3))], 2048).await.unwrap();
+
+        let shard_hashes_before: Vec<_> = client.shard_file_paths().unwrap().into_iter().map(|(h, _)| h).collect();
+        assert!(!shard_hashes_before.is_empty());
+
+        client
+            .delete_file_entry(&client.list_file_shard_entries().await.unwrap()[0].0)
+            .await
+            .unwrap();
+
+        let shard_hashes_after: Vec<_> = client.shard_file_paths().unwrap().into_iter().map(|(h, _)| h).collect();
+        assert_eq!(shard_hashes_before, shard_hashes_after, "Shard file hashes must not change after soft-delete");
+    }
+
+    /// Verifies that file deletion status persists across LocalClient restarts (disk-backed).
+    #[tokio::test]
+    async fn test_deletion_status_persists_across_restart() {
+        let tmp_dir = TempDir::new().unwrap();
+        let path = tmp_dir.path().to_owned();
+
+        let file_hash;
+        {
+            let client = LocalClient::new(&path).await.unwrap();
+            let file = client.upload_random_file(&[(1, (0, 3)), (2, (0, 2))], 2048).await.unwrap();
+            file_hash = file.file_hash;
+            assert!(!client.list_file_shard_entries().await.unwrap().is_empty());
+
+            client.delete_file_entry(&file_hash).await.unwrap();
+            assert!(client.list_file_shard_entries().await.unwrap().is_empty());
+        }
+
+        {
+            let client = LocalClient::new(&path).await.unwrap();
+            assert!(client.is_file_deleted(&file_hash), "Deletion status should persist across restart");
+            assert!(
+                client.list_file_shard_entries().await.unwrap().is_empty(),
+                "Deleted files should remain hidden after restart"
+            );
+        }
+    }
+
+    /// Tests cross-shard dedup integrity: a file entry referencing an XORB that is not indexed
+    /// in any shard but exists on disk should pass verify_integrity (dedup case).
+    #[tokio::test]
+    async fn test_verify_integrity_cross_shard_dedup_ok() {
+        let client = LocalClient::temporary().await.unwrap();
+        client.upload_random_file(&[(1, (0, 3))], 2048).await.unwrap();
+        client.verify_integrity().await.unwrap();
+
+        let mut in_memory = client.load_all_shard_data().unwrap();
+        in_memory.xorb_content.clear();
+        client.write_shard_data_and_register(&in_memory).await.unwrap();
+
+        client
+            .verify_integrity()
+            .await
+            .expect("Integrity should pass: XORB files exist on disk even though no shard indexes them");
+    }
+
+    /// Tests that verify_integrity skips soft-deleted files, so missing XORBs for
+    /// deleted files do not cause false integrity failures.
+    #[tokio::test]
+    async fn test_verify_integrity_skips_soft_deleted_files() {
+        let client = LocalClient::temporary().await.unwrap();
+        let deleted_file = client.upload_random_file(&[(1, (0, 3))], 2048).await.unwrap();
+        let live_file = client.upload_random_file(&[(2, (0, 2))], 2048).await.unwrap();
+        client.verify_integrity().await.unwrap();
+
+        client.delete_file_entry(&deleted_file.file_hash).await.unwrap();
+
+        for t in &deleted_file.terms {
+            client.delete_xorb(&t.xorb_hash).await;
+        }
+
+        // Remove deleted-file XORB entries from shard metadata too, so pass 1 doesn't fail
+        // on deliberately removed XORB files.
+        let mut in_memory = client.load_all_shard_data().unwrap();
+        for t in &deleted_file.terms {
+            in_memory.xorb_content.remove(&t.xorb_hash);
+        }
+        client.write_shard_data_and_register(&in_memory).await.unwrap();
+
+        client
+            .verify_integrity()
+            .await
+            .expect("Integrity should pass: missing XORBs are only referenced by a soft-deleted file");
+
+        // Sanity check: the surviving file remains readable.
+        let live_data = client.get_file_data(&live_file.file_hash, None).await.unwrap();
+        assert_eq!(live_data, live_file.data);
     }
 }
