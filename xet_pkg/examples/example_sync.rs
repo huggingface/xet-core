@@ -1,6 +1,6 @@
 //! Session-based upload/download example.
 //!
-//! Shows the three-level hierarchy: XetSession → UploadCommit/DownloadGroup → files.
+//! Shows the three-level hierarchy: XetSession → UploadCommit/FileDownloadGroup → files.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -61,7 +61,7 @@ fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<()> {
         commit.upload_from_path_blocking(f.clone(), Sha256Policy::Compute)?;
     }
 
-    // Spawn a thread to print progress; the main thread blocks in commit() below.
+    // Spawn a task to print progress; the main thread blocks in commit() below.
     let commit_for_progress = commit.clone();
     std::thread::spawn(move || {
         loop {
@@ -94,8 +94,9 @@ fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: Option<
         builder = builder.with_endpoint(ep);
     }
     let session = builder.build()?;
-    let group = session.new_download_group_blocking()?;
+    let group = session.new_file_download_group_blocking()?;
 
+    // Enqueue all downloads; each starts immediately in the background.
     let n_files = metadata.len();
     let mut handles = Vec::with_capacity(n_files);
     for m in &metadata {
@@ -103,7 +104,7 @@ fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: Option<
         handles.push(group.download_file_to_path_blocking(m.xet_info.clone(), dest)?);
     }
 
-    // Spawn a thread to print progress; the main thread blocks in finish() below.
+    // Spawn a task to print progress; the main thread blocks in finish() below.
     let group_for_progress = group.clone();
     std::thread::spawn(move || {
         loop {
@@ -118,6 +119,7 @@ fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: Option<
         }
     });
 
+    // Block until all downloads finish.
     let results = group.finish_blocking()?;
 
     for (_task_id, result) in &results {

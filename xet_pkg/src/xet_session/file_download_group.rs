@@ -1,4 +1,4 @@
-//! DownloadGroup - groups related downloads
+//! FileDownloadGroup - groups related downloads
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -17,8 +17,8 @@ use crate::error::XetError;
 
 /// API for grouping related file downloads into a single unit of work.
 ///
-/// Obtain via [`XetSession::new_download_group`] (async) or
-/// [`XetSession::new_download_group_blocking`] (sync).
+/// Obtain via [`XetSession::new_file_download_group`] (async) or
+/// [`XetSession::new_file_download_group_blocking`] (sync).
 ///
 /// Queue files with [`download_file_to_path`](Self::download_file_to_path) (they start
 /// downloading immediately in the background), poll progress with
@@ -38,18 +38,18 @@ use crate::error::XetError;
 /// aborted, and [`XetError::AlreadyFinished`] if
 /// [`finish`](Self::finish) has already been called.
 #[derive(Clone)]
-pub struct DownloadGroup {
-    pub(super) inner: Arc<DownloadGroupInner>,
+pub struct FileDownloadGroup {
+    pub(super) inner: Arc<FileDownloadGroupInner>,
 }
 
-impl std::ops::Deref for DownloadGroup {
-    type Target = DownloadGroupInner;
+impl std::ops::Deref for FileDownloadGroup {
+    type Target = FileDownloadGroupInner;
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-impl DownloadGroup {
+impl FileDownloadGroup {
     /// Create a new download group from an **async** context. Initialisation logic shared by the sync and async
     /// constructors.
     pub(super) async fn new(session: XetSession) -> Result<Self, XetError> {
@@ -57,7 +57,7 @@ impl DownloadGroup {
         let config = create_translator_config(&session)?;
         let download_session = FileDownloadSession::new(Arc::new(config)).await?;
 
-        let inner = Arc::new(DownloadGroupInner {
+        let inner = Arc::new(FileDownloadGroupInner {
             group_id,
             session,
             active_tasks: RwLock::new(HashMap::new()),
@@ -152,27 +152,23 @@ impl DownloadGroup {
 
     /// Blocking version of [`download_file_to_path`](Self::download_file_to_path).
     ///
-    /// Returns [`XetError::WrongRuntimeMode`] if the session uses an external
-    /// tokio runtime (built with [`build_async`](super::XetSessionBuilder::build_async)).
+    /// # Errors
+    ///
+    /// Returns [`XetError::WrongRuntimeMode`] if the session was created with an external
+    /// tokio runtime. Use [`download_file_to_path`](Self::download_file_to_path)`.await`
+    /// instead.
     ///
     /// # Panics
     ///
-    /// Panics if called from within a tokio async runtime.
+    /// Panics if called from within a tokio async runtime on an Owned-mode session.
     pub fn download_file_to_path_blocking(
         &self,
         file_info: XetFileInfo,
         dest_path: PathBuf,
     ) -> Result<DownloadTaskHandle, XetError> {
-        if matches!(self.session.runtime_mode, super::session::RuntimeMode::External) {
-            return Err(XetError::wrong_mode(
-                "download_file_to_path_blocking() cannot be called on a session using an \
-                 external tokio runtime (with_tokio_handle() or tokio build_async()); \
-                 use download_file_to_path().await instead",
-            ));
-        }
         let group = self.clone();
         self.runtime()
-            .external_run_async_task(async move { group.download_file_to_path(file_info, dest_path).await })?
+            .bridge_sync(async move { group.download_file_to_path(file_info, dest_path).await })?
     }
 
     /// Blocking version of [`get_progress`](Self::get_progress).
@@ -187,18 +183,18 @@ impl DownloadGroup {
     /// Panics if called from within a tokio async runtime.
     pub fn finish_blocking(self) -> Result<HashMap<UniqueID, DownloadResult>, XetError> {
         let group = self.clone();
-        self.runtime().external_run_async_task(group.finish())?
+        self.runtime().bridge_sync(group.finish())?
     }
 }
 
-/// Per-file result type returned by [`DownloadGroup::finish`].
+/// Per-file result type returned by [`FileDownloadGroup::finish`].
 ///
 /// The `Arc` lets the same value be stored in both the `finish()` return map
 /// and the per-task [`DownloadTaskHandle`] without requiring the inner
 /// `Result` to be `Clone`.
 pub type DownloadResult = Arc<Result<DownloadedFile, XetError>>;
 
-/// Handle for a single download task tracked internally by DownloadGroup.
+/// Handle for a single download task tracked internally by FileDownloadGroup.
 struct InnerDownloadTaskHandle {
     status: Arc<Mutex<TaskStatus>>,
     dest_path: PathBuf,
@@ -207,10 +203,10 @@ struct InnerDownloadTaskHandle {
     result: Arc<OnceLock<DownloadResult>>,
 }
 
-/// All shared state owned by a single DownloadGroup instance.
-/// Accessed through `Arc<DownloadGroupInner>`; do not use this type directly.
+/// All shared state owned by a single FileDownloadGroup instance.
+/// Accessed through `Arc<FileDownloadGroupInner>`; do not use this type directly.
 #[doc(hidden)]
-pub struct DownloadGroupInner {
+pub struct FileDownloadGroupInner {
     group_id: UniqueID,
     session: XetSession,
 
@@ -224,7 +220,7 @@ pub struct DownloadGroupInner {
     state: Mutex<GroupState>,
 }
 
-impl DownloadGroupInner {
+impl FileDownloadGroupInner {
     // ===== State helpers =====
 
     /// Check whether the group is still accepting new tasks.
@@ -352,7 +348,7 @@ impl DownloadGroupInner {
         *self.state.lock()? = GroupState::Finished;
 
         // Unregister from session
-        self.session.finish_download_group(self.group_id)?;
+        self.session.finish_file_download_group(self.group_id)?;
 
         Ok(results)
     }
@@ -369,7 +365,7 @@ impl DownloadGroupInner {
     }
 }
 
-/// Per-file result returned by [`DownloadGroup::finish`].
+/// Per-file result returned by [`FileDownloadGroup::finish`].
 #[derive(Clone, Debug)]
 pub struct DownloadedFile {
     /// Local path where the file was written.
@@ -380,17 +376,19 @@ pub struct DownloadedFile {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use std::sync::mpsc;
     use std::time::Duration;
 
+    use anyhow::Result;
     use tempfile::{TempDir, tempdir};
     use xet_data::processing::Sha256Policy;
-    use xet_runtime::GenericError;
+    use xet_runtime::core::RuntimeMode;
 
     use super::*;
-    use crate::xet_session::session::{RuntimeMode, XetSession, XetSessionBuilder};
+    use crate::xet_session::session::{XetSession, XetSessionBuilder};
 
-    async fn local_session(temp: &TempDir) -> Result<XetSession, GenericError> {
+    async fn local_session(temp: &TempDir) -> Result<XetSession> {
         let cas_path = temp.path().join("cas");
         Ok(XetSessionBuilder::new()
             .with_endpoint(format!("local://{}", cas_path.display()))
@@ -398,13 +396,14 @@ mod tests {
             .await?)
     }
 
-    async fn upload_bytes(session: &XetSession, data: &[u8], name: &str) -> Result<XetFileInfo, GenericError> {
+    async fn upload_bytes(session: &XetSession, data: &[u8], name: &str) -> Result<XetFileInfo> {
         let commit = session.new_upload_commit().await?;
-        let handle = commit
+        let _handle = commit
             .upload_bytes(data.to_vec(), Sha256Policy::Compute, Some(name.into()))
             .await?;
-        commit.commit().await?;
-        Ok(handle.finish().await?.xet_info)
+        let results = commit.commit().await?;
+        let meta = results.files.into_iter().next().expect("one uploaded file");
+        Ok(meta.xet_info)
     }
 
     // ── Mutex guard / concurrency test ───────────────────────────────────────
@@ -417,12 +416,12 @@ mod tests {
 
     #[test]
     // finish() must block while download_file_to_path() holds the state lock.
-    fn test_finish_blocked_while_download_registration_holds_state_lock() -> Result<(), GenericError> {
+    fn test_finish_blocked_while_download_registration_holds_state_lock() -> Result<()> {
         let session = XetSessionBuilder::new().build()?;
         let runtime = session.runtime.clone();
-        // Create DownloadGroup directly so we can access its private state field
+        // Create FileDownloadGroup directly so we can access its private state field
         // (accessible here because mod tests is a submodule of download_group).
-        let group = runtime.external_run_async_task(DownloadGroup::new(session.clone()))??;
+        let group = runtime.bridge_sync(FileDownloadGroup::new(session.clone()))??;
         let group_for_thread = group.clone();
         let runtime_for_thread = runtime.clone();
 
@@ -431,7 +430,7 @@ mod tests {
 
         let (done_tx, done_rx) = mpsc::channel::<()>();
         let join_handle = std::thread::spawn(move || {
-            let _ = runtime_for_thread.external_run_async_task(async move { group_for_thread.finish().await });
+            let _ = runtime_for_thread.bridge_sync(async move { group_for_thread.finish().await });
             let _ = done_tx.send(());
         });
 
@@ -453,9 +452,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     // Two download groups created from the same session have distinct IDs.
     async fn test_group_has_unique_id() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
-        let g1 = session.new_download_group().await.unwrap();
-        let g2 = session.new_download_group().await.unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
+        let g1 = session.new_file_download_group().await.unwrap();
+        let g2 = session.new_file_download_group().await.unwrap();
         assert_ne!(g1.id(), g2.id());
     }
 
@@ -464,8 +463,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     // A fresh group has all-zero aggregate progress.
     async fn test_get_progress_empty_initially() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
-        let group = session.new_download_group().await.unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
+        let group = session.new_file_download_group().await.unwrap();
         let report = group.get_progress().unwrap();
         assert_eq!(report.total_bytes, 0);
         assert_eq!(report.total_bytes_completed, 0);
@@ -476,8 +475,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     // An empty finish succeeds and returns an empty result set.
     async fn test_finish_empty_succeeds() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
-        let group = session.new_download_group().await.unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
+        let group = session.new_file_download_group().await.unwrap();
         let results = group.finish().await.unwrap();
         assert!(results.is_empty());
     }
@@ -485,8 +484,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     // finish() transitions the group into the Finished state.
     async fn test_finish_marks_as_finished() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
-        let group = session.new_download_group().await.unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
+        let group = session.new_file_download_group().await.unwrap();
         let group_clone = group.clone();
         group.finish().await.unwrap();
         assert!(group_clone.is_finished());
@@ -495,8 +494,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     // A second finish() call on any clone returns AlreadyFinished.
     async fn test_second_finish_fails() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
-        let g1 = session.new_download_group().await.unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
+        let g1 = session.new_file_download_group().await.unwrap();
         let g2 = g1.clone();
         g1.finish().await.unwrap();
         let err = g2.finish().await.unwrap_err();
@@ -506,11 +505,11 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     // finish() unregisters the group from the session's active set.
     async fn test_finish_unregisters_from_session() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
-        let group = session.new_download_group().await.unwrap();
-        assert_eq!(session.active_download_groups.lock().unwrap().len(), 1);
+        let session = XetSessionBuilder::new().build().unwrap();
+        let group = session.new_file_download_group().await.unwrap();
+        assert_eq!(session.active_file_download_groups.lock().unwrap().len(), 1);
         group.finish().await.unwrap();
-        assert_eq!(session.active_download_groups.lock().unwrap().len(), 0);
+        assert_eq!(session.active_file_download_groups.lock().unwrap().len(), 0);
     }
 
     // ── Guards ───────────────────────────────────────────────────────────────
@@ -518,8 +517,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     // download_file_to_path returns Aborted when the parent session has been aborted.
     async fn test_download_file_on_aborted_session_returns_error() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
-        let group = session.new_download_group().await.unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
+        let group = session.new_file_download_group().await.unwrap();
         session.abort().unwrap();
         let err = group
             .download_file_to_path(
@@ -538,8 +537,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     // download_file_to_path after finish returns AlreadyFinished.
     async fn test_download_file_after_finish_fails() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
-        let g1 = session.new_download_group().await.unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
+        let g1 = session.new_file_download_group().await.unwrap();
         let g2 = g1.clone();
         g1.finish().await.unwrap();
         let err = g2
@@ -559,8 +558,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     // download_file_to_path on a directly-aborted group returns Aborted.
     async fn test_download_file_on_aborted_group_returns_aborted() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
-        let group = session.new_download_group().await.unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
+        let group = session.new_file_download_group().await.unwrap();
         group.abort().unwrap();
         let err = group
             .download_file_to_path(
@@ -581,9 +580,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     // Finishing one group does not affect the state of another from the same session.
     async fn test_two_groups_are_independent() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
-        let g1 = session.new_download_group().await.unwrap();
-        let g2 = session.new_download_group().await.unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
+        let g1 = session.new_file_download_group().await.unwrap();
+        let g2 = session.new_file_download_group().await.unwrap();
         g1.finish().await.unwrap();
         assert!(!g2.is_finished());
     }
@@ -599,7 +598,7 @@ mod tests {
         let file_info = upload_bytes(&session, original, "payload.bin").await.unwrap();
 
         let dest = temp.path().join("downloaded.bin");
-        let group = session.new_download_group().await.unwrap();
+        let group = session.new_file_download_group().await.unwrap();
         let handle = group.download_file_to_path(file_info, dest.clone()).await.unwrap();
         assert!(matches!(handle.status().unwrap(), TaskStatus::Queued | TaskStatus::Running | TaskStatus::Completed));
         group.finish().await.unwrap();
@@ -613,7 +612,7 @@ mod tests {
     async fn test_download_status_failed_for_invalid_file_info() {
         let temp = tempdir().unwrap();
         let session = local_session(&temp).await.unwrap();
-        let group = session.new_download_group().await.unwrap();
+        let group = session.new_file_download_group().await.unwrap();
         let handle = group
             .download_file_to_path(
                 XetFileInfo {
@@ -640,7 +639,7 @@ mod tests {
         let file_info = upload_bytes(&session, original, "id.bin").await.unwrap();
 
         let dest = temp.path().join("download_id.bin");
-        let group = session.new_download_group().await.unwrap();
+        let group = session.new_file_download_group().await.unwrap();
         let handle = group.download_file_to_path(file_info, dest).await.unwrap();
 
         let download_session = group.inner.download_session.lock().unwrap().clone().unwrap();
@@ -668,28 +667,26 @@ mod tests {
         let data_a = b"First file content";
         let data_b = b"Second file content - different";
 
-        let commit = session.new_upload_commit().await.unwrap();
-        let handle_a = commit
-            .upload_bytes(data_a.to_vec(), Sha256Policy::Compute, Some("a.bin".into()))
-            .await
-            .unwrap();
-        let handle_b = commit
-            .upload_bytes(data_b.to_vec(), Sha256Policy::Compute, Some("b.bin".into()))
-            .await
-            .unwrap();
-        commit.commit().await.unwrap();
-
-        let info_a = handle_a.finish().await.unwrap().xet_info;
-        let info_b = handle_b.finish().await.unwrap().xet_info;
-        drop(handle_a);
-        drop(handle_b);
-        drop(commit);
+        let (file_a_info, file_b_info) = {
+            let commit = session.new_upload_commit().await.unwrap();
+            let _handle_a = commit
+                .upload_bytes(data_a.to_vec(), Sha256Policy::Compute, Some("a.bin".into()))
+                .await
+                .unwrap();
+            let _handle_b = commit
+                .upload_bytes(data_b.to_vec(), Sha256Policy::Compute, Some("b.bin".into()))
+                .await
+                .unwrap();
+            let results = commit.commit().await.unwrap();
+            assert_eq!(results.files.len(), 2);
+            (results.files[0].xet_info.clone(), results.files[1].xet_info.clone())
+        };
 
         let dest_a = temp.path().join("a_out.bin");
         let dest_b = temp.path().join("b_out.bin");
-        let group = session.new_download_group().await.unwrap();
-        group.download_file_to_path(info_a, dest_a.clone()).await.unwrap();
-        group.download_file_to_path(info_b, dest_b.clone()).await.unwrap();
+        let group = session.new_file_download_group().await.unwrap();
+        group.download_file_to_path(file_a_info, dest_a.clone()).await.unwrap();
+        group.download_file_to_path(file_b_info, dest_b.clone()).await.unwrap();
         group.finish().await.unwrap();
 
         assert_eq!(std::fs::read(&dest_a).unwrap(), data_a);
@@ -705,7 +702,7 @@ mod tests {
         let file_info = upload_bytes(&session, original, "prog.bin").await.unwrap();
 
         let dest = temp.path().join("out.bin");
-        let group = session.new_download_group().await.unwrap();
+        let group = session.new_file_download_group().await.unwrap();
         let progress_observer = group.clone();
         group.download_file_to_path(file_info, dest).await.unwrap();
         group.finish().await.unwrap();
@@ -736,7 +733,7 @@ mod tests {
         let data = b"result via task_id in finish map";
         let file_info = upload_bytes(&session, data, "file.bin").await.unwrap();
         let dest = temp.path().join("out.bin");
-        let group = session.new_download_group().await.unwrap();
+        let group = session.new_file_download_group().await.unwrap();
         let handle = group.download_file_to_path(file_info, dest).await.unwrap();
         let results = group.finish().await.unwrap();
         let result = results.get(&handle.task_id).expect("task_id must be present in results");
@@ -750,7 +747,7 @@ mod tests {
         let session = local_session(&temp).await.unwrap();
         let file_info = upload_bytes(&session, b"some data", "file.bin").await.unwrap();
         let dest = temp.path().join("out.bin");
-        let group = session.new_download_group().await.unwrap();
+        let group = session.new_file_download_group().await.unwrap();
         let handle = group.download_file_to_path(file_info, dest).await.unwrap();
         assert!(handle.result().is_none(), "result must be None before finish()");
         group.finish().await.unwrap();
@@ -764,7 +761,7 @@ mod tests {
         let data = b"download result test data";
         let file_info = upload_bytes(&session, data, "file.bin").await.unwrap();
         let dest = temp.path().join("out.bin");
-        let group = session.new_download_group().await.unwrap();
+        let group = session.new_file_download_group().await.unwrap();
         let handle = group.download_file_to_path(file_info.clone(), dest).await.unwrap();
         group.finish().await.unwrap();
         let result = handle.result().expect("result must be set after finish()");
@@ -776,7 +773,7 @@ mod tests {
     // ── Non-tokio executor (Owned-mode bridge) ────────────────────────────────
 
     #[test]
-    // build_async() falls back to Owned mode from a futures executor, and the
+    // `build()` falls back to Owned mode from a futures executor, and the
     // bridge correctly routes download through the owned thread pool while the
     // future is driven by the caller's executor (futures::block_on).
     fn test_async_bridge_works_from_futures_executor() {
@@ -784,21 +781,21 @@ mod tests {
 
         futures::executor::block_on(async {
             let session = local_session(&temp).await.unwrap();
-            assert_eq!(session.runtime_mode, RuntimeMode::Owned);
+            assert_eq!(session.runtime.mode(), RuntimeMode::Owned);
 
             let data = b"hello from futures executor";
-            let commit = session.new_upload_commit().await.unwrap();
-            let handle = commit
-                .upload_bytes(data.to_vec(), Sha256Policy::Compute, Some("test.bin".into()))
-                .await
-                .unwrap();
-            commit.commit().await.unwrap();
-            let file_info = handle.finish().await.unwrap().xet_info;
-            drop(handle);
-            drop(commit);
+            let file_info = {
+                let commit = session.new_upload_commit().await.unwrap();
+                let _handle = commit
+                    .upload_bytes(data.to_vec(), Sha256Policy::Compute, Some("test.bin".into()))
+                    .await
+                    .unwrap();
+                let results = commit.commit().await.unwrap();
+                results.files[0].xet_info.clone()
+            };
 
             let dest = temp.path().join("out_futures.bin");
-            let group = session.new_download_group().await.unwrap();
+            let group = session.new_file_download_group().await.unwrap();
             group.download_file_to_path(file_info, dest.clone()).await.unwrap();
             group.finish().await.unwrap();
             assert_eq!(std::fs::read(&dest).unwrap(), data);
@@ -812,21 +809,21 @@ mod tests {
 
         smol::block_on(async {
             let session = local_session(&temp).await.unwrap();
-            assert_eq!(session.runtime_mode, RuntimeMode::Owned);
+            assert_eq!(session.runtime.mode(), RuntimeMode::Owned);
 
             let data = b"hello from smol executor";
-            let commit = session.new_upload_commit().await.unwrap();
-            let handle = commit
-                .upload_bytes(data.to_vec(), Sha256Policy::Compute, Some("test.bin".into()))
-                .await
-                .unwrap();
-            commit.commit().await.unwrap();
-            let file_info = handle.finish().await.unwrap().xet_info;
-            drop(handle);
-            drop(commit);
+            let file_info = {
+                let commit = session.new_upload_commit().await.unwrap();
+                let _handle = commit
+                    .upload_bytes(data.to_vec(), Sha256Policy::Compute, Some("test.bin".into()))
+                    .await
+                    .unwrap();
+                let results = commit.commit().await.unwrap();
+                results.files[0].xet_info.clone()
+            };
 
             let dest = temp.path().join("out_smol.bin");
-            let group = session.new_download_group().await.unwrap();
+            let group = session.new_file_download_group().await.unwrap();
             group.download_file_to_path(file_info, dest.clone()).await.unwrap();
             group.finish().await.unwrap();
             assert_eq!(std::fs::read(&dest).unwrap(), data);
@@ -840,21 +837,21 @@ mod tests {
 
         async_std::task::block_on(async {
             let session = local_session(&temp).await.unwrap();
-            assert_eq!(session.runtime_mode, RuntimeMode::Owned);
+            assert_eq!(session.runtime.mode(), RuntimeMode::Owned);
 
             let data = b"hello from async-std executor";
-            let commit = session.new_upload_commit().await.unwrap();
-            let handle = commit
-                .upload_bytes(data.to_vec(), Sha256Policy::Compute, Some("test.bin".into()))
-                .await
-                .unwrap();
-            commit.commit().await.unwrap();
-            let file_info = handle.finish().await.unwrap().xet_info;
-            drop(handle);
-            drop(commit);
+            let file_info = {
+                let commit = session.new_upload_commit().await.unwrap();
+                let _handle = commit
+                    .upload_bytes(data.to_vec(), Sha256Policy::Compute, Some("test.bin".into()))
+                    .await
+                    .unwrap();
+                let results = commit.commit().await.unwrap();
+                results.files[0].xet_info.clone()
+            };
 
             let dest = temp.path().join("out_async_std.bin");
-            let group = session.new_download_group().await.unwrap();
+            let group = session.new_file_download_group().await.unwrap();
             group.download_file_to_path(file_info, dest.clone()).await.unwrap();
             group.finish().await.unwrap();
             assert_eq!(std::fs::read(&dest).unwrap(), data);
@@ -863,29 +860,30 @@ mod tests {
 
     // ── Blocking API tests ────────────────────────────────────────────────────
 
-    fn local_session_sync(temp: &TempDir) -> Result<XetSession, GenericError> {
+    fn local_session_sync(temp: &TempDir) -> Result<XetSession> {
         let cas_path = temp.path().join("cas");
         Ok(XetSessionBuilder::new()
             .with_endpoint(format!("local://{}", cas_path.display()))
             .build()?)
     }
 
-    fn upload_bytes_blocking(session: &XetSession, data: &[u8], name: &str) -> Result<XetFileInfo, GenericError> {
+    fn upload_bytes_blocking(session: &XetSession, data: &[u8], name: &str) -> Result<XetFileInfo> {
         let commit = session.new_upload_commit_blocking()?;
-        let handle = commit.upload_bytes_blocking(data.to_vec(), Sha256Policy::Compute, Some(name.into()))?;
-        commit.commit_blocking()?;
-        Ok(handle.finish_blocking()?.xet_info)
+        let _handle = commit.upload_bytes_blocking(data.to_vec(), Sha256Policy::Compute, Some(name.into()))?;
+        let results = commit.commit_blocking()?;
+        let meta = results.files.into_iter().next().expect("one uploaded file");
+        Ok(meta.xet_info)
     }
 
     #[test]
-    fn test_blocking_download_file_round_trip() -> Result<(), GenericError> {
+    fn test_blocking_download_file_round_trip() -> Result<()> {
         let temp = tempdir()?;
         let session = local_session_sync(&temp)?;
         let original = b"Hello, download round-trip!";
         let file_info = upload_bytes_blocking(&session, original, "payload.bin")?;
 
         let dest = temp.path().join("downloaded.bin");
-        let group = session.new_download_group_blocking()?;
+        let group = session.new_file_download_group_blocking()?;
         group.download_file_to_path_blocking(file_info, dest.clone())?;
         group.finish_blocking()?;
 
@@ -894,29 +892,29 @@ mod tests {
     }
 
     #[test]
-    fn test_blocking_download_multiple_files() -> Result<(), GenericError> {
+    fn test_blocking_download_multiple_files() -> Result<()> {
         let temp = tempdir()?;
         let session = local_session_sync(&temp)?;
 
         let data_a = b"First file content";
         let data_b = b"Second file content - different";
 
-        let commit = session.new_upload_commit_blocking()?;
-        let handle_a = commit.upload_bytes_blocking(data_a.to_vec(), Sha256Policy::Compute, Some("a.bin".into()))?;
-        let handle_b = commit.upload_bytes_blocking(data_b.to_vec(), Sha256Policy::Compute, Some("b.bin".into()))?;
-        commit.commit_blocking()?;
-
-        let info_a = handle_a.finish_blocking()?.xet_info;
-        let info_b = handle_b.finish_blocking()?.xet_info;
-        drop(handle_a);
-        drop(handle_b);
-        drop(commit);
+        let (file_a_info, file_b_info) = {
+            let commit = session.new_upload_commit_blocking()?;
+            let _handle_a =
+                commit.upload_bytes_blocking(data_a.to_vec(), Sha256Policy::Compute, Some("a.bin".into()))?;
+            let _handle_b =
+                commit.upload_bytes_blocking(data_b.to_vec(), Sha256Policy::Compute, Some("b.bin".into()))?;
+            let results = commit.commit_blocking()?;
+            assert_eq!(results.files.len(), 2);
+            (results.files[0].xet_info.clone(), results.files[1].xet_info.clone())
+        };
 
         let dest_a = temp.path().join("a_out.bin");
         let dest_b = temp.path().join("b_out.bin");
-        let group = session.new_download_group_blocking()?;
-        group.download_file_to_path_blocking(info_a, dest_a.clone())?;
-        group.download_file_to_path_blocking(info_b, dest_b.clone())?;
+        let group = session.new_file_download_group_blocking()?;
+        group.download_file_to_path_blocking(file_a_info, dest_a.clone())?;
+        group.download_file_to_path_blocking(file_b_info, dest_b.clone())?;
         group.finish_blocking()?;
 
         assert_eq!(std::fs::read(&dest_a)?, data_a);
@@ -925,14 +923,14 @@ mod tests {
     }
 
     #[test]
-    fn test_blocking_download_progress_reflects_bytes_after_finish() -> Result<(), GenericError> {
+    fn test_blocking_download_progress_reflects_bytes_after_finish() -> Result<()> {
         let temp = tempdir()?;
         let session = local_session_sync(&temp)?;
         let original = b"download progress tracking data";
         let file_info = upload_bytes_blocking(&session, original, "prog.bin")?;
 
         let dest = temp.path().join("out.bin");
-        let group = session.new_download_group_blocking()?;
+        let group = session.new_file_download_group_blocking()?;
         let progress_observer = group.clone();
         group.download_file_to_path_blocking(file_info, dest)?;
         group.finish_blocking()?;
@@ -954,13 +952,13 @@ mod tests {
     }
 
     #[test]
-    fn test_blocking_download_result_access_patterns() -> Result<(), GenericError> {
+    fn test_blocking_download_result_access_patterns() -> Result<()> {
         let temp = tempdir()?;
         let session = local_session_sync(&temp)?;
         let data = b"download result access patterns";
         let file_info = upload_bytes_blocking(&session, data, "file.bin")?;
         let dest = temp.path().join("out.bin");
-        let group = session.new_download_group_blocking()?;
+        let group = session.new_file_download_group_blocking()?;
         let handle = group.download_file_to_path_blocking(file_info.clone(), dest)?;
 
         // Before finish, per-task result is not available yet.
@@ -991,7 +989,7 @@ mod tests {
             let data = b"download from smol executor";
             let file_info = upload_bytes_blocking(&session, data, "test.bin").unwrap();
             let dest = temp.path().join("out_smol.bin");
-            let group = session.new_download_group_blocking().unwrap();
+            let group = session.new_file_download_group_blocking().unwrap();
             group.download_file_to_path_blocking(file_info, dest.clone()).unwrap();
             group.finish_blocking().unwrap();
             assert_eq!(std::fs::read(&dest).unwrap(), data);
@@ -1016,10 +1014,11 @@ mod tests {
     // ── RuntimeMode checks ────────────────────────────────────────────────────
 
     #[tokio::test(flavor = "multi_thread")]
+    // download_file_to_path_blocking returns WrongRuntimeMode on an External-mode session.
     async fn test_download_file_to_path_blocking_errors_in_external_mode() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
-        assert_eq!(session.runtime_mode, RuntimeMode::External);
-        let group = session.new_download_group().await.unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
+        assert_eq!(session.runtime.mode(), RuntimeMode::External);
+        let group = session.new_file_download_group().await.unwrap();
         let file_info = XetFileInfo {
             hash: String::new(),
             file_size: Some(0),
@@ -1035,9 +1034,13 @@ mod tests {
     // ── Owned-mode _blocking panic guard ─────────────────────────────────────
 
     #[test]
+    // download_file_to_path_blocking panics when called from within a tokio runtime on an
+    // Owned-mode session: bridge_sync uses handle.block_on(), which panics
+    // because tokio sets a thread-local runtime context that it detects and rejects.
     fn test_download_file_to_path_blocking_panics_in_async_context() {
         let session = XetSessionBuilder::new().build().unwrap();
-        let group = session.new_download_group_blocking().unwrap();
+        assert_eq!(session.runtime.mode(), RuntimeMode::Owned);
+        let group = session.new_file_download_group_blocking().unwrap();
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         let file_info = XetFileInfo {
             hash: String::new(),

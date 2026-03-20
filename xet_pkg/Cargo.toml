@@ -19,6 +19,7 @@ xet-client = { version = "1.4.0", path = "../xet_client" }
 xet-data = { version = "1.4.0", path = "../xet_data" }
 
 async-trait = { workspace = true }
+bytes = { workspace = true }
 http = { workspace = true }
 more-asserts = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

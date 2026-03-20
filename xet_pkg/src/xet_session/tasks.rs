@@ -1,12 +1,17 @@
-//! Task handles for download groups and shared task types.
+//! Progress tracking for upload commits and download groups.
 
 use std::ops::Deref;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use xet_data::progress_tracking::UniqueID;
 
-use super::download_group::DownloadResult;
+use super::SessionError;
+use super::file_download_group::DownloadResult;
+use super::upload_commit::FileMetadata;
 use crate::error::XetError;
+
+/// Per-file upload result (aligned with download [`DownloadResult`]).
+pub type UploadResult = std::sync::Arc<Result<FileMetadata, XetError>>;
 
 /// Lifecycle state of a single upload or download task.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,6 +60,20 @@ pub struct TaskHandle {
 }
 
 #[derive(Debug)]
+pub struct UploadTaskHandle {
+    pub(super) inner: TaskHandle,
+    pub(super) result: Arc<OnceLock<UploadResult>>,
+}
+
+impl Deref for UploadTaskHandle {
+    type Target = TaskHandle;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+#[derive(Debug)]
 pub struct DownloadTaskHandle {
     pub(super) inner: TaskHandle,
     pub(super) result: Arc<OnceLock<DownloadResult>>,
@@ -69,12 +88,18 @@ impl Deref for DownloadTaskHandle {
 }
 
 impl TaskHandle {
-    pub fn status(&self) -> Result<TaskStatus, XetError> {
+    pub fn status(&self) -> Result<TaskStatus, SessionError> {
         if let Some(status) = &self.status {
             Ok(*status.lock()?)
         } else {
-            Err(XetError::other("status not available"))
+            Err(SessionError::other("status not available"))
         }
+    }
+}
+
+impl UploadTaskHandle {
+    pub fn result(&self) -> Option<UploadResult> {
+        self.result.get().cloned()
     }
 }
 
@@ -88,10 +113,11 @@ impl DownloadTaskHandle {
 mod tests {
     use std::path::PathBuf;
 
+    use xet_data::deduplication::DeduplicationMetrics;
     use xet_data::processing::XetFileInfo;
 
     use super::*;
-    use crate::xet_session::DownloadedFile;
+    use crate::xet_session::{DownloadedFile, FileMetadata};
 
     #[test]
     fn test_task_handle_with_no_status_returns_error() {
@@ -100,6 +126,46 @@ mod tests {
             task_id: UniqueID::new(),
         };
         assert!(handle.status().is_err());
+    }
+
+    #[test]
+    fn test_upload_task_handle_result_none_before_commit() {
+        let handle = UploadTaskHandle {
+            inner: TaskHandle {
+                status: None,
+                task_id: UniqueID::new(),
+            },
+            result: Arc::new(OnceLock::new()),
+        };
+        assert!(handle.result().is_none());
+    }
+
+    #[test]
+    fn test_upload_task_handle_result_some_after_result_set() {
+        let result_arc = Arc::new(OnceLock::new());
+        let handle = UploadTaskHandle {
+            inner: TaskHandle {
+                status: None,
+                task_id: UniqueID::new(),
+            },
+            result: result_arc.clone(),
+        };
+
+        let metadata = Arc::new(Ok(FileMetadata {
+            tracking_name: Some("file.bin".to_string()),
+            xet_info: XetFileInfo {
+                hash: "abc123".to_string(),
+                file_size: Some(42),
+                sha256: None,
+            },
+            dedup_metrics: DeduplicationMetrics::default(),
+        }));
+        result_arc.set(metadata).unwrap();
+
+        let result = handle.result().unwrap();
+        let meta = result.as_ref().as_ref().unwrap();
+        assert_eq!(meta.xet_info.file_size, Some(42));
+        assert_eq!(meta.xet_info.hash, "abc123");
     }
 
     #[test]
@@ -137,7 +203,7 @@ mod tests {
 
         let result = handle.result().unwrap();
         let dl = result.as_ref().as_ref().unwrap();
-        assert_eq!(dl.file_info.file_size, Some(99));
+        assert_eq!(dl.file_info.file_size(), Some(99));
         assert_eq!(dl.dest_path, PathBuf::from("out/file.bin"));
     }
 }
