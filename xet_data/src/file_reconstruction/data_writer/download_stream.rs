@@ -152,6 +152,7 @@ impl DownloadStream {
             Some(item)
         } else {
             tokio::select! {
+                biased;
                 recv = self.receiver.recv() => recv,
                 _ = self.run_state.cancelled() => None,
             }

@@ -403,7 +403,7 @@ mod tests {
     #[tokio::test]
     async fn test_error_propagation_prevents_subsequent_writes() {
         let run_state = RunState::new_for_test();
-        let (mut writer, mut _rx, _progress) = UnorderedWriter::new_streaming(run_state);
+        let (mut writer, mut _rx, _progress) = UnorderedWriter::new_streaming(run_state.clone());
 
         let failing_future: DataFuture =
             Box::pin(async { Err(FileReconstructionError::InternalError("fail".to_string())) });
@@ -413,8 +413,16 @@ mod tests {
             .await
             .unwrap();
 
-        // Wait for the error to propagate through run_state.
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        let wait_for_error = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if run_state.check_error().is_err() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(wait_for_error.is_ok());
 
         let result = writer
             .set_next_term_data_source(FileRange::new(5, 10), None, immediate_future(Bytes::from("World")))

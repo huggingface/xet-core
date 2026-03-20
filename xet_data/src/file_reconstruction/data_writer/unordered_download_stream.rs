@@ -129,10 +129,6 @@ impl UnorderedDownloadStream {
         }
         self.ensure_started();
 
-        if let Ok(result) = self.receiver.try_recv() {
-            return self.process_term(result);
-        }
-
         match self.receiver.blocking_recv() {
             Some(result) => self.process_term(result),
             None => {
@@ -158,6 +154,7 @@ impl UnorderedDownloadStream {
         }
 
         let next_item = tokio::select! {
+            biased;
             recv = self.receiver.recv() => recv,
             _ = self.run_state.cancelled() => None,
         };
