@@ -46,6 +46,8 @@ accumulation in long-lived sessions.
 ### New unordered stream path
 
 - `FileDownloadSession::download_unordered_stream(file_info, source_range)`
+- `FileDownloadSession::download_stream_range(file_info, range)` — ordered
+  stream with `RangeBounds<u64>` (merged from main; includes open-ended ranges)
 - `processing::mod` now re-exports `UnorderedDownloadStream`
 
 ### `DataWriter` trait contract update

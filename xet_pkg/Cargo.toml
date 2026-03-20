@@ -27,7 +27,6 @@ serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["net", "time"] }
 tracing = { workspace = true }
-ulid = { workspace = true }
 pyo3 = { workspace = true, optional = true }
 
 [features]

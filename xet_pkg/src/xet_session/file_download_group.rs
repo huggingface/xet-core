@@ -1056,7 +1056,7 @@ mod tests {
     async fn test_download_file_to_path_blocking_errors_in_external_mode() {
         let session = XetSessionBuilder::new().build_async().await.unwrap();
         assert_eq!(session.runtime_mode, RuntimeMode::External);
-        let group = session.new_download_group().await.unwrap();
+        let group = session.new_file_download_group().await.unwrap();
         let file_info = XetFileInfo {
             hash: String::new(),
             file_size: Some(0),
@@ -1078,7 +1078,7 @@ mod tests {
     fn test_download_file_to_path_blocking_panics_in_async_context() {
         let session = XetSessionBuilder::new().build().unwrap();
         assert_eq!(session.runtime_mode, RuntimeMode::Owned);
-        let group = session.new_download_group_blocking().unwrap();
+        let group = session.new_file_download_group_blocking().unwrap();
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         let file_info = XetFileInfo {
             hash: String::new(),

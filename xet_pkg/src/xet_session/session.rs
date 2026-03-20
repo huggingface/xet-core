@@ -968,7 +968,7 @@ mod tests {
             .download_stream(
                 XetFileInfo {
                     hash: "abc123".to_string(),
-                    file_size: 1024,
+                    file_size: Some(1024),
                     sha256: None,
                 },
                 None,
@@ -985,7 +985,7 @@ mod tests {
         let result = session.download_stream_blocking(
             XetFileInfo {
                 hash: "abc123".to_string(),
-                file_size: 1024,
+                file_size: Some(1024),
                 sha256: None,
             },
             None,
@@ -1001,7 +1001,7 @@ mod tests {
         let result = session.download_stream_blocking(
             XetFileInfo {
                 hash: "abc123".to_string(),
-                file_size: 1024,
+                file_size: Some(1024),
                 sha256: None,
             },
             None,
@@ -1042,7 +1042,7 @@ mod tests {
         let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
         Ok(XetFileInfo {
             hash: meta.hash.clone(),
-            file_size: meta.file_size,
+            file_size: Some(meta.file_size),
             sha256: meta.sha256.clone(),
         })
     }
@@ -1058,7 +1058,7 @@ mod tests {
         let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
         Ok(XetFileInfo {
             hash: meta.hash.clone(),
-            file_size: meta.file_size,
+            file_size: Some(meta.file_size),
             sha256: meta.sha256.clone(),
         })
     }
