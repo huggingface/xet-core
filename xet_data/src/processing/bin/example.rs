@@ -65,9 +65,7 @@ fn get_threadpool() -> Arc<XetRuntime> {
 
 fn main() {
     let cli = XCommand::parse();
-    let _ = get_threadpool()
-        .external_run_async_task(async move { cli.run().await })
-        .unwrap();
+    let _ = get_threadpool().bridge_sync(async move { cli.run().await }).unwrap();
 }
 
 async fn clean_file(arg: &CleanArg) -> Result<()> {

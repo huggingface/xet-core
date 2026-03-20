@@ -660,7 +660,7 @@ mod tests {
 
         runtime
             .clone()
-            .external_run_async_task(async move {
+            .bridge_sync(async move {
                 let cas_path = temp.path().join("cas");
 
                 // 1. Write an original file in the temp directory
@@ -691,7 +691,7 @@ mod tests {
 
         runtime
             .clone()
-            .external_run_async_task(async move {
+            .bridge_sync(async move {
                 let cas_path = temp.path().join("cas");
 
                 let upload_session = FileUploadSession::new(TranslatorConfig::local_config(&cas_path).unwrap().into())

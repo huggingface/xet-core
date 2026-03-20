@@ -249,7 +249,7 @@ fn main() -> Result<()> {
     }
 
     let threadpool = XetRuntime::new_with_config(config)?;
-    threadpool.external_run_async_task(async move { cli.run().await })??;
+    threadpool.bridge_sync(async move { cli.run().await })??;
 
     Ok(())
 }
