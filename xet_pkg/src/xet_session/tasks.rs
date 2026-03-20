@@ -1,4 +1,4 @@
-//! Progress tracking for upload commits and download groups.
+//! Task handles for download groups and shared task types.
 
 use std::ops::Deref;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -6,7 +6,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 use xet_data::progress_tracking::UniqueID;
 
 use super::download_group::DownloadResult;
-use super::upload_commit::UploadResult;
 use crate::error::XetError;
 
 /// Lifecycle state of a single upload or download task.
@@ -56,20 +55,6 @@ pub struct TaskHandle {
 }
 
 #[derive(Debug)]
-pub struct UploadTaskHandle {
-    pub(super) inner: TaskHandle,
-    pub(super) result: Arc<OnceLock<UploadResult>>,
-}
-
-impl Deref for UploadTaskHandle {
-    type Target = TaskHandle;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
-#[derive(Debug)]
 pub struct DownloadTaskHandle {
     pub(super) inner: TaskHandle,
     pub(super) result: Arc<OnceLock<DownloadResult>>,
@@ -93,12 +78,6 @@ impl TaskHandle {
     }
 }
 
-impl UploadTaskHandle {
-    pub fn result(&self) -> Option<UploadResult> {
-        self.result.get().cloned()
-    }
-}
-
 impl DownloadTaskHandle {
     pub fn result(&self) -> Option<DownloadResult> {
         self.result.get().cloned()
@@ -112,7 +91,7 @@ mod tests {
     use xet_data::processing::XetFileInfo;
 
     use super::*;
-    use crate::xet_session::{DownloadedFile, FileMetadata};
+    use crate::xet_session::DownloadedFile;
 
     #[test]
     fn test_task_handle_with_no_status_returns_error() {
@@ -121,43 +100,6 @@ mod tests {
             task_id: UniqueID::new(),
         };
         assert!(handle.status().is_err());
-    }
-
-    #[test]
-    fn test_upload_task_handle_result_none_before_commit() {
-        let handle = UploadTaskHandle {
-            inner: TaskHandle {
-                status: None,
-                task_id: UniqueID::new(),
-            },
-            result: Arc::new(OnceLock::new()),
-        };
-        assert!(handle.result().is_none());
-    }
-
-    #[test]
-    fn test_upload_task_handle_result_some_after_result_set() {
-        let result_arc = Arc::new(OnceLock::new());
-        let handle = UploadTaskHandle {
-            inner: TaskHandle {
-                status: None,
-                task_id: UniqueID::new(),
-            },
-            result: result_arc.clone(),
-        };
-
-        let metadata = Arc::new(Ok(FileMetadata {
-            tracking_name: Some("file.bin".to_string()),
-            hash: "abc123".to_string(),
-            file_size: 42,
-            sha256: None,
-        }));
-        result_arc.set(metadata).unwrap();
-
-        let result = handle.result().unwrap();
-        let meta = result.as_ref().as_ref().unwrap();
-        assert_eq!(meta.file_size, 42);
-        assert_eq!(meta.hash, "abc123");
     }
 
     #[test]

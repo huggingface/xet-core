@@ -37,8 +37,10 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
-use anyhow::Result;
 use git_xet::test_utils::{GitLFSAuthenticateResponse, start_local_ssh_server};
+use xet_runtime::GenericError;
+
+type Result<T> = std::result::Result<T, GenericError>;
 
 fn git_xet_run<I, S>(command: I) -> std::io::Result<Output>
 where

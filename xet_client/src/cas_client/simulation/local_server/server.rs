@@ -12,11 +12,10 @@
 //! # Example
 //!
 //! ```no_run
-//! use anyhow::Result;
 //! use xet_client::cas_client::{LocalServer, LocalServerConfig};
 //!
 //! #[tokio::main]
-//! async fn main() -> Result<()> {
+//! async fn main() -> Result<(), xet_runtime::GenericError> {
 //!     let config = LocalServerConfig {
 //!         data_directory: "./data".into(),
 //!         host: "127.0.0.1".to_string(),

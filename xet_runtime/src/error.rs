@@ -6,6 +6,9 @@ pub enum RuntimeError {
     #[error("Error initializing runtime: {0:?}")]
     RuntimeInit(std::io::Error),
 
+    #[error("Invalid runtime: {0}")]
+    InvalidRuntime(String),
+
     #[error("Task panic: {0:?}")]
     TaskPanic(String),
 
@@ -30,3 +33,5 @@ impl From<tokio::task::JoinError> for RuntimeError {
 }
 
 pub type Result<T> = std::result::Result<T, RuntimeError>;
+
+pub type GenericError = Box<dyn std::error::Error + Send + Sync + 'static>;

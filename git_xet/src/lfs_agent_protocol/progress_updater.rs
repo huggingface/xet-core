@@ -75,7 +75,9 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    use anyhow::Result;
+    use xet_runtime::GenericError;
+
+    type Result<T> = std::result::Result<T, GenericError>;
 
     use super::ProgressUpdater;
 

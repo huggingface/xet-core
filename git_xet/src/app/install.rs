@@ -121,8 +121,10 @@ pub mod tests {
     use std::io::{BufRead, BufReader, Cursor};
     use std::path::{Path, PathBuf};
 
-    use anyhow::Result;
     use serial_test::serial;
+    use xet_runtime::GenericError;
+
+    type Result<T> = std::result::Result<T, GenericError>;
 
     use super::{global, local};
     use crate::git_repo::GitRepo;

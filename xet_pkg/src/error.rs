@@ -11,7 +11,7 @@ use xet_runtime::RuntimeError;
 /// Variants are grouped into user-facing categories that map naturally to
 /// Python exception types, plus session-lifecycle states that the internal
 /// code can match on.
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 #[non_exhaustive]
 pub enum XetError {
     // -- Session lifecycle -----------------------------------------------
@@ -85,6 +85,7 @@ impl XetError {
     fn from_runtime_error_ref(re: &RuntimeError) -> Self {
         match re {
             RuntimeError::TaskCanceled(_) => XetError::Cancelled(re.to_string()),
+            RuntimeError::InvalidRuntime(_) => XetError::WrongRuntimeMode(re.to_string()),
             _ => XetError::Internal(re.to_string()),
         }
     }

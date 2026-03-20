@@ -1,0 +1,1 @@
+/Users/hoytak/workspace/resources/AGENTS.md

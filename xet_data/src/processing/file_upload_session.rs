@@ -208,7 +208,7 @@ impl FileUploadSession {
     pub fn start_clean(
         self: &Arc<Self>,
         tracking_name: Option<Arc<str>>,
-        size: u64,
+        size: Option<u64>,
         sha256: Sha256Policy,
     ) -> Result<(UniqueID, SingleFileCleaner)> {
         self.check_not_finalized()?;
@@ -221,11 +221,11 @@ impl FileUploadSession {
         self: &Arc<Self>,
         id: UniqueID,
         tracking_name: Option<Arc<str>>,
-        size: u64,
+        size: Option<u64>,
         sha256: Sha256Policy,
     ) -> SingleFileCleaner {
         let updater = self.progress.new_item(id, tracking_name.clone().unwrap_or_default());
-        let file_id = self.completion_tracker.register_new_file(updater, Some(size));
+        let file_id = self.completion_tracker.register_new_file(updater, size);
         SingleFileCleaner::new(tracking_name, file_id, sha256, self.clone())
     }
 
@@ -236,11 +236,11 @@ impl FileUploadSession {
         self: &Arc<Self>,
         file_path: PathBuf,
         sha256: Sha256Policy,
-    ) -> Result<(UniqueID, JoinHandle<Result<XetFileInfo>>)> {
+    ) -> Result<(UniqueID, JoinHandle<Result<(XetFileInfo, DeduplicationMetrics)>>)> {
         self.check_not_finalized()?;
         let file_size = std::fs::metadata(&file_path)?.len();
         let tracking_name: Arc<str> = Arc::from(file_path.to_string_lossy().as_ref());
-        let (id, cleaner) = self.start_clean(Some(tracking_name), file_size, sha256)?;
+        let (id, cleaner) = self.start_clean(Some(tracking_name), Some(file_size), sha256)?;
 
         let rt = XetRuntime::current();
         let semaphore = rt.common().file_ingestion_semaphore.clone();
@@ -260,23 +260,25 @@ impl FileUploadSession {
         bytes: Vec<u8>,
         sha256: Sha256Policy,
         tracking_name: Option<Arc<str>>,
-    ) -> Result<(UniqueID, JoinHandle<Result<XetFileInfo>>)> {
+    ) -> Result<(UniqueID, JoinHandle<Result<(XetFileInfo, DeduplicationMetrics)>>)> {
         self.check_not_finalized()?;
-        let (id, mut cleaner) = self.start_clean(tracking_name, bytes.len() as u64, sha256)?;
+        let (id, mut cleaner) = self.start_clean(tracking_name, Some(bytes.len() as u64), sha256)?;
 
         let rt = XetRuntime::current();
         let semaphore = rt.common().file_ingestion_semaphore.clone();
         let handle = rt.spawn(async move {
             let _permit = semaphore.acquire().await?;
             cleaner.add_data(&bytes).await?;
-            let (file_info, _metrics) = cleaner.finish().await?;
-            Ok(file_info)
+            cleaner.finish().await
         });
 
         Ok((id, handle))
     }
 
-    async fn feed_file_to_cleaner(mut cleaner: SingleFileCleaner, file_path: &Path) -> Result<XetFileInfo> {
+    async fn feed_file_to_cleaner(
+        mut cleaner: SingleFileCleaner,
+        file_path: &Path,
+    ) -> Result<(XetFileInfo, DeduplicationMetrics)> {
         let mut reader = File::open(file_path)?;
         let filesize = reader.metadata()?.len();
         let mut buffer = vec![0u8; u64::min(filesize, *xet_config().data.ingestion_block_size) as usize];
@@ -288,8 +290,7 @@ impl FileUploadSession {
             }
             cleaner.add_data(&buffer[..n]).await?;
         }
-        let (file_info, _metrics) = cleaner.finish().await?;
-        Ok(file_info)
+        cleaner.finish().await
     }
 
     /// Registers a new xorb for upload, returning true if the xorb was added to the upload queue and false
@@ -613,7 +614,7 @@ mod tests {
             .unwrap();
 
         let (_id, mut cleaner) = upload_session
-            .start_clean(Some("test".into()), read_data.len() as u64, Sha256Policy::Compute)
+            .start_clean(Some("test".into()), Some(read_data.len() as u64), Sha256Policy::Compute)
             .unwrap();
 
         // Read blocks from the source file and hand them to the cleaning handle
@@ -660,7 +661,7 @@ mod tests {
 
         runtime
             .clone()
-            .external_run_async_task(async move {
+            .bridge_sync(async move {
                 let cas_path = temp.path().join("cas");
 
                 // 1. Write an original file in the temp directory
@@ -691,7 +692,7 @@ mod tests {
 
         runtime
             .clone()
-            .external_run_async_task(async move {
+            .bridge_sync(async move {
                 let cas_path = temp.path().join("cas");
 
                 let upload_session = FileUploadSession::new(TranslatorConfig::local_config(&cas_path).unwrap().into())
@@ -699,7 +700,7 @@ mod tests {
                     .unwrap();
 
                 let (_id, mut cleaner) = upload_session
-                    .start_clean(Some("test".into()), data.len() as u64, Sha256Policy::Skip)
+                    .start_clean(Some("test".into()), Some(data.len() as u64), Sha256Policy::Skip)
                     .unwrap();
                 cleaner.add_data(data).await.unwrap();
                 cleaner.finish().await.unwrap();

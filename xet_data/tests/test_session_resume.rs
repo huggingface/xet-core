@@ -62,7 +62,7 @@ mod tests {
 
             // Feed it half the data, and checkpoint.
             let (_id, mut cleaner) = file_upload_session
-                .start_clean(Some("data".into()), data.len() as u64, Sha256Policy::Compute)
+                .start_clean(Some("data".into()), Some(data.len() as u64), Sha256Policy::Compute)
                 .unwrap();
             cleaner.add_data(&data[..half_n]).await.unwrap();
             cleaner.checkpoint().await.unwrap();
@@ -83,7 +83,7 @@ mod tests {
 
             // Feed it half the data, and checkpoint.
             let (_id, mut cleaner) = file_upload_session
-                .start_clean(Some("data".into()), data.len() as u64, Sha256Policy::Compute)
+                .start_clean(Some("data".into()), Some(data.len() as u64), Sha256Policy::Compute)
                 .unwrap();
 
             // Add all the data.  Roughly the first half should dedup.
@@ -124,7 +124,7 @@ mod tests {
 
             // Feed it half the data, and checkpoint.
             let (_id, mut cleaner) = file_upload_session
-                .start_clean(Some("data".into()), data.len() as u64, Sha256Policy::Compute)
+                .start_clean(Some("data".into()), Some(data.len() as u64), Sha256Policy::Compute)
                 .unwrap();
             cleaner.add_data(&data[..rn]).await.unwrap();
             cleaner.checkpoint().await.unwrap();
@@ -148,7 +148,7 @@ mod tests {
 
             // Feed it half the data, and checkpoint.
             let (_id, mut cleaner) = file_upload_session
-                .start_clean(Some("data".into()), data.len() as u64, Sha256Policy::Compute)
+                .start_clean(Some("data".into()), Some(data.len() as u64), Sha256Policy::Compute)
                 .unwrap();
 
             // Add all the data.  Roughly the first half should dedup.

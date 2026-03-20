@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use xet::xet_session::{FileMetadata, Sha256Policy, TaskStatus, XetFileInfo, XetSessionBuilder};
+use xet::xet_session::{FileMetadata, Sha256Policy, TaskStatus, XetSessionBuilder};
 
 #[derive(Parser)]
 #[clap(name = "session-demo", about = "XetSession API demo")]
@@ -56,41 +56,31 @@ fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<()> {
     let session = builder.build()?;
     let commit = session.new_upload_commit_blocking()?;
 
-    // Enqueue all uploads; each starts immediately in the background.
     let n_files = files.len();
-    let mut handles = Vec::with_capacity(n_files);
     for f in &files {
-        handles.push(commit.upload_from_path_blocking(f.clone(), Sha256Policy::Compute)?);
+        commit.upload_from_path_blocking(f.clone(), Sha256Policy::Compute)?;
     }
 
-    // Spawn a task to print progress; the main thread blocks in commit() below.
+    // Spawn a thread to print progress; the main thread blocks in commit() below.
     let commit_for_progress = commit.clone();
     std::thread::spawn(move || {
         loop {
-            if let Ok(report) = commit_for_progress.get_progress_blocking() {
-                let done = handles
-                    .iter()
-                    .filter(|h| matches!(h.status(), Ok(TaskStatus::Completed)))
-                    .count();
-                println!("{}/{} files | {}/{} bytes", done, n_files, report.total_bytes_completed, report.total_bytes);
-            }
+            let report = commit_for_progress.get_progress_blocking();
+            println!("{}/{} bytes", report.total_bytes_completed, report.total_bytes);
             std::thread::sleep(Duration::from_millis(100));
         }
     });
 
-    // Block until all uploads finish and metadata is finalized.
-    let results = commit.commit_blocking()?;
+    let report = commit.commit_blocking()?;
 
-    for m in results.values().filter_map(|m| m.as_ref().as_ref().ok()) {
-        println!("  {} -> {} ({} bytes)", m.tracking_name.as_deref().unwrap_or("?"), m.hash, m.file_size);
+    for m in &report.files {
+        let size = m.xet_info.file_size.map_or("unknown".to_string(), |s| s.to_string());
+        println!("  {} -> {} ({} bytes)", m.tracking_name.as_deref().unwrap_or("?"), m.xet_info.hash, size);
     }
+    println!("Uploaded {} files", n_files);
 
     // Persist metadata so it can be passed to the `download` subcommand.
-    let metadata: Vec<_> = results
-        .into_values()
-        .filter_map(|m| m.as_ref().as_ref().ok().cloned())
-        .collect();
-    std::fs::write("upload_metadata.json", serde_json::to_string_pretty(&metadata)?)?;
+    std::fs::write("upload_metadata.json", serde_json::to_string_pretty(&report.files)?)?;
 
     Ok(())
 }
@@ -106,22 +96,14 @@ fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: Option<
     let session = builder.build()?;
     let group = session.new_download_group_blocking()?;
 
-    // Enqueue all downloads; each starts immediately in the background.
     let n_files = metadata.len();
     let mut handles = Vec::with_capacity(n_files);
     for m in &metadata {
         let dest = output_dir.join(m.tracking_name.as_deref().unwrap_or("file"));
-        handles.push(group.download_file_to_path_blocking(
-            XetFileInfo {
-                hash: m.hash.clone(),
-                file_size: Some(m.file_size),
-                sha256: m.sha256.clone(),
-            },
-            dest,
-        )?);
+        handles.push(group.download_file_to_path_blocking(m.xet_info.clone(), dest)?);
     }
 
-    // Spawn a task to print progress; the main thread blocks in finish() below.
+    // Spawn a thread to print progress; the main thread blocks in finish() below.
     let group_for_progress = group.clone();
     std::thread::spawn(move || {
         loop {
@@ -136,7 +118,6 @@ fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: Option<
         }
     });
 
-    // Block until all downloads finish.
     let results = group.finish_blocking()?;
 
     for (_task_id, result) in &results {

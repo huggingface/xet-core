@@ -77,12 +77,12 @@ impl Display for RepoInfo {
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
+    use xet_runtime::GenericError;
 
     use super::CasJWTInfo;
 
     #[test]
-    fn test_cas_jwt_response_deser() -> Result<()> {
+    fn test_cas_jwt_response_deser() -> Result<(), GenericError> {
         let bytes = r#"{"casUrl":"https://cas-server.xethub.hf.co","exp":1756489133,"accessToken":"ey...jQ"}"#;
 
         let info: CasJWTInfo = serde_json::from_slice(bytes.as_bytes())?;

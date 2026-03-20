@@ -32,12 +32,14 @@ The entire `xet::xet_session::sync` module has been deleted.
 
 ## New Blocking Methods on `UploadCommit`
 
+**Note:** These signatures were further updated in `update_260318_upload_handle_refactor.md`.
+
 | New Method | Async Equivalent |
 |---|---|
-| `upload_from_path_blocking(&self, PathBuf, Sha256Policy) -> Result<UploadTaskHandle, SessionError>` | `upload_from_path(&self, PathBuf, Sha256Policy).await` |
-| `upload_bytes_blocking(&self, Vec<u8>, Sha256Policy, Option<String>) -> Result<UploadTaskHandle, SessionError>` | `upload_bytes(&self, Vec<u8>, Sha256Policy, Option<String>).await` |
-| `upload_file_blocking(&self, Option<String>, u64, Sha256Policy) -> Result<(TaskHandle, SingleFileCleaner), SessionError>` | `upload_file(&self, Option<String>, u64, Sha256Policy).await` |
-| `commit_blocking(self) -> Result<HashMap<Ulid, UploadResult>, SessionError>` | `commit(self).await` |
+| `upload_from_path_blocking(&self, PathBuf, Sha256Policy) -> Result<UploadFileHandle, XetError>` | `upload_from_path(&self, PathBuf, Sha256Policy).await` |
+| `upload_bytes_blocking(&self, Vec<u8>, Sha256Policy, Option<String>) -> Result<UploadFileHandle, XetError>` | `upload_bytes(&self, Vec<u8>, Sha256Policy, Option<String>).await` |
+| `upload_stream_blocking(&self, Option<String>, Sha256Policy) -> Result<UploadStreamHandle, XetError>` | `upload_stream(&self, Option<String>, Sha256Policy).await` |
+| `commit_blocking(&self) -> Result<CommitReport, XetError>` | `commit(&self).await` |
 
 All blocking methods use `runtime.external_run_async_task()` internally and
 **must not be called from within a tokio runtime** (they will panic).
@@ -71,11 +73,11 @@ let group: DownloadGroupSync = session.new_download_group_blocking()?;
 group.download_file_to_path(info, dest)?;
 let results = group.finish()?;
 
-// New
+// New (see update_260318_upload_handle_refactor.md for latest signatures)
 let commit: UploadCommit = session.new_upload_commit_blocking()?;
 let handle = commit.upload_from_path_blocking(path, sha256)?;
 let handle2 = commit.upload_bytes_blocking(bytes, sha256, name)?;
-let (_h, cleaner) = commit.upload_file_blocking(name, size, sha256)?;
+let stream = commit.upload_stream_blocking(name, sha256)?;
 let results = commit.commit_blocking()?;
 
 let group: DownloadGroup = session.new_download_group_blocking()?;
@@ -86,8 +88,9 @@ let results = group.finish_blocking()?;
 ### Async callers
 
 No changes needed. `UploadCommit` and `DownloadGroup` retain all their
-existing async methods (`upload_from_path`, `upload_bytes`, `upload_file`,
-`commit`, `finish`).
+existing async methods (`upload_from_path`, `upload_bytes`, `upload_stream`,
+`commit`, `finish`). See `update_260318_upload_handle_refactor.md` for
+subsequent renames (`upload_file` → `upload_stream`, etc.).
 
 ### Import changes
 

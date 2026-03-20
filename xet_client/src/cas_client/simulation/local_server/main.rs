@@ -43,10 +43,10 @@
 
 use std::path::PathBuf;
 
-use anyhow::Result;
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 use xet_client::cas_client::{LocalServer, LocalServerConfig};
+use xet_runtime::GenericError;
 
 /// A local HTTP server that wraps a DirectAccessClient for testing and development.
 ///
@@ -94,7 +94,7 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> Result<(), GenericError> {
     // Initialize tracing with environment filter (respects RUST_LOG)
     tracing_subscriber::fmt().with_env_filter(EnvFilter::from_default_env()).init();
 

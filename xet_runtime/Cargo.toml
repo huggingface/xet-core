@@ -11,7 +11,6 @@ name = "xet_runtime"
 path = "src/lib.rs"
 
 [dependencies]
-anyhow = { workspace = true }
 chrono = { workspace = true }
 colored = { workspace = true }
 const-str = "1.1"

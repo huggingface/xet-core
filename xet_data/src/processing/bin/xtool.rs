@@ -3,8 +3,10 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
+use xet_runtime::GenericError;
+
+type Result<T> = std::result::Result<T, GenericError>;
 use http::header::{self, HeaderMap, HeaderValue};
 use walkdir::WalkDir;
 use xet_client::cas_client::RemoteClient;
@@ -249,7 +251,7 @@ fn main() -> Result<()> {
     }
 
     let threadpool = XetRuntime::new_with_config(config)?;
-    threadpool.external_run_async_task(async move { cli.run().await })??;
+    threadpool.bridge_sync(async move { cli.run().await })??;
 
     Ok(())
 }

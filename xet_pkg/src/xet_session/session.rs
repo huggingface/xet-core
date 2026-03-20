@@ -8,7 +8,6 @@ use std::task::{Context, Waker};
 
 use http::HeaderMap;
 use tracing::info;
-use ulid::Ulid;
 use xet_client::cas_client::auth::TokenRefresher;
 use xet_data::progress_tracking::UniqueID;
 use xet_runtime::RuntimeError;
@@ -66,8 +65,7 @@ pub struct XetSessionInner {
 
     // Session state
     state: Mutex<SessionState>,
-    // "id" is used to identity a group of activities on our server, and so need to be globally unique
-    pub(super) id: Ulid,
+    pub(super) id: UniqueID,
 }
 
 /// Probe whether a tokio runtime handle meets the requirements for External mode.
@@ -337,7 +335,7 @@ impl XetSession {
                 active_upload_commits: Mutex::new(HashMap::new()),
                 active_download_groups: Mutex::new(HashMap::new()),
                 state: Mutex::new(SessionState::Alive),
-                id: Ulid::new(),
+                id: UniqueID::new(),
             }),
         }
     }
@@ -551,13 +549,6 @@ mod tests {
         let s1 = XetSessionBuilder::new().build().unwrap();
         let s2 = XetSessionBuilder::new().build().unwrap();
         assert_ne!(s1.id, s2.id);
-    }
-
-    #[test]
-    // Session ID is a Ulid, to guard future regressions.
-    fn test_session_id_is_ulid() {
-        let s = XetSessionBuilder::new().build().unwrap();
-        assert!(Ulid::from_string(&s.id.to_string()).is_ok())
     }
 
     // ── Abort behavior ───────────────────────────────────────────────────────
