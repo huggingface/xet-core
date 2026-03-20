@@ -430,8 +430,14 @@ pub async fn upload_ranges(
 
     // Stable suffix after the last dirty region.
     if chunk_cursor < compose_num_chunks {
-        let (segments, verification_hashes) =
-            extract_segments(&original_mdb, &original_chunks, chunk_cursor, compose_num_chunks, &mut seg_cursor, &mut seg_chunk_cursor);
+        let (segments, verification_hashes) = extract_segments(
+            &original_mdb,
+            &original_chunks,
+            chunk_cursor,
+            compose_num_chunks,
+            &mut seg_cursor,
+            &mut seg_chunk_cursor,
+        );
         all_chunks.extend_from_slice(&original_chunks[chunk_cursor..compose_num_chunks]);
         all_segments.extend(segments);
         all_verification.extend(verification_hashes);
@@ -1362,9 +1368,7 @@ mod tests {
     async fn test_upload_ranges_small_file_mid_edit() {
         let server = LocalTestServerBuilder::new().start().await;
         let base_dir = TempDir::new().unwrap();
-        let config = Arc::new(
-            TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap(),
-        );
+        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
         let original_data = b"AAAA_HEADER_AAAA|";
@@ -1390,12 +1394,7 @@ mod tests {
 
         assert_eq!(result.file_size(), original_size);
 
-        let downloaded = download_file(
-            &config,
-            MerkleHash::from_hex(result.hash()).unwrap(),
-            original_size,
-        )
-        .await;
+        let downloaded = download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), original_size).await;
         assert_eq!(downloaded.len(), original_size as usize, "reconstructed size mismatch");
         assert_eq!(&downloaded[..5], b"AAAA_", "prefix from CAS");
         assert_eq!(&downloaded[5..11], b"SPARSE", "dirty range");
@@ -1542,7 +1541,7 @@ mod tests {
         // For appends, ensure the appended region is included as a dirty input.
         if total_size > original_size {
             let append_start = original_size;
-            let already_covered = dirty_ranges.iter().any(|&(s, _)| s <= append_start);
+            let already_covered = dirty_ranges.iter().any(|&(s, e)| s <= append_start && e >= total_size);
             if !already_covered {
                 inputs.push(DirtyInput {
                     range: append_start..total_size,
