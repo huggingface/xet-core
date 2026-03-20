@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytes::Bytes;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -26,7 +26,6 @@ pub(crate) struct CompletedTerm {
 pub(crate) struct UnorderedWriterProgress {
     pub terms_in_progress: AtomicU64,
     pub bytes_in_progress: AtomicU64,
-    pub finished: AtomicBool,
 }
 
 impl UnorderedWriterProgress {
@@ -36,10 +35,6 @@ impl UnorderedWriterProgress {
 
     pub fn bytes_in_progress(&self) -> u64 {
         self.bytes_in_progress.load(Ordering::Relaxed)
-    }
-
-    pub fn is_finished(&self) -> bool {
-        self.finished.load(Ordering::Acquire)
     }
 }
 
@@ -146,14 +141,12 @@ impl DataWriter for UnorderedWriter {
     async fn finish(mut self: Box<Self>) -> Result<u64> {
         self.run_state.check_error()?;
 
-        self.finished = true;
-        self.progress.finished.store(true, Ordering::Release);
-
         while let Some(result) = self.task_set.join_next().await {
             self.total_bytes_sent +=
                 result.map_err(|e| FileReconstructionError::InternalError(format!("Task join error: {e}")))??;
         }
 
+        self.finished = true;
         Ok(self.total_bytes_sent)
     }
 }
@@ -175,7 +168,6 @@ impl UnorderedWriter {
         let progress = Arc::new(UnorderedWriterProgress {
             terms_in_progress: AtomicU64::new(0),
             bytes_in_progress: AtomicU64::new(0),
-            finished: AtomicBool::new(false),
         });
 
         let writer = Box::new(UnorderedWriter {

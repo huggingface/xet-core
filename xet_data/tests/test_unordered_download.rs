@@ -2,6 +2,7 @@
 mod tests {
     use std::fs;
     use std::sync::Arc;
+    use std::time::Duration;
 
     use tempfile::TempDir;
     use xet_client::cas_client::LocalTestServerBuilder;
@@ -145,6 +146,33 @@ mod tests {
         assert_eq!(stream.bytes_completed(), original_data.len() as u64);
         assert_eq!(stream.bytes_in_progress(), 0);
         assert_eq!(stream.terms_in_progress(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_unordered_stream_is_complete_loop_drains_all_data() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+
+        let original_data: Vec<u8> = (0..131072u32).map(|i| (i % 251) as u8).collect();
+
+        let upload_session = FileUploadSession::new(config.clone()).await.unwrap();
+        let xfi = upload_bytes(&upload_session, "is_complete_loop", &original_data).await;
+        upload_session.finalize().await.unwrap();
+
+        let download_session = FileDownloadSession::new(config.clone()).await.unwrap();
+        let (_id, mut stream) = download_session.download_unordered_stream(&xfi, None).await.unwrap();
+
+        let mut chunks = Vec::new();
+        while !stream.is_complete() {
+            if let Some((offset, chunk)) = stream.next().await.unwrap() {
+                chunks.push((offset, chunk));
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        }
+
+        let assembled = reassemble(chunks, original_data.len());
+        assert_eq!(assembled, original_data);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

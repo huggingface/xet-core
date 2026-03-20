@@ -221,9 +221,13 @@ impl UnorderedDownloadStream {
         self.progress.terms_in_progress()
     }
 
-    /// Returns `true` if all data has been fetched and the writer has finished.
+    /// Returns `true` once the stream has reached terminal state.
+    ///
+    /// This flips to `true` after [`next`](Self::next) / [`blocking_next`](Self::blocking_next)
+    /// has observed the end-of-stream (`None`), or after [`cancel`](Self::cancel).
+    /// Buffered but unconsumed channel items do not count as complete.
     pub fn is_complete(&self) -> bool {
-        self.progress.is_finished() && self.progress.terms_in_progress() == 0
+        self.finished
     }
 }
 
