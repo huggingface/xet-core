@@ -711,11 +711,11 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(result.file_size, total_size);
+        assert_eq!(result.file_size, Some(total_size));
 
         // 3. Download and verify the composed file.
         let composed_hash = MerkleHash::from_hex(result.hash()).unwrap();
-        let session = FileDownloadSession::new(config.clone(), None).await.unwrap();
+        let session = FileDownloadSession::new(config.clone()).await.unwrap();
         let file_info = crate::processing::XetFileInfo::new(composed_hash.hex(), total_size);
         let out_path = base_dir.path().join("output");
         session.download_file(&file_info, &out_path).await.unwrap();
@@ -751,7 +751,7 @@ mod tests {
                 .await
                 .unwrap();
 
-        assert_eq!(result.file_size(), truncated_size);
+        assert_eq!(result.file_size(), Some(truncated_size));
 
         // Download and verify: first truncated_size bytes should match original.
         let downloaded = download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), truncated_size).await;
@@ -792,7 +792,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(result.file_size(), total_size);
+        assert_eq!(result.file_size(), Some(total_size));
 
         let downloaded = download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), total_size).await;
         assert_eq!(downloaded, full_data);
@@ -832,7 +832,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(result.file_size(), total_size);
+        assert_eq!(result.file_size(), Some(total_size));
 
         let downloaded = download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), total_size).await;
         assert_eq!(downloaded.len(), modified_data.len());
@@ -873,7 +873,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(result.file_size(), total_size);
+        assert_eq!(result.file_size(), Some(total_size));
 
         let downloaded = download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), total_size).await;
         assert_eq!(downloaded.len(), modified_data.len());
@@ -970,7 +970,7 @@ mod tests {
                 .await
                 .unwrap();
 
-        assert_eq!(result.file_size(), truncated_size);
+        assert_eq!(result.file_size(), Some(truncated_size));
 
         let downloaded = download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), truncated_size).await;
         assert_eq!(&downloaded[..], truncated_data);
@@ -1016,7 +1016,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(result.file_size(), total_size);
+        assert_eq!(result.file_size(), Some(total_size));
 
         let downloaded = download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), total_size).await;
         assert_eq!(downloaded.len(), full_data.len(), "size mismatch");
@@ -1182,7 +1182,7 @@ mod tests {
         let result = upload_ranges(config, cas_client, hash, size, vec![], size).await.unwrap();
 
         assert_eq!(result.hash(), hash.hex());
-        assert_eq!(result.file_size(), size);
+        assert_eq!(result.file_size(), Some(size));
     }
 
     // dirty_range end > total_size -> rejected.
@@ -1391,7 +1391,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(result.file_size(), original_size);
+        assert_eq!(result.file_size(), Some(original_size));
 
         let downloaded = download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), original_size).await;
         assert_eq!(downloaded.len(), original_size as usize, "reconstructed size mismatch");
@@ -1428,7 +1428,7 @@ mod tests {
                 .await
                 .unwrap();
 
-        assert_eq!(result.file_size(), truncated_size);
+        assert_eq!(result.file_size(), Some(truncated_size));
 
         let downloaded = download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), truncated_size).await;
         assert_eq!(downloaded.len(), truncated_size as usize);
@@ -1482,7 +1482,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(result.file_size(), truncated_size);
+        assert_eq!(result.file_size(), Some(truncated_size));
 
         let downloaded = download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), truncated_size).await;
         assert_eq!(downloaded.len(), expected.len());
@@ -1515,7 +1515,7 @@ mod tests {
     }
 
     async fn download_file(config: &Arc<TranslatorConfig>, hash: MerkleHash, size: u64) -> Vec<u8> {
-        let session = FileDownloadSession::new(config.clone(), None).await.unwrap();
+        let session = FileDownloadSession::new(config.clone()).await.unwrap();
         let xfi = crate::processing::XetFileInfo::new(hash.hex(), size);
         let dir = TempDir::new().unwrap();
         let out = dir.path().join("out");
@@ -1555,10 +1555,10 @@ mod tests {
                 .await
                 .unwrap();
 
-        assert_eq!(result.file_size(), total_size, "file size mismatch");
+        assert_eq!(result.file_size(), Some(total_size), "file size mismatch");
         let downloaded = download_file(config, MerkleHash::from_hex(result.hash()).unwrap(), total_size).await;
         assert_eq!(downloaded.len(), expected.len(), "downloaded length mismatch");
-        assert_eq!(&downloaded[..], &expected[..], "content mismatch");
+        assert_eq!(&downloaded[..], expected, "content mismatch");
 
         let clean_hash = upload_file(config, expected).await;
         assert_eq!(result.hash(), clean_hash.hex(), "hash mismatch with clean upload");
