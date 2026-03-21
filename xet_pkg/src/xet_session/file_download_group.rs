@@ -414,8 +414,7 @@ mod tests {
         let cas_path = temp.path().join("cas");
         Ok(XetSessionBuilder::new()
             .with_endpoint(format!("local://{}", cas_path.display()))
-            .build_async()
-            .await?)
+            .build()?)
     }
 
     async fn upload_bytes(session: &XetSession, data: &[u8], name: &str) -> Result<XetFileInfo> {

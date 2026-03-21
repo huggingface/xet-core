@@ -6,7 +6,7 @@
 //! - **Tokio async** (External mode): standard `#[tokio::test]` tests.
 //! - **Blocking** (Owned mode): sync `build()` + `_blocking` methods.
 //! - **Non-tokio async bridge** (Owned mode): `futures::executor`, `smol`, `async-std` driving async methods via
-//!   `bridge_to_owned`.
+//!   `XetRuntime::bridge_async`.
 //! - **Deficient tokio runtime** (fallback to Owned mode): tokio runtimes missing IO/time drivers or using
 //!   `current_thread` flavor.
 //! - **Blocking from non-tokio executors**: `_blocking` methods called from within smol/async-std/futures executor

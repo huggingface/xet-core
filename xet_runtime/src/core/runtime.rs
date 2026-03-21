@@ -533,13 +533,17 @@ impl XetRuntime {
         self.handle().metrics().num_workers()
     }
 
-    /// Gives the number of concurrent calls to external_run_async_task.
+    /// Gives the number of concurrent sync bridge callers (`external_run_async_task` and `bridge_sync`).
     #[inline]
     pub fn external_executor_count(&self) -> usize {
         self.external_executor_count.load(Ordering::SeqCst)
     }
 
     /// Cancels and shuts down the runtime.  All tasks currently running will be aborted.
+    ///
+    /// A concurrent [`bridge_sync`](Self::bridge_sync) or in-flight
+    /// [`bridge_async`](Self::bridge_async) may still hold a cloned `Arc` to the tokio runtime
+    /// until that call returns, so teardown of the reactor may complete only after those finish.
     pub fn perform_sigint_shutdown(&self) {
         // Shut down the tokio
         self.sigint_shutdown.store(true, Ordering::SeqCst);
@@ -800,7 +804,7 @@ impl XetRuntime {
     /// Returns `Err(RuntimeError::TaskPanic)` if the spawned future panics, or
     /// `Err(RuntimeError::TaskCanceled)` if the runtime shuts down before the result
     /// can be delivered.
-    pub async fn bridge_to_owned<T, F>(&self, task_name: &'static str, fut: F) -> Result<T, RuntimeError>
+    async fn bridge_to_owned<T, F>(&self, task_name: &'static str, fut: F) -> Result<T, RuntimeError>
     where
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,

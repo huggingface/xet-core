@@ -102,14 +102,12 @@
 //! use xet::xet_session::{Sha256Policy, XetFileInfo, XetSessionBuilder};
 //!
 //! # async fn example() -> Result<(), xet::xet_session::SessionError> {
-//! // 1. Build a session. build_async() auto-detects the executor:
-//! //    - tokio (multi-thread): wraps the caller's handle, no second thread pool.
-//! //    - non-tokio (smol, async-std, etc.): creates an owned thread pool.
+//! // build() auto-detects: if inside a suitable tokio runtime, wraps it;
+//! // otherwise creates an owned thread pool.
 //! let session = XetSessionBuilder::new()
 //!     .with_endpoint("https://cas.example.com".into())
 //!     .with_token_info("my-token".into(), 1_700_000_000)
-//!     .build_async()
-//!     .await?;
+//!     .build()?;
 //!
 //! // Upload — async methods
 //! let commit = session.new_upload_commit().await?;
