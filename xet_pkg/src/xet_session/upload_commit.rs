@@ -259,11 +259,11 @@ impl UploadCommit {
     ) -> Result<UploadTaskHandle, XetError> {
         self.session.check_alive()?;
 
-        let absolute_path = std::path::absolute(file_path)?;
         let commit_inner = self.inner.clone();
-        self.session
-            .runtime
-            .bridge_sync(async move { commit_inner.start_upload_file_from_path(absolute_path, sha256).await })?
+        self.session.runtime.bridge_sync(async move {
+            let absolute_path = std::path::absolute(file_path)?;
+            commit_inner.start_upload_file_from_path(absolute_path, sha256).await
+        })?
     }
 
     /// Blocking version of [`upload_bytes`](Self::upload_bytes).

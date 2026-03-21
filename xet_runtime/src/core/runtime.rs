@@ -648,7 +648,7 @@ impl XetRuntime {
     /// Returns `Err(RuntimeError::TaskPanic)` if the spawned future panics, or
     /// `Err(RuntimeError::TaskCanceled)` if the runtime shuts down before the result
     /// can be delivered.
-    pub(crate) async fn bridge_to_owned<T, F>(&self, task_name: &'static str, fut: F) -> Result<T, RuntimeError>
+    async fn bridge_to_owned<T, F>(&self, task_name: &'static str, fut: F) -> Result<T, RuntimeError>
     where
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
@@ -732,6 +732,13 @@ impl XetRuntime {
     /// `tokio::net::TcpListener::bind` when the corresponding driver is absent.
     /// This is undocumented internal behavior validated against tokio 1.x.
     ///
+    /// On WASM targets the only available flavor is `current_thread` and
+    /// there are no separate IO/time drivers to probe, so any handle is accepted.
+    #[cfg(target_family = "wasm")]
+    pub fn handle_meets_requirements(_handle: &TokioRuntimeHandle) -> bool {
+        true
+    }
+
     /// Not available on WASM targets (WASM always uses `current_thread`).
     #[cfg(not(target_family = "wasm"))]
     pub fn handle_meets_requirements(handle: &TokioRuntimeHandle) -> bool {
@@ -935,5 +942,19 @@ mod tests {
         let tokio_rt = tokio::runtime::Builder::new_multi_thread().build().unwrap();
         let result = XetRuntime::from_validated_external(tokio_rt.handle().clone(), XetConfig::new());
         assert!(matches!(result, Err(RuntimeError::InvalidRuntime(_))));
+    }
+
+    #[test]
+    fn test_bridge_async_owned_mode_catches_panic() {
+        let rt = XetRuntime::new().unwrap();
+        let rt2 = rt.clone();
+        let result = rt.bridge_sync(async move {
+            rt2.bridge_async("panic_test", async {
+                panic!("intentional test panic");
+            })
+            .await
+        });
+        let err = result.unwrap().unwrap_err();
+        assert!(matches!(err, RuntimeError::TaskPanic(_)));
     }
 }

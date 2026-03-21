@@ -150,11 +150,7 @@ impl XetSessionBuilder {
     /// drivers), it is silently ignored and [`build`](Self::build) will fall back to creating
     /// an owned thread pool instead.
     pub fn with_tokio_handle(self, handle: tokio::runtime::Handle) -> Self {
-        #[cfg(not(target_family = "wasm"))]
         let accept = XetRuntime::handle_meets_requirements(&handle);
-        #[cfg(target_family = "wasm")]
-        let accept = true;
-
         if !accept {
             info!("supplied tokio handle rejected (missing drivers or wrong flavor); falling back to Owned mode");
         }
@@ -175,21 +171,25 @@ impl XetSessionBuilder {
     pub fn build(self) -> Result<XetSession, SessionError> {
         let handle = self.tokio_handle.or_else(|| {
             tokio::runtime::Handle::try_current().ok().filter(|h| {
-                #[cfg(not(target_family = "wasm"))]
-                {
-                    XetRuntime::handle_meets_requirements(h)
+                let ok = XetRuntime::handle_meets_requirements(h);
+                if !ok {
+                    info!(
+                        "auto-detected tokio handle rejected (missing drivers or wrong flavor); creating Owned runtime"
+                    );
                 }
-                #[cfg(target_family = "wasm")]
-                {
-                    let _ = h;
-                    true
-                }
+                ok
             })
         });
 
         let runtime = match handle {
-            Some(h) => XetRuntime::from_external_with_config(h, self.config.clone()),
-            None => XetRuntime::new_with_config(self.config.clone())?,
+            Some(h) => {
+                info!("XetSession using External runtime (wrapping caller's tokio handle)");
+                XetRuntime::from_external_with_config(h, self.config.clone())
+            },
+            None => {
+                info!("XetSession creating Owned runtime (new thread pool)");
+                XetRuntime::new_with_config(self.config.clone())?
+            },
         };
 
         Ok(XetSession::new(
@@ -312,7 +312,8 @@ impl XetSession {
             }
         }
 
-        let commit = self.runtime.bridge_sync(UploadCommit::new(self.clone()))??;
+        let session = self.clone();
+        let commit = self.runtime.bridge_sync(async move { UploadCommit::new(session).await })??;
         self.active_upload_commits.lock()?.insert(commit.id(), commit.clone());
         Ok(commit)
     }
@@ -370,7 +371,10 @@ impl XetSession {
             }
         }
 
-        let group = self.runtime.bridge_sync(FileDownloadGroup::new(self.clone()))??;
+        let session = self.clone();
+        let group = self
+            .runtime
+            .bridge_sync(async move { FileDownloadGroup::new(session).await })??;
         self.active_file_download_groups.lock()?.insert(group.id(), group.clone());
         Ok(group)
     }
