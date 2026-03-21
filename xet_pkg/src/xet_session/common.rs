@@ -24,11 +24,3 @@ pub(super) fn create_translator_config(session: &XetSession) -> Result<Translato
 
     Ok(config)
 }
-
-/// State of the upload commit and download group
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum GroupState {
-    Alive,
-    Finished,
-    Aborted,
-}

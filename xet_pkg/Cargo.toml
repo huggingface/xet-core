@@ -25,6 +25,7 @@ more-asserts = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["net", "time"] }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 pyo3 = { workspace = true, optional = true }
 

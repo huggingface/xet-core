@@ -1,50 +1,56 @@
 //! UploadFileHandle — handle for a background file-upload task
 
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use tokio::task::{AbortHandle, JoinHandle};
 use xet_data::DataError;
 use xet_data::deduplication::DeduplicationMetrics;
-use xet_data::processing::{FileUploadSession, XetFileInfo};
+use xet_data::processing::{FileUploadCoordinator, XetFileInfo};
 use xet_data::progress_tracking::{ItemProgressReport, UniqueID};
-use xet_runtime::core::XetRuntime;
 
+use super::task_runtime::TaskRuntime;
 use super::upload_commit::FileMetadata;
 use crate::error::XetError;
 
 // ── Private state ───────────────────────────────────────────────────────────
 
-pub(super) enum FileTaskState {
-    Running {
-        join_handle: JoinHandle<Result<(XetFileInfo, DeduplicationMetrics), DataError>>,
-        tracking_name: Option<String>,
-    },
-    Finished(Result<FileMetadata, XetError>),
-}
+type UploadJoinHandle = JoinHandle<Result<(XetFileInfo, DeduplicationMetrics), DataError>>;
 
 pub(super) struct TrackedFileUpload {
-    pub(super) state: Arc<tokio::sync::Mutex<FileTaskState>>,
+    pub(super) result: Arc<OnceLock<Result<FileMetadata, XetError>>>,
+    pub(super) join_handle: Arc<tokio::sync::Mutex<Option<UploadJoinHandle>>>,
+    pub(super) tracking_name: Option<String>,
     pub(super) abort_handle: AbortHandle,
+    pub(super) task_runtime: Arc<TaskRuntime>,
+}
+
+impl TrackedFileUpload {
+    pub(super) async fn finish(&self) -> Result<FileMetadata, XetError> {
+        let result = self.result.clone();
+        let join_handle = self.join_handle.clone();
+        let tracking_name = self.tracking_name.clone();
+        self.task_runtime
+            .bridge_async_terminal("tracked_upload_finish", result, async move {
+                resolve_file_task(&join_handle, tracking_name).await
+            })
+            .await
+    }
 }
 
 // ── Resolution helper ───────────────────────────────────────────────────────
 
-pub(super) async fn resolve_file_task(state: &tokio::sync::Mutex<FileTaskState>) -> Result<FileMetadata, XetError> {
-    let mut guard = state.lock().await;
-    if let FileTaskState::Finished(ref result) = *guard {
-        return result.clone();
-    }
-    let prev =
-        std::mem::replace(&mut *guard, FileTaskState::Finished(Err(XetError::other("task resolution in progress"))));
-    let FileTaskState::Running {
-        join_handle,
-        tracking_name,
-    } = prev
-    else {
-        unreachable!()
+pub(super) async fn resolve_file_task(
+    join_handle: &tokio::sync::Mutex<Option<UploadJoinHandle>>,
+    tracking_name: Option<String>,
+) -> Result<FileMetadata, XetError> {
+    let mut guard = join_handle.lock().await;
+    let Some(join_handle) = guard.take() else {
+        return Err(XetError::other("upload task already resolved"));
     };
-    let result = match join_handle.await {
+    drop(guard);
+
+    match join_handle.await {
         Ok(Ok((xet_info, dedup_metrics))) => Ok(FileMetadata {
             xet_info,
             dedup_metrics,
@@ -52,34 +58,30 @@ pub(super) async fn resolve_file_task(state: &tokio::sync::Mutex<FileTaskState>)
         }),
         Ok(Err(e)) => Err(XetError::from(e)),
         Err(e) => Err(XetError::from(e)),
-    };
-    *guard = FileTaskState::Finished(result.clone());
-    result
+    }
 }
 
 // ── UploadFileHandleInner ───────────────────────────────────────────────────
 
 pub(super) struct UploadFileHandleInner {
     pub(super) task_id: UniqueID,
-    pub(super) state: Arc<tokio::sync::Mutex<FileTaskState>>,
-    pub(super) upload_session: Arc<FileUploadSession>,
+    pub(super) result: Arc<OnceLock<Result<FileMetadata, XetError>>>,
+    pub(super) join_handle: Arc<tokio::sync::Mutex<Option<UploadJoinHandle>>>,
+    pub(super) tracking_name: Option<String>,
+    pub(super) upload_coordinator: Arc<FileUploadCoordinator>,
 }
 
 impl UploadFileHandleInner {
-    async fn finish(&self) -> Result<FileMetadata, XetError> {
-        resolve_file_task(&self.state).await
+    async fn finish(self: &Arc<Self>) -> Result<FileMetadata, XetError> {
+        resolve_file_task(&self.join_handle, self.tracking_name.clone()).await
     }
 
-    fn try_finish(&self) -> Option<Result<FileMetadata, XetError>> {
-        let guard = self.state.try_lock().ok()?;
-        match &*guard {
-            FileTaskState::Finished(result) => Some(result.clone()),
-            FileTaskState::Running { .. } => None,
-        }
+    fn try_finish(self: &Arc<Self>) -> Option<Result<FileMetadata, XetError>> {
+        self.result.get().cloned()
     }
 
-    fn get_progress(&self) -> Option<ItemProgressReport> {
-        self.upload_session.item_report(self.task_id)
+    fn get_progress(self: &Arc<Self>) -> Option<ItemProgressReport> {
+        self.upload_coordinator.item_report(self.task_id)
     }
 }
 
@@ -99,7 +101,7 @@ impl UploadFileHandleInner {
 #[derive(Clone)]
 pub struct UploadFileHandle {
     pub(super) inner: Arc<UploadFileHandleInner>,
-    pub(super) runtime: Arc<XetRuntime>,
+    pub(super) task_runtime: Arc<TaskRuntime>,
 }
 
 impl fmt::Debug for UploadFileHandle {
@@ -124,7 +126,11 @@ impl UploadFileHandle {
     ///
     /// Idempotent: subsequent calls return the same cached result.
     pub async fn finish(&self) -> Result<FileMetadata, XetError> {
-        self.inner.finish().await
+        let inner = Arc::clone(&self.inner);
+        let result = self.inner.result.clone();
+        self.task_runtime
+            .bridge_async_terminal("upload_file_finish", result, async move { inner.finish().await })
+            .await
     }
 
     /// Blocking version of [`finish`](Self::finish).
@@ -134,7 +140,12 @@ impl UploadFileHandle {
     /// Panics if called from within a tokio async runtime.
     pub fn finish_blocking(&self) -> Result<FileMetadata, XetError> {
         let inner = Arc::clone(&self.inner);
-        self.runtime.external_run_async_task(async move { inner.finish().await })?
+        let result = self.inner.result.clone();
+        self.task_runtime.bridge_sync_terminal(
+            "upload_file_finish_blocking",
+            result,
+            async move { inner.finish().await },
+        )
     }
 
     /// Returns the result if ingestion has already completed, without blocking.

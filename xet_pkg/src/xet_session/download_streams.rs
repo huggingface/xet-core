@@ -6,6 +6,7 @@ use xet_data::processing::{DownloadStream, FileDownloadSession, UnorderedDownloa
 use xet_data::progress_tracking::{ItemProgressReport, UniqueID};
 
 use super::errors::SessionError;
+use super::task_runtime::TaskRuntime;
 
 /// A streaming download handle with built-in progress tracking.
 ///
@@ -24,14 +25,21 @@ pub struct XetDownloadStream {
     inner: DownloadStream,
     download_session: Arc<FileDownloadSession>,
     id: UniqueID,
+    task_runtime: Arc<TaskRuntime>,
 }
 
 impl XetDownloadStream {
-    pub(super) fn new(inner: DownloadStream, download_session: Arc<FileDownloadSession>, id: UniqueID) -> Self {
+    pub(super) fn new(
+        inner: DownloadStream,
+        download_session: Arc<FileDownloadSession>,
+        id: UniqueID,
+        task_runtime: Arc<TaskRuntime>,
+    ) -> Self {
         Self {
             inner,
             download_session,
             id,
+            task_runtime,
         }
     }
 
@@ -70,6 +78,7 @@ impl XetDownloadStream {
     /// Subsequent calls to [`next`](Self::next) / [`blocking_next`](Self::blocking_next)
     /// will return `Ok(None)`.
     pub fn cancel(&mut self) {
+        let _ = self.task_runtime.cancel_subtree();
         self.inner.cancel();
     }
 
@@ -109,6 +118,7 @@ pub struct XetUnorderedDownloadStream {
     inner: UnorderedDownloadStream,
     download_session: Arc<FileDownloadSession>,
     id: UniqueID,
+    task_runtime: Arc<TaskRuntime>,
 }
 
 impl XetUnorderedDownloadStream {
@@ -116,11 +126,13 @@ impl XetUnorderedDownloadStream {
         inner: UnorderedDownloadStream,
         download_session: Arc<FileDownloadSession>,
         id: UniqueID,
+        task_runtime: Arc<TaskRuntime>,
     ) -> Self {
         Self {
             inner,
             download_session,
             id,
+            task_runtime,
         }
     }
 
@@ -160,6 +172,7 @@ impl XetUnorderedDownloadStream {
     /// Subsequent calls to [`next`](Self::next) / [`blocking_next`](Self::blocking_next)
     /// will return `Ok(None)`.
     pub fn cancel(&mut self) {
+        let _ = self.task_runtime.cancel_subtree();
         self.inner.cancel();
     }
 

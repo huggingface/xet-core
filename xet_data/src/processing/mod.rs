@@ -7,6 +7,7 @@ mod file_upload_session;
 pub mod migration_tool;
 mod prometheus_metrics;
 mod remote_client_interface;
+mod session_coordinators;
 mod sha256;
 mod shard_interface;
 mod xet_file;
@@ -15,6 +16,7 @@ mod xet_file;
 pub use file_cleaner::{Sha256Policy, SingleFileCleaner};
 pub use file_download_session::FileDownloadSession;
 pub use file_upload_session::FileUploadSession;
+pub use session_coordinators::{FileDownloadCoordinator, FileUploadCoordinator};
 pub use xet_file::XetFileInfo;
 
 pub use crate::deduplication::RawXorbData;
