@@ -101,8 +101,7 @@ fn write_decimal_u64(buf: &mut [u8], pos: &mut usize, val: u64) {
 
 /// Max bytes per entry: 64 hex + 3 " : " + 20 decimal digits + 1 newline = 88.
 /// Max group size: 2 * BRANCHING_FACTOR + 1 = 9.
-const MAX_MERGE_BUF_SIZE: usize =
-    (2 * AGGREGATED_HASHES_MEAN_TREE_BRANCHING_FACTOR as usize + 1) * 88;
+const MAX_MERGE_BUF_SIZE: usize = (2 * AGGREGATED_HASHES_MEAN_TREE_BRANCHING_FACTOR as usize + 1) * 88;
 
 /// Write one (hash, size) entry into the merge buffer.
 #[inline]
