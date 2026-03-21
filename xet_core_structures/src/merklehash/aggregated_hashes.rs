@@ -1,17 +1,6 @@
-use std::cell::RefCell;
-use std::fmt::Write;
-
 use super::{MerkleHash, compute_internal_node_hash};
 
 pub const AGGREGATED_HASHES_MEAN_TREE_BRANCHING_FACTOR: u64 = 4;
-
-pub(super) const MAX_GROUP_SIZE: usize = 2 * AGGREGATED_HASHES_MEAN_TREE_BRANCHING_FACTOR as usize + 1;
-pub(super) const MIN_GROUP_SIZE: usize = 2;
-
-#[inline]
-pub(super) fn is_natural_cut(h: MerkleHash) -> bool {
-    h % AGGREGATED_HASHES_MEAN_TREE_BRANCHING_FACTOR == 0
-}
 
 /// Find the next cut point in a sequence of hashes at which to break.
 ///
@@ -51,26 +40,88 @@ pub(super) fn next_merge_cut(hashes: &[(MerkleHash, u64)]) -> usize {
     end
 }
 
+const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+
+/// Write a u64 as 16 zero-padded lowercase hex chars directly into a fixed buffer.
+#[inline]
+fn write_hex_u64(buf: &mut [u8], pos: &mut usize, val: u64) {
+    let p = *pos;
+    buf[p] = HEX_DIGITS[((val >> 60) & 0xF) as usize];
+    buf[p + 1] = HEX_DIGITS[((val >> 56) & 0xF) as usize];
+    buf[p + 2] = HEX_DIGITS[((val >> 52) & 0xF) as usize];
+    buf[p + 3] = HEX_DIGITS[((val >> 48) & 0xF) as usize];
+    buf[p + 4] = HEX_DIGITS[((val >> 44) & 0xF) as usize];
+    buf[p + 5] = HEX_DIGITS[((val >> 40) & 0xF) as usize];
+    buf[p + 6] = HEX_DIGITS[((val >> 36) & 0xF) as usize];
+    buf[p + 7] = HEX_DIGITS[((val >> 32) & 0xF) as usize];
+    buf[p + 8] = HEX_DIGITS[((val >> 28) & 0xF) as usize];
+    buf[p + 9] = HEX_DIGITS[((val >> 24) & 0xF) as usize];
+    buf[p + 10] = HEX_DIGITS[((val >> 20) & 0xF) as usize];
+    buf[p + 11] = HEX_DIGITS[((val >> 16) & 0xF) as usize];
+    buf[p + 12] = HEX_DIGITS[((val >> 12) & 0xF) as usize];
+    buf[p + 13] = HEX_DIGITS[((val >> 8) & 0xF) as usize];
+    buf[p + 14] = HEX_DIGITS[((val >> 4) & 0xF) as usize];
+    buf[p + 15] = HEX_DIGITS[(val & 0xF) as usize];
+    *pos = p + 16;
+}
+
+/// Write a u64 as decimal digits into a fixed buffer.
+#[inline]
+fn write_decimal_u64(buf: &mut [u8], pos: &mut usize, val: u64) {
+    if val == 0 {
+        buf[*pos] = b'0';
+        *pos += 1;
+        return;
+    }
+    // Write digits in reverse into a small stack buffer, then copy forward.
+    let mut digits = [0u8; 20]; // u64 max is 20 digits
+    let mut dpos = 20;
+    let mut v = val;
+    while v > 0 {
+        dpos -= 1;
+        digits[dpos] = b'0' + (v % 10) as u8;
+        v /= 10;
+    }
+    let len = 20 - dpos;
+    buf[*pos..*pos + len].copy_from_slice(&digits[dpos..]);
+    *pos += len;
+}
+
+/// Max bytes per entry: 64 hex + 3 " : " + 20 decimal digits + 1 newline = 88.
+/// Max group size: 2 * BRANCHING_FACTOR + 1 = 9.
+const MAX_MERGE_BUF_SIZE: usize =
+    (2 * AGGREGATED_HASHES_MEAN_TREE_BRANCHING_FACTOR as usize + 1) * 88;
+
+/// Write one (hash, size) entry into the merge buffer.
+#[inline]
+fn write_hash_entry(buf: &mut [u8], pos: &mut usize, total_len: &mut u64, h: &MerkleHash, s: u64) {
+    write_hex_u64(buf, pos, h[0].to_le());
+    write_hex_u64(buf, pos, h[1].to_le());
+    write_hex_u64(buf, pos, h[2].to_le());
+    write_hex_u64(buf, pos, h[3].to_le());
+    buf[*pos] = b' ';
+    buf[*pos + 1] = b':';
+    buf[*pos + 2] = b' ';
+    *pos += 3;
+    write_decimal_u64(buf, pos, s);
+    buf[*pos] = b'\n';
+    *pos += 1;
+    *total_len += s;
+}
+
 /// Merge the hashes together, including the size information and returning the new (hash, size) pair.
+///
+/// Formats each entry as `"{hash_hex} : {size}\n"` and computes the internal node hash.
+/// Uses direct byte writing to a stack buffer to avoid allocation and TLS overhead.
 #[inline]
 pub(super) fn merged_hash_of_sequence(hash: &[(MerkleHash, u64)]) -> (MerkleHash, u64) {
-    // Use a threadlocal buffer to avoid the overhead of reallocations.
-    thread_local! {
-        static BUFFER: RefCell<String> =
-        RefCell::new(String::with_capacity(1024));
+    let mut buf = [0u8; MAX_MERGE_BUF_SIZE];
+    let mut pos = 0usize;
+    let mut total_len = 0u64;
+    for &(ref h, s) in hash.iter() {
+        write_hash_entry(&mut buf, &mut pos, &mut total_len, h, s);
     }
-
-    BUFFER.with(|buffer| {
-        let mut buf = buffer.borrow_mut();
-        buf.clear();
-        let mut total_len = 0;
-
-        for (h, s) in hash.iter() {
-            writeln!(buf, "{h:x} : {s}").unwrap();
-            total_len += *s;
-        }
-        (compute_internal_node_hash(buf.as_bytes()), total_len)
-    })
+    (compute_internal_node_hash(&buf[..pos]), total_len)
 }
 
 /// The base calculation for the aggregated node hash.
@@ -78,7 +129,7 @@ pub(super) fn merged_hash_of_sequence(hash: &[(MerkleHash, u64)]) -> (MerkleHash
 /// Iteratively collapse the list of hashes using the criteria in next_merge_cut
 /// until only one hash remains; this is the aggregated hash.
 #[inline]
-pub(super) fn aggregated_node_hash(chunks: &[(MerkleHash, u64)]) -> MerkleHash {
+fn aggregated_node_hash(chunks: &[(MerkleHash, u64)]) -> MerkleHash {
     if chunks.is_empty() {
         return MerkleHash::default();
     }
