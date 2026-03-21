@@ -764,7 +764,7 @@ mod tests {
 
         // Act
         let result = threadpool
-            .external_run_async_task(async move {
+            .bridge_sync(async move {
                 let permit = client.acquire_upload_permit().await.unwrap();
                 client.upload_xorb(prefix, xorb_obj, None, permit).await
             })

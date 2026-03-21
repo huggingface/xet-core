@@ -4,7 +4,7 @@ pub mod exports;
 pub mod runtime;
 
 pub use common::XetCommon;
-pub use runtime::{XetRuntime, check_sigint_shutdown};
+pub use runtime::{RuntimeMode, XetRuntime, check_sigint_shutdown};
 
 pub mod sync_primatives;
 pub use sync_primatives::{SyncJoinHandle, spawn_os_thread};

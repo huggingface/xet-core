@@ -67,21 +67,18 @@
 //! ```rust,no_run
 //! use xet::xet_session::{Sha256Policy, XetFileInfo, XetSessionBuilder};
 //!
-//! // 1. Build a session — sync (non-async) context only.
-//! //    For async code call build_async().await instead.
 //! let session = XetSessionBuilder::new()
 //!     .with_endpoint("https://cas.example.com".into())
 //!     .with_token_info("my-token".into(), 1_700_000_000)
 //!     .build()?;
 //!
-//! // 2. Upload — use the _blocking factory and _blocking methods
+//! // Upload — use the _blocking factory and _blocking methods
 //! let commit = session.new_upload_commit_blocking()?;
 //! let handle = commit.upload_from_path_blocking("file.bin".into(), Sha256Policy::Compute)?;
-//! // UploadResult = Arc<Result<FileMetadata, SessionError>>
 //! let results = commit.commit_blocking()?;
 //! let m = results.values().next().unwrap().as_ref().as_ref().unwrap();
 //!
-//! // 3. Download — use the _blocking factory and finish_blocking
+//! // Download — use the _blocking factory and finish_blocking
 //! let group = session.new_file_download_group_blocking()?;
 //! let info = XetFileInfo {
 //!     hash: m.hash.clone(),
@@ -90,7 +87,6 @@
 //! };
 //! let dl_handle = group.download_file_to_path_blocking(info, "out/file.bin".into())?;
 //! let finish_results = group.finish_blocking()?;
-//! // DownloadResult = Arc<Result<DownloadedFile, SessionError>>
 //! let r = finish_results.get(&dl_handle.task_id).unwrap().as_ref().as_ref().unwrap();
 //!
 //! # Ok::<(), xet::xet_session::SessionError>(())
@@ -102,23 +98,20 @@
 //! use xet::xet_session::{Sha256Policy, XetFileInfo, XetSessionBuilder};
 //!
 //! # async fn example() -> Result<(), xet::xet_session::SessionError> {
-//! // 1. Build a session. build_async() auto-detects the executor:
-//! //    - tokio (multi-thread): wraps the caller's handle, no second thread pool.
-//! //    - non-tokio (smol, async-std, etc.): creates an owned thread pool.
+//! // build() auto-detects: if inside a suitable tokio runtime, wraps it;
+//! // otherwise creates an owned thread pool.
 //! let session = XetSessionBuilder::new()
 //!     .with_endpoint("https://cas.example.com".into())
 //!     .with_token_info("my-token".into(), 1_700_000_000)
-//!     .build_async()
-//!     .await?;
+//!     .build()?;
 //!
-//! // 2. Upload — use the async factory and async methods
+//! // Upload — async methods
 //! let commit = session.new_upload_commit().await?;
 //! let handle = commit.upload_from_path("file.bin".into(), Sha256Policy::Compute).await?;
-//! // UploadResult = Arc<Result<FileMetadata, SessionError>>
 //! let results = commit.commit().await?;
 //! let m = results.values().next().unwrap().as_ref().as_ref().unwrap();
 //!
-//! // 3. Download — use the async factory and async finish
+//! // Download — async methods
 //! let group = session.new_file_download_group().await?;
 //! let info = XetFileInfo {
 //!     hash: m.hash.clone(),
@@ -127,7 +120,6 @@
 //! };
 //! let dl_handle = group.download_file_to_path(info, "out/file.bin".into()).await?;
 //! let finish_results = group.finish().await?;
-//! // DownloadResult = Arc<Result<DownloadedFile, SessionError>>
 //! let r = finish_results.get(&dl_handle.task_id).unwrap().as_ref().as_ref().unwrap();
 //! # Ok(())
 //! # }

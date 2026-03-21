@@ -397,7 +397,7 @@ mod tests {
         let runtime = get_threadpool();
         runtime
             .clone()
-            .external_run_async_task(async {
+            .bridge_sync(async {
                 let temp = tempdir().unwrap();
                 let cas_path = temp.path().join("cas");
                 let original_data = b"Hello, download session!";
@@ -421,7 +421,7 @@ mod tests {
         let runtime = get_threadpool();
         runtime
             .clone()
-            .external_run_async_task(async {
+            .bridge_sync(async {
                 let temp = tempdir().unwrap();
                 let cas_path = temp.path().join("cas");
                 let original_data = b"nested directory test";
@@ -446,7 +446,7 @@ mod tests {
         let runtime = get_threadpool();
         runtime
             .clone()
-            .external_run_async_task(async {
+            .bridge_sync(async {
                 let temp = tempdir().unwrap();
                 let cas_path = temp.path().join("cas");
                 let original_data = b"0123456789abcdef";
@@ -476,7 +476,7 @@ mod tests {
         let runtime = get_threadpool();
         runtime
             .clone()
-            .external_run_async_task(async {
+            .bridge_sync(async {
                 let temp = tempdir().unwrap();
                 let cas_path = temp.path().join("cas");
                 let original_data = b"abcdefghijklmnopqrstuvwxyz0123456789";
@@ -524,7 +524,7 @@ mod tests {
         let runtime = get_threadpool();
         runtime
             .clone()
-            .external_run_async_task(async {
+            .bridge_sync(async {
                 let temp = tempdir().unwrap();
                 let cas_path = temp.path().join("cas");
 
@@ -566,7 +566,7 @@ mod tests {
         let runtime = get_threadpool();
         runtime
             .clone()
-            .external_run_async_task(async {
+            .bridge_sync(async {
                 let temp = tempdir().unwrap();
                 let cas_path = temp.path().join("cas");
                 let original_data = b"Hello, streaming download!";
@@ -593,7 +593,7 @@ mod tests {
         let runtime = get_threadpool();
         runtime
             .clone()
-            .external_run_async_task(async {
+            .bridge_sync(async {
                 let temp = tempdir().unwrap();
                 let cas_path = temp.path().join("cas");
                 let original_data = b"Blocking stream test data";
@@ -626,7 +626,7 @@ mod tests {
         let runtime = get_threadpool();
         runtime
             .clone()
-            .external_run_async_task(async {
+            .bridge_sync(async {
                 let temp = tempdir().unwrap();
                 let cas_path = temp.path().join("cas");
                 let original_data = b"Extra none calls";
@@ -652,7 +652,7 @@ mod tests {
         let runtime = get_threadpool();
         runtime
             .clone()
-            .external_run_async_task(async {
+            .bridge_sync(async {
                 let temp = tempdir().unwrap();
                 let cas_path = temp.path().join("cas");
 
@@ -698,7 +698,7 @@ mod tests {
         let runtime = get_threadpool();
         runtime
             .clone()
-            .external_run_async_task(async {
+            .bridge_sync(async {
                 let temp = tempdir().unwrap();
                 let cas_path = temp.path().join("cas");
                 let original_data = b"Drop-without-reading cleanup test";
@@ -724,7 +724,7 @@ mod tests {
         let runtime = get_threadpool();
         runtime
             .clone()
-            .external_run_async_task(async {
+            .bridge_sync(async {
                 let temp = tempdir().unwrap();
                 let cas_path = temp.path().join("cas");
                 let original_data = b"Multi-cycle drop cleanup test";
@@ -755,7 +755,7 @@ mod tests {
         let runtime = get_threadpool();
         runtime
             .clone()
-            .external_run_async_task(async {
+            .bridge_sync(async {
                 let temp = tempdir().unwrap();
                 let cas_path = temp.path().join("cas");
                 let original_data = b"Blocking drop cleanup test data";
@@ -788,7 +788,7 @@ mod tests {
         let runtime = get_threadpool();
         runtime
             .clone()
-            .external_run_async_task(async {
+            .bridge_sync(async {
                 let temp = tempdir().unwrap();
                 let cas_path = temp.path().join("cas");
                 let original_data = b"Cancel-before-start stream test";
@@ -811,7 +811,7 @@ mod tests {
         let runtime = get_threadpool();
         runtime
             .clone()
-            .external_run_async_task(async {
+            .bridge_sync(async {
                 let temp = tempdir().unwrap();
                 let cas_path = temp.path().join("cas");
                 let original_data = b"Cancel-after-first-chunk stream test data";

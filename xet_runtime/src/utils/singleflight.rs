@@ -432,7 +432,7 @@ pub(crate) mod tests {
         let threadpool = Arc::new(XetRuntime::new().unwrap());
         let g = Group::new();
         let res = threadpool
-            .external_run_async_task(async move { g.work("key", return_res()).await })
+            .bridge_sync(async move { g.work("key", return_res()).await })
             .unwrap()
             .0;
         let r = res.unwrap();
@@ -479,7 +479,7 @@ pub(crate) mod tests {
             assert_eq!(1, num_callers);
             assert_eq!(1, times_called.load(Ordering::SeqCst));
         };
-        threadpool.external_run_async_task(tasks).unwrap();
+        threadpool.bridge_sync(tasks).unwrap();
     }
 
     #[tokio::test]
