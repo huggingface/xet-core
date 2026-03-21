@@ -25,7 +25,6 @@ futures = { workspace = true }
 http = { workspace = true }
 lazy_static = { workspace = true }
 more-asserts = { workspace = true }
-once_cell = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true }
 reqwest-middleware = { workspace = true }
