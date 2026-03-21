@@ -1,3 +1,4 @@
+#![cfg(feature = "simulation")]
 //! Regression test for the 416 Range Not Satisfiable bug.
 //!
 //! When downloading a full file without an explicit byte range, `FileReconstructor`

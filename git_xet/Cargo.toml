@@ -12,7 +12,7 @@ path = "src/bin/main.rs"
 xet-data = { path = "../xet_data", features = ["simulation"] }
 xet-runtime = { path = "../xet_runtime" }
 xet-client = { path = "../xet_client", features = ["simulation"] }
-xet-pkg = { package = "hf-xet", path = "../xet_pkg" }
+xet-pkg = { package = "hf-xet", path = "../xet_pkg", features = ["simulation"] }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }

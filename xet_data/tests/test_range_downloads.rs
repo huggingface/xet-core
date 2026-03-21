@@ -1,3 +1,4 @@
+#![cfg(feature = "simulation")]
 //! Integration tests for range-based downloads using a LocalTestServer.
 //!
 //! Exercises all range variants (`start..end`, `start..`, `..end`, `..`) across

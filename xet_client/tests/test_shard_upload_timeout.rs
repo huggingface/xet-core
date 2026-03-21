@@ -1,3 +1,4 @@
+#![cfg(feature = "simulation")]
 //! Integration tests for the shard upload no-read-timeout client (XET-885).
 //!
 //! Verifies that shard uploads succeed even when the server takes a long time to process,
