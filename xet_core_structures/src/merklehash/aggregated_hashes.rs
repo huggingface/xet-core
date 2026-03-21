@@ -5,6 +5,14 @@ use super::{MerkleHash, compute_internal_node_hash};
 
 pub const AGGREGATED_HASHES_MEAN_TREE_BRANCHING_FACTOR: u64 = 4;
 
+pub(super) const MAX_GROUP_SIZE: usize = 2 * AGGREGATED_HASHES_MEAN_TREE_BRANCHING_FACTOR as usize + 1;
+pub(super) const MIN_GROUP_SIZE: usize = 2;
+
+#[inline]
+pub(super) fn is_natural_cut(h: MerkleHash) -> bool {
+    h % AGGREGATED_HASHES_MEAN_TREE_BRANCHING_FACTOR == 0
+}
+
 /// Find the next cut point in a sequence of hashes at which to break.
 ///
 ///   
@@ -25,7 +33,7 @@ pub const AGGREGATED_HASHES_MEAN_TREE_BRANCHING_FACTOR: u64 = 4;
 ///    children: This ensures that the graph always has at most 1/2 the number of parents as children. and we don't have
 ///    too wide branches.
 #[inline]
-fn next_merge_cut(hashes: &[(MerkleHash, u64)]) -> usize {
+pub(super) fn next_merge_cut(hashes: &[(MerkleHash, u64)]) -> usize {
     if hashes.len() <= 2 {
         return hashes.len();
     }
@@ -45,7 +53,7 @@ fn next_merge_cut(hashes: &[(MerkleHash, u64)]) -> usize {
 
 /// Merge the hashes together, including the size information and returning the new (hash, size) pair.
 #[inline]
-fn merged_hash_of_sequence(hash: &[(MerkleHash, u64)]) -> (MerkleHash, u64) {
+pub(super) fn merged_hash_of_sequence(hash: &[(MerkleHash, u64)]) -> (MerkleHash, u64) {
     // Use a threadlocal buffer to avoid the overhead of reallocations.
     thread_local! {
         static BUFFER: RefCell<String> =
@@ -70,7 +78,7 @@ fn merged_hash_of_sequence(hash: &[(MerkleHash, u64)]) -> (MerkleHash, u64) {
 /// Iteratively collapse the list of hashes using the criteria in next_merge_cut
 /// until only one hash remains; this is the aggregated hash.
 #[inline]
-fn aggregated_node_hash(chunks: &[(MerkleHash, u64)]) -> MerkleHash {
+pub(super) fn aggregated_node_hash(chunks: &[(MerkleHash, u64)]) -> MerkleHash {
     if chunks.is_empty() {
         return MerkleHash::default();
     }
