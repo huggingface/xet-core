@@ -20,6 +20,11 @@ name = "bg_split_regroup_bench"
 harness = false
 bench = true
 
+[[bench]]
+name = "chunk_hash_range_bench"
+harness = false
+bench = true
+
 [dependencies]
 xet-runtime = { version = "1.4.0", path = "../xet_runtime" }
 

@@ -2,6 +2,18 @@ use super::{MerkleHash, compute_internal_node_hash};
 
 pub const AGGREGATED_HASHES_MEAN_TREE_BRANCHING_FACTOR: u64 = 4;
 
+/// Minimum group size: groups always have at least 2 nodes.
+pub(super) const MIN_GROUP_SIZE: usize = 2;
+
+/// Maximum group size: groups have at most 2*BF+1 = 9 nodes.
+pub(super) const MAX_GROUP_SIZE: usize = 2 * AGGREGATED_HASHES_MEAN_TREE_BRANCHING_FACTOR as usize + 1;
+
+/// Returns true if this hash would trigger a natural cut (hash % BF == 0).
+#[inline]
+pub(super) fn is_natural_cut(h: MerkleHash) -> bool {
+    h % AGGREGATED_HASHES_MEAN_TREE_BRANCHING_FACTOR == 0
+}
+
 /// Find the next cut point in a sequence of hashes at which to break.
 ///
 ///   
@@ -129,7 +141,7 @@ pub(super) fn merged_hash_of_sequence(hash: &[(MerkleHash, u64)]) -> (MerkleHash
 /// Iteratively collapse the list of hashes using the criteria in next_merge_cut
 /// until only one hash remains; this is the aggregated hash.
 #[inline]
-fn aggregated_node_hash(chunks: &[(MerkleHash, u64)]) -> MerkleHash {
+pub(super) fn aggregated_node_hash(chunks: &[(MerkleHash, u64)]) -> MerkleHash {
     if chunks.is_empty() {
         return MerkleHash::default();
     }

@@ -277,6 +277,7 @@ type Node = (MerkleHash, u64);
 /// Scan forward for the first position where `is_natural_cut(hash)` is true,
 /// ignoring `MIN_GROUP_SIZE` / `MAX_GROUP_SIZE` bounds.  Returns the index
 /// within the slice, or `None` if no natural cut exists.
+#[inline]
 fn next_cut_unbounded(hashes: &[Node]) -> Option<usize> {
     for (i, &(h, _)) in hashes.iter().enumerate() {
         if is_natural_cut(h) {
@@ -289,6 +290,7 @@ fn next_cut_unbounded(hashes: &[Node]) -> Option<usize> {
 /// Scan backward for the last position where `is_natural_cut(hash)` is true,
 /// ignoring `MIN_GROUP_SIZE` / `MAX_GROUP_SIZE` bounds.  Returns the index
 /// within the slice, or `None` if no natural cut exists.
+#[inline]
 fn prev_cut_unbounded(hashes: &[Node]) -> Option<usize> {
     (0..hashes.len()).rev().find(|&i| is_natural_cut(hashes[i].0))
 }
@@ -405,6 +407,8 @@ pub fn find_stable_end(nodes: &[Node]) -> Option<usize> {
 /// - `nodes`:  Flat storage of all hump nodes.  Layout is all left-side nodes ascending by level, then all right-side
 ///   nodes descending by level.  See [`flatten_hump`] for details.
 /// - `levels`: Per-level `(left_count, right_count)` pairs indexing into `nodes`.
+/// - `left_offsets`: Pre-computed cumulative left offsets for O(1) access.
+/// - `right_offsets`: Pre-computed cumulative right offsets for O(1) access.
 /// - `at_start`: `true` if this range begins at position 0 of the full chunk sequence (left boundary is known).
 /// - `at_end`: `true` if this range ends at the last chunk of the full sequence (right boundary is known).
 /// - `debug_chunks`: (debug builds only) the original level-0 chunks, retained to verify that `final_hash()` matches
@@ -413,11 +417,40 @@ pub fn find_stable_end(nodes: &[Node]) -> Option<usize> {
 pub struct ChunkHashRange {
     nodes: Vec<Node>,
     levels: Vec<(usize, usize)>,
+    /// Pre-computed: left_offsets[i] = sum of levels[0..i].0
+    left_offsets: Vec<usize>,
+    /// Pre-computed: right_offsets[i] = total_left + sum of levels[i+1..].1
+    right_offsets: Vec<usize>,
     at_start: bool,
     at_end: bool,
 
     #[cfg(debug_assertions)]
     debug_chunks: Vec<Node>,
+}
+
+/// Pre-compute left and right offset arrays from levels.
+#[inline]
+fn compute_offsets(levels: &[(usize, usize)]) -> (Vec<usize>, Vec<usize>) {
+    let n = levels.len();
+    let mut left_offsets = Vec::with_capacity(n);
+    let mut right_offsets = Vec::with_capacity(n);
+
+    // left_offsets[i] = sum of levels[0..i].0
+    let mut cumulative_left: usize = 0;
+    for &(lc, _) in levels {
+        left_offsets.push(cumulative_left);
+        cumulative_left += lc;
+    }
+
+    // right_offsets[i] = total_left + sum of levels[i+1..].1
+    let total_left = cumulative_left;
+    let mut cumulative_right_after: usize = levels.iter().map(|&(_, rc)| rc).sum();
+    for &(_, rc) in levels {
+        cumulative_right_after -= rc;
+        right_offsets.push(total_left + cumulative_right_after);
+    }
+
+    (left_offsets, right_offsets)
 }
 
 impl ChunkHashRange {
@@ -434,6 +467,8 @@ impl ChunkHashRange {
             Self {
                 nodes: Vec::new(),
                 levels: Vec::new(),
+                left_offsets: Vec::new(),
+                right_offsets: Vec::new(),
                 at_start,
                 at_end,
                 #[cfg(debug_assertions)]
@@ -441,9 +476,12 @@ impl ChunkHashRange {
             }
         } else {
             let (nodes, levels) = build_hump(chunks, at_start, at_end);
+            let (left_offsets, right_offsets) = compute_offsets(&levels);
             Self {
                 nodes,
                 levels,
+                left_offsets,
+                right_offsets,
                 at_start,
                 at_end,
                 #[cfg(debug_assertions)]
@@ -469,30 +507,17 @@ impl ChunkHashRange {
         self.nodes.is_empty()
     }
 
-    /// Byte offset into `self.nodes` where level `level`'s left-side nodes begin.
-    /// Left sides are packed contiguously: L0_left, L1_left, ..., Lk_left.
-    fn left_offset(&self, level: usize) -> usize {
-        self.levels[..level].iter().map(|(lc, _)| lc).sum()
-    }
-
-    /// Byte offset into `self.nodes` where level `level`'s right-side nodes begin.
-    /// Right sides are packed in reverse order after all lefts:
-    /// ..., Lk_right, ..., L1_right, L0_right.
-    fn right_offset(&self, level: usize) -> usize {
-        let total_left: usize = self.levels.iter().map(|(lc, _)| lc).sum();
-        let right_before: usize = self.levels[level + 1..].iter().map(|(_, rc)| rc).sum();
-        total_left + right_before
-    }
-
     /// Slice of the left-side (prefix) nodes at the given level.
+    #[inline]
     fn left_at(&self, level: usize) -> &[Node] {
-        let start = self.left_offset(level);
+        let start = self.left_offsets[level];
         &self.nodes[start..start + self.levels[level].0]
     }
 
     /// Slice of the right-side (suffix) nodes at the given level.
+    #[inline]
     fn right_at(&self, level: usize) -> &[Node] {
-        let start = self.right_offset(level);
+        let start = self.right_offsets[level];
         &self.nodes[start..start + self.levels[level].1]
     }
 
@@ -520,6 +545,8 @@ impl ChunkHashRange {
             return ChunkHashRange {
                 nodes: Vec::new(),
                 levels: Vec::new(),
+                left_offsets: Vec::new(),
+                right_offsets: Vec::new(),
                 at_start: combined_at_start,
                 at_end: combined_at_end,
                 #[cfg(debug_assertions)]
@@ -537,9 +564,23 @@ impl ChunkHashRange {
 
         let max_levels = left_range.num_levels().max(right_range.num_levels());
 
-        let mut new_left_levels: Vec<Vec<Node>> = Vec::new();
-        let mut new_right_levels: Vec<Vec<Node>> = Vec::new();
+        // Build output flat arrays directly to avoid Vec<Vec<Node>> overhead.
+        // Left nodes are appended in level order. Right nodes are collected
+        // per-level in a single vec; we track per-level counts in `levels`
+        // so we can rearrange them at the end into reverse-level order.
+        let estimated_total = left_range.num_nodes() + right_range.num_nodes() + 16;
+        let estimated_levels = max_levels + 2;
+        let mut out_left_nodes: Vec<Node> = Vec::with_capacity(estimated_total);
+        let mut out_right_nodes: Vec<Node> = Vec::with_capacity(estimated_total / 2);
+        let mut levels: Vec<(usize, usize)> = Vec::with_capacity(estimated_levels);
         let mut carry: Vec<Node> = Vec::new();
+
+        // Reusable buffer for assembling full node sequence at each level
+        let mut full: Vec<Node> = Vec::with_capacity(64);
+
+        // Track at_start/at_end propagation with simple flags
+        let mut all_lefts_empty = true;
+        let mut all_rights_empty = true;
 
         for level in 0..max_levels {
             let lr_left = if level < left_range.num_levels() {
@@ -563,53 +604,86 @@ impl ChunkHashRange {
                 &[]
             };
 
-            let mut full =
-                Vec::with_capacity(lr_left.len() + lr_right.len() + carry.len() + rr_left.len() + rr_right.len());
+            // Reuse the full buffer instead of allocating a new Vec each level
+            full.clear();
             full.extend_from_slice(lr_left);
             full.extend_from_slice(lr_right);
             full.extend_from_slice(&carry);
             full.extend_from_slice(rr_left);
             full.extend_from_slice(rr_right);
 
-            let level_at_start = combined_at_start && (0..level).all(|l| new_left_levels[l].is_empty());
-            let level_at_end = combined_at_end && (0..level).all(|l| new_right_levels[l].is_empty());
+            let level_at_start = combined_at_start && all_lefts_empty;
+            let level_at_end = combined_at_end && all_rights_empty;
 
-            let (prefix, promoted, suffix) = split_and_promote(&full, level_at_start, level_at_end);
+            let (prefix_len, promoted, suffix_len) = split_and_promote(&full, level_at_start, level_at_end);
 
-            new_left_levels.push(prefix);
-            new_right_levels.push(suffix);
+            out_left_nodes.extend_from_slice(&full[..prefix_len]);
+            out_right_nodes.extend_from_slice(&full[full.len() - suffix_len..]);
+
+            if prefix_len > 0 {
+                all_lefts_empty = false;
+            }
+            if suffix_len > 0 {
+                all_rights_empty = false;
+            }
+
+            levels.push((prefix_len, suffix_len));
             carry = promoted;
         }
 
         while !carry.is_empty() {
             if carry.len() == 1 {
-                new_left_levels.push(carry);
-                new_right_levels.push(Vec::new());
+                out_left_nodes.extend_from_slice(&carry);
+                levels.push((carry.len(), 0));
                 carry = Vec::new();
             } else {
-                let at_start_here = combined_at_start && new_left_levels.iter().all(|v| v.is_empty());
-                let at_end_here = combined_at_end && new_right_levels.iter().all(|v| v.is_empty());
+                let at_start_here = combined_at_start && all_lefts_empty;
+                let at_end_here = combined_at_end && all_rights_empty;
 
-                let (prefix, promoted, suffix) = split_and_promote(&carry, at_start_here, at_end_here);
-                new_left_levels.push(prefix);
-                new_right_levels.push(suffix);
+                let (prefix_len, promoted, suffix_len) = split_and_promote(&carry, at_start_here, at_end_here);
+
+                out_left_nodes.extend_from_slice(&carry[..prefix_len]);
+                out_right_nodes.extend_from_slice(&carry[carry.len() - suffix_len..]);
+
+                if prefix_len > 0 {
+                    all_lefts_empty = false;
+                }
+                if suffix_len > 0 {
+                    all_rights_empty = false;
+                }
+
+                levels.push((prefix_len, suffix_len));
                 carry = promoted;
             }
         }
 
-        while new_left_levels.len() > 1
-            && new_left_levels.last().is_some_and(|v| v.is_empty())
-            && new_right_levels.last().is_some_and(|v| v.is_empty())
+        // Trim empty trailing levels
+        while levels.len() > 1
+            && levels.last() == Some(&(0, 0))
         {
-            new_left_levels.pop();
-            new_right_levels.pop();
+            levels.pop();
         }
 
-        let (nodes, levels) = flatten_hump(&new_left_levels, &new_right_levels);
+        // Build final flat node array: all lefts, then rights in reverse level order.
+        // out_right_nodes stores [level0_right, level1_right, ...].
+        // We need them in reverse: [levelN_right, ..., level1_right, level0_right].
+        let mut nodes = out_left_nodes;
+        {
+            let mut end = out_right_nodes.len();
+            for &(_, rc) in levels.iter().rev() {
+                let start = end - rc;
+                nodes.extend_from_slice(&out_right_nodes[start..end]);
+                end = start;
+            }
+        }
+
+        let (left_offsets, right_offsets) = compute_offsets(&levels);
 
         let result = ChunkHashRange {
             nodes,
             levels,
+            left_offsets,
+            right_offsets,
             at_start: combined_at_start,
             at_end: combined_at_end,
             #[cfg(debug_assertions)]
@@ -635,6 +709,8 @@ impl ChunkHashRange {
             0 => ChunkHashRange {
                 nodes: Vec::new(),
                 levels: Vec::new(),
+                left_offsets: Vec::new(),
+                right_offsets: Vec::new(),
                 at_start: true,
                 at_end: true,
                 #[cfg(debug_assertions)]
@@ -731,9 +807,13 @@ fn rebuild_with_flags(range: &ChunkHashRange, at_start: bool, at_end: bool) -> C
         build_hump(&level0, at_start, at_end)
     };
 
+    let (left_offsets, right_offsets) = compute_offsets(&levels);
+
     let result = ChunkHashRange {
         nodes,
         levels,
+        left_offsets,
+        right_offsets,
         at_start,
         at_end,
         #[cfg(debug_assertions)]
@@ -762,7 +842,7 @@ fn rebuild_level0(range: &ChunkHashRange) -> Vec<Node> {
     }
 
     let top = range.levels.len() - 1;
-    let mut current: Vec<Node> = Vec::new();
+    let mut current: Vec<Node> = Vec::with_capacity(range.nodes.len());
     current.extend_from_slice(range.left_at(top));
     current.extend_from_slice(range.right_at(top));
 
@@ -793,63 +873,64 @@ fn rebuild_level0(range: &ChunkHashRange) -> Vec<Node> {
 /// Terminates when promotion produces 0 nodes (everything went to
 /// prefix/suffix) or exactly 1 node (the root of the hump).
 fn build_hump(chunks: &[Node], at_start: bool, at_end: bool) -> (Vec<Node>, Vec<(usize, usize)>) {
-    let mut left_levels: Vec<Vec<Node>> = Vec::new();
-    let mut right_levels: Vec<Vec<Node>> = Vec::new();
+    // Build output directly: left nodes appended in level order,
+    // right nodes collected per-level then reversed at the end.
+    // Conservative capacity: O(MAX_GROUP_SIZE * log_4(n)) for left+right combined.
+    let est_side = MAX_GROUP_SIZE * 12;
+    let mut out_left_nodes: Vec<Node> = Vec::with_capacity(est_side);
+    let mut out_right_nodes: Vec<Node> = Vec::with_capacity(est_side);
+    let mut levels: Vec<(usize, usize)> = Vec::with_capacity(12);
     let mut current = chunks.to_vec();
 
+    // Track at_start/at_end propagation incrementally
+    let mut all_lefts_empty = true;
+    let mut all_rights_empty = true;
+
     loop {
-        let level_at_start = at_start && left_levels.iter().all(Vec::is_empty);
-        let level_at_end = at_end && right_levels.iter().all(Vec::is_empty);
+        let level_at_start = at_start && all_lefts_empty;
+        let level_at_end = at_end && all_rights_empty;
 
-        let (prefix, promoted, suffix) = split_and_promote(&current, level_at_start, level_at_end);
+        let (prefix_len, promoted, suffix_len) = split_and_promote(&current, level_at_start, level_at_end);
 
-        left_levels.push(prefix);
-        right_levels.push(suffix);
+        out_left_nodes.extend_from_slice(&current[..prefix_len]);
+        out_right_nodes.extend_from_slice(&current[current.len() - suffix_len..]);
+
+        if prefix_len > 0 {
+            all_lefts_empty = false;
+        }
+        if suffix_len > 0 {
+            all_rights_empty = false;
+        }
+
+        levels.push((prefix_len, suffix_len));
 
         if promoted.is_empty() {
             break;
         }
         if promoted.len() == 1 {
-            left_levels.push(promoted);
-            right_levels.push(Vec::new());
+            out_left_nodes.extend_from_slice(&promoted);
+            levels.push((promoted.len(), 0));
             break;
         }
 
         current = promoted;
     }
 
-    flatten_hump(&left_levels, &right_levels)
-}
-
-/// Pack the per-level left/right `Vec`s into the flat storage format.
-///
-/// Layout in `nodes`: all lefts ascending by level, then all rights
-/// descending by level.  This ensures that left_at(0) starts at offset 0,
-/// left_at(1) follows, etc., and right_at(k) (highest level) comes first
-/// in the right section, down to right_at(0) at the end.
-fn flatten_hump(left_levels: &[Vec<Node>], right_levels: &[Vec<Node>]) -> (Vec<Node>, Vec<(usize, usize)>) {
-    let num_levels = left_levels.len();
-    let total: usize = left_levels.iter().chain(right_levels.iter()).map(|v| v.len()).sum();
-
-    let mut nodes = Vec::with_capacity(total);
-    let mut levels = Vec::with_capacity(num_levels);
-
-    for left in left_levels {
-        nodes.extend_from_slice(left);
-    }
-
-    for right in right_levels.iter().rev() {
-        nodes.extend_from_slice(right);
-    }
-
-    for i in 0..num_levels {
-        levels.push((left_levels[i].len(), right_levels[i].len()));
+    // Build final flat node array: all lefts, then rights in reverse level order
+    let mut nodes = out_left_nodes;
+    {
+        let mut end = out_right_nodes.len();
+        for &(_, rc) in levels.iter().rev() {
+            let start = end - rc;
+            nodes.extend_from_slice(&out_right_nodes[start..end]);
+            end = start;
+        }
     }
 
     (nodes, levels)
 }
 
-/// The core per-level operation: partition nodes into `(prefix, promoted, suffix)`.
+/// The core per-level operation: partition nodes into `(prefix_len, promoted, suffix_len)`.
 ///
 /// 1. **Determine the mergeable region**:
 ///    - Left boundary: position 0 if `at_start`, else [`find_stable_start`].
@@ -860,16 +941,21 @@ fn flatten_hump(left_levels: &[Vec<Node>], right_levels: &[Vec<Node>]) -> (Vec<N
 ///    of 2-9 nodes becomes one promoted node.
 ///
 /// 3. **Return**:
-///    - `prefix`: nodes before the left stable boundary (hump's left side).
+///    - `prefix_len`: number of nodes before the left stable boundary (hump's left side).
 ///    - `promoted`: merged parent nodes (input to the next level up).
-///    - `suffix`: nodes after the right stable boundary (hump's right side).
+///    - `suffix_len`: number of nodes after the right stable boundary (hump's right side).
 ///
 /// The prefix and suffix are each bounded by `O(MAX_GROUP_SIZE * K)` where
 /// `K` is the number of natural cuts needed for stability (typically 3),
 /// so they contribute O(1) nodes per level.
-fn split_and_promote(nodes: &[Node], at_start: bool, at_end: bool) -> (Vec<Node>, Vec<Node>, Vec<Node>) {
+///
+/// Returns `(prefix_len, promoted_vec, suffix_len)` instead of allocating
+/// prefix/suffix Vecs. The caller can slice `nodes[..prefix_len]` and
+/// `nodes[nodes.len()-suffix_len..]` to get the actual data.
+#[inline]
+fn split_and_promote(nodes: &[Node], at_start: bool, at_end: bool) -> (usize, Vec<Node>, usize) {
     if nodes.len() <= 1 {
-        return (nodes.to_vec(), Vec::new(), Vec::new());
+        return (nodes.len(), Vec::new(), 0);
     }
 
     let stable_start = if at_start {
@@ -877,7 +963,7 @@ fn split_and_promote(nodes: &[Node], at_start: bool, at_end: bool) -> (Vec<Node>
     } else {
         match find_stable_start(nodes) {
             Some(idx) => idx,
-            None => return (nodes.to_vec(), Vec::new(), Vec::new()),
+            None => return (nodes.len(), Vec::new(), 0),
         }
     };
 
@@ -886,34 +972,30 @@ fn split_and_promote(nodes: &[Node], at_start: bool, at_end: bool) -> (Vec<Node>
     } else {
         match find_stable_end(&nodes[stable_start..]) {
             Some(idx) => stable_start + idx,
-            None => return (nodes.to_vec(), Vec::new(), Vec::new()),
+            None => return (nodes.len(), Vec::new(), 0),
         }
     };
 
     if stable_start >= stable_end {
-        return (nodes.to_vec(), Vec::new(), Vec::new());
+        return (nodes.len(), Vec::new(), 0);
     }
 
-    let prefix = nodes[..stable_start].to_vec();
+    let prefix_len = stable_start;
+    let suffix_len = nodes.len() - stable_end;
     let mergeable = &nodes[stable_start..stable_end];
-    let suffix = nodes[stable_end..].to_vec();
 
-    let mut promoted = Vec::new();
+    // Pre-allocate: each group of ~4 nodes produces 1 promoted node
+    let mut promoted = Vec::with_capacity(mergeable.len() / 3 + 1);
     let mut pos = 0;
 
     while pos < mergeable.len() {
         let remaining = &mergeable[pos..];
-
-        if remaining.is_empty() {
-            break;
-        }
-
         let cut_len = next_merge_cut(remaining);
         promoted.push(merged_hash_of_sequence(&remaining[..cut_len]));
         pos += cut_len;
     }
 
-    (prefix, promoted, suffix)
+    (prefix_len, promoted, suffix_len)
 }
 
 #[cfg(test)]
