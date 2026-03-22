@@ -7,11 +7,6 @@ use more_asserts::{debug_assert_ge, debug_assert_le};
 use super::Chunk;
 use super::constants::{MAXIMUM_CHUNK_MULTIPLIER, MINIMUM_CHUNK_DIVISOR, TARGET_CHUNK_SIZE};
 
-/// The maximum chunk size, calculated from the configurable constants above
-#[allow(dead_code)]
-pub static MAX_CHUNK_SIZE: std::sync::LazyLock<usize> =
-    std::sync::LazyLock::new(|| (*TARGET_CHUNK_SIZE) * (*MAXIMUM_CHUNK_MULTIPLIER));
-
 /// Chunk Generator given an input stream. Do not use directly.
 /// Use `chunk_target_default`.
 pub struct Chunker {
