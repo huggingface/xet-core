@@ -23,7 +23,6 @@ crc32fast = { workspace = true }
 derivative = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
-lazy_static = { workspace = true }
 more-asserts = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true }

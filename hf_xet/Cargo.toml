@@ -17,7 +17,6 @@ xet-pkg = { package = "hf-xet", path = "../xet_pkg", features = ["python"] }
 async-trait = "0.1"
 chrono = "0.4"
 itertools = "0.14"
-lazy_static = "1.5"
 pprof = { version = "0.14", features = [
     "flamegraph",
     "prost",

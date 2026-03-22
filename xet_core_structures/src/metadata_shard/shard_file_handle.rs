@@ -45,9 +45,8 @@ impl Default for MDBShardFile {
     }
 }
 
-lazy_static::lazy_static! {
-    static ref MDB_SHARD_FILE_CACHE: RwLock<HashMap<PathBuf, Arc<MDBShardFile>>> = RwLock::new(HashMap::default());
-}
+static MDB_SHARD_FILE_CACHE: std::sync::LazyLock<RwLock<HashMap<PathBuf, Arc<MDBShardFile>>>> =
+    std::sync::LazyLock::new(|| RwLock::new(HashMap::default()));
 
 impl MDBShardFile {
     pub fn new(shard_hash: MerkleHash, path: PathBuf, shard: MDBShardInfo) -> Result<Arc<Self>> {

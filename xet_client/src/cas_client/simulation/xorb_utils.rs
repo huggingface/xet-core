@@ -16,15 +16,13 @@ use xet_core_structures::xorb_object::XorbObject;
 use crate::cas_types::{ChunkRange, FileRange, HttpRange, XorbRangeDescriptor, XorbReconstructionTerm};
 use crate::error::{ClientError, Result};
 
-lazy_static::lazy_static! {
-    /// Reference instant for URL timestamps. Initialized far in the past to allow
-    /// testing timestamps that are earlier in the current process lifetime.
-    pub(crate) static ref REFERENCE_INSTANT: Instant = {
-        let now = Instant::now();
-        now.checked_sub(Duration::from_secs(365 * 24 * 60 * 60))
-            .unwrap_or(now)
-    };
-}
+/// Reference instant for URL timestamps. Initialized far in the past to allow
+/// testing timestamps that are earlier in the current process lifetime.
+pub(crate) static REFERENCE_INSTANT: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(|| {
+    let now = Instant::now();
+    now.checked_sub(Duration::from_secs(365 * 24 * 60 * 60))
+        .unwrap_or(now)
+});
 
 /// A merged byte/chunk range for a single xorb.
 #[derive(Clone, Debug)]

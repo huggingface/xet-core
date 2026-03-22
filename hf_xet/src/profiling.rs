@@ -32,9 +32,8 @@ use pprof::{ProfilerGuard, ProfilerGuardBuilder};
 const SAMPLING_FREQUENCY: i32 = 100; // 100 Hz
 
 // A global reference to the current profiling session.  The python at_exit function dumps this out.
-lazy_static::lazy_static! {
-    static ref CURRENT_SESSION: ProfilingSession<'static> = ProfilingSession::new();
-}
+static CURRENT_SESSION: std::sync::LazyLock<ProfilingSession<'static>> =
+    std::sync::LazyLock::new(ProfilingSession::new);
 
 struct ProfilingSession<'a> {
     guard: Option<ProfilerGuard<'a>>,

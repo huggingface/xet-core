@@ -20,7 +20,6 @@ dirs = { workspace = true }
 humantime = { workspace = true }
 git-version = { workspace = true }
 konst = "0.4"
-lazy_static = { workspace = true }
 libc = { workspace = true }
 more-asserts = { workspace = true }
 oneshot = { workspace = true }

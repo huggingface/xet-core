@@ -5,7 +5,7 @@ use std::path::Path;
 
 #[cfg(unix)]
 use colored::Colorize;
-use lazy_static::lazy_static;
+use std::sync::LazyLock;
 use tracing::error;
 #[cfg(windows)]
 use winapi::um::{
@@ -60,9 +60,7 @@ fn is_elevated_impl() -> bool {
     }
 }
 
-lazy_static! {
-    static ref IS_ELEVATED: bool = is_elevated_impl();
-}
+static IS_ELEVATED: LazyLock<bool> = LazyLock::new(is_elevated_impl);
 
 pub fn is_elevated() -> bool {
     *IS_ELEVATED

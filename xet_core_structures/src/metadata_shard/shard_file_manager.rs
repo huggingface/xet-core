@@ -21,9 +21,8 @@ use crate::merklehash::{HMACKey, MerkleHash};
 use crate::{MerkleHashMap, TruncatedMerkleHashMap};
 
 // The shard manager cache
-lazy_static::lazy_static! {
-    static ref MDB_SHARD_FILE_MANAGER_CACHE: RwLock<HashMap<PathBuf, Arc<ShardFileManager>>> = RwLock::new(HashMap::default());
-}
+static MDB_SHARD_FILE_MANAGER_CACHE: std::sync::LazyLock<RwLock<HashMap<PathBuf, Arc<ShardFileManager>>>> =
+    std::sync::LazyLock::new(|| RwLock::new(HashMap::default()));
 
 // The structure used as the target for the dedup lookup
 #[repr(Rust, packed)]

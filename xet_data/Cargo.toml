@@ -24,7 +24,6 @@ clap = { workspace = true }
 gearhash = { workspace = true }
 http = { workspace = true }
 itertools = { workspace = true }
-lazy_static = { workspace = true }
 more-asserts = { workspace = true }
 prometheus = { workspace = true }
 rand = { workspace = true }

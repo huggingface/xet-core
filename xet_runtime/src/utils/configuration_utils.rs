@@ -1,4 +1,5 @@
 use std::str::FromStr;
+use std::sync::LazyLock;
 
 use tracing::{Level, event, info, warn};
 
@@ -162,9 +163,6 @@ impl ParsableConfigValue for TemplatedPathBuf {
     }
 }
 
-// Reexport this so that dependencies don't have weird other dependencies
-pub use lazy_static::lazy_static;
-
 #[macro_export]
 macro_rules! test_configurable_constants {
     ($(
@@ -175,21 +173,19 @@ macro_rules! test_configurable_constants {
             #[allow(unused_imports)]
             use $crate::configuration_utils::*;
 
-            lazy_static! {
-                $(#[$meta])*
-                pub static ref $name: $type = {
-                    #[cfg(debug_assertions)]
-                    {
-                        let default_value = $value;
-                        let maybe_env_value = std::env::var(concat!("HF_XET_",stringify!($name))).ok();
-                        <$type>::parse_config_value(stringify!($name), maybe_env_value, default_value)
-                    }
-                    #[cfg(not(debug_assertions))]
-                    {
-                        $value
-                    }
-                };
-            }
+            $(#[$meta])*
+            pub static $name: std::sync::LazyLock<$type> = std::sync::LazyLock::new(|| {
+                #[cfg(debug_assertions)]
+                {
+                    let default_value = $value;
+                    let maybe_env_value = std::env::var(concat!("HF_XET_",stringify!($name))).ok();
+                    <$type>::parse_config_value(stringify!($name), maybe_env_value, default_value)
+                }
+                #[cfg(not(debug_assertions))]
+                {
+                    $value
+                }
+            });
         )+
     };
 }
@@ -243,7 +239,7 @@ macro_rules! test_set_constants {
                     std::env::set_var(env_name, &val_str);
                 }
 
-                // Force lazy_static to be read now:
+                // Force LazyLock to initialize now:
                 let actual_value = *$var_name;
 
                 if format!("{actual_value:?}") != val_str {
@@ -338,12 +334,10 @@ fn get_high_performance_flag() -> bool {
     }
 }
 
-lazy_static! {
-    /// To set the high performance mode to true, set either of the following environment variables to 1 or true:
-    ///  - HF_XET_HIGH_PERFORMANCE
-    ///  - HF_XET_HP
-    pub static ref HIGH_PERFORMANCE: bool = get_high_performance_flag();
-}
+/// To set the high performance mode to true, set either of the following environment variables to 1 or true:
+///  - HF_XET_HIGH_PERFORMANCE
+///  - HF_XET_HP
+pub static HIGH_PERFORMANCE: LazyLock<bool> = LazyLock::new(get_high_performance_flag);
 
 #[inline]
 pub fn is_high_performance() -> bool {
