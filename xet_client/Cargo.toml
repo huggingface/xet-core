@@ -82,7 +82,6 @@ mockall = { workspace = true }
 httpmock = { workspace = true }
 rand_distr = { workspace = true }
 serde_json = { workspace = true }
-tempdir = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing-test = { workspace = true }
 wiremock = { workspace = true }

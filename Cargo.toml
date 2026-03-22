@@ -132,6 +132,5 @@ rand_core = "0.6"
 rand_distr = "0.5"
 russh = "0.55"
 serial_test = "3"
-tempdir = "0.3"
 tracing-test = { version = "0.2", features = ["no-env-filter"] }
 wiremock = "0.6"

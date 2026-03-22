@@ -816,7 +816,7 @@ mod tests {
 
     use rand::SeedableRng;
     use rand::rngs::StdRng;
-    use tempdir::TempDir;
+    use tempfile::TempDir;
     use xet_runtime::utils::output_bytes;
 
     use super::super::{CacheConfig, ChunkCache};
@@ -1258,7 +1258,7 @@ mod tests {
 
 #[cfg(test)]
 mod concurrency_tests {
-    use tempdir::TempDir;
+    use tempfile::TempDir;
 
     use super::super::{CacheConfig, ChunkCache};
     use super::DiskCache;
