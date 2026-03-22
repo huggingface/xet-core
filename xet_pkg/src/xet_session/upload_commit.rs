@@ -196,11 +196,12 @@ impl UploadCommitInner {
                 return Err(err);
             },
         };
-        self.task_runtime.mark_runtime_finished_ok()?;
-
         if let Some(e) = first_error {
+            self.task_runtime.mark_runtime_finished_err(e.clone())?;
             return Err(e);
         }
+
+        self.task_runtime.mark_runtime_finished_ok()?;
 
         Ok(CommitReport {
             dedup_metrics,
@@ -503,9 +504,10 @@ mod tests {
     use std::time::Duration;
 
     use tempfile::{TempDir, tempdir};
+    use xet_runtime::core::RuntimeMode;
 
     use super::*;
-    use crate::xet_session::session::{RuntimeMode, XetSession, XetSessionBuilder};
+    use crate::xet_session::session::{XetSession, XetSessionBuilder};
 
     async fn local_session(temp: &TempDir) -> Result<XetSession, Box<dyn std::error::Error>> {
         let cas_path = temp.path().join("cas");

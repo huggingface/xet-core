@@ -1,7 +1,6 @@
 //! Progress tracking for upload commits and download groups.
 
-use std::ops::Deref;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use xet_data::progress_tracking::UniqueID;
 
@@ -58,20 +57,6 @@ pub struct TaskHandle {
     pub task_id: UniqueID,
 }
 
-#[derive(Debug)]
-pub struct UploadTaskHandle {
-    pub(super) inner: TaskHandle,
-    pub(super) result: Arc<OnceLock<UploadResult>>,
-}
-
-impl Deref for UploadTaskHandle {
-    type Target = TaskHandle;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
 impl TaskHandle {
     pub fn status(&self) -> Result<TaskStatus, SessionError> {
         if let Some(status) = &self.status {
@@ -82,19 +67,36 @@ impl TaskHandle {
     }
 }
 
-impl UploadTaskHandle {
-    pub fn result(&self) -> Option<UploadResult> {
-        self.result.get().cloned()
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::ops::Deref;
+    use std::sync::OnceLock;
+
     use xet_data::deduplication::DeduplicationMetrics;
     use xet_data::processing::XetFileInfo;
 
     use super::*;
     use crate::xet_session::FileMetadata;
+
+    #[derive(Debug)]
+    struct UploadTaskHandle {
+        inner: TaskHandle,
+        result: Arc<OnceLock<UploadResult>>,
+    }
+
+    impl Deref for UploadTaskHandle {
+        type Target = TaskHandle;
+
+        fn deref(&self) -> &Self::Target {
+            &self.inner
+        }
+    }
+
+    impl UploadTaskHandle {
+        fn result(&self) -> Option<UploadResult> {
+            self.result.get().cloned()
+        }
+    }
 
     #[test]
     fn test_task_handle_with_no_status_returns_error() {

@@ -46,7 +46,6 @@ External-mode session (where blocking APIs return `WrongRuntimeMode`).
 
 - `XetRuntime::handle_meets_requirements(&Handle)` (non-wasm)
 - `XetRuntime::from_validated_external(handle, config)` (non-wasm)
-- `XetRuntime::new_lightweight(config)` (non-wasm)
 - `XetRuntime::mode() -> RuntimeMode`
 
 ## Error Mapping Change

@@ -104,7 +104,6 @@ type OwnedRuntimeCell = Arc<std::sync::RwLock<Option<Arc<TokioRuntime>>>>;
 enum RuntimeBackend {
     External { handle_id: Option<tokio::runtime::Id> },
     OwnedThreadPool { runtime: OwnedRuntimeCell },
-    OwnedCurrentThread { runtime: OwnedRuntimeCell },
 }
 
 #[cfg(target_family = "wasm")]
@@ -197,10 +196,6 @@ pub struct XetRuntime {
     //  System monitor instance if enabled, monitor starts on initiation
     #[cfg(not(target_family = "wasm"))]
     system_monitor: Option<SystemMonitor>,
-    /// Serializes `Runtime::block_on` on the lightweight `current_thread` backend and holds the
-    /// runtime cell read lock during `block_on` so `perform_sigint_shutdown` cannot `take()` it.
-    #[cfg(not(target_family = "wasm"))]
-    lightweight_block_on_mutex: Option<Arc<std::sync::Mutex<()>>>,
 }
 
 // Use thread-local references to the runtime that are set on initialization among all
@@ -293,8 +288,6 @@ impl XetRuntime {
                     .ok()
                 })
                 .flatten(),
-            #[cfg(not(target_family = "wasm"))]
-            lightweight_block_on_mutex: None,
             config: Arc::new(config),
         });
 
@@ -400,8 +393,6 @@ impl XetRuntime {
                     .ok()
                 })
                 .flatten(),
-            #[cfg(not(target_family = "wasm"))]
-            lightweight_block_on_mutex: None,
             config: Arc::new(config),
         });
         if let Ok(mut reg) = EXTERNAL_RUNTIME_REGISTRY.write() {
@@ -435,62 +426,8 @@ impl XetRuntime {
                     .ok()
                 })
                 .flatten(),
-            #[cfg(not(target_family = "wasm"))]
-            lightweight_block_on_mutex: None,
             config: Arc::new(config),
         })
-    }
-
-    /// Create a lightweight single-threaded tokio runtime in the current thread.
-    ///
-    /// The runtime uses `current_thread` with all drivers enabled. Unlike
-    /// [`new_with_config`](Self::new_with_config), no background thread pool is
-    /// created. Useful for simple scripting or testing scenarios where a full
-    /// multi-threaded pool is not needed.
-    ///
-    /// The mode is set to `Owned`, so both `bridge_async` and `bridge_sync`
-    /// work as expected.
-    #[cfg(not(target_family = "wasm"))]
-    pub fn new_lightweight(config: XetConfig) -> Result<Arc<Self>, RuntimeError> {
-        let tokio_rt = TokioRuntimeBuilder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(RuntimeError::RuntimeInit)?;
-
-        let runtime = Arc::new(std::sync::RwLock::new(Some(Arc::new(tokio_rt))));
-        let handle = {
-            let guard = runtime.read().map_err(|e| RuntimeError::Other(e.to_string()))?;
-            guard
-                .as_ref()
-                .ok_or_else(|| RuntimeError::Other("lightweight runtime not available".into()))?
-                .handle()
-                .clone()
-        };
-
-        let rt = Arc::new(Self {
-            backend: RuntimeBackend::OwnedCurrentThread {
-                runtime: runtime.clone(),
-            },
-            handle_ref: handle.into(),
-            external_executor_count: 0.into(),
-            sigint_shutdown: false.into(),
-            common: XetCommon::new(&config),
-            system_monitor: config
-                .system_monitor
-                .enabled
-                .then(|| {
-                    SystemMonitor::follow_process(
-                        config.system_monitor.sample_interval,
-                        config.system_monitor.log_path.clone(),
-                    )
-                    .ok()
-                })
-                .flatten(),
-            lightweight_block_on_mutex: Some(Arc::new(std::sync::Mutex::new(()))),
-            config: Arc::new(config),
-        });
-
-        Ok(rt)
     }
 
     #[inline]
@@ -651,10 +588,8 @@ impl XetRuntime {
     /// Run a future on the appropriate runtime for this `XetRuntime`.
     ///
     /// - **External mode**: the future is awaited directly on the caller's executor.
-    /// - **Owned mode with a background thread pool**: the future is spawned onto the owned thread pool and the result
-    ///   is delivered via a `oneshot` channel (compatible with any executor).
-    /// - **Owned mode with an in-process runtime** (e.g. lightweight): the future is awaited directly, because there is
-    ///   no separate thread to dispatch to.
+    /// - **Owned mode**: the future is spawned onto the owned thread pool and the result is delivered via a `oneshot`
+    ///   channel (compatible with any executor).
     ///
     /// This is the primary async entry point. Session-level async methods should call
     /// `self.runtime.bridge_async(...)`.
@@ -665,7 +600,6 @@ impl XetRuntime {
     {
         match &self.backend {
             RuntimeBackend::External { .. } => Ok(fut.await),
-            RuntimeBackend::OwnedCurrentThread { .. } => self.bridge_current_thread(fut).await,
             RuntimeBackend::OwnedThreadPool { .. } => self.bridge_to_owned(task_name, fut).await,
         }
     }
@@ -698,99 +632,9 @@ impl XetRuntime {
             self.external_executor_count.fetch_sub(1, Ordering::SeqCst);
         });
 
-        // For current_thread runtimes, use Runtime::block_on to drive the
-        // reactor inline. Handle::block_on cannot drive a current_thread reactor
-        // from an external thread.
-        match &self.backend {
-            RuntimeBackend::OwnedCurrentThread { .. } => {
-                #[cfg(not(target_family = "wasm"))]
-                {
-                    let mutex = self
-                        .lightweight_block_on_mutex
-                        .as_ref()
-                        .ok_or_else(|| RuntimeError::Other("internal: lightweight mutex missing".into()))?;
-                    let runtime_cell = self.runtime_cell_if_owned().ok_or_else(|| {
-                        RuntimeError::InvalidRuntime("owned runtime is not available in external mode".into())
-                    })?;
-                    let _guard = mutex.lock().map_err(|e| RuntimeError::Other(e.to_string()))?;
-                    let guard = runtime_cell.read().map_err(|e| RuntimeError::Other(e.to_string()))?;
-                    let rt = guard
-                        .as_ref()
-                        .ok_or_else(|| RuntimeError::Other("runtime not available".into()))?;
-                    Ok(rt.block_on(future))
-                }
-                #[cfg(target_family = "wasm")]
-                {
-                    let rt = self.clone_owned_runtime()?;
-                    Ok(rt.block_on(future))
-                }
-            },
-            RuntimeBackend::OwnedThreadPool { .. } => {
-                let spawn_handle = self.handle();
-                self.handle()
-                    .block_on(async move { spawn_handle.spawn(future).await.map_err(RuntimeError::from) })
-            },
-            RuntimeBackend::External { .. } => unreachable!("checked above"),
-        }
-    }
-
-    /// Bridge a future for a `current_thread` runtime from a non-tokio async context.
-    ///
-    /// Spawns a temporary OS thread that calls `Runtime::block_on(future)` to
-    /// drive the reactor inline. The result is returned via a `tokio::sync::oneshot`
-    /// channel that any outer executor can poll.
-    async fn bridge_current_thread<T, F>(&self, fut: F) -> Result<T, RuntimeError>
-    where
-        F: Future<Output = T> + Send + 'static,
-        T: Send + 'static,
-    {
-        #[cfg(not(target_family = "wasm"))]
-        {
-            let mutex = self
-                .lightweight_block_on_mutex
-                .as_ref()
-                .ok_or_else(|| RuntimeError::Other("internal: lightweight mutex missing".into()))?;
-            let runtime_cell = self.runtime_cell_if_owned().ok_or_else(|| {
-                RuntimeError::InvalidRuntime("owned runtime is not available in external mode".into())
-            })?;
-            let mutex = Arc::clone(mutex);
-            let runtime_cell = Arc::clone(runtime_cell);
-            let (tx, rx) = oneshot::channel();
-
-            std::thread::Builder::new()
-                .name("hf-xet-lightweight-bridge".into())
-                .spawn(move || {
-                    let _guard = mutex.lock().unwrap();
-                    let result: Result<T, RuntimeError> = match runtime_cell.read() {
-                        Ok(guard) => match guard.as_ref() {
-                            Some(rt) => Ok(rt.block_on(fut)),
-                            None => Err(RuntimeError::Other("runtime not available".into())),
-                        },
-                        Err(e) => Err(RuntimeError::Other(e.to_string())),
-                    };
-                    let _ = tx.send(result);
-                })
-                .map_err(RuntimeError::RuntimeInit)?;
-
-            rx.await
-                .map_err(|_| RuntimeError::TaskCanceled("lightweight bridge thread dropped".into()))?
-        }
-        #[cfg(target_family = "wasm")]
-        {
-            let runtime = self.clone_owned_runtime()?;
-            let (tx, rx) = oneshot::channel();
-
-            std::thread::Builder::new()
-                .name("hf-xet-lightweight-bridge".into())
-                .spawn(move || {
-                    let result = runtime.block_on(fut);
-                    let _ = tx.send(result);
-                })
-                .map_err(RuntimeError::RuntimeInit)?;
-
-            rx.await
-                .map_err(|_| RuntimeError::TaskCanceled("lightweight bridge thread dropped".into()))
-        }
+        let spawn_handle = self.handle();
+        self.handle()
+            .block_on(async move { spawn_handle.spawn(future).await.map_err(RuntimeError::from) })
     }
 
     /// Bridge a future onto this runtime's `hf-xet-*` thread pool from any async context,
@@ -830,25 +674,10 @@ impl XetRuntime {
         }
     }
 
-    #[cfg(target_family = "wasm")]
-    #[inline]
-    fn clone_owned_runtime(&self) -> Result<Arc<TokioRuntime>, RuntimeError> {
-        let runtime_cell = self
-            .runtime_cell_if_owned()
-            .ok_or_else(|| RuntimeError::InvalidRuntime("owned runtime is not available in external mode".into()))?;
-        let guard = runtime_cell.read().map_err(|e| RuntimeError::Other(e.to_string()))?;
-        guard
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| RuntimeError::Other("runtime not available".into()))
-    }
-
     #[inline]
     fn runtime_cell_if_owned(&self) -> Option<&OwnedRuntimeCell> {
         match &self.backend {
-            RuntimeBackend::OwnedThreadPool { runtime } | RuntimeBackend::OwnedCurrentThread { runtime } => {
-                Some(runtime)
-            },
+            RuntimeBackend::OwnedThreadPool { runtime } => Some(runtime),
             RuntimeBackend::External { .. } => None,
         }
     }
@@ -882,7 +711,7 @@ impl XetRuntime {
     pub fn mode(&self) -> RuntimeMode {
         match &self.backend {
             RuntimeBackend::External { .. } => RuntimeMode::External,
-            RuntimeBackend::OwnedCurrentThread { .. } | RuntimeBackend::OwnedThreadPool { .. } => RuntimeMode::Owned,
+            RuntimeBackend::OwnedThreadPool { .. } => RuntimeMode::Owned,
         }
     }
 
@@ -903,6 +732,13 @@ impl XetRuntime {
     /// `tokio::net::TcpListener::bind` when the corresponding driver is absent.
     /// This is undocumented internal behavior validated against tokio 1.x.
     ///
+    /// On WASM targets the only available flavor is `current_thread` and
+    /// there are no separate IO/time drivers to probe, so any handle is accepted.
+    #[cfg(target_family = "wasm")]
+    pub fn handle_meets_requirements(_handle: &TokioRuntimeHandle) -> bool {
+        true
+    }
+
     /// Not available on WASM targets (WASM always uses `current_thread`).
     #[cfg(not(target_family = "wasm"))]
     pub fn handle_meets_requirements(handle: &TokioRuntimeHandle) -> bool {
@@ -944,7 +780,7 @@ impl Display for XetRuntime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let metrics = match &self.backend {
             RuntimeBackend::External { .. } => self.handle().metrics(),
-            RuntimeBackend::OwnedCurrentThread { runtime } | RuntimeBackend::OwnedThreadPool { runtime } => {
+            RuntimeBackend::OwnedThreadPool { runtime } => {
                 // Need to be careful that this doesn't acquire locks eagerly, as this function can be called
                 // from some weird places like displaying the backtrace of a panic or exception.
                 let Ok(runtime_rlg) = runtime.try_read() else {
@@ -1086,96 +922,39 @@ mod tests {
 
     #[cfg(not(target_family = "wasm"))]
     #[test]
-    fn test_new_lightweight_bridge_sync() {
-        let rt = XetRuntime::new_lightweight(XetConfig::new()).unwrap();
-        assert_eq!(rt.mode(), RuntimeMode::Owned);
-        let result = rt.bridge_sync(async { 42 }).unwrap();
-        assert_eq!(result, 42);
+    fn test_from_validated_external_accepts_valid_handle() {
+        let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let xet_rt = XetRuntime::from_validated_external(tokio_rt.handle().clone(), XetConfig::new()).unwrap();
+        assert_eq!(xet_rt.mode(), RuntimeMode::External);
     }
 
     #[cfg(not(target_family = "wasm"))]
     #[test]
-    fn test_new_lightweight_bridge_async_from_non_tokio() {
-        let rt = XetRuntime::new_lightweight(XetConfig::new()).unwrap();
-        let result = futures::executor::block_on(async { rt.bridge_async("test", async { 77 }).await.unwrap() });
-        assert_eq!(result, 77);
+    fn test_from_validated_external_rejects_current_thread_runtime() {
+        let tokio_rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let result = XetRuntime::from_validated_external(tokio_rt.handle().clone(), XetConfig::new());
+        assert!(matches!(result, Err(RuntimeError::InvalidRuntime(_))));
     }
 
     #[cfg(not(target_family = "wasm"))]
     #[test]
-    fn test_new_lightweight_shutdown_on_drop() {
-        let rt = XetRuntime::new_lightweight(XetConfig::new()).unwrap();
-        let result = rt.bridge_sync(async { 1 + 1 }).unwrap();
-        assert_eq!(result, 2);
-        drop(rt);
+    fn test_from_validated_external_rejects_runtime_without_drivers() {
+        let tokio_rt = tokio::runtime::Builder::new_multi_thread().build().unwrap();
+        let result = XetRuntime::from_validated_external(tokio_rt.handle().clone(), XetConfig::new());
+        assert!(matches!(result, Err(RuntimeError::InvalidRuntime(_))));
     }
 
-    #[cfg(not(target_family = "wasm"))]
     #[test]
-    #[ignore = "perform_sigint_shutdown inside block_on future races taking the owned runtime"]
-    fn test_new_lightweight_bridge_sync_shutdown_inside_future_no_deadlock() {
-        use std::sync::mpsc;
-        use std::time::Duration;
-
-        let rt = XetRuntime::new_lightweight(XetConfig::new()).unwrap();
-        let rt_for_thread = rt.clone();
-        let rt_for_shutdown = rt.clone();
-        let (tx, rx) = mpsc::channel();
-
-        std::thread::spawn(move || {
-            let result = rt_for_thread.bridge_sync(async move {
-                rt_for_shutdown.perform_sigint_shutdown();
-                17usize
-            });
-            let _ = tx.send(result);
+    fn test_bridge_async_owned_mode_catches_panic() {
+        let rt = XetRuntime::new().unwrap();
+        let rt2 = rt.clone();
+        let result = rt.bridge_sync(async move {
+            rt2.bridge_async("panic_test", async {
+                panic!("intentional test panic");
+            })
+            .await
         });
-
-        let result = rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("bridge_sync should not deadlock when future triggers shutdown");
-        assert_eq!(result.unwrap(), 17);
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    #[test]
-    #[ignore = "perform_sigint_shutdown inside block_on future races taking the owned runtime"]
-    fn test_new_lightweight_bridge_async_shutdown_inside_future_no_deadlock() {
-        use std::sync::mpsc;
-        use std::time::Duration;
-
-        let rt = XetRuntime::new_lightweight(XetConfig::new()).unwrap();
-        let rt_for_thread = rt.clone();
-        let rt_for_shutdown = rt.clone();
-        let (tx, rx) = mpsc::channel();
-
-        std::thread::spawn(move || {
-            let result = futures::executor::block_on(async move {
-                rt_for_thread
-                    .bridge_async("shutdown-in-future", async move {
-                        rt_for_shutdown.perform_sigint_shutdown();
-                        21usize
-                    })
-                    .await
-            });
-            let _ = tx.send(result);
-        });
-
-        let result = rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("bridge_async should not deadlock when future triggers shutdown");
-        assert_eq!(result.unwrap(), 21);
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    #[test]
-    fn test_bridge_sync_restores_external_count_on_early_error() {
-        let rt = XetRuntime::new_lightweight(XetConfig::new()).unwrap();
-        assert_eq!(rt.external_executor_count(), 0);
-
-        rt.perform_sigint_shutdown();
-        let result = rt.bridge_sync(async { 1usize });
-        assert!(result.is_err());
-
-        assert_eq!(rt.external_executor_count(), 0);
+        let err = result.unwrap().unwrap_err();
+        assert!(matches!(err, RuntimeError::TaskPanic(_)));
     }
 }

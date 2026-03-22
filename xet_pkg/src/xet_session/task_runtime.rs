@@ -131,6 +131,48 @@ impl TaskRuntime {
         self.bridge_sync(task_name, fut)
     }
 
+    /// Checks state before a terminal operation; if not `Running`, caches and returns the
+    /// appropriate error.  Returns `Ok(())` when the caller should proceed with the bridge call.
+    fn check_terminal_state<T: Clone>(
+        &self,
+        task_name: &'static str,
+        result_cell: &OnceLock<Result<T, XetError>>,
+    ) -> Result<(), XetError> {
+        match self.state()? {
+            TaskRuntimeState::Running => Ok(()),
+            TaskRuntimeState::Cancelled => {
+                let result = Err(XetError::Cancelled(format!("{task_name} cancelled")));
+                let _ = result_cell.set(result.clone());
+                result.map(|_| ())
+            },
+            TaskRuntimeState::Finished(Err(XetError::Aborted)) => {
+                let result = Err(XetError::Aborted);
+                let _ = result_cell.set(result.clone());
+                result.map(|_| ())
+            },
+            TaskRuntimeState::Finished(_) => {
+                let result = Err(XetError::other(format!("{task_name} already finished")));
+                let _ = result_cell.set(result.clone());
+                result.map(|_| ())
+            },
+        }
+    }
+
+    /// Records the bridge result into `result_cell` and updates internal state to match.
+    fn record_terminal_result<T: Clone>(
+        &self,
+        result: &Result<T, XetError>,
+        result_cell: &OnceLock<Result<T, XetError>>,
+    ) -> Result<(), XetError> {
+        self.set_state(match result {
+            Ok(_) => TaskRuntimeState::Finished(Ok(())),
+            Err(XetError::Cancelled(_)) => TaskRuntimeState::Cancelled,
+            Err(e) => TaskRuntimeState::Finished(Err(e.clone())),
+        })?;
+        let _ = result_cell.set(result.clone());
+        Ok(())
+    }
+
     pub(super) async fn bridge_async_terminal<T, F>(
         &self,
         task_name: &'static str,
@@ -149,32 +191,9 @@ impl TaskRuntime {
             return cached.clone();
         }
 
-        match self.state()? {
-            TaskRuntimeState::Running => {},
-            TaskRuntimeState::Cancelled => {
-                let result = Err(XetError::Cancelled(format!("{task_name} cancelled")));
-                let _ = result_cell.set(result.clone());
-                return result;
-            },
-            TaskRuntimeState::Finished(Err(XetError::Aborted)) => {
-                let result = Err(XetError::Aborted);
-                let _ = result_cell.set(result.clone());
-                return result;
-            },
-            TaskRuntimeState::Finished(_) => {
-                let result = Err(XetError::other(format!("{task_name} already finished")));
-                let _ = result_cell.set(result.clone());
-                return result;
-            },
-        };
-
+        self.check_terminal_state(task_name, &result_cell)?;
         let result = self.bridge_async(task_name, fut).await;
-        self.set_state(match &result {
-            Ok(_) => TaskRuntimeState::Finished(Ok(())),
-            Err(XetError::Cancelled(_)) => TaskRuntimeState::Cancelled,
-            Err(e) => TaskRuntimeState::Finished(Err(e.clone())),
-        })?;
-        let _ = result_cell.set(result.clone());
+        self.record_terminal_result(&result, &result_cell)?;
         result
     }
 
@@ -234,32 +253,9 @@ impl TaskRuntime {
             return cached.clone();
         }
 
-        match self.state()? {
-            TaskRuntimeState::Running => {},
-            TaskRuntimeState::Cancelled => {
-                let result = Err(XetError::Cancelled(format!("{task_name} cancelled")));
-                let _ = result_cell.set(result.clone());
-                return result;
-            },
-            TaskRuntimeState::Finished(Err(XetError::Aborted)) => {
-                let result = Err(XetError::Aborted);
-                let _ = result_cell.set(result.clone());
-                return result;
-            },
-            TaskRuntimeState::Finished(_) => {
-                let result = Err(XetError::other(format!("{task_name} already finished")));
-                let _ = result_cell.set(result.clone());
-                return result;
-            },
-        };
-
+        self.check_terminal_state(task_name, &result_cell)?;
         let result = self.bridge_sync(task_name, fut);
-        self.set_state(match &result {
-            Ok(_) => TaskRuntimeState::Finished(Ok(())),
-            Err(XetError::Cancelled(_)) => TaskRuntimeState::Cancelled,
-            Err(e) => TaskRuntimeState::Finished(Err(e.clone())),
-        })?;
-        let _ = result_cell.set(result.clone());
+        self.record_terminal_result(&result, &result_cell)?;
         result
     }
 

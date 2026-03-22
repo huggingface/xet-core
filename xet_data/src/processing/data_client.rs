@@ -17,6 +17,7 @@ use super::file_cleaner::Sha256Policy;
 use super::{FileUploadSession, XetFileInfo};
 use crate::deduplication::{Chunker, DeduplicationMetrics};
 use crate::error::Result;
+
 pub fn default_config(
     endpoint: String,
     token_info: Option<(String, u64)>,

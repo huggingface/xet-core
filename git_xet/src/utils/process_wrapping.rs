@@ -189,9 +189,7 @@ mod tests {
     use std::io::Write;
     use std::process::Command;
 
-    use xet_runtime::GenericError;
-
-    type Result<T> = std::result::Result<T, GenericError>;
+    use anyhow::Result;
 
     use super::{CapturedCommand, run_program_captured, run_program_captured_with_input_and_output};
 

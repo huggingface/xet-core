@@ -86,10 +86,8 @@ impl CredentialHelper for SSHCredentialHelper {
 
 #[cfg(test)]
 mod tests {
+    use anyhow::Result;
     use xet_client::hub_client::Operation;
-    use xet_runtime::GenericError;
-
-    type Result<T> = std::result::Result<T, GenericError>;
 
     use super::SSHCredentialHelper;
     use crate::git_repo::GitRepo;

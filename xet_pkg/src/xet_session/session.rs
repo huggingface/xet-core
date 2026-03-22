@@ -10,7 +10,7 @@ use xet_client::cas_client::auth::TokenRefresher;
 use xet_data::processing::{FileDownloadSession, XetFileInfo};
 use xet_data::progress_tracking::UniqueID;
 use xet_runtime::config::XetConfig;
-use xet_runtime::core::XetRuntime;
+use xet_runtime::core::{RuntimeMode, XetRuntime};
 
 use super::common::create_translator_config;
 use super::download_streams::{XetDownloadStream, XetUnorderedDownloadStream};
@@ -18,12 +18,6 @@ use super::errors::SessionError;
 use super::file_download_group::FileDownloadGroup;
 use super::task_runtime::TaskRuntime;
 use super::upload_commit::UploadCommit;
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum RuntimeMode {
-    Owned,
-    External,
-}
 
 /// All shared state for a session.
 /// Lives behind `Arc<XetSessionInner>` — do not use this type directly.
@@ -152,11 +146,7 @@ impl XetSessionBuilder {
     /// drivers), it is silently ignored and [`build`](Self::build) will fall back to creating
     /// an owned thread pool instead.
     pub fn with_tokio_handle(self, handle: tokio::runtime::Handle) -> Self {
-        #[cfg(not(target_family = "wasm"))]
         let accept = XetRuntime::handle_meets_requirements(&handle);
-        #[cfg(target_family = "wasm")]
-        let accept = true;
-
         if !accept {
             info!("supplied tokio handle rejected (missing drivers or wrong flavor); falling back to Owned mode");
         }
@@ -176,22 +166,14 @@ impl XetSessionBuilder {
     /// any executor, and `_blocking` methods are available.
     pub fn build(self) -> Result<XetSession, SessionError> {
         let handle = self.tokio_handle.or_else(|| {
-            tokio::runtime::Handle::try_current().ok().filter(|h| {
-                #[cfg(not(target_family = "wasm"))]
-                {
-                    XetRuntime::handle_meets_requirements(h)
-                }
-                #[cfg(target_family = "wasm")]
-                {
-                    let _ = h;
-                    true
-                }
-            })
+            tokio::runtime::Handle::try_current()
+                .ok()
+                .filter(XetRuntime::handle_meets_requirements)
         });
 
-        let (runtime, runtime_mode) = match handle {
-            Some(h) => (XetRuntime::from_external_with_config(h, self.config.clone()), RuntimeMode::External),
-            None => (XetRuntime::new_with_config(self.config.clone())?, RuntimeMode::Owned),
+        let runtime = match handle {
+            Some(h) => XetRuntime::from_external_with_config(h, self.config.clone()),
+            None => XetRuntime::new_with_config(self.config.clone())?,
         };
 
         Ok(XetSession::new(
@@ -201,7 +183,6 @@ impl XetSessionBuilder {
             self.token_refresher,
             self.custom_headers,
             runtime,
-            runtime_mode,
         ))
     }
 
@@ -256,8 +237,8 @@ impl XetSession {
         token_refresher: Option<Arc<dyn TokenRefresher>>,
         custom_headers: Option<Arc<HeaderMap>>,
         runtime: Arc<XetRuntime>,
-        runtime_mode: RuntimeMode,
     ) -> Self {
+        let runtime_mode = runtime.mode();
         let task_runtime = TaskRuntime::new_root(runtime.clone());
         Self {
             inner: Arc::new(XetSessionInner {

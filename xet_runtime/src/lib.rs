@@ -1,7 +1,7 @@
 #![cfg_attr(feature = "strict", deny(warnings))]
 
 pub mod error;
-pub use error::{GenericError, RuntimeError};
+pub use error::RuntimeError;
 
 pub mod error_printer;
 pub mod file_utils;

@@ -10,7 +10,6 @@ name = "hf_xet"
 crate-type = ["cdylib", "lib"]
 
 [dependencies]
-xet-data = { path = "../xet_data" }
 xet-runtime = { path = "../xet_runtime" }
 xet-client = { path = "../xet_client" }
 xet-pkg = { package = "hf-xet", path = "../xet_pkg", features = ["python"] }
@@ -69,7 +68,3 @@ split-debuginfo = "none"
 inherits = "dev"
 debug = true
 opt-level = 3
-
-# cargo-machete has detected the below unused dependency incorrectly
-[package.metadata.cargo-machete]
-ignored = ["xet-data"]

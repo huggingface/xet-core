@@ -429,8 +429,8 @@ mod tests {
 
     // ── Mutex guard / concurrency test ───────────────────────────────────────
     //
-    // `finish()` takes a write lock on active_tasks while draining. We verify
-    // it blocks when that lock is held mid-execution.
+    // `finish()` takes a write lock on `active_tasks` while draining. We verify
+    // it blocks when that write lock is already held.
 
     #[test]
     // finish() must block while download_file_to_path() holds the state lock.
