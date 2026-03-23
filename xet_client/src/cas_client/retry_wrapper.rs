@@ -12,7 +12,7 @@ use tracing::{error, info};
 use xet_runtime::core::xet_config;
 
 use super::adaptive_concurrency::ConnectionPermit;
-use super::http_client::request_id_from_response;
+use crate::common::http_client::request_id_from_response;
 use crate::error::{ClientError, Result};
 
 #[derive(Debug)]

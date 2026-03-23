@@ -6,7 +6,6 @@ use std::sync::{Arc, Mutex};
 
 use http::HeaderMap;
 use tracing::info;
-use xet_client::cas_client::auth::TokenRefresher;
 use xet_data::processing::{FileDownloadSession, XetFileInfo};
 use xet_data::progress_tracking::UniqueID;
 use xet_runtime::config::XetConfig;
@@ -37,7 +36,8 @@ pub struct XetSessionInner {
     // CAS endpoint and auth (shared by all upload commits/download groups)
     pub(super) endpoint: Option<String>,
     pub(super) token_info: Option<(String, u64)>,
-    pub(super) token_refresher: Option<Arc<dyn TokenRefresher>>,
+    /// URL and headers for token refresh requests (always set together).
+    pub(super) token_refresh: Option<(String, Arc<HeaderMap>)>,
     pub(super) custom_headers: Option<Arc<HeaderMap>>,
 
     // Track active upload commits and download groups.
@@ -59,11 +59,23 @@ pub struct XetSessionInner {
 /// [`build`](Self::build) auto-detects a suitable current tokio handle when present,
 /// or creates an owned runtime (see [`XetSessionBuilder::with_tokio_handle`]).
 ///
+/// ## Authentication
+///
+/// Use [`with_token_refresh_url`](Self::with_token_refresh_url) to supply a Hub endpoint
+/// that the session will `GET` whenever the access token expires. Optionally seed an
+/// initial token with [`with_token_info`](Self::with_token_info) to avoid a refresh on
+/// the very first request:
+///
 /// ```rust,no_run
+/// # use std::sync::Arc;
+/// # use http::HeaderMap;
 /// # use xet::xet_session::XetSessionBuilder;
+/// let mut headers = HeaderMap::new();
+/// headers.insert("Authorization", "Bearer hub-token".parse().unwrap());
 /// let session = XetSessionBuilder::new()
-///     .with_endpoint("https://cas.example.com".into())
-///     .with_token_info("my-token".into(), 1_700_000_000)
+///     .with_endpoint("https://cas.example.com")
+///     .with_token_refresh_url("https://huggingface.co/api/repos/token", Arc::new(headers))
+///     .with_token_info("initial-token", 1_700_000_000)  // optional
 ///     .build()?;
 /// # Ok::<(), xet::xet_session::SessionError>(())
 /// ```
@@ -71,7 +83,7 @@ pub struct XetSessionBuilder {
     config: XetConfig,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
-    token_refresher: Option<Arc<dyn TokenRefresher>>,
+    token_refresh: Option<(String, Arc<HeaderMap>)>,
     custom_headers: Option<Arc<HeaderMap>>,
     tokio_handle: Option<tokio::runtime::Handle>,
 }
@@ -89,7 +101,7 @@ impl XetSessionBuilder {
             config: XetConfig::new(),
             endpoint: None,
             token_info: None,
-            token_refresher: None,
+            token_refresh: None,
             custom_headers: None,
             tokio_handle: None,
         }
@@ -101,32 +113,43 @@ impl XetSessionBuilder {
             config,
             endpoint: None,
             token_info: None,
-            token_refresher: None,
+            token_refresh: None,
             custom_headers: None,
             tokio_handle: None,
         }
     }
 
     /// Set the Xet CAS server endpoint URL (e.g. `"https://cas.example.com"`).
-    pub fn with_endpoint(self, endpoint: String) -> Self {
+    pub fn with_endpoint(self, endpoint: impl Into<String>) -> Self {
         Self {
-            endpoint: Some(endpoint),
+            endpoint: Some(endpoint.into()),
             ..self
         }
     }
 
-    /// Set a static Xet CAS server access token and its expiry as a Unix timestamp (seconds).
-    pub fn with_token_info(self, token: String, expiry: u64) -> Self {
+    /// Seed an initial CAS access token and its expiry as a Unix timestamp (seconds).
+    ///
+    /// When combined with [`with_token_refresh_url`](Self::with_token_refresh_url) this
+    /// avoids an extra refresh round-trip on the first request. Without a refresh URL the
+    /// token is used as-is and never refreshed.
+    pub fn with_token_info(self, token: impl Into<String>, expiry: u64) -> Self {
         Self {
-            token_info: Some((token, expiry)),
+            token_info: Some((token.into(), expiry)),
             ..self
         }
     }
 
-    /// Set a callback that is invoked to refresh the Xet CAS server access token when it expires.
-    pub fn with_token_refresher(self, refresher: Arc<dyn TokenRefresher>) -> Self {
+    /// Set a URL that the session will call (HTTP GET) to obtain a fresh CAS access token
+    /// whenever the current one is about to expire.
+    ///
+    /// `headers` are sent with every token-refresh request and are independent of the
+    /// CAS headers set by [`with_custom_headers`](Self::with_custom_headers).
+    ///
+    /// The endpoint must return a JSON object with `accessToken` (string) and `exp`
+    /// (Unix timestamp in seconds) fields.
+    pub fn with_token_refresh_url(self, url: impl Into<String>, headers: Arc<HeaderMap>) -> Self {
         Self {
-            token_refresher: Some(refresher),
+            token_refresh: Some((url.into(), headers)),
             ..self
         }
     }
@@ -196,7 +219,7 @@ impl XetSessionBuilder {
             self.config,
             self.endpoint,
             self.token_info,
-            self.token_refresher,
+            self.token_refresh,
             self.custom_headers,
             runtime,
         ))
@@ -238,7 +261,7 @@ impl XetSession {
         config: XetConfig,
         endpoint: Option<String>,
         token_info: Option<(String, u64)>,
-        token_refresher: Option<Arc<dyn TokenRefresher>>,
+        token_refresh: Option<(String, Arc<HeaderMap>)>,
         custom_headers: Option<Arc<HeaderMap>>,
         runtime: Arc<XetRuntime>,
     ) -> Self {
@@ -248,7 +271,7 @@ impl XetSession {
                 config,
                 endpoint,
                 token_info,
-                token_refresher,
+                token_refresh,
                 custom_headers,
                 active_upload_commits: Mutex::new(HashMap::new()),
                 active_file_download_groups: Mutex::new(HashMap::new()),

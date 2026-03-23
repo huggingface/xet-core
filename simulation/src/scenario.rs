@@ -8,7 +8,8 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use xet_client::cas_client::simulation::NetworkProfileOptions;
 use xet_client::cas_client::simulation::local_server::ServerLatencyProfile;
-use xet_client::cas_client::{LocalTestServer, LocalTestServerBuilder, build_http_client};
+use xet_client::cas_client::{LocalTestServer, LocalTestServerBuilder};
+use xet_client::common::http_client::build_http_client;
 
 use crate::upload_concurrency::generate_timeline_csv;
 

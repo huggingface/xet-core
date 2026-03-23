@@ -57,11 +57,14 @@ impl XetCommon {
         &self,
         tag: String,
         create_client_fn: F,
-    ) -> std::result::Result<Client, reqwest::Error>
+    ) -> crate::error::Result<Client>
     where
         F: FnOnce() -> std::result::Result<Client, reqwest::Error>,
     {
-        let mut guard = self.global_reqwest_client.lock().unwrap();
+        let mut guard = self
+            .global_reqwest_client
+            .lock()
+            .map_err(|e| crate::error::RuntimeError::PoisonError(e.to_string()))?;
 
         match guard.as_ref() {
             Some((cached_tag, cached_client)) if cached_tag == &tag => {

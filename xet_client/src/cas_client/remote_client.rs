@@ -16,7 +16,7 @@ use xet_runtime::core::xet_config;
 
 use super::adaptive_concurrency::{AdaptiveConcurrencyController, ConnectionPermit};
 use super::auth::AuthConfig;
-use super::http_client::{self, Api};
+use crate::common::http_client::{self, Api};
 use super::interface::URLProvider;
 use super::progress_tracked_streams::{
     DownloadProgressStream, ProgressCallback, StreamProgressReporter, UploadProgressStream,

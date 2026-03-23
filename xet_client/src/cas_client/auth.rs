@@ -4,7 +4,10 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use derivative::Derivative;
+use reqwest_middleware::ClientWithMiddleware;
 use thiserror::Error;
+
+use crate::hub_client::CredentialHelper;
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -38,17 +41,6 @@ pub trait TokenRefresher: Send + Sync {
 }
 
 #[derive(Debug)]
-pub struct NoOpTokenRefresher;
-
-#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
-impl TokenRefresher for NoOpTokenRefresher {
-    async fn refresh(&self) -> Result<TokenInfo, AuthError> {
-        Ok(("token".to_string(), 0))
-    }
-}
-
-#[derive(Debug)]
 pub struct ErrTokenRefresher;
 
 #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
@@ -56,6 +48,63 @@ pub struct ErrTokenRefresher;
 impl TokenRefresher for ErrTokenRefresher {
     async fn refresh(&self) -> Result<TokenInfo, AuthError> {
         Err(AuthError::RefreshFunctionNotCallable("Token refresh not expected".to_string()))
+    }
+}
+
+/// Token refresher that fetches a new token by making an authenticated GET request to a URL.
+///
+/// An optional [`CredentialHelper`](crate::hub_client::CredentialHelper) is applied to the
+/// request before it is sent; pass `None` when no additional credentials are needed.
+pub struct DirectRefreshRouteTokenRefresher {
+    refresh_route: String,
+    client: ClientWithMiddleware,
+    cred_helper: Option<Arc<dyn CredentialHelper>>,
+}
+
+impl DirectRefreshRouteTokenRefresher {
+    pub fn new(
+        refresh_route: impl Into<String>,
+        client: ClientWithMiddleware,
+        cred_helper: Option<Arc<dyn CredentialHelper>>,
+    ) -> Self {
+        Self {
+            refresh_route: refresh_route.into(),
+            client,
+            cred_helper,
+        }
+    }
+}
+
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
+impl TokenRefresher for DirectRefreshRouteTokenRefresher {
+    async fn refresh(&self) -> Result<TokenInfo, AuthError> {
+        let client = self.client.clone();
+        let refresh_route = self.refresh_route.clone();
+        let cred_helper = self.cred_helper.clone();
+
+        let jwt_info: crate::hub_client::CasJWTInfo = super::retry_wrapper::RetryWrapper::new("xet-token")
+            .run_and_extract_json(move || {
+                let refresh_route = refresh_route.clone();
+                let client = client.clone();
+                let cred_helper = cred_helper.clone();
+                async move {
+                    let req = client.get(&refresh_route).with_extension(crate::common::http_client::Api("xet-token"));
+                    let req = if let Some(helper) = cred_helper {
+                        helper
+                            .fill_credential(req)
+                            .await
+                            .map_err(reqwest_middleware::Error::middleware)?
+                    } else {
+                        req
+                    };
+                    req.send().await
+                }
+            })
+            .await
+            .map_err(AuthError::token_refresh_failure)?;
+
+        Ok((jwt_info.access_token, jwt_info.exp))
     }
 }
 

@@ -14,7 +14,7 @@ use reqwest::{Body, Url};
 use serde_json;
 
 use super::super::adaptive_concurrency::ConnectionPermit;
-use super::super::http_client::Api;
+use crate::common::http_client::Api;
 use super::super::interface::Client;
 use super::super::progress_tracked_streams::{ProgressCallback, UploadProgressStream};
 use super::super::remote_client::RemoteClient;

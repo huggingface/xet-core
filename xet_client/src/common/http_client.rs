@@ -9,7 +9,7 @@ use tracing::{Instrument, info, info_span, warn};
 use xet_runtime::core::{XetRuntime, xet_config};
 use xet_runtime::error_printer::{ErrorPrinter, OptionPrinter};
 
-use super::auth::{AuthConfig, TokenProvider};
+use crate::cas_client::auth::{AuthConfig, TokenProvider};
 use crate::cas_types::{REQUEST_ID_HEADER, SESSION_ID_HEADER};
 use crate::error::{ClientError, Result};
 
@@ -50,6 +50,21 @@ fn redact_headers(headers: &HeaderMap) -> HeaderMap {
     sanitized_headers
 }
 
+/// Produces a stable string tag for `custom_headers` that can be included in the
+/// client cache key.  We sort by header name so the tag is independent of insertion
+/// order.
+fn headers_tag(headers: Option<&HeaderMap>) -> String {
+    let Some(headers) = headers else {
+        return String::new();
+    };
+    let mut pairs: Vec<String> = headers
+        .iter()
+        .map(|(k, v)| format!("{}={}", k, v.to_str().unwrap_or("<binary>")))
+        .collect();
+    pairs.sort();
+    pairs.join(";")
+}
+
 #[allow(unused_variables)]
 #[cfg(not(target_family = "wasm"))]
 fn reqwest_client(unix_socket_path: Option<&str>, custom_headers: Option<Arc<HeaderMap>>) -> Result<reqwest::Client> {
@@ -58,8 +73,13 @@ fn reqwest_client(unix_socket_path: Option<&str>, custom_headers: Option<Arc<Hea
         .map(|s| s.to_string())
         .or_else(|| xet_config().client.unix_socket_path.clone());
 
-    // Determine the tag for client caching
-    let tag = socket_path.as_deref().unwrap_or("tcp").to_string();
+    // Build a cache tag that captures both the transport (socket path / TCP) and the
+    // set of default headers so that clients with different headers get separate pools.
+    let tag = format!(
+        "{}|{}",
+        socket_path.as_deref().unwrap_or("tcp"),
+        headers_tag(custom_headers.as_deref())
+    );
 
     // Create client function
     let socket_path_clone = socket_path.clone();
