@@ -89,7 +89,9 @@ impl TokenRefresher for DirectRefreshRouteTokenRefresher {
                 let client = client.clone();
                 let cred_helper = cred_helper.clone();
                 async move {
-                    let req = client.get(&refresh_route).with_extension(crate::common::http_client::Api("xet-token"));
+                    let req = client
+                        .get(&refresh_route)
+                        .with_extension(crate::common::http_client::Api("xet-token"));
                     let req = if let Some(helper) = cred_helper {
                         helper
                             .fill_credential(req)

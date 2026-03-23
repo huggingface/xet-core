@@ -1,4 +1,3 @@
-pub use crate::common::http_client::{Api, ResponseErrorLogger, build_auth_http_client, build_http_client};
 pub use interface::{Client, URLProvider};
 pub use remote_client::RemoteClient;
 pub use simulation::{ClientTestingUtils, DirectAccessClient, MemoryClient, RandomFileContents, RandomXorb};
@@ -8,6 +7,8 @@ pub use simulation::{
     RemoteSimulationClient, SimulationControlClient,
 };
 use tracing::Level;
+
+pub use crate::common::http_client::{Api, ResponseErrorLogger, build_auth_http_client, build_http_client};
 
 pub mod adaptive_concurrency;
 pub mod auth;

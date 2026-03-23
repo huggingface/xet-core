@@ -14,12 +14,12 @@ use reqwest::{Body, Url};
 use serde_json;
 
 use super::super::adaptive_concurrency::ConnectionPermit;
-use crate::common::http_client::Api;
 use super::super::interface::Client;
 use super::super::progress_tracked_streams::{ProgressCallback, UploadProgressStream};
 use super::super::remote_client::RemoteClient;
 use super::super::retry_wrapper::RetryWrapper;
 use super::local_server::ServerLatencyProfile;
+use crate::common::http_client::Api;
 use crate::error::{ClientError, Result};
 
 /// A wrapper around `RemoteClient` that provides simulation-specific methods for controlling

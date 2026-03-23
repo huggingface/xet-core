@@ -68,8 +68,8 @@
 //! use xet::xet_session::{Sha256Policy, XetFileInfo, XetSessionBuilder};
 //!
 //! let session = XetSessionBuilder::new()
-//!     .with_endpoint("https://cas.example.com".into())
-//!     .with_token_info("my-token".into(), 1_700_000_000)
+//!     .with_endpoint("https://cas.example.com")
+//!     .with_token_info("my-token", 1_700_000_000)
 //!     .build()?;
 //!
 //! // Upload — use the _blocking factory and _blocking methods
@@ -101,8 +101,8 @@
 //! // build() auto-detects: if inside a suitable tokio runtime, wraps it;
 //! // otherwise creates an owned thread pool.
 //! let session = XetSessionBuilder::new()
-//!     .with_endpoint("https://cas.example.com".into())
-//!     .with_token_info("my-token".into(), 1_700_000_000)
+//!     .with_endpoint("https://cas.example.com")
+//!     .with_token_info("my-token", 1_700_000_000)
 //!     .build()?;
 //!
 //! // Upload — async methods

@@ -75,7 +75,7 @@ pub struct XetSessionInner {
 /// let session = XetSessionBuilder::new()
 ///     .with_endpoint("https://cas.example.com")
 ///     .with_token_refresh_url("https://huggingface.co/api/repos/token", Arc::new(headers))
-///     .with_token_info("initial-token", 1_700_000_000)  // optional
+///     .with_token_info("initial-token", 1_700_000_000) // optional
 ///     .build()?;
 /// # Ok::<(), xet::xet_session::SessionError>(())
 /// ```
@@ -140,7 +140,8 @@ impl XetSessionBuilder {
     }
 
     /// Set a URL that the session will call (HTTP GET) to obtain a fresh CAS access token
-    /// whenever the current one is about to expire.
+    /// whenever the current one is about to expire. If the GET request requires authorization,
+    /// provide the auth header in the `headers` map.
     ///
     /// `headers` are sent with every token-refresh request and are independent of the
     /// CAS headers set by [`with_custom_headers`](Self::with_custom_headers).

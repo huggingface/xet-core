@@ -75,11 +75,7 @@ fn reqwest_client(unix_socket_path: Option<&str>, custom_headers: Option<Arc<Hea
 
     // Build a cache tag that captures both the transport (socket path / TCP) and the
     // set of default headers so that clients with different headers get separate pools.
-    let tag = format!(
-        "{}|{}",
-        socket_path.as_deref().unwrap_or("tcp"),
-        headers_tag(custom_headers.as_deref())
-    );
+    let tag = format!("{}|{}", socket_path.as_deref().unwrap_or("tcp"), headers_tag(custom_headers.as_deref()));
 
     // Create client function
     let socket_path_clone = socket_path.clone();

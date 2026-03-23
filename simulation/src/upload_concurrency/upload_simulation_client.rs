@@ -18,9 +18,9 @@ use tokio_util::sync::CancellationToken;
 use xet_client::cas_client::adaptive_concurrency::{
     AdaptiveConcurrencyController, CCLatencyModelState, CCSuccessModelState,
 };
-use xet_client::common::http_client::build_http_client;
 use xet_client::cas_client::progress_tracked_streams::UploadProgressStream;
 use xet_client::cas_client::retry_wrapper::RetryWrapper;
+use xet_client::common::http_client::build_http_client;
 use xet_runtime::core::xet_config;
 
 use crate::scenario::base_url;

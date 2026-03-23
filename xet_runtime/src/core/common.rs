@@ -53,11 +53,7 @@ impl XetCommon {
     ///
     /// # Returns
     /// Returns a clone of the cached client if the tag matches, or creates a new client if the tag differs.
-    pub fn get_or_create_reqwest_client<F>(
-        &self,
-        tag: String,
-        create_client_fn: F,
-    ) -> crate::error::Result<Client>
+    pub fn get_or_create_reqwest_client<F>(&self, tag: String, create_client_fn: F) -> crate::error::Result<Client>
     where
         F: FnOnce() -> std::result::Result<Client, reqwest::Error>,
     {
