@@ -211,17 +211,22 @@ pub fn create_file(path: impl AsRef<Path>) -> std::io::Result<File> {
 
 #[allow(unused_variables)]
 fn permission_warning(path: &Path, recursive: bool) {
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "ios"), not(target_os = "tvos"), not(target_os = "watchos")))]
     {
         let username = whoami::username().unwrap_or_else(|_| "unknown".to_string());
         let message = format!(
-            "The process doesn't have correct read-write permission into path {path:?}, please resets 
+            "The process doesn't have correct read-write permission into path {path:?}, please resets
         ownership by 'sudo chown{}{} {path:?}'.",
             if recursive { " -R " } else { " " },
             username
         );
 
         eprintln!("{}", message.bright_blue());
+    }
+
+    #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "watchos"))]
+    {
+        eprintln!("Permission denied for path {path:?}");
     }
 
     #[cfg(windows)]
@@ -236,6 +241,24 @@ fn permission_warning(path: &Path, recursive: bool) {
     unsafe {
         WARNING_PRINTED = true
     };
+}
+
+#[cfg(test)]
+mod test_permission_warning {
+    use super::permission_warning;
+    use std::path::Path;
+
+    /// Regression test: `permission_warning` must not reference `whoami` (and
+    /// therefore `objc2-system-configuration` / `SCDynamicStoreCopyComputerName`)
+    /// on iOS/tvOS/watchOS targets.  If the cfg gates are correct, this test
+    /// compiles and runs on every platform — the interesting guarantee is that
+    /// it also *compiles* for `aarch64-apple-ios` (checked in CI).
+    #[test]
+    fn permission_warning_does_not_panic() {
+        // Just verify the function is callable without panicking on the host platform.
+        permission_warning(Path::new("/tmp/test-xet-path"), false);
+        permission_warning(Path::new("/tmp/test-xet-path"), true);
+    }
 }
 
 #[cfg(all(test, unix))]
