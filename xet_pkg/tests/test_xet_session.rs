@@ -846,7 +846,7 @@ async fn async_abort_prevents_new_commits() {
     let session = XetSessionBuilder::new().build().unwrap();
     session.abort().unwrap();
     let err = session.new_upload_commit().await.err().unwrap();
-    assert!(matches!(err, SessionError::Cancelled(_) | SessionError::Aborted));
+    assert!(matches!(err, SessionError::UserCancelled(_)));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -854,7 +854,7 @@ async fn async_abort_prevents_new_groups() {
     let session = XetSessionBuilder::new().build().unwrap();
     session.abort().unwrap();
     let err = session.new_file_download_group().await.err().unwrap();
-    assert!(matches!(err, SessionError::Cancelled(_) | SessionError::Aborted));
+    assert!(matches!(err, SessionError::UserCancelled(_)));
 }
 
 #[test]
@@ -862,7 +862,7 @@ fn blocking_abort_prevents_new_commits() {
     let session = XetSessionBuilder::new().build().unwrap();
     session.abort().unwrap();
     let err = session.new_upload_commit_blocking().err().unwrap();
-    assert!(matches!(err, SessionError::Cancelled(_) | SessionError::Aborted));
+    assert!(matches!(err, SessionError::UserCancelled(_)));
 }
 
 #[test]
@@ -870,7 +870,7 @@ fn blocking_abort_prevents_new_groups() {
     let session = XetSessionBuilder::new().build().unwrap();
     session.abort().unwrap();
     let err = session.new_file_download_group_blocking().err().unwrap();
-    assert!(matches!(err, SessionError::Cancelled(_) | SessionError::Aborted));
+    assert!(matches!(err, SessionError::UserCancelled(_)));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -883,7 +883,7 @@ async fn async_abort_rejects_upload_on_existing_commit() {
         .await
         .err()
         .unwrap();
-    assert!(matches!(err, SessionError::Cancelled(_) | SessionError::Aborted));
+    assert!(matches!(err, SessionError::UserCancelled(_)));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -903,7 +903,7 @@ async fn async_abort_rejects_download_on_existing_group() {
         .await
         .err()
         .unwrap();
-    assert!(matches!(err, SessionError::Cancelled(_) | SessionError::Aborted));
+    assert!(matches!(err, SessionError::UserCancelled(_)));
 }
 
 // ── 8. Deduplication (same content uploaded twice) ───────────────────────
@@ -1052,7 +1052,7 @@ async fn async_stream_aborted_session() {
             None,
         )
         .await;
-    assert!(matches!(result, Err(SessionError::Aborted)));
+    assert!(matches!(result, Err(SessionError::UserCancelled(_))));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1140,7 +1140,7 @@ fn blocking_stream_aborted_session() {
         },
         None,
     );
-    assert!(matches!(result, Err(SessionError::Aborted)));
+    assert!(matches!(result, Err(SessionError::UserCancelled(_))));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1301,7 +1301,7 @@ async fn async_unordered_stream_aborted_session() {
             None,
         )
         .await;
-    assert!(matches!(result, Err(SessionError::Aborted)));
+    assert!(matches!(result, Err(SessionError::UserCancelled(_))));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1372,7 +1372,7 @@ fn blocking_unordered_stream_aborted_session() {
         },
         None,
     );
-    assert!(matches!(result, Err(SessionError::Aborted)));
+    assert!(matches!(result, Err(SessionError::UserCancelled(_))));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

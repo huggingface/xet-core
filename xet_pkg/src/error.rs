@@ -11,21 +11,25 @@ use xet_runtime::RuntimeError;
 /// Variants are grouped into user-facing categories that map naturally to
 /// Python exception types, plus session-lifecycle states that the internal
 /// code can match on.
-#[derive(Debug, Clone, Error)]
+#[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum XetError {
     // -- Session lifecycle -----------------------------------------------
-    /// The session (or its parent commit/group) has been aborted.
-    #[error("Session aborted")]
-    Aborted,
+    /// SIGINT / runtime shutdown.
+    #[error("Keyboard interrupt (SIGINT)")]
+    KeyboardInterrupt,
 
-    /// `commit()` was called more than once.
-    #[error("Upload commit already committed")]
-    AlreadyCommitted,
+    /// Explicit user abort (session, commit, group, or stream level).
+    #[error("User cancelled: {0}")]
+    UserCancelled(String),
 
-    /// `finish()` was called more than once.
-    #[error("Download group already finished")]
-    AlreadyFinished,
+    /// A previous operation on this task failed; carries the stored error description.
+    #[error("Previous task error: {0}")]
+    PreviousTaskError(String),
+
+    /// The operation has already completed, is already finalizing, or was already committed/finished.
+    #[error("Already completed")]
+    AlreadyCompleted,
 
     /// A task ID that doesn't correspond to any queued file.
     #[error("Invalid task ID: {0}")]
@@ -60,7 +64,7 @@ pub enum XetError {
     #[error("I/O error: {0}")]
     Io(String),
 
-    /// Cancellation: SIGINT, session abort, semaphore closed.
+    /// Generic cancellation from non-user sources (semaphore close, join cancellation).
     #[error("Operation cancelled: {0}")]
     Cancelled(String),
 
@@ -84,7 +88,8 @@ impl XetError {
 
     fn from_runtime_error_ref(re: &RuntimeError) -> Self {
         match re {
-            RuntimeError::TaskCanceled(_) => XetError::Cancelled(re.to_string()),
+            RuntimeError::KeyboardInterrupt => XetError::KeyboardInterrupt,
+            RuntimeError::TaskCanceled(_) => XetError::KeyboardInterrupt,
             RuntimeError::InvalidRuntime(_) => XetError::WrongRuntimeMode(re.to_string()),
             _ => XetError::Internal(re.to_string()),
         }
@@ -271,11 +276,14 @@ pub use py_exceptions::{XetAuthenticationError, XetObjectNotFoundError, register
 #[cfg(feature = "python")]
 impl From<XetError> for pyo3::PyErr {
     fn from(err: XetError) -> pyo3::PyErr {
-        use pyo3::exceptions::{PyConnectionError, PyOSError, PyRuntimeError, PyTimeoutError, PyValueError};
+        use pyo3::exceptions::{
+            PyConnectionError, PyKeyboardInterrupt, PyOSError, PyRuntimeError, PyTimeoutError, PyValueError,
+        };
 
         let msg = err.to_string();
         #[allow(unreachable_patterns)] // XetError is #[non_exhaustive]
         match err {
+            XetError::KeyboardInterrupt => PyKeyboardInterrupt::new_err(msg),
             XetError::Authentication(_) => XetAuthenticationError::new_err(msg),
             XetError::NotFound(_) => XetObjectNotFoundError::new_err(msg),
             XetError::Network(_) => PyConnectionError::new_err(msg),
@@ -285,9 +293,9 @@ impl From<XetError> for pyo3::PyErr {
             XetError::DataIntegrity(_)
             | XetError::Internal(_)
             | XetError::WrongRuntimeMode(_)
-            | XetError::AlreadyCommitted
-            | XetError::AlreadyFinished
-            | XetError::Aborted
+            | XetError::AlreadyCompleted
+            | XetError::UserCancelled(_)
+            | XetError::PreviousTaskError(_)
             | XetError::Cancelled(_) => PyRuntimeError::new_err(msg),
             _ => PyRuntimeError::new_err(msg),
         }
@@ -302,9 +310,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn runtime_cancelled_maps_to_cancelled() {
+    fn runtime_cancelled_maps_to_keyboard_interrupt() {
         let err = XetError::from(RuntimeError::TaskCanceled("worker stopped".to_string()));
-        assert!(matches!(err, XetError::Cancelled(_)));
+        assert!(matches!(err, XetError::KeyboardInterrupt));
+    }
+
+    #[test]
+    fn runtime_keyboard_interrupt_maps_to_keyboard_interrupt() {
+        let err = XetError::from(RuntimeError::KeyboardInterrupt);
+        assert!(matches!(err, XetError::KeyboardInterrupt));
     }
 
     #[test]
@@ -338,9 +352,9 @@ mod tests {
     }
 
     #[test]
-    fn data_runtime_cancelled_maps_to_cancelled() {
+    fn data_runtime_cancelled_maps_to_keyboard_interrupt() {
         let err = XetError::from(DataError::RuntimeError(RuntimeError::TaskCanceled("cancelled".to_string())));
-        assert!(matches!(err, XetError::Cancelled(_)));
+        assert!(matches!(err, XetError::KeyboardInterrupt));
     }
 
     #[test]

@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use tracing::info;
 use xet_data::deduplication::DeduplicationMetrics;
 use xet_data::processing::{FileUploadCoordinator, Sha256Policy, XetFileInfo};
 use xet_data::progress_tracking::{GroupProgressReport, UniqueID};
@@ -161,28 +162,32 @@ impl UploadCommitInner {
     }
 
     async fn commit(self: &Arc<Self>) -> Result<CommitReport, XetError> {
-        let stream_uploads = std::mem::take(&mut *self.stream_handles.lock()?);
-        let file_uploads = std::mem::take(&mut *self.file_handles.lock()?);
-
-        let mut files = Vec::with_capacity(file_uploads.len() + stream_uploads.len());
+        let stream_uploads = self.stream_handles.lock()?.clone();
+        let mut files = Vec::with_capacity(stream_uploads.len());
 
         for stream in &stream_uploads {
             match stream.try_finish() {
-                Some(Ok(meta)) => files.push(meta),
-                Some(Err(e)) => return Err(e),
+                Some(meta) => files.push(meta),
                 None => return Err(XetError::other("stream upload not finished before commit")),
             }
         }
 
+        let file_uploads = std::mem::take(&mut *self.file_handles.lock()?);
+        files.reserve(file_uploads.len());
+
         let mut first_error = None;
         for upload in &file_uploads {
-            match upload.finish().await {
-                Ok(meta) => files.push(meta),
-                Err(e) => {
-                    if first_error.is_none() {
-                        first_error = Some(e);
-                    }
-                },
+            if let Some(meta) = upload.result.get().cloned() {
+                files.push(meta);
+            } else {
+                match upload.finish().await {
+                    Ok(meta) => files.push(meta),
+                    Err(e) => {
+                        if first_error.is_none() {
+                            first_error = Some(e);
+                        }
+                    },
+                }
             }
         }
 
@@ -190,18 +195,11 @@ impl UploadCommitInner {
         self.session.finish_upload_commit(self.commit_id)?;
         let (dedup_metrics, progress) = match finalize_result {
             Ok(v) => v,
-            Err(e) => {
-                let err: XetError = e.into();
-                self.task_runtime.mark_runtime_finished_err(err.clone())?;
-                return Err(err);
-            },
+            Err(e) => return Err(e.into()),
         };
         if let Some(e) = first_error {
-            self.task_runtime.mark_runtime_finished_err(e.clone())?;
             return Err(e);
         }
-
-        self.task_runtime.mark_runtime_finished_ok()?;
 
         Ok(CommitReport {
             dedup_metrics,
@@ -251,8 +249,8 @@ impl UploadCommitInner {
 ///
 /// # Errors
 ///
-/// Methods return [`XetError::Aborted`] if the parent session has been
-/// aborted, and [`XetError::AlreadyCommitted`] if [`commit`](Self::commit)
+/// Methods return [`XetError::UserCancelled`] if the parent session has been
+/// aborted, and [`XetError::AlreadyCompleted`] if [`commit`](Self::commit)
 /// has already been called.
 #[derive(Clone)]
 pub struct UploadCommit {
@@ -291,14 +289,10 @@ impl UploadCommit {
         file_path: PathBuf,
         sha256: Sha256Policy,
     ) -> Result<UploadFileHandle, XetError> {
+        info!(commit_id = %self.id(), path = ?file_path, "Upload from path");
         let inner = Arc::clone(&self.inner);
         self.task_runtime
-            .bridge_async_runtime_checked(
-                "upload_from_path",
-                XetError::AlreadyCommitted,
-                "Upload commit cancelled",
-                async move { inner.upload_from_path(file_path, sha256).await },
-            )
+            .bridge_async("upload_from_path", async move { inner.upload_from_path(file_path, sha256).await })
             .await
     }
 
@@ -338,14 +332,10 @@ impl UploadCommit {
         tracking_name: Option<String>,
         sha256: Sha256Policy,
     ) -> Result<UploadStreamHandle, XetError> {
+        info!(commit_id = %self.id(), name = ?tracking_name, "Upload stream");
         let inner = Arc::clone(&self.inner);
         self.task_runtime
-            .bridge_async_runtime_checked(
-                "upload_stream",
-                XetError::AlreadyCommitted,
-                "Upload commit cancelled",
-                async move { inner.upload_stream(tracking_name, sha256).await },
-            )
+            .bridge_async("upload_stream", async move { inner.upload_stream(tracking_name, sha256).await })
             .await
     }
 
@@ -365,14 +355,15 @@ impl UploadCommit {
         sha256: Sha256Policy,
         tracking_name: Option<String>,
     ) -> Result<UploadFileHandle, XetError> {
+        info!(
+            commit_id = %self.id(),
+            name = ?tracking_name,
+            size = bytes.len(),
+            "Upload bytes"
+        );
         let inner = Arc::clone(&self.inner);
         self.task_runtime
-            .bridge_async_runtime_checked(
-                "upload_bytes",
-                XetError::AlreadyCommitted,
-                "Upload commit cancelled",
-                async move { inner.upload_bytes(bytes, sha256, tracking_name).await },
-            )
+            .bridge_async("upload_bytes", async move { inner.upload_bytes(bytes, sha256, tracking_name).await })
             .await
     }
 
@@ -385,20 +376,19 @@ impl UploadCommit {
     ///
     /// Returns a [`CommitReport`] with aggregate dedup metrics, progress,
     /// and per-file [`FileMetadata`].  Subsequent calls return
-    /// [`XetError::AlreadyCommitted`].
+    /// [`XetError::AlreadyCompleted`].
     pub async fn commit(&self) -> Result<CommitReport, XetError> {
+        info!(commit_id = %self.id(), "Commit starting");
         let inner = Arc::clone(&self.inner);
         self.task_runtime
-            .bridge_async_runtime_checked("commit", XetError::AlreadyCommitted, "Upload commit cancelled", async move {
-                inner.commit().await
-            })
+            .bridge_async_finalizing("commit", async move { inner.commit().await })
             .await
     }
 
     /// Returns `true` if [`commit`](Self::commit) has completed.
     #[cfg(test)]
-    async fn is_committed(&self) -> bool {
-        matches!(self.inner.task_runtime.state(), Ok(super::task_runtime::TaskState::Finished(Ok(()))))
+    fn is_committed(&self) -> bool {
+        matches!(self.inner.task_runtime.state(), Ok(crate::xet_session::task_runtime::TaskRuntimeState::Completed))
     }
 
     // ===== Blocking (sync) variants =====
@@ -416,13 +406,10 @@ impl UploadCommit {
         file_path: PathBuf,
         sha256: Sha256Policy,
     ) -> Result<UploadFileHandle, XetError> {
+        info!(commit_id = %self.id(), path = ?file_path, "Upload from path");
         let inner = Arc::clone(&self.inner);
-        self.task_runtime.bridge_sync_runtime_checked(
-            "upload_from_path_blocking",
-            XetError::AlreadyCommitted,
-            "Upload commit cancelled",
-            async move { inner.upload_from_path(file_path, sha256).await },
-        )
+        self.task_runtime
+            .bridge_sync("upload_from_path_blocking", async move { inner.upload_from_path(file_path, sha256).await })
     }
 
     /// Blocking version of [`upload_stream`](Self::upload_stream).
@@ -437,13 +424,10 @@ impl UploadCommit {
         tracking_name: Option<String>,
         sha256: Sha256Policy,
     ) -> Result<UploadStreamHandle, XetError> {
+        info!(commit_id = %self.id(), name = ?tracking_name, "Upload stream");
         let inner = Arc::clone(&self.inner);
-        self.task_runtime.bridge_sync_runtime_checked(
-            "upload_stream_blocking",
-            XetError::AlreadyCommitted,
-            "Upload commit cancelled",
-            async move { inner.upload_stream(tracking_name, sha256).await },
-        )
+        self.task_runtime
+            .bridge_sync("upload_stream_blocking", async move { inner.upload_stream(tracking_name, sha256).await })
     }
 
     /// Blocking version of [`upload_bytes`](Self::upload_bytes).
@@ -459,13 +443,15 @@ impl UploadCommit {
         sha256: Sha256Policy,
         tracking_name: Option<String>,
     ) -> Result<UploadFileHandle, XetError> {
+        info!(
+            commit_id = %self.id(),
+            name = ?tracking_name,
+            size = bytes.len(),
+            "Upload bytes"
+        );
         let inner = Arc::clone(&self.inner);
-        self.task_runtime.bridge_sync_runtime_checked(
-            "upload_bytes_blocking",
-            XetError::AlreadyCommitted,
-            "Upload commit cancelled",
-            async move { inner.upload_bytes(bytes, sha256, tracking_name).await },
-        )
+        self.task_runtime
+            .bridge_sync("upload_bytes_blocking", async move { inner.upload_bytes(bytes, sha256, tracking_name).await })
     }
 
     /// Blocking version of [`get_progress`](Self::get_progress).
@@ -482,17 +468,15 @@ impl UploadCommit {
     ///
     /// Panics if called from within a tokio async runtime.
     pub fn commit_blocking(&self) -> Result<CommitReport, XetError> {
+        info!(commit_id = %self.id(), "Commit starting");
         let inner = Arc::clone(&self.inner);
-        self.task_runtime.bridge_sync_runtime_checked(
-            "commit_blocking",
-            XetError::AlreadyCommitted,
-            "Upload commit cancelled",
-            async move { inner.commit().await },
-        )
+        self.task_runtime
+            .bridge_sync_finalizing("commit_blocking", async move { inner.commit().await })
     }
 
     /// Cancel all tracked upload tasks.
     pub(super) fn abort(&self) -> Result<(), XetError> {
+        info!(commit_id = %self.id(), "Commit abort");
         self.inner.abort()
     }
 }
@@ -513,8 +497,7 @@ mod tests {
         let cas_path = temp.path().join("cas");
         Ok(XetSessionBuilder::new()
             .with_endpoint(format!("local://{}", cas_path.display()))
-            .build_async()
-            .await?)
+            .build()?)
     }
 
     // ── Mutex guard / concurrency test ───────────────────────────────────────
@@ -553,7 +536,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_commit_has_unique_id() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
         let c1 = session.new_upload_commit().await.unwrap();
         let c2 = session.new_upload_commit().await.unwrap();
         assert_ne!(c1.id(), c2.id());
@@ -561,7 +544,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_commit_clone_shares_id() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
         let commit = session.new_upload_commit().await.unwrap();
         let commit2 = commit.clone();
         assert_eq!(commit.id(), commit2.id());
@@ -571,7 +554,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_get_progress_empty_initially() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
         let commit = session.new_upload_commit().await.unwrap();
         let report = commit.get_progress();
         assert_eq!(report.total_bytes, 0);
@@ -582,32 +565,32 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_commit_empty_succeeds() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
         session.new_upload_commit().await.unwrap().commit().await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_commit_marks_as_committed() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
         let commit = session.new_upload_commit().await.unwrap();
         let commit_clone = commit.clone();
         commit.commit().await.unwrap();
-        assert!(commit_clone.is_committed().await);
+        assert!(commit_clone.is_committed());
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_second_commit_fails() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
         let c1 = session.new_upload_commit().await.unwrap();
         let c2 = c1.clone();
         c1.commit().await.unwrap();
         let err = c2.commit().await.unwrap_err();
-        assert!(matches!(err, XetError::AlreadyCommitted | XetError::Internal(_)));
+        assert!(matches!(err, XetError::AlreadyCompleted | XetError::Internal(_)));
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_commit_unregisters_from_session() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
         let commit = session.new_upload_commit().await.unwrap();
         assert_eq!(session.active_upload_commits.lock().unwrap().len(), 1);
         commit.commit().await.unwrap();
@@ -618,33 +601,33 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_upload_file_on_aborted_session_returns_error() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
         let commit = session.new_upload_commit().await.unwrap();
         session.abort().unwrap();
         let err = commit
             .upload_from_path(PathBuf::from("nonexistent.bin"), Sha256Policy::Compute)
             .await
             .unwrap_err();
-        assert!(matches!(err, XetError::Cancelled(_) | XetError::Aborted));
+        assert!(matches!(err, XetError::UserCancelled(_)));
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_upload_bytes_on_aborted_session_returns_error() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
         let commit = session.new_upload_commit().await.unwrap();
         session.abort().unwrap();
         let err = commit
             .upload_bytes(b"data".to_vec(), Sha256Policy::Compute, Some("bytes 1".into()))
             .await
             .unwrap_err();
-        assert!(matches!(err, XetError::Cancelled(_) | XetError::Aborted));
+        assert!(matches!(err, XetError::UserCancelled(_)));
     }
 
-    // ── Post-commit guards (AlreadyCommitted) ────────────────────────────────
+    // ── Post-commit guards (AlreadyCompleted) ────────────────────────────────
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_upload_from_path_after_commit_fails() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
         let c1 = session.new_upload_commit().await.unwrap();
         let c2 = c1.clone();
         c1.commit().await.unwrap();
@@ -652,12 +635,12 @@ mod tests {
             .upload_from_path(PathBuf::from("any.bin"), Sha256Policy::Compute)
             .await
             .unwrap_err();
-        assert!(matches!(err, XetError::AlreadyCommitted));
+        assert!(matches!(err, XetError::AlreadyCompleted));
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_upload_bytes_after_commit_fails() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
         let c1 = session.new_upload_commit().await.unwrap();
         let c2 = c1.clone();
         c1.commit().await.unwrap();
@@ -665,14 +648,14 @@ mod tests {
             .upload_bytes(b"hello".to_vec(), Sha256Policy::Compute, None)
             .await
             .unwrap_err();
-        assert!(matches!(err, XetError::AlreadyCommitted));
+        assert!(matches!(err, XetError::AlreadyCompleted));
     }
 
     // ── API coverage & abort ─────────────────────────────────────────────────
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_upload_file_returns_stream_handle() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
         let commit = session.new_upload_commit().await.unwrap();
         let handle = commit
             .upload_stream(Some("stream.bin".into()), Sha256Policy::Compute)
@@ -683,7 +666,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_abort_cancels_tracked_uploads() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
         let commit = session.new_upload_commit().await.unwrap();
         let handle = commit
             .upload_bytes(b"data".to_vec(), Sha256Policy::Compute, None)
@@ -697,7 +680,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_abort_while_state_lock_held_still_drains_tasks() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
         let commit = session.new_upload_commit().await.unwrap();
         let _handle = commit
             .upload_bytes(b"data".to_vec(), Sha256Policy::Compute, None)
@@ -707,7 +690,7 @@ mod tests {
         commit.abort().unwrap();
         assert!(matches!(
             commit.inner.task_runtime.state().unwrap(),
-            crate::xet_session::task_runtime::TaskState::Finished(Err(XetError::Aborted))
+            crate::xet_session::task_runtime::TaskRuntimeState::UserCancelled
         ));
 
         assert!(commit.inner.file_handles.lock().unwrap().is_empty());
@@ -717,11 +700,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_two_commits_are_independent() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
         let c1 = session.new_upload_commit().await.unwrap();
         let c2 = session.new_upload_commit().await.unwrap();
         c1.commit().await.unwrap();
-        assert!(!c2.is_committed().await);
+        assert!(!c2.is_committed());
     }
 
     // ── Round-trip tests ─────────────────────────────────────────────────────
@@ -739,7 +722,7 @@ mod tests {
 
         commit.commit().await.unwrap();
 
-        let meta = task_handle.finish().await.unwrap();
+        let meta = task_handle.try_finish().unwrap();
         assert_eq!(meta.xet_info.file_size, Some(data.len() as u64));
         assert!(!meta.xet_info.hash.is_empty());
         assert!(meta.xet_info.sha256.is_some());
@@ -778,7 +761,7 @@ mod tests {
         let commit = session.new_upload_commit().await.unwrap();
         let handle = commit.upload_from_path(src, Sha256Policy::Compute).await.unwrap();
         commit.commit().await.unwrap();
-        let meta = handle.finish().await.unwrap();
+        let meta = handle.try_finish().unwrap();
         assert_eq!(meta.xet_info.file_size, Some(data.len() as u64));
         assert!(!meta.xet_info.hash.is_empty());
         assert!(meta.xet_info.sha256.is_some());
@@ -807,14 +790,14 @@ mod tests {
 
         commit.commit().await.unwrap();
 
-        let compute_meta = compute_handle.finish().await.unwrap();
+        let compute_meta = compute_handle.try_finish().unwrap();
         assert!(compute_meta.xet_info.sha256.is_some());
         assert_eq!(compute_meta.xet_info.sha256.as_deref().unwrap().len(), 64);
 
-        let provided_meta = provided_handle.finish().await.unwrap();
+        let provided_meta = provided_handle.try_finish().unwrap();
         assert_eq!(provided_meta.xet_info.sha256.as_deref(), Some(provided_sha256.as_str()));
 
-        let skip_meta = skip_handle.finish().await.unwrap();
+        let skip_meta = skip_handle.try_finish().unwrap();
         assert!(skip_meta.xet_info.sha256.is_none());
     }
 
@@ -836,7 +819,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_finish_is_idempotent() {
+    async fn test_finish_second_call_is_already_completed() {
         let temp = tempdir().unwrap();
         let session = local_session(&temp).await.unwrap();
         let commit = session.new_upload_commit().await.unwrap();
@@ -845,7 +828,9 @@ mod tests {
             .await
             .unwrap();
         let meta1 = handle.finish().await.unwrap();
-        let meta2 = handle.finish().await.unwrap();
+        let err = handle.finish().await.unwrap_err();
+        assert!(matches!(err, XetError::AlreadyCompleted));
+        let meta2 = handle.try_finish().unwrap();
         assert_eq!(meta1.xet_info.hash, meta2.xet_info.hash);
         commit.commit().await.unwrap();
     }
@@ -897,7 +882,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_stream_finish_is_idempotent() {
+    async fn test_stream_finish_second_call_is_already_completed() {
         let temp = tempdir().unwrap();
         let session = local_session(&temp).await.unwrap();
         let commit = session.new_upload_commit().await.unwrap();
@@ -907,7 +892,9 @@ mod tests {
             .unwrap();
         handle.write(&b"idem"[..]).await.unwrap();
         let meta1 = handle.finish().await.unwrap();
-        let meta2 = handle.finish().await.unwrap();
+        let err = handle.finish().await.unwrap_err();
+        assert!(matches!(err, XetError::AlreadyCompleted));
+        let meta2 = handle.try_finish().unwrap();
         assert_eq!(meta1.xet_info.hash, meta2.xet_info.hash);
         commit.commit().await.unwrap();
     }
@@ -924,13 +911,13 @@ mod tests {
         handle.write(&b"done"[..]).await.unwrap();
         handle.finish().await.unwrap();
         let err = handle.write(&b"more"[..]).await.unwrap_err();
-        assert!(matches!(err, XetError::Internal(_)));
+        assert!(matches!(err, XetError::AlreadyCompleted));
         commit.commit().await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_stream_abort_prevents_further_writes() {
-        let session = XetSessionBuilder::new().build_async().await.unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
         let commit = session.new_upload_commit().await.unwrap();
         let handle = commit
             .upload_stream(Some("abort.bin".into()), Sha256Policy::Compute)
@@ -938,7 +925,7 @@ mod tests {
             .unwrap();
         handle.abort();
         let err = handle.write(&b"data"[..]).await.unwrap_err();
-        assert!(matches!(err, XetError::Cancelled(_) | XetError::Aborted));
+        assert!(matches!(err, XetError::UserCancelled(_)));
         let result = handle.finish().await;
         assert!(result.is_err());
     }
@@ -963,9 +950,9 @@ mod tests {
             .await
             .unwrap();
         commit.commit().await.unwrap();
-        assert!(h1.finish().await.is_ok());
-        assert!(h2.finish().await.is_ok());
-        assert!(h3.finish().await.is_ok());
+        assert!(matches!(h1.finish().await.unwrap_err(), XetError::AlreadyCompleted));
+        assert!(matches!(h2.finish().await.unwrap_err(), XetError::AlreadyCompleted));
+        assert!(matches!(h3.finish().await.unwrap_err(), XetError::AlreadyCompleted));
     }
 
     // ── Progress ─────────────────────────────────────────────────────────────
@@ -997,7 +984,7 @@ mod tests {
 
         futures::executor::block_on(async {
             let session = local_session(&temp).await.unwrap();
-            assert_eq!(session.runtime_mode, RuntimeMode::Owned);
+            assert_eq!(session.runtime.mode(), RuntimeMode::Owned);
 
             let data = b"hello from non-tokio executor";
             let commit = session.new_upload_commit().await.unwrap();
@@ -1007,7 +994,7 @@ mod tests {
                 .unwrap();
             commit.commit().await.unwrap();
 
-            let meta = handle.finish().await.unwrap();
+            let meta = handle.try_finish().unwrap();
             assert_eq!(meta.xet_info.file_size, Some(data.len() as u64));
         });
     }
@@ -1018,7 +1005,7 @@ mod tests {
 
         smol::block_on(async {
             let session = local_session(&temp).await.unwrap();
-            assert_eq!(session.runtime_mode, RuntimeMode::Owned);
+            assert_eq!(session.runtime.mode(), RuntimeMode::Owned);
 
             let data = b"hello from smol executor";
             let commit = session.new_upload_commit().await.unwrap();
@@ -1028,7 +1015,7 @@ mod tests {
                 .unwrap();
             commit.commit().await.unwrap();
 
-            let meta = handle.finish().await.unwrap();
+            let meta = handle.try_finish().unwrap();
             assert_eq!(meta.xet_info.file_size, Some(data.len() as u64));
         });
     }
@@ -1039,7 +1026,7 @@ mod tests {
 
         async_std::task::block_on(async {
             let session = local_session(&temp).await.unwrap();
-            assert_eq!(session.runtime_mode, RuntimeMode::Owned);
+            assert_eq!(session.runtime.mode(), RuntimeMode::Owned);
 
             let data = b"hello from async-std executor";
             let commit = session.new_upload_commit().await.unwrap();
@@ -1049,7 +1036,7 @@ mod tests {
                 .unwrap();
             commit.commit().await.unwrap();
 
-            let meta = handle.finish().await.unwrap();
+            let meta = handle.try_finish().unwrap();
             assert_eq!(meta.xet_info.file_size, Some(data.len() as u64));
         });
     }
@@ -1072,7 +1059,7 @@ mod tests {
         let task_handle =
             commit.upload_bytes_blocking(data.to_vec(), Sha256Policy::Compute, Some("hello.bin".into()))?;
         commit.commit_blocking()?;
-        let meta = task_handle.finish_blocking()?;
+        let meta = task_handle.try_finish().unwrap();
         assert_eq!(meta.xet_info.file_size, Some(data.len() as u64));
         assert!(!meta.xet_info.hash.is_empty());
         Ok(())
@@ -1088,7 +1075,7 @@ mod tests {
         let commit = session.new_upload_commit_blocking()?;
         let handle = commit.upload_from_path_blocking(src, Sha256Policy::Compute)?;
         commit.commit_blocking()?;
-        let meta = handle.finish_blocking()?;
+        let meta = handle.try_finish().unwrap();
         assert_eq!(meta.xet_info.file_size, Some(data.len() as u64));
         assert!(!meta.xet_info.hash.is_empty());
         Ok(())
@@ -1134,9 +1121,9 @@ mod tests {
         let h2 = commit.upload_bytes_blocking(b"file two".to_vec(), Sha256Policy::Compute, Some("b.bin".into()))?;
         let h3 = commit.upload_bytes_blocking(b"file three".to_vec(), Sha256Policy::Compute, Some("c.bin".into()))?;
         commit.commit_blocking()?;
-        assert!(h1.finish_blocking().is_ok());
-        assert!(h2.finish_blocking().is_ok());
-        assert!(h3.finish_blocking().is_ok());
+        assert!(matches!(h1.finish_blocking().unwrap_err(), XetError::AlreadyCompleted));
+        assert!(matches!(h2.finish_blocking().unwrap_err(), XetError::AlreadyCompleted));
+        assert!(matches!(h3.finish_blocking().unwrap_err(), XetError::AlreadyCompleted));
         Ok(())
     }
 
@@ -1181,7 +1168,7 @@ mod tests {
                 .upload_bytes_blocking(data.to_vec(), Sha256Policy::Compute, Some("test.bin".into()))
                 .unwrap();
             commit.commit_blocking().unwrap();
-            let meta = handle.finish_blocking().unwrap();
+            let meta = handle.try_finish().unwrap();
             assert_eq!(meta.xet_info.file_size, Some(data.len() as u64));
             assert!(!meta.xet_info.hash.is_empty());
         }));

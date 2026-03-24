@@ -6,38 +6,55 @@ This change set completes a structural pass that aligns upload and download orch
 
 - Added `TaskRuntime` in `xet_pkg::xet_session`:
   - owns `Arc<XetRuntime>` plus `tokio_util::sync::CancellationToken`,
-  - exposes `bridge_async` and `bridge_sync`,
-  - wraps bridged work in `tokio::select!` and returns runtime task-cancel errors when canceled,
+  - exposes four bridge methods: `bridge_async`, `bridge_sync`, `bridge_async_finalizing`, `bridge_sync_finalizing`,
+  - wraps bridged work in `tokio::select!` and returns `UserCancelled` when the cancellation token fires,
   - tracks child runtimes via `Mutex<Vec<Weak<TaskRuntime>>>`,
-  - supports recursive state propagation (`Alive`, `Finalizing`, `Finished`, `Aborted`) and subtree cancellation.
+  - `TaskRuntimeState` is a flat enum: `Running`, `Finalizing`, `Completed`, `Error(String)`, `UserCancelled`.
 
-- Session/commit/group/task cancellation now follows a token tree:
+- SIGINT handling is fully owned by `XetRuntime`:
+  - `bridge_sync`/`bridge_async` on `XetRuntime` check `in_sigint_shutdown()` at entry and return `RuntimeError::KeyboardInterrupt`,
+  - `check_sigint_shutdown()` returns `RuntimeError::KeyboardInterrupt`.
+
+- Session/commit/group/task cancellation follows a token tree:
   - `XetSession` owns root runtime/token,
   - `UploadCommit` and `FileDownloadGroup` receive child runtimes,
   - per-upload/per-download handles receive child runtimes,
-  - aborting a parent cancels descendants.
+  - aborting a parent cancels descendants and sets `UserCancelled` state.
+
+### Error variant changes in `XetError`
+
+- **Removed**: `Aborted`, `AlreadyCommitted`, `AlreadyFinished`.
+- **Added**: `KeyboardInterrupt` (SIGINT, maps to `PyKeyboardInterrupt`), `UserCancelled(String)` (explicit user abort), `PreviousTaskError(String)` (cached error from prior failed operation), `AlreadyCompleted` (replaces all "already committed/finished/finalizing" cases).
+- **Removed**: `Clone` derive from `XetError`.
+- `RuntimeError::KeyboardInterrupt` added and mapped to `XetError::KeyboardInterrupt`.
+- `RuntimeError::TaskCanceled` also maps to `XetError::KeyboardInterrupt` (only source is runtime shutdown).
 
 ### Wrapper/inner contract alignment
 
-- Public upload/download methods were flattened into thin runtime-bridge wrappers.
-- State gating and transition logic moved to inner methods and `TaskRuntime` state.
-- Download path now mirrors upload wrapper flow (`Arc` clone + bridge + inner call).
+- Public upload/download methods are thin runtime-bridge wrappers.
+- Terminal operations (`commit`, `finish`) use `bridge_async_finalizing`/`bridge_sync_finalizing` which handle the `Running` -> `Finalizing` -> `Completed`/`Error` state transition.
+- Non-terminal operations use `bridge_async`/`bridge_sync` which pre-check state and update on error.
+- Result caching for upload handles uses `OnceLock<FileMetadata>` (success only); `try_finish()` returns `Option<FileMetadata>`.
 
 ### Download bespoke task handles
 
-- Download group task tracking no longer uses the generic shared task-handle abstraction.
-- `FileDownloadGroup` now owns a bespoke `DownloadTaskHandle` with:
-  - per-task status,
-  - stable task id,
-  - per-task result access,
-  - handle-local cancel behavior.
+- Download group task tracking uses bespoke `DownloadTaskHandle` with per-task status, stable task id, per-task result access, and handle-local cancel.
 
 ### xet_data boundary extraction
 
-- Added `FileUploadCoordinator` and `FileDownloadCoordinator` in `xet_data::processing` as data-layer orchestration wrappers around session primitives.
-- `xet_session` upload/download internals now call these coordinator APIs instead of directly wiring all session operations themselves.
+- `FileUploadCoordinator` and `FileDownloadCoordinator` in `xet_data::processing` as data-layer orchestration wrappers.
+
+### Structured tracing
+
+- `info!` for lifecycle events: session/commit/group creation, finish, abort, cancellation.
+- `debug!` for incremental operations: stream writes, download chunk retrieval.
+- `error!` for unexpected failures (not cancellations/aborts).
+- All log entries include relevant IDs (session_id, commit_id, group_id, task_id) and user-provided data.
 
 ### Behavioral notes
 
-- In aborted/canceled races, some API calls that previously returned only `Aborted` may now return cancellation errors (`Cancelled`) when cancellation is observed first by bridged runtime selection.
-- Existing roundtrip behavior and runtime-mode compatibility remain preserved by tests.
+- User abort produces `XetError::UserCancelled(msg)` (previously `Aborted`).
+- SIGINT produces `XetError::KeyboardInterrupt` (previously `Cancelled`).
+- Repeated calls to terminal operations produce `XetError::AlreadyCompleted`.
+- After an error in a terminal operation, subsequent calls produce `XetError::PreviousTaskError(msg)`.
+- `RuntimeMode` checks removed from session code; enforcement is in `XetRuntime::bridge_sync`.

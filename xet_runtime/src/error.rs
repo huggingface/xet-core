@@ -15,6 +15,9 @@ pub enum RuntimeError {
     #[error("Task cancelled; possible runtime shutdown in progress ({0}).")]
     TaskCanceled(String),
 
+    #[error("Keyboard interrupt (SIGINT)")]
+    KeyboardInterrupt,
+
     #[error("{0}")]
     Other(String),
 }

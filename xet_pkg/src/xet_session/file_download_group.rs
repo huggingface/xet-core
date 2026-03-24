@@ -6,13 +6,14 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use tokio::task::JoinHandle;
+use tracing::info;
 use xet_data::DataError;
 use xet_data::processing::{FileDownloadCoordinator, XetFileInfo};
 use xet_data::progress_tracking::{GroupProgressReport, UniqueID};
 
 use super::common::create_translator_config;
 use super::session::XetSession;
-use super::task_runtime::TaskRuntime;
+use super::task_runtime::{TaskRuntime, TaskRuntimeState};
 use super::tasks::TaskStatus;
 use crate::error::XetError;
 
@@ -35,8 +36,8 @@ use crate::error::XetError;
 ///
 /// # Errors
 ///
-/// Methods return [`XetError::Aborted`] if the parent session has been
-/// aborted, and [`XetError::AlreadyFinished`] if
+/// Methods return [`XetError::UserCancelled`] if the parent session has been
+/// aborted, and [`XetError::AlreadyCompleted`] if
 /// [`finish`](Self::finish) has already been called.
 #[derive(Clone)]
 pub struct FileDownloadGroup {
@@ -77,6 +78,7 @@ impl FileDownloadGroup {
 
     /// Abort this download group.
     pub(super) fn abort(&self) -> Result<(), XetError> {
+        info!(group_id = %self.id(), "Download group abort");
         self.inner.abort()
     }
 
@@ -94,22 +96,25 @@ impl FileDownloadGroup {
     ///
     /// # Errors
     ///
-    /// Returns [`XetError::Aborted`] if the session has been aborted, or
-    /// [`XetError::AlreadyFinished`] if [`finish`](Self::finish) has already
+    /// Returns [`XetError::UserCancelled`] if the session has been aborted, or
+    /// [`XetError::AlreadyCompleted`] if [`finish`](Self::finish) has already
     /// been called.
     pub async fn download_file_to_path(
         &self,
         file_info: XetFileInfo,
         dest_path: PathBuf,
     ) -> Result<DownloadTaskHandle, XetError> {
+        info!(
+            group_id = %self.id(),
+            dest_path = ?dest_path,
+            hash = %file_info.hash,
+            "Download file to path"
+        );
         let inner = self.inner.clone();
         self.task_runtime
-            .bridge_async_runtime_checked(
-                "download_file_to_path",
-                XetError::AlreadyFinished,
-                "Download group cancelled",
-                async move { inner.start_download_file_to_path(file_info, dest_path).await },
-            )
+            .bridge_async("download_file_to_path", async move {
+                inner.start_download_file_to_path(file_info, dest_path).await
+            })
             .await
     }
 
@@ -130,23 +135,19 @@ impl FileDownloadGroup {
     /// [`result`](DownloadTaskHandle::result) after this method returns.
     ///
     /// Consumes `self` — subsequent calls on any clone will return
-    /// [`XetError::AlreadyFinished`].
+    /// [`XetError::AlreadyCompleted`].
     pub async fn finish(self) -> Result<HashMap<UniqueID, DownloadResult>, XetError> {
+        info!(group_id = %self.id(), "Download group finish");
         let inner = self.inner.clone();
         self.task_runtime
-            .bridge_async_runtime_checked(
-                "download_finish",
-                XetError::AlreadyFinished,
-                "Download group cancelled",
-                async move { inner.handle_finish().await },
-            )
+            .bridge_async_finalizing("download_finish", async move { inner.handle_finish().await })
             .await
     }
 
     /// Returns `true` if [`finish`](Self::finish) has been called and completed.
     #[cfg(test)]
     fn is_finished(&self) -> bool {
-        matches!(self.inner.task_runtime.state(), Ok(super::task_runtime::TaskState::Finished(Ok(()))))
+        matches!(self.inner.task_runtime.state(), Ok(super::task_runtime::TaskRuntimeState::Completed))
     }
 
     /// Blocking version of [`download_file_to_path`](Self::download_file_to_path).
@@ -165,13 +166,16 @@ impl FileDownloadGroup {
         file_info: XetFileInfo,
         dest_path: PathBuf,
     ) -> Result<DownloadTaskHandle, XetError> {
+        info!(
+            group_id = %self.id(),
+            dest_path = ?dest_path,
+            hash = %file_info.hash,
+            "Download file to path"
+        );
         let inner = self.inner.clone();
-        self.task_runtime.bridge_sync_runtime_checked(
-            "download_file_to_path_blocking",
-            XetError::AlreadyFinished,
-            "Download group cancelled",
-            async move { inner.start_download_file_to_path(file_info, dest_path).await },
-        )
+        self.task_runtime.bridge_sync("download_file_to_path_blocking", async move {
+            inner.start_download_file_to_path(file_info, dest_path).await
+        })
     }
 
     /// Blocking version of [`get_progress`](Self::get_progress).
@@ -185,13 +189,10 @@ impl FileDownloadGroup {
     ///
     /// Panics if called from within a tokio async runtime.
     pub fn finish_blocking(self) -> Result<HashMap<UniqueID, DownloadResult>, XetError> {
+        info!(group_id = %self.id(), "Download group finish");
         let inner = self.inner.clone();
-        self.task_runtime.bridge_sync_runtime_checked(
-            "download_finish_blocking",
-            XetError::AlreadyFinished,
-            "Download group cancelled",
-            async move { inner.handle_finish().await },
-        )
+        self.task_runtime
+            .bridge_sync_finalizing("download_finish_blocking", async move { inner.handle_finish().await })
     }
 }
 
@@ -288,12 +289,17 @@ impl FileDownloadGroupInner {
             .await?;
 
         // Re-check state: if finish() or abort() raced in, cancel the spawned task.
-        if let Err(err) = self
-            .task_runtime
-            .check_runtime_running(XetError::AlreadyFinished, "Download group cancelled")
-        {
+        let state = self.task_runtime.state()?;
+        if !matches!(state, TaskRuntimeState::Running) {
             join_handle.abort();
-            return Err(err);
+            return match state {
+                TaskRuntimeState::UserCancelled => {
+                    Err(XetError::UserCancelled("Download group cancelled by user".to_string()))
+                },
+                TaskRuntimeState::Completed | TaskRuntimeState::Finalizing => Err(XetError::AlreadyCompleted),
+                TaskRuntimeState::Error(msg) => Err(XetError::PreviousTaskError(msg)),
+                TaskRuntimeState::Running => unreachable!(),
+            };
         }
 
         let task_runtime = self.task_runtime.child()?;
@@ -367,10 +373,8 @@ impl FileDownloadGroupInner {
         self.session.finish_file_download_group(self.group_id)?;
 
         if let Some(e) = join_err {
-            self.task_runtime.mark_runtime_finished_err(e.clone())?;
             return Err(e);
         }
-        self.task_runtime.mark_runtime_finished_ok()?;
 
         Ok(results)
     }
@@ -508,14 +512,14 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    // A second finish() call on any clone returns AlreadyFinished.
+    // A second finish() call on any clone returns AlreadyCompleted.
     async fn test_second_finish_fails() {
         let session = XetSessionBuilder::new().build().unwrap();
         let g1 = session.new_file_download_group().await.unwrap();
         let g2 = g1.clone();
         g1.finish().await.unwrap();
         let err = g2.finish().await.unwrap_err();
-        assert!(matches!(err, XetError::AlreadyFinished | XetError::Internal(_)));
+        assert!(matches!(err, XetError::AlreadyCompleted));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -531,7 +535,7 @@ mod tests {
     // ── Guards ───────────────────────────────────────────────────────────────
 
     #[tokio::test(flavor = "multi_thread")]
-    // download_file_to_path returns Aborted when the parent session has been aborted.
+    // download_file_to_path returns UserCancelled when the parent session has been aborted.
     async fn test_download_file_on_aborted_session_returns_error() {
         let session = XetSessionBuilder::new().build().unwrap();
         let group = session.new_file_download_group().await.unwrap();
@@ -547,11 +551,11 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(matches!(err, XetError::Cancelled(_) | XetError::Aborted));
+        assert!(matches!(err, XetError::UserCancelled(_)));
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    // download_file_to_path after finish returns AlreadyFinished.
+    // download_file_to_path after finish returns AlreadyCompleted.
     async fn test_download_file_after_finish_fails() {
         let session = XetSessionBuilder::new().build().unwrap();
         let g1 = session.new_file_download_group().await.unwrap();
@@ -568,7 +572,7 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(matches!(err, XetError::AlreadyFinished));
+        assert!(matches!(err, XetError::AlreadyCompleted));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -588,7 +592,7 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(matches!(err, XetError::Cancelled(_) | XetError::Aborted));
+        assert!(matches!(err, XetError::UserCancelled(_)));
     }
 
     // ── Independence ─────────────────────────────────────────────────────────

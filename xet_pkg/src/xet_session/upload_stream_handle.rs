@@ -4,6 +4,7 @@ use std::fmt;
 use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
+use tracing::{debug, info};
 use xet_data::processing::{FileUploadCoordinator, SingleFileCleaner};
 use xet_data::progress_tracking::{ItemProgressReport, UniqueID};
 
@@ -19,7 +20,7 @@ type CleanerState = Option<(SingleFileCleaner, Option<String>)>;
 
 pub(super) struct UploadStreamHandleInner {
     pub(super) task_id: UniqueID,
-    pub(super) result: Arc<OnceLock<Result<FileMetadata, XetError>>>,
+    pub(super) result: Arc<OnceLock<FileMetadata>>,
     pub(super) cleaner: Arc<tokio::sync::Mutex<CleanerState>>,
     pub(super) upload_coordinator: Arc<FileUploadCoordinator>,
     pub(super) task_runtime: Arc<TaskRuntime>,
@@ -51,7 +52,7 @@ impl UploadStreamHandleInner {
         }
     }
 
-    fn try_finish(self: &Arc<Self>) -> Option<Result<FileMetadata, XetError>> {
+    fn try_finish(self: &Arc<Self>) -> Option<FileMetadata> {
         self.result.get().cloned()
     }
 
@@ -64,7 +65,6 @@ impl UploadStreamHandleInner {
         if let Ok(mut cleaner_guard) = self.cleaner.try_lock() {
             *cleaner_guard = None;
         }
-        let _ = self.result.set(Err(XetError::Aborted));
     }
 }
 
@@ -76,8 +76,6 @@ impl UploadStreamHandleInner {
 /// [`write`](Self::write), then call [`finish`](Self::finish) to finalise
 /// ingestion.  **`finish` must be called before [`UploadCommit::commit`]**;
 /// committing with an unfinished stream handle is an error.
-///
-/// `finish` is idempotent: subsequent calls return the same cached result.
 ///
 /// This type is cheaply clonable; all clones share the same underlying state.
 #[derive(Clone)]
@@ -108,13 +106,9 @@ impl UploadStreamHandle {
     pub async fn write(&self, data: impl Into<Bytes>) -> Result<(), XetError> {
         let inner = Arc::clone(&self.inner);
         let data = data.into();
+        debug!(task_id = %self.task_id(), bytes = data.len(), "Stream write");
         self.task_runtime
-            .bridge_async_checked(
-                "upload_stream_write",
-                XetError::other("stream already finished"),
-                "Upload stream cancelled",
-                async move { inner.write(data).await },
-            )
+            .bridge_async("upload_stream_write", async move { inner.write(data).await })
             .await
     }
 
@@ -125,25 +119,28 @@ impl UploadStreamHandle {
     /// Panics if called from within a tokio async runtime.
     pub fn write_blocking(&self, data: impl Into<Bytes>) -> Result<(), XetError> {
         let data = data.into();
+        debug!(task_id = %self.task_id(), bytes = data.len(), "Stream write");
         let inner = Arc::clone(&self.inner);
-        self.task_runtime.bridge_sync_checked(
-            "upload_stream_write_blocking",
-            XetError::other("stream already finished"),
-            "Upload stream cancelled",
-            async move { inner.write(data).await },
-        )
+        self.task_runtime
+            .bridge_sync("upload_stream_write_blocking", async move { inner.write(data).await })
     }
 
     /// Finalise the streaming upload and return per-file [`FileMetadata`].
     ///
-    /// Must be called before [`UploadCommit::commit`].  Idempotent:
-    /// subsequent calls return the same cached result.
+    /// Must be called before [`UploadCommit::commit`].  A second call returns
+    /// [`XetError::AlreadyCompleted`] after a successful finish; use
+    /// [`try_finish`](Self::try_finish) to read cached metadata without
+    /// finalizing again.
     pub async fn finish(&self) -> Result<FileMetadata, XetError> {
+        info!(task_id = %self.task_id(), "Stream finish");
         let inner = Arc::clone(&self.inner);
-        let result = self.inner.result.clone();
-        self.task_runtime
-            .bridge_async_terminal("upload_stream_finish", result, async move { inner.finish().await })
-            .await
+        let result_cell = self.inner.result.clone();
+        let meta = self
+            .task_runtime
+            .bridge_async_finalizing("upload_stream_finish", async move { inner.finish().await })
+            .await?;
+        let _ = result_cell.set(meta.clone());
+        Ok(meta)
     }
 
     /// Blocking version of [`finish`](Self::finish).
@@ -152,17 +149,18 @@ impl UploadStreamHandle {
     ///
     /// Panics if called from within a tokio async runtime.
     pub fn finish_blocking(&self) -> Result<FileMetadata, XetError> {
+        info!(task_id = %self.task_id(), "Stream finish");
         let inner = Arc::clone(&self.inner);
-        let result = self.inner.result.clone();
-        self.task_runtime.bridge_sync_terminal(
-            "upload_stream_finish_blocking",
-            result,
-            async move { inner.finish().await },
-        )
+        let result_cell = self.inner.result.clone();
+        let meta = self
+            .task_runtime
+            .bridge_sync_finalizing("upload_stream_finish_blocking", async move { inner.finish().await })?;
+        let _ = result_cell.set(meta.clone());
+        Ok(meta)
     }
 
     /// Returns the result if the stream has been finished, without blocking.
-    pub fn try_finish(&self) -> Option<Result<FileMetadata, XetError>> {
+    pub fn try_finish(&self) -> Option<FileMetadata> {
         self.inner.try_finish()
     }
 
@@ -173,10 +171,11 @@ impl UploadStreamHandle {
 
     /// Cancel the streaming upload.
     ///
-    /// Drops the internal data pipeline and stores an [`XetError::Aborted`]
-    /// result.  Subsequent [`write`](Self::write) or [`finish`](Self::finish)
-    /// calls will return the aborted error.
+    /// Drops the internal data pipeline.  Subsequent [`write`](Self::write) or
+    /// [`finish`](Self::finish) calls may return [`XetError::UserCancelled`] or
+    /// related errors.
     pub fn abort(&self) {
+        info!(task_id = %self.task_id(), "Stream abort");
         self.inner.abort()
     }
 }

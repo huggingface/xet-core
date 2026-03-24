@@ -4,6 +4,7 @@ use std::fmt;
 use std::sync::{Arc, OnceLock};
 
 use tokio::task::{AbortHandle, JoinHandle};
+use tracing::info;
 use xet_data::DataError;
 use xet_data::deduplication::DeduplicationMetrics;
 use xet_data::processing::{FileUploadCoordinator, XetFileInfo};
@@ -18,7 +19,7 @@ use crate::error::XetError;
 type UploadJoinHandle = JoinHandle<Result<(XetFileInfo, DeduplicationMetrics), DataError>>;
 
 pub(super) struct TrackedFileUpload {
-    pub(super) result: Arc<OnceLock<Result<FileMetadata, XetError>>>,
+    pub(super) result: Arc<OnceLock<FileMetadata>>,
     pub(super) join_handle: Arc<tokio::sync::Mutex<Option<UploadJoinHandle>>>,
     pub(super) tracking_name: Option<String>,
     pub(super) abort_handle: AbortHandle,
@@ -27,14 +28,17 @@ pub(super) struct TrackedFileUpload {
 
 impl TrackedFileUpload {
     pub(super) async fn finish(&self) -> Result<FileMetadata, XetError> {
-        let result = self.result.clone();
         let join_handle = self.join_handle.clone();
         let tracking_name = self.tracking_name.clone();
-        self.task_runtime
-            .bridge_async_terminal("tracked_upload_finish", result, async move {
+        let result_cell = self.result.clone();
+        let meta = self
+            .task_runtime
+            .bridge_async_finalizing("tracked_upload_finish", async move {
                 resolve_file_task(&join_handle, tracking_name).await
             })
-            .await
+            .await?;
+        let _ = result_cell.set(meta.clone());
+        Ok(meta)
     }
 }
 
@@ -65,7 +69,7 @@ pub(super) async fn resolve_file_task(
 
 pub(super) struct UploadFileHandleInner {
     pub(super) task_id: UniqueID,
-    pub(super) result: Arc<OnceLock<Result<FileMetadata, XetError>>>,
+    pub(super) result: Arc<OnceLock<FileMetadata>>,
     pub(super) join_handle: Arc<tokio::sync::Mutex<Option<UploadJoinHandle>>>,
     pub(super) tracking_name: Option<String>,
     pub(super) upload_coordinator: Arc<FileUploadCoordinator>,
@@ -76,7 +80,7 @@ impl UploadFileHandleInner {
         resolve_file_task(&self.join_handle, self.tracking_name.clone()).await
     }
 
-    fn try_finish(self: &Arc<Self>) -> Option<Result<FileMetadata, XetError>> {
+    fn try_finish(self: &Arc<Self>) -> Option<FileMetadata> {
         self.result.get().cloned()
     }
 
@@ -94,8 +98,6 @@ impl UploadFileHandleInner {
 /// ingestion (chunking + deduplication) to complete.  This does **not** mean
 /// the data has been uploaded to the server — call [`UploadCommit::commit`]
 /// for that.
-///
-/// `finish` is idempotent: subsequent calls return the same cached result.
 ///
 /// This type is cheaply clonable; all clones share the same underlying state.
 #[derive(Clone)]
@@ -124,13 +126,19 @@ impl UploadFileHandle {
     /// It does **not** mean data has reached the server — call
     /// [`UploadCommit::commit`] for that.
     ///
-    /// Idempotent: subsequent calls return the same cached result.
+    /// A second call returns [`XetError::AlreadyCompleted`] after a successful
+    /// finish; use [`try_finish`](Self::try_finish) to read cached metadata
+    /// without waiting again.
     pub async fn finish(&self) -> Result<FileMetadata, XetError> {
+        info!(task_id = %self.task_id(), "File upload finish");
         let inner = Arc::clone(&self.inner);
-        let result = self.inner.result.clone();
-        self.task_runtime
-            .bridge_async_terminal("upload_file_finish", result, async move { inner.finish().await })
-            .await
+        let result_cell = self.inner.result.clone();
+        let meta = self
+            .task_runtime
+            .bridge_async_finalizing("upload_file_finish", async move { inner.finish().await })
+            .await?;
+        let _ = result_cell.set(meta.clone());
+        Ok(meta)
     }
 
     /// Blocking version of [`finish`](Self::finish).
@@ -139,17 +147,18 @@ impl UploadFileHandle {
     ///
     /// Panics if called from within a tokio async runtime.
     pub fn finish_blocking(&self) -> Result<FileMetadata, XetError> {
+        info!(task_id = %self.task_id(), "File upload finish");
         let inner = Arc::clone(&self.inner);
-        let result = self.inner.result.clone();
-        self.task_runtime.bridge_sync_terminal(
-            "upload_file_finish_blocking",
-            result,
-            async move { inner.finish().await },
-        )
+        let result_cell = self.inner.result.clone();
+        let meta = self
+            .task_runtime
+            .bridge_sync_finalizing("upload_file_finish_blocking", async move { inner.finish().await })?;
+        let _ = result_cell.set(meta.clone());
+        Ok(meta)
     }
 
     /// Returns the result if ingestion has already completed, without blocking.
-    pub fn try_finish(&self) -> Option<Result<FileMetadata, XetError>> {
+    pub fn try_finish(&self) -> Option<FileMetadata> {
         self.inner.try_finish()
     }
 
