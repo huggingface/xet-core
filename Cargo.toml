@@ -97,7 +97,7 @@ shell-words = "1.1"
 shellexpand = "3.1"
 smol = "2"
 static_assertions = "1.1"
-statrs = "0.18"
+statrs = { version = "0.18", default-features = false }
 sysinfo = "0.38"
 tempfile = "3.25"
 thiserror = "2.0"
