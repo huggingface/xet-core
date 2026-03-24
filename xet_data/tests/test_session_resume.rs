@@ -33,8 +33,8 @@ mod tests {
 
     #[cfg(feature = "simulation")]
     use {
-        std::sync::Arc,
         rand::prelude::*,
+        std::sync::Arc,
         tempfile::TempDir,
         xet_client::cas_client::LocalTestServerBuilder,
         xet_data::deduplication::constants::{MAX_CHUNK_SIZE, MAX_XORB_BYTES},
