@@ -658,9 +658,7 @@ impl ChunkHashRange {
         }
 
         // Trim empty trailing levels
-        while levels.len() > 1
-            && levels.last() == Some(&(0, 0))
-        {
+        while levels.len() > 1 && levels.last() == Some(&(0, 0)) {
             levels.pop();
         }
 
