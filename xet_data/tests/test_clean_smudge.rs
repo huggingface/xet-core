@@ -1,5 +1,3 @@
-#![cfg(feature = "simulation")]
-
 use xet_data::deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS, TARGET_CHUNK_SIZE};
 #[cfg(all(test, not(feature = "smoke-test")))]
 use xet_data::processing::test_utils::*;

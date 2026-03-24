@@ -13,23 +13,18 @@ pub(crate) async fn create_remote_client(
     let session = &config.session;
 
     if let Some(local_path) = session.local_path() {
-        #[cfg(all(feature = "simulation", not(target_family = "wasm")))]
+        #[cfg(not(target_family = "wasm"))]
         {
             let xorb_path = local_path.join("xet").join("xorbs");
             Ok(xet_client::cas_client::LocalClient::new(xorb_path).await?)
         }
-        #[cfg(any(not(feature = "simulation"), target_family = "wasm"))]
+        #[cfg(target_family = "wasm")]
         {
             let _ = local_path;
-            unimplemented!("Local file system access requires the 'simulation' feature")
+            unimplemented!("Local file system access is not available in WASM")
         }
     } else if session.is_memory() {
-        #[cfg(feature = "simulation")]
-        {
-            Ok(xet_client::cas_client::MemoryClient::new())
-        }
-        #[cfg(not(feature = "simulation"))]
-        unimplemented!("In-memory client requires the 'simulation' feature")
+        Ok(xet_client::cas_client::MemoryClient::new())
     } else {
         Ok(RemoteClient::new(
             &session.endpoint,

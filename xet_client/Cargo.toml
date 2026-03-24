@@ -49,7 +49,7 @@ web-time = { workspace = true }
 axum = { workspace = true, optional = true }
 humantime = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
-heed = { workspace = true, optional = true }
+heed = { workspace = true }
 human-bandwidth = { workspace = true, optional = true }
 hyper = { workspace = true }
 tokio = { workspace = true }
@@ -64,7 +64,7 @@ rustls-tls = ["reqwest/rustls"]
 native-tls = ["reqwest/native-tls"]
 native-tls-vendored = ["reqwest/native-tls-vendored"]
 analysis = []
-simulation = ["dep:axum", "dep:humantime", "dep:futures-util", "dep:heed", "dep:human-bandwidth", "dep:tower-http"]
+simulation = ["dep:axum", "dep:humantime", "dep:futures-util", "dep:human-bandwidth", "dep:tower-http"]
 
 [[bin]]
 name = "local_cas_server"

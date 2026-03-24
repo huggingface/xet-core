@@ -1,13 +1,7 @@
-#![cfg(feature = "simulation")]
-
 use std::time::Duration;
 
 // Run tests that determine deduplication, especially across different test subjects.
-use tempfile::TempDir;
-use xet_client::cas_client::LocalTestServerBuilder;
-use xet_data::deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS, TARGET_CHUNK_SIZE};
-use xet_data::processing::configurations::TranslatorConfig;
-use xet_data::processing::{FileUploadSession, Sha256Policy};
+use xet_data::deduplication::constants::{MAX_XORB_CHUNKS, TARGET_CHUNK_SIZE};
 use xet_runtime::{test_set_config, test_set_constants};
 
 // Runs this test suite with small chunks and xorbs so that we can make sure that all the different edge
@@ -34,14 +28,20 @@ test_set_config! {
 // Test the deduplication framework.
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use more_asserts::*;
-    use rand::prelude::*;
-    use xet_data::deduplication::constants::MAX_CHUNK_SIZE;
     use xet_data::processing::test_utils::{HydrateDehydrateTest, create_random_file, create_random_files};
 
-    use super::*;
+    #[cfg(feature = "simulation")]
+    use {
+        std::sync::Arc,
+        rand::prelude::*,
+        tempfile::TempDir,
+        xet_client::cas_client::LocalTestServerBuilder,
+        xet_data::deduplication::constants::{MAX_CHUNK_SIZE, MAX_XORB_BYTES},
+        xet_data::processing::configurations::TranslatorConfig,
+        xet_data::processing::{FileUploadSession, Sha256Policy},
+    };
+    #[cfg(feature = "simulation")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_simple_resume() {
         // Ensure the deduplication numbers are approximately accurate.
@@ -102,6 +102,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "simulation")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_multiple_resume() {
         // Ensure the deduplication numbers are approximately accurate.

@@ -1,3 +1,5 @@
+#![cfg(feature = "simulation")]
+
 #[cfg(test)]
 mod tests {
     use std::fs;

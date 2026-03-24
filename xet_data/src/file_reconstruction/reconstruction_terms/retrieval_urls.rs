@@ -154,7 +154,7 @@ impl URLProvider for XorbURLProvider {
     }
 }
 
-#[cfg(all(test, feature = "simulation"))]
+#[cfg(test)]
 mod tests {
     use std::sync::Arc;
 

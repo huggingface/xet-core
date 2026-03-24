@@ -6,7 +6,9 @@ use std::sync::Arc;
 use itertools::multizip;
 use rand::prelude::*;
 use tempfile::TempDir;
-use xet_client::cas_client::{Client, LocalClient, LocalTestServer, LocalTestServerBuilder};
+use xet_client::cas_client::{Client, LocalClient};
+#[cfg(feature = "simulation")]
+use xet_client::cas_client::{LocalTestServer, LocalTestServerBuilder};
 
 use super::configurations::TranslatorConfig;
 use super::data_client::clean_file;
@@ -24,8 +26,11 @@ use super::{FileDownloadSession, FileUploadSession, XetFileInfo};
 #[derive(Debug, Clone, Copy)]
 pub enum HydrationMode {
     DirectClient,
+    #[cfg(feature = "simulation")]
     ServerV2,
+    #[cfg(feature = "simulation")]
     ServerV1Fallback,
+    #[cfg(feature = "simulation")]
     ServerMaxRanges2,
 }
 
@@ -33,14 +38,21 @@ impl HydrationMode {
     pub fn all() -> &'static [HydrationMode] {
         &[
             HydrationMode::DirectClient,
+            #[cfg(feature = "simulation")]
             HydrationMode::ServerV2,
+            #[cfg(feature = "simulation")]
             HydrationMode::ServerV1Fallback,
+            #[cfg(feature = "simulation")]
             HydrationMode::ServerMaxRanges2,
         ]
     }
 
     pub fn uses_server(&self) -> bool {
-        !matches!(self, HydrationMode::DirectClient)
+        match self {
+            HydrationMode::DirectClient => false,
+            #[cfg(feature = "simulation")]
+            _ => true,
+        }
     }
 }
 
@@ -48,8 +60,11 @@ impl std::fmt::Display for HydrationMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             HydrationMode::DirectClient => write!(f, "direct_client"),
+            #[cfg(feature = "simulation")]
             HydrationMode::ServerV2 => write!(f, "server_v2"),
+            #[cfg(feature = "simulation")]
             HydrationMode::ServerV1Fallback => write!(f, "server_v1_fallback"),
+            #[cfg(feature = "simulation")]
             HydrationMode::ServerMaxRanges2 => write!(f, "server_max_ranges_2"),
         }
     }
@@ -78,7 +93,7 @@ pub fn create_random_file(path: impl AsRef<Path>, size: usize, seed: u64) -> usi
     size
 }
 
-/// Creates a collection of random files, each with a deterministic seed.  
+/// Creates a collection of random files, each with a deterministic seed.
 /// the total number of bytes written for all files combined.
 pub fn create_random_files(dir: impl AsRef<Path>, files: &[(impl AsRef<str>, usize)], seed: u64) -> usize {
     let dir = dir.as_ref();
@@ -174,6 +189,7 @@ pub struct HydrateDehydrateTest {
     pub dest_dir: PathBuf,
     use_test_server: bool,
     /// Kept alive so the test server stays running for the duration of the test.
+    #[cfg(feature = "simulation")]
     test_server: Option<LocalTestServer>,
 }
 
@@ -210,6 +226,7 @@ impl HydrateDehydrateTest {
             dest_dir,
             _temp_dir,
             use_test_server,
+            #[cfg(feature = "simulation")]
             test_server: None,
         }
     }
@@ -224,13 +241,16 @@ impl HydrateDehydrateTest {
     pub async fn apply_hydration_mode(&mut self, mode: HydrationMode) {
         match mode {
             HydrationMode::DirectClient => {},
+            #[cfg(feature = "simulation")]
             HydrationMode::ServerV2 => {
                 self.ensure_server_created().await;
             },
+            #[cfg(feature = "simulation")]
             HydrationMode::ServerV1Fallback => {
                 self.ensure_server_created().await;
                 self.test_server.as_ref().unwrap().client().disable_v2_reconstruction(404);
             },
+            #[cfg(feature = "simulation")]
             HydrationMode::ServerMaxRanges2 => {
                 self.ensure_server_created().await;
                 self.test_server.as_ref().unwrap().client().set_max_ranges_per_fetch(2);
@@ -240,6 +260,7 @@ impl HydrateDehydrateTest {
 
     /// Ensures the test server is running, creating it if necessary.
     /// Call this before configuring the server (e.g., disabling V2 or setting max ranges).
+    #[cfg(feature = "simulation")]
     pub async fn ensure_server_created(&mut self) {
         if self.use_test_server && self.test_server.is_none() {
             let local_client = LocalClient::new(self.cas_dir.join("xet/xorbs")).await.unwrap();
@@ -248,6 +269,7 @@ impl HydrateDehydrateTest {
     }
 
     /// Returns a reference to the test server, if one has been created.
+    #[cfg(feature = "simulation")]
     pub fn test_server(&self) -> Option<&LocalTestServer> {
         self.test_server.as_ref()
     }
@@ -255,11 +277,18 @@ impl HydrateDehydrateTest {
     /// Lazily initializes the test server (if needed) and returns a CAS client.
     async fn get_or_create_client(&mut self) -> Arc<dyn Client> {
         if self.use_test_server {
-            if self.test_server.is_none() {
-                let local_client = LocalClient::new(self.cas_dir.join("xet/xorbs")).await.unwrap();
-                self.test_server = Some(LocalTestServerBuilder::new().with_client(local_client).start().await);
+            #[cfg(feature = "simulation")]
+            {
+                if self.test_server.is_none() {
+                    let local_client = LocalClient::new(self.cas_dir.join("xet/xorbs")).await.unwrap();
+                    self.test_server = Some(LocalTestServerBuilder::new().with_client(local_client).start().await);
+                }
+                self.test_server.as_ref().unwrap().remote_client().clone() as Arc<dyn Client>
             }
-            self.test_server.as_ref().unwrap().remote_client().clone() as Arc<dyn Client>
+            #[cfg(not(feature = "simulation"))]
+            {
+                panic!("test server requires the 'simulation' feature");
+            }
         } else {
             LocalClient::new(self.cas_dir.join("xet/xorbs")).await.unwrap() as Arc<dyn Client>
         }

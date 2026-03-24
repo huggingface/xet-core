@@ -20,5 +20,5 @@ pub use xet_file::XetFileInfo;
 pub use crate::deduplication::RawXorbData;
 pub use crate::file_reconstruction::{DownloadStream, UnorderedDownloadStream};
 
-#[cfg(all(debug_assertions, feature = "simulation"))]
+#[cfg(debug_assertions)]
 pub mod test_utils;

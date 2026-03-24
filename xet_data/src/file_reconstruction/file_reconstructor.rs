@@ -394,14 +394,13 @@ fn default_progress_updater() -> Option<Arc<ItemProgressUpdater>> {
     None
 }
 
-#[cfg(all(test, feature = "simulation"))]
+#[cfg(test)]
 mod tests {
     use std::io::{Cursor, Write};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
-    use tokio_util::sync::CancellationToken;
     use xet_client::cas_client::{ClientTestingUtils, DirectAccessClient, LocalClient, RandomFileContents};
     use xet_client::cas_types::FileRange;
     use xet_runtime::core::XetRuntime;
@@ -1315,6 +1314,12 @@ mod tests {
         assert_eq!(&result[start as usize..end as usize], &file_contents.data[start as usize..end as usize]);
     }
 
+    // ==================== Server-dependent tests (require simulation feature) ====================
+    #[cfg(feature = "simulation")]
+    mod server_tests {
+    use super::*;
+    use tokio_util::sync::CancellationToken;
+
     // ==================== V1 Fallback Tests ====================
     //
     // These tests use LocalTestServer with V2 disabled to verify that
@@ -1883,4 +1888,5 @@ mod tests {
             .unwrap();
         }
     }
+    } // mod server_tests
 }
