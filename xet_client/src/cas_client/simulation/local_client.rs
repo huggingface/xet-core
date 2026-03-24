@@ -11,7 +11,7 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use bytes::Bytes;
 use heed::types::*;
-use rand::Rng;
+use rand::RngExt;
 use tempfile::TempDir;
 use tokio::time::{Duration, Instant};
 use tracing::{error, info, warn};

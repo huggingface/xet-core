@@ -490,7 +490,7 @@ mod tests {
     use std::io::Cursor;
 
     use rand::rngs::SmallRng;
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt, SeedableRng};
 
     use super::super::MDBShardInfo;
     use super::super::file_structs::MDBFileInfo;

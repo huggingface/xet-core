@@ -79,8 +79,7 @@ oneshot = "0.1"
 pin-project = "1"
 pyo3 = { version = "0.26", features = ["abi3-py37", "multiple-pymethods"] }
 prometheus = "0.14"
-rand = "0.9"
-rand_chacha = "0.9"
+rand = "0.10"
 regex = "1"
 reqwest = { version = "0.13.1", features = [
     "json",
@@ -132,7 +131,7 @@ winapi = { version = "0.3", features = [
 approx = "0.5"
 httpmock = "0.8"
 rand_core = "0.6"
-rand_distr = "0.5"
+rand_distr = "0.6"
 russh = "0.55"
 serial_test = "3"
 tracing-test = { version = "0.2", features = ["no-env-filter"] }

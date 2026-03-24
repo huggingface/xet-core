@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use tempfile::TempDir;
 use tokio::time;
 use xet_core_structures::merklehash::MerkleHash;

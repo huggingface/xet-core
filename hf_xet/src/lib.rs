@@ -13,7 +13,7 @@ use itertools::Itertools;
 use pyo3::exceptions::{PyKeyboardInterrupt, PyValueError};
 use pyo3::prelude::*;
 use pyo3::pyfunction;
-use rand::Rng;
+use rand::RngExt;
 use runtime::async_run;
 use token_refresh::WrappedTokenRefresher;
 use tracing::debug;

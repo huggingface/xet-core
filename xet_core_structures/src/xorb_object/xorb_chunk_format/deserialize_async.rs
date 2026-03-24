@@ -131,12 +131,12 @@ where
 mod tests {
     use bytes::Bytes;
     use futures::Stream;
-    use rand::{Rng, rng};
+    use rand::{RngExt, rng};
 
     use super::super::{CompressionScheme, serialize_chunk};
     use super::deserialize_chunks_to_writer_from_stream;
 
-    fn gen_random_bytes(rng: &mut impl Rng, uncompressed_chunk_size: u32) -> Vec<u8> {
+    fn gen_random_bytes(rng: &mut impl RngExt, uncompressed_chunk_size: u32) -> Vec<u8> {
         let mut data = vec![0u8; uncompressed_chunk_size as usize];
         rng.fill(&mut data[..]);
         data
@@ -144,7 +144,7 @@ mod tests {
 
     const CHUNK_SIZE: usize = 1000;
 
-    fn get_chunks(rng: &mut impl Rng, num_chunks: u32, compression_scheme: CompressionScheme) -> Vec<u8> {
+    fn get_chunks(rng: &mut impl RngExt, num_chunks: u32, compression_scheme: CompressionScheme) -> Vec<u8> {
         let mut out = Vec::new();
         for _ in 0..num_chunks {
             let data = gen_random_bytes(rng, CHUNK_SIZE as u32);
@@ -154,7 +154,7 @@ mod tests {
     }
 
     fn get_stream(
-        rng: &mut impl Rng,
+        rng: &mut impl RngExt,
         num_chunks: u32,
         compression_scheme: CompressionScheme,
     ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Unpin {

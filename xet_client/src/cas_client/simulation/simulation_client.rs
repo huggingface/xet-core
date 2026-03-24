@@ -9,7 +9,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use http::HeaderValue;
 use http::header::CONTENT_LENGTH;
-use rand::Rng;
+use rand::RngExt;
 use reqwest::{Body, Url};
 use serde_json;
 

@@ -2,7 +2,7 @@ use std::path::Path;
 
 use rand::rngs::{StdRng, ThreadRng};
 use rand::seq::SliceRandom;
-use rand::{Rng, SeedableRng, rng};
+use rand::{RngExt, SeedableRng, rng};
 use xet_core_structures::merklehash::MerkleHash;
 
 use crate::cas_types::{ChunkRange, Key};
@@ -36,20 +36,20 @@ pub fn print_directory_contents(path: &Path) {
     }
 }
 
-pub fn random_key(rng: &mut impl Rng) -> Key {
+pub fn random_key(rng: &mut impl RngExt) -> Key {
     Key {
         prefix: "default".to_string(),
         hash: MerkleHash::from_slice(&rng.random::<[u8; 32]>()).unwrap(),
     }
 }
 
-pub fn random_range(rng: &mut impl Rng) -> ChunkRange {
+pub fn random_range(rng: &mut impl RngExt) -> ChunkRange {
     let start = rng.random::<u32>() % 1000;
     let end = start + 1 + rng.random::<u32>() % (1024 - start);
     ChunkRange::new(start, end)
 }
 
-pub fn random_bytes(rng: &mut impl Rng, range: &ChunkRange, len: u32) -> (Vec<u32>, Vec<u8>) {
+pub fn random_bytes(rng: &mut impl RngExt, range: &ChunkRange, len: u32) -> (Vec<u32>, Vec<u8>) {
     let random_vec: Vec<u8> = (0..len).map(|_| rng.random()).collect();
     if range.end - range.start == 0 {
         return (vec![0, len], random_vec);
@@ -70,13 +70,13 @@ pub fn random_bytes(rng: &mut impl Rng, range: &ChunkRange, len: u32) -> (Vec<u3
 }
 
 #[derive(Debug)]
-pub struct RandomEntryIterator<T: Rng> {
+pub struct RandomEntryIterator<T: RngExt> {
     rng: T,
     range_len: u32,
     one_chunk_ranges: bool,
 }
 
-impl<T: Rng> RandomEntryIterator<T> {
+impl<T: RngExt> RandomEntryIterator<T> {
     pub fn new(rng: T) -> Self {
         Self {
             rng,
@@ -101,7 +101,7 @@ impl<T: Rng> RandomEntryIterator<T> {
     }
 }
 
-impl<T: SeedableRng + Rng> RandomEntryIterator<T> {
+impl<T: SeedableRng + RngExt> RandomEntryIterator<T> {
     pub fn from_seed(seed: u64) -> Self {
         Self::new(T::seed_from_u64(seed))
     }
@@ -119,7 +119,7 @@ impl Default for RandomEntryIterator<ThreadRng> {
     }
 }
 
-impl<T: Rng> Iterator for RandomEntryIterator<T> {
+impl<T: RngExt> Iterator for RandomEntryIterator<T> {
     type Item = (Key, ChunkRange, Vec<u32>, Vec<u8>);
 
     fn next(&mut self) -> Option<Self::Item> {
