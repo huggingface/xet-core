@@ -9,10 +9,10 @@ name = "git-xet"
 path = "src/bin/main.rs"
 
 [dependencies]
-xet-data = { path = "../xet_data", features = ["simulation"] }
+xet-data = { path = "../xet_data" }
 xet-runtime = { path = "../xet_runtime" }
-xet-client = { path = "../xet_client", features = ["simulation"] }
-xet-pkg = { package = "hf-xet", path = "../xet_pkg", features = ["simulation"] }
+xet-client = { path = "../xet_client" }
+xet-pkg = { package = "hf-xet", path = "../xet_pkg" }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -39,6 +39,7 @@ serial_test = { workspace = true }
 smoke-test = []
 git-xet-for-integration-test = []
 git2-vendored-openssl = ["git2/vendored-openssl"]
+simulation = ["xet-data/simulation", "xet-client/simulation", "xet-pkg/simulation"]
 
 # tell cargo-machete a renamed crate
 [package.metadata.cargo-machete.renamed]
