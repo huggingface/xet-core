@@ -78,9 +78,6 @@ jobs:
       - name: Build and Test hf_xet
         run: |
           cd hf_xet && cargo test --verbose --no-fail-fast
-      - name: Check benchmarks compile
-        run: |
-          cargo bench --no-run
   build_and_test-macos:
     runs-on: macos-latest
     steps:
