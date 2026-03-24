@@ -70,14 +70,13 @@ pub struct XetSessionInner {
 /// the very first request:
 ///
 /// ```rust,no_run
-/// # use std::sync::Arc;
 /// # use http::HeaderMap;
 /// # use xet::xet_session::XetSessionBuilder;
 /// let mut headers = HeaderMap::new();
 /// headers.insert("Authorization", "Bearer hub-token".parse().unwrap());
 /// let session = XetSessionBuilder::new()
 ///     .with_endpoint("https://cas.example.com")
-///     .with_token_refresh_url("https://huggingface.co/api/repos/token", Arc::new(headers))
+///     .with_token_refresh_url("https://huggingface.co/api/repos/token", headers)
 ///     .with_token_info("initial-token", 1_700_000_000) // optional
 ///     .build()?;
 /// # Ok::<(), xet::xet_session::SessionError>(())
@@ -151,9 +150,9 @@ impl XetSessionBuilder {
     ///
     /// The endpoint must return a JSON object with `accessToken` (string) and `exp`
     /// (Unix timestamp in seconds) fields.
-    pub fn with_token_refresh_url(self, url: impl Into<String>, headers: Arc<HeaderMap>) -> Self {
+    pub fn with_token_refresh_url(self, url: impl Into<String>, headers: HeaderMap) -> Self {
         Self {
-            token_refresh: Some((url.into(), headers)),
+            token_refresh: Some((url.into(), Arc::new(headers))),
             ..self
         }
     }

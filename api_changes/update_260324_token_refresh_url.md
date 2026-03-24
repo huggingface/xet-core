@@ -20,7 +20,7 @@ use by legacy API functions (`upload_bytes`, `upload_files`, `download_files` in
 
 ### New method on `XetSessionBuilder`
 
-- `XetSessionBuilder::with_token_refresh_url(url: impl Into<String>, headers: Arc<HeaderMap>) -> Self`
+- `XetSessionBuilder::with_token_refresh_url(url: impl Into<String>, headers: HeaderMap) -> Self`
 
   `headers` are sent exclusively with token-refresh requests. They are independent of
   the CAS headers supplied via `with_custom_headers`.
@@ -31,10 +31,11 @@ use by legacy API functions (`upload_bytes`, `upload_files`, `download_files` in
 
 ### New field on `XetSessionInner`
 
-- `token_refresh: Option<(String, Arc<HeaderMap>)>`
+- `token_refresher: Option<Arc<dyn TokenRefresher>>`
 
-  The URL and its refresh-specific headers are stored as a single `Option` tuple,
-  enforcing at the type level that they are always set together.
+  Built once at session construction time from the refresh URL and headers.
+  `create_translator_config` clones the `Arc` on each call — no HTTP client is
+  constructed per upload/download operation.
 
 ---
 
@@ -57,7 +58,7 @@ let session = XetSessionBuilder::new()
     .with_endpoint("https://cas.example.com")
     .with_token_refresh_url(
         "https://huggingface.co/api/repos/token",
-        Arc::new(refresh_headers),
+        refresh_headers,
     )
     .build()?;
 ```
@@ -67,7 +68,7 @@ An initial token can optionally be seeded to skip the first refresh round-trip:
 ```rust
 let session = XetSessionBuilder::new()
     .with_endpoint("https://cas.example.com")
-    .with_token_refresh_url(refresh_url, Arc::new(refresh_headers))
+    .with_token_refresh_url(refresh_url, refresh_headers)
     .with_token_info(current_token, expiry_timestamp)
     .build()?;
 ```
