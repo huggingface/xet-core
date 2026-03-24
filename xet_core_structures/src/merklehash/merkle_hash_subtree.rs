@@ -39,7 +39,7 @@
 //!
 //! # Solution: The Hump Representation
 //!
-//! A `ChunkHashRange` stores the partially-aggregated state of a contiguous
+//! A `MerkleHashSubtree` stores the partially-aggregated state of a contiguous
 //! range of chunks as a "hump" -- a structure that ascends in aggregation
 //! level from left to right, peaks, then descends:
 //!
@@ -196,7 +196,7 @@
 //!
 //! # Merging Two Humps (`merge_into`)
 //!
-//! Given two adjacent `ChunkHashRange`s (self = left, other = right),
+//! Given two adjacent `MerkleHashSubtree`s (self = left, other = right),
 //! merges `other` into `self` in place.  At each level, the full node
 //! sequence at that level from both humps, plus any carry-up from the
 //! level below, is reassembled and re-split:
@@ -263,6 +263,9 @@
 //! Access is via `left_offset(level)` and `right_offset(level)` computed
 //! from the cumulative sums of the level counts.
 
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize, Serializer};
+
 use super::MerkleHash;
 #[cfg(debug_assertions)]
 use super::aggregated_hashes::aggregated_node_hash;
@@ -271,6 +274,16 @@ use super::aggregated_hashes::{
 };
 
 type Node = (MerkleHash, u64);
+
+/// Human-readable serialization wrapper for a `Node` that renders the hash as
+/// a hex string.  Used only when the serializer is human-readable (JSON, YAML,
+/// etc.); binary formats serialize `Node` tuples directly.
+#[derive(Serialize, Deserialize)]
+struct HexNode {
+    #[serde(with = "super::data_hash::hex::serde")]
+    hash: MerkleHash,
+    size: u64,
+}
 
 /// Scan forward for the first position where `is_natural_cut(hash)` is true,
 /// ignoring `MIN_GROUP_SIZE` / `MAX_GROUP_SIZE` bounds.  Returns the index
@@ -412,7 +425,7 @@ pub fn find_stable_end(nodes: &[Node]) -> Option<usize> {
 /// - `debug_chunks`: (debug builds only) the original level-0 chunks, retained to verify that `final_hash()` matches
 ///   `aggregated_node_hash`.
 #[derive(Clone, Debug)]
-pub struct ChunkHashRange {
+pub struct MerkleHashSubtree {
     nodes: Vec<Node>,
     levels: Vec<(usize, usize)>,
     /// Pre-computed: left_offsets[i] = sum of levels[0..i].0
@@ -451,8 +464,70 @@ fn compute_offsets(levels: &[(usize, usize)]) -> (Vec<usize>, Vec<usize>) {
     (left_offsets, right_offsets)
 }
 
-impl ChunkHashRange {
-    /// Create a new `ChunkHashRange` from a slice of level-0 chunk hashes.
+impl Serialize for MerkleHashSubtree {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let human_readable = serializer.is_human_readable();
+        let mut state = serializer.serialize_struct("MerkleHashSubtree", 4)?;
+
+        if human_readable {
+            let hex_nodes: Vec<HexNode> = self.nodes.iter().map(|&(hash, size)| HexNode { hash, size }).collect();
+            state.serialize_field("nodes", &hex_nodes)?;
+        } else {
+            state.serialize_field("nodes", &self.nodes)?;
+        }
+        state.serialize_field("levels", &self.levels)?;
+        state.serialize_field("at_start", &self.at_start)?;
+        state.serialize_field("at_end", &self.at_end)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for MerkleHashSubtree {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let is_human_readable = deserializer.is_human_readable();
+
+        #[derive(Deserialize)]
+        struct HexRaw {
+            nodes: Vec<HexNode>,
+            levels: Vec<(usize, usize)>,
+            at_start: bool,
+            at_end: bool,
+        }
+
+        #[derive(Deserialize)]
+        struct BinRaw {
+            nodes: Vec<Node>,
+            levels: Vec<(usize, usize)>,
+            at_start: bool,
+            at_end: bool,
+        }
+
+        let (nodes, levels, at_start, at_end) = if is_human_readable {
+            let raw = HexRaw::deserialize(deserializer)?;
+            let nodes = raw.nodes.into_iter().map(|hn| (hn.hash, hn.size)).collect();
+            (nodes, raw.levels, raw.at_start, raw.at_end)
+        } else {
+            let raw = BinRaw::deserialize(deserializer)?;
+            (raw.nodes, raw.levels, raw.at_start, raw.at_end)
+        };
+
+        let (left_offsets, right_offsets) = compute_offsets(&levels);
+
+        Ok(MerkleHashSubtree {
+            nodes,
+            levels,
+            left_offsets,
+            right_offsets,
+            at_start,
+            at_end,
+            #[cfg(debug_assertions)]
+            debug_chunks: Vec::new(),
+        })
+    }
+}
+
+impl MerkleHashSubtree {
+    /// Create a new `MerkleHashSubtree` from a slice of level-0 chunk hashes.
     ///
     /// - `at_start`: set `true` if `chunks[0]` is the first chunk of the entire file (left boundary is known).
     /// - `at_end`: set `true` if the last element of `chunks` is the final chunk (right boundary is known).
@@ -460,7 +535,7 @@ impl ChunkHashRange {
     /// Internally calls [`build_hump`] to produce the O(log n) hump
     /// representation.  In debug builds, retains the original chunks
     /// and verifies `final_hash()` against `aggregated_node_hash()`.
-    pub fn new(at_start: bool, chunks: &[Node], at_end: bool) -> Self {
+    pub fn from_chunks(at_start: bool, chunks: &[Node], at_end: bool) -> Self {
         let (nodes, levels) = build_hump(chunks, at_start, at_end);
         let (left_offsets, right_offsets) = compute_offsets(&levels);
         let result = Self {
@@ -506,7 +581,7 @@ impl ChunkHashRange {
         &self.nodes[start..start + self.levels[level].1]
     }
 
-    /// Merge an adjacent `ChunkHashRange` into this one, consuming it on the right.
+    /// Merge an adjacent `MerkleHashSubtree` into this one, consuming it on the right.
     ///
     /// After the call, `self` represents the combined range: it inherits
     /// its own `at_start` and `other`'s `at_end`.
@@ -514,7 +589,7 @@ impl ChunkHashRange {
     /// Internally delegates to [`merge_into_impl`] with a temporary buffer.
     /// When merging many ranges in a loop, prefer [`merge`] which reuses
     /// a single buffer across all iterations.
-    pub fn merge_into(&mut self, other: &ChunkHashRange) {
+    pub fn merge_into(&mut self, other: &MerkleHashSubtree) {
         let mut buffers = CHRMergeBuffers::new();
         self.merge_into_impl(other, &mut buffers);
     }
@@ -524,9 +599,9 @@ impl ChunkHashRange {
     /// Reuses a single [`CHRMergeBuffers`] across all iterations to
     /// avoid repeated allocation when merging hundreds of small ranges.
     /// Returns an empty fully-closed range if `ranges` is empty.
-    pub fn merge(ranges: &[ChunkHashRange]) -> ChunkHashRange {
+    pub fn merge(ranges: &[MerkleHashSubtree]) -> MerkleHashSubtree {
         match ranges.len() {
-            0 => ChunkHashRange::new(true, &[], true),
+            0 => MerkleHashSubtree::from_chunks(true, &[], true),
             1 => ranges[0].clone(),
             _ => {
                 let mut result = ranges[0].clone();
@@ -556,7 +631,7 @@ impl ChunkHashRange {
     /// new level's prefix, promoted nodes (carry to next level), and
     /// suffix.  The total work is O(total nodes across all levels) =
     /// O(log n).
-    fn merge_into_impl(&mut self, other: &ChunkHashRange, buf: &mut CHRMergeBuffers) {
+    fn merge_into_impl(&mut self, other: &MerkleHashSubtree, buf: &mut CHRMergeBuffers) {
         let combined_at_start = self.at_start;
         let combined_at_end = other.at_end;
 
@@ -741,7 +816,7 @@ impl ChunkHashRange {
         assert_eq!(
             expected,
             got,
-            "ChunkHashRange invariant: final_hash mismatch.\n\
+            "MerkleHashSubtree invariant: final_hash mismatch.\n\
              Expected: {expected:x}\nGot: {got:x}\n\
              Num debug_chunks: {}, num_nodes: {}",
             self.debug_chunks.len(),
@@ -750,7 +825,7 @@ impl ChunkHashRange {
     }
 }
 
-/// Reusable scratch buffers for [`ChunkHashRange::merge_into_impl`].
+/// Reusable scratch buffers for [`MerkleHashSubtree::merge_into_impl`].
 ///
 /// Creating one of these and passing it to repeated `merge_into_impl`
 /// calls avoids re-allocating the working vectors on every merge.
@@ -1097,8 +1172,8 @@ mod tests {
                 let abs_stable = offset + s;
                 if abs_stable < n && abs_stable > 0 {
                     let expected = xorb_hash(&chunks);
-                    let mut merged = ChunkHashRange::new(true, &chunks[..abs_stable], false);
-                    let r2 = ChunkHashRange::new(false, &chunks[abs_stable..], true);
+                    let mut merged = MerkleHashSubtree::from_chunks(true, &chunks[..abs_stable], false);
+                    let r2 = MerkleHashSubtree::from_chunks(false, &chunks[abs_stable..], true);
                     merged.merge_into(&r2);
                     assert_eq!(merged.final_hash().unwrap(), expected);
                 }
@@ -1125,12 +1200,12 @@ mod tests {
     }
 
     // ========================================================================
-    // ChunkHashRange correctness tests
+    // MerkleHashSubtree correctness tests
     // ========================================================================
 
     #[test]
     fn test_empty() {
-        let r = ChunkHashRange::new(true, &[], true);
+        let r = MerkleHashSubtree::from_chunks(true, &[], true);
         assert_eq!(r.final_hash(), Some(MerkleHash::default()));
     }
 
@@ -1138,7 +1213,7 @@ mod tests {
     fn test_single_chunk() {
         let h = MerkleHash::random_from_seed(42);
         let chunks = vec![(h, 1000u64)];
-        let r = ChunkHashRange::new(true, &chunks, true);
+        let r = MerkleHashSubtree::from_chunks(true, &chunks, true);
         assert_eq!(r.final_hash(), Some(xorb_hash(&chunks)));
     }
 
@@ -1148,7 +1223,7 @@ mod tests {
         for n in 2..=30 {
             let chunks = random_chunks(&mut rng, n);
             let expected = xorb_hash(&chunks);
-            let r = ChunkHashRange::new(true, &chunks, true);
+            let r = MerkleHashSubtree::from_chunks(true, &chunks, true);
             assert_eq!(r.final_hash().unwrap(), expected, "Failed for n={n}");
         }
     }
@@ -1156,9 +1231,9 @@ mod tests {
     #[test]
     fn test_no_final_hash_without_boundaries() {
         let chunks = vec![(MerkleHash::random_from_seed(1), 100)];
-        assert!(ChunkHashRange::new(false, &chunks, true).final_hash().is_none());
-        assert!(ChunkHashRange::new(true, &chunks, false).final_hash().is_none());
-        assert!(ChunkHashRange::new(false, &chunks, false).final_hash().is_none());
+        assert!(MerkleHashSubtree::from_chunks(false, &chunks, true).final_hash().is_none());
+        assert!(MerkleHashSubtree::from_chunks(true, &chunks, false).final_hash().is_none());
+        assert!(MerkleHashSubtree::from_chunks(false, &chunks, false).final_hash().is_none());
     }
 
     #[test]
@@ -1168,8 +1243,8 @@ mod tests {
         let expected = xorb_hash(&chunks);
 
         for split in 1..16 {
-            let mut merged = ChunkHashRange::new(true, &chunks[..split], false);
-            let r2 = ChunkHashRange::new(false, &chunks[split..], true);
+            let mut merged = MerkleHashSubtree::from_chunks(true, &chunks[..split], false);
+            let r2 = MerkleHashSubtree::from_chunks(false, &chunks[split..], true);
             merged.merge_into(&r2);
             assert_eq!(merged.final_hash().unwrap(), expected, "Failed split={split}");
         }
@@ -1194,8 +1269,8 @@ mod tests {
             let expected = xorb_hash(&chunks);
 
             let split = rng.random_range(1..16);
-            let mut merged = ChunkHashRange::new(true, &chunks[..split], false);
-            let r2 = ChunkHashRange::new(false, &chunks[split..], true);
+            let mut merged = MerkleHashSubtree::from_chunks(true, &chunks[..split], false);
+            let r2 = MerkleHashSubtree::from_chunks(false, &chunks[split..], true);
             merged.merge_into(&r2);
             assert_eq!(merged.final_hash().unwrap(), expected, "Failed trial {trial}, split at {split}");
         }
@@ -1210,8 +1285,8 @@ mod tests {
                 let expected = xorb_hash(&chunks);
 
                 let split = rng.random_range(1..n);
-                let mut merged = ChunkHashRange::new(true, &chunks[..split], false);
-                let r2 = ChunkHashRange::new(false, &chunks[split..], true);
+                let mut merged = MerkleHashSubtree::from_chunks(true, &chunks[..split], false);
+                let r2 = MerkleHashSubtree::from_chunks(false, &chunks[split..], true);
                 merged.merge_into(&r2);
                 assert_eq!(merged.final_hash().unwrap(), expected, "Failed n={n}, split={split}");
             }
@@ -1238,12 +1313,12 @@ mod tests {
                 let mut prev = 0;
                 for &sp in &split_points {
                     let is_start = prev == 0;
-                    ranges.push(ChunkHashRange::new(is_start, &chunks[prev..sp], false));
+                    ranges.push(MerkleHashSubtree::from_chunks(is_start, &chunks[prev..sp], false));
                     prev = sp;
                 }
-                ranges.push(ChunkHashRange::new(false, &chunks[prev..], true));
+                ranges.push(MerkleHashSubtree::from_chunks(false, &chunks[prev..], true));
 
-                let merged = ChunkHashRange::merge(&ranges);
+                let merged = MerkleHashSubtree::merge(&ranges);
                 assert_eq!(merged.final_hash().unwrap(), expected, "Multi-way failed n={n}, splits={split_points:?}");
             }
         }
@@ -1255,7 +1330,7 @@ mod tests {
         for n in [100, 500, 1000, 5000] {
             let chunks = random_chunks(&mut rng, n);
 
-            let r = ChunkHashRange::new(false, &chunks, false);
+            let r = MerkleHashSubtree::from_chunks(false, &chunks, false);
 
             let log_n = (n as f64).log2().ceil() as usize;
             let max_expected = MAX_GROUP_SIZE * log_n * 3;
@@ -1287,8 +1362,8 @@ mod tests {
             let expected = xorb_hash(&chunks);
 
             for split in 1..chunks.len() {
-                let mut merged = ChunkHashRange::new(true, &chunks[..split], false);
-                let r2 = ChunkHashRange::new(false, &chunks[split..], true);
+                let mut merged = MerkleHashSubtree::from_chunks(true, &chunks[..split], false);
+                let r2 = MerkleHashSubtree::from_chunks(false, &chunks[split..], true);
                 merged.merge_into(&r2);
                 assert_eq!(merged.final_hash().unwrap(), expected, "Reference failed: seeds={seeds:?}, split={split}");
             }
@@ -1305,10 +1380,10 @@ mod tests {
 
             for s1 in 1..n - 1 {
                 for s2 in s1 + 1..n {
-                    let r1 = ChunkHashRange::new(true, &chunks[..s1], false);
-                    let r2 = ChunkHashRange::new(false, &chunks[s1..s2], false);
-                    let r3 = ChunkHashRange::new(false, &chunks[s2..], true);
-                    let merged = ChunkHashRange::merge(&[r1, r2, r3]);
+                    let r1 = MerkleHashSubtree::from_chunks(true, &chunks[..s1], false);
+                    let r2 = MerkleHashSubtree::from_chunks(false, &chunks[s1..s2], false);
+                    let r3 = MerkleHashSubtree::from_chunks(false, &chunks[s2..], true);
+                    let merged = MerkleHashSubtree::merge(&[r1, r2, r3]);
                     assert_eq!(merged.final_hash().unwrap(), expected, "Three-way failed: n={n}, s1={s1}, s2={s2}");
                 }
             }
@@ -1323,8 +1398,8 @@ mod tests {
             let chunks = random_chunks(&mut rng, n);
             let split = n / 2;
 
-            let mut merged = ChunkHashRange::new(true, &chunks[..split], false);
-            let r2 = ChunkHashRange::new(false, &chunks[split..], true);
+            let mut merged = MerkleHashSubtree::from_chunks(true, &chunks[..split], false);
+            let r2 = MerkleHashSubtree::from_chunks(false, &chunks[split..], true);
             merged.merge_into(&r2);
 
             let log_n = (n as f64).log2().ceil() as usize;
@@ -1346,7 +1421,7 @@ mod tests {
             let chunks = random_chunks(&mut rng, n);
 
             for &(at_start, at_end) in &[(true, true), (true, false), (false, true), (false, false)] {
-                let r = ChunkHashRange::new(at_start, &chunks, at_end);
+                let r = MerkleHashSubtree::from_chunks(at_start, &chunks, at_end);
 
                 if r.levels.is_empty() {
                     continue;
@@ -1377,13 +1452,13 @@ mod tests {
             let max_expected = MAX_GROUP_SIZE * log_n * 3;
 
             let chunk_size = rng.random_range(10..50);
-            let mut ranges: Vec<ChunkHashRange> = Vec::new();
+            let mut ranges: Vec<MerkleHashSubtree> = Vec::new();
             let mut pos = 0;
             while pos < total {
                 let end = (pos + chunk_size).min(total);
                 let is_start = pos == 0;
                 let is_end = end == total;
-                ranges.push(ChunkHashRange::new(is_start, &chunks[pos..end], is_end));
+                ranges.push(MerkleHashSubtree::from_chunks(is_start, &chunks[pos..end], is_end));
                 pos = end;
             }
 
@@ -1416,7 +1491,7 @@ mod tests {
         let milestones: Vec<usize> = vec![1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000];
         let max_milestone = *milestones.last().unwrap();
 
-        let mut accumulated = ChunkHashRange::new(true, &random_chunks(&mut rng, batch_size), false);
+        let mut accumulated = MerkleHashSubtree::from_chunks(true, &random_chunks(&mut rng, batch_size), false);
         let mut total_chunks: usize = batch_size;
         let mut milestone_idx = 0;
 
@@ -1425,7 +1500,7 @@ mod tests {
 
         while total_chunks < max_milestone && milestone_idx < milestones.len() {
             let batch = random_chunks(&mut rng, batch_size);
-            let batch_range = ChunkHashRange::new(false, &batch, false);
+            let batch_range = MerkleHashSubtree::from_chunks(false, &batch, false);
             accumulated.merge_into(&batch_range);
             total_chunks += batch_size;
 
@@ -1455,5 +1530,93 @@ mod tests {
             let bound = (MAX_GROUP_SIZE as f64) * 4.0;
             assert!(ratio < bound, "n={n}: worst_nodes={worst}, ratio={ratio:.1}, exceeds {bound:.0} * log2(n)",);
         }
+    }
+
+    // ========================================================================
+    // Serialization tests
+    // ========================================================================
+
+    #[test]
+    fn test_json_round_trip() {
+        let mut rng = SmallRng::seed_from_u64(42);
+
+        for n in [0, 1, 5, 20, 100] {
+            for &(at_start, at_end) in &[(true, true), (true, false), (false, true), (false, false)] {
+                let chunks = random_chunks(&mut rng, n);
+                let original = MerkleHashSubtree::from_chunks(at_start, &chunks, at_end);
+
+                let json = serde_json::to_string(&original).unwrap();
+                let deserialized: MerkleHashSubtree = serde_json::from_str(&json).unwrap();
+
+                assert_eq!(original.nodes, deserialized.nodes, "n={n}");
+                assert_eq!(original.levels, deserialized.levels, "n={n}");
+                assert_eq!(original.left_offsets, deserialized.left_offsets, "n={n}");
+                assert_eq!(original.right_offsets, deserialized.right_offsets, "n={n}");
+                assert_eq!(original.at_start, deserialized.at_start, "n={n}");
+                assert_eq!(original.at_end, deserialized.at_end, "n={n}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_json_format_has_hex_hashes() {
+        let h = MerkleHash::random_from_seed(42);
+        let chunks = vec![(h, 1000u64)];
+        let r = MerkleHashSubtree::from_chunks(true, &chunks, true);
+
+        let json = serde_json::to_string_pretty(&r).unwrap();
+
+        assert!(json.contains(&h.hex()), "JSON should contain hex hash string:\n{json}");
+        assert!(json.contains("\"hash\""), "JSON should have 'hash' field:\n{json}");
+        assert!(json.contains("\"size\""), "JSON should have 'size' field:\n{json}");
+        assert!(!json.contains("[0,"), "JSON should not contain raw u64 array for hash:\n{json}");
+    }
+
+    #[test]
+    fn test_json_round_trip_preserves_merge_result() {
+        let mut rng = SmallRng::seed_from_u64(99);
+        let chunks = random_chunks(&mut rng, 50);
+        let expected = xorb_hash(&chunks);
+
+        let mut r1 = MerkleHashSubtree::from_chunks(true, &chunks[..20], false);
+        let r2 = MerkleHashSubtree::from_chunks(false, &chunks[20..], true);
+        r1.merge_into(&r2);
+
+        let json = serde_json::to_string(&r1).unwrap();
+        let deserialized: MerkleHashSubtree = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.final_hash().unwrap(), expected);
+    }
+
+    #[test]
+    fn test_bincode_round_trip() {
+        let mut rng = SmallRng::seed_from_u64(42);
+
+        for n in [0, 1, 5, 20, 100] {
+            for &(at_start, at_end) in &[(true, true), (true, false), (false, true), (false, false)] {
+                let chunks = random_chunks(&mut rng, n);
+                let original = MerkleHashSubtree::from_chunks(at_start, &chunks, at_end);
+
+                let bytes = bincode::serialize(&original).unwrap();
+                let deserialized: MerkleHashSubtree = bincode::deserialize(&bytes).unwrap();
+
+                assert_eq!(original.nodes, deserialized.nodes, "n={n}");
+                assert_eq!(original.levels, deserialized.levels, "n={n}");
+                assert_eq!(original.left_offsets, deserialized.left_offsets, "n={n}");
+                assert_eq!(original.right_offsets, deserialized.right_offsets, "n={n}");
+                assert_eq!(original.at_start, deserialized.at_start, "n={n}");
+                assert_eq!(original.at_end, deserialized.at_end, "n={n}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_bincode_smaller_than_json() {
+        let mut rng = SmallRng::seed_from_u64(77);
+        let chunks = random_chunks(&mut rng, 100);
+        let r = MerkleHashSubtree::from_chunks(true, &chunks, true);
+
+        let json_bytes = serde_json::to_string(&r).unwrap().len();
+        let bin_bytes = bincode::serialize(&r).unwrap().len();
+        assert!(bin_bytes < json_bytes, "bincode ({bin_bytes}) should be smaller than JSON ({json_bytes})");
     }
 }
