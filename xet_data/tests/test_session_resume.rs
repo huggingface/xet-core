@@ -30,7 +30,6 @@ test_set_config! {
 mod tests {
     use more_asserts::*;
     use xet_data::processing::test_utils::{HydrateDehydrateTest, create_random_file, create_random_files};
-
     #[cfg(feature = "simulation")]
     use {
         rand::prelude::*,

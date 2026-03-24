@@ -1317,8 +1317,9 @@ mod tests {
     // ==================== Server-dependent tests (require simulation feature) ====================
     #[cfg(feature = "simulation")]
     mod server_tests {
-        use super::*;
         use tokio_util::sync::CancellationToken;
+
+        use super::*;
 
         // ==================== V1 Fallback Tests ====================
         //
