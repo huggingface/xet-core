@@ -1,6 +1,6 @@
 //! Session-based upload/download example.
 //!
-//! Shows the three-level hierarchy: XetSession → UploadCommit/DownloadGroup → files.
+//! Shows the three-level hierarchy: XetSession → UploadCommit/FileDownloadGroup → files.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -104,7 +104,7 @@ fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: Option<
         builder = builder.with_endpoint(ep);
     }
     let session = builder.build()?;
-    let group = session.new_download_group_blocking()?;
+    let group = session.new_file_download_group_blocking()?;
 
     // Enqueue all downloads; each starts immediately in the background.
     let n_files = metadata.len();

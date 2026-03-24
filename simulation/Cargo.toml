@@ -37,5 +37,8 @@ reqwest = { workspace = true }
 reqwest-middleware = { workspace = true }
 tracing-subscriber = { workspace = true }
 
+[features]
+smoke-test = []
+
 [dev-dependencies]
 tempfile = { workspace = true }

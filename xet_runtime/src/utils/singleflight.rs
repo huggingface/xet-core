@@ -432,7 +432,7 @@ pub(crate) mod tests {
         let threadpool = Arc::new(XetRuntime::new().unwrap());
         let g = Group::new();
         let res = threadpool
-            .external_run_async_task(async move { g.work("key", return_res()).await })
+            .bridge_sync(async move { g.work("key", return_res()).await })
             .unwrap()
             .0;
         let r = res.unwrap();
@@ -448,6 +448,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     fn test_multiple_threads_with_threadpool() {
         let times_called = Arc::new(AtomicU32::new(0));
         let threadpool = Arc::new(XetRuntime::new().unwrap());
@@ -478,10 +479,11 @@ pub(crate) mod tests {
             assert_eq!(1, num_callers);
             assert_eq!(1, times_called.load(Ordering::SeqCst));
         };
-        threadpool.external_run_async_task(tasks).unwrap();
+        threadpool.bridge_sync(tasks).unwrap();
     }
 
     #[tokio::test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_multiple_threads() {
         let times_called = Arc::new(AtomicU32::new(0));
         let g: Arc<Group<usize, ()>> = Arc::new(Group::new());
@@ -511,6 +513,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_error() {
         let times_called = Arc::new(AtomicU32::new(0));
 
@@ -540,6 +543,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_multiple_keys() {
         let times_called_x = Arc::new(AtomicU32::new(0));
         let times_called_y = Arc::new(AtomicU32::new(0));

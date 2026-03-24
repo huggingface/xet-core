@@ -29,6 +29,7 @@ async fn test_shard_upload_succeeds_with_no_server_delay() {
 }
 
 #[tokio::test]
+#[cfg_attr(feature = "smoke-test", ignore)]
 async fn test_shard_upload_succeeds_with_slow_server() {
     let server = LocalTestServerBuilder::new().start().await;
 

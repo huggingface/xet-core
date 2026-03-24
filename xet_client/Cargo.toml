@@ -57,6 +57,7 @@ tower-http = { version = "0.6", features = ["cors"], optional = true }
 
 [features]
 strict = []
+smoke-test = []
 default = ["rustls-tls"]
 elevated_information_level = []
 rustls-tls = ["reqwest/rustls"]

@@ -18,7 +18,7 @@ pub use file_upload_session::FileUploadSession;
 pub use xet_file::XetFileInfo;
 
 pub use crate::deduplication::RawXorbData;
-pub use crate::file_reconstruction::DownloadStream;
+pub use crate::file_reconstruction::{DownloadStream, UnorderedDownloadStream};
 
 #[cfg(all(debug_assertions, feature = "simulation"))]
 pub mod test_utils;

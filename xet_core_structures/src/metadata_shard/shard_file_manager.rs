@@ -1110,6 +1110,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_timestamp_filtering() -> Result<()> {
         let tmp_dir = TempDir::with_prefix("shard_test_timestamp")?;
         let tmp_dir_path = tmp_dir.path();
@@ -1172,6 +1173,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_export_expiration() -> Result<()> {
         let tmp_dir = TempDir::with_prefix("shard_test_timestamp_2")?;
         let tmp_dir_path = tmp_dir.path();

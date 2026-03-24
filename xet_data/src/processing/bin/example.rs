@@ -65,9 +65,7 @@ fn get_threadpool() -> Arc<XetRuntime> {
 
 fn main() {
     let cli = XCommand::parse();
-    let _ = get_threadpool()
-        .external_run_async_task(async move { cli.run().await })
-        .unwrap();
+    let _ = get_threadpool().bridge_sync(async move { cli.run().await }).unwrap();
 }
 
 async fn clean_file(arg: &CleanArg) -> Result<()> {
@@ -90,7 +88,7 @@ async fn clean(mut reader: impl Read, mut writer: impl Write, size: u64) -> Resu
     let translator = FileUploadSession::new(TranslatorConfig::local_config(std::env::current_dir()?)?.into()).await?;
 
     let mut size_read = 0;
-    let (_id, mut handle) = translator.start_clean(None, size, Sha256Policy::Compute)?;
+    let (_id, mut handle) = translator.start_clean(None, Some(size), Sha256Policy::Compute)?;
 
     loop {
         let bytes = reader.read(&mut read_buf)?;

@@ -1,6 +1,6 @@
 //! Async session-based upload/download example.
 //!
-//! Mirror of `example_sync.rs` using the async API (`UploadCommit` / `DownloadGroup`).
+//! Mirror of `example_sync.rs` using the async API (`UploadCommit` / `FileDownloadGroup`).
 //! Requires an async runtime — here provided by `#[tokio::main]`.
 
 use std::path::PathBuf;
@@ -56,7 +56,7 @@ async fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<(
     if let Some(ep) = endpoint {
         builder = builder.with_endpoint(ep);
     }
-    let session = builder.build_async().await?;
+    let session = builder.build()?;
     let commit = session.new_upload_commit().await?;
 
     // Enqueue all uploads; each starts immediately in the background.
@@ -106,8 +106,8 @@ async fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: O
     if let Some(ep) = endpoint {
         builder = builder.with_endpoint(ep);
     }
-    let session = builder.build_async().await?;
-    let group = session.new_download_group().await?;
+    let session = builder.build()?;
+    let group = session.new_file_download_group().await?;
 
     // Enqueue all downloads; each starts immediately in the background.
     let n_files = metadata.len();

@@ -1109,6 +1109,7 @@ version = "1.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bytes",
  "http",
  "more-asserts",
  "pyo3",
@@ -1116,7 +1117,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "ulid",
  "xet-client",
  "xet-core-structures",
  "xet-data",

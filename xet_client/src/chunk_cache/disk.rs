@@ -1305,6 +1305,7 @@ mod concurrency_tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_run_concurrently_with_evictions() {
         let cache_root = TempDir::new().unwrap();
         let config = CacheConfig {

@@ -1298,6 +1298,7 @@ mod tests {
 
     /// Runs the common DirectAccessClient test suite via SimulationControlClient.
     #[tokio::test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_simulation_control_client_common_suite() {
         crate::cas_client::simulation::client_unit_testing::test_client_functionality(|| async {
             let lc = LocalClient::temporary().await.unwrap();
@@ -1311,6 +1312,7 @@ mod tests {
 
     /// Runs the common DeletionControlableClient test suite via SimulationControlClient.
     #[tokio::test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_simulation_control_client_deletion_suite() {
         crate::cas_client::simulation::deletion_unit_testing::test_deletion_functionality(|| async {
             let lc = LocalClient::temporary().await.unwrap();

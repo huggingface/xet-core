@@ -145,7 +145,7 @@ where
     F: Future<Output = ScenarioResult<()>> + Send + 'static,
 {
     let xet = XetRuntime::new().map_err(|e| ScenarioError::Runtime(e.to_string()))?;
-    xet.external_run_async_task(async move {
+    xet.bridge_sync(async move {
         tokio::task::spawn_blocking(move || {
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()

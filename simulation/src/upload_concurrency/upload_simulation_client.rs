@@ -390,6 +390,7 @@ mod tests {
     /// Runs a full scenario: start server, add upload client, run 3s, shutdown, then verify
     /// output directory has network_stats.json, timeline.csv, client_parameters_*.json, client_stats_*.json.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     async fn scenario_run_3_seconds_shutdown_verify_output() {
         let temp = tempfile::tempdir().unwrap();
         let out_dir = temp.path().to_path_buf();

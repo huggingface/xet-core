@@ -14,7 +14,7 @@ use xet_runtime::core::{XetRuntime, xet_config};
 use xet_runtime::utils::ClosureGuard;
 use xet_runtime::utils::adjustable_semaphore::AdjustableSemaphore;
 
-use super::data_writer::{DataWriter, DownloadStream, SequentialWriter};
+use super::data_writer::{DataWriter, DownloadStream, SequentialWriter, UnorderedDownloadStream};
 use super::error::{FileReconstructionError, Result};
 use super::reconstruction_terms::ReconstructionTermManager;
 use super::run_state::{RunError, RunState};
@@ -124,7 +124,9 @@ impl FileReconstructor {
         }
 
         let run_state = RunState::new(self.cancellation_token.clone(), self.file_hash, self.progress_updater.clone());
+
         let data_writer = SequentialWriter::new(file, self.config.use_vectored_write, run_state.clone());
+
         self.run(data_writer, run_state, false).await
     }
 
@@ -147,13 +149,39 @@ impl FileReconstructor {
     /// Reconstructs the file as a stream, returning a [`DownloadStream`] that
     /// yields data chunks as they become available.
     ///
-    /// The reconstruction task is **not** started immediately. It begins when
-    /// [`DownloadStream::start`] is called, or automatically on the first call
-    /// to [`DownloadStream::next`] / [`DownloadStream::blocking_next`].
+    /// The reconstruction task is spawned immediately but pauses on an
+    /// internal [`tokio::sync::Notify`] until [`DownloadStream::start`] is
+    /// called (or the first [`DownloadStream::next`] /
+    /// [`DownloadStream::blocking_next`]).
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside a tokio runtime context (the constructor
+    /// uses [`tokio::spawn`]).
     pub fn reconstruct_to_stream(self) -> DownloadStream {
         let run_state = RunState::new(self.cancellation_token.clone(), self.file_hash, self.progress_updater.clone());
 
         DownloadStream::new(self, run_state)
+    }
+
+    /// Reconstructs the file as an unordered stream, returning an
+    /// [`UnorderedDownloadStream`] that yields `(offset, Bytes)` chunks
+    /// in whatever order they complete.
+    ///
+    /// The reconstruction task is spawned immediately but pauses on an
+    /// internal [`tokio::sync::Notify`] until
+    /// [`UnorderedDownloadStream::start`] is called (or the first
+    /// [`UnorderedDownloadStream::next`] /
+    /// [`UnorderedDownloadStream::blocking_next`]).
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside a tokio runtime context (the constructor
+    /// uses [`tokio::spawn`]).
+    pub fn reconstruct_to_unordered_stream(self) -> UnorderedDownloadStream {
+        let run_state = RunState::new(self.cancellation_token.clone(), self.file_hash, self.progress_updater.clone());
+
+        UnorderedDownloadStream::new(self, run_state)
     }
 
     /// Runs the file reconstruction with error handling and cancellation support.
@@ -164,7 +192,7 @@ impl FileReconstructor {
     /// asynchronously after this method returns.
     pub(crate) async fn run(
         self,
-        data_writer: Arc<dyn DataWriter>,
+        data_writer: Box<dyn DataWriter>,
         run_state: Arc<RunState>,
         is_streaming: bool,
     ) -> Result<u64> {
@@ -183,7 +211,7 @@ impl FileReconstructor {
 
     async fn run_impl(
         self,
-        data_writer: Arc<dyn DataWriter>,
+        mut data_writer: Box<dyn DataWriter>,
         run_state: &RunState,
         _is_streaming: bool,
     ) -> std::result::Result<u64, RunError> {
@@ -1145,7 +1173,7 @@ mod tests {
 
         let rt = XetRuntime::new_with_config(runtime_config).unwrap();
 
-        rt.external_run_async_task(async move {
+        rt.bridge_sync(async move {
             let (client, file_contents) = setup_test_file(&[(1, (0, 2)), (2, (0, 2)), (3, (0, 2))]).await;
             let sem = XetRuntime::current().common().reconstruction_download_buffer.clone();
 
@@ -1751,7 +1779,7 @@ mod tests {
     fn test_multirange_local_client() {
         for enable in [false, true] {
             let rt = with_multirange_config(enable);
-            rt.external_run_async_task(async move {
+            rt.bridge_sync(async move {
                 let scenarios: Vec<Vec<(u64, (u64, u64))>> = vec![
                     vec![(1, (0, 2)), (1, (4, 6)), (1, (8, 10))],
                     vec![
@@ -1790,7 +1818,7 @@ mod tests {
     fn test_multirange_max_ranges() {
         for enable in [false, true] {
             let rt = with_multirange_config(enable);
-            rt.external_run_async_task(async {
+            rt.bridge_sync(async {
                 let client = LocalClient::temporary().await.unwrap();
                 client.set_max_ranges_per_fetch(2);
 
@@ -1811,7 +1839,7 @@ mod tests {
     fn test_multirange_via_server() {
         for enable in [false, true] {
             let rt = with_multirange_config(enable);
-            rt.external_run_async_task(async {
+            rt.bridge_sync(async {
                 let config = test_config();
 
                 // Full reconstruction with disjoint ranges

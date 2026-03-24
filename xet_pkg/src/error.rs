@@ -85,6 +85,7 @@ impl XetError {
     fn from_runtime_error_ref(re: &RuntimeError) -> Self {
         match re {
             RuntimeError::TaskCanceled(_) => XetError::Cancelled(re.to_string()),
+            RuntimeError::InvalidRuntime(_) => XetError::WrongRuntimeMode(re.to_string()),
             _ => XetError::Internal(re.to_string()),
         }
     }
