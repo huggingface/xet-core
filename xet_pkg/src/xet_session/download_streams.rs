@@ -92,7 +92,7 @@ impl XetDownloadStream {
     /// The returned [`ItemProgressReport`] contains the item name,
     /// total bytes, and bytes completed so far. This method is lock-free
     /// (reads atomic counters) and safe to call from any thread.
-    pub fn get_progress(&self) -> ItemProgressReport {
+    pub fn progress(&self) -> ItemProgressReport {
         self.download_session
             .item_report(self.id)
             .expect("progress item was registered at stream creation and is never removed")
@@ -190,7 +190,7 @@ impl XetUnorderedDownloadStream {
     /// The returned [`ItemProgressReport`] contains the item name,
     /// total bytes, and bytes completed so far. This method is lock-free
     /// (reads atomic counters) and safe to call from any thread.
-    pub fn get_progress(&self) -> ItemProgressReport {
+    pub fn progress(&self) -> ItemProgressReport {
         self.download_session
             .item_report(self.id)
             .expect("progress item was registered at stream creation and is never removed")

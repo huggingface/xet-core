@@ -1,13 +1,13 @@
 //! Session-based upload/download example.
 //!
-//! Shows the three-level hierarchy: XetSession → UploadCommit/FileDownloadGroup → files.
+//! Shows the three-level hierarchy: XetSession → XetUploadCommit/XetDownloadGroup → files.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use xet::xet_session::{FileMetadata, Sha256Policy, TaskStatus, XetSessionBuilder};
+use xet::xet_session::{Sha256Policy, XetFileMetadata, XetSessionBuilder, XetTaskState};
 
 #[derive(Parser)]
 #[clap(name = "session-demo", about = "XetSession API demo")]
@@ -65,7 +65,7 @@ fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<()> {
     let commit_for_progress = commit.clone();
     std::thread::spawn(move || {
         loop {
-            let report = commit_for_progress.get_progress_blocking();
+            let report = commit_for_progress.progress_blocking();
             println!("{}/{} bytes", report.total_bytes_completed, report.total_bytes);
             std::thread::sleep(Duration::from_millis(100));
         }
@@ -86,7 +86,7 @@ fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<()> {
 }
 
 fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: Option<String>) -> Result<()> {
-    let metadata: Vec<FileMetadata> = serde_json::from_str(&std::fs::read_to_string(metadata_file)?)?;
+    let metadata: Vec<XetFileMetadata> = serde_json::from_str(&std::fs::read_to_string(metadata_file)?)?;
     std::fs::create_dir_all(&output_dir)?;
 
     let mut builder = XetSessionBuilder::new();
@@ -108,10 +108,10 @@ fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: Option<
     let group_for_progress = group.clone();
     std::thread::spawn(move || {
         loop {
-            if let Ok(report) = group_for_progress.get_progress_blocking() {
+            if let Ok(report) = group_for_progress.progress_blocking() {
                 let done = handles
                     .iter()
-                    .filter(|h| matches!(h.status(), Ok(TaskStatus::Completed)))
+                    .filter(|h| matches!(h.status(), Ok(XetTaskState::Completed)))
                     .count();
                 println!("{}/{} files | {}/{} bytes", done, n_files, report.total_bytes_completed, report.total_bytes);
             }

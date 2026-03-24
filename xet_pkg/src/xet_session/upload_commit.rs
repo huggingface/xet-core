@@ -1,40 +1,40 @@
-//! UploadCommit — groups related uploads
+//! XetUploadCommit — groups related uploads
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use tracing::info;
 use xet_data::deduplication::DeduplicationMetrics;
-use xet_data::processing::{FileUploadCoordinator, Sha256Policy, XetFileInfo};
+use xet_data::processing::{FileUploadSession, Sha256Policy, XetFileInfo};
 use xet_data::progress_tracking::{GroupProgressReport, UniqueID};
 
 use super::common::create_translator_config;
 use super::session::XetSession;
-use super::task_runtime::TaskRuntime;
-use super::upload_file_handle::{TrackedFileUpload, UploadFileHandle, UploadFileHandleInner};
-use super::upload_stream_handle::{UploadStreamHandle, UploadStreamHandleInner};
+use super::task_runtime::{BackgroundTaskState, TaskRuntime, XetTaskState};
+use super::upload_file_handle::XetFileUpload;
+use super::upload_stream_handle::{XetStreamUpload, XetStreamUploadInner};
 use crate::error::XetError;
 
 // ── Data types ──────────────────────────────────────────────────────────────
 
-/// Report returned by [`UploadCommit::commit`].
+/// Report returned by [`XetUploadCommit::commit`].
 ///
 /// Contains aggregate deduplication metrics, final progress, and per-file
-/// [`FileMetadata`] for every file that was successfully ingested.
+/// [`XetFileMetadata`] for every file that was successfully ingested.
 #[derive(Clone, Debug)]
-pub struct CommitReport {
+pub struct XetCommitReport {
     /// Aggregate deduplication metrics across all files in this commit.
     pub dedup_metrics: DeduplicationMetrics,
     /// Final progress snapshot at the time the commit completed.
     pub progress: GroupProgressReport,
     /// Per-file metadata, one entry per successfully ingested file.
-    pub files: Vec<FileMetadata>,
+    pub files: Vec<XetFileMetadata>,
 }
 
-/// Per-file metadata returned by [`UploadFileHandle::finish`] and
-/// [`UploadStreamHandle::finish`].
+/// Per-file metadata returned by [`XetFileUpload::finalize_ingestion`] and
+/// [`XetStreamUpload::finish`].
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct FileMetadata {
+pub struct XetFileMetadata {
     /// Xet file information: hash, size, and optional SHA-256.
     pub xet_info: XetFileInfo,
     /// Per-file deduplication and chunking metrics.
@@ -44,28 +44,28 @@ pub struct FileMetadata {
     pub tracking_name: Option<String>,
 }
 
-// ── UploadCommitInner ───────────────────────────────────────────────────────
+// ── XetUploadCommitInner ────────────────────────────────────────────────────
 
-pub(super) struct UploadCommitInner {
+pub(super) struct XetUploadCommitInner {
     commit_id: UniqueID,
     pub(super) session: XetSession,
     pub(super) task_runtime: Arc<TaskRuntime>,
-    upload_coordinator: Arc<FileUploadCoordinator>,
-    pub(super) file_handles: Mutex<Vec<TrackedFileUpload>>,
-    stream_handles: Mutex<Vec<UploadStreamHandle>>,
+    upload_session: Arc<FileUploadSession>,
+    pub(super) file_handles: Mutex<Vec<XetFileUpload>>,
+    stream_handles: Mutex<Vec<XetStreamUpload>>,
 }
 
-impl UploadCommitInner {
+impl XetUploadCommitInner {
     async fn new(session: XetSession, task_runtime: Arc<TaskRuntime>) -> Result<Self, XetError> {
         let commit_id = UniqueID::new();
         let config = create_translator_config(&session)?;
-        let upload_coordinator = FileUploadCoordinator::new(Arc::new(config)).await?;
+        let upload_session = FileUploadSession::new(Arc::new(config)).await?;
 
         Ok(Self {
             commit_id,
             session,
             task_runtime,
-            upload_coordinator,
+            upload_session,
             file_handles: Mutex::new(Vec::new()),
             stream_handles: Mutex::new(Vec::new()),
         })
@@ -75,29 +75,32 @@ impl UploadCommitInner {
         self: &Arc<Self>,
         file_path: PathBuf,
         sha256: Sha256Policy,
-    ) -> Result<UploadFileHandle, XetError> {
+    ) -> Result<XetFileUpload, XetError> {
         let absolute_path = std::path::absolute(file_path)?;
         let tracking_name = absolute_path.to_str().map(|s| s.to_owned());
-        let (task_id, join_handle) = self.upload_coordinator.spawn_upload_from_path(absolute_path, sha256).await?;
+        let (task_id, join_handle) = self
+            .upload_session
+            .spawn_upload_from_path(absolute_path.clone(), sha256)
+            .await?;
 
-        self.register_spawned_task(task_id, join_handle, tracking_name)
+        self.register_spawned_task(task_id, join_handle, tracking_name, Some(absolute_path))
     }
 
     async fn upload_stream(
         self: &Arc<Self>,
         tracking_name: Option<String>,
         sha256: Sha256Policy,
-    ) -> Result<UploadStreamHandle, XetError> {
+    ) -> Result<XetStreamUpload, XetError> {
         let name: Option<Arc<str>> = tracking_name.as_deref().map(Arc::from);
-        let (task_id, cleaner) = self.upload_coordinator.start_clean(name, None, sha256)?;
+        let (task_id, cleaner) = self.upload_session.start_clean(name, None, sha256)?;
         let task_runtime = self.task_runtime.child()?;
 
-        let handle = UploadStreamHandle {
-            inner: Arc::new(UploadStreamHandleInner {
+        let handle = XetStreamUpload {
+            inner: Arc::new(XetStreamUploadInner {
                 task_id,
                 result: Arc::new(OnceLock::new()),
                 cleaner: Arc::new(tokio::sync::Mutex::new(Some((cleaner, tracking_name)))),
-                upload_coordinator: self.upload_coordinator.clone(),
+                upload_session: self.upload_session.clone(),
                 task_runtime: task_runtime.clone(),
             }),
             task_runtime,
@@ -116,11 +119,11 @@ impl UploadCommitInner {
         bytes: Vec<u8>,
         sha256: Sha256Policy,
         tracking_name: Option<String>,
-    ) -> Result<UploadFileHandle, XetError> {
+    ) -> Result<XetFileUpload, XetError> {
         let name: Option<Arc<str>> = tracking_name.as_deref().map(Arc::from);
-        let (task_id, join_handle) = self.upload_coordinator.spawn_upload_bytes(bytes, sha256, name).await?;
+        let (task_id, join_handle) = self.upload_session.spawn_upload_bytes(bytes, sha256, name).await?;
 
-        self.register_spawned_task(task_id, join_handle, tracking_name)
+        self.register_spawned_task(task_id, join_handle, tracking_name, None)
     }
 
     fn register_spawned_task(
@@ -128,40 +131,33 @@ impl UploadCommitInner {
         task_id: UniqueID,
         join_handle: tokio::task::JoinHandle<Result<(XetFileInfo, DeduplicationMetrics), xet_data::DataError>>,
         tracking_name: Option<String>,
-    ) -> Result<UploadFileHandle, XetError> {
+        file_path: Option<PathBuf>,
+    ) -> Result<XetFileUpload, XetError> {
         let task_runtime = self.task_runtime.child()?;
-        let abort_handle = join_handle.abort_handle();
-        let result = Arc::new(OnceLock::new());
-        let join_handle = Arc::new(tokio::sync::Mutex::new(Some(join_handle)));
+        let handle = XetFileUpload {
+            task_id,
+            file_path,
+            tracking_name,
+            upload_session: self.upload_session.clone(),
+            state: Arc::new(tokio::sync::Mutex::new(BackgroundTaskState::Running {
+                join_handle: Some(join_handle),
+            })),
+            task_runtime,
+        };
 
         self.file_handles
             .lock()
             .expect("file_handles lock poisoned")
-            .push(TrackedFileUpload {
-                result: result.clone(),
-                join_handle: join_handle.clone(),
-                tracking_name: tracking_name.clone(),
-                abort_handle,
-                task_runtime: task_runtime.clone(),
-            });
+            .push(handle.clone());
 
-        Ok(UploadFileHandle {
-            inner: Arc::new(UploadFileHandleInner {
-                task_id,
-                result,
-                join_handle,
-                tracking_name,
-                upload_coordinator: self.upload_coordinator.clone(),
-            }),
-            task_runtime,
-        })
+        Ok(handle)
     }
 
-    fn get_progress(self: &Arc<Self>) -> GroupProgressReport {
-        self.upload_coordinator.report()
+    fn progress(self: &Arc<Self>) -> GroupProgressReport {
+        self.upload_session.report()
     }
 
-    async fn commit(self: &Arc<Self>) -> Result<CommitReport, XetError> {
+    async fn commit(self: &Arc<Self>) -> Result<XetCommitReport, XetError> {
         let stream_uploads = self.stream_handles.lock()?.clone();
         let mut files = Vec::with_capacity(stream_uploads.len());
 
@@ -177,21 +173,17 @@ impl UploadCommitInner {
 
         let mut first_error = None;
         for upload in &file_uploads {
-            if let Some(meta) = upload.result.get().cloned() {
-                files.push(meta);
-            } else {
-                match upload.finish().await {
-                    Ok(meta) => files.push(meta),
-                    Err(e) => {
-                        if first_error.is_none() {
-                            first_error = Some(e);
-                        }
-                    },
-                }
+            match upload.finalize_ingestion().await {
+                Ok(meta) => files.push(meta),
+                Err(e) => {
+                    if first_error.is_none() {
+                        first_error = Some(e);
+                    }
+                },
             }
         }
 
-        let finalize_result = self.upload_coordinator.clone().finalize_with_report().await;
+        let finalize_result = self.upload_session.clone().finalize_with_report().await;
         self.session.finish_upload_commit(self.commit_id)?;
         let (dedup_metrics, progress) = match finalize_result {
             Ok(v) => v,
@@ -201,7 +193,7 @@ impl UploadCommitInner {
             return Err(e);
         }
 
-        Ok(CommitReport {
+        Ok(XetCommitReport {
             dedup_metrics,
             progress,
             files,
@@ -212,7 +204,7 @@ impl UploadCommitInner {
         self.task_runtime.cancel_subtree()?;
         let file_uploads = std::mem::take(&mut *self.file_handles.lock()?);
         for upload in file_uploads {
-            upload.abort_handle.abort();
+            upload.abort_task();
         }
         let stream_uploads = std::mem::take(&mut *self.stream_handles.lock()?);
         for stream in stream_uploads {
@@ -222,7 +214,7 @@ impl UploadCommitInner {
     }
 }
 
-// ── UploadCommit (public wrapper) ───────────────────────────────────────────
+// ── XetUploadCommit (public wrapper) ────────────────────────────────────────
 
 /// API for grouping related file uploads into a single atomic commit.
 ///
@@ -237,12 +229,12 @@ impl UploadCommitInner {
 /// [`upload_bytes_blocking`](Self::upload_bytes_blocking) — transfers start
 /// immediately in the background.
 ///
-/// Poll progress with [`get_progress`](Self::get_progress), then call
+/// Poll progress with [`progress`](Self::progress), then call
 /// [`commit`](Self::commit) (async) or [`commit_blocking`](Self::commit_blocking)
 /// to wait for all uploads to finish and push metadata to the CAS server.
 ///
-/// Per-file results are available via [`UploadFileHandle::finish`] or
-/// [`UploadStreamHandle::finish`] at any time after ingestion completes —
+/// Per-file results are available via [`XetFileUpload::finalize_ingestion`] or
+/// [`XetStreamUpload::finish`] at any time after ingestion completes —
 /// you do not need to wait for [`commit`](Self::commit).
 ///
 /// This type is cheaply clonable; all clones share the same underlying state.
@@ -253,14 +245,14 @@ impl UploadCommitInner {
 /// aborted, and [`XetError::AlreadyCompleted`] if [`commit`](Self::commit)
 /// has already been called.
 #[derive(Clone)]
-pub struct UploadCommit {
-    pub(super) inner: Arc<UploadCommitInner>,
+pub struct XetUploadCommit {
+    pub(super) inner: Arc<XetUploadCommitInner>,
     pub(super) task_runtime: Arc<TaskRuntime>,
 }
 
-impl UploadCommit {
+impl XetUploadCommit {
     pub(super) async fn new(session: XetSession, task_runtime: Arc<TaskRuntime>) -> Result<Self, XetError> {
-        let inner = UploadCommitInner::new(session, task_runtime.clone()).await?;
+        let inner = XetUploadCommitInner::new(session, task_runtime.clone()).await?;
         Ok(Self {
             inner: Arc::new(inner),
             task_runtime,
@@ -275,20 +267,16 @@ impl UploadCommit {
 
     /// Queue a file for upload from a path on disk.
     ///
-    /// The file is read in a background task.  Returns an [`UploadFileHandle`]
-    /// whose [`finish`](UploadFileHandle::finish) method yields per-file
-    /// [`FileMetadata`] once ingestion completes.
+    /// The file is read in a background task. Returns a [`XetFileUpload`]
+    /// whose [`finalize_ingestion`](XetFileUpload::finalize_ingestion) method yields per-file
+    /// [`XetFileMetadata`] once ingestion completes.
     ///
     /// # Parameters
     ///
     /// - `file_path`: path to the file. Resolved to an absolute path so the upload is unaffected by later
     ///   working-directory changes.
     /// - `sha256`: SHA-256 handling policy for this file.
-    pub async fn upload_from_path(
-        &self,
-        file_path: PathBuf,
-        sha256: Sha256Policy,
-    ) -> Result<UploadFileHandle, XetError> {
+    pub async fn upload_from_path(&self, file_path: PathBuf, sha256: Sha256Policy) -> Result<XetFileUpload, XetError> {
         info!(commit_id = %self.id(), path = ?file_path, "Upload from path");
         let inner = Arc::clone(&self.inner);
         self.task_runtime
@@ -298,9 +286,9 @@ impl UploadCommit {
 
     /// Begin an incremental streaming upload.
     ///
-    /// Returns an [`UploadStreamHandle`] for writing data in chunks.  Call
-    /// [`write`](UploadStreamHandle::write) to feed bytes, then
-    /// [`finish`](UploadStreamHandle::finish) to finalise ingestion.
+    /// Returns an [`XetStreamUpload`] for writing data in chunks.  Call
+    /// [`write`](XetStreamUpload::write) to feed bytes, then
+    /// [`finish`](XetStreamUpload::finish) to finalise ingestion.
     /// **`finish` must be called before [`commit`](Self::commit).**
     ///
     /// ```rust,no_run
@@ -308,7 +296,7 @@ impl UploadCommit {
     /// # use std::io::Read;
     /// # use bytes::Bytes;
     /// # use xet::XetError;
-    /// # async fn example(commit: xet::xet_session::UploadCommit, filename: &str) -> Result<(), Box<dyn std::error::Error>> {
+    /// # async fn example(commit: xet::xet_session::XetUploadCommit, filename: &str) -> Result<(), Box<dyn std::error::Error>> {
     /// # use xet::xet_session::Sha256Policy;
     /// let handle = commit.upload_stream(Some(filename.into()), Sha256Policy::Compute).await?;
     /// let mut reader = File::open(&filename)?;
@@ -325,13 +313,13 @@ impl UploadCommit {
     ///
     /// # Parameters
     ///
-    /// - `tracking_name`: optional display name for progress and [`FileMetadata::tracking_name`].
+    /// - `tracking_name`: optional display name for progress and [`XetFileMetadata::tracking_name`].
     /// - `sha256`: SHA-256 handling policy for this file.
     pub async fn upload_stream(
         &self,
         tracking_name: Option<String>,
         sha256: Sha256Policy,
-    ) -> Result<UploadStreamHandle, XetError> {
+    ) -> Result<XetStreamUpload, XetError> {
         info!(commit_id = %self.id(), name = ?tracking_name, "Upload stream");
         let inner = Arc::clone(&self.inner);
         self.task_runtime
@@ -341,8 +329,9 @@ impl UploadCommit {
 
     /// Queue raw bytes for upload, starting the transfer immediately.
     ///
-    /// Returns an [`UploadFileHandle`] whose [`finish`](UploadFileHandle::finish)
-    /// method yields per-file [`FileMetadata`] once ingestion completes.
+    /// Returns a [`XetFileUpload`] whose
+    /// [`finalize_ingestion`](XetFileUpload::finalize_ingestion) method yields
+    /// per-file [`XetFileMetadata`] once ingestion completes.
     ///
     /// # Parameters
     ///
@@ -354,7 +343,7 @@ impl UploadCommit {
         bytes: Vec<u8>,
         sha256: Sha256Policy,
         tracking_name: Option<String>,
-    ) -> Result<UploadFileHandle, XetError> {
+    ) -> Result<XetFileUpload, XetError> {
         info!(
             commit_id = %self.id(),
             name = ?tracking_name,
@@ -368,16 +357,20 @@ impl UploadCommit {
     }
 
     /// Return a snapshot of aggregate progress for every queued upload.
-    pub fn get_progress(&self) -> GroupProgressReport {
-        self.inner.get_progress()
+    pub fn progress(&self) -> GroupProgressReport {
+        self.inner.progress()
+    }
+
+    pub fn status(&self) -> Result<XetTaskState, XetError> {
+        self.task_runtime.status()
     }
 
     /// Wait for all uploads to complete and push metadata to the CAS server.
     ///
-    /// Returns a [`CommitReport`] with aggregate dedup metrics, progress,
-    /// and per-file [`FileMetadata`].  Subsequent calls return
+    /// Returns a [`XetCommitReport`] with aggregate dedup metrics, progress,
+    /// and per-file [`XetFileMetadata`].  Subsequent calls return
     /// [`XetError::AlreadyCompleted`].
-    pub async fn commit(&self) -> Result<CommitReport, XetError> {
+    pub async fn commit(&self) -> Result<XetCommitReport, XetError> {
         info!(commit_id = %self.id(), "Commit starting");
         let inner = Arc::clone(&self.inner);
         self.task_runtime
@@ -388,7 +381,7 @@ impl UploadCommit {
     /// Returns `true` if [`commit`](Self::commit) has completed.
     #[cfg(test)]
     fn is_committed(&self) -> bool {
-        matches!(self.inner.task_runtime.state(), Ok(crate::xet_session::task_runtime::TaskRuntimeState::Completed))
+        matches!(self.inner.task_runtime.status(), Ok(XetTaskState::Completed))
     }
 
     // ===== Blocking (sync) variants =====
@@ -396,7 +389,7 @@ impl UploadCommit {
     /// Blocking version of [`upload_from_path`](Self::upload_from_path).
     ///
     /// Reads a file from disk in a background task and returns an
-    /// [`UploadFileHandle`] for tracking the result.
+    /// [`XetFileUpload`] for tracking the result.
     ///
     /// # Panics
     ///
@@ -405,7 +398,7 @@ impl UploadCommit {
         &self,
         file_path: PathBuf,
         sha256: Sha256Policy,
-    ) -> Result<UploadFileHandle, XetError> {
+    ) -> Result<XetFileUpload, XetError> {
         info!(commit_id = %self.id(), path = ?file_path, "Upload from path");
         let inner = Arc::clone(&self.inner);
         self.task_runtime
@@ -414,7 +407,7 @@ impl UploadCommit {
 
     /// Blocking version of [`upload_stream`](Self::upload_stream).
     ///
-    /// Returns an [`UploadStreamHandle`] for incrementally writing data.
+    /// Returns an [`XetStreamUpload`] for incrementally writing data.
     ///
     /// # Panics
     ///
@@ -423,7 +416,7 @@ impl UploadCommit {
         &self,
         tracking_name: Option<String>,
         sha256: Sha256Policy,
-    ) -> Result<UploadStreamHandle, XetError> {
+    ) -> Result<XetStreamUpload, XetError> {
         info!(commit_id = %self.id(), name = ?tracking_name, "Upload stream");
         let inner = Arc::clone(&self.inner);
         self.task_runtime
@@ -432,7 +425,7 @@ impl UploadCommit {
 
     /// Blocking version of [`upload_bytes`](Self::upload_bytes).
     ///
-    /// Queues raw bytes and returns an [`UploadFileHandle`].
+    /// Queues raw bytes and returns a [`XetFileUpload`].
     ///
     /// # Panics
     ///
@@ -442,7 +435,7 @@ impl UploadCommit {
         bytes: Vec<u8>,
         sha256: Sha256Policy,
         tracking_name: Option<String>,
-    ) -> Result<UploadFileHandle, XetError> {
+    ) -> Result<XetFileUpload, XetError> {
         info!(
             commit_id = %self.id(),
             name = ?tracking_name,
@@ -454,20 +447,20 @@ impl UploadCommit {
             .bridge_sync("upload_bytes_blocking", async move { inner.upload_bytes(bytes, sha256, tracking_name).await })
     }
 
-    /// Blocking version of [`get_progress`](Self::get_progress).
-    pub fn get_progress_blocking(&self) -> GroupProgressReport {
-        self.inner.get_progress()
+    /// Blocking version of [`progress`](Self::progress).
+    pub fn progress_blocking(&self) -> GroupProgressReport {
+        self.inner.progress()
     }
 
     /// Blocking version of [`commit`](Self::commit).
     ///
     /// Waits for all uploads to complete and pushes metadata to the CAS
-    /// server.  Returns a [`CommitReport`].
+    /// server.  Returns a [`XetCommitReport`].
     ///
     /// # Panics
     ///
     /// Panics if called from within a tokio async runtime.
-    pub fn commit_blocking(&self) -> Result<CommitReport, XetError> {
+    pub fn commit_blocking(&self) -> Result<XetCommitReport, XetError> {
         info!(commit_id = %self.id(), "Commit starting");
         let inner = Arc::clone(&self.inner);
         self.task_runtime
@@ -553,10 +546,10 @@ mod tests {
     // ── Initial state ────────────────────────────────────────────────────────
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_get_progress_empty_initially() {
+    async fn test_progress_empty_initially() {
         let session = XetSessionBuilder::new().build().unwrap();
         let commit = session.new_upload_commit().await.unwrap();
-        let report = commit.get_progress();
+        let report = commit.progress();
         assert_eq!(report.total_bytes, 0);
         assert_eq!(report.total_bytes_completed, 0);
     }
@@ -674,7 +667,7 @@ mod tests {
             .unwrap();
         commit.abort().unwrap();
         assert!(commit.inner.file_handles.lock().unwrap().is_empty());
-        let result = handle.finish().await;
+        let result = handle.finalize_ingestion().await;
         assert!(result.is_err());
     }
 
@@ -688,10 +681,7 @@ mod tests {
             .unwrap();
 
         commit.abort().unwrap();
-        assert!(matches!(
-            commit.inner.task_runtime.state().unwrap(),
-            crate::xet_session::task_runtime::TaskRuntimeState::UserCancelled
-        ));
+        assert!(matches!(commit.inner.task_runtime.status().unwrap(), XetTaskState::UserCancelled));
 
         assert!(commit.inner.file_handles.lock().unwrap().is_empty());
     }
@@ -742,13 +732,25 @@ mod tests {
             .unwrap();
 
         for _ in 0..50 {
-            if handle.get_progress().is_some() {
+            if handle.progress().is_some() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
-        assert!(handle.get_progress().is_some());
+        assert!(handle.progress().is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_upload_handle_file_path_none_for_bytes_upload() {
+        let temp = tempdir().unwrap();
+        let session = local_session(&temp).await.unwrap();
+        let commit = session.new_upload_commit().await.unwrap();
+        let handle = commit
+            .upload_bytes(b"no-path".to_vec(), Sha256Policy::Compute, Some("bytes.bin".into()))
+            .await
+            .unwrap();
+        assert_eq!(handle.file_path(), None);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -766,6 +768,18 @@ mod tests {
         assert!(!meta.xet_info.hash.is_empty());
         assert!(meta.xet_info.sha256.is_some());
         assert_eq!(meta.xet_info.sha256.as_deref().unwrap().len(), 64);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_upload_handle_file_path_for_path_upload() {
+        let temp = tempdir().unwrap();
+        let session = local_session(&temp).await.unwrap();
+        let src = temp.path().join("path_meta.bin");
+        std::fs::write(&src, b"path metadata").unwrap();
+        let absolute = std::path::absolute(&src).unwrap();
+        let commit = session.new_upload_commit().await.unwrap();
+        let handle = commit.upload_from_path(src, Sha256Policy::Compute).await.unwrap();
+        assert_eq!(handle.file_path(), Some(absolute));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -813,13 +827,13 @@ mod tests {
             .upload_bytes(data.to_vec(), Sha256Policy::Compute, Some("early.bin".into()))
             .await
             .unwrap();
-        let meta = handle.finish().await.unwrap();
+        let meta = handle.finalize_ingestion().await.unwrap();
         assert_eq!(meta.xet_info.file_size, Some(data.len() as u64));
         commit.commit().await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_finish_second_call_is_already_completed() {
+    async fn test_finish_second_call_returns_cached_result() {
         let temp = tempdir().unwrap();
         let session = local_session(&temp).await.unwrap();
         let commit = session.new_upload_commit().await.unwrap();
@@ -827,11 +841,11 @@ mod tests {
             .upload_bytes(b"idem".to_vec(), Sha256Policy::Compute, None)
             .await
             .unwrap();
-        let meta1 = handle.finish().await.unwrap();
-        let err = handle.finish().await.unwrap_err();
-        assert!(matches!(err, XetError::AlreadyCompleted));
-        let meta2 = handle.try_finish().unwrap();
+        let meta1 = handle.finalize_ingestion().await.unwrap();
+        let meta2 = handle.finalize_ingestion().await.unwrap();
         assert_eq!(meta1.xet_info.hash, meta2.xet_info.hash);
+        let cached = handle.try_finish().unwrap();
+        assert_eq!(meta1.xet_info.hash, cached.xet_info.hash);
         commit.commit().await.unwrap();
     }
 
@@ -842,7 +856,7 @@ mod tests {
         let data = b"dedup metrics check";
         let commit = session.new_upload_commit().await.unwrap();
         let handle = commit.upload_bytes(data.to_vec(), Sha256Policy::Compute, None).await.unwrap();
-        let meta = handle.finish().await.unwrap();
+        let meta = handle.finalize_ingestion().await.unwrap();
         assert_eq!(meta.dedup_metrics.total_bytes, data.len() as u64);
         commit.commit().await.unwrap();
     }
@@ -950,9 +964,9 @@ mod tests {
             .await
             .unwrap();
         commit.commit().await.unwrap();
-        assert!(matches!(h1.finish().await.unwrap_err(), XetError::AlreadyCompleted));
-        assert!(matches!(h2.finish().await.unwrap_err(), XetError::AlreadyCompleted));
-        assert!(matches!(h3.finish().await.unwrap_err(), XetError::AlreadyCompleted));
+        assert!(h1.finalize_ingestion().await.is_ok());
+        assert!(h2.finalize_ingestion().await.is_ok());
+        assert!(h3.finalize_ingestion().await.is_ok());
     }
 
     // ── Progress ─────────────────────────────────────────────────────────────
@@ -969,7 +983,7 @@ mod tests {
             .await
             .unwrap();
         commit.commit().await.unwrap();
-        let report = progress_observer.get_progress();
+        let report = progress_observer.progress();
         assert_eq!(report.total_bytes, data.len() as u64);
         assert_eq!(report.total_bytes_completed, data.len() as u64);
         assert_eq!(report.total_transfer_bytes, report.total_transfer_bytes_completed);
@@ -1089,7 +1103,7 @@ mod tests {
         let commit = session.new_upload_commit_blocking()?;
         let handle = commit.upload_bytes_blocking(data.to_vec(), Sha256Policy::Compute, None)?;
 
-        let meta = handle.finish_blocking()?;
+        let meta = handle.finalize_ingestion_blocking()?;
         assert_eq!(meta.xet_info.file_size, Some(data.len() as u64));
 
         commit.commit_blocking()?;
@@ -1121,9 +1135,9 @@ mod tests {
         let h2 = commit.upload_bytes_blocking(b"file two".to_vec(), Sha256Policy::Compute, Some("b.bin".into()))?;
         let h3 = commit.upload_bytes_blocking(b"file three".to_vec(), Sha256Policy::Compute, Some("c.bin".into()))?;
         commit.commit_blocking()?;
-        assert!(matches!(h1.finish_blocking().unwrap_err(), XetError::AlreadyCompleted));
-        assert!(matches!(h2.finish_blocking().unwrap_err(), XetError::AlreadyCompleted));
-        assert!(matches!(h3.finish_blocking().unwrap_err(), XetError::AlreadyCompleted));
+        assert!(h1.finalize_ingestion_blocking().is_ok());
+        assert!(h2.finalize_ingestion_blocking().is_ok());
+        assert!(h3.finalize_ingestion_blocking().is_ok());
         Ok(())
     }
 
@@ -1136,7 +1150,7 @@ mod tests {
         let progress_observer = commit.clone();
         commit.upload_bytes_blocking(data.to_vec(), Sha256Policy::Compute, Some("prog.bin".into()))?;
         commit.commit_blocking()?;
-        let snapshot = progress_observer.get_progress_blocking();
+        let snapshot = progress_observer.progress_blocking();
         assert_eq!(snapshot.total_bytes, data.len() as u64);
         assert_eq!(snapshot.total_bytes_completed, data.len() as u64);
         assert_eq!(snapshot.total_transfer_bytes, snapshot.total_transfer_bytes_completed);

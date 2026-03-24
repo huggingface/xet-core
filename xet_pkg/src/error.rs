@@ -27,6 +27,10 @@ pub enum XetError {
     #[error("Previous task error: {0}")]
     PreviousTaskError(String),
 
+    /// Task-level error captured from a background upload/download handle.
+    #[error("Task error: {0}")]
+    TaskError(String),
+
     /// The operation has already completed, is already finalizing, or was already committed/finished.
     #[error("Already completed")]
     AlreadyCompleted,
@@ -296,6 +300,7 @@ impl From<XetError> for pyo3::PyErr {
             | XetError::AlreadyCompleted
             | XetError::UserCancelled(_)
             | XetError::PreviousTaskError(_)
+            | XetError::TaskError(_)
             | XetError::Cancelled(_) => PyRuntimeError::new_err(msg),
             _ => PyRuntimeError::new_err(msg),
         }

@@ -1,13 +1,13 @@
 //! Async session-based upload/download example.
 //!
-//! Mirror of `example_sync.rs` using the async API (`UploadCommit` / `FileDownloadGroup`).
+//! Mirror of `example_sync.rs` using the async API (`XetUploadCommit` / `XetDownloadGroup`).
 //! Requires an async runtime — here provided by `#[tokio::main]`.
 
 use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use xet::xet_session::{DownloadTaskHandle, FileMetadata, Sha256Policy, TaskStatus, XetSessionBuilder};
+use xet::xet_session::{Sha256Policy, XetFileDownload, XetFileMetadata, XetSessionBuilder, XetTaskState};
 
 #[derive(Parser)]
 #[clap(name = "session-demo-async", about = "XetSession async API demo")]
@@ -66,7 +66,7 @@ async fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<(
     let commit_for_progress = commit.clone();
     tokio::spawn(async move {
         loop {
-            let report = commit_for_progress.get_progress();
+            let report = commit_for_progress.progress();
             println!("{}/{} bytes", report.total_bytes_completed, report.total_bytes);
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
@@ -87,7 +87,7 @@ async fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<(
 }
 
 async fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: Option<String>) -> Result<()> {
-    let metadata: Vec<FileMetadata> = serde_json::from_str(&std::fs::read_to_string(metadata_file)?)?;
+    let metadata: Vec<XetFileMetadata> = serde_json::from_str(&std::fs::read_to_string(metadata_file)?)?;
     std::fs::create_dir_all(&output_dir)?;
 
     let mut builder = XetSessionBuilder::new();
@@ -98,7 +98,7 @@ async fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: O
     let group = session.new_file_download_group().await?;
 
     let n_files = metadata.len();
-    let mut handles: Vec<DownloadTaskHandle> = Vec::with_capacity(n_files);
+    let mut handles: Vec<XetFileDownload> = Vec::with_capacity(n_files);
     for m in &metadata {
         let dest = output_dir.join(m.tracking_name.as_deref().unwrap_or("file"));
         handles.push(group.download_file_to_path(m.xet_info.clone(), dest).await?);
@@ -108,10 +108,10 @@ async fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: O
     let group_for_progress = group.clone();
     tokio::spawn(async move {
         loop {
-            if let Ok(report) = group_for_progress.get_progress() {
+            if let Ok(report) = group_for_progress.progress() {
                 let done = handles
                     .iter()
-                    .filter(|h| matches!(h.status(), Ok(TaskStatus::Completed)))
+                    .filter(|h| matches!(h.status(), Ok(XetTaskState::Completed)))
                     .count();
                 println!("{}/{} files | {}/{} bytes", done, n_files, report.total_bytes_completed, report.total_bytes);
             }
