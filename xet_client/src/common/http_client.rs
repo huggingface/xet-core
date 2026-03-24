@@ -59,7 +59,13 @@ fn headers_tag(headers: Option<&HeaderMap>) -> String {
     };
     let mut pairs: Vec<String> = headers
         .iter()
-        .map(|(k, v)| format!("{}={}", k, v.to_str().unwrap_or("<binary>")))
+        .map(|(k, v)| {
+            let val = v
+                .to_str()
+                .map(|s| s.to_owned())
+                .unwrap_or_else(|_| v.as_bytes().iter().map(|b| format!("{b:02x}")).collect());
+            format!("{}={}", k, val)
+        })
         .collect();
     pairs.sort();
     pairs.join(";")

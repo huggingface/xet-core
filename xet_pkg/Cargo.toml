@@ -23,11 +23,12 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 http = { workspace = true }
 more-asserts = { workspace = true }
+pyo3 = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["net", "time"] }
 tracing = { workspace = true }
-pyo3 = { workspace = true, optional = true }
+ulid = { workspace = true }
 
 [features]
 smoke-test = []

@@ -6,6 +6,9 @@ use std::sync::{Arc, Mutex};
 
 use http::HeaderMap;
 use tracing::info;
+use ulid::Ulid;
+use xet_client::cas_client::auth::{DirectRefreshRouteTokenRefresher, TokenRefresher};
+use xet_client::common::http_client::build_http_client;
 use xet_data::processing::{FileDownloadSession, XetFileInfo};
 use xet_data::progress_tracking::UniqueID;
 use xet_runtime::config::XetConfig;
@@ -36,8 +39,7 @@ pub struct XetSessionInner {
     // CAS endpoint and auth (shared by all upload commits/download groups)
     pub(super) endpoint: Option<String>,
     pub(super) token_info: Option<(String, u64)>,
-    /// URL and headers for token refresh requests (always set together).
-    pub(super) token_refresh: Option<(String, Arc<HeaderMap>)>,
+    pub(super) token_refresher: Option<Arc<dyn TokenRefresher>>,
     pub(super) custom_headers: Option<Arc<HeaderMap>>,
 
     // Track active upload commits and download groups.
@@ -49,7 +51,8 @@ pub struct XetSessionInner {
 
     // Session state
     state: Mutex<SessionState>,
-    pub(super) id: UniqueID,
+    // "id" is used to identity a group of activities on our server, and so need to be globally unique
+    pub(super) id: Ulid,
 }
 
 /// Builder for [`XetSession`].
@@ -216,14 +219,7 @@ impl XetSessionBuilder {
             },
         };
 
-        Ok(XetSession::new(
-            self.config,
-            self.endpoint,
-            self.token_info,
-            self.token_refresh,
-            self.custom_headers,
-            runtime,
-        ))
+        XetSession::new(self.config, self.endpoint, self.token_info, self.token_refresh, self.custom_headers, runtime)
     }
 }
 
@@ -265,22 +261,33 @@ impl XetSession {
         token_refresh: Option<(String, Arc<HeaderMap>)>,
         custom_headers: Option<Arc<HeaderMap>>,
         runtime: Arc<XetRuntime>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, SessionError> {
+        let id = Ulid::new();
+        let session_id = id.to_string();
+
+        let token_refresher: Option<Arc<dyn TokenRefresher>> = token_refresh
+            .as_ref()
+            .map(|(url, headers)| -> Result<Arc<dyn TokenRefresher>, SessionError> {
+                let client = build_http_client(&session_id, None, Some(headers.clone()))?;
+                Ok(Arc::new(DirectRefreshRouteTokenRefresher::new(url, client, None)))
+            })
+            .transpose()?;
+
+        Ok(Self {
             inner: Arc::new(XetSessionInner {
                 runtime,
                 config,
                 endpoint,
                 token_info,
-                token_refresh,
+                token_refresher,
                 custom_headers,
                 active_upload_commits: Mutex::new(HashMap::new()),
                 active_file_download_groups: Mutex::new(HashMap::new()),
                 streaming_download_session: tokio::sync::OnceCell::new(),
                 state: Mutex::new(SessionState::Alive),
-                id: UniqueID::new(),
+                id,
             }),
-        }
+        })
     }
 
     /// Create a new [`UploadCommit`] that groups related file uploads.
@@ -610,6 +617,13 @@ mod tests {
         let s1 = XetSessionBuilder::new().build().unwrap();
         let s2 = XetSessionBuilder::new().build().unwrap();
         assert_ne!(s1.id, s2.id);
+    }
+
+    #[test]
+    // Session ID is a Ulid, to guard future regressions.
+    fn test_session_id_is_ulid() {
+        let s = XetSessionBuilder::new().build().unwrap();
+        assert!(Ulid::from_string(&s.id.to_string()).is_ok())
     }
 
     // ── Abort behavior ───────────────────────────────────────────────────────
