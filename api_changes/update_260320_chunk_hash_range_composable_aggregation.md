@@ -21,4 +21,4 @@ This PR adds a composable hash-range representation for merklehash aggregation s
 ## Notes for downstream users
 
 - Existing callers do not need to change anything.
-- New callers can construct partial ranges with `ChunkHashRange::new(...)`, merge with `ChunkHashRange::merge_two(...)` or `ChunkHashRange::merge(...)`, and request `final_hash()` only when both file boundaries are known.
+- New callers can construct partial ranges with `ChunkHashRange::new(...)`, merge with `range.merge_into(&other)` or `ChunkHashRange::merge(&[...])`, and request `final_hash()` only when both file boundaries are known.
