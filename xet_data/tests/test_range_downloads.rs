@@ -1,5 +1,4 @@
-#![cfg(feature = "simulation")]
-//! Integration tests for range-based downloads using a LocalTestServer.
+//! Integration tests for range-based downloads.
 //!
 //! Exercises all range variants (`start..end`, `start..`, `..end`, `..`) across
 //! the three download paths: file, writer, and streaming.
@@ -9,9 +8,7 @@ mod tests {
     use std::fs;
     use std::sync::Arc;
 
-    use tempfile::TempDir;
-    use xet_client::cas_client::{LocalTestServer, LocalTestServerBuilder};
-    use xet_data::processing::configurations::TranslatorConfig;
+    use xet_data::processing::test_utils::TestEnvironment;
     use xet_data::processing::{FileDownloadSession, FileUploadSession, Sha256Policy, XetFileInfo};
 
     async fn upload_bytes(upload_session: &Arc<FileUploadSession>, name: &str, data: &[u8]) -> XetFileInfo {
@@ -24,27 +21,23 @@ mod tests {
     }
 
     struct TestHarness {
-        _server: LocalTestServer,
-        _base_dir: TempDir,
+        _env: TestEnvironment,
         session: Arc<FileDownloadSession>,
         xfi: XetFileInfo,
         data: Vec<u8>,
     }
 
     async fn setup() -> TestHarness {
-        let server = LocalTestServerBuilder::new().start().await;
-        let base_dir = TempDir::new().unwrap();
-        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let env = TestEnvironment::new().await;
 
         let data: Vec<u8> = (0..=255u8).cycle().take(8192).collect();
-        let upload_session = FileUploadSession::new(config.clone()).await.unwrap();
+        let upload_session = FileUploadSession::new(env.config.clone()).await.unwrap();
         let xfi = upload_bytes(&upload_session, "range_test", &data).await;
         upload_session.finalize().await.unwrap();
 
-        let download_session = FileDownloadSession::new(config).await.unwrap();
+        let download_session = FileDownloadSession::new(env.config.clone()).await.unwrap();
         TestHarness {
-            _server: server,
-            _base_dir: base_dir,
+            _env: env,
             session: download_session,
             xfi,
             data,
@@ -161,7 +154,7 @@ mod tests {
         let h = setup().await;
         let xfi_no_size = XetFileInfo::new_hash_only(h.xfi.hash().to_string());
 
-        let out_path = h._base_dir.path().join("unknown_size.bin");
+        let out_path = h._env.base_dir.join("unknown_size.bin");
         let (_id, n_bytes) = h.session.download_file(&xfi_no_size, &out_path).await.unwrap();
 
         assert_eq!(n_bytes, h.data.len() as u64);
@@ -187,7 +180,7 @@ mod tests {
         let h = setup().await;
         let wrong_size = XetFileInfo::new(h.xfi.hash().to_string(), 42);
 
-        let out_path = h._base_dir.path().join("mismatch.bin");
+        let out_path = h._env.base_dir.join("mismatch.bin");
         let err = h.session.download_file(&wrong_size, &out_path).await.unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("mismatch"), "Expected size mismatch error, got: {msg}");

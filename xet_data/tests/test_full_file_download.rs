@@ -1,4 +1,3 @@
-#![cfg(feature = "simulation")]
 //! Regression test for the 416 Range Not Satisfiable bug.
 //!
 //! When downloading a full file without an explicit byte range, `FileReconstructor`
@@ -11,9 +10,7 @@ mod tests {
     use std::fs;
     use std::sync::Arc;
 
-    use tempfile::TempDir;
-    use xet_client::cas_client::LocalTestServerBuilder;
-    use xet_data::processing::configurations::TranslatorConfig;
+    use xet_data::processing::test_utils::TestEnvironment;
     use xet_data::processing::{FileDownloadSession, FileUploadSession, Sha256Policy, XetFileInfo};
 
     async fn upload_bytes(upload_session: &Arc<FileUploadSession>, name: &str, data: &[u8]) -> XetFileInfo {
@@ -25,13 +22,11 @@ mod tests {
         xfi
     }
 
-    /// Uploads files of various sizes through a LocalTestServer and downloads them
-    /// without an explicit byte range, verifying no 416 errors occur.
+    /// Uploads files of various sizes and downloads them without an explicit byte
+    /// range, verifying no 416 errors occur.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_full_file_download_no_416() {
-        let server = LocalTestServerBuilder::new().start().await;
-        let base_dir = TempDir::new().unwrap();
-        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let env = TestEnvironment::new().await;
 
         let test_cases: &[(&str, &[u8])] = &[
             ("one_byte", &[0x42]),
@@ -40,15 +35,22 @@ mod tests {
             ("larger", &vec![0xCD; 64 * 1024]),
         ];
 
-        let download_session = FileDownloadSession::new(config.clone()).await.unwrap();
+        // Upload all files first in a single session.
+        let upload_session = FileUploadSession::new(env.config.clone()).await.unwrap();
+        let xfis: Vec<_> = {
+            let mut v = Vec::new();
+            for (name, data) in test_cases {
+                v.push((*name, *data, upload_bytes(&upload_session, name, data).await));
+            }
+            v
+        };
+        upload_session.finalize().await.unwrap();
 
-        for (name, data) in test_cases {
-            let upload_session = FileUploadSession::new(config.clone()).await.unwrap();
-            let xfi = upload_bytes(&upload_session, name, data).await;
-            upload_session.finalize().await.unwrap();
-
-            let out_path = base_dir.path().join(format!("out_{name}"));
-            let (_id, n_bytes) = download_session.download_file(&xfi, &out_path).await.unwrap();
+        // Now download and verify each file.
+        let download_session = FileDownloadSession::new(env.config.clone()).await.unwrap();
+        for (name, data, xfi) in &xfis {
+            let out_path = env.base_dir.join(format!("out_{name}"));
+            let (_id, n_bytes) = download_session.download_file(xfi, &out_path).await.unwrap();
 
             assert_eq!(n_bytes, data.len() as u64, "size mismatch for {name}");
             assert_eq!(fs::read(&out_path).unwrap(), *data, "content mismatch for {name}");

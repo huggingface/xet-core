@@ -422,3 +422,42 @@ impl HydrateDehydrateTest {
         verify_directories_match(&self.src_dir, &self.dest_dir);
     }
 }
+
+/// Provides a test environment with a config suitable for `FileUploadSession` / `FileDownloadSession`.
+///
+/// When the `simulation` feature is enabled the environment spins up a `LocalTestServer` and
+/// returns a server-backed config; otherwise it falls back to `LocalClient` via `local_config`.
+pub struct TestEnvironment {
+    _temp_dir: TempDir,
+    pub base_dir: PathBuf,
+    pub config: Arc<super::configurations::TranslatorConfig>,
+    #[cfg(feature = "simulation")]
+    _server: Option<LocalTestServer>,
+}
+
+impl TestEnvironment {
+    pub async fn new() -> Self {
+        let temp_dir = TempDir::new().unwrap();
+        let base_dir = temp_dir.path().to_path_buf();
+
+        #[cfg(feature = "simulation")]
+        let (config, server) = {
+            let server = LocalTestServerBuilder::new().start().await;
+            let config = Arc::new(
+                super::configurations::TranslatorConfig::test_server_config(server.http_endpoint(), &base_dir).unwrap(),
+            );
+            (config, Some(server))
+        };
+
+        #[cfg(not(feature = "simulation"))]
+        let config = Arc::new(super::configurations::TranslatorConfig::local_config(&base_dir).unwrap());
+
+        Self {
+            _temp_dir: temp_dir,
+            base_dir,
+            config,
+            #[cfg(feature = "simulation")]
+            _server: server,
+        }
+    }
+}
