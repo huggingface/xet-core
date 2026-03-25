@@ -25,8 +25,8 @@ mod tests {
     }
 
     /// Helper: uploads all test cases in one session, finalizes, then returns (env, download_session, xfis).
-    async fn setup_various_sizes() -> (TestEnvironment, Arc<FileDownloadSession>, Vec<(&'static str, Vec<u8>, XetFileInfo)>)
-    {
+    async fn setup_various_sizes()
+    -> (TestEnvironment, Arc<FileDownloadSession>, Vec<(&'static str, Vec<u8>, XetFileInfo)>) {
         let env = TestEnvironment::new().await;
 
         let test_cases: Vec<(&str, Vec<u8>)> = vec![
@@ -218,8 +218,7 @@ mod tests {
     async fn test_unordered_stream_multiple_concurrent() {
         let data_a = b"Unordered stream A for concurrent download";
         let data_b = b"Unordered stream B for concurrent download - different content";
-        let (_env, download_session, xfi_a, xfi_b) =
-            setup_two("concurrent_a", data_a, "concurrent_b", data_b).await;
+        let (_env, download_session, xfi_a, xfi_b) = setup_two("concurrent_a", data_a, "concurrent_b", data_b).await;
 
         let (_id_a, mut stream_a) = download_session.download_unordered_stream(&xfi_a, None).await.unwrap();
         let (_id_b, mut stream_b) = download_session.download_unordered_stream(&xfi_b, None).await.unwrap();
