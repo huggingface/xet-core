@@ -29,18 +29,13 @@ test_set_config! {
 #[cfg(test)]
 mod tests {
     use more_asserts::*;
-    use xet_data::processing::test_utils::{HydrateDehydrateTest, create_random_file, create_random_files};
-    #[cfg(feature = "simulation")]
-    use {
-        rand::prelude::*,
-        std::sync::Arc,
-        tempfile::TempDir,
-        xet_client::cas_client::LocalTestServerBuilder,
-        xet_data::deduplication::constants::{MAX_CHUNK_SIZE, MAX_XORB_BYTES},
-        xet_data::processing::configurations::TranslatorConfig,
-        xet_data::processing::{FileUploadSession, Sha256Policy},
+    use rand::prelude::*;
+    use xet_data::deduplication::constants::{MAX_CHUNK_SIZE, MAX_XORB_BYTES};
+    use xet_data::processing::test_utils::{
+        HydrateDehydrateTest, TestEnvironment, create_random_file, create_random_files,
     };
-    #[cfg(feature = "simulation")]
+    use xet_data::processing::{FileUploadSession, Sha256Policy};
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_simple_resume() {
         // Ensure the deduplication numbers are approximately accurate.
@@ -54,12 +49,10 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(0);
         rng.fill(&mut data[..]);
 
-        let server = LocalTestServerBuilder::new().start().await;
-        let shard_base = TempDir::new().unwrap();
-        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), shard_base.path()).unwrap());
+        let env = TestEnvironment::new().await;
 
         {
-            let file_upload_session = FileUploadSession::new(config.clone()).await.unwrap();
+            let file_upload_session = FileUploadSession::new(env.config.clone()).await.unwrap();
 
             // Feed it half the data, and checkpoint.
             let (_id, mut cleaner) = file_upload_session
@@ -80,7 +73,7 @@ mod tests {
 
         // Now try again to test the resume.
         {
-            let file_upload_session = FileUploadSession::new(config).await.unwrap();
+            let file_upload_session = FileUploadSession::new(env.config.clone()).await.unwrap();
 
             // Feed it half the data, and checkpoint.
             let (_id, mut cleaner) = file_upload_session
@@ -101,7 +94,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "simulation")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_multiple_resume() {
         // Ensure the deduplication numbers are approximately accurate.
@@ -114,15 +106,13 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(0);
         rng.fill(&mut data[..]);
 
-        let server = LocalTestServerBuilder::new().start().await;
-        let shard_base = TempDir::new().unwrap();
-        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), shard_base.path()).unwrap());
+        let env = TestEnvironment::new().await;
         let max_deviance = (*MAX_XORB_BYTES + *MAX_CHUNK_SIZE) as u64;
 
         let mut prev_rn = 0;
 
         for rn in resume_n {
-            let file_upload_session = FileUploadSession::new(config.clone()).await.unwrap();
+            let file_upload_session = FileUploadSession::new(env.config.clone()).await.unwrap();
 
             // Feed it half the data, and checkpoint.
             let (_id, mut cleaner) = file_upload_session
@@ -146,7 +136,7 @@ mod tests {
 
         // Now try again to test the resume.
         {
-            let file_upload_session = FileUploadSession::new(config).await.unwrap();
+            let file_upload_session = FileUploadSession::new(env.config.clone()).await.unwrap();
 
             // Feed it half the data, and checkpoint.
             let (_id, mut cleaner) = file_upload_session
