@@ -54,7 +54,7 @@ fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<()> {
         builder = builder.with_endpoint(ep);
     }
     let session = builder.build()?;
-    let commit = session.new_upload_commit_blocking()?;
+    let commit = session.new_upload_commit()?.build_blocking()?;
 
     // Enqueue all uploads; each starts immediately in the background.
     let n_files = files.len();
@@ -104,7 +104,7 @@ fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: Option<
         builder = builder.with_endpoint(ep);
     }
     let session = builder.build()?;
-    let group = session.new_file_download_group_blocking()?;
+    let group = session.new_file_download_group()?.build_blocking()?;
 
     // Enqueue all downloads; each starts immediately in the background.
     let n_files = metadata.len();
