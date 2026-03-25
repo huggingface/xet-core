@@ -23,9 +23,10 @@ pub(super) fn create_translator_config(
     token_info: Option<(String, u64)>,
     token_refresh: Option<&(String, Arc<HeaderMap>)>,
 ) -> Result<TranslatorConfig, XetError> {
+    let session_id = session.id.to_string();
+
     let token_refresher: Option<Arc<dyn TokenRefresher>> = token_refresh
         .map(|(url, headers)| -> Result<Arc<dyn TokenRefresher>, XetError> {
-            let session_id = session.id.to_string();
             let client = build_http_client(&session_id, None, Some(headers.clone()))?;
             Ok(Arc::new(DirectRefreshRouteTokenRefresher::new(url, client, None)))
         })
@@ -43,7 +44,6 @@ pub(super) fn create_translator_config(
         session.custom_headers.clone(),
     )?;
 
-    let session_id = session.id.to_string();
     if !session_id.is_empty() {
         config.session.session_id = Some(session_id);
     }

@@ -82,7 +82,10 @@ impl DownloadStreamGroupBuilder {
                 async move { DownloadStreamGroup::new(session, token_info, token_refresh).await }
             })
             .await??;
-        session.active_download_stream_groups.lock()?.insert(group.id(), group.clone());
+        session
+            .active_download_stream_groups
+            .lock()?
+            .insert(group.id(), Arc::downgrade(&group.inner));
         Ok(group)
     }
 
@@ -107,7 +110,10 @@ impl DownloadStreamGroupBuilder {
             let session = session.clone();
             async move { DownloadStreamGroup::new(session, token_info, token_refresh).await }
         })??;
-        session.active_download_stream_groups.lock()?.insert(group.id(), group.clone());
+        session
+            .active_download_stream_groups
+            .lock()?
+            .insert(group.id(), Arc::downgrade(&group.inner));
         Ok(group)
     }
 }

@@ -1,7 +1,7 @@
 //! XetSession - manages runtime and configuration
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use http::HeaderMap;
 use tracing::info;
@@ -10,7 +10,7 @@ use xet_data::progress_tracking::UniqueID;
 use xet_runtime::config::XetConfig;
 use xet_runtime::core::XetRuntime;
 
-use super::download_stream_group::{DownloadStreamGroup, DownloadStreamGroupBuilder};
+use super::download_stream_group::{DownloadStreamGroup, DownloadStreamGroupBuilder, DownloadStreamGroupInner};
 use super::errors::SessionError;
 use super::file_download_group::{FileDownloadGroup, FileDownloadGroupBuilder};
 use super::upload_commit::{UploadCommit, UploadCommitBuilder};
@@ -38,7 +38,10 @@ pub struct XetSessionInner {
     // Track active upload commits and download groups.
     pub(super) active_upload_commits: Mutex<HashMap<UniqueID, UploadCommit>>,
     pub(super) active_file_download_groups: Mutex<HashMap<UniqueID, FileDownloadGroup>>,
-    pub(super) active_download_stream_groups: Mutex<HashMap<UniqueID, DownloadStreamGroup>>,
+    // Weak references so that dropping all user-held DownloadStreamGroup clones frees the group
+    // immediately, without needing an explicit finalization call (unlike UploadCommit/FileDownloadGroup
+    // which deregister on commit()/finish()). abort() upgrades live weak refs to cancel active streams.
+    pub(super) active_download_stream_groups: Mutex<HashMap<UniqueID, Weak<DownloadStreamGroupInner>>>,
 
     // Session state
     state: Mutex<SessionState>,
@@ -246,7 +249,6 @@ impl XetSession {
         custom_headers: Option<Arc<HeaderMap>>,
         runtime: Arc<XetRuntime>,
     ) -> Result<Self, SessionError> {
-        let id = Ulid::new();
         Ok(Self {
             inner: Arc::new(XetSessionInner {
                 runtime,
@@ -257,7 +259,7 @@ impl XetSession {
                 active_file_download_groups: Mutex::new(HashMap::new()),
                 active_download_stream_groups: Mutex::new(HashMap::new()),
                 state: Mutex::new(SessionState::Alive),
-                id,
+                id: Ulid::new(),
             }),
         })
     }
@@ -334,8 +336,10 @@ impl XetSession {
             task.abort()?;
         }
         let active_download_stream_groups = std::mem::take(&mut *self.active_download_stream_groups.lock()?);
-        for (_id, group) in active_download_stream_groups {
-            group.abort()?;
+        for (_id, weak_group) in active_download_stream_groups {
+            if let Some(inner) = weak_group.upgrade() {
+                DownloadStreamGroup { inner }.abort()?;
+            }
         }
         Ok(())
     }
