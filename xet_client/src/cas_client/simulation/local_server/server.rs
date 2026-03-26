@@ -485,6 +485,13 @@ impl Client for LocalTestServer {
             .upload_xorb(prefix, serialized_xorb_object, progress_callback, upload_permit)
             .await
     }
+
+    async fn get_file_chunk_hashes(
+        &self,
+        file_id: &xet_core_structures::merklehash::MerkleHash,
+    ) -> Result<xet_core_structures::merklehash::ChunkHashList> {
+        self.client.get_file_chunk_hashes(file_id).await
+    }
 }
 
 #[cfg(test)]

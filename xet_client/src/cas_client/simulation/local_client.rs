@@ -15,7 +15,7 @@ use rand::Rng;
 use tempfile::TempDir;
 use tokio::time::{Duration, Instant};
 use tracing::{error, info, warn};
-use xet_core_structures::merklehash::MerkleHash;
+use xet_core_structures::merklehash::{ChunkHashList, MerkleHash};
 use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
 use xet_core_structures::metadata_shard::shard_file_reconstructor::FileReconstructor;
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
@@ -1160,6 +1160,25 @@ impl Client for LocalClient {
 
         // Should not reach here, but return error if we do.
         Err(ClientError::PresignedUrlExpirationError)
+    }
+
+    async fn get_file_chunk_hashes(&self, file_id: &MerkleHash) -> Result<ChunkHashList> {
+        self.apply_api_delay().await;
+
+        let Some((file_info, _)) = self.shard_manager.get_file_reconstruction_info(file_id).await? else {
+            return Err(ClientError::FileNotFound(*file_id));
+        };
+
+        let mut result = Vec::new();
+        for segment in &file_info.segments {
+            let xorb_obj = self.xorb_footer(&segment.xorb_hash).await?;
+            let pairs = xorb_obj
+                .chunk_hash_sizes(segment.chunk_index_start, segment.chunk_index_end)
+                .map_err(|err| ClientError::Other(format!("chunk_hash_sizes error: {err}")))?;
+            result.extend(pairs);
+        }
+
+        Ok(result)
     }
 }
 

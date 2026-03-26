@@ -5,6 +5,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use tracing::{Instrument, debug_span, info, instrument};
+use xet_core_structures::merklehash::ChunkHashList;
 use xet_core_structures::metadata_shard::Sha256;
 use xet_core_structures::metadata_shard::file_structs::FileMetadataExt;
 use xet_runtime::core::{XetRuntime, xet_config};
@@ -194,7 +195,7 @@ impl SingleFileCleaner {
 
     /// Return the representation of the file after clean as a pointer file instance.
     #[instrument(skip_all, name = "FileCleaner::finish", fields(file_name=self.file_name.as_ref().map(|s|s.to_string())))]
-    pub async fn finish(mut self) -> Result<(XetFileInfo, DeduplicationMetrics)> {
+    pub async fn finish(mut self) -> Result<(XetFileInfo, ChunkHashList, DeduplicationMetrics)> {
         // Chunk the rest of the data.
         if let Some(chunk) = self.chunker.finish() {
             let data = Arc::new([chunk]);
@@ -209,7 +210,7 @@ impl SingleFileCleaner {
         };
         let metadata_ext = sha256.map(FileMetadataExt::new);
 
-        let (file_hash, remaining_file_data, deduplication_metrics) =
+        let (file_hash, chunk_hashes, remaining_file_data, deduplication_metrics) =
             self.dedup_manager_fut.await?.finalize(metadata_ext);
 
         let file_info = XetFileInfo {
@@ -246,6 +247,6 @@ impl SingleFileCleaner {
             end_processing_ts = Utc::now().to_rfc3339(),
         );
 
-        Ok((file_info, deduplication_metrics))
+        Ok((file_info, chunk_hashes, deduplication_metrics))
     }
 }
