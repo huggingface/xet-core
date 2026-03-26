@@ -201,7 +201,7 @@ impl XetSessionBuilder {
             },
         };
 
-        XetSession::new(self.config, self.endpoint, self.custom_headers, runtime)
+        Ok(XetSession::new(self.config, self.endpoint, self.custom_headers, runtime))
     }
 }
 
@@ -248,8 +248,8 @@ impl XetSession {
         endpoint: Option<String>,
         custom_headers: Option<Arc<HeaderMap>>,
         runtime: Arc<XetRuntime>,
-    ) -> Result<Self, SessionError> {
-        Ok(Self {
+    ) -> Self {
+        Self {
             inner: Arc::new(XetSessionInner {
                 runtime,
                 config,
@@ -261,7 +261,7 @@ impl XetSession {
                 state: Mutex::new(SessionState::Alive),
                 id: Ulid::new(),
             }),
-        })
+        }
     }
 
     /// Create an [`UploadCommitBuilder`] for configuring and constructing an upload commit.

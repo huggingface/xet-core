@@ -1,3 +1,5 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use http::{Extensions, HeaderMap, StatusCode};
@@ -50,25 +52,19 @@ fn redact_headers(headers: &HeaderMap) -> HeaderMap {
     sanitized_headers
 }
 
-/// Produces a stable string tag for `custom_headers` that can be included in the
-/// client cache key.  We sort by header name so the tag is independent of insertion
-/// order.
+/// Produces a stable hash tag for `custom_headers` that can be included in the
+/// client cache key.  Header names are sorted for order-independence.  Values are
+/// hashed rather than included verbatim to avoid persisting auth tokens (e.g.
+/// `Authorization: Bearer …`) as plaintext in a long-lived map key.
 fn headers_tag(headers: Option<&HeaderMap>) -> String {
     let Some(headers) = headers else {
         return String::new();
     };
-    let mut pairs: Vec<String> = headers
-        .iter()
-        .map(|(k, v)| {
-            let val = v
-                .to_str()
-                .map(|s| s.to_owned())
-                .unwrap_or_else(|_| v.as_bytes().iter().map(|b| format!("{b:02x}")).collect());
-            format!("{}={}", k, val)
-        })
-        .collect();
-    pairs.sort();
-    pairs.join(";")
+    let mut pairs: Vec<(&str, &[u8])> = headers.iter().map(|(k, v)| (k.as_str(), v.as_bytes())).collect();
+    pairs.sort_by_key(|(k, _)| *k);
+    let mut hasher = DefaultHasher::new();
+    pairs.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 #[allow(unused_variables)]

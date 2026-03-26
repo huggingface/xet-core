@@ -41,6 +41,17 @@ pub trait TokenRefresher: Send + Sync {
 }
 
 #[derive(Debug)]
+pub struct NoOpTokenRefresher;
+
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
+impl TokenRefresher for NoOpTokenRefresher {
+    async fn refresh(&self) -> Result<TokenInfo, AuthError> {
+        Ok(("token".to_string(), 0))
+    }
+}
+
+#[derive(Debug)]
 pub struct ErrTokenRefresher;
 
 #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
