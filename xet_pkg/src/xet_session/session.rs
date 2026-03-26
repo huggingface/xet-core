@@ -69,25 +69,28 @@ pub struct XetSessionInner {
 ///
 /// // Upload token (write access)
 /// let mut upload_headers = HeaderMap::new();
-/// upload_headers.insert("Authorization", "Bearer write-token".parse().unwrap());
+/// upload_headers.insert("Authorization", "Bearer hub-write-token".parse().unwrap());
 /// let commit = session
 ///     .new_upload_commit()?
+///     .with_token_info("CAS_WRITE_JWT", 900)
 ///     .with_token_refresh_url("https://huggingface.co/api/repos/token/write", upload_headers)
 ///     .build_blocking()?;
 ///
 /// // File download token (read access)
 /// let mut dl_headers = HeaderMap::new();
-/// dl_headers.insert("Authorization", "Bearer read-token".parse().unwrap());
+/// dl_headers.insert("Authorization", "Bearer hub-read-token".parse().unwrap());
 /// let group = session
 ///     .new_file_download_group()?
+///     .with_token_info("CAS_READ_JWT", 900)
 ///     .with_token_refresh_url("https://huggingface.co/api/repos/token/read", dl_headers)
 ///     .build_blocking()?;
 ///
 /// // Streaming download token (read access, different group/pool)
 /// let mut stream_headers = HeaderMap::new();
-/// stream_headers.insert("Authorization", "Bearer read-token".parse().unwrap());
+/// stream_headers.insert("Authorization", "Bearer hub-read-token".parse().unwrap());
 /// let stream_group = session
 ///     .new_download_stream_group()?
+///     .with_token_info("CAS_READ_JWT", 900)
 ///     .with_token_refresh_url("https://huggingface.co/api/repos/token/read", stream_headers)
 ///     .build_blocking()?;
 /// # Ok::<(), xet::xet_session::SessionError>(())

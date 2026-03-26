@@ -7,7 +7,7 @@ use derivative::Derivative;
 use reqwest_middleware::ClientWithMiddleware;
 use thiserror::Error;
 
-use crate::hub_client::CredentialHelper;
+use crate::common::auth::CredentialHelper;
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -64,7 +64,7 @@ impl TokenRefresher for ErrTokenRefresher {
 
 /// Token refresher that fetches a new token by making an authenticated GET request to a URL.
 ///
-/// An optional [`CredentialHelper`](crate::hub_client::CredentialHelper) is applied to the
+/// An optional [`CredentialHelper`](crate::common::auth::CredentialHelper) is applied to the
 /// request before it is sent; pass `None` when no additional credentials are needed.
 pub struct DirectRefreshRouteTokenRefresher {
     refresh_route: String,

@@ -3,10 +3,10 @@ use std::sync::Arc;
 use http::header::HeaderMap;
 use urlencoding::encode;
 
-use super::auth::CredentialHelper;
 use super::types::{CasJWTInfo, RepoInfo};
 use crate::cas_client::exports::ClientWithMiddleware;
 use crate::cas_client::retry_wrapper::RetryWrapper;
+use crate::common::auth::CredentialHelper;
 use crate::common::http_client::{Api, build_http_client};
 use crate::error::Result;
 

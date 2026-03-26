@@ -193,6 +193,16 @@ The client cache tag now incorporates both the transport (`"tcp"` or unix socket
 different header sets get separate connection pools. Header key-value pairs are sorted
 for a stable tag independent of insertion order.
 
+### `xet_client::common::auth` — credential helper moved out of `hub_client`
+
+`CredentialHelper`, `BearerCredentialHelper`, and `NoopCredentialHelper` have been moved
+from `xet_client::hub_client::auth` to `xet_client::common::auth` so they can be used
+directly by `cas_client` (e.g. in `DirectRefreshRouteTokenRefresher`) without creating a
+dependency on `hub_client`.
+
+The old `xet_client::hub_client` paths continue to work unchanged via re-exports — no
+migration required for external callers.
+
 ---
 
 ## New types: `DownloadStreamGroup` / `DownloadStreamGroupBuilder`
@@ -246,6 +256,7 @@ removed and replaced with `active_download_stream_groups`.
 ## Affected Areas
 
 - `xet_client::cas_client::auth` — added `DirectRefreshRouteTokenRefresher`
+- `xet_client::common::auth` — **new module**; contains `CredentialHelper`, `BearerCredentialHelper`, `NoopCredentialHelper` (moved from `xet_client::hub_client::auth`; re-exported from `hub_client` for backwards compatibility)
 - `xet_client::common::http_client` — **new module**; contains HTTP client construction code previously in `xet_client::cas_client::http_client`
 - `xet_runtime::error::RuntimeError` — added `ReqwestError` and `PoisonError` variants
 - `xet_runtime::core::XetRuntime::get_or_create_reqwest_client` — return type changed to `xet_runtime::Result<Client>`
