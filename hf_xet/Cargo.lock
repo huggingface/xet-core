@@ -1245,6 +1245,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "ulid",
  "xet-client",
  "xet-core-structures",
  "xet-data",

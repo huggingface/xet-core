@@ -15,6 +15,12 @@ pub enum RuntimeError {
     #[error("Task cancelled; possible runtime shutdown in progress ({0}).")]
     TaskCanceled(String),
 
+    #[error("Reqwest error: {0}")]
+    ReqwestError(#[from] reqwest::Error),
+
+    #[error("Mutex poison error: {0}")]
+    PoisonError(String),
+
     #[error("{0}")]
     Other(String),
 }

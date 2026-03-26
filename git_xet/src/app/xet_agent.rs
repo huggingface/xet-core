@@ -20,7 +20,7 @@ use crate::git_url::{GitUrl, Scheme};
 use crate::lfs_agent_protocol::{
     GitLFSProtocolError, InitRequestInner, ProgressUpdater, TransferAgent, TransferRequest,
 };
-use crate::token_refresher::DirectRefreshRouteTokenRefresher;
+use crate::token_refresher::new_git_token_refresher;
 
 // This implements a Git LFS custom transfer agent that uploads and downloads files using the Xet protocol.
 #[derive(Default)]
@@ -84,7 +84,7 @@ impl TransferAgent for XetAgent {
         };
 
         let session_id = req.action.header.get(XET_SESSION_ID).map(|s| s.as_str()).unwrap_or_default();
-        let token_refresher: Arc<dyn TokenRefresher> = Arc::new(DirectRefreshRouteTokenRefresher::new(
+        let token_refresher: Arc<dyn TokenRefresher> = Arc::new(new_git_token_refresher(
             repo,
             self.remote_url.clone(),
             &req.action.href,
