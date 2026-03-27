@@ -1166,16 +1166,20 @@ checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 name = "hf-xet"
 version = "1.4.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "bytes",
+ "clap",
  "http",
  "more-asserts",
  "pyo3",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
  "tracing",
+ "walkdir",
  "xet-client",
  "xet-core-structures",
  "xet-data",
