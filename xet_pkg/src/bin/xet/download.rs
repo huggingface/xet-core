@@ -47,7 +47,7 @@ pub struct DownloadArgs {
 
     /// Byte range in the output file to write into, e.g. "64..".
     /// Only valid with -o. Seeks to the start offset before writing.
-    #[arg(long)]
+    #[arg(long, requires = "output")]
     pub write_range: Option<String>,
 
     /// Expected file size in bytes (optional; improves progress tracking).
@@ -61,6 +61,10 @@ pub async fn run(cli: &Cli, config: XetConfig, args: &DownloadArgs) -> Result<()
 }
 
 pub async fn run_download(session: &XetSession, args: &DownloadArgs, quiet: bool) -> Result<()> {
+    if args.write_range.is_some() && args.output.is_none() {
+        anyhow::bail!("--write-range requires --output");
+    }
+
     let file_info = match args.size {
         Some(size) => XetFileInfo::new(args.hash.clone(), size),
         None => XetFileInfo::new_hash_only(args.hash.clone()),

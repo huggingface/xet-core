@@ -27,6 +27,19 @@ pub async fn run(cli: &Cli, args: &DumpReconstructionArgs) -> Result<()> {
 }
 
 fn parse_range(s: &str) -> Result<FileRange> {
+    if let Some((start_s, end_s)) = s.split_once("..") {
+        let start = start_s
+            .parse::<u64>()
+            .map_err(|e| anyhow::anyhow!("invalid range start '{start_s}': {e}"))?;
+        let end = end_s
+            .parse::<u64>()
+            .map_err(|e| anyhow::anyhow!("invalid range end '{end_s}': {e}"))?;
+        if start > end {
+            anyhow::bail!("range start ({start}) must be <= end ({end})");
+        }
+        return Ok(FileRange::new(start, end));
+    }
+
     s.parse::<FileRange>()
         .map_err(|e| anyhow::anyhow!("range must be 'start..end' or CAS format, got: {s}: {e}"))
 }
@@ -48,6 +61,12 @@ mod tests {
     use super::*;
     use crate::session::{build_cas_client, build_xet_session};
     use crate::upload::{UploadArgs, run_upload};
+
+    #[test]
+    fn test_parse_range_dotdot_format() {
+        assert_eq!(super::parse_range("0..1024").unwrap(), FileRange::new(0, 1024));
+        assert!(super::parse_range("1024..0").is_err());
+    }
 
     async fn upload_and_get_hash(cas_dir: &tempfile::TempDir, content: &[u8]) -> (String, String, u64) {
         let endpoint = format!("local://{}", cas_dir.path().display());

@@ -94,11 +94,11 @@ pub async fn run_upload(session: &XetSession, args: &UploadArgs) -> Result<Vec<X
         }
     }
 
-    commit.commit().await?;
-
     if had_error {
+        commit.abort()?;
         anyhow::bail!("one or more files failed to upload");
     }
+    commit.commit().await?;
     Ok(output)
 }
 

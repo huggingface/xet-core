@@ -18,6 +18,15 @@ fn xet_cmd(cas_dir: &Path, args: &[&str]) -> Output {
         .expect("failed to execute xet binary")
 }
 
+fn xet_cmd_with_env(args: &[&str], env_vars: &[(&str, &str)]) -> Output {
+    let mut cmd = Command::new(xet_bin());
+    cmd.args(args);
+    for (key, value) in env_vars {
+        cmd.env(key, value);
+    }
+    cmd.output().expect("failed to execute xet binary")
+}
+
 fn xet_ok(cas_dir: &Path, args: &[&str]) -> String {
     let out = xet_cmd(cas_dir, args);
     assert!(
@@ -154,6 +163,80 @@ fn test_cli_download_to_stdout() {
 }
 
 #[test]
+fn test_cli_download_source_range() {
+    let cas_dir = tempdir().unwrap();
+    let src_dir = tempdir().unwrap();
+    let content = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    let src = write_test_file(&src_dir, "range.bin", content);
+
+    let (hash, size) = upload_file(cas_dir.path(), &src);
+
+    let dest_dir = tempdir().unwrap();
+    let dest = dest_dir.path().join("range_out.bin");
+    xet_ok(
+        cas_dir.path(),
+        &[
+            "file",
+            "download",
+            &hash,
+            "-o",
+            dest.to_str().unwrap(),
+            "--size",
+            &size.to_string(),
+            "--source-range",
+            "5..13",
+        ],
+    );
+
+    assert_eq!(std::fs::read(&dest).unwrap(), content[5..13].to_vec());
+}
+
+#[test]
+fn test_cli_download_write_range() {
+    let cas_dir = tempdir().unwrap();
+    let src_dir = tempdir().unwrap();
+    let content = b"abcdefghij";
+    let src = write_test_file(&src_dir, "write_range.bin", content);
+    let (hash, _size) = upload_file(cas_dir.path(), &src);
+
+    let dest_dir = tempdir().unwrap();
+    let dest = dest_dir.path().join("write_range_out.bin");
+    let mut initial = b"................".to_vec();
+    std::fs::write(&dest, &initial).unwrap();
+
+    xet_ok(
+        cas_dir.path(),
+        &[
+            "file",
+            "download",
+            &hash,
+            "-o",
+            dest.to_str().unwrap(),
+            "--source-range",
+            "2..7",
+            "--write-range",
+            "4..9",
+        ],
+    );
+
+    initial[4..9].copy_from_slice(&content[2..7]);
+    assert_eq!(std::fs::read(&dest).unwrap(), initial);
+}
+
+#[test]
+fn test_cli_download_write_range_requires_output() {
+    let cas_dir = tempdir().unwrap();
+    let src_dir = tempdir().unwrap();
+    let src = write_test_file(&src_dir, "write_range_required.bin", b"abcdef");
+    let (hash, _size) = upload_file(cas_dir.path(), &src);
+
+    let out = xet_cmd(cas_dir.path(), &["file", "download", &hash, "--write-range", "0..4"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(stderr.contains("--output"));
+}
+
+#[test]
 fn test_cli_upload_from_stdin() {
     let cas_dir = tempdir().unwrap();
     let content = b"piped stdin content for upload";
@@ -269,12 +352,30 @@ fn test_cli_dump_reconstruction_after_upload() {
 }
 
 #[test]
+fn test_cli_dump_reconstruction_with_source_range() {
+    let cas_dir = tempdir().unwrap();
+    let src_dir = tempdir().unwrap();
+    let src = write_test_file(&src_dir, "recon_range.bin", &vec![9u8; 4096]);
+
+    let (hash, _size) = upload_file(cas_dir.path(), &src);
+    let stdout = xet_ok(cas_dir.path(), &["file", "dump-reconstruction", &hash, "--source-range", "0..512"]);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert!(!parsed.is_null());
+    let terms = parsed["terms"].as_array().unwrap();
+    assert!(!terms.is_empty());
+    let total_unpacked: u64 = terms.iter().map(|t| t["unpacked_length"].as_u64().unwrap()).sum();
+    assert!(total_unpacked > 0);
+}
+
+#[test]
 fn test_cli_dump_reconstruction_nonexistent_hash() {
     let cas_dir = tempdir().unwrap();
     let fake_hash = "0".repeat(64);
     let stdout = xet_ok(cas_dir.path(), &["file", "dump-reconstruction", &fake_hash]);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    if !parsed.is_null() && let Some(t) = parsed["terms"].as_array() {
+    if !parsed.is_null()
+        && let Some(t) = parsed["terms"].as_array()
+    {
         assert!(t.is_empty());
     }
 }
@@ -311,7 +412,50 @@ fn test_cli_config_override_accepted() {
 }
 
 #[test]
-fn test_cli_concurrent_upload_download_stress() {
+fn test_cli_hf_endpoint_env_fallback() {
+    let cas_dir = tempdir().unwrap();
+    let endpoint = format!("local://{}", cas_dir.path().display());
+    let src_dir = tempdir().unwrap();
+    let content = b"hf endpoint fallback";
+    let src = write_test_file(&src_dir, "env_fallback.txt", content);
+
+    let out = xet_cmd_with_env(&["file", "upload", src.to_str().unwrap()], &[("HF_ENDPOINT", &endpoint)]);
+    assert!(out.status.success());
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    let (hash, size) = parse_upload_line(&stderr);
+    assert_eq!(size, content.len() as u64);
+
+    let downloaded = xet_ok(cas_dir.path(), &["file", "download", &hash]);
+    assert_eq!(downloaded.as_bytes(), content);
+}
+
+#[test]
+fn test_cli_endpoint_flag_overrides_hf_endpoint() {
+    let env_cas_dir = tempdir().unwrap();
+    let env_endpoint = format!("local://{}", env_cas_dir.path().display());
+    let flag_cas_dir = tempdir().unwrap();
+    let flag_endpoint = format!("local://{}", flag_cas_dir.path().display());
+    let src_dir = tempdir().unwrap();
+    let content = b"endpoint override";
+    let src = write_test_file(&src_dir, "override.txt", content);
+
+    let out = xet_cmd_with_env(
+        &["--endpoint", &flag_endpoint, "file", "upload", src.to_str().unwrap()],
+        &[("HF_ENDPOINT", &env_endpoint)],
+    );
+    assert!(out.status.success());
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    let (hash, _size) = parse_upload_line(&stderr);
+
+    let downloaded = xet_ok(flag_cas_dir.path(), &["file", "download", &hash]);
+    assert_eq!(downloaded.as_bytes(), content);
+
+    let env_downloaded = xet_ok(env_cas_dir.path(), &["file", "download", &hash]);
+    assert!(env_downloaded.is_empty());
+}
+
+#[test]
+fn test_cli_parallel_upload_download_stress() {
     let cas_dir = tempdir().unwrap();
     let src_dir = tempdir().unwrap();
 
@@ -331,15 +475,24 @@ fn test_cli_concurrent_upload_download_stress() {
 
     let upload_lines: Vec<&str> = stderr.lines().filter(|l| l.contains("hash=")).collect();
     assert_eq!(upload_lines.len(), n);
+    let hashes: Vec<String> = upload_lines.iter().map(|line| parse_upload_line(line).0).collect();
 
     let dest_dir = tempdir().unwrap();
-    for (i, line) in upload_lines.iter().enumerate() {
-        let (hash, _size) = parse_upload_line(line);
-
-        let dest = dest_dir.path().join(format!("out_{i}.bin"));
-        xet_ok(cas_dir.path(), &["file", "download", &hash, "-o", dest.to_str().unwrap()]);
-
-        let downloaded = std::fs::read(&dest).unwrap();
-        assert_eq!(downloaded, files[i].1, "content mismatch for file {i} (hash={hash})");
+    let cas_path = cas_dir.path().to_path_buf();
+    let dest_root = dest_dir.path().to_path_buf();
+    let mut workers = Vec::with_capacity(hashes.len());
+    for (i, hash) in hashes.into_iter().enumerate() {
+        let cas_path = cas_path.clone();
+        let dest_root = dest_root.clone();
+        let expected = files[i].1.clone();
+        workers.push(std::thread::spawn(move || {
+            let dest = dest_root.join(format!("out_{i}.bin"));
+            xet_ok(&cas_path, &["file", "download", &hash, "-o", dest.to_str().unwrap()]);
+            let downloaded = std::fs::read(&dest).unwrap();
+            assert_eq!(downloaded, expected);
+        }));
+    }
+    for worker in workers {
+        worker.join().unwrap();
     }
 }
