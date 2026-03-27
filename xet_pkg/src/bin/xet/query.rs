@@ -27,21 +27,8 @@ pub async fn run(cli: &Cli, args: &DumpReconstructionArgs) -> Result<()> {
 }
 
 fn parse_range(s: &str) -> Result<FileRange> {
-    if let Some((start_s, end_s)) = s.split_once("..") {
-        let start = start_s
-            .parse::<u64>()
-            .map_err(|e| anyhow::anyhow!("invalid range start '{start_s}': {e}"))?;
-        let end = end_s
-            .parse::<u64>()
-            .map_err(|e| anyhow::anyhow!("invalid range end '{end_s}': {e}"))?;
-        if start > end {
-            anyhow::bail!("range start ({start}) must be <= end ({end})");
-        }
-        return Ok(FileRange::new(start, end));
-    }
-
-    s.parse::<FileRange>()
-        .map_err(|e| anyhow::anyhow!("range must be 'start..end' or CAS format, got: {s}: {e}"))
+    let (start, end) = super::parse_byte_range(s)?;
+    Ok(FileRange::new(start, end))
 }
 
 pub async fn run_query(
@@ -56,44 +43,15 @@ pub async fn run_query(
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;
-    use xet_runtime::config::XetConfig;
 
     use super::*;
-    use crate::session::{build_cas_client, build_xet_session};
-    use crate::upload::{UploadArgs, run_upload};
-
-    #[test]
-    fn test_parse_range_dotdot_format() {
-        assert_eq!(super::parse_range("0..1024").unwrap(), FileRange::new(0, 1024));
-        assert!(super::parse_range("1024..0").is_err());
-    }
-
-    async fn upload_and_get_hash(cas_dir: &tempfile::TempDir, content: &[u8]) -> (String, String, u64) {
-        let endpoint = format!("local://{}", cas_dir.path().display());
-        let src_dir = tempdir().unwrap();
-        let src = src_dir.path().join("query_test.bin");
-        std::fs::write(&src, content).unwrap();
-
-        let session = build_xet_session(&endpoint, None, XetConfig::new()).unwrap();
-        let results = run_upload(
-            &session,
-            &UploadArgs {
-                files: vec![src.to_str().unwrap().to_owned()],
-                no_sha256: true,
-                dump_stats: false,
-                output: None,
-            },
-        )
-        .await
-        .unwrap();
-        let meta = &results[0];
-        (endpoint, meta.xet_info.hash.clone(), meta.xet_info.file_size.unwrap_or(0))
-    }
+    use crate::download::tests::upload_test_file;
+    use crate::session::build_cas_client;
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_query_after_upload() {
         let cas_dir = tempdir().unwrap();
-        let (endpoint, hash, file_size) = upload_and_get_hash(&cas_dir, &vec![1u8; 4096]).await;
+        let (endpoint, hash, file_size) = upload_test_file(&cas_dir, "query_test.bin", &vec![1u8; 4096]).await;
 
         let client = build_cas_client(&endpoint, None).await.unwrap();
         let args = DumpReconstructionArgs {

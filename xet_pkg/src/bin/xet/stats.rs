@@ -28,21 +28,7 @@ pub async fn run(cli: &Cli, args: &ScanArgs) -> Result<()> {
     let config = super::session::build_translator_config(&cli.resolved_endpoint())?;
     let metrics = run_scan(config, args).await?;
     if let Some(output_path) = &args.output {
-        let json = serde_json::to_string_pretty(&serde_json::json!({
-            "total_bytes": metrics.total_bytes,
-            "new_bytes": metrics.new_bytes,
-            "deduped_bytes": metrics.deduped_bytes,
-            "deduped_bytes_by_global_dedup": metrics.deduped_bytes_by_global_dedup,
-            "defrag_prevented_dedup_bytes": metrics.defrag_prevented_dedup_bytes,
-            "total_chunks": metrics.total_chunks,
-            "new_chunks": metrics.new_chunks,
-            "deduped_chunks": metrics.deduped_chunks,
-            "deduped_chunks_by_global_dedup": metrics.deduped_chunks_by_global_dedup,
-            "defrag_prevented_dedup_chunks": metrics.defrag_prevented_dedup_chunks,
-            "xorb_bytes_uploaded": metrics.xorb_bytes_uploaded,
-            "shard_bytes_uploaded": metrics.shard_bytes_uploaded,
-            "total_bytes_uploaded": metrics.total_bytes_uploaded,
-        }))?;
+        let json = serde_json::to_string_pretty(&metrics)?;
         std::fs::write(output_path, json)?;
     } else if !cli.quiet {
         println!(
@@ -186,16 +172,10 @@ mod tests {
         };
         let metrics = run_scan(config, &args).await.unwrap();
 
-        let json = serde_json::to_string_pretty(&serde_json::json!({
-            "total_bytes": metrics.total_bytes,
-            "new_bytes": metrics.new_bytes,
-            "deduped_bytes": metrics.deduped_bytes,
-            "total_bytes_uploaded": metrics.total_bytes_uploaded,
-        }))
-        .unwrap();
+        let json = serde_json::to_string_pretty(&metrics).unwrap();
         std::fs::write(&json_path, &json).unwrap();
 
-        let parsed: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&json_path).unwrap()).unwrap();
-        assert_eq!(parsed["total_bytes"], 2048);
+        let parsed: DeduplicationMetrics = serde_json::from_str(&std::fs::read_to_string(&json_path).unwrap()).unwrap();
+        assert_eq!(parsed.total_bytes, 2048);
     }
 }

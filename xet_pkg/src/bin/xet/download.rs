@@ -1,5 +1,5 @@
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{Seek, Write};
 use std::ops::Range;
 use std::path::PathBuf;
 
@@ -11,23 +11,8 @@ use xet_runtime::config::XetConfig;
 
 use super::Cli;
 
-/// Parse a range string like "32..64" or "32.." into a Range<u64>.
-/// Open-ended "N.." produces N..u64::MAX (interpreted as "to end of file").
 fn parse_range(s: &str) -> Result<Range<u64>> {
-    let (start_s, end_s) = s
-        .split_once("..")
-        .ok_or_else(|| anyhow::anyhow!("range must be START..END or START.., got: {s}"))?;
-    let start: u64 = start_s
-        .parse()
-        .map_err(|e| anyhow::anyhow!("invalid range start '{start_s}': {e}"))?;
-    let end: u64 = if end_s.is_empty() {
-        u64::MAX
-    } else {
-        end_s.parse().map_err(|e| anyhow::anyhow!("invalid range end '{end_s}': {e}"))?
-    };
-    if start > end {
-        anyhow::bail!("range start ({start}) must be <= end ({end})");
-    }
+    let (start, end) = super::parse_byte_range(s)?;
     Ok(start..end)
 }
 
@@ -96,7 +81,6 @@ pub async fn run_download(session: &XetSession, args: &DownloadArgs, quiet: bool
             };
 
             if let Some(ref wr) = write_range {
-                use std::io::Seek;
                 file.seek(std::io::SeekFrom::Start(wr.start))?;
             }
 
@@ -129,11 +113,9 @@ pub async fn run_download(session: &XetSession, args: &DownloadArgs, quiet: bool
         },
         None => {
             while let Some(chunk) = stream.next().await? {
-                let stdout = std::io::stdout();
-                let mut out = stdout.lock();
-                out.write_all(&chunk)?;
+                std::io::stdout().write_all(&chunk)?;
             }
-            std::io::stdout().lock().flush()?;
+            std::io::stdout().flush()?;
         },
     }
 
@@ -141,14 +123,18 @@ pub async fn run_download(session: &XetSession, args: &DownloadArgs, quiet: bool
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use tempfile::tempdir;
 
     use super::*;
     use crate::session::build_xet_session;
     use crate::upload::{UploadArgs, run_upload};
 
-    async fn upload_test_file(cas_dir: &tempfile::TempDir, name: &str, content: &[u8]) -> (String, String, u64) {
+    pub(crate) async fn upload_test_file(
+        cas_dir: &tempfile::TempDir,
+        name: &str,
+        content: &[u8],
+    ) -> (String, String, u64) {
         let endpoint = format!("local://{}", cas_dir.path().display());
         let src_dir = tempdir().unwrap();
         let src = src_dir.path().join(name);
