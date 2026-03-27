@@ -32,6 +32,7 @@ pyo3 = { workspace = true, optional = true }
 [features]
 smoke-test = []
 python = ["xet-runtime/python", "dep:pyo3"]
+simulation = ["xet-client/simulation"]
 
 [dev-dependencies]
 anyhow = { workspace = true }

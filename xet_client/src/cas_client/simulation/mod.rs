@@ -11,47 +11,54 @@
 //! - [`client_unit_testing`]: Common unit tests for Client implementations (not available in WASM)
 //! - [`network_simulation`]: Bandwidth-limit proxy and network profiles (not available in WASM)
 
+// --- Always-available lightweight types ---
 pub mod client_testing_utils;
-#[cfg(all(test, not(target_family = "wasm")))]
-pub mod client_unit_testing;
-#[cfg(not(target_family = "wasm"))]
-mod deletion_controls;
-#[cfg(all(test, not(target_family = "wasm")))]
-pub mod deletion_unit_testing;
 mod direct_access_client;
-#[cfg(not(target_family = "wasm"))]
-mod local_client;
-#[cfg(not(target_family = "wasm"))]
-pub mod local_server;
 mod memory_client;
-#[cfg(not(target_family = "wasm"))]
-pub mod network_simulation;
 mod random_xorb;
-#[cfg(not(target_family = "wasm"))]
-mod simulation_client;
-#[cfg(not(target_family = "wasm"))]
-mod simulation_server;
-#[cfg(unix)]
-#[cfg(not(target_family = "wasm"))]
-pub mod socket_proxy;
 pub(crate) mod xorb_utils;
 
 pub use client_testing_utils::{ClientTestingUtils, RandomFileContents};
+pub use direct_access_client::DirectAccessClient;
+pub use memory_client::MemoryClient;
+pub use random_xorb::RandomXorb;
+
+// --- Non-WASM types that don't need heavy deps ---
+#[cfg(not(target_family = "wasm"))]
+mod deletion_controls;
+#[cfg(not(target_family = "wasm"))]
+mod local_client;
+
 #[cfg(not(target_family = "wasm"))]
 pub use deletion_controls::DeletionControlableClient;
-pub use direct_access_client::DirectAccessClient;
 #[cfg(not(target_family = "wasm"))]
 pub use local_client::LocalClient;
-#[cfg(not(target_family = "wasm"))]
+
+// --- Test-only modules (always available for non-WASM) ---
+#[cfg(all(test, not(target_family = "wasm")))]
+pub mod client_unit_testing;
+#[cfg(all(test, not(target_family = "wasm")))]
+pub mod deletion_unit_testing;
+
+// --- Heavy deps: require "simulation" feature (axum, tower-http, etc.) ---
+#[cfg(all(feature = "simulation", not(target_family = "wasm")))]
+pub mod local_server;
+#[cfg(all(feature = "simulation", not(target_family = "wasm")))]
+pub mod network_simulation;
+#[cfg(all(feature = "simulation", not(target_family = "wasm")))]
+mod simulation_client;
+#[cfg(all(feature = "simulation", not(target_family = "wasm")))]
+mod simulation_server;
+#[cfg(all(feature = "simulation", unix, not(target_family = "wasm")))]
+pub mod socket_proxy;
+
+#[cfg(all(feature = "simulation", not(target_family = "wasm")))]
 pub use local_server::{LocalServer, LocalServerConfig, SimulationControlClient};
-pub use memory_client::MemoryClient;
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(feature = "simulation", not(target_family = "wasm")))]
 pub use network_simulation::{NetworkConfig, NetworkProfile, NetworkProfileOptions, NetworkSimulationProxy};
-pub use random_xorb::RandomXorb;
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(feature = "simulation", not(target_family = "wasm")))]
 pub use simulation_client::RemoteSimulationClient;
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(feature = "simulation", not(target_family = "wasm")))]
 pub use simulation_server::{LocalTestServer, LocalTestServerBuilder};
-#[cfg(unix)]
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(feature = "simulation", unix, not(target_family = "wasm")))]
 pub use socket_proxy::UnixSocketProxy;

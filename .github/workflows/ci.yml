@@ -61,7 +61,7 @@ jobs:
           git lfs install
       - name: Build and Test
         run: |
-          cargo test --verbose --no-fail-fast --features "strict git-xet-for-integration-test"
+          cargo test --verbose --no-fail-fast --features "strict simulation git-xet-for-integration-test"
       - name: Build and Test hf_xet
         run: |
           cd hf_xet && cargo test --verbose --no-fail-fast
@@ -79,7 +79,7 @@ jobs:
       - uses: ./.github/actions/cache-rust-build
       - name: Build and Test
         run: |
-          cargo test --verbose --no-fail-fast --features "strict git-xet-for-integration-test"
+          cargo test --verbose --no-fail-fast --features "strict simulation git-xet-for-integration-test"
       - name: Build and Test hf_xet
         run: |
           cd hf_xet && cargo test --verbose --no-fail-fast
@@ -97,7 +97,7 @@ jobs:
       - uses: ./.github/actions/cache-rust-build
       - name: Build and Test
         run: |
-          cargo test --verbose --no-fail-fast --features "strict git-xet-for-integration-test"
+          cargo test --verbose --no-fail-fast --features "strict simulation git-xet-for-integration-test"
       - name: Build and Test hf_xet
         run: |
           cd hf_xet && cargo test --verbose --no-fail-fast

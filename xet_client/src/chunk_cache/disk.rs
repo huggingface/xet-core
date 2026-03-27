@@ -816,7 +816,7 @@ mod tests {
 
     use rand::SeedableRng;
     use rand::rngs::StdRng;
-    use tempdir::TempDir;
+    use tempfile::TempDir;
     use xet_runtime::utils::output_bytes;
 
     use super::super::{CacheConfig, ChunkCache};
@@ -831,7 +831,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_cache_empty() {
         let mut rng = StdRng::seed_from_u64(RANDOM_SEED);
-        let cache_root = TempDir::new("empty").unwrap();
+        let cache_root = TempDir::new().unwrap();
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
@@ -850,7 +850,7 @@ mod tests {
     #[tokio::test]
     async fn test_put_get_simple() {
         let mut rng = StdRng::seed_from_u64(RANDOM_SEED);
-        let cache_root = TempDir::new("put_get_simple").unwrap();
+        let cache_root = TempDir::new().unwrap();
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
@@ -882,7 +882,7 @@ mod tests {
     #[tokio::test]
     async fn test_put_get_subrange() {
         let mut rng = StdRng::seed_from_u64(RANDOM_SEED);
-        let cache_root = TempDir::new("put_get_subrange").unwrap();
+        let cache_root = TempDir::new().unwrap();
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
@@ -929,7 +929,7 @@ mod tests {
     async fn test_puts_eviction() {
         const MIN_NUM_KEYS: u32 = 12;
         const CAP: u64 = (RANGE_LEN * (MIN_NUM_KEYS - 1)) as u64;
-        let cache_root = TempDir::new("puts_eviction").unwrap();
+        let cache_root = TempDir::new().unwrap();
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: CAP,
@@ -953,7 +953,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_same_puts_noop() {
-        let cache_root = TempDir::new("same_puts_noop").unwrap();
+        let cache_root = TempDir::new().unwrap();
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
@@ -970,7 +970,7 @@ mod tests {
     async fn test_overlap_range_data_mismatch_fail() {
         let setup = || async move {
             let mut it = RandomEntryIterator::std_from_seed(RANDOM_SEED);
-            let cache_root = TempDir::new("overlap_range_data_mismatch_fail").unwrap();
+            let cache_root = TempDir::new().unwrap();
             let config = CacheConfig {
                 cache_directory: cache_root.path().to_path_buf(),
                 cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
@@ -1021,7 +1021,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_initialize_non_empty() {
-        let cache_root = TempDir::new("initialize_non_empty").unwrap();
+        let cache_root = TempDir::new().unwrap();
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
@@ -1054,7 +1054,7 @@ mod tests {
     #[tokio::test]
     async fn test_initialize_too_large_file() {
         const LARGE_FILE: u64 = 1000;
-        let cache_root = TempDir::new("initialize_too_large_file").unwrap();
+        let cache_root = TempDir::new().unwrap();
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
@@ -1078,7 +1078,7 @@ mod tests {
     #[tokio::test]
     async fn test_initialize_stops_loading_early_with_too_many_files() {
         const LARGE_FILE: u64 = 1000;
-        let cache_root = TempDir::new("initialize_stops_loading_early_with_too_many_files").unwrap();
+        let cache_root = TempDir::new().unwrap();
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: LARGE_FILE * 10,
@@ -1111,7 +1111,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unknown_eviction() {
-        let cache_root = TempDir::new("initialize_non_empty").unwrap();
+        let cache_root = TempDir::new().unwrap();
         let capacity = 12 * RANGE_LEN as u64;
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
@@ -1152,7 +1152,7 @@ mod tests {
 
     #[tokio::test]
     async fn put_subrange() {
-        let cache_root = TempDir::new("put_subrange").unwrap();
+        let cache_root = TempDir::new().unwrap();
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
@@ -1205,7 +1205,7 @@ mod tests {
     #[tokio::test]
     async fn test_evictions_with_multiple_range_per_key() {
         const NUM: u32 = 12;
-        let cache_root = TempDir::new("multiple_range_per_key").unwrap();
+        let cache_root = TempDir::new().unwrap();
         let capacity = (NUM * RANGE_LEN) as u64;
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
@@ -1258,7 +1258,7 @@ mod tests {
 
 #[cfg(test)]
 mod concurrency_tests {
-    use tempdir::TempDir;
+    use tempfile::TempDir;
 
     use super::super::{CacheConfig, ChunkCache};
     use super::DiskCache;
@@ -1271,7 +1271,7 @@ mod concurrency_tests {
 
     #[tokio::test]
     async fn test_run_concurrently() {
-        let cache_root = TempDir::new("run_concurrently").unwrap();
+        let cache_root = TempDir::new().unwrap();
 
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
@@ -1307,7 +1307,7 @@ mod concurrency_tests {
     #[tokio::test]
     #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_run_concurrently_with_evictions() {
-        let cache_root = TempDir::new("run_concurrently_with_evictions").unwrap();
+        let cache_root = TempDir::new().unwrap();
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: RANGE_LEN as u64 * NUM_ITEMS_PER_TASK as u64,
@@ -1341,7 +1341,7 @@ mod concurrency_tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_run_concurrently_thundering_herd() {
-        let cache_root = TempDir::new("run_concurrently_thundering_herd").unwrap();
+        let cache_root = TempDir::new().unwrap();
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: RANGE_LEN as u64 * NUM_ITEMS_PER_TASK as u64,
