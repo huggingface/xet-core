@@ -5,6 +5,7 @@ mod auth;
 pub mod blob_reader;
 pub mod configurations;
 mod errors;
+mod merkle_hash_subtree;
 mod session;
 mod sha256;
 mod wasm_deduplication_interface;
