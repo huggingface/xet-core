@@ -109,7 +109,8 @@ async fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: O
     let group_for_progress = group.clone();
     tokio::spawn(async move {
         loop {
-            if let Ok(report) = group_for_progress.progress() {
+            {
+                let report = group_for_progress.progress();
                 let done = handles
                     .iter()
                     .filter(|h| matches!(h.status(), Ok(XetTaskState::Completed)))

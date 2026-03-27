@@ -125,8 +125,8 @@ impl XetDownloadGroup {
     }
 
     /// Return a snapshot of progress for every queued download.
-    pub fn progress(&self) -> Result<GroupProgressReport, XetError> {
-        Ok(self.inner.download_session.report())
+    pub fn progress(&self) -> GroupProgressReport {
+        self.inner.download_session.report()
     }
 
     pub fn status(&self) -> Result<XetTaskState, XetError> {
@@ -895,7 +895,7 @@ mod tests {
                 .progress_update_interval
                 .saturating_add(Duration::from_secs(1)),
         );
-        let snapshot = progress_observer.progress()?;
+        let snapshot = progress_observer.progress();
         assert_eq!(snapshot.total_bytes, original.len() as u64);
         assert_eq!(snapshot.total_bytes_completed, original.len() as u64);
         assert_eq!(snapshot.total_transfer_bytes, snapshot.total_transfer_bytes_completed);
