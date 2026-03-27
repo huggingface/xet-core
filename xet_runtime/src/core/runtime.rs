@@ -386,6 +386,18 @@ impl XetRuntime {
         config: XetConfig,
     ) -> Result<Arc<Self>, RuntimeError> {
         let id = rt_handle.id();
+
+        let mut reg = EXTERNAL_RUNTIME_REGISTRY.write()?;
+        if let Some(existing) = reg.get(&id)
+            && existing.upgrade().is_some()
+        {
+            return Err(RuntimeError::InvalidRuntime(
+                "a XetRuntime is already registered for this tokio runtime handle; \
+                 attach the same handle only once"
+                    .into(),
+            ));
+        }
+
         let rt = Arc::new(Self {
             backend: RuntimeBackend::External { handle_id: Some(id) },
             handle_ref: rt_handle.into(),
@@ -406,16 +418,7 @@ impl XetRuntime {
                 .flatten(),
             config: Arc::new(config),
         });
-        let mut reg = EXTERNAL_RUNTIME_REGISTRY.write()?;
-        if let Some(existing) = reg.get(&id)
-            && existing.upgrade().is_some()
-        {
-            return Err(RuntimeError::InvalidRuntime(
-                "a XetRuntime is already registered for this tokio runtime handle; \
-                 attach the same handle only once"
-                    .into(),
-            ));
-        }
+
         reg.insert(id, Arc::downgrade(&rt));
         Ok(rt)
     }
