@@ -393,7 +393,7 @@ mod tests {
     async fn test_progress_empty_initially() {
         let session = XetSessionBuilder::new().build().unwrap();
         let group = session.new_file_download_group().await.unwrap();
-        let report = group.progress().unwrap();
+        let report = group.progress();
         assert_eq!(report.total_bytes, 0);
         assert_eq!(report.total_bytes_completed, 0);
     }
@@ -646,7 +646,7 @@ mod tests {
                 .saturating_add(Duration::from_secs(1)),
         )
         .await;
-        let report = progress_observer.progress().unwrap();
+        let report = progress_observer.progress();
         assert_eq!(report.total_bytes, original.len() as u64);
         assert_eq!(report.total_bytes_completed, original.len() as u64);
         assert_eq!(report.total_transfer_bytes, report.total_transfer_bytes_completed);
