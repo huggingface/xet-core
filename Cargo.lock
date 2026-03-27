@@ -6485,6 +6485,7 @@ dependencies = [
  "regex",
  "safe-transmute",
  "serde",
+ "serde_json",
  "serial_test",
  "static_assertions",
  "tempfile",
