@@ -144,11 +144,12 @@ impl XetDownloadGroup {
     pub async fn finish(self) -> Result<XetDownloadGroupReport, XetError> {
         info!(group_id = %self.id(), "Download group finish");
         let inner = self.inner.clone();
-        let progress = self.progress()?;
+        let download_session = self.inner.download_session.clone();
         let downloads = self
             .task_runtime
             .bridge_async_finalizing("download_finish", false, async move { inner.handle_finish().await })
             .await?;
+        let progress = download_session.report();
         Ok(XetDownloadGroupReport { progress, downloads })
     }
 
@@ -195,10 +196,11 @@ impl XetDownloadGroup {
     pub fn finish_blocking(self) -> Result<XetDownloadGroupReport, XetError> {
         info!(group_id = %self.id(), "Download group finish");
         let inner = self.inner.clone();
-        let progress = self.progress()?;
+        let download_session = self.inner.download_session.clone();
         let downloads = self
             .task_runtime
             .bridge_sync_finalizing("download_finish_blocking", false, async move { inner.handle_finish().await })?;
+        let progress = download_session.report();
         Ok(XetDownloadGroupReport { progress, downloads })
     }
 }
@@ -223,27 +225,41 @@ impl XetDownloadGroupInner {
             .download_file_background(file_info.clone(), absolute_path.clone())
             .await?;
 
+        let task_runtime = parent_task_runtime.child()?;
+        let token = task_runtime.cancellation_token();
+
         let fi = file_info.clone();
         let dp = absolute_path.clone();
         let ds = self.download_session.clone();
+        let mut download_join_handle = join_handle;
         let mapped_handle = tokio::spawn(async move {
-            match join_handle.await {
-                Ok(Ok(n_bytes)) => Ok(XetDownloadReport {
-                    task_id,
-                    path: Some(dp),
-                    file_info: XetFileInfo {
-                        hash: fi.hash,
-                        file_size: Some(n_bytes),
-                        sha256: fi.sha256,
-                    },
-                    progress: ds.item_report(task_id),
-                }),
-                Ok(Err(e)) => Err(XetError::TaskError(e.to_string())),
-                Err(e) => Err(XetError::TaskError(e.to_string())),
+            tokio::select! {
+                // Propagate TaskRuntime cancellation through the mapped background task.
+                // We abort the owned download join handle here so cancellation does not
+                // leave the file download task detached in the runtime.
+                _ = token.cancelled() => {
+                    download_join_handle.abort();
+                    Err(XetError::UserCancelled("download task cancelled by user".to_string()))
+                }
+                join_result = &mut download_join_handle => {
+                    match join_result {
+                        Ok(Ok(n_bytes)) => Ok(XetDownloadReport {
+                            task_id,
+                            path: Some(dp),
+                            file_info: XetFileInfo {
+                                hash: fi.hash,
+                                file_size: Some(n_bytes),
+                                sha256: fi.sha256,
+                            },
+                            progress: ds.item_report(task_id),
+                        }),
+                        Ok(Err(e)) => Err(XetError::TaskError(e.to_string())),
+                        Err(e) => Err(XetError::TaskError(e.to_string())),
+                    }
+                }
             }
         });
 
-        let task_runtime = parent_task_runtime.child()?;
         let inner = Arc::new(XetFileDownloadInner {
             task_id,
             dest_path: absolute_path,
@@ -616,7 +632,9 @@ mod tests {
         let group = session.new_file_download_group().await.unwrap();
         let progress_observer = group.clone();
         group.download_file_to_path(file_info, dest).await.unwrap();
-        group.finish().await.unwrap();
+        let finish_report = group.finish().await.unwrap();
+        assert_eq!(finish_report.progress.total_bytes, original.len() as u64);
+        assert_eq!(finish_report.progress.total_bytes_completed, original.len() as u64);
 
         tokio::time::sleep(
             session
@@ -638,7 +656,7 @@ mod tests {
     // ── Per-task result access patterns ──────────────────────────────────────
 
     #[tokio::test(flavor = "multi_thread")]
-    // Pattern 1: per-task result is accessible via task_id in the finish() HashMap.
+    // Pattern 1: per-task result is accessible via task_id in the finish report downloads map.
     async fn test_download_result_accessible_via_task_id_in_finish_map() {
         let temp = tempdir().unwrap();
         let session = local_session(&temp).await.unwrap();

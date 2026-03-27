@@ -45,6 +45,11 @@ impl<T: Clone> BackgroundTaskState<T> {
                         Err(e)
                     },
                     Err(join_err) => {
+                        if join_err.is_cancelled() {
+                            let msg = "background task cancelled by user".to_string();
+                            *self = BackgroundTaskState::Error(msg.clone());
+                            return Err(XetError::UserCancelled(msg));
+                        }
                         let msg = join_err.to_string();
                         *self = BackgroundTaskState::Error(msg.clone());
                         Err(XetError::TaskError(msg))
@@ -121,8 +126,15 @@ impl TaskRuntime {
     }
 
     pub(super) fn cancel_subtree(&self) -> Result<(), XetError> {
+        // TaskRuntime cancellation is token-driven: cancel the subtree token,
+        // then mark the local state tree as UserCancelled. Child tasks observe
+        // the token in bridge paths and exit cooperatively.
         self.cancellation_token.cancel();
         self.set_state_recursive(XetTaskState::UserCancelled)
+    }
+
+    pub(super) fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation_token.clone()
     }
 
     pub(super) fn check_state(&self, task_name: &'static str) -> Result<(), XetError> {
@@ -304,20 +316,11 @@ impl TaskRuntime {
         }
     }
 
-    pub(super) fn cancel_background_task<T>(
-        &self,
-        state: &tokio::sync::Mutex<BackgroundTaskState<T>>,
-        cancel_message: &'static str,
-    ) {
+    // Cancellation entrypoint for per-handle abort methods.
+    // We intentionally rely on subtree token propagation (plus bridge select
+    // points) instead of mutating per-handle background state directly.
+    pub(super) fn cancel_background_task(&self) {
         let _ = self.cancel_subtree();
-        if let Ok(mut guard) = state.try_lock()
-            && let BackgroundTaskState::Running { join_handle } = &mut *guard
-        {
-            if let Some(handle) = join_handle.take() {
-                handle.abort();
-            }
-            *guard = BackgroundTaskState::Error(cancel_message.to_string());
-        }
     }
 
     fn live_children(&self) -> Result<Vec<Arc<TaskRuntime>>, XetError> {

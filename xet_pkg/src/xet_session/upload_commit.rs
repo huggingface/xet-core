@@ -139,18 +139,31 @@ impl XetUploadCommitInner {
         file_path: Option<PathBuf>,
     ) -> Result<XetFileUpload, XetError> {
         let task_runtime = self.task_runtime.child()?;
+        let token = task_runtime.cancellation_token();
 
         let tn = tracking_name.clone();
+        let mut upload_join_handle = join_handle;
         let mapped_handle = tokio::spawn(async move {
-            match join_handle.await {
-                Ok(Ok((xet_info, dedup_metrics))) => Ok(XetFileMetadata {
-                    task_id,
-                    xet_info,
-                    dedup_metrics,
-                    tracking_name: tn,
-                }),
-                Ok(Err(e)) => Err(XetError::from(e)),
-                Err(e) => Err(XetError::from(e)),
+            tokio::select! {
+                // Propagate TaskRuntime cancellation through the mapped background task.
+                // We abort the owned upload join handle here so cancellation does not
+                // leave the ingestion task detached in the runtime.
+                _ = token.cancelled() => {
+                    upload_join_handle.abort();
+                    Err(XetError::UserCancelled("upload task cancelled by user".to_string()))
+                }
+                join_result = &mut upload_join_handle => {
+                    match join_result {
+                        Ok(Ok((xet_info, dedup_metrics))) => Ok(XetFileMetadata {
+                            task_id,
+                            xet_info,
+                            dedup_metrics,
+                            tracking_name: tn,
+                        }),
+                        Ok(Err(e)) => Err(XetError::from(e)),
+                        Err(e) => Err(XetError::from(e)),
+                    }
+                }
             }
         });
 

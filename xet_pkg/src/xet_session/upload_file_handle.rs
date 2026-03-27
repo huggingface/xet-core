@@ -72,7 +72,10 @@ impl XetFileUpload {
     /// to upload all ingested files in the commit.
     pub async fn finalize_ingestion(&self) -> Result<XetFileMetadata, XetError> {
         info!(task_id = %self.task_id(), "File upload finalize_ingestion");
-        self.inner.state.lock().await.finish().await
+        let inner = self.inner.clone();
+        self.task_runtime
+            .bridge_async_finalizing("finalize_ingestion", true, async move { inner.state.lock().await.finish().await })
+            .await
     }
 
     /// Blocking version of [`finalize_ingestion`](Self::finalize_ingestion).
@@ -83,7 +86,9 @@ impl XetFileUpload {
         }
         let inner = self.inner.clone();
         self.task_runtime
-            .bridge_sync("finalize_ingestion", async move { inner.state.lock().await.finish().await })
+            .bridge_sync_finalizing("finalize_ingestion_blocking", true, async move {
+                inner.state.lock().await.finish().await
+            })
     }
 
     /// Returns cached completion metadata if finalize succeeded.
@@ -92,7 +97,6 @@ impl XetFileUpload {
     }
 
     pub(super) fn abort_task(&self) {
-        self.task_runtime
-            .cancel_background_task(&self.inner.state, "upload task cancelled by user");
+        self.task_runtime.cancel_background_task();
     }
 }

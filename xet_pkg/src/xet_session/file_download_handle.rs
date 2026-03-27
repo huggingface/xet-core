@@ -84,8 +84,7 @@ impl XetFileDownload {
     }
 
     pub fn cancel(&self) {
-        self.task_runtime
-            .cancel_background_task(&self.inner.state, "download task cancelled by user");
+        self.task_runtime.cancel_background_task();
     }
 }
 
