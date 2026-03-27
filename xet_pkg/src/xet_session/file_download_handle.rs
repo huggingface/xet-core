@@ -32,13 +32,6 @@ pub(super) struct XetFileDownloadInner {
     pub(super) state: tokio::sync::Mutex<BackgroundTaskState<XetDownloadReport>>,
 }
 
-impl XetFileDownloadInner {
-    async fn finish(&self, task_runtime: &TaskRuntime) -> Result<XetDownloadReport, XetError> {
-        let mut guard = self.state.lock().await;
-        task_runtime.join_background_task("download_finish", &mut guard).await
-    }
-}
-
 // ── XetFileDownload (public wrapper) ────────────────────────────────────────
 
 /// Handle for a background file-download task within an [`XetDownloadGroup`](crate::xet_session::XetDownloadGroup).
@@ -77,15 +70,17 @@ impl XetFileDownload {
     ///
     /// Idempotent: returns the cached result if already resolved.
     pub async fn finish(&self) -> Result<XetDownloadReport, XetError> {
-        self.inner.finish(&self.task_runtime).await
+        let inner = self.inner.clone();
+        self.task_runtime
+            .bridge_async_finalizing("download_finish", true, async move { inner.state.lock().await.finish().await })
+            .await
     }
 
     /// Blocking version of [`finish`](Self::finish).
     pub fn finish_blocking(&self) -> Result<XetDownloadReport, XetError> {
         let inner = self.inner.clone();
-        let task_runtime = self.task_runtime.clone();
         self.task_runtime
-            .run_sync("download_finish", async move { inner.finish(&task_runtime).await })
+            .bridge_sync_finalizing("download_finish", true, async move { inner.state.lock().await.finish().await })
     }
 
     pub fn cancel(&self) {

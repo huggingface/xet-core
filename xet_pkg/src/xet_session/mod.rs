@@ -62,8 +62,8 @@
 //! [`commit`](XetUploadCommit::commit) returns a [`XetCommitReport`] containing
 //! aggregate dedup metrics, progress, and per-file [`XetFileMetadata`].
 //! [`finish`](XetDownloadGroup::finish) returns
-//! [`XetDownloadGroupReport`] keyed by task ID, so a single
-//! failed download does not discard all others.
+//! [`XetDownloadGroupReport`] keyed by task ID. If any download
+//! fails, the error is propagated immediately.
 //!
 //! # Quick start — sync API
 //!
@@ -87,7 +87,7 @@
 //! let info = meta.xet_info.clone();
 //! let dl_handle = group.download_file_to_path_blocking(info, "out/file.bin".into())?;
 //! let finish_report = group.finish_blocking()?;
-//! let r = finish_report.downloads.get(&dl_handle.task_id()).unwrap().as_ref().unwrap();
+//! let r = finish_report.downloads.get(&dl_handle.task_id()).unwrap();
 //!
 //! # Ok::<(), xet::xet_session::SessionError>(())
 //! ```
@@ -117,7 +117,7 @@
 //! let info = meta.xet_info.clone();
 //! let dl_handle = group.download_file_to_path(info, "out/file.bin".into()).await?;
 //! let finish_report = group.finish().await?;
-//! let r = finish_report.downloads.get(&dl_handle.task_id()).unwrap().as_ref().unwrap();
+//! let r = finish_report.downloads.get(&dl_handle.task_id()).unwrap();
 //! # Ok(())
 //! # }
 //! ```

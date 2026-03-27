@@ -410,8 +410,7 @@ async fn async_download_unknown_size_roundtrip() {
     group.download_file_to_path(hash_only, dest.clone()).await.unwrap();
     let report = group.finish().await.unwrap();
 
-    for result in report.downloads.values() {
-        let dl = result.as_ref().unwrap();
+    for dl in report.downloads.values() {
         assert_eq!(dl.file_info.file_size, Some(data.len() as u64));
     }
     assert_eq!(fs::read(&dest).unwrap(), data);
@@ -434,8 +433,8 @@ async fn async_download_invalid_hash_fails() {
         )
         .await
         .unwrap();
-    let report = group.finish().await.unwrap();
-    assert!(report.downloads.get(&handle.task_id()).unwrap().is_err());
+    let err = group.finish().await.unwrap_err();
+    assert!(matches!(err, SessionError::TaskError(_)));
     assert!(matches!(handle.status().unwrap(), XetTaskState::Error(_)));
 }
 
@@ -938,13 +937,7 @@ async fn async_separate_sessions_are_isolated() {
         .download_file_to_path(info1, temp2.path().join("cross.bin"))
         .await
         .unwrap();
-    let finish_result = group.finish().await;
-    match finish_result {
-        Err(_) => {},
-        Ok(report) => {
-            assert!(report.downloads.values().any(|r| r.is_err()));
-        },
-    }
+    assert!(group.finish().await.is_err());
 }
 
 // ── 10. Streaming download (XetDownloadStream) ──────────────────────────

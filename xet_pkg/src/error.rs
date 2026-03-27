@@ -93,7 +93,7 @@ impl XetError {
     fn from_runtime_error_ref(re: &RuntimeError) -> Self {
         match re {
             RuntimeError::KeyboardInterrupt => XetError::KeyboardInterrupt,
-            RuntimeError::TaskCanceled(_) => XetError::KeyboardInterrupt,
+            RuntimeError::TaskCanceled(msg) => XetError::Cancelled(format!("Task cancelled: {msg}")),
             RuntimeError::InvalidRuntime(_) => XetError::WrongRuntimeMode(re.to_string()),
             _ => XetError::Internal(re.to_string()),
         }
@@ -315,9 +315,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn runtime_cancelled_maps_to_keyboard_interrupt() {
+    fn runtime_cancelled_maps_to_cancelled() {
         let err = XetError::from(RuntimeError::TaskCanceled("worker stopped".to_string()));
-        assert!(matches!(err, XetError::KeyboardInterrupt));
+        assert!(matches!(err, XetError::Cancelled(_)));
     }
 
     #[test]
@@ -357,9 +357,9 @@ mod tests {
     }
 
     #[test]
-    fn data_runtime_cancelled_maps_to_keyboard_interrupt() {
+    fn data_runtime_cancelled_maps_to_cancelled() {
         let err = XetError::from(DataError::RuntimeError(RuntimeError::TaskCanceled("cancelled".to_string())));
-        assert!(matches!(err, XetError::KeyboardInterrupt));
+        assert!(matches!(err, XetError::Cancelled(_)));
     }
 
     #[test]

@@ -21,13 +21,6 @@ pub(super) struct XetFileUploadInner {
     pub(super) state: tokio::sync::Mutex<BackgroundTaskState<XetFileMetadata>>,
 }
 
-impl XetFileUploadInner {
-    async fn finalize_ingestion(&self, task_runtime: &TaskRuntime) -> Result<XetFileMetadata, XetError> {
-        let mut guard = self.state.lock().await;
-        task_runtime.join_background_task("finalize_ingestion", &mut guard).await
-    }
-}
-
 // ── XetFileUpload (public wrapper) ──────────────────────────────────────────
 
 /// Handle for a background file-upload task within an [`XetUploadCommit`].
@@ -79,16 +72,18 @@ impl XetFileUpload {
     /// to upload all ingested files in the commit.
     pub async fn finalize_ingestion(&self) -> Result<XetFileMetadata, XetError> {
         info!(task_id = %self.task_id(), "File upload finalize_ingestion");
-        self.inner.finalize_ingestion(&self.task_runtime).await
+        self.inner.state.lock().await.finish().await
     }
 
     /// Blocking version of [`finalize_ingestion`](Self::finalize_ingestion).
     pub fn finalize_ingestion_blocking(&self) -> Result<XetFileMetadata, XetError> {
         info!(task_id = %self.task_id(), "File upload finalize_ingestion");
+        if let Some(meta) = self.try_finish() {
+            return Ok(meta);
+        }
         let inner = self.inner.clone();
-        let task_runtime = self.task_runtime.clone();
         self.task_runtime
-            .run_sync("finalize_ingestion", async move { inner.finalize_ingestion(&task_runtime).await })
+            .bridge_sync("finalize_ingestion", async move { inner.state.lock().await.finish().await })
     }
 
     /// Returns cached completion metadata if finalize succeeded.

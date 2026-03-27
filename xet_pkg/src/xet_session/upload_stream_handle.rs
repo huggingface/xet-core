@@ -138,7 +138,7 @@ impl XetStreamUpload {
         let result_cell = self.inner.result.clone();
         let meta = self
             .task_runtime
-            .bridge_async_finalizing("upload_stream_finish", async move { inner.finish().await })
+            .bridge_async_finalizing("upload_stream_finish", false, async move { inner.finish().await })
             .await?;
         let _ = result_cell.set(meta.clone());
         Ok(meta)
@@ -155,7 +155,7 @@ impl XetStreamUpload {
         let result_cell = self.inner.result.clone();
         let meta = self
             .task_runtime
-            .bridge_sync_finalizing("upload_stream_finish_blocking", async move { inner.finish().await })?;
+            .bridge_sync_finalizing("upload_stream_finish_blocking", false, async move { inner.finish().await })?;
         let _ = result_cell.set(meta.clone());
         Ok(meta)
     }

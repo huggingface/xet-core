@@ -123,7 +123,7 @@ fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: Option<
     // Block until all downloads finish.
     let report = group.finish_blocking()?;
 
-    for r in report.downloads.values().flatten() {
+    for r in report.downloads.values() {
         println!(
             "  {} ({:?} bytes)",
             r.path.as_ref().map_or("?".into(), |p| p.display().to_string()),

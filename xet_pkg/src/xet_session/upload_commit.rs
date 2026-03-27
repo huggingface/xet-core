@@ -401,7 +401,7 @@ impl XetUploadCommit {
         info!(commit_id = %self.id(), "Commit starting");
         let inner = Arc::clone(&self.inner);
         self.task_runtime
-            .bridge_async_finalizing("commit", async move { inner.commit().await })
+            .bridge_async_finalizing("commit", false, async move { inner.commit().await })
             .await
     }
 
@@ -486,7 +486,7 @@ impl XetUploadCommit {
         info!(commit_id = %self.id(), "Commit starting");
         let inner = Arc::clone(&self.inner);
         self.task_runtime
-            .bridge_sync_finalizing("commit_blocking", async move { inner.commit().await })
+            .bridge_sync_finalizing("commit_blocking", false, async move { inner.commit().await })
     }
 
     /// Cancel all active uploads in this commit.
@@ -524,7 +524,7 @@ mod tests {
         let session = XetSessionBuilder::new()
             .with_endpoint(format!("local://{}", cas_path.display()))
             .build()?;
-        let runtime = session.runtime.clone();
+        let runtime = session.inner.runtime.clone();
         let commit = session.new_upload_commit_blocking()?;
         let commit_for_thread = commit.clone();
         let runtime_for_thread = runtime.clone();
@@ -607,9 +607,9 @@ mod tests {
     async fn test_commit_unregisters_from_session() {
         let session = XetSessionBuilder::new().build().unwrap();
         let commit = session.new_upload_commit().await.unwrap();
-        assert_eq!(session.active_upload_commits.lock().unwrap().len(), 1);
+        assert_eq!(session.inner.active_upload_commits.lock().unwrap().len(), 1);
         commit.commit().await.unwrap();
-        assert_eq!(session.active_upload_commits.lock().unwrap().len(), 0);
+        assert_eq!(session.inner.active_upload_commits.lock().unwrap().len(), 0);
     }
 
     // ── Session-abort guards ─────────────────────────────────────────────────
@@ -1020,7 +1020,7 @@ mod tests {
 
         futures::executor::block_on(async {
             let session = local_session(&temp).await.unwrap();
-            assert_eq!(session.runtime.mode(), RuntimeMode::Owned);
+            assert_eq!(session.inner.runtime.mode(), RuntimeMode::Owned);
 
             let data = b"hello from non-tokio executor";
             let commit = session.new_upload_commit().await.unwrap();
@@ -1041,7 +1041,7 @@ mod tests {
 
         smol::block_on(async {
             let session = local_session(&temp).await.unwrap();
-            assert_eq!(session.runtime.mode(), RuntimeMode::Owned);
+            assert_eq!(session.inner.runtime.mode(), RuntimeMode::Owned);
 
             let data = b"hello from smol executor";
             let commit = session.new_upload_commit().await.unwrap();
@@ -1062,7 +1062,7 @@ mod tests {
 
         async_std::task::block_on(async {
             let session = local_session(&temp).await.unwrap();
-            assert_eq!(session.runtime.mode(), RuntimeMode::Owned);
+            assert_eq!(session.inner.runtime.mode(), RuntimeMode::Owned);
 
             let data = b"hello from async-std executor";
             let commit = session.new_upload_commit().await.unwrap();

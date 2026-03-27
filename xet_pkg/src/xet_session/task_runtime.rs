@@ -25,6 +25,36 @@ pub(super) enum BackgroundTaskState<T> {
     Error(String),
 }
 
+impl<T: Clone> BackgroundTaskState<T> {
+    pub(super) async fn finish(&mut self) -> Result<T, XetError> {
+        match self {
+            BackgroundTaskState::Success(value) => Ok(value.clone()),
+            BackgroundTaskState::Error(msg) => Err(XetError::PreviousTaskError(msg.clone())),
+            BackgroundTaskState::Running { join_handle } => {
+                let handle = join_handle
+                    .take()
+                    .ok_or_else(|| XetError::TaskError("task already being resolved".into()))?;
+                match handle.await {
+                    Ok(Ok(value)) => {
+                        *self = BackgroundTaskState::Success(value.clone());
+                        Ok(value)
+                    },
+                    Ok(Err(e)) => {
+                        let msg = e.to_string();
+                        *self = BackgroundTaskState::Error(msg);
+                        Err(e)
+                    },
+                    Err(join_err) => {
+                        let msg = join_err.to_string();
+                        *self = BackgroundTaskState::Error(msg.clone());
+                        Err(XetError::TaskError(msg))
+                    },
+                }
+            },
+        }
+    }
+}
+
 pub(super) struct TaskRuntime {
     runtime: Arc<XetRuntime>,
     cancellation_token: CancellationToken,
@@ -63,14 +93,20 @@ impl TaskRuntime {
         Ok(())
     }
 
-    fn transition_to_finalizing(&self, task_name: &'static str) -> Result<(), XetError> {
+    fn transition_to_finalizing(&self, task_name: &'static str, allow_repeat: bool) -> Result<(), XetError> {
         let mut state = self.state.lock()?;
         match &*state {
             XetTaskState::Running => {
                 *state = XetTaskState::Finalizing;
                 Ok(())
             },
-            XetTaskState::Finalizing | XetTaskState::Completed => Err(XetError::AlreadyCompleted),
+            XetTaskState::Finalizing | XetTaskState::Completed => {
+                if allow_repeat {
+                    Ok(())
+                } else {
+                    Err(XetError::AlreadyCompleted)
+                }
+            },
             XetTaskState::UserCancelled => Err(XetError::UserCancelled(format!("{task_name} cancelled by user"))),
             XetTaskState::Error(msg) => Err(XetError::PreviousTaskError(msg.clone())),
         }
@@ -91,7 +127,8 @@ impl TaskRuntime {
 
     pub(super) fn check_state(&self, task_name: &'static str) -> Result<(), XetError> {
         match self.status()? {
-            XetTaskState::Running | XetTaskState::Finalizing => Ok(()),
+            XetTaskState::Running => Ok(()),
+            XetTaskState::Finalizing => Err(XetError::AlreadyCompleted),
             XetTaskState::UserCancelled => Err(XetError::UserCancelled(format!("{task_name} cancelled by user"))),
             XetTaskState::Completed => Err(XetError::AlreadyCompleted),
             XetTaskState::Error(msg) => Err(XetError::PreviousTaskError(msg)),
@@ -168,34 +205,17 @@ impl TaskRuntime {
         result
     }
 
-    /// Run a future synchronously without checking task state.
-    ///
-    /// Use for operations like `finalize_ingestion` / `finish` where
-    /// `join_background_task` handles idempotent cached returns internally.
-    pub(super) fn run_sync<T, F>(&self, task_name: &'static str, fut: F) -> Result<T, XetError>
+    pub(super) async fn bridge_async_finalizing<T, F>(
+        &self,
+        task_name: &'static str,
+        allow_repeat: bool,
+        fut: F,
+    ) -> Result<T, XetError>
     where
         F: Future<Output = Result<T, XetError>> + Send + 'static,
         T: Send + 'static,
     {
-        let token = self.cancellation_token.clone();
-        self.runtime
-            .bridge_sync(async move {
-                tokio::select! {
-                    _ = token.cancelled() => Err(XetError::UserCancelled(
-                        format!("{task_name} cancelled by user"),
-                    )),
-                    result = fut => result,
-                }
-            })
-            .map_err(XetError::from)?
-    }
-
-    pub(super) async fn bridge_async_finalizing<T, F>(&self, task_name: &'static str, fut: F) -> Result<T, XetError>
-    where
-        F: Future<Output = Result<T, XetError>> + Send + 'static,
-        T: Send + 'static,
-    {
-        self.transition_to_finalizing(task_name)?;
+        self.transition_to_finalizing(task_name, allow_repeat)?;
 
         let result = self.run_inner_async(task_name, fut).await;
         match &result {
@@ -208,12 +228,17 @@ impl TaskRuntime {
         result
     }
 
-    pub(super) fn bridge_sync_finalizing<T, F>(&self, task_name: &'static str, fut: F) -> Result<T, XetError>
+    pub(super) fn bridge_sync_finalizing<T, F>(
+        &self,
+        task_name: &'static str,
+        allow_repeat: bool,
+        fut: F,
+    ) -> Result<T, XetError>
     where
         F: Future<Output = Result<T, XetError>> + Send + 'static,
         T: Send + 'static,
     {
-        self.transition_to_finalizing(task_name)?;
+        self.transition_to_finalizing(task_name, allow_repeat)?;
 
         let token = self.cancellation_token.clone();
         let result = self
@@ -238,56 +263,6 @@ impl TaskRuntime {
     }
 
     // ── Background task helpers ──────────────────────────────────────────────
-
-    /// Resolve a background task to completion, handling all state transitions.
-    ///
-    /// The caller must hold the `tokio::sync::Mutex` lock on the
-    /// `BackgroundTaskState` and pass it as `&mut`. This method:
-    ///
-    /// 1. Returns cached `Success`/`Error` immediately if already resolved.
-    /// 2. Takes the `JoinHandle` from `Running`.
-    /// 3. Transitions `XetTaskState` to `Finalizing`.
-    /// 4. Awaits the join handle with cancellation support.
-    /// 5. Updates both `BackgroundTaskState` and `XetTaskState`.
-    pub(super) async fn join_background_task<T: Clone + Send + 'static>(
-        &self,
-        task_name: &'static str,
-        state: &mut BackgroundTaskState<T>,
-    ) -> Result<T, XetError> {
-        match state {
-            BackgroundTaskState::Success(value) => Ok(value.clone()),
-            BackgroundTaskState::Error(msg) => Err(XetError::TaskError(msg.clone())),
-            BackgroundTaskState::Running { join_handle } => {
-                let handle = join_handle
-                    .take()
-                    .ok_or_else(|| XetError::TaskError(format!("{task_name} already being resolved")))?;
-
-                self.transition_to_finalizing(task_name)?;
-
-                let result = self
-                    .run_inner_async(task_name, async move { handle.await.map_err(XetError::from)? })
-                    .await;
-
-                match &result {
-                    Ok(value) => {
-                        *state = BackgroundTaskState::Success(value.clone());
-                        self.set_state(XetTaskState::Completed)?;
-                    },
-                    Err(err) => {
-                        *state = BackgroundTaskState::Error(Self::task_error_message(err));
-                        match err {
-                            XetError::UserCancelled(_) => {
-                                self.set_state(XetTaskState::UserCancelled)?;
-                            },
-                            e => self.set_state(XetTaskState::Error(e.to_string()))?,
-                        }
-                    },
-                }
-
-                result
-            },
-        }
-    }
 
     pub(super) fn status_from_background_task<T>(
         &self,
@@ -342,16 +317,6 @@ impl TaskRuntime {
                 handle.abort();
             }
             *guard = BackgroundTaskState::Error(cancel_message.to_string());
-        }
-    }
-
-    fn task_error_message(err: &XetError) -> String {
-        match err {
-            XetError::TaskError(msg)
-            | XetError::PreviousTaskError(msg)
-            | XetError::UserCancelled(msg)
-            | XetError::Cancelled(msg) => msg.clone(),
-            _ => err.to_string(),
         }
     }
 
