@@ -1,4 +1,6 @@
-#[derive(Default, Debug, Clone, Copy)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Default, Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct DeduplicationMetrics {
     pub total_bytes: u64,
     pub deduped_bytes: u64,

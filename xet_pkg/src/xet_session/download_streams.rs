@@ -1,11 +1,13 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
+use tracing::{debug, info};
 use xet_data::DataError;
 use xet_data::processing::{DownloadStream, FileDownloadSession, UnorderedDownloadStream};
 use xet_data::progress_tracking::{ItemProgressReport, UniqueID};
 
 use super::errors::SessionError;
+use super::task_runtime::TaskRuntime;
 
 /// A streaming download handle with built-in progress tracking.
 ///
@@ -24,14 +26,21 @@ pub struct XetDownloadStream {
     inner: DownloadStream,
     download_session: Arc<FileDownloadSession>,
     id: UniqueID,
+    task_runtime: Arc<TaskRuntime>,
 }
 
 impl XetDownloadStream {
-    pub(super) fn new(inner: DownloadStream, download_session: Arc<FileDownloadSession>, id: UniqueID) -> Self {
+    pub(super) fn new(
+        inner: DownloadStream,
+        download_session: Arc<FileDownloadSession>,
+        id: UniqueID,
+        task_runtime: Arc<TaskRuntime>,
+    ) -> Self {
         Self {
             inner,
             download_session,
             id,
+            task_runtime,
         }
     }
 
@@ -42,6 +51,7 @@ impl XetDownloadStream {
     ///
     /// This method is non-async and does not require a tokio runtime context.
     pub fn start(&mut self) {
+        info!(stream_id = %self.id, "Download stream start");
         self.inner.start();
     }
 
@@ -49,6 +59,7 @@ impl XetDownloadStream {
     ///
     /// Returns `Ok(None)` when the download is complete.
     pub async fn next(&mut self) -> Result<Option<Bytes>, SessionError> {
+        debug!(stream_id = %self.id, "Download stream next");
         self.inner.next().await.map_err(|e| SessionError::from(DataError::from(e)))
     }
 
@@ -62,6 +73,7 @@ impl XetDownloadStream {
     /// Panics if called from within an async runtime context. Use
     /// [`next`](Self::next) for async contexts.
     pub fn blocking_next(&mut self) -> Result<Option<Bytes>, SessionError> {
+        debug!(stream_id = %self.id, "Download stream next");
         self.inner.blocking_next().map_err(|e| SessionError::from(DataError::from(e)))
     }
 
@@ -70,6 +82,8 @@ impl XetDownloadStream {
     /// Subsequent calls to [`next`](Self::next) / [`blocking_next`](Self::blocking_next)
     /// will return `Ok(None)`.
     pub fn cancel(&mut self) {
+        info!(stream_id = %self.id, "Download stream cancel");
+        let _ = self.task_runtime.cancel_subtree();
         self.inner.cancel();
     }
 
@@ -78,7 +92,7 @@ impl XetDownloadStream {
     /// The returned [`ItemProgressReport`] contains the item name,
     /// total bytes, and bytes completed so far. This method is lock-free
     /// (reads atomic counters) and safe to call from any thread.
-    pub fn get_progress(&self) -> ItemProgressReport {
+    pub fn progress(&self) -> ItemProgressReport {
         self.download_session
             .item_report(self.id)
             .expect("progress item was registered at stream creation and is never removed")
@@ -109,6 +123,7 @@ pub struct XetUnorderedDownloadStream {
     inner: UnorderedDownloadStream,
     download_session: Arc<FileDownloadSession>,
     id: UniqueID,
+    task_runtime: Arc<TaskRuntime>,
 }
 
 impl XetUnorderedDownloadStream {
@@ -116,11 +131,13 @@ impl XetUnorderedDownloadStream {
         inner: UnorderedDownloadStream,
         download_session: Arc<FileDownloadSession>,
         id: UniqueID,
+        task_runtime: Arc<TaskRuntime>,
     ) -> Self {
         Self {
             inner,
             download_session,
             id,
+            task_runtime,
         }
     }
 
@@ -131,6 +148,7 @@ impl XetUnorderedDownloadStream {
     ///
     /// This method is non-async and does not require a tokio runtime context.
     pub fn start(&mut self) {
+        info!(stream_id = %self.id, "Download stream start");
         self.inner.start();
     }
 
@@ -139,6 +157,7 @@ impl XetUnorderedDownloadStream {
     ///
     /// Returns `Ok(None)` when the download is complete.
     pub async fn next(&mut self) -> Result<Option<(u64, Bytes)>, SessionError> {
+        debug!(stream_id = %self.id, "Download stream next");
         self.inner.next().await.map_err(|e| SessionError::from(DataError::from(e)))
     }
 
@@ -152,6 +171,7 @@ impl XetUnorderedDownloadStream {
     /// Panics if called from within an async runtime context. Use
     /// [`next`](Self::next) for async contexts.
     pub fn blocking_next(&mut self) -> Result<Option<(u64, Bytes)>, SessionError> {
+        debug!(stream_id = %self.id, "Download stream next");
         self.inner.blocking_next().map_err(|e| SessionError::from(DataError::from(e)))
     }
 
@@ -160,6 +180,8 @@ impl XetUnorderedDownloadStream {
     /// Subsequent calls to [`next`](Self::next) / [`blocking_next`](Self::blocking_next)
     /// will return `Ok(None)`.
     pub fn cancel(&mut self) {
+        info!(stream_id = %self.id, "Download stream cancel");
+        let _ = self.task_runtime.cancel_subtree();
         self.inner.cancel();
     }
 
@@ -168,7 +190,7 @@ impl XetUnorderedDownloadStream {
     /// The returned [`ItemProgressReport`] contains the item name,
     /// total bytes, and bytes completed so far. This method is lock-free
     /// (reads atomic counters) and safe to call from any thread.
-    pub fn get_progress(&self) -> ItemProgressReport {
+    pub fn progress(&self) -> ItemProgressReport {
         self.download_session
             .item_report(self.id)
             .expect("progress item was registered at stream creation and is never removed")

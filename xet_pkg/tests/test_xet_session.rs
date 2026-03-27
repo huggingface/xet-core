@@ -20,8 +20,8 @@ use std::pin::Pin;
 use bytes::Bytes;
 use tempfile::{TempDir, tempdir};
 use xet::xet_session::{
-    FileMetadata, SessionError, Sha256Policy, TaskStatus, XetDownloadStream, XetFileInfo, XetSession,
-    XetSessionBuilder, XetUnorderedDownloadStream,
+    SessionError, Sha256Policy, XetDownloadStream, XetFileInfo, XetFileMetadata, XetSession, XetSessionBuilder,
+    XetTaskState, XetUnorderedDownloadStream,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -39,12 +39,8 @@ fn sync_session(temp: &TempDir) -> XetSession {
     XetSessionBuilder::new().with_endpoint(local_endpoint(temp)).build().unwrap()
 }
 
-fn to_file_info(meta: &FileMetadata) -> XetFileInfo {
-    XetFileInfo {
-        hash: meta.hash.clone(),
-        file_size: Some(meta.file_size),
-        sha256: meta.sha256.clone(),
-    }
+fn to_file_info(meta: &XetFileMetadata) -> XetFileInfo {
+    meta.xet_info.clone()
 }
 
 async fn upload_bytes_async(session: &XetSession, data: &[u8], name: &str) -> XetFileInfo {
@@ -53,9 +49,9 @@ async fn upload_bytes_async(session: &XetSession, data: &[u8], name: &str) -> Xe
         .upload_bytes(data.to_vec(), Sha256Policy::Compute, Some(name.into()))
         .await
         .unwrap();
-    let results = commit.commit().await.unwrap();
-    let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
-    to_file_info(meta)
+    let file_meta = handle.finalize_ingestion().await.unwrap();
+    commit.commit().await.unwrap();
+    file_meta.xet_info
 }
 
 fn upload_bytes_sync(session: &XetSession, data: &[u8], name: &str) -> XetFileInfo {
@@ -63,9 +59,9 @@ fn upload_bytes_sync(session: &XetSession, data: &[u8], name: &str) -> XetFileIn
     let handle = commit
         .upload_bytes_blocking(data.to_vec(), Sha256Policy::Compute, Some(name.into()))
         .unwrap();
-    let results = commit.commit_blocking().unwrap();
-    let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
-    to_file_info(meta)
+    let file_meta = handle.finalize_ingestion_blocking().unwrap();
+    commit.commit_blocking().unwrap();
+    file_meta.xet_info
 }
 
 async fn assert_roundtrip_async(session: &XetSession, temp: &TempDir, data: &[u8], name: &str) {
@@ -100,14 +96,20 @@ async fn assert_upload_from_path_roundtrip_async(
     let src = temp.path().join(src_name);
     fs::write(&src, data).unwrap();
 
-    let commit = session.new_upload_commit().await.unwrap();
-    let handle = commit.upload_from_path(src, Sha256Policy::Compute).await.unwrap();
-    let results = commit.commit().await.unwrap();
-    let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
+    let file_meta = {
+        let commit = session.new_upload_commit().await.unwrap();
+        let handle = commit.upload_from_path(src, Sha256Policy::Compute).await.unwrap();
+        let file_meta = handle.finalize_ingestion().await.unwrap();
+        commit.commit().await.unwrap();
+        file_meta
+    };
 
     let dest = temp.path().join(dest_name);
     let group = session.new_file_download_group().await.unwrap();
-    group.download_file_to_path(to_file_info(meta), dest.clone()).await.unwrap();
+    group
+        .download_file_to_path(to_file_info(&file_meta), dest.clone())
+        .await
+        .unwrap();
     group.finish().await.unwrap();
     assert_eq!(fs::read(&dest).unwrap(), data);
 }
@@ -122,14 +124,19 @@ fn assert_upload_from_path_roundtrip_sync(
     let src = temp.path().join(src_name);
     fs::write(&src, data).unwrap();
 
-    let commit = session.new_upload_commit_blocking().unwrap();
-    let handle = commit.upload_from_path_blocking(src, Sha256Policy::Compute).unwrap();
-    let results = commit.commit_blocking().unwrap();
-    let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
+    let file_meta = {
+        let commit = session.new_upload_commit_blocking().unwrap();
+        let handle = commit.upload_from_path_blocking(src, Sha256Policy::Compute).unwrap();
+        let file_meta = handle.finalize_ingestion_blocking().unwrap();
+        commit.commit_blocking().unwrap();
+        file_meta
+    };
 
     let dest = temp.path().join(dest_name);
     let group = session.new_file_download_group_blocking().unwrap();
-    group.download_file_to_path_blocking(to_file_info(meta), dest.clone()).unwrap();
+    group
+        .download_file_to_path_blocking(to_file_info(&file_meta), dest.clone())
+        .unwrap();
     group.finish_blocking().unwrap();
     assert_eq!(fs::read(&dest).unwrap(), data);
 }
@@ -222,16 +229,22 @@ async fn async_upload_from_path_roundtrip() {
     let data = b"upload from path integration test content";
     fs::write(&src, data).unwrap();
 
-    let commit = session.new_upload_commit().await.unwrap();
-    let handle = commit.upload_from_path(src, Sha256Policy::Compute).await.unwrap();
-    let results = commit.commit().await.unwrap();
-    let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
-    assert_eq!(meta.file_size, data.len() as u64);
-    assert!(meta.sha256.is_some());
+    let file_meta = {
+        let commit = session.new_upload_commit().await.unwrap();
+        let handle = commit.upload_from_path(src, Sha256Policy::Compute).await.unwrap();
+        let file_meta = handle.finalize_ingestion().await.unwrap();
+        assert_eq!(file_meta.xet_info.file_size(), Some(data.len() as u64));
+        assert!(file_meta.xet_info.sha256().is_some());
+        commit.commit().await.unwrap();
+        file_meta
+    };
 
     let dest = temp.path().join("dest.bin");
     let group = session.new_file_download_group().await.unwrap();
-    group.download_file_to_path(to_file_info(meta), dest.clone()).await.unwrap();
+    group
+        .download_file_to_path(file_meta.xet_info.clone(), dest.clone())
+        .await
+        .unwrap();
     group.finish().await.unwrap();
     assert_eq!(fs::read(&dest).unwrap(), data);
 }
@@ -247,24 +260,28 @@ async fn async_multiple_files_in_one_commit() {
         ("gamma.bin", &[0xAB; 4096]),
     ];
 
-    let commit = session.new_upload_commit().await.unwrap();
-    let mut handles = Vec::new();
-    for (name, data) in &files {
-        let h = commit
-            .upload_bytes(data.to_vec(), Sha256Policy::Compute, Some((*name).into()))
-            .await
-            .unwrap();
-        handles.push(h);
-    }
-    let results = commit.commit().await.unwrap();
-    assert_eq!(results.len(), files.len());
+    let metas = {
+        let commit = session.new_upload_commit().await.unwrap();
+        let mut metas = Vec::new();
+        for (name, data) in &files {
+            let h = commit
+                .upload_bytes(data.to_vec(), Sha256Policy::Compute, Some((*name).into()))
+                .await
+                .unwrap();
+            metas.push(h.finalize_ingestion().await.unwrap());
+        }
+        commit.commit().await.unwrap();
+        metas
+    };
 
     let group = session.new_file_download_group().await.unwrap();
     let mut dest_paths = Vec::new();
-    for (i, handle) in handles.iter().enumerate() {
-        let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
+    for (i, file_meta) in metas.iter().enumerate() {
         let dest = temp.path().join(format!("out_{i}.bin"));
-        group.download_file_to_path(to_file_info(meta), dest.clone()).await.unwrap();
+        group
+            .download_file_to_path(file_meta.xet_info.clone(), dest.clone())
+            .await
+            .unwrap();
         dest_paths.push(dest);
     }
     group.finish().await.unwrap();
@@ -295,17 +312,17 @@ async fn async_sha256_policy_variants() {
         .await
         .unwrap();
 
-    let results = commit.commit().await.unwrap();
+    let m_compute = h_compute.finalize_ingestion().await.unwrap();
+    let m_provided = h_provided.finalize_ingestion().await.unwrap();
+    let m_skip = h_skip.finalize_ingestion().await.unwrap();
+    commit.commit().await.unwrap();
 
-    let m_compute = results.get(&h_compute.task_id).unwrap().as_ref().as_ref().unwrap();
-    assert!(m_compute.sha256.is_some());
-    assert_eq!(m_compute.sha256.as_deref().unwrap().len(), 64);
+    assert!(m_compute.xet_info.sha256().is_some());
+    assert_eq!(m_compute.xet_info.sha256().unwrap().len(), 64);
 
-    let m_provided = results.get(&h_provided.task_id).unwrap().as_ref().as_ref().unwrap();
-    assert_eq!(m_provided.sha256.as_deref(), Some(provided_sha256.as_str()));
+    assert_eq!(m_provided.xet_info.sha256(), Some(provided_sha256.as_str()));
 
-    let m_skip = results.get(&h_skip.task_id).unwrap().as_ref().as_ref().unwrap();
-    assert!(m_skip.sha256.is_none());
+    assert!(m_skip.xet_info.sha256().is_none());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -350,14 +367,12 @@ async fn async_task_status_transitions() {
         .await
         .unwrap();
 
-    assert!(matches!(handle.status().unwrap(), TaskStatus::Queued | TaskStatus::Running | TaskStatus::Completed));
-    assert!(handle.result().is_none());
+    assert!(handle.progress().is_some() || handle.try_finish().is_none());
+
+    let file_meta = handle.finalize_ingestion().await.unwrap();
+    assert!(file_meta.xet_info.file_size().is_some());
 
     commit.commit().await.unwrap();
-
-    assert!(matches!(handle.status().unwrap(), TaskStatus::Completed));
-    assert!(handle.result().is_some());
-    assert!(handle.result().unwrap().as_ref().is_ok());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -374,7 +389,7 @@ async fn async_progress_tracking() {
     let progress_observer = commit.clone();
     commit.commit().await.unwrap();
 
-    let report = progress_observer.get_progress().unwrap();
+    let report = progress_observer.progress();
     assert_eq!(report.total_bytes, data.len() as u64);
     assert_eq!(report.total_bytes_completed, data.len() as u64);
 }
@@ -393,10 +408,9 @@ async fn async_download_unknown_size_roundtrip() {
     let dest = temp.path().join("unknown_size.out");
     let group = session.new_file_download_group().await.unwrap();
     group.download_file_to_path(hash_only, dest.clone()).await.unwrap();
-    let results = group.finish().await.unwrap();
+    let report = group.finish().await.unwrap();
 
-    for result in results.values() {
-        let dl = result.as_ref().as_ref().unwrap();
+    for dl in report.downloads.values() {
         assert_eq!(dl.file_info.file_size, Some(data.len() as u64));
     }
     assert_eq!(fs::read(&dest).unwrap(), data);
@@ -419,9 +433,9 @@ async fn async_download_invalid_hash_fails() {
         )
         .await
         .unwrap();
-    let results = group.finish().await.unwrap();
-    assert!(results.get(&handle.task_id).unwrap().is_err());
-    assert!(matches!(handle.status().unwrap(), TaskStatus::Failed));
+    let err = group.finish().await.unwrap_err();
+    assert!(matches!(err, SessionError::TaskError(_)));
+    assert!(matches!(handle.status().unwrap(), XetTaskState::Error(_)));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -434,13 +448,15 @@ async fn async_upload_from_path_multiple_files() {
     fs::write(&src_a, b"file A from path").unwrap();
     fs::write(&src_b, [0xCD; 8192]).unwrap();
 
-    let commit = session.new_upload_commit().await.unwrap();
-    let ha = commit.upload_from_path(src_a, Sha256Policy::Compute).await.unwrap();
-    let hb = commit.upload_from_path(src_b, Sha256Policy::Compute).await.unwrap();
-    let results = commit.commit().await.unwrap();
-
-    let info_a = to_file_info(results.get(&ha.task_id).unwrap().as_ref().as_ref().unwrap());
-    let info_b = to_file_info(results.get(&hb.task_id).unwrap().as_ref().as_ref().unwrap());
+    let (info_a, info_b) = {
+        let commit = session.new_upload_commit().await.unwrap();
+        let ha = commit.upload_from_path(src_a, Sha256Policy::Compute).await.unwrap();
+        let hb = commit.upload_from_path(src_b, Sha256Policy::Compute).await.unwrap();
+        let info_a = ha.finalize_ingestion().await.unwrap().xet_info;
+        let info_b = hb.finalize_ingestion().await.unwrap().xet_info;
+        commit.commit().await.unwrap();
+        (info_a, info_b)
+    };
 
     let dest_a = temp.path().join("dest_a.bin");
     let dest_b = temp.path().join("dest_b.bin");
@@ -483,18 +499,19 @@ fn blocking_multiple_files_roundtrip() {
     let data_a = b"blocking file A";
     let data_b = b"blocking file B is longer";
 
-    let commit = session.new_upload_commit_blocking().unwrap();
-    let ha = commit
-        .upload_bytes_blocking(data_a.to_vec(), Sha256Policy::Compute, Some("a.bin".into()))
-        .unwrap();
-    let hb = commit
-        .upload_bytes_blocking(data_b.to_vec(), Sha256Policy::Compute, Some("b.bin".into()))
-        .unwrap();
-    let results = commit.commit_blocking().unwrap();
-    assert_eq!(results.len(), 2);
-
-    let info_a = to_file_info(results.get(&ha.task_id).unwrap().as_ref().as_ref().unwrap());
-    let info_b = to_file_info(results.get(&hb.task_id).unwrap().as_ref().as_ref().unwrap());
+    let (info_a, info_b) = {
+        let commit = session.new_upload_commit_blocking().unwrap();
+        let ha = commit
+            .upload_bytes_blocking(data_a.to_vec(), Sha256Policy::Compute, Some("a.bin".into()))
+            .unwrap();
+        let hb = commit
+            .upload_bytes_blocking(data_b.to_vec(), Sha256Policy::Compute, Some("b.bin".into()))
+            .unwrap();
+        let info_a = ha.finalize_ingestion_blocking().unwrap().xet_info;
+        let info_b = hb.finalize_ingestion_blocking().unwrap().xet_info;
+        commit.commit_blocking().unwrap();
+        (info_a, info_b)
+    };
 
     let dest_a = temp.path().join("a.out");
     let dest_b = temp.path().join("b.out");
@@ -524,12 +541,9 @@ fn blocking_task_status_transitions() {
     let handle = commit
         .upload_bytes_blocking(b"status blocking".to_vec(), Sha256Policy::Compute, Some("status.bin".into()))
         .unwrap();
-    assert!(handle.result().is_none());
-
+    let file_meta = handle.finalize_ingestion_blocking().unwrap();
+    assert!(file_meta.xet_info.file_size().is_some());
     commit.commit_blocking().unwrap();
-
-    assert!(matches!(handle.status().unwrap(), TaskStatus::Completed));
-    assert!(handle.result().unwrap().as_ref().is_ok());
 }
 
 #[test]
@@ -545,7 +559,7 @@ fn blocking_progress_tracking() {
     let progress_observer = commit.clone();
     commit.commit_blocking().unwrap();
 
-    let report = progress_observer.get_progress_blocking().unwrap();
+    let report = progress_observer.progress();
     assert_eq!(report.total_bytes, data.len() as u64);
     assert_eq!(report.total_bytes_completed, data.len() as u64);
 }
@@ -603,23 +617,24 @@ fn bridge_multiple_files() {
                 (format!("{tag}_b.bin"), format!("{tag} B").into_bytes()),
             ];
 
-            let commit = session.new_upload_commit().await.unwrap();
-            let mut handles = Vec::new();
-            for (name, data) in &files {
-                handles.push(
-                    commit
+            let metas = {
+                let commit = session.new_upload_commit().await.unwrap();
+                let mut metas = Vec::new();
+                for (name, data) in &files {
+                    let h = commit
                         .upload_bytes(data.clone(), Sha256Policy::Compute, Some(name.clone()))
                         .await
-                        .unwrap(),
-                );
-            }
-            let results = commit.commit().await.unwrap();
-            assert_eq!(results.len(), files.len());
+                        .unwrap();
+                    metas.push(h.finalize_ingestion().await.unwrap());
+                }
+                commit.commit().await.unwrap();
+                metas
+            };
 
             let group = session.new_file_download_group().await.unwrap();
             let mut outputs = Vec::new();
-            for (index, handle) in handles.iter().enumerate() {
-                let info = to_file_info(results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap());
+            for (index, file_meta) in metas.iter().enumerate() {
+                let info = file_meta.xet_info.clone();
                 let dest = temp.path().join(format!("{tag}_out_{index}.bin"));
                 group.download_file_to_path(info, dest.clone()).await.unwrap();
                 outputs.push(dest);
@@ -694,20 +709,21 @@ fn deficient_tokio_no_drivers_multiple_files() {
     rt.block_on(async {
         let session = async_session(&temp);
 
-        let commit = session.new_upload_commit().await.unwrap();
-        let ha = commit
-            .upload_bytes(b"deficient A".to_vec(), Sha256Policy::Compute, Some("a.bin".into()))
-            .await
-            .unwrap();
-        let hb = commit
-            .upload_bytes(b"deficient B".to_vec(), Sha256Policy::Compute, Some("b.bin".into()))
-            .await
-            .unwrap();
-        let results = commit.commit().await.unwrap();
-        assert_eq!(results.len(), 2);
-
-        let info_a = to_file_info(results.get(&ha.task_id).unwrap().as_ref().as_ref().unwrap());
-        let info_b = to_file_info(results.get(&hb.task_id).unwrap().as_ref().as_ref().unwrap());
+        let (info_a, info_b) = {
+            let commit = session.new_upload_commit().await.unwrap();
+            let ha = commit
+                .upload_bytes(b"deficient A".to_vec(), Sha256Policy::Compute, Some("a.bin".into()))
+                .await
+                .unwrap();
+            let hb = commit
+                .upload_bytes(b"deficient B".to_vec(), Sha256Policy::Compute, Some("b.bin".into()))
+                .await
+                .unwrap();
+            let info_a = ha.finalize_ingestion().await.unwrap().xet_info;
+            let info_b = hb.finalize_ingestion().await.unwrap().xet_info;
+            commit.commit().await.unwrap();
+            (info_a, info_b)
+        };
 
         let dest_a = temp.path().join("a.out");
         let dest_b = temp.path().join("b.out");
@@ -829,7 +845,7 @@ async fn async_abort_prevents_new_commits() {
     let session = XetSessionBuilder::new().build().unwrap();
     session.abort().unwrap();
     let err = session.new_upload_commit().await.err().unwrap();
-    assert!(matches!(err, SessionError::Aborted));
+    assert!(matches!(err, SessionError::UserCancelled(_)));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -837,7 +853,7 @@ async fn async_abort_prevents_new_groups() {
     let session = XetSessionBuilder::new().build().unwrap();
     session.abort().unwrap();
     let err = session.new_file_download_group().await.err().unwrap();
-    assert!(matches!(err, SessionError::Aborted));
+    assert!(matches!(err, SessionError::UserCancelled(_)));
 }
 
 #[test]
@@ -845,7 +861,7 @@ fn blocking_abort_prevents_new_commits() {
     let session = XetSessionBuilder::new().build().unwrap();
     session.abort().unwrap();
     let err = session.new_upload_commit_blocking().err().unwrap();
-    assert!(matches!(err, SessionError::Aborted));
+    assert!(matches!(err, SessionError::UserCancelled(_)));
 }
 
 #[test]
@@ -853,7 +869,7 @@ fn blocking_abort_prevents_new_groups() {
     let session = XetSessionBuilder::new().build().unwrap();
     session.abort().unwrap();
     let err = session.new_file_download_group_blocking().err().unwrap();
-    assert!(matches!(err, SessionError::Aborted));
+    assert!(matches!(err, SessionError::UserCancelled(_)));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -866,7 +882,7 @@ async fn async_abort_rejects_upload_on_existing_commit() {
         .await
         .err()
         .unwrap();
-    assert!(matches!(err, SessionError::Aborted));
+    assert!(matches!(err, SessionError::UserCancelled(_)));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -886,7 +902,7 @@ async fn async_abort_rejects_download_on_existing_group() {
         .await
         .err()
         .unwrap();
-    assert!(matches!(err, SessionError::Aborted));
+    assert!(matches!(err, SessionError::UserCancelled(_)));
 }
 
 // ── 8. Deduplication (same content uploaded twice) ───────────────────────
@@ -921,13 +937,7 @@ async fn async_separate_sessions_are_isolated() {
         .download_file_to_path(info1, temp2.path().join("cross.bin"))
         .await
         .unwrap();
-    let finish_result = group.finish().await;
-    match finish_result {
-        Err(_) => {},
-        Ok(results) => {
-            assert!(results.values().any(|r| r.is_err()));
-        },
-    }
+    assert!(group.finish().await.is_err());
 }
 
 // ── 10. Streaming download (XetDownloadStream) ──────────────────────────
@@ -979,13 +989,13 @@ async fn async_stream_progress_tracking() {
 
     let mut stream = session.download_stream(file_info, None).await.unwrap();
 
-    let initial = stream.get_progress();
+    let initial = stream.progress();
     assert_eq!(initial.total_bytes, data.len() as u64);
     assert_eq!(initial.bytes_completed, 0);
 
     let _ = collect_stream(&mut stream).await;
 
-    let final_progress = stream.get_progress();
+    let final_progress = stream.progress();
     assert_eq!(final_progress.total_bytes, data.len() as u64);
     assert_eq!(final_progress.bytes_completed, data.len() as u64);
 }
@@ -1035,7 +1045,7 @@ async fn async_stream_aborted_session() {
             None,
         )
         .await;
-    assert!(matches!(result, Err(SessionError::Aborted)));
+    assert!(matches!(result, Err(SessionError::UserCancelled(_))));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1088,7 +1098,7 @@ fn blocking_stream_progress_tracking() {
     let mut stream = session.download_stream_blocking(file_info, None).unwrap();
     let _ = collect_stream_blocking(&mut stream);
 
-    let final_progress = stream.get_progress();
+    let final_progress = stream.progress();
     assert_eq!(final_progress.total_bytes, data.len() as u64);
     assert_eq!(final_progress.bytes_completed, data.len() as u64);
 }
@@ -1123,7 +1133,7 @@ fn blocking_stream_aborted_session() {
         },
         None,
     );
-    assert!(matches!(result, Err(SessionError::Aborted)));
+    assert!(matches!(result, Err(SessionError::UserCancelled(_))));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1245,13 +1255,13 @@ async fn async_unordered_stream_progress_tracking() {
 
     let mut stream = session.download_unordered_stream(file_info, None).await.unwrap();
 
-    let initial = stream.get_progress();
+    let initial = stream.progress();
     assert_eq!(initial.total_bytes, data.len() as u64);
     assert_eq!(initial.bytes_completed, 0);
 
     let _ = collect_unordered_stream(&mut stream, data.len()).await;
 
-    let final_progress = stream.get_progress();
+    let final_progress = stream.progress();
     assert_eq!(final_progress.total_bytes, data.len() as u64);
     assert_eq!(final_progress.bytes_completed, data.len() as u64);
 }
@@ -1284,7 +1294,7 @@ async fn async_unordered_stream_aborted_session() {
             None,
         )
         .await;
-    assert!(matches!(result, Err(SessionError::Aborted)));
+    assert!(matches!(result, Err(SessionError::UserCancelled(_))));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1337,7 +1347,7 @@ fn blocking_unordered_stream_progress_tracking() {
     let mut stream = session.download_unordered_stream_blocking(file_info, None).unwrap();
     let _ = collect_unordered_stream_blocking(&mut stream, data.len());
 
-    let final_progress = stream.get_progress();
+    let final_progress = stream.progress();
     assert_eq!(final_progress.total_bytes, data.len() as u64);
     assert_eq!(final_progress.bytes_completed, data.len() as u64);
 }
@@ -1355,7 +1365,7 @@ fn blocking_unordered_stream_aborted_session() {
         },
         None,
     );
-    assert!(matches!(result, Err(SessionError::Aborted)));
+    assert!(matches!(result, Err(SessionError::UserCancelled(_))));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1480,13 +1490,13 @@ async fn async_stream_range_progress() {
 
     let mut stream = session.download_stream(file_info, Some(50..150)).await.unwrap();
 
-    let initial = stream.get_progress();
+    let initial = stream.progress();
     assert_eq!(initial.total_bytes, 100);
     assert_eq!(initial.bytes_completed, 0);
 
     let _ = collect_stream(&mut stream).await;
 
-    let final_progress = stream.get_progress();
+    let final_progress = stream.progress();
     assert_eq!(final_progress.total_bytes, 100);
     assert_eq!(final_progress.bytes_completed, 100);
 }
@@ -1510,7 +1520,7 @@ fn blocking_stream_range_progress() {
     let mut stream = session.download_stream_blocking(file_info, Some(10..110)).unwrap();
     let _ = collect_stream_blocking(&mut stream);
 
-    let final_progress = stream.get_progress();
+    let final_progress = stream.progress();
     assert_eq!(final_progress.total_bytes, 100);
     assert_eq!(final_progress.bytes_completed, 100);
 }
@@ -1553,13 +1563,13 @@ async fn async_unordered_stream_range_progress() {
 
     let mut stream = session.download_unordered_stream(file_info, Some(50..150)).await.unwrap();
 
-    let initial = stream.get_progress();
+    let initial = stream.progress();
     assert_eq!(initial.total_bytes, 100);
     assert_eq!(initial.bytes_completed, 0);
 
     let _ = collect_unordered_stream(&mut stream, 100).await;
 
-    let final_progress = stream.get_progress();
+    let final_progress = stream.progress();
     assert_eq!(final_progress.total_bytes, 100);
     assert_eq!(final_progress.bytes_completed, 100);
 }
@@ -1583,7 +1593,7 @@ fn blocking_unordered_stream_range_progress() {
     let mut stream = session.download_unordered_stream_blocking(file_info, Some(10..110)).unwrap();
     let _ = collect_unordered_stream_blocking(&mut stream, 100);
 
-    let final_progress = stream.get_progress();
+    let final_progress = stream.progress();
     assert_eq!(final_progress.total_bytes, 100);
     assert_eq!(final_progress.bytes_completed, 100);
 }
