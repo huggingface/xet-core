@@ -272,6 +272,7 @@ use super::aggregated_hashes::aggregated_node_hash;
 use super::aggregated_hashes::{
     MAX_GROUP_SIZE, MIN_GROUP_SIZE, is_natural_cut, merged_hash_of_sequence, next_merge_cut,
 };
+use crate::error::CoreError;
 
 type Node = (MerkleHash, u64);
 
@@ -586,12 +587,16 @@ impl MerkleHashSubtree {
     /// After the call, `self` represents the combined range: it inherits
     /// its own `at_start` and `other`'s `at_end`.
     ///
+    /// Returns `Err(InvalidArguments)` if `self.at_end` is true (nothing
+    /// can follow the end) or `other.at_start` is true (the start cannot
+    /// appear on the right side of a merge).
+    ///
     /// Internally delegates to [`merge_into_impl`] with a temporary buffer.
     /// When merging many ranges in a loop, prefer [`merge`] which reuses
     /// a single buffer across all iterations.
-    pub fn merge_into(&mut self, other: &MerkleHashSubtree) {
+    pub fn merge_into(&mut self, other: &MerkleHashSubtree) -> crate::error::Result<()> {
         let mut buffers = CHRMergeBuffers::new();
-        self.merge_into_impl(other, &mut buffers);
+        self.merge_into_impl(other, &mut buffers)
     }
 
     /// Merge multiple adjacent ranges via left-to-right iterative merge.
@@ -599,17 +604,17 @@ impl MerkleHashSubtree {
     /// Reuses a single [`CHRMergeBuffers`] across all iterations to
     /// avoid repeated allocation when merging hundreds of small ranges.
     /// Returns an empty fully-closed range if `ranges` is empty.
-    pub fn merge(ranges: &[MerkleHashSubtree]) -> MerkleHashSubtree {
+    pub fn merge(ranges: &[MerkleHashSubtree]) -> crate::error::Result<MerkleHashSubtree> {
         match ranges.len() {
-            0 => MerkleHashSubtree::from_chunks(true, &[], true),
-            1 => ranges[0].clone(),
+            0 => Ok(MerkleHashSubtree::from_chunks(true, &[], true)),
+            1 => Ok(ranges[0].clone()),
             _ => {
                 let mut result = ranges[0].clone();
                 let mut buffers = CHRMergeBuffers::new();
                 for range in &ranges[1..] {
-                    result.merge_into_impl(range, &mut buffers);
+                    result.merge_into_impl(range, &mut buffers)?;
                 }
-                result
+                Ok(result)
             },
         }
     }
@@ -631,7 +636,14 @@ impl MerkleHashSubtree {
     /// new level's prefix, promoted nodes (carry to next level), and
     /// suffix.  The total work is O(total nodes across all levels) =
     /// O(log n).
-    fn merge_into_impl(&mut self, other: &MerkleHashSubtree, buf: &mut CHRMergeBuffers) {
+    fn merge_into_impl(&mut self, other: &MerkleHashSubtree, buf: &mut CHRMergeBuffers) -> crate::error::Result<()> {
+        if self.at_end {
+            return Err(CoreError::InvalidArguments);
+        }
+        if other.at_start {
+            return Err(CoreError::InvalidArguments);
+        }
+
         let combined_at_start = self.at_start;
         let combined_at_end = other.at_end;
 
@@ -764,6 +776,8 @@ impl MerkleHashSubtree {
 
         #[cfg(debug_assertions)]
         self.verify_invariants();
+
+        Ok(())
     }
 
     /// Returns the final aggregated hash if both boundaries are known.
@@ -1062,6 +1076,7 @@ mod tests {
     // ========================================================================
 
     #[test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     fn test_find_stable_start_with_random_prefixes() {
         let mut rng = SmallRng::seed_from_u64(42);
         let mut tested = 0;
@@ -1083,6 +1098,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     fn test_stability_exhaustive_prefix_lengths() {
         let mut rng = SmallRng::seed_from_u64(123);
 
@@ -1112,6 +1128,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     fn test_find_stable_end_with_random_suffixes() {
         let mut rng = SmallRng::seed_from_u64(44);
         let mut tested = 0;
@@ -1133,6 +1150,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     fn test_stable_end_exhaustive_suffix_lengths() {
         let mut rng = SmallRng::seed_from_u64(125);
 
@@ -1160,6 +1178,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     fn test_stable_start_implies_correct_merge() {
         let mut rng = SmallRng::seed_from_u64(555);
 
@@ -1174,7 +1193,7 @@ mod tests {
                     let expected = xorb_hash(&chunks);
                     let mut merged = MerkleHashSubtree::from_chunks(true, &chunks[..abs_stable], false);
                     let r2 = MerkleHashSubtree::from_chunks(false, &chunks[abs_stable..], true);
-                    merged.merge_into(&r2);
+                    merged.merge_into(&r2).unwrap();
                     assert_eq!(merged.final_hash().unwrap(), expected);
                 }
             }
@@ -1182,6 +1201,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     fn test_stable_cut_found_in_long_sequences() {
         let mut rng = SmallRng::seed_from_u64(777);
         let mut found = 0;
@@ -1245,7 +1265,7 @@ mod tests {
         for split in 1..16 {
             let mut merged = MerkleHashSubtree::from_chunks(true, &chunks[..split], false);
             let r2 = MerkleHashSubtree::from_chunks(false, &chunks[split..], true);
-            merged.merge_into(&r2);
+            merged.merge_into(&r2).unwrap();
             assert_eq!(merged.final_hash().unwrap(), expected, "Failed split={split}");
         }
     }
@@ -1262,6 +1282,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     fn test_two_way_merge_sweep_16() {
         let mut rng = SmallRng::seed_from_u64(42);
         for trial in 0..800 {
@@ -1271,12 +1292,13 @@ mod tests {
             let split = rng.random_range(1..16);
             let mut merged = MerkleHashSubtree::from_chunks(true, &chunks[..split], false);
             let r2 = MerkleHashSubtree::from_chunks(false, &chunks[split..], true);
-            merged.merge_into(&r2);
+            merged.merge_into(&r2).unwrap();
             assert_eq!(merged.final_hash().unwrap(), expected, "Failed trial {trial}, split at {split}");
         }
     }
 
     #[test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     fn test_two_way_merge_scaling() {
         let mut rng = SmallRng::seed_from_u64(123);
         for n in (20..=200).step_by(4) {
@@ -1287,13 +1309,14 @@ mod tests {
                 let split = rng.random_range(1..n);
                 let mut merged = MerkleHashSubtree::from_chunks(true, &chunks[..split], false);
                 let r2 = MerkleHashSubtree::from_chunks(false, &chunks[split..], true);
-                merged.merge_into(&r2);
+                merged.merge_into(&r2).unwrap();
                 assert_eq!(merged.final_hash().unwrap(), expected, "Failed n={n}, split={split}");
             }
         }
     }
 
     #[test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     fn test_multi_way_merge() {
         let mut rng = SmallRng::seed_from_u64(987);
         for n in (16..=200).step_by(8) {
@@ -1318,13 +1341,14 @@ mod tests {
                 }
                 ranges.push(MerkleHashSubtree::from_chunks(false, &chunks[prev..], true));
 
-                let merged = MerkleHashSubtree::merge(&ranges);
+                let merged = MerkleHashSubtree::merge(&ranges).unwrap();
                 assert_eq!(merged.final_hash().unwrap(), expected, "Multi-way failed n={n}, splits={split_points:?}");
             }
         }
     }
 
     #[test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     fn test_storage_is_log_n() {
         let mut rng = SmallRng::seed_from_u64(456);
         for n in [100, 500, 1000, 5000] {
@@ -1340,6 +1364,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     fn test_merge_with_existing_reference_hashes() {
         fn rh(h: u64) -> MerkleHash {
             if h == 0 {
@@ -1364,13 +1389,14 @@ mod tests {
             for split in 1..chunks.len() {
                 let mut merged = MerkleHashSubtree::from_chunks(true, &chunks[..split], false);
                 let r2 = MerkleHashSubtree::from_chunks(false, &chunks[split..], true);
-                merged.merge_into(&r2);
+                merged.merge_into(&r2).unwrap();
                 assert_eq!(merged.final_hash().unwrap(), expected, "Reference failed: seeds={seeds:?}, split={split}");
             }
         }
     }
 
     #[test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     fn test_three_way_merge_all_splits() {
         let mut rng = SmallRng::seed_from_u64(321);
 
@@ -1383,7 +1409,7 @@ mod tests {
                     let r1 = MerkleHashSubtree::from_chunks(true, &chunks[..s1], false);
                     let r2 = MerkleHashSubtree::from_chunks(false, &chunks[s1..s2], false);
                     let r3 = MerkleHashSubtree::from_chunks(false, &chunks[s2..], true);
-                    let merged = MerkleHashSubtree::merge(&[r1, r2, r3]);
+                    let merged = MerkleHashSubtree::merge(&[r1, r2, r3]).unwrap();
                     assert_eq!(merged.final_hash().unwrap(), expected, "Three-way failed: n={n}, s1={s1}, s2={s2}");
                 }
             }
@@ -1391,6 +1417,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     fn test_merge_preserves_log_storage() {
         let mut rng = SmallRng::seed_from_u64(789);
 
@@ -1400,7 +1427,7 @@ mod tests {
 
             let mut merged = MerkleHashSubtree::from_chunks(true, &chunks[..split], false);
             let r2 = MerkleHashSubtree::from_chunks(false, &chunks[split..], true);
-            merged.merge_into(&r2);
+            merged.merge_into(&r2).unwrap();
 
             let log_n = (n as f64).log2().ceil() as usize;
             let max_expected = MAX_GROUP_SIZE * log_n * 3;
@@ -1414,6 +1441,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     fn test_hump_invariants() {
         let mut rng = SmallRng::seed_from_u64(654);
 
@@ -1442,6 +1470,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     fn test_merge_preserves_log_storage_multi() {
         let mut rng = SmallRng::seed_from_u64(790);
 
@@ -1464,7 +1493,7 @@ mod tests {
 
             let mut merged = ranges[0].clone();
             for range in &ranges[1..] {
-                merged.merge_into(range);
+                merged.merge_into(range).unwrap();
                 assert!(
                     merged.num_nodes() <= max_expected,
                     "After merging, n={total}: nodes={}, max={max_expected}",
@@ -1501,7 +1530,7 @@ mod tests {
         while total_chunks < max_milestone && milestone_idx < milestones.len() {
             let batch = random_chunks(&mut rng, batch_size);
             let batch_range = MerkleHashSubtree::from_chunks(false, &batch, false);
-            accumulated.merge_into(&batch_range);
+            accumulated.merge_into(&batch_range).unwrap();
             total_chunks += batch_size;
 
             worst_since_last = worst_since_last.max(accumulated.num_nodes());
@@ -1537,6 +1566,7 @@ mod tests {
     // ========================================================================
 
     #[test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     fn test_json_round_trip() {
         let mut rng = SmallRng::seed_from_u64(42);
 
@@ -1559,6 +1589,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     fn test_json_format_has_hex_hashes() {
         let h = MerkleHash::random_from_seed(42);
         let chunks = vec![(h, 1000u64)];
@@ -1573,6 +1604,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     fn test_json_round_trip_preserves_merge_result() {
         let mut rng = SmallRng::seed_from_u64(99);
         let chunks = random_chunks(&mut rng, 50);
@@ -1580,7 +1612,7 @@ mod tests {
 
         let mut r1 = MerkleHashSubtree::from_chunks(true, &chunks[..20], false);
         let r2 = MerkleHashSubtree::from_chunks(false, &chunks[20..], true);
-        r1.merge_into(&r2);
+        r1.merge_into(&r2).unwrap();
 
         let json = serde_json::to_string(&r1).unwrap();
         let deserialized: MerkleHashSubtree = serde_json::from_str(&json).unwrap();
@@ -1588,6 +1620,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     fn test_bincode_round_trip() {
         let mut rng = SmallRng::seed_from_u64(42);
 
@@ -1610,6 +1643,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     fn test_bincode_smaller_than_json() {
         let mut rng = SmallRng::seed_from_u64(77);
         let chunks = random_chunks(&mut rng, 100);
