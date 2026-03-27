@@ -1194,17 +1194,10 @@ mod tests {
 
     // ── Blocking API tests ────────────────────────────────────────────────────
 
-    fn local_session_sync(temp: &TempDir) -> Result<XetSession> {
-        let cas_path = temp.path().join("cas");
-        Ok(XetSessionBuilder::new()
-            .with_endpoint(format!("local://{}", cas_path.display()))
-            .build()?)
-    }
-
     #[test]
     fn test_blocking_upload_bytes_round_trip() -> Result<()> {
         let temp = tempdir()?;
-        let session = local_session_sync(&temp)?;
+        let session = local_session(&temp)?;
         let data = b"Hello, upload commit round-trip!";
         let commit = session.new_upload_commit_blocking()?;
         let task_handle =
@@ -1220,7 +1213,7 @@ mod tests {
     #[test]
     fn test_blocking_upload_from_path_round_trip() -> Result<()> {
         let temp = tempdir()?;
-        let session = local_session_sync(&temp)?;
+        let session = local_session(&temp)?;
         let src = temp.path().join("data.bin");
         let data = b"file path upload content";
         std::fs::write(&src, data)?;
@@ -1237,7 +1230,7 @@ mod tests {
     #[test]
     fn test_blocking_upload_result_access_patterns() -> Result<()> {
         let temp = tempdir()?;
-        let session = local_session_sync(&temp)?;
+        let session = local_session(&temp)?;
         let data = b"result access patterns";
         let src = temp.path().join("data.bin");
         std::fs::write(&src, data)?;
@@ -1262,7 +1255,7 @@ mod tests {
     #[test]
     fn test_blocking_upload_streaming_round_trip() -> Result<()> {
         let temp = tempdir()?;
-        let session = local_session_sync(&temp)?;
+        let session = local_session(&temp)?;
         let data = b"streamed upload bytes";
         let commit = session.new_upload_commit_blocking()?;
         let (_handle, mut cleaner) =
@@ -1282,7 +1275,7 @@ mod tests {
     #[test]
     fn test_blocking_upload_multiple_files_in_one_commit() -> Result<()> {
         let temp = tempdir()?;
-        let session = local_session_sync(&temp)?;
+        let session = local_session(&temp)?;
         let commit = session.new_upload_commit_blocking()?;
         commit.upload_bytes_blocking(b"file one".to_vec(), Sha256Policy::Compute, Some("a.bin".into()))?;
         commit.upload_bytes_blocking(b"file two".to_vec(), Sha256Policy::Compute, Some("b.bin".into()))?;
@@ -1295,7 +1288,7 @@ mod tests {
     #[test]
     fn test_blocking_upload_progress_reflects_bytes_after_commit() -> Result<()> {
         let temp = tempdir()?;
-        let session = local_session_sync(&temp)?;
+        let session = local_session(&temp)?;
         let data = b"progress tracking upload data";
         let commit = session.new_upload_commit_blocking()?;
         let progress_observer = commit.clone();
@@ -1312,7 +1305,7 @@ mod tests {
     #[test]
     fn test_blocking_upload_file_returns_handle_without_status() -> Result<()> {
         let temp = tempdir()?;
-        let session = local_session_sync(&temp)?;
+        let session = local_session(&temp)?;
         let commit = session.new_upload_commit_blocking()?;
         let (handle, _cleaner) =
             commit.upload_file_blocking(Some("stream.bin".into()), Some(1024), Sha256Policy::Compute)?;
@@ -1325,7 +1318,7 @@ mod tests {
         R: FnOnce(std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>),
     {
         let temp = tempdir().unwrap();
-        let session = local_session_sync(&temp).unwrap();
+        let session = local_session(&temp).unwrap();
 
         run(Box::pin(async move {
             let data = b"upload from smol executor";

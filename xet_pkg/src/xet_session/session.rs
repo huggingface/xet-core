@@ -184,7 +184,7 @@ impl XetSessionBuilder {
         let runtime = match handle {
             Some(h) => {
                 info!("XetSession using External runtime (wrapping caller's tokio handle)");
-                XetRuntime::from_external_with_config(h, self.config.clone())
+                XetRuntime::from_external_with_config(h, self.config.clone())?
             },
             None => {
                 info!("XetSession creating Owned runtime (new thread pool)");
@@ -566,6 +566,8 @@ impl XetSession {
 
 #[cfg(test)]
 mod tests {
+    use tempfile::{TempDir, tempdir};
+    use xet_data::processing::Sha256Policy;
     use xet_runtime::core::{RuntimeMode, XetRuntime};
 
     use super::*;
@@ -886,17 +888,7 @@ mod tests {
 
     // ── Streaming download round-trip tests ─────────────────────────────────
 
-    use tempfile::{TempDir, tempdir};
-    use xet_data::processing::Sha256Policy;
-
-    async fn local_session(temp: &TempDir) -> Result<XetSession, Box<dyn std::error::Error>> {
-        let cas_path = temp.path().join("cas");
-        Ok(XetSessionBuilder::new()
-            .with_endpoint(format!("local://{}", cas_path.display()))
-            .build()?)
-    }
-
-    fn local_session_sync(temp: &TempDir) -> Result<XetSession, Box<dyn std::error::Error>> {
+    fn local_session(temp: &TempDir) -> Result<XetSession, Box<dyn std::error::Error>> {
         let cas_path = temp.path().join("cas");
         Ok(XetSessionBuilder::new()
             .with_endpoint(format!("local://{}", cas_path.display()))
@@ -941,7 +933,7 @@ mod tests {
     // Async streaming download round-trip: upload, stream, verify content.
     async fn test_download_stream_round_trip() {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).await.unwrap();
+        let session = local_session(&temp).unwrap();
         let original = b"Hello, streaming download!";
         let file_info = upload_bytes(&session, original, "stream.bin").await.unwrap();
 
@@ -957,7 +949,7 @@ mod tests {
     // Blocking streaming download round-trip: upload, stream, verify content.
     fn test_download_stream_blocking_round_trip() {
         let temp = tempdir().unwrap();
-        let session = local_session_sync(&temp).unwrap();
+        let session = local_session(&temp).unwrap();
         let original = b"Hello, blocking streaming download!";
         let file_info = upload_bytes_blocking(&session, original, "stream.bin").unwrap();
 
@@ -974,7 +966,7 @@ mod tests {
     // get_progress() reports correct totals after consuming the stream.
     async fn test_download_stream_progress_reports_completion() {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).await.unwrap();
+        let session = local_session(&temp).unwrap();
         let original = b"progress tracking test data for streaming";
         let file_info = upload_bytes(&session, original, "progress.bin").await.unwrap();
 
@@ -998,7 +990,7 @@ mod tests {
     // get_progress() works correctly in blocking mode.
     fn test_download_stream_blocking_progress_reports_completion() {
         let temp = tempdir().unwrap();
-        let session = local_session_sync(&temp).unwrap();
+        let session = local_session(&temp).unwrap();
         let original = b"blocking progress tracking test data";
         let file_info = upload_bytes_blocking(&session, original, "progress.bin").unwrap();
 
@@ -1019,7 +1011,7 @@ mod tests {
     // Multiple sequential streaming downloads reuse the lazy FileDownloadSession.
     async fn test_download_stream_multiple_sequential() {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).await.unwrap();
+        let session = local_session(&temp).unwrap();
         let data_a = b"first stream payload";
         let data_b = b"second stream payload";
         let info_a = upload_bytes(&session, data_a, "a.bin").await.unwrap();
@@ -1038,5 +1030,38 @@ mod tests {
             collected_b.extend_from_slice(&chunk);
         }
         assert_eq!(collected_b, data_b);
+    }
+
+    // ── Duplicate tokio handle rejection ─────────────────────────────────────
+
+    #[test]
+    // Building two sessions with the same tokio handle must fail on the second attempt,
+    // because the same runtime ID would already be registered in EXTERNAL_RUNTIME_REGISTRY.
+    fn test_build_with_same_handle_twice_fails() {
+        let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let handle = tokio_rt.handle().clone();
+
+        let first = XetSessionBuilder::new().with_tokio_handle(handle.clone()).build();
+        assert!(first.is_ok(), "first build with tokio handle must succeed");
+
+        let second = XetSessionBuilder::new().with_tokio_handle(handle).build();
+        assert!(
+            matches!(second, Err(SessionError::WrongRuntimeMode(_))),
+            "second build with the same tokio handle must return WrongRuntimeMode"
+        );
+    }
+
+    #[test]
+    // After the first session is dropped (deregistering the handle), a new session can
+    // attach to the same tokio handle successfully.
+    fn test_build_with_same_handle_succeeds_after_first_is_dropped() {
+        let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let handle = tokio_rt.handle().clone();
+
+        let first = XetSessionBuilder::new().with_tokio_handle(handle.clone()).build().unwrap();
+        drop(first);
+
+        let second = XetSessionBuilder::new().with_tokio_handle(handle).build();
+        assert!(second.is_ok(), "build must succeed after the previous session holding the same handle is dropped");
     }
 }
