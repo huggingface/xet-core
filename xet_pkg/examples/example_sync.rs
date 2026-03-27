@@ -65,7 +65,7 @@ fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<()> {
     let commit_for_progress = commit.clone();
     std::thread::spawn(move || {
         loop {
-            let report = commit_for_progress.progress_blocking();
+            let report = commit_for_progress.progress();
             println!("{}/{} bytes", report.total_bytes_completed, report.total_bytes);
             std::thread::sleep(Duration::from_millis(100));
         }
@@ -73,14 +73,15 @@ fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<()> {
 
     let report = commit.commit_blocking()?;
 
-    for m in &report.files {
+    for m in report.uploads.values() {
         let size = m.xet_info.file_size.map_or("unknown".to_string(), |s| s.to_string());
         println!("  {} -> {} ({} bytes)", m.tracking_name.as_deref().unwrap_or("?"), m.xet_info.hash, size);
     }
     println!("Uploaded {} files", n_files);
 
     // Persist metadata so it can be passed to the `download` subcommand.
-    std::fs::write("upload_metadata.json", serde_json::to_string_pretty(&report.files)?)?;
+    let uploads_vec: Vec<_> = report.uploads.into_values().collect();
+    std::fs::write("upload_metadata.json", serde_json::to_string_pretty(&uploads_vec)?)?;
 
     Ok(())
 }
@@ -108,7 +109,7 @@ fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: Option<
     let group_for_progress = group.clone();
     std::thread::spawn(move || {
         loop {
-            if let Ok(report) = group_for_progress.progress_blocking() {
+            if let Ok(report) = group_for_progress.progress() {
                 let done = handles
                     .iter()
                     .filter(|h| matches!(h.status(), Ok(XetTaskState::Completed)))
@@ -120,12 +121,14 @@ fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: Option<
     });
 
     // Block until all downloads finish.
-    let results = group.finish_blocking()?;
+    let report = group.finish_blocking()?;
 
-    for (_task_id, result) in &results {
-        if let Ok(r) = result.as_ref() {
-            println!("  {} ({:?} bytes)", r.dest_path.display(), r.file_info.file_size);
-        }
+    for r in report.downloads.values().flatten() {
+        println!(
+            "  {} ({:?} bytes)",
+            r.path.as_ref().map_or("?".into(), |p| p.display().to_string()),
+            r.file_info.file_size
+        );
     }
 
     Ok(())

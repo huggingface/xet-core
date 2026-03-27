@@ -1,6 +1,6 @@
 # API changes
 
-This folder contains a record of API changes in main.  It's intended for AI agents
+This folder contains a record of API changes in main.  It's indended for AI agents
 to read in order to correctly apply merges or update dependencies and PRs. 
 
 The updates are listed by date in the form: `update_<yymmdd>_<description>.md`

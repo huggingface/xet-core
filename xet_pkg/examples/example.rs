@@ -74,14 +74,15 @@ async fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<(
 
     let report = commit.commit().await?;
 
-    for m in &report.files {
+    for m in report.uploads.values() {
         let size = m.xet_info.file_size.map_or("unknown".to_string(), |s| s.to_string());
         println!("  {} -> {} ({} bytes)", m.tracking_name.as_deref().unwrap_or("?"), m.xet_info.hash, size);
     }
     println!("Uploaded {} files", n_files);
 
     // Persist metadata so it can be passed to the `download` subcommand.
-    std::fs::write("upload_metadata.json", serde_json::to_string_pretty(&report.files)?)?;
+    let uploads_vec: Vec<_> = report.uploads.into_values().collect();
+    std::fs::write("upload_metadata.json", serde_json::to_string_pretty(&uploads_vec)?)?;
 
     Ok(())
 }
@@ -119,12 +120,14 @@ async fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: O
         }
     });
 
-    let results = group.finish().await?;
+    let report = group.finish().await?;
 
-    for (_task_id, result) in &results {
-        if let Ok(r) = result.as_ref() {
-            println!("  {} ({:?} bytes)", r.dest_path.display(), r.file_info.file_size);
-        }
+    for r in report.downloads.values().flatten() {
+        println!(
+            "  {} ({:?} bytes)",
+            r.path.as_ref().map_or("?".into(), |p| p.display().to_string()),
+            r.file_info.file_size
+        );
     }
 
     Ok(())

@@ -39,12 +39,8 @@
 //! [`download_file_to_path_blocking`](XetDownloadGroup::download_file_to_path_blocking),
 //! then call [`finish`](XetDownloadGroup::finish) (async) or
 //! [`finish_blocking`](XetDownloadGroup::finish_blocking) (sync) to wait for all
-//! transfers to complete and receive a `HashMap<`[`UniqueID`]`, `[`DownloadResult`]`>`
-//! keyed by task ID.
-//!
-//! `DownloadResult` = `Arc<Result<`[`DownloadedFile`]`, `[`SessionError`]`>>`.
-//! Per-task results can also be read from the returned [`XetFileDownload`]
-//! via [`result`](XetFileDownload::result) after `finish()` returns.
+//! transfers to complete and receive an [`XetDownloadGroupReport`] containing
+//! per-file [`XetDownloadReport`] entries keyed by [`UniqueID`].
 //!
 //! ## Streaming downloads
 //!
@@ -66,7 +62,7 @@
 //! [`commit`](XetUploadCommit::commit) returns a [`XetCommitReport`] containing
 //! aggregate dedup metrics, progress, and per-file [`XetFileMetadata`].
 //! [`finish`](XetDownloadGroup::finish) returns
-//! `HashMap<`[`UniqueID`]`, `[`DownloadResult`]`>` keyed by task ID, so a single
+//! [`XetDownloadGroupReport`] keyed by task ID, so a single
 //! failed download does not discard all others.
 //!
 //! # Quick start — sync API
@@ -90,8 +86,8 @@
 //! let group = session.new_file_download_group_blocking()?;
 //! let info = meta.xet_info.clone();
 //! let dl_handle = group.download_file_to_path_blocking(info, "out/file.bin".into())?;
-//! let finish_results = group.finish_blocking()?;
-//! let r = finish_results.get(&dl_handle.task_id).unwrap().as_ref().as_ref().unwrap();
+//! let finish_report = group.finish_blocking()?;
+//! let r = finish_report.downloads.get(&dl_handle.task_id()).unwrap().as_ref().unwrap();
 //!
 //! # Ok::<(), xet::xet_session::SessionError>(())
 //! ```
@@ -120,8 +116,8 @@
 //! let group = session.new_file_download_group().await?;
 //! let info = meta.xet_info.clone();
 //! let dl_handle = group.download_file_to_path(info, "out/file.bin".into()).await?;
-//! let finish_results = group.finish().await?;
-//! let r = finish_results.get(&dl_handle.task_id).unwrap().as_ref().as_ref().unwrap();
+//! let finish_report = group.finish().await?;
+//! let r = finish_report.downloads.get(&dl_handle.task_id()).unwrap().as_ref().unwrap();
 //! # Ok(())
 //! # }
 //! ```
@@ -139,8 +135,8 @@ mod upload_stream_handle;
 
 pub use download_streams::{XetDownloadStream, XetUnorderedDownloadStream};
 pub use errors::SessionError;
-pub use file_download_group::XetDownloadGroup;
-pub use file_download_handle::{DownloadResult, DownloadedFile, XetFileDownload};
+pub use file_download_group::{XetDownloadGroup, XetDownloadGroupReport};
+pub use file_download_handle::{XetDownloadReport, XetFileDownload};
 pub use session::{XetSession, XetSessionBuilder};
 pub use task_runtime::XetTaskState;
 pub use upload_commit::{XetCommitReport, XetFileMetadata, XetUploadCommit};

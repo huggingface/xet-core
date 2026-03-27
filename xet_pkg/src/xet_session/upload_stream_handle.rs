@@ -44,6 +44,7 @@ impl XetStreamUploadInner {
 
         match cleaner.finish().await {
             Ok((xet_info, dedup_metrics)) => Ok(XetFileMetadata {
+                task_id: self.task_id,
                 xet_info,
                 dedup_metrics,
                 tracking_name,
@@ -56,11 +57,11 @@ impl XetStreamUploadInner {
         self.result.get().cloned()
     }
 
-    fn progress(self: &Arc<Self>) -> Option<ItemProgressReport> {
+    fn progress(&self) -> Option<ItemProgressReport> {
         self.upload_session.item_report(self.task_id)
     }
 
-    fn abort(self: &Arc<Self>) {
+    fn abort(&self) {
         let _ = self.task_runtime.cancel_subtree();
         if let Ok(mut cleaner_guard) = self.cleaner.try_lock() {
             *cleaner_guard = None;

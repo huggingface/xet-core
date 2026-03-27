@@ -408,10 +408,10 @@ async fn async_download_unknown_size_roundtrip() {
     let dest = temp.path().join("unknown_size.out");
     let group = session.new_file_download_group().await.unwrap();
     group.download_file_to_path(hash_only, dest.clone()).await.unwrap();
-    let results = group.finish().await.unwrap();
+    let report = group.finish().await.unwrap();
 
-    for result in results.values() {
-        let dl = result.as_ref().as_ref().unwrap();
+    for result in report.downloads.values() {
+        let dl = result.as_ref().unwrap();
         assert_eq!(dl.file_info.file_size, Some(data.len() as u64));
     }
     assert_eq!(fs::read(&dest).unwrap(), data);
@@ -434,8 +434,8 @@ async fn async_download_invalid_hash_fails() {
         )
         .await
         .unwrap();
-    let results = group.finish().await.unwrap();
-    assert!(results.get(&handle.task_id).unwrap().is_err());
+    let report = group.finish().await.unwrap();
+    assert!(report.downloads.get(&handle.task_id()).unwrap().is_err());
     assert!(matches!(handle.status().unwrap(), XetTaskState::Error(_)));
 }
 
@@ -560,7 +560,7 @@ fn blocking_progress_tracking() {
     let progress_observer = commit.clone();
     commit.commit_blocking().unwrap();
 
-    let report = progress_observer.progress_blocking();
+    let report = progress_observer.progress();
     assert_eq!(report.total_bytes, data.len() as u64);
     assert_eq!(report.total_bytes_completed, data.len() as u64);
 }
@@ -941,8 +941,8 @@ async fn async_separate_sessions_are_isolated() {
     let finish_result = group.finish().await;
     match finish_result {
         Err(_) => {},
-        Ok(results) => {
-            assert!(results.values().any(|r| r.is_err()));
+        Ok(report) => {
+            assert!(report.downloads.values().any(|r| r.is_err()));
         },
     }
 }

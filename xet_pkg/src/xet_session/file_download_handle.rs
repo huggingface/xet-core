@@ -4,159 +4,100 @@ use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tokio::task::JoinHandle;
-use xet_data::DataError;
 use xet_data::processing::{FileDownloadSession, XetFileInfo};
 use xet_data::progress_tracking::{ItemProgressReport, UniqueID};
 
-use super::task_runtime::{BackgroundTaskResolution, BackgroundTaskState, TaskRuntime, XetTaskState};
+use super::task_runtime::{BackgroundTaskState, TaskRuntime, XetTaskState};
 use crate::error::XetError;
 
-type DownloadJoinHandle = JoinHandle<Result<u64, DataError>>;
-
-/// Per-file result returned by [`XetDownloadGroup::finish`](crate::xet_session::XetDownloadGroup::finish).
+/// Per-file download result returned by [`XetDownloadGroup::finish`](crate::xet_session::XetDownloadGroup::finish).
 #[derive(Clone, Debug)]
-pub struct DownloadedFile {
-    /// Local path where the file was written.
-    pub dest_path: PathBuf,
+pub struct XetDownloadReport {
+    /// Unique identifier for this download task.
+    pub task_id: UniqueID,
+    /// Local path where the file was written, if applicable.
+    pub path: Option<PathBuf>,
     /// Xet file hash and size of the downloaded file.
     pub file_info: XetFileInfo,
+    /// Per-file progress snapshot at the time of completion.
+    pub progress: Option<ItemProgressReport>,
 }
 
-/// Per-file result type returned by [`XetDownloadGroup::finish`](crate::xet_session::XetDownloadGroup::finish).
-///
-/// The `Arc` lets the same value be stored in both the `finish()` return map
-/// and the per-task [`XetFileDownload`] without requiring the inner `Result`
-/// to be `Clone`.
-pub type DownloadResult = Arc<Result<DownloadedFile, XetError>>;
+// ── XetFileDownloadInner ────────────────────────────────────────────────────
 
-#[derive(Clone)]
-pub struct XetFileDownload {
-    /// Id of the task, can be used to retrieve per-task progress and result.
-    pub task_id: UniqueID,
+pub(super) struct XetFileDownloadInner {
+    pub(super) task_id: UniqueID,
     pub(super) dest_path: PathBuf,
-    pub(super) file_info: XetFileInfo,
     pub(super) download_session: Arc<FileDownloadSession>,
+    pub(super) state: tokio::sync::Mutex<BackgroundTaskState<XetDownloadReport>>,
+}
+
+impl XetFileDownloadInner {
+    async fn finish(&self, task_runtime: &TaskRuntime) -> Result<XetDownloadReport, XetError> {
+        let mut guard = self.state.lock().await;
+        task_runtime.join_background_task("download_finish", &mut guard).await
+    }
+}
+
+// ── XetFileDownload (public wrapper) ────────────────────────────────────────
+
+/// Handle for a background file-download task within an [`XetDownloadGroup`](crate::xet_session::XetDownloadGroup).
+///
+/// Returned by
+/// [`XetDownloadGroup::download_file_to_path`](crate::xet_session::XetDownloadGroup::download_file_to_path).
+/// Use [`finish`](Self::finish) to wait for completion or
+/// [`result`](Self::result) to poll without blocking.
+pub struct XetFileDownload {
+    pub(super) inner: Arc<XetFileDownloadInner>,
     pub(super) task_runtime: Arc<TaskRuntime>,
-    pub(super) state: Arc<tokio::sync::Mutex<BackgroundTaskState<DownloadedFile, DownloadJoinHandle>>>,
 }
 
 impl XetFileDownload {
     pub fn task_id(&self) -> UniqueID {
-        self.task_id
+        self.inner.task_id
     }
 
     pub fn file_path(&self) -> PathBuf {
-        self.dest_path.clone()
+        self.inner.dest_path.clone()
     }
 
     pub fn progress(&self) -> Option<ItemProgressReport> {
-        self.download_session.item_report(self.task_id)
+        self.inner.download_session.item_report(self.inner.task_id)
     }
 
     pub fn status(&self) -> Result<XetTaskState, XetError> {
-        self.task_runtime.status_from_background_task(&self.state)
+        self.task_runtime.status_from_background_task(&self.inner.state)
     }
 
-    pub fn result(&self) -> Option<DownloadResult> {
-        self.task_runtime.background_result(&self.state).map(Arc::new)
+    pub fn result(&self) -> Option<Result<XetDownloadReport, XetError>> {
+        self.task_runtime.background_result(&self.inner.state)
     }
 
-    pub async fn finish(&self) -> Result<DownloadedFile, XetError> {
-        let join_handle = match self
-            .task_runtime
-            .begin_background_task_resolution(&self.state, "download task already resolved")
-            .await?
-        {
-            BackgroundTaskResolution::Cached(value) => return Ok(value),
-            BackgroundTaskResolution::JoinHandle(handle) => handle,
-        };
-
-        let file_info = self.file_info.clone();
-        let dest_path = self.dest_path.clone();
-        let result = self
-            .task_runtime
-            .bridge_async_finalizing("download_handle_finish", async move {
-                match join_handle.await {
-                    Ok(Ok(n_bytes)) => Ok(DownloadedFile {
-                        dest_path,
-                        file_info: XetFileInfo {
-                            hash: file_info.hash,
-                            file_size: Some(n_bytes),
-                            sha256: file_info.sha256,
-                        },
-                    }),
-                    Ok(Err(e)) => Err(XetError::TaskError(e.to_string())),
-                    Err(e) => Err(XetError::TaskError(e.to_string())),
-                }
-            })
-            .await;
-
-        self.task_runtime.finish_background_task_resolution(&self.state, &result).await;
-
-        match result {
-            Ok(value) => Ok(value),
-            Err(_) => Err(self
-                .task_runtime
-                .background_result(&self.state)
-                .and_then(Result::err)
-                .unwrap_or_else(|| XetError::TaskError("download task failed".to_string()))),
-        }
+    /// Wait for the download to complete and return the report.
+    ///
+    /// Idempotent: returns the cached result if already resolved.
+    pub async fn finish(&self) -> Result<XetDownloadReport, XetError> {
+        self.inner.finish(&self.task_runtime).await
     }
 
-    pub fn finish_blocking(&self) -> Result<DownloadedFile, XetError> {
-        let join_handle = match self
-            .task_runtime
-            .begin_background_task_resolution_blocking(&self.state, "download task already resolved")?
-        {
-            BackgroundTaskResolution::Cached(value) => return Ok(value),
-            BackgroundTaskResolution::JoinHandle(handle) => handle,
-        };
-
-        let file_info = self.file_info.clone();
-        let dest_path = self.dest_path.clone();
-        let result = self
-            .task_runtime
-            .bridge_sync_finalizing("download_handle_finish_blocking", async move {
-                match join_handle.await {
-                    Ok(Ok(n_bytes)) => Ok(DownloadedFile {
-                        dest_path,
-                        file_info: XetFileInfo {
-                            hash: file_info.hash,
-                            file_size: Some(n_bytes),
-                            sha256: file_info.sha256,
-                        },
-                    }),
-                    Ok(Err(e)) => Err(XetError::TaskError(e.to_string())),
-                    Err(e) => Err(XetError::TaskError(e.to_string())),
-                }
-            });
-
+    /// Blocking version of [`finish`](Self::finish).
+    pub fn finish_blocking(&self) -> Result<XetDownloadReport, XetError> {
+        let inner = self.inner.clone();
+        let task_runtime = self.task_runtime.clone();
         self.task_runtime
-            .finish_background_task_resolution_blocking(&self.state, &result);
-
-        match result {
-            Ok(value) => Ok(value),
-            Err(_) => Err(self
-                .task_runtime
-                .background_result(&self.state)
-                .and_then(Result::err)
-                .unwrap_or_else(|| XetError::TaskError("download task failed".to_string()))),
-        }
+            .run_sync("download_finish", async move { inner.finish(&task_runtime).await })
     }
 
     pub fn cancel(&self) {
         self.task_runtime
-            .cancel_background_task(&self.state, "download task cancelled by user", |join_handle| {
-                join_handle.abort();
-            });
+            .cancel_background_task(&self.inner.state, "download task cancelled by user");
     }
 }
 
 impl fmt::Debug for XetFileDownload {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("XetFileDownload")
-            .field("task_id", &self.task_id)
+            .field("task_id", &self.inner.task_id)
             .finish_non_exhaustive()
     }
 }

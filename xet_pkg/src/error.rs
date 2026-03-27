@@ -370,10 +370,7 @@ mod tests {
 
     #[test]
     fn credential_helper_maps_to_authentication() {
-        let err = XetError::from(ClientError::credential_helper_error(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "cred fail",
-        )));
+        let err = XetError::from(ClientError::credential_helper_error(std::io::Error::other("cred fail")));
         assert!(matches!(err, XetError::Authentication(_)));
     }
 

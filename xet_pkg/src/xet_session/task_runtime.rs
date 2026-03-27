@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::sync::{Arc, Mutex, Weak};
 
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use xet_runtime::core::XetRuntime;
 
@@ -16,15 +17,12 @@ pub enum XetTaskState {
 }
 
 #[derive(Debug)]
-pub(super) enum BackgroundTaskState<T, J> {
-    Running { join_handle: Option<J> },
+pub(super) enum BackgroundTaskState<T> {
+    Running {
+        join_handle: Option<JoinHandle<Result<T, XetError>>>,
+    },
     Success(T),
     Error(String),
-}
-
-pub(super) enum BackgroundTaskResolution<T, J> {
-    Cached(T),
-    JoinHandle(J),
 }
 
 pub(super) struct TaskRuntime {
@@ -48,7 +46,7 @@ impl TaskRuntime {
         let child = Arc::new(Self {
             runtime: self.runtime.clone(),
             cancellation_token: self.cancellation_token.child_token(),
-            state: Mutex::new(self.state()?),
+            state: Mutex::new(self.status()?),
             children: Mutex::new(Vec::new()),
         });
 
@@ -60,13 +58,22 @@ impl TaskRuntime {
         Ok(self.state.lock()?.clone())
     }
 
-    pub(super) fn state(&self) -> Result<XetTaskState, XetError> {
-        self.status()
-    }
-
     fn set_state(&self, new_state: XetTaskState) -> Result<(), XetError> {
         *self.state.lock()? = new_state;
         Ok(())
+    }
+
+    fn transition_to_finalizing(&self, task_name: &'static str) -> Result<(), XetError> {
+        let mut state = self.state.lock()?;
+        match &*state {
+            XetTaskState::Running => {
+                *state = XetTaskState::Finalizing;
+                Ok(())
+            },
+            XetTaskState::Finalizing | XetTaskState::Completed => Err(XetError::AlreadyCompleted),
+            XetTaskState::UserCancelled => Err(XetError::UserCancelled(format!("{task_name} cancelled by user"))),
+            XetTaskState::Error(msg) => Err(XetError::PreviousTaskError(msg.clone())),
+        }
     }
 
     fn set_state_recursive(&self, new_state: XetTaskState) -> Result<(), XetError> {
@@ -82,7 +89,7 @@ impl TaskRuntime {
         self.set_state_recursive(XetTaskState::UserCancelled)
     }
 
-    fn check_state(&self, task_name: &'static str) -> Result<(), XetError> {
+    pub(super) fn check_state(&self, task_name: &'static str) -> Result<(), XetError> {
         match self.status()? {
             XetTaskState::Running | XetTaskState::Finalizing => Ok(()),
             XetTaskState::UserCancelled => Err(XetError::UserCancelled(format!("{task_name} cancelled by user"))),
@@ -161,21 +168,34 @@ impl TaskRuntime {
         result
     }
 
+    /// Run a future synchronously without checking task state.
+    ///
+    /// Use for operations like `finalize_ingestion` / `finish` where
+    /// `join_background_task` handles idempotent cached returns internally.
+    pub(super) fn run_sync<T, F>(&self, task_name: &'static str, fut: F) -> Result<T, XetError>
+    where
+        F: Future<Output = Result<T, XetError>> + Send + 'static,
+        T: Send + 'static,
+    {
+        let token = self.cancellation_token.clone();
+        self.runtime
+            .bridge_sync(async move {
+                tokio::select! {
+                    _ = token.cancelled() => Err(XetError::UserCancelled(
+                        format!("{task_name} cancelled by user"),
+                    )),
+                    result = fut => result,
+                }
+            })
+            .map_err(XetError::from)?
+    }
+
     pub(super) async fn bridge_async_finalizing<T, F>(&self, task_name: &'static str, fut: F) -> Result<T, XetError>
     where
         F: Future<Output = Result<T, XetError>> + Send + 'static,
         T: Send + 'static,
     {
-        match self.status()? {
-            XetTaskState::Running => self.set_state(XetTaskState::Finalizing)?,
-            XetTaskState::Finalizing | XetTaskState::Completed => {
-                return Err(XetError::AlreadyCompleted);
-            },
-            XetTaskState::UserCancelled => {
-                return Err(XetError::UserCancelled(format!("{task_name} cancelled by user")));
-            },
-            XetTaskState::Error(msg) => return Err(XetError::PreviousTaskError(msg)),
-        }
+        self.transition_to_finalizing(task_name)?;
 
         let result = self.run_inner_async(task_name, fut).await;
         match &result {
@@ -193,16 +213,7 @@ impl TaskRuntime {
         F: Future<Output = Result<T, XetError>> + Send + 'static,
         T: Send + 'static,
     {
-        match self.status()? {
-            XetTaskState::Running => self.set_state(XetTaskState::Finalizing)?,
-            XetTaskState::Finalizing | XetTaskState::Completed => {
-                return Err(XetError::AlreadyCompleted);
-            },
-            XetTaskState::UserCancelled => {
-                return Err(XetError::UserCancelled(format!("{task_name} cancelled by user")));
-            },
-            XetTaskState::Error(msg) => return Err(XetError::PreviousTaskError(msg)),
-        }
+        self.transition_to_finalizing(task_name)?;
 
         let token = self.cancellation_token.clone();
         let result = self
@@ -226,9 +237,61 @@ impl TaskRuntime {
         result
     }
 
-    pub(super) fn status_from_background_task<T, J>(
+    // ── Background task helpers ──────────────────────────────────────────────
+
+    /// Resolve a background task to completion, handling all state transitions.
+    ///
+    /// The caller must hold the `tokio::sync::Mutex` lock on the
+    /// `BackgroundTaskState` and pass it as `&mut`. This method:
+    ///
+    /// 1. Returns cached `Success`/`Error` immediately if already resolved.
+    /// 2. Takes the `JoinHandle` from `Running`.
+    /// 3. Transitions `XetTaskState` to `Finalizing`.
+    /// 4. Awaits the join handle with cancellation support.
+    /// 5. Updates both `BackgroundTaskState` and `XetTaskState`.
+    pub(super) async fn join_background_task<T: Clone + Send + 'static>(
         &self,
-        state: &tokio::sync::Mutex<BackgroundTaskState<T, J>>,
+        task_name: &'static str,
+        state: &mut BackgroundTaskState<T>,
+    ) -> Result<T, XetError> {
+        match state {
+            BackgroundTaskState::Success(value) => Ok(value.clone()),
+            BackgroundTaskState::Error(msg) => Err(XetError::TaskError(msg.clone())),
+            BackgroundTaskState::Running { join_handle } => {
+                let handle = join_handle
+                    .take()
+                    .ok_or_else(|| XetError::TaskError(format!("{task_name} already being resolved")))?;
+
+                self.transition_to_finalizing(task_name)?;
+
+                let result = self
+                    .run_inner_async(task_name, async move { handle.await.map_err(XetError::from)? })
+                    .await;
+
+                match &result {
+                    Ok(value) => {
+                        *state = BackgroundTaskState::Success(value.clone());
+                        self.set_state(XetTaskState::Completed)?;
+                    },
+                    Err(err) => {
+                        *state = BackgroundTaskState::Error(Self::task_error_message(err));
+                        match err {
+                            XetError::UserCancelled(_) => {
+                                self.set_state(XetTaskState::UserCancelled)?;
+                            },
+                            e => self.set_state(XetTaskState::Error(e.to_string()))?,
+                        }
+                    },
+                }
+
+                result
+            },
+        }
+    }
+
+    pub(super) fn status_from_background_task<T>(
+        &self,
+        state: &tokio::sync::Mutex<BackgroundTaskState<T>>,
     ) -> Result<XetTaskState, XetError> {
         let runtime_state = self.status()?;
         if !matches!(runtime_state, XetTaskState::Running | XetTaskState::Finalizing) {
@@ -246,78 +309,7 @@ impl TaskRuntime {
         Ok(status)
     }
 
-    pub(super) async fn begin_background_task_resolution<T: Clone, J>(
-        &self,
-        state: &tokio::sync::Mutex<BackgroundTaskState<T, J>>,
-        already_resolved_message: &'static str,
-    ) -> Result<BackgroundTaskResolution<T, J>, XetError> {
-        let mut guard = state.lock().await;
-        match &mut *guard {
-            BackgroundTaskState::Success(value) => Ok(BackgroundTaskResolution::Cached(value.clone())),
-            BackgroundTaskState::Error(msg) => Err(XetError::TaskError(msg.clone())),
-            BackgroundTaskState::Running { join_handle } => {
-                let handle = join_handle
-                    .take()
-                    .ok_or_else(|| XetError::TaskError(already_resolved_message.to_string()))?;
-                Ok(BackgroundTaskResolution::JoinHandle(handle))
-            },
-        }
-    }
-
-    pub(super) fn begin_background_task_resolution_blocking<T: Clone, J>(
-        &self,
-        state: &tokio::sync::Mutex<BackgroundTaskState<T, J>>,
-        already_resolved_message: &'static str,
-    ) -> Result<BackgroundTaskResolution<T, J>, XetError> {
-        let mut guard = state.blocking_lock();
-        match &mut *guard {
-            BackgroundTaskState::Success(value) => Ok(BackgroundTaskResolution::Cached(value.clone())),
-            BackgroundTaskState::Error(msg) => Err(XetError::TaskError(msg.clone())),
-            BackgroundTaskState::Running { join_handle } => {
-                let handle = join_handle
-                    .take()
-                    .ok_or_else(|| XetError::TaskError(already_resolved_message.to_string()))?;
-                Ok(BackgroundTaskResolution::JoinHandle(handle))
-            },
-        }
-    }
-
-    pub(super) async fn finish_background_task_resolution<T: Clone, J>(
-        &self,
-        state: &tokio::sync::Mutex<BackgroundTaskState<T, J>>,
-        result: &Result<T, XetError>,
-    ) {
-        let mut guard = state.lock().await;
-        match result {
-            Ok(value) => {
-                *guard = BackgroundTaskState::Success(value.clone());
-            },
-            Err(err) => {
-                *guard = BackgroundTaskState::Error(Self::task_error_message(err));
-            },
-        }
-    }
-
-    pub(super) fn finish_background_task_resolution_blocking<T: Clone, J>(
-        &self,
-        state: &tokio::sync::Mutex<BackgroundTaskState<T, J>>,
-        result: &Result<T, XetError>,
-    ) {
-        let mut guard = state.blocking_lock();
-        match result {
-            Ok(value) => {
-                *guard = BackgroundTaskState::Success(value.clone());
-            },
-            Err(err) => {
-                *guard = BackgroundTaskState::Error(Self::task_error_message(err));
-            },
-        }
-    }
-
-    pub(super) fn background_success<T: Clone, J>(
-        &self,
-        state: &tokio::sync::Mutex<BackgroundTaskState<T, J>>,
-    ) -> Option<T> {
+    pub(super) fn background_success<T: Clone>(&self, state: &tokio::sync::Mutex<BackgroundTaskState<T>>) -> Option<T> {
         let guard = state.try_lock().ok()?;
         match &*guard {
             BackgroundTaskState::Success(value) => Some(value.clone()),
@@ -325,9 +317,9 @@ impl TaskRuntime {
         }
     }
 
-    pub(super) fn background_result<T: Clone, J>(
+    pub(super) fn background_result<T: Clone>(
         &self,
-        state: &tokio::sync::Mutex<BackgroundTaskState<T, J>>,
+        state: &tokio::sync::Mutex<BackgroundTaskState<T>>,
     ) -> Option<Result<T, XetError>> {
         let guard = state.try_lock().ok()?;
         match &*guard {
@@ -337,20 +329,17 @@ impl TaskRuntime {
         }
     }
 
-    pub(super) fn cancel_background_task<T, J, F>(
+    pub(super) fn cancel_background_task<T>(
         &self,
-        state: &tokio::sync::Mutex<BackgroundTaskState<T, J>>,
+        state: &tokio::sync::Mutex<BackgroundTaskState<T>>,
         cancel_message: &'static str,
-        mut abort_join_handle: F,
-    ) where
-        F: FnMut(&mut J),
-    {
+    ) {
         let _ = self.cancel_subtree();
         if let Ok(mut guard) = state.try_lock()
             && let BackgroundTaskState::Running { join_handle } = &mut *guard
         {
-            if let Some(mut handle) = join_handle.take() {
-                abort_join_handle(&mut handle);
+            if let Some(handle) = join_handle.take() {
+                handle.abort();
             }
             *guard = BackgroundTaskState::Error(cancel_message.to_string());
         }

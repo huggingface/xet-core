@@ -536,12 +536,7 @@ impl XetSession {
         if self.runtime.in_sigint_shutdown() {
             return Err(SessionError::KeyboardInterrupt);
         }
-        match self.task_runtime.status()? {
-            XetTaskState::Running | XetTaskState::Finalizing => Ok(()),
-            XetTaskState::UserCancelled => Err(SessionError::UserCancelled("session cancelled by user".to_string())),
-            XetTaskState::Completed => Err(SessionError::AlreadyCompleted),
-            XetTaskState::Error(msg) => Err(SessionError::PreviousTaskError(msg)),
-        }
+        self.task_runtime.check_state("session")
     }
 
     pub(super) fn finish_upload_commit(&self, commit_id: UniqueID) -> Result<(), SessionError> {
@@ -932,7 +927,7 @@ mod tests {
             .upload_bytes(data.to_vec(), Sha256Policy::Compute, Some(name.into()))
             .await?;
         let results = commit.commit().await?;
-        let meta = results.files.into_iter().next().expect("one uploaded file");
+        let meta = results.uploads.into_values().next().expect("one uploaded file");
         Ok(meta.xet_info)
     }
 
@@ -944,7 +939,7 @@ mod tests {
         let commit = session.new_upload_commit_blocking()?;
         let _handle = commit.upload_bytes_blocking(data.to_vec(), Sha256Policy::Compute, Some(name.into()))?;
         let results = commit.commit_blocking()?;
-        let meta = results.files.into_iter().next().expect("one uploaded file");
+        let meta = results.uploads.into_values().next().expect("one uploaded file");
         Ok(meta.xet_info)
     }
 
