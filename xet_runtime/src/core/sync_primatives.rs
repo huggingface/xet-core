@@ -173,7 +173,6 @@ mod tests {
         thread::sleep(Duration::from_millis(300));
 
         // If we reached here without panic, behavior is as intended.
-        assert!(true);
     }
 
     #[test]

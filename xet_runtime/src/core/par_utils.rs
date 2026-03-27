@@ -257,7 +257,7 @@ mod parallel_tests {
         if let Err(ParutilsError::Join(e)) = result {
             assert!(e.is_panic());
         } else {
-            assert!(false, "Expected to panic, but got {:?}", result);
+            panic!("Expected to panic, but got {:?}", result);
         }
     }
 }

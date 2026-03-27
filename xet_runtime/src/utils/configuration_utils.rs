@@ -396,7 +396,7 @@ mod tests {
             0i64,
             i64::MIN,
             0.0f32,
-            3.14f32,
+            std::f32::consts::PI,
             -1.5f32,
             0.0f64,
             std::f64::consts::PI,
