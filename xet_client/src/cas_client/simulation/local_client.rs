@@ -53,8 +53,8 @@ pub struct LocalClient {
     shard_dir: PathBuf,
     upload_concurrency_controller: Arc<AdaptiveConcurrencyController>,
     url_expiration_ms: AtomicU64,
-    /// Global dedup shard expiration in milliseconds (0 = disabled).
-    global_dedup_expiration_ms: AtomicU64,
+    /// Global dedup shard expiration in seconds (0 = disabled).
+    global_dedup_expiration_secs: AtomicU64,
     /// API delay range in milliseconds as (min_ms, max_ms). (0, 0) means disabled.
     random_ms_delay_window: (AtomicU64, AtomicU64),
     /// Max ranges per XorbMultiRangeFetch entry. usize::MAX means no splitting.
@@ -159,7 +159,7 @@ impl LocalClient {
             shard_dir,
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("local_uploads"),
             url_expiration_ms: AtomicU64::new(u64::MAX),
-            global_dedup_expiration_ms: AtomicU64::new(0),
+            global_dedup_expiration_secs: AtomicU64::new(0),
             random_ms_delay_window: (AtomicU64::new(0), AtomicU64::new(0)),
             max_ranges_per_fetch: AtomicUsize::new(usize::MAX),
             v2_disabled_status: AtomicU16::new(0),
@@ -452,8 +452,8 @@ impl DirectAccessClient for LocalClient {
     }
 
     fn set_global_dedup_shard_expiration(&self, expiration: Option<Duration>) {
-        self.global_dedup_expiration_ms
-            .store(expiration.map_or(0, |d| d.as_millis() as u64), Ordering::Relaxed);
+        self.global_dedup_expiration_secs
+            .store(expiration.map_or(0, |d| d.as_secs()), Ordering::Relaxed);
     }
 
     fn set_max_ranges_per_fetch(&self, max_ranges: usize) {
@@ -922,12 +922,12 @@ impl Client for LocalClient {
 
         let filename = self.shard_dir.join(shard_file_name(&shard_hash));
 
-        let expiration_ms = self.global_dedup_expiration_ms.load(Ordering::Relaxed);
-        if expiration_ms == 0 {
+        let expiration_secs = self.global_dedup_expiration_secs.load(Ordering::Relaxed);
+        if expiration_secs == 0 {
             return Ok(Some(std::fs::read(filename)?.into()));
         }
 
-        let expiry = std::time::SystemTime::now() + Duration::from_millis(expiration_ms);
+        let expiry = std::time::SystemTime::now() + Duration::from_secs(expiration_secs);
         let shard_bytes = std::fs::read(filename)?;
 
         let mut reader = Cursor::new(&shard_bytes);

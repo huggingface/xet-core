@@ -9,9 +9,8 @@ use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::xorb_object::XorbObject;
 
 use super::simulation_types::{
-    ConfigDelayRangeRequest, ConfigDurationRequest, FetchTermDataRequest, FetchTermDataResponse, FileShardsEntry,
-    FileSizeResponse, XorbExistsResponse, XorbLengthResponse, XorbRangesRequest, XorbRangesResponse,
-    XorbRawLengthResponse,
+    FetchTermDataRequest, FetchTermDataResponse, FileShardsEntry, FileSizeResponse, XorbExistsResponse,
+    XorbLengthResponse, XorbRangesRequest, XorbRangesResponse, XorbRawLengthResponse,
 };
 use crate::cas_client::RemoteClient;
 use crate::cas_client::interface::Client;
@@ -48,6 +47,20 @@ impl SimulationControlClient {
     /// Constructs a full URL for a `/simulation/` endpoint path.
     fn sim_url(&self, path: &str) -> String {
         format!("{}/simulation{}", self.endpoint, path)
+    }
+
+    /// Posts a config key-value pair to the `/simulation/set_config` endpoint.
+    fn post_config(&self, config: &str, value: &str) {
+        let url = format!(
+            "{}/simulation/set_config?config={}&value={}",
+            self.endpoint,
+            urlencoding::encode(config),
+            urlencoding::encode(value),
+        );
+        let client = self.http_client.clone();
+        tokio::spawn(async move {
+            let _ = client.post(&url).send().await;
+        });
     }
 
     /// Checks an HTTP response status, mapping errors to `ClientError`.
@@ -156,32 +169,24 @@ impl Client for SimulationControlClient {
 
 #[async_trait]
 impl DirectAccessClient for SimulationControlClient {
-    fn set_global_dedup_shard_expiration(&self, _expiration: Option<Duration>) {
-        // No-op: SimulationControlClient configures server via HTTP; endpoint not yet implemented.
+    fn set_global_dedup_shard_expiration(&self, expiration: Option<Duration>) {
+        self.post_config("global_dedup_shard_expiration", &expiration.map_or(0, |d| d.as_secs()).to_string());
     }
 
-    /// Sets the URL expiration duration via the `/simulation/config/url_expiration` endpoint.
     fn set_fetch_term_url_expiration(&self, expiration: Duration) {
-        let url = self.sim_url("/config/url_expiration");
-        let client = self.http_client.clone();
-        let body = ConfigDurationRequest {
-            millis: expiration.as_millis() as u64,
-        };
-        tokio::spawn(async move {
-            let _ = client.post(&url).json(&body).send().await;
-        });
+        self.post_config("url_expiration", &(expiration.as_millis() as u64).to_string());
     }
 
     async fn apply_api_delay(&self) {
         // No-op: delays are applied server-side via set_api_delay_range
     }
 
-    fn set_max_ranges_per_fetch(&self, _max_ranges: usize) {
-        // No-op: SimulationControlClient configures server via HTTP; endpoint not yet implemented.
+    fn set_max_ranges_per_fetch(&self, max_ranges: usize) {
+        self.post_config("max_ranges_per_fetch", &max_ranges.to_string());
     }
 
-    fn disable_v2_reconstruction(&self, _status_code: u16) {
-        // No-op: SimulationControlClient configures server via HTTP; endpoint not yet implemented.
+    fn disable_v2_reconstruction(&self, status_code: u16) {
+        self.post_config("disable_v2_reconstruction", &status_code.to_string());
     }
 
     async fn get_reconstruction_v1(
@@ -200,23 +205,16 @@ impl DirectAccessClient for SimulationControlClient {
         self.remote_client.get_reconstruction_v2(file_id, bytes_range).await
     }
 
-    /// Sets the API delay range via the `/simulation/config/api_delay` endpoint.
     fn set_api_delay_range(&self, delay_range: Option<Range<Duration>>) {
-        let url = self.sim_url("/config/api_delay");
-        let client = self.http_client.clone();
-        let body = match delay_range {
-            Some(range) => ConfigDelayRangeRequest {
-                min_millis: Some(range.start.as_millis() as u64),
-                max_millis: Some(range.end.as_millis() as u64),
+        match delay_range {
+            Some(range) => {
+                let value = format!("({}ms, {}ms)", range.start.as_millis(), range.end.as_millis());
+                self.post_config("api_delay", &value);
             },
-            None => ConfigDelayRangeRequest {
-                min_millis: None,
-                max_millis: None,
+            None => {
+                self.post_config("api_delay", "(0ms, 0ms)");
             },
-        };
-        tokio::spawn(async move {
-            let _ = client.post(&url).json(&body).send().await;
-        });
+        }
     }
 
     /// Lists all XORB hashes via the `/simulation/xorbs` endpoint.

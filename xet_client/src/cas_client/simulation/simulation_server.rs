@@ -940,43 +940,30 @@ mod tests {
         }
     }
 
-    /// Tests the /simulation/set_config endpoint for setting random_delay.
+    async fn post_set_config(server: &LocalTestServer, config: &str, value: &str) -> reqwest::StatusCode {
+        let http_client = reqwest::Client::new();
+        let url = format!(
+            "{}/simulation/set_config?config={}&value={}",
+            server.http_endpoint(),
+            urlencoding::encode(config),
+            urlencoding::encode(value),
+        );
+        http_client.post(&url).send().await.unwrap().status()
+    }
+
+    /// Tests the /simulation/set_config endpoint for all supported configs.
     async fn check_simulation_set_config(server: &LocalTestServer) {
         let http_client = reqwest::Client::new();
 
-        // Test setting random_delay with valid value
-        let response = http_client
-            .post(format!("{}/simulation/set_config?config=random_delay&value=(10ms,100ms)", server.http_endpoint()))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        // --- random_delay ---
+        assert_eq!(post_set_config(server, "random_delay", "(10ms,100ms)").await, reqwest::StatusCode::OK);
+        assert_eq!(post_set_config(server, "RANDOM_DELAY", "(5ms,50ms)").await, reqwest::StatusCode::OK);
+        assert_eq!(post_set_config(server, "random_delay", "invalid").await, reqwest::StatusCode::BAD_REQUEST);
 
-        // Test case insensitivity
-        let response = http_client
-            .post(format!("{}/simulation/set_config?config=RANDOM_DELAY&value=(5ms,50ms)", server.http_endpoint()))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        // Unknown config
+        assert_eq!(post_set_config(server, "unknown_config", "test").await, reqwest::StatusCode::BAD_REQUEST);
 
-        // Test unknown config
-        let response = http_client
-            .post(format!("{}/simulation/set_config?config=unknown_config&value=test", server.http_endpoint()))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
-
-        // Test invalid random_delay value
-        let response = http_client
-            .post(format!("{}/simulation/set_config?config=random_delay&value=invalid", server.http_endpoint()))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
-
-        // Test missing config parameter
+        // Missing config parameter
         let response = http_client
             .post(format!("{}/simulation/set_config?value=test", server.http_endpoint()))
             .send()
@@ -984,7 +971,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
 
-        // Test missing value parameter
+        // Missing value parameter
         let response = http_client
             .post(format!("{}/simulation/set_config?config=random_delay", server.http_endpoint()))
             .send()
@@ -992,13 +979,92 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
 
-        // Reset delay to zero for subsequent tests
-        let response = http_client
-            .post(format!("{}/simulation/set_config?config=random_delay&value=(0ms,0ms)", server.http_endpoint()))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        // Reset delay
+        assert_eq!(post_set_config(server, "random_delay", "(0ms,0ms)").await, reqwest::StatusCode::OK);
+
+        // --- global_dedup_shard_expiration ---
+        assert_eq!(post_set_config(server, "global_dedup_shard_expiration", "300").await, reqwest::StatusCode::OK);
+        // Verify effect: upload a shard, query dedup, check expiry is set and file data stripped
+        {
+            use std::io::Cursor;
+
+            use xet_core_structures::metadata_shard::MDBShardInfo;
+            use xet_core_structures::metadata_shard::streaming_shard::MDBMinimalShard;
+
+            let file = server.client().upload_random_file(&[(1, (0, 5))], CHUNK_SIZE).await.unwrap();
+            let first_chunk = file.terms[0].chunk_hashes[0];
+            let shard_bytes = server
+                .client()
+                .query_for_global_dedup_shard("default", &first_chunk)
+                .await
+                .unwrap()
+                .unwrap();
+
+            let minimal_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&shard_bytes), true, true).unwrap();
+            assert_eq!(minimal_shard.num_files(), 0);
+            assert_ne!(minimal_shard.num_xorb(), 0);
+
+            let shard_info = MDBShardInfo::load_from_reader(&mut Cursor::new(&shard_bytes)).unwrap();
+            let now_epoch = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            assert_ne!(shard_info.metadata.shard_key_expiry, 0);
+            assert!(shard_info.metadata.shard_key_expiry >= now_epoch + 295);
+            assert!(shard_info.metadata.shard_key_expiry <= now_epoch + 305);
+        }
+        // Disable it again
+        assert_eq!(post_set_config(server, "global_dedup_shard_expiration", "0").await, reqwest::StatusCode::OK);
+        assert_eq!(
+            post_set_config(server, "global_dedup_shard_expiration", "not_a_number").await,
+            reqwest::StatusCode::BAD_REQUEST
+        );
+
+        // --- max_ranges_per_fetch ---
+        assert_eq!(post_set_config(server, "max_ranges_per_fetch", "10").await, reqwest::StatusCode::OK);
+        assert_eq!(post_set_config(server, "max_ranges_per_fetch", "abc").await, reqwest::StatusCode::BAD_REQUEST);
+        // Reset
+        assert_eq!(
+            post_set_config(server, "max_ranges_per_fetch", &usize::MAX.to_string()).await,
+            reqwest::StatusCode::OK
+        );
+
+        // --- disable_v2_reconstruction ---
+        assert_eq!(post_set_config(server, "disable_v2_reconstruction", "503").await, reqwest::StatusCode::OK);
+        // Verify effect: V2 reconstruction via HTTP should return 503
+        {
+            let file = server.client().upload_random_file(&[(1, (0, 3))], CHUNK_SIZE).await.unwrap();
+            let v2_url = format!("{}/v2/reconstructions/{:?}", server.http_endpoint(), file.file_hash);
+            let resp = http_client.get(&v2_url).send().await.unwrap();
+            assert_eq!(resp.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        }
+        // Re-enable
+        assert_eq!(post_set_config(server, "disable_v2_reconstruction", "0").await, reqwest::StatusCode::OK);
+        assert_eq!(post_set_config(server, "disable_v2_reconstruction", "xyz").await, reqwest::StatusCode::BAD_REQUEST);
+
+        // --- api_delay ---
+        assert_eq!(post_set_config(server, "api_delay", "(50ms, 50ms)").await, reqwest::StatusCode::OK);
+        // Verify effect: a Client-trait API call should take at least 40ms
+        {
+            let file = server.client().upload_random_file(&[(1, (0, 3))], CHUNK_SIZE).await.unwrap();
+            let first_chunk = file.terms[0].chunk_hashes[0];
+            let start = std::time::Instant::now();
+            let _ = server.client().query_for_global_dedup_shard("default", &first_chunk).await;
+            assert!(
+                start.elapsed() >= std::time::Duration::from_millis(40),
+                "Expected delay of ~50ms, but got {:?}",
+                start.elapsed()
+            );
+        }
+        // Disable
+        assert_eq!(post_set_config(server, "api_delay", "(0ms, 0ms)").await, reqwest::StatusCode::OK);
+        assert_eq!(post_set_config(server, "api_delay", "invalid").await, reqwest::StatusCode::BAD_REQUEST);
+
+        // --- url_expiration ---
+        assert_eq!(post_set_config(server, "url_expiration", "5000").await, reqwest::StatusCode::OK);
+        assert_eq!(post_set_config(server, "url_expiration", "not_a_number").await, reqwest::StatusCode::BAD_REQUEST);
+        // Reset to large value
+        assert_eq!(post_set_config(server, "url_expiration", &u64::MAX.to_string()).await, reqwest::StatusCode::OK);
     }
 
     /// Tests the /simulation/dummy_upload endpoint.
