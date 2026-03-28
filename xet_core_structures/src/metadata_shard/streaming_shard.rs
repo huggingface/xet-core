@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::io::{Cursor, Read, Write, copy};
 use std::mem::size_of;
+use std::time::SystemTime;
 
 use bytes::Bytes;
 use futures::AsyncRead;
@@ -337,6 +338,7 @@ impl MDBMinimalShard {
         writer: &mut W,
         with_file_section: bool,
         with_verification: bool,
+        expiry: Option<SystemTime>,
         xorb_filter_fn: impl Fn(&MDBXorbInfoView) -> bool,
     ) -> Result<usize> {
         let mut bytes = 0;
@@ -408,7 +410,8 @@ impl MDBMinimalShard {
             chunk_lookup_offset: footer_start,
             chunk_lookup_num_entry: 0,
             shard_creation_timestamp: current_timestamp(),
-            shard_key_expiry: 0,
+            shard_key_expiry: expiry
+                .map_or(0, |t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()),
             stored_bytes_on_disk,
             materialized_bytes,
             stored_bytes,
@@ -427,13 +430,24 @@ impl MDBMinimalShard {
         writer: &mut W,
         xorb_filter_fn: impl Fn(&MDBXorbInfoView) -> bool,
     ) -> Result<usize> {
-        self.serialize_impl(writer, false, false, xorb_filter_fn)
+        self.serialize_impl(writer, false, false, None, xorb_filter_fn)
+    }
+
+    /// Serialize out a shard without file information, with the given expiration time set in the footer.
+    /// Pass `None` for no expiration.
+    pub fn serialize_xorb_subset_with_expiry<W: Write>(
+        &self,
+        writer: &mut W,
+        expiry: Option<SystemTime>,
+        xorb_filter_fn: impl Fn(&MDBXorbInfoView) -> bool,
+    ) -> Result<usize> {
+        self.serialize_impl(writer, false, false, expiry, xorb_filter_fn)
     }
 
     /// Serialize out the given shard, sanitizing and updating the global dedup chunk flags and optionally
     /// dropping the file verification section.
     pub fn serialize<W: Write>(&self, writer: &mut W, with_verification: bool) -> Result<usize> {
-        self.serialize_impl(writer, true, with_verification, |_| true)
+        self.serialize_impl(writer, true, with_verification, None, |_| true)
     }
 
     /// Returns a list of all the global dedup eligible chunks, as given either by the hash value, file starts, or

@@ -57,6 +57,8 @@ pub struct MemoryClient {
     upload_concurrency_controller: Arc<AdaptiveConcurrencyController>,
     /// URL expiration in milliseconds
     url_expiration_ms: AtomicU64,
+    /// Global dedup shard expiration in milliseconds (0 = disabled).
+    global_dedup_expiration_ms: AtomicU64,
     /// API delay range in milliseconds as (min_ms, max_ms). (0, 0) means disabled.
     random_ms_delay_window: (AtomicU64, AtomicU64),
     /// Max ranges per XorbMultiRangeFetch entry. usize::MAX means no splitting.
@@ -74,6 +76,7 @@ impl MemoryClient {
             global_dedup: RwLock::new(MerkleHashMap::new()),
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("memory_uploads"),
             url_expiration_ms: AtomicU64::new(u64::MAX),
+            global_dedup_expiration_ms: AtomicU64::new(0),
             random_ms_delay_window: (AtomicU64::new(0), AtomicU64::new(0)),
             max_ranges_per_fetch: AtomicUsize::new(usize::MAX),
             v2_disabled_status: AtomicU16::new(0),
@@ -220,6 +223,7 @@ impl Default for MemoryClient {
             global_dedup: RwLock::new(MerkleHashMap::new()),
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("memory_uploads"),
             url_expiration_ms: AtomicU64::new(u64::MAX),
+            global_dedup_expiration_ms: AtomicU64::new(0),
             random_ms_delay_window: (AtomicU64::new(0), AtomicU64::new(0)),
             max_ranges_per_fetch: AtomicUsize::new(usize::MAX),
             v2_disabled_status: AtomicU16::new(0),
@@ -232,6 +236,11 @@ impl Default for MemoryClient {
 impl DirectAccessClient for MemoryClient {
     fn set_fetch_term_url_expiration(&self, expiration: Duration) {
         self.url_expiration_ms.store(expiration.as_millis() as u64, Ordering::Relaxed);
+    }
+
+    fn set_global_dedup_shard_expiration(&self, expiration: Option<Duration>) {
+        self.global_dedup_expiration_ms
+            .store(expiration.map_or(0, |d| d.as_millis() as u64), Ordering::Relaxed);
     }
 
     fn set_max_ranges_per_fetch(&self, max_ranges: usize) {
@@ -679,7 +688,23 @@ impl Client for MemoryClient {
     async fn query_for_global_dedup_shard(&self, _prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Bytes>> {
         self.apply_api_delay().await;
         let dedup = self.global_dedup.read().await;
-        Ok(dedup.get(chunk_hash).cloned())
+        let Some(shard_bytes) = dedup.get(chunk_hash) else {
+            return Ok(None);
+        };
+
+        let expiration_ms = self.global_dedup_expiration_ms.load(Ordering::Relaxed);
+        if expiration_ms == 0 {
+            return Ok(Some(shard_bytes.clone()));
+        }
+
+        let expiry = std::time::SystemTime::now() + Duration::from_millis(expiration_ms);
+
+        let mut reader = Cursor::new(shard_bytes.as_ref());
+        let minimal_shard = MDBMinimalShard::from_reader(&mut reader, true, true)?;
+
+        let mut out = Vec::new();
+        minimal_shard.serialize_xorb_subset_with_expiry(&mut out, Some(expiry), |_| true)?;
+        Ok(Some(out.into()))
     }
 
     async fn acquire_upload_permit(&self) -> Result<super::super::adaptive_concurrency::ConnectionPermit> {
@@ -958,6 +983,12 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_api_delay() {
         super::super::client_unit_testing::test_api_delay_functionality(|| async { new_client() }).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_global_dedup_shard_expiration() {
+        super::super::client_unit_testing::test_global_dedup_shard_expiration_functionality(|| async { new_client() })
+            .await;
     }
 
     /// Comprehensive test for RandomXorb insertion and data access.

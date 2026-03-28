@@ -156,6 +156,10 @@ impl Client for SimulationControlClient {
 
 #[async_trait]
 impl DirectAccessClient for SimulationControlClient {
+    fn set_global_dedup_shard_expiration(&self, _expiration: Option<Duration>) {
+        // No-op: SimulationControlClient configures server via HTTP; endpoint not yet implemented.
+    }
+
     /// Sets the URL expiration duration via the `/simulation/config/url_expiration` endpoint.
     fn set_fetch_term_url_expiration(&self, expiration: Duration) {
         let url = self.sim_url("/config/url_expiration");

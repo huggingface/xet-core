@@ -53,6 +53,8 @@ pub struct LocalClient {
     shard_dir: PathBuf,
     upload_concurrency_controller: Arc<AdaptiveConcurrencyController>,
     url_expiration_ms: AtomicU64,
+    /// Global dedup shard expiration in milliseconds (0 = disabled).
+    global_dedup_expiration_ms: AtomicU64,
     /// API delay range in milliseconds as (min_ms, max_ms). (0, 0) means disabled.
     random_ms_delay_window: (AtomicU64, AtomicU64),
     /// Max ranges per XorbMultiRangeFetch entry. usize::MAX means no splitting.
@@ -157,6 +159,7 @@ impl LocalClient {
             shard_dir,
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("local_uploads"),
             url_expiration_ms: AtomicU64::new(u64::MAX),
+            global_dedup_expiration_ms: AtomicU64::new(0),
             random_ms_delay_window: (AtomicU64::new(0), AtomicU64::new(0)),
             max_ranges_per_fetch: AtomicUsize::new(usize::MAX),
             v2_disabled_status: AtomicU16::new(0),
@@ -446,6 +449,11 @@ impl Drop for LocalClient {
 impl DirectAccessClient for LocalClient {
     fn set_fetch_term_url_expiration(&self, expiration: Duration) {
         self.url_expiration_ms.store(expiration.as_millis() as u64, Ordering::Relaxed);
+    }
+
+    fn set_global_dedup_shard_expiration(&self, expiration: Option<Duration>) {
+        self.global_dedup_expiration_ms
+            .store(expiration.map_or(0, |d| d.as_millis() as u64), Ordering::Relaxed);
     }
 
     fn set_max_ranges_per_fetch(&self, max_ranges: usize) {
@@ -908,11 +916,26 @@ impl Client for LocalClient {
             .ok_or_else(|| ClientError::Other("LocalClient has been closed".to_string()))?;
         let read_txn = env.read_txn().map_err(map_heed_db_error)?;
 
-        if let Some(shard) = self.global_dedup_table.get(&read_txn, chunk_hash).map_err(map_heed_db_error)? {
-            let filename = self.shard_dir.join(shard_file_name(&shard));
+        let Some(shard_hash) = self.global_dedup_table.get(&read_txn, chunk_hash).map_err(map_heed_db_error)? else {
+            return Ok(None);
+        };
+
+        let filename = self.shard_dir.join(shard_file_name(&shard_hash));
+
+        let expiration_ms = self.global_dedup_expiration_ms.load(Ordering::Relaxed);
+        if expiration_ms == 0 {
             return Ok(Some(std::fs::read(filename)?.into()));
         }
-        Ok(None)
+
+        let expiry = std::time::SystemTime::now() + Duration::from_millis(expiration_ms);
+        let shard_bytes = std::fs::read(filename)?;
+
+        let mut reader = Cursor::new(&shard_bytes);
+        let minimal_shard = MDBMinimalShard::from_reader(&mut reader, true, true)?;
+
+        let mut out = Vec::new();
+        minimal_shard.serialize_xorb_subset_with_expiry(&mut out, Some(expiry), |_| true)?;
+        Ok(Some(out.into()))
     }
 
     async fn acquire_upload_permit(&self) -> Result<super::super::adaptive_concurrency::ConnectionPermit> {
@@ -1355,6 +1378,15 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_api_delay() {
         super::super::client_unit_testing::test_api_delay_functionality(|| async {
+            LocalClient::temporary().await.unwrap()
+                as std::sync::Arc<dyn crate::cas_client::simulation::DirectAccessClient>
+        })
+        .await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_global_dedup_shard_expiration() {
+        super::super::client_unit_testing::test_global_dedup_shard_expiration_functionality(|| async {
             LocalClient::temporary().await.unwrap()
                 as std::sync::Arc<dyn crate::cas_client::simulation::DirectAccessClient>
         })

@@ -515,6 +515,10 @@ impl DirectAccessClient for LocalTestServer {
         self.client.set_fetch_term_url_expiration(expiration);
     }
 
+    fn set_global_dedup_shard_expiration(&self, expiration: Option<std::time::Duration>) {
+        self.client.set_global_dedup_shard_expiration(expiration);
+    }
+
     fn set_api_delay_range(&self, delay_range: Option<std::ops::Range<std::time::Duration>>) {
         self.client.set_api_delay_range(delay_range);
     }

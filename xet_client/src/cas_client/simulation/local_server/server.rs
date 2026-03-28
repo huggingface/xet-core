@@ -494,6 +494,10 @@ impl DirectAccessClient for LocalTestServer {
         self.client.set_fetch_term_url_expiration(expiration);
     }
 
+    fn set_global_dedup_shard_expiration(&self, expiration: Option<std::time::Duration>) {
+        self.client.set_global_dedup_shard_expiration(expiration);
+    }
+
     fn set_max_ranges_per_fetch(&self, max_ranges: usize) {
         self.client.set_max_ranges_per_fetch(max_ranges);
     }
