@@ -423,3 +423,90 @@ jobs:
           echo "zipping debug symbols"
           zip -r dbg-symbols.zip dbg-symbols
           gh release create "$RELEASE_TAG" wheels-*/* dbg-symbols.zip --generate-notes --prerelease --target ${{github.sha}}
+
+  smoke-test:
+    name: Smoke test released version
+    runs-on: ${{ matrix.os }}
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    needs: [release-pypi]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+    env:
+      HF_XET_VERSION: ${{ github.event.inputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install hf CLI
+        run: uv tool install huggingface_hub
+
+      - name: Strip version prefix
+        id: version
+        run: |
+          VERSION="${HF_XET_VERSION#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for PyPI availability
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          for i in $(seq 1 30); do
+            if uv pip compile --no-deps - <<< "hf_xet==$VERSION" > /dev/null 2>&1; then
+              echo "✓ hf_xet==$VERSION available on PyPI"
+              exit 0
+            fi
+            echo "Waiting for hf_xet==$VERSION on PyPI... (attempt $i/30)"
+            sleep 30
+          done
+          echo "ERROR: hf_xet==$VERSION not found on PyPI after 15 minutes"
+          exit 1
+
+      - name: Run smoke tests
+        env:
+          HF_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          ./scripts/smoke_tests/run.sh --hf-xet-version "$VERSION"
+
+      - name: Notify Slack on failure
+        if: failure()
+        uses: slackapi/slack-github-action@v2.1.0
+        with:
+          webhook: ${{ secrets.SLACK_SMOKE_TEST_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": ":red_circle: hf-xet smoke tests failed for ${{ github.event.inputs.tag }} on ${{ matrix.os }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ":red_circle: *hf-xet smoke tests failed*\n*Version:* `${{ github.event.inputs.tag }}`\n*Platform:* `${{ matrix.os }}`\n*Run:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View logs>"
+                  }
+                }
+              ]
+            }
+
+      - name: Notify Slack on success
+        if: success()
+        uses: slackapi/slack-github-action@v2.1.0
+        with:
+          webhook: ${{ secrets.SLACK_SMOKE_TEST_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": ":large_green_circle: hf-xet smoke tests passed for ${{ github.event.inputs.tag }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ":large_green_circle: *hf-xet smoke tests passed*\n*Version:* `${{ github.event.inputs.tag }}`\n*Platform:* `${{ matrix.os }}`"
+                  }
+                }
+              ]
+            }
