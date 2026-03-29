@@ -20,8 +20,7 @@ use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
 use xet_core_structures::metadata_shard::shard_file_reconstructor::FileReconstructor;
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::metadata_shard::streaming_shard::MDBMinimalShard;
-use xet_core_structures::merklehash::compute_data_hash;
-use xet_core_structures::metadata_shard::utils::{parse_shard_filename, shard_file_name, temp_shard_file_name};
+use xet_core_structures::metadata_shard::utils::{parse_shard_filename, shard_file_name};
 use xet_core_structures::metadata_shard::xorb_structs::MDBXorbInfo;
 use xet_core_structures::metadata_shard::{MDBShardFile, ShardFileManager};
 use xet_core_structures::serialization_utils::read_u32;
@@ -362,20 +361,15 @@ impl super::DeletionControlableClient for LocalClient {
 
         // Collect xorbs claimed by shard xorb-entries, xorbs referenced by active file
         // entries (cross-shard dedup), and which shards have at least one active file.
-        let mut xorbs_in_shard_entries: std::collections::HashSet<MerkleHash> =
-            std::collections::HashSet::new();
-        let mut xorbs_in_active_file_entries: std::collections::HashSet<MerkleHash> =
-            std::collections::HashSet::new();
-        let mut shards_with_active_files: std::collections::HashSet<MerkleHash> =
-            std::collections::HashSet::new();
+        let mut xorbs_in_shard_entries: std::collections::HashSet<MerkleHash> = std::collections::HashSet::new();
+        let mut xorbs_in_active_file_entries: std::collections::HashSet<MerkleHash> = std::collections::HashSet::new();
+        let mut shards_with_active_files: std::collections::HashSet<MerkleHash> = std::collections::HashSet::new();
         // Per-shard xorb list, used below to check compact-shard reachability.
-        let mut shard_xorbs: std::collections::HashMap<MerkleHash, Vec<MerkleHash>> =
-            std::collections::HashMap::new();
+        let mut shard_xorbs: std::collections::HashMap<MerkleHash, Vec<MerkleHash>> = std::collections::HashMap::new();
 
         for (shard_hash, path) in &shard_files {
             let shard_bytes = std::fs::read(path)?;
-            let minimal_shard =
-                MDBMinimalShard::from_reader(&mut Cursor::new(&shard_bytes), true, true)?;
+            let minimal_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&shard_bytes), true, true)?;
 
             for i in 0..minimal_shard.num_xorb() {
                 let xorb_hash = minimal_shard.xorb(i).unwrap().xorb_hash();
@@ -409,9 +403,7 @@ impl super::DeletionControlableClient for LocalClient {
             if !shards_with_active_files.contains(shard_hash) {
                 let has_file_referenced_xorb = shard_xorbs
                     .get(shard_hash)
-                    .map_or(false, |xorbs| {
-                        xorbs.iter().any(|x| xorbs_in_active_file_entries.contains(x))
-                    });
+                    .is_some_and(|xorbs| xorbs.iter().any(|x| xorbs_in_active_file_entries.contains(x)));
                 if !has_file_referenced_xorb {
                     errors.push(format!(
                         "Reachability error: shard {} has no active file entries and no \
@@ -426,9 +418,7 @@ impl super::DeletionControlableClient for LocalClient {
         // xorb entries, or referenced directly by an active file's file entries (cross-shard
         // dedup). Xorbs that satisfy neither are orphaned and GC should have deleted them.
         for xorb_hash in self.list_xorbs().await? {
-            if !xorbs_in_shard_entries.contains(&xorb_hash)
-                && !xorbs_in_active_file_entries.contains(&xorb_hash)
-            {
+            if !xorbs_in_shard_entries.contains(&xorb_hash) && !xorbs_in_active_file_entries.contains(&xorb_hash) {
                 errors.push(format!(
                     "Reachability error: xorb {} exists on disk but is not referenced by \
                      any shard xorb entry or active file entry (GC should have deleted it)",
@@ -1042,19 +1032,6 @@ impl Client for LocalClient {
     ) -> Result<bool> {
         self.apply_api_delay().await;
 
-        // Compute the canonical shard hash from the incoming bytes.  GC Stage 4 (and other
-        // uploaders) compute this same hash via HashedWrite over the serialized bytes and pass
-        // it as the expected identity.  Storing the shard under this hash ensures that
-        // load_shard(new_hash) resolves correctly in the next epoch — the previous approach of
-        // hashing the *rebuilt* bytes produced a different hash (different shard_creation_timestamp
-        // in the footer) which caused "Shard file not found" errors in Stage 2 section 4b.
-        let shard_hash = compute_data_hash(&shard_data);
-        let shard_path = self.shard_dir.join(shard_file_name(&shard_hash));
-
-        if shard_path.exists() {
-            return Ok(false);
-        }
-
         // Parse the shard using the streaming parser (handles shards without footer)
         let mut reader = Cursor::new(&shard_data);
         let minimal_shard = MDBMinimalShard::from_reader(&mut reader, true, true)?;
@@ -1074,14 +1051,10 @@ impl Client for LocalClient {
             in_memory_shard.add_xorb_block(MDBXorbInfo::from(xorb_view))?;
         }
 
-        // Write to a temp file then rename to the canonical shard_hash path.
-        // write_to_directory would hash the rebuilt bytes (different timestamp in footer)
-        // and produce a mismatched filename; instead we control the final name explicitly.
-        let temp_path = self.shard_dir.join(temp_shard_file_name());
-        in_memory_shard.write_to_temp_shard_file(&temp_path, None)?;
-        std::fs::rename(&temp_path, &shard_path)?;
-
+        // Write the rebuilt shard to disk (creates proper lookup tables)
+        let shard_path = in_memory_shard.write_to_directory(&self.shard_dir, None)?;
         let shard = MDBShardFile::load_from_file(&shard_path)?;
+        let shard_hash = shard.shard_hash;
 
         self.shard_manager.register_shards(&[shard]).await?;
 

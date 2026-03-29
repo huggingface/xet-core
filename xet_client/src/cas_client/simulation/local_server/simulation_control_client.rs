@@ -543,9 +543,8 @@ impl DeletionControlableClient for SimulationControlClient {
 
     /// Triggers server-side reachability verification via `/simulation/verify_all_reachable`.
     ///
-    /// Intended to be called after GC has converged (several epochs of quiescence). Checks
-    /// that all on-disk shards have active file entries and all on-disk xorbs are referenced
-    /// by at least one shard or active file. Failures indicate GC left orphaned data.
+    /// Intended to be called after GC has converged (several epochs of quiescence). Same checks
+    /// as `DeletionControlableClient::verify_all_reachable`.
     async fn verify_all_reachable(&self) -> Result<()> {
         let resp = self
             .http_client

@@ -39,13 +39,11 @@ pub trait DeletionControlableClient: Send + Sync {
     ///
     /// Intended to be called after several epochs of quiescence (no uploads, no deletes).
     /// Checks:
-    /// 1. Every on-disk shard is "reachable": either it has at least one active (non-deleted)
-    ///    file entry, OR it is a compact shard (no file entries) with at least one xorb
-    ///    referenced by some active file (cross-shard dedup case — the compact shard is needed
-    ///    to hold the dedup-table entries for those xorbs).  A shard that has neither active
-    ///    file entries nor any file-referenced xorbs is truly orphaned and GC should have
-    ///    deleted it.
-    /// 2. Every on-disk xorb is referenced by at least one shard's xorb entries, or by
-    ///    an active file's file entries (cross-shard dedup case).
+    /// 1. Every on-disk shard is "reachable": either it has at least one active (non-deleted) file entry, OR it is a
+    ///    compact shard (no file entries) with at least one xorb referenced by some active file (cross-shard dedup case
+    ///    — the compact shard is needed to hold the dedup-table entries for those xorbs).  A shard that has neither
+    ///    active file entries nor any file-referenced xorbs is truly orphaned and GC should have deleted it.
+    /// 2. Every on-disk xorb is referenced by at least one shard's xorb entries, or by an active file's file entries
+    ///    (cross-shard dedup case).
     async fn verify_all_reachable(&self) -> Result<()>;
 }
