@@ -851,6 +851,14 @@ impl DirectAccessClient for LocalClient {
 
         Ok((data.into(), chunk_byte_indices))
     }
+
+    async fn verify_integrity(&self) -> Result<()> {
+        LocalClient::verify_integrity(self).await
+    }
+
+    async fn verify_all_reachable(&self) -> Result<()> {
+        LocalClient::verify_all_reachable(self).await
+    }
 }
 
 impl LocalClient {

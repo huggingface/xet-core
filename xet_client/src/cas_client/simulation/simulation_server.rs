@@ -424,6 +424,16 @@ impl LocalTestServer {
         self.remote_simulation_client().simulation_set_latency_profile(profile).await
     }
 
+    /// Verifies referential integrity by calling through to the underlying `DirectAccessClient`.
+    pub async fn verify_integrity(&self) -> Result<()> {
+        self.client.verify_integrity().await
+    }
+
+    /// Verifies all on-disk data is reachable by calling through to the underlying `DirectAccessClient`.
+    pub async fn verify_all_reachable(&self) -> Result<()> {
+        self.client.verify_all_reachable().await
+    }
+
     fn find_available_port() -> u16 {
         StdTcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
     }

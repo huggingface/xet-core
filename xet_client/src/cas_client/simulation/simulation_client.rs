@@ -102,6 +102,54 @@ impl RemoteSimulationClient {
 
         Ok(n_upload_bytes)
     }
+
+    /// Triggers server-side integrity verification via `/simulation/verify_integrity`.
+    pub async fn simulation_verify_integrity(&self) -> Result<()> {
+        let url = Url::parse(&format!("{}/simulation/verify_integrity", self.inner.endpoint()))?;
+        let client = self.inner.http_client();
+
+        let response = client
+            .post(url)
+            .with_extension(Api("simulation::verify_integrity"))
+            .send()
+            .await
+            .map_err(|e| ClientError::Other(format!("Failed to send verify_integrity request: {e}")))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(ClientError::Other(format!(
+                "verify_integrity request failed with status {}: {}",
+                status, error_text
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Triggers server-side reachability verification via `/simulation/verify_all_reachable`.
+    pub async fn simulation_verify_all_reachable(&self) -> Result<()> {
+        let url = Url::parse(&format!("{}/simulation/verify_all_reachable", self.inner.endpoint()))?;
+        let client = self.inner.http_client();
+
+        let response = client
+            .post(url)
+            .with_extension(Api("simulation::verify_all_reachable"))
+            .send()
+            .await
+            .map_err(|e| ClientError::Other(format!("Failed to send verify_all_reachable request: {e}")))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(ClientError::Other(format!(
+                "verify_all_reachable request failed with status {}: {}",
+                status, error_text
+            )));
+        }
+
+        Ok(())
+    }
 }
 
 impl Deref for RemoteSimulationClient {

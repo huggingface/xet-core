@@ -134,4 +134,18 @@ pub trait DirectAccessClient: Client + Send + Sync {
         hash: MerkleHash,
         fetch_term: XorbReconstructionFetchInfo,
     ) -> Result<(Bytes, Vec<u32>)>;
+
+    /// Verifies referential integrity of all shards on disk.
+    ///
+    /// Default is a no-op (suitable for `MemoryClient` and other non-disk backends).
+    async fn verify_integrity(&self) -> Result<()> {
+        Ok(())
+    }
+
+    /// Verifies completeness: after GC convergence, all on-disk data must be reachable.
+    ///
+    /// Default is a no-op (suitable for `MemoryClient` and other non-disk backends).
+    async fn verify_all_reachable(&self) -> Result<()> {
+        Ok(())
+    }
 }
