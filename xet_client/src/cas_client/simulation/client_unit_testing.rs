@@ -704,6 +704,7 @@ where
 {
     test_global_dedup_shard_expiration_strips_file_data(factory().await).await;
     test_global_dedup_shard_expiration_sets_expiry(factory().await).await;
+    test_global_dedup_shard_expiration_rounds_up_subsecond(factory().await).await;
     test_global_dedup_shard_always_returned(factory().await).await;
     test_global_dedup_shard_no_expiration_returns_full(factory().await).await;
 }
@@ -789,6 +790,38 @@ async fn test_global_dedup_shard_expiration_sets_expiry(client: Arc<dyn DirectAc
     assert!(shard_info.metadata.shard_key_expiry <= now_epoch + 300 + 5);
 }
 
+/// Tests that sub-second durations round up to one second instead of disabling expiration.
+async fn test_global_dedup_shard_expiration_rounds_up_subsecond(client: Arc<dyn DirectAccessClient>) {
+    client.set_global_dedup_shard_expiration(Some(tokio::time::Duration::from_millis(1)));
+
+    let dedup_hashes = upload_shard_and_get_dedup_hashes(&client).await;
+    let now_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    let shard_bytes = client
+        .query_for_global_dedup_shard("default", &dedup_hashes[0])
+        .await
+        .unwrap()
+        .unwrap();
+
+    let shard_info =
+        xet_core_structures::metadata_shard::MDBShardInfo::load_from_reader(&mut std::io::Cursor::new(&shard_bytes))
+            .unwrap();
+    assert!(shard_info.metadata.shard_key_expiry >= now_epoch + 1);
+    assert!(shard_info.metadata.shard_key_expiry <= now_epoch + 3);
+
+    let minimal_shard = xet_core_structures::metadata_shard::streaming_shard::MDBMinimalShard::from_reader(
+        &mut std::io::Cursor::new(&shard_bytes),
+        true,
+        true,
+    )
+    .unwrap();
+    assert_eq!(minimal_shard.num_files(), 0);
+    assert_ne!(minimal_shard.num_xorb(), 0);
+}
+
 /// Tests that the shard is always returned regardless of elapsed time since upload.
 /// The expiry is set relative to query time (now + duration), not upload time.
 async fn test_global_dedup_shard_always_returned(client: Arc<dyn DirectAccessClient>) {
@@ -841,6 +874,51 @@ async fn test_global_dedup_shard_no_expiration_returns_full(client: Arc<dyn Dire
 
     assert_ne!(minimal_shard.num_files(), 0);
     assert_ne!(minimal_shard.num_xorb(), 0);
+}
+
+/// Runs a short stress test of concurrent dedup-shard queries while toggling expiration settings.
+pub async fn test_global_dedup_shard_expiration_stress<Fut>(factory: impl Fn() -> Fut)
+where
+    Fut: Future<Output = Arc<dyn DirectAccessClient>>,
+{
+    let client = factory().await;
+    let dedup_hashes = upload_shard_and_get_dedup_hashes(&client).await;
+    let first_hash = dedup_hashes[0];
+
+    let mut tasks = tokio::task::JoinSet::new();
+    let start_time = std::time::Instant::now();
+
+    for worker_id in 0..12usize {
+        let client = client.clone();
+        tasks.spawn(async move {
+            for iteration in 0..50usize {
+                match (worker_id + iteration) % 3 {
+                    0 => client.set_global_dedup_shard_expiration(None),
+                    1 => client.set_global_dedup_shard_expiration(Some(tokio::time::Duration::from_millis(1))),
+                    _ => client.set_global_dedup_shard_expiration(Some(tokio::time::Duration::from_secs(2))),
+                }
+
+                let shard_bytes = client
+                    .query_for_global_dedup_shard("default", &first_hash)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let minimal_shard = xet_core_structures::metadata_shard::streaming_shard::MDBMinimalShard::from_reader(
+                    &mut std::io::Cursor::new(&shard_bytes),
+                    true,
+                    true,
+                )
+                .unwrap();
+                assert_ne!(minimal_shard.num_xorb(), 0);
+            }
+        });
+    }
+
+    while let Some(result) = tasks.join_next().await {
+        result.unwrap();
+    }
+
+    assert!(start_time.elapsed() < std::time::Duration::from_secs(10));
 }
 
 /// Runs all URL expiration tests. Must be called from a `#[tokio::test(start_paused = true)]` context.

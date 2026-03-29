@@ -18,6 +18,13 @@ use crate::cas_client::simulation::{DeletionControlableClient, DirectAccessClien
 use crate::cas_types::{FileRange, HexMerkleHash, QueryReconstructionResponseV2, XorbReconstructionFetchInfo};
 use crate::error::{ClientError, Result};
 
+const CONFIG_POST_MAX_ATTEMPTS: usize = 4;
+const CONFIG_POST_RETRY_DELAY_MS: u64 = 40;
+
+fn duration_to_expiration_secs_ceil(expiration: Option<Duration>) -> u64 {
+    expiration.map_or(0, |d| d.as_secs().saturating_add(u64::from(d.subsec_nanos() > 0)))
+}
+
 /// A client that connects to a `LocalTestServer` via HTTP and provides access
 /// to both `DirectAccessClient` and `DeletionControlableClient` operations
 /// through the `/simulation/` routes.
@@ -58,8 +65,66 @@ impl SimulationControlClient {
             urlencoding::encode(value),
         );
         let client = self.http_client.clone();
+        let config_name = config.to_string();
+        let config_value = value.to_string();
         tokio::spawn(async move {
-            let _ = client.post(&url).send().await;
+            for attempt in 1..=CONFIG_POST_MAX_ATTEMPTS {
+                match client.post(&url).send().await {
+                    Ok(response) if response.status().is_success() => return,
+                    Ok(response) => {
+                        let status = response.status();
+                        let body = response.text().await.unwrap_or_default();
+
+                        if !status.is_server_error() || attempt == CONFIG_POST_MAX_ATTEMPTS {
+                            tracing::warn!(
+                                "simulation config apply failed: config={} value={} attempt={}/{} status={} body={}",
+                                config_name,
+                                config_value,
+                                attempt,
+                                CONFIG_POST_MAX_ATTEMPTS,
+                                status,
+                                body
+                            );
+                            return;
+                        }
+
+                        tracing::warn!(
+                            "simulation config apply retrying: config={} value={} attempt={}/{} status={} body={}",
+                            config_name,
+                            config_value,
+                            attempt,
+                            CONFIG_POST_MAX_ATTEMPTS,
+                            status,
+                            body
+                        );
+                    },
+                    Err(error) => {
+                        if attempt == CONFIG_POST_MAX_ATTEMPTS {
+                            tracing::warn!(
+                                "simulation config apply failed after retries: config={} value={} attempt={}/{} error={}",
+                                config_name,
+                                config_value,
+                                attempt,
+                                CONFIG_POST_MAX_ATTEMPTS,
+                                error
+                            );
+                            return;
+                        }
+
+                        tracing::warn!(
+                            "simulation config apply retrying after transport error: config={} value={} attempt={}/{} error={}",
+                            config_name,
+                            config_value,
+                            attempt,
+                            CONFIG_POST_MAX_ATTEMPTS,
+                            error
+                        );
+                    },
+                }
+
+                let delay_ms = CONFIG_POST_RETRY_DELAY_MS.saturating_mul(attempt as u64);
+                tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+            }
         });
     }
 
@@ -170,7 +235,7 @@ impl Client for SimulationControlClient {
 #[async_trait]
 impl DirectAccessClient for SimulationControlClient {
     fn set_global_dedup_shard_expiration(&self, expiration: Option<Duration>) {
-        self.post_config("global_dedup_shard_expiration", &expiration.map_or(0, |d| d.as_secs()).to_string());
+        self.post_config("global_dedup_shard_expiration", &duration_to_expiration_secs_ceil(expiration).to_string());
     }
 
     fn set_fetch_term_url_expiration(&self, expiration: Duration) {

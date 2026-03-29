@@ -38,6 +38,10 @@ use crate::cas_types::{
 };
 use crate::error::{ClientError, Result};
 
+fn duration_to_expiration_secs_ceil(expiration: Option<Duration>) -> u64 {
+    expiration.map_or(0, |d| d.as_secs().saturating_add(u64::from(d.subsec_nanos() > 0)))
+}
+
 pub struct LocalClient {
     // Note: Field order matters for Drop! heed::Env must be dropped before _tmp_dir
     // because heed holds file handles that need to be closed before the directory is deleted.
@@ -453,7 +457,7 @@ impl DirectAccessClient for LocalClient {
 
     fn set_global_dedup_shard_expiration(&self, expiration: Option<Duration>) {
         self.global_dedup_expiration_secs
-            .store(expiration.map_or(0, |d| d.as_secs()), Ordering::Relaxed);
+            .store(duration_to_expiration_secs_ceil(expiration), Ordering::Relaxed);
     }
 
     fn set_max_ranges_per_fetch(&self, max_ranges: usize) {
@@ -1387,6 +1391,15 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_global_dedup_shard_expiration() {
         super::super::client_unit_testing::test_global_dedup_shard_expiration_functionality(|| async {
+            LocalClient::temporary().await.unwrap()
+                as std::sync::Arc<dyn crate::cas_client::simulation::DirectAccessClient>
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_global_dedup_shard_expiration_stress() {
+        super::super::client_unit_testing::test_global_dedup_shard_expiration_stress(|| async {
             LocalClient::temporary().await.unwrap()
                 as std::sync::Arc<dyn crate::cas_client::simulation::DirectAccessClient>
         })

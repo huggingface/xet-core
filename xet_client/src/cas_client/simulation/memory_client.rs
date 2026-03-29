@@ -31,6 +31,10 @@ use crate::cas_types::{
 };
 use crate::error::{ClientError, Result};
 
+fn duration_to_expiration_secs_ceil(expiration: Option<Duration>) -> u64 {
+    expiration.map_or(0, |d| d.as_secs().saturating_add(u64::from(d.subsec_nanos() > 0)))
+}
+
 /// Stored XORB data: the serialized data and the deserialized XorbObject (header/footer).
 struct MaterializedXorb {
     serialized_data: Bytes,
@@ -240,7 +244,7 @@ impl DirectAccessClient for MemoryClient {
 
     fn set_global_dedup_shard_expiration(&self, expiration: Option<Duration>) {
         self.global_dedup_expiration_secs
-            .store(expiration.map_or(0, |d| d.as_secs()), Ordering::Relaxed);
+            .store(duration_to_expiration_secs_ceil(expiration), Ordering::Relaxed);
     }
 
     fn set_max_ranges_per_fetch(&self, max_ranges: usize) {
@@ -687,14 +691,17 @@ impl Client for MemoryClient {
 
     async fn query_for_global_dedup_shard(&self, _prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Bytes>> {
         self.apply_api_delay().await;
-        let dedup = self.global_dedup.read().await;
-        let Some(shard_bytes) = dedup.get(chunk_hash) else {
-            return Ok(None);
+        let shard_bytes = {
+            let dedup = self.global_dedup.read().await;
+            let Some(shard_bytes) = dedup.get(chunk_hash) else {
+                return Ok(None);
+            };
+            shard_bytes.clone()
         };
 
         let expiration_secs = self.global_dedup_expiration_secs.load(Ordering::Relaxed);
         if expiration_secs == 0 {
-            return Ok(Some(shard_bytes.clone()));
+            return Ok(Some(shard_bytes));
         }
 
         let expiry = std::time::SystemTime::now() + Duration::from_secs(expiration_secs);
@@ -989,6 +996,11 @@ mod tests {
     async fn test_global_dedup_shard_expiration() {
         super::super::client_unit_testing::test_global_dedup_shard_expiration_functionality(|| async { new_client() })
             .await;
+    }
+
+    #[tokio::test]
+    async fn test_global_dedup_shard_expiration_stress() {
+        super::super::client_unit_testing::test_global_dedup_shard_expiration_stress(|| async { new_client() }).await;
     }
 
     /// Comprehensive test for RandomXorb insertion and data access.

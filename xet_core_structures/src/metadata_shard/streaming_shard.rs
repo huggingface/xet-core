@@ -502,6 +502,7 @@ impl MDBMinimalShard {
 mod tests {
     use std::collections::{HashMap, HashSet};
     use std::io::Cursor;
+    use std::time::{Duration, SystemTime};
 
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
@@ -797,5 +798,30 @@ mod tests {
 
         let shard = gen_random_shard_with_xorb_references(1, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], true, true).unwrap();
         verify_minimal_shard_dedup_processing(&shard).await;
+    }
+
+    #[test]
+    fn test_serialize_xorb_subset_with_expiry_footer() {
+        let shard = gen_random_shard_with_xorb_references(1, &[1, 2], &[3, 2], true, true).unwrap();
+        let buffer = convert_to_file(&shard).unwrap();
+        let min_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&buffer), true, true).unwrap();
+
+        let mut no_expiry_buffer = Vec::new();
+        min_shard
+            .serialize_xorb_subset_with_expiry(&mut no_expiry_buffer, None, |_| true)
+            .unwrap();
+        let no_expiry_info = MDBShardInfo::load_from_reader(&mut Cursor::new(&no_expiry_buffer)).unwrap();
+        assert_eq!(no_expiry_info.metadata.shard_key_expiry, 0);
+
+        let expiry_secs = super::current_timestamp().saturating_add(12345);
+        let expiry = SystemTime::UNIX_EPOCH + Duration::from_secs(expiry_secs);
+        let mut expiry_buffer = Vec::new();
+        min_shard
+            .serialize_xorb_subset_with_expiry(&mut expiry_buffer, Some(expiry), |_| true)
+            .unwrap();
+
+        let expiry_info = MDBShardInfo::load_from_reader(&mut Cursor::new(&expiry_buffer)).unwrap();
+        assert_eq!(expiry_info.metadata.shard_key_expiry, expiry_secs);
+        assert!(expiry_info.metadata.shard_key_expiry > super::current_timestamp());
     }
 }
