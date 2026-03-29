@@ -20,4 +20,22 @@ crate::config_group!({
     ///
     /// Use the environment variable `HF_XET_XORB_COMPRESSION_POLICY` to set this value.
     ref compression_policy: ConfigEnum = ConfigEnum::new("auto", &["", "auto", "none", "lz4", "bg4-lz4"]);
+
+    /// Override the maximum xorb size in bytes for simulation mode.
+    /// When set to Some(value), this overrides the hard-coded MAX_XORB_BYTES constant
+    /// in simulation builds. When None (default), the standard constant is used.
+    ///
+    /// Only effective when compilation is done with the `simulation` feature enabled.
+    ///
+    /// Use the environment variable `HF_XET_XORB_SIMULATION_MAX_BYTES` to set this value.
+    ref simulation_max_bytes: Option<usize> = None;
+
+    /// Override the maximum xorb chunk count for simulation mode.
+    /// When set to Some(value), this overrides the hard-coded MAX_XORB_CHUNKS constant
+    /// in simulation builds. When None (default), the standard constant is used.
+    ///
+    /// Only effective when compilation is done with the `simulation` feature enabled.
+    ///
+    /// Use the environment variable `HF_XET_XORB_SIMULATION_MAX_CHUNKS` to set this value.
+    ref simulation_max_chunks: Option<usize> = None;
 });

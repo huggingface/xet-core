@@ -8,7 +8,7 @@ use xet_core_structures::metadata_shard::file_structs::{
 };
 use xet_core_structures::metadata_shard::hash_is_global_dedup_eligible;
 
-use super::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
+use super::constants::{XORB_CUT_THRESHOLD_BYTES, XORB_CUT_THRESHOLD_CHUNKS};
 use super::data_aggregator::DataAggregator;
 use super::dedup_metrics::DeduplicationMetrics;
 use super::defrag_prevention::DefragPrevention;
@@ -213,7 +213,9 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
             dedup_metrics.new_chunks += 1;
 
             // Do we need to cut a new xorb first?
-            if self.new_data_size + n_bytes > *MAX_XORB_BYTES || self.new_data.len() + 1 > *MAX_XORB_CHUNKS {
+            if self.new_data_size + n_bytes > *XORB_CUT_THRESHOLD_BYTES
+                || self.new_data.len() + 1 > *XORB_CUT_THRESHOLD_CHUNKS
+            {
                 let new_xorb = self.cut_new_xorb();
                 xorb_dependencies.push(FileXorbDependency {
                     file_id: self.file_id,

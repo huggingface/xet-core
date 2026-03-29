@@ -26,4 +26,38 @@ xet_runtime::test_configurable_constants! {
 lazy_static::lazy_static! {
     /// The maximum chunk size, calculated from the configurable constants above
     pub static ref MAX_CHUNK_SIZE: usize = (*TARGET_CHUNK_SIZE) * (*MAXIMUM_CHUNK_MULTIPLIER);
+
+    /// The byte threshold at which to cut a new xorb during building.
+    /// Defaults to MAX_XORB_BYTES, but in simulation builds can be lowered
+    /// via the `simulation_max_xorb_bytes` xorb config value to produce
+    /// smaller (but still valid) xorbs.
+    pub static ref XORB_CUT_THRESHOLD_BYTES: usize = {
+        #[cfg(feature = "simulation")]
+        {
+            xet_runtime::core::xet_config()
+                .xorb
+                .simulation_max_bytes
+                .unwrap_or(*MAX_XORB_BYTES)
+                .min(*MAX_XORB_BYTES)
+        }
+        #[cfg(not(feature = "simulation"))]
+        { *MAX_XORB_BYTES }
+    };
+
+    /// The chunk-count threshold at which to cut a new xorb during building.
+    /// Defaults to MAX_XORB_CHUNKS, but in simulation builds can be lowered
+    /// via the `simulation_max_xorb_chunks` xorb config value to produce
+    /// smaller (but still valid) xorbs.
+    pub static ref XORB_CUT_THRESHOLD_CHUNKS: usize = {
+        #[cfg(feature = "simulation")]
+        {
+            xet_runtime::core::xet_config()
+                .xorb
+                .simulation_max_chunks
+                .unwrap_or(*MAX_XORB_CHUNKS)
+                .min(*MAX_XORB_CHUNKS)
+        }
+        #[cfg(not(feature = "simulation"))]
+        { *MAX_XORB_CHUNKS }
+    };
 }
