@@ -20,7 +20,8 @@ use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
 use xet_core_structures::metadata_shard::shard_file_reconstructor::FileReconstructor;
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::metadata_shard::streaming_shard::MDBMinimalShard;
-use xet_core_structures::metadata_shard::utils::{parse_shard_filename, shard_file_name};
+use xet_core_structures::merklehash::compute_data_hash;
+use xet_core_structures::metadata_shard::utils::{parse_shard_filename, shard_file_name, temp_shard_file_name};
 use xet_core_structures::metadata_shard::xorb_structs::MDBXorbInfo;
 use xet_core_structures::metadata_shard::{MDBShardFile, ShardFileManager};
 use xet_core_structures::serialization_utils::read_u32;
@@ -356,6 +357,93 @@ impl super::DeletionControlableClient for LocalClient {
     /// 2. For each file entry in any shard, every referenced XORB must exist on disk. (Global-dedup allows file entries
     ///    to reference XORBs described in a different shard, so we do a cross-shard check against disk rather than a
     ///    within-shard check.)
+    async fn verify_all_reachable(&self) -> Result<()> {
+        let shard_files = self.shard_file_paths()?;
+
+        // Collect xorbs claimed by shard xorb-entries, xorbs referenced by active file
+        // entries (cross-shard dedup), and which shards have at least one active file.
+        let mut xorbs_in_shard_entries: std::collections::HashSet<MerkleHash> =
+            std::collections::HashSet::new();
+        let mut xorbs_in_active_file_entries: std::collections::HashSet<MerkleHash> =
+            std::collections::HashSet::new();
+        let mut shards_with_active_files: std::collections::HashSet<MerkleHash> =
+            std::collections::HashSet::new();
+        // Per-shard xorb list, used below to check compact-shard reachability.
+        let mut shard_xorbs: std::collections::HashMap<MerkleHash, Vec<MerkleHash>> =
+            std::collections::HashMap::new();
+
+        for (shard_hash, path) in &shard_files {
+            let shard_bytes = std::fs::read(path)?;
+            let minimal_shard =
+                MDBMinimalShard::from_reader(&mut Cursor::new(&shard_bytes), true, true)?;
+
+            for i in 0..minimal_shard.num_xorb() {
+                let xorb_hash = minimal_shard.xorb(i).unwrap().xorb_hash();
+                xorbs_in_shard_entries.insert(xorb_hash);
+                shard_xorbs.entry(*shard_hash).or_default().push(xorb_hash);
+            }
+
+            let mut has_active_file = false;
+            for i in 0..minimal_shard.num_files() {
+                let file_view = minimal_shard.file(i).unwrap();
+                if !self.is_file_deleted(&file_view.file_hash()) {
+                    has_active_file = true;
+                    for seg_idx in 0..file_view.num_entries() {
+                        xorbs_in_active_file_entries.insert(file_view.entry(seg_idx).xorb_hash);
+                    }
+                }
+            }
+            if has_active_file {
+                shards_with_active_files.insert(*shard_hash);
+            }
+        }
+
+        let mut errors: Vec<String> = Vec::new();
+
+        // Check 1: every on-disk shard must be "reachable".
+        // A shard is reachable if it has at least one active (non-deleted) file entry, OR if it is
+        // a compact shard (no file entries) that holds xorb-entries for xorbs referenced by some
+        // active file (cross-shard dedup case — the compact shard is needed for dedup lookups).
+        // A shard that satisfies neither condition is truly orphaned and GC should have deleted it.
+        for (shard_hash, _) in &shard_files {
+            if !shards_with_active_files.contains(shard_hash) {
+                let has_file_referenced_xorb = shard_xorbs
+                    .get(shard_hash)
+                    .map_or(false, |xorbs| {
+                        xorbs.iter().any(|x| xorbs_in_active_file_entries.contains(x))
+                    });
+                if !has_file_referenced_xorb {
+                    errors.push(format!(
+                        "Reachability error: shard {} has no active file entries and no \
+                         xorbs referenced by any active file (GC should have deleted it)",
+                        shard_hash.hex()
+                    ));
+                }
+            }
+        }
+
+        // Check 2: every on-disk xorb must be reachable — either indexed by a shard's
+        // xorb entries, or referenced directly by an active file's file entries (cross-shard
+        // dedup). Xorbs that satisfy neither are orphaned and GC should have deleted them.
+        for xorb_hash in self.list_xorbs().await? {
+            if !xorbs_in_shard_entries.contains(&xorb_hash)
+                && !xorbs_in_active_file_entries.contains(&xorb_hash)
+            {
+                errors.push(format!(
+                    "Reachability error: xorb {} exists on disk but is not referenced by \
+                     any shard xorb entry or active file entry (GC should have deleted it)",
+                    xorb_hash.hex()
+                ));
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(ClientError::Other(errors.join("\n")))
+        }
+    }
+
     async fn verify_integrity(&self) -> Result<()> {
         let shard_files = self.shard_file_paths()?;
 
@@ -954,6 +1042,19 @@ impl Client for LocalClient {
     ) -> Result<bool> {
         self.apply_api_delay().await;
 
+        // Compute the canonical shard hash from the incoming bytes.  GC Stage 4 (and other
+        // uploaders) compute this same hash via HashedWrite over the serialized bytes and pass
+        // it as the expected identity.  Storing the shard under this hash ensures that
+        // load_shard(new_hash) resolves correctly in the next epoch — the previous approach of
+        // hashing the *rebuilt* bytes produced a different hash (different shard_creation_timestamp
+        // in the footer) which caused "Shard file not found" errors in Stage 2 section 4b.
+        let shard_hash = compute_data_hash(&shard_data);
+        let shard_path = self.shard_dir.join(shard_file_name(&shard_hash));
+
+        if shard_path.exists() {
+            return Ok(false);
+        }
+
         // Parse the shard using the streaming parser (handles shards without footer)
         let mut reader = Cursor::new(&shard_data);
         let minimal_shard = MDBMinimalShard::from_reader(&mut reader, true, true)?;
@@ -973,10 +1074,14 @@ impl Client for LocalClient {
             in_memory_shard.add_xorb_block(MDBXorbInfo::from(xorb_view))?;
         }
 
-        // Write the rebuilt shard to disk (creates proper lookup tables)
-        let shard_path = in_memory_shard.write_to_directory(&self.shard_dir, None)?;
+        // Write to a temp file then rename to the canonical shard_hash path.
+        // write_to_directory would hash the rebuilt bytes (different timestamp in footer)
+        // and produce a mismatched filename; instead we control the final name explicitly.
+        let temp_path = self.shard_dir.join(temp_shard_file_name());
+        in_memory_shard.write_to_temp_shard_file(&temp_path, None)?;
+        std::fs::rename(&temp_path, &shard_path)?;
+
         let shard = MDBShardFile::load_from_file(&shard_path)?;
-        let shard_hash = shard.shard_hash;
 
         self.shard_manager.register_shards(&[shard]).await?;
 
