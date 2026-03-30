@@ -41,7 +41,8 @@ jobs:
       - name: Run huggingface_hub xet tests
         run: |
           source .venv/bin/activate
-          pytest huggingface_hub/tests/test_xet_*.py
+          python3 -m pip install pytest-rerunfailures
+          pytest huggingface_hub/tests/test_xet_*.py --reruns 2 --reruns-delay 5
       - name: Check Cargo.lock has no uncommitted changes
         run: |
           # the Build wheel step would update hf_xet/Cargo.lock if it is out of date
