@@ -10,9 +10,9 @@ use xet_data::progress_tracking::UniqueID;
 use xet_runtime::config::XetConfig;
 use xet_runtime::core::XetRuntime;
 
-use super::download_stream_group::{DownloadStreamGroupBuilder, DownloadStreamGroupInner};
+use super::download_stream_group::{DownloadStreamGroupBuilder, XetDownloadStreamGroup, XetDownloadStreamGroupInner};
 use super::errors::SessionError;
-use super::file_download_group::{FileDownloadGroupBuilder, XetDownloadGroup};
+use super::file_download_group::{FileDownloadGroupBuilder, XetFileDownloadGroup};
 use super::task_runtime::{TaskRuntime, XetTaskState};
 use super::upload_commit::{UploadCommitBuilder, XetUploadCommit};
 
@@ -32,13 +32,13 @@ pub struct XetSessionInner {
 
     // Track active upload commits and download groups.
     pub(super) active_upload_commits: Mutex<HashMap<UniqueID, XetUploadCommit>>,
-    pub(super) active_file_download_groups: Mutex<HashMap<UniqueID, XetDownloadGroup>>,
+    pub(super) active_file_download_groups: Mutex<HashMap<UniqueID, XetFileDownloadGroup>>,
     pub(super) task_runtime: Arc<TaskRuntime>,
 
-    // Weak references so that dropping all user-held DownloadStreamGroup clones frees the group
+    // Weak references so that dropping all user-held XetDownloadStreamGroup clones frees the group
     // immediately, without needing an explicit finalization call (unlike UploadCommit/FileDownloadGroup
     // which deregister on commit()/finish()). abort() upgrades live weak refs to cancel active streams.
-    pub(super) active_download_stream_groups: Mutex<HashMap<UniqueID, Weak<DownloadStreamGroupInner>>>,
+    pub(super) active_download_stream_groups: Mutex<HashMap<UniqueID, Weak<XetDownloadStreamGroupInner>>>,
 
     // "id" is used to identify a group of activities on our server, and so needs to be globally unique
     pub(super) id: Ulid,
@@ -207,9 +207,9 @@ impl XetSessionBuilder {
 /// 2. Create operations:
 ///    - uploads via [`new_upload_commit`](Self::new_upload_commit) → [`UploadCommitBuilder`] → [`XetUploadCommit`]
 ///    - file downloads via [`new_file_download_group`](Self::new_file_download_group) → [`FileDownloadGroupBuilder`] →
-///      [`XetDownloadGroup`]
+///      [`XetFileDownloadGroup`]
 ///    - streaming downloads via [`new_download_stream_group`](Self::new_download_stream_group) →
-///      [`DownloadStreamGroupBuilder`] → [`DownloadStreamGroup`]
+///      [`DownloadStreamGroupBuilder`] → [`XetDownloadStreamGroup`]
 /// 3. For an emergency stop, call [`XetSession::abort`].
 #[derive(Clone)]
 pub struct XetSession {
@@ -273,9 +273,9 @@ impl XetSession {
     /// [`build`](DownloadStreamGroupBuilder::build) (async) or
     /// [`build_blocking`](DownloadStreamGroupBuilder::build_blocking) (sync).
     ///
-    /// Use the resulting [`DownloadStreamGroup`] to create individual streams via
-    /// [`download_stream`](DownloadStreamGroup::download_stream) and
-    /// [`download_unordered_stream`](DownloadStreamGroup::download_unordered_stream).
+    /// Use the resulting [`XetDownloadStreamGroup`] to create individual streams via
+    /// [`download_stream`](XetDownloadStreamGroup::download_stream) and
+    /// [`download_unordered_stream`](XetDownloadStreamGroup::download_unordered_stream).
     ///
     /// Returns `Err(SessionError::UserCancelled)` if the session has been aborted.
     pub fn new_download_stream_group(&self) -> Result<DownloadStreamGroupBuilder, SessionError> {
@@ -340,6 +340,24 @@ impl XetSession {
         self.inner.task_runtime.check_state("session")
     }
 
+    pub(super) fn register_upload_commit(&self, commit: &XetUploadCommit) -> Result<(), SessionError> {
+        self.inner.active_upload_commits.lock()?.insert(commit.id(), commit.clone());
+        Ok(())
+    }
+
+    pub(super) fn register_file_download_group(&self, group: &XetFileDownloadGroup) -> Result<(), SessionError> {
+        self.inner.active_file_download_groups.lock()?.insert(group.id(), group.clone());
+        Ok(())
+    }
+
+    pub(super) fn register_download_stream_group(&self, group: &XetDownloadStreamGroup) -> Result<(), SessionError> {
+        self.inner
+            .active_download_stream_groups
+            .lock()?
+            .insert(group.id(), Arc::downgrade(&group.inner));
+        Ok(())
+    }
+
     pub(super) fn finish_upload_commit(&self, commit_id: UniqueID) -> Result<(), SessionError> {
         self.inner.active_upload_commits.lock()?.remove(&commit_id);
         Ok(())
@@ -348,6 +366,10 @@ impl XetSession {
     pub(super) fn finish_file_download_group(&self, group_id: UniqueID) -> Result<(), SessionError> {
         self.inner.active_file_download_groups.lock()?.remove(&group_id);
         Ok(())
+    }
+
+    pub(super) fn id(&self) -> &Ulid {
+        &self.inner.id
     }
 }
 

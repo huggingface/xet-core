@@ -12,7 +12,7 @@ use crate::error::XetError;
 /// combined with the per-commit/group token credentials supplied by the caller.
 ///
 /// `token_info` is an optional pre-seeded `(token, expiry_unix_secs)` pair that
-/// lets the first CAS request use an already-known token instead of fetching one.
+/// lets the CAS request use an already-known token instead of fetching one.
 ///
 /// `token_refresh` is an optional `(refresh_url, request_headers)` pair.  When
 /// present, an HTTP client is built with those headers and wrapped in a

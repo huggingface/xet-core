@@ -49,10 +49,13 @@ impl UploadCommitBuilder {
         }
     }
 
-    /// Set a URL this commit will call (HTTP GET) to obtain a fresh CAS access token
+    /// Set a URL and authentication headers used to obtain a fresh CAS access token
     /// whenever the current one is about to expire.
     ///
-    /// `headers` are sent with every token-refresh request for this commit.
+    /// The client issues an authenticated HTTP GET to `url` with `headers` (which should
+    /// include auth credentials, e.g. `Authorization: Bearer <hub-token>`).  The endpoint
+    /// must return JSON:
+    /// `{ "accessToken": "<string>", "exp": <unix_secs>, "casUrl": "<string>" }`.
     pub fn with_token_refresh_url(self, url: impl Into<String>, headers: HeaderMap) -> Self {
         Self {
             token_refresh: Some((url.into(), Arc::new(headers))),
@@ -75,14 +78,8 @@ impl UploadCommitBuilder {
                 XetUploadCommit::new(session, commit_runtime, token_info, token_refresh).await
             })
             .await?;
-        info!("New upload commit, session_id={}, commit_id={}", commit.inner.session.inner.id, commit.id());
-        commit
-            .inner
-            .session
-            .inner
-            .active_upload_commits
-            .lock()?
-            .insert(commit.id(), commit.clone());
+        info!("New upload commit, session_id={}, commit_id={}", commit.session().id(), commit.id());
+        commit.session().register_upload_commit(&commit)?;
         Ok(commit)
     }
 
@@ -109,14 +106,8 @@ impl UploadCommitBuilder {
             let commit_runtime = child_parent.child()?;
             XetUploadCommit::new(session, commit_runtime, token_info, token_refresh).await
         })?;
-        info!("New upload commit, session_id={}, commit_id={}", commit.inner.session.inner.id, commit.id());
-        commit
-            .inner
-            .session
-            .inner
-            .active_upload_commits
-            .lock()?
-            .insert(commit.id(), commit.clone());
+        info!("New upload commit, session_id={}, commit_id={}", commit.session().id(), commit.id());
+        commit.session().register_upload_commit(&commit)?;
         Ok(commit)
     }
 }
@@ -418,6 +409,10 @@ impl XetUploadCommit {
     /// Unique identifier for this upload commit.
     pub fn id(&self) -> UniqueID {
         self.inner.commit_id
+    }
+
+    fn session(&self) -> &XetSession {
+        &self.inner.session
     }
 
     // ===== Async public API =====

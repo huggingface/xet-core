@@ -20,7 +20,7 @@ use std::pin::Pin;
 use bytes::Bytes;
 use tempfile::{TempDir, tempdir};
 use xet::xet_session::{
-    DownloadStreamGroup, SessionError, Sha256Policy, XetDownloadStream, XetFileInfo, XetFileMetadata, XetSession,
+    SessionError, Sha256Policy, XetDownloadStream, XetDownloadStreamGroup, XetFileInfo, XetFileMetadata, XetSession,
     XetSessionBuilder, XetTaskState, XetUnorderedDownloadStream,
 };
 
@@ -942,11 +942,11 @@ async fn async_separate_sessions_are_isolated() {
 
 // ── 10. Streaming download (XetDownloadStream) ──────────────────────────
 
-async fn async_stream_group(session: &XetSession) -> DownloadStreamGroup {
+async fn async_stream_group(session: &XetSession) -> XetDownloadStreamGroup {
     session.new_download_stream_group().unwrap().build().await.unwrap()
 }
 
-fn sync_stream_group(session: &XetSession) -> DownloadStreamGroup {
+fn sync_stream_group(session: &XetSession) -> XetDownloadStreamGroup {
     session.new_download_stream_group().unwrap().build_blocking().unwrap()
 }
 

@@ -1,4 +1,4 @@
-//! XetDownloadGroup - groups related downloads
+//! XetFileDownloadGroup - groups related downloads
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -15,7 +15,7 @@ use super::session::XetSession;
 use super::task_runtime::{BackgroundTaskState, TaskRuntime, XetTaskState};
 use crate::error::XetError;
 
-/// Builder for [`XetDownloadGroup`].
+/// Builder for [`XetFileDownloadGroup`].
 ///
 /// Obtain via [`XetSession::new_file_download_group`], configure per-group auth
 /// with [`with_token_info`](Self::with_token_info) and
@@ -47,10 +47,13 @@ impl FileDownloadGroupBuilder {
         }
     }
 
-    /// Set a URL this group will call (HTTP GET) to obtain a fresh CAS access token
+    /// Set a URL and authentication headers used to obtain a fresh CAS access token
     /// whenever the current one is about to expire.
     ///
-    /// `headers` are sent with every token-refresh request for this group.
+    /// The client issues an authenticated HTTP GET to `url` with `headers` (which should
+    /// include auth credentials, e.g. `Authorization: Bearer <hub-token>`).  The endpoint
+    /// must return JSON:
+    /// `{ "accessToken": "<string>", "exp": <unix_secs>, "casUrl": "<string>" }`.
     pub fn with_token_refresh_url(self, url: impl Into<String>, headers: HeaderMap) -> Self {
         Self {
             token_refresh: Some((url.into(), Arc::new(headers))),
@@ -58,8 +61,8 @@ impl FileDownloadGroupBuilder {
         }
     }
 
-    /// Create the [`XetDownloadGroup`] from an async context.
-    pub async fn build(self) -> Result<XetDownloadGroup, XetError> {
+    /// Create the [`XetFileDownloadGroup`] from an async context.
+    pub async fn build(self) -> Result<XetFileDownloadGroup, XetError> {
         let FileDownloadGroupBuilder {
             session,
             token_info,
@@ -70,21 +73,16 @@ impl FileDownloadGroupBuilder {
         let group = parent_runtime
             .bridge_async("new_file_download_group", async move {
                 let group_runtime = child_parent.child()?;
-                XetDownloadGroup::new(session, group_runtime, token_info, token_refresh).await
+                XetFileDownloadGroup::new(session, group_runtime, token_info, token_refresh).await
             })
             .await?;
-        info!("New file download group, session_id={}, group_id={}", group.inner.session.inner.id, group.id());
-        group
-            .inner
-            .session
-            .inner
-            .active_file_download_groups
-            .lock()?
-            .insert(group.id(), group.clone());
+        info!("New file download group, session_id={}, group_id={}", group.session().id(), group.id());
+        group.session().register_file_download_group(&group)?;
+
         Ok(group)
     }
 
-    /// Create the [`XetDownloadGroup`] from a sync context.
+    /// Create the [`XetFileDownloadGroup`] from a sync context.
     ///
     /// # Errors
     ///
@@ -95,7 +93,7 @@ impl FileDownloadGroupBuilder {
     /// # Panics
     ///
     /// Panics if called from within a tokio async runtime on an Owned-mode session.
-    pub fn build_blocking(self) -> Result<XetDownloadGroup, XetError> {
+    pub fn build_blocking(self) -> Result<XetFileDownloadGroup, XetError> {
         let FileDownloadGroupBuilder {
             session,
             token_info,
@@ -105,21 +103,15 @@ impl FileDownloadGroupBuilder {
         let child_parent = parent_runtime.clone();
         let group = parent_runtime.bridge_sync("new_file_download_group_blocking", async move {
             let group_runtime = child_parent.child()?;
-            XetDownloadGroup::new(session, group_runtime, token_info, token_refresh).await
+            XetFileDownloadGroup::new(session, group_runtime, token_info, token_refresh).await
         })?;
-        info!("New file download group, session_id={}, group_id={}", group.inner.session.inner.id, group.id());
-        group
-            .inner
-            .session
-            .inner
-            .active_file_download_groups
-            .lock()?
-            .insert(group.id(), group.clone());
+        info!("New file download group, session_id={}, group_id={}", group.session().id(), group.id());
+        group.session().register_file_download_group(&group)?;
         Ok(group)
     }
 }
 
-/// Report returned by [`XetDownloadGroup::finish`].
+/// Report returned by [`XetFileDownloadGroup::finish`].
 ///
 /// Contains final progress and per-file results keyed by [`UniqueID`].
 /// Only created when all downloads succeed; any failure propagates as an error.
@@ -156,12 +148,12 @@ pub struct XetDownloadGroupReport {
 /// aborted, and [`XetError::AlreadyCompleted`] if
 /// [`finish`](Self::finish) has already been called.
 #[derive(Clone)]
-pub struct XetDownloadGroup {
-    pub(super) inner: Arc<XetDownloadGroupInner>,
+pub struct XetFileDownloadGroup {
+    pub(super) inner: Arc<XetFileDownloadGroupInner>,
     pub(super) task_runtime: Arc<TaskRuntime>,
 }
 
-impl XetDownloadGroup {
+impl XetFileDownloadGroup {
     /// Create a new download group from an **async** context. Initialisation logic shared by the sync and async
     /// constructors.
     pub(super) async fn new(
@@ -174,7 +166,7 @@ impl XetDownloadGroup {
         let config = create_translator_config(&session, token_info, token_refresh.as_ref())?;
         let download_session = FileDownloadSession::new(Arc::new(config)).await?;
 
-        let inner = Arc::new(XetDownloadGroupInner {
+        let inner = Arc::new(XetFileDownloadGroupInner {
             group_id,
             session,
             active_tasks: RwLock::new(HashMap::new()),
@@ -187,6 +179,10 @@ impl XetDownloadGroup {
     /// Unique identifier for this download group.
     pub fn id(&self) -> UniqueID {
         self.inner.group_id
+    }
+
+    fn session(&self) -> &XetSession {
+        &self.inner.session
     }
 
     /// Cancel all active downloads in this group.
@@ -317,14 +313,14 @@ impl XetDownloadGroup {
     }
 }
 
-pub(super) struct XetDownloadGroupInner {
+pub(super) struct XetFileDownloadGroupInner {
     group_id: UniqueID,
     pub(super) session: XetSession,
     active_tasks: RwLock<HashMap<UniqueID, XetFileDownload>>,
     pub(super) download_session: Arc<FileDownloadSession>,
 }
 
-impl XetDownloadGroupInner {
+impl XetFileDownloadGroupInner {
     async fn start_download_file_to_path(
         self: &Arc<Self>,
         file_info: XetFileInfo,

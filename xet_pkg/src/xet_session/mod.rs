@@ -41,18 +41,12 @@
 //! Call [`XetSession::new_file_download_group`] to obtain a [`FileDownloadGroupBuilder`].
 //! Configure auth similarly, then call [`build`](FileDownloadGroupBuilder::build) (async) or
 //! [`build_blocking`](FileDownloadGroupBuilder::build_blocking) (sync).
-//! Queue files with [`download_file_to_path`](XetDownloadGroup::download_file_to_path) /
-//! [`download_file_to_path_blocking`](XetDownloadGroup::download_file_to_path_blocking),
-//! then call [`finish`](XetDownloadGroup::finish) (async) or
-//! [`finish_blocking`](XetDownloadGroup::finish_blocking) (sync) to wait for all
+//! Queue files with [`download_file_to_path`](XetFileDownloadGroup::download_file_to_path) /
+//! [`download_file_to_path_blocking`](XetFileDownloadGroup::download_file_to_path_blocking),
+//! then call [`finish`](XetFileDownloadGroup::finish) (async) or
+//! [`finish_blocking`](XetFileDownloadGroup::finish_blocking) (sync) to wait for all
 //! transfers to complete and receive an [`XetDownloadGroupReport`] containing
 //! per-file [`XetDownloadReport`] entries keyed by [`UniqueID`].
-//!
-//! ## Streaming downloads
-//!
-//! Use [`XetSession::download_stream`] / [`XetSession::download_stream_blocking`]
-//! for ordered byte streaming, or [`XetSession::download_unordered_stream`] /
-//! [`XetSession::download_unordered_stream_blocking`] for unordered chunks.
 //!
 //! ## Streaming Downloads
 //!
@@ -60,11 +54,11 @@
 //! Configure auth similarly, then call [`build`](DownloadStreamGroupBuilder::build) (async) or
 //! [`build_blocking`](DownloadStreamGroupBuilder::build_blocking) (sync).
 //! Create individual streams with
-//! [`download_stream`](DownloadStreamGroup::download_stream) /
-//! [`download_stream_blocking`](DownloadStreamGroup::download_stream_blocking) for
+//! [`download_stream`](XetDownloadStreamGroup::download_stream) /
+//! [`download_stream_blocking`](XetDownloadStreamGroup::download_stream_blocking) for
 //! ordered byte delivery, or
-//! [`download_unordered_stream`](DownloadStreamGroup::download_unordered_stream) /
-//! [`download_unordered_stream_blocking`](DownloadStreamGroup::download_unordered_stream_blocking)
+//! [`download_unordered_stream`](XetDownloadStreamGroup::download_unordered_stream) /
+//! [`download_unordered_stream_blocking`](XetDownloadStreamGroup::download_unordered_stream_blocking)
 //! for out-of-order `(offset, bytes)` chunks.  Multiple streams can be active
 //! concurrently from the same group; they share a single CAS connection pool and
 //! auth token.
@@ -75,7 +69,7 @@
 //!
 //! ## Progress tracking
 //!
-//! Both [`XetUploadCommit`] and [`XetDownloadGroup`] expose `progress()`,
+//! Both [`XetUploadCommit`] and [`XetFileDownloadGroup`] expose `progress()`,
 //! which returns a [`GroupProgressReport`] without acquiring a lock on the
 //! calling thread (useful for Python bindings that must release the GIL).
 //! Poll it from a background thread/task while the main thread/task blocks
@@ -87,10 +81,14 @@
 //!
 //! ## Error handling
 //!
-//! All public methods return `Result<_, `[`SessionError`]`>`.
+//! Session-level factory methods and upload/file-download operations return
+//! `Result<_, `[`SessionError`]`>`.
+//! Streaming operations — [`DownloadStreamGroupBuilder::build`],
+//! [`XetDownloadStreamGroup`] methods, [`XetDownloadStream`] methods, and
+//! [`XetUnorderedDownloadStream`] methods — return `Result<_, XetError>`.
 //! [`commit`](XetUploadCommit::commit) returns a [`XetCommitReport`] containing
 //! aggregate dedup metrics, progress, and per-file [`XetFileMetadata`].
-//! [`finish`](XetDownloadGroup::finish) returns
+//! [`finish`](XetFileDownloadGroup::finish) returns
 //! [`XetDownloadGroupReport`] keyed by task ID. If any download
 //! fails, the error is propagated immediately.
 //!
@@ -161,6 +159,7 @@
 
 mod common;
 mod download_stream_group;
+mod download_stream_handle;
 mod errors;
 mod file_download_group;
 mod file_download_handle;
@@ -170,11 +169,10 @@ mod upload_commit;
 mod upload_file_handle;
 mod upload_stream_handle;
 
-pub use download_stream_group::{
-    DownloadStreamGroup, DownloadStreamGroupBuilder, XetDownloadStream, XetUnorderedDownloadStream,
-};
+pub use download_stream_group::{DownloadStreamGroupBuilder, XetDownloadStreamGroup};
+pub use download_stream_handle::{XetDownloadStream, XetUnorderedDownloadStream};
 pub use errors::SessionError;
-pub use file_download_group::{FileDownloadGroupBuilder, XetDownloadGroup, XetDownloadGroupReport};
+pub use file_download_group::{FileDownloadGroupBuilder, XetDownloadGroupReport, XetFileDownloadGroup};
 pub use file_download_handle::{XetDownloadReport, XetFileDownload};
 pub use session::{XetSession, XetSessionBuilder};
 pub use task_runtime::XetTaskState;

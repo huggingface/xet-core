@@ -1,13 +1,15 @@
 //! Session-based upload/download example.
 //!
-//! Shows the three-level hierarchy: XetSession → XetUploadCommit/XetDownloadGroup → files.
+//! Shows the three-level hierarchy: XetSession → XetUploadCommit/XetFileDownloadGroup → files.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use http::{HeaderMap, HeaderValue, header};
 use xet::xet_session::{Sha256Policy, XetFileMetadata, XetSessionBuilder, XetTaskState};
+use xet_client::hub_client::{self, HFRepoType, HubClient, RepoInfo};
 
 #[derive(Parser)]
 #[clap(name = "session-demo", about = "XetSession API demo")]
@@ -49,12 +51,28 @@ fn main() -> Result<()> {
 }
 
 fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<()> {
-    let mut builder = XetSessionBuilder::new();
-    if let Some(ep) = endpoint {
-        builder = builder.with_endpoint(ep);
-    }
-    let session = builder.build()?;
-    let commit = session.new_upload_commit()?.build_blocking()?;
+    let mut hf_hub_header = HeaderMap::new();
+    hf_hub_header.insert(header::AUTHORIZATION, HeaderValue::from_str("Bearer [HF_WRITE_TOKEN]")?);
+    let hub_client = HubClient::new(
+        &endpoint.unwrap_or("https://huggingface.co".into()),
+        RepoInfo {
+            repo_type: HFRepoType::Model,
+            full_name: "user/repo".into(),
+        },
+        Some("main".into()),
+        "",
+        None,
+        Some(hf_hub_header),
+    )?;
+    let token_info = smol::block_on(async move { hub_client.get_cas_jwt(hub_client::Operation::Upload).await })?;
+
+    let session = XetSessionBuilder::new().with_endpoint(token_info.cas_url).build()?;
+
+    let commit = session
+        .new_upload_commit()?
+        .with_token_info(token_info.access_token, token_info.exp)
+        //.with_token_refresh_url(token_refresh_url, hf_hub_header) // see HubClient::get_cas_jwt for how to build a token_refresh_url
+        .build_blocking()?;
 
     let n_files = files.len();
     for f in &files {
@@ -90,12 +108,28 @@ fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: Option<
     let metadata: Vec<XetFileMetadata> = serde_json::from_str(&std::fs::read_to_string(metadata_file)?)?;
     std::fs::create_dir_all(&output_dir)?;
 
-    let mut builder = XetSessionBuilder::new();
-    if let Some(ep) = endpoint {
-        builder = builder.with_endpoint(ep);
-    }
-    let session = builder.build()?;
-    let group = session.new_file_download_group()?.build_blocking()?;
+    let mut hf_hub_header = HeaderMap::new();
+    hf_hub_header.insert(header::AUTHORIZATION, HeaderValue::from_str("Bearer [HF_READ_TOKEN]")?);
+    let hub_client = HubClient::new(
+        &endpoint.unwrap_or("https://huggingface.co".into()),
+        RepoInfo {
+            repo_type: HFRepoType::Model,
+            full_name: "user/repo".into(),
+        },
+        Some("main".into()),
+        "",
+        None,
+        Some(hf_hub_header),
+    )?;
+    let token_info = smol::block_on(async move { hub_client.get_cas_jwt(hub_client::Operation::Download).await })?;
+
+    let session = XetSessionBuilder::new().with_endpoint(token_info.cas_url).build()?;
+
+    let group = session
+        .new_file_download_group()?
+        .with_token_info(token_info.access_token, token_info.exp)
+        //.with_token_refresh_url(token_refresh_url, hf_hub_header) // see HubClient::get_cas_jwt for how to build a token_refresh_url
+        .build_blocking()?;
 
     // Enqueue all downloads; each starts immediately in the background.
     let n_files = metadata.len();

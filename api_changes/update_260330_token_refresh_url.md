@@ -4,7 +4,7 @@
 
 `XetSessionBuilder::with_token_refresher(Arc<dyn TokenRefresher>)` has been removed.
 Auth tokens are now configured per-[`UploadCommit`], per-[`FileDownloadGroup`], and
-per-[`DownloadStreamGroup`] via builder methods, so uploads, file downloads, and
+per-[`XetDownloadStreamGroup`] via builder methods, so uploads, file downloads, and
 streaming downloads can each carry a different access-level token from the same session.
 
 The low-level `TokenRefresher` trait in `xet_client::cas_client::auth` is retained for
@@ -19,7 +19,6 @@ use by legacy API functions (`upload_bytes`, `upload_files`, `download_files` in
 
 - `XetSessionBuilder::with_token_refresher(refresher: Arc<dyn TokenRefresher>) -> Self`
 - `XetSessionBuilder::with_token_info(token: impl Into<String>, expiry: u64) -> Self`
-- `XetSessionBuilder::with_token_refresh_url(url: impl Into<String>, headers: HeaderMap) -> Self`
 
 ### Removed fields from `XetSessionInner`
 
@@ -74,24 +73,19 @@ fn test_session_id_is_ulid() {
 }
 ```
 
-### Changed `XetDownloadStream` / `XetUnorderedDownloadStream`
-
-- `get_progress()` renamed to `progress()` on both types.
-- `cancel()` now also propagates cancellation through the `TaskRuntime` tree before
-  cancelling the underlying download stream.
-
 ### New builder types
 
 **`UploadCommitBuilder`** and **`FileDownloadGroupBuilder`** — both have:
 
 ```rust
 pub fn with_token_info(self, token: impl Into<String>, expiry: u64) -> Self
+/// `headers` are sent on every GET to `url` and should include auth credentials (e.g. `Authorization: Bearer <hub-token>`)
 pub fn with_token_refresh_url(self, url: impl Into<String>, headers: HeaderMap) -> Self
-pub async fn build(self) -> Result<XetUploadCommit / XetDownloadGroup, SessionError>
-pub fn build_blocking(self) -> Result<XetUploadCommit / XetDownloadGroup, SessionError>
+pub async fn build(self) -> Result<XetUploadCommit / XetFileDownloadGroup, XetError>
+pub fn build_blocking(self) -> Result<XetUploadCommit / XetFileDownloadGroup, XetError>
 ```
 
-`build_blocking()` returns `Err(SessionError::WrongRuntimeMode)` when called from within
+`build_blocking()` returns `Err(XetError::WrongRuntimeMode)` when called from within
 an external tokio runtime context (e.g. inside `#[tokio::main]`).
 
 ---
@@ -112,14 +106,15 @@ let session = XetSessionBuilder::new()
     .with_endpoint("https://cas.example.com")
     .build()?;
 
+// headers carry the HuggingFace Hub auth credential for the refresh endpoint
 let mut write_headers = HeaderMap::new();
-write_headers.insert("Authorization", "Bearer write-token".parse().unwrap());
+write_headers.insert("Authorization", "Bearer <hub-write-token>".parse().unwrap());
 let commit = session.new_upload_commit()?
     .with_token_refresh_url("https://huggingface.co/api/repos/token/write", write_headers)
     .build_blocking()?;
 
 let mut read_headers = HeaderMap::new();
-read_headers.insert("Authorization", "Bearer read-token".parse().unwrap());
+read_headers.insert("Authorization", "Bearer <hub-read-token>".parse().unwrap());
 let group = session.new_file_download_group()?
     .with_token_refresh_url("https://huggingface.co/api/repos/token/read", read_headers)
     .build_blocking()?;
@@ -136,7 +131,9 @@ let commit = session.new_upload_commit()?
 
 ### Token refresh URL contract
 
-The URL must accept an unauthenticated HTTP GET and return JSON with the shape:
+The refresh endpoint must accept an authenticated HTTP GET.  The `headers` argument to
+`with_token_refresh_url` are sent on every refresh request and should include auth
+credentials (typically `Authorization: Bearer <hub-token>`).  The endpoint must return JSON with the shape:
 
 ```json
 { "accessToken": "<string>", "exp": <unix_timestamp_seconds>, "casUrl": "<string>" }
@@ -205,17 +202,15 @@ The internal `build_token_refresher` helper function has been merged into
 Option<&(String, Arc<HeaderMap>)>` directly and builds the `TokenRefresher`
 internally, eliminating the need for callers to construct it separately.
 
-### `xet_pkg::xet_session::download_stream_group` — stream types merged in
+### `xet_pkg::xet_session::download_streams` — module deleted; types split
 
-`XetDownloadStream` and `XetUnorderedDownloadStream` were previously defined in a
-separate `xet_pkg::xet_session::download_streams` module.  That module has been
-deleted and both types are now defined directly in `download_stream_group.rs`
-alongside `DownloadStreamGroup` and `DownloadStreamGroupBuilder`.
+The old `xet_pkg::xet_session::download_streams` module has been deleted.  Its two
+types have been redistributed:
 
-The public API of both types is unchanged except for `get_progress()` being renamed
-to `progress()`.  Their Rust module path is now
-`xet_pkg::xet_session::download_stream_group::Xet*Stream` (though they continue to
-be re-exported at `xet_pkg::xet_session::Xet*Stream`).
+- `XetDownloadStreamGroup` and `DownloadStreamGroupBuilder` → `download_stream_group`
+- `XetDownloadStream` and `XetUnorderedDownloadStream` → **new** `download_stream_handle`
+
+All four types continue to be re-exported at `xet_pkg::xet_session::*` unchanged.
 
 ### `xet_client::common::http_client` — new shared module
 
@@ -246,10 +241,10 @@ migration required for external callers.
 
 ---
 
-## New types: `DownloadStreamGroup` / `DownloadStreamGroupBuilder`
+## New types: `XetDownloadStreamGroup` / `DownloadStreamGroupBuilder`
 
 Streaming downloads have been moved off `XetSession` and are now surfaced exclusively
-through a new `DownloadStreamGroup` type.  The old session-level `download_stream*`
+through a new `XetDownloadStreamGroup` type.  The old session-level `download_stream*`
 methods have been removed.
 
 ### `XetSession::new_download_stream_group`
@@ -265,22 +260,28 @@ group.  Returns `Err(SessionError::UserCancelled)` if the session has been abort
 
 ```rust
 pub fn with_token_info(self, token: impl Into<String>, expiry: u64) -> Self
+/// `headers` are sent on every GET to `url` and should include auth credentials (e.g. `Authorization: Bearer <hub-token>`)
 pub fn with_token_refresh_url(self, url: impl Into<String>, headers: HeaderMap) -> Self
-pub async fn build(self) -> Result<DownloadStreamGroup, SessionError>
-pub fn build_blocking(self) -> Result<DownloadStreamGroup, SessionError>
+pub async fn build(self) -> Result<XetDownloadStreamGroup, XetError>
+pub fn build_blocking(self) -> Result<XetDownloadStreamGroup, XetError>
 ```
 
-### `DownloadStreamGroup`
+### `XetDownloadStreamGroup`
 
 ```rust
-pub async fn download_stream(&self, file_info: XetFileInfo, range: Option<Range<u64>>) -> Result<XetDownloadStream, SessionError>
-pub fn download_stream_blocking(&self, file_info: XetFileInfo, range: Option<Range<u64>>) -> Result<XetDownloadStream, SessionError>
-pub async fn download_unordered_stream(&self, file_info: XetFileInfo, range: Option<Range<u64>>) -> Result<XetUnorderedDownloadStream, SessionError>
-pub fn download_unordered_stream_blocking(&self, file_info: XetFileInfo, range: Option<Range<u64>>) -> Result<XetUnorderedDownloadStream, SessionError>
+pub async fn download_stream(&self, file_info: XetFileInfo, range: Option<Range<u64>>) -> Result<XetDownloadStream, XetError>
+pub fn download_stream_blocking(&self, file_info: XetFileInfo, range: Option<Range<u64>>) -> Result<XetDownloadStream, XetError>
+pub async fn download_unordered_stream(&self, file_info: XetFileInfo, range: Option<Range<u64>>) -> Result<XetUnorderedDownloadStream, XetError>
+pub fn download_unordered_stream_blocking(&self, file_info: XetFileInfo, range: Option<Range<u64>>) -> Result<XetUnorderedDownloadStream, XetError>
 ```
 
 Multiple streams can be active concurrently from the same group; they share a single
 CAS connection pool and auth token.
+
+> **Note on error types:** `XetSession::new_download_stream_group` returns
+> `SessionError` (consistent with other session factory methods), but all
+> `DownloadStreamGroupBuilder`, `XetDownloadStreamGroup`, `XetDownloadStream`, and
+> `XetUnorderedDownloadStream` methods return `XetError`.
 
 ### Removed from `XetSession`
 
@@ -296,13 +297,13 @@ The lazily-initialised `streaming_download_session` field on `XetSessionInner` h
 removed and replaced with `active_download_stream_groups`:
 
 ```rust
-// XetSessionInner — new field
-pub(super) active_download_stream_groups: Mutex<HashMap<UniqueID, Weak<DownloadStreamGroupInner>>>,
+// XetSessionInner — new field (XetDownloadStreamGroupInner is pub(super), internal only)
+pub(super) active_download_stream_groups: Mutex<HashMap<UniqueID, Weak<XetDownloadStreamGroupInner>>>,
 ```
 
-Weak references are used so that dropping all user-held `DownloadStreamGroup` clones frees
+Weak references are used so that dropping all user-held `XetDownloadStreamGroup` clones frees
 the group immediately without needing an explicit finalization call (unlike
-`XetUploadCommit` / `XetDownloadGroup` which deregister on `commit()` / `finish()`).
+`XetUploadCommit` / `XetFileDownloadGroup` which deregister on `commit()` / `finish()`).
 `XetSession::abort()` upgrades live weak refs to cancel active streams.
 
 ---
@@ -315,7 +316,7 @@ the group immediately without needing an explicit finalization call (unlike
 - `xet_runtime::error::RuntimeError` — added `ReqwestError` and `PoisonError` variants
 - `xet_runtime::core::XetRuntime::get_or_create_reqwest_client` — return type changed to `xet_runtime::Result<Client>`
 - `xet_client::error::ClientError` — added `From<xet_runtime::error::RuntimeError>`
-- `xet_pkg::xet_session::{session, common, upload_commit, file_download_group, download_stream_group}` — auth moved from session to per-commit/group builders; session-level `download_stream*` methods removed and replaced by `DownloadStreamGroup`; `XetSessionInner::id` changed to `Ulid`; `XetDownloadStream` and `XetUnorderedDownloadStream` merged from the now-deleted `download_streams` module into `download_stream_group`; `get_progress()` renamed to `progress()` on both stream types
+- `xet_pkg::xet_session::{session, common, upload_commit, file_download_group, download_stream_group, download_stream_handle}` — auth moved from session to per-commit/group builders; session-level `download_stream*` methods removed and replaced by `XetDownloadStreamGroup`; `XetSessionInner::id` changed to `Ulid`; the now-deleted `download_streams` module split into `download_stream_group` (`XetDownloadStreamGroup`, `DownloadStreamGroupBuilder`) and new `download_stream_handle` (`XetDownloadStream`, `XetUnorderedDownloadStream`)
 - `git_xet::token_refresher` — now a thin factory delegating to `xet_client`
 - `git_xet::app::xet_agent` — updated to call `new_git_token_refresher`
 - Legacy `hf_xet` Python functions (`upload_bytes`, `upload_files`, `download_files`) are **unchanged**
