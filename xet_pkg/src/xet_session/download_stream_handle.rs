@@ -14,8 +14,9 @@ use super::task_runtime::TaskRuntime;
 /// Wraps a [`DownloadStream`] and keeps a reference to the
 /// [`FileDownloadSession`] that created it, so callers can poll progress
 /// while consuming data chunks.  Created by
-/// [`XetSession::download_stream`](super::XetSession::download_stream) or
-/// [`XetSession::download_stream_blocking`](super::XetSession::download_stream_blocking).
+/// [`XetDownloadStreamGroup::download_stream`](super::download_stream_group::XetDownloadStreamGroup::download_stream)
+/// or
+/// [`XetDownloadStreamGroup::download_stream_blocking`](super::download_stream_group::XetDownloadStreamGroup::download_stream_blocking).
 ///
 /// The reconstruction task is spawned at creation time but paused until
 /// [`start`](Self::start) is called explicitly, or automatically on the
@@ -111,8 +112,8 @@ impl Drop for XetDownloadStream {
 /// Wraps an [`UnorderedDownloadStream`] and keeps a reference to the
 /// [`FileDownloadSession`] that created it, so callers can poll progress
 /// while consuming data chunks. Created by
-/// [`XetSession::download_unordered_stream`](super::XetSession::download_unordered_stream) or
-/// [`XetSession::download_unordered_stream_blocking`](super::XetSession::download_unordered_stream_blocking).
+/// [`XetDownloadStreamGroup::download_unordered_stream`](super::download_stream_group::XetDownloadStreamGroup::download_unordered_stream) or
+/// [`XetDownloadStreamGroup::download_unordered_stream_blocking`](super::download_stream_group::XetDownloadStreamGroup::download_unordered_stream_blocking).
 ///
 /// The reconstruction task is spawned at creation time but paused until
 /// [`start`](Self::start) is called explicitly, or automatically on the

@@ -1,72 +1,30 @@
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use http::header::HeaderMap;
-use reqwest_middleware::ClientWithMiddleware;
-use xet_client::cas_client::auth::{AuthError, TokenInfo, TokenRefresher};
-use xet_client::cas_client::retry_wrapper::RetryWrapper;
-use xet_client::cas_client::{Api, build_http_client};
-use xet_client::hub_client::{CasJWTInfo, CredentialHelper, Operation};
+use xet_client::cas_client::auth::DirectRefreshRouteTokenRefresher;
+use xet_client::common::http_client::build_http_client;
+use xet_client::hub_client::Operation;
 
 use crate::auth::get_credential;
 use crate::errors::Result;
 use crate::git_repo::GitRepo;
 use crate::git_url::GitUrl;
 
-pub struct DirectRefreshRouteTokenRefresher {
-    refresh_route: String,
-    client: ClientWithMiddleware,
-    cred_helper: Arc<dyn CredentialHelper>,
-}
-
-impl DirectRefreshRouteTokenRefresher {
-    pub fn new(
-        repo: &GitRepo,
-        remote_url: Option<GitUrl>,
-        refresh_route: &str,
-        operation: Operation,
-        session_id: &str,
-        custom_headers: Option<Arc<HeaderMap>>,
-    ) -> Result<Self> {
-        let remote_url = match remote_url {
-            Some(r) => r,
-            None => repo.remote_url()?,
-        };
-
-        let cred_helper = get_credential(repo, &remote_url, operation)?;
-
-        Ok(Self {
-            refresh_route: refresh_route.to_owned(),
-            client: build_http_client(session_id, None, custom_headers)?,
-            cred_helper,
-        })
-    }
-}
-
-#[async_trait]
-impl TokenRefresher for DirectRefreshRouteTokenRefresher {
-    async fn refresh(&self) -> std::result::Result<TokenInfo, AuthError> {
-        let client = self.client.clone();
-        let refresh_route = self.refresh_route.clone();
-        let cred_helper = self.cred_helper.clone();
-
-        let jwt_info: CasJWTInfo = RetryWrapper::new("xet-token")
-            .run_and_extract_json(move || {
-                let refresh_route = refresh_route.clone();
-                let client = client.clone();
-                let cred_helper = cred_helper.clone();
-                async move {
-                    let req = client.get(&refresh_route).with_extension(Api("xet-token"));
-                    let req = cred_helper
-                        .fill_credential(req)
-                        .await
-                        .map_err(reqwest_middleware::Error::middleware)?;
-                    req.send().await
-                }
-            })
-            .await
-            .map_err(AuthError::token_refresh_failure)?;
-
-        Ok((jwt_info.access_token, jwt_info.exp))
-    }
+/// Build a [`DirectRefreshRouteTokenRefresher`] for the git-xet path,
+/// deriving credentials from the git repo's credential helper.
+pub fn new_git_token_refresher(
+    repo: &GitRepo,
+    remote_url: Option<GitUrl>,
+    refresh_route: &str,
+    operation: Operation,
+    session_id: &str,
+    custom_headers: Option<Arc<HeaderMap>>,
+) -> Result<DirectRefreshRouteTokenRefresher> {
+    let remote_url = match remote_url {
+        Some(r) => r,
+        None => repo.remote_url()?,
+    };
+    let cred_helper = get_credential(repo, &remote_url, operation)?;
+    let client = build_http_client(session_id, None, custom_headers)?;
+    Ok(DirectRefreshRouteTokenRefresher::new(refresh_route.to_owned(), client, Some(cred_helper)))
 }

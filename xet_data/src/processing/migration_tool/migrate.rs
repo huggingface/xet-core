@@ -42,8 +42,8 @@ pub async fn migrate_with_external_runtime(
         RepoInfo::try_from(repo_type, repo_id)?,
         Some("main".to_owned()),
         "",
-        cred_helper,
-        Some(Arc::new(headers)),
+        Some(cred_helper),
+        Some(headers),
     )?;
 
     migrate_files_impl(file_paths, sha256s, false, hub_client, cas_endpoint, false).await?;

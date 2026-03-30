@@ -1176,6 +1176,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "ulid",
  "xet-client",
  "xet-core-structures",
  "xet-data",

@@ -1,7 +1,7 @@
-mod auth;
 mod client;
 mod types;
 
-pub use auth::{BearerCredentialHelper, CredentialHelper, NoopCredentialHelper};
 pub use client::{HubClient, Operation};
 pub use types::{CasJWTInfo, HFRepoType, RepoInfo};
+
+pub use crate::common::auth::{BearerCredentialHelper, CredentialHelper, NoopCredentialHelper};

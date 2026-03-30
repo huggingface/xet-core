@@ -2021,6 +2021,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "ulid",
  "xet-client",
  "xet-core-structures",
  "xet-data",

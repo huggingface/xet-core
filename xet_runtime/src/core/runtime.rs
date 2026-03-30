@@ -451,7 +451,7 @@ impl XetRuntime {
     /// Returns a clone of the cached client if the tag matches and we're in a runtime,
     /// or creates a new client otherwise. This allows creating high-level clients outside
     /// a runtime, like in tests.
-    pub fn get_or_create_reqwest_client<F>(tag: String, f: F) -> std::result::Result<Client, reqwest::Error>
+    pub fn get_or_create_reqwest_client<F>(tag: String, f: F) -> crate::error::Result<Client>
     where
         F: FnOnce() -> std::result::Result<Client, reqwest::Error>,
     {
@@ -461,7 +461,7 @@ impl XetRuntime {
         if let Some(rt) = Self::current_if_exists() {
             rt.common().get_or_create_reqwest_client(tag, f)
         } else {
-            f()
+            Ok(f()?)
         }
     }
 
