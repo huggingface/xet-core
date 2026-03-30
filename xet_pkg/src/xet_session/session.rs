@@ -7,6 +7,7 @@ use http::HeaderMap;
 use tracing::info;
 use ulid::Ulid;
 use xet_data::progress_tracking::UniqueID;
+use xet_runtime::RuntimeError;
 use xet_runtime::config::XetConfig;
 use xet_runtime::core::XetRuntime;
 
@@ -150,6 +151,10 @@ impl XetSessionBuilder {
     /// If the handle does **not** meet requirements (e.g. `current_thread` flavor or missing
     /// drivers), it is silently ignored and [`build`](Self::build) will fall back to creating
     /// an owned thread pool instead.
+    ///
+    /// If the handle is already in use by another live `XetSession`, [`build`](Self::build) will
+    /// also fall back to creating an owned thread pool — the duplicate is logged at `INFO` level
+    /// and no error is returned.
     pub fn with_tokio_handle(self, handle: tokio::runtime::Handle) -> Self {
         let accept = XetRuntime::handle_meets_requirements(&handle);
         if !accept {
@@ -169,6 +174,10 @@ impl XetSessionBuilder {
     /// it — no second thread pool is created. Otherwise, an owned multi-thread
     /// runtime is created; async methods use an internal bridge and work from
     /// any executor, and `_blocking` methods are available.
+    ///
+    /// If the detected or provided handle is already registered to another live `XetSession`,
+    /// the duplicate attach is silently rejected and an owned runtime is created instead.
+    /// This prevents two sessions from fighting over the same tokio runtime's task scheduler.
     pub fn build(self) -> Result<XetSession, SessionError> {
         let handle = self.tokio_handle.or_else(|| {
             tokio::runtime::Handle::try_current()
@@ -179,7 +188,17 @@ impl XetSessionBuilder {
         let runtime = match handle {
             Some(h) => {
                 info!("XetSession using External runtime (wrapping caller's tokio handle)");
-                XetRuntime::from_external_with_config(h, self.config.clone())?
+                let result = XetRuntime::from_external_with_config(h, self.config.clone());
+                match result {
+                    Ok(runtime) => runtime,
+                    Err(RuntimeError::ExternalAlreadyAttached(_)) => {
+                        info!(
+                            "An existing XetSession already wraps caller's tokio handle, switching to creating Owned runtime"
+                        );
+                        XetRuntime::new_with_config(self.config.clone())?
+                    },
+                    Err(e) => Err(e)?,
+                }
             },
             None => {
                 info!("XetSession creating Owned runtime (new thread pool)");
@@ -870,19 +889,22 @@ mod tests {
     // ── Duplicate tokio handle rejection ─────────────────────────────────────
 
     #[test]
-    // Building two sessions with the same tokio handle must fail on the second attempt,
-    // because the same runtime ID would already be registered in EXTERNAL_RUNTIME_REGISTRY.
-    fn test_build_with_same_handle_twice_fails() {
+    // Building a second session with the same tokio handle while the first is alive must
+    // fall back to Owned mode rather than returning an error — the duplicate is handled
+    // gracefully so callers do not need to track handle ownership.
+    fn test_build_with_same_handle_falls_back_to_owned() {
         let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         let handle = tokio_rt.handle().clone();
 
-        let first = XetSessionBuilder::new().with_tokio_handle(handle.clone()).build();
-        assert!(first.is_ok(), "first build with tokio handle must succeed");
+        let first = XetSessionBuilder::new().with_tokio_handle(handle.clone()).build().unwrap();
+        assert_eq!(first.inner.runtime.mode(), RuntimeMode::External, "first build must use External runtime");
 
         let second = XetSessionBuilder::new().with_tokio_handle(handle).build();
-        assert!(
-            matches!(second, Err(SessionError::WrongRuntimeMode(_))),
-            "second build with the same tokio handle must return WrongRuntimeMode"
+        assert!(second.is_ok(), "second build with the same tokio handle must still succeed");
+        assert_eq!(
+            second.unwrap().inner.runtime.mode(),
+            RuntimeMode::Owned,
+            "second build must fall back to Owned runtime when External handle is already in use"
         );
     }
 

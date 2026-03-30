@@ -915,31 +915,22 @@ async fn async_duplicate_content_produces_same_hash() {
 
 // ── 9. Cross-session isolation ───────────────────────────────────────────
 
-#[test]
-fn separate_sessions_are_isolated() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn async_separate_sessions_are_isolated() {
     let temp1 = tempdir().unwrap();
     let temp2 = tempdir().unwrap();
     let session1 = local_session(&temp1).unwrap();
     let session2 = local_session(&temp2).unwrap();
 
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-    rt.block_on(async move {
-        let info1 = upload_bytes_async(&session1, b"session 1 data", "s1.bin").await;
+    let info1 = upload_bytes_async(&session1, b"session 1 data", "s1.bin").await;
 
-        // Data from session1 should not be downloadable from session2 (different CAS store).
-        let group = session2.new_file_download_group().unwrap().build().await.unwrap();
-        group
-            .download_file_to_path(info1, temp2.path().join("cross.bin"))
-            .await
-            .unwrap();
-        let finish_result = group.finish().await;
-        match finish_result {
-            Err(_) => {},
-            Ok(results) => {
-                assert!(results.downloads.is_empty());
-            },
-        }
-    });
+    // Data from session1 should not be downloadable from session2 (different CAS store).
+    let group = session2.new_file_download_group().unwrap().build().await.unwrap();
+    group
+        .download_file_to_path(info1, temp2.path().join("cross.bin"))
+        .await
+        .unwrap();
+    assert!(group.finish().await.is_err());
 }
 
 // ── 10. Streaming download (XetDownloadStream) ──────────────────────────

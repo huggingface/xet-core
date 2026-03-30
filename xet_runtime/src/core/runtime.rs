@@ -348,9 +348,9 @@ impl XetRuntime {
     ///
     /// # Errors
     ///
-    /// - [`RuntimeError::InvalidRuntime`] — the handle lacks multi-thread flavor, time driver, or IO driver (checked
-    ///   here); or a live `XetRuntime` is already registered for this handle (checked inside
-    ///   [`from_external_with_config`](Self::from_external_with_config)).
+    /// - [`RuntimeError::InvalidRuntime`] — the handle lacks multi-thread flavor, time driver, or IO driver.
+    /// - [`RuntimeError::ExternalAlreadyAttached`] — a live `XetRuntime` is already registered for this
+    ///   handle (checked inside [`from_external_with_config`](Self::from_external_with_config)).
     ///
     /// Not available on WASM targets.
     #[cfg(not(target_family = "wasm"))]
@@ -379,8 +379,9 @@ impl XetRuntime {
     ///
     /// # Errors
     ///
-    /// - [`RuntimeError::InvalidRuntime`] — a live `XetRuntime` is already registered for `rt_handle`'s tokio runtime
-    ///   ID (i.e. the same handle was wrapped twice).
+    /// - [`RuntimeError::ExternalAlreadyAttached`] — a live `XetRuntime` is already registered for
+    ///   `rt_handle`'s tokio runtime ID (i.e. the same handle was wrapped twice while the first is
+    ///   still alive).  Drop the existing `XetRuntime` first, or use a different handle.
     pub fn from_external_with_config(
         rt_handle: TokioRuntimeHandle,
         config: XetConfig,
@@ -391,11 +392,7 @@ impl XetRuntime {
         if let Some(existing) = reg.get(&id)
             && existing.upgrade().is_some()
         {
-            return Err(RuntimeError::InvalidRuntime(
-                "a XetRuntime is already registered for this tokio runtime handle; \
-                 attach the same handle only once"
-                    .into(),
-            ));
+            return Err(RuntimeError::ExternalAlreadyAttached(id));
         }
 
         let rt = Arc::new(Self {
@@ -426,6 +423,11 @@ impl XetRuntime {
     /// Wrap an existing tokio [`TokioRuntimeHandle`] with a [`XetRuntime`] using a default
     /// [`XetConfig`].  Prefer [`from_external_with_config`](Self::from_external_with_config) when
     /// you have a config available.
+    ///
+    /// Unlike [`from_external_with_config`](Self::from_external_with_config), this function does
+    /// **not** register the runtime in `EXTERNAL_RUNTIME_REGISTRY` and therefore performs no
+    /// duplicate-handle check.  It is intended for lightweight, short-lived wrapping where
+    /// registry lookup via [`XetRuntime::current()`] is not required.
     pub fn from_external(rt_handle: TokioRuntimeHandle) -> Arc<Self> {
         let config = XetConfig::new();
         Arc::new(Self {
@@ -990,14 +992,14 @@ mod tests {
 
     #[test]
     // Wrapping the same tokio handle a second time (while the first XetRuntime is alive)
-    // must return InvalidRuntime.
+    // must return ExternalAlreadyAttached.
     fn test_from_external_with_config_duplicate_handle_fails() {
         let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         let _first = XetRuntime::from_external_with_config(tokio_rt.handle().clone(), XetConfig::new()).unwrap();
         let second = XetRuntime::from_external_with_config(tokio_rt.handle().clone(), XetConfig::new());
         assert!(
-            matches!(second, Err(RuntimeError::InvalidRuntime(_))),
-            "expected InvalidRuntime for duplicate handle, got: {second:?}"
+            matches!(second, Err(RuntimeError::ExternalAlreadyAttached(_))),
+            "expected ExternalAlreadyAttached for duplicate handle, got: {second:?}"
         );
     }
 
