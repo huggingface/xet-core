@@ -9,6 +9,7 @@ pub use cache_manager::get_cache;
 pub use disk::DiskCache;
 pub use disk::test_utils::*;
 use error::ChunkCacheError;
+#[cfg(test)]
 use mockall::automock;
 use xet_runtime::core::xet_config;
 
@@ -34,7 +35,7 @@ pub struct CacheRange {
 ///
 /// implementors are allowed to evict data, a get after a put is not required to
 /// be a cache hit.
-#[automock]
+#[cfg_attr(test, automock)]
 #[async_trait]
 pub trait ChunkCache: Sync + Send {
     /// get should return an Ok() variant if significant error occurred, check the error

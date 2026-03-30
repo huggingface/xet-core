@@ -129,23 +129,27 @@ impl SingleFileCleaner {
     }
 
     pub async fn add_data(&mut self, data: &[u8]) -> Result<()> {
+        self.add_data_from_bytes(Bytes::copy_from_slice(data)).await
+    }
+
+    pub async fn add_data_from_bytes(&mut self, data: Bytes) -> Result<()> {
         let block_size = *xet_config().data.ingestion_block_size as usize;
         if data.len() > block_size {
             let mut pos = 0;
             while pos < data.len() {
                 let next_pos = usize::min(pos + block_size, data.len());
-                self.add_data_impl(Bytes::copy_from_slice(&data[pos..next_pos])).await?;
+                self.add_data_chunk_impl(data.slice(pos..next_pos)).await?;
                 pos = next_pos;
             }
         } else {
-            self.add_data_impl(Bytes::copy_from_slice(data)).await?;
+            self.add_data_chunk_impl(data).await?;
         }
 
         Ok(())
     }
 
     #[instrument(skip_all, level="debug", name = "FileCleaner::add_data", fields(file_name=self.file_name.as_ref().map(|s|s.to_string()), len=data.len()))]
-    pub(crate) async fn add_data_impl(&mut self, data: Bytes) -> Result<()> {
+    async fn add_data_chunk_impl(&mut self, data: Bytes) -> Result<()> {
         // If the file size was not specified at the beginning, then incrementally update tho total size with
         // how much data we know about.
         self.session

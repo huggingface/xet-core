@@ -24,9 +24,7 @@ derivative = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 lazy_static = { workspace = true }
-mockall = { workspace = true }
 more-asserts = { workspace = true }
-once_cell = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true }
 reqwest-middleware = { workspace = true }
@@ -48,15 +46,14 @@ tokio = { workspace = true, features = ["sync", "macros", "io-util", "rt", "time
 web-time = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-axum = { workspace = true }
-duration-str = { workspace = true }
-futures-util = { workspace = true }
+axum = { workspace = true, optional = true }
+humantime = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
 heed = { workspace = true }
-human-bandwidth = { workspace = true }
+human-bandwidth = { workspace = true, optional = true }
 hyper = { workspace = true }
 tokio = { workspace = true }
-tower-http = { version = "0.6", features = ["cors"] }
-warp = { workspace = true }
+tower-http = { version = "0.6", features = ["cors"], optional = true }
 
 [features]
 strict = []
@@ -67,10 +64,12 @@ rustls-tls = ["reqwest/rustls"]
 native-tls = ["reqwest/native-tls"]
 native-tls-vendored = ["reqwest/native-tls-vendored"]
 analysis = []
+simulation = ["dep:axum", "dep:humantime", "dep:futures-util", "dep:human-bandwidth", "dep:tower-http"]
 
 [[bin]]
 name = "local_cas_server"
 path = "src/cas_client/simulation/local_server/main.rs"
+required-features = ["simulation"]
 
 [[bin]]
 name = "cache_analysis"
@@ -80,10 +79,10 @@ required-features = ["analysis"]
 [dev-dependencies]
 approx = { workspace = true }
 ctor = { workspace = true }
+mockall = { workspace = true }
 httpmock = { workspace = true }
 rand_distr = { workspace = true }
 serde_json = { workspace = true }
-tempdir = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing-test = { workspace = true }
 wiremock = { workspace = true }

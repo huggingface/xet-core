@@ -5,8 +5,8 @@
 //!
 //! ```text
 //! XetSession                 — holds runtime context and shared HTTP settings
-//!   ├── UploadCommitBuilder  — configures per-commit auth; build() → UploadCommit
-//!   ├── FileDownloadGroupBuilder — configures per-group auth; build() → FileDownloadGroup
+//!   ├── UploadCommitBuilder  — configures per-commit auth; build() → XetUploadCommit
+//!   ├── FileDownloadGroupBuilder — configures per-group auth; build() → XetDownloadGroup
 //!   └── DownloadStreamGroupBuilder — configures per-group auth; build() → DownloadStreamGroup
 //! ```
 //!
@@ -23,34 +23,36 @@
 //! [`with_token_refresh_url`](UploadCommitBuilder::with_token_refresh_url), then call
 //! [`build`](UploadCommitBuilder::build) (async) or
 //! [`build_blocking`](UploadCommitBuilder::build_blocking) (sync).
-//! Queue files with [`upload_from_path`](UploadCommit::upload_from_path) /
-//! [`upload_from_path_blocking`](UploadCommit::upload_from_path_blocking) or
-//! [`upload_bytes`](UploadCommit::upload_bytes) /
-//! [`upload_bytes_blocking`](UploadCommit::upload_bytes_blocking), then call
-//! [`commit`](UploadCommit::commit) or
-//! [`commit_blocking`](UploadCommit::commit_blocking) to wait for all
-//! transfers to finish and receive a `HashMap<`[`UniqueID`]`, `[`UploadResult`]`>`
-//! keyed by task ID.
+//! Queue files with [`upload_from_path`](XetUploadCommit::upload_from_path) /
+//! [`upload_from_path_blocking`](XetUploadCommit::upload_from_path_blocking) or
+//! [`upload_bytes`](XetUploadCommit::upload_bytes) /
+//! [`upload_bytes_blocking`](XetUploadCommit::upload_bytes_blocking), then call
+//! [`commit`](XetUploadCommit::commit) or
+//! [`commit_blocking`](XetUploadCommit::commit_blocking) to wait for all
+//! transfers to finish and receive a [`XetCommitReport`].
 //!
-//! `UploadResult` = `Arc<Result<`[`FileMetadata`]`, `[`SessionError`]`>>`.
-//! Per-task results can also be read from the returned [`UploadTaskHandle`]
-//! via [`result`](UploadTaskHandle::result) after `commit()` returns.
+//! Per-file results are available via [`XetFileUpload::finalize_ingestion`] or
+//! [`XetStreamUpload::finish`] at any time — even before `commit()`
+//! completes.  Each result is a [`XetFileMetadata`] containing [`XetFileInfo`],
+//! [`DeduplicationMetrics`], and an optional tracking name.
 //!
 //! ## File Downloads
 //!
 //! Call [`XetSession::new_file_download_group`] to obtain a [`FileDownloadGroupBuilder`].
 //! Configure auth similarly, then call [`build`](FileDownloadGroupBuilder::build) (async) or
 //! [`build_blocking`](FileDownloadGroupBuilder::build_blocking) (sync).
-//! Queue files with [`download_file_to_path`](FileDownloadGroup::download_file_to_path) /
-//! [`download_file_to_path_blocking`](FileDownloadGroup::download_file_to_path_blocking),
-//! then call [`finish`](FileDownloadGroup::finish) (async) or
-//! [`finish_blocking`](FileDownloadGroup::finish_blocking) (sync) to wait for all
-//! transfers to complete and receive a `HashMap<`[`UniqueID`]`, `[`DownloadResult`]`>`
-//! keyed by task ID.
+//! Queue files with [`download_file_to_path`](XetDownloadGroup::download_file_to_path) /
+//! [`download_file_to_path_blocking`](XetDownloadGroup::download_file_to_path_blocking),
+//! then call [`finish`](XetDownloadGroup::finish) (async) or
+//! [`finish_blocking`](XetDownloadGroup::finish_blocking) (sync) to wait for all
+//! transfers to complete and receive an [`XetDownloadGroupReport`] containing
+//! per-file [`XetDownloadReport`] entries keyed by [`UniqueID`].
 //!
-//! `DownloadResult` = `Arc<Result<`[`DownloadedFile`]`, `[`SessionError`]`>>`.
-//! Per-task results can also be read from the returned [`DownloadTaskHandle`]
-//! via [`result`](DownloadTaskHandle::result) after `finish()` returns.
+//! ## Streaming downloads
+//!
+//! Use [`XetSession::download_stream`] / [`XetSession::download_stream_blocking`]
+//! for ordered byte streaming, or [`XetSession::download_unordered_stream`] /
+//! [`XetSession::download_unordered_stream_blocking`] for unordered chunks.
 //!
 //! ## Streaming Downloads
 //!
@@ -67,29 +69,30 @@
 //! concurrently from the same group; they share a single CAS connection pool and
 //! auth token.
 //!
-//! Each stream exposes [`get_progress`](XetDownloadStream::get_progress) (returning
+//! Each stream exposes [`progress`](XetDownloadStream::progress) (returning
 //! [`ItemProgressReport`]) and can be explicitly cancelled via
 //! [`cancel`](XetDownloadStream::cancel).
 //!
 //! ## Progress tracking
 //!
-//! [`UploadCommit`] and [`FileDownloadGroup`] expose `get_progress()`, which
-//! returns a [`GroupProgressReport`] without acquiring a lock on the calling
-//! thread (useful for Python bindings that must release the GIL).
+//! Both [`XetUploadCommit`] and [`XetDownloadGroup`] expose `progress()`,
+//! which returns a [`GroupProgressReport`] without acquiring a lock on the
+//! calling thread (useful for Python bindings that must release the GIL).
 //! Poll it from a background thread/task while the main thread/task blocks
 //! in `commit()` / `finish()`.
 //!
 //! Individual [`XetDownloadStream`] and [`XetUnorderedDownloadStream`] objects expose
-//! their own [`get_progress`](XetDownloadStream::get_progress), returning an
+//! their own [`progress`](XetDownloadStream::progress), returning an
 //! [`ItemProgressReport`] with lock-free atomic reads.
 //!
 //! ## Error handling
 //!
 //! All public methods return `Result<_, `[`SessionError`]`>`.
-//! [`commit`](UploadCommit::commit) returns `HashMap<`[`UniqueID`]`, `[`UploadResult`]`>`
-//! keyed by task ID, and [`finish`](FileDownloadGroup::finish) returns
-//! `HashMap<`[`UniqueID`]`, `[`DownloadResult`]`>` keyed by task ID, so a single failed
-//! file does not discard all others.
+//! [`commit`](XetUploadCommit::commit) returns a [`XetCommitReport`] containing
+//! aggregate dedup metrics, progress, and per-file [`XetFileMetadata`].
+//! [`finish`](XetDownloadGroup::finish) returns
+//! [`XetDownloadGroupReport`] keyed by task ID. If any download
+//! fails, the error is propagated immediately.
 //!
 //! # Quick start — sync API
 //!
@@ -104,22 +107,19 @@
 //!     .with_token_info("write-token", 1_700_000_000)
 //!     .build_blocking()?;
 //! let handle = commit.upload_from_path_blocking("file.bin".into(), Sha256Policy::Compute)?;
-//! let results = commit.commit_blocking()?;
-//! let m = results.values().next().unwrap().as_ref().as_ref().unwrap();
+//! let meta = handle.finalize_ingestion_blocking()?;
+//! let report = commit.commit_blocking()?;
+//! // report.dedup_metrics, report.progress, report.files
 //!
 //! // Download — configure token on the group builder, then build_blocking
 //! let group = session
 //!     .new_file_download_group()?
 //!     .with_token_info("read-token", 1_700_000_000)
 //!     .build_blocking()?;
-//! let info = XetFileInfo {
-//!     hash: m.hash.clone(),
-//!     file_size: Some(m.file_size),
-//!     sha256: m.sha256.clone(),
-//! };
+//! let info = meta.xet_info.clone();
 //! let dl_handle = group.download_file_to_path_blocking(info, "out/file.bin".into())?;
-//! let finish_results = group.finish_blocking()?;
-//! let r = finish_results.get(&dl_handle.task_id).unwrap().as_ref().as_ref().unwrap();
+//! let finish_report = group.finish_blocking()?;
+//! let r = finish_report.downloads.get(&dl_handle.task_id()).unwrap();
 //!
 //! # Ok::<(), xet::xet_session::SessionError>(())
 //! ```
@@ -141,8 +141,9 @@
 //!     .build()
 //!     .await?;
 //! let handle = commit.upload_from_path("file.bin".into(), Sha256Policy::Compute).await?;
-//! let results = commit.commit().await?;
-//! let m = results.values().next().unwrap().as_ref().as_ref().unwrap();
+//! let meta = handle.finalize_ingestion().await?;
+//! let report = commit.commit().await?;
+//! // report.dedup_metrics, report.progress, report.files
 //!
 //! // Download — configure token on the group builder, then build().await
 //! let group = session
@@ -150,14 +151,10 @@
 //!     .with_token_info("read-token", 1_700_000_000)
 //!     .build()
 //!     .await?;
-//! let info = XetFileInfo {
-//!     hash: m.hash.clone(),
-//!     file_size: Some(m.file_size),
-//!     sha256: m.sha256.clone(),
-//! };
+//! let info = meta.xet_info.clone();
 //! let dl_handle = group.download_file_to_path(info, "out/file.bin".into()).await?;
-//! let finish_results = group.finish().await?;
-//! let r = finish_results.get(&dl_handle.task_id).unwrap().as_ref().as_ref().unwrap();
+//! let finish_report = group.finish().await?;
+//! let r = finish_report.downloads.get(&dl_handle.task_id()).unwrap();
 //! # Ok(())
 //! # }
 //! ```
@@ -166,18 +163,25 @@ mod common;
 mod download_stream_group;
 mod errors;
 mod file_download_group;
+mod file_download_handle;
 mod session;
-mod tasks;
+mod task_runtime;
 mod upload_commit;
+mod upload_file_handle;
+mod upload_stream_handle;
 
 pub use download_stream_group::{
     DownloadStreamGroup, DownloadStreamGroupBuilder, XetDownloadStream, XetUnorderedDownloadStream,
 };
 pub use errors::SessionError;
-pub use file_download_group::{DownloadResult, DownloadedFile, FileDownloadGroup, FileDownloadGroupBuilder};
+pub use file_download_group::{FileDownloadGroupBuilder, XetDownloadGroup, XetDownloadGroupReport};
+pub use file_download_handle::{XetDownloadReport, XetFileDownload};
 pub use session::{XetSession, XetSessionBuilder};
-pub use tasks::{DownloadTaskHandle, TaskHandle, TaskStatus, UploadTaskHandle};
-pub use upload_commit::{FileMetadata, UploadCommit, UploadCommitBuilder, UploadResult};
+pub use task_runtime::XetTaskState;
+pub use upload_commit::{UploadCommitBuilder, XetCommitReport, XetFileMetadata, XetUploadCommit};
+pub use upload_file_handle::XetFileUpload;
+pub use upload_stream_handle::XetStreamUpload;
+pub use xet_data::deduplication::DeduplicationMetrics;
 pub use xet_data::processing::{Sha256Policy, XetFileInfo};
 pub use xet_data::progress_tracking::{GroupProgressReport, ItemProgressReport, UniqueID};
 pub use xet_runtime::config::XetConfig;

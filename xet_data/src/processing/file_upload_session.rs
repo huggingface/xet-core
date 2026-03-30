@@ -163,7 +163,7 @@ impl FileUploadSession {
 
                         bytes_read += buffer.len() as u64;
 
-                        cleaner.add_data_impl(Bytes::from(buffer)).await?;
+                        cleaner.add_data_from_bytes(Bytes::from(buffer)).await?;
                     }
 
                     // Finish and return the result.
@@ -236,7 +236,7 @@ impl FileUploadSession {
         self: &Arc<Self>,
         file_path: PathBuf,
         sha256: Sha256Policy,
-    ) -> Result<(UniqueID, JoinHandle<Result<XetFileInfo>>)> {
+    ) -> Result<(UniqueID, JoinHandle<Result<(XetFileInfo, DeduplicationMetrics)>>)> {
         self.check_not_finalized()?;
         let file_size = std::fs::metadata(&file_path)?.len();
         let tracking_name: Arc<str> = Arc::from(file_path.to_string_lossy().as_ref());
@@ -260,7 +260,7 @@ impl FileUploadSession {
         bytes: Vec<u8>,
         sha256: Sha256Policy,
         tracking_name: Option<Arc<str>>,
-    ) -> Result<(UniqueID, JoinHandle<Result<XetFileInfo>>)> {
+    ) -> Result<(UniqueID, JoinHandle<Result<(XetFileInfo, DeduplicationMetrics)>>)> {
         self.check_not_finalized()?;
         let (id, mut cleaner) = self.start_clean(tracking_name, Some(bytes.len() as u64), sha256)?;
 
@@ -269,14 +269,16 @@ impl FileUploadSession {
         let handle = rt.spawn(async move {
             let _permit = semaphore.acquire().await?;
             cleaner.add_data(&bytes).await?;
-            let (file_info, _metrics) = cleaner.finish().await?;
-            Ok(file_info)
+            cleaner.finish().await
         });
 
         Ok((id, handle))
     }
 
-    async fn feed_file_to_cleaner(mut cleaner: SingleFileCleaner, file_path: &Path) -> Result<XetFileInfo> {
+    async fn feed_file_to_cleaner(
+        mut cleaner: SingleFileCleaner,
+        file_path: &Path,
+    ) -> Result<(XetFileInfo, DeduplicationMetrics)> {
         let mut reader = File::open(file_path)?;
         let filesize = reader.metadata()?.len();
         let mut buffer = vec![0u8; u64::min(filesize, *xet_config().data.ingestion_block_size) as usize];
@@ -288,8 +290,7 @@ impl FileUploadSession {
             }
             cleaner.add_data(&buffer[..n]).await?;
         }
-        let (file_info, _metrics) = cleaner.finish().await?;
-        Ok(file_info)
+        cleaner.finish().await
     }
 
     /// Registers a new xorb for upload, returning true if the xorb was added to the upload queue and false

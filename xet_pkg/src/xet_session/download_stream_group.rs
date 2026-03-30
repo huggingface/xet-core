@@ -23,6 +23,7 @@ use xet_data::progress_tracking::{ItemProgressReport, UniqueID};
 use super::common::create_translator_config;
 use super::errors::SessionError;
 use super::session::XetSession;
+use super::task_runtime::TaskRuntime;
 use crate::error::XetError;
 
 /// Builder for [`DownloadStreamGroup`].
@@ -75,14 +76,17 @@ impl DownloadStreamGroupBuilder {
             token_info,
             token_refresh,
         } = self;
-        let group = session
-            .runtime
-            .bridge_async("new_download_stream_group", {
-                let session = session.clone();
-                async move { DownloadStreamGroup::new(session, token_info, token_refresh).await }
+        let session_for_reg = session.clone();
+        let parent_runtime = session.inner.task_runtime.clone();
+        let child_parent = parent_runtime.clone();
+        let group = parent_runtime
+            .bridge_async("new_download_stream_group", async move {
+                let group_runtime = child_parent.child()?;
+                DownloadStreamGroup::new(session, group_runtime, token_info, token_refresh).await
             })
-            .await??;
-        session
+            .await?;
+        session_for_reg
+            .inner
             .active_download_stream_groups
             .lock()?
             .insert(group.id(), Arc::downgrade(&group.inner));
@@ -106,11 +110,15 @@ impl DownloadStreamGroupBuilder {
             token_info,
             token_refresh,
         } = self;
-        let group = session.runtime.bridge_sync({
-            let session = session.clone();
-            async move { DownloadStreamGroup::new(session, token_info, token_refresh).await }
-        })??;
-        session
+        let session_for_reg = session.clone();
+        let parent_runtime = session.inner.task_runtime.clone();
+        let child_parent = parent_runtime.clone();
+        let group = parent_runtime.bridge_sync("new_download_stream_group_blocking", async move {
+            let group_runtime = child_parent.child()?;
+            DownloadStreamGroup::new(session, group_runtime, token_info, token_refresh).await
+        })?;
+        session_for_reg
+            .inner
             .active_download_stream_groups
             .lock()?
             .insert(group.id(), Arc::downgrade(&group.inner));
@@ -142,30 +150,34 @@ impl DownloadStreamGroupBuilder {
 #[derive(Clone)]
 pub struct DownloadStreamGroup {
     pub(super) inner: Arc<DownloadStreamGroupInner>,
-}
-
-impl std::ops::Deref for DownloadStreamGroup {
-    type Target = DownloadStreamGroupInner;
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
+    task_runtime: Arc<TaskRuntime>,
 }
 
 /// All shared state owned by a single DownloadStreamGroup instance.
 /// Accessed through `Arc<DownloadStreamGroupInner>`; do not use this type directly.
 #[doc(hidden)]
 pub struct DownloadStreamGroupInner {
-    group_id: UniqueID,
-    session: XetSession,
-    /// Wrapped in `Option` so [`abort`](DownloadStreamGroup::abort) can drop the
-    /// [`FileDownloadSession`] and cancel all active streams.
+    pub(super) group_id: UniqueID,
+    /// Wrapped in `Option` so the underlying session can be dropped to cancel all active streams.
     download_session: Mutex<Option<Arc<FileDownloadSession>>>,
+}
+
+impl DownloadStreamGroupInner {
+    /// Cancel all active streams by taking and aborting the underlying download session.
+    pub(super) fn abort(&self) {
+        if let Ok(mut guard) = self.download_session.lock()
+            && let Some(dl_session) = guard.take()
+        {
+            dl_session.abort_active_streams();
+        }
+    }
 }
 
 impl DownloadStreamGroup {
     /// Create a new download stream group. Called by [`DownloadStreamGroupBuilder::build`].
     pub(super) async fn new(
         session: XetSession,
+        task_runtime: Arc<TaskRuntime>,
         token_info: Option<(String, u64)>,
         token_refresh: Option<(String, Arc<HeaderMap>)>,
     ) -> Result<Self, XetError> {
@@ -176,27 +188,23 @@ impl DownloadStreamGroup {
         Ok(Self {
             inner: Arc::new(DownloadStreamGroupInner {
                 group_id,
-                session,
                 download_session: Mutex::new(Some(download_session)),
             }),
+            task_runtime,
         })
     }
 
-    /// Get the group ID.
-    pub(super) fn id(&self) -> UniqueID {
-        self.group_id
-    }
-
-    /// Abort this download stream group, cancelling all active streams.
-    pub(super) fn abort(&self) -> Result<(), XetError> {
-        if let Some(session) = self.download_session.lock()?.take() {
-            session.abort_active_streams();
-        }
-        Ok(())
-    }
-
     fn get_download_session(&self) -> Result<Arc<FileDownloadSession>, XetError> {
-        self.download_session.lock()?.clone().ok_or(XetError::Aborted)
+        self.inner
+            .download_session
+            .lock()?
+            .clone()
+            .ok_or(XetError::UserCancelled("stream group aborted".into()))
+    }
+
+    /// Returns the unique ID for this stream group.
+    pub(super) fn id(&self) -> UniqueID {
+        self.inner.group_id
     }
 
     /// Create a [`XetDownloadStream`] for the given file, optionally
@@ -204,7 +212,7 @@ impl DownloadStreamGroup {
     ///
     /// The returned stream yields data chunks as they are reconstructed,
     /// with built-in progress tracking via
-    /// [`get_progress`](XetDownloadStream::get_progress).
+    /// [`progress`](XetDownloadStream::progress).
     /// The reconstruction task is spawned on the session's runtime but
     /// paused until [`start`](XetDownloadStream::start) is called (or the
     /// first [`next`](XetDownloadStream::next) /
@@ -215,23 +223,21 @@ impl DownloadStreamGroup {
     /// If `range` is `Some`, only the specified byte range of the file is
     /// reconstructed.
     ///
-    /// Returns `Err(SessionError::Aborted)` if the session or this group has been aborted.
+    /// Returns `Err(SessionError::UserCancelled)` if the session or this group has been aborted.
     pub async fn download_stream(
         &self,
         file_info: XetFileInfo,
         range: Option<Range<u64>>,
     ) -> Result<XetDownloadStream, SessionError> {
-        self.session.check_alive()?;
-
         let group = self.clone();
-        self.session
-            .runtime
+        self.task_runtime
             .bridge_async("download_stream", async move {
                 let dl_session = group.get_download_session()?;
                 let (id, stream) = dl_session.download_stream(&file_info, range).await?;
-                Ok(XetDownloadStream::new(stream, dl_session, id))
+                let stream_runtime = group.task_runtime.child()?;
+                Ok(XetDownloadStream::new(stream, dl_session, id, stream_runtime))
             })
-            .await?
+            .await
     }
 
     /// Blocking version of [`download_stream`](Self::download_stream).
@@ -255,14 +261,13 @@ impl DownloadStreamGroup {
         file_info: XetFileInfo,
         range: Option<Range<u64>>,
     ) -> Result<XetDownloadStream, SessionError> {
-        self.session.check_alive()?;
-
         let group = self.clone();
-        self.session.runtime.bridge_sync(async move {
+        self.task_runtime.bridge_sync("download_stream_blocking", async move {
             let dl_session = group.get_download_session()?;
             let (id, stream) = dl_session.download_stream(&file_info, range).await?;
-            Ok(XetDownloadStream::new(stream, dl_session, id))
-        })?
+            let stream_runtime = group.task_runtime.child()?;
+            Ok(XetDownloadStream::new(stream, dl_session, id, stream_runtime))
+        })
     }
 
     /// Create an [`XetUnorderedDownloadStream`] for the given file,
@@ -270,30 +275,28 @@ impl DownloadStreamGroup {
     ///
     /// The returned stream yields `(offset, Bytes)` chunks in whatever
     /// order they complete, with built-in progress tracking via
-    /// [`get_progress`](XetUnorderedDownloadStream::get_progress).
+    /// [`progress`](XetUnorderedDownloadStream::progress).
     ///
     /// If `range` is `Some`, only the specified byte range of the file is
     /// reconstructed.
     ///
     /// Can be awaited from any async executor (tokio, smol, async-std, futures).
     ///
-    /// Returns `Err(SessionError::Aborted)` if the session or this group has been aborted.
+    /// Returns `Err(SessionError::UserCancelled)` if the session or this group has been aborted.
     pub async fn download_unordered_stream(
         &self,
         file_info: XetFileInfo,
         range: Option<Range<u64>>,
     ) -> Result<XetUnorderedDownloadStream, SessionError> {
-        self.session.check_alive()?;
-
         let group = self.clone();
-        self.session
-            .runtime
+        self.task_runtime
             .bridge_async("download_unordered_stream", async move {
                 let dl_session = group.get_download_session()?;
                 let (id, stream) = dl_session.download_unordered_stream(&file_info, range).await?;
-                Ok(XetUnorderedDownloadStream::new(stream, dl_session, id))
+                let stream_runtime = group.task_runtime.child()?;
+                Ok(XetUnorderedDownloadStream::new(stream, dl_session, id, stream_runtime))
             })
-            .await?
+            .await
     }
 
     /// Blocking version of [`download_unordered_stream`](Self::download_unordered_stream).
@@ -317,14 +320,13 @@ impl DownloadStreamGroup {
         file_info: XetFileInfo,
         range: Option<Range<u64>>,
     ) -> Result<XetUnorderedDownloadStream, SessionError> {
-        self.session.check_alive()?;
-
         let group = self.clone();
-        self.session.runtime.bridge_sync(async move {
+        self.task_runtime.bridge_sync("download_unordered_stream_blocking", async move {
             let dl_session = group.get_download_session()?;
             let (id, stream) = dl_session.download_unordered_stream(&file_info, range).await?;
-            Ok(XetUnorderedDownloadStream::new(stream, dl_session, id))
-        })?
+            let stream_runtime = group.task_runtime.child()?;
+            Ok(XetUnorderedDownloadStream::new(stream, dl_session, id, stream_runtime))
+        })
     }
 }
 
@@ -345,14 +347,21 @@ pub struct XetDownloadStream {
     inner: DownloadStream,
     download_session: Arc<FileDownloadSession>,
     id: UniqueID,
+    task_runtime: Arc<TaskRuntime>,
 }
 
 impl XetDownloadStream {
-    pub(super) fn new(inner: DownloadStream, download_session: Arc<FileDownloadSession>, id: UniqueID) -> Self {
+    pub(super) fn new(
+        inner: DownloadStream,
+        download_session: Arc<FileDownloadSession>,
+        id: UniqueID,
+        task_runtime: Arc<TaskRuntime>,
+    ) -> Self {
         Self {
             inner,
             download_session,
             id,
+            task_runtime,
         }
     }
 
@@ -391,6 +400,7 @@ impl XetDownloadStream {
     /// Subsequent calls to [`next`](Self::next) / [`blocking_next`](Self::blocking_next)
     /// will return `Ok(None)`.
     pub fn cancel(&mut self) {
+        let _ = self.task_runtime.cancel_subtree();
         self.inner.cancel();
     }
 
@@ -399,7 +409,7 @@ impl XetDownloadStream {
     /// The returned [`ItemProgressReport`] contains the item name,
     /// total bytes, and bytes completed so far. This method is lock-free
     /// (reads atomic counters) and safe to call from any thread.
-    pub fn get_progress(&self) -> ItemProgressReport {
+    pub fn progress(&self) -> ItemProgressReport {
         self.download_session
             .item_report(self.id)
             .expect("progress item was registered at stream creation and is never removed")
@@ -430,6 +440,7 @@ pub struct XetUnorderedDownloadStream {
     inner: UnorderedDownloadStream,
     download_session: Arc<FileDownloadSession>,
     id: UniqueID,
+    task_runtime: Arc<TaskRuntime>,
 }
 
 impl XetUnorderedDownloadStream {
@@ -437,11 +448,13 @@ impl XetUnorderedDownloadStream {
         inner: UnorderedDownloadStream,
         download_session: Arc<FileDownloadSession>,
         id: UniqueID,
+        task_runtime: Arc<TaskRuntime>,
     ) -> Self {
         Self {
             inner,
             download_session,
             id,
+            task_runtime,
         }
     }
 
@@ -481,6 +494,7 @@ impl XetUnorderedDownloadStream {
     /// Subsequent calls to [`next`](Self::next) / [`blocking_next`](Self::blocking_next)
     /// will return `Ok(None)`.
     pub fn cancel(&mut self) {
+        let _ = self.task_runtime.cancel_subtree();
         self.inner.cancel();
     }
 
@@ -489,7 +503,7 @@ impl XetUnorderedDownloadStream {
     /// The returned [`ItemProgressReport`] contains the item name,
     /// total bytes, and bytes completed so far. This method is lock-free
     /// (reads atomic counters) and safe to call from any thread.
-    pub fn get_progress(&self) -> ItemProgressReport {
+    pub fn progress(&self) -> ItemProgressReport {
         self.download_session
             .item_report(self.id)
             .expect("progress item was registered at stream creation and is never removed")
@@ -523,16 +537,12 @@ mod tests {
         name: &str,
     ) -> Result<XetFileInfo, Box<dyn std::error::Error>> {
         let commit = session.new_upload_commit()?.build().await?;
-        let handle = commit
+        let _handle = commit
             .upload_bytes(data.to_vec(), Sha256Policy::Compute, Some(name.into()))
             .await?;
         let results = commit.commit().await?;
-        let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
-        Ok(XetFileInfo {
-            hash: meta.hash.clone(),
-            file_size: Some(meta.file_size),
-            sha256: meta.sha256.clone(),
-        })
+        let meta = results.uploads.into_values().next().expect("one uploaded file");
+        Ok(meta.xet_info)
     }
 
     fn upload_bytes_blocking(
@@ -541,14 +551,10 @@ mod tests {
         name: &str,
     ) -> Result<XetFileInfo, Box<dyn std::error::Error>> {
         let commit = session.new_upload_commit()?.build_blocking()?;
-        let handle = commit.upload_bytes_blocking(data.to_vec(), Sha256Policy::Compute, Some(name.into()))?;
+        let _handle = commit.upload_bytes_blocking(data.to_vec(), Sha256Policy::Compute, Some(name.into()))?;
         let results = commit.commit_blocking()?;
-        let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
-        Ok(XetFileInfo {
-            hash: meta.hash.clone(),
-            file_size: Some(meta.file_size),
-            sha256: meta.sha256.clone(),
-        })
+        let meta = results.uploads.into_values().next().expect("one uploaded file");
+        Ok(meta.xet_info)
     }
 
     async fn stream_group_async(session: &XetSession) -> DownloadStreamGroup {
@@ -604,7 +610,7 @@ mod tests {
 
         let group = stream_group_async(&session).await;
         let mut stream = group.download_stream(file_info, None).await.unwrap();
-        let initial = stream.get_progress();
+        let initial = stream.progress();
         assert_eq!(initial.total_bytes, original.len() as u64);
         assert_eq!(initial.bytes_completed, 0);
 
@@ -614,7 +620,7 @@ mod tests {
         }
         assert_eq!(collected, original);
 
-        let final_progress = stream.get_progress();
+        let final_progress = stream.progress();
         assert_eq!(final_progress.total_bytes, original.len() as u64);
         assert_eq!(final_progress.bytes_completed, original.len() as u64);
     }
@@ -636,7 +642,7 @@ mod tests {
         }
         assert_eq!(collected, original);
 
-        let final_progress = stream.get_progress();
+        let final_progress = stream.progress();
         assert_eq!(final_progress.total_bytes, original.len() as u64);
         assert_eq!(final_progress.bytes_completed, original.len() as u64);
     }

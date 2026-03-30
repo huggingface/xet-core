@@ -18,11 +18,22 @@ pub enum RuntimeError {
     #[error("Reqwest error: {0}")]
     ReqwestError(#[from] reqwest::Error),
 
-    #[error("Mutex poison error: {0}")]
-    PoisonError(String),
+    #[error("Lock poisoned: {0}")]
+    LockPoisoned(String),
+
+    #[error("Keyboard interrupt (SIGINT)")]
+    KeyboardInterrupt,
 
     #[error("{0}")]
     Other(String),
+}
+
+// PoisonError<T> is generic over the lock-guard type, so #[from] cannot be used directly.
+// This blanket impl gives the same `?`-propagation ergonomics for any poisoned std lock.
+impl<T> From<std::sync::PoisonError<T>> for RuntimeError {
+    fn from(e: std::sync::PoisonError<T>) -> Self {
+        RuntimeError::LockPoisoned(e.to_string())
+    }
 }
 
 impl From<tokio::task::JoinError> for RuntimeError {

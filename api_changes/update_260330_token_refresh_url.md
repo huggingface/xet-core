@@ -29,19 +29,56 @@ use by legacy API functions (`upload_bytes`, `upload_files`, `download_files` in
 ### Changed factory methods on `XetSession`
 
 `new_upload_commit` and `new_file_download_group` are now **synchronous** and return
-builder types instead of directly constructing the commit/group:
+builder types instead of directly constructing the commit/group.  The `_blocking`
+variants have been removed (use `build_blocking()` on the returned builder instead):
 
 ```
 // Before
-pub async fn new_upload_commit(&self) -> Result<UploadCommit, SessionError>
-pub fn new_upload_commit_blocking(&self) -> Result<UploadCommit, SessionError>
-pub async fn new_file_download_group(&self) -> Result<FileDownloadGroup, SessionError>
-pub fn new_file_download_group_blocking(&self) -> Result<FileDownloadGroup, SessionError>
+pub async fn new_upload_commit(&self) -> Result<XetUploadCommit, SessionError>
+pub fn new_upload_commit_blocking(&self) -> Result<XetUploadCommit, SessionError>
+pub async fn new_file_download_group(&self) -> Result<XetDownloadGroup, SessionError>
+pub fn new_file_download_group_blocking(&self) -> Result<XetDownloadGroup, SessionError>
 
 // After
 pub fn new_upload_commit(&self) -> Result<UploadCommitBuilder, SessionError>
 pub fn new_file_download_group(&self) -> Result<FileDownloadGroupBuilder, SessionError>
 ```
+
+Both return `Err(SessionError::UserCancelled)` if the session has been aborted.
+
+### Session ID type: `XetSessionInner::id` is `ulid::Ulid`
+
+> ⚠️ **Regression-prone.** This was fixed in PR #738 and regressed once already during
+> a subsequent merge. A dedicated test (`test_session_id_is_ulid`) guards against it.
+> Do **not** change `id: Ulid` back to `UniqueId` or any other type.
+
+`XetSessionInner::id` is `ulid::Ulid` (crate `ulid = "1"`, in workspace `Cargo.toml`).
+
+```rust
+// xet_pkg/src/xet_session/session.rs — XetSessionInner
+pub(super) id: Ulid,   // ← must stay Ulid
+
+// constructed as:
+id: Ulid::new(),
+```
+
+`Ulid` values are globally unique across processes and machines (128-bit, time-ordered).
+The old `UniqueId` (`xet_runtime::utils::UniqueId`) was a process-local atomic `u64` and
+must **not** be used here. The guard test in `session.rs` is:
+
+```rust
+#[test]
+fn test_session_id_is_ulid() {
+    let s = XetSessionBuilder::new().build().unwrap();
+    assert!(s.inner.id.to_string().parse::<ulid::Ulid>().is_ok());
+}
+```
+
+### Changed `XetDownloadStream` / `XetUnorderedDownloadStream`
+
+- `get_progress()` renamed to `progress()` on both types.
+- `cancel()` now also propagates cancellation through the `TaskRuntime` tree before
+  cancelling the underlying download stream.
 
 ### New builder types
 
@@ -50,9 +87,12 @@ pub fn new_file_download_group(&self) -> Result<FileDownloadGroupBuilder, Sessio
 ```rust
 pub fn with_token_info(self, token: impl Into<String>, expiry: u64) -> Self
 pub fn with_token_refresh_url(self, url: impl Into<String>, headers: HeaderMap) -> Self
-pub async fn build(self) -> Result<UploadCommit / FileDownloadGroup, SessionError>
-pub fn build_blocking(self) -> Result<UploadCommit / FileDownloadGroup, SessionError>
+pub async fn build(self) -> Result<XetUploadCommit / XetDownloadGroup, SessionError>
+pub fn build_blocking(self) -> Result<XetUploadCommit / XetDownloadGroup, SessionError>
 ```
+
+`build_blocking()` returns `Err(SessionError::WrongRuntimeMode)` when called from within
+an external tokio runtime context (e.g. inside `#[tokio::main]`).
 
 ---
 
@@ -172,9 +212,10 @@ separate `xet_pkg::xet_session::download_streams` module.  That module has been
 deleted and both types are now defined directly in `download_stream_group.rs`
 alongside `DownloadStreamGroup` and `DownloadStreamGroupBuilder`.
 
-The public API of both types is unchanged.  The only visible change is that their
-Rust module path is now `xet_pkg::xet_session::download_stream_group::Xet*Stream`
-(though they continue to be re-exported at `xet_pkg::xet_session::Xet*Stream`).
+The public API of both types is unchanged except for `get_progress()` being renamed
+to `progress()`.  Their Rust module path is now
+`xet_pkg::xet_session::download_stream_group::Xet*Stream` (though they continue to
+be re-exported at `xet_pkg::xet_session::Xet*Stream`).
 
 ### `xet_client::common::http_client` — new shared module
 
@@ -207,8 +248,9 @@ migration required for external callers.
 
 ## New types: `DownloadStreamGroup` / `DownloadStreamGroupBuilder`
 
-Streaming downloads are now surfaced through a new `DownloadStreamGroup` type rather
-than directly on `XetSession`.
+Streaming downloads have been moved off `XetSession` and are now surfaced exclusively
+through a new `DownloadStreamGroup` type.  The old session-level `download_stream*`
+methods have been removed.
 
 ### `XetSession::new_download_stream_group`
 
@@ -217,7 +259,7 @@ pub fn new_download_stream_group(&self) -> Result<DownloadStreamGroupBuilder, Se
 ```
 
 Returns a builder that can be configured with per-group auth before constructing the
-group.  Returns `Err(SessionError::Aborted)` if the session has been aborted.
+group.  Returns `Err(SessionError::UserCancelled)` if the session has been aborted.
 
 ### `DownloadStreamGroupBuilder`
 
@@ -242,6 +284,8 @@ CAS connection pool and auth token.
 
 ### Removed from `XetSession`
 
+The following `XetSession` methods have been removed:
+
 - `download_stream`
 - `download_stream_blocking`
 - `download_unordered_stream`
@@ -249,7 +293,17 @@ CAS connection pool and auth token.
 - `get_or_init_streaming_session` (internal)
 
 The lazily-initialised `streaming_download_session` field on `XetSessionInner` has been
-removed and replaced with `active_download_stream_groups`.
+removed and replaced with `active_download_stream_groups`:
+
+```rust
+// XetSessionInner — new field
+pub(super) active_download_stream_groups: Mutex<HashMap<UniqueID, Weak<DownloadStreamGroupInner>>>,
+```
+
+Weak references are used so that dropping all user-held `DownloadStreamGroup` clones frees
+the group immediately without needing an explicit finalization call (unlike
+`XetUploadCommit` / `XetDownloadGroup` which deregister on `commit()` / `finish()`).
+`XetSession::abort()` upgrades live weak refs to cancel active streams.
 
 ---
 
@@ -261,7 +315,7 @@ removed and replaced with `active_download_stream_groups`.
 - `xet_runtime::error::RuntimeError` — added `ReqwestError` and `PoisonError` variants
 - `xet_runtime::core::XetRuntime::get_or_create_reqwest_client` — return type changed to `xet_runtime::Result<Client>`
 - `xet_client::error::ClientError` — added `From<xet_runtime::error::RuntimeError>`
-- `xet_pkg::xet_session::{session, common, upload_commit, file_download_group, download_stream_group}` — auth moved from session to per-commit/group builders; streaming downloads moved to `DownloadStreamGroup`; `XetDownloadStream` and `XetUnorderedDownloadStream` merged from the now-deleted `download_streams` module into `download_stream_group`
+- `xet_pkg::xet_session::{session, common, upload_commit, file_download_group, download_stream_group}` — auth moved from session to per-commit/group builders; session-level `download_stream*` methods removed and replaced by `DownloadStreamGroup`; `XetSessionInner::id` changed to `Ulid`; `XetDownloadStream` and `XetUnorderedDownloadStream` merged from the now-deleted `download_streams` module into `download_stream_group`; `get_progress()` renamed to `progress()` on both stream types
 - `git_xet::token_refresher` — now a thin factory delegating to `xet_client`
 - `git_xet::app::xet_agent` — updated to call `new_git_token_refresher`
 - Legacy `hf_xet` Python functions (`upload_bytes`, `upload_files`, `download_files`) are **unchanged**

@@ -30,6 +30,16 @@ jobs:
       - uses: actions/checkout@v6
       - name: Machete
         uses: bnjbvr/cargo-machete@main
+  check-bench-compiles:
+    name: Check benchmarks compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.89.0
+      - uses: ./.github/actions/cache-rust-build
+      - name: Compile benchmarks
+        run: |
+          cargo bench --no-run --workspace --exclude git_xet
   build_and_test-linux:
     runs-on: ubuntu-latest
     steps:
@@ -51,13 +61,10 @@ jobs:
           git lfs install
       - name: Build and Test
         run: |
-          cargo test --verbose --no-fail-fast --features "strict git-xet-for-integration-test"
+          cargo test --verbose --no-fail-fast --features "strict simulation git-xet-for-integration-test"
       - name: Build and Test hf_xet
         run: |
           cd hf_xet && cargo test --verbose --no-fail-fast
-      - name: Check benchmarks compile
-        run: |
-          cargo bench --no-run
       - name: Check Cargo.lock has no uncommitted changes
         run: |
           # the build and test steps would update Cargo.lock if it is out of date
@@ -69,12 +76,10 @@ jobs:
         uses: actions/checkout@v6
       - name: Install Rust 1.89
         uses: dtolnay/rust-toolchain@1.89.0
-        with:
-          components: clippy
       - uses: ./.github/actions/cache-rust-build
       - name: Build and Test
         run: |
-          cargo test --verbose --no-fail-fast --features "strict git-xet-for-integration-test"
+          cargo test --verbose --no-fail-fast --features "strict simulation git-xet-for-integration-test"
       - name: Build and Test hf_xet
         run: |
           cd hf_xet && cargo test --verbose --no-fail-fast
@@ -85,8 +90,6 @@ jobs:
         uses: actions/checkout@v6
       - name: Install Rust 1.89
         uses: dtolnay/rust-toolchain@1.89.0
-        with:
-          components: clippy
       - name: Set up Git LFS
         run: |
           brew install git-lfs
@@ -94,13 +97,10 @@ jobs:
       - uses: ./.github/actions/cache-rust-build
       - name: Build and Test
         run: |
-          cargo test --verbose --no-fail-fast --features "strict git-xet-for-integration-test"
+          cargo test --verbose --no-fail-fast --features "strict simulation git-xet-for-integration-test"
       - name: Build and Test hf_xet
         run: |
           cd hf_xet && cargo test --verbose --no-fail-fast
-      - name: Check benchmarks compile
-        run: |
-          cargo bench --no-run
   build_and_test-wasm:
     name: Build WASM
     runs-on: ubuntu-latest

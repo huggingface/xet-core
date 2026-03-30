@@ -1,16 +1,14 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, Weak};
-
-use once_cell::sync::Lazy;
+use std::sync::{Arc, LazyLock, Mutex, Weak};
 
 use super::error::ChunkCacheError;
 use super::{CacheConfig, ChunkCache, DiskCache};
 
 // single instance of CACHE_MANAGER not exposed to outside users that
 // dedupes cache instances based on configurations
-static CACHE_MANAGER: Lazy<CacheManager> = Lazy::new(CacheManager::new);
+static CACHE_MANAGER: LazyLock<CacheManager> = LazyLock::new(CacheManager::new);
 
 /// get_cache attempts to return a cache given the provided config parameter
 pub fn get_cache(config: &CacheConfig) -> Result<Arc<dyn ChunkCache>, ChunkCacheError> {

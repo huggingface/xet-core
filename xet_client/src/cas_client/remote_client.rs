@@ -118,6 +118,7 @@ impl RemoteClient {
         &self.endpoint
     }
 
+    #[cfg(feature = "simulation")]
     pub(crate) fn http_client(&self) -> Arc<ClientWithMiddleware> {
         self.http_client.clone()
     }

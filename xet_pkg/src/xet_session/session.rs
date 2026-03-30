@@ -10,16 +10,11 @@ use xet_data::progress_tracking::UniqueID;
 use xet_runtime::config::XetConfig;
 use xet_runtime::core::XetRuntime;
 
-use super::download_stream_group::{DownloadStreamGroup, DownloadStreamGroupBuilder, DownloadStreamGroupInner};
+use super::download_stream_group::{DownloadStreamGroupBuilder, DownloadStreamGroupInner};
 use super::errors::SessionError;
-use super::file_download_group::{FileDownloadGroup, FileDownloadGroupBuilder};
-use super::upload_commit::{UploadCommit, UploadCommitBuilder};
-
-/// Session state
-enum SessionState {
-    Alive,
-    Aborted,
-}
+use super::file_download_group::{FileDownloadGroupBuilder, XetDownloadGroup};
+use super::task_runtime::{TaskRuntime, XetTaskState};
+use super::upload_commit::{UploadCommitBuilder, XetUploadCommit};
 
 /// All shared state for a session.
 /// Lives behind `Arc<XetSessionInner>` — do not use this type directly.
@@ -36,16 +31,16 @@ pub struct XetSessionInner {
     pub(super) custom_headers: Option<Arc<HeaderMap>>,
 
     // Track active upload commits and download groups.
-    pub(super) active_upload_commits: Mutex<HashMap<UniqueID, UploadCommit>>,
-    pub(super) active_file_download_groups: Mutex<HashMap<UniqueID, FileDownloadGroup>>,
+    pub(super) active_upload_commits: Mutex<HashMap<UniqueID, XetUploadCommit>>,
+    pub(super) active_file_download_groups: Mutex<HashMap<UniqueID, XetDownloadGroup>>,
+    pub(super) task_runtime: Arc<TaskRuntime>,
+
     // Weak references so that dropping all user-held DownloadStreamGroup clones frees the group
     // immediately, without needing an explicit finalization call (unlike UploadCommit/FileDownloadGroup
     // which deregister on commit()/finish()). abort() upgrades live weak refs to cancel active streams.
     pub(super) active_download_stream_groups: Mutex<HashMap<UniqueID, Weak<DownloadStreamGroupInner>>>,
 
-    // Session state
-    state: Mutex<SessionState>,
-    // "id" is used to identity a group of activities on our server, and so need to be globally unique
+    // "id" is used to identify a group of activities on our server, and so needs to be globally unique
     pub(super) id: Ulid,
 }
 
@@ -148,15 +143,9 @@ impl XetSessionBuilder {
     /// Attach to an existing tokio runtime handle.
     ///
     /// If the handle meets runtime requirements (multi-thread flavor, time driver, IO driver),
-    /// the session will wrap it — no second thread pool is created.
-    /// [`new_upload_commit`](XetSession::new_upload_commit),
-    /// [`new_file_download_group`](XetSession::new_file_download_group), and
-    /// [`new_download_stream_group`](XetSession::new_download_stream_group) are always
-    /// available (they are synchronous factory methods), but calling
-    /// [`build_blocking`](crate::xet_session::UploadCommitBuilder::build_blocking),
-    /// [`build_blocking`](crate::xet_session::FileDownloadGroupBuilder::build_blocking), or
-    /// [`build_blocking`](crate::xet_session::DownloadStreamGroupBuilder::build_blocking) on
-    /// the returned builder will return [`SessionError::WrongRuntimeMode`].
+    /// the session will wrap it — no second thread pool is created. Only async
+    /// methods (`new_upload_commit`, `new_file_download_group`) may be called; `_blocking` variants
+    /// return [`SessionError::WrongRuntimeMode`] from `bridge_sync` (external runtime cannot run sync bridge).
     ///
     /// If the handle does **not** meet requirements (e.g. `current_thread` flavor or missing
     /// drivers), it is silently ignored and [`build`](Self::build) will fall back to creating
@@ -182,29 +171,19 @@ impl XetSessionBuilder {
     /// any executor, and `_blocking` methods are available.
     pub fn build(self) -> Result<XetSession, SessionError> {
         let handle = self.tokio_handle.or_else(|| {
-            tokio::runtime::Handle::try_current().ok().filter(|h| {
-                let ok = XetRuntime::handle_meets_requirements(h);
-                if !ok {
-                    info!(
-                        "auto-detected tokio handle rejected (missing drivers or wrong flavor); creating Owned runtime"
-                    );
-                }
-                ok
-            })
+            tokio::runtime::Handle::try_current()
+                .ok()
+                .filter(XetRuntime::handle_meets_requirements)
         });
 
         let runtime = match handle {
-            Some(h) => {
-                info!("XetSession using External runtime (wrapping caller's tokio handle)");
-                XetRuntime::from_external_with_config(h, self.config.clone())
-            },
-            None => {
-                info!("XetSession creating Owned runtime (new thread pool)");
-                XetRuntime::new_with_config(self.config.clone())?
-            },
+            Some(h) => XetRuntime::from_external_with_config(h, self.config.clone()),
+            None => XetRuntime::new_with_config(self.config.clone())?,
         };
 
-        Ok(XetSession::new(self.config, self.endpoint, self.custom_headers, runtime))
+        let session = XetSession::new(self.config, self.endpoint, self.custom_headers, runtime);
+        info!("Session created, session_id={}", session.inner.id);
+        Ok(session)
     }
 }
 
@@ -226,22 +205,15 @@ impl XetSessionBuilder {
 ///
 /// 1. Create a session with [`XetSessionBuilder`].
 /// 2. Create operations:
-///    - uploads via [`new_upload_commit`](Self::new_upload_commit) → [`UploadCommitBuilder`] → [`UploadCommit`]
+///    - uploads via [`new_upload_commit`](Self::new_upload_commit) → [`UploadCommitBuilder`] → [`XetUploadCommit`]
 ///    - file downloads via [`new_file_download_group`](Self::new_file_download_group) → [`FileDownloadGroupBuilder`] →
-///      [`FileDownloadGroup`]
+///      [`XetDownloadGroup`]
 ///    - streaming downloads via [`new_download_stream_group`](Self::new_download_stream_group) →
 ///      [`DownloadStreamGroupBuilder`] → [`DownloadStreamGroup`]
 /// 3. For an emergency stop, call [`XetSession::abort`].
 #[derive(Clone)]
 pub struct XetSession {
-    inner: Arc<XetSessionInner>,
-}
-
-impl std::ops::Deref for XetSession {
-    type Target = XetSessionInner;
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
+    pub(super) inner: Arc<XetSessionInner>,
 }
 
 impl XetSession {
@@ -252,6 +224,7 @@ impl XetSession {
         custom_headers: Option<Arc<HeaderMap>>,
         runtime: Arc<XetRuntime>,
     ) -> Self {
+        let task_runtime = TaskRuntime::new_root(runtime.clone());
         Self {
             inner: Arc::new(XetSessionInner {
                 runtime,
@@ -260,8 +233,8 @@ impl XetSession {
                 custom_headers,
                 active_upload_commits: Mutex::new(HashMap::new()),
                 active_file_download_groups: Mutex::new(HashMap::new()),
+                task_runtime,
                 active_download_stream_groups: Mutex::new(HashMap::new()),
-                state: Mutex::new(SessionState::Alive),
                 id: Ulid::new(),
             }),
         }
@@ -274,11 +247,9 @@ impl XetSession {
     /// [`build`](UploadCommitBuilder::build) (async) or
     /// [`build_blocking`](UploadCommitBuilder::build_blocking) (sync).
     ///
-    /// Returns `Err(SessionError::Aborted)` if the session has been aborted.
+    /// Returns `Err(SessionError::UserCancelled)` if the session has been aborted.
     pub fn new_upload_commit(&self) -> Result<UploadCommitBuilder, SessionError> {
-        if matches!(*self.state.lock()?, SessionState::Aborted) {
-            return Err(SessionError::Aborted);
-        }
+        self.inner.task_runtime.check_state("new_upload_commit")?;
         Ok(UploadCommitBuilder::new(self.clone()))
     }
 
@@ -289,11 +260,9 @@ impl XetSession {
     /// [`build`](FileDownloadGroupBuilder::build) (async) or
     /// [`build_blocking`](FileDownloadGroupBuilder::build_blocking) (sync).
     ///
-    /// Returns `Err(SessionError::Aborted)` if the session has been aborted.
+    /// Returns `Err(SessionError::UserCancelled)` if the session has been aborted.
     pub fn new_file_download_group(&self) -> Result<FileDownloadGroupBuilder, SessionError> {
-        if matches!(*self.state.lock()?, SessionState::Aborted) {
-            return Err(SessionError::Aborted);
-        }
+        self.inner.task_runtime.check_state("new_file_download_group")?;
         Ok(FileDownloadGroupBuilder::new(self.clone()))
     }
 
@@ -308,59 +277,76 @@ impl XetSession {
     /// [`download_stream`](DownloadStreamGroup::download_stream) and
     /// [`download_unordered_stream`](DownloadStreamGroup::download_unordered_stream).
     ///
-    /// Returns `Err(SessionError::Aborted)` if the session has been aborted.
+    /// Returns `Err(SessionError::UserCancelled)` if the session has been aborted.
     pub fn new_download_stream_group(&self) -> Result<DownloadStreamGroupBuilder, SessionError> {
-        if matches!(*self.state.lock()?, SessionState::Aborted) {
-            return Err(SessionError::Aborted);
-        }
+        self.inner.task_runtime.check_state("new_download_stream_group")?;
         Ok(DownloadStreamGroupBuilder::new(self.clone()))
     }
 
-    /// Abort the session - cancel all currently running tasks
+    pub fn status(&self) -> Result<XetTaskState, SessionError> {
+        self.inner.task_runtime.status()
+    }
+
+    /// Abort the session and cancel all currently running tasks.
     ///
-    /// This performs a SIGINT-style shutdown, aborting all active upload and download tasks.
-    /// Use this when a Ctrl+C signal is detected or when you need to immediately stop all operations.
+    /// This does not shut down the underlying runtime. Use
+    /// [`sigint_abort`](Self::sigint_abort) for SIGINT-style runtime teardown.
     pub fn abort(&self) -> Result<(), SessionError> {
-        // Mark as not accepting new work, hold the lock so no new task can be created when aborting
-        let mut state = self.state.lock()?;
-        *state = SessionState::Aborted;
+        info!("Session abort, session_id={}", self.inner.id);
+        self.inner.task_runtime.cancel_subtree()?;
 
-        // Perform SIGINT shutdown on the runtime
-        // This will cancel all active tasks (uploads, downloads, etc.)
-        self.runtime.perform_sigint_shutdown();
-
-        // Propagate states to registered tasks and clear registered work
-        let active_upload_commits = std::mem::take(&mut *self.active_upload_commits.lock()?);
+        let active_upload_commits = std::mem::take(&mut *self.inner.active_upload_commits.lock()?);
         for (_id, task) in active_upload_commits {
             task.abort()?;
         }
-        let active_file_download_groups = std::mem::take(&mut *self.active_file_download_groups.lock()?);
+        let active_file_download_groups = std::mem::take(&mut *self.inner.active_file_download_groups.lock()?);
         for (_id, task) in active_file_download_groups {
             task.abort()?;
         }
-        let active_download_stream_groups = std::mem::take(&mut *self.active_download_stream_groups.lock()?);
+        let active_download_stream_groups = std::mem::take(&mut *self.inner.active_download_stream_groups.lock()?);
         for (_id, weak_group) in active_download_stream_groups {
             if let Some(inner) = weak_group.upgrade() {
-                DownloadStreamGroup { inner }.abort()?;
+                inner.abort();
             }
         }
         Ok(())
     }
 
-    pub(super) fn check_alive(&self) -> Result<(), SessionError> {
-        if matches!(*self.state.lock()?, SessionState::Aborted) {
-            return Err(SessionError::Aborted);
+    /// SIGINT-style abort.
+    ///
+    /// Performs runtime SIGINT shutdown and clears session registrations.
+    /// This does not call per-commit/group local abort hooks.
+    pub fn sigint_abort(&self) -> Result<(), SessionError> {
+        info!("Session SIGINT abort, session_id={}", self.inner.id);
+        self.inner.runtime.perform_sigint_shutdown();
+
+        self.inner.active_upload_commits.lock()?.clear();
+        self.inner.active_file_download_groups.lock()?.clear();
+        let active_download_stream_groups = std::mem::take(&mut *self.inner.active_download_stream_groups.lock()?);
+        for (_id, weak_group) in active_download_stream_groups {
+            if let Some(inner) = weak_group.upgrade() {
+                inner.abort();
+            }
         }
+
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(super) fn check_alive(&self) -> Result<(), SessionError> {
+        if self.inner.runtime.in_sigint_shutdown() {
+            return Err(SessionError::KeyboardInterrupt);
+        }
+        self.inner.task_runtime.check_state("session")
+    }
+
     pub(super) fn finish_upload_commit(&self, commit_id: UniqueID) -> Result<(), SessionError> {
-        self.active_upload_commits.lock()?.remove(&commit_id);
+        self.inner.active_upload_commits.lock()?.remove(&commit_id);
         Ok(())
     }
 
     pub(super) fn finish_file_download_group(&self, group_id: UniqueID) -> Result<(), SessionError> {
-        self.active_file_download_groups.lock()?.remove(&group_id);
+        self.inner.active_file_download_groups.lock()?.remove(&group_id);
         Ok(())
     }
 }
@@ -379,7 +365,7 @@ mod tests {
     fn test_session_clone_shares_state() {
         let s1 = XetSessionBuilder::new().build().unwrap();
         let s2 = s1.clone();
-        assert_eq!(s1.id, s2.id);
+        assert_eq!(s1.inner.id, s2.inner.id);
     }
 
     #[test]
@@ -387,43 +373,52 @@ mod tests {
     fn test_two_sessions_have_distinct_ids() {
         let s1 = XetSessionBuilder::new().build().unwrap();
         let s2 = XetSessionBuilder::new().build().unwrap();
-        assert_ne!(s1.id, s2.id);
+        assert_ne!(s1.inner.id, s2.inner.id);
     }
 
     #[test]
     // Session ID is a Ulid, to guard future regressions.
     fn test_session_id_is_ulid() {
         let s = XetSessionBuilder::new().build().unwrap();
-        assert!(Ulid::from_string(&s.id.to_string()).is_ok())
+        assert!(s.inner.id.to_string().parse::<ulid::Ulid>().is_ok());
     }
 
     // ── Abort behavior ───────────────────────────────────────────────────────
 
     #[test]
-    // After abort, check_alive returns Aborted.
+    // After abort, check_alive returns UserCancelled.
     fn test_check_alive_after_abort() {
         let session = XetSessionBuilder::new().build().unwrap();
         session.abort().unwrap();
         let err = session.check_alive().unwrap_err();
-        assert!(matches!(err, SessionError::Aborted));
+        assert!(matches!(err, SessionError::UserCancelled(_)));
     }
 
     #[test]
-    // new_upload_commit on an aborted session returns Aborted.
+    // After sigint_abort, check_alive returns KeyboardInterrupt.
+    fn test_check_alive_after_sigint_abort() {
+        let session = XetSessionBuilder::new().build().unwrap();
+        session.sigint_abort().unwrap();
+        let err = session.check_alive().unwrap_err();
+        assert!(matches!(err, SessionError::KeyboardInterrupt));
+    }
+
+    #[test]
+    // new_upload_commit on an aborted session returns UserCancelled.
     fn test_new_upload_commit_after_abort_returns_aborted() {
         let session = XetSessionBuilder::new().build().unwrap();
         session.abort().unwrap();
         let err = session.new_upload_commit().err().unwrap();
-        assert!(matches!(err, SessionError::Aborted));
+        assert!(matches!(err, SessionError::UserCancelled(_)));
     }
 
     #[test]
-    // new_file_download_group on an aborted session returns Aborted.
+    // new_file_download_group on an aborted session returns UserCancelled.
     fn test_new_file_download_group_after_abort_returns_aborted() {
         let session = XetSessionBuilder::new().build().unwrap();
         session.abort().unwrap();
         let err = session.new_file_download_group().err().unwrap();
-        assert!(matches!(err, SessionError::Aborted));
+        assert!(matches!(err, SessionError::UserCancelled(_)));
     }
 
     #[test]
@@ -433,7 +428,17 @@ mod tests {
         let _c1 = session.new_upload_commit().unwrap().build_blocking().unwrap();
         let _c2 = session.new_upload_commit().unwrap().build_blocking().unwrap();
         session.abort().unwrap();
-        assert_eq!(session.active_upload_commits.lock().unwrap().len(), 0);
+        assert_eq!(session.inner.active_upload_commits.lock().unwrap().len(), 0);
+    }
+
+    #[test]
+    // SIGINT abort clears all registered upload commits.
+    fn test_sigint_abort_clears_active_upload_commits() {
+        let session = XetSessionBuilder::new().build().unwrap();
+        let _c1 = session.new_upload_commit().unwrap().build_blocking().unwrap();
+        let _c2 = session.new_upload_commit().unwrap().build_blocking().unwrap();
+        session.sigint_abort().unwrap();
+        assert_eq!(session.inner.active_upload_commits.lock().unwrap().len(), 0);
     }
 
     #[test]
@@ -442,7 +447,16 @@ mod tests {
         let session = XetSessionBuilder::new().build().unwrap();
         let _g1 = session.new_file_download_group().unwrap().build_blocking().unwrap();
         session.abort().unwrap();
-        assert_eq!(session.active_file_download_groups.lock().unwrap().len(), 0);
+        assert_eq!(session.inner.active_file_download_groups.lock().unwrap().len(), 0);
+    }
+
+    #[test]
+    // SIGINT abort clears all registered download groups.
+    fn test_sigint_abort_clears_active_file_download_groups() {
+        let session = XetSessionBuilder::new().build().unwrap();
+        let _g1 = session.new_file_download_group().unwrap().build_blocking().unwrap();
+        session.sigint_abort().unwrap();
+        assert_eq!(session.inner.active_file_download_groups.lock().unwrap().len(), 0);
     }
 
     // ── Registration ─────────────────────────────────────────────────────────
@@ -452,7 +466,7 @@ mod tests {
     fn test_new_upload_commit_registers_in_session() {
         let session = XetSessionBuilder::new().build().unwrap();
         let _commit = session.new_upload_commit().unwrap().build_blocking().unwrap();
-        assert_eq!(session.active_upload_commits.lock().unwrap().len(), 1);
+        assert_eq!(session.inner.active_upload_commits.lock().unwrap().len(), 1);
     }
 
     #[test]
@@ -460,7 +474,7 @@ mod tests {
     fn test_new_file_download_group_registers_in_session() {
         let session = XetSessionBuilder::new().build().unwrap();
         let _group = session.new_file_download_group().unwrap().build_blocking().unwrap();
-        assert_eq!(session.active_file_download_groups.lock().unwrap().len(), 1);
+        assert_eq!(session.inner.active_file_download_groups.lock().unwrap().len(), 1);
     }
 
     // ── Deregistration ───────────────────────────────────────────────────────
@@ -471,9 +485,9 @@ mod tests {
         let session = XetSessionBuilder::new().build().unwrap();
         let c1 = session.new_upload_commit().unwrap().build_blocking().unwrap();
         let _c2 = session.new_upload_commit().unwrap().build_blocking().unwrap();
-        assert_eq!(session.active_upload_commits.lock().unwrap().len(), 2);
+        assert_eq!(session.inner.active_upload_commits.lock().unwrap().len(), 2);
         session.finish_upload_commit(c1.id()).unwrap();
-        assert_eq!(session.active_upload_commits.lock().unwrap().len(), 1);
+        assert_eq!(session.inner.active_upload_commits.lock().unwrap().len(), 1);
     }
 
     #[test]
@@ -482,9 +496,9 @@ mod tests {
         let session = XetSessionBuilder::new().build().unwrap();
         let g1 = session.new_file_download_group().unwrap().build_blocking().unwrap();
         let _g2 = session.new_file_download_group().unwrap().build_blocking().unwrap();
-        assert_eq!(session.active_file_download_groups.lock().unwrap().len(), 2);
+        assert_eq!(session.inner.active_file_download_groups.lock().unwrap().len(), 2);
         session.finish_file_download_group(g1.id()).unwrap();
-        assert_eq!(session.active_file_download_groups.lock().unwrap().len(), 1);
+        assert_eq!(session.inner.active_file_download_groups.lock().unwrap().len(), 1);
     }
 
     #[test]
@@ -494,20 +508,20 @@ mod tests {
         let _c1 = session.new_upload_commit().unwrap().build_blocking().unwrap();
         let unknown_id = UniqueID::new();
         assert!(session.finish_upload_commit(unknown_id).is_ok());
-        assert_eq!(session.active_upload_commits.lock().unwrap().len(), 1);
+        assert_eq!(session.inner.active_upload_commits.lock().unwrap().len(), 1);
     }
 
     // ── Async abort behavior ──────────────────────────────────────────────────
 
     #[tokio::test(flavor = "multi_thread")]
-    // new_upload_commit / new_file_download_group on an aborted session both return Aborted.
+    // new_upload_commit / new_file_download_group on an aborted session both return UserCancelled.
     async fn test_async_new_after_abort_returns_aborted() {
         let session = XetSessionBuilder::new().build().unwrap();
         session.abort().unwrap();
         let commit_err = session.new_upload_commit().err().unwrap();
         let group_err = session.new_file_download_group().err().unwrap();
-        assert!(matches!(commit_err, SessionError::Aborted));
-        assert!(matches!(group_err, SessionError::Aborted));
+        assert!(matches!(commit_err, SessionError::UserCancelled(_)));
+        assert!(matches!(group_err, SessionError::UserCancelled(_)));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -518,8 +532,8 @@ mod tests {
         let _c2 = session.new_upload_commit().unwrap().build().await.unwrap();
         let _g1 = session.new_file_download_group().unwrap().build().await.unwrap();
         session.abort().unwrap();
-        assert_eq!(session.active_upload_commits.lock().unwrap().len(), 0);
-        assert_eq!(session.active_file_download_groups.lock().unwrap().len(), 0);
+        assert_eq!(session.inner.active_upload_commits.lock().unwrap().len(), 0);
+        assert_eq!(session.inner.active_file_download_groups.lock().unwrap().len(), 0);
     }
 
     // ── Async registration ────────────────────────────────────────────────────
@@ -531,8 +545,8 @@ mod tests {
         let session = XetSessionBuilder::new().build().unwrap();
         let _commit = session.new_upload_commit().unwrap().build().await.unwrap();
         let _group = session.new_file_download_group().unwrap().build().await.unwrap();
-        assert_eq!(session.active_upload_commits.lock().unwrap().len(), 1);
-        assert_eq!(session.active_file_download_groups.lock().unwrap().len(), 1);
+        assert_eq!(session.inner.active_upload_commits.lock().unwrap().len(), 1);
+        assert_eq!(session.inner.active_file_download_groups.lock().unwrap().len(), 1);
     }
 
     // ── Async deregistration ──────────────────────────────────────────────────
@@ -546,12 +560,12 @@ mod tests {
         let _c2 = session.new_upload_commit().unwrap().build().await.unwrap();
         let g1 = session.new_file_download_group().unwrap().build().await.unwrap();
         let _g2 = session.new_file_download_group().unwrap().build().await.unwrap();
-        assert_eq!(session.active_upload_commits.lock().unwrap().len(), 2);
-        assert_eq!(session.active_file_download_groups.lock().unwrap().len(), 2);
+        assert_eq!(session.inner.active_upload_commits.lock().unwrap().len(), 2);
+        assert_eq!(session.inner.active_file_download_groups.lock().unwrap().len(), 2);
         session.finish_upload_commit(c1.id()).unwrap();
         session.finish_file_download_group(g1.id()).unwrap();
-        assert_eq!(session.active_upload_commits.lock().unwrap().len(), 1);
-        assert_eq!(session.active_file_download_groups.lock().unwrap().len(), 1);
+        assert_eq!(session.inner.active_upload_commits.lock().unwrap().len(), 1);
+        assert_eq!(session.inner.active_file_download_groups.lock().unwrap().len(), 1);
     }
 
     // ── XetRuntime::handle_meets_requirements ────────────────────────────────
@@ -598,7 +612,7 @@ mod tests {
     // build_blocking on an External-mode session returns WrongRuntimeMode.
     async fn test_new_upload_commit_blocking_errors_in_external_mode() {
         let session = XetSessionBuilder::new().build().unwrap();
-        assert_eq!(session.runtime.mode(), RuntimeMode::External);
+        assert_eq!(session.inner.runtime.mode(), RuntimeMode::External);
         let err = session.new_upload_commit().unwrap().build_blocking().err().unwrap();
         assert!(matches!(err, SessionError::WrongRuntimeMode(_)));
     }
@@ -607,7 +621,7 @@ mod tests {
     // build_blocking on an External-mode session returns WrongRuntimeMode.
     async fn test_new_file_download_group_blocking_errors_in_external_mode() {
         let session = XetSessionBuilder::new().build().unwrap();
-        assert_eq!(session.runtime.mode(), RuntimeMode::External);
+        assert_eq!(session.inner.runtime.mode(), RuntimeMode::External);
         let err = session.new_file_download_group().unwrap().build_blocking().err().unwrap();
         assert!(matches!(err, SessionError::WrongRuntimeMode(_)));
     }
@@ -618,7 +632,7 @@ mod tests {
     // build_blocking panics when called from within a tokio runtime on an Owned-mode session.
     fn test_new_upload_commit_blocking_panics_in_async_context() {
         let session = XetSessionBuilder::new().build().unwrap();
-        assert_eq!(session.runtime.mode(), RuntimeMode::Owned);
+        assert_eq!(session.inner.runtime.mode(), RuntimeMode::Owned);
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             rt.block_on(async { session.new_upload_commit().unwrap().build_blocking() })
@@ -630,7 +644,7 @@ mod tests {
     // build_blocking panics when called from within a tokio runtime on an Owned-mode session.
     fn test_new_file_download_group_blocking_panics_in_async_context() {
         let session = XetSessionBuilder::new().build().unwrap();
-        assert_eq!(session.runtime.mode(), RuntimeMode::Owned);
+        assert_eq!(session.inner.runtime.mode(), RuntimeMode::Owned);
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             rt.block_on(async { session.new_file_download_group().unwrap().build_blocking() })
@@ -638,58 +652,199 @@ mod tests {
         assert!(result.is_err(), "build_blocking() must panic when called from async");
     }
 
-    // ── Streaming download ──────────────────────────────────────────────────
-
     #[test]
-    // new_download_stream_group on an aborted session returns Aborted.
-    fn test_download_stream_on_aborted_session_returns_aborted() {
-        let session = XetSessionBuilder::new().build().unwrap();
-        session.abort().unwrap();
-        let err = session.new_download_stream_group().err().unwrap();
-        assert!(matches!(err, SessionError::Aborted));
-    }
-
-    #[test]
-    // new_download_stream_group on an aborted session returns Aborted (blocking variant).
-    fn test_download_stream_blocking_on_aborted_session_returns_aborted() {
-        let session = XetSessionBuilder::new().build().unwrap();
-        session.abort().unwrap();
-        let err = session.new_download_stream_group().err().unwrap();
-        assert!(matches!(err, SessionError::Aborted));
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    // download_stream_blocking on a group returns WrongRuntimeMode on an External-mode session.
-    async fn test_download_stream_blocking_errors_in_external_mode() {
-        let session = XetSessionBuilder::new().build().unwrap();
-        assert_eq!(session.runtime.mode(), RuntimeMode::External);
-        let group = session.new_download_stream_group().unwrap().build().await.unwrap();
-        let result = group.download_stream_blocking(
-            XetFileInfo {
-                hash: "abc123".to_string(),
-                file_size: Some(1024),
-                sha256: None,
-            },
-            None,
-        );
-        assert!(matches!(result, Err(SessionError::WrongRuntimeMode(_))));
-    }
-
-    #[test]
-    // Aborting a session clears all registered download stream groups.
-    fn test_abort_clears_active_download_stream_groups() {
-        let session = XetSessionBuilder::new().build().unwrap();
-        let _g1 = session.new_download_stream_group().unwrap().build_blocking().unwrap();
-        session.abort().unwrap();
-        assert_eq!(session.active_download_stream_groups.lock().unwrap().len(), 0);
-    }
-
-    #[test]
-    // new_download_stream_group after abort returns Aborted.
+    // new_download_stream_group after abort returns UserCancelled.
     fn test_new_download_stream_group_after_abort_returns_aborted() {
         let session = XetSessionBuilder::new().build().unwrap();
         session.abort().unwrap();
         let err = session.new_download_stream_group().err().unwrap();
-        assert!(matches!(err, SessionError::Aborted));
+        assert!(matches!(err, SessionError::UserCancelled(_)));
+    }
+
+    #[test]
+    // Aborting a session clears all registered stream groups.
+    fn test_abort_clears_active_download_stream_groups() {
+        let session = XetSessionBuilder::new().build().unwrap();
+        let _g1 = session.new_download_stream_group().unwrap().build_blocking().unwrap();
+        session.abort().unwrap();
+        assert_eq!(session.inner.active_download_stream_groups.lock().unwrap().len(), 0);
+    }
+
+    // ── Streaming download round-trip tests ─────────────────────────────────
+
+    use tempfile::{TempDir, tempdir};
+    use xet_data::processing::Sha256Policy;
+
+    async fn local_session(temp: &TempDir) -> Result<XetSession, Box<dyn std::error::Error>> {
+        let cas_path = temp.path().join("cas");
+        Ok(XetSessionBuilder::new()
+            .with_endpoint(format!("local://{}", cas_path.display()))
+            .build()?)
+    }
+
+    fn local_session_sync(temp: &TempDir) -> Result<XetSession, Box<dyn std::error::Error>> {
+        let cas_path = temp.path().join("cas");
+        Ok(XetSessionBuilder::new()
+            .with_endpoint(format!("local://{}", cas_path.display()))
+            .build()?)
+    }
+
+    async fn upload_bytes(
+        session: &XetSession,
+        data: &[u8],
+        name: &str,
+    ) -> Result<XetFileInfo, Box<dyn std::error::Error>> {
+        let commit = session.new_upload_commit()?.build().await?;
+        let _handle = commit
+            .upload_bytes(data.to_vec(), Sha256Policy::Compute, Some(name.into()))
+            .await?;
+        let results = commit.commit().await?;
+        let meta = results.uploads.into_values().next().expect("one uploaded file");
+        Ok(meta.xet_info)
+    }
+
+    fn upload_bytes_blocking(
+        session: &XetSession,
+        data: &[u8],
+        name: &str,
+    ) -> Result<XetFileInfo, Box<dyn std::error::Error>> {
+        let commit = session.new_upload_commit()?.build_blocking()?;
+        let _handle = commit.upload_bytes_blocking(data.to_vec(), Sha256Policy::Compute, Some(name.into()))?;
+        let results = commit.commit_blocking()?;
+        let meta = results.uploads.into_values().next().expect("one uploaded file");
+        Ok(meta.xet_info)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    // Async streaming download round-trip: upload, stream, verify content.
+    async fn test_download_stream_round_trip() {
+        let temp = tempdir().unwrap();
+        let session = local_session(&temp).await.unwrap();
+        let original = b"Hello, streaming download!";
+        let file_info = upload_bytes(&session, original, "stream.bin").await.unwrap();
+
+        let mut stream = session
+            .new_download_stream_group()
+            .unwrap()
+            .build()
+            .await
+            .unwrap()
+            .download_stream(file_info, None)
+            .await
+            .unwrap();
+        let mut collected = Vec::new();
+        while let Some(chunk) = stream.next().await.unwrap() {
+            collected.extend_from_slice(&chunk);
+        }
+        assert_eq!(collected, original);
+    }
+
+    #[test]
+    // Blocking streaming download round-trip: upload, stream, verify content.
+    fn test_download_stream_blocking_round_trip() {
+        let temp = tempdir().unwrap();
+        let session = local_session_sync(&temp).unwrap();
+        let original = b"Hello, blocking streaming download!";
+        let file_info = upload_bytes_blocking(&session, original, "stream.bin").unwrap();
+
+        let mut stream = session
+            .new_download_stream_group()
+            .unwrap()
+            .build_blocking()
+            .unwrap()
+            .download_stream_blocking(file_info, None)
+            .unwrap();
+
+        let mut collected = Vec::new();
+        while let Some(chunk) = stream.blocking_next().unwrap() {
+            collected.extend_from_slice(&chunk);
+        }
+        assert_eq!(collected, original);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    // progress() reports correct totals after consuming the stream.
+    async fn test_download_stream_progress_reports_completion() {
+        let temp = tempdir().unwrap();
+        let session = local_session(&temp).await.unwrap();
+        let original = b"progress tracking test data for streaming";
+        let file_info = upload_bytes(&session, original, "progress.bin").await.unwrap();
+
+        let mut stream = session
+            .new_download_stream_group()
+            .unwrap()
+            .build()
+            .await
+            .unwrap()
+            .download_stream(file_info, None)
+            .await
+            .unwrap();
+        let initial = stream.progress();
+        assert_eq!(initial.total_bytes, original.len() as u64);
+        assert_eq!(initial.bytes_completed, 0);
+
+        let mut collected = Vec::new();
+        while let Some(chunk) = stream.next().await.unwrap() {
+            collected.extend_from_slice(&chunk);
+        }
+        assert_eq!(collected, original);
+
+        let final_progress = stream.progress();
+        assert_eq!(final_progress.total_bytes, original.len() as u64);
+        assert_eq!(final_progress.bytes_completed, original.len() as u64);
+    }
+
+    #[test]
+    // progress() works correctly in blocking mode.
+    fn test_download_stream_blocking_progress_reports_completion() {
+        let temp = tempdir().unwrap();
+        let session = local_session_sync(&temp).unwrap();
+        let original = b"blocking progress tracking test data";
+        let file_info = upload_bytes_blocking(&session, original, "progress.bin").unwrap();
+
+        let mut stream = session
+            .new_download_stream_group()
+            .unwrap()
+            .build_blocking()
+            .unwrap()
+            .download_stream_blocking(file_info, None)
+            .unwrap();
+
+        let mut collected = Vec::new();
+        while let Some(chunk) = stream.blocking_next().unwrap() {
+            collected.extend_from_slice(&chunk);
+        }
+        assert_eq!(collected, original);
+
+        let final_progress = stream.progress();
+        assert_eq!(final_progress.total_bytes, original.len() as u64);
+        assert_eq!(final_progress.bytes_completed, original.len() as u64);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    // Multiple sequential streaming downloads share a single group's connection pool.
+    async fn test_download_stream_multiple_sequential() {
+        let temp = tempdir().unwrap();
+        let session = local_session(&temp).await.unwrap();
+        let data_a = b"first stream payload";
+        let data_b = b"second stream payload";
+        let info_a = upload_bytes(&session, data_a, "a.bin").await.unwrap();
+        let info_b = upload_bytes(&session, data_b, "b.bin").await.unwrap();
+
+        let group = session.new_download_stream_group().unwrap().build().await.unwrap();
+
+        let mut stream_a = group.download_stream(info_a, None).await.unwrap();
+        let mut collected_a = Vec::new();
+        while let Some(chunk) = stream_a.next().await.unwrap() {
+            collected_a.extend_from_slice(&chunk);
+        }
+        assert_eq!(collected_a, data_a);
+
+        let mut stream_b = group.download_stream(info_b, None).await.unwrap();
+        let mut collected_b = Vec::new();
+        while let Some(chunk) = stream_b.next().await.unwrap() {
+            collected_b.extend_from_slice(&chunk);
+        }
+        assert_eq!(collected_b, data_b);
     }
 }

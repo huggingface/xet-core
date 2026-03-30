@@ -23,7 +23,7 @@ pub(super) fn create_translator_config(
     token_info: Option<(String, u64)>,
     token_refresh: Option<&(String, Arc<HeaderMap>)>,
 ) -> Result<TranslatorConfig, XetError> {
-    let session_id = session.id.to_string();
+    let session_id = session.inner.id.to_string();
 
     let token_refresher: Option<Arc<dyn TokenRefresher>> = token_refresh
         .map(|(url, headers)| -> Result<Arc<dyn TokenRefresher>, XetError> {
@@ -33,15 +33,16 @@ pub(super) fn create_translator_config(
         .transpose()?;
 
     let endpoint = session
+        .inner
         .endpoint
         .clone()
-        .unwrap_or_else(|| session.config.data.default_cas_endpoint.clone());
+        .unwrap_or_else(|| session.inner.config.data.default_cas_endpoint.clone());
 
     let mut config = xet_data::processing::data_client::default_config(
         endpoint,
         token_info,
         token_refresher,
-        session.custom_headers.clone(),
+        session.inner.custom_headers.clone(),
     )?;
 
     if !session_id.is_empty() {
@@ -49,12 +50,4 @@ pub(super) fn create_translator_config(
     }
 
     Ok(config)
-}
-
-/// State of the upload commit and download group
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum GroupState {
-    Alive,
-    Finished,
-    Aborted,
 }
