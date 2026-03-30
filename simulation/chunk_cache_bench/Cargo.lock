@@ -2740,6 +2740,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "redb"
+version = "3.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef99362319c782aa4639ad3a306b64c3bb90e12874e99b8df124cb679d988611"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "redis"
 version = "0.25.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5233,6 +5242,7 @@ dependencies = [
  "lazy_static",
  "more-asserts",
  "rand 0.9.2",
+ "redb",
  "reqwest 0.13.2",
  "reqwest-middleware",
  "reqwest-retry",
