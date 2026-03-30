@@ -48,7 +48,7 @@ fn bench_sequential_non_vectored(c: &mut Criterion) {
                     let path = dir.path().join("out.bin");
                     FileReconstructor::new(&client, hash)
                         .with_config(cfg)
-                        .reconstruct_to_file(&path, None)
+                        .reconstruct_to_file(&path, None, false)
                         .await
                         .unwrap();
                 }
@@ -77,7 +77,7 @@ fn bench_sequential_vectored(c: &mut Criterion) {
                     let path = dir.path().join("out.bin");
                     FileReconstructor::new(&client, hash)
                         .with_config(cfg)
-                        .reconstruct_to_file(&path, None)
+                        .reconstruct_to_file(&path, None, false)
                         .await
                         .unwrap();
                 }
