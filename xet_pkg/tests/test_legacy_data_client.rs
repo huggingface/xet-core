@@ -1,3 +1,4 @@
+#![cfg(feature = "simulation")]
 use std::fs;
 use std::sync::Arc;
 

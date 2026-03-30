@@ -16,7 +16,6 @@ use xet_runtime::core::xet_config;
 
 use super::adaptive_concurrency::{AdaptiveConcurrencyController, ConnectionPermit};
 use super::auth::AuthConfig;
-use super::http_client::{self, Api};
 use super::interface::URLProvider;
 use super::progress_tracked_streams::{
     DownloadProgressStream, ProgressCallback, StreamProgressReporter, UploadProgressStream,
@@ -27,6 +26,7 @@ use crate::cas_types::{
     BatchQueryReconstructionResponse, FileRange, HttpRange, Key, QueryReconstructionResponse,
     QueryReconstructionResponseV2, UploadShardResponse, UploadShardResponseType, UploadXorbResponse,
 };
+use crate::common::http_client::{self, Api};
 use crate::error::{ClientError, Result};
 
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
@@ -118,6 +118,7 @@ impl RemoteClient {
         &self.endpoint
     }
 
+    #[cfg(feature = "simulation")]
     pub(crate) fn http_client(&self) -> Arc<ClientWithMiddleware> {
         self.http_client.clone()
     }

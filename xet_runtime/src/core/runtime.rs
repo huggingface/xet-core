@@ -78,7 +78,7 @@ pub fn check_sigint_shutdown() -> Result<(), RuntimeError> {
         .map(|rt| rt.in_sigint_shutdown())
         .unwrap_or(false)
     {
-        Err(RuntimeError::TaskCanceled("CTRL-C Cancellation".to_owned()))
+        Err(RuntimeError::KeyboardInterrupt)
     } else {
         Ok(())
     }
@@ -471,7 +471,7 @@ impl XetRuntime {
     /// Returns a clone of the cached client if the tag matches and we're in a runtime,
     /// or creates a new client otherwise. This allows creating high-level clients outside
     /// a runtime, like in tests.
-    pub fn get_or_create_reqwest_client<F>(tag: String, f: F) -> std::result::Result<Client, reqwest::Error>
+    pub fn get_or_create_reqwest_client<F>(tag: String, f: F) -> crate::error::Result<Client>
     where
         F: FnOnce() -> std::result::Result<Client, reqwest::Error>,
     {
@@ -481,7 +481,7 @@ impl XetRuntime {
         if let Some(rt) = Self::current_if_exists() {
             rt.common().get_or_create_reqwest_client(tag, f)
         } else {
-            f()
+            Ok(f()?)
         }
     }
 
@@ -575,6 +575,14 @@ impl XetRuntime {
         self.sigint_shutdown.load(Ordering::SeqCst)
     }
 
+    fn check_sigint(&self) -> Result<(), RuntimeError> {
+        if self.in_sigint_shutdown() {
+            Err(RuntimeError::KeyboardInterrupt)
+        } else {
+            Ok(())
+        }
+    }
+
     /// This function should ONLY be used by threads outside of tokio; it should not be called
     /// from within a task running on the runtime worker pool.  Doing so can lead to deadlocking.
     pub fn external_run_async_task<F>(&self, future: F) -> Result<F::Output, RuntimeError>
@@ -618,6 +626,7 @@ impl XetRuntime {
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
+        self.check_sigint()?;
         match &self.backend {
             RuntimeBackend::External { .. } => Ok(fut.await),
             RuntimeBackend::OwnedThreadPool { .. } => self.bridge_to_owned(task_name, fut).await,
@@ -639,6 +648,7 @@ impl XetRuntime {
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
+        self.check_sigint()?;
         if matches!(self.backend, RuntimeBackend::External { .. }) {
             return Err(RuntimeError::InvalidRuntime(
                 "bridge_sync() cannot be called on an External-mode runtime; \

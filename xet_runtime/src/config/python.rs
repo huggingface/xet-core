@@ -95,7 +95,7 @@ impl PythonConfigValue for ConfigEnum {
 
     fn update_from_python(&mut self, obj: &Bound<'_, PyAny>) -> PyResult<()> {
         let s: String = obj.extract()?;
-        self.try_set(&s).map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
+        self.try_set(&s).map_err(pyo3::exceptions::PyValueError::new_err)
     }
 }
 

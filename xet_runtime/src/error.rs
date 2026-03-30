@@ -15,8 +15,14 @@ pub enum RuntimeError {
     #[error("Task cancelled; possible runtime shutdown in progress ({0}).")]
     TaskCanceled(String),
 
+    #[error("Reqwest error: {0}")]
+    ReqwestError(#[from] reqwest::Error),
+
     #[error("Lock poisoned: {0}")]
     LockPoisoned(String),
+
+    #[error("Keyboard interrupt (SIGINT)")]
+    KeyboardInterrupt,
 
     #[error("{0}")]
     Other(String),

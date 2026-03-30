@@ -67,8 +67,8 @@ impl XCommand {
             RepoInfo::try_from(&self.overrides.repo_type, &self.overrides.repo_id)?,
             Some("main".to_owned()),
             "",
-            cred_helper,
-            Some(Arc::new(headers)),
+            Some(cred_helper),
+            Some(headers),
         )?;
 
         self.command.run(hub_client).await
