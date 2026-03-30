@@ -45,6 +45,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Parser;
+#[cfg(feature = "logging")]
 use tracing_subscriber::EnvFilter;
 use xet_client::cas_client::{LocalServer, LocalServerConfig};
 
@@ -96,6 +97,7 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize tracing with environment filter (respects RUST_LOG)
+    #[cfg(feature = "logging")]
     tracing_subscriber::fmt().with_env_filter(EnvFilter::from_default_env()).init();
 
     let args = Args::parse();

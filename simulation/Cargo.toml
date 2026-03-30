@@ -35,10 +35,12 @@ bytes = { workspace = true }
 http = { workspace = true }
 reqwest = { workspace = true }
 reqwest-middleware = { workspace = true }
-tracing-subscriber = { workspace = true }
+tracing-subscriber = { workspace = true, optional = true }
 
 [features]
+default = ["logging"]
 smoke-test = []
+logging = ["dep:tracing-subscriber", "xet-runtime/logging"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -40,7 +40,7 @@ signal-hook = "0.3"
 winapi = { version = "0.3", features = ["consoleapi", "wincon", "errhandlingapi"] }
 
 [features]
-default = ["no-default-cache", "elevated_information_level"] # By default, hf_xet disables the disk cache and uses aggressive logging level
+default = ["no-default-cache", "elevated_information_level", "metrics", "logging"] # By default, hf_xet disables the disk cache and uses aggressive logging level
 extension-module = ["pyo3/extension-module"] # Only enabled when building with maturin
 native-tls = ["xet-client/native-tls-vendored"]
 native-tls-vendored = ["xet-client/native-tls-vendored"]
@@ -48,6 +48,8 @@ no-default-cache = ["xet-runtime/no-default-cache"]
 profiling = ["pprof"]
 tokio-console = ["xet-runtime/tokio-console"]
 elevated_information_level = ["xet-client/elevated_information_level", "xet-runtime/elevated_information_level"]
+metrics = ["xet-pkg/metrics"]
+logging = ["xet-runtime/logging", "xet-client/logging", "xet-pkg/logging"]
 
 [profile.release]
 split-debuginfo = "packed"

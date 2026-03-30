@@ -37,7 +37,7 @@ tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio-retry = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+tracing-subscriber = { workspace = true, optional = true }
 url = { workspace = true }
 urlencoding = { workspace = true }
 
@@ -58,8 +58,9 @@ tower-http = { version = "0.6", features = ["cors"], optional = true }
 [features]
 strict = []
 smoke-test = []
-default = ["rustls-tls"]
+default = ["rustls-tls", "logging"]
 elevated_information_level = []
+logging = ["dep:tracing-subscriber", "xet-runtime/logging"]
 rustls-tls = ["reqwest/rustls"]
 native-tls = ["reqwest/native-tls"]
 native-tls-vendored = ["reqwest/native-tls-vendored"]

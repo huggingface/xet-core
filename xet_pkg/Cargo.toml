@@ -31,7 +31,10 @@ tracing = { workspace = true }
 ulid = { workspace = true }
 
 [features]
+default = ["metrics", "logging"]
 smoke-test = []
+metrics = ["xet-data/metrics"]
+logging = ["xet-runtime/logging", "xet-data/logging"]
 python = ["xet-runtime/python", "dep:pyo3"]
 simulation = ["xet-client/simulation"]
 

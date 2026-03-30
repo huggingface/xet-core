@@ -21,7 +21,9 @@ use super::configurations::TranslatorConfig;
 use super::file_cleaner::{Sha256Policy, SingleFileCleaner};
 use super::remote_client_interface::create_remote_client;
 use super::shard_interface::SessionShardInterface;
-use super::{XetFileInfo, prometheus_metrics};
+use super::XetFileInfo;
+#[cfg(feature = "metrics")]
+use super::prometheus_metrics;
 use crate::deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use crate::deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
 use crate::error::{DataError, Result};
@@ -502,8 +504,11 @@ impl FileUploadSession {
         metrics.total_bytes_uploaded = metrics.shard_bytes_uploaded + metrics.xorb_bytes_uploaded;
 
         // Update the global counters
-        prometheus_metrics::FILTER_CAS_BYTES_PRODUCED.inc_by(metrics.new_bytes);
-        prometheus_metrics::FILTER_BYTES_CLEANED.inc_by(metrics.total_bytes);
+        #[cfg(feature = "metrics")]
+        {
+            prometheus_metrics::FILTER_CAS_BYTES_PRODUCED.inc_by(metrics.new_bytes);
+            prometheus_metrics::FILTER_BYTES_CLEANED.inc_by(metrics.total_bytes);
+        }
 
         #[cfg(debug_assertions)]
         {

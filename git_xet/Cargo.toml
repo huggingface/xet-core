@@ -36,8 +36,11 @@ tokio = { workspace = true }
 serial_test = { workspace = true }
 
 [features]
+default = ["metrics", "logging"]
 smoke-test = []
 git-xet-for-integration-test = []
+metrics = ["xet-data/metrics"]
+logging = ["xet-runtime/logging", "xet-client/logging", "xet-data/logging"]
 git2-vendored-openssl = ["git2/vendored-openssl"]
 simulation = ["xet-data/simulation", "xet-client/simulation", "xet-pkg/simulation"]
 

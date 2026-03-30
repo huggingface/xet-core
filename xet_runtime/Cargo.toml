@@ -36,8 +36,8 @@ futures-util = { workspace = true }
 pin-project = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-tracing-appender = { workspace = true }
-tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
 
 console-subscriber = { workspace = true, optional = true }
 pyo3 = { workspace = true, optional = true }
@@ -60,9 +60,11 @@ tokio-util = { workspace = true, features = ["io"] }
 libc = { workspace = true }
 
 [features]
+default = ["logging"]
 strict = []
 smoke-test = []
 elevated_information_level = []
+logging = ["dep:tracing-subscriber", "dep:tracing-appender"]
 no-default-cache = []
 python = ["dep:pyo3"]
 tokio-console = ["dep:console-subscriber"]
@@ -70,6 +72,7 @@ tokio-console = ["dep:console-subscriber"]
 [[bin]]
 name = "log_test_executable"
 path = "tests/bin/log_test_executable.rs"
+required-features = ["logging"]
 
 [dev-dependencies]
 xet-core-structures = { version = "1.4.0", path = "../xet_core_structures" }

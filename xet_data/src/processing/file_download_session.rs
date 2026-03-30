@@ -14,7 +14,9 @@ use xet_runtime::core::{XetRuntime, xet_config};
 
 use super::configurations::TranslatorConfig;
 use super::remote_client_interface::create_remote_client;
-use super::{XetFileInfo, prometheus_metrics};
+use super::XetFileInfo;
+#[cfg(feature = "metrics")]
+use super::prometheus_metrics;
 use crate::error::{DataError, Result};
 use crate::file_reconstruction::{DownloadStream, FileReconstructor, UnorderedDownloadStream};
 use crate::progress_tracking::{GroupProgress, ItemProgressUpdater, UniqueID};
@@ -139,6 +141,7 @@ impl FileDownloadSession {
                 actual: n_bytes,
             });
         }
+        #[cfg(feature = "metrics")]
         prometheus_metrics::FILTER_BYTES_SMUDGED.inc_by(n_bytes);
         Ok(n_bytes)
     }
@@ -185,6 +188,7 @@ impl FileDownloadSession {
             });
         }
 
+        #[cfg(feature = "metrics")]
         prometheus_metrics::FILTER_BYTES_SMUDGED.inc_by(n_bytes);
         Ok((id, n_bytes))
     }

@@ -20,6 +20,7 @@ use tokio::time::sleep;
 use tracing::info;
 use xet_client::cas_client::simulation::local_server::ServerLatencyProfile;
 use xet_runtime::core::XetRuntime;
+#[cfg(feature = "logging")]
 use xet_runtime::logging::{LoggingConfig, init as init_logging};
 
 #[derive(Parser, Debug)]
@@ -132,12 +133,16 @@ fn parse_duration(s: &str) -> ScenarioResult<Duration> {
     humantime::parse_duration(s).map_err(|e| ScenarioError::Scenario(format!("invalid duration {:?}: {}", s, e)))
 }
 
+#[cfg(feature = "logging")]
 fn setup_logging(out_dir: &Path) {
     let log_dest = format!("{}/", out_dir.display());
     // SAFETY: Called from main() before any threads are spawned.
     unsafe { std::env::set_var("HF_XET_LOG_DEST", &log_dest) };
     init_logging(LoggingConfig::default_to_directory("run_upload_scenario".to_string(), out_dir));
 }
+
+#[cfg(not(feature = "logging"))]
+fn setup_logging(_out_dir: &Path) {}
 
 /// Runs an async future on a fresh multi-threaded tokio runtime, using XetRuntime for initialization.
 fn run_async<F>(future: F) -> ScenarioResult<()>

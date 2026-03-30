@@ -5,6 +5,7 @@ mod file_cleaner;
 mod file_download_session;
 mod file_upload_session;
 pub mod migration_tool;
+#[cfg(feature = "metrics")]
 mod prometheus_metrics;
 mod remote_client_interface;
 mod sha256;
