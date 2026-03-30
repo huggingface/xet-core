@@ -128,7 +128,7 @@ impl FileDownloadSession {
         let name = Arc::from(write_path.to_string_lossy().as_ref());
         let progress_updater = self.progress.new_item(id, name);
         let reconstructor = self.setup_reconstructor(file_info, None, Some(progress_updater))?;
-        let n_bytes = reconstructor.reconstruct_to_file(write_path, None).await?;
+        let n_bytes = reconstructor.reconstruct_to_file(write_path, None, true).await?;
         // Caller is responsible for cleaning up the file on error (consistent
         // with other error paths); see download_group.rs error handling.
         if let Some(expected_size) = file_info.file_size()
