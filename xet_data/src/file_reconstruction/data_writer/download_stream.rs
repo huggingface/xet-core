@@ -122,11 +122,15 @@ impl DownloadStream {
 
         match self.receiver.blocking_recv() {
             Some(SequentialRetrievalItem::Data { receiver, permit }) => {
-                let data = receiver.blocking_recv().map_err(|_| {
-                    FileReconstructionError::InternalWriterError(
-                        "Data sender was dropped before sending data.".to_string(),
-                    )
-                })?;
+                let data = match receiver.blocking_recv() {
+                    Ok(data) => data,
+                    Err(_) => {
+                        self.run_state.check_error()?;
+                        return Err(FileReconstructionError::InternalWriterError(
+                            "Data sender was dropped before sending data.".to_string(),
+                        ));
+                    },
+                };
                 self.run_state.report_bytes_written(data.len() as u64);
                 drop(permit);
                 Ok(Some(data))
@@ -160,11 +164,15 @@ impl DownloadStream {
 
         match item {
             Some(SequentialRetrievalItem::Data { receiver, permit }) => {
-                let data = receiver.await.map_err(|_| {
-                    FileReconstructionError::InternalWriterError(
-                        "Data sender was dropped before sending data.".to_string(),
-                    )
-                })?;
+                let data = match receiver.await {
+                    Ok(data) => data,
+                    Err(_) => {
+                        self.run_state.check_error()?;
+                        return Err(FileReconstructionError::InternalWriterError(
+                            "Data sender was dropped before sending data.".to_string(),
+                        ));
+                    },
+                };
                 self.run_state.report_bytes_written(data.len() as u64);
                 drop(permit);
                 Ok(Some(data))
