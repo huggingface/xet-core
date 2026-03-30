@@ -95,13 +95,17 @@ impl FileReconstructor {
 
     /// Reconstructs the file and writes it to the given path.
     ///
-    /// The file is opened with read/write access without truncation, allowing
-    /// multiple concurrent reconstructions to write to different regions of the
-    /// same file.
+    /// When `write_offset` is `None` and no byte range is set, the file is
+    /// truncated on open so that a smaller download fully replaces a larger
+    /// pre-existing file. When a `write_offset` or byte range is present the
+    /// file is opened without truncation, allowing multiple concurrent
+    /// reconstructions to write to different regions of the same file.
     ///
     /// When `write_offset` is `Some(offset)`, writing begins at that byte
     /// position regardless of the byte range. When `None`, writing begins at
-    /// the byte range start (or 0 for a full-file reconstruction).
+    /// the byte range start (or 0 for a full-file reconstruction). Note that
+    /// `Some(0)` is not equivalent to `None`: `None` truncates the file for
+    /// full-file reconstructions, while `Some(0)` does not.
     pub async fn reconstruct_to_file(self, path: &Path, write_offset: Option<u64>) -> Result<u64> {
         info!(
             file_hash = %self.file_hash,
@@ -115,7 +119,12 @@ impl FileReconstructor {
             std::fs::create_dir_all(parent)?;
         }
 
-        let mut file = OpenOptions::new().write(true).create(true).truncate(false).open(path)?;
+        let should_truncate = self.byte_range.is_none() && write_offset.is_none();
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(should_truncate)
+            .open(path)?;
 
         let default_write_position = self.byte_range.map_or(0, |r| r.start);
         let seek_position = write_offset.unwrap_or(default_write_position);
@@ -1312,6 +1321,32 @@ mod tests {
 
         // Middle third should have reconstructed data.
         assert_eq!(&result[start as usize..end as usize], &file_contents.data[start as usize..end as usize]);
+    }
+
+    #[tokio::test]
+    async fn test_full_file_truncates_larger_existing_file() {
+        // Regression test: when downloading a file that is smaller than the
+        // existing local file, the local file must be truncated so that no
+        // stale trailing bytes remain.
+        let (client, file_contents) = setup_test_file(&[(1, (0, 4))]).await;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("output.bin");
+
+        // Pre-create a file that is larger than the content we are about to download.
+        let larger_content = vec![0xAA_u8; file_contents.data.len() * 3];
+        std::fs::write(&file_path, &larger_content).unwrap();
+
+        // Full-file reconstruction (no byte range, no write offset) must truncate.
+        FileReconstructor::new(&(client as Arc<dyn Client>), file_contents.file_hash)
+            .with_config(test_config())
+            .reconstruct_to_file(&file_path, None)
+            .await
+            .unwrap();
+
+        let result = std::fs::read(&file_path).unwrap();
+        assert_eq!(result.len(), file_contents.data.len(), "file should be truncated to downloaded size");
+        assert_eq!(result, file_contents.data);
     }
 
     // ==================== Multi-Disjoint Range Tests (LocalClient) ====================
