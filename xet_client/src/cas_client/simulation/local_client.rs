@@ -4,8 +4,8 @@ use std::io::{BufReader, Cursor, Seek, SeekFrom, Write};
 use std::mem::size_of;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use anyhow::anyhow;
 use async_trait::async_trait;
@@ -101,8 +101,25 @@ impl redb::Key for RedbHash {
 const GLOBAL_DEDUP_TABLE: TableDefinition<RedbHash, RedbHash> = TableDefinition::new("global_dedup");
 const FILE_STATUS_TABLE: TableDefinition<RedbHash, bool> = TableDefinition::new("file_status");
 
+/// Global cache of open redb databases keyed by canonical path.
+/// redb enforces exclusive file locking, so multiple LocalClient instances
+/// pointing at the same directory must share a single Database handle.
+static DB_CACHE: LazyLock<Mutex<HashMap<PathBuf, Arc<redb::Database>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn get_or_open_db(db_path: &Path) -> std::result::Result<Arc<redb::Database>, redb::DatabaseError> {
+    let mut map = DB_CACHE.lock().unwrap();
+
+    if let Some(db) = map.get(db_path) {
+        return Ok(db.clone());
+    }
+
+    let db = Arc::new(redb::Database::create(db_path)?);
+    map.insert(db_path.to_owned(), db.clone());
+    Ok(db)
+}
+
 pub struct LocalClient {
-    db: redb::Database,
+    db: Arc<redb::Database>,
     shard_manager: Arc<ShardFileManager>,
     xorb_dir: PathBuf,
     shard_dir: PathBuf,
@@ -151,8 +168,8 @@ impl LocalClient {
         }
 
         let db_path = base_dir.join("global_dedup_lookup.redb");
-        let db = redb::Database::create(&db_path)
-            .map_err(|e| ClientError::Other(format!("Error opening redb database: {e}")))?;
+        let db =
+            get_or_open_db(&db_path).map_err(|e| ClientError::Other(format!("Error opening redb database: {e}")))?;
 
         // Ensure tables exist by opening a write transaction.
         {
