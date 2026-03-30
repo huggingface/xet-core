@@ -1241,7 +1241,10 @@ mod tests {
         let results = commit.commit_blocking()?;
 
         // Result should be available in the commit map by task id.
-        let map_result = results.uploads.get(&handle.task_id()).expect("task_id must be present in results");
+        let map_result = results
+            .uploads
+            .get(&handle.task_id())
+            .expect("task_id must be present in results");
         assert_eq!(map_result.xet_info.file_size, Some(data.len() as u64));
 
         // Result should also be available via the task handle.

@@ -349,8 +349,8 @@ impl XetRuntime {
     /// # Errors
     ///
     /// - [`RuntimeError::InvalidRuntime`] — the handle lacks multi-thread flavor, time driver, or IO driver.
-    /// - [`RuntimeError::ExternalAlreadyAttached`] — a live `XetRuntime` is already registered for this
-    ///   handle (checked inside [`from_external_with_config`](Self::from_external_with_config)).
+    /// - [`RuntimeError::ExternalAlreadyAttached`] — a live `XetRuntime` is already registered for this handle (checked
+    ///   inside [`from_external_with_config`](Self::from_external_with_config)).
     ///
     /// Not available on WASM targets.
     #[cfg(not(target_family = "wasm"))]
@@ -379,9 +379,9 @@ impl XetRuntime {
     ///
     /// # Errors
     ///
-    /// - [`RuntimeError::ExternalAlreadyAttached`] — a live `XetRuntime` is already registered for
-    ///   `rt_handle`'s tokio runtime ID (i.e. the same handle was wrapped twice while the first is
-    ///   still alive).  Drop the existing `XetRuntime` first, or use a different handle.
+    /// - [`RuntimeError::ExternalAlreadyAttached`] — a live `XetRuntime` is already registered for `rt_handle`'s tokio
+    ///   runtime ID (i.e. the same handle was wrapped twice while the first is still alive).  Drop the existing
+    ///   `XetRuntime` first, or use a different handle.
     pub fn from_external_with_config(
         rt_handle: TokioRuntimeHandle,
         config: XetConfig,
