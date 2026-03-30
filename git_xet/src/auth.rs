@@ -14,6 +14,7 @@ mod ssh;
 
 use git::GitCredentialHelper;
 use ssh::SSHCredentialHelper;
+#[cfg(any(test, feature = "git-xet-for-integration-test"))]
 pub use ssh::{GitLFSAuthentationResponseHeader, GitLFSAuthenticateResponse};
 
 // This mod derives credentials for the Xet CAS token API on HF Hub from the local repository's credentials.
