@@ -84,7 +84,7 @@ impl FileDownloadSession {
     pub async fn download_file(&self, file_info: &XetFileInfo, write_path: &Path, tracking_id: Ulid) -> Result<u64> {
         // download concurrency controlled outside
         let reconstructor = self.setup_reconstructor(file_info, None, tracking_id, Some(write_path), None)?;
-        let n_bytes = reconstructor.reconstruct_to_file(write_path, None).await?;
+        let n_bytes = reconstructor.reconstruct_to_file(write_path, None, true).await?;
         prometheus_metrics::FILTER_BYTES_SMUDGED.inc_by(n_bytes);
 
         Ok(n_bytes)
@@ -130,7 +130,7 @@ impl FileDownloadSession {
 
         let reconstructor =
             self.setup_reconstructor(file_info, None, Ulid::new(), Some(write_path), tracker.as_ref())?;
-        let n_bytes = reconstructor.reconstruct_to_file(write_path, None).await?;
+        let n_bytes = reconstructor.reconstruct_to_file(write_path, None, true).await?;
         prometheus_metrics::FILTER_BYTES_SMUDGED.inc_by(n_bytes);
 
         if let Some(agg) = aggregator {
