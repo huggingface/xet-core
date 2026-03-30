@@ -430,7 +430,7 @@ mod tests {
     use super::*;
     use crate::xet_session::session::{XetSession, XetSessionBuilder};
 
-    async fn local_session(temp: &TempDir) -> Result<XetSession> {
+    fn local_session(temp: &TempDir) -> Result<XetSession> {
         let cas_path = temp.path().join("cas");
         Ok(XetSessionBuilder::new()
             .with_endpoint(format!("local://{}", cas_path.display()))
@@ -629,7 +629,7 @@ mod tests {
     // Downloading a previously uploaded file produces byte-identical content at the destination.
     async fn test_download_file_round_trip() {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).await.unwrap();
+        let session = local_session(&temp).unwrap();
         let original = b"Hello, download round-trip!";
         let file_info = upload_bytes(&session, original, "payload.bin").await.unwrap();
 
@@ -647,7 +647,7 @@ mod tests {
     // A download task that fails transitions to Error status.
     async fn test_download_status_failed_for_invalid_file_info() {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).await.unwrap();
+        let session = local_session(&temp).unwrap();
         let group = session.new_file_download_group().unwrap().build().await.unwrap();
         let handle = group
             .download_file_to_path(
@@ -669,7 +669,7 @@ mod tests {
     // task_id returned by download_file_to_path must match the per-item progress entry id.
     async fn test_download_task_id_matches_progress_item_id() {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).await.unwrap();
+        let session = local_session(&temp).unwrap();
         let original = b"download id match";
         let file_info = upload_bytes(&session, original, "id.bin").await.unwrap();
 
@@ -695,7 +695,7 @@ mod tests {
     // Downloading multiple files from a single group produces correct content for each.
     async fn test_download_multiple_files() {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).await.unwrap();
+        let session = local_session(&temp).unwrap();
 
         let data_a = b"First file content";
         let data_b = b"Second file content - different";
@@ -732,7 +732,7 @@ mod tests {
     // After a successful finish the aggregate download progress reflects bytes received.
     async fn test_download_progress_reflects_bytes_after_finish() {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).await.unwrap();
+        let session = local_session(&temp).unwrap();
         let original = b"download progress tracking data";
         let file_info = upload_bytes(&session, original, "prog.bin").await.unwrap();
 
@@ -767,7 +767,7 @@ mod tests {
     // Pattern 1: per-task result is accessible via task_id in the finish report downloads map.
     async fn test_download_result_accessible_via_task_id_in_finish_map() {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).await.unwrap();
+        let session = local_session(&temp).unwrap();
         let data = b"result via task_id in finish map";
         let file_info = upload_bytes(&session, data, "file.bin").await.unwrap();
         let dest = temp.path().join("out.bin");
@@ -785,7 +785,7 @@ mod tests {
     // XetFileDownload::result() returns None before finish() is called.
     async fn test_download_result_none_before_finish() {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).await.unwrap();
+        let session = local_session(&temp).unwrap();
         let file_info = upload_bytes(&session, b"some data", "file.bin").await.unwrap();
         let dest = temp.path().join("out.bin");
         let group = session.new_file_download_group().unwrap().build().await.unwrap();
@@ -798,7 +798,7 @@ mod tests {
     // XetFileDownload::result() returns Some after finish() completes.
     async fn test_download_result_some_after_finish() {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).await.unwrap();
+        let session = local_session(&temp).unwrap();
         let data = b"download result test data";
         let file_info = upload_bytes(&session, data, "file.bin").await.unwrap();
         let dest = temp.path().join("out.bin");
@@ -814,7 +814,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_download_finish_second_call_returns_cached_result() {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).await.unwrap();
+        let session = local_session(&temp).unwrap();
         let data = b"download finish cache test";
         let file_info = upload_bytes(&session, data, "cache.bin").await.unwrap();
         let dest = temp.path().join("cache.out");
@@ -837,7 +837,7 @@ mod tests {
         let temp = tempdir().unwrap();
 
         futures::executor::block_on(async {
-            let session = local_session(&temp).await.unwrap();
+            let session = local_session(&temp).unwrap();
             assert_eq!(session.inner.runtime.mode(), RuntimeMode::Owned);
 
             let data = b"hello from futures executor";
@@ -865,7 +865,7 @@ mod tests {
         let temp = tempdir().unwrap();
 
         smol::block_on(async {
-            let session = local_session(&temp).await.unwrap();
+            let session = local_session(&temp).unwrap();
             assert_eq!(session.inner.runtime.mode(), RuntimeMode::Owned);
 
             let data = b"hello from smol executor";
@@ -893,7 +893,7 @@ mod tests {
         let temp = tempdir().unwrap();
 
         async_std::task::block_on(async {
-            let session = local_session(&temp).await.unwrap();
+            let session = local_session(&temp).unwrap();
             assert_eq!(session.inner.runtime.mode(), RuntimeMode::Owned);
 
             let data = b"hello from async-std executor";
@@ -917,13 +917,6 @@ mod tests {
 
     // ── Blocking API tests ────────────────────────────────────────────────────
 
-    fn local_session_sync(temp: &TempDir) -> Result<XetSession> {
-        let cas_path = temp.path().join("cas");
-        Ok(XetSessionBuilder::new()
-            .with_endpoint(format!("local://{}", cas_path.display()))
-            .build()?)
-    }
-
     fn upload_bytes_blocking(session: &XetSession, data: &[u8], name: &str) -> Result<XetFileInfo> {
         let commit = session.new_upload_commit()?.build_blocking()?;
         let _handle = commit.upload_bytes_blocking(data.to_vec(), Sha256Policy::Compute, Some(name.into()))?;
@@ -935,7 +928,7 @@ mod tests {
     #[test]
     fn test_blocking_download_file_round_trip() -> Result<()> {
         let temp = tempdir()?;
-        let session = local_session_sync(&temp)?;
+        let session = local_session(&temp)?;
         let original = b"Hello, download round-trip!";
         let file_info = upload_bytes_blocking(&session, original, "payload.bin")?;
 
@@ -951,7 +944,7 @@ mod tests {
     #[test]
     fn test_blocking_download_multiple_files() -> Result<()> {
         let temp = tempdir()?;
-        let session = local_session_sync(&temp)?;
+        let session = local_session(&temp)?;
 
         let data_a = b"First file content";
         let data_b = b"Second file content - different";
@@ -984,7 +977,7 @@ mod tests {
     #[test]
     fn test_blocking_download_progress_reflects_bytes_after_finish() -> Result<()> {
         let temp = tempdir()?;
-        let session = local_session_sync(&temp)?;
+        let session = local_session(&temp)?;
         let original = b"download progress tracking data";
         let file_info = upload_bytes_blocking(&session, original, "prog.bin")?;
 
@@ -1014,7 +1007,7 @@ mod tests {
     #[test]
     fn test_blocking_download_result_access_patterns() -> Result<()> {
         let temp = tempdir()?;
-        let session = local_session_sync(&temp)?;
+        let session = local_session(&temp)?;
         let data = b"download result access patterns";
         let file_info = upload_bytes_blocking(&session, data, "file.bin")?;
         let dest = temp.path().join("out.bin");
@@ -1046,7 +1039,7 @@ mod tests {
         R: FnOnce(std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>),
     {
         let temp = tempdir().unwrap();
-        let session = local_session_sync(&temp).unwrap();
+        let session = local_session(&temp).unwrap();
 
         run(Box::pin(async move {
             let data = b"download from smol executor";
