@@ -119,14 +119,15 @@ impl FileReconstructor {
 
     /// Reconstructs the file and writes it to the given path.
     ///
-    /// The file is opened with read/write access without truncation, allowing
-    /// multiple concurrent reconstructions to write to different regions of the
-    /// same file.
+    /// The file is opened with read/write access. When `truncate_file` is `true`
+    /// the file is truncated to the reconstructed length; when `false` the file
+    /// is left at its existing size, allowing multiple concurrent reconstructions
+    /// to write to different regions of the same file.
     ///
     /// When `write_offset` is `Some(offset)`, writing begins at that byte
     /// position regardless of the byte range. When `None`, writing begins at
     /// the byte range start (or 0 for a full-file reconstruction).
-    pub async fn reconstruct_to_file(self, path: &Path, write_offset: Option<u64>) -> Result<u64> {
+    pub async fn reconstruct_to_file(self, path: &Path, write_offset: Option<u64>, truncate_file: bool) -> Result<u64> {
         info!(
             file_hash = %self.file_hash,
             byte_range = ?self.byte_range,
@@ -139,7 +140,7 @@ impl FileReconstructor {
             std::fs::create_dir_all(parent)?;
         }
 
-        let mut file = OpenOptions::new().write(true).create(true).truncate(false).open(path)?;
+        let mut file = OpenOptions::new().write(true).create(true).truncate(truncate_file).open(path)?;
 
         let default_write_position = self.byte_range.map_or(0, |r| r.start);
         let seek_position = write_offset.unwrap_or(default_write_position);
@@ -500,7 +501,7 @@ mod tests {
             reconstructor = reconstructor.with_byte_range(range);
         }
 
-        reconstructor.reconstruct_to_file(&file_path, None).await?;
+        reconstructor.reconstruct_to_file(&file_path, None, false).await?;
 
         // Read back the data from the file at the expected location.
         let file_data = std::fs::read(&file_path)?;
@@ -527,7 +528,7 @@ mod tests {
             reconstructor = reconstructor.with_byte_range(range);
         }
 
-        reconstructor.reconstruct_to_file(&file_path, Some(offset)).await?;
+        reconstructor.reconstruct_to_file(&file_path, Some(offset), false).await?;
 
         // Read back all file data.
         let file_data = std::fs::read(&file_path)?;
@@ -552,7 +553,7 @@ mod tests {
             reconstructor = reconstructor.with_byte_range(range);
         }
 
-        reconstructor.reconstruct_to_file(&file_path, Some(0)).await?;
+        reconstructor.reconstruct_to_file(&file_path, Some(0), false).await?;
 
         // Read back all file data (it starts at offset 0).
         let file_data = std::fs::read(&file_path)?;
@@ -1247,7 +1248,7 @@ mod tests {
         FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_hash)
             .with_byte_range(range)
             .with_config(config)
-            .reconstruct_to_file(file_path, None)
+            .reconstruct_to_file(file_path, None, false)
             .await
     }
 
@@ -1303,7 +1304,7 @@ mod tests {
                 FileReconstructor::new(&(client as Arc<dyn Client>), file_hash)
                     .with_byte_range(range)
                     .with_config(config)
-                    .reconstruct_to_file(&file_path, None)
+                    .reconstruct_to_file(&file_path, None, false)
                     .await
             });
         }
