@@ -115,6 +115,9 @@ fn get_or_open_db(db_path: &Path) -> std::result::Result<Arc<redb::Database>, re
         return Ok(db);
     }
 
+    // Purge dead entries to avoid unbounded cache growth.
+    map.retain(|_, weak| weak.strong_count() > 0);
+
     let db = Arc::new(redb::Database::create(db_path)?);
     map.insert(db_path.to_owned(), Arc::downgrade(&db));
     Ok(db)
