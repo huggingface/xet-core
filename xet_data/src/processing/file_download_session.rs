@@ -124,7 +124,7 @@ impl FileDownloadSession {
 
         let reconstructor =
             self.setup_reconstructor(file_info, None, Ulid::new(), Some(write_path), tracker.as_ref())?;
-        let n_bytes = reconstructor.reconstruct_to_file(write_path, None).await?;
+        let n_bytes = reconstructor.reconstruct_to_file(write_path, None, true).await?;
         prometheus_metrics::FILTER_BYTES_SMUDGED.inc_by(n_bytes);
 
         if let Some(agg) = aggregator {
