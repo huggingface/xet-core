@@ -822,8 +822,8 @@ async fn test_global_dedup_shard_expiration_rounds_up_subsecond(client: Arc<dyn 
     assert_ne!(minimal_shard.num_xorb(), 0);
 }
 
-/// Tests that the shard is always returned regardless of elapsed time since upload.
-/// The expiry is set relative to query time (now + duration), not upload time.
+/// After upload, global dedup shard queries still return the shard; footer `shard_key_expiry` is
+/// computed from wall-clock `SystemTime::now()` at query time plus the configured duration (not upload time).
 async fn test_global_dedup_shard_always_returned(client: Arc<dyn DirectAccessClient>) {
     use std::io::Cursor;
 
@@ -835,8 +835,6 @@ async fn test_global_dedup_shard_always_returned(client: Arc<dyn DirectAccessCli
 
     let result = client.query_for_global_dedup_shard("default", &dedup_hashes[0]).await.unwrap();
     assert!(result.is_some());
-
-    tokio::time::advance(tokio::time::Duration::from_secs(600)).await;
 
     let shard_bytes = client
         .query_for_global_dedup_shard("default", &dedup_hashes[0])

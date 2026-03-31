@@ -28,7 +28,7 @@ use xet_core_structures::xorb_object::{SerializedXorbObject, XorbObject};
 use xet_runtime::file_utils::SafeFileCreator;
 
 use super::direct_access_client::DirectAccessClient;
-use super::xorb_utils::{self, REFERENCE_INSTANT};
+use super::xorb_utils::{self, REFERENCE_INSTANT, duration_to_expiration_secs_ceil};
 use crate::cas_client::Client;
 use crate::cas_client::adaptive_concurrency::AdaptiveConcurrencyController;
 use crate::cas_client::progress_tracked_streams::ProgressCallback;
@@ -37,10 +37,6 @@ use crate::cas_types::{
     QueryReconstructionResponseV2, XorbMultiRangeFetch, XorbRangeDescriptor, XorbReconstructionFetchInfo,
 };
 use crate::error::{ClientError, Result};
-
-fn duration_to_expiration_secs_ceil(expiration: Option<Duration>) -> u64 {
-    expiration.map_or(0, |d| d.as_secs().saturating_add(u64::from(d.subsec_nanos() > 0)))
-}
 
 pub struct LocalClient {
     // Note: Field order matters for Drop! heed::Env must be dropped before _tmp_dir

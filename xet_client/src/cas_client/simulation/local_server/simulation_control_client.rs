@@ -14,16 +14,13 @@ use super::simulation_types::{
 };
 use crate::cas_client::RemoteClient;
 use crate::cas_client::interface::Client;
+use crate::cas_client::simulation::xorb_utils::duration_to_expiration_secs_ceil;
 use crate::cas_client::simulation::{DeletionControlableClient, DirectAccessClient};
 use crate::cas_types::{FileRange, HexMerkleHash, QueryReconstructionResponseV2, XorbReconstructionFetchInfo};
 use crate::error::{ClientError, Result};
 
 const CONFIG_POST_MAX_ATTEMPTS: usize = 4;
 const CONFIG_POST_RETRY_DELAY_MS: u64 = 40;
-
-fn duration_to_expiration_secs_ceil(expiration: Option<Duration>) -> u64 {
-    expiration.map_or(0, |d| d.as_secs().saturating_add(u64::from(d.subsec_nanos() > 0)))
-}
 
 /// A client that connects to a `LocalTestServer` via HTTP and provides access
 /// to both `DirectAccessClient` and `DeletionControlableClient` operations

@@ -24,16 +24,12 @@ use super::super::progress_tracked_streams::ProgressCallback;
 use super::client_testing_utils::{FileTermReference, RandomFileContents};
 use super::direct_access_client::DirectAccessClient;
 use super::random_xorb::RandomXorb;
-use super::xorb_utils::{self, REFERENCE_INSTANT};
+use super::xorb_utils::{self, REFERENCE_INSTANT, duration_to_expiration_secs_ceil};
 use crate::cas_types::{
     BatchQueryReconstructionResponse, FileRange, HexMerkleHash, HttpRange, QueryReconstructionResponse,
     QueryReconstructionResponseV2, XorbMultiRangeFetch, XorbRangeDescriptor, XorbReconstructionFetchInfo,
 };
 use crate::error::{ClientError, Result};
-
-fn duration_to_expiration_secs_ceil(expiration: Option<Duration>) -> u64 {
-    expiration.map_or(0, |d| d.as_secs().saturating_add(u64::from(d.subsec_nanos() > 0)))
-}
 
 /// Stored XORB data: the serialized data and the deserialized XorbObject (header/footer).
 struct MaterializedXorb {
