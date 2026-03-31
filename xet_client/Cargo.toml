@@ -49,7 +49,7 @@ web-time = { workspace = true }
 axum = { workspace = true, optional = true }
 humantime = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
-heed = { workspace = true }
+redb = { workspace = true }
 human-bandwidth = { workspace = true, optional = true }
 hyper = { workspace = true }
 tokio = { workspace = true }
