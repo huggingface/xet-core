@@ -350,168 +350,6 @@ impl super::DeletionControlableClient for LocalClient {
 
         Ok(())
     }
-
-    /// Verifies referential integrity of all shards on disk:
-    /// 1. For each XORB entry listed in any shard, the corresponding XORB file must exist on disk.
-    /// 2. For each file entry in any shard, every referenced XORB must exist on disk. (Global-dedup allows file entries
-    ///    to reference XORBs described in a different shard, so we do a cross-shard check against disk rather than a
-    ///    within-shard check.)
-    async fn verify_all_reachable(&self) -> Result<()> {
-        let shard_files = self.shard_file_paths()?;
-
-        // Collect xorbs claimed by shard xorb-entries, xorbs referenced by active file
-        // entries (cross-shard dedup), and which shards have at least one active file.
-        let mut xorbs_in_shard_entries: std::collections::HashSet<MerkleHash> = std::collections::HashSet::new();
-        let mut xorbs_in_active_file_entries: std::collections::HashSet<MerkleHash> = std::collections::HashSet::new();
-        let mut shards_with_active_files: std::collections::HashSet<MerkleHash> = std::collections::HashSet::new();
-        // Per-shard xorb list, used below to check compact-shard reachability.
-        let mut shard_xorbs: std::collections::HashMap<MerkleHash, Vec<MerkleHash>> = std::collections::HashMap::new();
-
-        for (shard_hash, path) in &shard_files {
-            let shard_bytes = std::fs::read(path)?;
-            let minimal_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&shard_bytes), true, true)?;
-
-            for i in 0..minimal_shard.num_xorb() {
-                let xorb_hash = minimal_shard.xorb(i).unwrap().xorb_hash();
-                xorbs_in_shard_entries.insert(xorb_hash);
-                shard_xorbs.entry(*shard_hash).or_default().push(xorb_hash);
-            }
-
-            let mut has_active_file = false;
-            for i in 0..minimal_shard.num_files() {
-                let file_view = minimal_shard.file(i).unwrap();
-                if !self.is_file_deleted(&file_view.file_hash()) {
-                    has_active_file = true;
-                    for seg_idx in 0..file_view.num_entries() {
-                        xorbs_in_active_file_entries.insert(file_view.entry(seg_idx).xorb_hash);
-                    }
-                }
-            }
-            if has_active_file {
-                shards_with_active_files.insert(*shard_hash);
-            }
-        }
-
-        let mut errors: Vec<String> = Vec::new();
-
-        // Check 1: every on-disk shard must be "reachable".
-        // A shard is reachable if it has at least one active (non-deleted) file entry, OR if it is
-        // a compact shard (no file entries) that holds xorb-entries for xorbs referenced by some
-        // active file (cross-shard dedup case — the compact shard is needed for dedup lookups).
-        // A shard that satisfies neither condition is truly orphaned and GC should have deleted it.
-        for (shard_hash, _) in &shard_files {
-            if !shards_with_active_files.contains(shard_hash) {
-                let has_file_referenced_xorb = shard_xorbs
-                    .get(shard_hash)
-                    .is_some_and(|xorbs| xorbs.iter().any(|x| xorbs_in_active_file_entries.contains(x)));
-                if !has_file_referenced_xorb {
-                    errors.push(format!(
-                        "Reachability error: shard {} has no active file entries and no \
-                         xorbs referenced by any active file (GC should have deleted it)",
-                        shard_hash.hex()
-                    ));
-                }
-            }
-        }
-
-        // Check 2: every on-disk xorb must be reachable — either indexed by a shard's
-        // xorb entries, or referenced directly by an active file's file entries (cross-shard
-        // dedup). Xorbs that satisfy neither are orphaned and GC should have deleted them.
-        for xorb_hash in self.list_xorbs().await? {
-            if !xorbs_in_shard_entries.contains(&xorb_hash) && !xorbs_in_active_file_entries.contains(&xorb_hash) {
-                errors.push(format!(
-                    "Reachability error: xorb {} exists on disk but is not referenced by \
-                     any shard xorb entry or active file entry (GC should have deleted it)",
-                    xorb_hash.hex()
-                ));
-            }
-        }
-
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(ClientError::Other(errors.join("\n")))
-        }
-    }
-
-    async fn verify_integrity(&self) -> Result<()> {
-        let shard_files = self.shard_file_paths()?;
-
-        // Pass 1: collect all XORB hashes listed across all shards and build
-        // a global chunk-count index.  Also verify each listed XORB file exists.
-        let mut global_xorb_chunk_counts: HashMap<MerkleHash, usize> = HashMap::new();
-        for (shard_hash, path) in &shard_files {
-            let shard_bytes = std::fs::read(path)?;
-            let minimal_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&shard_bytes), true, true)?;
-
-            for i in 0..minimal_shard.num_xorb() {
-                let xorb_view = minimal_shard.xorb(i).unwrap();
-                let xorb_hash = xorb_view.xorb_hash();
-
-                let xorb_path = self.get_path_for_entry(&xorb_hash);
-                if !xorb_path.exists() {
-                    return Err(ClientError::Other(format!(
-                        "Integrity error: shard {} references non-existent XORB {}",
-                        shard_hash.hex(),
-                        xorb_hash.hex()
-                    )));
-                }
-
-                global_xorb_chunk_counts.entry(xorb_hash).or_insert(xorb_view.num_entries());
-            }
-        }
-
-        // Pass 2: validate every file entry across all shards.
-        // A file may reference an XORB described in a different shard (global dedup).
-        // We accept the reference if (a) the XORB is in the global index, or
-        // (b) the XORB file exists on disk (dedup case: chunk-count validation is skipped).
-        for (shard_hash, path) in &shard_files {
-            let shard_bytes = std::fs::read(path)?;
-            let minimal_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&shard_bytes), true, true)?;
-
-            for i in 0..minimal_shard.num_files() {
-                let file_view = minimal_shard.file(i).unwrap();
-                let fh = file_view.file_hash();
-
-                // Skip soft-deleted files.
-                if self.is_file_deleted(&fh) {
-                    continue;
-                }
-
-                for seg_idx in 0..file_view.num_entries() {
-                    let segment = file_view.entry(seg_idx);
-                    let xorb_path = self.get_path_for_entry(&segment.xorb_hash);
-
-                    if let Some(&chunk_count) = global_xorb_chunk_counts.get(&segment.xorb_hash) {
-                        // XORB is indexed in some shard — validate chunk range.
-                        if segment.chunk_index_end as usize > chunk_count {
-                            return Err(ClientError::Other(format!(
-                                "Integrity error: file {} references chunk range {}..{} \
-                                 but XORB block {} only has {} chunks",
-                                fh.hex(),
-                                segment.chunk_index_start,
-                                segment.chunk_index_end,
-                                segment.xorb_hash.hex(),
-                                chunk_count
-                            )));
-                        }
-                    } else if xorb_path.exists() {
-                        // XORB not in any shard index but file exists — dedup reference, OK.
-                    } else {
-                        return Err(ClientError::Other(format!(
-                            "Integrity error: file {} in shard {} references XORB {} \
-                             that has no shard index entry and no XORB file on disk",
-                            fh.hex(),
-                            shard_hash.hex(),
-                            segment.xorb_hash.hex()
-                        )));
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
 }
 
 impl Drop for LocalClient {
@@ -852,12 +690,166 @@ impl DirectAccessClient for LocalClient {
         Ok((data.into(), chunk_byte_indices))
     }
 
-    async fn verify_integrity(&self) -> Result<()> {
-        LocalClient::verify_integrity(self).await
+    /// Verifies referential integrity of all shards on disk:
+    /// 1. For each XORB entry listed in any shard, the corresponding XORB file must exist on disk.
+    /// 2. For each file entry in any shard, every referenced XORB must exist on disk. (Global-dedup allows file entries
+    ///    to reference XORBs described in a different shard, so we do a cross-shard check against disk rather than a
+    ///    within-shard check.)
+    async fn verify_all_reachable(&self) -> Result<()> {
+        let shard_files = self.shard_file_paths()?;
+
+        // Collect xorbs claimed by shard xorb-entries, xorbs referenced by active file
+        // entries (cross-shard dedup), and which shards have at least one active file.
+        let mut xorbs_in_shard_entries: std::collections::HashSet<MerkleHash> = std::collections::HashSet::new();
+        let mut xorbs_in_active_file_entries: std::collections::HashSet<MerkleHash> = std::collections::HashSet::new();
+        let mut shards_with_active_files: std::collections::HashSet<MerkleHash> = std::collections::HashSet::new();
+        // Per-shard xorb list, used below to check compact-shard reachability.
+        let mut shard_xorbs: std::collections::HashMap<MerkleHash, Vec<MerkleHash>> = std::collections::HashMap::new();
+
+        for (shard_hash, path) in &shard_files {
+            let shard_bytes = std::fs::read(path)?;
+            let minimal_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&shard_bytes), true, true)?;
+
+            for i in 0..minimal_shard.num_xorb() {
+                let xorb_hash = minimal_shard.xorb(i).unwrap().xorb_hash();
+                xorbs_in_shard_entries.insert(xorb_hash);
+                shard_xorbs.entry(*shard_hash).or_default().push(xorb_hash);
+            }
+
+            let mut has_active_file = false;
+            for i in 0..minimal_shard.num_files() {
+                let file_view = minimal_shard.file(i).unwrap();
+                if !self.is_file_deleted(&file_view.file_hash()) {
+                    has_active_file = true;
+                    for seg_idx in 0..file_view.num_entries() {
+                        xorbs_in_active_file_entries.insert(file_view.entry(seg_idx).xorb_hash);
+                    }
+                }
+            }
+            if has_active_file {
+                shards_with_active_files.insert(*shard_hash);
+            }
+        }
+
+        let mut errors: Vec<String> = Vec::new();
+
+        // Check 1: every on-disk shard must be "reachable".
+        // A shard is reachable if it has at least one active (non-deleted) file entry, OR if it is
+        // a compact shard (no file entries) that holds xorb-entries for xorbs referenced by some
+        // active file (cross-shard dedup case — the compact shard is needed for dedup lookups).
+        // A shard that satisfies neither condition is truly orphaned and GC should have deleted it.
+        for (shard_hash, _) in &shard_files {
+            if !shards_with_active_files.contains(shard_hash) {
+                let has_file_referenced_xorb = shard_xorbs
+                    .get(shard_hash)
+                    .is_some_and(|xorbs| xorbs.iter().any(|x| xorbs_in_active_file_entries.contains(x)));
+                if !has_file_referenced_xorb {
+                    errors.push(format!(
+                        "Reachability error: shard {} has no active file entries and no \
+                         xorbs referenced by any active file (GC should have deleted it)",
+                        shard_hash.hex()
+                    ));
+                }
+            }
+        }
+
+        // Check 2: every on-disk xorb must be reachable — either indexed by a shard's
+        // xorb entries, or referenced directly by an active file's file entries (cross-shard
+        // dedup). Xorbs that satisfy neither are orphaned and GC should have deleted them.
+        for xorb_hash in self.list_xorbs().await? {
+            if !xorbs_in_shard_entries.contains(&xorb_hash) && !xorbs_in_active_file_entries.contains(&xorb_hash) {
+                errors.push(format!(
+                    "Reachability error: xorb {} exists on disk but is not referenced by \
+                     any shard xorb entry or active file entry (GC should have deleted it)",
+                    xorb_hash.hex()
+                ));
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(ClientError::Other(errors.join("\n")))
+        }
     }
 
-    async fn verify_all_reachable(&self) -> Result<()> {
-        LocalClient::verify_all_reachable(self).await
+    async fn verify_integrity(&self) -> Result<()> {
+        let shard_files = self.shard_file_paths()?;
+
+        // Pass 1: collect all XORB hashes listed across all shards and build
+        // a global chunk-count index.  Also verify each listed XORB file exists.
+        let mut global_xorb_chunk_counts: HashMap<MerkleHash, usize> = HashMap::new();
+        for (shard_hash, path) in &shard_files {
+            let shard_bytes = std::fs::read(path)?;
+            let minimal_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&shard_bytes), true, true)?;
+
+            for i in 0..minimal_shard.num_xorb() {
+                let xorb_view = minimal_shard.xorb(i).unwrap();
+                let xorb_hash = xorb_view.xorb_hash();
+
+                let xorb_path = self.get_path_for_entry(&xorb_hash);
+                if !xorb_path.exists() {
+                    return Err(ClientError::Other(format!(
+                        "Integrity error: shard {} references non-existent XORB {}",
+                        shard_hash.hex(),
+                        xorb_hash.hex()
+                    )));
+                }
+
+                global_xorb_chunk_counts.entry(xorb_hash).or_insert(xorb_view.num_entries());
+            }
+        }
+
+        // Pass 2: validate every file entry across all shards.
+        // A file may reference an XORB described in a different shard (global dedup).
+        // We accept the reference if (a) the XORB is in the global index, or
+        // (b) the XORB file exists on disk (dedup case: chunk-count validation is skipped).
+        for (shard_hash, path) in &shard_files {
+            let shard_bytes = std::fs::read(path)?;
+            let minimal_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&shard_bytes), true, true)?;
+
+            for i in 0..minimal_shard.num_files() {
+                let file_view = minimal_shard.file(i).unwrap();
+                let fh = file_view.file_hash();
+
+                // Skip soft-deleted files.
+                if self.is_file_deleted(&fh) {
+                    continue;
+                }
+
+                for seg_idx in 0..file_view.num_entries() {
+                    let segment = file_view.entry(seg_idx);
+                    let xorb_path = self.get_path_for_entry(&segment.xorb_hash);
+
+                    if let Some(&chunk_count) = global_xorb_chunk_counts.get(&segment.xorb_hash) {
+                        // XORB is indexed in some shard — validate chunk range.
+                        if segment.chunk_index_end as usize > chunk_count {
+                            return Err(ClientError::Other(format!(
+                                "Integrity error: file {} references chunk range {}..{} \
+                                 but XORB block {} only has {} chunks",
+                                fh.hex(),
+                                segment.chunk_index_start,
+                                segment.chunk_index_end,
+                                segment.xorb_hash.hex(),
+                                chunk_count
+                            )));
+                        }
+                    } else if xorb_path.exists() {
+                        // XORB not in any shard index but file exists — dedup reference, OK.
+                    } else {
+                        return Err(ClientError::Other(format!(
+                            "Integrity error: file {} in shard {} references XORB {} \
+                             that has no shard index entry and no XORB file on disk",
+                            fh.hex(),
+                            shard_hash.hex(),
+                            segment.xorb_hash.hex()
+                        )));
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 

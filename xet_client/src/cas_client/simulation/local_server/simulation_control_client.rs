@@ -550,31 +550,4 @@ impl DeletionControlableClient for SimulationControlClient {
         Self::check_status(resp).await?;
         Ok(())
     }
-
-    /// Triggers server-side integrity verification via the `/simulation/verify_integrity` endpoint.
-    async fn verify_integrity(&self) -> Result<()> {
-        let resp = self
-            .http_client
-            .post(self.sim_url("/verify_integrity"))
-            .send()
-            .await
-            .map_err(|e| ClientError::Other(e.to_string()))?;
-        Self::check_status(resp).await?;
-        Ok(())
-    }
-
-    /// Triggers server-side reachability verification via `/simulation/verify_all_reachable`.
-    ///
-    /// Intended to be called after GC has converged (several epochs of quiescence). Same checks
-    /// as `DeletionControlableClient::verify_all_reachable`.
-    async fn verify_all_reachable(&self) -> Result<()> {
-        let resp = self
-            .http_client
-            .post(self.sim_url("/verify_all_reachable"))
-            .send()
-            .await
-            .map_err(|e| ClientError::Other(e.to_string()))?;
-        Self::check_status(resp).await?;
-        Ok(())
-    }
 }

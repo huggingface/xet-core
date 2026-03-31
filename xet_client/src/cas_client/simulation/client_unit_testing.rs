@@ -809,7 +809,7 @@ async fn test_global_dedup_shard_expiration_rounds_up_subsecond(client: Arc<dyn 
     let shard_info =
         xet_core_structures::metadata_shard::MDBShardInfo::load_from_reader(&mut std::io::Cursor::new(&shard_bytes))
             .unwrap();
-    assert!(shard_info.metadata.shard_key_expiry >= now_epoch + 1);
+    assert!(shard_info.metadata.shard_key_expiry > now_epoch);
     assert!(shard_info.metadata.shard_key_expiry <= now_epoch + 3);
 
     let minimal_shard = xet_core_structures::metadata_shard::streaming_shard::MDBMinimalShard::from_reader(

@@ -4,7 +4,9 @@ use xet_core_structures::merklehash::MerkleHash;
 
 use crate::error::Result;
 
-/// Trait for clients that support deletion and integrity operations on shards and file entries.
+/// Trait for clients that support deletion operations on shards and file entries.
+///
+/// Integrity checks (`verify_integrity`, `verify_all_reachable`) live on [`super::DirectAccessClient`].
 ///
 /// This is implemented by `LocalClient` which has disk-backed storage. Operations that go
 /// through the local server will return 501 Not Implemented if the underlying client does
@@ -31,19 +33,4 @@ pub trait DeletionControlableClient: Send + Sync {
     /// Removes all global-dedup table entries contributed by the given shard.
     /// Called by GC Stage 4 before replacing or discarding a shard.
     async fn remove_shard_dedup_entries(&self, shard_hash: &MerkleHash) -> Result<()>;
-
-    /// Verifies referential integrity of all shards on disk.
-    async fn verify_integrity(&self) -> Result<()>;
-
-    /// Verifies completeness: after GC convergence, all on-disk data must be reachable.
-    ///
-    /// Intended to be called after several epochs of quiescence (no uploads, no deletes).
-    /// Checks:
-    /// 1. Every on-disk shard is "reachable": either it has at least one active (non-deleted) file entry, OR it is a
-    ///    compact shard (no file entries) with at least one xorb referenced by some active file (cross-shard dedup case
-    ///    — the compact shard is needed to hold the dedup-table entries for those xorbs).  A shard that has neither
-    ///    active file entries nor any file-referenced xorbs is truly orphaned and GC should have deleted it.
-    /// 2. Every on-disk xorb is referenced by at least one shard's xorb entries, or by an active file's file entries
-    ///    (cross-shard dedup case).
-    async fn verify_all_reachable(&self) -> Result<()>;
 }

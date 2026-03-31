@@ -15,6 +15,8 @@ unifies additional simulation knobs under `/simulation/set_config`.
 fn set_global_dedup_shard_expiration(&self, expiration: Option<Duration>);
 ```
 
+`verify_integrity` and `verify_all_reachable` are also defined on this trait (default no-op for backends without on-disk shards).  They are not on `DeletionControlableClient`.
+
 When set, `query_for_global_dedup_shard` returns shard bytes with:
 
 - file reconstruction section removed
