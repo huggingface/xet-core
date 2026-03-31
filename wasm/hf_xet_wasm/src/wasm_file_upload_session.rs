@@ -8,7 +8,7 @@ use xet_core_structures::merklehash::{HashedWrite, MerkleHash};
 use xet_core_structures::metadata_shard::MDBShardInfo;
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::xorb_object::SerializedXorbObject;
-use xet_data::deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
+use xet_data::deduplication::constants::{XORB_CUT_THRESHOLD_BYTES, XORB_CUT_THRESHOLD_CHUNKS};
 use xet_data::deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
 
 use super::configurations::TranslatorConfig;
@@ -82,8 +82,8 @@ impl FileUploadSession {
             let mut current_session_data = self.current_session_data.lock().await;
 
             // Do we need to cut one of these to a xorb?
-            if current_session_data.num_bytes() + file_data.num_bytes() > *MAX_XORB_BYTES
-                || current_session_data.num_chunks() + file_data.num_chunks() > *MAX_XORB_CHUNKS
+            if current_session_data.num_bytes() + file_data.num_bytes() > *XORB_CUT_THRESHOLD_BYTES
+                || current_session_data.num_chunks() + file_data.num_chunks() > *XORB_CUT_THRESHOLD_CHUNKS
             {
                 // Cut the larger one as a xorb, uploading it and registering the files.
                 if current_session_data.num_bytes() > file_data.num_bytes() {

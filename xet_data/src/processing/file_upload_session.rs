@@ -22,7 +22,9 @@ use super::file_cleaner::{Sha256Policy, SingleFileCleaner};
 use super::remote_client_interface::create_remote_client;
 use super::shard_interface::SessionShardInterface;
 use super::{XetFileInfo, prometheus_metrics};
-use crate::deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
+use crate::deduplication::constants::{
+    MAX_XORB_BYTES, MAX_XORB_CHUNKS, XORB_CUT_THRESHOLD_BYTES, XORB_CUT_THRESHOLD_CHUNKS,
+};
 use crate::deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
 use crate::error::{DataError, Result};
 use crate::progress_tracking::upload_tracking::{CompletionTracker, FileXorbDependency};
@@ -396,8 +398,8 @@ impl FileUploadSession {
             let mut current_session_data = self.current_session_data.lock().await;
 
             // Do we need to cut one of these to a xorb?
-            if current_session_data.num_bytes() + file_data.num_bytes() > *MAX_XORB_BYTES
-                || current_session_data.num_chunks() + file_data.num_chunks() > *MAX_XORB_CHUNKS
+            if current_session_data.num_bytes() + file_data.num_bytes() > *XORB_CUT_THRESHOLD_BYTES
+                || current_session_data.num_chunks() + file_data.num_chunks() > *XORB_CUT_THRESHOLD_CHUNKS
             {
                 // Cut the larger one as a xorb, uploading it and registering the files.
                 if current_session_data.num_bytes() > file_data.num_bytes() {
