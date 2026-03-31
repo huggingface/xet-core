@@ -109,10 +109,10 @@ static DB_CACHE: LazyLock<Mutex<HashMap<PathBuf, Weak<redb::Database>>>> = LazyL
 fn get_or_open_db(db_path: &Path) -> std::result::Result<Arc<redb::Database>, redb::DatabaseError> {
     let mut map = DB_CACHE.lock().unwrap();
 
-    if let Some(weak) = map.get(db_path) {
-        if let Some(db) = weak.upgrade() {
-            return Ok(db);
-        }
+    if let Some(weak) = map.get(db_path)
+        && let Some(db) = weak.upgrade()
+    {
+        return Ok(db);
     }
 
     let db = Arc::new(redb::Database::create(db_path)?);
