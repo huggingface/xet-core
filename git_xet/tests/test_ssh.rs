@@ -1,3 +1,4 @@
+#![cfg(feature = "git-xet-for-integration-test")]
 //! Integration tests for verifying access to POSIX utility commands when running programs
 //! through `git-xet` (invoked via `git-lfs` and `git`). These tests focus on the behaviour on
 //! Windows where "Git for Windows" ships a MinGW/MSYS environment containing common POSIX

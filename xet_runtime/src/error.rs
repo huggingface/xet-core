@@ -9,6 +9,9 @@ pub enum RuntimeError {
     #[error("Invalid runtime: {0}")]
     InvalidRuntime(String),
 
+    #[error("A XetRuntime is already attached to this tokio runtime handle with Id {0}")]
+    ExternalAlreadyAttached(tokio::runtime::Id),
+
     #[error("Task panic: {0:?}")]
     TaskPanic(String),
 
