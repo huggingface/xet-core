@@ -29,7 +29,7 @@ lazy_static::lazy_static! {
 
     /// The byte threshold at which to cut a new xorb during building.
     /// Defaults to MAX_XORB_BYTES, but in simulation builds can be lowered
-    /// via the `simulation_max_xorb_bytes` xorb config value to produce
+    /// via the `simulation_max_bytes` xorb config value to produce
     /// smaller (but still valid) xorbs.
     pub static ref XORB_CUT_THRESHOLD_BYTES: usize = {
         #[cfg(feature = "simulation")]
@@ -37,8 +37,8 @@ lazy_static::lazy_static! {
             xet_runtime::core::xet_config()
                 .xorb
                 .simulation_max_bytes
+                .map(|bs| (bs.as_u64() as usize).min(*MAX_XORB_BYTES))
                 .unwrap_or(*MAX_XORB_BYTES)
-                .min(*MAX_XORB_BYTES)
         }
         #[cfg(not(feature = "simulation"))]
         { *MAX_XORB_BYTES }
