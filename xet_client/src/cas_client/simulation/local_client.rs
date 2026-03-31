@@ -5,7 +5,7 @@ use std::mem::size_of;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, Weak};
 
 use anyhow::anyhow;
 use async_trait::async_trait;
@@ -104,17 +104,19 @@ const FILE_STATUS_TABLE: TableDefinition<RedbHash, bool> = TableDefinition::new(
 /// Global cache of open redb databases keyed by canonical path.
 /// redb enforces exclusive file locking, so multiple LocalClient instances
 /// pointing at the same directory must share a single Database handle.
-static DB_CACHE: LazyLock<Mutex<HashMap<PathBuf, Arc<redb::Database>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static DB_CACHE: LazyLock<Mutex<HashMap<PathBuf, Weak<redb::Database>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn get_or_open_db(db_path: &Path) -> std::result::Result<Arc<redb::Database>, redb::DatabaseError> {
     let mut map = DB_CACHE.lock().unwrap();
 
-    if let Some(db) = map.get(db_path) {
-        return Ok(db.clone());
+    if let Some(weak) = map.get(db_path) {
+        if let Some(db) = weak.upgrade() {
+            return Ok(db);
+        }
     }
 
     let db = Arc::new(redb::Database::create(db_path)?);
-    map.insert(db_path.to_owned(), db.clone());
+    map.insert(db_path.to_owned(), Arc::downgrade(&db));
     Ok(db)
 }
 
