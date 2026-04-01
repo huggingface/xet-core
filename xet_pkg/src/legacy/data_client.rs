@@ -152,7 +152,7 @@ pub async fn download_async(
         Some(updaters) => updaters.into_iter().map(Some).collect(),
     };
 
-    let session = FileDownloadSession::new(config).await?;
+    let session = FileDownloadSession::new(config, None).await?;
 
     let mut tasks = Vec::with_capacity(file_infos.len());
     let mut bridges: Vec<Option<ItemProgressCallbackUpdater>> = Vec::with_capacity(file_infos.len());

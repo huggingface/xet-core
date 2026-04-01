@@ -4,8 +4,10 @@ use std::sync::Arc;
 use bytes::Bytes;
 use tokio::sync::{Mutex, OnceCell};
 use xet_client::cas_client::{Client, ProgressCallback};
-use xet_client::cas_types::ChunkRange;
+use xet_client::cas_types::{ChunkRange, Key};
+use xet_client::chunk_cache::ChunkCache;
 use xet_core_structures::merklehash::MerkleHash;
+use xet_runtime::core::xet_config;
 use xet_runtime::utils::UniqueId;
 
 use super::super::error::Result;
@@ -70,6 +72,19 @@ impl PartialEq for XorbBlock {
 
 impl Eq for XorbBlock {}
 
+/// Builds chunk offset pairs from chunk ranges and a flat byte-offset slice.
+fn build_chunk_offsets(chunk_ranges: &[ChunkRange], byte_offsets: &[u32]) -> Vec<(usize, usize)> {
+    let mut chunk_offsets = Vec::new();
+    let mut offset_idx = 0;
+    for range in chunk_ranges {
+        for chunk_idx in range.start..range.end {
+            chunk_offsets.push((chunk_idx as usize, byte_offsets[offset_idx] as usize));
+            offset_idx += 1;
+        }
+    }
+    chunk_offsets
+}
+
 impl XorbBlock {
     /// Retrieve the xorb block data from the client, caching it for subsequent calls.
     ///
@@ -82,6 +97,7 @@ impl XorbBlock {
         client: Arc<dyn Client>,
         url_info: Arc<TermBlockRetrievalURLs>,
         progress_updater: Option<Arc<ItemProgressUpdater>>,
+        chunk_cache: Option<Arc<dyn ChunkCache>>,
     ) -> Result<Arc<XorbBlockData>> {
         let xorb_block_index = self.xorb_block_index;
         let uncompressed_size_if_known = self.uncompressed_size_if_known;
@@ -89,7 +105,31 @@ impl XorbBlock {
 
         self.data
             .get_or_try_init(|| async {
-                // Acquire a CAS download permit only when actually downloading.
+                // Try the on-disk chunk cache before hitting the network.
+                // NOTE: cache key uses only the first ChunkRange. This works when each
+                // XorbBlock has a single range, but will need rework if multi-range
+                // blocks (multiple disjoint chunk ranges per block) are cached.
+                if let Some(ref cache) = chunk_cache {
+                    let cache_key = Key {
+                        prefix: xet_config().data.default_prefix.clone(),
+                        hash: self.xorb_hash,
+                    };
+                    let chunk_range = chunk_ranges.first().copied().unwrap_or_default();
+
+                    if let Ok(Some(cache_range)) = cache.get(&cache_key, &chunk_range).await {
+                        // Report cached bytes as completed so progress tracking stays consistent.
+                        if let Some(ref updater) = progress_updater {
+                            let (_, _, http_ranges) = url_info.get_retrieval_url(xorb_block_index).await;
+                            let transfer_bytes: u64 = http_ranges.iter().map(|r| r.length()).sum();
+                            updater.report_transfer_progress(transfer_bytes);
+                        }
+                        let chunk_offsets = build_chunk_offsets(&chunk_ranges, &cache_range.offsets);
+                        let data = Bytes::from(cache_range.data);
+                        return Ok(Arc::new(XorbBlockData { chunk_offsets, data }));
+                    }
+                }
+
+                // Cache miss or no cache configured - download from CAS.
                 let permit = client.acquire_download_permit().await?;
 
                 let url_provider = XorbURLProvider {
@@ -112,16 +152,23 @@ impl XorbBlock {
                     .get_file_term_data(Box::new(url_provider), permit, progress_callback, uncompressed_size_if_known)
                     .await?;
 
-                // Build chunk_offsets by zipping each chunk index (from all chunk_ranges)
-                // with the corresponding byte offset from the returned data.
-                let mut chunk_offsets = Vec::new();
-                let mut offset_idx = 0;
-                for range in &chunk_ranges {
-                    for chunk_idx in range.start..range.end {
-                        chunk_offsets.push((chunk_idx as usize, chunk_byte_offsets[offset_idx] as usize));
-                        offset_idx += 1;
-                    }
+                // Store in chunk cache (best-effort, non-blocking).
+                if let Some(cache) = chunk_cache {
+                    let cache_key = Key {
+                        prefix: xet_config().data.default_prefix.clone(),
+                        hash: self.xorb_hash,
+                    };
+                    let chunk_range = chunk_ranges.first().copied().unwrap_or_default();
+                    let data = data.clone();
+                    let chunk_byte_offsets = chunk_byte_offsets.clone();
+                    tokio::spawn(async move {
+                        if let Err(err) = cache.put(&cache_key, &chunk_range, &chunk_byte_offsets, &data).await {
+                            tracing::warn!("chunk cache put failed: {err}");
+                        }
+                    });
                 }
+
+                let chunk_offsets = build_chunk_offsets(&chunk_ranges, &chunk_byte_offsets);
 
                 Ok(Arc::new(XorbBlockData { chunk_offsets, data }))
             })

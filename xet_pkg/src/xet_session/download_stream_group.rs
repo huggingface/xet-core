@@ -173,7 +173,7 @@ impl XetDownloadStreamGroup {
     ) -> Result<Self, XetError> {
         let group_id = UniqueID::new();
         let config = create_translator_config(&session, token_info, token_refresh.as_ref())?;
-        let download_session = FileDownloadSession::new(Arc::new(config)).await?;
+        let download_session = FileDownloadSession::new(Arc::new(config), None).await?;
 
         Ok(Self {
             inner: Arc::new(XetDownloadStreamGroupInner {

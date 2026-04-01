@@ -44,7 +44,7 @@ mod tests {
         }
         upload_session.finalize().await.unwrap();
 
-        let download_session = FileDownloadSession::new(env.config.clone()).await.unwrap();
+        let download_session = FileDownloadSession::new(env.config.clone(), None).await.unwrap();
         (env, download_session, xfis)
     }
 
@@ -54,7 +54,7 @@ mod tests {
         let upload_session = FileUploadSession::new(env.config.clone()).await.unwrap();
         let xfi = upload_bytes(&upload_session, name, data).await;
         upload_session.finalize().await.unwrap();
-        let download_session = FileDownloadSession::new(env.config.clone()).await.unwrap();
+        let download_session = FileDownloadSession::new(env.config.clone(), None).await.unwrap();
         (env, download_session, xfi)
     }
 
@@ -70,7 +70,7 @@ mod tests {
         let xfi_a = upload_bytes(&upload_session, name_a, data_a).await;
         let xfi_b = upload_bytes(&upload_session, name_b, data_b).await;
         upload_session.finalize().await.unwrap();
-        let download_session = FileDownloadSession::new(env.config.clone()).await.unwrap();
+        let download_session = FileDownloadSession::new(env.config.clone(), None).await.unwrap();
         (env, download_session, xfi_a, xfi_b)
     }
 
