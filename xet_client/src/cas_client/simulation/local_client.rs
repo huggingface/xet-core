@@ -107,9 +107,19 @@ const FILE_STATUS_TABLE: TableDefinition<RedbHash, bool> = TableDefinition::new(
 static DB_CACHE: LazyLock<Mutex<HashMap<PathBuf, Weak<redb::Database>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn get_or_open_db(db_path: &Path) -> std::result::Result<Arc<redb::Database>, redb::DatabaseError> {
+    // Canonicalize the path so that different textual representations of the
+    // same file (common on Windows with \\?\ prefixes or 8.3 short names)
+    // resolve to a single cache entry.  The file may not exist yet, so
+    // canonicalize the parent directory and re-append the file name.
+    let canonical = db_path
+        .parent()
+        .and_then(|p| p.canonicalize().ok())
+        .map(|p| p.join(db_path.file_name().unwrap_or_default()))
+        .unwrap_or_else(|| db_path.to_path_buf());
+
     let mut map = DB_CACHE.lock().unwrap();
 
-    if let Some(weak) = map.get(db_path)
+    if let Some(weak) = map.get(&canonical)
         && let Some(db) = weak.upgrade()
     {
         return Ok(db);
@@ -119,7 +129,7 @@ fn get_or_open_db(db_path: &Path) -> std::result::Result<Arc<redb::Database>, re
     map.retain(|_, weak| weak.strong_count() > 0);
 
     let db = Arc::new(redb::Database::create(db_path)?);
-    map.insert(db_path.to_owned(), Arc::downgrade(&db));
+    map.insert(canonical, Arc::downgrade(&db));
     Ok(db)
 }
 
