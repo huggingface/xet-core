@@ -354,6 +354,10 @@ impl HydrateDehydrateTest {
             let xf: XetFileInfo = serde_json::from_reader(File::open(entry.path()).unwrap()).unwrap();
             let (_id, _) = session.download_file(&xf, &out_filename).await.unwrap();
         }
+
+        // Explicitly drop the session (and its LocalClient) to release the redb database
+        // handle before the next hydrate method creates a new one.
+        drop(session);
     }
 
     pub async fn hydrate_partitioned_writers(&mut self, partitions: usize) {
@@ -398,6 +402,10 @@ impl HydrateDehydrateTest {
                 task.await.unwrap().unwrap();
             }
         }
+
+        // Explicitly drop the session (and its LocalClient) to release the redb database
+        // handle before the next hydrate method creates a new one.
+        drop(session);
     }
 
     pub async fn hydrate_stream(&mut self) {
@@ -416,6 +424,10 @@ impl HydrateDehydrateTest {
                 file.write_all(&chunk).unwrap();
             }
         }
+
+        // Explicitly drop the session (and its LocalClient) to release the redb database
+        // handle before the next hydrate method creates a new one.
+        drop(session);
     }
 
     pub fn verify_src_dest_match(&self) {
