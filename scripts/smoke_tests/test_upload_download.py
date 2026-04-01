@@ -113,6 +113,7 @@ def main():
     parser.add_argument("--hf-xet-version", help="Expected hf_xet version (display/warn only)")
     parser.add_argument("--keep-repo", action="store_true", help="Skip cleanup of test repo/bucket")
     parser.add_argument("--repo-prefix", default="smoke-test-xet", help="Prefix for temp resource names")
+    parser.add_argument("--namespace", help="HF namespace (user/org) for test repos; defaults to token owner")
     parser.add_argument("--skip-buckets", action="store_true", help="Skip storage bucket tests")
     args = parser.parse_args()
 
@@ -139,13 +140,16 @@ def main():
         print("hf_xet version: unknown")
     print(f"hf CLI: {run(['hf', 'version'])}")
 
-    # --- resolve username ---
-    from huggingface_hub import HfApi
-    user = HfApi(token=token).whoami()["name"]
+    # --- resolve namespace ---
+    if args.namespace:
+        namespace = args.namespace
+    else:
+        from huggingface_hub import HfApi
+        namespace = HfApi(token=token).whoami()["name"]
 
     suffix = secrets.token_hex(4)
-    repo_id = f"{user}/{args.repo_prefix}-{suffix}"
-    bucket_id = f"{user}/{args.repo_prefix}-bucket-{suffix}"
+    repo_id = f"{namespace}/{args.repo_prefix}-{suffix}"
+    bucket_id = f"{namespace}/{args.repo_prefix}-bucket-{suffix}"
 
     print(f"\nTest repo:   {repo_id}")
     if not args.skip_buckets:

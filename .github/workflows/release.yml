@@ -469,7 +469,7 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          ./scripts/smoke_tests/run.sh --hf-xet-version "$VERSION"
+          ./scripts/smoke_tests/run.sh --hf-xet-version "$VERSION" --namespace xet-team
 
       - name: Notify Slack on failure
         if: failure()
