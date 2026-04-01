@@ -2,8 +2,7 @@ use std::path::PathBuf;
 use std::u64;
 
 use clap::Parser;
-
-use crate::chunk_cache::{CacheConfig, DiskCache};
+use xet_client::chunk_cache::{CacheConfig, DiskCache};
 
 #[derive(Debug, Parser)]
 struct CacheAnalysisArgs {
@@ -13,16 +12,17 @@ struct CacheAnalysisArgs {
 
 /// Usage: ./cache_analysis --root "path to cache root"
 /// prints out the state of the cache
-fn main() {
+#[tokio::main]
+async fn main() {
     let args = CacheAnalysisArgs::parse();
-    print_main(args.root);
+    print_main(args.root).await;
 }
 
-fn print_main(root: PathBuf) {
+async fn print_main(root: PathBuf) {
     let cache = DiskCache::initialize(&CacheConfig {
         cache_directory: root,
         cache_size: u64::MAX,
     })
     .unwrap();
-    cache.print();
+    cache.print().await;
 }
