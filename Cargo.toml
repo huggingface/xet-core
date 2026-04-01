@@ -78,7 +78,6 @@ more-asserts = "0.3"
 oneshot = "0.1"
 pin-project = "1"
 pyo3 = { version = "0.26", features = ["abi3-py37", "multiple-pymethods"] }
-prometheus = "0.14"
 rand = "0.9"
 rand_chacha = "0.9"
 regex = "1"
