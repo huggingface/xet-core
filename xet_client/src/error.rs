@@ -173,3 +173,9 @@ impl From<crate::chunk_cache::error::ChunkCacheError> for ClientError {
         ClientError::CacheError(e.to_string())
     }
 }
+
+impl From<xet_runtime::error::RuntimeError> for ClientError {
+    fn from(e: xet_runtime::error::RuntimeError) -> Self {
+        ClientError::internal(e)
+    }
+}

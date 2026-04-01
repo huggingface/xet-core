@@ -27,6 +27,7 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 http = { workspace = true }
 more-asserts = { workspace = true }
+pyo3 = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["net", "time"] }
@@ -34,8 +35,8 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+ulid = { workspace = true }
 walkdir = { workspace = true }
-pyo3 = { workspace = true, optional = true }
 
 [features]
 smoke-test = []

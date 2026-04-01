@@ -3,11 +3,11 @@ use std::sync::Arc;
 use http::header::HeaderMap;
 use urlencoding::encode;
 
-use super::auth::CredentialHelper;
 use super::types::{CasJWTInfo, RepoInfo};
 use crate::cas_client::exports::ClientWithMiddleware;
 use crate::cas_client::retry_wrapper::RetryWrapper;
-use crate::cas_client::{Api, build_http_client};
+use crate::common::auth::CredentialHelper;
+use crate::common::http_client::{Api, build_http_client};
 use crate::error::Result;
 
 /// The type of operation to perform, either to upload files or to download files.
@@ -39,7 +39,7 @@ pub struct HubClient {
     repo_info: RepoInfo,
     reference: Option<String>,
     client: ClientWithMiddleware,
-    cred_helper: Arc<dyn CredentialHelper>,
+    cred_helper: Option<Arc<dyn CredentialHelper>>,
 }
 
 impl HubClient {
@@ -48,14 +48,14 @@ impl HubClient {
         repo_info: RepoInfo,
         reference: Option<String>,
         session_id: &str,
-        cred_helper: Arc<dyn CredentialHelper>,
-        custom_headers: Option<Arc<HeaderMap>>,
+        cred_helper: Option<Arc<dyn CredentialHelper>>,
+        custom_headers: Option<HeaderMap>,
     ) -> Result<Self> {
         Ok(HubClient {
             endpoint: endpoint.to_owned(),
             repo_info,
             reference,
-            client: build_http_client(session_id, None, custom_headers)?,
+            client: build_http_client(session_id, None, custom_headers.map(|ch| ch.into()))?,
             cred_helper,
         })
     }
@@ -94,11 +94,10 @@ impl HubClient {
                 let client = client.clone();
                 let cred_helper = cred_helper.clone();
                 async move {
-                    let req = client.get(&url).with_extension(Api("xet-token"));
-                    let req = cred_helper
-                        .fill_credential(req)
-                        .await
-                        .map_err(reqwest_middleware::Error::middleware)?;
+                    let mut req = client.get(&url).with_extension(Api("xet-token"));
+                    if let Some(cred) = cred_helper {
+                        req = cred.fill_credential(req).await.map_err(reqwest_middleware::Error::middleware)?;
+                    }
                     req.send().await
                 }
             })
@@ -110,8 +109,6 @@ impl HubClient {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use http::header::{self, HeaderMap, HeaderValue};
 
     use super::super::{BearerCredentialHelper, HFRepoType, Operation, RepoInfo};
@@ -132,8 +129,8 @@ mod tests {
             },
             Some("main".into()),
             "",
-            cred_helper,
-            Some(Arc::new(headers)),
+            Some(cred_helper),
+            Some(headers),
         )?;
 
         let read_info = hub_client.get_cas_jwt(Operation::Upload).await?;
@@ -159,8 +156,8 @@ mod tests {
             },
             Some("refs/pr/1".into()),
             "",
-            cred_helper,
-            Some(Arc::new(headers)),
+            Some(cred_helper),
+            Some(headers),
         )?;
 
         let read_info = hub_client.get_cas_jwt(Operation::Upload).await?;
@@ -186,8 +183,8 @@ mod tests {
             },
             None,
             "",
-            cred_helper,
-            Some(Arc::new(headers)),
+            Some(cred_helper),
+            Some(headers),
         )?;
 
         let read_info = hub_client.get_cas_jwt(Operation::Upload).await?;

@@ -10,7 +10,8 @@ use xet_data::progress_tracking::{ItemProgressReport, UniqueID};
 use super::task_runtime::{BackgroundTaskState, TaskRuntime, XetTaskState};
 use crate::error::XetError;
 
-/// Per-file download result returned by [`XetDownloadGroup::finish`](crate::xet_session::XetDownloadGroup::finish).
+/// Per-file download result returned by
+/// [`XetFileDownloadGroup::finish`](crate::xet_session::XetFileDownloadGroup::finish).
 #[derive(Clone, Debug)]
 pub struct XetDownloadReport {
     /// Unique identifier for this download task.
@@ -34,10 +35,11 @@ pub(super) struct XetFileDownloadInner {
 
 // ── XetFileDownload (public wrapper) ────────────────────────────────────────
 
-/// Handle for a background file-download task within an [`XetDownloadGroup`](crate::xet_session::XetDownloadGroup).
+/// Handle for a background file-download task within an
+/// [`XetFileDownloadGroup`](crate::xet_session::XetFileDownloadGroup).
 ///
 /// Returned by
-/// [`XetDownloadGroup::download_file_to_path`](crate::xet_session::XetDownloadGroup::download_file_to_path).
+/// [`XetFileDownloadGroup::download_file_to_path`](crate::xet_session::XetFileDownloadGroup::download_file_to_path).
 /// Use [`finish`](Self::finish) to wait for completion or
 /// [`result`](Self::result) to poll without blocking.
 pub struct XetFileDownload {

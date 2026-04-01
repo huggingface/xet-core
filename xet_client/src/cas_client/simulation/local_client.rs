@@ -4,14 +4,14 @@ use std::io::{BufReader, Cursor, Seek, SeekFrom, Write};
 use std::mem::size_of;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, Weak};
 
 use anyhow::anyhow;
 use async_trait::async_trait;
 use bytes::Bytes;
-use heed::types::*;
 use rand::Rng;
+use redb::{ReadableDatabase, ReadableTable, TableDefinition};
 use tempfile::TempDir;
 use tokio::time::{Duration, Instant};
 use tracing::{error, info, warn};
@@ -38,16 +38,93 @@ use crate::cas_types::{
 };
 use crate::error::{ClientError, Result};
 
+/// Newtype wrapper for MerkleHash to implement redb Key/Value traits.
+/// MerkleHash is DataHash([u64; 4]) = 32 bytes, stored as fixed-width little-endian.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RedbHash(MerkleHash);
+
+impl From<MerkleHash> for RedbHash {
+    fn from(h: MerkleHash) -> Self {
+        RedbHash(h)
+    }
+}
+
+impl From<RedbHash> for MerkleHash {
+    fn from(h: RedbHash) -> Self {
+        h.0
+    }
+}
+
+impl redb::Value for RedbHash {
+    type SelfType<'a> = RedbHash;
+    type AsBytes<'a> = [u8; 32];
+
+    fn fixed_width() -> Option<usize> {
+        Some(32)
+    }
+
+    fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
+    where
+        Self: 'a,
+    {
+        let mut hash = MerkleHash::default();
+        let u64s: &mut [u64; 4] = &mut hash;
+        for (i, chunk) in data.chunks_exact(8).enumerate() {
+            u64s[i] = u64::from_le_bytes(chunk.try_into().unwrap());
+        }
+        RedbHash(hash)
+    }
+
+    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
+    where
+        Self: 'a + 'b,
+    {
+        let mut bytes = [0u8; 32];
+        let u64s: &[u64; 4] = &value.0;
+        for (i, &val) in u64s.iter().enumerate() {
+            bytes[i * 8..(i + 1) * 8].copy_from_slice(&val.to_le_bytes());
+        }
+        bytes
+    }
+
+    fn type_name() -> redb::TypeName {
+        redb::TypeName::new("MerkleHash")
+    }
+}
+
+impl redb::Key for RedbHash {
+    fn compare(data1: &[u8], data2: &[u8]) -> std::cmp::Ordering {
+        data1.cmp(data2)
+    }
+}
+
+const GLOBAL_DEDUP_TABLE: TableDefinition<RedbHash, RedbHash> = TableDefinition::new("global_dedup");
+const FILE_STATUS_TABLE: TableDefinition<RedbHash, bool> = TableDefinition::new("file_status");
+
+/// Global cache of open redb databases keyed by canonical path.
+/// redb enforces exclusive file locking, so multiple LocalClient instances
+/// pointing at the same directory must share a single Database handle.
+static DB_CACHE: LazyLock<Mutex<HashMap<PathBuf, Weak<redb::Database>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn get_or_open_db(db_path: &Path) -> std::result::Result<Arc<redb::Database>, redb::DatabaseError> {
+    let mut map = DB_CACHE.lock().unwrap();
+
+    if let Some(weak) = map.get(db_path)
+        && let Some(db) = weak.upgrade()
+    {
+        return Ok(db);
+    }
+
+    // Purge dead entries to avoid unbounded cache growth.
+    map.retain(|_, weak| weak.strong_count() > 0);
+
+    let db = Arc::new(redb::Database::create(db_path)?);
+    map.insert(db_path.to_owned(), Arc::downgrade(&db));
+    Ok(db)
+}
+
 pub struct LocalClient {
-    // Note: Field order matters for Drop! heed::Env must be dropped before _tmp_dir
-    // because heed holds file handles that need to be closed before the directory is deleted.
-    // We use Option<heed::Env> so we can take() it in Drop to properly close via prepare_for_closing.
-    global_dedup_db_env: Option<heed::Env>,
-    global_dedup_table: heed::Database<SerdeBincode<MerkleHash>, SerdeBincode<MerkleHash>>,
-    /// Disk-backed file deletion status. Maps file_hash -> is_deleted (bool).
-    /// Files marked `true` are logically deleted without rewriting shard files,
-    /// preserving shard hash stability across GC epochs.
-    file_status_table: heed::Database<SerdeBincode<MerkleHash>, SerdeBincode<bool>>,
+    db: Arc<redb::Database>,
     shard_manager: Arc<ShardFileManager>,
     xorb_dir: PathBuf,
     shard_dir: PathBuf,
@@ -59,7 +136,7 @@ pub struct LocalClient {
     max_ranges_per_fetch: AtomicUsize,
     /// HTTP status code to return when V2 is disabled (0 = enabled).
     v2_disabled_status: AtomicU16,
-    _tmp_dir: Option<TempDir>, // Must be last - dropped after heed env is closed
+    _tmp_dir: Option<TempDir>,
 }
 
 impl LocalClient {
@@ -95,63 +172,23 @@ impl LocalClient {
             std::fs::create_dir_all(&xorb_dir)?;
         }
 
-        let global_dedup_dir = base_dir.join("global_dedup_lookup.db");
-        if !global_dedup_dir.exists() {
-            std::fs::create_dir_all(&global_dedup_dir)?;
+        let db_path = base_dir.join("global_dedup_lookup.redb");
+        let db =
+            get_or_open_db(&db_path).map_err(|e| ClientError::Other(format!("Error opening redb database: {e}")))?;
+
+        // Ensure tables exist by opening a write transaction.
+        {
+            let write_txn = db.begin_write().map_err(map_redb_db_error)?;
+            let _ = write_txn.open_table(GLOBAL_DEDUP_TABLE).map_err(map_redb_db_error)?;
+            let _ = write_txn.open_table(FILE_STATUS_TABLE).map_err(map_redb_db_error)?;
+            write_txn.commit().map_err(map_redb_db_error)?;
         }
-
-        // Open / set up the global dedup lookup.
-        // Retry with backoff: on Windows, a prior env.prepare_for_closing() may not have
-        // fully released LMDB's process-global env slot by the time we re-open the same path.
-        let global_dedup_db_env = {
-            let mut last_err = None;
-            let mut result = None;
-            for attempt in 0..5 {
-                match unsafe { heed::EnvOpenOptions::new().max_dbs(2).open(&global_dedup_dir) } {
-                    Ok(env) => {
-                        result = Some(env);
-                        break;
-                    },
-                    Err(e) => {
-                        warn!(
-                            "Attempt {}/{} to open db at {:?} failed: {e}; retrying...",
-                            attempt + 1,
-                            5,
-                            global_dedup_dir
-                        );
-                        last_err = Some(e);
-                        std::thread::sleep(std::time::Duration::from_secs(1));
-                    },
-                }
-            }
-            result.ok_or_else(|| {
-                ClientError::Other(format!(
-                    "Error opening db at {global_dedup_dir:?} after 5 attempts: {}",
-                    last_err.unwrap()
-                ))
-            })?
-        };
-
-        let mut write_txn = global_dedup_db_env
-            .write_txn()
-            .map_err(|e| ClientError::Other(format!("Error opening heed write transaction: {e}")))?;
-        let global_dedup_table = global_dedup_db_env
-            .create_database(&mut write_txn, Some("global_dedup"))
-            .map_err(|e| ClientError::Other(format!("Error opening heed table: {e}")))?;
-        let file_status_table = global_dedup_db_env
-            .create_database(&mut write_txn, Some("file_status"))
-            .map_err(|e| ClientError::Other(format!("Error opening heed file_status table: {e}")))?;
-        write_txn
-            .commit()
-            .map_err(|e| ClientError::Other(format!("Error committing heed database: {e}")))?;
 
         // Open / set up the shard lookup
         let shard_manager = ShardFileManager::new_in_session_directory(shard_dir.clone(), true).await?;
 
         Ok(Self {
-            global_dedup_db_env: Some(global_dedup_db_env),
-            global_dedup_table,
-            file_status_table,
+            db,
             shard_manager,
             xorb_dir,
             shard_dir,
@@ -160,7 +197,7 @@ impl LocalClient {
             random_ms_delay_window: (AtomicU64::new(0), AtomicU64::new(0)),
             max_ranges_per_fetch: AtomicUsize::new(usize::MAX),
             v2_disabled_status: AtomicU16::new(0),
-            _tmp_dir: tmp_dir, // Must be last - dropped after heed env is closed
+            _tmp_dir: tmp_dir,
         })
     }
 
@@ -170,15 +207,17 @@ impl LocalClient {
     }
 
     fn is_file_deleted(&self, file_hash: &MerkleHash) -> bool {
-        let Some(env) = self.global_dedup_db_env.as_ref() else {
+        let Ok(read_txn) = self.db.begin_read() else {
             return false;
         };
-        let Ok(read_txn) = env.read_txn() else {
+        let Ok(table) = read_txn.open_table(FILE_STATUS_TABLE) else {
             return false;
         };
-        self.file_status_table
-            .get(&read_txn, file_hash)
-            .unwrap_or(None)
+        table
+            .get(&RedbHash::from(*file_hash))
+            .ok()
+            .flatten()
+            .map(|v| v.value())
             .unwrap_or(false)
     }
 
@@ -279,35 +318,29 @@ impl super::DeletionControlableClient for LocalClient {
     }
 
     async fn delete_file_entry(&self, file_hash: &MerkleHash) -> Result<()> {
-        let env = self
-            .global_dedup_db_env
-            .as_ref()
-            .ok_or_else(|| ClientError::Other("LocalClient has been closed".to_string()))?;
-        let mut write_txn = env.write_txn().map_err(map_heed_db_error)?;
-        self.file_status_table
-            .put(&mut write_txn, file_hash, &true)
-            .map_err(map_heed_db_error)?;
-        write_txn.commit().map_err(map_heed_db_error)?;
+        let write_txn = self.db.begin_write().map_err(map_redb_db_error)?;
+        {
+            let mut table = write_txn.open_table(FILE_STATUS_TABLE).map_err(map_redb_db_error)?;
+            table.insert(&RedbHash::from(*file_hash), &true).map_err(map_redb_db_error)?;
+        }
+        write_txn.commit().map_err(map_redb_db_error)?;
         Ok(())
     }
 
     async fn remove_shard_dedup_entries(&self, shard_hash: &MerkleHash) -> Result<()> {
-        let env = self
-            .global_dedup_db_env
-            .as_ref()
-            .ok_or_else(|| ClientError::Other("LocalClient has been closed".to_string()))?;
-
         // Retry a few cleanup passes to tolerate interleaved writes.
         // In the common single-writer GC path this exits after one pass.
+        let shard_redb = RedbHash::from(*shard_hash);
         for _ in 0..4 {
-            let to_delete: Vec<MerkleHash> = {
-                let read_txn = env.read_txn().map_err(map_heed_db_error)?;
-                self.global_dedup_table
-                    .iter(&read_txn)
-                    .map_err(map_heed_db_error)?
+            let to_delete: Vec<RedbHash> = {
+                let read_txn = self.db.begin_read().map_err(map_redb_db_error)?;
+                let table = read_txn.open_table(GLOBAL_DEDUP_TABLE).map_err(map_redb_db_error)?;
+                table
+                    .iter()
+                    .map_err(map_redb_db_error)?
                     .filter_map(|entry| entry.ok())
-                    .filter(|(_, v)| v == shard_hash)
-                    .map(|(k, _)| k)
+                    .filter(|(_, v)| v.value() == shard_redb)
+                    .map(|(k, _)| k.value())
                     .collect()
             };
 
@@ -315,23 +348,25 @@ impl super::DeletionControlableClient for LocalClient {
                 return Ok(());
             }
 
-            let mut write_txn = env.write_txn().map_err(map_heed_db_error)?;
-            for chunk_hash in &to_delete {
-                self.global_dedup_table
-                    .delete(&mut write_txn, chunk_hash)
-                    .map_err(map_heed_db_error)?;
+            let write_txn = self.db.begin_write().map_err(map_redb_db_error)?;
+            {
+                let mut table = write_txn.open_table(GLOBAL_DEDUP_TABLE).map_err(map_redb_db_error)?;
+                for chunk_hash in &to_delete {
+                    table.remove(chunk_hash).map_err(map_redb_db_error)?;
+                }
             }
-            write_txn.commit().map_err(map_heed_db_error)?;
+            write_txn.commit().map_err(map_redb_db_error)?;
         }
 
         // If entries still remain after retries, signal a concurrent-update issue.
         let still_present = {
-            let read_txn = env.read_txn().map_err(map_heed_db_error)?;
-            self.global_dedup_table
-                .iter(&read_txn)
-                .map_err(map_heed_db_error)?
+            let read_txn = self.db.begin_read().map_err(map_redb_db_error)?;
+            let table = read_txn.open_table(GLOBAL_DEDUP_TABLE).map_err(map_redb_db_error)?;
+            table
+                .iter()
+                .map_err(map_redb_db_error)?
                 .filter_map(|entry| entry.ok())
-                .any(|(_, v)| v == *shard_hash)
+                .any(|(_, v)| v.value() == shard_redb)
         };
 
         if still_present {
@@ -426,19 +461,6 @@ impl super::DeletionControlableClient for LocalClient {
         }
 
         Ok(())
-    }
-}
-
-impl Drop for LocalClient {
-    fn drop(&mut self) {
-        // Properly close the heed environment by calling prepare_for_closing.
-        // This removes the environment from heed's global OPENED_ENV cache,
-        // allowing the file handles to be released. Without this, the cached
-        // environment reference prevents the file descriptors from being closed.
-        if let Some(env) = self.global_dedup_db_env.take() {
-            let closing_event = env.prepare_for_closing();
-            closing_event.wait();
-        }
     }
 }
 
@@ -902,14 +924,12 @@ impl Client for LocalClient {
 
     async fn query_for_global_dedup_shard(&self, _prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Bytes>> {
         self.apply_api_delay().await;
-        let env = self
-            .global_dedup_db_env
-            .as_ref()
-            .ok_or_else(|| ClientError::Other("LocalClient has been closed".to_string()))?;
-        let read_txn = env.read_txn().map_err(map_heed_db_error)?;
+        let read_txn = self.db.begin_read().map_err(map_redb_db_error)?;
+        let table = read_txn.open_table(GLOBAL_DEDUP_TABLE).map_err(map_redb_db_error)?;
 
-        if let Some(shard) = self.global_dedup_table.get(&read_txn, chunk_hash).map_err(map_heed_db_error)? {
-            let filename = self.shard_dir.join(shard_file_name(&shard));
+        if let Some(shard) = table.get(&RedbHash::from(*chunk_hash)).map_err(map_redb_db_error)? {
+            let shard_hash: MerkleHash = shard.value().into();
+            let filename = self.shard_dir.join(shard_file_name(&shard_hash));
             return Ok(Some(std::fs::read(filename)?.into()));
         }
         Ok(None)
@@ -956,26 +976,25 @@ impl Client for LocalClient {
         // Get global dedup chunks from the minimal shard
         let chunk_hashes = minimal_shard.global_dedup_eligible_chunks();
 
-        let env = self
-            .global_dedup_db_env
-            .as_ref()
-            .ok_or_else(|| ClientError::Other("LocalClient has been closed".to_string()))?;
-        let mut write_txn = env.write_txn().map_err(map_heed_db_error)?;
+        let shard_hash_redb = RedbHash::from(shard_hash);
+        let write_txn = self.db.begin_write().map_err(map_redb_db_error)?;
+        {
+            let mut dedup_table = write_txn.open_table(GLOBAL_DEDUP_TABLE).map_err(map_redb_db_error)?;
+            for chunk in chunk_hashes {
+                dedup_table
+                    .insert(&RedbHash::from(chunk), &shard_hash_redb)
+                    .map_err(map_redb_db_error)?;
+            }
 
-        for chunk in chunk_hashes {
-            self.global_dedup_table
-                .put(&mut write_txn, &chunk, &shard_hash)
-                .map_err(map_heed_db_error)?;
+            let mut status_table = write_txn.open_table(FILE_STATUS_TABLE).map_err(map_redb_db_error)?;
+            for i in 0..minimal_shard.num_files() {
+                let file_hash = minimal_shard.file(i).unwrap().file_hash();
+                status_table
+                    .insert(&RedbHash::from(file_hash), &false)
+                    .map_err(map_redb_db_error)?;
+            }
         }
-
-        for i in 0..minimal_shard.num_files() {
-            let file_hash = minimal_shard.file(i).unwrap().file_hash();
-            self.file_status_table
-                .put(&mut write_txn, &file_hash, &false)
-                .map_err(map_heed_db_error)?;
-        }
-
-        write_txn.commit().map_err(map_heed_db_error)?;
+        write_txn.commit().map_err(map_redb_db_error)?;
 
         Ok(true)
     }
@@ -1163,7 +1182,7 @@ impl Client for LocalClient {
     }
 }
 
-fn map_heed_db_error(e: heed::Error) -> ClientError {
+fn map_redb_db_error(e: impl std::fmt::Debug) -> ClientError {
     let msg = format!("Global shard dedup database error: {e:?}");
     warn!("{msg}");
     ClientError::Other(msg)

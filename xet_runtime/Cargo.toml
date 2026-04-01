@@ -32,7 +32,6 @@ sysinfo = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
-futures-util = { workspace = true }
 pin-project = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -74,6 +73,7 @@ path = "tests/bin/log_test_executable.rs"
 [dev-dependencies]
 xet-core-structures = { version = "1.4.0", path = "../xet_core_structures" }
 
+futures-util = { workspace = true }
 rand = { workspace = true }
 serial_test = { workspace = true }
 tempfile = { workspace = true }
