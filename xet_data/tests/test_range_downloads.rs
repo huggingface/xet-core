@@ -35,7 +35,7 @@ mod tests {
         let xfi = upload_bytes(&upload_session, "range_test", &data).await;
         upload_session.finalize().await.unwrap();
 
-        let download_session = FileDownloadSession::new(env.config.clone()).await.unwrap();
+        let download_session = FileDownloadSession::new(env.config.clone(), None).await.unwrap();
         TestHarness {
             _env: env,
             session: download_session,

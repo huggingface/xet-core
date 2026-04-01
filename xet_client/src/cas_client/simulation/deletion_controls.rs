@@ -34,4 +34,7 @@ pub trait DeletionControlableClient: Send + Sync {
 
     /// Verifies referential integrity of all shards on disk.
     async fn verify_integrity(&self) -> Result<()>;
+
+    /// Verifies completeness: after GC convergence, all on-disk data must be reachable.
+    async fn verify_all_reachable(&self) -> Result<()>;
 }

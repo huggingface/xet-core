@@ -65,6 +65,7 @@ elevated_information_level = []
 no-default-cache = []
 python = ["dep:pyo3"]
 tokio-console = ["dep:console-subscriber"]
+simulation = []
 
 [[bin]]
 name = "log_test_executable"

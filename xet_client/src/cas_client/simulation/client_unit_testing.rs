@@ -9,6 +9,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use bytes::Bytes;
+use xet_core_structures::merklehash::MerkleHash;
 
 use super::{ClientTestingUtils, DirectAccessClient};
 use crate::cas_types::FileRange;
@@ -693,6 +694,229 @@ pub async fn test_global_dedup(client: Arc<dyn DirectAccessClient>) {
     // in a different hash. The semantic correctness is verified above by checking that
     // the dedup hashes match.
     let _ = shard_hash; // Acknowledge we have it but don't assert path equality
+}
+
+/// Runs all global dedup shard expiration tests. Must be called from a
+/// `#[tokio::test(start_paused = true)]` context.
+pub async fn test_global_dedup_shard_expiration_functionality<Fut>(factory: impl Fn() -> Fut)
+where
+    Fut: Future<Output = Arc<dyn DirectAccessClient>>,
+{
+    test_global_dedup_shard_expiration_strips_file_data(factory().await).await;
+    test_global_dedup_shard_expiration_sets_expiry(factory().await).await;
+    test_global_dedup_shard_expiration_rounds_up_subsecond(factory().await).await;
+    test_global_dedup_shard_always_returned(factory().await).await;
+    test_global_dedup_shard_no_expiration_returns_full(factory().await).await;
+}
+
+/// Helper: uploads a shard and returns the dedup-eligible chunk hashes.
+async fn upload_shard_and_get_dedup_hashes(client: &Arc<dyn DirectAccessClient>) -> Vec<MerkleHash> {
+    use xet_core_structures::metadata_shard::MDBShardInfo;
+    use xet_core_structures::metadata_shard::shard_format::test_routines::gen_random_shard_with_xorb_references;
+
+    let tmp_dir = tempfile::TempDir::new().unwrap();
+    let shard_dir = tmp_dir.path().join("shard");
+    std::fs::create_dir_all(&shard_dir).unwrap();
+
+    let shard_in = gen_random_shard_with_xorb_references(0, &[16; 8], &[2; 20], true, true).unwrap();
+    let shard_path = shard_in.write_to_directory(&shard_dir, None).unwrap();
+
+    let permit = client.acquire_upload_permit().await.unwrap();
+    client
+        .upload_shard(std::fs::read(&shard_path).unwrap().into(), permit)
+        .await
+        .unwrap();
+
+    let dedup_hashes =
+        MDBShardInfo::filter_cas_chunks_for_global_dedup(&mut std::fs::File::open(&shard_path).unwrap()).unwrap();
+    assert_ne!(dedup_hashes.len(), 0);
+    dedup_hashes
+}
+
+/// Tests that when expiration is set, returned shards have file data stripped.
+async fn test_global_dedup_shard_expiration_strips_file_data(client: Arc<dyn DirectAccessClient>) {
+    use std::io::Cursor;
+
+    use xet_core_structures::metadata_shard::streaming_shard::MDBMinimalShard;
+
+    client.set_global_dedup_shard_expiration(Some(tokio::time::Duration::from_secs(300)));
+
+    let dedup_hashes = upload_shard_and_get_dedup_hashes(&client).await;
+
+    let shard_bytes = client
+        .query_for_global_dedup_shard("default", &dedup_hashes[0])
+        .await
+        .unwrap()
+        .unwrap();
+
+    let mut reader = Cursor::new(&shard_bytes);
+    let minimal_shard = MDBMinimalShard::from_reader(&mut reader, true, true).unwrap();
+
+    assert_eq!(minimal_shard.num_files(), 0);
+    assert_ne!(minimal_shard.num_xorb(), 0);
+
+    let returned_dedup_hashes = minimal_shard.global_dedup_eligible_chunks();
+    for hash in &dedup_hashes {
+        assert!(returned_dedup_hashes.contains(hash));
+    }
+}
+
+/// Tests that when expiration is set, the returned shard footer has a non-zero expiry.
+async fn test_global_dedup_shard_expiration_sets_expiry(client: Arc<dyn DirectAccessClient>) {
+    use std::io::Cursor;
+
+    use xet_core_structures::metadata_shard::MDBShardInfo;
+
+    client.set_global_dedup_shard_expiration(Some(tokio::time::Duration::from_secs(300)));
+
+    let dedup_hashes = upload_shard_and_get_dedup_hashes(&client).await;
+
+    let shard_bytes = client
+        .query_for_global_dedup_shard("default", &dedup_hashes[0])
+        .await
+        .unwrap()
+        .unwrap();
+
+    let mut reader = Cursor::new(&shard_bytes);
+    let shard_info = MDBShardInfo::load_from_reader(&mut reader).unwrap();
+
+    let now_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    assert_ne!(shard_info.metadata.shard_key_expiry, 0);
+    assert!(shard_info.metadata.shard_key_expiry > now_epoch);
+    assert!(shard_info.metadata.shard_key_expiry <= now_epoch + 300 + 5);
+}
+
+/// Tests that sub-second durations round up to one second instead of disabling expiration.
+async fn test_global_dedup_shard_expiration_rounds_up_subsecond(client: Arc<dyn DirectAccessClient>) {
+    client.set_global_dedup_shard_expiration(Some(tokio::time::Duration::from_millis(1)));
+
+    let dedup_hashes = upload_shard_and_get_dedup_hashes(&client).await;
+    let now_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    let shard_bytes = client
+        .query_for_global_dedup_shard("default", &dedup_hashes[0])
+        .await
+        .unwrap()
+        .unwrap();
+
+    let shard_info =
+        xet_core_structures::metadata_shard::MDBShardInfo::load_from_reader(&mut std::io::Cursor::new(&shard_bytes))
+            .unwrap();
+    assert!(shard_info.metadata.shard_key_expiry > now_epoch);
+    assert!(shard_info.metadata.shard_key_expiry <= now_epoch + 3);
+
+    let minimal_shard = xet_core_structures::metadata_shard::streaming_shard::MDBMinimalShard::from_reader(
+        &mut std::io::Cursor::new(&shard_bytes),
+        true,
+        true,
+    )
+    .unwrap();
+    assert_eq!(minimal_shard.num_files(), 0);
+    assert_ne!(minimal_shard.num_xorb(), 0);
+}
+
+/// After upload, global dedup shard queries still return the shard; footer `shard_key_expiry` is
+/// computed from wall-clock `SystemTime::now()` at query time plus the configured duration (not upload time).
+async fn test_global_dedup_shard_always_returned(client: Arc<dyn DirectAccessClient>) {
+    use std::io::Cursor;
+
+    use xet_core_structures::metadata_shard::MDBShardInfo;
+
+    client.set_global_dedup_shard_expiration(Some(tokio::time::Duration::from_secs(5)));
+
+    let dedup_hashes = upload_shard_and_get_dedup_hashes(&client).await;
+
+    let result = client.query_for_global_dedup_shard("default", &dedup_hashes[0]).await.unwrap();
+    assert!(result.is_some());
+
+    let shard_bytes = client
+        .query_for_global_dedup_shard("default", &dedup_hashes[0])
+        .await
+        .unwrap()
+        .unwrap();
+
+    let now_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    let shard_info = MDBShardInfo::load_from_reader(&mut Cursor::new(&shard_bytes)).unwrap();
+    assert_ne!(shard_info.metadata.shard_key_expiry, 0);
+    assert!(shard_info.metadata.shard_key_expiry >= now_epoch + 4);
+    assert!(shard_info.metadata.shard_key_expiry <= now_epoch + 6);
+}
+
+/// Tests that without expiration set, the full shard is returned (with file data).
+async fn test_global_dedup_shard_no_expiration_returns_full(client: Arc<dyn DirectAccessClient>) {
+    use std::io::Cursor;
+
+    use xet_core_structures::metadata_shard::streaming_shard::MDBMinimalShard;
+
+    let dedup_hashes = upload_shard_and_get_dedup_hashes(&client).await;
+
+    let shard_bytes = client
+        .query_for_global_dedup_shard("default", &dedup_hashes[0])
+        .await
+        .unwrap()
+        .unwrap();
+
+    let mut reader = Cursor::new(&shard_bytes);
+    let minimal_shard = MDBMinimalShard::from_reader(&mut reader, true, true).unwrap();
+
+    assert_ne!(minimal_shard.num_files(), 0);
+    assert_ne!(minimal_shard.num_xorb(), 0);
+}
+
+/// Runs a short stress test of concurrent dedup-shard queries while toggling expiration settings.
+pub async fn test_global_dedup_shard_expiration_stress<Fut>(factory: impl Fn() -> Fut)
+where
+    Fut: Future<Output = Arc<dyn DirectAccessClient>>,
+{
+    let client = factory().await;
+    let dedup_hashes = upload_shard_and_get_dedup_hashes(&client).await;
+    let first_hash = dedup_hashes[0];
+
+    let mut tasks = tokio::task::JoinSet::new();
+    let start_time = std::time::Instant::now();
+
+    for worker_id in 0..12usize {
+        let client = client.clone();
+        tasks.spawn(async move {
+            for iteration in 0..50usize {
+                match (worker_id + iteration) % 3 {
+                    0 => client.set_global_dedup_shard_expiration(None),
+                    1 => client.set_global_dedup_shard_expiration(Some(tokio::time::Duration::from_millis(1))),
+                    _ => client.set_global_dedup_shard_expiration(Some(tokio::time::Duration::from_secs(2))),
+                }
+
+                let shard_bytes = client
+                    .query_for_global_dedup_shard("default", &first_hash)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let minimal_shard = xet_core_structures::metadata_shard::streaming_shard::MDBMinimalShard::from_reader(
+                    &mut std::io::Cursor::new(&shard_bytes),
+                    true,
+                    true,
+                )
+                .unwrap();
+                assert_ne!(minimal_shard.num_xorb(), 0);
+            }
+        });
+    }
+
+    while let Some(result) = tasks.join_next().await {
+        result.unwrap();
+    }
+
+    assert!(start_time.elapsed() < std::time::Duration::from_secs(10));
 }
 
 /// Runs all URL expiration tests. Must be called from a `#[tokio::test(start_paused = true)]` context.

@@ -50,6 +50,14 @@ pub trait DirectAccessClient: Client + Send + Sync {
     /// This simulates the CloudFront URL length limit that forces splitting.
     fn set_max_ranges_per_fetch(&self, max_ranges: usize);
 
+    /// Sets the expiration duration for global dedup shards.
+    ///
+    /// When set, `query_for_global_dedup_shard` will set the shard footer's
+    /// `shard_key_expiry` to `now + expiration`
+    ///
+    /// Pass `None` to disable (default: returns full shards with no expiration).
+    fn set_global_dedup_shard_expiration(&self, expiration: Option<Duration>);
+
     /// Disables V2 reconstruction responses with the given HTTP status code.
     /// When disabled, the V2 endpoint returns this status, forcing clients to
     /// fall back to V1. Pass 0 to re-enable.

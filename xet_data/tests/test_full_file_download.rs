@@ -47,7 +47,7 @@ mod tests {
         upload_session.finalize().await.unwrap();
 
         // Now download and verify each file.
-        let download_session = FileDownloadSession::new(env.config.clone()).await.unwrap();
+        let download_session = FileDownloadSession::new(env.config.clone(), None).await.unwrap();
         for (name, data, xfi) in &xfis {
             let out_path = env.base_dir.join(format!("out_{name}"));
             let (_id, n_bytes) = download_session.download_file(xfi, &out_path).await.unwrap();

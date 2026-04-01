@@ -133,7 +133,7 @@ async fn smudge(_name: Arc<str>, mut reader: impl Read, output_path: PathBuf) ->
     // Use local config pointing to current directory
     let cas_path = std::env::current_dir()?;
     let config = TranslatorConfig::local_config(cas_path)?;
-    let session = xet_data::processing::FileDownloadSession::new(config.into()).await?;
+    let session = xet_data::processing::FileDownloadSession::new(config.into(), None).await?;
 
     let (_id, _n_bytes) = session.download_file(&xet_file, &output_path).await?;
 
