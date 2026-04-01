@@ -101,22 +101,31 @@ impl redb::Key for RedbHash {
 const GLOBAL_DEDUP_TABLE: TableDefinition<RedbHash, RedbHash> = TableDefinition::new("global_dedup");
 const FILE_STATUS_TABLE: TableDefinition<RedbHash, bool> = TableDefinition::new("file_status");
 
-/// Global cache of open redb databases keyed by canonical path.
+/// Weak handle so the cache never keeps a [`redb::Database`] alive; only [`Arc`]s held by
+/// [`LocalClient`] (and clones) do. When the last strong ref drops, the entry can be purged.
+type CachedDbWeak = Weak<redb::Database>;
+
+/// Global cache of redb databases keyed by canonical DB file path.
 /// redb enforces exclusive file locking, so multiple LocalClient instances
 /// pointing at the same directory must share a single Database handle.
-static DB_CACHE: LazyLock<Mutex<HashMap<PathBuf, Weak<redb::Database>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static DB_CACHE: LazyLock<Mutex<HashMap<PathBuf, CachedDbWeak>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Opens or returns a shared [`Arc<redb::Database>`] for `db_path`. The map stores only
+/// [`Weak`] pointers ([`Arc::downgrade`]); on a hit, [`Weak::upgrade`] yields a new strong ref.
 fn get_or_open_db(db_path: &Path) -> std::result::Result<Arc<redb::Database>, redb::DatabaseError> {
     let mut map = DB_CACHE.lock().unwrap();
 
     if let Some(weak) = map.get(db_path)
-        && let Some(db) = weak.upgrade()
+        && let Some(db) = Weak::upgrade(weak)
     {
+        tracing::trace!(target: "xet_client::local_cas_redb", path = %db_path.display(), "DB_CACHE hit");
         return Ok(db);
     }
 
     // Purge dead entries to avoid unbounded cache growth.
     map.retain(|_, weak| weak.strong_count() > 0);
+
+    tracing::trace!(target: "xet_client::local_cas_redb", path = %db_path.display(), "DB_CACHE miss");
 
     let db = Arc::new(redb::Database::create(db_path)?);
     map.insert(db_path.to_owned(), Arc::downgrade(&db));
@@ -163,6 +172,10 @@ impl LocalClient {
         if !base_dir.exists() {
             std::fs::create_dir_all(&base_dir)?;
         }
+        // `std::path::absolute` does not resolve symlinks; without canonicalizing, two path strings
+        // for the same directory (e.g. via symlinks or /var vs /private/var on macOS) would open
+        // multiple `redb::Database` handles and duplicate file descriptors for one CAS root.
+        let base_dir = std::fs::canonicalize(&base_dir).unwrap_or(base_dir);
 
         let shard_dir = base_dir.join("shards");
         if !shard_dir.exists() {
@@ -1334,6 +1347,23 @@ mod tests {
                 as std::sync::Arc<dyn crate::cas_client::simulation::DirectAccessClient>
         })
         .await;
+    }
+
+    /// Two different path strings for the same directory (symlink) must share one `redb::Database`
+    /// in `DB_CACHE`. Without `canonicalize` in `new_internal`, `redb` returns
+    /// `Database already open. Cannot acquire lock.` (duplicate opens for the same file).
+    /// That can also surface as EMFILE under parallel tests (extra FDs per duplicate handle).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn db_cache_unifies_symlink_equivalent_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let _c1 = LocalClient::new(&link).await.unwrap();
+        let _c2 = LocalClient::new(&real).await.unwrap();
     }
 
     #[tokio::test]
