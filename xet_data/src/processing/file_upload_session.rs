@@ -17,11 +17,11 @@ use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
 use xet_core_structures::xorb_object::SerializedXorbObject;
 use xet_runtime::core::{XetRuntime, xet_config};
 
+use super::XetFileInfo;
 use super::configurations::TranslatorConfig;
 use super::file_cleaner::{Sha256Policy, SingleFileCleaner};
 use super::remote_client_interface::create_remote_client;
 use super::shard_interface::SessionShardInterface;
-use super::{XetFileInfo, prometheus_metrics};
 use crate::deduplication::constants::{
     MAX_XORB_BYTES, MAX_XORB_CHUNKS, XORB_CUT_THRESHOLD_BYTES, XORB_CUT_THRESHOLD_CHUNKS,
 };
@@ -502,10 +502,6 @@ impl FileUploadSession {
         // to the cache.
         metrics.shard_bytes_uploaded = self.shard_interface.upload_and_register_session_shards().await?;
         metrics.total_bytes_uploaded = metrics.shard_bytes_uploaded + metrics.xorb_bytes_uploaded;
-
-        // Update the global counters
-        prometheus_metrics::FILTER_CAS_BYTES_PRODUCED.inc_by(metrics.new_bytes);
-        prometheus_metrics::FILTER_BYTES_CLEANED.inc_by(metrics.total_bytes);
 
         #[cfg(debug_assertions)]
         {

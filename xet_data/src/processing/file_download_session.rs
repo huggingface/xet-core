@@ -13,9 +13,9 @@ use xet_client::cas_types::FileRange;
 use xet_client::chunk_cache::ChunkCache;
 use xet_runtime::core::{XetRuntime, xet_config};
 
+use super::XetFileInfo;
 use super::configurations::TranslatorConfig;
 use super::remote_client_interface::create_remote_client;
-use super::{XetFileInfo, prometheus_metrics};
 use crate::error::{DataError, Result};
 use crate::file_reconstruction::{DownloadStream, FileReconstructor, UnorderedDownloadStream};
 use crate::progress_tracking::{GroupProgress, ItemProgressUpdater, UniqueID};
@@ -143,7 +143,6 @@ impl FileDownloadSession {
                 actual: n_bytes,
             });
         }
-        prometheus_metrics::FILTER_BYTES_SMUDGED.inc_by(n_bytes);
         Ok(n_bytes)
     }
 
@@ -189,7 +188,6 @@ impl FileDownloadSession {
             });
         }
 
-        prometheus_metrics::FILTER_BYTES_SMUDGED.inc_by(n_bytes);
         Ok((id, n_bytes))
     }
 

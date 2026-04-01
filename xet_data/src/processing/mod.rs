@@ -5,7 +5,6 @@ mod file_cleaner;
 mod file_download_session;
 mod file_upload_session;
 pub mod migration_tool;
-mod prometheus_metrics;
 mod remote_client_interface;
 mod sha256;
 mod shard_interface;
