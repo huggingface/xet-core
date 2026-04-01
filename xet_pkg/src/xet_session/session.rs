@@ -13,9 +13,9 @@ use xet_runtime::core::XetRuntime;
 
 use super::download_stream_group::{DownloadStreamGroupBuilder, XetDownloadStreamGroup, XetDownloadStreamGroupInner};
 use super::errors::SessionError;
-use super::file_download_group::{FileDownloadGroupBuilder, XetFileDownloadGroup};
+use super::file_download_group::FileDownloadGroupBuilder;
 use super::task_runtime::{TaskRuntime, XetTaskState};
-use super::upload_commit::{UploadCommitBuilder, XetUploadCommit};
+use super::upload_commit::UploadCommitBuilder;
 
 /// All shared state for a session.
 /// Lives behind `Arc<XetSessionInner>` — do not use this type directly.
@@ -31,14 +31,19 @@ pub struct XetSessionInner {
     pub(super) endpoint: Option<String>,
     pub(super) custom_headers: Option<Arc<HeaderMap>>,
 
-    // Track active upload commits and download groups.
-    pub(super) active_upload_commits: Mutex<HashMap<UniqueID, XetUploadCommit>>,
-    pub(super) active_file_download_groups: Mutex<HashMap<UniqueID, XetFileDownloadGroup>>,
+    // Root of the cancellation tree. Child commits/groups create child TaskRuntimes via
+    // task_runtime.child(), which links their cancellation tokens to this root. Calling
+    // cancel_subtree() here propagates cancellation to all descendants automatically.
+    //
+    // IMPORTANT: Do NOT add maps of active commits or download groups to this struct.
+    // Storing strong (or even Weak) references to child objects here creates a circular
+    // dependency (session → child → session) that prevents cleanup and leaks file handles.
+    // All abort propagation is handled through the TaskRuntime cancellation token tree.
     pub(super) task_runtime: Arc<TaskRuntime>,
 
     // Weak references so that dropping all user-held XetDownloadStreamGroup clones frees the group
-    // immediately, without needing an explicit finalization call (unlike UploadCommit/FileDownloadGroup
-    // which deregister on commit()/finish()). abort() upgrades live weak refs to cancel active streams.
+    // immediately, without needing an explicit finalization call. abort() upgrades live weak refs
+    // to cancel active streams.
     pub(super) active_download_stream_groups: Mutex<HashMap<UniqueID, Weak<XetDownloadStreamGroupInner>>>,
 
     // "id" is used to identify a group of activities on our server, and so needs to be globally unique
@@ -256,8 +261,6 @@ impl XetSession {
                 config,
                 endpoint,
                 custom_headers,
-                active_upload_commits: Mutex::new(HashMap::new()),
-                active_file_download_groups: Mutex::new(HashMap::new()),
                 task_runtime,
                 active_download_stream_groups: Mutex::new(HashMap::new()),
                 id: Ulid::new(),
@@ -320,14 +323,6 @@ impl XetSession {
         info!("Session abort, session_id={}", self.inner.id);
         self.inner.task_runtime.cancel_subtree()?;
 
-        let active_upload_commits = std::mem::take(&mut *self.inner.active_upload_commits.lock()?);
-        for (_id, task) in active_upload_commits {
-            task.abort()?;
-        }
-        let active_file_download_groups = std::mem::take(&mut *self.inner.active_file_download_groups.lock()?);
-        for (_id, task) in active_file_download_groups {
-            task.abort()?;
-        }
         let active_download_stream_groups = std::mem::take(&mut *self.inner.active_download_stream_groups.lock()?);
         for (_id, weak_group) in active_download_stream_groups {
             if let Some(inner) = weak_group.upgrade() {
@@ -345,8 +340,6 @@ impl XetSession {
         info!("Session SIGINT abort, session_id={}", self.inner.id);
         self.inner.runtime.perform_sigint_shutdown();
 
-        self.inner.active_upload_commits.lock()?.clear();
-        self.inner.active_file_download_groups.lock()?.clear();
         let active_download_stream_groups = std::mem::take(&mut *self.inner.active_download_stream_groups.lock()?);
         for (_id, weak_group) in active_download_stream_groups {
             if let Some(inner) = weak_group.upgrade() {
@@ -365,31 +358,11 @@ impl XetSession {
         self.inner.task_runtime.check_state("session")
     }
 
-    pub(super) fn register_upload_commit(&self, commit: &XetUploadCommit) -> Result<(), SessionError> {
-        self.inner.active_upload_commits.lock()?.insert(commit.id(), commit.clone());
-        Ok(())
-    }
-
-    pub(super) fn register_file_download_group(&self, group: &XetFileDownloadGroup) -> Result<(), SessionError> {
-        self.inner.active_file_download_groups.lock()?.insert(group.id(), group.clone());
-        Ok(())
-    }
-
     pub(super) fn register_download_stream_group(&self, group: &XetDownloadStreamGroup) -> Result<(), SessionError> {
         self.inner
             .active_download_stream_groups
             .lock()?
             .insert(group.id(), Arc::downgrade(&group.inner));
-        Ok(())
-    }
-
-    pub(super) fn finish_upload_commit(&self, commit_id: UniqueID) -> Result<(), SessionError> {
-        self.inner.active_upload_commits.lock()?.remove(&commit_id);
-        Ok(())
-    }
-
-    pub(super) fn finish_file_download_group(&self, group_id: UniqueID) -> Result<(), SessionError> {
-        self.inner.active_file_download_groups.lock()?.remove(&group_id);
         Ok(())
     }
 
@@ -469,96 +442,6 @@ mod tests {
         assert!(matches!(err, SessionError::UserCancelled(_)));
     }
 
-    #[test]
-    // Aborting a session clears all registered upload commits.
-    fn test_abort_clears_active_upload_commits() {
-        let session = XetSessionBuilder::new().build().unwrap();
-        let _c1 = session.new_upload_commit().unwrap().build_blocking().unwrap();
-        let _c2 = session.new_upload_commit().unwrap().build_blocking().unwrap();
-        session.abort().unwrap();
-        assert_eq!(session.inner.active_upload_commits.lock().unwrap().len(), 0);
-    }
-
-    #[test]
-    // SIGINT abort clears all registered upload commits.
-    fn test_sigint_abort_clears_active_upload_commits() {
-        let session = XetSessionBuilder::new().build().unwrap();
-        let _c1 = session.new_upload_commit().unwrap().build_blocking().unwrap();
-        let _c2 = session.new_upload_commit().unwrap().build_blocking().unwrap();
-        session.sigint_abort().unwrap();
-        assert_eq!(session.inner.active_upload_commits.lock().unwrap().len(), 0);
-    }
-
-    #[test]
-    // Aborting a session clears all registered download groups.
-    fn test_abort_clears_active_file_download_groups() {
-        let session = XetSessionBuilder::new().build().unwrap();
-        let _g1 = session.new_file_download_group().unwrap().build_blocking().unwrap();
-        session.abort().unwrap();
-        assert_eq!(session.inner.active_file_download_groups.lock().unwrap().len(), 0);
-    }
-
-    #[test]
-    // SIGINT abort clears all registered download groups.
-    fn test_sigint_abort_clears_active_file_download_groups() {
-        let session = XetSessionBuilder::new().build().unwrap();
-        let _g1 = session.new_file_download_group().unwrap().build_blocking().unwrap();
-        session.sigint_abort().unwrap();
-        assert_eq!(session.inner.active_file_download_groups.lock().unwrap().len(), 0);
-    }
-
-    // ── Registration ─────────────────────────────────────────────────────────
-
-    #[test]
-    // A new upload commit is registered in the session's active set.
-    fn test_new_upload_commit_registers_in_session() {
-        let session = XetSessionBuilder::new().build().unwrap();
-        let _commit = session.new_upload_commit().unwrap().build_blocking().unwrap();
-        assert_eq!(session.inner.active_upload_commits.lock().unwrap().len(), 1);
-    }
-
-    #[test]
-    // A new download group is registered in the session's active set.
-    fn test_new_file_download_group_registers_in_session() {
-        let session = XetSessionBuilder::new().build().unwrap();
-        let _group = session.new_file_download_group().unwrap().build_blocking().unwrap();
-        assert_eq!(session.inner.active_file_download_groups.lock().unwrap().len(), 1);
-    }
-
-    // ── Deregistration ───────────────────────────────────────────────────────
-
-    #[test]
-    // finish_upload_commit removes only the specified commit, leaving others intact.
-    fn test_finish_upload_commit_removes_only_that_commit() {
-        let session = XetSessionBuilder::new().build().unwrap();
-        let c1 = session.new_upload_commit().unwrap().build_blocking().unwrap();
-        let _c2 = session.new_upload_commit().unwrap().build_blocking().unwrap();
-        assert_eq!(session.inner.active_upload_commits.lock().unwrap().len(), 2);
-        session.finish_upload_commit(c1.id()).unwrap();
-        assert_eq!(session.inner.active_upload_commits.lock().unwrap().len(), 1);
-    }
-
-    #[test]
-    // finish_file_download_group removes only the specified group, leaving others intact.
-    fn test_finish_file_download_group_removes_only_that_group() {
-        let session = XetSessionBuilder::new().build().unwrap();
-        let g1 = session.new_file_download_group().unwrap().build_blocking().unwrap();
-        let _g2 = session.new_file_download_group().unwrap().build_blocking().unwrap();
-        assert_eq!(session.inner.active_file_download_groups.lock().unwrap().len(), 2);
-        session.finish_file_download_group(g1.id()).unwrap();
-        assert_eq!(session.inner.active_file_download_groups.lock().unwrap().len(), 1);
-    }
-
-    #[test]
-    // finish_upload_commit on an unknown ID is a no-op (no error, no change).
-    fn test_finish_upload_commit_with_unknown_id_is_noop() {
-        let session = XetSessionBuilder::new().build().unwrap();
-        let _c1 = session.new_upload_commit().unwrap().build_blocking().unwrap();
-        let unknown_id = UniqueID::new();
-        assert!(session.finish_upload_commit(unknown_id).is_ok());
-        assert_eq!(session.inner.active_upload_commits.lock().unwrap().len(), 1);
-    }
-
     // ── Async abort behavior ──────────────────────────────────────────────────
 
     #[tokio::test(flavor = "multi_thread")]
@@ -570,50 +453,6 @@ mod tests {
         let group_err = session.new_file_download_group().err().unwrap();
         assert!(matches!(commit_err, SessionError::UserCancelled(_)));
         assert!(matches!(group_err, SessionError::UserCancelled(_)));
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    // Aborting a session clears all active upload commits and download groups.
-    async fn test_async_abort_clears_active_commits_and_groups() {
-        let session = XetSessionBuilder::new().build().unwrap();
-        let _c1 = session.new_upload_commit().unwrap().build().await.unwrap();
-        let _c2 = session.new_upload_commit().unwrap().build().await.unwrap();
-        let _g1 = session.new_file_download_group().unwrap().build().await.unwrap();
-        session.abort().unwrap();
-        assert_eq!(session.inner.active_upload_commits.lock().unwrap().len(), 0);
-        assert_eq!(session.inner.active_file_download_groups.lock().unwrap().len(), 0);
-    }
-
-    // ── Async registration ────────────────────────────────────────────────────
-
-    #[tokio::test(flavor = "multi_thread")]
-    // A new upload commit and a new download group are each registered in the
-    // session's active set, and concurrent creation registers both.
-    async fn test_async_new_registers_in_session() {
-        let session = XetSessionBuilder::new().build().unwrap();
-        let _commit = session.new_upload_commit().unwrap().build().await.unwrap();
-        let _group = session.new_file_download_group().unwrap().build().await.unwrap();
-        assert_eq!(session.inner.active_upload_commits.lock().unwrap().len(), 1);
-        assert_eq!(session.inner.active_file_download_groups.lock().unwrap().len(), 1);
-    }
-
-    // ── Async deregistration ──────────────────────────────────────────────────
-
-    #[tokio::test(flavor = "multi_thread")]
-    // Finishing one upload commit / download group removes only that one,
-    // leaving the other still registered.
-    async fn test_async_finish_removes_only_that_item() {
-        let session = XetSessionBuilder::new().build().unwrap();
-        let c1 = session.new_upload_commit().unwrap().build().await.unwrap();
-        let _c2 = session.new_upload_commit().unwrap().build().await.unwrap();
-        let g1 = session.new_file_download_group().unwrap().build().await.unwrap();
-        let _g2 = session.new_file_download_group().unwrap().build().await.unwrap();
-        assert_eq!(session.inner.active_upload_commits.lock().unwrap().len(), 2);
-        assert_eq!(session.inner.active_file_download_groups.lock().unwrap().len(), 2);
-        session.finish_upload_commit(c1.id()).unwrap();
-        session.finish_file_download_group(g1.id()).unwrap();
-        assert_eq!(session.inner.active_upload_commits.lock().unwrap().len(), 1);
-        assert_eq!(session.inner.active_file_download_groups.lock().unwrap().len(), 1);
     }
 
     // ── XetRuntime::handle_meets_requirements ────────────────────────────────

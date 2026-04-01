@@ -201,8 +201,13 @@ pub struct XetRuntime {
 // Use thread-local references to the runtime that are set on initialization among all
 // the worker threads in the runtime.  This way, XetRuntime::current() will always refer to
 // the runtime active with that worker thread.
+//
+// IMPORTANT: Uses Weak<XetRuntime> instead of Arc to avoid a reference cycle:
+//   worker thread TLS -> Arc<XetRuntime> -> OwnedRuntimeCell -> TokioRuntime -> worker threads
+// With Weak, the cycle is broken: when the last external Arc<XetRuntime> is dropped,
+// the runtime can shut down and join its worker threads normally.
 thread_local! {
-    static THREAD_RUNTIME_REF: RefCell<Option<(u32, Arc<XetRuntime>)>> = const { RefCell::new(None) };
+    static THREAD_RUNTIME_REF: RefCell<Option<(u32, Weak<XetRuntime>)>> = const { RefCell::new(None) };
 }
 
 // Registry for External-mode runtimes created via from_external_with_config.
@@ -234,10 +239,16 @@ impl XetRuntime {
     #[inline]
     pub fn current_if_exists() -> Option<Arc<Self>> {
         // 1. Thread-local: set by on_thread_start in new_with_config (Owned mode).
-        let maybe_rt = THREAD_RUNTIME_REF.with_borrow(|rt| rt.clone());
-        if let Some((pid, rt)) = maybe_rt
-            && pid == std::process::id()
-        {
+        let maybe_rt = THREAD_RUNTIME_REF.with_borrow(|rt| {
+            rt.as_ref().and_then(|(pid, weak)| {
+                if *pid == std::process::id() {
+                    weak.upgrade()
+                } else {
+                    None
+                }
+            })
+        });
+        if let Some(rt) = maybe_rt {
             return Some(rt);
         }
 
@@ -291,14 +302,13 @@ impl XetRuntime {
             config: Arc::new(config),
         });
 
-        // Each thread in each of the tokio worker threads holds a reference to the runtime handling
-        // that thread.  If there are multiple runtimes -- as could exist if CTRL-C is hit, then a process
-        // calls into xet immediately afterward -- the references are still correct due to using
-        // thread-local storage.
-        let rt_c = rt.clone();
+        // Each thread in each of the tokio worker threads holds a weak reference to the runtime
+        // handling that thread. Using Weak avoids a reference cycle that would prevent the runtime
+        // from being dropped when the last external Arc is released.
+        let rt_weak = Arc::downgrade(&rt);
         let pid = std::process::id();
         let set_threadlocal_reference = move || {
-            THREAD_RUNTIME_REF.set(Some((pid, rt_c.clone())));
+            THREAD_RUNTIME_REF.set(Some((pid, rt_weak.clone())));
         };
 
         // Set the name of a new thread for the threadpool. Names are prefixed with
@@ -724,10 +734,10 @@ impl XetRuntime {
         F: FnOnce() -> R + Send + 'static,
         R: Send + 'static,
     {
-        let rt = self.clone();
+        let rt_weak = Arc::downgrade(self);
         self.handle().spawn_blocking(move || {
             let pid = std::process::id();
-            THREAD_RUNTIME_REF.set(Some((pid, rt)));
+            THREAD_RUNTIME_REF.set(Some((pid, rt_weak)));
             f()
         })
     }
@@ -804,6 +814,19 @@ impl Drop for XetRuntime {
             && let Ok(mut reg) = EXTERNAL_RUNTIME_REGISTRY.write()
         {
             reg.remove(id);
+        }
+
+        // When dropping from within an async context, the default TokioRuntime Drop
+        // would panic ("Cannot drop a runtime in a context where blocking is not allowed").
+        // Avoid this by taking ownership of the runtime and using shutdown_background(),
+        // which spawns a thread for the blocking shutdown work instead.
+        if let RuntimeBackend::OwnedThreadPool { runtime } = &self.backend
+            && tokio::runtime::Handle::try_current().is_ok()
+            && let Ok(mut guard) = runtime.write()
+            && let Some(rt_arc) = guard.take()
+            && let Ok(rt) = Arc::try_unwrap(rt_arc)
+        {
+            rt.shutdown_background();
         }
     }
 }
