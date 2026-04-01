@@ -12,12 +12,17 @@ categories = ["api-bindings"]
 name = "xet"
 path = "src/lib.rs"
 
+[[bin]]
+name = "xet"
+path = "src/bin/xet/main.rs"
+
 [dependencies]
 xet-runtime = { version = "1.4.0", path = "../xet_runtime" }
 xet-core-structures = { version = "1.4.0", path = "../xet_core_structures" }
 xet-client = { version = "1.4.0", path = "../xet_client" }
 xet-data = { version = "1.4.0", path = "../xet_data" }
 
+anyhow = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 http = { workspace = true }
@@ -29,6 +34,9 @@ tokio = { workspace = true, features = ["net", "time"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 ulid = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+walkdir = { workspace = true }
 
 [features]
 smoke-test = []
@@ -36,12 +44,8 @@ python = ["xet-runtime/python", "dep:pyo3"]
 simulation = ["xet-client/simulation"]
 
 [dev-dependencies]
-anyhow = { workspace = true }
 async-std = { workspace = true }
-clap = { workspace = true, features = ["derive"] }
 futures = { workspace = true }
-more-asserts = { workspace = true }
-serde_json = { workspace = true }
 serial_test = { workspace = true }
 smol = { workspace = true }
 tempfile = { workspace = true }
