@@ -1,4 +1,4 @@
-use crate::utils::ConfigEnum;
+use crate::utils::{ByteSize, ConfigEnum};
 
 crate::config_group!({
     /// How often should we retest the compression scheme?
@@ -20,4 +20,24 @@ crate::config_group!({
     ///
     /// Use the environment variable `HF_XET_XORB_COMPRESSION_POLICY` to set this value.
     ref compression_policy: ConfigEnum = ConfigEnum::new("auto", &["", "auto", "none", "lz4", "bg4-lz4"]);
+
+    /// Override the maximum xorb size in bytes for simulation mode.
+    /// When set to Some(value), this overrides the hard-coded MAX_XORB_BYTES
+    /// cutting threshold in simulation builds. When None (default), the
+    /// standard constant is used.
+    ///
+    /// Only effective when the `simulation` feature is enabled.
+    ///
+    /// Use the environment variable `HF_XET_XORB_SIMULATION_MAX_BYTES` to set this value.
+    ref simulation_max_bytes: Option<ByteSize> = None;
+
+    /// Override the maximum xorb chunk count for simulation mode.
+    /// When set to Some(value), this overrides the hard-coded MAX_XORB_CHUNKS
+    /// cutting threshold in simulation builds. When None (default), the
+    /// standard constant is used.
+    ///
+    /// Only effective when the `simulation` feature is enabled.
+    ///
+    /// Use the environment variable `HF_XET_XORB_SIMULATION_MAX_CHUNKS` to set this value.
+    ref simulation_max_chunks: Option<usize> = None;
 });

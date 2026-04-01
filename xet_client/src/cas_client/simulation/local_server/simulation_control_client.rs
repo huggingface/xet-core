@@ -9,15 +9,18 @@ use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::xorb_object::XorbObject;
 
 use super::simulation_types::{
-    ConfigDelayRangeRequest, ConfigDurationRequest, FetchTermDataRequest, FetchTermDataResponse, FileShardsEntry,
-    FileSizeResponse, XorbExistsResponse, XorbLengthResponse, XorbRangesRequest, XorbRangesResponse,
-    XorbRawLengthResponse,
+    FetchTermDataRequest, FetchTermDataResponse, FileShardsEntry, FileSizeResponse, XorbExistsResponse,
+    XorbLengthResponse, XorbRangesRequest, XorbRangesResponse, XorbRawLengthResponse,
 };
 use crate::cas_client::RemoteClient;
 use crate::cas_client::interface::Client;
+use crate::cas_client::simulation::xorb_utils::duration_to_expiration_secs_ceil;
 use crate::cas_client::simulation::{DeletionControlableClient, DirectAccessClient};
 use crate::cas_types::{FileRange, HexMerkleHash, QueryReconstructionResponseV2, XorbReconstructionFetchInfo};
 use crate::error::{ClientError, Result};
+
+const CONFIG_POST_MAX_ATTEMPTS: usize = 4;
+const CONFIG_POST_RETRY_DELAY_MS: u64 = 40;
 
 /// A client that connects to a `LocalTestServer` via HTTP and provides access
 /// to both `DirectAccessClient` and `DeletionControlableClient` operations
@@ -48,6 +51,78 @@ impl SimulationControlClient {
     /// Constructs a full URL for a `/simulation/` endpoint path.
     fn sim_url(&self, path: &str) -> String {
         format!("{}/simulation{}", self.endpoint, path)
+    }
+
+    /// Posts a config key-value pair to the `/simulation/set_config` endpoint.
+    fn post_config(&self, config: &str, value: &str) {
+        let url = format!(
+            "{}/simulation/set_config?config={}&value={}",
+            self.endpoint,
+            urlencoding::encode(config),
+            urlencoding::encode(value),
+        );
+        let client = self.http_client.clone();
+        let config_name = config.to_string();
+        let config_value = value.to_string();
+        tokio::spawn(async move {
+            for attempt in 1..=CONFIG_POST_MAX_ATTEMPTS {
+                match client.post(&url).send().await {
+                    Ok(response) if response.status().is_success() => return,
+                    Ok(response) => {
+                        let status = response.status();
+                        let body = response.text().await.unwrap_or_default();
+
+                        if !status.is_server_error() || attempt == CONFIG_POST_MAX_ATTEMPTS {
+                            tracing::warn!(
+                                "simulation config apply failed: config={} value={} attempt={}/{} status={} body={}",
+                                config_name,
+                                config_value,
+                                attempt,
+                                CONFIG_POST_MAX_ATTEMPTS,
+                                status,
+                                body
+                            );
+                            return;
+                        }
+
+                        tracing::warn!(
+                            "simulation config apply retrying: config={} value={} attempt={}/{} status={} body={}",
+                            config_name,
+                            config_value,
+                            attempt,
+                            CONFIG_POST_MAX_ATTEMPTS,
+                            status,
+                            body
+                        );
+                    },
+                    Err(error) => {
+                        if attempt == CONFIG_POST_MAX_ATTEMPTS {
+                            tracing::warn!(
+                                "simulation config apply failed after retries: config={} value={} attempt={}/{} error={}",
+                                config_name,
+                                config_value,
+                                attempt,
+                                CONFIG_POST_MAX_ATTEMPTS,
+                                error
+                            );
+                            return;
+                        }
+
+                        tracing::warn!(
+                            "simulation config apply retrying after transport error: config={} value={} attempt={}/{} error={}",
+                            config_name,
+                            config_value,
+                            attempt,
+                            CONFIG_POST_MAX_ATTEMPTS,
+                            error
+                        );
+                    },
+                }
+
+                let delay_ms = CONFIG_POST_RETRY_DELAY_MS.saturating_mul(attempt as u64);
+                tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+            }
+        });
     }
 
     /// Checks an HTTP response status, mapping errors to `ClientError`.
@@ -156,28 +231,24 @@ impl Client for SimulationControlClient {
 
 #[async_trait]
 impl DirectAccessClient for SimulationControlClient {
-    /// Sets the URL expiration duration via the `/simulation/config/url_expiration` endpoint.
+    fn set_global_dedup_shard_expiration(&self, expiration: Option<Duration>) {
+        self.post_config("global_dedup_shard_expiration", &duration_to_expiration_secs_ceil(expiration).to_string());
+    }
+
     fn set_fetch_term_url_expiration(&self, expiration: Duration) {
-        let url = self.sim_url("/config/url_expiration");
-        let client = self.http_client.clone();
-        let body = ConfigDurationRequest {
-            millis: expiration.as_millis() as u64,
-        };
-        tokio::spawn(async move {
-            let _ = client.post(&url).json(&body).send().await;
-        });
+        self.post_config("url_expiration", &(expiration.as_millis() as u64).to_string());
     }
 
     async fn apply_api_delay(&self) {
         // No-op: delays are applied server-side via set_api_delay_range
     }
 
-    fn set_max_ranges_per_fetch(&self, _max_ranges: usize) {
-        // No-op: SimulationControlClient configures server via HTTP; endpoint not yet implemented.
+    fn set_max_ranges_per_fetch(&self, max_ranges: usize) {
+        self.post_config("max_ranges_per_fetch", &max_ranges.to_string());
     }
 
-    fn disable_v2_reconstruction(&self, _status_code: u16) {
-        // No-op: SimulationControlClient configures server via HTTP; endpoint not yet implemented.
+    fn disable_v2_reconstruction(&self, status_code: u16) {
+        self.post_config("disable_v2_reconstruction", &status_code.to_string());
     }
 
     async fn get_reconstruction_v1(
@@ -196,23 +267,16 @@ impl DirectAccessClient for SimulationControlClient {
         self.remote_client.get_reconstruction_v2(file_id, bytes_range).await
     }
 
-    /// Sets the API delay range via the `/simulation/config/api_delay` endpoint.
     fn set_api_delay_range(&self, delay_range: Option<Range<Duration>>) {
-        let url = self.sim_url("/config/api_delay");
-        let client = self.http_client.clone();
-        let body = match delay_range {
-            Some(range) => ConfigDelayRangeRequest {
-                min_millis: Some(range.start.as_millis() as u64),
-                max_millis: Some(range.end.as_millis() as u64),
+        match delay_range {
+            Some(range) => {
+                let value = format!("({}ms, {}ms)", range.start.as_millis(), range.end.as_millis());
+                self.post_config("api_delay", &value);
             },
-            None => ConfigDelayRangeRequest {
-                min_millis: None,
-                max_millis: None,
+            None => {
+                self.post_config("api_delay", "(0ms, 0ms)");
             },
-        };
-        tokio::spawn(async move {
-            let _ = client.post(&url).json(&body).send().await;
-        });
+        }
     }
 
     /// Lists all XORB hashes via the `/simulation/xorbs` endpoint.
@@ -462,11 +526,21 @@ impl DeletionControlableClient for SimulationControlClient {
         Ok(())
     }
 
-    /// Triggers server-side integrity verification via the `/simulation/verify_integrity` endpoint.
     async fn verify_integrity(&self) -> Result<()> {
         let resp = self
             .http_client
             .post(self.sim_url("/verify_integrity"))
+            .send()
+            .await
+            .map_err(|e| ClientError::Other(e.to_string()))?;
+        Self::check_status(resp).await?;
+        Ok(())
+    }
+
+    async fn verify_all_reachable(&self) -> Result<()> {
+        let resp = self
+            .http_client
+            .post(self.sim_url("/verify_all_reachable"))
             .send()
             .await
             .map_err(|e| ClientError::Other(e.to_string()))?;

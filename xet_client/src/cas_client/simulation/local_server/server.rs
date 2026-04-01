@@ -494,6 +494,10 @@ impl DirectAccessClient for LocalTestServer {
         self.client.set_fetch_term_url_expiration(expiration);
     }
 
+    fn set_global_dedup_shard_expiration(&self, expiration: Option<std::time::Duration>) {
+        self.client.set_global_dedup_shard_expiration(expiration);
+    }
+
     fn set_max_ranges_per_fetch(&self, max_ranges: usize) {
         self.client.set_max_ranges_per_fetch(max_ranges);
     }
@@ -1310,6 +1314,47 @@ mod tests {
         .await;
     }
 
+    #[tokio::test]
+    async fn test_simulation_control_client_config_eventual_apply() {
+        let server = crate::cas_client::simulation::LocalTestServerBuilder::new()
+            .with_ephemeral_disk()
+            .start()
+            .await;
+        let sc = SimulationControlClient::new(server.http_endpoint());
+
+        let file = sc.upload_random_file(&[(1, (0, 4))], CHUNK_SIZE).await.unwrap();
+        let first_chunk = file.terms[0].chunk_hashes[0];
+
+        sc.set_global_dedup_shard_expiration(Some(Duration::from_millis(1)));
+
+        let mut expiration_enabled = false;
+        for _ in 0..40 {
+            let shard_bytes = Client::query_for_global_dedup_shard(&sc, "default", &first_chunk)
+                .await
+                .unwrap()
+                .unwrap();
+
+            let minimal_shard = xet_core_structures::metadata_shard::streaming_shard::MDBMinimalShard::from_reader(
+                &mut std::io::Cursor::new(&shard_bytes),
+                true,
+                true,
+            )
+            .unwrap();
+            let shard_info = xet_core_structures::metadata_shard::MDBShardInfo::load_from_reader(
+                &mut std::io::Cursor::new(&shard_bytes),
+            )
+            .unwrap();
+
+            if minimal_shard.num_files() == 0 && shard_info.metadata.shard_key_expiry > 0 {
+                expiration_enabled = true;
+                break;
+            }
+
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(expiration_enabled);
+    }
+
     /// Runs the common DeletionControlableClient test suite via SimulationControlClient.
     #[tokio::test]
     #[cfg_attr(feature = "smoke-test", ignore)]
@@ -1337,7 +1382,8 @@ mod tests {
         // DeletionControlableClient methods should return errors (501)
         assert!(DeletionControlableClient::list_shard_entries(&sc).await.is_err());
         assert!(DeletionControlableClient::list_file_shard_entries(&sc).await.is_err());
-        assert!(DeletionControlableClient::verify_integrity(&sc).await.is_err());
+        // Integrity/reachability returns 501 on MemoryClient (no deletion client).
+        assert!(sc.verify_integrity().await.is_err());
         assert!(
             DeletionControlableClient::delete_shard_entry(&sc, &xet_core_structures::merklehash::MerkleHash::default())
                 .await
@@ -1374,7 +1420,7 @@ mod tests {
         assert_eq!(file_entries[0].0, file.file_hash);
         let shard_hash = file_entries[0].1;
 
-        DeletionControlableClient::verify_integrity(&sc).await.unwrap();
+        sc.verify_integrity().await.unwrap();
 
         let first_chunk = file.terms[0].chunk_hashes[0];
         assert!(

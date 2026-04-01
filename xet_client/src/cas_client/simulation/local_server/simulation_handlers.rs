@@ -42,6 +42,7 @@ pub fn simulation_routes() -> Router<ServerState> {
         .route("/file_entries", get(list_file_shard_entries))
         .route("/file_entries/{hash}", delete(delete_file_entry))
         .route("/verify_integrity", post(verify_integrity))
+        .route("/verify_all_reachable", post(verify_all_reachable))
 }
 
 // ---------------------------------------------------------------------------
@@ -275,6 +276,16 @@ async fn verify_integrity(State(state): State<ServerState>) -> Response {
         return not_implemented();
     };
     match dc.verify_integrity().await {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(e) => error_to_response(e),
+    }
+}
+
+async fn verify_all_reachable(State(state): State<ServerState>) -> Response {
+    let Some(dc) = &state.deletion_client else {
+        return not_implemented();
+    };
+    match dc.verify_all_reachable().await {
         Ok(()) => StatusCode::OK.into_response(),
         Err(e) => error_to_response(e),
     }

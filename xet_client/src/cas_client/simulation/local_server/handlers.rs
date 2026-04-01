@@ -14,6 +14,7 @@
 //! Errors are mapped to appropriate HTTP status codes via `error_to_response`.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Json;
 use axum::body::Body;
@@ -767,9 +768,58 @@ pub async fn set_config(State(state): State<ServerState>, uri: Uri, body: Body) 
             },
             Err(e) => (StatusCode::BAD_REQUEST, format!("Invalid random_delay value: {e}")).into_response(),
         },
+        "global_dedup_shard_expiration" => match value.parse::<u64>() {
+            Ok(secs) => {
+                let expiration = if secs == 0 {
+                    None
+                } else {
+                    Some(Duration::from_secs(secs))
+                };
+                state.client.set_global_dedup_shard_expiration(expiration);
+                (StatusCode::OK, "Global dedup shard expiration set").into_response()
+            },
+            Err(e) => (StatusCode::BAD_REQUEST, format!("Invalid seconds value: {e}")).into_response(),
+        },
+        "max_ranges_per_fetch" => match value.parse::<usize>() {
+            Ok(n) => {
+                state.client.set_max_ranges_per_fetch(n);
+                (StatusCode::OK, "Max ranges per fetch set").into_response()
+            },
+            Err(e) => (StatusCode::BAD_REQUEST, format!("Invalid usize value: {e}")).into_response(),
+        },
+        "disable_v2_reconstruction" => match value.parse::<u16>() {
+            Ok(code) => {
+                state.client.disable_v2_reconstruction(code);
+                (StatusCode::OK, "V2 reconstruction config set").into_response()
+            },
+            Err(e) => (StatusCode::BAD_REQUEST, format!("Invalid status code: {e}")).into_response(),
+        },
+        "api_delay" => match parse_random_delay_value(value) {
+            Ok((min_ms, max_ms)) => {
+                let range = if min_ms == 0 && max_ms == 0 {
+                    None
+                } else {
+                    Some(Duration::from_millis(min_ms)..Duration::from_millis(max_ms))
+                };
+                state.client.set_api_delay_range(range);
+                (StatusCode::OK, "API delay set").into_response()
+            },
+            Err(e) => (StatusCode::BAD_REQUEST, format!("Invalid api_delay value: {e}")).into_response(),
+        },
+        "url_expiration" => match value.parse::<u64>() {
+            Ok(ms) => {
+                state.client.set_fetch_term_url_expiration(Duration::from_millis(ms));
+                (StatusCode::OK, "URL expiration set").into_response()
+            },
+            Err(e) => (StatusCode::BAD_REQUEST, format!("Invalid millis value: {e}")).into_response(),
+        },
         _ => (
             StatusCode::BAD_REQUEST,
-            format!("Unknown config: {config_name}. Supported: congestion, random_delay"),
+            format!(
+                "Unknown config: {config_name}. Supported: congestion, random_delay, \
+                 global_dedup_shard_expiration, max_ranges_per_fetch, \
+                 disable_v2_reconstruction, api_delay, url_expiration"
+            ),
         )
             .into_response(),
     }

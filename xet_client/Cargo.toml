@@ -64,7 +64,7 @@ rustls-tls = ["reqwest/rustls"]
 native-tls = ["reqwest/native-tls"]
 native-tls-vendored = ["reqwest/native-tls-vendored"]
 analysis = []
-simulation = ["dep:axum", "dep:humantime", "dep:futures-util", "dep:human-bandwidth", "dep:tower-http"]
+simulation = ["dep:axum", "dep:humantime", "dep:futures-util", "dep:human-bandwidth", "dep:tower-http", "xet-core-structures/simulation"]
 
 [[bin]]
 name = "local_cas_server"
