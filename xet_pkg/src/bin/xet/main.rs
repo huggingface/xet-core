@@ -92,11 +92,32 @@ fn resolve_token(cli_token: Option<&str>, env_token: Option<&str>) -> Option<Str
         .filter(|token| !token.is_empty())
 }
 
+/// Parse a range string like "32..64" or "32.." into start and end values.
+/// Open-ended "N.." produces `N..u64::MAX` (interpreted as "to end of file").
+pub fn parse_byte_range(s: &str) -> anyhow::Result<(u64, u64)> {
+    let (start_s, end_s) = s
+        .split_once("..")
+        .ok_or_else(|| anyhow::anyhow!("range must be START..END or START.., got: {s}"))?;
+    let start: u64 = start_s
+        .parse()
+        .map_err(|e| anyhow::anyhow!("invalid range start '{start_s}': {e}"))?;
+    let end: u64 = if end_s.is_empty() {
+        u64::MAX
+    } else {
+        end_s.parse().map_err(|e| anyhow::anyhow!("invalid range end '{end_s}': {e}"))?
+    };
+    if start > end {
+        anyhow::bail!("range start ({start}) must be <= end ({end})");
+    }
+    Ok((start, end))
+}
+
 /// Normalizes an endpoint string: absolute filesystem paths get a `local://` prefix.
+/// On Windows, `/tmp/...` is not `Path::is_absolute`, so leading `/` (except `//`) is handled explicitly.
 pub fn normalize_endpoint(raw: &str) -> String {
     if raw.contains("://") {
         raw.to_owned()
-    } else if std::path::Path::new(raw).is_absolute() {
+    } else if std::path::Path::new(raw).is_absolute() || (raw.starts_with('/') && !raw.starts_with("//")) {
         format!("local://{raw}")
     } else {
         raw.to_owned()
@@ -135,7 +156,7 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_endpoint, resolve_endpoint, resolve_token};
+    use super::{normalize_endpoint, parse_byte_range, resolve_endpoint, resolve_token};
 
     #[test]
     fn test_normalize_endpoint() {
@@ -163,6 +184,15 @@ mod tests {
         );
         assert_eq!(resolve_endpoint(None, Some("https://env.example.com")), "https://env.example.com");
         assert_eq!(resolve_endpoint(None, None), "https://huggingface.co");
+    }
+
+    #[test]
+    fn test_parse_byte_range() {
+        assert_eq!(parse_byte_range("0..1024").unwrap(), (0, 1024));
+        assert_eq!(parse_byte_range("100..").unwrap(), (100, u64::MAX));
+        assert!(parse_byte_range("1024..0").is_err());
+        assert!(parse_byte_range("abc..100").is_err());
+        assert!(parse_byte_range("no_dots").is_err());
     }
 
     #[test]

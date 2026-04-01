@@ -14,9 +14,10 @@ const LOCAL_SCHEME: &str = "local://";
 
 /// Build a XetSession for upload/download commands.
 ///
-/// Tokens are no longer set on the session builder; callers should pass
-/// tokens to per-commit/group builders via `with_token_info`.
-pub fn build_xet_session(endpoint: &str, _token: Option<String>, config: XetConfig) -> Result<XetSession> {
+/// Auth tokens are supplied per upload commit or download stream group; see
+/// [`UploadCommitBuilder::with_token_info`](xet::xet_session::UploadCommitBuilder::with_token_info)
+/// and [`DownloadStreamGroupBuilder::with_token_info`](xet::xet_session::DownloadStreamGroupBuilder::with_token_info).
+pub fn build_xet_session(endpoint: &str, config: XetConfig) -> Result<XetSession> {
     let builder = XetSessionBuilder::new_with_config(config).with_endpoint(endpoint.to_owned());
     let session: XetSession = builder.build().context("Failed to build XetSession")?;
     Ok(session)
@@ -69,7 +70,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let endpoint = format!("local://{}", dir.path().display());
         let config = XetConfig::new();
-        let session = build_xet_session(&endpoint, None, config);
+        let session = build_xet_session(&endpoint, config);
         assert!(session.is_ok(), "expected Ok, got {:?}", session.err());
     }
 

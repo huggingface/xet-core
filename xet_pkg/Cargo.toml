@@ -33,9 +33,9 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["net", "time"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
-ulid = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+ulid = { workspace = true }
 walkdir = { workspace = true }
 
 [features]

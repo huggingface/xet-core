@@ -1,5 +1,5 @@
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{Seek, Write};
 use std::ops::Range;
 use std::path::PathBuf;
 
@@ -11,23 +11,8 @@ use xet_runtime::config::XetConfig;
 
 use super::Cli;
 
-/// Parse a range string like "32..64" or "32.." into a Range<u64>.
-/// Open-ended "N.." produces N..u64::MAX (interpreted as "to end of file").
 fn parse_range(s: &str) -> Result<Range<u64>> {
-    let (start_s, end_s) = s
-        .split_once("..")
-        .ok_or_else(|| anyhow::anyhow!("range must be START..END or START.., got: {s}"))?;
-    let start: u64 = start_s
-        .parse()
-        .map_err(|e| anyhow::anyhow!("invalid range start '{start_s}': {e}"))?;
-    let end: u64 = if end_s.is_empty() {
-        u64::MAX
-    } else {
-        end_s.parse().map_err(|e| anyhow::anyhow!("invalid range end '{end_s}': {e}"))?
-    };
-    if start > end {
-        anyhow::bail!("range start ({start}) must be <= end ({end})");
-    }
+    let (start, end) = super::parse_byte_range(s)?;
     Ok(start..end)
 }
 
@@ -56,11 +41,11 @@ pub struct DownloadArgs {
 }
 
 pub async fn run(cli: &Cli, config: XetConfig, args: &DownloadArgs) -> Result<()> {
-    let session = super::session::build_xet_session(&cli.resolved_endpoint(), cli.resolved_token(), config)?;
-    run_download(&session, args, cli.quiet).await
+    let session = super::session::build_xet_session(&cli.resolved_endpoint(), config)?;
+    run_download(&session, args, cli.quiet, cli.resolved_token()).await
 }
 
-pub async fn run_download(session: &XetSession, args: &DownloadArgs, quiet: bool) -> Result<()> {
+pub async fn run_download(session: &XetSession, args: &DownloadArgs, quiet: bool, token: Option<String>) -> Result<()> {
     if args.write_range.is_some() && args.output.is_none() {
         anyhow::bail!("--write-range requires --output");
     }
@@ -72,7 +57,11 @@ pub async fn run_download(session: &XetSession, args: &DownloadArgs, quiet: bool
 
     let source_range: Option<Range<u64>> = args.source_range.as_deref().map(parse_range).transpose()?;
 
-    let stream_group = session.new_download_stream_group()?.build().await?;
+    let mut group_builder = session.new_download_stream_group()?;
+    if let Some(tok) = token {
+        group_builder = group_builder.with_token_info(tok, u64::MAX);
+    }
+    let stream_group = group_builder.build().await?;
     let mut stream = stream_group.download_stream(file_info, source_range).await?;
 
     let mut total_bytes: u64 = 0;
@@ -97,7 +86,6 @@ pub async fn run_download(session: &XetSession, args: &DownloadArgs, quiet: bool
             };
 
             if let Some(ref wr) = write_range {
-                use std::io::Seek;
                 file.seek(std::io::SeekFrom::Start(wr.start))?;
             }
 
@@ -130,11 +118,9 @@ pub async fn run_download(session: &XetSession, args: &DownloadArgs, quiet: bool
         },
         None => {
             while let Some(chunk) = stream.next().await? {
-                let stdout = std::io::stdout();
-                let mut out = stdout.lock();
-                out.write_all(&chunk)?;
+                std::io::stdout().write_all(&chunk)?;
             }
-            std::io::stdout().lock().flush()?;
+            std::io::stdout().flush()?;
         },
     }
 
@@ -142,28 +128,32 @@ pub async fn run_download(session: &XetSession, args: &DownloadArgs, quiet: bool
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use tempfile::tempdir;
 
     use super::*;
     use crate::session::build_xet_session;
     use crate::upload::{UploadArgs, run_upload};
 
-    async fn upload_test_file(cas_dir: &tempfile::TempDir, name: &str, content: &[u8]) -> (String, String, u64) {
+    pub(crate) async fn upload_test_file(
+        cas_dir: &tempfile::TempDir,
+        name: &str,
+        content: &[u8],
+    ) -> (String, String, u64) {
         let endpoint = format!("local://{}", cas_dir.path().display());
         let src_dir = tempdir().unwrap();
         let src = src_dir.path().join(name);
         std::fs::write(&src, content).unwrap();
 
         let config = XetConfig::new();
-        let session = build_xet_session(&endpoint, None, config).unwrap();
+        let session = build_xet_session(&endpoint, config).unwrap();
         let upload_args = UploadArgs {
             files: vec![src.to_str().unwrap().to_owned()],
             no_sha256: true,
             dump_stats: false,
             output: None,
         };
-        let results = run_upload(&session, &upload_args).await.unwrap();
+        let results = run_upload(&session, &upload_args, None).await.unwrap();
         let meta = &results[0];
         (endpoint, meta.xet_info.hash.clone(), meta.xet_info.file_size.unwrap_or(0))
     }
@@ -177,7 +167,7 @@ mod tests {
         let dest_dir = tempdir().unwrap();
         let dest = dest_dir.path().join("out.bin");
 
-        let session = build_xet_session(&endpoint, None, XetConfig::new()).unwrap();
+        let session = build_xet_session(&endpoint, XetConfig::new()).unwrap();
         let args = DownloadArgs {
             hash,
             output: Some(dest.clone()),
@@ -185,7 +175,7 @@ mod tests {
             write_range: None,
             size: Some(size),
         };
-        run_download(&session, &args, false).await.unwrap();
+        run_download(&session, &args, false, None).await.unwrap();
         assert_eq!(std::fs::read(&dest).unwrap(), content);
     }
 
@@ -198,7 +188,7 @@ mod tests {
         let dest_dir = tempdir().unwrap();
         let dest = dest_dir.path().join("out.bin");
 
-        let session = build_xet_session(&endpoint, None, XetConfig::new()).unwrap();
+        let session = build_xet_session(&endpoint, XetConfig::new()).unwrap();
         let args = DownloadArgs {
             hash,
             output: Some(dest.clone()),
@@ -206,7 +196,7 @@ mod tests {
             write_range: None,
             size: None,
         };
-        run_download(&session, &args, false).await.unwrap();
+        run_download(&session, &args, false, None).await.unwrap();
         assert_eq!(std::fs::read(&dest).unwrap(), content);
     }
 
@@ -218,7 +208,7 @@ mod tests {
         let dest_dir = tempdir().unwrap();
         let dest = dest_dir.path().join("empty.bin");
 
-        let session = build_xet_session(&endpoint, None, XetConfig::new()).unwrap();
+        let session = build_xet_session(&endpoint, XetConfig::new()).unwrap();
         let args = DownloadArgs {
             hash: "0".repeat(64),
             output: Some(dest.clone()),
@@ -226,7 +216,7 @@ mod tests {
             write_range: None,
             size: None,
         };
-        let _ = run_download(&session, &args, false).await;
+        let _ = run_download(&session, &args, false, None).await;
         // LocalClient returns empty reconstruction for unknown hashes;
         // the output file should exist but be empty.
         let content = std::fs::read(&dest).unwrap_or_default();
