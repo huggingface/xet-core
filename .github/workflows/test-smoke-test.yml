@@ -6,6 +6,10 @@
 name: "Test: Smoke test"
 
 on:
+  pull_request:
+    paths:
+      - '.github/workflows/test-smoke-test.yml'
+      - 'scripts/smoke_tests/**'
   workflow_dispatch:
     inputs:
       hf-xet-version:
@@ -29,9 +33,15 @@ jobs:
       - name: Install hf CLI
         run: uv tool install huggingface_hub
 
+      - name: Determine version
+        id: version
+        run: |
+          VERSION="${{ github.event.inputs.hf-xet-version || '1.4.3' }}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
       - name: Wait for PyPI availability
         run: |
-          VERSION="${{ github.event.inputs.hf-xet-version }}"
+          VERSION="${{ steps.version.outputs.version }}"
           for i in $(seq 1 30); do
             if uv pip compile --no-deps - <<< "hf_xet==$VERSION" > /dev/null 2>&1; then
               echo "✓ hf_xet==$VERSION available on PyPI"
@@ -47,7 +57,7 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
         run: |
-          ./scripts/smoke_tests/run.sh --hf-xet-version "${{ github.event.inputs.hf-xet-version }}"
+          ./scripts/smoke_tests/run.sh --hf-xet-version "${{ steps.version.outputs.version }}"
 
       - name: Notify Slack on failure
         if: failure()
@@ -57,13 +67,13 @@ jobs:
           webhook-type: incoming-webhook
           payload: |
             {
-              "text": ":red_circle: hf-xet smoke tests failed for v${{ github.event.inputs.hf-xet-version }} on ${{ matrix.os }}",
+              "text": ":red_circle: hf-xet smoke tests failed for v${{ steps.version.outputs.version }} on ${{ matrix.os }}",
               "blocks": [
                 {
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": ":red_circle: *hf-xet smoke tests failed*\n*Version:* `v${{ github.event.inputs.hf-xet-version }}`\n*Platform:* `${{ matrix.os }}`\n*Run:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View logs>"
+                    "text": ":red_circle: *hf-xet smoke tests failed*\n*Version:* `v${{ steps.version.outputs.version }}`\n*Platform:* `${{ matrix.os }}`\n*Run:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View logs>"
                   }
                 }
               ]
@@ -77,13 +87,13 @@ jobs:
           webhook-type: incoming-webhook
           payload: |
             {
-              "text": ":large_green_circle: hf-xet smoke tests passed for v${{ github.event.inputs.hf-xet-version }}",
+              "text": ":large_green_circle: hf-xet smoke tests passed for v${{ steps.version.outputs.version }}",
               "blocks": [
                 {
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": ":large_green_circle: *hf-xet smoke tests passed*\n*Version:* `v${{ github.event.inputs.hf-xet-version }}`\n*Platform:* `${{ matrix.os }}`"
+                    "text": ":large_green_circle: *hf-xet smoke tests passed*\n*Version:* `v${{ steps.version.outputs.version }}`\n*Platform:* `${{ matrix.os }}`"
                   }
                 }
               ]
