@@ -113,10 +113,11 @@ pub fn parse_byte_range(s: &str) -> anyhow::Result<(u64, u64)> {
 }
 
 /// Normalizes an endpoint string: absolute filesystem paths get a `local://` prefix.
+/// On Windows, `/tmp/...` is not `Path::is_absolute`, so leading `/` (except `//`) is handled explicitly.
 pub fn normalize_endpoint(raw: &str) -> String {
     if raw.contains("://") {
         raw.to_owned()
-    } else if std::path::Path::new(raw).is_absolute() {
+    } else if std::path::Path::new(raw).is_absolute() || (raw.starts_with('/') && !raw.starts_with("//")) {
         format!("local://{raw}")
     } else {
         raw.to_owned()
