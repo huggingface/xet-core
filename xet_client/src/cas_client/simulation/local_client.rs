@@ -286,104 +286,6 @@ impl LocalClient {
 }
 
 #[async_trait]
-impl super::DeletionControlableClient for LocalClient {
-    async fn list_shard_entries(&self) -> Result<Vec<MerkleHash>> {
-        Ok(self.shard_file_paths()?.into_iter().map(|(h, _)| h).collect())
-    }
-
-    async fn get_shard_bytes(&self, hash: &MerkleHash) -> Result<Bytes> {
-        let path = self.shard_path_for_hash(hash)?;
-        let data = std::fs::read(&path)?;
-        Ok(Bytes::from(data))
-    }
-
-    async fn delete_shard_entry(&self, hash: &MerkleHash) -> Result<()> {
-        let path = self.shard_path_for_hash(hash)?;
-        std::fs::remove_file(&path)?;
-        Ok(())
-    }
-
-    async fn list_file_shard_entries(&self) -> Result<Vec<(MerkleHash, MerkleHash)>> {
-        let mut entries = Vec::new();
-        for (shard_hash, path) in self.shard_file_paths()? {
-            let shard_bytes = std::fs::read(&path)?;
-            let minimal_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&shard_bytes), true, false)?;
-
-            for i in 0..minimal_shard.num_files() {
-                let file_view = minimal_shard.file(i).unwrap();
-                let fh = file_view.file_hash();
-                if !self.is_file_deleted(&fh) {
-                    entries.push((fh, shard_hash));
-                }
-            }
-        }
-        Ok(entries)
-    }
-
-    async fn delete_file_entry(&self, file_hash: &MerkleHash) -> Result<()> {
-        let write_txn = self.db.begin_write().map_err(map_redb_db_error)?;
-        {
-            let mut table = write_txn.open_table(FILE_STATUS_TABLE).map_err(map_redb_db_error)?;
-            table.insert(&RedbHash::from(*file_hash), &true).map_err(map_redb_db_error)?;
-        }
-        write_txn.commit().map_err(map_redb_db_error)?;
-        Ok(())
-    }
-
-    async fn remove_shard_dedup_entries(&self, shard_hash: &MerkleHash) -> Result<()> {
-        // Retry a few cleanup passes to tolerate interleaved writes.
-        // In the common single-writer GC path this exits after one pass.
-        let shard_redb = RedbHash::from(*shard_hash);
-        for _ in 0..4 {
-            let to_delete: Vec<RedbHash> = {
-                let read_txn = self.db.begin_read().map_err(map_redb_db_error)?;
-                let table = read_txn.open_table(GLOBAL_DEDUP_TABLE).map_err(map_redb_db_error)?;
-                table
-                    .iter()
-                    .map_err(map_redb_db_error)?
-                    .filter_map(|entry| entry.ok())
-                    .filter(|(_, v)| v.value() == shard_redb)
-                    .map(|(k, _)| k.value())
-                    .collect()
-            };
-
-            if to_delete.is_empty() {
-                return Ok(());
-            }
-
-            let write_txn = self.db.begin_write().map_err(map_redb_db_error)?;
-            {
-                let mut table = write_txn.open_table(GLOBAL_DEDUP_TABLE).map_err(map_redb_db_error)?;
-                for chunk_hash in &to_delete {
-                    table.remove(chunk_hash).map_err(map_redb_db_error)?;
-                }
-            }
-            write_txn.commit().map_err(map_redb_db_error)?;
-        }
-
-        // If entries still remain after retries, signal a concurrent-update issue.
-        let still_present = {
-            let read_txn = self.db.begin_read().map_err(map_redb_db_error)?;
-            let table = read_txn.open_table(GLOBAL_DEDUP_TABLE).map_err(map_redb_db_error)?;
-            table
-                .iter()
-                .map_err(map_redb_db_error)?
-                .filter_map(|entry| entry.ok())
-                .any(|(_, v)| v.value() == shard_redb)
-        };
-
-        if still_present {
-            return Err(ClientError::Other(format!(
-                "Unable to fully remove dedup entries for shard {} due to concurrent updates",
-                shard_hash.hex()
-            )));
-        }
-
-        Ok(())
-    }
-}
-
-#[async_trait]
 impl DirectAccessClient for LocalClient {
     fn set_fetch_term_url_expiration(&self, expiration: Duration) {
         self.url_expiration_ms.store(expiration.as_millis() as u64, Ordering::Relaxed);
@@ -706,6 +608,101 @@ impl DirectAccessClient for LocalClient {
         };
 
         Ok((data.into(), chunk_byte_indices))
+    }
+}
+
+#[async_trait]
+impl super::DeletionControlableClient for LocalClient {
+    async fn list_shard_entries(&self) -> Result<Vec<MerkleHash>> {
+        Ok(self.shard_file_paths()?.into_iter().map(|(h, _)| h).collect())
+    }
+
+    async fn get_shard_bytes(&self, hash: &MerkleHash) -> Result<Bytes> {
+        let path = self.shard_path_for_hash(hash)?;
+        let data = std::fs::read(&path)?;
+        Ok(Bytes::from(data))
+    }
+
+    async fn delete_shard_entry(&self, hash: &MerkleHash) -> Result<()> {
+        let path = self.shard_path_for_hash(hash)?;
+        std::fs::remove_file(&path)?;
+        Ok(())
+    }
+
+    async fn list_file_shard_entries(&self) -> Result<Vec<(MerkleHash, MerkleHash)>> {
+        let mut entries = Vec::new();
+        for (shard_hash, path) in self.shard_file_paths()? {
+            let shard_bytes = std::fs::read(&path)?;
+            let minimal_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&shard_bytes), true, false)?;
+
+            for i in 0..minimal_shard.num_files() {
+                let file_view = minimal_shard.file(i).unwrap();
+                let fh = file_view.file_hash();
+                if !self.is_file_deleted(&fh) {
+                    entries.push((fh, shard_hash));
+                }
+            }
+        }
+        Ok(entries)
+    }
+
+    async fn delete_file_entry(&self, file_hash: &MerkleHash) -> Result<()> {
+        let write_txn = self.db.begin_write().map_err(map_redb_db_error)?;
+        {
+            let mut table = write_txn.open_table(FILE_STATUS_TABLE).map_err(map_redb_db_error)?;
+            table.insert(&RedbHash::from(*file_hash), &true).map_err(map_redb_db_error)?;
+        }
+        write_txn.commit().map_err(map_redb_db_error)?;
+        Ok(())
+    }
+
+    async fn remove_shard_dedup_entries(&self, shard_hash: &MerkleHash) -> Result<()> {
+        let shard_redb = RedbHash::from(*shard_hash);
+        for _ in 0..4 {
+            let to_delete: Vec<RedbHash> = {
+                let read_txn = self.db.begin_read().map_err(map_redb_db_error)?;
+                let table = read_txn.open_table(GLOBAL_DEDUP_TABLE).map_err(map_redb_db_error)?;
+                table
+                    .iter()
+                    .map_err(map_redb_db_error)?
+                    .filter_map(|entry| entry.ok())
+                    .filter(|(_, v)| v.value() == shard_redb)
+                    .map(|(k, _)| k.value())
+                    .collect()
+            };
+
+            if to_delete.is_empty() {
+                return Ok(());
+            }
+
+            let write_txn = self.db.begin_write().map_err(map_redb_db_error)?;
+            {
+                let mut table = write_txn.open_table(GLOBAL_DEDUP_TABLE).map_err(map_redb_db_error)?;
+                for chunk_hash in &to_delete {
+                    table.remove(chunk_hash).map_err(map_redb_db_error)?;
+                }
+            }
+            write_txn.commit().map_err(map_redb_db_error)?;
+        }
+
+        let still_present = {
+            let read_txn = self.db.begin_read().map_err(map_redb_db_error)?;
+            let table = read_txn.open_table(GLOBAL_DEDUP_TABLE).map_err(map_redb_db_error)?;
+            table
+                .iter()
+                .map_err(map_redb_db_error)?
+                .filter_map(|entry| entry.ok())
+                .any(|(_, v)| v.value() == shard_redb)
+        };
+
+        if still_present {
+            return Err(ClientError::Other(format!(
+                "Unable to fully remove dedup entries for shard {} due to concurrent updates",
+                shard_hash.hex()
+            )));
+        }
+
+        Ok(())
     }
 
     /// Verifies referential integrity of all shards on disk:

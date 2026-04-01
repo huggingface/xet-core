@@ -1382,8 +1382,8 @@ mod tests {
         // DeletionControlableClient methods should return errors (501)
         assert!(DeletionControlableClient::list_shard_entries(&sc).await.is_err());
         assert!(DeletionControlableClient::list_file_shard_entries(&sc).await.is_err());
-        // DirectAccessClient integrity/reachability default to no-ops on MemoryClient; HTTP routes still succeed.
-        assert!(DirectAccessClient::verify_integrity(&sc).await.is_ok());
+        // Integrity/reachability returns 501 on MemoryClient (no deletion client).
+        assert!(sc.verify_integrity().await.is_err());
         assert!(
             DeletionControlableClient::delete_shard_entry(&sc, &xet_core_structures::merklehash::MerkleHash::default())
                 .await
@@ -1420,7 +1420,7 @@ mod tests {
         assert_eq!(file_entries[0].0, file.file_hash);
         let shard_hash = file_entries[0].1;
 
-        DirectAccessClient::verify_integrity(&sc).await.unwrap();
+        sc.verify_integrity().await.unwrap();
 
         let first_chunk = file.terms[0].chunk_hashes[0];
         assert!(

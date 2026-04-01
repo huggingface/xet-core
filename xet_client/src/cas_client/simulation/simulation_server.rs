@@ -230,7 +230,7 @@ impl LocalTestServerBuilder {
                 (None, tcp_endpoint.clone())
             };
 
-        let server = LocalServer::from_client(client.clone(), deletion_client, host, port);
+        let server = LocalServer::from_client(client.clone(), deletion_client.clone(), host, port);
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         tokio::spawn(async move {
             let _ = server.run_until_stopped(shutdown_rx).await;
@@ -280,6 +280,7 @@ impl LocalTestServerBuilder {
             server_shutdown_tx: Some(shutdown_tx),
             remote_simulation_client,
             client,
+            deletion_client,
             socket_proxy,
             _ephemeral_socket_tempdir: ephemeral_tempdir,
             network_simulation_proxy: proxy_guard.clone(),
@@ -291,6 +292,7 @@ impl LocalTestServerBuilder {
             server_shutdown_tx: Some(shutdown_tx),
             remote_simulation_client,
             client,
+            deletion_client,
             network_simulation_proxy: proxy_guard,
         };
 
@@ -343,6 +345,7 @@ pub struct LocalTestServer {
     server_shutdown_tx: Option<oneshot::Sender<()>>,
     remote_simulation_client: Arc<RemoteSimulationClient>,
     client: Arc<dyn DirectAccessClient>,
+    deletion_client: Option<Arc<dyn DeletionControlableClient>>,
     network_simulation_proxy: Option<Arc<NetworkSimulationProxy>>,
 
     #[cfg(unix)]
@@ -424,14 +427,20 @@ impl LocalTestServer {
         self.remote_simulation_client().simulation_set_latency_profile(profile).await
     }
 
-    /// Verifies referential integrity by calling through to the underlying `DirectAccessClient`.
+    /// Verifies referential integrity by calling through to the underlying `DeletionControlableClient`.
     pub async fn verify_integrity(&self) -> Result<()> {
-        self.client.verify_integrity().await
+        match &self.deletion_client {
+            Some(dc) => dc.verify_integrity().await,
+            None => Ok(()),
+        }
     }
 
-    /// Verifies all on-disk data is reachable by calling through to the underlying `DirectAccessClient`.
+    /// Verifies all on-disk data is reachable by calling through to the underlying `DeletionControlableClient`.
     pub async fn verify_all_reachable(&self) -> Result<()> {
-        self.client.verify_all_reachable().await
+        match &self.deletion_client {
+            Some(dc) => dc.verify_all_reachable().await,
+            None => Ok(()),
+        }
     }
 
     fn find_available_port() -> u16 {

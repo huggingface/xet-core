@@ -441,28 +441,6 @@ impl DirectAccessClient for SimulationControlClient {
         let result: FetchTermDataResponse = resp.json().await.map_err(|e| ClientError::Other(e.to_string()))?;
         Ok((Bytes::from(result.data), result.chunk_byte_indices))
     }
-
-    async fn verify_integrity(&self) -> Result<()> {
-        let resp = self
-            .http_client
-            .post(self.sim_url("/verify_integrity"))
-            .send()
-            .await
-            .map_err(|e| ClientError::Other(e.to_string()))?;
-        Self::check_status(resp).await?;
-        Ok(())
-    }
-
-    async fn verify_all_reachable(&self) -> Result<()> {
-        let resp = self
-            .http_client
-            .post(self.sim_url("/verify_all_reachable"))
-            .send()
-            .await
-            .map_err(|e| ClientError::Other(e.to_string()))?;
-        Self::check_status(resp).await?;
-        Ok(())
-    }
 }
 
 #[async_trait]
@@ -541,6 +519,28 @@ impl DeletionControlableClient for SimulationControlClient {
         let resp = self
             .http_client
             .delete(&url)
+            .send()
+            .await
+            .map_err(|e| ClientError::Other(e.to_string()))?;
+        Self::check_status(resp).await?;
+        Ok(())
+    }
+
+    async fn verify_integrity(&self) -> Result<()> {
+        let resp = self
+            .http_client
+            .post(self.sim_url("/verify_integrity"))
+            .send()
+            .await
+            .map_err(|e| ClientError::Other(e.to_string()))?;
+        Self::check_status(resp).await?;
+        Ok(())
+    }
+
+    async fn verify_all_reachable(&self) -> Result<()> {
+        let resp = self
+            .http_client
+            .post(self.sim_url("/verify_all_reachable"))
             .send()
             .await
             .map_err(|e| ClientError::Other(e.to_string()))?;

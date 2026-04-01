@@ -15,8 +15,6 @@ unifies additional simulation knobs under `/simulation/set_config`.
 fn set_global_dedup_shard_expiration(&self, expiration: Option<Duration>);
 ```
 
-`verify_integrity` and `verify_all_reachable` are also defined on this trait (default no-op for backends without on-disk shards).  They are not on `DeletionControlableClient`.
-
 When set, `query_for_global_dedup_shard` returns shard bytes with:
 
 - file reconstruction section removed
@@ -69,9 +67,21 @@ The `/simulation/set_config?config=<k>&value=<v>` endpoint now supports:
 
 ---
 
-## 5. Downstream impact
+## 5. `DeletionControlableClient` changes
+
+`verify_integrity` and `verify_all_reachable` now live on
+`DeletionControlableClient` (previously on `DirectAccessClient`).
+Implementors of `DeletionControlableClient` must provide both methods.
+The `/simulation/verify_integrity` and `/simulation/verify_all_reachable`
+HTTP routes now return 501 when no deletion client is configured.
+
+---
+
+## 6. Downstream impact
 
 - Any external implementors of `DirectAccessClient` must implement
   `set_global_dedup_shard_expiration`.
+- Any external implementors of `DeletionControlableClient` must implement
+  `verify_integrity` and `verify_all_reachable`.
 - Consumers of simulation control routes can use the new `set_config` keys to
   configure runtime behavior without direct in-process client access.

@@ -272,14 +272,20 @@ async fn remove_shard_dedup_entries(
 }
 
 async fn verify_integrity(State(state): State<ServerState>) -> Response {
-    match state.client.verify_integrity().await {
+    let Some(dc) = &state.deletion_client else {
+        return not_implemented();
+    };
+    match dc.verify_integrity().await {
         Ok(()) => StatusCode::OK.into_response(),
         Err(e) => error_to_response(e),
     }
 }
 
 async fn verify_all_reachable(State(state): State<ServerState>) -> Response {
-    match state.client.verify_all_reachable().await {
+    let Some(dc) = &state.deletion_client else {
+        return not_implemented();
+    };
+    match dc.verify_all_reachable().await {
         Ok(()) => StatusCode::OK.into_response(),
         Err(e) => error_to_response(e),
     }
