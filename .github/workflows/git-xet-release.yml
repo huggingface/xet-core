@@ -28,7 +28,9 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - name: Install Rust 1.89
-        uses: dtolnay/rust-toolchain@193d6aa1dbbc28bd2c0a6b0e327cfdce68baaf6e  # 1.89.0
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
+        with:
+          toolchain: 1.94.1
       - uses: ./.github/actions/cache-rust-build
       - name: Build
         run: |
@@ -51,7 +53,9 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - name: Install Rust 1.89
-        uses: dtolnay/rust-toolchain@193d6aa1dbbc28bd2c0a6b0e327cfdce68baaf6e  # 1.89.0
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
+        with:
+          toolchain: 1.94.1
       - uses: ./.github/actions/cache-rust-build
       - name: Build
         run: |
@@ -90,7 +94,9 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - name: Install Rust 1.89
-        uses: dtolnay/rust-toolchain@193d6aa1dbbc28bd2c0a6b0e327cfdce68baaf6e  # 1.89.0
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
+        with:
+          toolchain: 1.94.1
       - uses: ./.github/actions/cache-rust-build
       - name: Install WiX
         run: |
