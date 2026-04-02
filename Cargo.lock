@@ -1963,6 +1963,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ulid",
+ "wiremock",
  "xet-client",
  "xet-core-structures",
  "xet-data",

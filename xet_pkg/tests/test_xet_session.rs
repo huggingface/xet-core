@@ -26,19 +26,18 @@ use xet::xet_session::{
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
-fn local_session(temp: &TempDir) -> Result<XetSession, Box<dyn std::error::Error>> {
-    let cas_path = temp.path().join("cas");
-    Ok(XetSessionBuilder::new()
-        .with_endpoint(format!("local://{}", cas_path.display()))
-        .build()?)
-}
-
 fn to_file_info(meta: &XetFileMetadata) -> XetFileInfo {
     meta.xet_info.clone()
 }
 
-async fn upload_bytes_async(session: &XetSession, data: &[u8], name: &str) -> XetFileInfo {
-    let commit = session.new_upload_commit().unwrap().build().await.unwrap();
+async fn upload_bytes_async(session: &XetSession, endpoint: &str, data: &[u8], name: &str) -> XetFileInfo {
+    let commit = session
+        .new_upload_commit()
+        .unwrap()
+        .with_endpoint(endpoint)
+        .build()
+        .await
+        .unwrap();
     let handle = commit
         .upload_bytes(data.to_vec(), Sha256Policy::Compute, Some(name.into()))
         .await
@@ -48,8 +47,13 @@ async fn upload_bytes_async(session: &XetSession, data: &[u8], name: &str) -> Xe
     file_meta.xet_info
 }
 
-fn upload_bytes_sync(session: &XetSession, data: &[u8], name: &str) -> XetFileInfo {
-    let commit = session.new_upload_commit().unwrap().build_blocking().unwrap();
+fn upload_bytes_sync(session: &XetSession, endpoint: &str, data: &[u8], name: &str) -> XetFileInfo {
+    let commit = session
+        .new_upload_commit()
+        .unwrap()
+        .with_endpoint(endpoint)
+        .build_blocking()
+        .unwrap();
     let handle = commit
         .upload_bytes_blocking(data.to_vec(), Sha256Policy::Compute, Some(name.into()))
         .unwrap();
@@ -58,23 +62,34 @@ fn upload_bytes_sync(session: &XetSession, data: &[u8], name: &str) -> XetFileIn
     file_meta.xet_info
 }
 
-async fn assert_roundtrip_async(session: &XetSession, temp: &TempDir, data: &[u8], name: &str) {
-    let file_info = upload_bytes_async(session, data, name).await;
+async fn assert_roundtrip_async(session: &XetSession, endpoint: &str, temp: &TempDir, data: &[u8], name: &str) {
+    let file_info = upload_bytes_async(session, endpoint, data, name).await;
     assert_eq!(file_info.file_size(), Some(data.len() as u64));
 
     let dest = temp.path().join(format!("{name}.out"));
-    let group = session.new_file_download_group().unwrap().build().await.unwrap();
+    let group = session
+        .new_file_download_group()
+        .unwrap()
+        .with_endpoint(endpoint)
+        .build()
+        .await
+        .unwrap();
     group.download_file_to_path(file_info, dest.clone()).await.unwrap();
     group.finish().await.unwrap();
     assert_eq!(fs::read(&dest).unwrap(), data);
 }
 
-fn assert_roundtrip_sync(session: &XetSession, temp: &TempDir, data: &[u8], name: &str) {
-    let file_info = upload_bytes_sync(session, data, name);
+fn assert_roundtrip_sync(session: &XetSession, endpoint: &str, temp: &TempDir, data: &[u8], name: &str) {
+    let file_info = upload_bytes_sync(session, endpoint, data, name);
     assert_eq!(file_info.file_size(), Some(data.len() as u64));
 
     let dest = temp.path().join(format!("{name}.out"));
-    let group = session.new_file_download_group().unwrap().build_blocking().unwrap();
+    let group = session
+        .new_file_download_group()
+        .unwrap()
+        .with_endpoint(endpoint)
+        .build_blocking()
+        .unwrap();
     group.download_file_to_path_blocking(file_info, dest.clone()).unwrap();
     group.finish_blocking().unwrap();
     assert_eq!(fs::read(&dest).unwrap(), data);
@@ -82,6 +97,7 @@ fn assert_roundtrip_sync(session: &XetSession, temp: &TempDir, data: &[u8], name
 
 async fn assert_upload_from_path_roundtrip_async(
     session: &XetSession,
+    endpoint: &str,
     temp: &TempDir,
     src_name: &str,
     dest_name: &str,
@@ -91,7 +107,13 @@ async fn assert_upload_from_path_roundtrip_async(
     fs::write(&src, data).unwrap();
 
     let file_meta = {
-        let commit = session.new_upload_commit().unwrap().build().await.unwrap();
+        let commit = session
+            .new_upload_commit()
+            .unwrap()
+            .with_endpoint(endpoint)
+            .build()
+            .await
+            .unwrap();
         let handle = commit.upload_from_path(src, Sha256Policy::Compute).await.unwrap();
         let file_meta = handle.finalize_ingestion().await.unwrap();
         commit.commit().await.unwrap();
@@ -99,7 +121,13 @@ async fn assert_upload_from_path_roundtrip_async(
     };
 
     let dest = temp.path().join(dest_name);
-    let group = session.new_file_download_group().unwrap().build().await.unwrap();
+    let group = session
+        .new_file_download_group()
+        .unwrap()
+        .with_endpoint(endpoint)
+        .build()
+        .await
+        .unwrap();
     group
         .download_file_to_path(to_file_info(&file_meta), dest.clone())
         .await
@@ -110,6 +138,7 @@ async fn assert_upload_from_path_roundtrip_async(
 
 fn assert_upload_from_path_roundtrip_sync(
     session: &XetSession,
+    endpoint: &str,
     temp: &TempDir,
     src_name: &str,
     dest_name: &str,
@@ -119,7 +148,12 @@ fn assert_upload_from_path_roundtrip_sync(
     fs::write(&src, data).unwrap();
 
     let file_meta = {
-        let commit = session.new_upload_commit().unwrap().build_blocking().unwrap();
+        let commit = session
+            .new_upload_commit()
+            .unwrap()
+            .with_endpoint(endpoint)
+            .build_blocking()
+            .unwrap();
         let handle = commit.upload_from_path_blocking(src, Sha256Policy::Compute).unwrap();
         let file_meta = handle.finalize_ingestion_blocking().unwrap();
         commit.commit_blocking().unwrap();
@@ -127,7 +161,12 @@ fn assert_upload_from_path_roundtrip_sync(
     };
 
     let dest = temp.path().join(dest_name);
-    let group = session.new_file_download_group().unwrap().build_blocking().unwrap();
+    let group = session
+        .new_file_download_group()
+        .unwrap()
+        .with_endpoint(endpoint)
+        .build_blocking()
+        .unwrap();
     group
         .download_file_to_path_blocking(to_file_info(&file_meta), dest.clone())
         .unwrap();
@@ -210,21 +249,29 @@ fn deficient_runtime_cases() -> Vec<(&'static str, RuntimeBuilder)> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_upload_bytes_roundtrip() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
-    assert_roundtrip_async(&session, &temp, b"async upload bytes test", "bytes").await;
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
+    assert_roundtrip_async(&session, &endpoint, &temp, b"async upload bytes test", "bytes").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_upload_from_path_roundtrip() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
 
     let src = temp.path().join("source.bin");
     let data = b"upload from path integration test content";
     fs::write(&src, data).unwrap();
 
     let file_meta = {
-        let commit = session.new_upload_commit().unwrap().build().await.unwrap();
+        let commit = session
+            .new_upload_commit()
+            .unwrap()
+            .with_endpoint(&endpoint)
+            .build()
+            .await
+            .unwrap();
         let handle = commit.upload_from_path(src, Sha256Policy::Compute).await.unwrap();
         let file_meta = handle.finalize_ingestion().await.unwrap();
         assert_eq!(file_meta.xet_info.file_size(), Some(data.len() as u64));
@@ -234,7 +281,13 @@ async fn async_upload_from_path_roundtrip() {
     };
 
     let dest = temp.path().join("dest.bin");
-    let group = session.new_file_download_group().unwrap().build().await.unwrap();
+    let group = session
+        .new_file_download_group()
+        .unwrap()
+        .with_endpoint(&endpoint)
+        .build()
+        .await
+        .unwrap();
     group
         .download_file_to_path(file_meta.xet_info.clone(), dest.clone())
         .await
@@ -246,7 +299,8 @@ async fn async_upload_from_path_roundtrip() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_multiple_files_in_one_commit() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
 
     let files: Vec<(&str, &[u8])> = vec![
         ("alpha.bin", b"alpha content"),
@@ -255,7 +309,13 @@ async fn async_multiple_files_in_one_commit() {
     ];
 
     let metas = {
-        let commit = session.new_upload_commit().unwrap().build().await.unwrap();
+        let commit = session
+            .new_upload_commit()
+            .unwrap()
+            .with_endpoint(&endpoint)
+            .build()
+            .await
+            .unwrap();
         let mut metas = Vec::new();
         for (name, data) in &files {
             let h = commit
@@ -268,7 +328,13 @@ async fn async_multiple_files_in_one_commit() {
         metas
     };
 
-    let group = session.new_file_download_group().unwrap().build().await.unwrap();
+    let group = session
+        .new_file_download_group()
+        .unwrap()
+        .with_endpoint(&endpoint)
+        .build()
+        .await
+        .unwrap();
     let mut dest_paths = Vec::new();
     for (i, file_meta) in metas.iter().enumerate() {
         let dest = temp.path().join(format!("out_{i}.bin"));
@@ -288,10 +354,17 @@ async fn async_multiple_files_in_one_commit() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_sha256_policy_variants() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
     let provided_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
 
-    let commit = session.new_upload_commit().unwrap().build().await.unwrap();
+    let commit = session
+        .new_upload_commit()
+        .unwrap()
+        .with_endpoint(&endpoint)
+        .build()
+        .await
+        .unwrap();
 
     let h_compute = commit
         .upload_bytes(b"compute sha".to_vec(), Sha256Policy::Compute, Some("compute.bin".into()))
@@ -322,27 +395,41 @@ async fn async_sha256_policy_variants() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_large_file_roundtrip() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
     let data: Vec<u8> = (0..65536u64).map(|i| (i % 251) as u8).collect();
-    assert_roundtrip_async(&session, &temp, &data, "large").await;
+    assert_roundtrip_async(&session, &endpoint, &temp, &data, "large").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_multiple_commits_and_groups() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
 
-    let info_a = upload_bytes_async(&session, b"commit A data", "a.bin").await;
-    let info_b = upload_bytes_async(&session, b"commit B data", "b.bin").await;
+    let info_a = upload_bytes_async(&session, &endpoint, b"commit A data", "a.bin").await;
+    let info_b = upload_bytes_async(&session, &endpoint, b"commit B data", "b.bin").await;
 
     let dest_a = temp.path().join("a.out");
     let dest_b = temp.path().join("b.out");
 
-    let group1 = session.new_file_download_group().unwrap().build().await.unwrap();
+    let group1 = session
+        .new_file_download_group()
+        .unwrap()
+        .with_endpoint(&endpoint)
+        .build()
+        .await
+        .unwrap();
     group1.download_file_to_path(info_a, dest_a.clone()).await.unwrap();
     group1.finish().await.unwrap();
 
-    let group2 = session.new_file_download_group().unwrap().build().await.unwrap();
+    let group2 = session
+        .new_file_download_group()
+        .unwrap()
+        .with_endpoint(&endpoint)
+        .build()
+        .await
+        .unwrap();
     group2.download_file_to_path(info_b, dest_b.clone()).await.unwrap();
     group2.finish().await.unwrap();
 
@@ -353,9 +440,16 @@ async fn async_multiple_commits_and_groups() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_task_status_transitions() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
 
-    let commit = session.new_upload_commit().unwrap().build().await.unwrap();
+    let commit = session
+        .new_upload_commit()
+        .unwrap()
+        .with_endpoint(&endpoint)
+        .build()
+        .await
+        .unwrap();
     let handle = commit
         .upload_bytes(b"status test".to_vec(), Sha256Policy::Compute, Some("status.bin".into()))
         .await
@@ -372,10 +466,17 @@ async fn async_task_status_transitions() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_progress_tracking() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
     let data = b"progress tracking integration test data";
 
-    let commit = session.new_upload_commit().unwrap().build().await.unwrap();
+    let commit = session
+        .new_upload_commit()
+        .unwrap()
+        .with_endpoint(&endpoint)
+        .build()
+        .await
+        .unwrap();
     commit
         .upload_bytes(data.to_vec(), Sha256Policy::Compute, Some("prog.bin".into()))
         .await
@@ -393,14 +494,21 @@ async fn async_progress_tracking() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_download_unknown_size_roundtrip() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
     let data = b"download with unknown size via xet_pkg";
-    let file_info = upload_bytes_async(&session, data, "unknown_size.bin").await;
+    let file_info = upload_bytes_async(&session, &endpoint, data, "unknown_size.bin").await;
 
     let hash_only = XetFileInfo::new_hash_only(file_info.hash().to_string());
 
     let dest = temp.path().join("unknown_size.out");
-    let group = session.new_file_download_group().unwrap().build().await.unwrap();
+    let group = session
+        .new_file_download_group()
+        .unwrap()
+        .with_endpoint(&endpoint)
+        .build()
+        .await
+        .unwrap();
     group.download_file_to_path(hash_only, dest.clone()).await.unwrap();
     let report = group.finish().await.unwrap();
 
@@ -413,9 +521,16 @@ async fn async_download_unknown_size_roundtrip() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_download_invalid_hash_fails() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
 
-    let group = session.new_file_download_group().unwrap().build().await.unwrap();
+    let group = session
+        .new_file_download_group()
+        .unwrap()
+        .with_endpoint(&endpoint)
+        .build()
+        .await
+        .unwrap();
     let handle = group
         .download_file_to_path(
             XetFileInfo {
@@ -435,7 +550,8 @@ async fn async_download_invalid_hash_fails() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_upload_from_path_multiple_files() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
 
     let src_a = temp.path().join("src_a.bin");
     let src_b = temp.path().join("src_b.bin");
@@ -443,7 +559,13 @@ async fn async_upload_from_path_multiple_files() {
     fs::write(&src_b, [0xCD; 8192]).unwrap();
 
     let (info_a, info_b) = {
-        let commit = session.new_upload_commit().unwrap().build().await.unwrap();
+        let commit = session
+            .new_upload_commit()
+            .unwrap()
+            .with_endpoint(&endpoint)
+            .build()
+            .await
+            .unwrap();
         let ha = commit.upload_from_path(src_a, Sha256Policy::Compute).await.unwrap();
         let hb = commit.upload_from_path(src_b, Sha256Policy::Compute).await.unwrap();
         let info_a = ha.finalize_ingestion().await.unwrap().xet_info;
@@ -454,7 +576,13 @@ async fn async_upload_from_path_multiple_files() {
 
     let dest_a = temp.path().join("dest_a.bin");
     let dest_b = temp.path().join("dest_b.bin");
-    let group = session.new_file_download_group().unwrap().build().await.unwrap();
+    let group = session
+        .new_file_download_group()
+        .unwrap()
+        .with_endpoint(&endpoint)
+        .build()
+        .await
+        .unwrap();
     group.download_file_to_path(info_a, dest_a.clone()).await.unwrap();
     group.download_file_to_path(info_b, dest_b.clone()).await.unwrap();
     group.finish().await.unwrap();
@@ -468,16 +596,19 @@ async fn async_upload_from_path_multiple_files() {
 #[test]
 fn blocking_upload_bytes_roundtrip() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
-    assert_roundtrip_sync(&session, &temp, b"blocking upload bytes test", "bytes");
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
+    assert_roundtrip_sync(&session, &endpoint, &temp, b"blocking upload bytes test", "bytes");
 }
 
 #[test]
 fn blocking_upload_from_path_roundtrip() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
     assert_upload_from_path_roundtrip_sync(
         &session,
+        &endpoint,
         &temp,
         "source.bin",
         "dest.bin",
@@ -488,13 +619,19 @@ fn blocking_upload_from_path_roundtrip() {
 #[test]
 fn blocking_multiple_files_roundtrip() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
 
     let data_a = b"blocking file A";
     let data_b = b"blocking file B is longer";
 
     let (info_a, info_b) = {
-        let commit = session.new_upload_commit().unwrap().build_blocking().unwrap();
+        let commit = session
+            .new_upload_commit()
+            .unwrap()
+            .with_endpoint(&endpoint)
+            .build_blocking()
+            .unwrap();
         let ha = commit
             .upload_bytes_blocking(data_a.to_vec(), Sha256Policy::Compute, Some("a.bin".into()))
             .unwrap();
@@ -509,7 +646,12 @@ fn blocking_multiple_files_roundtrip() {
 
     let dest_a = temp.path().join("a.out");
     let dest_b = temp.path().join("b.out");
-    let group = session.new_file_download_group().unwrap().build_blocking().unwrap();
+    let group = session
+        .new_file_download_group()
+        .unwrap()
+        .with_endpoint(&endpoint)
+        .build_blocking()
+        .unwrap();
     group.download_file_to_path_blocking(info_a, dest_a.clone()).unwrap();
     group.download_file_to_path_blocking(info_b, dest_b.clone()).unwrap();
     group.finish_blocking().unwrap();
@@ -521,17 +663,24 @@ fn blocking_multiple_files_roundtrip() {
 #[test]
 fn blocking_large_file_roundtrip() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
     let data: Vec<u8> = (0..65536u64).map(|i| (i % 251) as u8).collect();
-    assert_roundtrip_sync(&session, &temp, &data, "large");
+    assert_roundtrip_sync(&session, &endpoint, &temp, &data, "large");
 }
 
 #[test]
 fn blocking_task_status_transitions() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
 
-    let commit = session.new_upload_commit().unwrap().build_blocking().unwrap();
+    let commit = session
+        .new_upload_commit()
+        .unwrap()
+        .with_endpoint(&endpoint)
+        .build_blocking()
+        .unwrap();
     let handle = commit
         .upload_bytes_blocking(b"status blocking".to_vec(), Sha256Policy::Compute, Some("status.bin".into()))
         .unwrap();
@@ -543,10 +692,16 @@ fn blocking_task_status_transitions() {
 #[test]
 fn blocking_progress_tracking() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
     let data = b"blocking progress tracking data";
 
-    let commit = session.new_upload_commit().unwrap().build_blocking().unwrap();
+    let commit = session
+        .new_upload_commit()
+        .unwrap()
+        .with_endpoint(&endpoint)
+        .build_blocking()
+        .unwrap();
     commit
         .upload_bytes_blocking(data.to_vec(), Sha256Policy::Compute, Some("prog.bin".into()))
         .unwrap();
@@ -561,19 +716,30 @@ fn blocking_progress_tracking() {
 #[test]
 fn blocking_multiple_commits_and_groups() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
 
-    let info_a = upload_bytes_sync(&session, b"blocking commit A", "a.bin");
-    let info_b = upload_bytes_sync(&session, b"blocking commit B", "b.bin");
+    let info_a = upload_bytes_sync(&session, &endpoint, b"blocking commit A", "a.bin");
+    let info_b = upload_bytes_sync(&session, &endpoint, b"blocking commit B", "b.bin");
 
     let dest_a = temp.path().join("a.out");
-    let group1 = session.new_file_download_group().unwrap().build_blocking().unwrap();
+    let group1 = session
+        .new_file_download_group()
+        .unwrap()
+        .with_endpoint(&endpoint)
+        .build_blocking()
+        .unwrap();
     group1.download_file_to_path_blocking(info_a, dest_a.clone()).unwrap();
     group1.finish_blocking().unwrap();
     assert_eq!(fs::read(&dest_a).unwrap(), b"blocking commit A");
 
     let dest_b = temp.path().join("b.out");
-    let group2 = session.new_file_download_group().unwrap().build_blocking().unwrap();
+    let group2 = session
+        .new_file_download_group()
+        .unwrap()
+        .with_endpoint(&endpoint)
+        .build_blocking()
+        .unwrap();
     group2.download_file_to_path_blocking(info_b, dest_b.clone()).unwrap();
     group2.finish_blocking().unwrap();
     assert_eq!(fs::read(&dest_b).unwrap(), b"blocking commit B");
@@ -591,9 +757,10 @@ fn bridge_upload_download_roundtrip() {
         let temp = tempdir().unwrap();
         let tag = executor.label().to_string();
         Box::pin(async move {
-            let session = local_session(&temp).unwrap();
+            let session = XetSessionBuilder::new().build().unwrap();
+            let endpoint = format!("local://{}", temp.path().join("cas").display());
             let payload = format!("{tag} executor roundtrip");
-            assert_roundtrip_async(&session, &temp, payload.as_bytes(), &tag).await;
+            assert_roundtrip_async(&session, &endpoint, &temp, payload.as_bytes(), &tag).await;
         })
     });
 }
@@ -604,7 +771,8 @@ fn bridge_multiple_files() {
         let temp = tempdir().unwrap();
         let tag = executor.label().to_string();
         Box::pin(async move {
-            let session = local_session(&temp).unwrap();
+            let session = XetSessionBuilder::new().build().unwrap();
+            let endpoint = format!("local://{}", temp.path().join("cas").display());
 
             let files: Vec<(String, Vec<u8>)> = vec![
                 (format!("{tag}_a.bin"), format!("{tag} A").into_bytes()),
@@ -612,7 +780,13 @@ fn bridge_multiple_files() {
             ];
 
             let metas = {
-                let commit = session.new_upload_commit().unwrap().build().await.unwrap();
+                let commit = session
+                    .new_upload_commit()
+                    .unwrap()
+                    .with_endpoint(&endpoint)
+                    .build()
+                    .await
+                    .unwrap();
                 let mut metas = Vec::new();
                 for (name, data) in &files {
                     let h = commit
@@ -625,7 +799,13 @@ fn bridge_multiple_files() {
                 metas
             };
 
-            let group = session.new_file_download_group().unwrap().build().await.unwrap();
+            let group = session
+                .new_file_download_group()
+                .unwrap()
+                .with_endpoint(&endpoint)
+                .build()
+                .await
+                .unwrap();
             let mut outputs = Vec::new();
             for (index, file_meta) in metas.iter().enumerate() {
                 let info = file_meta.xet_info.clone();
@@ -648,10 +828,12 @@ fn bridge_upload_from_path_roundtrip() {
         let temp = tempdir().unwrap();
         let tag = executor.label().to_string();
         Box::pin(async move {
-            let session = local_session(&temp).unwrap();
+            let session = XetSessionBuilder::new().build().unwrap();
+            let endpoint = format!("local://{}", temp.path().join("cas").display());
             let payload = format!("{tag} upload from path");
             assert_upload_from_path_roundtrip_async(
                 &session,
+                &endpoint,
                 &temp,
                 &format!("src_{tag}.bin"),
                 &format!("dest_{tag}.bin"),
@@ -668,9 +850,10 @@ fn bridge_large_file_roundtrip() {
         let temp = tempdir().unwrap();
         let tag = executor.label().to_string();
         Box::pin(async move {
-            let session = local_session(&temp).unwrap();
+            let session = XetSessionBuilder::new().build().unwrap();
+            let endpoint = format!("local://{}", temp.path().join("cas").display());
             let data: Vec<u8> = (0..65536u64).map(|i| (i % 251) as u8).collect();
-            assert_roundtrip_async(&session, &temp, &data, &format!("large_{tag}")).await;
+            assert_roundtrip_async(&session, &endpoint, &temp, &data, &format!("large_{tag}")).await;
         })
     });
 }
@@ -689,9 +872,10 @@ fn deficient_tokio_async_roundtrip_matrix() {
         let rt = builder();
         let temp = tempdir().unwrap();
         rt.block_on(async {
-            let session = local_session(&temp).unwrap();
+            let session = XetSessionBuilder::new().build().unwrap();
+            let endpoint = format!("local://{}", temp.path().join("cas").display());
             let payload = format!("{label} async roundtrip");
-            assert_roundtrip_async(&session, &temp, payload.as_bytes(), label).await;
+            assert_roundtrip_async(&session, &endpoint, &temp, payload.as_bytes(), label).await;
         });
     }
 }
@@ -701,10 +885,17 @@ fn deficient_tokio_no_drivers_multiple_files() {
     let rt = tokio::runtime::Builder::new_multi_thread().build().unwrap();
     let temp = tempdir().unwrap();
     rt.block_on(async {
-        let session = local_session(&temp).unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
 
         let (info_a, info_b) = {
-            let commit = session.new_upload_commit().unwrap().build().await.unwrap();
+            let commit = session
+                .new_upload_commit()
+                .unwrap()
+                .with_endpoint(&endpoint)
+                .build()
+                .await
+                .unwrap();
             let ha = commit
                 .upload_bytes(b"deficient A".to_vec(), Sha256Policy::Compute, Some("a.bin".into()))
                 .await
@@ -721,7 +912,13 @@ fn deficient_tokio_no_drivers_multiple_files() {
 
         let dest_a = temp.path().join("a.out");
         let dest_b = temp.path().join("b.out");
-        let group = session.new_file_download_group().unwrap().build().await.unwrap();
+        let group = session
+            .new_file_download_group()
+            .unwrap()
+            .with_endpoint(&endpoint)
+            .build()
+            .await
+            .unwrap();
         group.download_file_to_path(info_a, dest_a.clone()).await.unwrap();
         group.download_file_to_path(info_b, dest_b.clone()).await.unwrap();
         group.finish().await.unwrap();
@@ -736,9 +933,11 @@ fn deficient_tokio_no_drivers_upload_from_path() {
     let rt = build_rt_no_drivers();
     let temp = tempdir().unwrap();
     rt.block_on(async {
-        let session = local_session(&temp).unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
         assert_upload_from_path_roundtrip_async(
             &session,
+            &endpoint,
             &temp,
             "src.bin",
             "dest.bin",
@@ -753,9 +952,10 @@ fn deficient_tokio_no_drivers_large_file() {
     let rt = build_rt_no_drivers();
     let temp = tempdir().unwrap();
     rt.block_on(async {
-        let session = local_session(&temp).unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
         let data: Vec<u8> = (0..65536u64).map(|i| (i % 251) as u8).collect();
-        assert_roundtrip_async(&session, &temp, &data, "large_deficient").await;
+        assert_roundtrip_async(&session, &endpoint, &temp, &data, "large_deficient").await;
     });
 }
 
@@ -770,10 +970,11 @@ fn deficient_tokio_handle_auto_fallback_blocking_roundtrip() {
     ] {
         let rt = builder();
         let temp = tempdir().unwrap();
-        let session = rt.block_on(async { local_session(&temp).unwrap() });
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
+        let session = rt.block_on(async { XetSessionBuilder::new().build().unwrap() });
 
         let payload = format!("{label} handle blocking roundtrip");
-        assert_roundtrip_sync(&session, &temp, payload.as_bytes(), &format!("{label}_blocking"));
+        assert_roundtrip_sync(&session, &endpoint, &temp, payload.as_bytes(), &format!("{label}_blocking"));
     }
 }
 
@@ -787,11 +988,12 @@ fn deficient_tokio_handle_auto_fallback_blocking_roundtrip() {
 fn blocking_in_non_tokio_executor_roundtrip() {
     run_on_all_non_tokio_executors(|executor| {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
         let tag = executor.label().to_string();
         Box::pin(async move {
             let payload = format!("blocking in {tag}");
-            assert_roundtrip_sync(&session, &temp, payload.as_bytes(), &format!("blocking_{tag}"));
+            assert_roundtrip_sync(&session, &endpoint, &temp, payload.as_bytes(), &format!("blocking_{tag}"));
         })
     });
 }
@@ -800,12 +1002,14 @@ fn blocking_in_non_tokio_executor_roundtrip() {
 fn blocking_in_non_tokio_executor_upload_from_path() {
     run_on_all_non_tokio_executors(|executor| {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
         let tag = executor.label().to_string();
         Box::pin(async move {
             let payload = format!("blocking {tag} upload from path");
             assert_upload_from_path_roundtrip_sync(
                 &session,
+                &endpoint,
                 &temp,
                 &format!("src_{tag}.bin"),
                 &format!("dest_{tag}.bin"),
@@ -903,11 +1107,12 @@ async fn async_abort_rejects_download_on_existing_group() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_duplicate_content_produces_same_hash() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
     let data = b"deduplication test content";
 
-    let info1 = upload_bytes_async(&session, data, "first.bin").await;
-    let info2 = upload_bytes_async(&session, data, "second.bin").await;
+    let info1 = upload_bytes_async(&session, &endpoint, data, "first.bin").await;
+    let info2 = upload_bytes_async(&session, &endpoint, data, "second.bin").await;
 
     assert_eq!(info1.hash, info2.hash);
     assert_eq!(info1.file_size, info2.file_size);
@@ -919,13 +1124,21 @@ async fn async_duplicate_content_produces_same_hash() {
 async fn async_separate_sessions_are_isolated() {
     let temp1 = tempdir().unwrap();
     let temp2 = tempdir().unwrap();
-    let session1 = local_session(&temp1).unwrap();
-    let session2 = local_session(&temp2).unwrap();
+    let session1 = XetSessionBuilder::new().build().unwrap();
+    let endpoint1 = format!("local://{}", temp1.path().join("cas").display());
+    let session2 = XetSessionBuilder::new().build().unwrap();
+    let endpoint2 = format!("local://{}", temp2.path().join("cas").display());
 
-    let info1 = upload_bytes_async(&session1, b"session 1 data", "s1.bin").await;
+    let info1 = upload_bytes_async(&session1, &endpoint1, b"session 1 data", "s1.bin").await;
 
     // Data from session1 should not be downloadable from session2 (different CAS store).
-    let group = session2.new_file_download_group().unwrap().build().await.unwrap();
+    let group = session2
+        .new_file_download_group()
+        .unwrap()
+        .with_endpoint(&endpoint2)
+        .build()
+        .await
+        .unwrap();
     group
         .download_file_to_path(info1, temp2.path().join("cross.bin"))
         .await
@@ -935,12 +1148,23 @@ async fn async_separate_sessions_are_isolated() {
 
 // ── 10. Streaming download (XetDownloadStream) ──────────────────────────
 
-async fn async_stream_group(session: &XetSession) -> XetDownloadStreamGroup {
-    session.new_download_stream_group().unwrap().build().await.unwrap()
+async fn async_stream_group(session: &XetSession, endpoint: &str) -> XetDownloadStreamGroup {
+    session
+        .new_download_stream_group()
+        .unwrap()
+        .with_endpoint(endpoint)
+        .build()
+        .await
+        .unwrap()
 }
 
-fn sync_stream_group(session: &XetSession) -> XetDownloadStreamGroup {
-    session.new_download_stream_group().unwrap().build_blocking().unwrap()
+fn sync_stream_group(session: &XetSession, endpoint: &str) -> XetDownloadStreamGroup {
+    session
+        .new_download_stream_group()
+        .unwrap()
+        .with_endpoint(endpoint)
+        .build_blocking()
+        .unwrap()
 }
 
 async fn collect_stream(stream: &mut XetDownloadStream) -> Vec<u8> {
@@ -962,11 +1186,12 @@ fn collect_stream_blocking(stream: &mut XetDownloadStream) -> Vec<u8> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_stream_roundtrip() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
     let data = b"async streaming download roundtrip";
-    let file_info = upload_bytes_async(&session, data, "stream.bin").await;
+    let file_info = upload_bytes_async(&session, &endpoint, data, "stream.bin").await;
 
-    let group = async_stream_group(&session).await;
+    let group = async_stream_group(&session, &endpoint).await;
     let mut stream = group.download_stream(file_info, None).await.unwrap();
     assert_eq!(collect_stream(&mut stream).await, data);
 }
@@ -974,11 +1199,12 @@ async fn async_stream_roundtrip() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_stream_large_file() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
     let data: Vec<u8> = (0..65536u64).map(|i| (i % 251) as u8).collect();
-    let file_info = upload_bytes_async(&session, &data, "large_stream.bin").await;
+    let file_info = upload_bytes_async(&session, &endpoint, &data, "large_stream.bin").await;
 
-    let group = async_stream_group(&session).await;
+    let group = async_stream_group(&session, &endpoint).await;
     let mut stream = group.download_stream(file_info, None).await.unwrap();
     assert_eq!(collect_stream(&mut stream).await, data);
 }
@@ -986,11 +1212,12 @@ async fn async_stream_large_file() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_stream_progress_tracking() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
     let data = b"stream progress tracking integration test";
-    let file_info = upload_bytes_async(&session, data, "progress_stream.bin").await;
+    let file_info = upload_bytes_async(&session, &endpoint, data, "progress_stream.bin").await;
 
-    let group = async_stream_group(&session).await;
+    let group = async_stream_group(&session, &endpoint).await;
     let mut stream = group.download_stream(file_info, None).await.unwrap();
 
     let initial = stream.progress();
@@ -1007,14 +1234,15 @@ async fn async_stream_progress_tracking() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_stream_multiple_sequential() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
 
     let data_a = b"stream sequential A";
     let data_b = b"stream sequential B is different";
-    let info_a = upload_bytes_async(&session, data_a, "seq_a.bin").await;
-    let info_b = upload_bytes_async(&session, data_b, "seq_b.bin").await;
+    let info_a = upload_bytes_async(&session, &endpoint, data_a, "seq_a.bin").await;
+    let info_b = upload_bytes_async(&session, &endpoint, data_b, "seq_b.bin").await;
 
-    let group = async_stream_group(&session).await;
+    let group = async_stream_group(&session, &endpoint).await;
     let mut stream_a = group.download_stream(info_a, None).await.unwrap();
     assert_eq!(collect_stream(&mut stream_a).await, data_a);
 
@@ -1025,11 +1253,12 @@ async fn async_stream_multiple_sequential() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_stream_cancel_before_consuming() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
     let data = b"stream cancel test data";
-    let file_info = upload_bytes_async(&session, data, "cancel_stream.bin").await;
+    let file_info = upload_bytes_async(&session, &endpoint, data, "cancel_stream.bin").await;
 
-    let group = async_stream_group(&session).await;
+    let group = async_stream_group(&session, &endpoint).await;
     let mut stream = group.download_stream(file_info, None).await.unwrap();
     stream.cancel();
     assert!(stream.next().await.unwrap().is_none());
@@ -1037,8 +1266,7 @@ async fn async_stream_cancel_before_consuming() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_stream_aborted_session() {
-    let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
     session.abort().unwrap();
     let result = session.new_download_stream_group();
     assert!(matches!(result, Err(SessionError::UserCancelled(_))));
@@ -1047,11 +1275,18 @@ async fn async_stream_aborted_session() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_stream_abort_cancels_active_stream() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
     let data: Vec<u8> = (0..65536u64).map(|i| (i % 251) as u8).collect();
-    let file_info = upload_bytes_async(&session, &data, "abort_stream.bin").await;
+    let file_info = upload_bytes_async(&session, &endpoint, &data, "abort_stream.bin").await;
 
-    let group = session.new_download_stream_group().unwrap().build().await.unwrap();
+    let group = session
+        .new_download_stream_group()
+        .unwrap()
+        .with_endpoint(&endpoint)
+        .build()
+        .await
+        .unwrap();
     let mut stream = group.download_stream(file_info, None).await.unwrap();
     session.abort().unwrap();
 
@@ -1066,11 +1301,12 @@ async fn async_stream_abort_cancels_active_stream() {
 #[test]
 fn blocking_stream_roundtrip() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
     let data = b"blocking streaming download roundtrip";
-    let file_info = upload_bytes_sync(&session, data, "stream.bin");
+    let file_info = upload_bytes_sync(&session, &endpoint, data, "stream.bin");
 
-    let group = sync_stream_group(&session);
+    let group = sync_stream_group(&session, &endpoint);
     let mut stream = group.download_stream_blocking(file_info, None).unwrap();
     assert_eq!(collect_stream_blocking(&mut stream), data);
 }
@@ -1078,11 +1314,12 @@ fn blocking_stream_roundtrip() {
 #[test]
 fn blocking_stream_large_file() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
     let data: Vec<u8> = (0..65536u64).map(|i| (i % 251) as u8).collect();
-    let file_info = upload_bytes_sync(&session, &data, "large_stream.bin");
+    let file_info = upload_bytes_sync(&session, &endpoint, &data, "large_stream.bin");
 
-    let group = sync_stream_group(&session);
+    let group = sync_stream_group(&session, &endpoint);
     let mut stream = group.download_stream_blocking(file_info, None).unwrap();
     assert_eq!(collect_stream_blocking(&mut stream), data);
 }
@@ -1090,11 +1327,12 @@ fn blocking_stream_large_file() {
 #[test]
 fn blocking_stream_progress_tracking() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
     let data = b"blocking stream progress integration test";
-    let file_info = upload_bytes_sync(&session, data, "progress_stream.bin");
+    let file_info = upload_bytes_sync(&session, &endpoint, data, "progress_stream.bin");
 
-    let group = sync_stream_group(&session);
+    let group = sync_stream_group(&session, &endpoint);
     let mut stream = group.download_stream_blocking(file_info, None).unwrap();
     let _ = collect_stream_blocking(&mut stream);
 
@@ -1106,14 +1344,15 @@ fn blocking_stream_progress_tracking() {
 #[test]
 fn blocking_stream_multiple_sequential() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
 
     let data_a = b"blocking stream seq A";
     let data_b = b"blocking stream seq B is longer";
-    let info_a = upload_bytes_sync(&session, data_a, "seq_a.bin");
-    let info_b = upload_bytes_sync(&session, data_b, "seq_b.bin");
+    let info_a = upload_bytes_sync(&session, &endpoint, data_a, "seq_a.bin");
+    let info_b = upload_bytes_sync(&session, &endpoint, data_b, "seq_b.bin");
 
-    let group = sync_stream_group(&session);
+    let group = sync_stream_group(&session, &endpoint);
     let mut stream_a = group.download_stream_blocking(info_a, None).unwrap();
     assert_eq!(collect_stream_blocking(&mut stream_a), data_a);
 
@@ -1131,8 +1370,10 @@ fn blocking_stream_aborted_session() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_mode_blocking_stream_returns_wrong_mode() {
+    let temp = tempdir().unwrap();
     let session = XetSessionBuilder::new().build().unwrap();
-    let group = async_stream_group(&session).await;
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
+    let group = async_stream_group(&session, &endpoint).await;
     let result = group.download_stream_blocking(
         XetFileInfo {
             hash: "abc".to_string(),
@@ -1150,11 +1391,13 @@ fn bridge_stream_roundtrip() {
         let temp = tempdir().unwrap();
         let tag = executor.label().to_string();
         Box::pin(async move {
-            let session = local_session(&temp).unwrap();
+            let session = XetSessionBuilder::new().build().unwrap();
+            let endpoint = format!("local://{}", temp.path().join("cas").display());
             let payload = format!("{tag} stream roundtrip");
-            let file_info = upload_bytes_async(&session, payload.as_bytes(), &format!("{tag}_stream.bin")).await;
+            let file_info =
+                upload_bytes_async(&session, &endpoint, payload.as_bytes(), &format!("{tag}_stream.bin")).await;
 
-            let group = async_stream_group(&session).await;
+            let group = async_stream_group(&session, &endpoint).await;
             let mut stream = group.download_stream(file_info, None).await.unwrap();
             assert_eq!(collect_stream(&mut stream).await, payload.as_bytes());
         })
@@ -1167,11 +1410,13 @@ fn deficient_tokio_stream_roundtrip() {
         let rt = builder();
         let temp = tempdir().unwrap();
         rt.block_on(async {
-            let session = local_session(&temp).unwrap();
+            let session = XetSessionBuilder::new().build().unwrap();
+            let endpoint = format!("local://{}", temp.path().join("cas").display());
             let payload = format!("{label} deficient stream");
-            let file_info = upload_bytes_async(&session, payload.as_bytes(), &format!("{label}_stream.bin")).await;
+            let file_info =
+                upload_bytes_async(&session, &endpoint, payload.as_bytes(), &format!("{label}_stream.bin")).await;
 
-            let group = async_stream_group(&session).await;
+            let group = async_stream_group(&session, &endpoint).await;
             let mut stream = group.download_stream(file_info, None).await.unwrap();
             assert_eq!(collect_stream(&mut stream).await, payload.as_bytes());
         });
@@ -1182,13 +1427,14 @@ fn deficient_tokio_stream_roundtrip() {
 fn blocking_stream_in_non_tokio_executor() {
     run_on_all_non_tokio_executors(|executor| {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
         let tag = executor.label().to_string();
         Box::pin(async move {
             let payload = format!("blocking stream in {tag}");
-            let file_info = upload_bytes_sync(&session, payload.as_bytes(), &format!("{tag}_stream.bin"));
+            let file_info = upload_bytes_sync(&session, &endpoint, payload.as_bytes(), &format!("{tag}_stream.bin"));
 
-            let group = sync_stream_group(&session);
+            let group = sync_stream_group(&session, &endpoint);
             let mut stream = group.download_stream_blocking(file_info, None).unwrap();
             assert_eq!(collect_stream_blocking(&mut stream), payload.as_bytes());
         })
@@ -1224,11 +1470,12 @@ fn collect_unordered_stream_blocking(stream: &mut XetUnorderedDownloadStream, ex
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_unordered_stream_roundtrip() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
     let data = b"async unordered streaming download roundtrip";
-    let file_info = upload_bytes_async(&session, data, "unordered.bin").await;
+    let file_info = upload_bytes_async(&session, &endpoint, data, "unordered.bin").await;
 
-    let group = async_stream_group(&session).await;
+    let group = async_stream_group(&session, &endpoint).await;
     let mut stream = group.download_unordered_stream(file_info, None).await.unwrap();
     assert_eq!(collect_unordered_stream(&mut stream, data.len()).await, data);
 }
@@ -1236,11 +1483,12 @@ async fn async_unordered_stream_roundtrip() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_unordered_stream_large_file() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
     let data: Vec<u8> = (0..65536u64).map(|i| (i % 251) as u8).collect();
-    let file_info = upload_bytes_async(&session, &data, "large_unordered.bin").await;
+    let file_info = upload_bytes_async(&session, &endpoint, &data, "large_unordered.bin").await;
 
-    let group = async_stream_group(&session).await;
+    let group = async_stream_group(&session, &endpoint).await;
     let mut stream = group.download_unordered_stream(file_info, None).await.unwrap();
     assert_eq!(collect_unordered_stream(&mut stream, data.len()).await, data);
 }
@@ -1248,11 +1496,12 @@ async fn async_unordered_stream_large_file() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_unordered_stream_progress_tracking() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
     let data = b"unordered stream progress tracking integration test";
-    let file_info = upload_bytes_async(&session, data, "progress_unordered.bin").await;
+    let file_info = upload_bytes_async(&session, &endpoint, data, "progress_unordered.bin").await;
 
-    let group = async_stream_group(&session).await;
+    let group = async_stream_group(&session, &endpoint).await;
     let mut stream = group.download_unordered_stream(file_info, None).await.unwrap();
 
     let initial = stream.progress();
@@ -1269,11 +1518,12 @@ async fn async_unordered_stream_progress_tracking() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_unordered_stream_cancel_before_consuming() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
     let data = b"unordered stream cancel test data";
-    let file_info = upload_bytes_async(&session, data, "cancel_unordered.bin").await;
+    let file_info = upload_bytes_async(&session, &endpoint, data, "cancel_unordered.bin").await;
 
-    let group = async_stream_group(&session).await;
+    let group = async_stream_group(&session, &endpoint).await;
     let mut stream = group.download_unordered_stream(file_info, None).await.unwrap();
     stream.cancel();
     assert!(stream.next().await.unwrap().is_none());
@@ -1281,8 +1531,7 @@ async fn async_unordered_stream_cancel_before_consuming() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_unordered_stream_aborted_session() {
-    let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
     session.abort().unwrap();
     let result = session.new_download_stream_group();
     assert!(matches!(result, Err(SessionError::UserCancelled(_))));
@@ -1291,11 +1540,18 @@ async fn async_unordered_stream_aborted_session() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_unordered_stream_abort_cancels_active_stream() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
     let data: Vec<u8> = (0..65536u64).map(|i| (i % 251) as u8).collect();
-    let file_info = upload_bytes_async(&session, &data, "abort_unordered_stream.bin").await;
+    let file_info = upload_bytes_async(&session, &endpoint, &data, "abort_unordered_stream.bin").await;
 
-    let group = session.new_download_stream_group().unwrap().build().await.unwrap();
+    let group = session
+        .new_download_stream_group()
+        .unwrap()
+        .with_endpoint(&endpoint)
+        .build()
+        .await
+        .unwrap();
     let mut stream = group.download_unordered_stream(file_info, None).await.unwrap();
     session.abort().unwrap();
 
@@ -1310,11 +1566,12 @@ async fn async_unordered_stream_abort_cancels_active_stream() {
 #[test]
 fn blocking_unordered_stream_roundtrip() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
     let data = b"blocking unordered streaming download roundtrip";
-    let file_info = upload_bytes_sync(&session, data, "unordered.bin");
+    let file_info = upload_bytes_sync(&session, &endpoint, data, "unordered.bin");
 
-    let group = sync_stream_group(&session);
+    let group = sync_stream_group(&session, &endpoint);
     let mut stream = group.download_unordered_stream_blocking(file_info, None).unwrap();
     assert_eq!(collect_unordered_stream_blocking(&mut stream, data.len()), data);
 }
@@ -1322,11 +1579,12 @@ fn blocking_unordered_stream_roundtrip() {
 #[test]
 fn blocking_unordered_stream_large_file() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
     let data: Vec<u8> = (0..65536u64).map(|i| (i % 251) as u8).collect();
-    let file_info = upload_bytes_sync(&session, &data, "large_unordered.bin");
+    let file_info = upload_bytes_sync(&session, &endpoint, &data, "large_unordered.bin");
 
-    let group = sync_stream_group(&session);
+    let group = sync_stream_group(&session, &endpoint);
     let mut stream = group.download_unordered_stream_blocking(file_info, None).unwrap();
     assert_eq!(collect_unordered_stream_blocking(&mut stream, data.len()), data);
 }
@@ -1334,11 +1592,12 @@ fn blocking_unordered_stream_large_file() {
 #[test]
 fn blocking_unordered_stream_progress_tracking() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
     let data = b"blocking unordered stream progress integration test";
-    let file_info = upload_bytes_sync(&session, data, "progress_unordered.bin");
+    let file_info = upload_bytes_sync(&session, &endpoint, data, "progress_unordered.bin");
 
-    let group = sync_stream_group(&session);
+    let group = sync_stream_group(&session, &endpoint);
     let mut stream = group.download_unordered_stream_blocking(file_info, None).unwrap();
     let _ = collect_unordered_stream_blocking(&mut stream, data.len());
 
@@ -1357,8 +1616,10 @@ fn blocking_unordered_stream_aborted_session() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_mode_blocking_unordered_stream_returns_wrong_mode() {
+    let temp = tempdir().unwrap();
     let session = XetSessionBuilder::new().build().unwrap();
-    let group = async_stream_group(&session).await;
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
+    let group = async_stream_group(&session, &endpoint).await;
     let result = group.download_unordered_stream_blocking(
         XetFileInfo {
             hash: "abc".to_string(),
@@ -1376,11 +1637,13 @@ fn bridge_unordered_stream_roundtrip() {
         let temp = tempdir().unwrap();
         let tag = executor.label().to_string();
         Box::pin(async move {
-            let session = local_session(&temp).unwrap();
+            let session = XetSessionBuilder::new().build().unwrap();
+            let endpoint = format!("local://{}", temp.path().join("cas").display());
             let payload = format!("{tag} unordered stream roundtrip");
-            let file_info = upload_bytes_async(&session, payload.as_bytes(), &format!("{tag}_unordered.bin")).await;
+            let file_info =
+                upload_bytes_async(&session, &endpoint, payload.as_bytes(), &format!("{tag}_unordered.bin")).await;
 
-            let group = async_stream_group(&session).await;
+            let group = async_stream_group(&session, &endpoint).await;
             let mut stream = group.download_unordered_stream(file_info, None).await.unwrap();
             assert_eq!(collect_unordered_stream(&mut stream, payload.len()).await, payload.as_bytes());
         })
@@ -1393,11 +1656,13 @@ fn deficient_tokio_unordered_stream_roundtrip() {
         let rt = builder();
         let temp = tempdir().unwrap();
         rt.block_on(async {
-            let session = local_session(&temp).unwrap();
+            let session = XetSessionBuilder::new().build().unwrap();
+            let endpoint = format!("local://{}", temp.path().join("cas").display());
             let payload = format!("{label} deficient unordered stream");
-            let file_info = upload_bytes_async(&session, payload.as_bytes(), &format!("{label}_unordered.bin")).await;
+            let file_info =
+                upload_bytes_async(&session, &endpoint, payload.as_bytes(), &format!("{label}_unordered.bin")).await;
 
-            let group = async_stream_group(&session).await;
+            let group = async_stream_group(&session, &endpoint).await;
             let mut stream = group.download_unordered_stream(file_info, None).await.unwrap();
             assert_eq!(collect_unordered_stream(&mut stream, payload.len()).await, payload.as_bytes());
         });
@@ -1408,13 +1673,14 @@ fn deficient_tokio_unordered_stream_roundtrip() {
 fn blocking_unordered_stream_in_non_tokio_executor() {
     run_on_all_non_tokio_executors(|executor| {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
         let tag = executor.label().to_string();
         Box::pin(async move {
             let payload = format!("blocking unordered stream in {tag}");
-            let file_info = upload_bytes_sync(&session, payload.as_bytes(), &format!("{tag}_unordered.bin"));
+            let file_info = upload_bytes_sync(&session, &endpoint, payload.as_bytes(), &format!("{tag}_unordered.bin"));
 
-            let group = sync_stream_group(&session);
+            let group = sync_stream_group(&session, &endpoint);
             let mut stream = group.download_unordered_stream_blocking(file_info, None).unwrap();
             assert_eq!(collect_unordered_stream_blocking(&mut stream, payload.len()), payload.as_bytes());
         })
@@ -1436,10 +1702,11 @@ const RANGE_TEST_DATA: &[u8; 256] = &{
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_stream_range_middle() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
-    let file_info = upload_bytes_async(&session, RANGE_TEST_DATA, "range.bin").await;
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
+    let file_info = upload_bytes_async(&session, &endpoint, RANGE_TEST_DATA, "range.bin").await;
 
-    let group = async_stream_group(&session).await;
+    let group = async_stream_group(&session, &endpoint).await;
     let mut stream = group.download_stream(file_info, Some(64..192)).await.unwrap();
     assert_eq!(collect_stream(&mut stream).await, &RANGE_TEST_DATA[64..192]);
 }
@@ -1447,10 +1714,11 @@ async fn async_stream_range_middle() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_stream_range_from_start() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
-    let file_info = upload_bytes_async(&session, RANGE_TEST_DATA, "range_start.bin").await;
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
+    let file_info = upload_bytes_async(&session, &endpoint, RANGE_TEST_DATA, "range_start.bin").await;
 
-    let group = async_stream_group(&session).await;
+    let group = async_stream_group(&session, &endpoint).await;
     let mut stream = group.download_stream(file_info, Some(0..100)).await.unwrap();
     assert_eq!(collect_stream(&mut stream).await, &RANGE_TEST_DATA[..100]);
 }
@@ -1458,10 +1726,11 @@ async fn async_stream_range_from_start() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_stream_range_to_end() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
-    let file_info = upload_bytes_async(&session, RANGE_TEST_DATA, "range_end.bin").await;
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
+    let file_info = upload_bytes_async(&session, &endpoint, RANGE_TEST_DATA, "range_end.bin").await;
 
-    let group = async_stream_group(&session).await;
+    let group = async_stream_group(&session, &endpoint).await;
     let mut stream = group.download_stream(file_info, Some(200..256)).await.unwrap();
     assert_eq!(collect_stream(&mut stream).await, &RANGE_TEST_DATA[200..]);
 }
@@ -1469,10 +1738,11 @@ async fn async_stream_range_to_end() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_stream_range_full() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
-    let file_info = upload_bytes_async(&session, RANGE_TEST_DATA, "range_full.bin").await;
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
+    let file_info = upload_bytes_async(&session, &endpoint, RANGE_TEST_DATA, "range_full.bin").await;
 
-    let group = async_stream_group(&session).await;
+    let group = async_stream_group(&session, &endpoint).await;
     let mut stream = group.download_stream(file_info, Some(0..256)).await.unwrap();
     assert_eq!(collect_stream(&mut stream).await, RANGE_TEST_DATA.as_slice());
 }
@@ -1480,10 +1750,11 @@ async fn async_stream_range_full() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_stream_range_progress() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
-    let file_info = upload_bytes_async(&session, RANGE_TEST_DATA, "range_progress.bin").await;
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
+    let file_info = upload_bytes_async(&session, &endpoint, RANGE_TEST_DATA, "range_progress.bin").await;
 
-    let group = async_stream_group(&session).await;
+    let group = async_stream_group(&session, &endpoint).await;
     let mut stream = group.download_stream(file_info, Some(50..150)).await.unwrap();
 
     let initial = stream.progress();
@@ -1500,10 +1771,11 @@ async fn async_stream_range_progress() {
 #[test]
 fn blocking_stream_range_middle() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
-    let file_info = upload_bytes_sync(&session, RANGE_TEST_DATA, "range.bin");
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
+    let file_info = upload_bytes_sync(&session, &endpoint, RANGE_TEST_DATA, "range.bin");
 
-    let group = sync_stream_group(&session);
+    let group = sync_stream_group(&session, &endpoint);
     let mut stream = group.download_stream_blocking(file_info, Some(64..192)).unwrap();
     assert_eq!(collect_stream_blocking(&mut stream), &RANGE_TEST_DATA[64..192]);
 }
@@ -1511,10 +1783,11 @@ fn blocking_stream_range_middle() {
 #[test]
 fn blocking_stream_range_progress() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
-    let file_info = upload_bytes_sync(&session, RANGE_TEST_DATA, "range_progress.bin");
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
+    let file_info = upload_bytes_sync(&session, &endpoint, RANGE_TEST_DATA, "range_progress.bin");
 
-    let group = sync_stream_group(&session);
+    let group = sync_stream_group(&session, &endpoint);
     let mut stream = group.download_stream_blocking(file_info, Some(10..110)).unwrap();
     let _ = collect_stream_blocking(&mut stream);
 
@@ -1526,10 +1799,11 @@ fn blocking_stream_range_progress() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_unordered_stream_range_middle() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
-    let file_info = upload_bytes_async(&session, RANGE_TEST_DATA, "unord_range.bin").await;
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
+    let file_info = upload_bytes_async(&session, &endpoint, RANGE_TEST_DATA, "unord_range.bin").await;
 
-    let group = async_stream_group(&session).await;
+    let group = async_stream_group(&session, &endpoint).await;
     let mut stream = group.download_unordered_stream(file_info, Some(64..192)).await.unwrap();
     assert_eq!(collect_unordered_stream(&mut stream, 128).await, &RANGE_TEST_DATA[64..192]);
 }
@@ -1537,10 +1811,11 @@ async fn async_unordered_stream_range_middle() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_unordered_stream_range_from_start() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
-    let file_info = upload_bytes_async(&session, RANGE_TEST_DATA, "unord_range_start.bin").await;
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
+    let file_info = upload_bytes_async(&session, &endpoint, RANGE_TEST_DATA, "unord_range_start.bin").await;
 
-    let group = async_stream_group(&session).await;
+    let group = async_stream_group(&session, &endpoint).await;
     let mut stream = group.download_unordered_stream(file_info, Some(0..100)).await.unwrap();
     assert_eq!(collect_unordered_stream(&mut stream, 100).await, &RANGE_TEST_DATA[..100]);
 }
@@ -1548,10 +1823,11 @@ async fn async_unordered_stream_range_from_start() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_unordered_stream_range_to_end() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
-    let file_info = upload_bytes_async(&session, RANGE_TEST_DATA, "unord_range_end.bin").await;
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
+    let file_info = upload_bytes_async(&session, &endpoint, RANGE_TEST_DATA, "unord_range_end.bin").await;
 
-    let group = async_stream_group(&session).await;
+    let group = async_stream_group(&session, &endpoint).await;
     let mut stream = group.download_unordered_stream(file_info, Some(200..256)).await.unwrap();
     assert_eq!(collect_unordered_stream(&mut stream, 56).await, &RANGE_TEST_DATA[200..]);
 }
@@ -1559,10 +1835,11 @@ async fn async_unordered_stream_range_to_end() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_unordered_stream_range_progress() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
-    let file_info = upload_bytes_async(&session, RANGE_TEST_DATA, "unord_range_progress.bin").await;
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
+    let file_info = upload_bytes_async(&session, &endpoint, RANGE_TEST_DATA, "unord_range_progress.bin").await;
 
-    let group = async_stream_group(&session).await;
+    let group = async_stream_group(&session, &endpoint).await;
     let mut stream = group.download_unordered_stream(file_info, Some(50..150)).await.unwrap();
 
     let initial = stream.progress();
@@ -1579,10 +1856,11 @@ async fn async_unordered_stream_range_progress() {
 #[test]
 fn blocking_unordered_stream_range_middle() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
-    let file_info = upload_bytes_sync(&session, RANGE_TEST_DATA, "unord_range.bin");
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
+    let file_info = upload_bytes_sync(&session, &endpoint, RANGE_TEST_DATA, "unord_range.bin");
 
-    let group = sync_stream_group(&session);
+    let group = sync_stream_group(&session, &endpoint);
     let mut stream = group.download_unordered_stream_blocking(file_info, Some(64..192)).unwrap();
     assert_eq!(collect_unordered_stream_blocking(&mut stream, 128), &RANGE_TEST_DATA[64..192]);
 }
@@ -1590,10 +1868,11 @@ fn blocking_unordered_stream_range_middle() {
 #[test]
 fn blocking_unordered_stream_range_progress() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
-    let file_info = upload_bytes_sync(&session, RANGE_TEST_DATA, "unord_range_progress.bin");
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
+    let file_info = upload_bytes_sync(&session, &endpoint, RANGE_TEST_DATA, "unord_range_progress.bin");
 
-    let group = sync_stream_group(&session);
+    let group = sync_stream_group(&session, &endpoint);
     let mut stream = group.download_unordered_stream_blocking(file_info, Some(10..110)).unwrap();
     let _ = collect_unordered_stream_blocking(&mut stream, 100);
 
@@ -1608,10 +1887,12 @@ fn bridge_stream_range_roundtrip() {
         let temp = tempdir().unwrap();
         let tag = executor.label().to_string();
         Box::pin(async move {
-            let session = local_session(&temp).unwrap();
-            let file_info = upload_bytes_async(&session, RANGE_TEST_DATA, &format!("{tag}_range_stream.bin")).await;
+            let session = XetSessionBuilder::new().build().unwrap();
+            let endpoint = format!("local://{}", temp.path().join("cas").display());
+            let file_info =
+                upload_bytes_async(&session, &endpoint, RANGE_TEST_DATA, &format!("{tag}_range_stream.bin")).await;
 
-            let group = async_stream_group(&session).await;
+            let group = async_stream_group(&session, &endpoint).await;
             let mut stream = group.download_stream(file_info, Some(30..200)).await.unwrap();
             assert_eq!(collect_stream(&mut stream).await, &RANGE_TEST_DATA[30..200]);
         })
@@ -1624,10 +1905,12 @@ fn bridge_unordered_stream_range_roundtrip() {
         let temp = tempdir().unwrap();
         let tag = executor.label().to_string();
         Box::pin(async move {
-            let session = local_session(&temp).unwrap();
-            let file_info = upload_bytes_async(&session, RANGE_TEST_DATA, &format!("{tag}_range_unord.bin")).await;
+            let session = XetSessionBuilder::new().build().unwrap();
+            let endpoint = format!("local://{}", temp.path().join("cas").display());
+            let file_info =
+                upload_bytes_async(&session, &endpoint, RANGE_TEST_DATA, &format!("{tag}_range_unord.bin")).await;
 
-            let group = async_stream_group(&session).await;
+            let group = async_stream_group(&session, &endpoint).await;
             let mut stream = group.download_unordered_stream(file_info, Some(30..200)).await.unwrap();
             assert_eq!(collect_unordered_stream(&mut stream, 170).await, &RANGE_TEST_DATA[30..200]);
         })
@@ -1640,10 +1923,12 @@ fn deficient_tokio_stream_range_roundtrip() {
         let rt = builder();
         let temp = tempdir().unwrap();
         rt.block_on(async {
-            let session = local_session(&temp).unwrap();
-            let file_info = upload_bytes_async(&session, RANGE_TEST_DATA, &format!("{label}_range_stream.bin")).await;
+            let session = XetSessionBuilder::new().build().unwrap();
+            let endpoint = format!("local://{}", temp.path().join("cas").display());
+            let file_info =
+                upload_bytes_async(&session, &endpoint, RANGE_TEST_DATA, &format!("{label}_range_stream.bin")).await;
 
-            let group = async_stream_group(&session).await;
+            let group = async_stream_group(&session, &endpoint).await;
             let mut stream = group.download_stream(file_info, Some(40..180)).await.unwrap();
             assert_eq!(collect_stream(&mut stream).await, &RANGE_TEST_DATA[40..180]);
         });
@@ -1656,10 +1941,12 @@ fn deficient_tokio_unordered_stream_range_roundtrip() {
         let rt = builder();
         let temp = tempdir().unwrap();
         rt.block_on(async {
-            let session = local_session(&temp).unwrap();
-            let file_info = upload_bytes_async(&session, RANGE_TEST_DATA, &format!("{label}_range_unord.bin")).await;
+            let session = XetSessionBuilder::new().build().unwrap();
+            let endpoint = format!("local://{}", temp.path().join("cas").display());
+            let file_info =
+                upload_bytes_async(&session, &endpoint, RANGE_TEST_DATA, &format!("{label}_range_unord.bin")).await;
 
-            let group = async_stream_group(&session).await;
+            let group = async_stream_group(&session, &endpoint).await;
             let mut stream = group.download_unordered_stream(file_info, Some(40..180)).await.unwrap();
             assert_eq!(collect_unordered_stream(&mut stream, 140).await, &RANGE_TEST_DATA[40..180]);
         });
@@ -1670,12 +1957,13 @@ fn deficient_tokio_unordered_stream_range_roundtrip() {
 fn blocking_stream_range_in_non_tokio_executor() {
     run_on_all_non_tokio_executors(|executor| {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
         let tag = executor.label().to_string();
         Box::pin(async move {
-            let file_info = upload_bytes_sync(&session, RANGE_TEST_DATA, &format!("{tag}_range_stream.bin"));
+            let file_info = upload_bytes_sync(&session, &endpoint, RANGE_TEST_DATA, &format!("{tag}_range_stream.bin"));
 
-            let group = sync_stream_group(&session);
+            let group = sync_stream_group(&session, &endpoint);
             let mut stream = group.download_stream_blocking(file_info, Some(20..220)).unwrap();
             assert_eq!(collect_stream_blocking(&mut stream), &RANGE_TEST_DATA[20..220]);
         })
@@ -1686,12 +1974,13 @@ fn blocking_stream_range_in_non_tokio_executor() {
 fn blocking_unordered_stream_range_in_non_tokio_executor() {
     run_on_all_non_tokio_executors(|executor| {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
         let tag = executor.label().to_string();
         Box::pin(async move {
-            let file_info = upload_bytes_sync(&session, RANGE_TEST_DATA, &format!("{tag}_range_unord.bin"));
+            let file_info = upload_bytes_sync(&session, &endpoint, RANGE_TEST_DATA, &format!("{tag}_range_unord.bin"));
 
-            let group = sync_stream_group(&session);
+            let group = sync_stream_group(&session, &endpoint);
             let mut stream = group.download_unordered_stream_blocking(file_info, Some(20..220)).unwrap();
             assert_eq!(collect_unordered_stream_blocking(&mut stream, 200), &RANGE_TEST_DATA[20..220]);
         })
@@ -1701,11 +1990,12 @@ fn blocking_unordered_stream_range_in_non_tokio_executor() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_stream_range_large_file() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
     let data: Vec<u8> = (0..65536u64).map(|i| (i % 251) as u8).collect();
-    let file_info = upload_bytes_async(&session, &data, "range_large.bin").await;
+    let file_info = upload_bytes_async(&session, &endpoint, &data, "range_large.bin").await;
 
-    let group = async_stream_group(&session).await;
+    let group = async_stream_group(&session, &endpoint).await;
     let mut stream = group.download_stream(file_info, Some(10000..50000)).await.unwrap();
     assert_eq!(collect_stream(&mut stream).await, &data[10000..50000]);
 }
@@ -1713,11 +2003,12 @@ async fn async_stream_range_large_file() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_unordered_stream_range_large_file() {
     let temp = tempdir().unwrap();
-    let session = local_session(&temp).unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
     let data: Vec<u8> = (0..65536u64).map(|i| (i % 251) as u8).collect();
-    let file_info = upload_bytes_async(&session, &data, "range_large_unord.bin").await;
+    let file_info = upload_bytes_async(&session, &endpoint, &data, "range_large_unord.bin").await;
 
-    let group = async_stream_group(&session).await;
+    let group = async_stream_group(&session, &endpoint).await;
     let mut stream = group.download_unordered_stream(file_info, Some(10000..50000)).await.unwrap();
     assert_eq!(collect_unordered_stream(&mut stream, 40000).await, &data[10000..50000]);
 }
