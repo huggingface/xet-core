@@ -15,6 +15,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: crates-release
+  cancel-in-progress: false
+
 # Placeholder secrets required:
 #   CARGO_REGISTRY_TOKEN — crates.io API token with publish scope.
 #     Generate at https://crates.io/settings/tokens/new
@@ -32,7 +36,8 @@ jobs:
 
       - uses: ./.github/actions/cache-rust-build
 
-      - name: Update crate versions
+      - &update_crate_versions
+        name: Update crate versions
         env:
           VERSION: ${{ inputs.tag }}
         run: |
@@ -49,11 +54,11 @@ jobs:
       - name: Run tests
         run: cargo test --workspace
 
-      - name: Verify package metadata
+      - name: Validate crate packaging
         run: |
           for crate in xet-runtime xet-core-structures xet-client xet-data hf-xet; do
-            echo "=== Files in $crate ==="
-            cargo package -p "$crate" --allow-dirty --list
+            echo "=== Verifying package for $crate ==="
+            cargo package -p "$crate" --allow-dirty
             echo ""
           done
 
@@ -75,16 +80,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.89.0
 
-      - name: Update crate versions
-        env:
-          VERSION: ${{ inputs.tag }}
-        run: |
-          sed -i 's/^version = ".*"/version = "'"$VERSION"'"/' Cargo.toml
-          find . -name "Cargo.toml" \
-            -not -path "./hf_xet/*" \
-            -not -path "./wasm/*" \
-            -not -path "./target/*" \
-            -exec sed -i 's/version = "[0-9][^"]*", path = "\.\.\//version = "'"$VERSION"'", path = "..\//g' {} +
+      - *update_crate_versions
 
       - name: Publish xet-runtime
         run: cargo publish -p xet-runtime --allow-dirty
