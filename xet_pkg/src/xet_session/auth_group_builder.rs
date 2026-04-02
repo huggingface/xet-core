@@ -43,8 +43,9 @@ impl<G> AuthGroupBuilder<G> {
         }
     }
 
-    /// Set the Xet CAS server endpoint URL (e.g. `"https://cas.example.com"`). If this is not provided but a token refresh URL is provided,
-    /// on build a request will be sent to the token refresh URL to fetch the CAS server endpoint.
+    /// Set the Xet CAS server endpoint URL (e.g. `"https://cas.example.com"`). If this is
+    /// not provided but a token refresh URL is provided, during build, a request will be
+    /// sent to the token refresh route to fetch the CAS server endpoint.
     pub fn with_endpoint(self, endpoint: impl Into<String>) -> Self {
         Self {
             auth_options: AuthOptions {
@@ -68,8 +69,8 @@ impl<G> AuthGroupBuilder<G> {
 
     /// Seed an initial CAS access token and its expiry as a Unix timestamp (seconds).
     ///
-    /// If endpoint is not provided but a token refresh URL is provided, the eager refresh response's token info is used
-    /// only if no token was pre-seeded here.
+    /// If endpoint is not provided but a token refresh URL is provided, the eager refresh
+    /// response's token info is used only if no token was pre-seeded here.
     pub fn with_token_info(self, token: impl Into<String>, expiry: u64) -> Self {
         Self {
             auth_options: AuthOptions {

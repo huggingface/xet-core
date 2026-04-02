@@ -43,7 +43,7 @@ pub(super) async fn create_translator_config(
         let direct_route_refresher = DirectRefreshRouteTokenRefresher::new(url, client, None);
 
         // CAS endpoint is not provided but CAS token refresh endpoint is provided, we
-        // refresh once to get the CAS endpoint, and fill the token info is nothing is provided.
+        // refresh once to get the CAS endpoint, and fill the token info if nothing is provided.
         if endpoint.is_none() {
             let jwt_info = direct_route_refresher.get_cas_jwt().await?;
 
@@ -84,7 +84,40 @@ mod tests {
     use crate::xet_session::XetSessionBuilder;
     use crate::xet_session::auth_group_builder::AuthOptions;
 
-    /// When `endpoint` is not set but `token_refresh` is set, `create_translator_config`
+    /// Pattern A: when `endpoint` is set, the token refresh route must not be called
+    /// during `build` — the endpoint is used as-is and the first refresh is deferred
+    /// until the token actually expires.
+    #[tokio::test]
+    async fn test_endpoint_provided_skips_eager_refresh() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "casUrl": "https://should-not-be-used.example.com",
+                "exp": 9_999_999_999u64,
+                "accessToken": "should-not-be-fetched",
+            })))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let refresh_url = format!("{}/token", server.uri());
+        let session = XetSessionBuilder::new().build().unwrap();
+
+        let auth_options = AuthOptions {
+            endpoint: Some("https://cas.example.com".to_string()),
+            custom_headers: None,
+            token_info: None,
+            token_refresh: Some((refresh_url, HeaderMap::new())),
+        };
+
+        let config = create_translator_config(&session, auth_options).await.unwrap();
+
+        assert_eq!(config.session.endpoint, "https://cas.example.com");
+    }
+
+    /// Pattern B: when `endpoint` is not set but `token_refresh` is set, `create_translator_config`
     /// calls the refresh URL exactly once, uses the returned `cas_url` as the endpoint,
     /// and seeds `token_info` from the response when none was pre-supplied.
     #[tokio::test]
@@ -120,7 +153,7 @@ mod tests {
         assert_eq!(auth.token_expiration, 9_999_999_999);
     }
 
-    /// When `token_info` is already provided alongside `token_refresh` but no `endpoint`,
+    /// Pattern B: when `token_info` is already provided alongside `token_refresh` but no `endpoint`,
     /// the refresh is still called once to obtain the `cas_url`, but the pre-supplied
     /// token is preserved — it must NOT be overwritten by the refresh response.
     #[tokio::test]
