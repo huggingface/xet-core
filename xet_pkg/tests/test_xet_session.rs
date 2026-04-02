@@ -16,6 +16,7 @@ use std::fs;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::time::Duration;
 
 use bytes::Bytes;
 use serial_test::serial;
@@ -205,6 +206,35 @@ fn deficient_runtime_cases() -> Vec<(&'static str, RuntimeBuilder)> {
         cases.push(("current_thread", build_rt_current_thread));
     }
     cases
+}
+
+// FD leak checks can see brief transient noise from async teardown.
+// Poll for a short settling window before failing.
+const FD_TOLERANCE: isize = 2;
+const FD_ASSERT_ATTEMPTS: usize = 40;
+const FD_ASSERT_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+fn fd_delta_from_baseline(baseline: usize) -> isize {
+    count_open_fds() as isize - baseline as isize
+}
+
+fn assert_fd_delta_eventually_le(label: &str, baseline: usize, tolerance: isize) {
+    let mut last_delta = fd_delta_from_baseline(baseline);
+    for attempt in 0..FD_ASSERT_ATTEMPTS {
+        last_delta = fd_delta_from_baseline(baseline);
+        if last_delta <= tolerance {
+            return;
+        }
+
+        if attempt + 1 < FD_ASSERT_ATTEMPTS {
+            std::thread::sleep(FD_ASSERT_POLL_INTERVAL);
+        }
+    }
+
+    panic!(
+        "[FD] {label}: positive delta {last_delta} exceeded tolerance {tolerance} after {} checks",
+        FD_ASSERT_ATTEMPTS
+    );
 }
 
 // ── 1. Async tokio tests (External mode) ─────────────────────────────────
@@ -1757,6 +1787,7 @@ fn fd_leak_single_session_roundtrip() {
 
     let leaked = after as isize - before as isize;
     eprintln!("[FD] SINGLE SESSION LEAK: {leaked} FDs leaked");
+    assert_fd_delta_eventually_le("single_session_roundtrip", before, FD_TOLERANCE);
 }
 
 #[test]
@@ -1765,18 +1796,12 @@ fn fd_leak_isolate_components() {
     use xet_runtime::config::XetConfig;
     use xet_runtime::core::XetRuntime;
 
-    let fd = |label: &str, baseline: usize| -> usize {
-        let n = count_open_fds();
-        let delta = n as isize - baseline as isize;
+    let report_nonzero_delta = |label: &str, baseline: usize| {
+        let delta = fd_delta_from_baseline(baseline);
         if delta != 0 {
             eprintln!("[FD] {label}: delta={delta}");
         }
-        n
     };
-
-    // FD tolerance: other parallel tests may transiently affect the process FD count,
-    // so we allow a small delta. The original bug leaked 4+ FDs per upload session.
-    const FD_TOLERANCE: isize = 2;
 
     // Warmup: first runtime creation installs signal handlers / global state.
     {
@@ -1789,11 +1814,7 @@ fn fd_leak_isolate_components() {
         let rt = XetRuntime::new_with_config(XetConfig::new()).unwrap();
         drop(rt);
     }
-    more_asserts::assert_le!(
-        (count_open_fds() as isize - before as isize).abs(),
-        FD_TOLERANCE,
-        "XetRuntime leaked FDs"
-    );
+    assert_fd_delta_eventually_le("runtime create/drop", before, FD_TOLERANCE);
 
     let before = count_open_fds();
     {
@@ -1801,11 +1822,7 @@ fn fd_leak_isolate_components() {
         let session = local_session(&temp).unwrap();
         drop(session);
     }
-    more_asserts::assert_le!(
-        (count_open_fds() as isize - before as isize).abs(),
-        FD_TOLERANCE,
-        "XetSession (no ops) leaked FDs"
-    );
+    assert_fd_delta_eventually_le("session create/drop", before, FD_TOLERANCE);
 
     let before = count_open_fds();
     {
@@ -1816,12 +1833,8 @@ fn fd_leak_isolate_components() {
         drop(commit);
         drop(session);
     }
-    fd("empty commit", before);
-    more_asserts::assert_le!(
-        (count_open_fds() as isize - before as isize).abs(),
-        FD_TOLERANCE,
-        "empty commit leaked FDs"
-    );
+    report_nonzero_delta("empty commit", before);
+    assert_fd_delta_eventually_le("empty commit", before, FD_TOLERANCE);
 
     let before_upload = count_open_fds();
     let file_info;
@@ -1839,12 +1852,8 @@ fn fd_leak_isolate_components() {
         }
         drop(session);
     }
-    fd("upload", before_upload);
-    more_asserts::assert_le!(
-        (count_open_fds() as isize - before_upload as isize).abs(),
-        FD_TOLERANCE,
-        "upload leaked FDs"
-    );
+    report_nonzero_delta("upload", before_upload);
+    assert_fd_delta_eventually_le("upload", before_upload, FD_TOLERANCE);
 
     let before_download = count_open_fds();
     {
@@ -1857,12 +1866,8 @@ fn fd_leak_isolate_components() {
         }
         drop(session);
     }
-    fd("download", before_download);
-    more_asserts::assert_le!(
-        (count_open_fds() as isize - before_download as isize).abs(),
-        FD_TOLERANCE,
-        "download leaked FDs"
-    );
+    report_nonzero_delta("download", before_download);
+    assert_fd_delta_eventually_le("download", before_download, FD_TOLERANCE);
 }
 
 #[test]
@@ -1884,6 +1889,7 @@ fn fd_leak_repeated_sessions() {
 
     let leaked = after as isize - before as isize;
     eprintln!("[FD] 10 SESSIONS LEAK: {leaked} FDs leaked ({} per session)", leaked as f64 / 10.0);
+    assert_fd_delta_eventually_le("repeated_sessions", before, FD_TOLERANCE);
 }
 
 #[test]
@@ -1946,6 +1952,7 @@ fn fd_leak_session_components_breakdown() {
     eprintln!("  -session:   {}", fds_after_session_drop as isize - fds_after_operations as isize);
     eprintln!("  -tempdir:   {}", fds_after_temp_drop as isize - fds_after_session_drop as isize);
     eprintln!("  net leak:   {}", fds_after_temp_drop as isize - before as isize);
+    assert_fd_delta_eventually_le("session_components_breakdown", before, FD_TOLERANCE);
 }
 
 #[test]
@@ -1977,4 +1984,5 @@ fn fd_leak_deficient_runtime() {
     let after = count_open_fds();
     let leaked = after as isize - before as isize;
     eprintln!("[FD] DEFICIENT RUNTIMES TOTAL LEAK: {leaked} FDs");
+    assert_fd_delta_eventually_le("deficient_runtime", before, FD_TOLERANCE);
 }

@@ -814,42 +814,28 @@ impl Drop for XetRuntime {
     fn drop(&mut self) {
         self.handle_ref.take();
 
-        match &self.backend {
-            RuntimeBackend::External { handle_id: Some(id) } => {
-                if let Ok(mut reg) = EXTERNAL_RUNTIME_REGISTRY.write() {
-                    reg.remove(id);
-                }
-            },
-            RuntimeBackend::OwnedThreadPool { runtime } => {
-                if let Ok(mut guard) = runtime.write()
-                    && let Some(rt_arc) = guard.take()
-                {
-                    match Arc::try_unwrap(rt_arc) {
-                        Ok(rt) => {
-                            if TokioRuntimeHandle::try_current().is_ok() {
-                                rt.shutdown_background();
-                            } else {
-                                rt.shutdown_timeout(std::time::Duration::from_secs(5));
-                            }
-                        },
-                        Err(_arc) => {},
-                    }
-                }
-            },
-            _ => {},
+        if let RuntimeBackend::External { handle_id: Some(id) } = &self.backend {
+            if let Ok(mut reg) = EXTERNAL_RUNTIME_REGISTRY.write() {
+                reg.remove(id);
+            }
+            return;
         }
 
         // When dropping from within an async context, the default TokioRuntime Drop
         // would panic ("Cannot drop a runtime in a context where blocking is not allowed").
         // Avoid this by taking ownership of the runtime and using shutdown_background(),
         // which spawns a thread for the blocking shutdown work instead.
+        let in_async_context = TokioRuntimeHandle::try_current().is_ok();
         if let RuntimeBackend::OwnedThreadPool { runtime } = &self.backend
-            && tokio::runtime::Handle::try_current().is_ok()
             && let Ok(mut guard) = runtime.write()
             && let Some(rt_arc) = guard.take()
             && let Ok(rt) = Arc::try_unwrap(rt_arc)
         {
-            rt.shutdown_background();
+            if in_async_context {
+                rt.shutdown_background();
+            } else {
+                rt.shutdown_timeout(std::time::Duration::from_secs(5));
+            }
         }
     }
 }
