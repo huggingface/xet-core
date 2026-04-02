@@ -3,8 +3,12 @@ name = "xet-data"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+homepage.workspace = true
 repository.workspace = true
 description = "Data processing pipeline for chunking, deduplication, and file reconstruction; used in the Hugging Face Xet client tools"
+readme = "README.md"
+keywords = ["huggingface", "xet", "chunking", "deduplication"]
+categories = ["data-structures"]
 
 [lib]
 name = "xet_data"

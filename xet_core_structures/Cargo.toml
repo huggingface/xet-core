@@ -3,8 +3,12 @@ name = "xet-core-structures"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+homepage.workspace = true
 repository.workspace = true
 description = "Core data structures including MerkleHash, metadata shards, and xorb objects"
+readme = "README.md"
+keywords = ["huggingface", "xet", "merkle", "deduplication"]
+categories = ["data-structures"]
 
 [lib]
 name = "xet_core_structures"

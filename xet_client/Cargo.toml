@@ -3,8 +3,12 @@ name = "xet-client"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+homepage.workspace = true
 repository.workspace = true
 description = "HTTPS client for communicating with Hugging Face Xet storage servers"
+readme = "README.md"
+keywords = ["huggingface", "xet", "cas", "storage"]
+categories = ["network-programming"]
 
 [lib]
 name = "xet_client"

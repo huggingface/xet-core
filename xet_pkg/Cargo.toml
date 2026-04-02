@@ -3,8 +3,10 @@ name = "hf-xet"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+homepage.workspace = true
 repository.workspace = true
 description = "Client library and tooling for the Hugging Face Xet data storage system"
+readme = "README.md"
 keywords = ["huggingface", "xet", "data", "ai"]
 categories = ["api-bindings"]
 

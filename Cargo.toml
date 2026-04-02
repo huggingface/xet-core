@@ -18,6 +18,7 @@ exclude = ["simulation/chunk_cache_bench", "hf_xet", "wasm/hf_xet_wasm", "wasm/h
 version = "1.4.0"
 edition = "2024"
 license = "Apache-2.0"
+homepage = "https://github.com/huggingface/xet-core"
 repository = "https://github.com/huggingface/xet-core"
 
 [profile.release]

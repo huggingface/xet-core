@@ -3,8 +3,12 @@ name = "xet-runtime"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+homepage.workspace = true
 repository.workspace = true
 description = "Async runtime, configuration, logging, and utility infrastructure for the Hugging Face Xet client tools"
+readme = "README.md"
+keywords = ["huggingface", "xet", "runtime", "async"]
+categories = ["asynchronous"]
 
 [lib]
 name = "xet_runtime"
