@@ -7,8 +7,9 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use http::{HeaderMap, HeaderValue, header};
-use xet::xet_session::{Sha256Policy, XetFileDownload, XetFileMetadata, XetSessionBuilder, XetTaskState};
+use xet::xet_session::{
+    HeaderMap, HeaderValue, Sha256Policy, XetFileDownload, XetFileMetadata, XetSessionBuilder, XetTaskState, header,
+};
 
 #[derive(Parser)]
 #[clap(name = "session-demo-async", about = "XetSession async API demo")]

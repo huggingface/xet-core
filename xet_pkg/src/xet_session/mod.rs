@@ -179,6 +179,7 @@ pub use download_stream_handle::{XetDownloadStream, XetUnorderedDownloadStream};
 pub use errors::SessionError;
 pub use file_download_group::{XetDownloadGroupReport, XetFileDownloadGroup};
 pub use file_download_handle::{XetDownloadReport, XetFileDownload};
+pub use http::{HeaderMap, HeaderValue, header};
 pub use session::{XetSession, XetSessionBuilder};
 pub use task_runtime::XetTaskState;
 pub use upload_commit::{XetCommitReport, XetFileMetadata, XetUploadCommit};
