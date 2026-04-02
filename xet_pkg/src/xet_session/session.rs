@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 
-use http::HeaderMap;
 use tracing::info;
 use ulid::Ulid;
 use xet_data::progress_tracking::UniqueID;
@@ -11,11 +10,13 @@ use xet_runtime::RuntimeError;
 use xet_runtime::config::XetConfig;
 use xet_runtime::core::XetRuntime;
 
-use super::download_stream_group::{DownloadStreamGroupBuilder, XetDownloadStreamGroup, XetDownloadStreamGroupInner};
+use super::download_stream_group::{
+    XetDownloadStreamGroup, XetDownloadStreamGroupBuilder, XetDownloadStreamGroupInner,
+};
 use super::errors::SessionError;
-use super::file_download_group::FileDownloadGroupBuilder;
+use super::file_download_group::XetFileDownloadGroupBuilder;
 use super::task_runtime::{TaskRuntime, XetTaskState};
-use super::upload_commit::UploadCommitBuilder;
+use super::upload_commit::XetUploadCommitBuilder;
 
 /// All shared state for a session.
 /// Lives behind `Arc<XetSessionInner>` — do not use this type directly.
@@ -26,10 +27,6 @@ pub struct XetSessionInner {
 
     // Only accessed through &self; no independent cloning needed.
     pub(super) config: XetConfig,
-
-    // CAS endpoint and shared HTTP settings (auth lives at the commit/group level)
-    pub(super) endpoint: Option<String>,
-    pub(super) custom_headers: Option<Arc<HeaderMap>>,
 
     // Root of the cancellation tree. Child commits/groups create child TaskRuntimes via
     // task_runtime.child(), which links their cancellation tokens to this root. Calling
@@ -59,20 +56,21 @@ pub struct XetSessionInner {
 ///
 /// ## Authentication
 ///
-/// Auth tokens are configured per-operation on [`UploadCommitBuilder`] and
-/// [`FileDownloadGroupBuilder`], not on the session itself.  This lets uploads
-/// and downloads use different access-level tokens from the same session:
+/// Auth tokens are configured per-operation on the builder returned by each factory method, not on the
+/// session itself.  This lets uploads and downloads use different access-level
+/// tokens from the same session:
 ///
 /// ```rust,no_run
 /// # use http::HeaderMap;
 /// # use xet::xet_session::XetSessionBuilder;
-/// let session = XetSessionBuilder::new().with_endpoint("https://cas.example.com").build()?;
+/// let session = XetSessionBuilder::new().build()?;
 ///
 /// // Upload token (write access)
 /// let mut upload_headers = HeaderMap::new();
 /// upload_headers.insert("Authorization", "Bearer hub-write-token".parse().unwrap());
 /// let commit = session
 ///     .new_upload_commit()?
+///     .with_endpoint("https://cas.example.com")
 ///     .with_token_info("CAS_WRITE_JWT", 900)
 ///     .with_token_refresh_url("https://huggingface.co/api/repos/token/write", upload_headers)
 ///     .build_blocking()?;
@@ -98,8 +96,6 @@ pub struct XetSessionInner {
 /// ```
 pub struct XetSessionBuilder {
     config: XetConfig,
-    endpoint: Option<String>,
-    custom_headers: Option<Arc<HeaderMap>>,
     tokio_handle: Option<tokio::runtime::Handle>,
 }
 
@@ -114,8 +110,6 @@ impl XetSessionBuilder {
     pub fn new() -> Self {
         Self {
             config: XetConfig::new(),
-            endpoint: None,
-            custom_headers: None,
             tokio_handle: None,
         }
     }
@@ -124,25 +118,7 @@ impl XetSessionBuilder {
     pub fn new_with_config(config: XetConfig) -> Self {
         Self {
             config,
-            endpoint: None,
-            custom_headers: None,
             tokio_handle: None,
-        }
-    }
-
-    /// Set the Xet CAS server endpoint URL (e.g. `"https://cas.example.com"`).
-    pub fn with_endpoint(self, endpoint: impl Into<String>) -> Self {
-        Self {
-            endpoint: Some(endpoint.into()),
-            ..self
-        }
-    }
-
-    /// Attach custom HTTP headers that are forwarded with every CAS request.
-    pub fn with_custom_headers(self, headers: Arc<HeaderMap>) -> Self {
-        Self {
-            custom_headers: Some(headers),
-            ..self
         }
     }
 
@@ -211,7 +187,7 @@ impl XetSessionBuilder {
             },
         };
 
-        let session = XetSession::new(self.config, self.endpoint, self.custom_headers, runtime);
+        let session = XetSession::new(self.config, runtime);
         info!("Session created, session_id={}", session.inner.id);
         Ok(session)
     }
@@ -235,11 +211,11 @@ impl XetSessionBuilder {
 ///
 /// 1. Create a session with [`XetSessionBuilder`].
 /// 2. Create operations:
-///    - uploads via [`new_upload_commit`](Self::new_upload_commit) → [`UploadCommitBuilder`] → [`XetUploadCommit`]
-///    - file downloads via [`new_file_download_group`](Self::new_file_download_group) → [`FileDownloadGroupBuilder`] →
-///      [`XetFileDownloadGroup`]
+///    - uploads via [`new_upload_commit`](Self::new_upload_commit) → [`XetUploadCommitBuilder`] → [`XetUploadCommit`]
+///    - file downloads via [`new_file_download_group`](Self::new_file_download_group) → [`XetFileDownloadGroupBuilder`]
+///      → [`XetFileDownloadGroup`]
 ///    - streaming downloads via [`new_download_stream_group`](Self::new_download_stream_group) →
-///      [`DownloadStreamGroupBuilder`] → [`XetDownloadStreamGroup`]
+///      [`XetDownloadStreamGroupBuilder`] → [`XetDownloadStreamGroup`]
 /// 3. For an emergency stop, call [`XetSession::abort`].
 #[derive(Clone)]
 pub struct XetSession {
@@ -248,19 +224,12 @@ pub struct XetSession {
 
 impl XetSession {
     /// Low-level constructor used by [`XetSessionBuilder::build`].
-    fn new(
-        config: XetConfig,
-        endpoint: Option<String>,
-        custom_headers: Option<Arc<HeaderMap>>,
-        runtime: Arc<XetRuntime>,
-    ) -> Self {
+    fn new(config: XetConfig, runtime: Arc<XetRuntime>) -> Self {
         let task_runtime = TaskRuntime::new_root(runtime.clone());
         Self {
             inner: Arc::new(XetSessionInner {
                 runtime,
                 config,
-                endpoint,
-                custom_headers,
                 task_runtime,
                 active_download_stream_groups: Mutex::new(HashMap::new()),
                 id: Ulid::new(),
@@ -268,47 +237,71 @@ impl XetSession {
         }
     }
 
-    /// Create an [`UploadCommitBuilder`] for configuring and constructing an upload commit.
+    /// Create a [`XetUploadCommitBuilder`] for configuring and constructing an upload commit.
     ///
-    /// Configure per-commit auth with [`with_token_info`](UploadCommitBuilder::with_token_info)
-    /// and [`with_token_refresh_url`](UploadCommitBuilder::with_token_refresh_url), then call
-    /// [`build`](UploadCommitBuilder::build) (async) or
-    /// [`build_blocking`](UploadCommitBuilder::build_blocking) (sync).
+    /// Configure the builder with any combination of:
+    /// - [`with_endpoint`](XetUploadCommitBuilder::with_endpoint) — CAS server URL (if omitted, resolved from the token
+    ///   refresh response or the session default)
+    /// - [`with_custom_headers`](XetUploadCommitBuilder::with_custom_headers) — extra HTTP headers forwarded with every
+    ///   CAS request
+    /// - [`with_token_info`](XetUploadCommitBuilder::with_token_info) — pre-seeded CAS token and expiry to skip the
+    ///   initial refresh round-trip
+    /// - [`with_token_refresh_url`](XetUploadCommitBuilder::with_token_refresh_url) — URL and auth headers for
+    ///   refreshing the CAS token
+    ///
+    /// Then call [`build`](XetUploadCommitBuilder::build) (async) or
+    /// [`build_blocking`](XetUploadCommitBuilder::build_blocking) (sync).
     ///
     /// Returns `Err(SessionError::UserCancelled)` if the session has been aborted.
-    pub fn new_upload_commit(&self) -> Result<UploadCommitBuilder, SessionError> {
+    pub fn new_upload_commit(&self) -> Result<XetUploadCommitBuilder, SessionError> {
         self.inner.task_runtime.check_state("new_upload_commit")?;
-        Ok(UploadCommitBuilder::new(self.clone()))
+        Ok(XetUploadCommitBuilder::new(self.clone()))
     }
 
-    /// Create a [`FileDownloadGroupBuilder`] for configuring and constructing a download group.
+    /// Create a [`XetFileDownloadGroupBuilder`] for configuring and constructing a file download group.
     ///
-    /// Configure per-group auth with [`with_token_info`](FileDownloadGroupBuilder::with_token_info)
-    /// and [`with_token_refresh_url`](FileDownloadGroupBuilder::with_token_refresh_url), then call
-    /// [`build`](FileDownloadGroupBuilder::build) (async) or
-    /// [`build_blocking`](FileDownloadGroupBuilder::build_blocking) (sync).
+    /// Configure the builder with any combination of:
+    /// - [`with_endpoint`](XetFileDownloadGroupBuilder::with_endpoint) — CAS server URL (if omitted, resolved from the
+    ///   token refresh response or the session default)
+    /// - [`with_custom_headers`](XetFileDownloadGroupBuilder::with_custom_headers) — extra HTTP headers forwarded with
+    ///   every CAS request
+    /// - [`with_token_info`](XetFileDownloadGroupBuilder::with_token_info) — pre-seeded CAS token and expiry to skip
+    ///   the initial refresh round-trip
+    /// - [`with_token_refresh_url`](XetFileDownloadGroupBuilder::with_token_refresh_url) — URL and auth headers for
+    ///   refreshing the CAS token
+    ///
+    /// Then call [`build`](XetFileDownloadGroupBuilder::build) (async) or
+    /// [`build_blocking`](XetFileDownloadGroupBuilder::build_blocking) (sync).
     ///
     /// Returns `Err(SessionError::UserCancelled)` if the session has been aborted.
-    pub fn new_file_download_group(&self) -> Result<FileDownloadGroupBuilder, SessionError> {
+    pub fn new_file_download_group(&self) -> Result<XetFileDownloadGroupBuilder, SessionError> {
         self.inner.task_runtime.check_state("new_file_download_group")?;
-        Ok(FileDownloadGroupBuilder::new(self.clone()))
+        Ok(XetFileDownloadGroupBuilder::new(self.clone()))
     }
 
-    /// Create a [`DownloadStreamGroupBuilder`] for configuring and constructing a download stream group.
+    /// Create a [`XetDownloadStreamGroupBuilder`] for configuring and constructing a download stream group.
     ///
-    /// Configure per-group auth with [`with_token_info`](DownloadStreamGroupBuilder::with_token_info)
-    /// and [`with_token_refresh_url`](DownloadStreamGroupBuilder::with_token_refresh_url), then call
-    /// [`build`](DownloadStreamGroupBuilder::build) (async) or
-    /// [`build_blocking`](DownloadStreamGroupBuilder::build_blocking) (sync).
+    /// Configure the builder with any combination of:
+    /// - [`with_endpoint`](XetDownloadStreamGroupBuilder::with_endpoint) — CAS server URL (if omitted, resolved from
+    ///   the token refresh response or the session default)
+    /// - [`with_custom_headers`](XetDownloadStreamGroupBuilder::with_custom_headers) — extra HTTP headers forwarded
+    ///   with every CAS request
+    /// - [`with_token_info`](XetDownloadStreamGroupBuilder::with_token_info) — pre-seeded CAS token and expiry to skip
+    ///   the initial refresh round-trip
+    /// - [`with_token_refresh_url`](XetDownloadStreamGroupBuilder::with_token_refresh_url) — URL and auth headers for
+    ///   refreshing the CAS token
+    ///
+    /// Then call [`build`](XetDownloadStreamGroupBuilder::build) (async) or
+    /// [`build_blocking`](XetDownloadStreamGroupBuilder::build_blocking) (sync).
     ///
     /// Use the resulting [`XetDownloadStreamGroup`] to create individual streams via
     /// [`download_stream`](XetDownloadStreamGroup::download_stream) and
     /// [`download_unordered_stream`](XetDownloadStreamGroup::download_unordered_stream).
     ///
     /// Returns `Err(SessionError::UserCancelled)` if the session has been aborted.
-    pub fn new_download_stream_group(&self) -> Result<DownloadStreamGroupBuilder, SessionError> {
+    pub fn new_download_stream_group(&self) -> Result<XetDownloadStreamGroupBuilder, SessionError> {
         self.inner.task_runtime.check_state("new_download_stream_group")?;
-        Ok(DownloadStreamGroupBuilder::new(self.clone()))
+        Ok(XetDownloadStreamGroupBuilder::new(self.clone()))
     }
 
     pub fn status(&self) -> Result<XetTaskState, SessionError> {
@@ -373,7 +366,7 @@ impl XetSession {
 
 #[cfg(test)]
 mod tests {
-    use tempfile::{TempDir, tempdir};
+    use tempfile::tempdir;
     use xet_data::processing::{Sha256Policy, XetFileInfo};
     use xet_runtime::core::{RuntimeMode, XetRuntime};
 
@@ -559,19 +552,13 @@ mod tests {
 
     // ── Streaming download round-trip tests ─────────────────────────────────
 
-    fn local_session(temp: &TempDir) -> Result<XetSession, Box<dyn std::error::Error>> {
-        let cas_path = temp.path().join("cas");
-        Ok(XetSessionBuilder::new()
-            .with_endpoint(format!("local://{}", cas_path.display()))
-            .build()?)
-    }
-
     async fn upload_bytes(
         session: &XetSession,
+        endpoint: &str,
         data: &[u8],
         name: &str,
     ) -> Result<XetFileInfo, Box<dyn std::error::Error>> {
-        let commit = session.new_upload_commit()?.build().await?;
+        let commit = session.new_upload_commit()?.with_endpoint(endpoint).build().await?;
         let _handle = commit
             .upload_bytes(data.to_vec(), Sha256Policy::Compute, Some(name.into()))
             .await?;
@@ -582,10 +569,11 @@ mod tests {
 
     fn upload_bytes_blocking(
         session: &XetSession,
+        endpoint: &str,
         data: &[u8],
         name: &str,
     ) -> Result<XetFileInfo, Box<dyn std::error::Error>> {
-        let commit = session.new_upload_commit()?.build_blocking()?;
+        let commit = session.new_upload_commit()?.with_endpoint(endpoint).build_blocking()?;
         let _handle = commit.upload_bytes_blocking(data.to_vec(), Sha256Policy::Compute, Some(name.into()))?;
         let results = commit.commit_blocking()?;
         let meta = results.uploads.into_values().next().expect("one uploaded file");
@@ -596,13 +584,15 @@ mod tests {
     // Async streaming download round-trip: upload, stream, verify content.
     async fn test_download_stream_round_trip() {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
         let original = b"Hello, streaming download!";
-        let file_info = upload_bytes(&session, original, "stream.bin").await.unwrap();
+        let file_info = upload_bytes(&session, &endpoint, original, "stream.bin").await.unwrap();
 
         let mut stream = session
             .new_download_stream_group()
             .unwrap()
+            .with_endpoint(&endpoint)
             .build()
             .await
             .unwrap()
@@ -620,13 +610,15 @@ mod tests {
     // Blocking streaming download round-trip: upload, stream, verify content.
     fn test_download_stream_blocking_round_trip() {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
         let original = b"Hello, blocking streaming download!";
-        let file_info = upload_bytes_blocking(&session, original, "stream.bin").unwrap();
+        let file_info = upload_bytes_blocking(&session, &endpoint, original, "stream.bin").unwrap();
 
         let mut stream = session
             .new_download_stream_group()
             .unwrap()
+            .with_endpoint(&endpoint)
             .build_blocking()
             .unwrap()
             .download_stream_blocking(file_info, None)
@@ -643,13 +635,15 @@ mod tests {
     // progress() reports correct totals after consuming the stream.
     async fn test_download_stream_progress_reports_completion() {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
         let original = b"progress tracking test data for streaming";
-        let file_info = upload_bytes(&session, original, "progress.bin").await.unwrap();
+        let file_info = upload_bytes(&session, &endpoint, original, "progress.bin").await.unwrap();
 
         let mut stream = session
             .new_download_stream_group()
             .unwrap()
+            .with_endpoint(&endpoint)
             .build()
             .await
             .unwrap()
@@ -675,13 +669,15 @@ mod tests {
     // progress() works correctly in blocking mode.
     fn test_download_stream_blocking_progress_reports_completion() {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
         let original = b"blocking progress tracking test data";
-        let file_info = upload_bytes_blocking(&session, original, "progress.bin").unwrap();
+        let file_info = upload_bytes_blocking(&session, &endpoint, original, "progress.bin").unwrap();
 
         let mut stream = session
             .new_download_stream_group()
             .unwrap()
+            .with_endpoint(&endpoint)
             .build_blocking()
             .unwrap()
             .download_stream_blocking(file_info, None)
@@ -702,13 +698,20 @@ mod tests {
     // Multiple sequential streaming downloads share a single group's connection pool.
     async fn test_download_stream_multiple_sequential() {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
         let data_a = b"first stream payload";
         let data_b = b"second stream payload";
-        let info_a = upload_bytes(&session, data_a, "a.bin").await.unwrap();
-        let info_b = upload_bytes(&session, data_b, "b.bin").await.unwrap();
+        let info_a = upload_bytes(&session, &endpoint, data_a, "a.bin").await.unwrap();
+        let info_b = upload_bytes(&session, &endpoint, data_b, "b.bin").await.unwrap();
 
-        let group = session.new_download_stream_group().unwrap().build().await.unwrap();
+        let group = session
+            .new_download_stream_group()
+            .unwrap()
+            .with_endpoint(&endpoint)
+            .build()
+            .await
+            .unwrap();
 
         let mut stream_a = group.download_stream(info_a, None).await.unwrap();
         let mut collected_a = Vec::new();

@@ -1301,7 +1301,7 @@ fn map_redb_db_error(e: impl std::fmt::Debug) -> ClientError {
 
 fn generate_fetch_url(file_path: &Path, byte_range: &FileRange, timestamp: Instant) -> String {
     let timestamp_ms = timestamp.saturating_duration_since(*REFERENCE_INSTANT).as_millis() as u64;
-    format!("{:?}:{}:{}:{}", file_path, byte_range.start, byte_range.end, timestamp_ms)
+    format!("{}:{}:{}:{}", file_path.display(), byte_range.start, byte_range.end, timestamp_ms)
 }
 
 fn parse_fetch_url(url: &str) -> Result<(PathBuf, FileRange, Instant)> {
@@ -1317,7 +1317,7 @@ fn parse_fetch_url(url: &str) -> Result<(PathBuf, FileRange, Instant)> {
     let end_pos: u64 = parts[2].parse().map_err(|_| ClientError::InvalidArguments)?;
     let timestamp_ms: u64 = parts[3].parse().map_err(|_| ClientError::InvalidArguments)?;
 
-    let file_path: PathBuf = file_path_str.trim_matches('"').into();
+    let file_path: PathBuf = file_path_str.into();
     let byte_range = FileRange::new(start_pos, end_pos);
     let timestamp = *REFERENCE_INSTANT + Duration::from_millis(timestamp_ms);
 
@@ -1436,7 +1436,7 @@ mod tests {
 
         // Test 5: Invalid start_pos - non-numeric
         let timestamp_ms = timestamp.saturating_duration_since(*REFERENCE_INSTANT).as_millis() as u64;
-        let non_numeric_start = format!("{:?}:not_a_number:{}:{}", file_path, fetch_byte_end, timestamp_ms);
+        let non_numeric_start = format!("{}:not_a_number:{}:{}", file_path.display(), fetch_byte_end, timestamp_ms);
         let invalid_fetch_term = XorbReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
             url: non_numeric_start,
@@ -1447,7 +1447,7 @@ mod tests {
         assert!(matches!(result.unwrap_err(), ClientError::InvalidArguments));
 
         // Test 6: Invalid end_pos - non-numeric
-        let non_numeric_end = format!("{:?}:{}:not_a_number:{}", file_path, fetch_byte_start, timestamp_ms);
+        let non_numeric_end = format!("{}:{}:not_a_number:{}", file_path.display(), fetch_byte_start, timestamp_ms);
         let invalid_fetch_term = XorbReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
             url: non_numeric_end,
@@ -1468,7 +1468,7 @@ mod tests {
         assert!(matches!(result.unwrap_err(), ClientError::InvalidArguments));
 
         // Test 8: Invalid timestamp - non-numeric
-        let non_numeric_timestamp = format!("{:?}:{}:{}:not_a_number", file_path, fetch_byte_start, fetch_byte_end);
+        let non_numeric_timestamp = format!("{}:{}:{}:not_a_number", file_path.display(), fetch_byte_start, fetch_byte_end);
         let invalid_fetch_term = XorbReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
             url: non_numeric_timestamp,

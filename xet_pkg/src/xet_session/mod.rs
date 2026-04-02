@@ -4,10 +4,10 @@
 //! file operations:
 //!
 //! ```text
-//! XetSession                 — holds runtime context and shared HTTP settings
-//!   ├── UploadCommitBuilder  — configures per-commit auth; build() → XetUploadCommit
-//!   ├── FileDownloadGroupBuilder — configures per-group auth; build() → XetDownloadGroup
-//!   └── DownloadStreamGroupBuilder — configures per-group auth; build() → DownloadStreamGroup
+//! XetSession                          — holds runtime context and shared HTTP settings
+//!   ├── AuthGroupBuilder<XetUploadCommit>         — configures per-commit auth; build() → XetUploadCommit
+//!   ├── AuthGroupBuilder<XetFileDownloadGroup>    — configures per-group auth;  build() → XetFileDownloadGroup
+//!   └── AuthGroupBuilder<XetDownloadStreamGroup>  — configures per-group auth;  build() → XetDownloadStreamGroup
 //! ```
 //!
 //! Each [`XetSession`] holds its own runtime context and configuration, so
@@ -18,11 +18,11 @@
 //!
 //! ## Uploads
 //!
-//! Call [`XetSession::new_upload_commit`] to obtain an [`UploadCommitBuilder`].
-//! Configure auth with [`with_token_info`](UploadCommitBuilder::with_token_info) and
-//! [`with_token_refresh_url`](UploadCommitBuilder::with_token_refresh_url), then call
-//! [`build`](UploadCommitBuilder::build) (async) or
-//! [`build_blocking`](UploadCommitBuilder::build_blocking) (sync).
+//! Call [`XetSession::new_upload_commit`] to obtain an [`AuthGroupBuilder`].
+//! Configure auth with [`with_token_info`](AuthGroupBuilder::with_token_info) and
+//! [`with_token_refresh_url`](AuthGroupBuilder::with_token_refresh_url), then call
+//! [`build`](AuthGroupBuilder::build) (async) or
+//! [`build_blocking`](AuthGroupBuilder::build_blocking) (sync).
 //! Queue files with [`upload_from_path`](XetUploadCommit::upload_from_path) /
 //! [`upload_from_path_blocking`](XetUploadCommit::upload_from_path_blocking) or
 //! [`upload_bytes`](XetUploadCommit::upload_bytes) /
@@ -38,9 +38,9 @@
 //!
 //! ## File Downloads
 //!
-//! Call [`XetSession::new_file_download_group`] to obtain a [`FileDownloadGroupBuilder`].
-//! Configure auth similarly, then call [`build`](FileDownloadGroupBuilder::build) (async) or
-//! [`build_blocking`](FileDownloadGroupBuilder::build_blocking) (sync).
+//! Call [`XetSession::new_file_download_group`] to obtain an [`AuthGroupBuilder`].
+//! Configure auth similarly, then call [`build`](AuthGroupBuilder::build) (async) or
+//! [`build_blocking`](AuthGroupBuilder::build_blocking) (sync).
 //! Queue files with [`download_file_to_path`](XetFileDownloadGroup::download_file_to_path) /
 //! [`download_file_to_path_blocking`](XetFileDownloadGroup::download_file_to_path_blocking),
 //! then call [`finish`](XetFileDownloadGroup::finish) (async) or
@@ -50,9 +50,9 @@
 //!
 //! ## Streaming Downloads
 //!
-//! Call [`XetSession::new_download_stream_group`] to obtain a [`DownloadStreamGroupBuilder`].
-//! Configure auth similarly, then call [`build`](DownloadStreamGroupBuilder::build) (async) or
-//! [`build_blocking`](DownloadStreamGroupBuilder::build_blocking) (sync).
+//! Call [`XetSession::new_download_stream_group`] to obtain an [`AuthGroupBuilder`].
+//! Configure auth similarly, then call [`build`](AuthGroupBuilder::build) (async) or
+//! [`build_blocking`](AuthGroupBuilder::build_blocking) (sync).
 //! Create individual streams with
 //! [`download_stream`](XetDownloadStreamGroup::download_stream) /
 //! [`download_stream_blocking`](XetDownloadStreamGroup::download_stream_blocking) for
@@ -83,7 +83,7 @@
 //!
 //! Session-level factory methods and upload/file-download operations return
 //! `Result<_, `[`SessionError`]`>`.
-//! Streaming operations — [`DownloadStreamGroupBuilder::build`],
+//! Streaming operations — [`AuthGroupBuilder::build`] (for `XetDownloadStreamGroup`),
 //! [`XetDownloadStreamGroup`] methods, [`XetDownloadStream`] methods, and
 //! [`XetUnorderedDownloadStream`] methods — return `Result<_, XetError>`.
 //! [`commit`](XetUploadCommit::commit) returns a [`XetCommitReport`] containing
@@ -97,11 +97,13 @@
 //! ```rust,no_run
 //! use xet::xet_session::{Sha256Policy, XetFileInfo, XetSessionBuilder};
 //!
-//! let session = XetSessionBuilder::new().with_endpoint("https://cas.example.com").build()?;
+//! # fn example() -> Result<(), xet::xet_session::SessionError> {
+//! let session = XetSessionBuilder::new().build()?;
 //!
-//! // Upload — configure token on the commit builder, then build_blocking
+//! // Upload — configure endpoint and token on the commit builder, then build_blocking
 //! let commit = session
 //!     .new_upload_commit()?
+//!     .with_endpoint("https://cas.example.com")
 //!     .with_token_info("write-token", 1_700_000_000)
 //!     .build_blocking()?;
 //! let handle = commit.upload_from_path_blocking("file.bin".into(), Sha256Policy::Compute)?;
@@ -118,8 +120,8 @@
 //! let dl_handle = group.download_file_to_path_blocking(info, "out/file.bin".into())?;
 //! let finish_report = group.finish_blocking()?;
 //! let r = finish_report.downloads.get(&dl_handle.task_id()).unwrap();
-//!
-//! # Ok::<(), xet::xet_session::SessionError>(())
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! # Quick start — async API
@@ -130,11 +132,12 @@
 //! # async fn example() -> Result<(), xet::xet_session::SessionError> {
 //! // build() auto-detects: if inside a suitable tokio runtime, wraps it;
 //! // otherwise creates an owned thread pool.
-//! let session = XetSessionBuilder::new().with_endpoint("https://cas.example.com").build()?;
+//! let session = XetSessionBuilder::new().build()?;
 //!
-//! // Upload — configure token on the commit builder, then build().await
+//! // Upload — configure endpoint and token on the commit builder, then build().await
 //! let commit = session
 //!     .new_upload_commit()?
+//!     .with_endpoint("https://cas.example.com")
 //!     .with_token_info("write-token", 1_700_000_000)
 //!     .build()
 //!     .await?;
@@ -157,6 +160,7 @@
 //! # }
 //! ```
 
+mod auth_group_builder;
 mod common;
 mod download_stream_group;
 mod download_stream_handle;
@@ -169,14 +173,15 @@ mod upload_commit;
 mod upload_file_handle;
 mod upload_stream_handle;
 
-pub use download_stream_group::{DownloadStreamGroupBuilder, XetDownloadStreamGroup};
+pub use download_stream_group::{XetDownloadStreamGroup, XetDownloadStreamGroupBuilder};
 pub use download_stream_handle::{XetDownloadStream, XetUnorderedDownloadStream};
 pub use errors::SessionError;
-pub use file_download_group::{FileDownloadGroupBuilder, XetDownloadGroupReport, XetFileDownloadGroup};
+pub use file_download_group::{XetDownloadGroupReport, XetFileDownloadGroup, XetFileDownloadGroupBuilder};
 pub use file_download_handle::{XetDownloadReport, XetFileDownload};
+pub use http::{HeaderMap, HeaderValue, header};
 pub use session::{XetSession, XetSessionBuilder};
 pub use task_runtime::XetTaskState;
-pub use upload_commit::{UploadCommitBuilder, XetCommitReport, XetFileMetadata, XetUploadCommit};
+pub use upload_commit::{XetCommitReport, XetFileMetadata, XetUploadCommit, XetUploadCommitBuilder};
 pub use upload_file_handle::XetFileUpload;
 pub use upload_stream_handle::XetStreamUpload;
 pub use xet_data::deduplication::DeduplicationMetrics;
