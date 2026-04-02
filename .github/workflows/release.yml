@@ -424,35 +424,22 @@ jobs:
           zip -r dbg-symbols.zip dbg-symbols
           gh release create "$RELEASE_TAG" wheels-*/* dbg-symbols.zip --generate-notes --prerelease --target ${{github.sha}}
 
-  smoke-test:
-    name: Smoke test released version
-    runs-on: ${{ matrix.os }}
+  wait-for-pypi:
+    name: Wait for PyPI availability
+    runs-on: ubuntu-latest
     if: ${{ github.event_name == 'workflow_dispatch' }}
     needs: [release-pypi]
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    env:
-      HF_XET_VERSION: ${{ github.event.inputs.tag }}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6
-
-      - name: Install hf CLI
-        run: uv tool install huggingface_hub
-
       - name: Strip version prefix
         id: version
-        shell: bash
         run: |
-          VERSION="${HF_XET_VERSION#v}"
+          VERSION="${{ github.event.inputs.tag }}"
+          VERSION="${VERSION#v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Wait for PyPI availability
-        shell: bash
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           for i in $(seq 1 30); do
@@ -466,13 +453,29 @@ jobs:
           echo "ERROR: hf_xet==$VERSION not found on PyPI after 15 minutes"
           exit 1
 
+  smoke-test:
+    name: Smoke test released version
+    runs-on: ${{ matrix.os }}
+    needs: [wait-for-pypi]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6
+
+      - name: Install hf CLI
+        run: uv tool install huggingface_hub
+
       - name: Run smoke tests
         env:
           HF_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
         shell: bash
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          ./scripts/smoke_tests/run.sh --hf-xet-version "$VERSION" --namespace xet-team
+          ./scripts/smoke_tests/run.sh --hf-xet-version "${{ needs.wait-for-pypi.outputs.version }}" --namespace xet-team
 
   smoke-test-notify:
     name: Notify smoke test results
