@@ -302,9 +302,10 @@ impl XetRuntime {
             config: Arc::new(config),
         });
 
-        // Each thread in each of the tokio worker threads holds a weak reference to the runtime
-        // handling that thread. Using Weak avoids a reference cycle that would prevent the runtime
-        // from being dropped when the last external Arc is released.
+        // Each tokio worker thread stores a Weak reference so it can resolve its owning
+        // XetRuntime via current()/current_if_exists(). Weak (not Arc) avoids a cycle:
+        // XetRuntime owns the tokio runtime, so a strong TLS ref from workers would prevent
+        // the runtime from being dropped when the last external Arc<XetRuntime> is released.
         let rt_weak = Arc::downgrade(&rt);
         let pid = std::process::id();
         let set_threadlocal_reference = move || {
@@ -341,6 +342,7 @@ impl XetRuntime {
             .thread_name_fn(get_thread_name) // thread names will be hf-xet-0, hf-xet-1, etc.
             .on_thread_start(set_threadlocal_reference) // Set the local runtime reference.
             .thread_stack_size(THREADPOOL_STACK_SIZE) // 8MB stack size, default is 2MB
+            .thread_keep_alive(std::time::Duration::from_millis(100)) // Don't keep idle blocking threads for long
             .enable_all() // enable all features, including IO/Timer/Signal/Reactor
             .build()
             .map_err(RuntimeError::RuntimeInit)?;
@@ -810,10 +812,31 @@ impl XetRuntime {
 
 impl Drop for XetRuntime {
     fn drop(&mut self) {
-        if let RuntimeBackend::External { handle_id: Some(id) } = &self.backend
-            && let Ok(mut reg) = EXTERNAL_RUNTIME_REGISTRY.write()
-        {
-            reg.remove(id);
+        self.handle_ref.take();
+
+        match &self.backend {
+            RuntimeBackend::External { handle_id: Some(id) } => {
+                if let Ok(mut reg) = EXTERNAL_RUNTIME_REGISTRY.write() {
+                    reg.remove(id);
+                }
+            },
+            RuntimeBackend::OwnedThreadPool { runtime } => {
+                if let Ok(mut guard) = runtime.write()
+                    && let Some(rt_arc) = guard.take()
+                {
+                    match Arc::try_unwrap(rt_arc) {
+                        Ok(rt) => {
+                            if TokioRuntimeHandle::try_current().is_ok() {
+                                rt.shutdown_background();
+                            } else {
+                                rt.shutdown_timeout(std::time::Duration::from_secs(5));
+                            }
+                        },
+                        Err(_arc) => {},
+                    }
+                }
+            },
+            _ => {},
         }
 
         // When dropping from within an async context, the default TokioRuntime Drop
