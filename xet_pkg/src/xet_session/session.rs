@@ -10,12 +10,13 @@ use xet_runtime::RuntimeError;
 use xet_runtime::config::XetConfig;
 use xet_runtime::core::XetRuntime;
 
-use super::download_stream_group::{XetDownloadStreamGroup, XetDownloadStreamGroupInner};
+use super::download_stream_group::{
+    XetDownloadStreamGroup, XetDownloadStreamGroupBuilder, XetDownloadStreamGroupInner,
+};
 use super::errors::SessionError;
-use super::file_download_group::XetFileDownloadGroup;
+use super::file_download_group::{XetFileDownloadGroup, XetFileDownloadGroupBuilder};
 use super::task_runtime::{TaskRuntime, XetTaskState};
-use super::upload_commit::XetUploadCommit;
-use crate::xet_session::auth_group_builder::AuthGroupBuilder;
+use super::upload_commit::{XetUploadCommit, XetUploadCommitBuilder};
 
 /// All shared state for a session.
 /// Lives behind `Arc<XetSessionInner>` — do not use this type directly.
@@ -50,7 +51,7 @@ pub struct XetSessionInner {
 ///
 /// ## Authentication
 ///
-/// Auth tokens are configured per-operation on [`AuthGroupBuilder`], not on the
+/// Auth tokens are configured per-operation on the builder returned by each factory method, not on the
 /// session itself.  This lets uploads and downloads use different access-level
 /// tokens from the same session:
 ///
@@ -205,11 +206,11 @@ impl XetSessionBuilder {
 ///
 /// 1. Create a session with [`XetSessionBuilder`].
 /// 2. Create operations:
-///    - uploads via [`new_upload_commit`](Self::new_upload_commit) → [`AuthGroupBuilder`] → [`XetUploadCommit`]
-///    - file downloads via [`new_file_download_group`](Self::new_file_download_group) → [`AuthGroupBuilder`] →
-///      [`XetFileDownloadGroup`]
-///    - streaming downloads via [`new_download_stream_group`](Self::new_download_stream_group) → [`AuthGroupBuilder`] →
-///      [`XetDownloadStreamGroup`]
+///    - uploads via [`new_upload_commit`](Self::new_upload_commit) → [`XetUploadCommitBuilder`] → [`XetUploadCommit`]
+///    - file downloads via [`new_file_download_group`](Self::new_file_download_group) → [`XetFileDownloadGroupBuilder`]
+///      → [`XetFileDownloadGroup`]
+///    - streaming downloads via [`new_download_stream_group`](Self::new_download_stream_group) →
+///      [`XetDownloadStreamGroupBuilder`] → [`XetDownloadStreamGroup`]
 /// 3. For an emergency stop, call [`XetSession::abort`].
 #[derive(Clone)]
 pub struct XetSession {
@@ -233,71 +234,71 @@ impl XetSession {
         }
     }
 
-    /// Create an [`AuthGroupBuilder`] for configuring and constructing an upload commit.
+    /// Create a [`XetUploadCommitBuilder`] for configuring and constructing an upload commit.
     ///
     /// Configure the builder with any combination of:
-    /// - [`with_endpoint`](AuthGroupBuilder::with_endpoint) — CAS server URL (if omitted, resolved from the token
+    /// - [`with_endpoint`](XetUploadCommitBuilder::with_endpoint) — CAS server URL (if omitted, resolved from the token
     ///   refresh response or the session default)
-    /// - [`with_custom_headers`](AuthGroupBuilder::with_custom_headers) — extra HTTP headers forwarded with every CAS
-    ///   request
-    /// - [`with_token_info`](AuthGroupBuilder::with_token_info) — pre-seeded CAS token and expiry to skip the initial
-    ///   refresh round-trip
-    /// - [`with_token_refresh_url`](AuthGroupBuilder::with_token_refresh_url) — URL and auth headers for refreshing the
-    ///   CAS token
+    /// - [`with_custom_headers`](XetUploadCommitBuilder::with_custom_headers) — extra HTTP headers forwarded with every
+    ///   CAS request
+    /// - [`with_token_info`](XetUploadCommitBuilder::with_token_info) — pre-seeded CAS token and expiry to skip the
+    ///   initial refresh round-trip
+    /// - [`with_token_refresh_url`](XetUploadCommitBuilder::with_token_refresh_url) — URL and auth headers for
+    ///   refreshing the CAS token
     ///
-    /// Then call [`build`](AuthGroupBuilder::build) (async) or [`build_blocking`](AuthGroupBuilder::build_blocking)
-    /// (sync).
+    /// Then call [`build`](XetUploadCommitBuilder::build) (async) or
+    /// [`build_blocking`](XetUploadCommitBuilder::build_blocking) (sync).
     ///
     /// Returns `Err(SessionError::UserCancelled)` if the session has been aborted.
-    pub fn new_upload_commit(&self) -> Result<AuthGroupBuilder<XetUploadCommit>, SessionError> {
+    pub fn new_upload_commit(&self) -> Result<XetUploadCommitBuilder, SessionError> {
         self.inner.task_runtime.check_state("new_upload_commit")?;
-        Ok(AuthGroupBuilder::<XetUploadCommit>::new(self.clone()))
+        Ok(XetUploadCommitBuilder::new(self.clone()))
     }
 
-    /// Create an [`AuthGroupBuilder`] for configuring and constructing a file download group.
+    /// Create a [`XetFileDownloadGroupBuilder`] for configuring and constructing a file download group.
     ///
     /// Configure the builder with any combination of:
-    /// - [`with_endpoint`](AuthGroupBuilder::with_endpoint) — CAS server URL (if omitted, resolved from the token
-    ///   refresh response or the session default)
-    /// - [`with_custom_headers`](AuthGroupBuilder::with_custom_headers) — extra HTTP headers forwarded with every CAS
-    ///   request
-    /// - [`with_token_info`](AuthGroupBuilder::with_token_info) — pre-seeded CAS token and expiry to skip the initial
-    ///   refresh round-trip
-    /// - [`with_token_refresh_url`](AuthGroupBuilder::with_token_refresh_url) — URL and auth headers for refreshing the
-    ///   CAS token
+    /// - [`with_endpoint`](XetFileDownloadGroupBuilder::with_endpoint) — CAS server URL (if omitted, resolved from the
+    ///   token refresh response or the session default)
+    /// - [`with_custom_headers`](XetFileDownloadGroupBuilder::with_custom_headers) — extra HTTP headers forwarded with
+    ///   every CAS request
+    /// - [`with_token_info`](XetFileDownloadGroupBuilder::with_token_info) — pre-seeded CAS token and expiry to skip
+    ///   the initial refresh round-trip
+    /// - [`with_token_refresh_url`](XetFileDownloadGroupBuilder::with_token_refresh_url) — URL and auth headers for
+    ///   refreshing the CAS token
     ///
-    /// Then call [`build`](AuthGroupBuilder::build) (async) or [`build_blocking`](AuthGroupBuilder::build_blocking)
-    /// (sync).
+    /// Then call [`build`](XetFileDownloadGroupBuilder::build) (async) or
+    /// [`build_blocking`](XetFileDownloadGroupBuilder::build_blocking) (sync).
     ///
     /// Returns `Err(SessionError::UserCancelled)` if the session has been aborted.
-    pub fn new_file_download_group(&self) -> Result<AuthGroupBuilder<XetFileDownloadGroup>, SessionError> {
+    pub fn new_file_download_group(&self) -> Result<XetFileDownloadGroupBuilder, SessionError> {
         self.inner.task_runtime.check_state("new_file_download_group")?;
-        Ok(AuthGroupBuilder::<XetFileDownloadGroup>::new(self.clone()))
+        Ok(XetFileDownloadGroupBuilder::new(self.clone()))
     }
 
-    /// Create an [`AuthGroupBuilder`] for configuring and constructing a download stream group.
+    /// Create a [`XetDownloadStreamGroupBuilder`] for configuring and constructing a download stream group.
     ///
     /// Configure the builder with any combination of:
-    /// - [`with_endpoint`](AuthGroupBuilder::with_endpoint) — CAS server URL (if omitted, resolved from the token
-    ///   refresh response or the session default)
-    /// - [`with_custom_headers`](AuthGroupBuilder::with_custom_headers) — extra HTTP headers forwarded with every CAS
-    ///   request
-    /// - [`with_token_info`](AuthGroupBuilder::with_token_info) — pre-seeded CAS token and expiry to skip the initial
-    ///   refresh round-trip
-    /// - [`with_token_refresh_url`](AuthGroupBuilder::with_token_refresh_url) — URL and auth headers for refreshing the
-    ///   CAS token
+    /// - [`with_endpoint`](XetDownloadStreamGroupBuilder::with_endpoint) — CAS server URL (if omitted, resolved from
+    ///   the token refresh response or the session default)
+    /// - [`with_custom_headers`](XetDownloadStreamGroupBuilder::with_custom_headers) — extra HTTP headers forwarded
+    ///   with every CAS request
+    /// - [`with_token_info`](XetDownloadStreamGroupBuilder::with_token_info) — pre-seeded CAS token and expiry to skip
+    ///   the initial refresh round-trip
+    /// - [`with_token_refresh_url`](XetDownloadStreamGroupBuilder::with_token_refresh_url) — URL and auth headers for
+    ///   refreshing the CAS token
     ///
-    /// Then call [`build`](AuthGroupBuilder::build) (async) or [`build_blocking`](AuthGroupBuilder::build_blocking)
-    /// (sync).
+    /// Then call [`build`](XetDownloadStreamGroupBuilder::build) (async) or
+    /// [`build_blocking`](XetDownloadStreamGroupBuilder::build_blocking) (sync).
     ///
     /// Use the resulting [`XetDownloadStreamGroup`] to create individual streams via
     /// [`download_stream`](XetDownloadStreamGroup::download_stream) and
     /// [`download_unordered_stream`](XetDownloadStreamGroup::download_unordered_stream).
     ///
     /// Returns `Err(SessionError::UserCancelled)` if the session has been aborted.
-    pub fn new_download_stream_group(&self) -> Result<AuthGroupBuilder<XetDownloadStreamGroup>, SessionError> {
+    pub fn new_download_stream_group(&self) -> Result<XetDownloadStreamGroupBuilder, SessionError> {
         self.inner.task_runtime.check_state("new_download_stream_group")?;
-        Ok(AuthGroupBuilder::<XetDownloadStreamGroup>::new(self.clone()))
+        Ok(XetDownloadStreamGroupBuilder::new(self.clone()))
     }
 
     pub fn status(&self) -> Result<XetTaskState, SessionError> {

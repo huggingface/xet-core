@@ -17,6 +17,8 @@ use super::upload_file_handle::{XetFileUpload, XetFileUploadInner};
 use super::upload_stream_handle::{XetStreamUpload, XetStreamUploadInner};
 use crate::error::XetError;
 
+pub type XetUploadCommitBuilder = AuthGroupBuilder<XetUploadCommit>;
+
 impl AuthGroupBuilder<XetUploadCommit> {
     /// Create the [`XetUploadCommit`] from an async context.
     pub async fn build(self) -> Result<XetUploadCommit, XetError> {

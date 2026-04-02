@@ -24,6 +24,8 @@ use super::task_runtime::TaskRuntime;
 use super::{XetDownloadStream, XetUnorderedDownloadStream};
 use crate::error::XetError;
 
+pub type XetDownloadStreamGroupBuilder = AuthGroupBuilder<XetDownloadStreamGroup>;
+
 impl AuthGroupBuilder<XetDownloadStreamGroup> {
     /// Create the [`XetDownloadStreamGroup`] from an async context.
     pub async fn build(self) -> Result<XetDownloadStreamGroup, XetError> {

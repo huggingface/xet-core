@@ -15,6 +15,8 @@ use super::session::XetSession;
 use super::task_runtime::{BackgroundTaskState, TaskRuntime, XetTaskState};
 use crate::error::XetError;
 
+pub type XetFileDownloadGroupBuilder = AuthGroupBuilder<XetFileDownloadGroup>;
+
 impl AuthGroupBuilder<XetFileDownloadGroup> {
     /// Create the [`XetFileDownloadGroup`] from an async context.
     pub async fn build(self) -> Result<XetFileDownloadGroup, XetError> {
