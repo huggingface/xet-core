@@ -29,10 +29,6 @@ use xet_runtime::fd_diagnostics::{count_open_fds, report_fd_count};
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
-fn local_session() -> Result<XetSession, Box<dyn std::error::Error>> {
-    Ok(XetSessionBuilder::new().build()?)
-}
-
 fn local_endpoint(temp: &TempDir) -> String {
     format!("local://{}", temp.path().join("cas").display())
 }
@@ -2065,7 +2061,7 @@ fn fd_leak_single_session_roundtrip() {
         let temp = tempdir().unwrap();
         report_fd_count("after tempdir");
 
-        let session = local_session().unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
         let endpoint = local_endpoint(&temp);
         report_fd_count("after local_session");
 
@@ -2119,7 +2115,7 @@ fn fd_leak_isolate_components() {
     let before = count_open_fds();
     {
         let _temp = tempdir().unwrap();
-        let session = local_session().unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
         drop(session);
     }
     assert_fd_delta_eventually_le("session create/drop", before, FD_TOLERANCE);
@@ -2128,7 +2124,7 @@ fn fd_leak_isolate_components() {
     {
         let temp = tempdir().unwrap();
         let endpoint = local_endpoint(&temp);
-        let session = local_session().unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
         let commit = session
             .new_upload_commit()
             .unwrap()
@@ -2147,7 +2143,7 @@ fn fd_leak_isolate_components() {
     let temp = tempdir().unwrap();
     let endpoint = local_endpoint(&temp);
     {
-        let session = local_session().unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
         {
             let commit = session
                 .new_upload_commit()
@@ -2169,7 +2165,7 @@ fn fd_leak_isolate_components() {
 
     let before_download = count_open_fds();
     {
-        let session = local_session().unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
         {
             let group = session
                 .new_file_download_group()
@@ -2196,7 +2192,7 @@ fn fd_leak_repeated_sessions() {
     for i in 0..10 {
         let temp = tempdir().unwrap();
         let endpoint = local_endpoint(&temp);
-        let session = local_session().unwrap();
+        let session = XetSessionBuilder::new().build().unwrap();
         assert_roundtrip_sync(&session, &endpoint, &temp, b"repeated fd test", &format!("iter_{i}"));
         drop(session);
         drop(temp);
@@ -2221,7 +2217,7 @@ fn fd_leak_session_components_breakdown() {
     report_fd_count("breakdown: after tempdir");
 
     let endpoint = local_endpoint(&temp);
-    let session = local_session().unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
     let fds_after_session = count_open_fds();
     report_fd_count("breakdown: after session");
 
@@ -2295,7 +2291,7 @@ fn fd_leak_deficient_runtime() {
         let temp = tempdir().unwrap();
         let endpoint = local_endpoint(&temp);
         let session = rt.block_on(async {
-            let session = local_session().unwrap();
+            let session = XetSessionBuilder::new().build().unwrap();
             report_fd_count(&format!("deficient({label}): after session"));
 
             let payload = format!("{label} fd leak test");

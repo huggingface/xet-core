@@ -1362,8 +1362,9 @@ mod tests {
         let link = tmp.path().join("link");
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
-        let _c1 = LocalClient::new(&link).await.unwrap();
-        let _c2 = LocalClient::new(&real).await.unwrap();
+        let c1 = LocalClient::new(&link).await.unwrap();
+        let c2 = LocalClient::new(&real).await.unwrap();
+        assert!(Arc::ptr_eq(&c1.db, &c2.db));
     }
 
     #[tokio::test]
