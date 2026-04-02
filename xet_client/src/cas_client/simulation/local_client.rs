@@ -1468,7 +1468,8 @@ mod tests {
         assert!(matches!(result.unwrap_err(), ClientError::InvalidArguments));
 
         // Test 8: Invalid timestamp - non-numeric
-        let non_numeric_timestamp = format!("{}:{}:{}:not_a_number", file_path.display(), fetch_byte_start, fetch_byte_end);
+        let non_numeric_timestamp =
+            format!("{}:{}:{}:not_a_number", file_path.display(), fetch_byte_start, fetch_byte_end);
         let invalid_fetch_term = XorbReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
             url: non_numeric_timestamp,

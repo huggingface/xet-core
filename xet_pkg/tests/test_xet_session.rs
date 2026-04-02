@@ -29,6 +29,14 @@ use xet_runtime::fd_diagnostics::{count_open_fds, report_fd_count};
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
+fn local_session() -> Result<XetSession, Box<dyn std::error::Error>> {
+    Ok(XetSessionBuilder::new().build()?)
+}
+
+fn local_endpoint(temp: &TempDir) -> String {
+    format!("local://{}", temp.path().join("cas").display())
+}
+
 fn to_file_info(meta: &XetFileMetadata) -> XetFileInfo {
     meta.xet_info.clone()
 }
@@ -2057,10 +2065,11 @@ fn fd_leak_single_session_roundtrip() {
         let temp = tempdir().unwrap();
         report_fd_count("after tempdir");
 
-        let session = local_session(&temp).unwrap();
+        let session = local_session().unwrap();
+        let endpoint = local_endpoint(&temp);
         report_fd_count("after local_session");
 
-        assert_roundtrip_sync(&session, &temp, b"fd leak test", "fd_test");
+        assert_roundtrip_sync(&session, &endpoint, &temp, b"fd leak test", "fd_test");
         report_fd_count("after roundtrip");
 
         drop(session);
@@ -2109,8 +2118,8 @@ fn fd_leak_isolate_components() {
 
     let before = count_open_fds();
     {
-        let temp = tempdir().unwrap();
-        let session = local_session(&temp).unwrap();
+        let _temp = tempdir().unwrap();
+        let session = local_session().unwrap();
         drop(session);
     }
     assert_fd_delta_eventually_le("session create/drop", before, FD_TOLERANCE);
@@ -2118,8 +2127,14 @@ fn fd_leak_isolate_components() {
     let before = count_open_fds();
     {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).unwrap();
-        let commit = session.new_upload_commit().unwrap().build_blocking().unwrap();
+        let endpoint = local_endpoint(&temp);
+        let session = local_session().unwrap();
+        let commit = session
+            .new_upload_commit()
+            .unwrap()
+            .with_endpoint(&endpoint)
+            .build_blocking()
+            .unwrap();
         commit.commit_blocking().unwrap();
         drop(commit);
         drop(session);
@@ -2130,10 +2145,16 @@ fn fd_leak_isolate_components() {
     let before_upload = count_open_fds();
     let file_info;
     let temp = tempdir().unwrap();
+    let endpoint = local_endpoint(&temp);
     {
-        let session = local_session(&temp).unwrap();
+        let session = local_session().unwrap();
         {
-            let commit = session.new_upload_commit().unwrap().build_blocking().unwrap();
+            let commit = session
+                .new_upload_commit()
+                .unwrap()
+                .with_endpoint(&endpoint)
+                .build_blocking()
+                .unwrap();
             let handle = commit
                 .upload_bytes_blocking(b"leak test".to_vec(), Sha256Policy::Compute, Some("leak.bin".into()))
                 .unwrap();
@@ -2148,9 +2169,14 @@ fn fd_leak_isolate_components() {
 
     let before_download = count_open_fds();
     {
-        let session = local_session(&temp).unwrap();
+        let session = local_session().unwrap();
         {
-            let group = session.new_file_download_group().unwrap().build_blocking().unwrap();
+            let group = session
+                .new_file_download_group()
+                .unwrap()
+                .with_endpoint(&endpoint)
+                .build_blocking()
+                .unwrap();
             let dest = temp.path().join("leak.out");
             group.download_file_to_path_blocking(file_info, dest).unwrap();
             group.finish_blocking().unwrap();
@@ -2169,8 +2195,9 @@ fn fd_leak_repeated_sessions() {
 
     for i in 0..10 {
         let temp = tempdir().unwrap();
-        let session = local_session(&temp).unwrap();
-        assert_roundtrip_sync(&session, &temp, b"repeated fd test", &format!("iter_{i}"));
+        let endpoint = local_endpoint(&temp);
+        let session = local_session().unwrap();
+        assert_roundtrip_sync(&session, &endpoint, &temp, b"repeated fd test", &format!("iter_{i}"));
         drop(session);
         drop(temp);
     }
@@ -2193,13 +2220,19 @@ fn fd_leak_session_components_breakdown() {
     let fds_after_temp = count_open_fds();
     report_fd_count("breakdown: after tempdir");
 
-    let session = local_session(&temp).unwrap();
+    let endpoint = local_endpoint(&temp);
+    let session = local_session().unwrap();
     let fds_after_session = count_open_fds();
     report_fd_count("breakdown: after session");
 
     // Upload phase
     {
-        let commit = session.new_upload_commit().unwrap().build_blocking().unwrap();
+        let commit = session
+            .new_upload_commit()
+            .unwrap()
+            .with_endpoint(&endpoint)
+            .build_blocking()
+            .unwrap();
         report_fd_count("breakdown: after commit build");
 
         let handle = commit
@@ -2215,7 +2248,12 @@ fn fd_leak_session_components_breakdown() {
 
         // Download phase
         let dest = temp.path().join("bd.out");
-        let group = session.new_file_download_group().unwrap().build_blocking().unwrap();
+        let group = session
+            .new_file_download_group()
+            .unwrap()
+            .with_endpoint(&endpoint)
+            .build_blocking()
+            .unwrap();
         report_fd_count("breakdown: after download group build");
 
         group.download_file_to_path_blocking(file_meta.xet_info, dest.clone()).unwrap();
@@ -2255,12 +2293,13 @@ fn fd_leak_deficient_runtime() {
     for (label, builder) in deficient_runtime_cases() {
         let rt = builder();
         let temp = tempdir().unwrap();
+        let endpoint = local_endpoint(&temp);
         let session = rt.block_on(async {
-            let session = local_session(&temp).unwrap();
+            let session = local_session().unwrap();
             report_fd_count(&format!("deficient({label}): after session"));
 
             let payload = format!("{label} fd leak test");
-            assert_roundtrip_async(&session, &temp, payload.as_bytes(), label).await;
+            assert_roundtrip_async(&session, &endpoint, &temp, payload.as_bytes(), label).await;
             report_fd_count(&format!("deficient({label}): after roundtrip"));
             session
         });
