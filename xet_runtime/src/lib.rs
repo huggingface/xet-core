@@ -9,4 +9,5 @@ pub mod utils;
 pub use utils::configuration_utils;
 pub mod config;
 pub mod core;
+pub mod fd_diagnostics;
 pub mod logging;

@@ -18,11 +18,13 @@ use std::path::PathBuf;
 use std::pin::Pin;
 
 use bytes::Bytes;
+use serial_test::serial;
 use tempfile::{TempDir, tempdir};
 use xet::xet_session::{
     SessionError, Sha256Policy, XetDownloadStream, XetDownloadStreamGroup, XetFileInfo, XetFileMetadata, XetSession,
     XetSessionBuilder, XetTaskState, XetUnorderedDownloadStream,
 };
+use xet_runtime::fd_diagnostics::{count_open_fds, report_fd_count};
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -1720,4 +1722,259 @@ async fn async_unordered_stream_range_large_file() {
     let group = async_stream_group(&session).await;
     let mut stream = group.download_unordered_stream(file_info, Some(10000..50000)).await.unwrap();
     assert_eq!(collect_unordered_stream(&mut stream, 40000).await, &data[10000..50000]);
+}
+
+// ── FD leak diagnostics ─────────────────────────────────────────────────
+
+#[test]
+#[serial(fd_leak)]
+fn fd_leak_single_session_roundtrip() {
+    let before = count_open_fds();
+    report_fd_count("before session creation");
+
+    {
+        let temp = tempdir().unwrap();
+        report_fd_count("after tempdir");
+
+        let session = local_session(&temp).unwrap();
+        report_fd_count("after local_session");
+
+        assert_roundtrip_sync(&session, &temp, b"fd leak test", "fd_test");
+        report_fd_count("after roundtrip");
+
+        drop(session);
+        report_fd_count("after session drop");
+
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        report_fd_count("after 200ms settle");
+
+        drop(temp);
+        report_fd_count("after tempdir drop");
+    }
+
+    let after = count_open_fds();
+    report_fd_count("after full cleanup");
+
+    let leaked = after as isize - before as isize;
+    eprintln!("[FD] SINGLE SESSION LEAK: {leaked} FDs leaked");
+}
+
+#[test]
+#[serial(fd_leak)]
+fn fd_leak_isolate_components() {
+    use xet_runtime::config::XetConfig;
+    use xet_runtime::core::XetRuntime;
+
+    let fd = |label: &str, baseline: usize| -> usize {
+        let n = count_open_fds();
+        let delta = n as isize - baseline as isize;
+        if delta != 0 {
+            eprintln!("[FD] {label}: delta={delta}");
+        }
+        n
+    };
+
+    // FD tolerance: other parallel tests may transiently affect the process FD count,
+    // so we allow a small delta. The original bug leaked 4+ FDs per upload session.
+    const FD_TOLERANCE: isize = 2;
+
+    // Warmup: first runtime creation installs signal handlers / global state.
+    {
+        let rt = XetRuntime::new_with_config(XetConfig::new()).unwrap();
+        drop(rt);
+    }
+
+    let before = count_open_fds();
+    {
+        let rt = XetRuntime::new_with_config(XetConfig::new()).unwrap();
+        drop(rt);
+    }
+    more_asserts::assert_le!(
+        (count_open_fds() as isize - before as isize).abs(),
+        FD_TOLERANCE,
+        "XetRuntime leaked FDs"
+    );
+
+    let before = count_open_fds();
+    {
+        let temp = tempdir().unwrap();
+        let session = local_session(&temp).unwrap();
+        drop(session);
+    }
+    more_asserts::assert_le!(
+        (count_open_fds() as isize - before as isize).abs(),
+        FD_TOLERANCE,
+        "XetSession (no ops) leaked FDs"
+    );
+
+    let before = count_open_fds();
+    {
+        let temp = tempdir().unwrap();
+        let session = local_session(&temp).unwrap();
+        let commit = session.new_upload_commit().unwrap().build_blocking().unwrap();
+        commit.commit_blocking().unwrap();
+        drop(commit);
+        drop(session);
+    }
+    fd("empty commit", before);
+    more_asserts::assert_le!(
+        (count_open_fds() as isize - before as isize).abs(),
+        FD_TOLERANCE,
+        "empty commit leaked FDs"
+    );
+
+    let before_upload = count_open_fds();
+    let file_info;
+    let temp = tempdir().unwrap();
+    {
+        let session = local_session(&temp).unwrap();
+        {
+            let commit = session.new_upload_commit().unwrap().build_blocking().unwrap();
+            let handle = commit
+                .upload_bytes_blocking(b"leak test".to_vec(), Sha256Policy::Compute, Some("leak.bin".into()))
+                .unwrap();
+            let meta = handle.finalize_ingestion_blocking().unwrap();
+            file_info = meta.xet_info;
+            commit.commit_blocking().unwrap();
+        }
+        drop(session);
+    }
+    fd("upload", before_upload);
+    more_asserts::assert_le!(
+        (count_open_fds() as isize - before_upload as isize).abs(),
+        FD_TOLERANCE,
+        "upload leaked FDs"
+    );
+
+    let before_download = count_open_fds();
+    {
+        let session = local_session(&temp).unwrap();
+        {
+            let group = session.new_file_download_group().unwrap().build_blocking().unwrap();
+            let dest = temp.path().join("leak.out");
+            group.download_file_to_path_blocking(file_info, dest).unwrap();
+            group.finish_blocking().unwrap();
+        }
+        drop(session);
+    }
+    fd("download", before_download);
+    more_asserts::assert_le!(
+        (count_open_fds() as isize - before_download as isize).abs(),
+        FD_TOLERANCE,
+        "download leaked FDs"
+    );
+}
+
+#[test]
+#[serial(fd_leak)]
+fn fd_leak_repeated_sessions() {
+    let before = count_open_fds();
+    report_fd_count("repeated: before loop");
+
+    for i in 0..10 {
+        let temp = tempdir().unwrap();
+        let session = local_session(&temp).unwrap();
+        assert_roundtrip_sync(&session, &temp, b"repeated fd test", &format!("iter_{i}"));
+        drop(session);
+        drop(temp);
+    }
+
+    let after = count_open_fds();
+    report_fd_count("repeated: after 10 iterations");
+
+    let leaked = after as isize - before as isize;
+    eprintln!("[FD] 10 SESSIONS LEAK: {leaked} FDs leaked ({} per session)", leaked as f64 / 10.0);
+}
+
+#[test]
+#[serial(fd_leak)]
+fn fd_leak_session_components_breakdown() {
+    let before = count_open_fds();
+    report_fd_count("breakdown: start");
+
+    let temp = tempdir().unwrap();
+    let fds_after_temp = count_open_fds();
+    report_fd_count("breakdown: after tempdir");
+
+    let session = local_session(&temp).unwrap();
+    let fds_after_session = count_open_fds();
+    report_fd_count("breakdown: after session");
+
+    // Upload phase
+    {
+        let commit = session.new_upload_commit().unwrap().build_blocking().unwrap();
+        report_fd_count("breakdown: after commit build");
+
+        let handle = commit
+            .upload_bytes_blocking(b"breakdown test".to_vec(), Sha256Policy::Compute, Some("bd.bin".into()))
+            .unwrap();
+        report_fd_count("breakdown: after upload_bytes");
+
+        let file_meta = handle.finalize_ingestion_blocking().unwrap();
+        report_fd_count("breakdown: after finalize");
+
+        commit.commit_blocking().unwrap();
+        report_fd_count("breakdown: after commit");
+
+        // Download phase
+        let dest = temp.path().join("bd.out");
+        let group = session.new_file_download_group().unwrap().build_blocking().unwrap();
+        report_fd_count("breakdown: after download group build");
+
+        group.download_file_to_path_blocking(file_meta.xet_info, dest.clone()).unwrap();
+        report_fd_count("breakdown: after download_file");
+
+        group.finish_blocking().unwrap();
+        report_fd_count("breakdown: after group finish");
+    }
+
+    let fds_after_operations = count_open_fds();
+    report_fd_count("breakdown: after operations complete");
+
+    drop(session);
+    let fds_after_session_drop = count_open_fds();
+    report_fd_count("breakdown: after session drop");
+
+    drop(temp);
+    let fds_after_temp_drop = count_open_fds();
+    report_fd_count("breakdown: after tempdir drop");
+
+    eprintln!("[FD] BREAKDOWN:");
+    eprintln!("  tempdir:    +{}", fds_after_temp as isize - before as isize);
+    eprintln!("  session:    +{}", fds_after_session as isize - fds_after_temp as isize);
+    eprintln!("  operations: +{}", fds_after_operations as isize - fds_after_session as isize);
+    eprintln!("  -session:   {}", fds_after_session_drop as isize - fds_after_operations as isize);
+    eprintln!("  -tempdir:   {}", fds_after_temp_drop as isize - fds_after_session_drop as isize);
+    eprintln!("  net leak:   {}", fds_after_temp_drop as isize - before as isize);
+}
+
+#[test]
+#[serial(fd_leak)]
+fn fd_leak_deficient_runtime() {
+    let before = count_open_fds();
+    report_fd_count("deficient: before");
+
+    for (label, builder) in deficient_runtime_cases() {
+        let rt = builder();
+        let temp = tempdir().unwrap();
+        let session = rt.block_on(async {
+            let session = local_session(&temp).unwrap();
+            report_fd_count(&format!("deficient({label}): after session"));
+
+            let payload = format!("{label} fd leak test");
+            assert_roundtrip_async(&session, &temp, payload.as_bytes(), label).await;
+            report_fd_count(&format!("deficient({label}): after roundtrip"));
+            session
+        });
+        drop(rt);
+        report_fd_count(&format!("deficient({label}): after rt drop"));
+        drop(session);
+        report_fd_count(&format!("deficient({label}): after session drop"));
+        drop(temp);
+        report_fd_count(&format!("deficient({label}): after temp drop"));
+    }
+
+    let after = count_open_fds();
+    let leaked = after as isize - before as isize;
+    eprintln!("[FD] DEFICIENT RUNTIMES TOTAL LEAK: {leaked} FDs");
 }
