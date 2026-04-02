@@ -13,7 +13,7 @@ Data processing pipeline for chunking, deduplication, and file reconstruction.  
 - **File reconstruction** — Reassemble files from deduplicated chunk references
 - **Progress tracking** — Hooks for upload/download progress reporting
 
-This crate is part of [xet-core](https://github.com/huggingface/xet-core), 
+This crate is part of [xet-core](https://github.com/huggingface/xet-core).
 
 ## License
 
