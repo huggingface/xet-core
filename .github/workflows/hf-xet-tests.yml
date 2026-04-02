@@ -17,19 +17,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # checkout out xet-core
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       # checkout out huggingface_hub
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           repository: huggingface/huggingface_hub
           path: huggingface_hub
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
         with:
           python-version: '3.10'
       - name: Create venv
         run: python3 -m venv .venv
       - name: Build wheel
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1
         with:
           command: develop
           sccache: 'true'
