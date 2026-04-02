@@ -68,8 +68,8 @@ impl<G> AuthGroupBuilder<G> {
 
     /// Seed an initial CAS access token and its expiry as a Unix timestamp (seconds).
     ///
-    /// If endpoint is not provided but a token refresh URL is provided, this token info will be replaced by the one
-    /// retrieved from the first token refresh request.
+    /// If endpoint is not provided but a token refresh URL is provided, the eager refresh response's token info is used
+    /// only if no token was pre-seeded here.
     pub fn with_token_info(self, token: impl Into<String>, expiry: u64) -> Self {
         Self {
             auth_options: AuthOptions {

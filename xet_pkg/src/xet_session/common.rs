@@ -73,3 +73,86 @@ pub(super) async fn create_translator_config(
 
     Ok(config)
 }
+
+#[cfg(test)]
+mod tests {
+    use http::HeaderMap;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use super::*;
+    use crate::xet_session::XetSessionBuilder;
+    use crate::xet_session::auth_group_builder::AuthOptions;
+
+    /// When `endpoint` is not set but `token_refresh` is set, `create_translator_config`
+    /// calls the refresh URL exactly once, uses the returned `cas_url` as the endpoint,
+    /// and seeds `token_info` from the response when none was pre-supplied.
+    #[tokio::test]
+    async fn test_eager_refresh_sets_endpoint_and_token() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "casUrl": "https://cas.example.com",
+                "exp": 9_999_999_999u64,
+                "accessToken": "eagerly-fetched-token",
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let refresh_url = format!("{}/token", server.uri());
+        let session = XetSessionBuilder::new().build().unwrap();
+
+        let auth_options = AuthOptions {
+            endpoint: None,
+            custom_headers: None,
+            token_info: None,
+            token_refresh: Some((refresh_url, HeaderMap::new())),
+        };
+
+        let config = create_translator_config(&session, auth_options).await.unwrap();
+
+        assert_eq!(config.session.endpoint, "https://cas.example.com");
+        let auth = config.session.auth.expect("auth config should be set");
+        assert_eq!(auth.token, "eagerly-fetched-token");
+        assert_eq!(auth.token_expiration, 9_999_999_999);
+    }
+
+    /// When `token_info` is already provided alongside `token_refresh` but no `endpoint`,
+    /// the refresh is still called once to obtain the `cas_url`, but the pre-supplied
+    /// token is preserved — it must NOT be overwritten by the refresh response.
+    #[tokio::test]
+    async fn test_eager_refresh_preserves_existing_token_info() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "casUrl": "https://cas.example.com",
+                "exp": 9_999_999_999u64,
+                "accessToken": "eagerly-fetched-token",
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let refresh_url = format!("{}/token", server.uri());
+        let session = XetSessionBuilder::new().build().unwrap();
+
+        let auth_options = AuthOptions {
+            endpoint: None,
+            custom_headers: None,
+            token_info: Some(("pre-supplied-token".to_string(), 1_000_000_000)),
+            token_refresh: Some((refresh_url, HeaderMap::new())),
+        };
+
+        let config = create_translator_config(&session, auth_options).await.unwrap();
+
+        assert_eq!(config.session.endpoint, "https://cas.example.com");
+        let auth = config.session.auth.expect("auth config should be set");
+        assert_eq!(auth.token, "pre-supplied-token");
+        assert_eq!(auth.token_expiration, 1_000_000_000);
+    }
+}
