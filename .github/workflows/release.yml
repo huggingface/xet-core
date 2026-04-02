@@ -432,30 +432,32 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     env:
       HF_XET_VERSION: ${{ github.event.inputs.tag }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6
 
       - name: Install hf CLI
         run: uv tool install huggingface_hub
 
       - name: Strip version prefix
         id: version
+        shell: bash
         run: |
           VERSION="${HF_XET_VERSION#v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Wait for PyPI availability
+        shell: bash
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           for i in $(seq 1 30); do
-            if uv pip compile --no-deps - <<< "hf_xet==$VERSION" > /dev/null 2>&1; then
-              echo "✓ hf_xet==$VERSION available on PyPI"
+            if curl -sf "https://pypi.org/pypi/hf_xet/$VERSION/json" > /dev/null; then
+              echo "hf_xet==$VERSION available on PyPI"
               exit 0
             fi
             echo "Waiting for hf_xet==$VERSION on PyPI... (attempt $i/30)"
@@ -467,33 +469,50 @@ jobs:
       - name: Run smoke tests
         env:
           HF_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
+        shell: bash
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           ./scripts/smoke_tests/run.sh --hf-xet-version "$VERSION" --namespace xet-team
 
+  smoke-test-notify:
+    name: Notify smoke test results
+    runs-on: ubuntu-latest
+    if: ${{ always() && github.event_name == 'workflow_dispatch' }}
+    needs: [smoke-test]
+    steps:
+      - name: Determine failed platforms
+        if: ${{ needs.smoke-test.result == 'failure' }}
+        id: failures
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          failed=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" \
+            --paginate -q '[.jobs[] | select(.name | startswith("Smoke test released version")) | select(.conclusion == "failure") | (.name | capture("\\((?<os>[^)]+)\\)")).os] | join(", ")')
+          echo "platforms=${failed:-unknown}" >> "$GITHUB_OUTPUT"
+
       - name: Notify Slack on failure
-        if: failure()
-        uses: slackapi/slack-github-action@v2.1.0
+        if: ${{ needs.smoke-test.result == 'failure' }}
+        uses: slackapi/slack-github-action@b0fa283ad8fea605de13dc3f449259339835fc52  # v2.1.0
         with:
           webhook: ${{ secrets.SLACK_SMOKE_TEST_WEBHOOK_URL }}
           webhook-type: incoming-webhook
           payload: |
             {
-              "text": ":red_circle: hf-xet smoke tests failed for ${{ github.event.inputs.tag }} on ${{ matrix.os }}",
+              "text": ":red_circle: hf-xet smoke tests failed for ${{ github.event.inputs.tag }}",
               "blocks": [
                 {
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": ":red_circle: *hf-xet smoke tests failed*\n*Version:* `${{ github.event.inputs.tag }}`\n*Platform:* `${{ matrix.os }}`\n*Run:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View logs>"
+                    "text": ":red_circle: *hf-xet smoke tests failed*\n*Version:* `${{ github.event.inputs.tag }}`\n*Failed:* ${{ steps.failures.outputs.platforms }}\n*Run:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View logs>"
                   }
                 }
               ]
             }
 
       - name: Notify Slack on success
-        if: success()
-        uses: slackapi/slack-github-action@v2.1.0
+        if: ${{ needs.smoke-test.result == 'success' }}
+        uses: slackapi/slack-github-action@b0fa283ad8fea605de13dc3f449259339835fc52  # v2.1.0
         with:
           webhook: ${{ secrets.SLACK_SMOKE_TEST_WEBHOOK_URL }}
           webhook-type: incoming-webhook
@@ -505,7 +524,7 @@ jobs:
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": ":large_green_circle: *hf-xet smoke tests passed*\n*Version:* `${{ github.event.inputs.tag }}`\n*Platform:* `${{ matrix.os }}`"
+                    "text": ":large_green_circle: *hf-xet smoke tests passed*\n*Version:* `${{ github.event.inputs.tag }}`\n*Platforms:* ubuntu, macos, windows\n*Run:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View logs>"
                   }
                 }
               ]
