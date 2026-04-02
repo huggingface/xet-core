@@ -201,8 +201,11 @@ pub struct XetRuntime {
 // Use thread-local references to the runtime that are set on initialization among all
 // the worker threads in the runtime.  This way, XetRuntime::current() will always refer to
 // the runtime active with that worker thread.
+//
+// Weak references are used to avoid a circular reference: XetRuntime owns the tokio runtime,
+// whose worker threads would otherwise prevent the XetRuntime from being dropped.
 thread_local! {
-    static THREAD_RUNTIME_REF: RefCell<Option<(u32, Arc<XetRuntime>)>> = const { RefCell::new(None) };
+    static THREAD_RUNTIME_REF: RefCell<Option<(u32, Weak<XetRuntime>)>> = const { RefCell::new(None) };
 }
 
 // Registry for External-mode runtimes created via from_external_with_config.
@@ -235,8 +238,9 @@ impl XetRuntime {
     pub fn current_if_exists() -> Option<Arc<Self>> {
         // 1. Thread-local: set by on_thread_start in new_with_config (Owned mode).
         let maybe_rt = THREAD_RUNTIME_REF.with_borrow(|rt| rt.clone());
-        if let Some((pid, rt)) = maybe_rt
+        if let Some((pid, weak)) = maybe_rt
             && pid == std::process::id()
+            && let Some(rt) = weak.upgrade()
         {
             return Some(rt);
         }
@@ -291,14 +295,14 @@ impl XetRuntime {
             config: Arc::new(config),
         });
 
-        // Each thread in each of the tokio worker threads holds a reference to the runtime handling
-        // that thread.  If there are multiple runtimes -- as could exist if CTRL-C is hit, then a process
-        // calls into xet immediately afterward -- the references are still correct due to using
-        // thread-local storage.
-        let rt_c = rt.clone();
+        // Each worker thread stores a Weak reference so it can find its owning XetRuntime via
+        // current()/current_if_exists(). Weak (not Arc) is critical: the XetRuntime owns the
+        // tokio runtime, so a strong reference from worker threads would create a cycle that
+        // prevents the runtime from ever being dropped.
+        let rt_weak = Arc::downgrade(&rt);
         let pid = std::process::id();
         let set_threadlocal_reference = move || {
-            THREAD_RUNTIME_REF.set(Some((pid, rt_c.clone())));
+            THREAD_RUNTIME_REF.set(Some((pid, rt_weak.clone())));
         };
 
         // Set the name of a new thread for the threadpool. Names are prefixed with
@@ -331,6 +335,7 @@ impl XetRuntime {
             .thread_name_fn(get_thread_name) // thread names will be hf-xet-0, hf-xet-1, etc.
             .on_thread_start(set_threadlocal_reference) // Set the local runtime reference.
             .thread_stack_size(THREADPOOL_STACK_SIZE) // 8MB stack size, default is 2MB
+            .thread_keep_alive(std::time::Duration::from_millis(100)) // Don't keep idle blocking threads for long
             .enable_all() // enable all features, including IO/Timer/Signal/Reactor
             .build()
             .map_err(RuntimeError::RuntimeInit)?;
@@ -724,10 +729,10 @@ impl XetRuntime {
         F: FnOnce() -> R + Send + 'static,
         R: Send + 'static,
     {
-        let rt = self.clone();
+        let rt_weak = Arc::downgrade(self);
         self.handle().spawn_blocking(move || {
             let pid = std::process::id();
-            THREAD_RUNTIME_REF.set(Some((pid, rt)));
+            THREAD_RUNTIME_REF.set(Some((pid, rt_weak)));
             f()
         })
     }
@@ -800,10 +805,31 @@ impl XetRuntime {
 
 impl Drop for XetRuntime {
     fn drop(&mut self) {
-        if let RuntimeBackend::External { handle_id: Some(id) } = &self.backend
-            && let Ok(mut reg) = EXTERNAL_RUNTIME_REGISTRY.write()
-        {
-            reg.remove(id);
+        self.handle_ref.take();
+
+        match &self.backend {
+            RuntimeBackend::External { handle_id: Some(id) } => {
+                if let Ok(mut reg) = EXTERNAL_RUNTIME_REGISTRY.write() {
+                    reg.remove(id);
+                }
+            },
+            RuntimeBackend::OwnedThreadPool { runtime } => {
+                if let Ok(mut guard) = runtime.write()
+                    && let Some(rt_arc) = guard.take()
+                {
+                    match Arc::try_unwrap(rt_arc) {
+                        Ok(rt) => {
+                            if TokioRuntimeHandle::try_current().is_ok() {
+                                rt.shutdown_background();
+                            } else {
+                                rt.shutdown_timeout(std::time::Duration::from_secs(5));
+                            }
+                        },
+                        Err(_arc) => {},
+                    }
+                }
+            },
+            _ => {},
         }
     }
 }
