@@ -4,8 +4,7 @@
 [![docs.rs](https://docs.rs/xet-data/badge.svg)](https://docs.rs/xet-data)
 [![License](https://img.shields.io/crates/l/xet-data.svg)](https://github.com/huggingface/xet-core/blob/main/LICENSE)
 
-Data processing pipeline for chunking, deduplication, and file reconstruction,
-used in the [Hugging Face Xet](https://github.com/huggingface/xet-core) storage tools.
+Data processing pipeline for chunking, deduplication, and file reconstruction.  Intended to be used through the API in the hf-xet package. 
 
 ## Overview
 
@@ -14,8 +13,7 @@ used in the [Hugging Face Xet](https://github.com/huggingface/xet-core) storage 
 - **File reconstruction** — Reassemble files from deduplicated chunk references
 - **Progress tracking** — Hooks for upload/download progress reporting
 
-This crate is part of [xet-core](https://github.com/huggingface/xet-core),
-the Rust backend for [huggingface_hub](https://github.com/huggingface/huggingface_hub).
+This crate is part of [xet-core](https://github.com/huggingface/xet-core), 
 
 ## License
 

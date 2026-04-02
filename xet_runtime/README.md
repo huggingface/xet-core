@@ -4,8 +4,8 @@
 [![docs.rs](https://docs.rs/xet-runtime/badge.svg)](https://docs.rs/xet-runtime)
 [![License](https://img.shields.io/crates/l/xet-runtime.svg)](https://github.com/huggingface/xet-core/blob/main/LICENSE)
 
-Async runtime, configuration, logging, and utility infrastructure for the
-[Hugging Face Xet](https://github.com/huggingface/xet-core) storage tools.
+Async runtime, configuration storage, logging, and utility infrastructure for the
+[Hugging Face Xet](https://github.com/huggingface/xet-core) storage tools.  This is meant to be used through the API in the hf-xet package. 
 
 ## Overview
 
@@ -18,8 +18,7 @@ xet-core ecosystem:
 - **Error handling** — `RuntimeError` type for the runtime layer
 - **Utilities** — File operations, sync primitives, and platform abstractions
 
-This crate is part of [xet-core](https://github.com/huggingface/xet-core),
-the Rust backend for [huggingface_hub](https://github.com/huggingface/huggingface_hub).
+This crate is part of [xet-core](https://github.com/huggingface/xet-core). 
 
 ## License
 

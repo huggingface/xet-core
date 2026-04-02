@@ -6,7 +6,7 @@
 
 Client library for the [Hugging Face Xet](https://github.com/huggingface/xet-core)
 data storage system. Provides the high-level session API for uploading and
-downloading files with chunk-based deduplication.
+downloading files with chunk-based deduplication. 
 
 ## Overview
 
@@ -14,8 +14,6 @@ downloading files with chunk-based deduplication.
   and concurrent file transfers
 - **Upload & download** — Stream files to/from Hugging Face Hub with automatic
   chunking, deduplication, and local caching
-- **Legacy compatibility** — Support for Git-LFS pointer files alongside
-  native Xet storage
 
 ## Crate Ecosystem
 
