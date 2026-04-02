@@ -7,9 +7,9 @@ use tokio::sync::Semaphore;
 use crate::config::XetConfig;
 use crate::utils::adjustable_semaphore::AdjustableSemaphore;
 
-/// Holds global values that are shared across the entire runtime.
+/// Holds shared state that is common across the entire context.
 ///
-/// Accessible via `XetRuntime::current().common()`.
+/// Accessible via `ctx.common` on a [`super::XetContext`].
 #[derive(Debug)]
 pub struct XetCommon {
     // A cached reqwest Client to be shared by all high-level clients.

@@ -10,6 +10,7 @@ crate-type = ["cdylib", "rlib"]
 xet-core-structures = { path = "../../xet_core_structures" }
 xet-client = { path = "../../xet_client" }
 xet-data = { path = "../../xet_data" }
+xet-runtime = { path = "../../xet_runtime" }
 
 async-trait = "0.1"
 bytes = "1.11"

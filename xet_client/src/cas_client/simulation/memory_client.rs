@@ -17,6 +17,7 @@ use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::metadata_shard::streaming_shard::MDBMinimalShard;
 use xet_core_structures::metadata_shard::xorb_structs::MDBXorbInfo;
 use xet_core_structures::xorb_object::{SerializedXorbObject, XorbObject};
+use xet_runtime::core::XetContext;
 
 use super::super::Client;
 use super::super::adaptive_concurrency::AdaptiveConcurrencyController;
@@ -69,12 +70,12 @@ pub struct MemoryClient {
 
 impl MemoryClient {
     /// Create a new in-memory client.
-    pub fn new() -> Arc<Self> {
+    pub fn new(ctx: XetContext) -> Arc<Self> {
         Arc::new(Self {
             xorbs: RwLock::new(MerkleHashMap::new()),
             shard: RwLock::new(MDBInMemoryShard::default()),
             global_dedup: RwLock::new(MerkleHashMap::new()),
-            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("memory_uploads"),
+            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload(ctx, "memory_uploads"),
             url_expiration_ms: AtomicU64::new(u64::MAX),
             global_dedup_expiration_secs: AtomicU64::new(0),
             random_ms_delay_window: (AtomicU64::new(0), AtomicU64::new(0)),
@@ -217,11 +218,12 @@ impl MemoryClient {
 
 impl Default for MemoryClient {
     fn default() -> Self {
+        let ctx = XetContext::default().expect("ctx");
         Self {
             xorbs: RwLock::new(MerkleHashMap::new()),
             shard: RwLock::new(MDBInMemoryShard::default()),
             global_dedup: RwLock::new(MerkleHashMap::new()),
-            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("memory_uploads"),
+            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload(ctx, "memory_uploads"),
             url_expiration_ms: AtomicU64::new(u64::MAX),
             global_dedup_expiration_secs: AtomicU64::new(0),
             random_ms_delay_window: (AtomicU64::new(0), AtomicU64::new(0)),
@@ -966,11 +968,22 @@ fn parse_any_fetch_url(url: &str) -> Result<(MerkleHash, Instant)> {
 
 #[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
+    use xet_runtime::config::XetConfig;
+    use xet_runtime::core::{XetContext, XetRuntime};
+
     use super::super::client_testing_utils::ClientTestingUtils;
     use super::*;
 
+    fn test_ctx() -> XetContext {
+        let config = XetConfig::new();
+        XetContext::new(
+            XetRuntime::from_external_with_config(tokio::runtime::Handle::current(), &config).expect("ctx"),
+            config,
+        )
+    }
+
     fn new_client() -> Arc<dyn super::super::DirectAccessClient> {
-        MemoryClient::new()
+        MemoryClient::new(test_ctx())
     }
 
     #[tokio::test]
@@ -1002,7 +1015,7 @@ mod tests {
     /// Comprehensive test for RandomXorb insertion and data access.
     #[tokio::test]
     async fn test_random_xorb() {
-        let client = MemoryClient::new();
+        let client = MemoryClient::new(test_ctx());
 
         // Basic insertion and existence
         let xorb = RandomXorb::from_seed(42, 5, 1024);
@@ -1045,7 +1058,7 @@ mod tests {
     /// Test RandomXorb with large chunk count and scattered range access.
     #[tokio::test]
     async fn test_random_xorb_large() {
-        let client = MemoryClient::new();
+        let client = MemoryClient::new(test_ctx());
         let xorb = RandomXorb::from_seed(12345, 100, 4096);
         let xorb_hash = client.insert_random_xorb(xorb.clone()).await.unwrap();
 
@@ -1060,7 +1073,7 @@ mod tests {
     /// Comprehensive test for lazy file insertion with on-the-fly xorb generation.
     #[tokio::test]
     async fn test_lazy_file() {
-        let client = MemoryClient::new();
+        let client = MemoryClient::new(test_ctx());
 
         // Single-term file
         let file = client.insert_random_lazy_file(&[(1, (0, 3))], 256).await.unwrap();
@@ -1105,8 +1118,14 @@ mod tests {
     #[tokio::test]
     async fn test_lazy_file_deterministic() {
         let term_spec = &[(999, (0, 4))];
-        let file1 = MemoryClient::new().insert_random_lazy_file(term_spec, 512).await.unwrap();
-        let file2 = MemoryClient::new().insert_random_lazy_file(term_spec, 512).await.unwrap();
+        let file1 = MemoryClient::new(test_ctx())
+            .insert_random_lazy_file(term_spec, 512)
+            .await
+            .unwrap();
+        let file2 = MemoryClient::new(test_ctx())
+            .insert_random_lazy_file(term_spec, 512)
+            .await
+            .unwrap();
         assert_eq!(file1.file_hash, file2.file_hash);
         assert_eq!(file1.data, file2.data);
     }
@@ -1114,7 +1133,7 @@ mod tests {
     /// Verify materialized and random xorbs coexist correctly.
     #[tokio::test]
     async fn test_mixed_xorb_types() {
-        let client = MemoryClient::new();
+        let client = MemoryClient::new(test_ctx());
 
         let random_xorb = RandomXorb::from_seed(111, 3, 256);
         let random_hash = client.insert_random_xorb(random_xorb).await.unwrap();

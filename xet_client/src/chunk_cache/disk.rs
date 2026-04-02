@@ -12,7 +12,7 @@ use base64::engine::general_purpose::URL_SAFE;
 use tokio::sync::RwLock;
 use tracing::{debug, error};
 use xet_core_structures::merklehash::MerkleHash;
-use xet_runtime::core::xet_config;
+use xet_runtime::config::XetConfig;
 use xet_runtime::error_printer::ErrorPrinter;
 use xet_runtime::file_utils::SafeFileCreator;
 use xet_runtime::utils::output_bytes;
@@ -205,7 +205,7 @@ impl DiskCache {
     /// │       ├── [range 400-402, file_len, file_hash]
     /// │       ├── [range 404-405, file_len, file_hash]
     /// │       └── [range 679-700, file_len, file_hash]
-    pub fn initialize(config: &CacheConfig) -> Result<Self, ChunkCacheError> {
+    pub fn initialize(xet_config: &XetConfig, config: &CacheConfig) -> Result<Self, ChunkCacheError> {
         if config.cache_size == 0 {
             return Err(ChunkCacheError::InvalidArguments);
         }
@@ -213,7 +213,7 @@ impl DiskCache {
         let cache_root = config.cache_directory.clone();
 
         // May take a while; don't block the runtime for this.
-        let state = Self::initialize_state(&cache_root, capacity)?;
+        let state = Self::initialize_state(&cache_root, capacity, xet_config)?;
 
         Ok(Self {
             state: Arc::new(RwLock::new(state)),
@@ -222,7 +222,11 @@ impl DiskCache {
         })
     }
 
-    fn initialize_state(cache_root: &PathBuf, capacity: u64) -> Result<CacheState, ChunkCacheError> {
+    fn initialize_state(
+        cache_root: &PathBuf,
+        capacity: u64,
+        xet_config: &XetConfig,
+    ) -> Result<CacheState, ChunkCacheError> {
         let mut state = HashMap::new();
         let mut total_bytes = 0;
         let mut num_items = 0;
@@ -284,7 +288,7 @@ impl DiskCache {
 
                 // loop through cache items inside key directory
                 for item in key_readdir {
-                    let cache_item = match try_parse_cache_file(item, capacity) {
+                    let cache_item = match try_parse_cache_file(item, capacity, xet_config) {
                         Ok(Some(ci)) => ci,
                         Ok(None) => continue,
                         Err(e) => return Err(e),
@@ -664,7 +668,11 @@ fn is_ok_dir(dir_result: Result<DirEntry, io::Error>) -> OptionResult<DirEntry, 
 // given a result from readdir attempts to parse it as a cache file handle
 // i.e. validate its file name against the contents (excluding file-hash-validation)
 // validate that it is a file, correct len, and is not too large.
-fn try_parse_cache_file(file_result: io::Result<DirEntry>, capacity: u64) -> OptionResult<CacheItem, ChunkCacheError> {
+fn try_parse_cache_file(
+    file_result: io::Result<DirEntry>,
+    capacity: u64,
+    config: &XetConfig,
+) -> OptionResult<CacheItem, ChunkCacheError> {
     let item = match file_result {
         Ok(item) => item,
         Err(e) => {
@@ -687,10 +695,10 @@ fn try_parse_cache_file(file_result: io::Result<DirEntry>, capacity: u64) -> Opt
     if !md.is_file() {
         return Ok(None);
     }
-    if md.len() > xet_config().chunk_cache.size_bytes {
+    if md.len() > config.chunk_cache.size_bytes {
         return Err(ChunkCacheError::general(format!(
             "Cache directory contains a file larger than {} GB, cache directory state is invalid",
-            (xet_config().chunk_cache.size_bytes as f64 / (1 << 30) as f64)
+            (config.chunk_cache.size_bytes as f64 / (1 << 30) as f64)
         )));
     }
 
@@ -817,6 +825,7 @@ mod tests {
     use rand::SeedableRng;
     use rand::rngs::StdRng;
     use tempfile::TempDir;
+    use xet_runtime::config::XetConfig;
     use xet_runtime::utils::output_bytes;
 
     use super::super::{CacheConfig, ChunkCache};
@@ -835,9 +844,9 @@ mod tests {
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
-            ..Default::default()
         };
-        let cache = DiskCache::initialize(&config).unwrap();
+        let xet_config = XetConfig::new();
+        let cache = DiskCache::initialize(&xet_config, &config).unwrap();
         assert!(
             cache
                 .get(&random_key(&mut rng), &random_range(&mut rng))
@@ -854,9 +863,9 @@ mod tests {
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
-            ..Default::default()
         };
-        let cache = DiskCache::initialize(&config).unwrap();
+        let xet_config = XetConfig::new();
+        let cache = DiskCache::initialize(&xet_config, &config).unwrap();
 
         let key = random_key(&mut rng);
         let range = ChunkRange::new(0, 4);
@@ -886,9 +895,9 @@ mod tests {
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
-            ..Default::default()
         };
-        let cache = DiskCache::initialize(&config).unwrap();
+        let xet_config = XetConfig::new();
+        let cache = DiskCache::initialize(&xet_config, &config).unwrap();
 
         let key = random_key(&mut rng);
         // following parts of test assume overall inserted range includes chunk 0
@@ -933,9 +942,9 @@ mod tests {
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: CAP,
-            ..Default::default()
         };
-        let cache = DiskCache::initialize(&config).unwrap();
+        let xet_config = XetConfig::new();
+        let cache = DiskCache::initialize(&xet_config, &config).unwrap();
         let mut it = RandomEntryIterator::std_from_seed(RANDOM_SEED);
 
         // fill the cache to almost capacity
@@ -957,9 +966,9 @@ mod tests {
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
-            ..Default::default()
         };
-        let cache = DiskCache::initialize(&config).unwrap();
+        let xet_config = XetConfig::new();
+        let cache = DiskCache::initialize(&xet_config, &config).unwrap();
         let mut it = RandomEntryIterator::std_from_seed(RANDOM_SEED).with_range_len(1000);
         let (key, range, offsets, data) = it.next().unwrap();
         assert!(cache.put(&key, &range, &offsets, &data).await.is_ok());
@@ -974,9 +983,9 @@ mod tests {
             let config = CacheConfig {
                 cache_directory: cache_root.path().to_path_buf(),
                 cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
-                ..Default::default()
             };
-            let cache = DiskCache::initialize(&config).unwrap();
+            let xet_config = XetConfig::new();
+            let cache = DiskCache::initialize(&xet_config, &config).unwrap();
             let (key, range, offsets, data) = it.next().unwrap();
             assert!(cache.put(&key, &range, &offsets, &data).await.is_ok());
             (cache_root, cache, key, range, offsets, data)
@@ -1025,9 +1034,9 @@ mod tests {
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
-            ..Default::default()
         };
-        let cache = DiskCache::initialize(&config).unwrap();
+        let xet_config = XetConfig::new();
+        let cache = DiskCache::initialize(&xet_config, &config).unwrap();
 
         let mut it = RandomEntryIterator::std_from_seed(RANDOM_SEED);
 
@@ -1039,7 +1048,7 @@ mod tests {
             keys_and_ranges.push((key, range));
         }
 
-        let cache2 = DiskCache::initialize(&config).unwrap();
+        let cache2 = DiskCache::initialize(&xet_config, &config).unwrap();
         for (i, (key, range)) in keys_and_ranges.iter().enumerate() {
             let get_result = cache2.get(&key, &range).await;
             assert!(get_result.is_ok(), "{i} {get_result:?}");
@@ -1058,9 +1067,9 @@ mod tests {
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
-            ..Default::default()
         };
-        let cache = DiskCache::initialize(&config).unwrap();
+        let xet_config = XetConfig::new();
+        let cache = DiskCache::initialize(&xet_config, &config).unwrap();
         let mut it = RandomEntryIterator::std_from_seed(RANDOM_SEED).with_range_len(LARGE_FILE as u32);
 
         let (key, range, offsets, data) = it.next().unwrap();
@@ -1068,9 +1077,8 @@ mod tests {
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: LARGE_FILE - 1,
-            ..Default::default()
         };
-        let cache2 = DiskCache::initialize(&config).unwrap();
+        let cache2 = DiskCache::initialize(&xet_config, &config).unwrap();
 
         assert_eq!(cache2.total_bytes().await, 0);
     }
@@ -1079,12 +1087,12 @@ mod tests {
     async fn test_initialize_stops_loading_early_with_too_many_files() {
         const LARGE_FILE: u64 = 1000;
         let cache_root = TempDir::new().unwrap();
+        let xet_config = XetConfig::new();
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: LARGE_FILE * 10,
-            ..Default::default()
         };
-        let cache = DiskCache::initialize(&config).unwrap();
+        let cache = DiskCache::initialize(&xet_config, &config).unwrap();
         let mut it = RandomEntryIterator::std_from_seed(RANDOM_SEED).with_range_len(LARGE_FILE as u32);
         for _ in 0..10 {
             let (key, range, offsets, data) = it.next().unwrap();
@@ -1095,9 +1103,8 @@ mod tests {
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: cap2,
-            ..Default::default()
         };
-        let cache2 = DiskCache::initialize(&config).unwrap();
+        let cache2 = DiskCache::initialize(&xet_config, &config).unwrap();
 
         assert!(cache2.total_bytes().await < cap2 * 3, "{} < {}", cache2.total_bytes().await, cap2 * 3);
     }
@@ -1113,17 +1120,17 @@ mod tests {
     async fn test_unknown_eviction() {
         let cache_root = TempDir::new().unwrap();
         let capacity = 12 * RANGE_LEN as u64;
+        let xet_config = XetConfig::new();
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: capacity,
-            ..Default::default()
         };
-        let cache = DiskCache::initialize(&config).unwrap();
+        let cache = DiskCache::initialize(&xet_config, &config).unwrap();
         let mut it = RandomEntryIterator::std_from_seed(RANDOM_SEED);
         let (key, range, chunk_byte_indices, data) = it.next().unwrap();
         cache.put(&key, &range, &chunk_byte_indices, &data).await.unwrap();
 
-        let cache2 = DiskCache::initialize(&config).unwrap();
+        let cache2 = DiskCache::initialize(&xet_config, &config).unwrap();
         let get_result = cache2.get(&key, &range).await;
         assert!(get_result.is_ok());
         assert!(get_result.unwrap().is_some());
@@ -1156,9 +1163,9 @@ mod tests {
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
-            ..Default::default()
         };
-        let cache = DiskCache::initialize(&config).unwrap();
+        let xet_config = XetConfig::new();
+        let cache = DiskCache::initialize(&xet_config, &config).unwrap();
 
         let (key, range, chunk_byte_indices, data) = RandomEntryIterator::std_from_seed(RANDOM_SEED).next().unwrap();
         cache.put(&key, &range, &chunk_byte_indices, &data).await.unwrap();
@@ -1207,12 +1214,12 @@ mod tests {
         const NUM: u32 = 12;
         let cache_root = TempDir::new().unwrap();
         let capacity = (NUM * RANGE_LEN) as u64;
+        let xet_config = XetConfig::new();
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: capacity,
-            ..Default::default()
         };
-        let cache = DiskCache::initialize(&config).unwrap();
+        let cache = DiskCache::initialize(&xet_config, &config).unwrap();
         let mut it = RandomEntryIterator::std_from_seed(RANDOM_SEED).with_one_chunk_ranges(true);
         let (key, _, _, _) = it.next().unwrap();
         let mut previously_put: Vec<(Key, ChunkRange)> = Vec::new();
@@ -1246,11 +1253,15 @@ mod tests {
 
     #[test]
     fn test_initialize_with_cache_size_0() {
+        let xet_config = XetConfig::new();
         assert!(
-            DiskCache::initialize(&CacheConfig {
-                cache_directory: "/tmp".into(),
-                cache_size: 0,
-            })
+            DiskCache::initialize(
+                &xet_config,
+                &CacheConfig {
+                    cache_directory: "/tmp".into(),
+                    cache_size: 0,
+                },
+            )
             .is_err()
         );
     }
@@ -1259,6 +1270,7 @@ mod tests {
 #[cfg(test)]
 mod concurrency_tests {
     use tempfile::TempDir;
+    use xet_runtime::config::XetConfig;
 
     use super::super::{CacheConfig, ChunkCache};
     use super::DiskCache;
@@ -1276,9 +1288,9 @@ mod concurrency_tests {
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
-            ..Default::default()
         };
-        let cache = DiskCache::initialize(&config).unwrap();
+        let xet_config = XetConfig::new();
+        let cache = DiskCache::initialize(&xet_config, &config).unwrap();
 
         let num_tasks = 2 + rand::random::<u8>() % 14;
 
@@ -1308,12 +1320,12 @@ mod concurrency_tests {
     #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_run_concurrently_with_evictions() {
         let cache_root = TempDir::new().unwrap();
+        let xet_config = XetConfig::new();
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: RANGE_LEN as u64 * NUM_ITEMS_PER_TASK as u64,
-            ..Default::default()
         };
-        let cache = DiskCache::initialize(&config).unwrap();
+        let cache = DiskCache::initialize(&xet_config, &config).unwrap();
 
         let num_tasks = 2 + rand::random::<u8>() % 14;
 
@@ -1342,11 +1354,12 @@ mod concurrency_tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_run_concurrently_thundering_herd() {
         let cache_root = TempDir::new().unwrap();
+        let xet_config = XetConfig::new();
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: RANGE_LEN as u64 * NUM_ITEMS_PER_TASK as u64,
         };
-        let cache = DiskCache::initialize(&config).unwrap();
+        let cache = DiskCache::initialize(&xet_config, &config).unwrap();
 
         // data inserted is the same
         let mut it = RandomEntryIterator::std_from_seed(RANDOM_SEED);

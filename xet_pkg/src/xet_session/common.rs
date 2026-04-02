@@ -27,8 +27,8 @@ pub(super) fn create_translator_config(
 
     let token_refresher: Option<Arc<dyn TokenRefresher>> = token_refresh
         .map(|(url, headers)| -> Result<Arc<dyn TokenRefresher>, XetError> {
-            let client = build_http_client(&session_id, None, Some(headers.clone()))?;
-            Ok(Arc::new(DirectRefreshRouteTokenRefresher::new(url, client, None)))
+            let client = build_http_client(&session.inner.ctx, &session_id, None, Some(headers.clone()))?;
+            Ok(Arc::new(DirectRefreshRouteTokenRefresher::new(session.inner.ctx.clone(), url, client, None)))
         })
         .transpose()?;
 
@@ -36,9 +36,10 @@ pub(super) fn create_translator_config(
         .inner
         .endpoint
         .clone()
-        .unwrap_or_else(|| session.inner.config.data.default_cas_endpoint.clone());
+        .unwrap_or_else(|| session.inner.ctx.config.data.default_cas_endpoint.clone());
 
     let mut config = xet_data::processing::data_client::default_config(
+        &session.inner.ctx,
         endpoint,
         token_info,
         token_refresher,

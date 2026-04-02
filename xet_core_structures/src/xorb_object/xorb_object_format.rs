@@ -8,7 +8,6 @@ use futures::AsyncReadExt;
 use more_asserts::*;
 use serde::Serialize;
 use tracing::warn;
-use xet_runtime::core::xet_config;
 
 use super::constants::{TARGET_CHUNK_SIZE, XORB_BLOCK_SIZE};
 use super::xorb_chunk_format::{deserialize_chunk, deserialize_chunk_header, serialize_chunk, write_chunk_header};
@@ -1285,11 +1284,16 @@ pub struct SerializedXorbObject {
 impl SerializedXorbObject {
     /// Builds the xorb from raw xorb data.
     ///
-    /// The compression scheme is determined by `HF_XET_XORB_COMPRESSION_POLICY`:
+    /// The compression scheme is determined by `compression_policy`:
     /// auto-detect (default) or an explicit scheme (none, lz4, bg4-lz4).
-    pub fn from_xorb(xorb: RawXorbData, serialize_footer: bool) -> Result<Self, CoreError> {
-        let compression_scheme: CompressionScheme = xet_config().xorb.compression_policy.parse()?;
-        Self::from_xorb_with_compression(xorb, compression_scheme, serialize_footer)
+    pub fn from_xorb(
+        xorb: RawXorbData,
+        serialize_footer: bool,
+        compression_policy: &str,
+        compression_scheme_retest_interval: usize,
+    ) -> Result<Self, CoreError> {
+        let compression_scheme: CompressionScheme = compression_policy.parse()?;
+        Self::from_xorb_with_compression(xorb, compression_scheme, serialize_footer, compression_scheme_retest_interval)
     }
 
     /// Builds the xorb from raw xorb data with an explicit compression scheme override.
@@ -1297,6 +1301,7 @@ impl SerializedXorbObject {
         xorb: RawXorbData,
         compression_scheme: CompressionScheme,
         serialize_footer: bool,
+        compression_scheme_retest_interval: usize,
     ) -> Result<Self, CoreError> {
         let mut xorb_object_info = XorbObjectInfoV1::default();
 
@@ -1325,8 +1330,8 @@ impl SerializedXorbObject {
         let mut serialized_data = Vec::with_capacity(size_upper_bound);
 
         // Set the periodic retesting interval
-        let retest_interval = if xet_config().xorb.compression_scheme_retest_interval > 0 {
-            xet_config().xorb.compression_scheme_retest_interval
+        let retest_interval = if compression_scheme_retest_interval > 0 {
+            compression_scheme_retest_interval
         } else {
             num_chunks
         };
@@ -1383,6 +1388,7 @@ impl SerializedXorbObject {
 
 pub mod test_utils {
     use rand::Rng;
+    use xet_runtime::config::XetConfig;
 
     use super::super::raw_xorb_data::test_utils::raw_xorb_to_vec;
     use super::super::xorb_chunk_format::serialize_chunk;
@@ -1556,8 +1562,9 @@ pub mod test_utils {
         xorb: RawXorbData,
         compression_scheme: CompressionScheme,
     ) -> SerializedXorbObject {
+        let retest = XetConfig::new().xorb.compression_scheme_retest_interval;
         let xorb_obj =
-            SerializedXorbObject::from_xorb_with_compression(xorb.clone(), compression_scheme, true).unwrap();
+            SerializedXorbObject::from_xorb_with_compression(xorb.clone(), compression_scheme, true, retest).unwrap();
 
         verify_serialized_xorb_object(&xorb, compression_scheme, &xorb_obj);
 
@@ -2551,7 +2558,14 @@ mod tests {
     #[test]
     fn test_from_xorb_uses_default_config() {
         let raw = build_raw_xorb(4, ChunkSize::Fixed(1024));
-        let serialized = SerializedXorbObject::from_xorb(raw, false).unwrap();
+        let cfg = xet_runtime::config::XetConfig::new();
+        let serialized = SerializedXorbObject::from_xorb(
+            raw,
+            false,
+            cfg.xorb.compression_policy.as_str(),
+            cfg.xorb.compression_scheme_retest_interval,
+        )
+        .unwrap();
         assert_eq!(serialized.num_chunks, 4);
         assert!(serialized.serialized_data.len() > 0);
     }

@@ -11,7 +11,7 @@ pub use disk::test_utils::*;
 use error::ChunkCacheError;
 #[cfg(test)]
 use mockall::automock;
-use xet_runtime::core::xet_config;
+use xet_runtime::config::XetConfig;
 
 use crate::cas_types::{ChunkRange, Key};
 
@@ -79,11 +79,11 @@ pub struct CacheConfig {
     pub cache_size: u64,
 }
 
-impl Default for CacheConfig {
-    fn default() -> Self {
+impl CacheConfig {
+    pub fn from_config(config: &XetConfig) -> Self {
         CacheConfig {
             cache_directory: PathBuf::from("/tmp"),
-            cache_size: xet_config().chunk_cache.size_bytes,
+            cache_size: config.chunk_cache.size_bytes,
         }
     }
 }

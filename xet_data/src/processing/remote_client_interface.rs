@@ -11,12 +11,13 @@ pub(crate) async fn create_remote_client(
     dry_run: bool,
 ) -> Result<Arc<dyn Client>> {
     let session = &config.session;
+    let ctx = config.ctx.clone();
 
-    if let Some(local_path) = session.local_path() {
+    if let Some(local_path) = session.local_path(&config.ctx) {
         #[cfg(not(target_family = "wasm"))]
         {
             let xorb_path = local_path.join("xet").join("xorbs");
-            Ok(xet_client::cas_client::LocalClient::new(xorb_path).await?)
+            Ok(xet_client::cas_client::LocalClient::new(ctx, xorb_path).await?)
         }
         #[cfg(target_family = "wasm")]
         {
@@ -24,9 +25,10 @@ pub(crate) async fn create_remote_client(
             unimplemented!("Local file system access is not available in WASM")
         }
     } else if session.is_memory() {
-        Ok(xet_client::cas_client::MemoryClient::new())
+        Ok(xet_client::cas_client::MemoryClient::new(ctx))
     } else {
         Ok(RemoteClient::new(
+            ctx,
             &session.endpoint,
             &session.auth,
             session_id,

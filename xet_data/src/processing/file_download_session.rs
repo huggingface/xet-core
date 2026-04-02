@@ -11,7 +11,7 @@ use tracing::instrument;
 use xet_client::cas_client::Client;
 use xet_client::cas_types::FileRange;
 use xet_client::chunk_cache::ChunkCache;
-use xet_runtime::core::{XetRuntime, xet_config};
+use xet_runtime::core::XetContext;
 
 use super::XetFileInfo;
 use super::configurations::TranslatorConfig;
@@ -25,6 +25,7 @@ use crate::progress_tracking::{GroupProgress, ItemProgressUpdater, UniqueID};
 /// This struct parallels `FileUploadSession` for the download path. It holds the
 /// CAS client and a shared progress group for all downloads in the session.
 pub struct FileDownloadSession {
+    ctx: XetContext,
     client: Arc<dyn Client>,
     chunk_cache: Option<Arc<dyn ChunkCache>>,
     progress: Arc<GroupProgress>,
@@ -41,13 +42,15 @@ impl FileDownloadSession {
             .map(Cow::Borrowed)
             .unwrap_or_else(|| Cow::Owned(UniqueID::new().to_string()));
 
+        let ctx = config.ctx.clone();
         let client = create_remote_client(&config, &session_id, false).await?;
         let progress = GroupProgress::with_speed_config(
-            xet_config().data.progress_update_speed_sampling_window,
-            xet_config().data.progress_update_speed_min_observations,
+            ctx.config.data.progress_update_speed_sampling_window,
+            ctx.config.data.progress_update_speed_min_observations,
         );
 
         Ok(Arc::new(Self {
+            ctx,
             client,
             chunk_cache,
             progress,
@@ -59,10 +62,16 @@ impl FileDownloadSession {
     /// Construct a download session from an existing CAS client.
     ///
     /// This path uses default progress speed settings. Use [`Self::new`] when the
-    /// session should inherit the configured speed parameters from `xet_config`.
-    pub fn from_client(client: Arc<dyn Client>, chunk_cache: Option<Arc<dyn ChunkCache>>) -> Arc<Self> {
+    /// session should inherit the configured speed parameters from the context used
+    /// to build [`TranslatorConfig`].
+    pub fn from_client(
+        ctx: &XetContext,
+        client: Arc<dyn Client>,
+        chunk_cache: Option<Arc<dyn ChunkCache>>,
+    ) -> Arc<Self> {
         let progress = GroupProgress::new();
         Arc::new(Self {
+            ctx: ctx.clone(),
             client,
             chunk_cache,
             progress,
@@ -110,8 +119,8 @@ impl FileDownloadSession {
         self.check_not_finalized()?;
         let id = UniqueID::new();
         let session = self.clone();
-        let rt = XetRuntime::current();
-        let semaphore = rt.common().file_download_semaphore.clone();
+        let rt = self.ctx.runtime.clone();
+        let semaphore = self.ctx.common.file_download_semaphore.clone();
         let handle = rt.spawn(async move {
             let _permit = semaphore.acquire().await?;
             session.download_file_with_id(&file_info, &write_path, id).await
@@ -292,7 +301,7 @@ impl FileDownloadSession {
     ) -> Result<FileReconstructor> {
         let file_id = file_info.merkle_hash()?;
 
-        let mut reconstructor = FileReconstructor::new(&self.client, file_id);
+        let mut reconstructor = FileReconstructor::new(&self.ctx, &self.client, file_id);
 
         match range {
             Some(range) if range.end < u64::MAX => {
@@ -371,22 +380,28 @@ mod tests {
     use std::sync::{Arc, OnceLock};
 
     use tempfile::tempdir;
-    use xet_runtime::core::XetRuntime;
+    use xet_runtime::core::XetContext;
 
     use super::*;
     use crate::processing::configurations::TranslatorConfig;
     use crate::processing::file_cleaner::Sha256Policy;
     use crate::processing::{FileUploadSession, XetFileInfo};
 
-    fn get_threadpool() -> Arc<XetRuntime> {
-        static THREADPOOL: OnceLock<Arc<XetRuntime>> = OnceLock::new();
+    fn get_threadpool() -> Arc<xet_runtime::core::XetRuntime> {
+        static THREADPOOL: OnceLock<Arc<xet_runtime::core::XetRuntime>> = OnceLock::new();
         THREADPOOL
-            .get_or_init(|| XetRuntime::new().expect("Error starting multithreaded runtime."))
+            .get_or_init(|| {
+                XetContext::default()
+                    .expect("Error starting multithreaded runtime.")
+                    .runtime
+                    .clone()
+            })
             .clone()
     }
 
     async fn upload_data(cas_path: &Path, data: &[u8]) -> XetFileInfo {
-        let upload_session = FileUploadSession::new(TranslatorConfig::local_config(cas_path).unwrap().into())
+        let ctx = XetContext::default().unwrap();
+        let upload_session = FileUploadSession::new(TranslatorConfig::local_config(&ctx, cas_path).unwrap().into())
             .await
             .unwrap();
 
@@ -411,7 +426,7 @@ mod tests {
 
                 let xfi = upload_data(&cas_path, original_data).await;
 
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let out_path = temp.path().join("output.txt");
@@ -435,7 +450,7 @@ mod tests {
 
                 let xfi = upload_data(&cas_path, original_data).await;
 
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let out_path = temp.path().join("deep").join("nested").join("dir").join("output.txt");
@@ -460,7 +475,7 @@ mod tests {
 
                 let xfi = upload_data(&cas_path, original_data).await;
 
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let out_path = temp.path().join("partial_writer.txt");
@@ -489,7 +504,7 @@ mod tests {
                 let original_data = b"abcdefghijklmnopqrstuvwxyz0123456789";
 
                 let xfi = upload_data(&cas_path, original_data).await;
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let out_path = temp.path().join("partitioned.txt");
@@ -541,7 +556,7 @@ mod tests {
                 let xfi_a = upload_data(&cas_path, data_a).await;
                 let xfi_b = upload_data(&cas_path, data_b).await;
 
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let out_a = temp.path().join("out_a.txt");
@@ -580,7 +595,7 @@ mod tests {
 
                 let xfi = upload_data(&cas_path, original_data).await;
 
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let (_id, mut stream) = session.download_stream(&xfi, None).await.unwrap();
@@ -607,7 +622,7 @@ mod tests {
 
                 let xfi = upload_data(&cas_path, original_data).await;
 
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let (_id, stream) = session.download_stream(&xfi, None).await.unwrap();
@@ -640,7 +655,7 @@ mod tests {
 
                 let xfi = upload_data(&cas_path, original_data).await;
 
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let (_id, mut stream) = session.download_stream(&xfi, None).await.unwrap();
@@ -669,7 +684,7 @@ mod tests {
                 let xfi_a = upload_data(&cas_path, data_a).await;
                 let xfi_b = upload_data(&cas_path, data_b).await;
 
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let (_id_a, mut stream_a) = session.download_stream(&xfi_a, None).await.unwrap();
@@ -712,7 +727,7 @@ mod tests {
 
                 let xfi = upload_data(&cas_path, original_data).await;
 
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let (_id, stream) = session.download_stream(&xfi, None).await.unwrap();
@@ -738,7 +753,7 @@ mod tests {
 
                 let xfi = upload_data(&cas_path, original_data).await;
 
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 for i in 0..5u32 {
@@ -769,7 +784,7 @@ mod tests {
 
                 let xfi = upload_data(&cas_path, original_data).await;
 
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let (_id, stream) = session.download_stream(&xfi, None).await.unwrap();
@@ -802,7 +817,7 @@ mod tests {
 
                 let xfi = upload_data(&cas_path, original_data).await;
 
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let (_id, mut stream) = session.download_stream(&xfi, None).await.unwrap();
@@ -825,7 +840,7 @@ mod tests {
 
                 let xfi = upload_data(&cas_path, original_data).await;
 
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let (_id, mut stream) = session.download_stream(&xfi, None).await.unwrap();
@@ -855,7 +870,7 @@ mod tests {
 
                 let xfi = upload_data(&cas_path, original_data).await;
 
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let out_path = temp.path().join("range_from.bin");
@@ -880,7 +895,7 @@ mod tests {
 
                 let xfi = upload_data(&cas_path, original_data).await;
 
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let out_path = temp.path().join("range_to.bin");
@@ -905,7 +920,7 @@ mod tests {
 
                 let xfi = upload_data(&cas_path, original_data).await;
 
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let out_path = temp.path().join("full_range.bin");
@@ -930,7 +945,7 @@ mod tests {
 
                 let xfi = upload_data(&cas_path, original_data).await;
 
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let out_path = temp.path().join("range_incl.bin");
@@ -957,7 +972,7 @@ mod tests {
 
                 let xfi = upload_data(&cas_path, original_data).await;
 
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let (_id, mut stream) = session.download_stream_range(&xfi, 4..12).await.unwrap();
@@ -984,7 +999,7 @@ mod tests {
 
                 let xfi = upload_data(&cas_path, original_data).await;
 
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let (_id, mut stream) = session.download_stream_range(&xfi, 10..).await.unwrap();
@@ -1011,7 +1026,7 @@ mod tests {
 
                 let xfi = upload_data(&cas_path, original_data).await;
 
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let (_id, mut stream) = session.download_stream_range(&xfi, ..6).await.unwrap();
@@ -1041,7 +1056,7 @@ mod tests {
                 let xfi = upload_data(&cas_path, original_data).await;
                 let xfi_no_size = XetFileInfo::new_hash_only(xfi.hash().to_string());
 
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let out_path = temp.path().join("output_unknown.txt");
@@ -1066,7 +1081,7 @@ mod tests {
                 let xfi = upload_data(&cas_path, original_data).await;
                 let xfi_no_size = XetFileInfo::new_hash_only(xfi.hash().to_string());
 
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let (_id, mut stream) = session.download_stream(&xfi_no_size, None).await.unwrap();
@@ -1095,7 +1110,7 @@ mod tests {
                 let xfi = upload_data(&cas_path, original_data).await;
                 let wrong_size_xfi = XetFileInfo::new(xfi.hash().to_string(), 999);
 
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let out_path = temp.path().join("output_mismatch.txt");
@@ -1142,7 +1157,7 @@ mod tests {
 
                 let xfi = upload_data(&cas_path, original_data).await;
 
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let out_path = temp.path().join("empty_range.bin");
@@ -1167,7 +1182,7 @@ mod tests {
 
                 let xfi = upload_data(&cas_path, original_data).await;
 
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let out_path = temp.path().join("inverted_range.bin");
@@ -1192,7 +1207,7 @@ mod tests {
 
                 let xfi = upload_data(&cas_path, original_data).await;
 
-                let config = TranslatorConfig::local_config(&cas_path).unwrap();
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let out_path = temp.path().join("beyond_size.bin");

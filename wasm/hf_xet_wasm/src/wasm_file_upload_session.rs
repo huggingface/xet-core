@@ -8,8 +8,10 @@ use xet_core_structures::merklehash::{HashedWrite, MerkleHash};
 use xet_core_structures::metadata_shard::MDBShardInfo;
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::xorb_object::SerializedXorbObject;
-use xet_data::deduplication::constants::{XORB_CUT_THRESHOLD_BYTES, XORB_CUT_THRESHOLD_CHUNKS};
+use xet_core_structures::xorb_object::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use xet_data::deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
+use xet_runtime::config::XetConfig;
+use xet_runtime::core::{XetContext, XetRuntime};
 
 use super::configurations::TranslatorConfig;
 use super::errors::*;
@@ -26,6 +28,8 @@ static UPLOAD_CONCURRENCY: usize = 5;
 /// that succeeds or fails as a unit;  i.e. all files get uploaded on finalization, and all shards
 /// and xorbs needed to reconstruct those files are properly uploaded and registered.
 pub struct FileUploadSession {
+    pub(crate) ctx: XetContext,
+
     /// The configuration settings, if needed.
     pub(crate) config: Arc<TranslatorConfig>,
 
@@ -48,7 +52,9 @@ impl FileUploadSession {
             Err(_) => None,
         };
 
+        let ctx = XetContext::new(XetRuntime::from_external(tokio::runtime::Handle::current()), XetConfig::new());
         let client = RemoteClient::new(
+            ctx.clone(),
             &config.data_config.endpoint,
             &config.data_config.auth,
             &config.session_id,
@@ -60,6 +66,7 @@ impl FileUploadSession {
             Box::new(XorbUploaderSpawnParallel::new(client.clone(), &config.data_config.prefix, UPLOAD_CONCURRENCY));
 
         Self {
+            ctx,
             session_shard: Mutex::new(MDBInMemoryShard::default()),
             xorb_uploader: Mutex::new(Some(xorb_uploader)),
             config,
@@ -82,8 +89,8 @@ impl FileUploadSession {
             let mut current_session_data = self.current_session_data.lock().await;
 
             // Do we need to cut one of these to a xorb?
-            if current_session_data.num_bytes() + file_data.num_bytes() > *XORB_CUT_THRESHOLD_BYTES
-                || current_session_data.num_chunks() + file_data.num_chunks() > *XORB_CUT_THRESHOLD_CHUNKS
+            if current_session_data.num_bytes() + file_data.num_bytes() > *MAX_XORB_BYTES
+                || current_session_data.num_chunks() + file_data.num_chunks() > *MAX_XORB_CHUNKS
             {
                 // Cut the larger one as a xorb, uploading it and registering the files.
                 if current_session_data.num_bytes() > file_data.num_bytes() {
@@ -126,8 +133,12 @@ impl FileUploadSession {
         }
 
         // XORBs are sent without footer - the server/client reconstructs it from chunk data.
-        let xorb_obj =
-            SerializedXorbObject::from_xorb_with_compression(xorb, self.config.data_config.compression, false)?;
+        let xorb_obj = SerializedXorbObject::from_xorb_with_compression(
+            xorb,
+            self.config.data_config.compression,
+            false,
+            self.ctx.config.xorb.compression_scheme_retest_interval,
+        )?;
 
         let Some(ref mut xorb_uploader) = *self.xorb_uploader.lock().await else {
             return Err(DataProcessingError::internal("register xorb after drop"));

@@ -10,14 +10,14 @@ use walkdir::WalkDir;
 use xet_client::cas_client::RemoteClient;
 use xet_client::cas_client::auth::TokenRefresher;
 use xet_client::cas_types::{FileRange, QueryReconstructionResponse};
-use xet_client::hub_client::{BearerCredentialHelper, HubClient, Operation, RepoInfo};
+use xet_client::hub_client::{BearerCredentialHelper, CredentialHelper, HubClient, Operation, RepoInfo};
 use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::xorb_object::CompressionScheme;
 use xet_data::processing::data_client::default_config;
 use xet_data::processing::migration_tool::hub_client_token_refresher::HubClientTokenRefresher;
 use xet_data::processing::migration_tool::migrate::migrate_files_impl;
 use xet_runtime::config::XetConfig;
-use xet_runtime::core::XetRuntime;
+use xet_runtime::core::{XetContext, XetRuntime};
 
 const DEFAULT_HF_ENDPOINT: &str = "https://huggingface.co";
 const USER_AGENT: &str = concat!("xtool", "/", env!("CARGO_PKG_VERSION"));
@@ -61,13 +61,15 @@ impl XCommand {
         let mut headers = HeaderMap::new();
         headers.insert(header::USER_AGENT, HeaderValue::from_static(USER_AGENT));
 
+        let ctx = XetContext::default()?;
         let cred_helper = BearerCredentialHelper::new(token, "");
         let hub_client = HubClient::new(
+            ctx.clone(),
             &endpoint,
             RepoInfo::try_from(&self.overrides.repo_type, &self.overrides.repo_id)?,
             Some("main".to_owned()),
             "",
-            Some(cred_helper),
+            Some(cred_helper as Arc<dyn CredentialHelper>),
             Some(headers),
         )?;
 
@@ -212,14 +214,24 @@ async fn query_reconstruction(
     let mut headers = http::HeaderMap::new();
     headers.insert(http::header::USER_AGENT, http::HeaderValue::from_static(USER_AGENT));
 
+    let config = XetConfig::new();
+    let ctx =
+        XetContext::new(XetRuntime::from_external_with_config(tokio::runtime::Handle::current(), &config)?, config);
     let config = default_config(
+        &ctx,
         jwt_info.cas_url.clone(),
         Some((jwt_info.access_token, jwt_info.exp)),
         Some(token_refresher),
         Some(Arc::new(headers)),
     )?;
-    let remote_client =
-        RemoteClient::new(&jwt_info.cas_url, &config.session.auth, "", true, config.session.custom_headers.clone());
+    let remote_client = RemoteClient::new(
+        ctx.clone(),
+        &jwt_info.cas_url,
+        &config.session.auth,
+        "",
+        true,
+        config.session.custom_headers.clone(),
+    );
 
     // Use V1 directly so the query tool returns the raw QueryReconstructionResponse for inspection.
     remote_client
@@ -248,8 +260,8 @@ fn main() -> Result<()> {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
     }
 
-    let threadpool = XetRuntime::new_with_config(config)?;
-    threadpool.bridge_sync(async move { cli.run().await })??;
+    let ctx = XetContext::default_with_config(config)?;
+    ctx.runtime.bridge_sync(async move { cli.run().await })??;
 
     Ok(())
 }

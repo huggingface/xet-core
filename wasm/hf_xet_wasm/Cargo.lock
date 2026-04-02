@@ -872,6 +872,7 @@ dependencies = [
  "xet-client",
  "xet-core-structures",
  "xet-data",
+ "xet-runtime",
 ]
 
 [[package]]

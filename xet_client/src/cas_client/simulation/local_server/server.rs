@@ -47,6 +47,7 @@ use tokio::net::TcpListener;
 #[cfg(test)]
 use tokio::sync::oneshot;
 use tower_http::cors::CorsLayer;
+use xet_runtime::core::XetContext;
 
 #[cfg(test)]
 use super::super::super::RemoteClient;
@@ -106,11 +107,12 @@ impl LocalServer {
     /// If `in_memory` is false, creates a new `LocalClient` pointing to the configured data directory.
     /// If `in_memory` is true, creates a new `MemoryClient` (data directory is ignored).
     pub async fn new(config: LocalServerConfig) -> Result<Self> {
+        let ctx = XetContext::default().map_err(|e| ClientError::Other(e.to_string()))?;
         let (client, deletion_client): (Arc<dyn DirectAccessClient>, Option<Arc<dyn DeletionControlableClient>>) =
             if config.in_memory {
-                (MemoryClient::new(), None)
+                (MemoryClient::new(ctx.clone()), None)
             } else {
-                let client = LocalClient::new(&config.data_directory).await?;
+                let client = LocalClient::new(ctx, &config.data_directory).await?;
                 let deletion_client = client.clone() as Arc<dyn DeletionControlableClient>;
                 (client, Some(deletion_client))
             };
@@ -285,13 +287,14 @@ impl LocalTestServer {
     ///
     /// The server listens on a randomly assigned available port on localhost.
     pub async fn start_with_socket_proxy(in_memory: bool, socket_path: Option<PathBuf>) -> Self {
+        let ctx = XetContext::default().expect("XetContext::new");
         if in_memory {
-            let client = MemoryClient::new();
-            Self::start_with_client_and_socket(client, None, socket_path).await
+            let client = MemoryClient::new(ctx.clone());
+            Self::start_with_client_and_socket(ctx, client, None, socket_path).await
         } else {
-            let client = LocalClient::temporary().await.unwrap();
+            let client = LocalClient::temporary(ctx.clone()).await.unwrap();
             let deletion_client: Arc<dyn DeletionControlableClient> = client.clone();
-            Self::start_with_client_and_socket(client, Some(deletion_client), socket_path).await
+            Self::start_with_client_and_socket(ctx, client, Some(deletion_client), socket_path).await
         }
     }
 
@@ -299,7 +302,8 @@ impl LocalTestServer {
     ///
     /// Useful when you need to pre-populate the client with data before starting the server.
     pub async fn start_with_client(client: Arc<dyn DirectAccessClient>) -> Self {
-        Self::start_with_client_and_socket(client, None, None).await
+        let ctx = XetContext::default().expect("XetContext::new");
+        Self::start_with_client_and_socket(ctx, client, None, None).await
     }
 
     /// Starts a new test server using an existing `DirectAccessClient` and optional
@@ -308,11 +312,13 @@ impl LocalTestServer {
         client: Arc<dyn DirectAccessClient>,
         deletion_client: Option<Arc<dyn DeletionControlableClient>>,
     ) -> Self {
-        Self::start_with_client_and_socket(client, deletion_client, None).await
+        let ctx = XetContext::default().expect("XetContext::new");
+        Self::start_with_client_and_socket(ctx, client, deletion_client, None).await
     }
 
     /// Starts a new test server using an existing `DirectAccessClient` with an optional socket proxy.
     async fn start_with_client_and_socket(
+        ctx: XetContext,
         client: Arc<dyn DirectAccessClient>,
         deletion_client: Option<Arc<dyn DeletionControlableClient>>,
         _socket_path: Option<PathBuf>,
@@ -348,6 +354,7 @@ impl LocalTestServer {
                     // Create RemoteClient with socket path
                     let socket_path_str = socket_path.to_string_lossy().to_string();
                     let client = RemoteClient::new_with_socket(
+                        ctx.clone(),
                         &tcp_endpoint,
                         &None,
                         "test-session",
@@ -358,15 +365,21 @@ impl LocalTestServer {
 
                     (client, Some(proxy))
                 } else {
-                    let client =
-                        RemoteClient::new(&tcp_endpoint, &None, "test-session", false, Some(Arc::new(headers)));
+                    let client = RemoteClient::new(
+                        ctx.clone(),
+                        &tcp_endpoint,
+                        &None,
+                        "test-session",
+                        false,
+                        Some(Arc::new(headers)),
+                    );
                     (client, None)
                 }
             }
 
             #[cfg(not(unix))]
             {
-                let client = RemoteClient::new(&tcp_endpoint, &None, "test-session", false, None);
+                let client = RemoteClient::new(ctx.clone(), &tcp_endpoint, &None, "test-session", false, None);
                 (client, Option::<()>::None)
             }
         };
@@ -1230,7 +1243,7 @@ mod tests {
     /// deletion controls.
     #[tokio::test]
     async fn test_deletion_lifecycle_via_server() {
-        let lc = LocalClient::temporary().await.unwrap();
+        let lc = LocalClient::temporary(XetContext::default().expect("ctx")).await.unwrap();
         let server = LocalTestServer::start_with_client(lc.clone()).await;
 
         // Upload files via remote client (goes through HTTP server)
@@ -1305,7 +1318,7 @@ mod tests {
     #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_simulation_control_client_common_suite() {
         crate::cas_client::simulation::client_unit_testing::test_client_functionality(|| async {
-            let lc = LocalClient::temporary().await.unwrap();
+            let lc = LocalClient::temporary(XetContext::default().expect("ctx")).await.unwrap();
             let dc: Arc<dyn DeletionControlableClient> = lc.clone();
             let server = LocalTestServer::start_with_client_and_deletion(lc, Some(dc)).await;
             let endpoint = detach_server(server);
@@ -1360,7 +1373,7 @@ mod tests {
     #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_simulation_control_client_deletion_suite() {
         crate::cas_client::simulation::deletion_unit_testing::test_deletion_functionality(|| async {
-            let lc = LocalClient::temporary().await.unwrap();
+            let lc = LocalClient::temporary(XetContext::default().expect("ctx")).await.unwrap();
             let dc: Arc<dyn DeletionControlableClient> = lc.clone();
             let server = LocalTestServer::start_with_client_and_deletion(lc, Some(dc)).await;
             let endpoint = detach_server(server);

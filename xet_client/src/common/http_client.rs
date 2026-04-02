@@ -8,7 +8,8 @@ use reqwest::{Request, Response};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
 use tokio::sync::Mutex;
 use tracing::{Instrument, info, info_span, warn};
-use xet_runtime::core::{XetRuntime, xet_config};
+use xet_runtime::config::XetConfig;
+use xet_runtime::core::XetContext;
 use xet_runtime::error_printer::{ErrorPrinter, OptionPrinter};
 
 use crate::cas_client::auth::{AuthConfig, TokenProvider};
@@ -69,57 +70,35 @@ fn headers_tag(headers: Option<&HeaderMap>) -> String {
 
 #[allow(unused_variables)]
 #[cfg(not(target_family = "wasm"))]
-fn reqwest_client(unix_socket_path: Option<&str>, custom_headers: Option<Arc<HeaderMap>>) -> Result<reqwest::Client> {
-    // Check config if explicit socket path is not provided
+fn reqwest_client_raw(
+    config: &XetConfig,
+    unix_socket_path: Option<&str>,
+    custom_headers: Option<Arc<HeaderMap>>,
+) -> std::result::Result<reqwest::Client, reqwest::Error> {
     let socket_path = unix_socket_path
         .map(|s| s.to_string())
-        .or_else(|| xet_config().client.unix_socket_path.clone());
+        .or_else(|| config.client.unix_socket_path.clone());
 
-    // Build a cache tag that captures both the transport (socket path / TCP) and the
-    // set of default headers so that clients with different headers get separate pools.
-    let tag = format!("{}|{}", socket_path.as_deref().unwrap_or("tcp"), headers_tag(custom_headers.as_deref()));
-
-    // Create client function
-    let socket_path_clone = socket_path.clone();
+    let socket_path_for_builder = socket_path.clone();
     let custom_headers_for_client = custom_headers.clone();
-    let create_client = move || {
-        let config = &xet_config().client;
-        let mut builder = reqwest::Client::builder()
-            .pool_idle_timeout(config.idle_connection_timeout)
-            .pool_max_idle_per_host(config.max_idle_connections)
-            .connect_timeout(config.connect_timeout)
-            .read_timeout(config.read_timeout)
-            .http1_only();
+    let client_cfg = &config.client;
+    let mut builder = reqwest::Client::builder()
+        .pool_idle_timeout(client_cfg.idle_connection_timeout)
+        .pool_max_idle_per_host(client_cfg.max_idle_connections)
+        .connect_timeout(client_cfg.connect_timeout)
+        .read_timeout(client_cfg.read_timeout)
+        .http1_only();
 
-        #[cfg(unix)]
-        if let Some(ref path) = socket_path_clone {
-            builder = builder.unix_socket(path.clone());
-        }
-
-        if let Some(headers) = custom_headers_for_client {
-            builder = builder.default_headers((*headers).clone());
-        }
-
-        builder.build()
-    };
-
-    // Try to use cached client if in a runtime, otherwise create directly
-    let client = XetRuntime::get_or_create_reqwest_client(tag, create_client)?;
-
-    if socket_path.is_some() {
-        info!(socket_path=?socket_path, "HTTP client configured with Unix socket");
-    } else {
-        let config = &xet_config().client;
-        let custom_headers = custom_headers.as_deref().map(redact_headers);
-        info!(
-            idle_timeout=?config.idle_connection_timeout,
-            max_idle_connections=config.max_idle_connections,
-            custom_headers=?custom_headers,
-            "HTTP client configured"
-        );
+    #[cfg(unix)]
+    if let Some(ref path) = socket_path_for_builder {
+        builder = builder.unix_socket(path.clone());
     }
 
-    Ok(client)
+    if let Some(headers) = custom_headers_for_client {
+        builder = builder.default_headers((*headers).clone());
+    }
+
+    builder.build()
 }
 
 /// Creates a reqwest client with no read_timeout. Used for shard uploads where server-side
@@ -128,19 +107,19 @@ fn reqwest_client(unix_socket_path: Option<&str>, custom_headers: Option<Arc<Hea
 #[cfg(not(target_family = "wasm"))]
 #[allow(unused_variables)]
 fn reqwest_client_no_read_timeout(
+    config: &XetConfig,
     unix_socket_path: Option<&str>,
     custom_headers: Option<Arc<HeaderMap>>,
 ) -> Result<reqwest::Client> {
     let socket_path = unix_socket_path
         .map(|s| s.to_string())
-        .or_else(|| xet_config().client.unix_socket_path.clone());
+        .or_else(|| config.client.unix_socket_path.clone());
 
-    let config = &xet_config().client;
+    let client_cfg = &config.client;
     let mut builder = reqwest::Client::builder()
-        .pool_idle_timeout(config.idle_connection_timeout)
-        .pool_max_idle_per_host(config.max_idle_connections)
-        .connect_timeout(config.connect_timeout)
-        // No read_timeout — shard processing time scales with entry count and is unbounded
+        .pool_idle_timeout(client_cfg.idle_connection_timeout)
+        .pool_max_idle_per_host(client_cfg.max_idle_connections)
+        .connect_timeout(client_cfg.connect_timeout)
         .http1_only();
 
     #[cfg(unix)]
@@ -155,7 +134,7 @@ fn reqwest_client_no_read_timeout(
     let client = builder.build()?;
 
     info!(
-        connect_timeout=?config.connect_timeout,
+        connect_timeout=?client_cfg.connect_timeout,
         "No-read-timeout HTTP client configured (for shard uploads)"
     );
 
@@ -163,20 +142,22 @@ fn reqwest_client_no_read_timeout(
 }
 
 #[cfg(target_family = "wasm")]
-fn reqwest_client(_unix_socket_path: Option<&str>, custom_headers: Option<Arc<HeaderMap>>) -> Result<reqwest::Client> {
-    // For WASM, create a new client with the specified headers, including the user-agent.
-    // Note: we could cache this, but user_agent can vary, so we create per-call
-    // Unix socket path is ignored on WASM
+fn reqwest_client_raw(
+    _config: &XetConfig,
+    _unix_socket_path: Option<&str>,
+    custom_headers: Option<Arc<HeaderMap>>,
+) -> std::result::Result<reqwest::Client, reqwest::Error> {
     let mut builder = reqwest::Client::builder();
     if let Some(custom_headers) = custom_headers {
         builder = builder.default_headers((*custom_headers).clone());
     }
-    Ok(builder.build()?)
+    builder.build()
 }
 
 /// Builds authenticated HTTP Client to talk to CAS.
 #[allow(unused_mut)]
 pub fn build_auth_http_client(
+    ctx: &XetContext,
     auth_config: &Option<AuthConfig>,
     session_id: &str,
     unix_socket_path: Option<&str>,
@@ -186,7 +167,32 @@ pub fn build_auth_http_client(
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
 
-    let mut builder = ClientBuilder::new(reqwest_client(unix_socket_path, custom_headers)?);
+    let config_arc = ctx.config.clone();
+    let unix_owned = unix_socket_path.map(|s| s.to_string());
+    let custom_for_client = custom_headers.clone();
+    let socket_path = unix_socket_path
+        .map(|s| s.to_string())
+        .or_else(|| config_arc.client.unix_socket_path.clone());
+    let tag = format!("{}|{}", socket_path.as_deref().unwrap_or("tcp"), headers_tag(custom_headers.as_deref()));
+
+    let raw_client = ctx.get_or_create_reqwest_client(tag, move || {
+        reqwest_client_raw(config_arc.as_ref(), unix_owned.as_deref(), custom_for_client)
+    })?;
+
+    if socket_path.is_some() {
+        info!(socket_path=?socket_path, "HTTP client configured with Unix socket");
+    } else {
+        let client_cfg = &ctx.config.client;
+        let custom_headers_log = custom_headers.as_deref().map(redact_headers);
+        info!(
+            idle_timeout=?client_cfg.idle_connection_timeout,
+            max_idle_connections=client_cfg.max_idle_connections,
+            custom_headers=?custom_headers_log,
+            "HTTP client configured"
+        );
+    }
+
+    let mut builder = ClientBuilder::new(raw_client);
 
     #[cfg(unix)]
     if unix_socket_path.is_some() {
@@ -208,6 +214,7 @@ pub fn build_auth_http_client(
 #[cfg(not(target_family = "wasm"))]
 #[allow(unused_mut)]
 pub fn build_auth_http_client_no_read_timeout(
+    ctx: &XetContext,
     auth_config: &Option<AuthConfig>,
     session_id: &str,
     unix_socket_path: Option<&str>,
@@ -217,7 +224,7 @@ pub fn build_auth_http_client_no_read_timeout(
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
 
-    let raw_client = reqwest_client_no_read_timeout(unix_socket_path, custom_headers)?;
+    let raw_client = reqwest_client_no_read_timeout(ctx.config.as_ref(), unix_socket_path, custom_headers)?;
     let mut builder = ClientBuilder::new(raw_client);
 
     #[cfg(unix)]
@@ -234,11 +241,12 @@ pub fn build_auth_http_client_no_read_timeout(
 
 /// Builds HTTP Client to talk to CAS.
 pub fn build_http_client(
+    ctx: &XetContext,
     session_id: &str,
     unix_socket_path: Option<&str>,
     custom_headers: Option<Arc<HeaderMap>>,
 ) -> Result<ClientWithMiddleware> {
-    build_auth_http_client(&None, session_id, unix_socket_path, custom_headers)
+    build_auth_http_client(ctx, &None, session_id, unix_socket_path, custom_headers)
 }
 
 /// Helper trait to allow the reqwest_middleware client to optionally add a middleware.
@@ -466,7 +474,8 @@ mod tests {
 
     #[test]
     fn test_build_http_client_without_uds() {
-        let result = build_http_client("test-session", None, None);
+        let ctx = XetContext::default().expect("ctx");
+        let result = build_http_client(&ctx, "test-session", None, None);
         assert!(result.is_ok());
     }
 
@@ -475,30 +484,35 @@ mod tests {
 
         #[test]
         fn test_build_no_read_timeout_succeeds() {
-            let result = build_auth_http_client_no_read_timeout(&None, "test-session", None, None);
+            let ctx = XetContext::default().expect("ctx");
+            let result = build_auth_http_client_no_read_timeout(&ctx, &None, "test-session", None, None);
             assert!(result.is_ok());
         }
 
         #[test]
         fn test_build_no_read_timeout_with_empty_session_id() {
-            let result = build_auth_http_client_no_read_timeout(&None, "", None, None);
+            let ctx = XetContext::default().expect("ctx");
+            let result = build_auth_http_client_no_read_timeout(&ctx, &None, "", None, None);
             assert!(result.is_ok());
         }
 
         #[test]
         fn test_build_no_read_timeout_with_custom_headers() {
+            let ctx = XetContext::default().expect("ctx");
             let mut headers = HeaderMap::new();
             headers.insert("X-Custom-Header", HeaderValue::from_static("test-value"));
             headers.insert(reqwest::header::USER_AGENT, HeaderValue::from_static("test-agent/1.0"));
 
-            let result = build_auth_http_client_no_read_timeout(&None, "test-session", None, Some(Arc::new(headers)));
+            let result =
+                build_auth_http_client_no_read_timeout(&ctx, &None, "test-session", None, Some(Arc::new(headers)));
             assert!(result.is_ok());
         }
 
         #[test]
         fn test_no_read_timeout_client_is_distinct_from_standard_client() {
-            let standard = build_auth_http_client(&None, "test-session", None, None).unwrap();
-            let no_timeout = build_auth_http_client_no_read_timeout(&None, "test-session", None, None).unwrap();
+            let ctx = XetContext::default().expect("ctx");
+            let standard = build_auth_http_client(&ctx, &None, "test-session", None, None).unwrap();
+            let no_timeout = build_auth_http_client_no_read_timeout(&ctx, &None, "test-session", None, None).unwrap();
 
             assert_ne!(
                 format!("{:p}", &standard),

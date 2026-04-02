@@ -1,17 +1,14 @@
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::fmt::Display;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 #[cfg(not(target_family = "wasm"))]
 use std::pin::pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock, OnceLock, Weak};
+use std::sync::{Arc, OnceLock};
 #[cfg(not(target_family = "wasm"))]
 use std::task::{Context, Waker};
 
 use futures::FutureExt;
-use reqwest::Client;
 use tokio::runtime::{Builder as TokioRuntimeBuilder, Handle as TokioRuntimeHandle, Runtime as TokioRuntime};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -19,7 +16,6 @@ use tracing::debug;
 #[cfg(not(target_family = "wasm"))]
 use tracing::info;
 
-use super::XetCommon;
 use crate::config::XetConfig;
 use crate::error::RuntimeError;
 #[cfg(not(target_family = "wasm"))]
@@ -71,19 +67,6 @@ fn get_num_tokio_worker_threads() -> usize {
     n
 }
 
-/// Quick function to check for a sigint shutdown.
-#[inline]
-pub fn check_sigint_shutdown() -> Result<(), RuntimeError> {
-    if XetRuntime::current_if_exists()
-        .map(|rt| rt.in_sigint_shutdown())
-        .unwrap_or(false)
-    {
-        Err(RuntimeError::KeyboardInterrupt)
-    } else {
-        Ok(())
-    }
-}
-
 /// Whether the runtime owns its tokio thread pool or wraps an external handle.
 ///
 /// - **`Owned`**: runtime created its own thread pool. Both async bridging ([`XetRuntime::bridge_async`]) and sync
@@ -102,7 +85,7 @@ type OwnedRuntimeCell = Arc<std::sync::RwLock<Option<Arc<TokioRuntime>>>>;
 #[derive(Debug)]
 #[cfg_attr(target_family = "wasm", allow(dead_code))]
 enum RuntimeBackend {
-    External { handle_id: Option<tokio::runtime::Id> },
+    External,
     OwnedThreadPool { runtime: OwnedRuntimeCell },
 }
 
@@ -187,87 +170,16 @@ pub struct XetRuntime {
     // Are we in the middle of a sigint shutdown?
     sigint_shutdown: AtomicBool,
 
-    // Shared state that is common across the entire runtime.
-    common: XetCommon,
-
-    // Primary configuration struct
-    config: Arc<XetConfig>,
-
     //  System monitor instance if enabled, monitor starts on initiation
     #[cfg(not(target_family = "wasm"))]
     system_monitor: Option<SystemMonitor>,
 }
 
-// Use thread-local references to the runtime that are set on initialization among all
-// the worker threads in the runtime.  This way, XetRuntime::current() will always refer to
-// the runtime active with that worker thread.
-thread_local! {
-    static THREAD_RUNTIME_REF: RefCell<Option<(u32, Arc<XetRuntime>)>> = const { RefCell::new(None) };
-}
-
-// Registry for External-mode runtimes created via from_external_with_config.
-// Keyed by tokio runtime ID so current_if_exists() can find the right XetRuntime
-// (with the correct XetConfig and XetCommon) when called from the caller's tokio threads,
-// where THREAD_RUNTIME_REF is never set.
-//
-// Uses std::sync (not tokio::sync) because the registry must be accessible from non-async
-// contexts such as Drop impls and sync builder methods.
-static EXTERNAL_RUNTIME_REGISTRY: LazyLock<std::sync::RwLock<HashMap<tokio::runtime::Id, Weak<XetRuntime>>>> =
-    LazyLock::new(|| std::sync::RwLock::new(HashMap::new()));
-
 impl XetRuntime {
-    /// Return the current threadpool that the current worker thread uses.  Will fail if  
-    /// called from a thread that is not spawned from the current runtime.  
-    #[inline]
-    pub fn current() -> Arc<Self> {
-        if let Some(rt) = Self::current_if_exists() {
-            return rt;
-        }
-
-        let Ok(tokio_rt) = TokioRuntimeHandle::try_current() else {
-            panic!("ThreadPool::current() called before ThreadPool::new() or on thread outside of current runtime.");
-        };
-
-        Self::from_external(tokio_rt)
-    }
-
-    #[inline]
-    pub fn current_if_exists() -> Option<Arc<Self>> {
-        // 1. Thread-local: set by on_thread_start in new_with_config (Owned mode).
-        let maybe_rt = THREAD_RUNTIME_REF.with_borrow(|rt| rt.clone());
-        if let Some((pid, rt)) = maybe_rt
-            && pid == std::process::id()
-        {
-            return Some(rt);
-        }
-
-        // 2. Handle registry: set by from_external_with_config (External mode). Returns the XetRuntime with the correct
-        //    XetConfig and XetCommon for this runtime.
-        if let Ok(handle) = TokioRuntimeHandle::try_current() {
-            if let Ok(reg) = EXTERNAL_RUNTIME_REGISTRY.read()
-                && let Some(weak) = reg.get(&handle.id())
-                && let Some(rt) = weak.upgrade()
-            {
-                return Some(rt);
-            }
-            // Fallback: no XetSession owns this handle; create a bare default-config wrapper.
-            Some(Self::from_external(handle))
-        } else {
-            None
-        }
-    }
-
-    /// Creates a new runtime with the default configuration.
-    pub fn new() -> Result<Arc<Self>, RuntimeError> {
-        Self::new_with_config(XetConfig::new())
-    }
-
-    /// Creates a new runtime with the given configuration.
-    pub fn new_with_config(config: XetConfig) -> Result<Arc<Self>, RuntimeError> {
+    /// Creates a new owned tokio thread pool with the given configuration.
+    pub fn new(config: &XetConfig) -> Result<Arc<Self>, RuntimeError> {
         let runtime = Arc::new(std::sync::RwLock::new(None));
 
-        // First, get an Arc value holding the runtime that we can initialize the
-        // thread-local THREAD_RUNTIME_REF with
         let rt = Arc::new(Self {
             backend: RuntimeBackend::OwnedThreadPool {
                 runtime: runtime.clone(),
@@ -275,7 +187,6 @@ impl XetRuntime {
             handle_ref: OnceLock::new(),
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
-            common: XetCommon::new(&config),
             #[cfg(not(target_family = "wasm"))]
             system_monitor: config
                 .system_monitor
@@ -288,22 +199,8 @@ impl XetRuntime {
                     .ok()
                 })
                 .flatten(),
-            config: Arc::new(config),
         });
 
-        // Each thread in each of the tokio worker threads holds a reference to the runtime handling
-        // that thread.  If there are multiple runtimes -- as could exist if CTRL-C is hit, then a process
-        // calls into xet immediately afterward -- the references are still correct due to using
-        // thread-local storage.
-        let rt_c = rt.clone();
-        let pid = std::process::id();
-        let set_threadlocal_reference = move || {
-            THREAD_RUNTIME_REF.set(Some((pid, rt_c.clone())));
-        };
-
-        // Set the name of a new thread for the threadpool. Names are prefixed with
-        // `THREADPOOL_THREAD_ID_PREFIX` and suffixed with a counter:
-        // e.g. hf-xet-0, hf-xet-1, hf-xet-2, ...
         let thread_id = AtomicUsize::new(0);
         let get_thread_name = move || {
             let id = thread_id.fetch_add(1, Ordering::Relaxed);
@@ -313,7 +210,6 @@ impl XetRuntime {
         let mut tokio_rt_builder = {
             #[cfg(not(target_family = "wasm"))]
             {
-                // A new multithreaded runtime with a capped number of threads
                 TokioRuntimeBuilder::new_multi_thread()
             }
 
@@ -328,79 +224,31 @@ impl XetRuntime {
         }
 
         let tokio_rt = tokio_rt_builder
-            .thread_name_fn(get_thread_name) // thread names will be hf-xet-0, hf-xet-1, etc.
-            .on_thread_start(set_threadlocal_reference) // Set the local runtime reference.
-            .thread_stack_size(THREADPOOL_STACK_SIZE) // 8MB stack size, default is 2MB
-            .enable_all() // enable all features, including IO/Timer/Signal/Reactor
+            .thread_name_fn(get_thread_name)
+            .thread_stack_size(THREADPOOL_STACK_SIZE)
+            .enable_all()
             .build()
             .map_err(RuntimeError::RuntimeInit)?;
 
-        // Now that the runtime is created, fill out the original struct.
         let handle = tokio_rt.handle().clone();
         let tokio_rt = Arc::new(tokio_rt);
-        *runtime.write().unwrap() = Some(tokio_rt); // Only fails if other thread destroyed mutex; unwrap ok.
-        rt.handle_ref.set(handle).unwrap(); // Only fails if set called twice; unwrap ok.
+        *runtime.write().unwrap() = Some(tokio_rt);
+        rt.handle_ref.set(handle).unwrap();
 
         Ok(rt)
     }
 
-    /// Wrap a caller-provided tokio handle after validating that it meets requirements.
-    ///
-    /// # Errors
-    ///
-    /// - [`RuntimeError::InvalidRuntime`] — the handle lacks multi-thread flavor, time driver, or IO driver.
-    /// - [`RuntimeError::ExternalAlreadyAttached`] — a live `XetRuntime` is already registered for this handle (checked
-    ///   inside [`from_external_with_config`](Self::from_external_with_config)).
-    ///
-    /// Not available on WASM targets.
-    #[cfg(not(target_family = "wasm"))]
-    pub fn from_validated_external(
-        rt_handle: TokioRuntimeHandle,
-        config: XetConfig,
-    ) -> Result<Arc<Self>, RuntimeError> {
-        if !Self::handle_meets_requirements(&rt_handle) {
-            return Err(RuntimeError::InvalidRuntime(
-                "supplied tokio handle does not meet requirements \
-                 (missing drivers or wrong flavor)"
-                    .into(),
-            ));
-        }
-        Self::from_external_with_config(rt_handle, config)
-    }
-
-    /// Wrap an existing tokio [`TokioRuntimeHandle`] with a [`XetRuntime`] using the provided
-    /// [`XetConfig`].  No new thread pool is created; `spawn()` calls will schedule work on the
-    /// runtime that owns `rt_handle`.
-    ///
-    /// The resulting `XetRuntime` is registered in `EXTERNAL_RUNTIME_REGISTRY` so that
-    /// [`XetRuntime::current()`] called from tasks running on `rt_handle`'s threads will return
-    /// this instance (with the correct config and shared `XetCommon`) rather than a default
-    /// throwaway.  The entry is removed when the last `Arc<XetRuntime>` is dropped.
-    ///
-    /// # Errors
-    ///
-    /// - [`RuntimeError::ExternalAlreadyAttached`] — a live `XetRuntime` is already registered for `rt_handle`'s tokio
-    ///   runtime ID (i.e. the same handle was wrapped twice while the first is still alive).  Drop the existing
-    ///   `XetRuntime` first, or use a different handle.
+    /// Wraps an existing tokio handle with a new `XetRuntime`, using the config for
+    /// system monitor setup.
     pub fn from_external_with_config(
         rt_handle: TokioRuntimeHandle,
-        config: XetConfig,
+        config: &XetConfig,
     ) -> Result<Arc<Self>, RuntimeError> {
-        let id = rt_handle.id();
-
-        let mut reg = EXTERNAL_RUNTIME_REGISTRY.write()?;
-        if let Some(existing) = reg.get(&id)
-            && existing.upgrade().is_some()
-        {
-            return Err(RuntimeError::ExternalAlreadyAttached(id));
-        }
-
-        let rt = Arc::new(Self {
-            backend: RuntimeBackend::External { handle_id: Some(id) },
+        Ok(Arc::new(Self {
+            backend: RuntimeBackend::External,
             handle_ref: rt_handle.into(),
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
-            common: XetCommon::new(&config),
             #[cfg(not(target_family = "wasm"))]
             system_monitor: config
                 .system_monitor
@@ -413,78 +261,24 @@ impl XetRuntime {
                     .ok()
                 })
                 .flatten(),
-            config: Arc::new(config),
-        });
-
-        reg.insert(id, Arc::downgrade(&rt));
-        Ok(rt)
+        }))
     }
 
-    /// Wrap an existing tokio [`TokioRuntimeHandle`] with a [`XetRuntime`] using a default
-    /// [`XetConfig`].  Prefer [`from_external_with_config`](Self::from_external_with_config) when
-    /// you have a config available.
-    ///
-    /// Unlike [`from_external_with_config`](Self::from_external_with_config), this function does
-    /// **not** register the runtime in `EXTERNAL_RUNTIME_REGISTRY` and therefore performs no
-    /// duplicate-handle check.  It is intended for lightweight, short-lived wrapping where
-    /// registry lookup via [`XetRuntime::current()`] is not required.
+    /// Wraps an existing tokio handle without system monitoring.
     pub fn from_external(rt_handle: TokioRuntimeHandle) -> Arc<Self> {
-        let config = XetConfig::new();
         Arc::new(Self {
-            backend: RuntimeBackend::External { handle_id: None },
+            backend: RuntimeBackend::External,
             handle_ref: rt_handle.into(),
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
-            common: XetCommon::new(&config),
             #[cfg(not(target_family = "wasm"))]
-            system_monitor: config
-                .system_monitor
-                .enabled
-                .then(|| {
-                    SystemMonitor::follow_process(
-                        config.system_monitor.sample_interval,
-                        config.system_monitor.log_path.clone(),
-                    )
-                    .ok()
-                })
-                .flatten(),
-            config: Arc::new(config),
+            system_monitor: None,
         })
     }
 
     #[inline]
     pub fn handle(&self) -> TokioRuntimeHandle {
         self.handle_ref.get().expect("Not initialized with handle set.").clone()
-    }
-
-    /// Returns a reference to the shared `XetCommon` state.
-    #[inline]
-    pub fn common(&self) -> &XetCommon {
-        &self.common
-    }
-
-    /// Gets or creates a reqwest client, using a tag to identify the client type.
-    ///
-    /// # Arguments
-    /// * `tag` - A string identifier for the client (e.g., "tcp" for regular, socket path for UDS)
-    /// * `f` - A function that creates the client if needed
-    ///
-    /// # Returns
-    /// Returns a clone of the cached client if the tag matches and we're in a runtime,
-    /// or creates a new client otherwise. This allows creating high-level clients outside
-    /// a runtime, like in tests.
-    pub fn get_or_create_reqwest_client<F>(tag: String, f: F) -> crate::error::Result<Client>
-    where
-        F: FnOnce() -> std::result::Result<Client, reqwest::Error>,
-    {
-        // Cache the reqwest Client if we are running inside a runtime, otherwise
-        // create a new one. This allows creating high-level clients outside a
-        // runtime, like in tests.
-        if let Some(rt) = Self::current_if_exists() {
-            rt.common().get_or_create_reqwest_client(tag, f)
-        } else {
-            Ok(f()?)
-        }
     }
 
     #[inline]
@@ -630,7 +424,7 @@ impl XetRuntime {
     {
         self.check_sigint()?;
         match &self.backend {
-            RuntimeBackend::External { .. } => Ok(fut.await),
+            RuntimeBackend::External => Ok(fut.await),
             RuntimeBackend::OwnedThreadPool { .. } => self.bridge_to_owned(task_name, fut).await,
         }
     }
@@ -651,7 +445,7 @@ impl XetRuntime {
         F::Output: Send + 'static,
     {
         self.check_sigint()?;
-        if matches!(self.backend, RuntimeBackend::External { .. }) {
+        if matches!(self.backend, RuntimeBackend::External) {
             return Err(RuntimeError::InvalidRuntime(
                 "bridge_sync() cannot be called on an External-mode runtime; \
                  use the async API instead"
@@ -710,41 +504,44 @@ impl XetRuntime {
     fn runtime_cell_if_owned(&self) -> Option<&OwnedRuntimeCell> {
         match &self.backend {
             RuntimeBackend::OwnedThreadPool { runtime } => Some(runtime),
-            RuntimeBackend::External { .. } => None,
+            RuntimeBackend::External => None,
         }
     }
 
-    /// Spawn a blocking task on the runtime's blocking thread pool. The task runs with this
-    /// runtime stored in thread-local storage so [`XetRuntime::current()`] works inside `f`.
-    ///
-    /// The receiver must be an `Arc<XetRuntime>` so the runtime can be installed in the
-    /// blocking thread (e.g. `rt.spawn_blocking(|| { ... })` where `rt: Arc<XetRuntime>`).
-    pub fn spawn_blocking<F, R>(self: &Arc<Self>, f: F) -> JoinHandle<R>
+    /// Spawn a blocking task on the runtime's blocking thread pool.
+    pub fn spawn_blocking<F, R>(&self, f: F) -> JoinHandle<R>
     where
         F: FnOnce() -> R + Send + 'static,
         R: Send + 'static,
     {
-        let rt = self.clone();
-        self.handle().spawn_blocking(move || {
-            let pid = std::process::id();
-            THREAD_RUNTIME_REF.set(Some((pid, rt)));
-            f()
-        })
-    }
-
-    /// Returns a reference to the primary configuration struct.
-    #[inline]
-    pub fn config(&self) -> &Arc<XetConfig> {
-        &self.config
+        self.handle().spawn_blocking(f)
     }
 
     /// Returns the runtime mode (Owned or External).
     #[inline]
     pub fn mode(&self) -> RuntimeMode {
         match &self.backend {
-            RuntimeBackend::External { .. } => RuntimeMode::External,
+            RuntimeBackend::External => RuntimeMode::External,
             RuntimeBackend::OwnedThreadPool { .. } => RuntimeMode::Owned,
         }
+    }
+
+    /// Wraps a caller-provided tokio handle after validating that it meets requirements.
+    ///
+    /// Not available on WASM targets.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn from_validated_external(
+        rt_handle: TokioRuntimeHandle,
+        config: &XetConfig,
+    ) -> Result<Arc<Self>, RuntimeError> {
+        if !Self::handle_meets_requirements(&rt_handle) {
+            return Err(RuntimeError::InvalidRuntime(
+                "supplied tokio handle does not meet requirements \
+                 (missing drivers or wrong flavor)"
+                    .into(),
+            ));
+        }
+        Self::from_external_with_config(rt_handle, config)
     }
 
     /// Probe whether a tokio runtime handle meets the requirements for use as an
@@ -798,20 +595,10 @@ impl XetRuntime {
     }
 }
 
-impl Drop for XetRuntime {
-    fn drop(&mut self) {
-        if let RuntimeBackend::External { handle_id: Some(id) } = &self.backend
-            && let Ok(mut reg) = EXTERNAL_RUNTIME_REGISTRY.write()
-        {
-            reg.remove(id);
-        }
-    }
-}
-
 impl Display for XetRuntime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let metrics = match &self.backend {
-            RuntimeBackend::External { .. } => self.handle().metrics(),
+            RuntimeBackend::External => self.handle().metrics(),
             RuntimeBackend::OwnedThreadPool { runtime } => {
                 // Need to be careful that this doesn't acquire locks eagerly, as this function can be called
                 // from some weird places like displaying the backtrace of a panic or exception.
@@ -839,95 +626,65 @@ impl Display for XetRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::XetContext;
 
     #[test]
     fn test_get_or_create_reqwest_client_returns_client() {
-        let result =
-            XetRuntime::get_or_create_reqwest_client("test".to_string(), || reqwest::Client::builder().build());
+        let ctx = XetContext::default().unwrap();
+        let result = ctx.get_or_create_reqwest_client("test".to_string(), || reqwest::Client::builder().build());
         assert!(result.is_ok());
     }
 
     #[test]
-    fn test_spawn_blocking_sets_current_runtime() {
-        let rt = XetRuntime::new().expect("Failed to create runtime");
-        let rt_clone = rt.clone();
-        let jh = rt.spawn_blocking(move || {
-            let current = XetRuntime::current();
-            Arc::ptr_eq(&current, &rt_clone)
-        });
-        let same = rt.bridge_sync(async { jh.await.unwrap() }).unwrap();
-        assert!(same);
-    }
-
-    /// current_if_exists() must return the session-owned XetRuntime (with the correct config)
-    /// when called from tasks on an External-mode runtime, not a default-config throwaway.
-    #[test]
-    fn test_current_if_exists_sees_external_runtime_config() {
-        let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        let mut config = XetConfig::new();
-        config.data.default_cas_endpoint = "https://test-endpoint.example.com".into();
-        let xet_rt = XetRuntime::from_external_with_config(tokio_rt.handle().clone(), config).unwrap();
-
-        // current_if_exists() from within the runtime must find the registered entry.
-        tokio_rt.block_on(async {
-            let found = XetRuntime::current_if_exists().expect("should find a runtime");
-            assert!(Arc::ptr_eq(&found, &xet_rt), "must be the same XetRuntime instance");
-            assert_eq!(found.config().data.default_cas_endpoint, "https://test-endpoint.example.com");
-        });
-
-        // After drop the entry is removed; current_if_exists() falls back to a default wrapper.
-        drop(xet_rt);
-        tokio_rt.block_on(async {
-            let found = XetRuntime::current_if_exists().expect("should still find a runtime");
-            assert_ne!(found.config().data.default_cas_endpoint, "https://test-endpoint.example.com");
-        });
-    }
-
-    #[test]
     fn test_bridge_async_owned_mode_runs_on_pool() {
-        let rt = XetRuntime::new().unwrap();
-        assert_eq!(rt.mode(), RuntimeMode::Owned);
-        let result = rt.bridge_sync(async {
-            let inner_rt = XetRuntime::new().unwrap();
-            inner_rt.bridge_async("test", async { 42 }).await.unwrap()
-        });
+        let ctx = XetContext::default().unwrap();
+        assert_eq!(ctx.runtime.mode(), RuntimeMode::Owned);
+        let rt = ctx.runtime.clone();
+        let result = ctx
+            .runtime
+            .bridge_sync(async move { rt.bridge_async("test", async { 42 }).await.unwrap() });
         assert_eq!(result.unwrap(), 42);
     }
 
     #[test]
     fn test_bridge_async_external_mode_runs_directly() {
         let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        let xet_rt = XetRuntime::from_external_with_config(tokio_rt.handle().clone(), XetConfig::new()).unwrap();
-        assert_eq!(xet_rt.mode(), RuntimeMode::External);
+        let config = XetConfig::new();
+        let rt = XetRuntime::from_external_with_config(tokio_rt.handle().clone(), &config).unwrap();
+        let ctx = XetContext::new(rt, config);
+        assert_eq!(ctx.runtime.mode(), RuntimeMode::External);
 
-        let result = tokio_rt.block_on(async { xet_rt.bridge_async("test", async { 99 }).await.unwrap() });
+        let result = tokio_rt.block_on(async { ctx.runtime.bridge_async("test", async { 99 }).await.unwrap() });
         assert_eq!(result, 99);
     }
 
     #[test]
     fn test_bridge_sync_owned_mode() {
-        let rt = XetRuntime::new().unwrap();
-        assert_eq!(rt.mode(), RuntimeMode::Owned);
-        let result = rt.bridge_sync(async { 123 }).unwrap();
+        let ctx = XetContext::default().unwrap();
+        assert_eq!(ctx.runtime.mode(), RuntimeMode::Owned);
+        let result = ctx.runtime.bridge_sync(async { 123 }).unwrap();
         assert_eq!(result, 123);
     }
 
     #[test]
     fn test_bridge_sync_from_spawn_blocking_owned_mode() {
-        let rt = XetRuntime::new().unwrap();
-        let rt_clone = rt.clone();
-        let jh = rt.spawn_blocking(move || rt_clone.bridge_sync(async { 456 }).unwrap());
-        let result = rt.bridge_sync(async { jh.await.unwrap() }).unwrap();
+        let ctx = XetContext::default().unwrap();
+        let rt = ctx.runtime.clone();
+        let rt2 = ctx.runtime.clone();
+        let jh = rt.spawn_blocking(move || rt2.bridge_sync(async { 456 }).unwrap());
+        let result = ctx.runtime.bridge_sync(async { jh.await.unwrap() }).unwrap();
         assert_eq!(result, 456);
     }
 
     #[test]
     fn test_bridge_sync_external_mode_returns_error() {
         let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        let xet_rt = XetRuntime::from_external_with_config(tokio_rt.handle().clone(), XetConfig::new()).unwrap();
-        assert_eq!(xet_rt.mode(), RuntimeMode::External);
+        let config = XetConfig::new();
+        let rt = XetRuntime::from_external_with_config(tokio_rt.handle().clone(), &config).unwrap();
+        let ctx = XetContext::new(rt, config);
+        assert_eq!(ctx.runtime.mode(), RuntimeMode::External);
 
-        let result = xet_rt.bridge_sync(async { 789 });
+        let result = ctx.runtime.bridge_sync(async { 789 });
         assert!(matches!(result, Err(RuntimeError::InvalidRuntime(_))));
     }
 
@@ -956,15 +713,17 @@ mod tests {
     #[test]
     fn test_from_validated_external_accepts_valid_handle() {
         let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        let xet_rt = XetRuntime::from_validated_external(tokio_rt.handle().clone(), XetConfig::new()).unwrap();
-        assert_eq!(xet_rt.mode(), RuntimeMode::External);
+        let config = XetConfig::new();
+        let rt = XetRuntime::from_validated_external(tokio_rt.handle().clone(), &config).unwrap();
+        assert_eq!(rt.mode(), RuntimeMode::External);
     }
 
     #[cfg(not(target_family = "wasm"))]
     #[test]
     fn test_from_validated_external_rejects_current_thread_runtime() {
         let tokio_rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let result = XetRuntime::from_validated_external(tokio_rt.handle().clone(), XetConfig::new());
+        let config = XetConfig::new();
+        let result = XetRuntime::from_validated_external(tokio_rt.handle().clone(), &config);
         assert!(matches!(result, Err(RuntimeError::InvalidRuntime(_))));
     }
 
@@ -972,16 +731,17 @@ mod tests {
     #[test]
     fn test_from_validated_external_rejects_runtime_without_drivers() {
         let tokio_rt = tokio::runtime::Builder::new_multi_thread().build().unwrap();
-        let result = XetRuntime::from_validated_external(tokio_rt.handle().clone(), XetConfig::new());
+        let config = XetConfig::new();
+        let result = XetRuntime::from_validated_external(tokio_rt.handle().clone(), &config);
         assert!(matches!(result, Err(RuntimeError::InvalidRuntime(_))));
     }
 
     #[test]
     fn test_bridge_async_owned_mode_catches_panic() {
-        let rt = XetRuntime::new().unwrap();
-        let rt2 = rt.clone();
-        let result = rt.bridge_sync(async move {
-            rt2.bridge_async("panic_test", async {
+        let ctx = XetContext::default().unwrap();
+        let rt = ctx.runtime.clone();
+        let result = ctx.runtime.bridge_sync(async move {
+            rt.bridge_async("panic_test", async {
                 panic!("intentional test panic");
             })
             .await
@@ -991,37 +751,18 @@ mod tests {
     }
 
     #[test]
-    // Wrapping the same tokio handle a second time (while the first XetRuntime is alive)
-    // must return ExternalAlreadyAttached.
-    fn test_from_external_with_config_duplicate_handle_fails() {
+    fn test_context_config_preserved_through_external() {
         let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        let _first = XetRuntime::from_external_with_config(tokio_rt.handle().clone(), XetConfig::new()).unwrap();
-        let second = XetRuntime::from_external_with_config(tokio_rt.handle().clone(), XetConfig::new());
-        assert!(
-            matches!(second, Err(RuntimeError::ExternalAlreadyAttached(_))),
-            "expected ExternalAlreadyAttached for duplicate handle, got: {second:?}"
-        );
+        let mut config = XetConfig::new();
+        config.data.default_cas_endpoint = "https://test-endpoint.example.com".into();
+        let rt = XetRuntime::from_external(tokio_rt.handle().clone());
+        let ctx = XetContext::new(rt, config);
+        assert_eq!(ctx.config.data.default_cas_endpoint, "https://test-endpoint.example.com");
     }
 
     #[test]
-    // After the first XetRuntime is dropped (deregistered), wrapping the same handle again
-    // must succeed.
-    fn test_from_external_with_config_reuse_handle_after_drop() {
-        let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        let first = XetRuntime::from_external_with_config(tokio_rt.handle().clone(), XetConfig::new()).unwrap();
-        drop(first);
-        let second = XetRuntime::from_external_with_config(tokio_rt.handle().clone(), XetConfig::new());
-        assert!(second.is_ok(), "expected Ok after previous XetRuntime was dropped, got: {second:?}");
-    }
-
-    #[test]
-    // Two distinct tokio runtimes must each accept their own XetRuntime without conflict.
-    fn test_from_external_with_config_distinct_handles_both_succeed() {
-        let rt_a = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        let rt_b = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        let xet_a = XetRuntime::from_external_with_config(rt_a.handle().clone(), XetConfig::new());
-        let xet_b = XetRuntime::from_external_with_config(rt_b.handle().clone(), XetConfig::new());
-        assert!(xet_a.is_ok());
-        assert!(xet_b.is_ok());
+    fn test_check_sigint_shutdown_not_triggered() {
+        let ctx = XetContext::default().unwrap();
+        assert!(ctx.check_sigint_shutdown().is_ok());
     }
 }
