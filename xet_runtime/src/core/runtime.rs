@@ -22,6 +22,8 @@ use tracing::info;
 use super::XetCommon;
 use crate::config::XetConfig;
 use crate::error::RuntimeError;
+#[cfg(feature = "fd-track")]
+use crate::fd_diagnostics::{report_fd_count, track_fd_scope};
 #[cfg(not(target_family = "wasm"))]
 use crate::logging::SystemMonitor;
 #[cfg(not(target_family = "wasm"))]
@@ -201,8 +203,13 @@ pub struct XetRuntime {
 // Use thread-local references to the runtime that are set on initialization among all
 // the worker threads in the runtime.  This way, XetRuntime::current() will always refer to
 // the runtime active with that worker thread.
+//
+// IMPORTANT: Uses Weak<XetRuntime> instead of Arc to avoid a reference cycle:
+//   worker thread TLS -> Arc<XetRuntime> -> OwnedRuntimeCell -> TokioRuntime -> worker threads
+// With Weak, the cycle is broken: when the last external Arc<XetRuntime> is dropped,
+// the runtime can shut down and join its worker threads normally.
 thread_local! {
-    static THREAD_RUNTIME_REF: RefCell<Option<(u32, Arc<XetRuntime>)>> = const { RefCell::new(None) };
+    static THREAD_RUNTIME_REF: RefCell<Option<(u32, Weak<XetRuntime>)>> = const { RefCell::new(None) };
 }
 
 // Registry for External-mode runtimes created via from_external_with_config.
@@ -234,10 +241,16 @@ impl XetRuntime {
     #[inline]
     pub fn current_if_exists() -> Option<Arc<Self>> {
         // 1. Thread-local: set by on_thread_start in new_with_config (Owned mode).
-        let maybe_rt = THREAD_RUNTIME_REF.with_borrow(|rt| rt.clone());
-        if let Some((pid, rt)) = maybe_rt
-            && pid == std::process::id()
-        {
+        let maybe_rt = THREAD_RUNTIME_REF.with_borrow(|rt| {
+            rt.as_ref().and_then(|(pid, weak)| {
+                if *pid == std::process::id() {
+                    weak.upgrade()
+                } else {
+                    None
+                }
+            })
+        });
+        if let Some(rt) = maybe_rt {
             return Some(rt);
         }
 
@@ -264,6 +277,9 @@ impl XetRuntime {
 
     /// Creates a new runtime with the given configuration.
     pub fn new_with_config(config: XetConfig) -> Result<Arc<Self>, RuntimeError> {
+        #[cfg(feature = "fd-track")]
+        let _fd_scope = track_fd_scope("XetRuntime::new_with_config");
+
         let runtime = Arc::new(std::sync::RwLock::new(None));
 
         // First, get an Arc value holding the runtime that we can initialize the
@@ -291,14 +307,14 @@ impl XetRuntime {
             config: Arc::new(config),
         });
 
-        // Each thread in each of the tokio worker threads holds a reference to the runtime handling
-        // that thread.  If there are multiple runtimes -- as could exist if CTRL-C is hit, then a process
-        // calls into xet immediately afterward -- the references are still correct due to using
-        // thread-local storage.
-        let rt_c = rt.clone();
+        // Each tokio worker thread stores a Weak reference so it can resolve its owning
+        // XetRuntime via current()/current_if_exists(). Weak (not Arc) avoids a cycle:
+        // XetRuntime owns the tokio runtime, so a strong TLS ref from workers would prevent
+        // the runtime from being dropped when the last external Arc<XetRuntime> is released.
+        let rt_weak = Arc::downgrade(&rt);
         let pid = std::process::id();
         let set_threadlocal_reference = move || {
-            THREAD_RUNTIME_REF.set(Some((pid, rt_c.clone())));
+            THREAD_RUNTIME_REF.set(Some((pid, rt_weak.clone())));
         };
 
         // Set the name of a new thread for the threadpool. Names are prefixed with
@@ -331,6 +347,7 @@ impl XetRuntime {
             .thread_name_fn(get_thread_name) // thread names will be hf-xet-0, hf-xet-1, etc.
             .on_thread_start(set_threadlocal_reference) // Set the local runtime reference.
             .thread_stack_size(THREADPOOL_STACK_SIZE) // 8MB stack size, default is 2MB
+            .thread_keep_alive(std::time::Duration::from_millis(100)) // Don't keep idle blocking threads for long
             .enable_all() // enable all features, including IO/Timer/Signal/Reactor
             .build()
             .map_err(RuntimeError::RuntimeInit)?;
@@ -340,6 +357,9 @@ impl XetRuntime {
         let tokio_rt = Arc::new(tokio_rt);
         *runtime.write().unwrap() = Some(tokio_rt); // Only fails if other thread destroyed mutex; unwrap ok.
         rt.handle_ref.set(handle).unwrap(); // Only fails if set called twice; unwrap ok.
+
+        #[cfg(feature = "fd-track")]
+        report_fd_count("XetRuntime::new_with_config complete");
 
         Ok(rt)
     }
@@ -386,6 +406,9 @@ impl XetRuntime {
         rt_handle: TokioRuntimeHandle,
         config: XetConfig,
     ) -> Result<Arc<Self>, RuntimeError> {
+        #[cfg(feature = "fd-track")]
+        let _fd_scope = track_fd_scope("XetRuntime::from_external_with_config");
+
         let id = rt_handle.id();
 
         let mut reg = EXTERNAL_RUNTIME_REGISTRY.write()?;
@@ -417,6 +440,10 @@ impl XetRuntime {
         });
 
         reg.insert(id, Arc::downgrade(&rt));
+
+        #[cfg(feature = "fd-track")]
+        report_fd_count("XetRuntime::from_external_with_config complete");
+
         Ok(rt)
     }
 
@@ -504,6 +531,9 @@ impl XetRuntime {
     /// [`bridge_async`](Self::bridge_async) may still hold a cloned `Arc` to the tokio runtime
     /// until that call returns, so teardown of the reactor may complete only after those finish.
     pub fn perform_sigint_shutdown(&self) {
+        #[cfg(feature = "fd-track")]
+        let _fd_scope = track_fd_scope("XetRuntime::perform_sigint_shutdown");
+
         // Shut down the tokio
         self.sigint_shutdown.store(true, Ordering::SeqCst);
 
@@ -724,10 +754,10 @@ impl XetRuntime {
         F: FnOnce() -> R + Send + 'static,
         R: Send + 'static,
     {
-        let rt = self.clone();
+        let rt_weak = Arc::downgrade(self);
         self.handle().spawn_blocking(move || {
             let pid = std::process::id();
-            THREAD_RUNTIME_REF.set(Some((pid, rt)));
+            THREAD_RUNTIME_REF.set(Some((pid, rt_weak)));
             f()
         })
     }
@@ -800,10 +830,33 @@ impl XetRuntime {
 
 impl Drop for XetRuntime {
     fn drop(&mut self) {
-        if let RuntimeBackend::External { handle_id: Some(id) } = &self.backend
-            && let Ok(mut reg) = EXTERNAL_RUNTIME_REGISTRY.write()
+        #[cfg(feature = "fd-track")]
+        let _fd_scope = track_fd_scope("XetRuntime::drop");
+
+        self.handle_ref.take();
+
+        if let RuntimeBackend::External { handle_id: Some(id) } = &self.backend {
+            if let Ok(mut reg) = EXTERNAL_RUNTIME_REGISTRY.write() {
+                reg.remove(id);
+            }
+            return;
+        }
+
+        // When dropping from within an async context, the default TokioRuntime Drop
+        // would panic ("Cannot drop a runtime in a context where blocking is not allowed").
+        // Avoid this by taking ownership of the runtime and using shutdown_background(),
+        // which spawns a thread for the blocking shutdown work instead.
+        let in_async_context = TokioRuntimeHandle::try_current().is_ok();
+        if let RuntimeBackend::OwnedThreadPool { runtime } = &self.backend
+            && let Ok(mut guard) = runtime.write()
+            && let Some(rt_arc) = guard.take()
+            && let Ok(rt) = Arc::try_unwrap(rt_arc)
         {
-            reg.remove(id);
+            if in_async_context {
+                rt.shutdown_background();
+            } else {
+                rt.shutdown_timeout(std::time::Duration::from_secs(5));
+            }
         }
     }
 }

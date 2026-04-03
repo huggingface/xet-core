@@ -34,7 +34,6 @@ impl AuthGroupBuilder<XetUploadCommit> {
             })
             .await?;
         info!("New upload commit, session_id={}, commit_id={}", commit.session().id(), commit.id());
-        commit.session().register_upload_commit(&commit)?;
         Ok(commit)
     }
 
@@ -60,7 +59,6 @@ impl AuthGroupBuilder<XetUploadCommit> {
             XetUploadCommit::new(session, commit_runtime, auth_options).await
         })?;
         info!("New upload commit, session_id={}, commit_id={}", commit.session().id(), commit.id());
-        commit.session().register_upload_commit(&commit)?;
         Ok(commit)
     }
 }
@@ -257,7 +255,6 @@ impl XetUploadCommitInner {
         }
 
         let finalize_result = self.upload_session.clone().finalize_with_report().await;
-        self.session.finish_upload_commit(self.commit_id)?;
         let (dedup_metrics, progress) = match finalize_result {
             Ok(v) => v,
             Err(e) => return Err(e.into()),
@@ -273,7 +270,7 @@ impl XetUploadCommitInner {
         })
     }
 
-    fn abort(&self) -> Result<(), XetError> {
+    pub(super) fn abort(&self) -> Result<(), XetError> {
         self.task_runtime.cancel_subtree()?;
         let file_uploads = std::mem::take(&mut *self.file_handles.lock()?);
         for upload in file_uploads {
@@ -647,15 +644,6 @@ mod tests {
         c1.commit().await.unwrap();
         let err = c2.commit().await.unwrap_err();
         assert!(matches!(err, XetError::AlreadyCompleted | XetError::Internal(_)));
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_commit_unregisters_from_session() {
-        let session = XetSessionBuilder::new().build().unwrap();
-        let commit = session.new_upload_commit().unwrap().build().await.unwrap();
-        assert_eq!(session.inner.active_upload_commits.lock().unwrap().len(), 1);
-        commit.commit().await.unwrap();
-        assert_eq!(session.inner.active_upload_commits.lock().unwrap().len(), 0);
     }
 
     // ── Session-abort guards ─────────────────────────────────────────────────

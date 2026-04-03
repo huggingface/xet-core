@@ -32,7 +32,6 @@ impl AuthGroupBuilder<XetFileDownloadGroup> {
             })
             .await?;
         info!("New file download group, session_id={}, group_id={}", group.session().id(), group.id());
-        group.session().register_file_download_group(&group)?;
 
         Ok(group)
     }
@@ -59,7 +58,6 @@ impl AuthGroupBuilder<XetFileDownloadGroup> {
             XetFileDownloadGroup::new(session, group_runtime, auth_options).await
         })?;
         info!("New file download group, session_id={}, group_id={}", group.session().id(), group.id());
-        group.session().register_file_download_group(&group)?;
         Ok(group)
     }
 }
@@ -104,6 +102,7 @@ pub struct XetDownloadGroupReport {
 pub struct XetFileDownloadGroup {
     pub(super) inner: Arc<XetFileDownloadGroupInner>,
     pub(super) task_runtime: Arc<TaskRuntime>,
+    session: XetSession,
 }
 
 impl XetFileDownloadGroup {
@@ -120,12 +119,15 @@ impl XetFileDownloadGroup {
 
         let inner = Arc::new(XetFileDownloadGroupInner {
             group_id,
-            session,
             active_tasks: RwLock::new(HashMap::new()),
             download_session: download_session.clone(),
         });
 
-        Ok(Self { inner, task_runtime })
+        Ok(Self {
+            inner,
+            task_runtime,
+            session,
+        })
     }
 
     /// Unique identifier for this download group.
@@ -134,7 +136,7 @@ impl XetFileDownloadGroup {
     }
 
     fn session(&self) -> &XetSession {
-        &self.inner.session
+        &self.session
     }
 
     /// Cancel all active downloads in this group.
@@ -267,7 +269,6 @@ impl XetFileDownloadGroup {
 
 pub(super) struct XetFileDownloadGroupInner {
     group_id: UniqueID,
-    pub(super) session: XetSession,
     active_tasks: RwLock<HashMap<UniqueID, XetFileDownload>>,
     pub(super) download_session: Arc<FileDownloadSession>,
 }
@@ -359,8 +360,6 @@ impl XetFileDownloadGroupInner {
                 },
             }
         }
-        self.session.finish_file_download_group(self.group_id)?;
-
         match first_error {
             Some(e) => Err(e),
             None => Ok(results),
@@ -481,16 +480,6 @@ mod tests {
         g1.finish().await.unwrap();
         let err = g2.finish().await.unwrap_err();
         assert!(matches!(err, XetError::AlreadyCompleted));
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    // finish() unregisters the group from the session's active set.
-    async fn test_finish_unregisters_from_session() {
-        let session = XetSessionBuilder::new().build().unwrap();
-        let group = session.new_file_download_group().unwrap().build().await.unwrap();
-        assert_eq!(session.inner.active_file_download_groups.lock().unwrap().len(), 1);
-        group.finish().await.unwrap();
-        assert_eq!(session.inner.active_file_download_groups.lock().unwrap().len(), 0);
     }
 
     // ── Guards ───────────────────────────────────────────────────────────────
