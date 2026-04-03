@@ -22,6 +22,8 @@ use tracing::info;
 use super::XetCommon;
 use crate::config::XetConfig;
 use crate::error::RuntimeError;
+#[cfg(feature = "fd-track")]
+use crate::fd_diagnostics::{report_fd_count, track_fd_scope};
 #[cfg(not(target_family = "wasm"))]
 use crate::logging::SystemMonitor;
 #[cfg(not(target_family = "wasm"))]
@@ -275,6 +277,9 @@ impl XetRuntime {
 
     /// Creates a new runtime with the given configuration.
     pub fn new_with_config(config: XetConfig) -> Result<Arc<Self>, RuntimeError> {
+        #[cfg(feature = "fd-track")]
+        let _fd_scope = track_fd_scope("XetRuntime::new_with_config");
+
         let runtime = Arc::new(std::sync::RwLock::new(None));
 
         // First, get an Arc value holding the runtime that we can initialize the
@@ -353,6 +358,9 @@ impl XetRuntime {
         *runtime.write().unwrap() = Some(tokio_rt); // Only fails if other thread destroyed mutex; unwrap ok.
         rt.handle_ref.set(handle).unwrap(); // Only fails if set called twice; unwrap ok.
 
+        #[cfg(feature = "fd-track")]
+        report_fd_count("XetRuntime::new_with_config complete");
+
         Ok(rt)
     }
 
@@ -398,6 +406,9 @@ impl XetRuntime {
         rt_handle: TokioRuntimeHandle,
         config: XetConfig,
     ) -> Result<Arc<Self>, RuntimeError> {
+        #[cfg(feature = "fd-track")]
+        let _fd_scope = track_fd_scope("XetRuntime::from_external_with_config");
+
         let id = rt_handle.id();
 
         let mut reg = EXTERNAL_RUNTIME_REGISTRY.write()?;
@@ -429,6 +440,10 @@ impl XetRuntime {
         });
 
         reg.insert(id, Arc::downgrade(&rt));
+
+        #[cfg(feature = "fd-track")]
+        report_fd_count("XetRuntime::from_external_with_config complete");
+
         Ok(rt)
     }
 
@@ -516,6 +531,9 @@ impl XetRuntime {
     /// [`bridge_async`](Self::bridge_async) may still hold a cloned `Arc` to the tokio runtime
     /// until that call returns, so teardown of the reactor may complete only after those finish.
     pub fn perform_sigint_shutdown(&self) {
+        #[cfg(feature = "fd-track")]
+        let _fd_scope = track_fd_scope("XetRuntime::perform_sigint_shutdown");
+
         // Shut down the tokio
         self.sigint_shutdown.store(true, Ordering::SeqCst);
 
@@ -812,6 +830,9 @@ impl XetRuntime {
 
 impl Drop for XetRuntime {
     fn drop(&mut self) {
+        #[cfg(feature = "fd-track")]
+        let _fd_scope = track_fd_scope("XetRuntime::drop");
+
         self.handle_ref.take();
 
         if let RuntimeBackend::External { handle_id: Some(id) } = &self.backend {

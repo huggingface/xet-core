@@ -25,6 +25,8 @@ use xet_core_structures::metadata_shard::xorb_structs::MDBXorbInfo;
 use xet_core_structures::metadata_shard::{MDBShardFile, ShardFileManager};
 use xet_core_structures::serialization_utils::read_u32;
 use xet_core_structures::xorb_object::{SerializedXorbObject, XorbObject};
+#[cfg(feature = "fd-track")]
+use xet_runtime::fd_diagnostics::{report_fd_count, track_fd_scope};
 use xet_runtime::file_utils::SafeFileCreator;
 
 use super::direct_access_client::DirectAccessClient;
@@ -113,12 +115,17 @@ static DB_CACHE: LazyLock<Mutex<HashMap<PathBuf, CachedDbWeak>>> = LazyLock::new
 /// Opens or returns a shared [`Arc<redb::Database>`] for `db_path`. The map stores only
 /// [`Weak`] pointers ([`Arc::downgrade`]); on a hit, [`Weak::upgrade`] yields a new strong ref.
 fn get_or_open_db(db_path: &Path) -> std::result::Result<Arc<redb::Database>, redb::DatabaseError> {
+    #[cfg(feature = "fd-track")]
+    let _fd_scope = track_fd_scope(format!("LocalClient::get_or_open_db({})", db_path.display()));
+
     let mut map = DB_CACHE.lock().unwrap();
 
     if let Some(weak) = map.get(db_path)
         && let Some(db) = Weak::upgrade(weak)
     {
         tracing::trace!(target: "xet_client::local_cas_redb", path = %db_path.display(), "DB_CACHE hit");
+        #[cfg(feature = "fd-track")]
+        report_fd_count("LocalClient::get_or_open_db cache hit");
         return Ok(db);
     }
 
@@ -129,6 +136,8 @@ fn get_or_open_db(db_path: &Path) -> std::result::Result<Arc<redb::Database>, re
 
     let db = Arc::new(redb::Database::create(db_path)?);
     map.insert(db_path.to_owned(), Arc::downgrade(&db));
+    #[cfg(feature = "fd-track")]
+    report_fd_count("LocalClient::get_or_open_db opened new DB");
     Ok(db)
 }
 
@@ -176,6 +185,10 @@ impl LocalClient {
         // for the same directory (e.g. via symlinks or /var vs /private/var on macOS) would open
         // multiple `redb::Database` handles and duplicate file descriptors for one CAS root.
         let base_dir = std::fs::canonicalize(&base_dir).unwrap_or(base_dir);
+        #[cfg(feature = "fd-track")]
+        let _fd_scope = track_fd_scope(format!("LocalClient::new_internal({})", base_dir.display()));
+        #[cfg(feature = "fd-track")]
+        report_fd_count("LocalClient::new_internal start");
 
         let shard_dir = base_dir.join("shards");
         if !shard_dir.exists() {
@@ -190,6 +203,8 @@ impl LocalClient {
         let db_path = base_dir.join("global_dedup_lookup.redb");
         let db =
             get_or_open_db(&db_path).map_err(|e| ClientError::Other(format!("Error opening redb database: {e}")))?;
+        #[cfg(feature = "fd-track")]
+        report_fd_count("LocalClient::new_internal after DB open");
 
         // Ensure tables exist by opening a write transaction.
         {
@@ -201,6 +216,8 @@ impl LocalClient {
 
         // Open / set up the shard lookup
         let shard_manager = ShardFileManager::new_in_session_directory(shard_dir.clone(), true).await?;
+        #[cfg(feature = "fd-track")]
+        report_fd_count("LocalClient::new_internal after shard manager init");
 
         Ok(Self {
             db,
@@ -295,6 +312,22 @@ impl LocalClient {
         }
 
         Ok(())
+    }
+}
+
+impl Drop for LocalClient {
+    fn drop(&mut self) {
+        #[cfg(feature = "fd-track")]
+        let _fd_scope = track_fd_scope(format!("LocalClient::drop({})", self.xorb_dir.display()));
+
+        #[cfg(feature = "fd-track")]
+        {
+            report_fd_count("LocalClient::drop start");
+            if let Ok(mut map) = DB_CACHE.lock() {
+                map.retain(|_, weak| weak.strong_count() > 0);
+            }
+            report_fd_count("LocalClient::drop end");
+        }
     }
 }
 

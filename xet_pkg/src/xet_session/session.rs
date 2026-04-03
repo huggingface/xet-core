@@ -9,6 +9,8 @@ use xet_data::progress_tracking::UniqueID;
 use xet_runtime::RuntimeError;
 use xet_runtime::config::XetConfig;
 use xet_runtime::core::XetRuntime;
+#[cfg(feature = "fd-track")]
+use xet_runtime::fd_diagnostics::{report_fd_count, track_fd_scope};
 
 use super::download_stream_group::{
     XetDownloadStreamGroup, XetDownloadStreamGroupBuilder, XetDownloadStreamGroupInner,
@@ -160,6 +162,9 @@ impl XetSessionBuilder {
     /// the duplicate attach is silently rejected and an owned runtime is created instead.
     /// This prevents two sessions from fighting over the same tokio runtime's task scheduler.
     pub fn build(self) -> Result<XetSession, SessionError> {
+        #[cfg(feature = "fd-track")]
+        let _fd_scope = track_fd_scope("XetSessionBuilder::build");
+
         let handle = self.tokio_handle.or_else(|| {
             tokio::runtime::Handle::try_current()
                 .ok()
@@ -189,6 +194,8 @@ impl XetSessionBuilder {
 
         let session = XetSession::new(self.config, runtime);
         info!("Session created, session_id={}", session.inner.id);
+        #[cfg(feature = "fd-track")]
+        report_fd_count("XetSessionBuilder::build complete");
         Ok(session)
     }
 }
@@ -255,6 +262,8 @@ impl XetSession {
     /// Returns `Err(SessionError::UserCancelled)` if the session has been aborted.
     pub fn new_upload_commit(&self) -> Result<XetUploadCommitBuilder, SessionError> {
         self.inner.task_runtime.check_state("new_upload_commit")?;
+        #[cfg(feature = "fd-track")]
+        report_fd_count("XetSession::new_upload_commit");
         Ok(XetUploadCommitBuilder::new(self.clone()))
     }
 
@@ -276,6 +285,8 @@ impl XetSession {
     /// Returns `Err(SessionError::UserCancelled)` if the session has been aborted.
     pub fn new_file_download_group(&self) -> Result<XetFileDownloadGroupBuilder, SessionError> {
         self.inner.task_runtime.check_state("new_file_download_group")?;
+        #[cfg(feature = "fd-track")]
+        report_fd_count("XetSession::new_file_download_group");
         Ok(XetFileDownloadGroupBuilder::new(self.clone()))
     }
 
@@ -301,6 +312,8 @@ impl XetSession {
     /// Returns `Err(SessionError::UserCancelled)` if the session has been aborted.
     pub fn new_download_stream_group(&self) -> Result<XetDownloadStreamGroupBuilder, SessionError> {
         self.inner.task_runtime.check_state("new_download_stream_group")?;
+        #[cfg(feature = "fd-track")]
+        report_fd_count("XetSession::new_download_stream_group");
         Ok(XetDownloadStreamGroupBuilder::new(self.clone()))
     }
 
@@ -313,6 +326,9 @@ impl XetSession {
     /// This does not shut down the underlying runtime. Use
     /// [`sigint_abort`](Self::sigint_abort) for SIGINT-style runtime teardown.
     pub fn abort(&self) -> Result<(), SessionError> {
+        #[cfg(feature = "fd-track")]
+        let _fd_scope = track_fd_scope(format!("XetSession::abort({})", self.inner.id));
+
         info!("Session abort, session_id={}", self.inner.id);
         self.inner.task_runtime.cancel_subtree()?;
 
@@ -322,6 +338,8 @@ impl XetSession {
                 inner.abort();
             }
         }
+        #[cfg(feature = "fd-track")]
+        report_fd_count("XetSession::abort complete");
         Ok(())
     }
 
@@ -330,6 +348,9 @@ impl XetSession {
     /// Performs runtime SIGINT shutdown and clears session registrations.
     /// This does not call per-commit/group local abort hooks.
     pub fn sigint_abort(&self) -> Result<(), SessionError> {
+        #[cfg(feature = "fd-track")]
+        let _fd_scope = track_fd_scope(format!("XetSession::sigint_abort({})", self.inner.id));
+
         info!("Session SIGINT abort, session_id={}", self.inner.id);
         self.inner.runtime.perform_sigint_shutdown();
 
@@ -340,6 +361,8 @@ impl XetSession {
             }
         }
 
+        #[cfg(feature = "fd-track")]
+        report_fd_count("XetSession::sigint_abort complete");
         Ok(())
     }
 

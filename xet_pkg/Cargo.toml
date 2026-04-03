@@ -32,6 +32,7 @@ ulid = { workspace = true }
 
 [features]
 smoke-test = []
+fd-track = ["xet-runtime/fd-track", "xet-client/fd-track", "xet-data/fd-track"]
 python = ["xet-runtime/python", "dep:pyo3"]
 simulation = ["xet-client/simulation"]
 
