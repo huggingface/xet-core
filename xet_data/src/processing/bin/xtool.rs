@@ -17,7 +17,7 @@ use xet_data::processing::data_client::default_config;
 use xet_data::processing::migration_tool::hub_client_token_refresher::HubClientTokenRefresher;
 use xet_data::processing::migration_tool::migrate::migrate_files_impl;
 use xet_runtime::config::XetConfig;
-use xet_runtime::core::{XetContext, XetRuntime};
+use xet_runtime::core::{XetRuntime, XetThreadpool};
 
 const DEFAULT_HF_ENDPOINT: &str = "https://huggingface.co";
 const USER_AGENT: &str = concat!("xtool", "/", env!("CARGO_PKG_VERSION"));
@@ -61,7 +61,7 @@ impl XCommand {
         let mut headers = HeaderMap::new();
         headers.insert(header::USER_AGENT, HeaderValue::from_static(USER_AGENT));
 
-        let ctx = XetContext::default()?;
+        let ctx = XetRuntime::default()?;
         let cred_helper = BearerCredentialHelper::new(token, "");
         let hub_client = HubClient::new(
             ctx.clone(),
@@ -216,7 +216,7 @@ async fn query_reconstruction(
 
     let config = XetConfig::new();
     let ctx =
-        XetContext::new(XetRuntime::from_external_with_config(tokio::runtime::Handle::current(), &config)?, config);
+        XetRuntime::new(XetThreadpool::from_external_with_config(tokio::runtime::Handle::current(), &config)?, config);
     let config = default_config(
         &ctx,
         jwt_info.cas_url.clone(),
@@ -260,8 +260,8 @@ fn main() -> Result<()> {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
     }
 
-    let ctx = XetContext::default_with_config(config)?;
-    ctx.runtime.bridge_sync(async move { cli.run().await })??;
+    let ctx = XetRuntime::default_with_config(config)?;
+    ctx.threadpool.bridge_sync(async move { cli.run().await })??;
 
     Ok(())
 }

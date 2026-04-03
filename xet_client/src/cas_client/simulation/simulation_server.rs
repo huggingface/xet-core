@@ -14,7 +14,7 @@ use http::header::{self, HeaderMap, HeaderValue};
 #[cfg(unix)]
 use tempfile::TempDir;
 use tokio::sync::oneshot;
-use xet_runtime::core::XetContext;
+use xet_runtime::core::XetRuntime;
 
 use super::super::RemoteClient;
 use super::super::interface::Client;
@@ -172,7 +172,7 @@ impl LocalTestServerBuilder {
 
     /// Builds and starts the test server.
     pub async fn start(self) -> LocalTestServer {
-        let ctx = XetContext::default().expect("XetContext::new");
+        let ctx = XetRuntime::default().expect("XetRuntime::new");
         #[cfg(unix)]
         let (socket_path, ephemeral_tempdir) = if self.ephemeral_socket {
             let tempdir = TempDir::new().expect("Failed to create temporary directory for ephemeral socket");

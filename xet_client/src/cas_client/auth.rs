@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use derivative::Derivative;
 use reqwest_middleware::ClientWithMiddleware;
 use thiserror::Error;
-use xet_runtime::core::XetContext;
+use xet_runtime::core::XetRuntime;
 
 use crate::common::auth::CredentialHelper;
 
@@ -68,7 +68,7 @@ impl TokenRefresher for ErrTokenRefresher {
 /// An optional [`CredentialHelper`](crate::common::auth::CredentialHelper) is applied to the
 /// request before it is sent; pass `None` when no additional credentials are needed.
 pub struct DirectRefreshRouteTokenRefresher {
-    ctx: XetContext,
+    ctx: XetRuntime,
     refresh_route: String,
     client: ClientWithMiddleware,
     cred_helper: Option<Arc<dyn CredentialHelper>>,
@@ -84,7 +84,7 @@ impl std::fmt::Debug for DirectRefreshRouteTokenRefresher {
 
 impl DirectRefreshRouteTokenRefresher {
     pub fn new(
-        ctx: XetContext,
+        ctx: XetRuntime,
         refresh_route: impl Into<String>,
         client: ClientWithMiddleware,
         cred_helper: Option<Arc<dyn CredentialHelper>>,

@@ -9,7 +9,7 @@ use crate::utils::adjustable_semaphore::AdjustableSemaphore;
 
 /// Holds shared state that is common across the entire context.
 ///
-/// Accessible via `ctx.common` on a [`super::XetContext`].
+/// Accessible via `ctx.common` on a [`super::XetRuntime`].
 #[derive(Debug)]
 pub struct XetCommon {
     // A cached reqwest Client to be shared by all high-level clients.

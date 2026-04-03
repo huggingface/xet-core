@@ -11,7 +11,7 @@ use xet_client::cas_types::FileRange;
 use xet_core_structures::ExpWeightedMovingAvg;
 use xet_core_structures::merklehash::MerkleHash;
 use xet_runtime::config::ReconstructionConfig;
-use xet_runtime::core::XetContext;
+use xet_runtime::core::XetRuntime;
 
 use super::super::FileReconstructionError;
 use super::super::error::Result;
@@ -24,7 +24,7 @@ type RawFetchedFileTerms = Result<Option<(Vec<FileTerm>, u64, u64)>>;
 /// Prefetches reconstruction blocks ahead of consumption based on observed completion rates
 /// to minimize download latency while controlling memory usage.
 pub struct ReconstructionTermManager {
-    ctx: XetContext,
+    ctx: XetRuntime,
     config: Arc<ReconstructionConfig>,
     client: Arc<dyn Client>,
     file_hash: MerkleHash,
@@ -42,7 +42,7 @@ pub struct ReconstructionTermManager {
 
 impl ReconstructionTermManager {
     pub async fn new(
-        ctx: XetContext,
+        ctx: XetRuntime,
         config: Arc<ReconstructionConfig>,
         client: Arc<dyn Client>,
         file_hash: MerkleHash,

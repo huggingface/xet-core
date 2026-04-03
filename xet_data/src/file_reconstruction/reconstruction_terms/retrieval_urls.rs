@@ -5,7 +5,7 @@ use tracing::{debug, info};
 use xet_client::cas_client::{Client, URLProvider};
 use xet_client::cas_types::{FileRange, HttpRange};
 use xet_core_structures::merklehash::MerkleHash;
-use xet_runtime::core::XetContext;
+use xet_runtime::core::XetRuntime;
 use xet_runtime::utils::UniqueId;
 
 use super::super::FileReconstructionError;
@@ -62,7 +62,7 @@ impl TermBlockRetrievalURLs {
     /// the new request will get a new URL.  
     pub async fn refresh_retrieval_urls(
         &self,
-        ctx: &XetContext,
+        ctx: &XetRuntime,
         client: Arc<dyn Client>,
         acquisition_id: UniqueId,
     ) -> Result<()> {
@@ -137,7 +137,7 @@ impl TermBlockRetrievalURLs {
 
 /// Provides download URLs for a xorb block, handling URL refresh on expiration.
 pub struct XorbURLProvider {
-    pub ctx: XetContext,
+    pub ctx: XetRuntime,
     pub client: Arc<dyn Client>,
     pub url_info: Arc<TermBlockRetrievalURLs>,
     pub xorb_block_index: usize,
@@ -169,7 +169,7 @@ mod tests {
     use xet_client::cas_client::{ClientTestingUtils, LocalClient, URLProvider};
     use xet_client::cas_types::{FileRange, HttpRange};
     use xet_core_structures::merklehash::MerkleHash;
-    use xet_runtime::core::XetContext;
+    use xet_runtime::core::XetRuntime;
     use xet_runtime::utils::UniqueId;
 
     use super::{TermBlockRetrievalURLs, XorbURLProvider};
@@ -196,7 +196,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_refresh_skipped_when_already_refreshed() {
-        let ctx = XetContext::default().unwrap();
+        let ctx = XetRuntime::default().unwrap();
         let (client, file_contents) = {
             let c = LocalClient::temporary(ctx.clone()).await.unwrap();
             let fc = c.upload_random_file(&[(1, (0, 3))], 64).await.unwrap();
@@ -237,7 +237,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_xorb_url_provider_retrieve_and_refresh() {
-        let ctx = XetContext::default().unwrap();
+        let ctx = XetRuntime::default().unwrap();
         let (client, file_contents) = {
             let c = LocalClient::temporary(ctx.clone()).await.unwrap();
             let fc = c.upload_random_file(&[(1, (0, 3))], 64).await.unwrap();

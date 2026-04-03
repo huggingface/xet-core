@@ -7,7 +7,7 @@ use xet_core_structures::metadata_shard::file_structs::{
     FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, FileVerificationEntry, MDBFileInfo,
 };
 use xet_core_structures::metadata_shard::hash_is_global_dedup_eligible;
-use xet_runtime::core::XetContext;
+use xet_runtime::core::XetRuntime;
 
 use super::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use super::data_aggregator::DataAggregator;
@@ -19,7 +19,7 @@ use crate::progress_tracking::upload_tracking::FileXorbDependency;
 
 pub struct FileDeduper<DataInterfaceType: DeduplicationDataInterface> {
     #[cfg_attr(not(feature = "simulation"), allow(dead_code))]
-    ctx: XetContext,
+    ctx: XetRuntime,
 
     data_mng: DataInterfaceType,
 
@@ -59,7 +59,7 @@ pub struct FileDeduper<DataInterfaceType: DeduplicationDataInterface> {
 }
 
 impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceType> {
-    pub fn new(data_manager: DataInterfaceType, file_id: u64, ctx: XetContext) -> Self {
+    pub fn new(data_manager: DataInterfaceType, file_id: u64, ctx: XetRuntime) -> Self {
         Self {
             ctx: ctx.clone(),
             data_mng: data_manager,

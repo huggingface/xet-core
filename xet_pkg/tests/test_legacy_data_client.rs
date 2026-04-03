@@ -38,8 +38,8 @@ fn make_endpoint(server: &xet_client::cas_client::LocalTestServer) -> Option<Str
 mod tests {
     use super::*;
 
-    fn test_ctx() -> XetContext {
-        XetContext::default().expect("ctx")
+    fn test_ctx() -> XetRuntime {
+        XetRuntime::default().expect("ctx")
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

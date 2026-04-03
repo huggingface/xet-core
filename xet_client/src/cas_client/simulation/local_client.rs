@@ -25,7 +25,7 @@ use xet_core_structures::metadata_shard::xorb_structs::MDBXorbInfo;
 use xet_core_structures::metadata_shard::{MDBShardFile, ShardFileManager};
 use xet_core_structures::serialization_utils::read_u32;
 use xet_core_structures::xorb_object::{SerializedXorbObject, XorbObject};
-use xet_runtime::core::XetContext;
+use xet_runtime::core::XetRuntime;
 use xet_runtime::file_utils::SafeFileCreator;
 
 use super::direct_access_client::DirectAccessClient;
@@ -145,7 +145,7 @@ pub struct LocalClient {
 impl LocalClient {
     /// Create a local client hosted in a temporary directory for testing.
     /// This is an async function to allow use with current-thread tokio runtime.
-    pub async fn temporary(ctx: XetContext) -> Result<Arc<Self>> {
+    pub async fn temporary(ctx: XetRuntime) -> Result<Arc<Self>> {
         let tmp_dir = TempDir::new().unwrap();
         let path = tmp_dir.path().to_owned();
         let s = Self::new_internal(ctx, path, Some(tmp_dir)).await?;
@@ -154,12 +154,12 @@ impl LocalClient {
 
     /// Create a local client hosted in a directory.  Effectively, this directory
     /// is the CAS endpoint and persists across instances of LocalClient.
-    pub async fn new(ctx: XetContext, path: impl AsRef<Path>) -> Result<Arc<Self>> {
+    pub async fn new(ctx: XetRuntime, path: impl AsRef<Path>) -> Result<Arc<Self>> {
         let path = path.as_ref().to_owned();
         Ok(Arc::new(Self::new_internal(ctx, path, None).await?))
     }
 
-    async fn new_internal(ctx: XetContext, path: impl AsRef<Path>, tmp_dir: Option<TempDir>) -> Result<Self> {
+    async fn new_internal(ctx: XetRuntime, path: impl AsRef<Path>, tmp_dir: Option<TempDir>) -> Result<Self> {
         let base_dir = std::path::absolute(path)?;
         if !base_dir.exists() {
             std::fs::create_dir_all(&base_dir)?;
@@ -1322,16 +1322,13 @@ mod tests {
         ChunkSize, build_and_verify_xorb_object, build_raw_xorb,
     };
     use xet_runtime::config::XetConfig;
-    use xet_runtime::core::{XetContext, XetRuntime};
+    use xet_runtime::core::XetRuntime;
 
     use super::*;
 
-    fn test_ctx() -> XetContext {
+    fn test_ctx() -> XetRuntime {
         let config = XetConfig::new();
-        XetContext::new(
-            XetRuntime::from_external_with_config(tokio::runtime::Handle::current(), &config).expect("ctx"),
-            config,
-        )
+        XetRuntime::from_external_with_config(tokio::runtime::Handle::current(), config).expect("ctx")
     }
     use crate::cas_client::simulation::DeletionControlableClient;
     use crate::cas_client::simulation::client_testing_utils::ClientTestingUtils;

@@ -17,8 +17,7 @@ use xet_core_structures::metadata_shard::shard_format::MDBShardInfo;
 use xet_core_structures::metadata_shard::shard_format::test_routines::rng_hash;
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::metadata_shard::xorb_structs::{MDBXorbInfo, XorbChunkSequenceEntry, XorbChunkSequenceHeader};
-use xet_runtime::config::XetConfig;
-use xet_runtime::core::{XetContext, XetRuntime};
+use xet_runtime::core::XetRuntime;
 
 const XORB_BLOCK_SIZE: usize = 512;
 const PAR_TASK: usize = 1;
@@ -51,7 +50,7 @@ fn make_shard(size: u64, seed: &mut u64) -> MDBInMemoryShard {
 }
 
 async fn run_shard_benchmark(
-    ctx: &XetContext,
+    ctx: &XetRuntime,
     shard_sizes: Vec<(u64, u64)>,
     file_contiguity: usize,
     contiguity: usize,
@@ -188,7 +187,7 @@ struct ShardBenchmarkArgs {
 async fn main() {
     let args = ShardBenchmarkArgs::parse();
 
-    let ctx = XetContext::new(XetRuntime::from_external(Handle::current()), XetConfig::new());
+    let ctx = XetRuntime::from_external(Handle::current());
 
     let temp_dir = TempDir::with_prefix("git-xet-shard").expect("Failed to create temp dir");
     let dir = args.dir.unwrap_or_else(|| temp_dir.path().into());

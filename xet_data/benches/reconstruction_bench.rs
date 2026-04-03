@@ -6,17 +6,17 @@ use tokio::runtime::Runtime;
 use xet_client::cas_client::{Client, MemoryClient};
 use xet_data::file_reconstruction::FileReconstructor;
 use xet_runtime::config::ReconstructionConfig;
-use xet_runtime::core::XetContext;
+use xet_runtime::core::XetRuntime;
 
 struct BenchFixture {
-    ctx: XetContext,
+    ctx: XetRuntime,
     client: Arc<dyn Client>,
     file_hash: xet_core_structures::merklehash::MerkleHash,
     _file_size: u64,
 }
 
 async fn create_fixture(num_xorbs: usize, chunks_per_xorb: u64, chunk_size: usize) -> BenchFixture {
-    let ctx = XetContext::default().expect("xet context");
+    let ctx = XetRuntime::default().expect("xet context");
     let client = MemoryClient::new(ctx.clone());
 
     let term_spec: Vec<(u64, (u64, u64))> = (0..num_xorbs).map(|i| ((i + 1) as u64, (0, chunks_per_xorb))).collect();

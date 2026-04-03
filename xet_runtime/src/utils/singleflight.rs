@@ -407,7 +407,7 @@ pub(crate) mod tests {
 
     use super::super::errors::SingleflightError;
     use super::{Call, Group, OwnerTask};
-    use crate::core::XetContext;
+    use crate::core::XetRuntime;
 
     /// A period of time for waiters to wait for a notification from the owner
     /// task. This is expected to be sufficient time for the test futures to
@@ -429,10 +429,10 @@ pub(crate) mod tests {
 
     #[test]
     fn test_simple_with_threadpool() {
-        let ctx = XetContext::default().unwrap();
+        let ctx = XetRuntime::default().unwrap();
         let g = Group::new();
         let res = ctx
-            .runtime
+            .threadpool
             .bridge_sync(async move { g.work("key", return_res()).await })
             .unwrap()
             .0;
@@ -452,10 +452,10 @@ pub(crate) mod tests {
     #[cfg_attr(feature = "smoke-test", ignore)]
     fn test_multiple_threads_with_threadpool() {
         let times_called = Arc::new(AtomicU32::new(0));
-        let ctx = XetContext::default().unwrap();
+        let ctx = XetRuntime::default().unwrap();
         let g: Arc<Group<usize, ()>> = Arc::new(Group::new());
         let mut handlers: Vec<JoinHandle<(usize, bool)>> = Vec::new();
-        let rt = ctx.runtime.clone();
+        let rt = ctx.threadpool.clone();
         let tasks = async move {
             for _ in 0..10 {
                 let g = g.clone();
@@ -480,7 +480,7 @@ pub(crate) mod tests {
             assert_eq!(1, num_callers);
             assert_eq!(1, times_called.load(Ordering::SeqCst));
         };
-        ctx.runtime.bridge_sync(tasks).unwrap();
+        ctx.threadpool.bridge_sync(tasks).unwrap();
     }
 
     #[tokio::test]

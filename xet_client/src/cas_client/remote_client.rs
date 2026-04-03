@@ -12,7 +12,7 @@ use tracing::{event, info, instrument};
 use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::metadata_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use xet_core_structures::xorb_object::SerializedXorbObject;
-use xet_runtime::core::XetContext;
+use xet_runtime::core::XetRuntime;
 
 use super::adaptive_concurrency::{AdaptiveConcurrencyController, ConnectionPermit};
 use super::auth::AuthConfig;
@@ -39,7 +39,7 @@ lazy_static! {
 }
 
 pub struct RemoteClient {
-    pub(crate) ctx: XetContext,
+    pub(crate) ctx: XetRuntime,
     endpoint: String,
     dry_run: bool,
     http_client: Arc<ClientWithMiddleware>,
@@ -65,7 +65,7 @@ impl RemoteClient {
     /// * `unix_socket_path` - Optional Unix socket path for proxying connections (ignored on non-Unix platforms)
     /// * `custom_headers` - Optional custom headers to include in HTTP requests (should include User-Agent)
     pub fn new_with_socket(
-        ctx: XetContext,
+        ctx: XetRuntime,
         endpoint: &str,
         auth: &Option<AuthConfig>,
         session_id: &str,
@@ -113,7 +113,7 @@ impl RemoteClient {
     /// * `dry_run` - Whether to run in dry-run mode
     /// * `custom_headers` - Optional custom headers to include in HTTP requests (should include User-Agent)
     pub fn new(
-        ctx: XetContext,
+        ctx: XetRuntime,
         endpoint: &str,
         auth: &Option<AuthConfig>,
         session_id: &str,
@@ -767,14 +767,14 @@ mod tests {
         let prefix = PREFIX_DEFAULT;
         let raw_xorb = build_raw_xorb(3, ChunkSize::Random(512, 10248));
 
-        let ctx = XetContext::default().unwrap();
+        let ctx = XetRuntime::default().unwrap();
         let client = RemoteClient::new(ctx.clone(), CAS_ENDPOINT, &None, "", false, None);
 
         let xorb_obj = build_and_verify_xorb_object(raw_xorb, CompressionScheme::LZ4);
 
         // Act
         let result = ctx
-            .runtime
+            .threadpool
             .bridge_sync(async move {
                 let permit = client.acquire_upload_permit().await.unwrap();
                 client.upload_xorb(prefix, xorb_obj, None, permit).await

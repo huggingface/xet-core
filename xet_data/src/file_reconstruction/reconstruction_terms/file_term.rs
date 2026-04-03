@@ -8,7 +8,7 @@ use xet_client::cas_client::Client;
 use xet_client::cas_types::{ChunkRange, FileRange, HttpRange};
 use xet_client::chunk_cache::ChunkCache;
 use xet_core_structures::merklehash::MerkleHash;
-use xet_runtime::core::XetContext;
+use xet_runtime::core::XetRuntime;
 use xet_runtime::utils::UniqueId;
 
 use super::super::FileReconstructionError;
@@ -58,7 +58,7 @@ impl FileTerm {
     /// only one download per xorb block (other callers wait without acquiring CAS permits).
     pub async fn get_data_task(
         &self,
-        ctx: XetContext,
+        ctx: XetRuntime,
         client: Arc<dyn Client>,
         progress_updater: Option<Arc<ItemProgressUpdater>>,
         chunk_cache: Option<Arc<dyn ChunkCache>>,
@@ -109,7 +109,7 @@ struct FileTermEntry {
 /// download (with dedup and compression enabled)
 /// along with the Vec<FileTerm>.
 pub async fn retrieve_file_term_block(
-    ctx: &XetContext,
+    ctx: &XetRuntime,
     client: Arc<dyn Client>,
     file_hash: MerkleHash,
     query_file_byte_range: FileRange,
@@ -355,7 +355,7 @@ mod tests {
     use more_asserts::assert_le;
     use xet_client::cas_client::{ClientTestingUtils, LocalClient, RandomFileContents};
     use xet_client::cas_types::{ChunkRange, FileRange};
-    use xet_runtime::core::XetContext;
+    use xet_runtime::core::XetRuntime;
     use xet_runtime::utils::UniqueId;
 
     use super::*;
@@ -385,8 +385,8 @@ mod tests {
 
     /// Creates a test client and uploads a random file with the given term specification.
     /// Returns the client and file contents for verification.
-    async fn setup_test_file(term_spec: &[(u64, (u64, u64))]) -> (XetContext, Arc<LocalClient>, RandomFileContents) {
-        let ctx = XetContext::default().unwrap();
+    async fn setup_test_file(term_spec: &[(u64, (u64, u64))]) -> (XetRuntime, Arc<LocalClient>, RandomFileContents) {
+        let ctx = XetRuntime::default().unwrap();
         let client = LocalClient::temporary(ctx.clone()).await.unwrap();
         let file_contents = client.upload_random_file(term_spec, TEST_CHUNK_SIZE).await.unwrap();
         (ctx, client, file_contents)
@@ -404,7 +404,7 @@ mod tests {
     /// - Cross-references with the known file contents for correctness
     /// - Verifies number of file terms matches expected from term_spec
     async fn retrieve_and_verify(
-        ctx: &XetContext,
+        ctx: &XetRuntime,
         client: &Arc<LocalClient>,
         file_contents: &RandomFileContents,
         requested_range: Option<FileRange>,

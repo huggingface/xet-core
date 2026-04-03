@@ -8,13 +8,13 @@ use pyo3::prelude::*;
 use tracing::info;
 use xet_pkg::XetError;
 use xet_runtime::RuntimeError;
-use xet_runtime::core::XetContext;
+use xet_runtime::core::XetRuntime;
 use xet_runtime::core::sync_primatives::spawn_os_thread;
 
 lazy_static! {
     static ref SIGINT_DETECTED: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     static ref SIGINT_HANDLER_INSTALL_PID: (AtomicU32, Mutex<()>) = (AtomicU32::new(0), Mutex::new(()));
-    static ref MULTITHREADED_RUNTIME: RwLock<Option<(u32, Arc<XetContext>)>> = RwLock::new(None);
+    static ref MULTITHREADED_RUNTIME: RwLock<Option<(u32, Arc<XetRuntime>)>> = RwLock::new(None);
 }
 
 #[cfg(unix)]
@@ -104,9 +104,9 @@ pub(crate) fn perform_sigint_shutdown() {
     if let Some((runtime_pid, ref ctx)) = maybe_runtime {
         // Only do anything with the runtime if we're on the right process.
         // Otherwise, it's none of our business.
-        if runtime_pid == std::process::id() && ctx.runtime.external_executor_count() != 0 {
+        if runtime_pid == std::process::id() && ctx.threadpool.external_executor_count() != 0 {
             eprintln!("Cancellation requested; stopping current tasks.");
-            ctx.runtime.perform_sigint_shutdown();
+            ctx.threadpool.perform_sigint_shutdown();
         }
     }
 }
@@ -139,7 +139,7 @@ fn signal_check_background_loop() {
 }
 
 // This should be called once on library load.
-pub fn init_threadpool() -> Result<Arc<XetContext>, RuntimeError> {
+pub fn init_threadpool() -> Result<Arc<XetRuntime>, RuntimeError> {
     // Need to initialize. Upgrade to write lock.
     let mut guard = MULTITHREADED_RUNTIME.write().unwrap();
 
@@ -155,13 +155,13 @@ pub fn init_threadpool() -> Result<Arc<XetContext>, RuntimeError> {
             // Ok, discard the previous runtime, as it's effectively poisoned by the
             // fork-exec, and we simply need to leak it and restart from scratch.  The memory and
             // resources will be freed up when the child exits.
-            existing.runtime.discard_runtime();
+            existing.threadpool.discard_runtime();
 
             info!("Runtime restarted due to detected process ID change, likely due to running inside a fork call.");
         }
     }
 
-    let ctx = Arc::new(XetContext::default()?);
+    let ctx = Arc::new(XetRuntime::default()?);
 
     // Check the signal handler.  This must be reinstalled on new or after a spawn
     check_sigint_handler()?;
@@ -187,11 +187,11 @@ pub fn init_threadpool() -> Result<Arc<XetContext>, RuntimeError> {
     Ok(ctx)
 }
 
-pub(crate) fn get_xet_context() -> Result<Arc<XetContext>, RuntimeError> {
+pub(crate) fn get_xet_context() -> Result<Arc<XetRuntime>, RuntimeError> {
     get_threadpool()
 }
 
-fn get_threadpool() -> Result<Arc<XetContext>, RuntimeError> {
+fn get_threadpool() -> Result<Arc<XetRuntime>, RuntimeError> {
     // First try a read lock to see if it's already initialized.
     {
         let guard = MULTITHREADED_RUNTIME.read().unwrap();
@@ -225,7 +225,7 @@ where
         spawn_os_thread(move || {
             let ctx = get_threadpool().map_err(convert_multithreading_error)?;
 
-            ctx.runtime
+            ctx.threadpool
                 .external_run_async_task(execution_call)
                 .map_err(convert_multithreading_error)?
                 .into()

@@ -15,7 +15,7 @@ use tracing::{Instrument, Span, info_span, instrument};
 use xet_client::cas_client::{Client, ProgressCallback};
 use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
 use xet_core_structures::xorb_object::SerializedXorbObject;
-use xet_runtime::core::XetContext;
+use xet_runtime::core::XetRuntime;
 
 use super::XetFileInfo;
 use super::configurations::TranslatorConfig;
@@ -35,7 +35,7 @@ use crate::progress_tracking::{GroupProgress, GroupProgressReport, ItemProgressR
 /// that succeeds or fails as a unit;  i.e. all files get uploaded on finalization, and all shards
 /// and xorbs needed to reconstruct those files are properly uploaded and registered.
 pub struct FileUploadSession {
-    pub(crate) ctx: XetContext,
+    pub(crate) ctx: XetRuntime,
     pub(crate) client: Arc<dyn Client + Send + Sync>,
     pub(crate) shard_interface: SessionShardInterface,
 
@@ -247,7 +247,7 @@ impl FileUploadSession {
         let (id, cleaner) = self.start_clean(Some(tracking_name), Some(file_size), sha256)?;
 
         let session = self.clone();
-        let rt = self.ctx.runtime.clone();
+        let rt = self.ctx.threadpool.clone();
         let semaphore = self.ctx.common.file_ingestion_semaphore.clone();
         let handle = rt.spawn(async move {
             let _permit = semaphore.acquire().await?;
@@ -269,7 +269,7 @@ impl FileUploadSession {
         self.check_not_finalized()?;
         let (id, mut cleaner) = self.start_clean(tracking_name, Some(bytes.len() as u64), sha256)?;
 
-        let rt = self.ctx.runtime.clone();
+        let rt = self.ctx.threadpool.clone();
         let semaphore = self.ctx.common.file_ingestion_semaphore.clone();
         let handle = rt.spawn(async move {
             let _permit = semaphore.acquire().await?;
@@ -347,7 +347,7 @@ impl FileUploadSession {
 
         // Serialize the object; this can be relatively expensive, so run it on a compute thread.
         // XORBs are sent without footer - the server/client reconstructs it from chunk data.
-        let rt = self.ctx.runtime.clone();
+        let rt = self.ctx.threadpool.clone();
         let compression_policy = self.ctx.config.xorb.compression_policy.clone();
         let compression_scheme_retest_interval = self.ctx.config.xorb.compression_scheme_retest_interval;
         let xorb_obj = rt
@@ -614,13 +614,13 @@ mod tests {
     use std::path::Path;
     use std::sync::{Arc, OnceLock};
 
-    use xet_runtime::core::XetContext;
+    use xet_runtime::core::XetRuntime;
 
     use crate::processing::{FileDownloadSession, FileUploadSession, XetFileInfo};
 
-    fn get_xet_context() -> Arc<XetContext> {
-        static CTX: OnceLock<Arc<XetContext>> = OnceLock::new();
-        CTX.get_or_init(|| Arc::new(XetContext::default().expect("Error starting multithreaded runtime.")))
+    fn get_xet_context() -> Arc<XetRuntime> {
+        static CTX: OnceLock<Arc<XetRuntime>> = OnceLock::new();
+        CTX.get_or_init(|| Arc::new(XetRuntime::default().expect("Error starting multithreaded runtime.")))
             .clone()
     }
 
@@ -640,7 +640,7 @@ mod tests {
                 .unwrap(),
         );
 
-        let ctx = XetContext::default().unwrap();
+        let ctx = XetRuntime::default().unwrap();
         let upload_session = FileUploadSession::new(TranslatorConfig::local_config(&ctx, cas_path).unwrap().into())
             .await
             .unwrap();
@@ -672,7 +672,7 @@ mod tests {
 
         let xet_file = serde_json::from_str::<XetFileInfo>(&input).unwrap();
 
-        let ctx = XetContext::default().unwrap();
+        let ctx = XetRuntime::default().unwrap();
         let config = TranslatorConfig::local_config(&ctx, cas_path).unwrap();
         let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
@@ -692,7 +692,7 @@ mod tests {
 
         let ctx = get_xet_context();
 
-        ctx.runtime
+        ctx.threadpool
             .clone()
             .bridge_sync(async move {
                 let cas_path = temp.path().join("cas");
@@ -723,12 +723,12 @@ mod tests {
 
         let ctx = get_xet_context();
 
-        ctx.runtime
+        ctx.threadpool
             .clone()
             .bridge_sync(async move {
                 let cas_path = temp.path().join("cas");
 
-                let ctx = XetContext::default().unwrap();
+                let ctx = XetRuntime::default().unwrap();
                 let upload_session =
                     FileUploadSession::new(TranslatorConfig::local_config(&ctx, &cas_path).unwrap().into())
                         .await

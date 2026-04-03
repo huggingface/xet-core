@@ -11,7 +11,7 @@ use xet_client::cas_types::FileRange;
 use xet_client::chunk_cache::ChunkCache;
 use xet_core_structures::merklehash::MerkleHash;
 use xet_runtime::config::ReconstructionConfig;
-use xet_runtime::core::XetContext;
+use xet_runtime::core::XetRuntime;
 use xet_runtime::utils::ClosureGuard;
 use xet_runtime::utils::adjustable_semaphore::AdjustableSemaphore;
 
@@ -25,7 +25,7 @@ use crate::progress_tracking::ItemProgressUpdater;
 /// and writing the reassembled data to an output. Supports byte range requests and
 /// uses memory-limited buffering with adaptive prefetching.
 pub struct FileReconstructor {
-    ctx: XetContext,
+    ctx: XetRuntime,
     client: Arc<dyn Client>,
     file_hash: MerkleHash,
     byte_range: Option<FileRange>,
@@ -45,7 +45,7 @@ pub struct FileReconstructor {
 }
 
 impl FileReconstructor {
-    pub fn new(ctx: &XetContext, client: &Arc<dyn Client>, file_hash: MerkleHash) -> Self {
+    pub fn new(ctx: &XetRuntime, client: &Arc<dyn Client>, file_hash: MerkleHash) -> Self {
         Self {
             ctx: ctx.clone(),
             client: client.clone(),
@@ -426,7 +426,7 @@ mod tests {
 
     use xet_client::cas_client::{ClientTestingUtils, DirectAccessClient, LocalClient, RandomFileContents};
     use xet_client::cas_types::FileRange;
-    use xet_runtime::core::{XetContext, XetRuntime};
+    use xet_runtime::core::{XetRuntime, XetThreadpool};
 
     use super::*;
     use crate::progress_tracking::ItemProgressUpdater;
@@ -445,7 +445,7 @@ mod tests {
 
     /// Creates a test client and uploads a random file with the given term specification.
     async fn setup_test_file(term_spec: &[(u64, (u64, u64))]) -> (Arc<LocalClient>, RandomFileContents) {
-        let client = LocalClient::temporary(XetContext::default().unwrap()).await.unwrap();
+        let client = LocalClient::temporary(XetRuntime::default().unwrap()).await.unwrap();
         let file_contents = client.upload_random_file(term_spec, TEST_CHUNK_SIZE).await.unwrap();
         (client, file_contents)
     }
@@ -462,7 +462,7 @@ mod tests {
         let writer = StaticCursorWriter(buffer.clone());
 
         let mut reconstructor =
-            FileReconstructor::new(&XetContext::default().unwrap(), &(client.clone() as Arc<dyn Client>), file_hash)
+            FileReconstructor::new(&XetRuntime::default().unwrap(), &(client.clone() as Arc<dyn Client>), file_hash)
                 .with_config(config);
 
         if let Some(range) = byte_range {
@@ -490,7 +490,7 @@ mod tests {
         let file_path = temp_dir.path().join("output.bin");
 
         let mut reconstructor =
-            FileReconstructor::new(&XetContext::default().unwrap(), &(client.clone() as Arc<dyn Client>), file_hash)
+            FileReconstructor::new(&XetRuntime::default().unwrap(), &(client.clone() as Arc<dyn Client>), file_hash)
                 .with_config(config);
 
         if let Some(range) = byte_range {
@@ -518,7 +518,7 @@ mod tests {
         let file_path = temp_dir.path().join("output.bin");
 
         let mut reconstructor =
-            FileReconstructor::new(&XetContext::default().unwrap(), &(client.clone() as Arc<dyn Client>), file_hash)
+            FileReconstructor::new(&XetRuntime::default().unwrap(), &(client.clone() as Arc<dyn Client>), file_hash)
                 .with_config(config);
 
         if let Some(range) = byte_range {
@@ -544,7 +544,7 @@ mod tests {
         let file_path = temp_dir.path().join("output.bin");
 
         let mut reconstructor =
-            FileReconstructor::new(&XetContext::default().unwrap(), &(client.clone() as Arc<dyn Client>), file_hash)
+            FileReconstructor::new(&XetRuntime::default().unwrap(), &(client.clone() as Arc<dyn Client>), file_hash)
                 .with_config(config);
 
         if let Some(range) = byte_range {
@@ -697,7 +697,7 @@ mod tests {
 
         let progress_updater = ItemProgressUpdater::new_standalone("file");
         let bytes_written = FileReconstructor::new(
-            &XetContext::default().unwrap(),
+            &XetRuntime::default().unwrap(),
             &(client.clone() as Arc<dyn Client>),
             file_contents.file_hash,
         )
@@ -723,7 +723,7 @@ mod tests {
 
         let progress_updater = ItemProgressUpdater::new_standalone("file");
         let bytes_written = FileReconstructor::new(
-            &XetContext::default().unwrap(),
+            &XetRuntime::default().unwrap(),
             &(client.clone() as Arc<dyn Client>),
             file_contents.file_hash,
         )
@@ -751,7 +751,7 @@ mod tests {
         let writer = StaticCursorWriter(buffer.clone());
 
         let bytes_written = FileReconstructor::new(
-            &XetContext::default().unwrap(),
+            &XetRuntime::default().unwrap(),
             &(client.clone() as Arc<dyn Client>),
             file_contents.file_hash,
         )
@@ -785,7 +785,7 @@ mod tests {
         let writer = StaticCursorWriter(buffer.clone());
 
         let bytes_written = FileReconstructor::new(
-            &XetContext::default().unwrap(),
+            &XetRuntime::default().unwrap(),
             &(client.clone() as Arc<dyn Client>),
             file_contents.file_hash,
         )
@@ -1081,7 +1081,7 @@ mod tests {
         let tiny_semaphore = AdjustableSemaphore::new(1, (1, 1));
 
         FileReconstructor::new(
-            &XetContext::default().unwrap(),
+            &XetRuntime::default().unwrap(),
             &(client.clone() as Arc<dyn Client>),
             file_contents.file_hash,
         )
@@ -1119,7 +1119,7 @@ mod tests {
         let tiny_semaphore = AdjustableSemaphore::new(1, (1, 1));
 
         FileReconstructor::new(
-            &XetContext::default().unwrap(),
+            &XetRuntime::default().unwrap(),
             &(client.clone() as Arc<dyn Client>),
             file_contents.file_hash,
         )
@@ -1149,7 +1149,7 @@ mod tests {
         let tiny_semaphore = AdjustableSemaphore::new(1, (1, 1));
 
         FileReconstructor::new(
-            &XetContext::default().unwrap(),
+            &XetRuntime::default().unwrap(),
             &(client.clone() as Arc<dyn Client>),
             file_contents.file_hash,
         )
@@ -1179,7 +1179,7 @@ mod tests {
         let tiny_semaphore = AdjustableSemaphore::new(1, (1, 1));
 
         FileReconstructor::new(
-            &XetContext::default().unwrap(),
+            &XetRuntime::default().unwrap(),
             &(client.clone() as Arc<dyn Client>),
             file_contents.file_hash,
         )
@@ -1210,7 +1210,7 @@ mod tests {
         let range = FileRange::new(file_len / 4, file_len * 3 / 4);
 
         FileReconstructor::new(
-            &XetContext::default().unwrap(),
+            &XetRuntime::default().unwrap(),
             &(client.clone() as Arc<dyn Client>),
             file_contents.file_hash,
         )
@@ -1233,8 +1233,8 @@ mod tests {
         runtime_config.reconstruction.download_buffer_limit = xet_runtime::utils::ByteSize::from("4kb");
         let expected_total = runtime_config.reconstruction.download_buffer_limit.as_u64();
 
-        let ctx = XetContext::default_with_config(runtime_config).unwrap();
-        let rt = ctx.runtime.clone();
+        let ctx = XetRuntime::default_with_config(runtime_config).unwrap();
+        let rt = ctx.threadpool.clone();
 
         rt.bridge_sync(async move {
             let ctx = ctx.clone();
@@ -1272,7 +1272,7 @@ mod tests {
         range: FileRange,
         config: ReconstructionConfig,
     ) -> Result<u64> {
-        FileReconstructor::new(&XetContext::default().unwrap(), &(client.clone() as Arc<dyn Client>), file_hash)
+        FileReconstructor::new(&XetRuntime::default().unwrap(), &(client.clone() as Arc<dyn Client>), file_hash)
             .with_byte_range(range)
             .with_config(config)
             .reconstruct_to_file(file_path, None, false)
@@ -1289,7 +1289,7 @@ mod tests {
         // Each xorb has ~64KB of data (16 chunks * 4KB), giving us ~1MB total with 16 xorbs.
         let term_spec: Vec<(u64, (u64, u64))> = (1..=16).map(|i| (i, (0, 16))).collect();
 
-        let client = LocalClient::temporary(XetContext::default().unwrap()).await.unwrap();
+        let client = LocalClient::temporary(XetRuntime::default().unwrap()).await.unwrap();
         let file_contents = client.upload_random_file(&term_spec, LARGE_CHUNK_SIZE).await.unwrap();
         let file_len = file_contents.data.len() as u64;
 
@@ -1328,7 +1328,7 @@ mod tests {
             let config = config.clone();
 
             join_set.spawn(async move {
-                FileReconstructor::new(&XetContext::default().unwrap(), &(client as Arc<dyn Client>), file_hash)
+                FileReconstructor::new(&XetRuntime::default().unwrap(), &(client as Arc<dyn Client>), file_hash)
                     .with_byte_range(range)
                     .with_config(config)
                     .reconstruct_to_file(&file_path, None, false)
@@ -1471,7 +1471,7 @@ mod tests {
     /// LocalClient with max_ranges_per_fetch=2 (tests V2 response splitting without HTTP).
     #[tokio::test]
     async fn test_local_client_max_ranges_2_disjoint() {
-        let client = LocalClient::temporary(XetContext::default().unwrap()).await.unwrap();
+        let client = LocalClient::temporary(XetRuntime::default().unwrap()).await.unwrap();
         client.set_max_ranges_per_fetch(2);
 
         let term_spec = &[(1, (0, 2)), (1, (4, 6)), (1, (8, 10)), (1, (12, 14))];
@@ -1487,7 +1487,7 @@ mod tests {
     /// LocalClient with max_ranges_per_fetch=1 (every range gets its own fetch entry).
     #[tokio::test]
     async fn test_local_client_max_ranges_1_multi_xorb() {
-        let client = LocalClient::temporary(XetContext::default().unwrap()).await.unwrap();
+        let client = LocalClient::temporary(XetRuntime::default().unwrap()).await.unwrap();
         client.set_max_ranges_per_fetch(1);
 
         let term_spec = &[(1, (0, 2)), (2, (0, 2)), (1, (4, 6)), (2, (4, 6))];
@@ -1518,7 +1518,7 @@ mod tests {
             let writer = StaticCursorWriter(buffer.clone());
 
             let bytes_written = FileReconstructor::new(
-                &XetContext::default().unwrap(),
+                &XetRuntime::default().unwrap(),
                 &(client.clone() as Arc<dyn Client>),
                 file_contents.file_hash,
             )
@@ -1575,7 +1575,7 @@ mod tests {
             let tiny_semaphore = AdjustableSemaphore::new(1, (1, 1));
 
             let bytes_written = FileReconstructor::new(
-                &XetContext::default().unwrap(),
+                &XetRuntime::default().unwrap(),
                 &(client.clone() as Arc<dyn Client>),
                 file_contents.file_hash,
             )
@@ -1602,7 +1602,7 @@ mod tests {
             let writer = StaticCursorWriter(buffer.clone());
 
             let bytes_written = FileReconstructor::new(
-                &XetContext::default().unwrap(),
+                &XetRuntime::default().unwrap(),
                 &(client.clone() as Arc<dyn Client>),
                 file_contents.file_hash,
             )
@@ -1622,10 +1622,10 @@ mod tests {
     mod multirange_tests {
         use super::*;
 
-        fn with_multirange_config(enable: bool) -> Arc<XetRuntime> {
+        fn with_multirange_config(enable: bool) -> Arc<XetThreadpool> {
             let mut config = xet_runtime::config::XetConfig::new();
             config.client.enable_multirange_fetching = enable;
-            XetContext::default_with_config(config).unwrap().runtime.clone()
+            XetRuntime::default_with_config(config).unwrap().threadpool.clone()
         }
 
         /// Exercises multiple disjoint-range scenarios through LocalClient with both
@@ -1674,7 +1674,7 @@ mod tests {
             for enable in [false, true] {
                 let rt = with_multirange_config(enable);
                 rt.bridge_sync(async {
-                    let client = LocalClient::temporary(XetContext::default().unwrap()).await.unwrap();
+                    let client = LocalClient::temporary(XetRuntime::default().unwrap()).await.unwrap();
                     client.set_max_ranges_per_fetch(2);
 
                     let term_spec = &[(1, (0, 2)), (1, (4, 6)), (1, (8, 10)), (1, (12, 14))];
@@ -1711,7 +1711,7 @@ mod tests {
 
             let client: Arc<dyn Client> = server.remote_client().clone();
             let mut reconstructor =
-                FileReconstructor::new(&XetContext::default().unwrap(), &client, file_hash).with_config(config);
+                FileReconstructor::new(&XetRuntime::default().unwrap(), &client, file_hash).with_config(config);
 
             if let Some(range) = byte_range {
                 reconstructor = reconstructor.with_byte_range(range);
@@ -1907,10 +1907,10 @@ mod tests {
 
         // ==================== Multirange via Server ====================
 
-        fn with_multirange_config(enable: bool) -> Arc<XetRuntime> {
+        fn with_multirange_config(enable: bool) -> Arc<XetThreadpool> {
             let mut config = xet_runtime::config::XetConfig::new();
             config.client.enable_multirange_fetching = enable;
-            XetContext::default_with_config(config).unwrap().runtime.clone()
+            XetRuntime::default_with_config(config).unwrap().threadpool.clone()
         }
 
         /// Exercises HTTP server path with full, max-ranges-split, and partial-range

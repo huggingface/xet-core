@@ -9,7 +9,7 @@ use tempfile::TempDir;
 use xet_client::cas_client::{Client, LocalClient};
 #[cfg(feature = "simulation")]
 use xet_client::cas_client::{LocalTestServer, LocalTestServerBuilder};
-use xet_runtime::core::XetContext;
+use xet_runtime::core::XetRuntime;
 
 use super::configurations::TranslatorConfig;
 use super::data_client::clean_file;
@@ -188,7 +188,7 @@ pub struct HydrateDehydrateTest {
     pub src_dir: PathBuf,
     pub ptr_dir: PathBuf,
     pub dest_dir: PathBuf,
-    xet_ctx: XetContext,
+    xet_ctx: XetRuntime,
     use_test_server: bool,
     /// Kept alive so the test server stays running for the duration of the test.
     #[cfg(feature = "simulation")]
@@ -226,7 +226,7 @@ impl HydrateDehydrateTest {
             src_dir,
             ptr_dir,
             dest_dir,
-            xet_ctx: XetContext::default().expect("xet context"),
+            xet_ctx: XetRuntime::default().expect("xet context"),
             _temp_dir,
             use_test_server,
             #[cfg(feature = "simulation")]
@@ -304,7 +304,7 @@ impl HydrateDehydrateTest {
     }
 
     pub async fn new_upload_session(&self) -> Arc<FileUploadSession> {
-        let ctx = XetContext::default().unwrap();
+        let ctx = XetRuntime::default().unwrap();
         let config = Arc::new(TranslatorConfig::local_config(&ctx, &self.cas_dir).unwrap());
         FileUploadSession::new(config.clone()).await.unwrap()
     }
@@ -355,7 +355,7 @@ impl HydrateDehydrateTest {
 
     pub async fn hydrate(&mut self) {
         let client = self.get_or_create_client().await;
-        let ctx = XetContext::default().unwrap();
+        let ctx = XetRuntime::default().unwrap();
         let session = FileDownloadSession::from_client(&ctx, client, None);
 
         for entry in read_dir(&self.ptr_dir).unwrap() {
@@ -369,7 +369,7 @@ impl HydrateDehydrateTest {
 
     pub async fn hydrate_partitioned_writers(&mut self, partitions: usize) {
         let client = self.get_or_create_client().await;
-        let ctx = XetContext::default().unwrap();
+        let ctx = XetRuntime::default().unwrap();
         let session = FileDownloadSession::from_client(&ctx, client, None);
 
         for entry in read_dir(&self.ptr_dir).unwrap() {
@@ -414,7 +414,7 @@ impl HydrateDehydrateTest {
 
     pub async fn hydrate_stream(&mut self) {
         let client = self.get_or_create_client().await;
-        let ctx = XetContext::default().unwrap();
+        let ctx = XetRuntime::default().unwrap();
         let session = FileDownloadSession::from_client(&ctx, client, None);
 
         for entry in read_dir(&self.ptr_dir).unwrap() {
@@ -443,7 +443,7 @@ impl HydrateDehydrateTest {
 pub struct TestEnvironment {
     _temp_dir: TempDir,
     pub base_dir: PathBuf,
-    pub ctx: XetContext,
+    pub ctx: XetRuntime,
     pub config: Arc<super::configurations::TranslatorConfig>,
     #[cfg(feature = "simulation")]
     _server: Option<LocalTestServer>,
@@ -453,7 +453,7 @@ impl TestEnvironment {
     pub async fn new() -> Self {
         let temp_dir = TempDir::new().unwrap();
         let base_dir = temp_dir.path().to_path_buf();
-        let ctx = XetContext::default().unwrap();
+        let ctx = XetRuntime::default().unwrap();
 
         #[cfg(feature = "simulation")]
         let (config, server) = {

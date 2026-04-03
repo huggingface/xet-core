@@ -21,14 +21,14 @@ use xet_core_structures::metadata_shard::xorb_structs::MDBXorbInfo;
 use xet_core_structures::metadata_shard::{
     MDB_SHARD_LOCAL_CACHE_EXPIRATION, MDBShardFile, MDBShardFileHeader, ShardFileManager,
 };
-use xet_runtime::core::XetContext;
+use xet_runtime::core::XetRuntime;
 use xet_runtime::error_printer::ErrorPrinter;
 
 use super::configurations::TranslatorConfig;
 use crate::error::Result;
 
 pub struct SessionShardInterface {
-    ctx: XetContext,
+    ctx: XetRuntime,
     session_shard_manager: Arc<ShardFileManager>,
     cache_shard_manager: Arc<ShardFileManager>,
 
@@ -55,7 +55,7 @@ pub struct SessionShardInterface {
 
 impl SessionShardInterface {
     pub async fn new(
-        ctx: &XetContext,
+        ctx: &XetRuntime,
         config: Arc<TranslatorConfig>,
         client: Arc<dyn Client + Send + Sync>,
         dry_run: bool,
@@ -80,7 +80,7 @@ impl SessionShardInterface {
         let shard_merge_jh = {
             if !dry_run {
                 Some(merge_shards_background(
-                    ctx.runtime.clone(),
+                    ctx.threadpool.clone(),
                     &xorb_metadata_staging_dir,
                     &session_dir,
                     ctx.config.shard.max_target_size,
@@ -241,7 +241,7 @@ impl SessionShardInterface {
 
         // First, scan, merge, and fill out any shards in the session directory
         let shard_list = consolidate_shards_in_directory(
-            &self.ctx.runtime,
+            &self.ctx.threadpool,
             self.session_shard_manager.shard_directory(),
             self.ctx.config.shard.max_target_size,
             false,

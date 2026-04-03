@@ -8,7 +8,7 @@ pub use xet_data::processing::data_client::hash_files_async;
 use xet_data::processing::data_client::{clean_bytes, default_config};
 use xet_data::processing::{FileDownloadSession, FileUploadSession, Sha256Policy, XetFileInfo};
 use xet_data::{DataError, Result};
-use xet_runtime::core::XetContext;
+use xet_runtime::core::XetRuntime;
 use xet_runtime::core::par_utils::run_constrained_with_semaphore;
 
 use super::progress_tracking::{GroupProgressCallbackUpdater, ItemProgressCallbackUpdater, TrackingProgressUpdater};
@@ -16,7 +16,7 @@ use super::progress_tracking::{GroupProgressCallbackUpdater, ItemProgressCallbac
 #[allow(clippy::too_many_arguments)]
 #[instrument(skip_all, name = "data_client::upload_bytes", fields(session_id = tracing::field::Empty, num_files=file_contents.len()))]
 pub async fn upload_bytes_async(
-    ctx: &XetContext,
+    ctx: &XetRuntime,
     file_contents: Vec<Vec<u8>>,
     sha256_policies: Vec<Sha256Policy>,
     endpoint: Option<String>,
@@ -76,7 +76,7 @@ pub async fn upload_bytes_async(
     defrag_prevented_dedup_chunks = tracing::field::Empty
     ))]
 pub async fn upload_async(
-    ctx: &XetContext,
+    ctx: &XetRuntime,
     file_paths: Vec<String>,
     sha256_policies: Vec<Sha256Policy>,
     endpoint: Option<String>,
@@ -131,7 +131,7 @@ pub async fn upload_async(
 
 #[instrument(skip_all, name = "data_client::download", fields(session_id = tracing::field::Empty, num_files=file_infos.len()))]
 pub async fn download_async(
-    ctx: &XetContext,
+    ctx: &XetRuntime,
     file_infos: Vec<(XetFileInfo, String)>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,

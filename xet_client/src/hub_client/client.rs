@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use http::header::HeaderMap;
 use urlencoding::encode;
-use xet_runtime::core::XetContext;
+use xet_runtime::core::XetRuntime;
 
 use super::types::{CasJWTInfo, RepoInfo};
 use crate::cas_client::exports::ClientWithMiddleware;
@@ -36,7 +36,7 @@ impl Operation {
 }
 
 pub struct HubClient {
-    ctx: XetContext,
+    ctx: XetRuntime,
     endpoint: String,
     repo_info: RepoInfo,
     reference: Option<String>,
@@ -46,7 +46,7 @@ pub struct HubClient {
 
 impl HubClient {
     pub fn new(
-        ctx: XetContext,
+        ctx: XetRuntime,
         endpoint: &str,
         repo_info: RepoInfo,
         reference: Option<String>,
@@ -114,7 +114,7 @@ impl HubClient {
 #[cfg(test)]
 mod tests {
     use http::header::{self, HeaderMap, HeaderValue};
-    use xet_runtime::core::XetContext;
+    use xet_runtime::core::XetRuntime;
 
     use super::super::{BearerCredentialHelper, HFRepoType, Operation, RepoInfo};
     use super::HubClient;
@@ -127,7 +127,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(header::USER_AGENT, HeaderValue::from_static("xtool"));
         let hub_client = HubClient::new(
-            XetContext::default().expect("ctx"),
+            XetRuntime::default().expect("ctx"),
             "https://huggingface.co",
             RepoInfo {
                 repo_type: HFRepoType::Model,
@@ -155,7 +155,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(header::USER_AGENT, HeaderValue::from_static("xtool"));
         let hub_client = HubClient::new(
-            XetContext::default().expect("ctx"),
+            XetRuntime::default().expect("ctx"),
             "https://huggingface.co",
             RepoInfo {
                 repo_type: HFRepoType::Model,
@@ -183,7 +183,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(header::USER_AGENT, HeaderValue::from_static("xtool"));
         let hub_client = HubClient::new(
-            XetContext::default().expect("ctx"),
+            XetRuntime::default().expect("ctx"),
             "https://huggingface.co",
             RepoInfo {
                 repo_type: HFRepoType::Model,

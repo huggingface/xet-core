@@ -1,12 +1,13 @@
 pub mod common;
-pub mod context;
 pub mod exports;
+
+pub mod threadpool;
 
 pub mod runtime;
 
 pub use common::XetCommon;
-pub use context::XetContext;
-pub use runtime::{RuntimeMode, XetRuntime};
+pub use runtime::XetRuntime;
+pub use threadpool::{RuntimeMode, XetThreadpool};
 
 pub mod sync_primatives;
 pub use sync_primatives::{SyncJoinHandle, spawn_os_thread};

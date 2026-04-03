@@ -629,7 +629,7 @@ mod tests {
         let session = XetSessionBuilder::new()
             .with_endpoint(format!("local://{}", cas_path.display()))
             .build()?;
-        let runtime = session.inner.ctx.runtime.clone();
+        let runtime = session.inner.ctx.threadpool.clone();
         let commit = session.new_upload_commit()?.build_blocking()?;
         let commit_for_thread = commit.clone();
         let runtime_for_thread = runtime.clone();
@@ -1133,7 +1133,7 @@ mod tests {
 
         futures::executor::block_on(async {
             let session = local_session(&temp).unwrap();
-            assert_eq!(session.inner.ctx.runtime.mode(), RuntimeMode::Owned);
+            assert_eq!(session.inner.ctx.threadpool.mode(), RuntimeMode::Owned);
 
             let data = b"hello from non-tokio executor";
             let commit = session.new_upload_commit().unwrap().build().await.unwrap();
@@ -1154,7 +1154,7 @@ mod tests {
 
         smol::block_on(async {
             let session = local_session(&temp).unwrap();
-            assert_eq!(session.inner.ctx.runtime.mode(), RuntimeMode::Owned);
+            assert_eq!(session.inner.ctx.threadpool.mode(), RuntimeMode::Owned);
 
             let data = b"hello from smol executor";
             let commit = session.new_upload_commit().unwrap().build().await.unwrap();
@@ -1175,7 +1175,7 @@ mod tests {
 
         async_std::task::block_on(async {
             let session = local_session(&temp).unwrap();
-            assert_eq!(session.inner.ctx.runtime.mode(), RuntimeMode::Owned);
+            assert_eq!(session.inner.ctx.threadpool.mode(), RuntimeMode::Owned);
 
             let data = b"hello from async-std executor";
             let commit = session.new_upload_commit().unwrap().build().await.unwrap();

@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use tracing::{Instrument, debug_span, info, instrument};
 use xet_core_structures::metadata_shard::Sha256;
 use xet_core_structures::metadata_shard::file_structs::FileMetadataExt;
-use xet_runtime::core::XetContext;
+use xet_runtime::core::XetRuntime;
 
 use super::XetFileInfo;
 use super::deduplication_interface::UploadSessionDataManager;
@@ -53,7 +53,7 @@ impl From<Option<Sha256>> for Sha256Policy {
 
 /// A class that encapsulates the clean and data task around a single file.
 pub struct SingleFileCleaner {
-    ctx: XetContext,
+    ctx: XetRuntime,
 
     // File name, if known.
     file_name: Option<Arc<str>>,
@@ -164,7 +164,7 @@ impl SingleFileCleaner {
         let chunk_data_jh = {
             let mut chunker = std::mem::take(&mut self.chunker);
             let data = data.clone();
-            let rt = self.ctx.runtime.clone();
+            let rt = self.ctx.threadpool.clone();
 
             rt.spawn_blocking(move || {
                 let chunks: Arc<[Chunk]> = Arc::from(chunker.next_block_bytes(&data, false));

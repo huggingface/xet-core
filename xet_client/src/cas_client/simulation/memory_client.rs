@@ -17,7 +17,7 @@ use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::metadata_shard::streaming_shard::MDBMinimalShard;
 use xet_core_structures::metadata_shard::xorb_structs::MDBXorbInfo;
 use xet_core_structures::xorb_object::{SerializedXorbObject, XorbObject};
-use xet_runtime::core::XetContext;
+use xet_runtime::core::XetRuntime;
 
 use super::super::Client;
 use super::super::adaptive_concurrency::AdaptiveConcurrencyController;
@@ -70,7 +70,7 @@ pub struct MemoryClient {
 
 impl MemoryClient {
     /// Create a new in-memory client.
-    pub fn new(ctx: XetContext) -> Arc<Self> {
+    pub fn new(ctx: XetRuntime) -> Arc<Self> {
         Arc::new(Self {
             xorbs: RwLock::new(MerkleHashMap::new()),
             shard: RwLock::new(MDBInMemoryShard::default()),
@@ -218,7 +218,7 @@ impl MemoryClient {
 
 impl Default for MemoryClient {
     fn default() -> Self {
-        let ctx = XetContext::default().expect("ctx");
+        let ctx = XetRuntime::default().expect("ctx");
         Self {
             xorbs: RwLock::new(MerkleHashMap::new()),
             shard: RwLock::new(MDBInMemoryShard::default()),
@@ -969,17 +969,14 @@ fn parse_any_fetch_url(url: &str) -> Result<(MerkleHash, Instant)> {
 #[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use xet_runtime::config::XetConfig;
-    use xet_runtime::core::{XetContext, XetRuntime};
+    use xet_runtime::core::XetRuntime;
 
     use super::super::client_testing_utils::ClientTestingUtils;
     use super::*;
 
-    fn test_ctx() -> XetContext {
+    fn test_ctx() -> XetRuntime {
         let config = XetConfig::new();
-        XetContext::new(
-            XetRuntime::from_external_with_config(tokio::runtime::Handle::current(), &config).expect("ctx"),
-            config,
-        )
+        XetRuntime::from_external_with_config(tokio::runtime::Handle::current(), config).expect("ctx")
     }
 
     fn new_client() -> Arc<dyn super::super::DirectAccessClient> {

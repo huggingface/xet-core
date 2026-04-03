@@ -6,7 +6,7 @@ use std::sync::atomic::AtomicBool;
 
 use tokio::sync::RwLock;
 use tracing::{debug, info, instrument, trace, warn};
-use xet_runtime::core::XetContext;
+use xet_runtime::core::XetRuntime;
 use xet_runtime::utils::RwTaskLock;
 
 use super::constants::MDB_SHARD_EXPIRATION_BUFFER;
@@ -74,7 +74,7 @@ impl ShardBookkeeper {
 }
 
 pub struct ShardFileManager {
-    ctx: XetContext,
+    ctx: XetRuntime,
     shard_bookkeeper: RwTaskLock<ShardBookkeeper, CoreError>,
     current_state: RwLock<MDBInMemoryShard>,
     shard_directory: PathBuf,
@@ -102,7 +102,7 @@ pub struct ShardFileManager {
 impl ShardFileManager {
     // Construct in a session directory.
     pub async fn new_in_session_directory(
-        ctx: &XetContext,
+        ctx: &XetRuntime,
         session_directory: impl AsRef<Path>,
         scan_directory: bool,
     ) -> Result<Arc<Self>> {
@@ -110,7 +110,7 @@ impl ShardFileManager {
     }
 
     // Construction functions
-    pub async fn new_in_cache_directory(ctx: &XetContext, cache_directory: impl AsRef<Path>) -> Result<Arc<Self>> {
+    pub async fn new_in_cache_directory(ctx: &XetRuntime, cache_directory: impl AsRef<Path>) -> Result<Arc<Self>> {
         Self::new_impl(
             ctx,
             cache_directory,
@@ -123,7 +123,7 @@ impl ShardFileManager {
     }
 
     async fn new_impl(
-        ctx: &XetContext,
+        ctx: &XetRuntime,
         directory: impl AsRef<Path>,
         is_cachable: bool,
         target_shard_max_size: u64,
@@ -231,7 +231,7 @@ impl ShardFileManager {
         // Compare in reverse order to sort from newest to oldest
         new_shards.sort_by_key(|shard| std::cmp::Reverse(shard.last_modified_time));
         let num_shards = new_shards.len();
-        let runtime = self.ctx.runtime.clone();
+        let runtime = self.ctx.threadpool.clone();
 
         for s in new_shards {
             s.verify_shard_integrity_debug_only();
@@ -578,8 +578,7 @@ mod tests {
     use rand::prelude::*;
     use tempfile::TempDir;
     use tokio::runtime::Handle;
-    use xet_runtime::config::XetConfig;
-    use xet_runtime::core::{XetContext, XetRuntime};
+    use xet_runtime::core::XetRuntime;
 
     use super::super::file_structs::FileDataSequenceHeader;
     use super::super::session_directory::{consolidate_shards_in_directory, merge_shards};
@@ -589,8 +588,8 @@ mod tests {
     use super::*;
     use crate::error::Result;
 
-    fn test_ctx() -> XetContext {
-        XetContext::new(XetRuntime::from_external(Handle::current()), XetConfig::new())
+    fn test_ctx() -> XetRuntime {
+        XetRuntime::from_external(Handle::current())
     }
 
     #[allow(clippy::type_complexity)]
@@ -640,7 +639,7 @@ mod tests {
 
     // Create n_shards new random shards in the directory pointed
     pub async fn create_random_shard_collection(
-        ctx: &XetContext,
+        ctx: &XetRuntime,
         seed: u64,
         shard_dir: impl AsRef<Path>,
         n_shards: usize,
@@ -782,7 +781,7 @@ mod tests {
     }
 
     async fn sfm_with_target_shard_size(
-        ctx: &XetContext,
+        ctx: &XetRuntime,
         path: impl AsRef<Path>,
         target_size: u64,
     ) -> Result<Arc<ShardFileManager>> {
@@ -823,8 +822,12 @@ mod tests {
             verify_metadata_shards_match(&mdb2, &mdb_in_mem, true).await?;
 
             // Now, merge shards in the background.
-            let merged_shards =
-                consolidate_shards_in_directory(&ctx.runtime, tmp_dir.path(), ctx.config.shard.max_target_size, false)?;
+            let merged_shards = consolidate_shards_in_directory(
+                &ctx.threadpool,
+                tmp_dir.path(),
+                ctx.config.shard.max_target_size,
+                false,
+            )?;
 
             assert_eq!(merged_shards.len(), 1);
             for si in merged_shards {
@@ -902,7 +905,7 @@ mod tests {
 
             {
                 let merged_shards = consolidate_shards_in_directory(
-                    &ctx.runtime,
+                    &ctx.threadpool,
                     tmp_dir.path(),
                     ctx.config.shard.max_target_size,
                     false,
@@ -962,7 +965,7 @@ mod tests {
         {
             let tmp_merge_dir = TempDir::new()?;
 
-            let shard_merge_result = merge_shards(&ctx.runtime, tmp_dir.path(), tmp_merge_dir.path(), 8 * T, false)?;
+            let shard_merge_result = merge_shards(&ctx.threadpool, tmp_dir.path(), tmp_merge_dir.path(), 8 * T, false)?;
             let mut merged_shards = shard_merge_result.merged_shards;
             let m_del_shards = shard_merge_result.obsolete_shards;
 
@@ -974,7 +977,7 @@ mod tests {
             assert_eq!(paths.count(), m_del_shards.len());
 
             // This call should be the same, but
-            let mut rv = consolidate_shards_in_directory(&ctx.runtime, tmp_dir.path(), 8 * T, false)?;
+            let mut rv = consolidate_shards_in_directory(&ctx.threadpool, tmp_dir.path(), 8 * T, false)?;
 
             let paths = std::fs::read_dir(tmp_dir.path()).unwrap();
             let n_paths = paths.count();
@@ -1038,7 +1041,7 @@ mod tests {
             // Make sure it's all in there this round.
             verify_metadata_shards_match(&mdb2, &mdb_in_mem, true).await?;
 
-            let merged_shards = consolidate_shards_in_directory(&ctx.runtime, tmp_dir.path(), target_size, false)?;
+            let merged_shards = consolidate_shards_in_directory(&ctx.threadpool, tmp_dir.path(), target_size, false)?;
 
             for si in merged_shards.iter() {
                 assert!(si.path.exists());
@@ -1132,7 +1135,7 @@ mod tests {
         Ok(())
     }
 
-    async fn shard_list_with_timestamp_filtering(ctx: &XetContext, path: &Path) -> Result<Vec<Arc<MDBShardFile>>> {
+    async fn shard_list_with_timestamp_filtering(ctx: &XetRuntime, path: &Path) -> Result<Vec<Arc<MDBShardFile>>> {
         Ok(ShardFileManager::new_impl(ctx, path, false, ctx.config.shard.max_target_size, true, 0)
             .await?
             .registered_shard_list()
@@ -1381,13 +1384,14 @@ mod tests {
                 // Now attempt a merge; this should cause an error.
                 let out_dir_1 = work_dir.join("out_err");
                 std::fs::create_dir_all(&out_dir_1).unwrap();
-                let res = merge_shards(&ctx.runtime, &tmp_src_dir, &out_dir_1, base_size * merge_size, false);
+                let res = merge_shards(&ctx.threadpool, &tmp_src_dir, &out_dir_1, base_size * merge_size, false);
                 assert!(res.is_err());
 
                 // Now attempt a merge with error skipping; which should not cause an error.
                 let out_dir_2 = work_dir.join("out_skips");
                 std::fs::create_dir_all(&out_dir_2).unwrap();
-                let res = merge_shards(&ctx.runtime, &tmp_src_dir, &out_dir_2, base_size * merge_size, true).unwrap();
+                let res =
+                    merge_shards(&ctx.threadpool, &tmp_src_dir, &out_dir_2, base_size * merge_size, true).unwrap();
 
                 assert_eq!(res.merged_shards.len(), n_merged);
 

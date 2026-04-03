@@ -10,8 +10,7 @@ use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::xorb_object::SerializedXorbObject;
 use xet_core_structures::xorb_object::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use xet_data::deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
-use xet_runtime::config::XetConfig;
-use xet_runtime::core::{XetContext, XetRuntime};
+use xet_runtime::core::XetRuntime;
 
 use super::configurations::TranslatorConfig;
 use super::errors::*;
@@ -28,7 +27,7 @@ static UPLOAD_CONCURRENCY: usize = 5;
 /// that succeeds or fails as a unit;  i.e. all files get uploaded on finalization, and all shards
 /// and xorbs needed to reconstruct those files are properly uploaded and registered.
 pub struct FileUploadSession {
-    pub(crate) ctx: XetContext,
+    pub(crate) ctx: XetRuntime,
 
     /// The configuration settings, if needed.
     pub(crate) config: Arc<TranslatorConfig>,
@@ -52,7 +51,7 @@ impl FileUploadSession {
             Err(_) => None,
         };
 
-        let ctx = XetContext::new(XetRuntime::from_external(tokio::runtime::Handle::current()), XetConfig::new());
+        let ctx = XetRuntime::from_external(tokio::runtime::Handle::current());
         let client = RemoteClient::new(
             ctx.clone(),
             &config.data_config.endpoint,

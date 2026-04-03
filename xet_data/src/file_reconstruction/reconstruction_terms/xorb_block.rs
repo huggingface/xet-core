@@ -7,7 +7,7 @@ use xet_client::cas_client::{Client, ProgressCallback};
 use xet_client::cas_types::{ChunkRange, Key};
 use xet_client::chunk_cache::ChunkCache;
 use xet_core_structures::merklehash::MerkleHash;
-use xet_runtime::core::XetContext;
+use xet_runtime::core::XetRuntime;
 use xet_runtime::utils::UniqueId;
 
 use super::super::error::Result;
@@ -94,7 +94,7 @@ impl XorbBlock {
     /// can retry.
     pub async fn retrieve_data(
         self: Arc<Self>,
-        ctx: XetContext,
+        ctx: XetRuntime,
         client: Arc<dyn Client>,
         url_info: Arc<TermBlockRetrievalURLs>,
         progress_updater: Option<Arc<ItemProgressUpdater>>,

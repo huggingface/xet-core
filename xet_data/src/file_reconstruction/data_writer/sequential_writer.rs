@@ -8,7 +8,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
 use tokio::task::{JoinHandle, JoinSet};
 use xet_client::cas_types::FileRange;
-use xet_runtime::core::XetContext;
+use xet_runtime::core::XetRuntime;
 use xet_runtime::utils::adjustable_semaphore::AdjustableSemaphorePermit;
 
 use super::super::data_writer::{DataFuture, DataWriter};
@@ -44,7 +44,7 @@ type PendingWrite = (Bytes, Option<AdjustableSemaphorePermit>);
 /// Background writer thread that processes queue items and dispatches data
 /// to an output sink (a `Write` impl or a stream function).
 struct SyncWriterThread {
-    ctx: XetContext,
+    ctx: XetRuntime,
     rx: UnboundedReceiver<SequentialRetrievalItem>,
     bytes_written: Arc<AtomicU64>,
     progress_updater: Option<Arc<ItemProgressUpdater>>,
@@ -55,7 +55,7 @@ struct SyncWriterThread {
 
 impl SyncWriterThread {
     fn new(
-        ctx: XetContext,
+        ctx: XetRuntime,
         rx: UnboundedReceiver<SequentialRetrievalItem>,
         bytes_written: Arc<AtomicU64>,
         progress_updater: Option<Arc<ItemProgressUpdater>>,
@@ -396,7 +396,7 @@ impl SequentialWriter {
     /// moved to a background thread for blocking I/O operations.
     #[allow(clippy::new_ret_no_self)]
     pub(crate) fn new<W: Write + Send + 'static>(
-        ctx: &XetContext,
+        ctx: &XetRuntime,
         writer: W,
         use_vectorized: bool,
         run_state: Arc<RunState>,
@@ -410,7 +410,7 @@ impl SequentialWriter {
         let progress_updater = run_state.progress_updater().cloned();
         let ctx_thread = ctx.clone();
 
-        let handle = ctx.runtime.spawn_blocking(move || {
+        let handle = ctx.threadpool.spawn_blocking(move || {
             let writer_thread =
                 SyncWriterThread::new(ctx_thread, rx, bytes_written_clone, progress_updater, run_state_thread);
             let result = if use_vectorized {
@@ -441,13 +441,13 @@ mod tests {
     use std::time::Duration;
 
     use xet_runtime::config::XetConfig;
-    use xet_runtime::core::{XetContext, XetRuntime};
+    use xet_runtime::core::{XetRuntime, XetThreadpool};
     use xet_runtime::utils::adjustable_semaphore::AdjustableSemaphore;
 
     use super::*;
 
-    fn test_ctx() -> XetContext {
-        XetContext::new(XetRuntime::from_external(tokio::runtime::Handle::current()), XetConfig::new())
+    fn test_ctx() -> XetRuntime {
+        XetRuntime::new(XetThreadpool::from_external(tokio::runtime::Handle::current()), XetConfig::new())
     }
 
     struct SharedBuffer(Arc<std::sync::Mutex<Vec<u8>>>);

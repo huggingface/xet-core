@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use xet_runtime::core::XetRuntime;
+use xet_runtime::core::XetThreadpool;
 
 use crate::error::XetError;
 
@@ -61,14 +61,14 @@ impl<T: Clone> BackgroundTaskState<T> {
 }
 
 pub(super) struct TaskRuntime {
-    runtime: Arc<XetRuntime>,
+    runtime: Arc<XetThreadpool>,
     cancellation_token: CancellationToken,
     state: Mutex<XetTaskState>,
     children: Mutex<Vec<Weak<TaskRuntime>>>,
 }
 
 impl TaskRuntime {
-    pub(super) fn new_root(runtime: Arc<XetRuntime>) -> Arc<Self> {
+    pub(super) fn new_root(runtime: Arc<XetThreadpool>) -> Arc<Self> {
         Arc::new(Self {
             runtime,
             cancellation_token: CancellationToken::new(),

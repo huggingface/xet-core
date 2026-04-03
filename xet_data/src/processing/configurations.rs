@@ -4,7 +4,7 @@ use std::sync::Arc;
 use http::HeaderMap;
 use tracing::info;
 use xet_client::cas_client::auth::AuthConfig;
-use xet_runtime::core::{XetContext, xet_cache_root};
+use xet_runtime::core::{XetRuntime, xet_cache_root};
 
 use crate::error::Result;
 
@@ -23,12 +23,12 @@ pub struct SessionContext {
 
 impl SessionContext {
     /// Returns true if this endpoint points to a local filesystem path.
-    pub fn is_local(&self, ctx: &XetContext) -> bool {
+    pub fn is_local(&self, ctx: &XetRuntime) -> bool {
         self.endpoint.starts_with(ctx.config.data.local_cas_scheme.as_str())
     }
 
     /// Returns the local filesystem path if this is a local endpoint.
-    pub fn local_path(&self, ctx: &XetContext) -> Option<PathBuf> {
+    pub fn local_path(&self, ctx: &XetRuntime) -> Option<PathBuf> {
         let path = self.endpoint.strip_prefix(ctx.config.data.local_cas_scheme.as_str())?;
         Some(PathBuf::from(path))
     }
@@ -39,7 +39,7 @@ impl SessionContext {
     }
 
     /// Creates a SessionContext for local filesystem-based operations.
-    pub fn for_local_path(ctx: &XetContext, base_dir: impl AsRef<Path>) -> Self {
+    pub fn for_local_path(ctx: &XetRuntime, base_dir: impl AsRef<Path>) -> Self {
         let path = base_dir.as_ref().to_path_buf();
         let endpoint = format!("{}{}", ctx.config.data.local_cas_scheme, path.display());
         Self {
@@ -67,7 +67,7 @@ impl SessionContext {
 /// Combines session-specific values with runtime-computed paths derived from the endpoint.
 #[derive(Debug, Clone)]
 pub struct TranslatorConfig {
-    pub ctx: XetContext,
+    pub ctx: XetRuntime,
     pub session: SessionContext,
 
     /// Directory for caching shard files.
@@ -89,7 +89,7 @@ impl TranslatorConfig {
     }
 
     /// Creates a new TranslatorConfig from a SessionContext, computing all derived paths.
-    pub fn new(ctx: &XetContext, session: SessionContext) -> Result<Self> {
+    pub fn new(ctx: &XetRuntime, session: SessionContext) -> Result<Self> {
         let config = ctx.config.as_ref();
 
         let (shard_cache_directory, shard_session_directory) = if let Some(local_path) = session.local_path(ctx) {
@@ -130,13 +130,13 @@ impl TranslatorConfig {
     }
 
     /// Creates a TranslatorConfig for local filesystem-based storage.
-    pub fn local_config(ctx: &XetContext, base_dir: impl AsRef<Path>) -> Result<Self> {
+    pub fn local_config(ctx: &XetRuntime, base_dir: impl AsRef<Path>) -> Result<Self> {
         Self::new(ctx, SessionContext::for_local_path(ctx, base_dir))
     }
 
     /// Creates a TranslatorConfig that uses in-memory storage for XORBs.
     /// Shard data still uses file-based storage in the provided base directory.
-    pub fn memory_config(ctx: &XetContext, base_dir: impl AsRef<Path>) -> Result<Self> {
+    pub fn memory_config(ctx: &XetRuntime, base_dir: impl AsRef<Path>) -> Result<Self> {
         let session = SessionContext::for_memory();
         let config = ctx.config.as_ref();
         let base_path = Self::create_base_xet_dir(base_dir)?;
@@ -153,7 +153,7 @@ impl TranslatorConfig {
     /// Creates a TranslatorConfig that connects to a CAS server at the given endpoint.
     /// Shard cache and session directories are created under the provided base directory.
     /// Useful for tests that use LocalTestServer.
-    pub fn test_server_config(ctx: &XetContext, endpoint: impl AsRef<str>, base_dir: impl AsRef<Path>) -> Result<Self> {
+    pub fn test_server_config(ctx: &XetRuntime, endpoint: impl AsRef<str>, base_dir: impl AsRef<Path>) -> Result<Self> {
         let session = SessionContext {
             endpoint: endpoint.as_ref().to_string(),
             auth: None,
@@ -198,13 +198,13 @@ fn compute_cache_path(endpoint: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;
-    use xet_runtime::core::XetContext;
+    use xet_runtime::core::XetRuntime;
 
     use super::{SessionContext, TranslatorConfig};
 
     #[test]
     fn test_session_context_mode_detection() {
-        let ctx = XetContext::default().unwrap();
+        let ctx = XetRuntime::default().unwrap();
         let temp_dir = tempdir().unwrap();
         let local_session = SessionContext::for_local_path(&ctx, temp_dir.path());
         assert!(local_session.is_local(&ctx));
@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn test_memory_and_server_configs_use_base_xet_layout() {
-        let ctx = XetContext::default().unwrap();
+        let ctx = XetRuntime::default().unwrap();
         let temp_dir = tempdir().unwrap();
 
         let memory_config = TranslatorConfig::memory_config(&ctx, temp_dir.path()).unwrap();

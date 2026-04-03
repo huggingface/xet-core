@@ -19,7 +19,7 @@ use simulation::upload_concurrency::run_upload_clients_until_cancelled;
 use tokio::time::sleep;
 use tracing::info;
 use xet_client::cas_client::simulation::local_server::ServerLatencyProfile;
-use xet_runtime::core::XetContext;
+use xet_runtime::core::XetRuntime;
 use xet_runtime::logging::{LoggingConfig, init as init_logging};
 
 #[derive(Parser, Debug)]
@@ -143,13 +143,13 @@ fn setup_logging(out_dir: &Path) {
     ));
 }
 
-/// Runs an async future on a fresh multi-threaded tokio runtime, using XetContext for initialization.
+/// Runs an async future on a fresh multi-threaded tokio runtime, using XetRuntime for initialization.
 fn run_async<F>(future: F) -> ScenarioResult<()>
 where
     F: Future<Output = ScenarioResult<()>> + Send + 'static,
 {
-    let xet = XetContext::default().map_err(|e| ScenarioError::Runtime(e.to_string()))?;
-    xet.runtime
+    let xet = XetRuntime::default().map_err(|e| ScenarioError::Runtime(e.to_string()))?;
+    xet.threadpool
         .bridge_sync(async move {
             tokio::task::spawn_blocking(move || {
                 tokio::runtime::Builder::new_multi_thread()
