@@ -92,12 +92,8 @@ impl DirectRefreshRouteTokenRefresher {
             cred_helper,
         }
     }
-}
 
-#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
-impl TokenRefresher for DirectRefreshRouteTokenRefresher {
-    async fn refresh(&self) -> Result<TokenInfo, AuthError> {
+    pub async fn get_cas_jwt(&self) -> Result<crate::hub_client::CasJWTInfo, crate::ClientError> {
         let client = self.client.clone();
         let refresh_route = self.refresh_route.clone();
         let cred_helper = self.cred_helper.clone();
@@ -122,8 +118,17 @@ impl TokenRefresher for DirectRefreshRouteTokenRefresher {
                     req.send().await
                 }
             })
-            .await
-            .map_err(AuthError::token_refresh_failure)?;
+            .await?;
+
+        Ok(jwt_info)
+    }
+}
+
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
+impl TokenRefresher for DirectRefreshRouteTokenRefresher {
+    async fn refresh(&self) -> Result<TokenInfo, AuthError> {
+        let jwt_info = self.get_cas_jwt().await.map_err(AuthError::token_refresh_failure)?;
 
         Ok((jwt_info.access_token, jwt_info.exp))
     }

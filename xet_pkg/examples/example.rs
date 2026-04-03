@@ -7,9 +7,9 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use http::{HeaderMap, HeaderValue, header};
-use xet::xet_session::{Sha256Policy, XetFileDownload, XetFileMetadata, XetSessionBuilder, XetTaskState};
-use xet_client::hub_client::{self, HFRepoType, HubClient, RepoInfo};
+use xet::xet_session::{
+    HeaderMap, HeaderValue, Sha256Policy, XetFileDownload, XetFileMetadata, XetSessionBuilder, XetTaskState, header,
+};
 
 #[derive(Parser)]
 #[clap(name = "session-demo-async", about = "XetSession async API demo")]
@@ -54,25 +54,14 @@ async fn main() -> Result<()> {
 async fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<()> {
     let mut hf_hub_header = HeaderMap::new();
     hf_hub_header.insert(header::AUTHORIZATION, HeaderValue::from_str("Bearer [HF_WRITE_TOKEN]")?);
-    let hub_client = HubClient::new(
-        &endpoint.unwrap_or("https://huggingface.co".into()),
-        RepoInfo {
-            repo_type: HFRepoType::Model,
-            full_name: "user/repo".into(),
-        },
-        Some("main".into()),
-        "",
-        None,
-        Some(hf_hub_header),
-    )?;
-    let token_info = hub_client.get_cas_jwt(hub_client::Operation::Upload).await?;
+    let endpoint = endpoint.unwrap_or("https://huggingface.co".into());
+    let token_refresh_url = format!("{endpoint}/api/{}s/{}/xet-{}-token/{}", "model", "user/repo", "write", "main");
 
-    let session = XetSessionBuilder::new().with_endpoint(token_info.cas_url).build()?;
+    let session = XetSessionBuilder::new().build()?;
 
     let commit = session
         .new_upload_commit()?
-        .with_token_info(token_info.access_token, token_info.exp)
-        //.with_token_refresh_url(token_refresh_url, hf_hub_header) // see HubClient::get_cas_jwt for how to build a token_refresh_url
+        .with_token_refresh_url(token_refresh_url, hf_hub_header)
         .build()
         .await?;
 
@@ -112,25 +101,14 @@ async fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: O
 
     let mut hf_hub_header = HeaderMap::new();
     hf_hub_header.insert(header::AUTHORIZATION, HeaderValue::from_str("Bearer [HF_READ_TOKEN]")?);
-    let hub_client = HubClient::new(
-        &endpoint.unwrap_or("https://huggingface.co".into()),
-        RepoInfo {
-            repo_type: HFRepoType::Model,
-            full_name: "user/repo".into(),
-        },
-        Some("main".into()),
-        "",
-        None,
-        Some(hf_hub_header),
-    )?;
-    let token_info = hub_client.get_cas_jwt(hub_client::Operation::Download).await?;
+    let endpoint = endpoint.unwrap_or("https://huggingface.co".into());
+    let token_refresh_url = format!("{endpoint}/api/{}s/{}/xet-{}-token/{}", "model", "user/repo", "read", "main");
 
-    let session = XetSessionBuilder::new().with_endpoint(token_info.cas_url).build()?;
+    let session = XetSessionBuilder::new().build()?;
 
     let group = session
         .new_file_download_group()?
-        .with_token_info(token_info.access_token, token_info.exp)
-        //.with_token_refresh_url(token_refresh_url, hf_hub_header) // see HubClient::get_cas_jwt for how to build a token_refresh_url
+        .with_token_refresh_url(token_refresh_url, hf_hub_header)
         .build()
         .await?;
 

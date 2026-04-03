@@ -28,8 +28,9 @@ pub struct UploadArgs {
 }
 
 pub async fn run(cli: &Cli, config: XetConfig, args: &UploadArgs) -> Result<()> {
-    let session = super::session::build_xet_session(&cli.resolved_endpoint(), config)?;
-    let results = run_upload(&session, args, cli.resolved_token()).await?;
+    let session = super::session::build_xet_session(config)?;
+    let endpoint = cli.resolved_endpoint();
+    let results = run_upload(&session, &endpoint, args, cli.resolved_token()).await?;
 
     if let Some(ref output_path) = args.output {
         let json = serde_json::to_string_pretty(&results)?;
@@ -50,6 +51,7 @@ pub async fn run(cli: &Cli, config: XetConfig, args: &UploadArgs) -> Result<()> 
 
 pub async fn run_upload(
     session: &XetSession,
+    endpoint: &str,
     args: &UploadArgs,
     token: Option<String>,
 ) -> Result<Vec<XetFileMetadata>> {
@@ -59,7 +61,10 @@ pub async fn run_upload(
         Sha256Policy::Compute
     };
 
-    let mut commit_builder = session.new_upload_commit().map_err(|e| anyhow::anyhow!(e))?;
+    let mut commit_builder = session
+        .new_upload_commit()
+        .map_err(|e| anyhow::anyhow!(e))?
+        .with_endpoint(endpoint);
     if let Some(tok) = token {
         commit_builder = commit_builder.with_token_info(tok, u64::MAX);
     }
@@ -119,14 +124,14 @@ mod tests {
 
     fn local_session(cas_dir: &tempfile::TempDir) -> (String, XetSession) {
         let endpoint = format!("local://{}", cas_dir.path().display());
-        let session = build_xet_session(&endpoint, XetConfig::new()).unwrap();
+        let session = build_xet_session(XetConfig::new()).unwrap();
         (endpoint, session)
     }
 
     #[tokio::test]
     async fn test_upload_single_file() {
         let cas_dir = tempdir().unwrap();
-        let (_endpoint, session) = local_session(&cas_dir);
+        let (endpoint, session) = local_session(&cas_dir);
 
         let src_dir = tempdir().unwrap();
         let src = src_dir.path().join("hello.txt");
@@ -138,7 +143,7 @@ mod tests {
             dump_stats: false,
             output: None,
         };
-        let results = run_upload(&session, &args, None).await.unwrap();
+        let results = run_upload(&session, &endpoint, &args, None).await.unwrap();
 
         assert_eq!(results.len(), 1);
         let meta = &results[0];
@@ -150,7 +155,7 @@ mod tests {
     #[tokio::test]
     async fn test_upload_multiple_files() {
         let cas_dir = tempdir().unwrap();
-        let (_endpoint, session) = local_session(&cas_dir);
+        let (endpoint, session) = local_session(&cas_dir);
 
         let src_dir = tempdir().unwrap();
         let files: Vec<String> = (0..5)
@@ -167,7 +172,7 @@ mod tests {
             dump_stats: false,
             output: None,
         };
-        let results = run_upload(&session, &args, None).await.unwrap();
+        let results = run_upload(&session, &endpoint, &args, None).await.unwrap();
 
         assert_eq!(results.len(), 5);
         for (i, meta) in results.iter().enumerate() {
@@ -184,32 +189,32 @@ mod tests {
         std::fs::write(&src, b"sha256 test data").unwrap();
         let src_str = src.to_str().unwrap().to_owned();
 
-        let (_, session) = local_session(&cas_dir);
+        let (endpoint, session) = local_session(&cas_dir);
         let args = UploadArgs {
             files: vec![src_str.clone()],
             no_sha256: false,
             dump_stats: false,
             output: None,
         };
-        let with_sha = run_upload(&session, &args, None).await.unwrap();
+        let with_sha = run_upload(&session, &endpoint, &args, None).await.unwrap();
         assert!(with_sha[0].xet_info.sha256.is_some());
 
         let cas_dir2 = tempdir().unwrap();
-        let (_, session2) = local_session(&cas_dir2);
+        let (endpoint2, session2) = local_session(&cas_dir2);
         let args = UploadArgs {
             files: vec![src_str],
             no_sha256: true,
             dump_stats: false,
             output: None,
         };
-        let without_sha = run_upload(&session2, &args, None).await.unwrap();
+        let without_sha = run_upload(&session2, &endpoint2, &args, None).await.unwrap();
         assert!(without_sha[0].xet_info.sha256.is_none());
     }
 
     #[tokio::test]
     async fn test_upload_json_output() {
         let cas_dir = tempdir().unwrap();
-        let (_endpoint, session) = local_session(&cas_dir);
+        let (endpoint, session) = local_session(&cas_dir);
 
         let src_dir = tempdir().unwrap();
         let src = src_dir.path().join("json_test.txt");
@@ -224,7 +229,7 @@ mod tests {
             dump_stats: false,
             output: Some(json_path.clone()),
         };
-        let results = run_upload(&session, &args, None).await.unwrap();
+        let results = run_upload(&session, &endpoint, &args, None).await.unwrap();
         let json = serde_json::to_string_pretty(&results).unwrap();
         std::fs::write(&json_path, &json).unwrap();
 

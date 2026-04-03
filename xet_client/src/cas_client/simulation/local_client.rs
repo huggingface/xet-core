@@ -25,6 +25,8 @@ use xet_core_structures::metadata_shard::xorb_structs::MDBXorbInfo;
 use xet_core_structures::metadata_shard::{MDBShardFile, ShardFileManager};
 use xet_core_structures::serialization_utils::read_u32;
 use xet_core_structures::xorb_object::{SerializedXorbObject, XorbObject};
+#[cfg(feature = "fd-track")]
+use xet_runtime::fd_diagnostics::{report_fd_count, track_fd_scope};
 use xet_runtime::file_utils::SafeFileCreator;
 
 use super::direct_access_client::DirectAccessClient;
@@ -101,25 +103,41 @@ impl redb::Key for RedbHash {
 const GLOBAL_DEDUP_TABLE: TableDefinition<RedbHash, RedbHash> = TableDefinition::new("global_dedup");
 const FILE_STATUS_TABLE: TableDefinition<RedbHash, bool> = TableDefinition::new("file_status");
 
-/// Global cache of open redb databases keyed by canonical path.
+/// Weak handle so the cache never keeps a [`redb::Database`] alive; only [`Arc`]s held by
+/// [`LocalClient`] (and clones) do. When the last strong ref drops, the entry can be purged.
+type CachedDbWeak = Weak<redb::Database>;
+
+/// Global cache of redb databases keyed by canonical DB file path.
 /// redb enforces exclusive file locking, so multiple LocalClient instances
 /// pointing at the same directory must share a single Database handle.
-static DB_CACHE: LazyLock<Mutex<HashMap<PathBuf, Weak<redb::Database>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static DB_CACHE: LazyLock<Mutex<HashMap<PathBuf, CachedDbWeak>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Opens or returns a shared [`Arc<redb::Database>`] for `db_path`. The map stores only
+/// [`Weak`] pointers ([`Arc::downgrade`]); on a hit, [`Weak::upgrade`] yields a new strong ref.
 fn get_or_open_db(db_path: &Path) -> std::result::Result<Arc<redb::Database>, redb::DatabaseError> {
+    #[cfg(feature = "fd-track")]
+    let _fd_scope = track_fd_scope(format!("LocalClient::get_or_open_db({})", db_path.display()));
+
     let mut map = DB_CACHE.lock().unwrap();
 
     if let Some(weak) = map.get(db_path)
-        && let Some(db) = weak.upgrade()
+        && let Some(db) = Weak::upgrade(weak)
     {
+        tracing::trace!(target: "xet_client::local_cas_redb", path = %db_path.display(), "DB_CACHE hit");
+        #[cfg(feature = "fd-track")]
+        report_fd_count("LocalClient::get_or_open_db cache hit");
         return Ok(db);
     }
 
     // Purge dead entries to avoid unbounded cache growth.
     map.retain(|_, weak| weak.strong_count() > 0);
 
+    tracing::trace!(target: "xet_client::local_cas_redb", path = %db_path.display(), "DB_CACHE miss");
+
     let db = Arc::new(redb::Database::create(db_path)?);
     map.insert(db_path.to_owned(), Arc::downgrade(&db));
+    #[cfg(feature = "fd-track")]
+    report_fd_count("LocalClient::get_or_open_db opened new DB");
     Ok(db)
 }
 
@@ -163,6 +181,14 @@ impl LocalClient {
         if !base_dir.exists() {
             std::fs::create_dir_all(&base_dir)?;
         }
+        // `std::path::absolute` does not resolve symlinks; without canonicalizing, two path strings
+        // for the same directory (e.g. via symlinks or /var vs /private/var on macOS) would open
+        // multiple `redb::Database` handles and duplicate file descriptors for one CAS root.
+        let base_dir = std::fs::canonicalize(&base_dir).unwrap_or(base_dir);
+        #[cfg(feature = "fd-track")]
+        let _fd_scope = track_fd_scope(format!("LocalClient::new_internal({})", base_dir.display()));
+        #[cfg(feature = "fd-track")]
+        report_fd_count("LocalClient::new_internal start");
 
         let shard_dir = base_dir.join("shards");
         if !shard_dir.exists() {
@@ -177,6 +203,8 @@ impl LocalClient {
         let db_path = base_dir.join("global_dedup_lookup.redb");
         let db =
             get_or_open_db(&db_path).map_err(|e| ClientError::Other(format!("Error opening redb database: {e}")))?;
+        #[cfg(feature = "fd-track")]
+        report_fd_count("LocalClient::new_internal after DB open");
 
         // Ensure tables exist by opening a write transaction.
         {
@@ -188,6 +216,8 @@ impl LocalClient {
 
         // Open / set up the shard lookup
         let shard_manager = ShardFileManager::new_in_session_directory(shard_dir.clone(), true).await?;
+        #[cfg(feature = "fd-track")]
+        report_fd_count("LocalClient::new_internal after shard manager init");
 
         Ok(Self {
             db,
@@ -282,6 +312,22 @@ impl LocalClient {
         }
 
         Ok(())
+    }
+}
+
+impl Drop for LocalClient {
+    fn drop(&mut self) {
+        #[cfg(feature = "fd-track")]
+        let _fd_scope = track_fd_scope(format!("LocalClient::drop({})", self.xorb_dir.display()));
+
+        #[cfg(feature = "fd-track")]
+        {
+            report_fd_count("LocalClient::drop start");
+            if let Ok(mut map) = DB_CACHE.lock() {
+                map.retain(|_, weak| weak.strong_count() > 0);
+            }
+            report_fd_count("LocalClient::drop end");
+        }
     }
 }
 
@@ -1288,7 +1334,7 @@ fn map_redb_db_error(e: impl std::fmt::Debug) -> ClientError {
 
 fn generate_fetch_url(file_path: &Path, byte_range: &FileRange, timestamp: Instant) -> String {
     let timestamp_ms = timestamp.saturating_duration_since(*REFERENCE_INSTANT).as_millis() as u64;
-    format!("{:?}:{}:{}:{}", file_path, byte_range.start, byte_range.end, timestamp_ms)
+    format!("{}:{}:{}:{}", file_path.display(), byte_range.start, byte_range.end, timestamp_ms)
 }
 
 fn parse_fetch_url(url: &str) -> Result<(PathBuf, FileRange, Instant)> {
@@ -1304,7 +1350,7 @@ fn parse_fetch_url(url: &str) -> Result<(PathBuf, FileRange, Instant)> {
     let end_pos: u64 = parts[2].parse().map_err(|_| ClientError::InvalidArguments)?;
     let timestamp_ms: u64 = parts[3].parse().map_err(|_| ClientError::InvalidArguments)?;
 
-    let file_path: PathBuf = file_path_str.trim_matches('"').into();
+    let file_path: PathBuf = file_path_str.into();
     let byte_range = FileRange::new(start_pos, end_pos);
     let timestamp = *REFERENCE_INSTANT + Duration::from_millis(timestamp_ms);
 
@@ -1334,6 +1380,24 @@ mod tests {
                 as std::sync::Arc<dyn crate::cas_client::simulation::DirectAccessClient>
         })
         .await;
+    }
+
+    /// Two different path strings for the same directory (symlink) must share one `redb::Database`
+    /// in `DB_CACHE`. Without `canonicalize` in `new_internal`, `redb` returns
+    /// `Database already open. Cannot acquire lock.` (duplicate opens for the same file).
+    /// That can also surface as EMFILE under parallel tests (extra FDs per duplicate handle).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn db_cache_unifies_symlink_equivalent_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let c1 = LocalClient::new(&link).await.unwrap();
+        let c2 = LocalClient::new(&real).await.unwrap();
+        assert!(Arc::ptr_eq(&c1.db, &c2.db));
     }
 
     #[tokio::test]
@@ -1406,7 +1470,7 @@ mod tests {
 
         // Test 5: Invalid start_pos - non-numeric
         let timestamp_ms = timestamp.saturating_duration_since(*REFERENCE_INSTANT).as_millis() as u64;
-        let non_numeric_start = format!("{:?}:not_a_number:{}:{}", file_path, fetch_byte_end, timestamp_ms);
+        let non_numeric_start = format!("{}:not_a_number:{}:{}", file_path.display(), fetch_byte_end, timestamp_ms);
         let invalid_fetch_term = XorbReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
             url: non_numeric_start,
@@ -1417,7 +1481,7 @@ mod tests {
         assert!(matches!(result.unwrap_err(), ClientError::InvalidArguments));
 
         // Test 6: Invalid end_pos - non-numeric
-        let non_numeric_end = format!("{:?}:{}:not_a_number:{}", file_path, fetch_byte_start, timestamp_ms);
+        let non_numeric_end = format!("{}:{}:not_a_number:{}", file_path.display(), fetch_byte_start, timestamp_ms);
         let invalid_fetch_term = XorbReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
             url: non_numeric_end,
@@ -1438,7 +1502,8 @@ mod tests {
         assert!(matches!(result.unwrap_err(), ClientError::InvalidArguments));
 
         // Test 8: Invalid timestamp - non-numeric
-        let non_numeric_timestamp = format!("{:?}:{}:{}:not_a_number", file_path, fetch_byte_start, fetch_byte_end);
+        let non_numeric_timestamp =
+            format!("{}:{}:{}:not_a_number", file_path.display(), fetch_byte_start, fetch_byte_end);
         let invalid_fetch_term = XorbReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
             url: non_numeric_timestamp,

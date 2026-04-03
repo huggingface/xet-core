@@ -88,5 +88,6 @@ harness = false
 strict = []
 smoke-test = []
 expensive_tests = []
+fd-track = ["xet-runtime/fd-track", "xet-client/fd-track"]
 python = ["dep:pyo3"]
 simulation = ["xet-client/simulation", "xet-core-structures/simulation"]

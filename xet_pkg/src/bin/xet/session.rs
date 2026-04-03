@@ -14,12 +14,12 @@ const LOCAL_SCHEME: &str = "local://";
 
 /// Build a XetSession for upload/download commands.
 ///
-/// Auth tokens are supplied per upload commit or download stream group; see
-/// [`UploadCommitBuilder::with_token_info`](xet::xet_session::UploadCommitBuilder::with_token_info)
-/// and [`DownloadStreamGroupBuilder::with_token_info`](xet::xet_session::DownloadStreamGroupBuilder::with_token_info).
-pub fn build_xet_session(endpoint: &str, config: XetConfig) -> Result<XetSession> {
-    let builder = XetSessionBuilder::new_with_config(config).with_endpoint(endpoint.to_owned());
-    let session: XetSession = builder.build().map_err(|e| anyhow::anyhow!(e))?;
+/// The CAS endpoint is set per-operation on the commit/group builder, not on the
+/// session itself. See [`AuthGroupBuilder::with_endpoint`].
+pub fn build_xet_session(config: XetConfig) -> Result<XetSession> {
+    let session: XetSession = XetSessionBuilder::new_with_config(config)
+        .build()
+        .map_err(|e| anyhow::anyhow!(e))?;
     Ok(session)
 }
 
@@ -67,10 +67,8 @@ mod tests {
 
     #[test]
     fn test_build_session_local() {
-        let dir = tempdir().unwrap();
-        let endpoint = format!("local://{}", dir.path().display());
         let config = XetConfig::new();
-        let session = build_xet_session(&endpoint, config);
+        let session = build_xet_session(config);
         assert!(session.is_ok(), "expected Ok, got {:?}", session.err());
     }
 
