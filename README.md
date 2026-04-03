@@ -37,6 +37,36 @@ xet-core enables huggingface_hub to utilize xet storage for uploading and downlo
 
 🔖 **local disk caching**: chunk-based cache that sits alongside the existing [huggingface_hub disk cache](https://huggingface.co/docs/huggingface_hub/guides/manage-cache).
 
+## Packages
+
+This repository produces the following packages:
+
+### Rust Crates (crates.io)
+
+| Crate | Description |
+|-------|-------------|
+| [`hf-xet`](https://crates.io/crates/hf-xet) | High-level client library for uploading and downloading files with chunk-based deduplication |
+| [`xet-client`](https://crates.io/crates/xet-client) | HTTP client for communicating with Hugging Face Xet storage servers |
+| [`xet-data`](https://crates.io/crates/xet-data) | Data processing pipeline for chunking, deduplication, and file reconstruction |
+| [`xet-core-structures`](https://crates.io/crates/xet-core-structures) | Core data structures including MerkleHash, metadata shards, and Xorb objects |
+| [`xet-runtime`](https://crates.io/crates/xet-runtime) | Async runtime, configuration, logging, and utility infrastructure |
+
+### Python Package (PyPI)
+
+| Package | Description |
+|---------|-------------|
+| [`hf-xet`](https://pypi.org/project/hf-xet/) | Python bindings for the Xet storage system, used by [huggingface_hub](https://github.com/huggingface/huggingface_hub) |
+
+Built from the [`hf_xet/`](./hf_xet) directory using [maturin](https://github.com/PyO3/maturin).
+
+### CLI Binary
+
+| Binary | Description |
+|--------|-------------|
+| `git-xet` | Git LFS compatible command-line tool for Xet storage |
+
+Built from the [`git_xet/`](./git_xet) directory. Distributed via [GitHub releases](https://github.com/huggingface/xet-core/releases).
+
 ## Contributions (feature requests, bugs, etc.) are encouraged & appreciated 💙💚💛💜🧡❤️
 
 Please join us in making xet-core better. We value everyone's contributions. Code is not the only way to help. Answering questions, helping each other, improving documentation, filing issues all help immensely. If you are interested in contributing (please do!), check out the [contribution guide](https://github.com/huggingface/xet-core/blob/main/CONTRIBUTING.md) for this repository.
@@ -73,21 +103,17 @@ HF_XET_LOG_FILE=/tmp/xet.log # write logs to a file (defaults to stdout)
 
 ## Local Development
 
-### Repo Organization - Rust Crates
+### Repo Organization
 
-* [cas_client](./cas_client): communication with CAS backend services, which include APIs for Xorbs and Shards.
-* [cas_object](./cas_object): CAS object (Xorb) format and associated APIs, including chunks (ranges within Xorbs).
-* [cas_types](./cas_types): common types shared across crates in xet-core and xetcas.
-* [chunk_cache](./chunk_cache): local disk cache of Xorb chunks.
-* [chunk_cache_bench](./chunk_cache_bench): benchmarking crate for chunk_cache.
-* [data](./data): main driver for client operations - FilePointerTranslator drives hydrating or shrinking files, chunking + deduplication here.
-* [error_printer](./error_printer): utility for printing errors conveniently.
-* [file_utils](./file_utils): SafeFileCreator utility, used by chunk_cache.
-* [hf_xet](./hf_xet): Python integration with Rust code, uses maturin to build `hf-xet` Python package. Main integration with HF Hub Python package.
-* [mdb_shard](./mdb_shard): Shard operations, including Shard format, dedupe probing, benchmarks, and utilities.
-* [merklehash](./merklehash): MerkleHash type, 256-bit hash, widely used across many crates.
-* [progress_reporting](./progress_reporting): offers ReportedWriter so progress for Writer operations can be displayed.
-* [utils](./utils): general utilities, including singleflight, progress, serialization_utils and threadpool.
+* [`xet_pkg/`](./xet_pkg) (`hf-xet`): High-level session API for uploading and downloading files with deduplication.
+* [`xet_client/`](./xet_client) (`xet-client`): HTTP client for CAS and Hub backend services.
+* [`xet_data/`](./xet_data) (`xet-data`): Chunking, deduplication, and file reconstruction pipeline.
+* [`xet_core_structures/`](./xet_core_structures) (`xet-core-structures`): MerkleHash, metadata shards, Xorb objects, and shared data structures.
+* [`xet_runtime/`](./xet_runtime) (`xet-runtime`): Async runtime, configuration, logging, and utilities.
+* [`hf_xet/`](./hf_xet): Python bindings (maturin/PyO3), produces the `hf-xet` PyPI package.
+* [`git_xet/`](./git_xet): Git LFS compatible CLI tool (`git-xet`).
+* [`wasm/`](./wasm): WebAssembly builds (`hf_xet_wasm`, `hf_xet_thin_wasm`).
+* [`simulation/`](./simulation): Simulation and benchmarking infrastructure.
 
 ### Build, Test & Benchmark
 

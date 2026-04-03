@@ -8,7 +8,7 @@ repository.workspace = true
 description = "Client library for communicating with Hugging Face Xet storage servers.  Use through the hf-xet crate."
 readme = "README.md"
 keywords = ["huggingface"]
-categories = ["artificial-intelligence", "asynchronous", "network-programming"]
+categories = ["artificial-intelligence", "network-programming"]
 
 [lib]
 name = "xet_client"

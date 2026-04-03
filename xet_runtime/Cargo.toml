@@ -8,7 +8,7 @@ repository.workspace = true
 description = "Async runtime, configuration, logging, and utility infrastructure for the Hugging Face Xet client tools."
 readme = "README.md"
 keywords = ["huggingface"]
-categories = ["asynchronous"]
+categories = ["artificial-intelligence", "asynchronous"]
 
 [lib]
 name = "xet_runtime"

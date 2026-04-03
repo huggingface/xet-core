@@ -8,12 +8,7 @@ repository.workspace = true
 description = "Data processing pipeline for chunking, deduplication, and file reconstruction; used in the Hugging Face Xet client tools.  Intended to be used through the API in the hf-xet package."
 readme = "README.md"
 keywords = ["huggingface"]
-categories = [
-    "artificial-intelligence",
-    "asynchronous",
-    "data-structures",
-    "filesystem",
-]
+categories = ["artificial-intelligence", "data-structures", "filesystem"]
 
 [lib]
 name = "xet_data"
