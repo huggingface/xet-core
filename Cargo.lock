@@ -6185,7 +6185,6 @@ dependencies = [
  "tracing-test",
  "whoami",
  "winapi",
- "xet-core-structures",
 ]
 
 [[package]]
