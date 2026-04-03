@@ -3,8 +3,12 @@ name = "xet-client"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+homepage.workspace = true
 repository.workspace = true
-description = "HTTPS client for communicating with Hugging Face Xet storage servers"
+description = "Client library for communicating with Hugging Face Xet storage servers.  Use through the hf-xet crate."
+readme = "README.md"
+keywords = ["huggingface"]
+categories = ["artificial-intelligence", "network-programming"]
 
 [lib]
 name = "xet_client"
@@ -42,7 +46,13 @@ url = { workspace = true }
 urlencoding = { workspace = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
-tokio = { workspace = true, features = ["sync", "macros", "io-util", "rt", "time"] }
+tokio = { workspace = true, features = [
+    "sync",
+    "macros",
+    "io-util",
+    "rt",
+    "time",
+] }
 web-time = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
@@ -65,7 +75,14 @@ rustls-tls = ["reqwest/rustls"]
 native-tls = ["reqwest/native-tls"]
 native-tls-vendored = ["reqwest/native-tls-vendored"]
 analysis = []
-simulation = ["dep:axum", "dep:humantime", "dep:futures-util", "dep:human-bandwidth", "dep:tower-http", "xet-core-structures/simulation"]
+simulation = [
+    "dep:axum",
+    "dep:humantime",
+    "dep:futures-util",
+    "dep:human-bandwidth",
+    "dep:tower-http",
+    "xet-core-structures/simulation",
+]
 
 [[bin]]
 name = "local_cas_server"

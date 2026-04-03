@@ -3,10 +3,23 @@ name = "hf-xet"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+homepage.workspace = true
 repository.workspace = true
-description = "Client library and tooling for the Hugging Face Xet data storage system"
-keywords = ["huggingface", "xet", "data", "ai"]
-categories = ["api-bindings"]
+description = "Client library and tooling for the Hugging Face Xet data storage system."
+readme = "README.md"
+keywords = [
+    "huggingface",
+    "datasets",
+    "large-files",
+    "deduplication",
+    "cloud-storage",
+]
+categories = [
+    "artificial-intelligence",
+    "asynchronous",
+    "data-structures",
+    "filesystem",
+]
 
 [lib]
 name = "xet"
@@ -46,6 +59,11 @@ serde_json = { workspace = true }
 serial_test = { workspace = true }
 smol = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "rt", "time", "macros"] }
+tokio = { workspace = true, features = [
+    "rt-multi-thread",
+    "rt",
+    "time",
+    "macros",
+] }
 tracing-subscriber = { workspace = true }
 wiremock = { workspace = true }
