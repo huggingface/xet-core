@@ -1,10 +1,12 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fmt::Display;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 #[cfg(not(target_family = "wasm"))]
 use std::pin::pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock, OnceLock, Weak};
 #[cfg(not(target_family = "wasm"))]
 use std::task::{Context, Waker};
 
@@ -18,6 +20,8 @@ use tracing::info;
 
 use crate::config::XetConfig;
 use crate::error::RuntimeError;
+#[cfg(feature = "fd-track")]
+use crate::fd_diagnostics::{report_fd_count, track_fd_scope};
 #[cfg(not(target_family = "wasm"))]
 use crate::logging::SystemMonitor;
 #[cfg(not(target_family = "wasm"))]
@@ -83,10 +87,23 @@ pub enum RuntimeMode {
 
 type OwnedRuntimeCell = Arc<std::sync::RwLock<Option<Arc<TokioRuntime>>>>;
 
+// Use thread-local references to the threadpool set on each tokio worker thread so code can
+// resolve the active pool. Weak (not Arc) avoids a cycle: worker TLS -> Arc<XetThreadpool> ->
+// OwnedRuntimeCell -> TokioRuntime -> worker threads.
+thread_local! {
+    static THREAD_THREADPOOL_REF: RefCell<Option<(u32, Weak<XetThreadpool>)>> =
+        const { RefCell::new(None) };
+}
+
+// External-mode threadpools from `from_external_with_config` are registered by tokio runtime ID
+// so duplicate attachment can be detected. Removed in Drop when the last Arc is released.
+static EXTERNAL_THREADPOOL_REGISTRY: LazyLock<std::sync::RwLock<HashMap<tokio::runtime::Id, Weak<XetThreadpool>>>> =
+    LazyLock::new(|| std::sync::RwLock::new(HashMap::new()));
+
 #[derive(Debug)]
 #[cfg_attr(target_family = "wasm", allow(dead_code))]
 enum RuntimeBackend {
-    External,
+    External { handle_id: Option<tokio::runtime::Id> },
     OwnedThreadPool { runtime: OwnedRuntimeCell },
 }
 
@@ -179,6 +196,9 @@ pub struct XetThreadpool {
 impl XetThreadpool {
     /// Creates a new owned tokio thread pool with the given configuration.
     pub fn new(config: &XetConfig) -> Result<Arc<Self>, RuntimeError> {
+        #[cfg(feature = "fd-track")]
+        let _fd_scope = track_fd_scope("XetThreadpool::new");
+
         let runtime = Arc::new(std::sync::RwLock::new(None));
 
         let rt = Arc::new(Self {
@@ -202,6 +222,12 @@ impl XetThreadpool {
                 .flatten(),
         });
 
+        let rt_weak = Arc::downgrade(&rt);
+        let pid = std::process::id();
+        let set_threadlocal_reference = move || {
+            THREAD_THREADPOOL_REF.set(Some((pid, rt_weak.clone())));
+        };
+
         let thread_id = AtomicUsize::new(0);
         let get_thread_name = move || {
             let id = thread_id.fetch_add(1, Ordering::Relaxed);
@@ -224,6 +250,14 @@ impl XetThreadpool {
             tokio_rt_builder.worker_threads(get_num_tokio_worker_threads());
         }
 
+        #[cfg(not(target_family = "wasm"))]
+        let tokio_rt_builder = tokio_rt_builder
+            .on_thread_start(set_threadlocal_reference)
+            .thread_keep_alive(std::time::Duration::from_millis(100));
+
+        #[cfg(target_family = "wasm")]
+        let tokio_rt_builder = tokio_rt_builder.on_thread_start(set_threadlocal_reference);
+
         let tokio_rt = tokio_rt_builder
             .thread_name_fn(get_thread_name)
             .thread_stack_size(THREADPOOL_STACK_SIZE)
@@ -236,6 +270,9 @@ impl XetThreadpool {
         *runtime.write().unwrap() = Some(tokio_rt);
         rt.handle_ref.set(handle).unwrap();
 
+        #[cfg(feature = "fd-track")]
+        report_fd_count("XetThreadpool::new complete");
+
         Ok(rt)
     }
 
@@ -245,8 +282,20 @@ impl XetThreadpool {
         rt_handle: TokioRuntimeHandle,
         config: &XetConfig,
     ) -> Result<Arc<Self>, RuntimeError> {
-        Ok(Arc::new(Self {
-            backend: RuntimeBackend::External,
+        #[cfg(feature = "fd-track")]
+        let _fd_scope = track_fd_scope("XetThreadpool::from_external_with_config");
+
+        let id = rt_handle.id();
+
+        let mut reg = EXTERNAL_THREADPOOL_REGISTRY.write()?;
+        if let Some(existing) = reg.get(&id)
+            && existing.upgrade().is_some()
+        {
+            return Err(RuntimeError::ExternalAlreadyAttached(id));
+        }
+
+        let rt = Arc::new(Self {
+            backend: RuntimeBackend::External { handle_id: Some(id) },
             handle_ref: rt_handle.into(),
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
@@ -262,13 +311,20 @@ impl XetThreadpool {
                     .ok()
                 })
                 .flatten(),
-        }))
+        });
+
+        reg.insert(id, Arc::downgrade(&rt));
+
+        #[cfg(feature = "fd-track")]
+        report_fd_count("XetThreadpool::from_external_with_config complete");
+
+        Ok(rt)
     }
 
     /// Wraps an existing tokio handle without system monitoring.
     pub fn from_external(rt_handle: TokioRuntimeHandle) -> Arc<Self> {
         Arc::new(Self {
-            backend: RuntimeBackend::External,
+            backend: RuntimeBackend::External { handle_id: None },
             handle_ref: rt_handle.into(),
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
@@ -299,6 +355,9 @@ impl XetThreadpool {
     /// [`bridge_async`](Self::bridge_async) may still hold a cloned `Arc` to the tokio runtime
     /// until that call returns, so teardown of the reactor may complete only after those finish.
     pub fn perform_sigint_shutdown(&self) {
+        #[cfg(feature = "fd-track")]
+        let _fd_scope = track_fd_scope("XetThreadpool::perform_sigint_shutdown");
+
         // Shut down the tokio
         self.sigint_shutdown.store(true, Ordering::SeqCst);
 
@@ -425,7 +484,7 @@ impl XetThreadpool {
     {
         self.check_sigint()?;
         match &self.backend {
-            RuntimeBackend::External => Ok(fut.await),
+            RuntimeBackend::External { .. } => Ok(fut.await),
             RuntimeBackend::OwnedThreadPool { .. } => self.bridge_to_owned(task_name, fut).await,
         }
     }
@@ -446,7 +505,7 @@ impl XetThreadpool {
         F::Output: Send + 'static,
     {
         self.check_sigint()?;
-        if matches!(self.backend, RuntimeBackend::External) {
+        if matches!(self.backend, RuntimeBackend::External { .. }) {
             return Err(RuntimeError::InvalidRuntime(
                 "bridge_sync() cannot be called on an External-mode runtime; \
                  use the async API instead"
@@ -505,24 +564,30 @@ impl XetThreadpool {
     fn runtime_cell_if_owned(&self) -> Option<&OwnedRuntimeCell> {
         match &self.backend {
             RuntimeBackend::OwnedThreadPool { runtime } => Some(runtime),
-            RuntimeBackend::External => None,
+            RuntimeBackend::External { .. } => None,
         }
     }
 
-    /// Spawn a blocking task on the runtime's blocking thread pool.
-    pub fn spawn_blocking<F, R>(&self, f: F) -> JoinHandle<R>
+    /// Spawn a blocking task on the runtime's blocking thread pool. Installs a weak thread-local
+    /// reference to this pool for the duration of `f`.
+    pub fn spawn_blocking<F, R>(self: &Arc<Self>, f: F) -> JoinHandle<R>
     where
         F: FnOnce() -> R + Send + 'static,
         R: Send + 'static,
     {
-        self.handle().spawn_blocking(f)
+        let pool_weak = Arc::downgrade(self);
+        self.handle().spawn_blocking(move || {
+            let pid = std::process::id();
+            THREAD_THREADPOOL_REF.set(Some((pid, pool_weak)));
+            f()
+        })
     }
 
     /// Returns the runtime mode (Owned or External).
     #[inline]
     pub fn mode(&self) -> RuntimeMode {
         match &self.backend {
-            RuntimeBackend::External => RuntimeMode::External,
+            RuntimeBackend::External { .. } => RuntimeMode::External,
             RuntimeBackend::OwnedThreadPool { .. } => RuntimeMode::Owned,
         }
     }
@@ -596,10 +661,41 @@ impl XetThreadpool {
     }
 }
 
+impl Drop for XetThreadpool {
+    fn drop(&mut self) {
+        #[cfg(feature = "fd-track")]
+        let _fd_scope = track_fd_scope("XetThreadpool::drop");
+
+        self.handle_ref.take();
+
+        match &self.backend {
+            RuntimeBackend::External { handle_id: Some(id) } => {
+                if let Ok(mut reg) = EXTERNAL_THREADPOOL_REGISTRY.write() {
+                    reg.remove(id);
+                }
+            },
+            RuntimeBackend::External { handle_id: None } => {},
+            RuntimeBackend::OwnedThreadPool { runtime } => {
+                let in_async_context = TokioRuntimeHandle::try_current().is_ok();
+                if let Ok(mut guard) = runtime.write()
+                    && let Some(rt_arc) = guard.take()
+                    && let Ok(rt) = Arc::try_unwrap(rt_arc)
+                {
+                    if in_async_context {
+                        rt.shutdown_background();
+                    } else {
+                        rt.shutdown_timeout(std::time::Duration::from_secs(5));
+                    }
+                }
+            },
+        }
+    }
+}
+
 impl Display for XetThreadpool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let metrics = match &self.backend {
-            RuntimeBackend::External => self.handle().metrics(),
+            RuntimeBackend::External { .. } => self.handle().metrics(),
             RuntimeBackend::OwnedThreadPool { runtime } => {
                 // Need to be careful that this doesn't acquire locks eagerly, as this function can be called
                 // from some weird places like displaying the backtrace of a panic or exception.

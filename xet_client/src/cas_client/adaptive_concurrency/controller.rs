@@ -764,8 +764,7 @@ impl ConcurrencyControllerState {
 #[cfg(test)]
 impl AdaptiveConcurrencyController {
     pub fn new_testing(concurrency: usize, concurrency_bounds: (usize, usize)) -> Arc<Self> {
-        let config = xet_runtime::config::XetConfig::new();
-        let ctx = XetRuntime::from_external_with_config(tokio::runtime::Handle::current(), config).expect("test ctx");
+        let ctx = XetRuntime::default().expect("test ctx");
         Arc::new(Self {
             ctx: ctx.clone(),
             state: Mutex::new(ConcurrencyControllerState::new_testing(ctx)),

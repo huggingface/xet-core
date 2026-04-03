@@ -340,6 +340,10 @@ impl ShardFileManager {
         }
 
         if num_shards != 0 {
+            // Resolve any pending bookkeeper update so its JoinHandle is dropped.
+            // A lingering JoinHandle keeps the Tokio I/O driver alive, leaking FDs
+            // when the ShardFileManager outlives the runtime (e.g. in the global cache).
+            let _ = self.shard_bookkeeper.read().await?;
             debug!("Registered {num_shards} new shards.");
         }
 
