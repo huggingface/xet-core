@@ -283,6 +283,14 @@ impl ReconstructionTermManager {
         let file_hash = self.file_hash;
 
         let jh = tokio::task::spawn(async move {
+            // Check if a previously completed block has already discovered the file end,
+            // making this request unnecessary. This avoids sending a request that would
+            // return a 416 Range Not Satisfiable.
+            if prefetch_block_range.start >= known_final_byte_position.load(Ordering::Relaxed) {
+                known_final_byte_position.fetch_min(prefetch_block_range.start, Ordering::Relaxed);
+                return Ok(None);
+            }
+
             let result = retrieve_file_term_block(client, file_hash, prefetch_block_range).await;
 
             // See if we're done with the file.
