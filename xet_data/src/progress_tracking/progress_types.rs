@@ -272,7 +272,7 @@ impl ItemProgressUpdater {
             return;
         }
         self.group.total_bytes_completed.fetch_add(increment, Ordering::Release);
-        let new_completed = self.item.bytes_completed.fetch_add(increment, Ordering::Release) + increment;
+        let new_completed = self.item.bytes_completed.fetch_add(increment, Ordering::Release).saturating_add(increment);
         debug_assert_le!(
             new_completed,
             self.item.total_bytes.load(Ordering::Acquire),
@@ -291,7 +291,7 @@ impl ItemProgressUpdater {
         self.group
             .total_transfer_bytes_completed
             .fetch_add(increment, Ordering::Release);
-        let new_completed = self.item.transfer_bytes_completed.fetch_add(increment, Ordering::Release) + increment;
+        let new_completed = self.item.transfer_bytes_completed.fetch_add(increment, Ordering::Release).saturating_add(increment);
         debug_assert_le!(
             new_completed,
             self.item.transfer_bytes.load(Ordering::Acquire),
@@ -578,5 +578,102 @@ mod tests {
         let report = group.report();
         assert!(report.total_bytes_completion_rate.is_some());
         assert!(report.total_transfer_bytes_completion_rate.is_some());
+    }
+
+    #[test]
+    fn test_standalone_updater_creation() {
+        let updater = ItemProgressUpdater::new_standalone("test_file.bin");
+        updater.update_item_size(1024, true);
+
+        assert_eq!(updater.item().total_bytes.load(Ordering::Relaxed), 1024);
+    }
+
+    #[test]
+    fn test_standalone_updater_report_bytes_completed() {
+        let updater = ItemProgressUpdater::new_standalone("test_file.bin");
+        updater.update_item_size(1000, true);
+
+        updater.report_bytes_completed(100);
+        assert_eq!(updater.total_bytes_completed(), 100);
+
+        updater.report_bytes_completed(200);
+        assert_eq!(updater.total_bytes_completed(), 300);
+    }
+
+    #[test]
+    fn test_standalone_updater_report_transfer_bytes_completed() {
+        let updater = ItemProgressUpdater::new_standalone("test_file.bin");
+        updater.update_item_size(1000, true);
+        updater.update_transfer_size(800);
+
+        updater.report_transfer_bytes_completed(100);
+        assert_eq!(updater.item().transfer_bytes_completed.load(Ordering::Relaxed), 100);
+
+        updater.report_transfer_bytes_completed(150);
+        assert_eq!(updater.item().transfer_bytes_completed.load(Ordering::Relaxed), 250);
+    }
+
+    #[test]
+    fn test_term_level_progress_reporting() {
+        let group = GroupProgress::new();
+        let updater = group.new_item(UniqueID::new(), "large_file.bin");
+        updater.update_item_size(10_000_000, true);
+
+        // Term size: ~8MB (typical xorb term size)
+        let term_size: u64 = 8_388_608;
+        updater.report_bytes_completed(term_size);
+
+        assert_eq!(updater.total_bytes_completed(), term_size);
+        assert_eq!(group.total_bytes_completed.load(Ordering::Relaxed), term_size);
+
+        let remaining = 10_000_000 - term_size;
+        updater.report_bytes_completed(remaining);
+
+        assert_eq!(updater.total_bytes_completed(), 10_000_000);
+    }
+
+    #[test]
+    fn test_block_level_transfer_progress() {
+        let group = GroupProgress::new();
+        let updater = group.new_item(UniqueID::new(), "large_file.bin");
+        updater.update_item_size(10_000_000, true);
+        updater.update_transfer_size(10_000_000);
+
+        // Block size: ~200KB (typical xorb block for network transfer)
+        let block_size: u64 = 204800;
+        updater.report_transfer_bytes_completed(block_size);
+
+        assert_eq!(
+            updater.item().transfer_bytes_completed.load(Ordering::Relaxed),
+            block_size
+        );
+        assert_eq!(group.total_transfer_bytes_completed.load(Ordering::Relaxed), block_size);
+
+        for _ in 0..10 {
+            updater.report_transfer_bytes_completed(block_size);
+        }
+
+        assert_eq!(
+            updater.item().transfer_bytes_completed.load(Ordering::Relaxed),
+            block_size * 11
+        );
+    }
+
+    #[test]
+    fn test_combined_bytes_and_transfer_tracking() {
+        let group = GroupProgress::new();
+        let updater = group.new_item(UniqueID::new(), "test.bin");
+        updater.update_item_size(1000, true);
+        updater.update_transfer_size(800);
+
+        updater.report_bytes_completed(500);
+        updater.report_transfer_bytes_completed(300);
+
+        let report = updater.report();
+        assert_eq!(report.bytes_completed, 500);
+
+        let group_report = group.report();
+        assert_eq!(group_report.total_bytes_completed, 500);
+        assert_eq!(group_report.total_transfer_bytes_completed, 300);
     }
 }
