@@ -207,6 +207,7 @@ impl RemoteClient {
         let client = self.authenticated_http_client.clone();
 
         let result: Result<T> = RetryWrapper::new(api_tag)
+            .with_expected_416()
             .run_and_extract_json(move || {
                 let mut request = client.get(url.clone()).with_extension(Api(api_tag));
                 if let Some(range) = bytes_range {
