@@ -164,7 +164,7 @@ impl RetryWrapper {
                     Err(RetryableReqwestError::RetryableError(cas_err))
                 } else if e.status() == Some(StatusCode::RANGE_NOT_SATISFIABLE) && self.expected_416 {
                     let cas_err = process_error("Reached end of reconstruction 416 (Range Not Satisfiable)", e, true);
-                    Err(RetryableReqwestError::RetryableError(cas_err))
+                    Err(RetryableReqwestError::FatalError(cas_err))
                 } else {
                     let cas_err = process_error("Fatal Error", e, false);
                     Err(RetryableReqwestError::FatalError(cas_err))
