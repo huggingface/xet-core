@@ -46,12 +46,20 @@ impl XetRuntime {
     /// If called from within an existing tokio runtime, wraps that runtime.
     /// Otherwise, spins up a new owned tokio thread pool.
     pub fn default_with_config(config: XetConfig) -> Result<Self, RuntimeError> {
-        let threadpool = if let Ok(handle) = TokioRuntimeHandle::try_current() {
+        let threadpool = if let Ok(handle) = TokioRuntimeHandle::try_current()
+            && Self::handle_meets_requirements(&handle)
+        {
             XetThreadpool::from_external(handle)
         } else {
             XetThreadpool::new(&config)?
         };
         Ok(Self::new(threadpool, config))
+    }
+
+    /// Backwards-compatible alias for creating a runtime with explicit configuration.
+    #[inline]
+    pub fn new_with_config(config: XetConfig) -> Result<Self, RuntimeError> {
+        Self::default_with_config(config)
     }
 
     /// Wraps a caller-provided tokio handle with default configuration.
