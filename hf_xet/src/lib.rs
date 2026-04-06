@@ -1,12 +1,11 @@
 mod logging;
 mod progress_update;
 mod runtime;
-mod token_refresh;
 
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::iter::IntoIterator;
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::time::Duration;
 
 use http::header::{self, HeaderMap, HeaderName, HeaderValue};
 use itertools::Itertools;
@@ -15,15 +14,13 @@ use pyo3::prelude::*;
 use pyo3::pyfunction;
 use rand::Rng;
 use runtime::async_run;
-use token_refresh::WrappedTokenRefresher;
 use tracing::debug;
 use xet_pkg::XetError;
-use xet_pkg::legacy::progress_tracking::TrackingProgressUpdater;
-use xet_pkg::legacy::{Sha256Policy, XetFileInfo, data_client};
+use xet_pkg::xet_session::{Sha256Policy, XetFileInfo, XetSessionBuilder};
 use xet_runtime::core::file_handle_limits;
 
 use crate::logging::init_logging;
-use crate::progress_update::WrappedProgressUpdater;
+use crate::progress_update::{GroupProgressDiffState, ProgressCallback, send_simple_progress};
 
 const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
@@ -31,37 +28,17 @@ const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VE
 #[cfg(feature = "profiling")]
 pub(crate) mod profiling;
 
-/// Converts a HashMap of headers to a HeaderMap and merges in the USER_AGENT.
-///
-/// If the input contains a User-Agent header, the USER_AGENT is appended to it.
-/// Otherwise, USER_AGENT is set as the only User-Agent header.
-fn build_headers_with_user_agent(request_headers: Option<HashMap<String, String>>) -> PyResult<Option<Arc<HeaderMap>>> {
-    let mut map = request_headers
-        .map(|headers| {
-            let mut map = HeaderMap::new();
-            for (key, value) in headers {
-                let name = HeaderName::from_bytes(key.as_bytes())
-                    .map_err(|e| PyValueError::new_err(format!("Invalid header name '{}': {}", key, e)))?;
-                let value = HeaderValue::from_str(&value)
-                    .map_err(|e| PyValueError::new_err(format!("Invalid header value for '{}': {}", key, e)))?;
-                map.insert(name, value);
-            }
-            Ok::<_, PyErr>(map)
-        })
-        .transpose()?
-        .unwrap_or_default();
+/// Build a HeaderMap from a Python dict and merge in the USER_AGENT.
+fn build_headers_with_user_agent(request_headers: Option<HashMap<String, String>>) -> PyResult<HeaderMap> {
+    let mut map = request_headers.map(build_header_map).transpose()?.unwrap_or_default();
 
-    // Append our USER_AGENT to any existing User-Agent header, or add it if not present
     let combined_user_agent = if let Some(existing_ua) = map.get(header::USER_AGENT) {
-        // Append our user agent to the existing one
         let existing_str = existing_ua.to_str().unwrap_or("");
         format!("{}; {}", existing_str, USER_AGENT)
     } else {
-        // No existing user agent, use ours
         USER_AGENT.to_string()
     };
 
-    // Try to create the combined header value, fall back gracefully if invalid
     let user_agent_value = HeaderValue::from_str(&combined_user_agent)
         .or_else(|_: http::header::InvalidHeaderValue| {
             Ok::<HeaderValue, http::header::InvalidHeaderValue>(HeaderValue::from_static(USER_AGENT))
@@ -69,22 +46,58 @@ fn build_headers_with_user_agent(request_headers: Option<HashMap<String, String>
         .unwrap_or_else(|_: http::header::InvalidHeaderValue| HeaderValue::from_static("unknown"));
     map.insert(header::USER_AGENT, user_agent_value);
 
-    Ok(Some(Arc::new(map)))
+    Ok(map)
+}
+
+/// Build a HeaderMap from a Python dict without adding USER_AGENT.
+fn build_header_map(headers: HashMap<String, String>) -> PyResult<HeaderMap> {
+    let mut map = HeaderMap::new();
+    for (key, value) in headers {
+        let name = HeaderName::from_bytes(key.as_bytes())
+            .map_err(|e| PyValueError::new_err(format!("Invalid header name '{}': {}", key, e)))?;
+        let value = HeaderValue::from_str(&value)
+            .map_err(|e| PyValueError::new_err(format!("Invalid header value for '{}': {}", key, e)))?;
+        map.insert(name, value);
+    }
+    Ok(map)
 }
 
 fn convert_xet_error(e: impl Into<XetError>) -> PyErr {
     PyErr::from(e.into())
 }
 
+/// Configure an auth group builder with optional endpoint, token, headers, and refresh URL.
+macro_rules! configure_auth_builder {
+    ($builder:expr, $endpoint:expr, $token_info:expr, $custom_headers:expr,
+     $token_refresh_url:expr, $token_refresh_headers:expr) => {{
+        let mut builder = $builder;
+        if let Some(ep) = $endpoint {
+            builder = builder.with_endpoint(ep);
+        }
+        if let Some((token, expiry)) = $token_info {
+            builder = builder.with_token_info(token, expiry);
+        }
+        if let Some(headers) = $custom_headers {
+            builder = builder.with_custom_headers(headers);
+        }
+        if let Some(url) = $token_refresh_url {
+            let refresh_headers = $token_refresh_headers.unwrap_or_default();
+            builder = builder.with_token_refresh_url(url, refresh_headers);
+        }
+        builder
+    }};
+}
+
 #[pyfunction]
-#[pyo3(signature = (file_contents, endpoint, token_info, token_refresher, progress_updater, _repo_type, request_headers=None, sha256s=None, skip_sha256=false), text_signature = "(file_contents: List[bytes], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str], request_headers: Optional[Dict[str, str]], sha256s: Optional[List[str]], skip_sha256: bool = False) -> List[PyXetUploadInfo]")]
+#[pyo3(signature = (file_contents, endpoint, token_info, token_refresh_url, token_refresh_headers, progress_updater, _repo_type, request_headers=None, sha256s=None, skip_sha256=false), text_signature = "(file_contents: List[bytes], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresh_url: Optional[str], token_refresh_headers: Optional[Dict[str, str]], progress_updater: Optional[Callable], _repo_type: Optional[str], request_headers: Optional[Dict[str, str]], sha256s: Optional[List[str]], skip_sha256: bool = False) -> List[PyXetUploadInfo]")]
 #[allow(clippy::too_many_arguments)]
 pub fn upload_bytes(
     py: Python,
     file_contents: Vec<Vec<u8>>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
-    token_refresher: Option<Py<PyAny>>,
+    token_refresh_url: Option<String>,
+    token_refresh_headers: Option<HashMap<String, String>>,
     progress_updater: Option<Py<PyAny>>,
     _repo_type: Option<String>,
     request_headers: Option<HashMap<String, String>>,
@@ -111,12 +124,10 @@ pub fn upload_bytes(
         None => vec![Sha256Policy::Compute; file_contents.len()],
     };
 
-    let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
-    let updater = progress_updater.map(WrappedProgressUpdater::new).transpose()?.map(Arc::new);
+    let callback = progress_updater.map(ProgressCallback::new).transpose()?;
+    let custom_headers = build_headers_with_user_agent(request_headers)?;
+    let refresh_headers = token_refresh_headers.map(build_header_map).transpose()?;
     let x: u64 = rand::rng().random();
-
-    // Convert Python dict -> Rust HashMap -> HeaderMap and merge with USER_AGENT
-    let header_map = build_headers_with_user_agent(request_headers)?;
 
     async_run(py, async move {
         debug!(
@@ -125,36 +136,43 @@ pub fn upload_bytes(
             file_contents.len(),
         );
 
-        let out: Vec<PyXetUploadInfo> = data_client::upload_bytes_async(
-            file_contents,
-            sha256_policies,
+        let session = XetSessionBuilder::new().build().map_err(convert_xet_error)?;
+        let builder = session.new_upload_commit().map_err(convert_xet_error)?;
+        let builder = configure_auth_builder!(
+            builder,
             endpoint,
             token_info,
-            refresher.map(|v| v as Arc<_>),
-            updater.map(|v| v as Arc<_>),
-            header_map,
-        )
-        .await
-        .map_err(convert_xet_error)?
-        .into_iter()
-        .map(PyXetUploadInfo::from)
-        .collect();
+            Some(custom_headers),
+            token_refresh_url,
+            refresh_headers
+        );
+        let commit = builder.build().await.map_err(convert_xet_error)?;
+
+        // Upload all byte blobs
+        let mut handles = Vec::with_capacity(file_contents.len());
+        for (blob, sha256) in file_contents.into_iter().zip(sha256_policies) {
+            let handle = commit.upload_bytes(blob, sha256, None).await.map_err(convert_xet_error)?;
+            handles.push(handle);
+        }
+
+        // Commit with concurrent progress polling
+        let out = commit_with_progress(&commit, &handles, callback.as_ref()).await?;
 
         debug!("Upload bytes call {x:x} finished.");
-
         PyResult::Ok(out)
     })
 }
 
 #[pyfunction]
-#[pyo3(signature = (file_paths, endpoint, token_info, token_refresher, progress_updater, _repo_type, request_headers=None, sha256s=None, skip_sha256=false), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str], request_headers: Optional[Dict[str, str]], sha256s: Optional[List[str]], skip_sha256: bool = False) -> List[PyXetUploadInfo]")]
+#[pyo3(signature = (file_paths, endpoint, token_info, token_refresh_url, token_refresh_headers, progress_updater, _repo_type, request_headers=None, sha256s=None, skip_sha256=false), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresh_url: Optional[str], token_refresh_headers: Optional[Dict[str, str]], progress_updater: Optional[Callable], _repo_type: Optional[str], request_headers: Optional[Dict[str, str]], sha256s: Optional[List[str]], skip_sha256: bool = False) -> List[PyXetUploadInfo]")]
 #[allow(clippy::too_many_arguments)]
 pub fn upload_files(
     py: Python,
     file_paths: Vec<String>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
-    token_refresher: Option<Py<PyAny>>,
+    token_refresh_url: Option<String>,
+    token_refresh_headers: Option<HashMap<String, String>>,
     progress_updater: Option<Py<PyAny>>,
     _repo_type: Option<String>,
     request_headers: Option<HashMap<String, String>>,
@@ -181,15 +199,12 @@ pub fn upload_files(
         None => vec![Sha256Policy::Compute; file_paths.len()],
     };
 
-    let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
-    let updater = progress_updater.map(WrappedProgressUpdater::new).transpose()?.map(Arc::new);
+    let callback = progress_updater.map(ProgressCallback::new).transpose()?;
+    let custom_headers = build_headers_with_user_agent(request_headers)?;
+    let refresh_headers = token_refresh_headers.map(build_header_map).transpose()?;
 
     let file_names = file_paths.iter().take(3).join(", ");
-
     let x: u64 = rand::rng().random();
-
-    // Convert Python dict -> Rust HashMap -> HeaderMap and merge with USER_AGENT
-    let header_map = build_headers_with_user_agent(request_headers)?;
 
     async_run(py, async move {
         debug!(
@@ -199,57 +214,117 @@ pub fn upload_files(
             if file_paths.len() > 3 { "..." } else { "." }
         );
 
-        let out: Vec<PyXetUploadInfo> = data_client::upload_async(
-            file_paths,
-            sha256_policies,
+        let session = XetSessionBuilder::new().build().map_err(convert_xet_error)?;
+        let builder = session.new_upload_commit().map_err(convert_xet_error)?;
+        let builder = configure_auth_builder!(
+            builder,
             endpoint,
             token_info,
-            refresher.map(|v| v as Arc<_>),
-            updater.map(|v| v as Arc<_>),
-            header_map,
-        )
-        .await
-        .map_err(convert_xet_error)?
-        .into_iter()
-        .map(PyXetUploadInfo::from)
-        .collect();
+            Some(custom_headers),
+            token_refresh_url,
+            refresh_headers
+        );
+        let commit = builder.build().await.map_err(convert_xet_error)?;
+
+        // Upload all files
+        let mut handles = Vec::with_capacity(file_paths.len());
+        for (path, sha256) in file_paths.into_iter().zip(sha256_policies) {
+            let handle = commit
+                .upload_from_path(PathBuf::from(path), sha256)
+                .await
+                .map_err(convert_xet_error)?;
+            handles.push(handle);
+        }
+
+        // Commit with concurrent progress polling
+        let out = commit_with_progress(&commit, &handles, callback.as_ref()).await?;
+
         debug!("Upload call {x:x} finished.");
         PyResult::Ok(out)
     })
 }
 
+/// Commit an upload, polling progress concurrently if a callback is provided.
+/// Returns results in the same order as the handles.
+async fn commit_with_progress(
+    commit: &xet_pkg::xet_session::XetUploadCommit,
+    handles: &[xet_pkg::xet_session::XetFileUpload],
+    callback: Option<&ProgressCallback>,
+) -> PyResult<Vec<PyXetUploadInfo>> {
+    // Collect task_ids in order so we can map results back
+    let task_ids: Vec<_> = handles.iter().map(|h| h.task_id()).collect();
+
+    let use_progress = callback.is_some_and(|c| c.is_enabled());
+
+    if use_progress {
+        let callback = callback.unwrap();
+        let commit_clone = commit.clone();
+        let mut commit_task = tokio::spawn(async move { commit_clone.commit().await });
+
+        let mut diff_state = GroupProgressDiffState::new();
+        let mut interval = tokio::time::interval(Duration::from_millis(250));
+
+        let report = loop {
+            tokio::select! {
+                result = &mut commit_task => {
+                    let report = result
+                        .map_err(|e| convert_xet_error(XetError::from(e)))?
+                        .map_err(convert_xet_error)?;
+
+                    // Final progress update
+                    let group = commit.progress();
+                    let items = handles
+                        .iter()
+                        .filter_map(|h| h.progress().map(|p| (h.task_id(), p)))
+                        .collect();
+                    let diff = diff_state.compute_diff(group, items);
+                    let _ = callback.send_update(diff).await;
+
+                    break report;
+                }
+                _ = interval.tick() => {
+                    let group = commit.progress();
+                    let items = handles
+                        .iter()
+                        .filter_map(|h| h.progress().map(|p| (h.task_id(), p)))
+                        .collect();
+                    let diff = diff_state.compute_diff(group, items);
+                    let _ = callback.send_update(diff).await;
+                }
+            }
+        };
+
+        // Map results in order
+        let mut out = Vec::with_capacity(task_ids.len());
+        for id in &task_ids {
+            let meta = report
+                .uploads
+                .get(id)
+                .ok_or_else(|| convert_xet_error(XetError::Internal(format!("missing upload result for task {id}"))))?;
+            out.push(PyXetUploadInfo::from(meta.xet_info.clone()));
+        }
+        Ok(out)
+    } else {
+        let report = commit.commit().await.map_err(convert_xet_error)?;
+
+        let mut out = Vec::with_capacity(task_ids.len());
+        for id in &task_ids {
+            let meta = report
+                .uploads
+                .get(id)
+                .ok_or_else(|| convert_xet_error(XetError::Internal(format!("missing upload result for task {id}"))))?;
+            out.push(PyXetUploadInfo::from(meta.xet_info.clone()));
+        }
+        Ok(out)
+    }
+}
+
 /// Compute xet hashes for files without uploading.
-///
-/// This function computes cryptographic hashes for the specified files using the same
-/// chunking and hashing algorithm as upload operations, but without requiring
-/// authentication or server connection. The resulting hashes can be used to verify
-/// file integrity after downloads or to determine which files need to be uploaded.
-///
-/// Args:
-///     file_paths: List of file paths to hash.
-///
-/// Returns:
-///     List[PyXetUploadInfo]: List of hash results in the same order as input paths.
-///         Each result contains the hash (as hex string) and file size in bytes.
-///
-/// Raises:
-///     RuntimeError: If any file cannot be read or hashed.
-///
-/// Example:
-///     >>> import hf_xet
-///     >>> results = hf_xet.hash_files(["/path/to/file1.txt", "/path/to/file2.txt"])
-///     >>> for path, info in zip(file_paths, results):
-///     ...     print(f"Hash: {info.hash}, Size: {info.file_size}")
-///
-/// Note:
-///     This function is primarily used for validation and verification of transferred
-///     files. Clients can verify that downloaded files are correctly reassembled by
-///     comparing the computed hash with the expected hash from the server.
 #[pyfunction]
 #[pyo3(signature = (file_paths), text_signature = "(file_paths: List[str]) -> List[PyXetUploadInfo]")]
 pub fn hash_files(py: Python, file_paths: Vec<String>) -> PyResult<Vec<PyXetUploadInfo>> {
     async_run(py, async move {
-        let out: Vec<PyXetUploadInfo> = data_client::hash_files_async(file_paths)
+        let out: Vec<PyXetUploadInfo> = xet_data::processing::data_client::hash_files_async(file_paths)
             .await
             .map_err(convert_xet_error)?
             .into_iter()
@@ -261,25 +336,23 @@ pub fn hash_files(py: Python, file_paths: Vec<String>) -> PyResult<Vec<PyXetUplo
 }
 
 #[pyfunction]
-#[pyo3(signature = (files, endpoint, token_info, token_refresher, progress_updater, request_headers=None), text_signature = "(files: List[PyXetDownloadInfo], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[List[Callable[[int], None]]], request_headers: Optional[Dict[str, str]]) -> List[str]")]
+#[pyo3(signature = (files, endpoint, token_info, token_refresh_url, token_refresh_headers, progress_updater, request_headers=None), text_signature = "(files: List[PyXetDownloadInfo], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresh_url: Optional[str], token_refresh_headers: Optional[Dict[str, str]], progress_updater: Optional[List[Callable[[int], None]]], request_headers: Optional[Dict[str, str]]) -> List[str]")]
+#[allow(clippy::too_many_arguments)]
 pub fn download_files(
     py: Python,
     files: Vec<PyXetDownloadInfo>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
-    token_refresher: Option<Py<PyAny>>,
+    token_refresh_url: Option<String>,
+    token_refresh_headers: Option<HashMap<String, String>>,
     progress_updater: Option<Vec<Py<PyAny>>>,
     request_headers: Option<HashMap<String, String>>,
 ) -> PyResult<Vec<String>> {
     let file_infos: Vec<_> = files.into_iter().map(<(XetFileInfo, DestinationPath)>::from).collect();
-    let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
-    let updaters = progress_updater.map(try_parse_progress_updaters).transpose()?;
-
-    // Convert Python dict -> Rust HashMap -> HeaderMap and merge with USER_AGENT
-    let header_map = build_headers_with_user_agent(request_headers)?;
+    let custom_headers = build_headers_with_user_agent(request_headers)?;
+    let refresh_headers = token_refresh_headers.map(build_header_map).transpose()?;
 
     let x: u64 = rand::rng().random();
-
     let file_names = file_infos.iter().take(3).map(|(_, p)| p).join(", ");
 
     async_run(py, async move {
@@ -290,37 +363,87 @@ pub fn download_files(
             if file_infos.len() > 3 { "..." } else { "." }
         );
 
-        let out: Vec<String> = data_client::download_async(
-            file_infos,
+        let session = XetSessionBuilder::new().build().map_err(convert_xet_error)?;
+        let builder = session.new_file_download_group().map_err(convert_xet_error)?;
+        let builder = configure_auth_builder!(
+            builder,
             endpoint,
             token_info,
-            refresher.map(|v| v as Arc<_>),
-            updaters,
-            header_map,
-        )
-        .await
-        .map_err(convert_xet_error)?;
+            Some(custom_headers),
+            token_refresh_url,
+            refresh_headers
+        );
+        let group = builder.build().await.map_err(convert_xet_error)?;
+
+        // Queue all downloads
+        let mut dl_handles = Vec::with_capacity(file_infos.len());
+        let mut paths = Vec::with_capacity(file_infos.len());
+        for (file_info, dest_path) in file_infos {
+            let handle = group
+                .download_file_to_path(file_info, PathBuf::from(&dest_path))
+                .await
+                .map_err(convert_xet_error)?;
+            dl_handles.push(handle);
+            paths.push(dest_path);
+        }
+
+        // Finish with concurrent progress polling
+        let group_for_finish = group.clone();
+        let mut finish_task = tokio::spawn(async move { group_for_finish.finish().await });
+
+        if let Some(updaters) = progress_updater {
+            let mut prev_completed: Vec<u64> = vec![0; dl_handles.len()];
+            let mut interval = tokio::time::interval(Duration::from_millis(250));
+
+            loop {
+                tokio::select! {
+                    result = &mut finish_task => {
+                        result
+                            .map_err(|e| convert_xet_error(XetError::from(e)))?
+                            .map_err(convert_xet_error)?;
+
+                        // Final per-file progress update
+                        for (i, handle) in dl_handles.iter().enumerate() {
+                            if i < updaters.len()
+                                && let Some(report) = handle.progress()
+                            {
+                                let increment = report.bytes_completed.saturating_sub(prev_completed[i]);
+                                send_simple_progress(&updaters[i], increment).await;
+                            }
+                        }
+                        break;
+                    }
+                    _ = interval.tick() => {
+                        for (i, handle) in dl_handles.iter().enumerate() {
+                            if i < updaters.len()
+                                && let Some(report) = handle.progress()
+                            {
+                                let increment = report.bytes_completed.saturating_sub(prev_completed[i]);
+                                if increment > 0 {
+                                    prev_completed[i] = report.bytes_completed;
+                                    send_simple_progress(&updaters[i], increment).await;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            finish_task
+                .await
+                .map_err(|e| convert_xet_error(XetError::from(e)))?
+                .map_err(convert_xet_error)?;
+        }
 
         debug!("Download call {x:x}: Completed.");
-
-        PyResult::Ok(out)
+        PyResult::Ok(paths)
     })
 }
 
 #[pyfunction]
 pub fn force_sigint_shutdown() -> PyResult<()> {
-    // Force a signint shutdown in the case where it gets intercepted by another process.
     crate::runtime::perform_sigint_shutdown();
     Err(PyKeyboardInterrupt::new_err(()))
-}
-
-fn try_parse_progress_updaters(funcs: Vec<Py<PyAny>>) -> PyResult<Vec<Arc<dyn TrackingProgressUpdater>>> {
-    let mut updaters = Vec::with_capacity(funcs.len());
-    for updater_func in funcs {
-        let wrapped = Arc::new(WrappedProgressUpdater::new(updater_func)?);
-        updaters.push(wrapped as Arc<dyn TrackingProgressUpdater>);
-    }
-    Ok(updaters)
 }
 
 // TODO: we won't need to subclass this in the next major version update.
@@ -508,9 +631,7 @@ mod tests {
 
     // Initialize Python once for all tests
     fn setup() {
-        // When auto-initialize is enabled, Python will be initialized on first use
-        // This ensures Python is available for the tests
-        let _ = pyo3::Python::attach(|_py| {});
+        pyo3::Python::attach(|_py| {});
     }
 
     #[test]
@@ -518,23 +639,19 @@ mod tests {
         setup();
         let empty_map: HashMap<String, String> = HashMap::new();
         let result = build_headers_with_user_agent(Some(empty_map)).unwrap();
-        let headers = result.unwrap();
 
-        // Should have exactly one header: USER_AGENT
-        assert_eq!(headers.len(), 1);
-        assert!(headers.contains_key(header::USER_AGENT));
+        assert_eq!(result.len(), 1);
+        assert!(result.contains_key(header::USER_AGENT));
 
-        let user_agent = headers.get(header::USER_AGENT).unwrap().to_str().unwrap();
+        let user_agent = result.get(header::USER_AGENT).unwrap().to_str().unwrap();
         assert_eq!(user_agent, USER_AGENT);
 
         let result = build_headers_with_user_agent(None).unwrap();
-        let headers = result.unwrap();
 
-        // Should have exactly one header: USER_AGENT
-        assert_eq!(headers.len(), 1);
-        assert!(headers.contains_key(header::USER_AGENT));
+        assert_eq!(result.len(), 1);
+        assert!(result.contains_key(header::USER_AGENT));
 
-        let user_agent = headers.get(header::USER_AGENT).unwrap().to_str().unwrap();
+        let user_agent = result.get(header::USER_AGENT).unwrap().to_str().unwrap();
         assert_eq!(user_agent, USER_AGENT);
     }
 
@@ -546,17 +663,12 @@ mod tests {
         headers_map.insert("Authorization".to_string(), "Bearer token123".to_string());
 
         let result = build_headers_with_user_agent(Some(headers_map)).unwrap();
-        let headers = result.unwrap();
 
-        // Should have 3 headers: Content-Type, Authorization, and USER_AGENT
-        assert_eq!(headers.len(), 3);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result.get(header::CONTENT_TYPE).unwrap().to_str().unwrap(), "application/json");
+        assert_eq!(result.get(header::AUTHORIZATION).unwrap().to_str().unwrap(), "Bearer token123");
 
-        // Verify each header was converted correctly
-        assert_eq!(headers.get(header::CONTENT_TYPE).unwrap().to_str().unwrap(), "application/json");
-        assert_eq!(headers.get(header::AUTHORIZATION).unwrap().to_str().unwrap(), "Bearer token123");
-
-        // Verify USER_AGENT was added
-        let user_agent = headers.get(header::USER_AGENT).unwrap().to_str().unwrap();
+        let user_agent = result.get(header::USER_AGENT).unwrap().to_str().unwrap();
         assert_eq!(user_agent, USER_AGENT);
     }
 
@@ -567,13 +679,10 @@ mod tests {
         headers_map.insert("User-Agent".to_string(), "CustomClient/1.0".to_string());
 
         let result = build_headers_with_user_agent(Some(headers_map)).unwrap();
-        let headers = result.unwrap();
 
-        // Should have exactly one header: USER_AGENT
-        assert_eq!(headers.len(), 1);
+        assert_eq!(result.len(), 1);
 
-        // Verify USER_AGENT was appended to existing one
-        let user_agent = headers.get(header::USER_AGENT).unwrap().to_str().unwrap();
+        let user_agent = result.get(header::USER_AGENT).unwrap().to_str().unwrap();
         assert_eq!(user_agent, format!("CustomClient/1.0; {}", USER_AGENT));
     }
 
@@ -585,18 +694,15 @@ mod tests {
 
         let result = build_headers_with_user_agent(Some(headers_map));
 
-        // Should return an error for invalid header name
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("Invalid header name"));
 
         let mut headers_map = HashMap::new();
-        // Header values cannot contain newlines
         headers_map.insert("X-Custom".to_string(), "value\nwith\nnewlines".to_string());
 
         let result = build_headers_with_user_agent(Some(headers_map));
 
-        // Should return an error for invalid header value
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("Invalid header value"));
@@ -607,9 +713,9 @@ mod tests {
         setup();
         pyo3::Python::attach(|py| {
             let file_paths = vec!["a.txt".to_string(), "b.txt".to_string()];
-            let sha256s = Some(vec!["abc123".to_string()]); // 1 hash for 2 files
+            let sha256s = Some(vec!["abc123".to_string()]);
 
-            let result = upload_files(py, file_paths, None, None, None, None, None, None, sha256s, false);
+            let result = upload_files(py, file_paths, None, None, None, None, None, None, None, sha256s, false);
 
             assert!(result.is_err());
             let err_msg = result.unwrap_err().to_string();
@@ -624,7 +730,7 @@ mod tests {
             let file_paths = vec!["a.txt".to_string()];
             let sha256s = Some(vec!["abc123".to_string()]);
 
-            let result = upload_files(py, file_paths, None, None, None, None, None, None, sha256s, true);
+            let result = upload_files(py, file_paths, None, None, None, None, None, None, None, sha256s, true);
 
             assert!(result.is_err());
             let err_msg = result.unwrap_err().to_string();

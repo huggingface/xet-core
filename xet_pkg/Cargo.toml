@@ -48,6 +48,8 @@ smoke-test = []
 fd-track = ["xet-runtime/fd-track", "xet-client/fd-track", "xet-data/fd-track"]
 python = ["xet-runtime/python", "dep:pyo3"]
 simulation = ["xet-client/simulation"]
+native-tls-vendored = ["xet-client/native-tls-vendored"]
+elevated_information_level = ["xet-client/elevated_information_level", "xet-runtime/elevated_information_level"]
 
 [dev-dependencies]
 anyhow = { workspace = true }

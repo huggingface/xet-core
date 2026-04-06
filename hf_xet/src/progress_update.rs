@@ -1,5 +1,5 @@
+use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
-use std::sync::Arc;
 
 use itertools::Itertools;
 use pyo3::exceptions::PyTypeError;
@@ -7,163 +7,81 @@ use pyo3::prelude::PyAnyMethods;
 use pyo3::types::{IntoPyDict, PyList, PyString};
 use pyo3::{IntoPyObjectExt, Py, PyAny, PyResult, Python, pyclass};
 use tracing::error;
-use xet_pkg::legacy::progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
+use xet_pkg::xet_session::{GroupProgressReport, ItemProgressReport, UniqueID};
 use xet_runtime::core::XetRuntime;
 use xet_runtime::error_printer::ErrorPrinter;
 
 use crate::runtime::convert_multithreading_error;
 
-/// Python-exposed versions of the per-item and total progress update classes.
-///
-/// Both `PyTotalProgressUpdate` and `PyItemProgressUpdate` are passed
-/// into a Python callback given to the wrapper class below.  For example:
-///
-/// ```python
-/// def update_progress(self, total_update, item_updates):
-///     from rich.progress import Progress, TextColumn, BarColumn, TimeRemainingColumn
-///
-///     # Update overall progress (we assume this has been initialized).
-///     self.progress.update(
-///         self.bytes_processed_task_id,
-///         advance=total_update.total_bytes_completion_increment,
-///         total = total_update.total_bytes
-///     )
-///
-///     # Update upload progress ; the total may have changed so set that too.
-///     self.progress.update(
-///         self.bytes_uploaded_task_id,
-///         advance=total_update.total_transfer_bytes_completion_increment,
-///         total = total_update.total_transfer_bytes
-///     )
-///
-///     # Update each item:
-///     for item in item_updates:
-///         name = item.item_name
-///         if name not in self.item_tasks:
-///             self.item_tasks[name] = self.progress.add_task(
-///                 name, total=item.total_bytes
-///             )
-///         self.progress.update(
-///             self.item_tasks[name],
-///             advance=item.bytes_completion_increment,
-///         )
-/// ```
-///
-/// In addition, the other possible bookkeeping values for everything are contained in this
-/// as needed.
+// === PyO3 progress update classes (exposed to Python) ===
+
 #[pyclass]
 pub struct PyItemProgressUpdate {
-    /// The name of the item, or a tag that is translated later.
     #[pyo3(get)]
     pub item_name: Py<PyString>,
-
-    /// The total bytes contained in this item.   
     #[pyo3(get)]
     pub total_bytes: u64,
-
-    /// The number of bytes completed so far, either by deduplication or transfer.
     #[pyo3(get)]
     pub bytes_completed: u64,
-
-    /// The change in bytes completed since the last update.
     #[pyo3(get)]
     pub bytes_completion_increment: u64,
 }
 
-/// Update class for total updates
 #[pyclass]
 pub struct PyTotalProgressUpdate {
-    /// The total bytes known for processing and possibly uploaded or downloaded.
     #[pyo3(get)]
     pub total_bytes: u64,
-
-    /// How much total_bytes has changed from the last update.
     #[pyo3(get)]
     pub total_bytes_increment: u64,
-
-    /// How many of the bytes queued for processing have been examined
-    /// and either deduped or queued for upload or download.  
     #[pyo3(get)]
     pub total_bytes_completed: u64,
-
-    /// The change in total_bytes_completed since the same upload.  
     #[pyo3(get)]
     pub total_bytes_completion_increment: u64,
-
-    /// If known, the current completion speed.
     #[pyo3(get)]
     pub total_bytes_completion_rate: Option<f64>,
-
-    /// The total bytes scheduled for transfer; also contained in total_bytes.
     #[pyo3(get)]
     pub total_transfer_bytes: u64,
-
-    /// How much total_transfer_bytes has changed since the last update.
     #[pyo3(get)]
     pub total_transfer_bytes_increment: u64,
-
-    /// The cumulative bytes uploaded or downloaded so far.  Also contained in total_bytes_completed.
     #[pyo3(get)]
     pub total_transfer_bytes_completed: u64,
-
-    /// The change in total_transfer_bytes_completed since the last update.
     #[pyo3(get)]
     pub total_transfer_bytes_completion_increment: u64,
-
-    /// If known, the current completion speed for bytes transferred.
     #[pyo3(get)]
     pub total_transfer_bytes_completion_rate: Option<f64>,
 }
 
-/// A wrapper over a passed-in python function to update
-/// the python process of some download/upload progress
-/// implements the ProgressUpdater trait and should be
-/// passed around as a ProgressUpdater trait object or
-/// as a template parameter
-struct WrappedProgressUpdaterImpl {
-    /// Is this enabled?
-    progress_updating_enabled: bool,
-
-    /// the function py_func is responsible for passing in the update value
-    /// into the python context. Expects 1 int (uint64) parameter that
-    /// is a number to increment the progress counter by.
-    py_func: Py<PyAny>,
-    name: String,
-
-    /// Whether to use the simple incremental progress updating method or
-    /// the more detailed
-    update_with_detailed_progress: bool,
-}
-
-impl Debug for WrappedProgressUpdaterImpl {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "WrappedTokenRefresher({})", self.name)
-    }
-}
+// === Progress callback (validated Python callable) ===
 
 const DETAILED_PROGRESS_ARG_NAMES: [&str; 2] = ["total_update", "item_updates"];
 
-impl WrappedProgressUpdaterImpl {
-    pub fn new(py_func: Py<PyAny>) -> PyResult<Self> {
-        // Analyze the function to make sure it's the correct form. If it's 4 arguments with
-        // the appropriate names, than we call it using the detailed progress update; if it's
-        // a single function, we assume it's a global increment function and just pass in the update
-        // increment.
-        //
-        // Run on compute thread that doesn't block async workers
-        Python::attach(|py| {
-            let func = py_func.bind(py);
+/// A validated Python progress callback. Determines on construction whether
+/// the callback uses the simple (1-arg increment) or detailed (2-arg total +
+/// items) calling convention.
+pub struct ProgressCallback {
+    py_func: Py<PyAny>,
+    detailed: bool,
+    enabled: bool,
+}
 
-            // Test if it's enabled first; if None is passed in, then this is disabled.
+impl Debug for ProgressCallback {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ProgressCallback(detailed={}, enabled={})", self.detailed, self.enabled)
+    }
+}
+
+impl ProgressCallback {
+    pub fn new(py_func: Py<PyAny>) -> PyResult<Self> {
+        Python::attach(|py| {
             if py_func.is_none(py) {
                 return Ok(Self {
-                    progress_updating_enabled: false,
                     py_func,
-                    name: Default::default(),
-                    update_with_detailed_progress: false,
+                    detailed: false,
+                    enabled: false,
                 });
             }
 
+            let func = py_func.bind(py);
             let name = func
                 .repr()
                 .and_then(|repr| repr.extract::<String>())
@@ -187,7 +105,7 @@ impl WrappedProgressUpdaterImpl {
                 })
                 .collect::<PyResult<_>>()?;
 
-            let update_with_detailed_progress = match param_names.len() {
+            let detailed = match param_names.len() {
                 1 => false,
                 2 => {
                     if param_names
@@ -212,43 +130,53 @@ impl WrappedProgressUpdaterImpl {
             };
 
             Ok(Self {
-                progress_updating_enabled: true,
                 py_func,
-                name,
-                update_with_detailed_progress,
+                detailed,
+                enabled: true,
             })
         })
     }
 
-    async fn register_updates_impl(self: Arc<Self>, updates: ProgressUpdate) -> PyResult<()> {
-        // Run on compute thread that doesn't block async workers
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Send a progress diff to the Python callback via spawn_blocking
+    /// (to avoid blocking the async runtime while holding the GIL).
+    pub async fn send_update(&self, diff: ProgressDiff) -> PyResult<()> {
+        if !self.enabled || diff.is_empty() {
+            return Ok(());
+        }
+
+        let py_func = Python::attach(|py| self.py_func.clone_ref(py));
+        let detailed = self.detailed;
+
         let rt = XetRuntime::current();
         rt.spawn_blocking(move || {
             Python::attach(|py| {
-                let f = self.py_func.bind(py);
+                let f = py_func.bind(py);
 
-                if self.update_with_detailed_progress {
-                    let total_update_report: Py<PyAny> = Py::new(
+                if detailed {
+                    let total_update: Py<PyAny> = Py::new(
                         py,
                         PyTotalProgressUpdate {
-                            total_bytes: updates.total_bytes,
-                            total_bytes_increment: updates.total_bytes_increment,
-                            total_bytes_completed: updates.total_bytes_completed,
-                            total_bytes_completion_increment: updates.total_bytes_completion_increment,
-                            total_bytes_completion_rate: updates.total_bytes_completion_rate,
-                            total_transfer_bytes: updates.total_transfer_bytes,
-                            total_transfer_bytes_increment: updates.total_transfer_bytes_increment,
-                            total_transfer_bytes_completed: updates.total_transfer_bytes_completed,
-                            total_transfer_bytes_completion_increment: updates
-                                .total_transfer_bytes_completion_increment,
-                            total_transfer_bytes_completion_rate: updates.total_transfer_bytes_completion_rate,
+                            total_bytes: diff.total_bytes,
+                            total_bytes_increment: diff.total_bytes_increment,
+                            total_bytes_completed: diff.total_bytes_completed,
+                            total_bytes_completion_increment: diff.total_bytes_completion_increment,
+                            total_bytes_completion_rate: diff.total_bytes_completion_rate,
+                            total_transfer_bytes: diff.total_transfer_bytes,
+                            total_transfer_bytes_increment: diff.total_transfer_bytes_increment,
+                            total_transfer_bytes_completed: diff.total_transfer_bytes_completed,
+                            total_transfer_bytes_completion_increment: diff.total_transfer_bytes_completion_increment,
+                            total_transfer_bytes_completion_rate: diff.total_transfer_bytes_completion_rate,
                         },
                     )?
                     .into_py_any(py)?;
 
-                    let item_updates_v: Vec<Py<PyAny>> = updates
-                        .item_updates
-                        .into_iter()
+                    let item_updates_v: Vec<Py<PyAny>> = diff
+                        .item_diffs
+                        .iter()
                         .map(|u| {
                             Py::new(
                                 py,
@@ -269,16 +197,20 @@ impl WrappedProgressUpdaterImpl {
                     let argname_item_updates: Py<PyAny> = DETAILED_PROGRESS_ARG_NAMES[1].into_py_any(py)?;
 
                     let kwargs = [
-                        (argname_total_update, total_update_report),
+                        (argname_total_update, total_update),
                         (argname_item_updates, item_updates),
                     ]
                     .into_py_dict(py)?;
 
                     f.call((), Some(&kwargs))?;
                 } else {
-                    let update_increment: u64 =
-                        updates.item_updates.iter().map(|pr| pr.bytes_completion_increment).sum();
-                    let _ = f.call1((update_increment,))?;
+                    let update_increment: u64 = diff.item_diffs.iter().map(|d| d.bytes_completion_increment).sum();
+                    let increment = if update_increment > 0 {
+                        update_increment
+                    } else {
+                        diff.total_bytes_completion_increment
+                    };
+                    let _ = f.call1((increment,))?;
                 }
 
                 Ok(())
@@ -289,29 +221,126 @@ impl WrappedProgressUpdaterImpl {
     }
 }
 
-#[derive(Debug)]
-pub struct WrappedProgressUpdater {
-    inner: Arc<WrappedProgressUpdaterImpl>,
+// === Simple per-file progress callback for downloads ===
+
+/// Send a simple byte-increment update to a Python callback.
+pub async fn send_simple_progress(py_func: &Py<PyAny>, increment: u64) {
+    if increment == 0 {
+        return;
+    }
+    let py_func = Python::attach(|py| py_func.clone_ref(py));
+    let rt = XetRuntime::current();
+    let _ = rt
+        .spawn_blocking(move || {
+            Python::attach(|py| {
+                let f = py_func.bind(py);
+                let _ = f.call1((increment,));
+            })
+        })
+        .await
+        .log_error("Python exception updating download progress:");
 }
 
-impl WrappedProgressUpdater {
-    pub fn new(py_func: Py<PyAny>) -> PyResult<Self> {
-        Ok(Self {
-            inner: Arc::new(WrappedProgressUpdaterImpl::new(py_func)?),
-        })
+// === Progress diff types ===
+
+#[derive(Clone, Debug)]
+pub struct ItemDiff {
+    pub item_name: String,
+    pub total_bytes: u64,
+    pub bytes_completed: u64,
+    pub bytes_completion_increment: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ProgressDiff {
+    pub total_bytes: u64,
+    pub total_bytes_increment: u64,
+    pub total_bytes_completed: u64,
+    pub total_bytes_completion_increment: u64,
+    pub total_bytes_completion_rate: Option<f64>,
+    pub total_transfer_bytes: u64,
+    pub total_transfer_bytes_increment: u64,
+    pub total_transfer_bytes_completed: u64,
+    pub total_transfer_bytes_completion_increment: u64,
+    pub total_transfer_bytes_completion_rate: Option<f64>,
+    pub item_diffs: Vec<ItemDiff>,
+}
+
+impl ProgressDiff {
+    pub fn is_empty(&self) -> bool {
+        self.total_bytes_increment == 0
+            && self.total_bytes_completion_increment == 0
+            && self.total_transfer_bytes_increment == 0
+            && self.total_transfer_bytes_completion_increment == 0
+            && self.item_diffs.is_empty()
     }
 }
 
-#[async_trait::async_trait]
-impl TrackingProgressUpdater for WrappedProgressUpdater {
-    async fn register_updates(&self, updates: ProgressUpdate) {
-        let inner = self.inner.clone();
+// === Diff state for group-level progress polling ===
 
-        if inner.progress_updating_enabled {
-            let _ = inner
-                .register_updates_impl(updates)
-                .await
-                .log_error("Python exception updating progress:");
+/// Tracks the previous progress snapshot so that incremental diffs can be
+/// computed each time the session's `progress()` is polled.
+pub struct GroupProgressDiffState {
+    prev_group: GroupProgressReport,
+    prev_items: HashMap<UniqueID, ItemProgressReport>,
+}
+
+impl GroupProgressDiffState {
+    pub fn new() -> Self {
+        Self {
+            prev_group: GroupProgressReport::default(),
+            prev_items: HashMap::new(),
         }
+    }
+
+    pub fn compute_diff(
+        &mut self,
+        group: GroupProgressReport,
+        items: HashMap<UniqueID, ItemProgressReport>,
+    ) -> ProgressDiff {
+        let total_bytes_increment = group.total_bytes.saturating_sub(self.prev_group.total_bytes);
+        let total_bytes_completion_increment = group
+            .total_bytes_completed
+            .saturating_sub(self.prev_group.total_bytes_completed);
+        let total_transfer_bytes_increment =
+            group.total_transfer_bytes.saturating_sub(self.prev_group.total_transfer_bytes);
+        let total_transfer_bytes_completion_increment = group
+            .total_transfer_bytes_completed
+            .saturating_sub(self.prev_group.total_transfer_bytes_completed);
+
+        let mut item_diffs = Vec::new();
+        for (&id, report) in &items {
+            let prev = self.prev_items.get(&id);
+            let prev_completed = prev.map_or(0, |p| p.bytes_completed);
+            let increment = report.bytes_completed.saturating_sub(prev_completed);
+
+            if increment > 0 || prev.is_none() {
+                item_diffs.push(ItemDiff {
+                    item_name: report.item_name.clone(),
+                    total_bytes: report.total_bytes,
+                    bytes_completed: report.bytes_completed,
+                    bytes_completion_increment: increment,
+                });
+            }
+        }
+
+        let diff = ProgressDiff {
+            total_bytes: group.total_bytes,
+            total_bytes_increment,
+            total_bytes_completed: group.total_bytes_completed,
+            total_bytes_completion_increment,
+            total_bytes_completion_rate: group.total_bytes_completion_rate,
+            total_transfer_bytes: group.total_transfer_bytes,
+            total_transfer_bytes_increment,
+            total_transfer_bytes_completed: group.total_transfer_bytes_completed,
+            total_transfer_bytes_completion_increment,
+            total_transfer_bytes_completion_rate: group.total_transfer_bytes_completion_rate,
+            item_diffs,
+        };
+
+        self.prev_group = group;
+        self.prev_items = items;
+
+        diff
     }
 }
