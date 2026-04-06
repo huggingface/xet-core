@@ -6,9 +6,8 @@ use std::sync::{Arc, Mutex, Weak};
 use tracing::info;
 use ulid::Ulid;
 use xet_data::progress_tracking::UniqueID;
-use xet_runtime::RuntimeError;
 use xet_runtime::config::XetConfig;
-use xet_runtime::core::XetRuntime;
+use xet_runtime::core::{XetRuntime, XetThreadpool};
 #[cfg(feature = "fd-track")]
 use xet_runtime::fd_diagnostics::{report_fd_count, track_fd_scope};
 
@@ -131,9 +130,9 @@ impl XetSessionBuilder {
     /// drivers), it is silently ignored and [`build`](Self::build) will fall back to creating
     /// an owned thread pool instead.
     ///
-    /// If the handle is already in use by another live `XetSession`, [`build`](Self::build) will
-    /// also fall back to creating an owned thread pool — the duplicate is logged at `INFO` level
-    /// and no error is returned.
+    /// Handles can be shared by multiple sessions. Each session gets its own
+    /// [`XetRuntime`] (`config` + `common`), while the underlying [`XetThreadpool`]
+    /// may be shared.
     pub fn with_tokio_handle(self, handle: tokio::runtime::Handle) -> Self {
         let accept = XetRuntime::handle_meets_requirements(&handle);
         if !accept {
@@ -147,16 +146,13 @@ impl XetSessionBuilder {
 
     /// Consume the builder and create a [`XetSession`].
     ///
-    /// If a tokio runtime handle is available (either from
-    /// [`with_tokio_handle`](Self::with_tokio_handle) or auto-detected via
-    /// `Handle::try_current()`), and it meets requirements, the session wraps
-    /// it — no second thread pool is created. Otherwise, an owned multi-thread
-    /// runtime is created; async methods use an internal bridge and work from
-    /// any executor, and `_blocking` methods are available.
+    /// Threadpool selection order:
+    /// 1. Reuse the current owned [`XetThreadpool`] from thread-local storage, when present.
+    /// 2. Otherwise, use a provided tokio handle (or auto-detected current handle) if valid.
+    /// 3. Otherwise, create a new owned threadpool.
     ///
-    /// If the detected or provided handle is already registered to another live `XetSession`,
-    /// the duplicate attach is silently rejected and an owned runtime is created instead.
-    /// This prevents two sessions from fighting over the same tokio runtime's task scheduler.
+    /// Each build creates a fresh [`XetRuntime`] around the selected threadpool, so sessions
+    /// can share the same threadpool while keeping independent config and common state.
     pub fn build(self) -> Result<XetSession, SessionError> {
         #[cfg(feature = "fd-track")]
         let _fd_scope = track_fd_scope("XetSessionBuilder::build");
@@ -167,25 +163,17 @@ impl XetSessionBuilder {
                 .filter(XetRuntime::handle_meets_requirements)
         });
 
-        let ctx = match handle {
-            Some(h) => {
-                info!("XetSession using External runtime (wrapping caller's tokio handle)");
-                match XetRuntime::from_external_with_config(h, self.config.clone()) {
-                    Ok(ctx) => ctx,
-                    Err(RuntimeError::ExternalAlreadyAttached(_)) => {
-                        info!(
-                            "An existing XetSession already wraps caller's tokio handle, switching to creating Owned runtime"
-                        );
-                        XetRuntime::default_with_config(self.config.clone())?
-                    },
-                    Err(e) => Err(e)?,
-                }
-            },
-            None => {
-                info!("XetSession creating Owned runtime (new thread pool)");
-                XetRuntime::default_with_config(self.config.clone())?
-            },
+        let threadpool = if let Some(shared_pool) = XetThreadpool::current_if_exists() {
+            info!("XetSession reusing current owned threadpool from thread-local storage");
+            shared_pool
+        } else if let Some(h) = handle {
+            info!("XetSession using External runtime (wrapping caller's tokio handle)");
+            XetThreadpool::from_external(h)
+        } else {
+            info!("XetSession creating Owned runtime (new thread pool)");
+            XetThreadpool::new(&self.config)?
         };
+        let ctx = XetRuntime::new(threadpool, self.config);
 
         let session = XetSession::new(ctx);
         info!("Session created, session_id={}", session.inner.id);
@@ -745,13 +733,11 @@ mod tests {
         assert_eq!(collected_b, data_b);
     }
 
-    // ── Duplicate tokio handle rejection ─────────────────────────────────────
+    // ── Shared tokio handle behavior ──────────────────────────────────────────
 
     #[test]
-    // Building a second session with the same tokio handle while the first is alive must
-    // fall back to Owned mode rather than returning an error — the duplicate is handled
-    // gracefully so callers do not need to track handle ownership.
-    fn test_build_with_same_handle_falls_back_to_owned() {
+    // Building multiple sessions with the same tokio handle is allowed.
+    fn test_build_with_same_handle_stays_external() {
         let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         let handle = tokio_rt.handle().clone();
 
@@ -762,14 +748,13 @@ mod tests {
         assert!(second.is_ok(), "second build with the same tokio handle must still succeed");
         assert_eq!(
             second.unwrap().inner.ctx.threadpool.mode(),
-            RuntimeMode::Owned,
-            "second build must fall back to Owned runtime when External handle is already in use"
+            RuntimeMode::External,
+            "second build should remain External when sharing the same tokio handle"
         );
     }
 
     #[test]
-    // After the first session is dropped (deregistering the handle), a new session can
-    // attach to the same tokio handle successfully.
+    // Dropping one session must not affect creating another session with the same handle.
     fn test_build_with_same_handle_succeeds_after_first_is_dropped() {
         let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         let handle = tokio_rt.handle().clone();

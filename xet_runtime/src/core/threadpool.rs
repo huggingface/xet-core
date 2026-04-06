@@ -333,6 +333,21 @@ impl XetThreadpool {
         })
     }
 
+    /// Returns the current thread's active owned threadpool, if any.
+    ///
+    /// This is populated on owned runtime worker threads and on spawn_blocking
+    /// threads created by an owned runtime. External runtimes do not set this.
+    #[inline]
+    pub fn current_if_exists() -> Option<Arc<Self>> {
+        let pid = std::process::id();
+        THREAD_THREADPOOL_REF.with_borrow(|entry| {
+            entry
+                .as_ref()
+                .filter(|(entry_pid, _)| *entry_pid == pid)
+                .and_then(|(_, weak_pool)| weak_pool.upgrade())
+        })
+    }
+
     #[inline]
     pub fn handle(&self) -> TokioRuntimeHandle {
         self.handle_ref.get().expect("Not initialized with handle set.").clone()
@@ -761,6 +776,21 @@ mod tests {
         assert_eq!(ctx.threadpool.mode(), RuntimeMode::Owned);
         let result = ctx.threadpool.bridge_sync(async { 123 }).unwrap();
         assert_eq!(result, 123);
+    }
+
+    #[test]
+    fn test_default_with_config_reuses_owned_threadpool_from_tls() {
+        let parent = XetRuntime::default().unwrap();
+        let parent_threadpool = parent.threadpool.clone();
+        let parent_config = parent.config.clone();
+
+        let child = parent
+            .threadpool
+            .bridge_sync(async move { XetRuntime::default_with_config(XetConfig::new()).unwrap() })
+            .unwrap();
+
+        assert!(Arc::ptr_eq(&child.threadpool, &parent_threadpool));
+        assert!(!Arc::ptr_eq(&child.config, &parent_config));
     }
 
     #[test]

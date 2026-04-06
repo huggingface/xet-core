@@ -43,10 +43,13 @@ impl XetRuntime {
 
     /// Creates a runtime with the given configuration and an auto-detected thread pool.
     ///
-    /// If called from within an existing tokio runtime, wraps that runtime.
-    /// Otherwise, spins up a new owned tokio thread pool.
+    /// If called from an owned runtime worker thread, reuses that owned threadpool.
+    /// Otherwise, if called from within an existing tokio runtime, wraps that runtime.
+    /// If neither is available, spins up a new owned tokio thread pool.
     pub fn default_with_config(config: XetConfig) -> Result<Self, RuntimeError> {
-        let threadpool = if let Ok(handle) = TokioRuntimeHandle::try_current()
+        let threadpool = if let Some(threadpool) = XetThreadpool::current_if_exists() {
+            threadpool
+        } else if let Ok(handle) = TokioRuntimeHandle::try_current()
             && Self::handle_meets_requirements(&handle)
         {
             XetThreadpool::from_external(handle)
