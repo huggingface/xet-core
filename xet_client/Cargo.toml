@@ -15,8 +15,8 @@ name = "xet_client"
 path = "src/lib.rs"
 
 [dependencies]
-xet-runtime = { version = "1.5.0", path = "../xet_runtime" }
-xet-core-structures = { version = "1.5.0", path = "../xet_core_structures" }
+xet-runtime = { version = "1.5.1", path = "../xet_runtime" }
+xet-core-structures = { version = "1.5.1", path = "../xet_core_structures" }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
