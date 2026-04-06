@@ -1,8 +1,7 @@
 //! Rust client library for the Hugging Face Xet storage system.
 //!
-//! Xet is the chunk-based, content-addressed storage backend used by the
-//! [Hugging Face Hub](https://huggingface.co) for large files.  Files are
-//! split into variable-size chunks, deduplicated, and stored in a CAS
+//! Xet is the storage backend used by the [Hugging Face Hub](https://huggingface.co) for
+//! large files.  Files are split into variable-size chunks, deduplicated, and stored in CAS
 //! (Content-Addressed Storage) server.  This crate provides a high-level
 //! API for uploading and downloading those files.
 //!
