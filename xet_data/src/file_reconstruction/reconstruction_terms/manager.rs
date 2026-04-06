@@ -287,7 +287,6 @@ impl ReconstructionTermManager {
             // making this request unnecessary. This avoids sending a request that would
             // return a 416 Range Not Satisfiable.
             if prefetch_block_range.start >= known_final_byte_position.load(Ordering::Relaxed) {
-                known_final_byte_position.fetch_min(prefetch_block_range.start, Ordering::Relaxed);
                 return Ok(None);
             }
 
