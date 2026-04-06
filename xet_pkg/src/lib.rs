@@ -45,8 +45,8 @@
 //!
 //! # Modules
 //!
-//! - [`xet_session`] — the primary API: [`XetSession`](xet_session::XetSession),
-//!   upload commits, file download groups, and streaming downloads.
+//! - [`xet_session`] — the primary API: [`XetSession`](xet_session::XetSession), upload commits, file download groups,
+//!   and streaming downloads.
 //! - [`error`] — [`XetError`], the unified error type for the public API.
 
 pub mod error;

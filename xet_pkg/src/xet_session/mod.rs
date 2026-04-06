@@ -27,18 +27,14 @@
 //! There are three ways to queue data for upload:
 //!
 //! - **From a file path** — [`upload_from_path`](XetUploadCommit::upload_from_path) /
-//!   [`upload_from_path_blocking`](XetUploadCommit::upload_from_path_blocking).
-//!   The file is read in a background task.
+//!   [`upload_from_path_blocking`](XetUploadCommit::upload_from_path_blocking). The file is read in a background task.
 //! - **From raw bytes** — [`upload_bytes`](XetUploadCommit::upload_bytes) /
-//!   [`upload_bytes_blocking`](XetUploadCommit::upload_bytes_blocking).
-//!   Useful when data is already in memory.
+//!   [`upload_bytes_blocking`](XetUploadCommit::upload_bytes_blocking). Useful when data is already in memory.
 //! - **Incrementally via a stream** — [`upload_stream`](XetUploadCommit::upload_stream) /
-//!   [`upload_stream_blocking`](XetUploadCommit::upload_stream_blocking).
-//!   Returns an [`XetStreamUpload`] handle; call [`write`](XetStreamUpload::write) to
-//!   feed chunks, then [`finish`](XetStreamUpload::finish) to finalise.
-//!   **`finish` must be called before [`commit`](XetUploadCommit::commit).**
-//!   Use this when data arrives incrementally (e.g. from a network socket or a
-//!   generator) and you don't want to buffer it all in memory first.
+//!   [`upload_stream_blocking`](XetUploadCommit::upload_stream_blocking). Returns an [`XetStreamUpload`] handle; call
+//!   [`write`](XetStreamUpload::write) to feed chunks, then [`finish`](XetStreamUpload::finish) to finalise. **`finish`
+//!   must be called before [`commit`](XetUploadCommit::commit).** Use this when data arrives incrementally (e.g. from a
+//!   network socket or a generator) and you don't want to buffer it all in memory first.
 //!
 //! Then call [`commit`](XetUploadCommit::commit) or
 //! [`commit_blocking`](XetUploadCommit::commit_blocking) to wait for all

@@ -57,15 +57,13 @@ pub struct XetSessionInner {
 ///
 /// [`build`](Self::build) auto-detects a suitable tokio runtime:
 ///
-/// - **Inside `#[tokio::main]` or an existing multi-thread runtime** — the session
-///   wraps the caller's handle; no second thread pool is created.  Both async and
-///   blocking methods work.
-/// - **Outside any runtime** — an owned multi-thread runtime is created internally.
-///   Blocking methods (`_blocking` suffix) work from any thread; async methods work
-///   via an internal bridge.
-/// - **Explicit handle** — call [`with_tokio_handle`](Self::with_tokio_handle) to
-///   supply a handle directly.  If it doesn't meet requirements (multi-thread, time +
-///   IO drivers), it is silently ignored and an owned runtime is created instead.
+/// - **Inside `#[tokio::main]` or an existing multi-thread runtime** — the session wraps the caller's handle; no second
+///   thread pool is created.  Both async and blocking methods work.
+/// - **Outside any runtime** — an owned multi-thread runtime is created internally. Blocking methods (`_blocking`
+///   suffix) work from any thread; async methods work via an internal bridge.
+/// - **Explicit handle** — call [`with_tokio_handle`](Self::with_tokio_handle) to supply a handle directly.  If it
+///   doesn't meet requirements (multi-thread, time + IO drivers), it is silently ignored and an owned runtime is
+///   created instead.
 ///
 /// ## Authentication
 ///
