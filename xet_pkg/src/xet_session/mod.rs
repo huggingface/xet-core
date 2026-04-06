@@ -23,11 +23,20 @@
 //! [`with_token_refresh_url`](AuthGroupBuilder::with_token_refresh_url), then call
 //! [`build`](AuthGroupBuilder::build) (async) or
 //! [`build_blocking`](AuthGroupBuilder::build_blocking) (sync).
-//! Queue files with [`upload_from_path`](XetUploadCommit::upload_from_path) /
-//! [`upload_from_path_blocking`](XetUploadCommit::upload_from_path_blocking) or
-//! [`upload_bytes`](XetUploadCommit::upload_bytes) /
-//! [`upload_bytes_blocking`](XetUploadCommit::upload_bytes_blocking), then call
-//! [`commit`](XetUploadCommit::commit) or
+//!
+//! There are three ways to queue data for upload:
+//!
+//! - **From a file path** — [`upload_from_path`](XetUploadCommit::upload_from_path) /
+//!   [`upload_from_path_blocking`](XetUploadCommit::upload_from_path_blocking). The file is read in a background task.
+//! - **From raw bytes** — [`upload_bytes`](XetUploadCommit::upload_bytes) /
+//!   [`upload_bytes_blocking`](XetUploadCommit::upload_bytes_blocking). Useful when data is already in memory.
+//! - **Incrementally via a stream** — [`upload_stream`](XetUploadCommit::upload_stream) /
+//!   [`upload_stream_blocking`](XetUploadCommit::upload_stream_blocking). Returns an [`XetStreamUpload`] handle; call
+//!   [`write`](XetStreamUpload::write) to feed chunks, then [`finish`](XetStreamUpload::finish) to finalise. **`finish`
+//!   must be called before [`commit`](XetUploadCommit::commit).** Use this when data arrives incrementally (e.g. from a
+//!   network socket or a generator) and you don't want to buffer it all in memory first.
+//!
+//! Then call [`commit`](XetUploadCommit::commit) or
 //! [`commit_blocking`](XetUploadCommit::commit_blocking) to wait for all
 //! transfers to finish and receive a [`XetCommitReport`].
 //!
@@ -156,6 +165,86 @@
 //! let dl_handle = group.download_file_to_path(info, "out/file.bin".into()).await?;
 //! let finish_report = group.finish().await?;
 //! let r = finish_report.downloads.get(&dl_handle.task_id()).unwrap();
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Streaming upload
+//!
+//! Use [`upload_stream`](XetUploadCommit::upload_stream) when data arrives
+//! incrementally and you don't want to buffer it all in memory or on disk
+//! first.  Call [`write`](XetStreamUpload::write) for each chunk, then
+//! [`finish`](XetStreamUpload::finish) before [`commit`](XetUploadCommit::commit).
+//!
+//! ```rust,no_run
+//! use xet::xet_session::{Sha256Policy, XetSessionBuilder};
+//!
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! let session = XetSessionBuilder::new().build()?;
+//! let commit = session
+//!     .new_upload_commit()?
+//!     .with_endpoint("https://cas.example.com")
+//!     .with_token_info("write-token", 1_700_000_000)
+//!     .build()
+//!     .await?;
+//!
+//! // Begin a streaming upload with an optional tracking name
+//! let stream = commit
+//!     .upload_stream(Some("generated-data.bin".into()), Sha256Policy::Compute)
+//!     .await?;
+//!
+//! // Feed data in chunks — could come from a network socket, a generator, etc.
+//! for chunk in vec![b"hello ".to_vec(), b"world".to_vec()] {
+//!     stream.write(chunk).await?;
+//! }
+//!
+//! // Finalise the stream and get per-file metadata
+//! let meta = stream.finish().await?;
+//! println!("hash: {}, size: {:?}", meta.xet_info.hash, meta.xet_info.file_size);
+//!
+//! // Commit all uploads in this group
+//! let report = commit.commit().await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Streaming download
+//!
+//! Use [`XetDownloadStreamGroup`] when you want to consume file data as a
+//! byte stream rather than writing it to disk.  This is useful for serving
+//! data over HTTP, piping it to another process, or processing it on the fly.
+//!
+//! [`download_stream`](XetDownloadStreamGroup::download_stream) returns
+//! chunks in file order.
+//! [`download_unordered_stream`](XetDownloadStreamGroup::download_unordered_stream)
+//! returns `(offset, Bytes)` chunks in completion order for higher throughput
+//! when the consumer can handle out-of-order data.
+//!
+//! ```rust,no_run
+//! use xet::xet_session::{XetFileInfo, XetSessionBuilder};
+//!
+//! # async fn example(file_info: XetFileInfo) -> Result<(), Box<dyn std::error::Error>> {
+//! let session = XetSessionBuilder::new().build()?;
+//! let group = session
+//!     .new_download_stream_group()?
+//!     .with_token_info("read-token", 1_700_000_000)
+//!     .build()
+//!     .await?;
+//!
+//! // Ordered stream — chunks arrive in file order
+//! let mut stream = group.download_stream(file_info.clone(), None).await?;
+//! let mut total = 0u64;
+//! while let Some(chunk) = stream.next().await? {
+//!     total += chunk.len() as u64;
+//!     // process chunk...
+//! }
+//! println!("received {total} bytes");
+//!
+//! // Byte-range request — only download bytes 1000..2000
+//! let mut range_stream = group.download_stream(file_info.clone(), Some(1000..2000)).await?;
+//! while let Some(chunk) = range_stream.next().await? {
+//!     // process partial data...
+//! }
 //! # Ok(())
 //! # }
 //! ```
