@@ -28,8 +28,6 @@ jobs:
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          token: ${{ github.token }}
       - name: Install Rust 1.94
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
         with:
@@ -94,7 +92,7 @@ jobs:
             --body "Automated version bump to ${VERSION} for crates.io release. Merge this PR to proceed with publishing." \
             --base main \
             --head "$BRANCH")
-          PR_NUMBER=$(gh pr view "$PR_URL" --json number --jq '.number')
+          PR_NUMBER=$(echo "$PR_URL" | sed 's|.*/||')
           echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
           echo "Created PR #${PR_NUMBER}: ${PR_URL}"
 
@@ -117,12 +115,6 @@ jobs:
             sleep 30
           done
 
-  # Publishes crates in dependency order:
-  #   xet-runtime → xet-core-structures → xet-client → xet-data → hf-xet
-  # cargo publish handles packaging internally; no separate cargo package step needed.
-  #
-  # Requires the "crates-release" GitHub environment to be configured with required reviewers
-  # for the manual approval gate.
   publish:
     name: Publish to crates.io
     runs-on: ubuntu-latest
@@ -141,17 +133,10 @@ jobs:
       - name: Authenticate to crates.io
         uses: rust-lang/crates-io-auth-action@bbd81622f20ce9e2dd9622e3218b975523e45bbe # v1.0.4
 
-      - name: Publish xet-runtime
-        run: cargo publish -p xet-runtime
-
-      - name: Publish xet-core-structures
-        run: cargo publish -p xet-core-structures
-
-      - name: Publish xet-client
-        run: cargo publish -p xet-client
-
-      - name: Publish xet-data
-        run: cargo publish -p xet-data
-
-      - name: Publish hf-xet
-        run: cargo publish --manifest-path hf_xet/Cargo.toml
+      - name: Publish crates
+        run: |
+          cargo publish -p xet-runtime
+          cargo publish -p xet-core-structures
+          cargo publish -p xet-client
+          cargo publish -p xet-data
+          cargo publish -p hf-xet
