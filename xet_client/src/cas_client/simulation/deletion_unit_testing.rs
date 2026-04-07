@@ -13,7 +13,7 @@ use std::sync::Arc;
 use xet_core_structures::merklehash::MerkleHash;
 
 use super::client_testing_utils::RandomFileContents;
-use super::deletion_controls::FileTag;
+use super::deletion_controls::ObjectTag;
 use super::{ClientTestingUtils, DeletionControlableClient, DirectAccessClient};
 
 /// Runs all common DeletionControlableClient tests using a factory that creates fresh clients.
@@ -351,7 +351,7 @@ async fn test_list_xorbs_and_tags<C: DirectAccessClient + DeletionControlableCli
     let listed_hashes: HashSet<MerkleHash> = xorbs_and_tags.iter().map(|(h, _)| *h).collect();
     assert_eq!(listed_hashes, expected_xorbs);
 
-    let zero_tag: FileTag = [0u8; 32];
+    let zero_tag: ObjectTag = [0u8; 32];
     for (_, tag) in &xorbs_and_tags {
         assert_ne!(tag, &zero_tag, "Tag should be non-zero");
     }
@@ -365,7 +365,7 @@ async fn test_delete_xorb_if_tag_matches<C: DirectAccessClient + DeletionControl
     let xorbs_and_tags = client.list_xorbs_and_tags().await.unwrap();
     let (_, correct_tag) = xorbs_and_tags.iter().find(|(h, _)| *h == xorb_hash).unwrap();
 
-    let wrong_tag: FileTag = [0xFFu8; 32];
+    let wrong_tag: ObjectTag = [0xFFu8; 32];
     let deleted = client.delete_xorb_if_tag_matches(&xorb_hash, &wrong_tag).await.unwrap();
     assert!(!deleted, "Wrong tag should not delete the xorb");
     assert!(client.xorb_exists(&xorb_hash).await.unwrap(), "Xorb should still exist after wrong tag");
@@ -388,7 +388,7 @@ async fn test_list_shards_with_tags<C: DirectAccessClient + DeletionControlableC
     let expected_hashes: HashSet<MerkleHash> = shard_entries.into_iter().collect();
     assert_eq!(listed_hashes, expected_hashes);
 
-    let zero_tag: FileTag = [0u8; 32];
+    let zero_tag: ObjectTag = [0u8; 32];
     for (_, tag) in &shards_and_tags {
         assert_ne!(tag, &zero_tag, "Tag should be non-zero");
     }
@@ -402,7 +402,7 @@ async fn test_delete_shard_if_tag_matches<C: DirectAccessClient + DeletionContro
     assert!(!shards_and_tags.is_empty());
     let (shard_hash, correct_tag) = &shards_and_tags[0];
 
-    let wrong_tag: FileTag = [0xFFu8; 32];
+    let wrong_tag: ObjectTag = [0xFFu8; 32];
     let deleted = client.delete_shard_if_tag_matches(shard_hash, &wrong_tag).await.unwrap();
     assert!(!deleted, "Wrong tag should not delete the shard");
     assert!(!client.list_shard_entries().await.unwrap().is_empty(), "Shard should still exist after wrong tag");
