@@ -9,11 +9,13 @@ use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::xorb_object::XorbObject;
 
 use super::simulation_types::{
-    FetchTermDataRequest, FetchTermDataResponse, FileShardsEntry, FileSizeResponse, XorbExistsResponse,
-    XorbLengthResponse, XorbRangesRequest, XorbRangesResponse, XorbRawLengthResponse,
+    FetchTermDataRequest, FetchTermDataResponse, FileShardsEntry, FileSizeResponse, HashWithTag, TagDeleteRequest,
+    TagDeleteResponse, XorbExistsResponse, XorbLengthResponse, XorbRangesRequest, XorbRangesResponse,
+    XorbRawLengthResponse,
 };
 use crate::cas_client::RemoteClient;
 use crate::cas_client::interface::Client;
+use crate::cas_client::simulation::deletion_controls::FileTag;
 use crate::cas_client::simulation::xorb_utils::duration_to_expiration_secs_ceil;
 use crate::cas_client::simulation::{DeletionControlableClient, DirectAccessClient};
 use crate::cas_types::{FileRange, HexMerkleHash, QueryReconstructionResponseV2, XorbReconstructionFetchInfo};
@@ -291,13 +293,6 @@ impl DirectAccessClient for SimulationControlClient {
         resp.json().await.map_err(|e| ClientError::Other(e.to_string()))
     }
 
-    /// Deletes a XORB by hash via the `/simulation/xorbs/{hash}` endpoint.
-    async fn delete_xorb(&self, hash: &MerkleHash) {
-        let hex = HexMerkleHash::from(*hash);
-        let url = self.sim_url(&format!("/xorbs/{hex}"));
-        let _ = self.http_client.delete(&url).send().await;
-    }
-
     /// Retrieves the full XORB contents by hash via the `/simulation/xorbs/{hash}` endpoint.
     async fn get_full_xorb(&self, hash: &MerkleHash) -> Result<Bytes> {
         let hex = HexMerkleHash::from(*hash);
@@ -524,6 +519,68 @@ impl DeletionControlableClient for SimulationControlClient {
             .map_err(|e| ClientError::Other(e.to_string()))?;
         Self::check_status(resp).await?;
         Ok(())
+    }
+
+    async fn delete_xorb(&self, hash: &MerkleHash) {
+        let hex = HexMerkleHash::from(*hash);
+        let url = self.sim_url(&format!("/xorbs/{hex}"));
+        let _ = self.http_client.delete(&url).send().await;
+    }
+
+    async fn list_xorbs_and_tags(&self) -> Result<Vec<(MerkleHash, FileTag)>> {
+        let resp = self
+            .http_client
+            .get(self.sim_url("/xorbs_with_tags"))
+            .send()
+            .await
+            .map_err(|e| ClientError::Other(e.to_string()))?;
+        let resp = Self::check_status(resp).await?;
+        let entries: Vec<HashWithTag> = resp.json().await.map_err(|e| ClientError::Other(e.to_string()))?;
+        Ok(entries.into_iter().map(|e| (e.hash, e.tag)).collect())
+    }
+
+    async fn delete_xorb_if_tag_matches(&self, hash: &MerkleHash, tag: &FileTag) -> Result<bool> {
+        let hex = HexMerkleHash::from(*hash);
+        let url = self.sim_url(&format!("/xorbs/{hex}/tag_delete"));
+        let body = TagDeleteRequest { tag: *tag };
+        let resp = self
+            .http_client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ClientError::Other(e.to_string()))?;
+        let resp = Self::check_status(resp).await?;
+        let result: TagDeleteResponse = resp.json().await.map_err(|e| ClientError::Other(e.to_string()))?;
+        Ok(result.deleted)
+    }
+
+    async fn list_shards_with_tags(&self) -> Result<Vec<(MerkleHash, FileTag)>> {
+        let resp = self
+            .http_client
+            .get(self.sim_url("/shards_with_tags"))
+            .send()
+            .await
+            .map_err(|e| ClientError::Other(e.to_string()))?;
+        let resp = Self::check_status(resp).await?;
+        let entries: Vec<HashWithTag> = resp.json().await.map_err(|e| ClientError::Other(e.to_string()))?;
+        Ok(entries.into_iter().map(|e| (e.hash, e.tag)).collect())
+    }
+
+    async fn delete_shard_if_tag_matches(&self, hash: &MerkleHash, tag: &FileTag) -> Result<bool> {
+        let hex = HexMerkleHash::from(*hash);
+        let url = self.sim_url(&format!("/shards/{hex}/tag_delete"));
+        let body = TagDeleteRequest { tag: *tag };
+        let resp = self
+            .http_client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ClientError::Other(e.to_string()))?;
+        let resp = Self::check_status(resp).await?;
+        let result: TagDeleteResponse = resp.json().await.map_err(|e| ClientError::Other(e.to_string()))?;
+        Ok(result.deleted)
     }
 
     async fn verify_integrity(&self) -> Result<()> {

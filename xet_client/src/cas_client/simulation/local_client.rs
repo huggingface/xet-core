@@ -29,6 +29,7 @@ use xet_core_structures::xorb_object::{SerializedXorbObject, XorbObject};
 use xet_runtime::fd_diagnostics::{report_fd_count, track_fd_scope};
 use xet_runtime::file_utils::SafeFileCreator;
 
+use super::deletion_controls::FileTag;
 use super::direct_access_client::DirectAccessClient;
 use super::xorb_utils::{self, REFERENCE_INSTANT, duration_to_expiration_secs_ceil};
 use crate::cas_client::Client;
@@ -279,6 +280,17 @@ impl LocalClient {
         }
     }
 
+    /// Builds a `FileTag` from the modification time of a file at the given path.
+    /// The tag encodes seconds-since-UNIX-epoch as 8 little-endian bytes, zero-padded to 32 bytes.
+    fn file_tag_from_path(path: &Path) -> Result<FileTag> {
+        let meta = std::fs::metadata(path).map_err(ClientError::internal)?;
+        let modified = meta.modified().map_err(ClientError::internal)?;
+        let secs = modified.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+        let mut tag = [0u8; 32];
+        tag[..8].copy_from_slice(&secs.to_le_bytes());
+        Ok(tag)
+    }
+
     /// Loads all shard data from disk into an in-memory shard.
     #[cfg(test)]
     fn load_all_shard_data(&self) -> Result<MDBInMemoryShard> {
@@ -420,23 +432,6 @@ impl DirectAccessClient for LocalClient {
                 }
             });
         Ok(ret)
-    }
-
-    async fn delete_xorb(&self, hash: &MerkleHash) {
-        let file_path = self.get_path_for_entry(hash);
-
-        // unset read-only for Windows to delete
-        #[cfg(windows)]
-        {
-            if let Ok(metadata) = std::fs::metadata(&file_path) {
-                let mut permissions = metadata.permissions();
-                #[allow(clippy::permissions_set_readonly_false)]
-                permissions.set_readonly(false);
-                let _ = std::fs::set_permissions(&file_path, permissions);
-            }
-        }
-
-        let _ = std::fs::remove_file(file_path);
     }
 
     async fn get_full_xorb(&self, hash: &MerkleHash) -> Result<Bytes> {
@@ -751,6 +746,84 @@ impl super::DeletionControlableClient for LocalClient {
         Ok(())
     }
 
+    async fn delete_xorb(&self, hash: &MerkleHash) {
+        let file_path = self.get_path_for_entry(hash);
+
+        #[cfg(windows)]
+        {
+            if let Ok(metadata) = std::fs::metadata(&file_path) {
+                let mut permissions = metadata.permissions();
+                #[allow(clippy::permissions_set_readonly_false)]
+                permissions.set_readonly(false);
+                let _ = std::fs::set_permissions(&file_path, permissions);
+            }
+        }
+
+        let _ = std::fs::remove_file(file_path);
+    }
+
+    async fn list_xorbs_and_tags(&self) -> Result<Vec<(MerkleHash, FileTag)>> {
+        let mut ret = Vec::new();
+        for entry in self.xorb_dir.read_dir().map_err(ClientError::internal)? {
+            let entry = entry.map_err(ClientError::internal)?;
+            let path = entry.path();
+            let Some(name) = entry.file_name().into_string().ok() else {
+                continue;
+            };
+            if let Some(pos) = name.rfind('.') {
+                let hex = &name[(pos + 1)..];
+                if let Ok(hash) = MerkleHash::from_hex(hex) {
+                    let tag = Self::file_tag_from_path(&path)?;
+                    ret.push((hash, tag));
+                }
+            }
+        }
+        Ok(ret)
+    }
+
+    async fn delete_xorb_if_tag_matches(&self, hash: &MerkleHash, tag: &FileTag) -> Result<bool> {
+        let file_path = self.get_path_for_entry(hash);
+        if !file_path.exists() {
+            return Err(ClientError::XORBNotFound(*hash));
+        }
+        let current_tag = Self::file_tag_from_path(&file_path)?;
+        if &current_tag != tag {
+            return Ok(false);
+        }
+
+        #[cfg(windows)]
+        {
+            if let Ok(metadata) = std::fs::metadata(&file_path) {
+                let mut permissions = metadata.permissions();
+                #[allow(clippy::permissions_set_readonly_false)]
+                permissions.set_readonly(false);
+                let _ = std::fs::set_permissions(&file_path, permissions);
+            }
+        }
+
+        std::fs::remove_file(&file_path)?;
+        Ok(true)
+    }
+
+    async fn list_shards_with_tags(&self) -> Result<Vec<(MerkleHash, FileTag)>> {
+        let mut ret = Vec::new();
+        for (hash, path) in self.shard_file_paths()? {
+            let tag = Self::file_tag_from_path(&path)?;
+            ret.push((hash, tag));
+        }
+        Ok(ret)
+    }
+
+    async fn delete_shard_if_tag_matches(&self, hash: &MerkleHash, tag: &FileTag) -> Result<bool> {
+        let path = self.shard_path_for_hash(hash)?;
+        let current_tag = Self::file_tag_from_path(&path)?;
+        if &current_tag != tag {
+            return Ok(false);
+        }
+        std::fs::remove_file(&path)?;
+        Ok(true)
+    }
+
     /// Verifies referential integrity of all shards on disk:
     /// 1. For each XORB entry listed in any shard, the corresponding XORB file must exist on disk.
     /// 2. For each file entry in any shard, every referenced XORB must exist on disk. (Global-dedup allows file entries
@@ -907,6 +980,26 @@ impl super::DeletionControlableClient for LocalClient {
                         )));
                     }
                 }
+            }
+        }
+
+        // Pass 3: verify that all shards referenced by the global dedup chunk table
+        // are present on disk.
+        let shard_hashes_on_disk: std::collections::HashSet<MerkleHash> = shard_files.iter().map(|(h, _)| *h).collect();
+
+        let read_txn = self.db.begin_read().map_err(map_redb_db_error)?;
+        let dedup_table = read_txn.open_table(GLOBAL_DEDUP_TABLE).map_err(map_redb_db_error)?;
+        for entry in dedup_table.iter().map_err(map_redb_db_error)? {
+            let (chunk_key, shard_val) = entry.map_err(map_redb_db_error)?;
+            let shard_hash: MerkleHash = shard_val.value().into();
+            if !shard_hashes_on_disk.contains(&shard_hash) {
+                let chunk_hash: MerkleHash = chunk_key.value().into();
+                return Err(ClientError::Other(format!(
+                    "Integrity error: global dedup table maps chunk {} to shard {} \
+                     which does not exist on disk",
+                    chunk_hash.hex(),
+                    shard_hash.hex()
+                )));
             }
         }
 
@@ -1653,6 +1746,12 @@ mod tests {
         client.upload_random_file(&[(1, (0, 3))], 2048).await.unwrap();
         client.verify_integrity().await.unwrap();
 
+        // Clear dedup entries for old shards before rewriting, so pass 3 doesn't
+        // flag stale references to the about-to-be-replaced shard files.
+        for h in client.list_shard_entries().await.unwrap() {
+            client.remove_shard_dedup_entries(&h).await.unwrap();
+        }
+
         let mut in_memory = client.load_all_shard_data().unwrap();
         in_memory.xorb_content.clear();
         client.write_shard_data_and_register(&in_memory).await.unwrap();
@@ -1678,6 +1777,12 @@ mod tests {
             client.delete_xorb(&t.xorb_hash).await;
         }
 
+        // Clear dedup entries for old shards before rewriting, so pass 3 doesn't
+        // flag stale references to the about-to-be-replaced shard files.
+        for h in client.list_shard_entries().await.unwrap() {
+            client.remove_shard_dedup_entries(&h).await.unwrap();
+        }
+
         // Remove deleted-file XORB entries from shard metadata too, so pass 1 doesn't fail
         // on deliberately removed XORB files.
         let mut in_memory = client.load_all_shard_data().unwrap();
@@ -1694,5 +1799,60 @@ mod tests {
         // Sanity check: the surviving file remains readable.
         let live_data = client.get_file_data(&live_file.file_hash, None).await.unwrap();
         assert_eq!(live_data, live_file.data);
+    }
+
+    /// Tests that verify_integrity catches stale global dedup table entries pointing
+    /// to shard files that have been removed.
+    #[tokio::test]
+    async fn test_verify_integrity_detects_stale_dedup_shard_reference() {
+        let client = LocalClient::temporary().await.unwrap();
+        let file = client.upload_random_file(&[(10, (0, 3))], 2048).await.unwrap();
+        client.verify_integrity().await.unwrap();
+
+        // Confirm dedup entries exist for the file's chunks.
+        let has_dedup = client
+            .query_for_global_dedup_shard("default", &file.terms[0].chunk_hashes[0])
+            .await
+            .unwrap()
+            .is_some();
+        assert!(has_dedup, "Dedup entry should exist after upload");
+
+        // Delete the shard file without clearing its dedup entries.
+        let shard_hashes = client.list_shard_entries().await.unwrap();
+        assert!(!shard_hashes.is_empty());
+        for h in &shard_hashes {
+            let path = client.shard_path_for_hash(h).unwrap();
+            std::fs::remove_file(&path).unwrap();
+        }
+
+        let result = client.verify_integrity().await;
+        assert!(result.is_err(), "verify_integrity should fail when dedup table references a missing shard");
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(err_msg.contains("global dedup table"), "Error should mention global dedup table");
+    }
+
+    /// Tests that list_xorbs_and_tags tags change after file re-creation with a timestamp delay.
+    #[tokio::test]
+    async fn test_list_xorbs_and_tags_timestamp_changes() {
+        let client = LocalClient::temporary().await.unwrap();
+
+        let file1 = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
+        let xorb_hash = file1.terms[0].xorb_hash;
+
+        let tags1 = client.list_xorbs_and_tags().await.unwrap();
+        let (_, tag1) = tags1.iter().find(|(h, _)| *h == xorb_hash).unwrap();
+
+        // Delete and wait 1 second so the filesystem timestamp advances.
+        client.delete_xorb(&xorb_hash).await;
+        std::thread::sleep(Duration::from_secs(1));
+
+        // Re-upload a file that creates a new xorb with the same hash seed.
+        let file2 = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
+        let xorb_hash2 = file2.terms[0].xorb_hash;
+
+        let tags2 = client.list_xorbs_and_tags().await.unwrap();
+        let (_, tag2) = tags2.iter().find(|(h, _)| *h == xorb_hash2).unwrap();
+
+        assert_ne!(tag1, tag2, "Tags should differ after re-creation with timestamp delay");
     }
 }

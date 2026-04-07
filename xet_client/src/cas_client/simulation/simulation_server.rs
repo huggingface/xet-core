@@ -574,10 +574,6 @@ impl DirectAccessClient for LocalTestServer {
         self.client.list_xorbs().await
     }
 
-    async fn delete_xorb(&self, hash: &xet_core_structures::merklehash::MerkleHash) {
-        self.client.delete_xorb(hash).await;
-    }
-
     async fn get_full_xorb(&self, hash: &xet_core_structures::merklehash::MerkleHash) -> Result<bytes::Bytes> {
         self.client.get_full_xorb(hash).await
     }
