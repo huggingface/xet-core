@@ -1088,7 +1088,7 @@ checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 
 [[package]]
 name = "hf-xet"
-version = "1.4.0"
+version = "1.5.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4198,7 +4198,7 @@ checksum = "9edde0db4769d2dc68579893f2306b26c6ecfbe0ef499b013d731b7b9247e0b9"
 
 [[package]]
 name = "xet-client"
-version = "1.4.0"
+version = "1.5.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4236,7 +4236,7 @@ dependencies = [
 
 [[package]]
 name = "xet-core-structures"
-version = "1.4.0"
+version = "1.5.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -4271,7 +4271,7 @@ dependencies = [
 
 [[package]]
 name = "xet-data"
-version = "1.4.0"
+version = "1.5.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4302,7 +4302,7 @@ dependencies = [
 
 [[package]]
 name = "xet-runtime"
-version = "1.4.0"
+version = "1.5.1"
 dependencies = [
  "anyhow",
  "async-trait",
