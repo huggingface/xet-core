@@ -1,120 +1,157 @@
 name: Crates.io Release
-run-name: crates.io release ${{ inputs.tag }}
+run-name: crates.io release ${{ inputs.version }}
 
 on:
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'Version to publish (e.g. 1.4.0, no v prefix)'
+      version:
+        description: 'Version to publish (e.g. 1.6.0, no v prefix)'
         required: true
-      dry_run:
-        description: 'Dry run — validate and package without publishing'
-        type: boolean
-        default: false
 
 permissions:
-  contents: read
+  contents: write
+  pull-requests: write
+  id-token: write
 
 concurrency:
   group: crates-release
   cancel-in-progress: false
 
-# Placeholder secrets required:
-#   CARGO_REGISTRY_TOKEN — crates.io API token with publish scope.
-#     Generate at https://crates.io/settings/tokens/new
-#     Add as a secret in the "crates-release" GitHub environment.
+# Trusted Publishing via OIDC — no long-lived secrets required.
+# Configure once per crate on crates.io: Settings → Trusted Publishing → Add GitHub.
+# Set Owner, Repository, Workflow name (crates-release.yml), and Environment (crates-release).
 
 jobs:
-  validate:
-    name: Validate & Test
-    runs-on: ubuntu-22.04
+  bump_crates_version:
+    name: Bump crate versions and create PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
     steps:
-      - uses: actions/checkout@v6
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.89.0
-
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          token: ${{ github.token }}
+      - name: Install Rust 1.94
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
+        with:
+          toolchain: 1.94.1
       - uses: ./.github/actions/cache-rust-build
-
-      - &update_crate_versions
-        name: Update crate versions
+      
+      - name: Update crate versions
         env:
-          VERSION: ${{ inputs.tag }}
+          VERSION: ${{ inputs.version }}
         run: |
-          sed -i 's/^version = ".*"/version = "'"$VERSION"'"/' Cargo.toml
+          # Update version only within [workspace.package] section
+          awk -v ver="$VERSION" '
+            /^\[workspace\.package\]/ { in_wp=1 }
+            /^\[/ && !/^\[workspace\.package\]/ { in_wp=0 }
+            in_wp && /^version = / { printf "version = \"%s\"\n", ver; next }
+            { print }
+          ' Cargo.toml > Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml
+
+          # Update dependency version fields for the four released crates only
           find . -name "Cargo.toml" \
             -not -path "./hf_xet/*" \
+            -not -path "./git_xet/*" \
             -not -path "./wasm/*" \
             -not -path "./target/*" \
-            -exec sed -i 's/version = "[0-9][^"]*", path = "\.\.\//version = "'"$VERSION"'", path = "..\//g' {} +
+            -exec sed -i \
+              -e 's/\(xet-runtime = { version = "\)[^"]*"/\1'"$VERSION"'"/g' \
+              -e 's/\(xet-core-structures = { version = "\)[^"]*"/\1'"$VERSION"'"/g' \
+              -e 's/\(xet-client = { version = "\)[^"]*"/\1'"$VERSION"'"/g' \
+              -e 's/\(xet-data = { version = "\)[^"]*"/\1'"$VERSION"'"/g' \
+              {} +
 
       - name: Check workspace compiles
-        run: cargo check --workspace
+        run: cargo build
 
       - name: Run tests
         run: cargo test --workspace
 
-      - name: Validate crate packaging
+      - uses: ./.github/actions/build-wasm
+
+      - name: Build hf-xet wheel
+        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1
+        with:
+          command: develop
+          sccache: 'true'
+          working-directory: hf_xet
+
+      - name: Create version bump PR
+        id: create_pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
         run: |
-          for crate in xet-runtime xet-core-structures xet-client xet-data hf-xet; do
-            echo "=== Verifying package for $crate ==="
-            cargo package -p "$crate" --allow-dirty
-            echo ""
+          BRANCH="crates-release/${VERSION}"
+          git config user.name "Hugging Face Bot (Crates release)"
+          git config user.email "bot+xet@huggingface.co"
+          git checkout -b "$BRANCH"
+          git add -u
+          git commit -m "chore: bump crate versions to ${VERSION}"
+          git push origin "$BRANCH"
+          PR_URL=$(gh pr create \
+            --title "Upgrade crates version to ${VERSION}" \
+            --body "Automated version bump to ${VERSION} for crates.io release. Merge this PR to proceed with publishing." \
+            --base main \
+            --head "$BRANCH")
+          PR_NUMBER=$(gh pr view "$PR_URL" --json number --jq '.number')
+          echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "Created PR #${PR_NUMBER}: ${PR_URL}"
+
+      - name: Wait for PR to merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_NUMBER=${{ steps.create_pr.outputs.pr_number }}
+          echo "Waiting for PR #${PR_NUMBER} to be merged..."
+          while true; do
+            STATE=$(gh pr view "${PR_NUMBER}" --json state --jq '.state')
+            if [ "$STATE" = "MERGED" ]; then
+              echo "PR #${PR_NUMBER} merged. Proceeding."
+              break
+            elif [ "$STATE" = "CLOSED" ]; then
+              echo "Error: PR #${PR_NUMBER} was closed without merging. Aborting release."
+              exit 1
+            fi
+            echo "PR state: ${STATE}. Waiting 30s..."
+            sleep 30
           done
 
   # Publishes crates in dependency order:
   #   xet-runtime → xet-core-structures → xet-client → xet-data → hf-xet
+  # cargo publish handles packaging internally; no separate cargo package step needed.
   #
-  # Requires the "crates-release" GitHub environment to be configured with:
-  #   - Required reviewers (approval gate)
-  #   - CARGO_REGISTRY_TOKEN secret
+  # Requires the "crates-release" GitHub environment to be configured with required reviewers
+  # for the manual approval gate.
   publish:
     name: Publish to crates.io
-    runs-on: ubuntu-22.04
-    needs: [validate]
-    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    needs: bump_crates_version
     environment: crates-release
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: main
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.89.0
+      - name: Install Rust 1.94
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
+        with:
+          toolchain: 1.94.1
 
-      - *update_crate_versions
+      - name: Authenticate to crates.io
+        uses: rust-lang/crates-io-auth-action@bbd81622f20ce9e2dd9622e3218b975523e45bbe # v1.0.4
 
       - name: Publish xet-runtime
-        run: cargo publish -p xet-runtime --allow-dirty
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      - name: Wait for crates.io index
-        run: sleep 30
+        run: cargo publish -p xet-runtime
 
       - name: Publish xet-core-structures
-        run: cargo publish -p xet-core-structures --allow-dirty
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      - name: Wait for crates.io index
-        run: sleep 30
+        run: cargo publish -p xet-core-structures
 
       - name: Publish xet-client
-        run: cargo publish -p xet-client --allow-dirty
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      - name: Wait for crates.io index
-        run: sleep 30
+        run: cargo publish -p xet-client
 
       - name: Publish xet-data
-        run: cargo publish -p xet-data --allow-dirty
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      - name: Wait for crates.io index
-        run: sleep 30
+        run: cargo publish -p xet-data
 
       - name: Publish hf-xet
-        run: cargo publish -p hf-xet --allow-dirty
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --manifest-path hf_xet/Cargo.toml
