@@ -12,9 +12,9 @@ pub type ObjectTag = [u8; 32];
 
 /// Trait for clients that support deletion and integrity operations on shards and file entries.
 ///
-/// This is implemented by `LocalClient` which has disk-backed storage. Operations that go
-/// through the local server will return 501 Not Implemented if the underlying client does
-/// not support these operations.
+/// Implemented by `LocalClient` (disk-backed) and `MemoryClient` (in-memory).
+/// Operations routed through the local server return 501 if the underlying
+/// client does not implement this trait.
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 pub trait DeletionControlableClient: Send + Sync {

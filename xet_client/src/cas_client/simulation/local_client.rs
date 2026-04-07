@@ -303,6 +303,17 @@ impl LocalClient {
         Ok(compute_data_hash(&entropy).into())
     }
 
+    /// Clears the readonly permission on a file so it can be deleted on Windows.
+    #[cfg(windows)]
+    fn clear_readonly(path: &Path) {
+        if let Ok(metadata) = std::fs::metadata(path) {
+            let mut permissions = metadata.permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            permissions.set_readonly(false);
+            let _ = std::fs::set_permissions(path, permissions);
+        }
+    }
+
     /// Loads all shard data from disk into an in-memory shard.
     #[cfg(test)]
     fn load_all_shard_data(&self) -> Result<MDBInMemoryShard> {
@@ -762,14 +773,7 @@ impl super::DeletionControlableClient for LocalClient {
         let file_path = self.get_path_for_entry(hash);
 
         #[cfg(windows)]
-        {
-            if let Ok(metadata) = std::fs::metadata(&file_path) {
-                let mut permissions = metadata.permissions();
-                #[allow(clippy::permissions_set_readonly_false)]
-                permissions.set_readonly(false);
-                let _ = std::fs::set_permissions(&file_path, permissions);
-            }
-        }
+        Self::clear_readonly(&file_path);
 
         let _ = std::fs::remove_file(file_path);
     }
@@ -804,14 +808,7 @@ impl super::DeletionControlableClient for LocalClient {
         }
 
         #[cfg(windows)]
-        {
-            if let Ok(metadata) = std::fs::metadata(&file_path) {
-                let mut permissions = metadata.permissions();
-                #[allow(clippy::permissions_set_readonly_false)]
-                permissions.set_readonly(false);
-                let _ = std::fs::set_permissions(&file_path, permissions);
-            }
-        }
+        Self::clear_readonly(&file_path);
 
         std::fs::remove_file(&file_path)?;
         Ok(true)

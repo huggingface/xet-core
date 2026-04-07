@@ -379,8 +379,7 @@ async fn test_delete_xorb_if_tag_matches<C: DirectAccessClient + DeletionControl
 async fn test_list_shards_with_tags<C: DirectAccessClient + DeletionControlableClient + 'static>(client: Arc<C>) {
     assert!(client.list_shards_with_tags().await.unwrap().is_empty());
 
-    let file = client.upload_random_file(&[(1, (0, 3))], 2048).await.unwrap();
-    let _ = expected_xorb_hashes(&[&file]);
+    client.upload_random_file(&[(1, (0, 3))], 2048).await.unwrap();
 
     let shards_and_tags = client.list_shards_with_tags().await.unwrap();
     let shard_entries = client.list_shard_entries().await.unwrap();

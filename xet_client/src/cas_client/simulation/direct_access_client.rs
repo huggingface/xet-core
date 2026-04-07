@@ -21,7 +21,7 @@ use crate::error::Result;
 /// A Client with direct access to XORB and file storage.
 ///
 /// This trait extends the standard Client interface with methods for:
-/// - Direct XORB access (read, list, delete)
+/// - Direct XORB access (read, list)
 /// - File data retrieval
 /// - URL expiration control
 /// - API delay simulation

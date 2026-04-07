@@ -11,7 +11,9 @@ use tokio::sync::RwLock;
 use tokio::time::{Duration, Instant};
 use tracing::{error, info};
 use xet_core_structures::MerkleHashMap;
-use xet_core_structures::merklehash::{MerkleHash, compute_data_hash};
+use xet_core_structures::merklehash::MerkleHash;
+#[cfg(not(target_family = "wasm"))]
+use xet_core_structures::merklehash::compute_data_hash;
 use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::metadata_shard::streaming_shard::MDBMinimalShard;
@@ -22,6 +24,7 @@ use super::super::Client;
 use super::super::adaptive_concurrency::AdaptiveConcurrencyController;
 use super::super::progress_tracked_streams::ProgressCallback;
 use super::client_testing_utils::{FileTermReference, RandomFileContents};
+#[cfg(not(target_family = "wasm"))]
 use super::deletion_controls::ObjectTag;
 use super::direct_access_client::DirectAccessClient;
 use super::random_xorb::RandomXorb;
@@ -215,6 +218,7 @@ impl MemoryClient {
         })
     }
 
+    #[cfg(not(target_family = "wasm"))]
     fn current_shard_hash_and_bytes(shard: &MDBInMemoryShard) -> Result<Option<(MerkleHash, Bytes)>> {
         if shard.is_empty() {
             return Ok(None);
@@ -224,6 +228,7 @@ impl MemoryClient {
         Ok(Some((hash, bytes)))
     }
 
+    #[cfg(not(target_family = "wasm"))]
     fn object_tag_from_key_and_payload(prefix: &[u8], key: &MerkleHash, payload: &[u8]) -> ObjectTag {
         let key_bytes: [u8; 32] = (*key).into();
         let payload_hash: [u8; 32] = compute_data_hash(payload).into();
@@ -232,6 +237,19 @@ impl MemoryClient {
         entropy.extend_from_slice(&key_bytes);
         entropy.extend_from_slice(&payload_hash);
         compute_data_hash(&entropy).into()
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn xorb_tag(hash: &MerkleHash, storage: &XorbStorage) -> ObjectTag {
+        match storage {
+            XorbStorage::Materialized(entry) => {
+                Self::object_tag_from_key_and_payload(b"xorb", hash, entry.serialized_data.as_ref())
+            },
+            XorbStorage::Random(random_xorb) => {
+                let entropy = random_xorb.num_chunks().to_le_bytes();
+                Self::object_tag_from_key_and_payload(b"xorb", hash, &entropy)
+            },
+        }
     }
 }
 
@@ -943,8 +961,8 @@ impl Client for MemoryClient {
     }
 }
 
-#[cfg_attr(not(target_family = "wasm"), async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+#[cfg(not(target_family = "wasm"))]
+#[async_trait]
 impl super::DeletionControlableClient for MemoryClient {
     async fn list_shard_entries(&self) -> Result<Vec<MerkleHash>> {
         let shard = self.shard.read().await;
@@ -1017,21 +1035,10 @@ impl super::DeletionControlableClient for MemoryClient {
 
     async fn list_xorbs_and_tags(&self) -> Result<Vec<(MerkleHash, ObjectTag)>> {
         let xorbs = self.xorbs.read().await;
-        let mut out = Vec::with_capacity(xorbs.len());
-        for (hash, storage) in xorbs.iter() {
-            let tag = match storage {
-                XorbStorage::Materialized(entry) => {
-                    Self::object_tag_from_key_and_payload(b"xorb", hash, entry.serialized_data.as_ref())
-                },
-                XorbStorage::Random(random_xorb) => {
-                    let mut entropy = Vec::with_capacity(8);
-                    entropy.extend_from_slice(&random_xorb.num_chunks().to_le_bytes());
-                    Self::object_tag_from_key_and_payload(b"xorb", hash, &entropy)
-                },
-            };
-            out.push((*hash, tag));
-        }
-        Ok(out)
+        Ok(xorbs
+            .iter()
+            .map(|(hash, storage)| (*hash, Self::xorb_tag(hash, storage)))
+            .collect())
     }
 
     async fn delete_xorb_if_tag_matches(&self, hash: &MerkleHash, tag: &ObjectTag) -> Result<bool> {
@@ -1039,17 +1046,7 @@ impl super::DeletionControlableClient for MemoryClient {
         let Some(storage) = xorbs.get(hash) else {
             return Err(ClientError::XORBNotFound(*hash));
         };
-        let current_tag = match storage {
-            XorbStorage::Materialized(entry) => {
-                Self::object_tag_from_key_and_payload(b"xorb", hash, entry.serialized_data.as_ref())
-            },
-            XorbStorage::Random(random_xorb) => {
-                let mut entropy = Vec::with_capacity(8);
-                entropy.extend_from_slice(&random_xorb.num_chunks().to_le_bytes());
-                Self::object_tag_from_key_and_payload(b"xorb", hash, &entropy)
-            },
-        };
-        if &current_tag != tag {
+        if &Self::xorb_tag(hash, storage) != tag {
             return Ok(false);
         }
         xorbs.remove(hash);
