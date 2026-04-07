@@ -1,3 +1,11 @@
+//! Legacy helpers re-exported for backward compatibility.
+//!
+//! This module exposes lower-level types and functions used by the Python
+//! bindings (`hf_xet`) and `git_xet`.  New code should use the
+//! [`xet_session`](crate::xet_session) API instead — it provides a safer,
+//! higher-level interface with built-in progress tracking, token refresh,
+//! and automatic runtime management.
+
 pub mod data_client;
 pub mod progress_tracking;
 

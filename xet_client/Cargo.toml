@@ -3,16 +3,20 @@ name = "xet-client"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+homepage.workspace = true
 repository.workspace = true
-description = "HTTPS client for communicating with Hugging Face Xet storage servers"
+description = "Client library for communicating with Hugging Face Xet storage servers.  Use through the hf-xet crate."
+readme = "README.md"
+keywords = ["huggingface"]
+categories = ["artificial-intelligence", "network-programming"]
 
 [lib]
 name = "xet_client"
 path = "src/lib.rs"
 
 [dependencies]
-xet-runtime = { version = "1.4.0", path = "../xet_runtime" }
-xet-core-structures = { version = "1.4.0", path = "../xet_core_structures" }
+xet-runtime = { version = "1.5.1", path = "../xet_runtime" }
+xet-core-structures = { version = "1.5.1", path = "../xet_core_structures" }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -42,7 +46,13 @@ url = { workspace = true }
 urlencoding = { workspace = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
-tokio = { workspace = true, features = ["sync", "macros", "io-util", "rt", "time"] }
+tokio = { workspace = true, features = [
+    "sync",
+    "macros",
+    "io-util",
+    "rt",
+    "time",
+] }
 web-time = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
@@ -65,7 +75,14 @@ rustls-tls = ["reqwest/rustls"]
 native-tls = ["reqwest/native-tls"]
 native-tls-vendored = ["reqwest/native-tls-vendored"]
 analysis = []
-simulation = ["dep:axum", "dep:humantime", "dep:futures-util", "dep:human-bandwidth", "dep:tower-http", "xet-core-structures/simulation"]
+simulation = [
+    "dep:axum",
+    "dep:humantime",
+    "dep:futures-util",
+    "dep:human-bandwidth",
+    "dep:tower-http",
+    "xet-core-structures/simulation",
+]
 
 [[bin]]
 name = "local_cas_server"

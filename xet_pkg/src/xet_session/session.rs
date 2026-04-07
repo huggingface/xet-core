@@ -48,8 +48,17 @@ pub struct XetSessionInner {
 ///
 /// All fields are optional; call [`build`](XetSessionBuilder::build) when done.
 ///
-/// [`build`](Self::build) auto-detects a suitable current tokio handle when present,
-/// or creates an owned runtime (see [`XetSessionBuilder::with_tokio_handle`]).
+/// ## Runtime detection
+///
+/// [`build`](Self::build) auto-detects a suitable tokio runtime:
+///
+/// - **Inside `#[tokio::main]` or an existing tokio multi-thread runtime** and the runtime meets the requirements — the
+///   session wraps the caller's handle; no second thread pool is created.  Both async and blocking methods work.
+/// - **Outside any runtime** — an owned multi-thread runtime is created internally. Blocking methods (`_blocking`
+///   suffix) work from any thread; async methods work via an internal bridge.
+/// - **Explicit handle** — call [`with_tokio_handle`](Self::with_tokio_handle) to supply a handle directly.  If it
+///   doesn't meet requirements (multi-thread, time + IO drivers), it is silently ignored and an owned runtime is
+///   created instead.
 ///
 /// ## Authentication
 ///
@@ -91,6 +100,12 @@ pub struct XetSessionInner {
 ///     .build_blocking()?;
 /// # Ok::<(), xet::xet_session::SessionError>(())
 /// ```
+///
+/// ## `XetConfig`
+///
+/// For most use cases, [`new`](Self::new) with the default [`XetConfig`] is
+/// sufficient.  Use [`new_with_config`](Self::new_with_config) when you need to
+/// override runtime settings such as cache directories or concurrency limits.
 pub struct XetSessionBuilder {
     config: XetConfig,
     tokio_handle: Option<tokio::runtime::Handle>,

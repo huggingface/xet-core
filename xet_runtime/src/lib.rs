@@ -1,3 +1,10 @@
+//! Async runtime, configuration, logging, and utility infrastructure for
+//! the Hugging Face Xet storage tools.
+//!
+//! This crate provides the shared foundation used by all crates in the
+//! xet-core ecosystem: a Tokio-based async runtime, hierarchical
+//! configuration, structured tracing-based logging, and common error types.
+
 #![cfg_attr(feature = "strict", deny(warnings))]
 
 pub mod error;

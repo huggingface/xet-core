@@ -33,6 +33,7 @@ pub struct RetryWrapper {
     base_delay: Duration,
     no_retry_on_429: bool,
     retry_on_403: bool,
+    expected_416: bool,
     log_errors_as_info: bool,
     api_tag: &'static str,
     connection_permit: Option<Mutex<ConnectionPermitInfo>>,
@@ -48,6 +49,7 @@ impl RetryWrapper {
             base_delay,
             no_retry_on_429: false,
             retry_on_403: false,
+            expected_416: false,
             log_errors_as_info: false,
             api_tag,
             connection_permit: None,
@@ -71,6 +73,11 @@ impl RetryWrapper {
 
     pub fn with_retry_on_403(mut self) -> Self {
         self.retry_on_403 = true;
+        self
+    }
+
+    pub fn with_expected_416(mut self) -> Self {
+        self.expected_416 = true;
         self
     }
 
@@ -160,6 +167,9 @@ impl RetryWrapper {
                 if e.status() == Some(StatusCode::FORBIDDEN) && self.retry_on_403 {
                     let cas_err = process_error("Retry on 403 (Forbidden) enabled)", e, true);
                     Err(RetryableReqwestError::RetryableError(cas_err))
+                } else if e.status() == Some(StatusCode::RANGE_NOT_SATISFIABLE) && self.expected_416 {
+                    let cas_err = process_error("Reached end of reconstruction 416 (Range Not Satisfiable)", e, true);
+                    Err(RetryableReqwestError::FatalError(cas_err))
                 } else {
                     let cas_err = process_error("Fatal Error", e, false);
                     Err(RetryableReqwestError::FatalError(cas_err))
