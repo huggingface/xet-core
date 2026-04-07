@@ -371,6 +371,7 @@ impl AdaptiveConcurrencyController {
             rtt_model_at_start: Some(self.state.lock().await.rtt_predictor.clone()),
             report_portion: AtomicU32::new(0),
             last_partial_report_ms: AtomicU64::new(0),
+            max_bytes_reported: AtomicU64::new(0),
         });
 
         Ok(ConnectionPermit { _permit, info })
@@ -450,8 +451,10 @@ impl AdaptiveConcurrencyController {
 
         let mut state_lg = self.state.lock().await;
 
-        // Update the bytes sent so far.
-        state_lg.bytes_sent_so_far += n_bytes_if_known.unwrap_or(0);
+        if let Some(n_bytes) = n_bytes_if_known {
+            let previous = permit_info.max_bytes_reported.fetch_max(n_bytes, Ordering::AcqRel);
+            state_lg.bytes_sent_so_far += n_bytes.saturating_sub(previous);
+        }
 
         // Increment completed transmissions count when a transmission completes (not a partial update).
         if !partial_update {
@@ -608,6 +611,9 @@ pub struct ConnectionPermitInfo {
     report_portion: AtomicU32,
     /// Last time (in milliseconds since reference instant) when a partial report was sent
     last_partial_report_ms: AtomicU64,
+    /// Maximum cumulative bytes reported for this permit; used to derive incremental deltas
+    /// so that bytes_sent_so_far is not inflated by repeated cumulative progress reports.
+    max_bytes_reported: AtomicU64,
 }
 
 /// A permit for a connection.  This can be used to track the start time of a transfer and report back
