@@ -309,10 +309,6 @@ impl DirectAccessClient for MemoryClient {
         Ok(self.xorbs.read().await.keys().copied().collect())
     }
 
-    async fn delete_xorb(&self, hash: &MerkleHash) {
-        self.xorbs.write().await.remove(hash);
-    }
-
     async fn get_full_xorb(&self, hash: &MerkleHash) -> Result<Bytes> {
         let xorbs = self.xorbs.read().await;
         let storage = xorbs.get(hash).ok_or_else(|| {
@@ -1036,10 +1032,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(partial, xorb.get_serialized_range(10, 50));
-
-        // Deletion
-        client.delete_xorb(&xorb_hash).await;
-        assert!(!client.xorb_exists(&xorb_hash).await.unwrap());
     }
 
     /// Test RandomXorb with large chunk count and scattered range access.

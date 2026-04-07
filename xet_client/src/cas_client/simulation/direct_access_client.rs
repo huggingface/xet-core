@@ -92,9 +92,6 @@ pub trait DirectAccessClient: Client + Send + Sync {
     /// Returns all XORB hashes stored in this client.
     async fn list_xorbs(&self) -> Result<Vec<MerkleHash>>;
 
-    /// Deletes a XORB by hash.
-    async fn delete_xorb(&self, hash: &MerkleHash);
-
     /// Get all uncompressed bytes from a XORB.
     async fn get_full_xorb(&self, hash: &MerkleHash) -> Result<Bytes>;
 
