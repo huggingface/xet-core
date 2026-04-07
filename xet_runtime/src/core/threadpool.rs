@@ -742,17 +742,19 @@ mod tests {
 
     #[test]
     fn test_get_or_create_reqwest_client_returns_client() {
-        let ctx = XetRuntime::default().unwrap();
-        let result = ctx.get_or_create_reqwest_client("test".to_string(), || reqwest::Client::builder().build());
+        let runtime = XetRuntime::default().unwrap();
+        let result = runtime
+            .common
+            .get_or_create_reqwest_client("test".to_string(), || reqwest::Client::builder().build());
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_bridge_async_owned_mode_runs_on_pool() {
-        let ctx = XetRuntime::default().unwrap();
-        assert_eq!(ctx.threadpool.mode(), RuntimeMode::Owned);
-        let rt = ctx.threadpool.clone();
-        let result = ctx
+        let runtime = XetRuntime::default().unwrap();
+        assert_eq!(runtime.threadpool.mode(), RuntimeMode::Owned);
+        let rt = runtime.threadpool.clone();
+        let result = runtime
             .threadpool
             .bridge_sync(async move { rt.bridge_async("test", async { 42 }).await.unwrap() });
         assert_eq!(result.unwrap(), 42);
@@ -763,30 +765,30 @@ mod tests {
         let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         let config = XetConfig::new();
         let rt = XetThreadpool::from_external_with_config(tokio_rt.handle().clone(), &config).unwrap();
-        let ctx = XetRuntime::new(rt, config);
-        assert_eq!(ctx.threadpool.mode(), RuntimeMode::External);
+        let runtime = XetRuntime::new(config, rt);
+        assert_eq!(runtime.threadpool.mode(), RuntimeMode::External);
 
-        let result = tokio_rt.block_on(async { ctx.threadpool.bridge_async("test", async { 99 }).await.unwrap() });
+        let result = tokio_rt.block_on(async { runtime.threadpool.bridge_async("test", async { 99 }).await.unwrap() });
         assert_eq!(result, 99);
     }
 
     #[test]
     fn test_bridge_sync_owned_mode() {
-        let ctx = XetRuntime::default().unwrap();
-        assert_eq!(ctx.threadpool.mode(), RuntimeMode::Owned);
-        let result = ctx.threadpool.bridge_sync(async { 123 }).unwrap();
+        let runtime = XetRuntime::default().unwrap();
+        assert_eq!(runtime.threadpool.mode(), RuntimeMode::Owned);
+        let result = runtime.threadpool.bridge_sync(async { 123 }).unwrap();
         assert_eq!(result, 123);
     }
 
     #[test]
-    fn test_default_with_config_reuses_owned_threadpool_from_tls() {
+    fn test_default_reuses_owned_threadpool_from_tls() {
         let parent = XetRuntime::default().unwrap();
         let parent_threadpool = parent.threadpool.clone();
         let parent_config = parent.config.clone();
 
         let child = parent
             .threadpool
-            .bridge_sync(async move { XetRuntime::default_with_config(XetConfig::new()).unwrap() })
+            .bridge_sync(async move { XetRuntime::default().unwrap() })
             .unwrap();
 
         assert!(Arc::ptr_eq(&child.threadpool, &parent_threadpool));
@@ -795,11 +797,11 @@ mod tests {
 
     #[test]
     fn test_bridge_sync_from_spawn_blocking_owned_mode() {
-        let ctx = XetRuntime::default().unwrap();
-        let rt = ctx.threadpool.clone();
-        let rt2 = ctx.threadpool.clone();
+        let runtime = XetRuntime::default().unwrap();
+        let rt = runtime.threadpool.clone();
+        let rt2 = runtime.threadpool.clone();
         let jh = rt.spawn_blocking(move || rt2.bridge_sync(async { 456 }).unwrap());
-        let result = ctx.threadpool.bridge_sync(async { jh.await.unwrap() }).unwrap();
+        let result = runtime.threadpool.bridge_sync(async { jh.await.unwrap() }).unwrap();
         assert_eq!(result, 456);
     }
 
@@ -808,10 +810,10 @@ mod tests {
         let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         let config = XetConfig::new();
         let rt = XetThreadpool::from_external_with_config(tokio_rt.handle().clone(), &config).unwrap();
-        let ctx = XetRuntime::new(rt, config);
-        assert_eq!(ctx.threadpool.mode(), RuntimeMode::External);
+        let runtime = XetRuntime::new(config, rt);
+        assert_eq!(runtime.threadpool.mode(), RuntimeMode::External);
 
-        let result = ctx.threadpool.bridge_sync(async { 789 });
+        let result = runtime.threadpool.bridge_sync(async { 789 });
         assert!(matches!(result, Err(RuntimeError::InvalidRuntime(_))));
     }
 
@@ -865,9 +867,9 @@ mod tests {
 
     #[test]
     fn test_bridge_async_owned_mode_catches_panic() {
-        let ctx = XetRuntime::default().unwrap();
-        let rt = ctx.threadpool.clone();
-        let result = ctx.threadpool.bridge_sync(async move {
+        let runtime = XetRuntime::default().unwrap();
+        let rt = runtime.threadpool.clone();
+        let result = runtime.threadpool.bridge_sync(async move {
             rt.bridge_async("panic_test", async {
                 panic!("intentional test panic");
             })
@@ -883,13 +885,13 @@ mod tests {
         let mut config = XetConfig::new();
         config.data.default_cas_endpoint = "https://test-endpoint.example.com".into();
         let rt = XetThreadpool::from_external(tokio_rt.handle().clone());
-        let ctx = XetRuntime::new(rt, config);
-        assert_eq!(ctx.config.data.default_cas_endpoint, "https://test-endpoint.example.com");
+        let runtime = XetRuntime::new(config, rt);
+        assert_eq!(runtime.config.data.default_cas_endpoint, "https://test-endpoint.example.com");
     }
 
     #[test]
     fn test_check_sigint_shutdown_not_triggered() {
-        let ctx = XetRuntime::default().unwrap();
-        assert!(ctx.check_sigint_shutdown().is_ok());
+        let runtime = XetRuntime::default().unwrap();
+        assert!(runtime.check_sigint_shutdown().is_ok());
     }
 }

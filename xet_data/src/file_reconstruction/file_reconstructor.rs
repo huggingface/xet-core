@@ -1233,7 +1233,8 @@ mod tests {
         runtime_config.reconstruction.download_buffer_limit = xet_runtime::utils::ByteSize::from("4kb");
         let expected_total = runtime_config.reconstruction.download_buffer_limit.as_u64();
 
-        let ctx = XetRuntime::default_with_config(runtime_config).unwrap();
+        let threadpool = XetThreadpool::new(&runtime_config).unwrap();
+        let ctx = XetRuntime::new(runtime_config, threadpool);
         let rt = ctx.threadpool.clone();
 
         rt.bridge_sync(async move {
@@ -1625,7 +1626,7 @@ mod tests {
         fn with_multirange_config(enable: bool) -> Arc<XetThreadpool> {
             let mut config = xet_runtime::config::XetConfig::new();
             config.client.enable_multirange_fetching = enable;
-            XetRuntime::default_with_config(config).unwrap().threadpool.clone()
+            XetThreadpool::new(&config).unwrap()
         }
 
         /// Exercises multiple disjoint-range scenarios through LocalClient with both
@@ -1910,7 +1911,7 @@ mod tests {
         fn with_multirange_config(enable: bool) -> Arc<XetThreadpool> {
             let mut config = xet_runtime::config::XetConfig::new();
             config.client.enable_multirange_fetching = enable;
-            XetRuntime::default_with_config(config).unwrap().threadpool.clone()
+            XetThreadpool::new(&config).unwrap()
         }
 
         /// Exercises HTTP server path with full, max-ranges-split, and partial-range

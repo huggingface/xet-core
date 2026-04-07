@@ -582,6 +582,7 @@ mod tests {
     use rand::prelude::*;
     use tempfile::TempDir;
     use tokio::runtime::Handle;
+    use xet_runtime::config::XetConfig;
     use xet_runtime::core::XetRuntime;
 
     use super::super::file_structs::FileDataSequenceHeader;
@@ -593,7 +594,7 @@ mod tests {
     use crate::error::Result;
 
     fn test_ctx() -> XetRuntime {
-        XetRuntime::from_external(Handle::current())
+        XetRuntime::from_external(Handle::current(), XetConfig::new())
     }
 
     #[allow(clippy::type_complexity)]

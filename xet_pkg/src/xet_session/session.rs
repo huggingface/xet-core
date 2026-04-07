@@ -173,7 +173,7 @@ impl XetSessionBuilder {
             info!("XetSession creating Owned runtime (new thread pool)");
             XetThreadpool::new(&self.config)?
         };
-        let ctx = XetRuntime::new(threadpool, self.config);
+        let ctx = XetRuntime::new(self.config, threadpool);
 
         let session = XetSession::new(ctx);
         info!("Session created, session_id={}", session.inner.id);

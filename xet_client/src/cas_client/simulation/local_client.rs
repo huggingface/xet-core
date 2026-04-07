@@ -1374,7 +1374,7 @@ mod tests {
 
     fn test_ctx() -> XetRuntime {
         let config = XetConfig::new();
-        XetRuntime::from_external_with_config(tokio::runtime::Handle::current(), config).expect("ctx")
+        XetRuntime::from_external(tokio::runtime::Handle::current(), config)
     }
     use crate::cas_client::simulation::DeletionControlableClient;
     use crate::cas_client::simulation::client_testing_utils::ClientTestingUtils;

@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use reqwest::Client;
 use tokio::runtime::Handle as TokioRuntimeHandle;
 
 use super::XetCommon;
@@ -22,7 +21,7 @@ pub struct XetRuntime {
 
 impl XetRuntime {
     /// Creates a runtime from a pre-built thread pool and configuration.
-    pub fn new(threadpool: Arc<XetThreadpool>, config: XetConfig) -> Self {
+    pub fn new(config: XetConfig, threadpool: Arc<XetThreadpool>) -> Self {
         let config = Arc::new(config);
         let common = Arc::new(XetCommon::new(&config));
         Self {
@@ -34,19 +33,12 @@ impl XetRuntime {
 
     /// Creates a runtime with default configuration and an auto-detected thread pool.
     ///
-    /// If called from within an existing tokio runtime, wraps that runtime.
-    /// Otherwise, spins up a new owned tokio thread pool.
-    #[allow(clippy::should_implement_trait)]
-    pub fn default() -> Result<Self, RuntimeError> {
-        Self::default_with_config(XetConfig::new())
-    }
-
-    /// Creates a runtime with the given configuration and an auto-detected thread pool.
-    ///
     /// If called from an owned runtime worker thread, reuses that owned threadpool.
     /// Otherwise, if called from within an existing tokio runtime, wraps that runtime.
     /// If neither is available, spins up a new owned tokio thread pool.
-    pub fn default_with_config(config: XetConfig) -> Result<Self, RuntimeError> {
+    #[allow(clippy::should_implement_trait)]
+    pub fn default() -> Result<Self, RuntimeError> {
+        let config = XetConfig::new();
         let threadpool = if let Some(threadpool) = XetThreadpool::current_if_exists() {
             threadpool
         } else if let Ok(handle) = TokioRuntimeHandle::try_current()
@@ -56,44 +48,17 @@ impl XetRuntime {
         } else {
             XetThreadpool::new(&config)?
         };
-        Ok(Self::new(threadpool, config))
+        Ok(Self::new(config, threadpool))
     }
 
-    /// Backwards-compatible alias for creating a runtime with explicit configuration.
-    #[inline]
-    pub fn new_with_config(config: XetConfig) -> Result<Self, RuntimeError> {
-        Self::default_with_config(config)
-    }
-
-    /// Wraps a caller-provided tokio handle with default configuration.
-    pub fn from_external(rt_handle: TokioRuntimeHandle) -> Self {
-        Self::new(XetThreadpool::from_external(rt_handle), XetConfig::new())
-    }
-
-    /// Wraps a caller-provided tokio handle with system monitoring enabled.
-    pub fn from_external_with_config(rt_handle: TokioRuntimeHandle, config: XetConfig) -> Result<Self, RuntimeError> {
-        let threadpool = XetThreadpool::from_external_with_config(rt_handle, &config)?;
-        Ok(Self::new(threadpool, config))
-    }
-
-    /// Wraps a caller-provided tokio handle after validating that it meets requirements.
-    #[cfg(not(target_family = "wasm"))]
-    pub fn from_validated_external(rt_handle: TokioRuntimeHandle, config: XetConfig) -> Result<Self, RuntimeError> {
-        let threadpool = XetThreadpool::from_validated_external(rt_handle, &config)?;
-        Ok(Self::new(threadpool, config))
+    /// Wraps a caller-provided tokio handle with the given configuration.
+    pub fn from_external(rt_handle: TokioRuntimeHandle, config: XetConfig) -> Self {
+        Self::new(config, XetThreadpool::from_external(rt_handle))
     }
 
     /// Checks whether a tokio handle meets the requirements for use with xet.
     pub fn handle_meets_requirements(handle: &TokioRuntimeHandle) -> bool {
         XetThreadpool::handle_meets_requirements(handle)
-    }
-
-    /// Gets or creates a reqwest client, delegating to the shared `XetCommon` state.
-    pub fn get_or_create_reqwest_client<F>(&self, tag: String, f: F) -> crate::error::Result<Client>
-    where
-        F: FnOnce() -> std::result::Result<Client, reqwest::Error>,
-    {
-        self.common.get_or_create_reqwest_client(tag, f)
     }
 
     /// Returns an error if the runtime is in the middle of a SIGINT shutdown.

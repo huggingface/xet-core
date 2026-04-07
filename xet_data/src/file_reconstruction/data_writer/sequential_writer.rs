@@ -447,7 +447,7 @@ mod tests {
     use super::*;
 
     fn test_ctx() -> XetRuntime {
-        XetRuntime::new(XetThreadpool::from_external(tokio::runtime::Handle::current()), XetConfig::new())
+        XetRuntime::new(XetConfig::new(), XetThreadpool::from_external(tokio::runtime::Handle::current()))
     }
 
     struct SharedBuffer(Arc<std::sync::Mutex<Vec<u8>>>);

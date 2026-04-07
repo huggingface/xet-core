@@ -215,8 +215,8 @@ async fn query_reconstruction(
     headers.insert(http::header::USER_AGENT, http::HeaderValue::from_static(USER_AGENT));
 
     let config = XetConfig::new();
-    let ctx =
-        XetRuntime::new(XetThreadpool::from_external_with_config(tokio::runtime::Handle::current(), &config)?, config);
+    let threadpool = XetThreadpool::from_external_with_config(tokio::runtime::Handle::current(), &config)?;
+    let ctx = XetRuntime::new(config, threadpool);
     let config = default_config(
         &ctx,
         jwt_info.cas_url.clone(),
@@ -260,7 +260,8 @@ fn main() -> Result<()> {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
     }
 
-    let ctx = XetRuntime::default_with_config(config)?;
+    let threadpool = XetThreadpool::new(&config)?;
+    let ctx = XetRuntime::new(config, threadpool);
     ctx.threadpool.bridge_sync(async move { cli.run().await })??;
 
     Ok(())

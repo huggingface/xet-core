@@ -21,6 +21,7 @@ use xet_client::cas_client::adaptive_concurrency::{
 use xet_client::cas_client::progress_tracked_streams::UploadProgressStream;
 use xet_client::cas_client::retry_wrapper::RetryWrapper;
 use xet_client::common::http_client::build_http_client;
+use xet_runtime::config::XetConfig;
 use xet_runtime::core::XetRuntime;
 
 use crate::scenario::base_url;
@@ -314,7 +315,7 @@ async fn run_upload_clients_impl(
     let max_data_size = max_data_kb * 1024;
     let client_id = rand::rng().random_range(0..1000000000_u64);
 
-    let xet_ctx = XetRuntime::from_external(tokio::runtime::Handle::current());
+    let xet_ctx = XetRuntime::from_external(tokio::runtime::Handle::current(), XetConfig::new());
     let http_client = build_http_client(&xet_ctx, "test_session", None, None)?;
 
     let duration_sec = repeat_duration_seconds.unwrap_or(u64::MAX);

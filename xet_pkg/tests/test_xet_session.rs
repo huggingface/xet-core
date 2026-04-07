@@ -2090,7 +2090,7 @@ fn fd_leak_single_session_roundtrip() {
 #[serial(fd_leak)]
 fn fd_leak_isolate_components() {
     use xet_runtime::config::XetConfig;
-    use xet_runtime::core::XetRuntime;
+    use xet_runtime::core::{XetRuntime, XetThreadpool};
 
     let report_nonzero_delta = |label: &str, baseline: usize| {
         let delta = fd_delta_from_baseline(baseline);
@@ -2101,13 +2101,17 @@ fn fd_leak_isolate_components() {
 
     // Warmup: first runtime creation installs signal handlers / global state.
     {
-        let rt = XetRuntime::new_with_config(XetConfig::new()).unwrap();
+        let config = XetConfig::new();
+        let threadpool = XetThreadpool::new(&config).unwrap();
+        let rt = XetRuntime::new(config, threadpool);
         drop(rt);
     }
 
     let before = count_open_fds();
     {
-        let rt = XetRuntime::new_with_config(XetConfig::new()).unwrap();
+        let config = XetConfig::new();
+        let threadpool = XetThreadpool::new(&config).unwrap();
+        let rt = XetRuntime::new(config, threadpool);
         drop(rt);
     }
     assert_fd_delta_eventually_le("runtime create/drop", before, FD_TOLERANCE);

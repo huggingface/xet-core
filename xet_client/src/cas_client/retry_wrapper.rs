@@ -547,7 +547,7 @@ mod tests {
 
     fn test_ctx() -> XetRuntime {
         let config = XetConfig::new();
-        XetRuntime::from_external_with_config(tokio::runtime::Handle::current(), config).expect("test ctx")
+        XetRuntime::from_external(tokio::runtime::Handle::current(), config)
     }
 
     fn connection_wrapper(api: &'static str) -> RetryWrapper {

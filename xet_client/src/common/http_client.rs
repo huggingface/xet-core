@@ -175,7 +175,7 @@ pub fn build_auth_http_client(
         .or_else(|| config_arc.client.unix_socket_path.clone());
     let tag = format!("{}|{}", socket_path.as_deref().unwrap_or("tcp"), headers_tag(custom_headers.as_deref()));
 
-    let raw_client = ctx.get_or_create_reqwest_client(tag, move || {
+    let raw_client = ctx.common.get_or_create_reqwest_client(tag, move || {
         reqwest_client_raw(config_arc.as_ref(), unix_owned.as_deref(), custom_for_client)
     })?;
 
