@@ -3,11 +3,11 @@ use std::sync::Arc;
 #[cfg(not(target_family = "wasm"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::common::auth::CredentialHelper;
 use derivative::Derivative;
 use reqwest_middleware::ClientWithMiddleware;
 use thiserror::Error;
-
-use crate::common::auth::CredentialHelper;
+use tracing::info;
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -193,6 +193,7 @@ impl TokenProvider {
             let (new_token, new_expiry) = self.refresher.refresh().await?;
             self.token = new_token;
             self.expiration = new_expiry;
+            info!(new_expiry = new_expiry, "Token refreshed");
         }
         Ok(self.token.clone())
     }

@@ -7,7 +7,7 @@ use reqwest::header::{AUTHORIZATION, COOKIE, HeaderValue, SET_COOKIE};
 use reqwest::{Request, Response};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
 use tokio::sync::Mutex;
-use tracing::{Instrument, info, info_span, warn};
+use tracing::{Instrument, info, info_span, warn, debug};
 use xet_runtime::core::{XetRuntime, xet_config};
 use xet_runtime::error_printer::{ErrorPrinter, OptionPrinter};
 
@@ -311,7 +311,7 @@ impl AuthMiddleware {
                 ClientError::AuthError(err)
             })
             .inspect(|_token| {
-                info!("Token refresh successful for CAS authentication");
+                debug!("Got token refresh for CAS authentication");
             })
     }
 }
