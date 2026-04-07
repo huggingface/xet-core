@@ -37,7 +37,7 @@ pub async fn run(cli: &Cli, config: XetConfig, args: &UploadArgs) -> Result<()> 
         std::fs::write(output_path, json)?;
     } else if !cli.quiet {
         for meta in &results {
-            eprintln!(
+            println!(
                 "{}  hash={}  size={}  sha256={}",
                 meta.tracking_name.as_deref().unwrap_or("<stdin>"),
                 meta.xet_info.hash,
