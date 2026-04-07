@@ -15,7 +15,7 @@ use redb::{ReadableDatabase, ReadableTable, TableDefinition};
 use tempfile::TempDir;
 use tokio::time::{Duration, Instant};
 use tracing::{error, info, warn};
-use xet_core_structures::merklehash::MerkleHash;
+use xet_core_structures::merklehash::{MerkleHash, compute_data_hash};
 use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
 use xet_core_structures::metadata_shard::shard_file_reconstructor::FileReconstructor;
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
@@ -29,7 +29,7 @@ use xet_core_structures::xorb_object::{SerializedXorbObject, XorbObject};
 use xet_runtime::fd_diagnostics::{report_fd_count, track_fd_scope};
 use xet_runtime::file_utils::SafeFileCreator;
 
-use super::deletion_controls::FileTag;
+use super::deletion_controls::ObjectTag;
 use super::direct_access_client::DirectAccessClient;
 use super::xorb_utils::{self, REFERENCE_INSTANT, duration_to_expiration_secs_ceil};
 use crate::cas_client::Client;
@@ -280,15 +280,38 @@ impl LocalClient {
         }
     }
 
-    /// Builds a `FileTag` from the modification time of a file at the given path.
-    /// The tag encodes seconds-since-UNIX-epoch as 8 little-endian bytes, zero-padded to 32 bytes.
-    fn file_tag_from_path(path: &Path) -> Result<FileTag> {
+    /// Builds an `ObjectTag` from file metadata at the given path.
+    ///
+    /// We hash multiple metadata fields to increase entropy and reduce false
+    /// matches during rapid rewrite/delete races.
+    fn object_tag_from_path(path: &Path) -> Result<ObjectTag> {
         let meta = std::fs::metadata(path).map_err(ClientError::internal)?;
         let modified = meta.modified().map_err(ClientError::internal)?;
-        let secs = modified.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
-        let mut tag = [0u8; 32];
-        tag[..8].copy_from_slice(&secs.to_le_bytes());
-        Ok(tag)
+        let modified_nanos = modified.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
+        let created_nanos = meta
+            .created()
+            .ok()
+            .and_then(|ts| ts.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0u128, |d| d.as_nanos());
+
+        let mut entropy = Vec::with_capacity(16 + 16 + 8 + 1);
+        entropy.extend_from_slice(&modified_nanos.to_le_bytes());
+        entropy.extend_from_slice(&created_nanos.to_le_bytes());
+        entropy.extend_from_slice(&meta.len().to_le_bytes());
+        entropy.push(u8::from(meta.permissions().readonly()));
+
+        Ok(compute_data_hash(&entropy).into())
+    }
+
+    /// Clears the readonly permission on a file so it can be deleted on Windows.
+    #[cfg(windows)]
+    fn clear_readonly(path: &Path) {
+        if let Ok(metadata) = std::fs::metadata(path) {
+            let mut permissions = metadata.permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            permissions.set_readonly(false);
+            let _ = std::fs::set_permissions(path, permissions);
+        }
     }
 
     /// Loads all shard data from disk into an in-memory shard.
@@ -750,19 +773,12 @@ impl super::DeletionControlableClient for LocalClient {
         let file_path = self.get_path_for_entry(hash);
 
         #[cfg(windows)]
-        {
-            if let Ok(metadata) = std::fs::metadata(&file_path) {
-                let mut permissions = metadata.permissions();
-                #[allow(clippy::permissions_set_readonly_false)]
-                permissions.set_readonly(false);
-                let _ = std::fs::set_permissions(&file_path, permissions);
-            }
-        }
+        Self::clear_readonly(&file_path);
 
         let _ = std::fs::remove_file(file_path);
     }
 
-    async fn list_xorbs_and_tags(&self) -> Result<Vec<(MerkleHash, FileTag)>> {
+    async fn list_xorbs_and_tags(&self) -> Result<Vec<(MerkleHash, ObjectTag)>> {
         let mut ret = Vec::new();
         for entry in self.xorb_dir.read_dir().map_err(ClientError::internal)? {
             let entry = entry.map_err(ClientError::internal)?;
@@ -773,7 +789,7 @@ impl super::DeletionControlableClient for LocalClient {
             if let Some(pos) = name.rfind('.') {
                 let hex = &name[(pos + 1)..];
                 if let Ok(hash) = MerkleHash::from_hex(hex) {
-                    let tag = Self::file_tag_from_path(&path)?;
+                    let tag = Self::object_tag_from_path(&path)?;
                     ret.push((hash, tag));
                 }
             }
@@ -781,42 +797,35 @@ impl super::DeletionControlableClient for LocalClient {
         Ok(ret)
     }
 
-    async fn delete_xorb_if_tag_matches(&self, hash: &MerkleHash, tag: &FileTag) -> Result<bool> {
+    async fn delete_xorb_if_tag_matches(&self, hash: &MerkleHash, tag: &ObjectTag) -> Result<bool> {
         let file_path = self.get_path_for_entry(hash);
         if !file_path.exists() {
             return Err(ClientError::XORBNotFound(*hash));
         }
-        let current_tag = Self::file_tag_from_path(&file_path)?;
+        let current_tag = Self::object_tag_from_path(&file_path)?;
         if &current_tag != tag {
             return Ok(false);
         }
 
         #[cfg(windows)]
-        {
-            if let Ok(metadata) = std::fs::metadata(&file_path) {
-                let mut permissions = metadata.permissions();
-                #[allow(clippy::permissions_set_readonly_false)]
-                permissions.set_readonly(false);
-                let _ = std::fs::set_permissions(&file_path, permissions);
-            }
-        }
+        Self::clear_readonly(&file_path);
 
         std::fs::remove_file(&file_path)?;
         Ok(true)
     }
 
-    async fn list_shards_with_tags(&self) -> Result<Vec<(MerkleHash, FileTag)>> {
+    async fn list_shards_with_tags(&self) -> Result<Vec<(MerkleHash, ObjectTag)>> {
         let mut ret = Vec::new();
         for (hash, path) in self.shard_file_paths()? {
-            let tag = Self::file_tag_from_path(&path)?;
+            let tag = Self::object_tag_from_path(&path)?;
             ret.push((hash, tag));
         }
         Ok(ret)
     }
 
-    async fn delete_shard_if_tag_matches(&self, hash: &MerkleHash, tag: &FileTag) -> Result<bool> {
+    async fn delete_shard_if_tag_matches(&self, hash: &MerkleHash, tag: &ObjectTag) -> Result<bool> {
         let path = self.shard_path_for_hash(hash)?;
-        let current_tag = Self::file_tag_from_path(&path)?;
+        let current_tag = Self::object_tag_from_path(&path)?;
         if &current_tag != tag {
             return Ok(false);
         }
@@ -1646,6 +1655,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_global_dedup_shard_expiration_stress() {
         super::super::client_unit_testing::test_global_dedup_shard_expiration_stress(|| async {
             LocalClient::temporary().await.unwrap()

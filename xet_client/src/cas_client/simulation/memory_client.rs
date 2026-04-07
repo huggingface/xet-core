@@ -12,6 +12,8 @@ use tokio::time::{Duration, Instant};
 use tracing::{error, info};
 use xet_core_structures::MerkleHashMap;
 use xet_core_structures::merklehash::MerkleHash;
+#[cfg(not(target_family = "wasm"))]
+use xet_core_structures::merklehash::compute_data_hash;
 use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::metadata_shard::streaming_shard::MDBMinimalShard;
@@ -22,6 +24,8 @@ use super::super::Client;
 use super::super::adaptive_concurrency::AdaptiveConcurrencyController;
 use super::super::progress_tracked_streams::ProgressCallback;
 use super::client_testing_utils::{FileTermReference, RandomFileContents};
+#[cfg(not(target_family = "wasm"))]
+use super::deletion_controls::ObjectTag;
 use super::direct_access_client::DirectAccessClient;
 use super::random_xorb::RandomXorb;
 use super::xorb_utils::{self, REFERENCE_INSTANT, duration_to_expiration_secs_ceil};
@@ -212,6 +216,40 @@ impl MemoryClient {
             xorbs: MerkleHashMap::new(),
             terms: term_infos,
         })
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn current_shard_hash_and_bytes(shard: &MDBInMemoryShard) -> Result<Option<(MerkleHash, Bytes)>> {
+        if shard.is_empty() {
+            return Ok(None);
+        }
+        let bytes = Bytes::from(shard.to_bytes()?);
+        let hash = compute_data_hash(bytes.as_ref());
+        Ok(Some((hash, bytes)))
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn object_tag_from_key_and_payload(prefix: &[u8], key: &MerkleHash, payload: &[u8]) -> ObjectTag {
+        let key_bytes: [u8; 32] = (*key).into();
+        let payload_hash: [u8; 32] = compute_data_hash(payload).into();
+        let mut entropy = Vec::with_capacity(prefix.len() + key_bytes.len() + payload_hash.len());
+        entropy.extend_from_slice(prefix);
+        entropy.extend_from_slice(&key_bytes);
+        entropy.extend_from_slice(&payload_hash);
+        compute_data_hash(&entropy).into()
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn xorb_tag(hash: &MerkleHash, storage: &XorbStorage) -> ObjectTag {
+        match storage {
+            XorbStorage::Materialized(entry) => {
+                Self::object_tag_from_key_and_payload(b"xorb", hash, entry.serialized_data.as_ref())
+            },
+            XorbStorage::Random(random_xorb) => {
+                let entropy = random_xorb.num_chunks().to_le_bytes();
+                Self::object_tag_from_key_and_payload(b"xorb", hash, &entropy)
+            },
+        }
     }
 }
 
@@ -923,6 +961,141 @@ impl Client for MemoryClient {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
+#[async_trait]
+impl super::DeletionControlableClient for MemoryClient {
+    async fn list_shard_entries(&self) -> Result<Vec<MerkleHash>> {
+        let shard = self.shard.read().await;
+        Ok(Self::current_shard_hash_and_bytes(&shard)?
+            .map(|(h, _)| vec![h])
+            .unwrap_or_default())
+    }
+
+    async fn get_shard_bytes(&self, hash: &MerkleHash) -> Result<Bytes> {
+        let shard = self.shard.read().await;
+        let Some((current_hash, bytes)) = Self::current_shard_hash_and_bytes(&shard)? else {
+            return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
+        };
+        if &current_hash != hash {
+            return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
+        }
+        Ok(bytes)
+    }
+
+    async fn delete_shard_entry(&self, hash: &MerkleHash) -> Result<()> {
+        let mut shard = self.shard.write().await;
+        let Some((current_hash, _)) = Self::current_shard_hash_and_bytes(&shard)? else {
+            return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
+        };
+        if &current_hash != hash {
+            return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
+        }
+        *shard = MDBInMemoryShard::default();
+        Ok(())
+    }
+
+    async fn list_file_shard_entries(&self) -> Result<Vec<(MerkleHash, MerkleHash)>> {
+        let shard = self.shard.read().await;
+        let Some((shard_hash, _)) = Self::current_shard_hash_and_bytes(&shard)? else {
+            return Ok(Vec::new());
+        };
+        Ok(shard
+            .file_content
+            .keys()
+            .copied()
+            .map(|file_hash| (file_hash, shard_hash))
+            .collect())
+    }
+
+    async fn delete_file_entry(&self, file_hash: &MerkleHash) -> Result<()> {
+        let mut shard = self.shard.write().await;
+        if shard.file_content.remove(file_hash).is_some() {
+            shard.recalculate_shard_size();
+        }
+        Ok(())
+    }
+
+    async fn remove_shard_dedup_entries(&self, shard_hash: &MerkleHash) -> Result<()> {
+        let shard = self.shard.read().await;
+        let Some((current_hash, _)) = Self::current_shard_hash_and_bytes(&shard)? else {
+            return Err(ClientError::Other(format!("Shard not found: {}", shard_hash.hex())));
+        };
+        if &current_hash != shard_hash {
+            return Err(ClientError::Other(format!("Shard not found: {}", shard_hash.hex())));
+        }
+        drop(shard);
+
+        self.global_dedup.write().await.clear();
+        Ok(())
+    }
+
+    async fn delete_xorb(&self, hash: &MerkleHash) {
+        self.xorbs.write().await.remove(hash);
+    }
+
+    async fn list_xorbs_and_tags(&self) -> Result<Vec<(MerkleHash, ObjectTag)>> {
+        let xorbs = self.xorbs.read().await;
+        Ok(xorbs
+            .iter()
+            .map(|(hash, storage)| (*hash, Self::xorb_tag(hash, storage)))
+            .collect())
+    }
+
+    async fn delete_xorb_if_tag_matches(&self, hash: &MerkleHash, tag: &ObjectTag) -> Result<bool> {
+        let mut xorbs = self.xorbs.write().await;
+        let Some(storage) = xorbs.get(hash) else {
+            return Err(ClientError::XORBNotFound(*hash));
+        };
+        if &Self::xorb_tag(hash, storage) != tag {
+            return Ok(false);
+        }
+        xorbs.remove(hash);
+        Ok(true)
+    }
+
+    async fn list_shards_with_tags(&self) -> Result<Vec<(MerkleHash, ObjectTag)>> {
+        let shard = self.shard.read().await;
+        let Some((shard_hash, shard_bytes)) = Self::current_shard_hash_and_bytes(&shard)? else {
+            return Ok(Vec::new());
+        };
+        let tag = Self::object_tag_from_key_and_payload(b"shard", &shard_hash, shard_bytes.as_ref());
+        Ok(vec![(shard_hash, tag)])
+    }
+
+    async fn delete_shard_if_tag_matches(&self, hash: &MerkleHash, tag: &ObjectTag) -> Result<bool> {
+        let mut shard = self.shard.write().await;
+        let Some((current_hash, shard_bytes)) = Self::current_shard_hash_and_bytes(&shard)? else {
+            return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
+        };
+        if &current_hash != hash {
+            return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
+        }
+        let current_tag = Self::object_tag_from_key_and_payload(b"shard", &current_hash, shard_bytes.as_ref());
+        if &current_tag != tag {
+            return Ok(false);
+        }
+        *shard = MDBInMemoryShard::default();
+        Ok(true)
+    }
+
+    async fn verify_integrity(&self) -> Result<()> {
+        let xorbs = self.xorbs.read().await;
+        let shard = self.shard.read().await;
+        for file_info in shard.file_content.values() {
+            for segment in &file_info.segments {
+                if !xorbs.contains_key(&segment.xorb_hash) {
+                    return Err(ClientError::XORBNotFound(segment.xorb_hash));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn verify_all_reachable(&self) -> Result<()> {
+        self.verify_integrity().await
+    }
+}
+
 fn generate_fetch_url(hash: &MerkleHash, byte_range: &FileRange, timestamp: Instant) -> String {
     let timestamp_ms = timestamp.saturating_duration_since(*REFERENCE_INSTANT).as_millis() as u64;
     format!("{}:{}:{}:{}", hash.hex(), byte_range.start, byte_range.end, timestamp_ms)
@@ -963,15 +1136,49 @@ fn parse_any_fetch_url(url: &str) -> Result<(MerkleHash, Instant)> {
 #[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::super::client_testing_utils::ClientTestingUtils;
+    use super::super::deletion_controls::DeletionControlableClient;
     use super::*;
 
     fn new_client() -> Arc<dyn super::super::DirectAccessClient> {
         MemoryClient::new()
     }
 
+    fn new_deletion_client() -> Arc<MemoryClient> {
+        MemoryClient::new()
+    }
+
     #[tokio::test]
     async fn test_common_client_suite() {
         super::super::client_unit_testing::test_client_functionality(|| async { new_client() }).await;
+    }
+
+    #[tokio::test]
+    async fn test_memory_deletion_controls_basic() {
+        let client = new_deletion_client();
+        let file = client.upload_random_file(&[(1, (0, 3))], 2048).await.unwrap();
+
+        let xorbs_and_tags = client.list_xorbs_and_tags().await.unwrap();
+        assert!(!xorbs_and_tags.is_empty());
+        let (xorb_hash, tag) = xorbs_and_tags[0];
+
+        let wrong_tag = [0xABu8; 32];
+        assert!(!client.delete_xorb_if_tag_matches(&xorb_hash, &wrong_tag).await.unwrap());
+        assert!(client.xorb_exists(&xorb_hash).await.unwrap());
+
+        assert!(client.delete_xorb_if_tag_matches(&xorb_hash, &tag).await.unwrap());
+        assert!(!client.xorb_exists(&xorb_hash).await.unwrap());
+
+        // file deletion is idempotent for parity with the disk-backed behavior.
+        client.delete_file_entry(&file.file_hash).await.unwrap();
+        client.delete_file_entry(&file.file_hash).await.unwrap();
+
+        let shards_and_tags = client.list_shards_with_tags().await.unwrap();
+        if !shards_and_tags.is_empty() {
+            let (shard_hash, shard_tag) = shards_and_tags[0];
+            assert!(!client.delete_shard_if_tag_matches(&shard_hash, &wrong_tag).await.unwrap());
+            assert!(client.delete_shard_if_tag_matches(&shard_hash, &shard_tag).await.unwrap());
+            assert!(client.list_shard_entries().await.unwrap().is_empty());
+        }
     }
 
     #[tokio::test(start_paused = true)]
@@ -991,6 +1198,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_global_dedup_shard_expiration_stress() {
         super::super::client_unit_testing::test_global_dedup_shard_expiration_stress(|| async { new_client() }).await;
     }
