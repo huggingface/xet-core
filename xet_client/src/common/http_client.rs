@@ -7,7 +7,7 @@ use reqwest::header::{AUTHORIZATION, COOKIE, HeaderValue, SET_COOKIE};
 use reqwest::{Request, Response};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
 use tokio::sync::Mutex;
-use tracing::{Instrument, info, info_span, warn, debug};
+use tracing::{Instrument, debug, info, info_span, warn};
 use xet_runtime::core::{XetRuntime, xet_config};
 use xet_runtime::error_printer::{ErrorPrinter, OptionPrinter};
 

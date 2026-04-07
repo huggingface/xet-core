@@ -3,11 +3,12 @@ use std::sync::Arc;
 #[cfg(not(target_family = "wasm"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::common::auth::CredentialHelper;
 use derivative::Derivative;
 use reqwest_middleware::ClientWithMiddleware;
 use thiserror::Error;
 use tracing::info;
+
+use crate::common::auth::CredentialHelper;
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
