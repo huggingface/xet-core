@@ -67,6 +67,9 @@ jobs:
 
       - uses: ./.github/actions/build-wasm
 
+      - name: Restore stable toolchain
+        run: rustup default 1.94.1
+
       - name: Build hf-xet wheel
         uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1
         with:
