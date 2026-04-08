@@ -424,8 +424,10 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
+    use tokio::runtime::Handle;
     use xet_client::cas_client::{ClientTestingUtils, DirectAccessClient, LocalClient, RandomFileContents};
     use xet_client::cas_types::FileRange;
+    use xet_runtime::config::XetConfig;
     use xet_runtime::core::{XetRuntime, XetThreadpool};
 
     use super::*;
@@ -1079,17 +1081,14 @@ mod tests {
         // Create a tiny semaphore (1 permit) to force sequential processing
         // This ensures each term is fully written before the next is fetched
         let tiny_semaphore = AdjustableSemaphore::new(1, (1, 1));
+        let ctx = XetRuntime::from_external(Handle::current(), XetConfig::new());
 
-        FileReconstructor::new(
-            &XetRuntime::default().unwrap(),
-            &(client.clone() as Arc<dyn Client>),
-            file_contents.file_hash,
-        )
-        .with_config(url_refresh_test_config())
-        .with_buffer_semaphore(tiny_semaphore)
-        .reconstruct_to_writer(writer)
-        .await
-        .expect("Reconstruction should succeed with URL refresh");
+        FileReconstructor::new(&ctx, &(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_config(url_refresh_test_config())
+            .with_buffer_semaphore(tiny_semaphore)
+            .reconstruct_to_writer(writer)
+            .await
+            .expect("Reconstruction should succeed with URL refresh");
 
         // Verify the reconstructed data is correct
         let reconstructed = writer_buffer.lock().unwrap().clone();
@@ -1117,17 +1116,14 @@ mod tests {
         let writer_buffer = writer.buffer.clone();
 
         let tiny_semaphore = AdjustableSemaphore::new(1, (1, 1));
+        let ctx = XetRuntime::from_external(Handle::current(), XetConfig::new());
 
-        FileReconstructor::new(
-            &XetRuntime::default().unwrap(),
-            &(client.clone() as Arc<dyn Client>),
-            file_contents.file_hash,
-        )
-        .with_config(url_refresh_test_config())
-        .with_buffer_semaphore(tiny_semaphore)
-        .reconstruct_to_writer(writer)
-        .await
-        .expect("Reconstruction should succeed");
+        FileReconstructor::new(&ctx, &(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_config(url_refresh_test_config())
+            .with_buffer_semaphore(tiny_semaphore)
+            .reconstruct_to_writer(writer)
+            .await
+            .expect("Reconstruction should succeed");
 
         let reconstructed = writer_buffer.lock().unwrap().clone();
         assert_eq!(reconstructed, file_contents.data);
@@ -1147,17 +1143,14 @@ mod tests {
         let writer_buffer = writer.buffer.clone();
 
         let tiny_semaphore = AdjustableSemaphore::new(1, (1, 1));
+        let ctx = XetRuntime::from_external(Handle::current(), XetConfig::new());
 
-        FileReconstructor::new(
-            &XetRuntime::default().unwrap(),
-            &(client.clone() as Arc<dyn Client>),
-            file_contents.file_hash,
-        )
-        .with_config(url_refresh_test_config())
-        .with_buffer_semaphore(tiny_semaphore)
-        .reconstruct_to_writer(writer)
-        .await
-        .expect("Reconstruction should succeed");
+        FileReconstructor::new(&ctx, &(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_config(url_refresh_test_config())
+            .with_buffer_semaphore(tiny_semaphore)
+            .reconstruct_to_writer(writer)
+            .await
+            .expect("Reconstruction should succeed");
 
         let reconstructed = writer_buffer.lock().unwrap().clone();
         assert_eq!(reconstructed, file_contents.data);
@@ -1177,17 +1170,14 @@ mod tests {
         let writer_buffer = writer.buffer.clone();
 
         let tiny_semaphore = AdjustableSemaphore::new(1, (1, 1));
+        let ctx = XetRuntime::from_external(Handle::current(), XetConfig::new());
 
-        FileReconstructor::new(
-            &XetRuntime::default().unwrap(),
-            &(client.clone() as Arc<dyn Client>),
-            file_contents.file_hash,
-        )
-        .with_config(url_refresh_test_config())
-        .with_buffer_semaphore(tiny_semaphore)
-        .reconstruct_to_writer(writer)
-        .await
-        .expect("Reconstruction should succeed");
+        FileReconstructor::new(&ctx, &(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_config(url_refresh_test_config())
+            .with_buffer_semaphore(tiny_semaphore)
+            .reconstruct_to_writer(writer)
+            .await
+            .expect("Reconstruction should succeed");
 
         let reconstructed = writer_buffer.lock().unwrap().clone();
         assert_eq!(reconstructed, file_contents.data);
@@ -1206,20 +1196,17 @@ mod tests {
         let writer_buffer = writer.buffer.clone();
 
         let tiny_semaphore = AdjustableSemaphore::new(1, (0, 1));
+        let ctx = XetRuntime::from_external(Handle::current(), XetConfig::new());
 
         let range = FileRange::new(file_len / 4, file_len * 3 / 4);
 
-        FileReconstructor::new(
-            &XetRuntime::default().unwrap(),
-            &(client.clone() as Arc<dyn Client>),
-            file_contents.file_hash,
-        )
-        .with_byte_range(range)
-        .with_config(url_refresh_test_config())
-        .with_buffer_semaphore(tiny_semaphore)
-        .reconstruct_to_writer(writer)
-        .await
-        .expect("Reconstruction should succeed");
+        FileReconstructor::new(&ctx, &(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_byte_range(range)
+            .with_config(url_refresh_test_config())
+            .with_buffer_semaphore(tiny_semaphore)
+            .reconstruct_to_writer(writer)
+            .await
+            .expect("Reconstruction should succeed");
 
         let reconstructed = writer_buffer.lock().unwrap().clone();
         let expected = &file_contents.data[range.start as usize..range.end as usize];

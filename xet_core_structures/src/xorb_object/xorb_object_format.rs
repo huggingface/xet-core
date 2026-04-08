@@ -2283,11 +2283,13 @@ mod tests {
         );
 
         // Switch V1 footer to V0
-        let mut xorb_info_v0 = XorbObjectInfoV0::default();
-        xorb_info_v0.xorb_hash = c.info.xorb_hash;
-        xorb_info_v0.num_chunks = c.info.num_chunks;
-        xorb_info_v0.chunk_boundary_offsets = c.info.chunk_boundary_offsets.clone();
-        xorb_info_v0.chunk_hashes = c.info.chunk_hashes.clone();
+        let xorb_info_v0 = XorbObjectInfoV0 {
+            xorb_hash: c.info.xorb_hash,
+            num_chunks: c.info.num_chunks,
+            chunk_boundary_offsets: c.info.chunk_boundary_offsets.clone(),
+            chunk_hashes: c.info.chunk_hashes.clone(),
+            ..Default::default()
+        };
 
         let mut buf = buf.into_inner();
         let serialized_chunks_length = c.get_contents_length().unwrap();
@@ -2567,6 +2569,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(serialized.num_chunks, 4);
-        assert!(serialized.serialized_data.len() > 0);
+        assert!(!serialized.serialized_data.is_empty());
     }
 }

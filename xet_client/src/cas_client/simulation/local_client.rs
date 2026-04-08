@@ -5,7 +5,7 @@ use std::mem::size_of;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, Weak};
+use std::sync::{Arc, Mutex, Weak};
 
 use anyhow::anyhow;
 use async_trait::async_trait;
@@ -25,7 +25,7 @@ use xet_core_structures::metadata_shard::xorb_structs::MDBXorbInfo;
 use xet_core_structures::metadata_shard::{MDBShardFile, ShardFileManager};
 use xet_core_structures::serialization_utils::read_u32;
 use xet_core_structures::xorb_object::{SerializedXorbObject, XorbObject};
-use xet_runtime::core::XetRuntime;
+use xet_runtime::core::{XetCommon, XetRuntime};
 #[cfg(feature = "fd-track")]
 use xet_runtime::fd_diagnostics::{report_fd_count, track_fd_scope};
 use xet_runtime::file_utils::SafeFileCreator;
@@ -108,18 +108,19 @@ const FILE_STATUS_TABLE: TableDefinition<RedbHash, bool> = TableDefinition::new(
 /// [`LocalClient`] (and clones) do. When the last strong ref drops, the entry can be purged.
 type CachedDbWeak = Weak<redb::Database>;
 
-/// Global cache of redb databases keyed by canonical DB file path.
-/// redb enforces exclusive file locking, so multiple LocalClient instances
-/// pointing at the same directory must share a single Database handle.
-static DB_CACHE: LazyLock<Mutex<HashMap<PathBuf, CachedDbWeak>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+type DbCache = Arc<Mutex<HashMap<PathBuf, CachedDbWeak>>>;
+
+fn get_db_cache(common: &XetCommon) -> DbCache {
+    common.cache_get_or_create("local_client_db_cache", || Arc::new(Mutex::new(HashMap::new())))
+}
 
 /// Opens or returns a shared [`Arc<redb::Database>`] for `db_path`. The map stores only
 /// [`Weak`] pointers ([`Arc::downgrade`]); on a hit, [`Weak::upgrade`] yields a new strong ref.
-fn get_or_open_db(db_path: &Path) -> std::result::Result<Arc<redb::Database>, redb::DatabaseError> {
+fn get_or_open_db(db_cache: &DbCache, db_path: &Path) -> std::result::Result<Arc<redb::Database>, redb::DatabaseError> {
     #[cfg(feature = "fd-track")]
     let _fd_scope = track_fd_scope(format!("LocalClient::get_or_open_db({})", db_path.display()));
 
-    let mut map = DB_CACHE.lock().unwrap();
+    let mut map = db_cache.lock().unwrap();
 
     if let Some(weak) = map.get(db_path)
         && let Some(db) = Weak::upgrade(weak)
@@ -144,6 +145,8 @@ fn get_or_open_db(db_path: &Path) -> std::result::Result<Arc<redb::Database>, re
 
 pub struct LocalClient {
     db: Arc<redb::Database>,
+    #[cfg(feature = "fd-track")]
+    db_cache: DbCache,
     shard_manager: Arc<ShardFileManager>,
     xorb_dir: PathBuf,
     shard_dir: PathBuf,
@@ -202,8 +205,9 @@ impl LocalClient {
         }
 
         let db_path = base_dir.join("global_dedup_lookup.redb");
-        let db =
-            get_or_open_db(&db_path).map_err(|e| ClientError::Other(format!("Error opening redb database: {e}")))?;
+        let db_cache = get_db_cache(&ctx.common);
+        let db = get_or_open_db(&db_cache, &db_path)
+            .map_err(|e| ClientError::Other(format!("Error opening redb database: {e}")))?;
         #[cfg(feature = "fd-track")]
         report_fd_count("LocalClient::new_internal after DB open");
 
@@ -222,6 +226,8 @@ impl LocalClient {
 
         Ok(Self {
             db,
+            #[cfg(feature = "fd-track")]
+            db_cache,
             shard_manager,
             xorb_dir,
             shard_dir,
@@ -308,7 +314,7 @@ impl LocalClient {
 
         if !in_memory.is_empty() {
             let shard_path = in_memory.write_to_directory(&self.shard_dir, None)?;
-            let shard = MDBShardFile::load_from_file(&shard_path)?;
+            let shard = MDBShardFile::load_from_file(&shard_path, self.shard_manager.shard_file_cache())?;
             self.shard_manager.register_shards(&[shard]).await?;
         }
 
@@ -324,7 +330,7 @@ impl Drop for LocalClient {
         #[cfg(feature = "fd-track")]
         {
             report_fd_count("LocalClient::drop start");
-            if let Ok(mut map) = DB_CACHE.lock() {
+            if let Ok(mut map) = self.db_cache.lock() {
                 map.retain(|_, weak| weak.strong_count() > 0);
             }
             report_fd_count("LocalClient::drop end");
@@ -1113,7 +1119,7 @@ impl Client for LocalClient {
 
         // Write the rebuilt shard to disk (creates proper lookup tables)
         let shard_path = in_memory_shard.write_to_directory(&self.shard_dir, None)?;
-        let shard = MDBShardFile::load_from_file(&shard_path)?;
+        let shard = MDBShardFile::load_from_file(&shard_path, self.shard_manager.shard_file_cache())?;
         let shard_hash = shard.shard_hash;
 
         self.shard_manager.register_shards(&[shard]).await?;

@@ -140,9 +140,10 @@ impl<F: FnOnce()> Drop for CallbackGuard<F> {
 /// # Example
 ///
 /// ```rust
+/// use xet_runtime::config::XetConfig;
 /// use xet_runtime::core::XetThreadpool;
 ///
-/// let pool = XetThreadpool::new().expect("Error initializing runtime.");
+/// let pool = XetThreadpool::new(&XetConfig::new()).expect("Error initializing runtime.");
 ///
 /// let result = pool
 ///     .bridge_sync(async {
@@ -391,7 +392,13 @@ impl XetThreadpool {
 
         // When a task is shut down, it will stop running at whichever .await it has yielded at.  All local
         // variables are destroyed by running their destructor.
-        let maybe_runtime = runtime_cell.write().expect("cancel_all called recursively.").take();
+        let maybe_runtime = match runtime_cell.write() {
+            Ok(mut guard) => guard.take(),
+            Err(poisoned) => {
+                eprintln!("WARNING: perform_sigint_shutdown encountered a poisoned runtime lock; continuing shutdown.");
+                poisoned.into_inner().take()
+            },
+        };
 
         let Some(runtime) = maybe_runtime else {
             eprintln!("WARNING: perform_sigint_shutdown called on runtime that has already been shut down.");
@@ -893,5 +900,37 @@ mod tests {
     fn test_check_sigint_shutdown_not_triggered() {
         let runtime = XetRuntime::default().unwrap();
         assert!(runtime.check_sigint_shutdown().is_ok());
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn test_from_external_with_config_rejects_second_attach() {
+        let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let config = XetConfig::new();
+
+        let first = XetThreadpool::from_external_with_config(tokio_rt.handle().clone(), &config).unwrap();
+        let second = XetThreadpool::from_external_with_config(tokio_rt.handle().clone(), &config);
+
+        assert!(matches!(second, Err(RuntimeError::ExternalAlreadyAttached(_))));
+        drop(first);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn test_perform_sigint_shutdown_tolerates_poisoned_runtime_lock() {
+        let runtime = XetRuntime::default().unwrap();
+        let threadpool = runtime.threadpool.clone();
+        let runtime_cell = threadpool.runtime_cell_if_owned().unwrap().clone();
+
+        let _ = std::thread::spawn(move || {
+            let _guard = runtime_cell.write().unwrap();
+            panic!("intentional poison for test");
+        })
+        .join();
+
+        let shutdown_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            threadpool.perform_sigint_shutdown();
+        }));
+        assert!(shutdown_result.is_ok());
     }
 }

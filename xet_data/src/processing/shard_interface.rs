@@ -19,7 +19,7 @@ use xet_core_structures::metadata_shard::session_directory::{
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::metadata_shard::xorb_structs::MDBXorbInfo;
 use xet_core_structures::metadata_shard::{
-    MDB_SHARD_LOCAL_CACHE_EXPIRATION, MDBShardFile, MDBShardFileHeader, ShardFileManager,
+    MDB_SHARD_LOCAL_CACHE_EXPIRATION, MDBShardFile, MDBShardFileHeader, ShardFileManager, get_shard_file_cache,
 };
 use xet_runtime::core::XetRuntime;
 use xet_runtime::error_printer::ErrorPrinter;
@@ -85,6 +85,7 @@ impl SessionShardInterface {
                     &session_dir,
                     ctx.config.shard.max_target_size,
                     true,
+                    get_shard_file_cache(&ctx.common),
                 ))
             } else {
                 None
@@ -245,6 +246,7 @@ impl SessionShardInterface {
             self.session_shard_manager.shard_directory(),
             self.ctx.config.shard.max_target_size,
             false,
+            self.session_shard_manager.shard_file_cache(),
         )?;
 
         // Upload all the shards and move each to the common directory.
@@ -289,6 +291,7 @@ impl SessionShardInterface {
                     let new_shard_path = si.export_with_expiration(
                         cache_shard_manager.shard_directory(),
                         *MDB_SHARD_LOCAL_CACHE_EXPIRATION,
+                        cache_shard_manager.shard_file_cache(),
                     )?;
 
                     // Register that new shard in the cache shard manager
@@ -350,7 +353,8 @@ mod tests {
         let mdb_in_mem = MDBInMemoryShard::default();
         let temp_shard_file_path = mdb_in_mem.write_to_directory(tmp_dir_path, None)?;
 
-        let shard_file = MDBShardFile::load_from_file(&temp_shard_file_path)?;
+        let sfc = xet_core_structures::metadata_shard::new_shard_file_cache();
+        let shard_file = MDBShardFile::load_from_file(&temp_shard_file_path, &sfc)?;
         assert_eq!(
             shard_file.shard.header.footer_size,
             size_of::<xet_core_structures::metadata_shard::MDBShardFileFooter>() as u64
