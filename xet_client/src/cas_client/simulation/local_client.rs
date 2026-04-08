@@ -917,6 +917,12 @@ impl super::DeletionControlableClient for LocalClient {
     }
 
     async fn verify_integrity(&self) -> Result<()> {
+        // Snapshot the dedup table before reading the directory.  This prevents
+        // a TOCTOU race: upload_shard writes the file then commits the dedup
+        // entry, so any entry visible in this MVCC snapshot is guaranteed to
+        // have its shard file already on disk when we read the directory below.
+        let read_txn = self.db.begin_read().map_err(map_redb_db_error)?;
+
         let shard_files = self.shard_file_paths()?;
 
         // Pass 1: collect all XORB hashes listed across all shards and build
@@ -993,10 +999,10 @@ impl super::DeletionControlableClient for LocalClient {
         }
 
         // Pass 3: verify that all shards referenced by the global dedup chunk table
-        // are present on disk.
+        // are present on disk.  Uses the read transaction snapshotted at the top
+        // of this function to avoid TOCTOU races with concurrent uploads.
         let shard_hashes_on_disk: std::collections::HashSet<MerkleHash> = shard_files.iter().map(|(h, _)| *h).collect();
 
-        let read_txn = self.db.begin_read().map_err(map_redb_db_error)?;
         let dedup_table = read_txn.open_table(GLOBAL_DEDUP_TABLE).map_err(map_redb_db_error)?;
         for entry in dedup_table.iter().map_err(map_redb_db_error)? {
             let (chunk_key, shard_val) = entry.map_err(map_redb_db_error)?;
