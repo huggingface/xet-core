@@ -1,127 +1,25 @@
-name: Crates.io Release
-run-name: crates.io release ${{ inputs.version }}
-
-on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version to publish (e.g. 1.6.0, no v prefix)'
-        required: true
-
-permissions:
-  contents: write
-  pull-requests: write
-  id-token: write
-
-concurrency:
-  group: crates-release
-  cancel-in-progress: false
+name: Crates.io Release — Publish
+# Triggered manually after merging the version-bump PR created by bump-crates-version.yml.
 
 # Trusted Publishing via OIDC — no long-lived secrets required.
 # Configure once per crate on crates.io: Settings → Trusted Publishing → Add GitHub.
 # Set Owner, Repository, Workflow name (crates-release.yml), and Environment (crates-release).
 
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: crates-release
+  cancel-in-progress: false
+
 jobs:
-  bump_crates_version:
-    name: Bump crate versions and create PR
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - name: Install Rust 1.94
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
-        with:
-          toolchain: 1.94.1
-      - uses: ./.github/actions/cache-rust-build
-      
-      - name: Update crate versions
-        env:
-          VERSION: ${{ inputs.version }}
-        run: |
-          # Update version only within [workspace.package] section
-          awk -v ver="$VERSION" '
-            /^\[workspace\.package\]/ { in_wp=1 }
-            /^\[/ && !/^\[workspace\.package\]/ { in_wp=0 }
-            in_wp && /^version = / { printf "version = \"%s\"\n", ver; next }
-            { print }
-          ' Cargo.toml > Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml
-
-          # Update dependency version fields for the four released crates only
-          find . -name "Cargo.toml" \
-            -not -path "./hf_xet/*" \
-            -not -path "./git_xet/*" \
-            -not -path "./wasm/*" \
-            -not -path "./target/*" \
-            -exec sed -i \
-              -e 's/\(xet-runtime = { version = "\)[^"]*"/\1'"$VERSION"'"/g' \
-              -e 's/\(xet-core-structures = { version = "\)[^"]*"/\1'"$VERSION"'"/g' \
-              -e 's/\(xet-client = { version = "\)[^"]*"/\1'"$VERSION"'"/g' \
-              -e 's/\(xet-data = { version = "\)[^"]*"/\1'"$VERSION"'"/g' \
-              {} +
-
-      - name: Check workspace compiles
-        run: cargo build
-
-      - name: Run tests
-        run: cargo test --workspace
-
-      - uses: ./.github/actions/build-wasm
-
-      - name: Restore stable toolchain
-        run: rustup default 1.94.1
-
-      - name: Build hf-xet wheel
-        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1
-        with:
-          command: develop
-          sccache: 'true'
-          working-directory: hf_xet
-
-      - name: Create version bump PR
-        id: create_pr
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ inputs.version }}
-        run: |
-          BRANCH="crates-release/${VERSION}"
-          git config user.name "Hugging Face Bot (Crates release)"
-          git config user.email "bot+xet@huggingface.co"
-          git checkout -b "$BRANCH"
-          git add -u
-          git commit -m "chore: bump crate versions to ${VERSION}"
-          git push origin "$BRANCH"
-          PR_URL=$(gh pr create \
-            --title "Upgrade crates version to ${VERSION}" \
-            --body "Automated version bump to ${VERSION} for crates.io release. Merge this PR to proceed with publishing." \
-            --base main \
-            --head "$BRANCH")
-          PR_NUMBER=$(echo "$PR_URL" | sed 's|.*/||')
-          echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
-          echo "Created PR #${PR_NUMBER}: ${PR_URL}"
-
-      - name: Wait for PR to merge
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ steps.create_pr.outputs.pr_number }}
-        run: |
-          echo "Waiting for PR #${PR_NUMBER} to be merged..."
-          while true; do
-            STATE=$(gh pr view "${PR_NUMBER}" --json state --jq '.state')
-            if [ "$STATE" = "MERGED" ]; then
-              echo "PR #${PR_NUMBER} merged. Proceeding."
-              break
-            elif [ "$STATE" = "CLOSED" ]; then
-              echo "Error: PR #${PR_NUMBER} was closed without merging. Aborting release."
-              exit 1
-            fi
-            echo "PR state: ${STATE}. Waiting 30s..."
-            sleep 30
-          done
-
   publish:
     name: Publish to crates.io
     runs-on: ubuntu-latest
-    needs: bump_crates_version
     environment: crates-release
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -141,8 +39,14 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
+          # Publish in dependency order, sleeping between each to allow the
+          # crates.io index to propagate before dependent crates are published.
           cargo publish -p xet-runtime
+          sleep 30
           cargo publish -p xet-core-structures
+          sleep 30
           cargo publish -p xet-client
+          sleep 30
           cargo publish -p xet-data
+          sleep 30
           cargo publish -p hf-xet
