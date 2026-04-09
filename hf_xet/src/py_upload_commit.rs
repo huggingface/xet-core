@@ -50,7 +50,11 @@ impl PyXetUploadCommitBuilder {
     }
 
     /// Seed an initial CAS access token and its Unix expiry timestamp.
-    pub fn with_token_info<'py>(mut slf: PyRefMut<'py, Self>, token: String, expiry_unix_secs: u64) -> PyRefMut<'py, Self> {
+    pub fn with_token_info<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        token: String,
+        expiry_unix_secs: u64,
+    ) -> PyRefMut<'py, Self> {
         if let Some(b) = slf.inner.take() {
             slf.inner = Some(b.with_token_info(token, expiry_unix_secs));
         }
@@ -77,6 +81,9 @@ impl PyXetUploadCommitBuilder {
     }
 
     /// Attach custom HTTP headers forwarded with every CAS request.
+    ///
+    /// A ``User-Agent: hf_xet/<version>`` header is automatically merged in
+    /// (appended to any existing ``User-Agent`` value you supply).
     pub fn with_custom_headers<'py>(
         mut slf: PyRefMut<'py, Self>,
         headers: HashMap<String, String>,
@@ -92,7 +99,10 @@ impl PyXetUploadCommitBuilder {
     ///
     /// Releases the GIL during the blocking network handshake.
     pub fn build(&mut self, py: Python<'_>) -> PyResult<PyXetUploadCommit> {
-        let builder = self.inner.take().ok_or_else(|| pyo3::exceptions::PyValueError::new_err("builder already consumed by build()"))?;
+        let builder = self
+            .inner
+            .take()
+            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("builder already consumed by build()"))?;
         let commit = py.detach(|| builder.build_blocking().map_err(convert_xet_error))?;
         Ok(PyXetUploadCommit { inner: commit })
     }
@@ -120,6 +130,10 @@ pub struct PyXetUploadCommit {
 
 #[pymethods]
 impl PyXetUploadCommit {
+    fn __repr__(&self) -> &'static str {
+        "XetUploadCommit()"
+    }
+
     // ── Context manager ──────────────────────────────────────────────────────
 
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
@@ -317,8 +331,15 @@ impl PyXetCommitReport {
 
 impl From<XetCommitReport> for PyXetCommitReport {
     fn from(r: XetCommitReport) -> Self {
-        let uploads = r.uploads.into_iter().map(|(id, meta)| (id.to_string(), PyXetFileUploadResult::from(meta))).collect();
-        Self { progress: r.progress, uploads }
+        let uploads = r
+            .uploads
+            .into_iter()
+            .map(|(id, meta)| (id.to_string(), PyXetFileUploadResult::from(meta)))
+            .collect();
+        Self {
+            progress: r.progress,
+            uploads,
+        }
     }
 }
 

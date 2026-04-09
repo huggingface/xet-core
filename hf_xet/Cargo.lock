@@ -1109,7 +1109,6 @@ dependencies = [
  "signal-hook",
  "tracing",
  "winapi",
- "xet-runtime",
 ]
 
 [[package]]

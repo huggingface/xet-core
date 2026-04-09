@@ -1,15 +1,15 @@
+use std::collections::HashMap;
 use std::ops::Range;
 
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use xet_pkg::xet_session::{
-    ItemProgressReport, XetDownloadStream, XetDownloadStreamGroup, XetDownloadStreamGroupBuilder,
-    XetFileInfo, XetUnorderedDownloadStream,
+    ItemProgressReport, XetDownloadStream, XetDownloadStreamGroup, XetDownloadStreamGroupBuilder, XetFileInfo,
+    XetUnorderedDownloadStream,
 };
 
-use crate::convert_xet_error;
 use crate::headers::{build_header_map, build_headers_with_user_agent};
-use crate::PyXetDownloadInfo;
+use crate::{PyXetDownloadInfo, convert_xet_error};
 
 // ── PyXetDownloadStreamGroupBuilder ──────────────────────────────────────────
 
@@ -47,7 +47,11 @@ impl PyXetDownloadStreamGroupBuilder {
     }
 
     /// Seed an initial CAS access token and its Unix expiry timestamp.
-    pub fn with_token_info<'py>(mut slf: PyRefMut<'py, Self>, token: String, expiry_unix_secs: u64) -> PyRefMut<'py, Self> {
+    pub fn with_token_info<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        token: String,
+        expiry_unix_secs: u64,
+    ) -> PyRefMut<'py, Self> {
         if let Some(b) = slf.inner.take() {
             slf.inner = Some(b.with_token_info(token, expiry_unix_secs));
         }
@@ -61,7 +65,7 @@ impl PyXetDownloadStreamGroupBuilder {
     pub fn with_token_refresh_url<'py>(
         mut slf: PyRefMut<'py, Self>,
         url: String,
-        headers: std::collections::HashMap<String, String>,
+        headers: HashMap<String, String>,
     ) -> PyResult<PyRefMut<'py, Self>> {
         let header_map = build_header_map(headers)?;
         if let Some(b) = slf.inner.take() {
@@ -71,9 +75,12 @@ impl PyXetDownloadStreamGroupBuilder {
     }
 
     /// Attach custom HTTP headers forwarded with every CAS request.
+    ///
+    /// A ``User-Agent: hf_xet/<version>`` header is automatically merged in
+    /// (appended to any existing ``User-Agent`` value you supply).
     pub fn with_custom_headers<'py>(
         mut slf: PyRefMut<'py, Self>,
-        headers: std::collections::HashMap<String, String>,
+        headers: HashMap<String, String>,
     ) -> PyResult<PyRefMut<'py, Self>> {
         let header_map = build_headers_with_user_agent(Some(headers))?;
         if let Some(b) = slf.inner.take() {
@@ -139,8 +146,7 @@ impl PyXetDownloadStreamGroup {
         let xet_info = xet_info_from_download_info(&file_info);
         let byte_range: Option<Range<u64>> = range.map(|(s, e)| s..e);
         let inner = self.inner.clone();
-        let stream =
-            py.detach(|| inner.download_stream_blocking(xet_info, byte_range).map_err(convert_xet_error))?;
+        let stream = py.detach(|| inner.download_stream_blocking(xet_info, byte_range).map_err(convert_xet_error))?;
         Ok(PyXetDownloadStream { inner: stream })
     }
 
@@ -164,8 +170,11 @@ impl PyXetDownloadStreamGroup {
         let xet_info = xet_info_from_download_info(&file_info);
         let byte_range: Option<Range<u64>> = range.map(|(s, e)| s..e);
         let inner = self.inner.clone();
-        let stream = py
-            .detach(|| inner.download_unordered_stream_blocking(xet_info, byte_range).map_err(convert_xet_error))?;
+        let stream = py.detach(|| {
+            inner
+                .download_unordered_stream_blocking(xet_info, byte_range)
+                .map_err(convert_xet_error)
+        })?;
         Ok(PyXetUnorderedDownloadStream { inner: stream })
     }
 }

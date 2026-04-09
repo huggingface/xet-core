@@ -6,10 +6,9 @@ use xet_pkg::xet_session::{
     XetFileDownloadGroup, XetFileDownloadGroupBuilder, XetFileInfo,
 };
 
-use crate::convert_xet_error;
 use crate::headers::{build_header_map, build_headers_with_user_agent};
 use crate::py_xet_session::task_state_to_str;
-use crate::PyXetDownloadInfo;
+use crate::{PyXetDownloadInfo, convert_xet_error};
 
 // ── PyXetFileDownloadGroupBuilder ─────────────────────────────────────────────
 
@@ -47,7 +46,11 @@ impl PyXetFileDownloadGroupBuilder {
     }
 
     /// Seed an initial CAS access token and its Unix expiry timestamp.
-    pub fn with_token_info<'py>(mut slf: PyRefMut<'py, Self>, token: String, expiry_unix_secs: u64) -> PyRefMut<'py, Self> {
+    pub fn with_token_info<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        token: String,
+        expiry_unix_secs: u64,
+    ) -> PyRefMut<'py, Self> {
         if let Some(b) = slf.inner.take() {
             slf.inner = Some(b.with_token_info(token, expiry_unix_secs));
         }
@@ -68,6 +71,9 @@ impl PyXetFileDownloadGroupBuilder {
     }
 
     /// Attach custom HTTP headers forwarded with every CAS request.
+    ///
+    /// A ``User-Agent: hf_xet/<version>`` header is automatically merged in
+    /// (appended to any existing ``User-Agent`` value you supply).
     pub fn with_custom_headers<'py>(
         mut slf: PyRefMut<'py, Self>,
         headers: HashMap<String, String>,
@@ -112,6 +118,10 @@ pub struct PyXetFileDownloadGroup {
 
 #[pymethods]
 impl PyXetFileDownloadGroup {
+    fn __repr__(&self) -> &'static str {
+        "XetFileDownloadGroup()"
+    }
+
     // ── Context manager ──────────────────────────────────────────────────────
 
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
@@ -304,8 +314,15 @@ impl PyXetDownloadGroupReport {
 
 impl From<XetDownloadGroupReport> for PyXetDownloadGroupReport {
     fn from(r: XetDownloadGroupReport) -> Self {
-        let downloads = r.downloads.into_iter().map(|(id, dr)| (id.to_string(), PyXetDownloadReport::from(dr))).collect();
-        Self { progress: r.progress, downloads }
+        let downloads = r
+            .downloads
+            .into_iter()
+            .map(|(id, dr)| (id.to_string(), PyXetDownloadReport::from(dr)))
+            .collect();
+        Self {
+            progress: r.progress,
+            downloads,
+        }
     }
 }
 

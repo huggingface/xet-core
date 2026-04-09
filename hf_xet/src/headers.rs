@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use http::header::{self, HeaderMap, HeaderName, HeaderValue};
-use pyo3::exceptions::PyValueError;
 use pyo3::PyResult;
+use pyo3::exceptions::PyValueError;
 
 const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
@@ -17,8 +17,8 @@ pub(crate) fn build_headers_with_user_agent(request_headers: Option<HashMap<Stri
         USER_AGENT.to_string()
     };
 
-    let user_agent_value = HeaderValue::from_str(&combined_user_agent)
-        .unwrap_or_else(|_| HeaderValue::from_static(USER_AGENT));
+    let user_agent_value =
+        HeaderValue::from_str(&combined_user_agent).unwrap_or_else(|_| HeaderValue::from_static(USER_AGENT));
     map.insert(header::USER_AGENT, user_agent_value);
 
     Ok(map)
