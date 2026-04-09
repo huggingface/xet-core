@@ -1,6 +1,7 @@
 mod headers;
 mod logging;
 mod py_download_group;
+mod py_download_stream_group;
 mod py_upload_commit;
 mod py_xet_session;
 
@@ -147,6 +148,10 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<py_download_group::PyXetFileDownload>()?;
     m.add_class::<py_download_group::PyXetDownloadReport>()?;
     m.add_class::<py_download_group::PyXetDownloadGroupReport>()?;
+    m.add_class::<py_download_stream_group::PyXetDownloadStreamGroupBuilder>()?;
+    m.add_class::<py_download_stream_group::PyXetDownloadStreamGroup>()?;
+    m.add_class::<py_download_stream_group::PyXetDownloadStream>()?;
+    m.add_class::<py_download_stream_group::PyXetUnorderedDownloadStream>()?;
 
     // ── Progress types (pyclass-annotated in xet_data with "python" feature) ─
     m.add_class::<xet_pkg::xet_session::GroupProgressReport>()?;

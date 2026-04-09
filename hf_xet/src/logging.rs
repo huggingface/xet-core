@@ -15,7 +15,7 @@ fn get_version_info_string(py: Python<'_>) -> String {
     }
 
     // Get huggingface_hub+hf_xet versions
-    let package_names = ["huggingface_hub", "hfxet"];
+    let package_names = ["huggingface_hub", "hf-xet"];
     if let Ok(importlib_metadata) = py.import("importlib.metadata") {
         for package_name in package_names.iter() {
             if let Ok(version) = importlib_metadata

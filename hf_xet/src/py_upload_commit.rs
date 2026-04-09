@@ -34,6 +34,10 @@ pub struct PyXetUploadCommitBuilder {
 
 #[pymethods]
 impl PyXetUploadCommitBuilder {
+    fn __repr__(&self) -> &'static str {
+        "XetUploadCommitBuilder()"
+    }
+
     /// Set the CAS server endpoint URL.
     ///
     /// If omitted and a token refresh URL is provided, the endpoint is read
@@ -225,6 +229,10 @@ pub struct PyXetFileUpload {
 
 #[pymethods]
 impl PyXetFileUpload {
+    fn __repr__(&self) -> String {
+        format!("XetFileUpload(task_id={:?})", self.inner.task_id().to_string())
+    }
+
     /// Per-file progress, or ``None`` if not yet available.
     pub fn progress(&self) -> Option<ItemProgressReport> {
         self.inner.progress()
@@ -248,6 +256,13 @@ impl PyXetFileUpload {
     /// Return upload metadata without blocking, or ``None`` if not yet done.
     pub fn try_result(&self) -> Option<PyXetFileUploadResult> {
         self.inner.try_finish().map(PyXetFileUploadResult::from)
+    }
+
+    /// The unique task ID for this upload, as a string.
+    ///
+    /// Matches the keys in :attr:`XetCommitReport.uploads`.
+    pub fn task_id(&self) -> String {
+        self.inner.task_id().to_string()
     }
 }
 

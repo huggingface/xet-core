@@ -3,6 +3,7 @@ use xet_pkg::xet_session::{XetSession, XetSessionBuilder, XetTaskState};
 
 use crate::convert_xet_error;
 use crate::py_download_group::PyXetFileDownloadGroupBuilder;
+use crate::py_download_stream_group::PyXetDownloadStreamGroupBuilder;
 use crate::py_upload_commit::PyXetUploadCommitBuilder;
 
 // ── PyXetSession ─────────────────────────────────────────────────────────────
@@ -18,6 +19,10 @@ pub struct PyXetSession {
 
 #[pymethods]
 impl PyXetSession {
+    fn __repr__(&self) -> &'static str {
+        "XetSession()"
+    }
+
     /// Create a new XetSession.
     #[new]
     pub fn new(py: Python<'_>) -> PyResult<Self> {
@@ -42,6 +47,15 @@ impl PyXetSession {
     pub fn new_file_download_group(&self) -> PyResult<PyXetFileDownloadGroupBuilder> {
         let builder = self.inner.new_file_download_group().map_err(convert_xet_error)?;
         Ok(PyXetFileDownloadGroupBuilder { inner: Some(builder) })
+    }
+
+    /// Return a builder for a new streaming download group.
+    ///
+    /// Configure auth on the builder, then call ``build()`` to get an
+    /// :class:`XetDownloadStreamGroup`.
+    pub fn new_download_stream_group(&self) -> PyResult<PyXetDownloadStreamGroupBuilder> {
+        let builder = self.inner.new_download_stream_group().map_err(convert_xet_error)?;
+        Ok(PyXetDownloadStreamGroupBuilder { inner: Some(builder) })
     }
 
     /// Current task state: ``"Running"``, ``"Finalizing"``, ``"Completed"``, or

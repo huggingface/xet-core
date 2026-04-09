@@ -34,6 +34,10 @@ pub struct PyXetFileDownloadGroupBuilder {
 
 #[pymethods]
 impl PyXetFileDownloadGroupBuilder {
+    fn __repr__(&self) -> &'static str {
+        "XetFileDownloadGroupBuilder()"
+    }
+
     /// Set the CAS server endpoint URL.
     pub fn with_endpoint<'py>(mut slf: PyRefMut<'py, Self>, endpoint: String) -> PyRefMut<'py, Self> {
         if let Some(b) = slf.inner.take() {
@@ -201,6 +205,10 @@ pub struct PyXetFileDownload {
 
 #[pymethods]
 impl PyXetFileDownload {
+    fn __repr__(&self) -> String {
+        format!("XetFileDownload(task_id={:?})", self.inner.task_id().to_string())
+    }
+
     /// Per-file progress, or ``None`` if not yet available.
     pub fn progress(&self) -> Option<ItemProgressReport> {
         self.inner.progress()
@@ -220,12 +228,23 @@ impl PyXetFileDownload {
         Ok(PyXetDownloadReport::from(report))
     }
 
-    /// Return the download report without blocking, or ``None`` if not done.
-    pub fn try_result(&self) -> Option<PyXetDownloadReport> {
+    /// Return the download report without blocking.
+    ///
+    /// Returns ``None`` if the download has not yet completed.
+    /// Raises if the download completed with an error.
+    pub fn try_result(&self) -> PyResult<Option<PyXetDownloadReport>> {
         match self.inner.result() {
-            Some(Ok(r)) => Some(PyXetDownloadReport::from(r)),
-            _ => None,
+            Some(Ok(r)) => Ok(Some(PyXetDownloadReport::from(r))),
+            Some(Err(e)) => Err(convert_xet_error(e)),
+            None => Ok(None),
         }
+    }
+
+    /// The unique task ID for this download, as a string.
+    ///
+    /// Matches the keys in :attr:`XetDownloadGroupReport.downloads`.
+    pub fn task_id(&self) -> String {
+        self.inner.task_id().to_string()
     }
 
     /// Cancel this individual download.

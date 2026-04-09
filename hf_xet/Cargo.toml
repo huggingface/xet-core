@@ -36,8 +36,8 @@ winapi = { version = "0.3", features = ["consoleapi", "wincon", "errhandlingapi"
 [features]
 default = ["no-default-cache", "elevated_information_level"] # By default, hf_xet disables the disk cache and uses aggressive logging level
 extension-module = ["pyo3/extension-module"] # Only enabled when building with maturin
-native-tls = []
-native-tls-vendored = []
+native-tls = ["xet-pkg/native-tls"]
+native-tls-vendored = ["xet-pkg/native-tls-vendored"]
 no-default-cache = ["xet-runtime/no-default-cache"]
 profiling = ["pprof"]
 tokio-console = ["xet-runtime/tokio-console"]
