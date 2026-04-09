@@ -10,7 +10,6 @@ name = "hf_xet"
 crate-type = ["cdylib", "lib"]
 
 [dependencies]
-xet-runtime = { path = "../xet_runtime" }
 xet-pkg = { package = "hf-xet", path = "../xet_pkg", features = ["python"] }
 
 pprof = { version = "0.14", features = [
@@ -38,10 +37,10 @@ default = ["no-default-cache", "elevated_information_level"] # By default, hf_xe
 extension-module = ["pyo3/extension-module"] # Only enabled when building with maturin
 native-tls = ["xet-pkg/native-tls"]
 native-tls-vendored = ["xet-pkg/native-tls-vendored"]
-no-default-cache = ["xet-runtime/no-default-cache"]
+no-default-cache = ["xet-pkg/no-default-cache"]
 profiling = ["pprof"]
-tokio-console = ["xet-runtime/tokio-console"]
-elevated_information_level = ["xet-runtime/elevated_information_level"]
+tokio-console = ["xet-pkg/tokio-console"]
+elevated_information_level = ["xet-pkg/elevated_information_level"]
 
 [profile.release]
 split-debuginfo = "packed"

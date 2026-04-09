@@ -7,7 +7,6 @@ mod py_xet_session;
 
 use pyo3::prelude::*;
 use xet_pkg::XetError;
-use xet_runtime::core::file_handle_limits;
 
 use crate::logging::init_logging;
 
@@ -167,9 +166,6 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // ── Logging ──────────────────────────────────────────────────────────────
     init_logging(py);
-
-    // ── System resource limits ───────────────────────────────────────────────
-    file_handle_limits::raise_nofile_soft_to_hard();
 
     #[cfg(feature = "profiling")]
     {

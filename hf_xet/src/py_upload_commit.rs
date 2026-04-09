@@ -7,7 +7,7 @@ use xet_pkg::xet_session::{
 };
 
 use crate::convert_xet_error;
-use crate::headers::hashmap_to_headermap;
+use crate::headers::{build_header_map, build_headers_with_user_agent};
 use crate::py_xet_session::task_state_to_str;
 
 // ── PyXetUploadCommitBuilder ──────────────────────────────────────────────────
@@ -69,7 +69,7 @@ impl PyXetUploadCommitBuilder {
         url: String,
         headers: HashMap<String, String>,
     ) -> PyResult<PyRefMut<'py, Self>> {
-        let header_map = hashmap_to_headermap(headers)?;
+        let header_map = build_header_map(headers)?;
         if let Some(b) = slf.inner.take() {
             slf.inner = Some(b.with_token_refresh_url(url, header_map));
         }
@@ -81,7 +81,7 @@ impl PyXetUploadCommitBuilder {
         mut slf: PyRefMut<'py, Self>,
         headers: HashMap<String, String>,
     ) -> PyResult<PyRefMut<'py, Self>> {
-        let header_map = hashmap_to_headermap(headers)?;
+        let header_map = build_headers_with_user_agent(Some(headers))?;
         if let Some(b) = slf.inner.take() {
             slf.inner = Some(b.with_custom_headers(header_map));
         }

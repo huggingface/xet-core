@@ -8,7 +8,7 @@ use xet_pkg::xet_session::{
 };
 
 use crate::convert_xet_error;
-use crate::headers::hashmap_to_headermap;
+use crate::headers::{build_header_map, build_headers_with_user_agent};
 use crate::PyXetDownloadInfo;
 
 // ── PyXetDownloadStreamGroupBuilder ──────────────────────────────────────────
@@ -63,7 +63,7 @@ impl PyXetDownloadStreamGroupBuilder {
         url: String,
         headers: std::collections::HashMap<String, String>,
     ) -> PyResult<PyRefMut<'py, Self>> {
-        let header_map = hashmap_to_headermap(headers)?;
+        let header_map = build_header_map(headers)?;
         if let Some(b) = slf.inner.take() {
             slf.inner = Some(b.with_token_refresh_url(url, header_map));
         }
@@ -75,7 +75,7 @@ impl PyXetDownloadStreamGroupBuilder {
         mut slf: PyRefMut<'py, Self>,
         headers: std::collections::HashMap<String, String>,
     ) -> PyResult<PyRefMut<'py, Self>> {
-        let header_map = hashmap_to_headermap(headers)?;
+        let header_map = build_headers_with_user_agent(Some(headers))?;
         if let Some(b) = slf.inner.take() {
             slf.inner = Some(b.with_custom_headers(header_map));
         }
@@ -176,15 +176,19 @@ impl PyXetDownloadStreamGroup {
 ///
 /// Returned by :meth:`XetDownloadStreamGroup.download_stream`.
 ///
-/// Usage::
+/// Usage:
 ///
-///     for chunk in group.download_stream(file_info):
-///         f.write(chunk)  # chunk is bytes, in file order
+/// ```text
+/// for chunk in group.download_stream(file_info):
+///     f.write(chunk)  # chunk is bytes, in file order
+/// ```
 ///
-/// Or with a byte range::
+/// Or with a byte range:
 ///
-///     for chunk in group.download_stream(file_info, range=(0, 1024)):
-///         process(chunk)
+/// ```text
+/// for chunk in group.download_stream(file_info, range=(0, 1024)):
+///     process(chunk)
+/// ```
 #[pyclass(name = "XetDownloadStream")]
 pub struct PyXetDownloadStream {
     inner: XetDownloadStream,
@@ -201,6 +205,11 @@ impl PyXetDownloadStream {
     }
 
     /// Return the next ``bytes`` chunk, or raise ``StopIteration`` when done.
+    ///
+    /// Note: the GIL is held while waiting for the next chunk.
+    /// ``XetDownloadStream`` is not ``Clone``, so ``py.detach()`` cannot be
+    /// used here.  In practice chunks arrive quickly from the background task,
+    /// so this is not expected to cause significant contention.
     fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyBytes>>> {
         match self.inner.blocking_next().map_err(convert_xet_error)? {
             Some(bytes) => Ok(Some(PyBytes::new(py, &bytes).unbind())),
@@ -229,11 +238,13 @@ impl PyXetDownloadStream {
 /// ``offset`` is the byte position of ``data`` within the file (or range).
 /// Chunks may arrive in any order.
 ///
-/// Usage::
+/// Usage:
 ///
-///     buf = bytearray(file_size)
-///     for offset, chunk in group.download_unordered_stream(file_info):
-///         buf[offset:offset + len(chunk)] = chunk
+/// ```text
+/// buf = bytearray(file_size)
+/// for offset, chunk in group.download_unordered_stream(file_info):
+///     buf[offset:offset + len(chunk)] = chunk
+/// ```
 #[pyclass(name = "XetUnorderedDownloadStream")]
 pub struct PyXetUnorderedDownloadStream {
     inner: XetUnorderedDownloadStream,
@@ -251,6 +262,12 @@ impl PyXetUnorderedDownloadStream {
 
     /// Return the next ``(offset, bytes)`` chunk, or raise ``StopIteration``
     /// when done.
+    ///
+    /// Note: the GIL is held while waiting for the next chunk.
+    /// ``XetUnorderedDownloadStream`` is not ``Clone``, so ``py.detach()``
+    /// cannot be used here.  In practice chunks arrive quickly from the
+    /// background task, so this is not expected to cause significant
+    /// contention.
     fn __next__<'py>(&mut self, py: Python<'py>) -> PyResult<Option<(u64, Bound<'py, PyBytes>)>> {
         match self.inner.blocking_next().map_err(convert_xet_error)? {
             Some((offset, bytes)) => Ok(Some((offset, PyBytes::new(py, &bytes)))),

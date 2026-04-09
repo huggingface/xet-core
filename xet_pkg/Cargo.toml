@@ -50,6 +50,9 @@ python = ["xet-runtime/python", "xet-data/python", "dep:pyo3"]
 simulation = ["xet-client/simulation"]
 native-tls = ["xet-client/native-tls"]
 native-tls-vendored = ["xet-client/native-tls-vendored"]
+elevated_information_level = ["xet-client/elevated_information_level", "xet-runtime/elevated_information_level"]
+no-default-cache = ["xet-runtime/no-default-cache"]
+tokio-console = ["xet-runtime/tokio-console"]
 
 [dev-dependencies]
 anyhow = { workspace = true }
