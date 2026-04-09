@@ -11,13 +11,8 @@ crate-type = ["cdylib", "lib"]
 
 [dependencies]
 xet-runtime = { path = "../xet_runtime" }
-xet-client = { path = "../xet_client" }
 xet-pkg = { package = "hf-xet", path = "../xet_pkg", features = ["python"] }
 
-async-trait = "0.1"
-chrono = "0.4"
-itertools = "0.14"
-lazy_static = "1.5"
 pprof = { version = "0.14", features = [
     "flamegraph",
     "prost",
@@ -27,9 +22,8 @@ pyo3 = { version = "0.26", features = [
     "abi3-py37",
     "auto-initialize",
 ] }
-rand = "0.9"
 tracing = "0.1"
-http = "1" 
+http = "1"
 
 # Unix-specific dependencies
 [target.'cfg(unix)'.dependencies]
@@ -42,12 +36,12 @@ winapi = { version = "0.3", features = ["consoleapi", "wincon", "errhandlingapi"
 [features]
 default = ["no-default-cache", "elevated_information_level"] # By default, hf_xet disables the disk cache and uses aggressive logging level
 extension-module = ["pyo3/extension-module"] # Only enabled when building with maturin
-native-tls = ["xet-client/native-tls-vendored"]
-native-tls-vendored = ["xet-client/native-tls-vendored"]
+native-tls = []
+native-tls-vendored = []
 no-default-cache = ["xet-runtime/no-default-cache"]
 profiling = ["pprof"]
 tokio-console = ["xet-runtime/tokio-console"]
-elevated_information_level = ["xet-client/elevated_information_level", "xet-runtime/elevated_information_level"]
+elevated_information_level = ["xet-runtime/elevated_information_level"]
 
 [profile.release]
 split-debuginfo = "packed"

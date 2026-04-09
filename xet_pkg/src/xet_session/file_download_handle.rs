@@ -42,6 +42,9 @@ pub(super) struct XetFileDownloadInner {
 /// [`XetFileDownloadGroup::download_file_to_path`](crate::xet_session::XetFileDownloadGroup::download_file_to_path).
 /// Use [`finish`](Self::finish) to wait for completion or
 /// [`result`](Self::result) to poll without blocking.
+///
+/// Cloning is cheap — all clones share the same underlying state via `Arc`.
+#[derive(Clone)]
 pub struct XetFileDownload {
     pub(super) inner: Arc<XetFileDownloadInner>,
     pub(super) task_runtime: Arc<TaskRuntime>,
