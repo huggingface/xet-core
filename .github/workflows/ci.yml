@@ -115,3 +115,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - uses: ./.github/actions/build-wasm
+      - name: Check hf_xet_thin_wasm Cargo.lock has no uncommitted changes
+        working-directory: wasm/hf_xet_thin_wasm
+        run: |
+          # the build steps would update Cargo.lock if it is out of date
+          test -z "$(git status --porcelain Cargo.lock)" || (echo "hf_xet_thin_wasm Cargo.lock has uncommitted changes!" && exit 1)
+      - name: Check hf_xet_wasm Cargo.lock has no uncommitted changes
+        working-directory: wasm/hf_xet_wasm
+        run: |
+          # the build steps would update Cargo.lock if it is out of date
+          test -z "$(git status --porcelain Cargo.lock)" || (echo "hf_xet_wasm Cargo.lock has uncommitted changes!" && exit 1)
