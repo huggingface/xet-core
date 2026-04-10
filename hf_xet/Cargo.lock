@@ -1102,20 +1102,14 @@ dependencies = [
 name = "hf_xet"
 version = "1.4.2"
 dependencies = [
- "async-trait",
- "chrono",
  "hf-xet",
  "http",
- "itertools 0.14.0",
- "lazy_static",
  "pprof",
  "pyo3",
- "rand 0.9.2",
  "signal-hook",
+ "tempfile",
  "tracing",
  "winapi",
- "xet-client",
- "xet-runtime",
 ]
 
 [[package]]
@@ -4273,6 +4267,7 @@ dependencies = [
  "itertools 0.14.0",
  "lazy_static",
  "more-asserts",
+ "pyo3",
  "rand 0.9.2",
  "serde",
  "serde_json",
