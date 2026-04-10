@@ -183,13 +183,15 @@ impl LocalTestServerBuilder {
         #[cfg(not(unix))]
         let _socket_path = if self.ephemeral_socket { None } else { self.socket_path };
 
-        // Build client + optional deletion_client. LocalClient supports both interfaces;
-        // MemoryClient and pre-supplied clients only support DirectAccessClient.
+        // Build client + optional deletion_client. LocalClient and MemoryClient both support
+        // DirectAccessClient + DeletionControlableClient; pre-supplied clients only support DirectAccessClient.
         let (client, deletion_client): (Arc<dyn DirectAccessClient>, Option<Arc<dyn DeletionControlableClient>>) =
             if let Some(client) = self.client {
                 (client, None)
             } else if self.in_memory {
-                (MemoryClient::new(), None)
+                let mc = MemoryClient::new();
+                let dc: Arc<dyn DeletionControlableClient> = mc.clone();
+                (mc, Some(dc))
             } else if self.ephemeral_disk {
                 let lc = LocalClient::temporary()
                     .await
@@ -572,10 +574,6 @@ impl DirectAccessClient for LocalTestServer {
 
     async fn list_xorbs(&self) -> Result<Vec<xet_core_structures::merklehash::MerkleHash>> {
         self.client.list_xorbs().await
-    }
-
-    async fn delete_xorb(&self, hash: &xet_core_structures::merklehash::MerkleHash) {
-        self.client.delete_xorb(hash).await;
     }
 
     async fn get_full_xorb(&self, hash: &xet_core_structures::merklehash::MerkleHash) -> Result<bytes::Bytes> {

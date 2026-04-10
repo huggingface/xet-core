@@ -547,33 +547,17 @@ pub async fn test_missing_xorb(client: Arc<dyn DirectAccessClient>) {
     assert!(matches!(result, Err(ClientError::XORBNotFound(_))));
 }
 
-/// Tests list_xorbs and delete_xorb operations.
+/// Tests list_xorbs operations.
 pub async fn test_xorb_list_and_delete(client: Arc<dyn DirectAccessClient>) {
-    // Initially should be empty
     let initial_list = client.list_xorbs().await.unwrap();
     assert!(initial_list.is_empty());
 
-    // Upload a file which creates xorbs
     let file = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
     let xorb_hash = file.term_xorb_hash(0).unwrap();
 
-    // Now should have one xorb
     let list = client.list_xorbs().await.unwrap();
     assert_eq!(list.len(), 1);
     assert!(list.contains(&xorb_hash));
-
-    // Delete the xorb
-    client.delete_xorb(&xorb_hash).await;
-
-    // Should be empty again
-    let final_list = client.list_xorbs().await.unwrap();
-    assert!(final_list.is_empty());
-
-    // xorb should no longer exist
-    assert!(!client.xorb_exists(&xorb_hash).await.unwrap());
-
-    // Deleting non-existent xorb should not fail
-    client.delete_xorb(&xorb_hash).await;
 }
 
 /// Tests get_file_data returns correct data.

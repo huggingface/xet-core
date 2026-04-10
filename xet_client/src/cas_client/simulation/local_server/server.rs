@@ -108,7 +108,9 @@ impl LocalServer {
     pub async fn new(config: LocalServerConfig) -> Result<Self> {
         let (client, deletion_client): (Arc<dyn DirectAccessClient>, Option<Arc<dyn DeletionControlableClient>>) =
             if config.in_memory {
-                (MemoryClient::new(), None)
+                let client = MemoryClient::new();
+                let deletion_client = client.clone() as Arc<dyn DeletionControlableClient>;
+                (client, Some(deletion_client))
             } else {
                 let client = LocalClient::new(&config.data_directory).await?;
                 let deletion_client = client.clone() as Arc<dyn DeletionControlableClient>;
@@ -287,7 +289,8 @@ impl LocalTestServer {
     pub async fn start_with_socket_proxy(in_memory: bool, socket_path: Option<PathBuf>) -> Self {
         if in_memory {
             let client = MemoryClient::new();
-            Self::start_with_client_and_socket(client, None, socket_path).await
+            let deletion_client: Arc<dyn DeletionControlableClient> = client.clone();
+            Self::start_with_client_and_socket(client, Some(deletion_client), socket_path).await
         } else {
             let client = LocalClient::temporary().await.unwrap();
             let deletion_client: Arc<dyn DeletionControlableClient> = client.clone();
@@ -536,10 +539,6 @@ impl DirectAccessClient for LocalTestServer {
 
     async fn list_xorbs(&self) -> Result<Vec<xet_core_structures::merklehash::MerkleHash>> {
         self.client.list_xorbs().await
-    }
-
-    async fn delete_xorb(&self, hash: &xet_core_structures::merklehash::MerkleHash) {
-        self.client.delete_xorb(hash).await;
     }
 
     async fn get_full_xorb(&self, hash: &xet_core_structures::merklehash::MerkleHash) -> Result<bytes::Bytes> {
@@ -1207,6 +1206,7 @@ mod tests {
 
     /// Main test that runs all server checks with both in-memory and disk-backed storage.
     #[tokio::test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_local_server() {
         // Test with in-memory storage
         {
@@ -1229,6 +1229,7 @@ mod tests {
     /// uploads via remote client, then uses the held LocalClient reference for
     /// deletion controls.
     #[tokio::test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_deletion_lifecycle_via_server() {
         let lc = LocalClient::temporary().await.unwrap();
         let server = LocalTestServer::start_with_client(lc.clone()).await;
@@ -1315,6 +1316,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_simulation_control_client_config_eventual_apply() {
         let server = crate::cas_client::simulation::LocalTestServerBuilder::new()
             .with_ephemeral_disk()
@@ -1369,36 +1371,26 @@ mod tests {
         .await;
     }
 
-    /// Tests that deletion routes return 501 when the backend is MemoryClient.
+    /// Tests that deletion routes are available when the backend is MemoryClient.
     #[tokio::test]
-    async fn test_simulation_control_client_501_on_memory_backend() {
+    async fn test_simulation_control_client_deletion_on_memory_backend() {
         let server = LocalTestServer::start(true).await;
         let sc = SimulationControlClient::new(server.endpoint());
 
-        // DirectAccessClient methods should still work
+        // DirectAccessClient methods should work.
         let xorbs = DirectAccessClient::list_xorbs(&sc).await.unwrap();
         assert!(xorbs.is_empty());
 
-        // DeletionControlableClient methods should return errors (501)
-        assert!(DeletionControlableClient::list_shard_entries(&sc).await.is_err());
-        assert!(DeletionControlableClient::list_file_shard_entries(&sc).await.is_err());
-        // Integrity/reachability returns 501 on MemoryClient (no deletion client).
-        assert!(sc.verify_integrity().await.is_err());
-        assert!(
-            DeletionControlableClient::delete_shard_entry(&sc, &xet_core_structures::merklehash::MerkleHash::default())
-                .await
-                .is_err()
-        );
-        assert!(
-            DeletionControlableClient::delete_file_entry(&sc, &xet_core_structures::merklehash::MerkleHash::default())
-                .await
-                .is_err()
-        );
-        assert!(
-            DeletionControlableClient::get_shard_bytes(&sc, &xet_core_structures::merklehash::MerkleHash::default())
-                .await
-                .is_err()
-        );
+        // DeletionControlableClient methods should be wired and functional.
+        let file = sc.upload_random_file(&[(1, (0, 2))], 1024).await.unwrap();
+        let shard_entries = DeletionControlableClient::list_shard_entries(&sc).await.unwrap();
+        assert_eq!(shard_entries.len(), 1);
+
+        let file_entries = DeletionControlableClient::list_file_shard_entries(&sc).await.unwrap();
+        assert_eq!(file_entries.len(), 1);
+        assert_eq!(file_entries[0].0, file.file_hash);
+
+        sc.verify_integrity().await.unwrap();
     }
 
     /// Tests that LocalTestServerBuilder with ephemeral disk correctly wires the deletion client,
