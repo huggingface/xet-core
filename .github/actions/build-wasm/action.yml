@@ -1,0 +1,34 @@
+name: Build WASM
+description: Build hf_xet_wasm and hf_xet_thin_wasm
+runs:
+  using: "composite"
+  steps:
+    - name: Save current default toolchain
+      id: save-toolchain
+      shell: bash
+      run: echo "toolchain=$(rustup show active-toolchain | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+    - name: Install Rust nightly
+      uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
+      with:
+        toolchain: nightly
+        targets: wasm32-unknown-unknown
+        components: rust-src
+    - uses: ./.github/actions/cache-rust-build
+    - name: Install wasm-bindgen-cli and wasm-pack
+      shell: bash
+      run: |
+        cargo install --version 0.2.100 wasm-bindgen-cli
+        cargo install --version 0.13.1 wasm-pack
+    - name: Build hf_xet_thin_wasm
+      shell: bash
+      working-directory: wasm/hf_xet_thin_wasm
+      run: |
+        ./build_wasm.sh
+    - name: Build hf_xet_wasm
+      shell: bash
+      working-directory: wasm/hf_xet_wasm
+      run: |
+        ./build_wasm.sh
+    - name: Restore default toolchain
+      shell: bash
+      run: rustup default ${{ steps.save-toolchain.outputs.toolchain }}
