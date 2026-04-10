@@ -39,17 +39,15 @@ use crate::error::{ClientError, Result};
 struct MaterializedXorb {
     serialized_data: Bytes,
     xorb_object: XorbObject,
-    /// Monotonic generation counter; bumped on every upload so the tag changes
-    /// even when content is identical, matching production ETag semantics.
-    generation: u64,
 }
 
 /// Storage for a XORB - either fully materialized or generated on-the-fly.
+/// Each variant carries a monotonic `generation` counter that is bumped on
+/// every insert, so the tag changes even when content is identical (matching
+/// production ETag semantics).
 enum XorbStorage {
-    /// Fully materialized XORB data stored in memory.
-    Materialized(MaterializedXorb),
-    /// XORB data generated on-the-fly from random seeds.
-    Random(RandomXorb),
+    Materialized { entry: MaterializedXorb, generation: u64 },
+    Random { xorb: RandomXorb, generation: u64 },
 }
 
 /// In-memory client for testing purposes. Stores all data in memory using hash tables.
@@ -136,7 +134,8 @@ impl MemoryClient {
             shard.add_xorb_block(cas_info)?;
         }
 
-        self.xorbs.write().await.insert(hash, XorbStorage::Random(xorb));
+        let generation = self.xorb_generation.fetch_add(1, Ordering::Relaxed);
+        self.xorbs.write().await.insert(hash, XorbStorage::Random { xorb, generation });
         Ok(hash)
     }
 
@@ -248,13 +247,15 @@ impl MemoryClient {
     #[cfg(not(target_family = "wasm"))]
     fn xorb_tag(hash: &MerkleHash, storage: &XorbStorage) -> ObjectTag {
         match storage {
-            XorbStorage::Materialized(entry) => {
+            XorbStorage::Materialized { entry, generation } => {
                 let mut payload = Vec::from(entry.serialized_data.as_ref());
-                payload.extend_from_slice(&entry.generation.to_le_bytes());
+                payload.extend_from_slice(&generation.to_le_bytes());
                 Self::object_tag_from_key_and_payload(b"xorb", hash, &payload)
             },
-            XorbStorage::Random(random_xorb) => {
-                let entropy = random_xorb.num_chunks().to_le_bytes();
+            XorbStorage::Random { xorb, generation } => {
+                let mut entropy = Vec::with_capacity(16);
+                entropy.extend_from_slice(&xorb.num_chunks().to_le_bytes());
+                entropy.extend_from_slice(&generation.to_le_bytes());
                 Self::object_tag_from_key_and_payload(b"xorb", hash, &entropy)
             },
         }
@@ -364,13 +365,13 @@ impl DirectAccessClient for MemoryClient {
         })?;
 
         match storage {
-            XorbStorage::Materialized(entry) => {
+            XorbStorage::Materialized { entry, .. } => {
                 let mut reader = BufReader::new(Cursor::new(&entry.serialized_data));
                 let xorb_obj = XorbObject::deserialize(&mut reader)?;
                 let result = xorb_obj.get_all_bytes(&mut reader)?;
                 Ok(Bytes::from(result))
             },
-            XorbStorage::Random(xorb) => xorb
+            XorbStorage::Random { xorb, .. } => xorb
                 .get_chunk_range_data(0, xorb.num_chunks())
                 .ok_or(ClientError::XORBNotFound(*hash)),
         }
@@ -388,7 +389,7 @@ impl DirectAccessClient for MemoryClient {
         })?;
 
         match storage {
-            XorbStorage::Materialized(entry) => {
+            XorbStorage::Materialized { entry, .. } => {
                 let mut reader = BufReader::new(Cursor::new(&entry.serialized_data));
                 let xorb_obj = XorbObject::deserialize(&mut reader)?;
 
@@ -403,7 +404,7 @@ impl DirectAccessClient for MemoryClient {
                 }
                 Ok(ret)
             },
-            XorbStorage::Random(xorb) => {
+            XorbStorage::Random { xorb, .. } => {
                 let mut ret: Vec<Bytes> = Vec::new();
                 for r in chunk_ranges {
                     if r.0 >= r.1 {
@@ -435,8 +436,8 @@ impl DirectAccessClient for MemoryClient {
         })?;
 
         match storage {
-            XorbStorage::Materialized(entry) => Ok(entry.xorb_object.clone()),
-            XorbStorage::Random(xorb) => Ok(xorb.get_xorb_object()),
+            XorbStorage::Materialized { entry, .. } => Ok(entry.xorb_object.clone()),
+            XorbStorage::Random { xorb, .. } => Ok(xorb.get_xorb_object()),
         }
     }
 
@@ -488,7 +489,7 @@ impl DirectAccessClient for MemoryClient {
         let storage = xorbs.get(hash).ok_or(ClientError::XORBNotFound(*hash))?;
 
         match storage {
-            XorbStorage::Materialized(entry) => {
+            XorbStorage::Materialized { entry, .. } => {
                 let data = &entry.serialized_data;
 
                 let start = byte_range.as_ref().map(|r| r.start as usize).unwrap_or(0);
@@ -504,7 +505,7 @@ impl DirectAccessClient for MemoryClient {
 
                 Ok(data.slice(start..end))
             },
-            XorbStorage::Random(xorb) => {
+            XorbStorage::Random { xorb, .. } => {
                 let total_len = xorb.serialized_length();
                 let start = byte_range.as_ref().map(|r| r.start).unwrap_or(0);
                 let end = byte_range.as_ref().map(|r| r.end).unwrap_or(total_len).min(total_len);
@@ -523,8 +524,8 @@ impl DirectAccessClient for MemoryClient {
         let storage = xorbs.get(hash).ok_or(ClientError::XORBNotFound(*hash))?;
 
         match storage {
-            XorbStorage::Materialized(entry) => Ok(entry.serialized_data.len() as u64),
-            XorbStorage::Random(xorb) => Ok(xorb.serialized_length()),
+            XorbStorage::Materialized { entry, .. } => Ok(entry.serialized_data.len() as u64),
+            XorbStorage::Random { xorb, .. } => Ok(xorb.serialized_length()),
         }
     }
 
@@ -558,14 +559,14 @@ impl DirectAccessClient for MemoryClient {
         })?;
 
         let (data, xorb_obj) = match storage {
-            XorbStorage::Materialized(entry) => {
+            XorbStorage::Materialized { entry, .. } => {
                 let mut reader = BufReader::new(Cursor::new(&entry.serialized_data));
                 let xorb_obj = XorbObject::deserialize(&mut reader)?;
                 let data =
                     xorb_obj.get_bytes_by_chunk_range(&mut reader, fetch_term.range.start, fetch_term.range.end)?;
                 (Bytes::from(data), xorb_obj)
             },
-            XorbStorage::Random(xorb) => {
+            XorbStorage::Random { xorb, .. } => {
                 let data = xorb
                     .get_chunk_range_data(fetch_term.range.start, fetch_term.range.end)
                     .ok_or(ClientError::XORBNotFound(hash))?;
@@ -613,8 +614,8 @@ impl MemoryClient {
                 ClientError::XORBNotFound(*hash)
             })?;
             Ok(match storage {
-                XorbStorage::Materialized(entry) => entry.xorb_object.clone(),
-                XorbStorage::Random(xorb) => xorb.get_xorb_object(),
+                XorbStorage::Materialized { entry, .. } => entry.xorb_object.clone(),
+                XorbStorage::Random { xorb, .. } => xorb.get_xorb_object(),
             })
         })
     }
@@ -845,11 +846,13 @@ impl Client for MemoryClient {
             let mut xorbs = self.xorbs.write().await;
             xorbs.insert(
                 hash,
-                XorbStorage::Materialized(MaterializedXorb {
-                    serialized_data: Bytes::from(serialized_data),
-                    xorb_object: xorb_obj,
+                XorbStorage::Materialized {
+                    entry: MaterializedXorb {
+                        serialized_data: Bytes::from(serialized_data),
+                        xorb_object: xorb_obj,
+                    },
                     generation,
-                }),
+                },
             );
         }
 
@@ -930,11 +933,11 @@ impl Client for MemoryClient {
             total_transfer += http_range.length();
 
             let (data, chunk_indices) = match storage {
-                XorbStorage::Materialized(entry) => {
+                XorbStorage::Materialized { entry, .. } => {
                     let range_data = &entry.serialized_data[start..end];
                     xet_core_structures::xorb_object::deserialize_chunks(&mut Cursor::new(range_data))?
                 },
-                XorbStorage::Random(xorb) => {
+                XorbStorage::Random { xorb, .. } => {
                     let range_data = xorb.get_serialized_range(start as u64, end as u64);
                     xet_core_structures::xorb_object::deserialize_chunks(&mut Cursor::new(range_data.as_ref()))?
                 },
