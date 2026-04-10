@@ -1107,6 +1107,7 @@ dependencies = [
  "pprof",
  "pyo3",
  "signal-hook",
+ "tempfile",
  "tracing",
  "winapi",
 ]

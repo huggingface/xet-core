@@ -1,7 +1,11 @@
 mod headers;
 mod logging;
-mod py_download_group;
 mod py_download_stream_group;
+mod py_download_stream_handle;
+mod py_file_download_group;
+mod py_file_download_handle;
+mod py_file_upload_handle;
+mod py_stream_upload_handle;
 mod py_upload_commit;
 mod py_xet_session;
 
@@ -137,20 +141,22 @@ impl PyXetUploadInfo {
 pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // ── New XetSession API ───────────────────────────────────────────────────
     m.add_class::<py_xet_session::PyXetSession>()?;
+    m.add_class::<py_upload_commit::PySha256Policy>()?;
     m.add_class::<py_upload_commit::PyXetUploadCommitBuilder>()?;
     m.add_class::<py_upload_commit::PyXetUploadCommit>()?;
-    m.add_class::<py_upload_commit::PyXetFileUpload>()?;
-    m.add_class::<py_upload_commit::PyXetFileUploadResult>()?;
+    m.add_class::<py_file_upload_handle::PyXetFileUpload>()?;
+    m.add_class::<py_stream_upload_handle::PyXetStreamUpload>()?;
+    m.add_class::<py_file_upload_handle::PyXetFileUploadResult>()?;
     m.add_class::<py_upload_commit::PyXetCommitReport>()?;
-    m.add_class::<py_download_group::PyXetFileDownloadGroupBuilder>()?;
-    m.add_class::<py_download_group::PyXetFileDownloadGroup>()?;
-    m.add_class::<py_download_group::PyXetFileDownload>()?;
-    m.add_class::<py_download_group::PyXetDownloadReport>()?;
-    m.add_class::<py_download_group::PyXetDownloadGroupReport>()?;
+    m.add_class::<py_file_download_group::PyXetFileDownloadGroupBuilder>()?;
+    m.add_class::<py_file_download_group::PyXetFileDownloadGroup>()?;
+    m.add_class::<py_file_download_handle::PyXetFileDownload>()?;
+    m.add_class::<py_file_download_handle::PyXetDownloadReport>()?;
+    m.add_class::<py_file_download_handle::PyXetDownloadGroupReport>()?;
     m.add_class::<py_download_stream_group::PyXetDownloadStreamGroupBuilder>()?;
     m.add_class::<py_download_stream_group::PyXetDownloadStreamGroup>()?;
-    m.add_class::<py_download_stream_group::PyXetDownloadStream>()?;
-    m.add_class::<py_download_stream_group::PyXetUnorderedDownloadStream>()?;
+    m.add_class::<py_download_stream_handle::PyXetDownloadStream>()?;
+    m.add_class::<py_download_stream_handle::PyXetUnorderedDownloadStream>()?;
 
     // ── Progress types (pyclass-annotated in xet_data with "python" feature) ─
     m.add_class::<xet_pkg::xet_session::GroupProgressReport>()?;

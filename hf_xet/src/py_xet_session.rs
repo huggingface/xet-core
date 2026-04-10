@@ -2,8 +2,8 @@ use pyo3::prelude::*;
 use xet_pkg::xet_session::{XetSession, XetSessionBuilder, XetTaskState};
 
 use crate::convert_xet_error;
-use crate::py_download_group::PyXetFileDownloadGroupBuilder;
 use crate::py_download_stream_group::PyXetDownloadStreamGroupBuilder;
+use crate::py_file_download_group::PyXetFileDownloadGroupBuilder;
 use crate::py_upload_commit::PyXetUploadCommitBuilder;
 
 // ── PyXetSession ─────────────────────────────────────────────────────────────
@@ -37,7 +37,11 @@ impl PyXetSession {
     /// :class:`XetUploadCommit`.
     pub fn new_upload_commit(&self) -> PyResult<PyXetUploadCommitBuilder> {
         let builder = self.inner.new_upload_commit().map_err(convert_xet_error)?;
-        Ok(PyXetUploadCommitBuilder { inner: Some(builder) })
+        Ok(PyXetUploadCommitBuilder {
+            inner: Some(builder),
+            progress_callback: None,
+            progress_interval_ms: 100,
+        })
     }
 
     /// Return a builder for a new file download group.
@@ -46,7 +50,11 @@ impl PyXetSession {
     /// :class:`XetFileDownloadGroup`.
     pub fn new_file_download_group(&self) -> PyResult<PyXetFileDownloadGroupBuilder> {
         let builder = self.inner.new_file_download_group().map_err(convert_xet_error)?;
-        Ok(PyXetFileDownloadGroupBuilder { inner: Some(builder) })
+        Ok(PyXetFileDownloadGroupBuilder {
+            inner: Some(builder),
+            progress_callback: None,
+            progress_interval_ms: 100,
+        })
     }
 
     /// Return a builder for a new streaming download group.
@@ -87,5 +95,50 @@ pub(crate) fn task_state_to_str(state: XetTaskState) -> PyResult<&'static str> {
         XetTaskState::Completed => Ok("Completed"),
         XetTaskState::UserCancelled => Ok("UserCancelled"),
         XetTaskState::Error(msg) => Err(convert_xet_error(xet_pkg::XetError::TaskError(msg))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pyo3::Python;
+
+    use super::*;
+
+    #[test]
+    fn test_task_state_running() {
+        Python::attach(|_py| {
+            assert_eq!(task_state_to_str(XetTaskState::Running).unwrap(), "Running");
+        });
+    }
+
+    #[test]
+    fn test_task_state_finalizing() {
+        Python::attach(|_py| {
+            assert_eq!(task_state_to_str(XetTaskState::Finalizing).unwrap(), "Finalizing");
+        });
+    }
+
+    #[test]
+    fn test_task_state_completed() {
+        Python::attach(|_py| {
+            assert_eq!(task_state_to_str(XetTaskState::Completed).unwrap(), "Completed");
+        });
+    }
+
+    #[test]
+    fn test_task_state_user_cancelled() {
+        Python::attach(|_py| {
+            assert_eq!(task_state_to_str(XetTaskState::UserCancelled).unwrap(), "UserCancelled");
+        });
+    }
+
+    #[test]
+    fn test_task_state_error_returns_err() {
+        let msg = Python::attach(|_py| {
+            task_state_to_str(XetTaskState::Error("something went wrong".into()))
+                .unwrap_err()
+                .to_string()
+        });
+        assert!(msg.contains("something went wrong"));
     }
 }
