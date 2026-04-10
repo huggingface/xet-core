@@ -39,6 +39,9 @@ use crate::error::{ClientError, Result};
 struct MaterializedXorb {
     serialized_data: Bytes,
     xorb_object: XorbObject,
+    /// Monotonic generation counter; bumped on every upload so the tag changes
+    /// even when content is identical, matching production ETag semantics.
+    generation: u64,
 }
 
 /// Storage for a XORB - either fully materialized or generated on-the-fly.
@@ -59,6 +62,8 @@ pub struct MemoryClient {
     global_dedup: RwLock<MerkleHashMap<Bytes>>,
     /// Upload concurrency controller
     upload_concurrency_controller: Arc<AdaptiveConcurrencyController>,
+    /// Monotonic counter for xorb upload generations (tag freshness).
+    xorb_generation: AtomicU64,
     /// URL expiration in milliseconds
     url_expiration_ms: AtomicU64,
     /// Global dedup shard expiration in seconds (0 = disabled).
@@ -79,6 +84,7 @@ impl MemoryClient {
             shard: RwLock::new(MDBInMemoryShard::default()),
             global_dedup: RwLock::new(MerkleHashMap::new()),
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("memory_uploads"),
+            xorb_generation: AtomicU64::new(0),
             url_expiration_ms: AtomicU64::new(u64::MAX),
             global_dedup_expiration_secs: AtomicU64::new(0),
             random_ms_delay_window: (AtomicU64::new(0), AtomicU64::new(0)),
@@ -243,7 +249,9 @@ impl MemoryClient {
     fn xorb_tag(hash: &MerkleHash, storage: &XorbStorage) -> ObjectTag {
         match storage {
             XorbStorage::Materialized(entry) => {
-                Self::object_tag_from_key_and_payload(b"xorb", hash, entry.serialized_data.as_ref())
+                let mut payload = Vec::from(entry.serialized_data.as_ref());
+                payload.extend_from_slice(&entry.generation.to_le_bytes());
+                Self::object_tag_from_key_and_payload(b"xorb", hash, &payload)
             },
             XorbStorage::Random(random_xorb) => {
                 let entropy = random_xorb.num_chunks().to_le_bytes();
@@ -260,6 +268,7 @@ impl Default for MemoryClient {
             shard: RwLock::new(MDBInMemoryShard::default()),
             global_dedup: RwLock::new(MerkleHashMap::new()),
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("memory_uploads"),
+            xorb_generation: AtomicU64::new(0),
             url_expiration_ms: AtomicU64::new(u64::MAX),
             global_dedup_expiration_secs: AtomicU64::new(0),
             random_ms_delay_window: (AtomicU64::new(0), AtomicU64::new(0)),
@@ -801,25 +810,19 @@ impl Client for MemoryClient {
         let footer_start = serialized_xorb_object.footer_start;
         let serialized_data = serialized_xorb_object.serialized_data;
 
-        // Check if already exists
-        {
-            let xorbs = self.xorbs.read().await;
-            if xorbs.contains_key(&hash) {
-                info!("object {hash:?} already exists in Memory CAS; returning.");
-                return Ok(0);
-            }
-        }
+        // Always overwrite: even if the xorb already exists, we must store it
+        // with a fresh generation so its tag changes, matching production ETag
+        // semantics and ensuring delete_xorb_if_tag_matches is safe under
+        // concurrent uploads.
 
         info!("Storing XORB {hash:?} in memory");
 
         // Reconstruct XorbObject from chunk data if no footer, or deserialize if footer present
         let (xorb_obj, serialized_data) = if footer_start.is_some() {
-            // Data has footer - deserialize directly
             let mut reader = Cursor::new(&serialized_data);
             let xorb_obj = XorbObject::deserialize(&mut reader)?;
             (xorb_obj, serialized_data)
         } else {
-            // No footer - reconstruct XorbObject from chunk data and append footer
             let mut data_with_footer = Vec::new();
             let (xorb_obj, computed_hash) = xet_core_structures::xorb_object::reconstruct_xorb_with_footer(
                 &mut data_with_footer,
@@ -836,8 +839,8 @@ impl Client for MemoryClient {
         };
 
         let bytes_written = serialized_data.len();
+        let generation = self.xorb_generation.fetch_add(1, Ordering::Relaxed);
 
-        // Store the xorb
         {
             let mut xorbs = self.xorbs.write().await;
             xorbs.insert(
@@ -845,6 +848,7 @@ impl Client for MemoryClient {
                 XorbStorage::Materialized(MaterializedXorb {
                     serialized_data: Bytes::from(serialized_data),
                     xorb_object: xorb_obj,
+                    generation,
                 }),
             );
         }
@@ -1018,10 +1022,10 @@ impl super::DeletionControlableClient for MemoryClient {
     async fn remove_shard_dedup_entries(&self, shard_hash: &MerkleHash) -> Result<()> {
         let shard = self.shard.read().await;
         let Some((current_hash, _)) = Self::current_shard_hash_and_bytes(&shard)? else {
-            return Err(ClientError::Other(format!("Shard not found: {}", shard_hash.hex())));
+            return Ok(());
         };
         if &current_hash != shard_hash {
-            return Err(ClientError::Other(format!("Shard not found: {}", shard_hash.hex())));
+            return Ok(());
         }
         drop(shard);
 
