@@ -1412,10 +1412,11 @@ impl Client for LocalClient {
         let hash = serialized_xorb_object.hash;
         let footer_start = serialized_xorb_object.footer_start;
         let serialized_data = serialized_xorb_object.serialized_data;
-        if self.xorb_exists(&hash).await? {
-            info!("object {hash:?} already exists in Local CAS; returning.");
-            return Ok(0);
-        }
+
+        // Always rewrite: even if the xorb already exists, the file must be
+        // re-created so its filesystem metadata (mtime/ctime) changes, producing
+        // a new tag for delete_xorb_if_tag_matches.  SafeFileCreator uses
+        // temp-file + atomic rename, so concurrent readers are safe.
 
         // Reconstruct footer if not present
         let data_to_write = if footer_start.is_some() {
