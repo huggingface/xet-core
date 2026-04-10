@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use derivative::Derivative;
 use reqwest_middleware::ClientWithMiddleware;
 use thiserror::Error;
+use tracing::info;
 use xet_runtime::core::XetRuntime;
 
 use crate::common::auth::CredentialHelper;
@@ -198,6 +199,7 @@ impl TokenProvider {
             let (new_token, new_expiry) = self.refresher.refresh().await?;
             self.token = new_token;
             self.expiration = new_expiry;
+            info!(new_expiry = new_expiry, "Token refreshed");
         }
         Ok(self.token.clone())
     }
