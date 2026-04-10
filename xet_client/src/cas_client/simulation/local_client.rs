@@ -737,6 +737,34 @@ impl DirectAccessClient for LocalClient {
     }
 }
 
+impl LocalClient {
+    /// Removes all FILE_TO_SHARD_TABLE entries whose shard_hash equals `shard_hash`.
+    fn remove_file_entries_for_shard(&self, shard_hash: &MerkleHash) -> Result<()> {
+        let to_remove: Vec<RedbHash> = {
+            let read_txn = self.db.begin_read().map_err(map_redb_db_error)?;
+            let table = read_txn.open_table(FILE_TO_SHARD_TABLE).map_err(map_redb_db_error)?;
+            table
+                .iter()
+                .map_err(map_redb_db_error)?
+                .filter_map(|e| e.ok())
+                .filter(|(_, v)| v.value().shard_hash == *shard_hash)
+                .map(|(k, _)| k.value())
+                .collect()
+        };
+        if !to_remove.is_empty() {
+            let write_txn = self.db.begin_write().map_err(map_redb_db_error)?;
+            {
+                let mut table = write_txn.open_table(FILE_TO_SHARD_TABLE).map_err(map_redb_db_error)?;
+                for key in &to_remove {
+                    table.remove(key).map_err(map_redb_db_error)?;
+                }
+            }
+            write_txn.commit().map_err(map_redb_db_error)?;
+        }
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl super::DeletionControlableClient for LocalClient {
     async fn list_shard_entries(&self) -> Result<Vec<MerkleHash>> {
@@ -751,30 +779,7 @@ impl super::DeletionControlableClient for LocalClient {
 
     async fn delete_shard_entry(&self, hash: &MerkleHash) -> Result<()> {
         let path = self.shard_path_for_hash(hash)?;
-
-        // Remove FILE_TO_SHARD_TABLE entries that point to this shard.
-        let to_remove: Vec<RedbHash> = {
-            let read_txn = self.db.begin_read().map_err(map_redb_db_error)?;
-            let table = read_txn.open_table(FILE_TO_SHARD_TABLE).map_err(map_redb_db_error)?;
-            table
-                .iter()
-                .map_err(map_redb_db_error)?
-                .filter_map(|e| e.ok())
-                .filter(|(_, v)| v.value().shard_hash == *hash)
-                .map(|(k, _)| k.value())
-                .collect()
-        };
-        if !to_remove.is_empty() {
-            let write_txn = self.db.begin_write().map_err(map_redb_db_error)?;
-            {
-                let mut table = write_txn.open_table(FILE_TO_SHARD_TABLE).map_err(map_redb_db_error)?;
-                for key in &to_remove {
-                    table.remove(key).map_err(map_redb_db_error)?;
-                }
-            }
-            write_txn.commit().map_err(map_redb_db_error)?;
-        }
-
+        self.remove_file_entries_for_shard(hash)?;
         std::fs::remove_file(&path)?;
         Ok(())
     }
@@ -911,6 +916,7 @@ impl super::DeletionControlableClient for LocalClient {
         if &current_tag != tag {
             return Ok(false);
         }
+        self.remove_file_entries_for_shard(hash)?;
         std::fs::remove_file(&path)?;
         Ok(true)
     }

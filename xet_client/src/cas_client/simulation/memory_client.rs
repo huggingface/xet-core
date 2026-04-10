@@ -1018,10 +1018,10 @@ impl super::DeletionControlableClient for MemoryClient {
     async fn remove_shard_dedup_entries(&self, shard_hash: &MerkleHash) -> Result<()> {
         let shard = self.shard.read().await;
         let Some((current_hash, _)) = Self::current_shard_hash_and_bytes(&shard)? else {
-            return Err(ClientError::Other(format!("Shard not found: {}", shard_hash.hex())));
+            return Ok(());
         };
         if &current_hash != shard_hash {
-            return Err(ClientError::Other(format!("Shard not found: {}", shard_hash.hex())));
+            return Ok(());
         }
         drop(shard);
 
