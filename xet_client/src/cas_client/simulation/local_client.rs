@@ -886,18 +886,37 @@ impl super::DeletionControlableClient for LocalClient {
 
     async fn delete_xorb_if_tag_matches(&self, hash: &MerkleHash, tag: &ObjectTag) -> Result<bool> {
         let file_path = self.get_path_for_entry(hash);
-        if !file_path.exists() {
+
+        // Atomically move the file out of the namespace before checking the
+        // tag.  This closes the TOCTOU window with concurrent upload_xorb
+        // (which always rewrites via SafeFileCreator atomic rename).
+        let tmp_path = file_path.with_extension(format!("gc_del_{:x}", rand::random::<u64>()));
+        if std::fs::rename(&file_path, &tmp_path).is_err() {
             return Err(ClientError::XORBNotFound(*hash));
         }
-        let current_tag = Self::object_tag_from_path(&file_path)?;
+
+        let current_tag = match Self::object_tag_from_path(&tmp_path) {
+            Ok(t) => t,
+            Err(e) => {
+                let _ = std::fs::hard_link(&tmp_path, &file_path);
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err(e);
+            },
+        };
+
         if &current_tag != tag {
+            // Tag mismatch — restore the file.  hard_link fails with EEXIST
+            // if a concurrent upload already recreated the path, in which case
+            // we just discard our stale copy.
+            let _ = std::fs::hard_link(&tmp_path, &file_path);
+            let _ = std::fs::remove_file(&tmp_path);
             return Ok(false);
         }
 
         #[cfg(windows)]
-        Self::clear_readonly(&file_path);
+        Self::clear_readonly(&tmp_path);
 
-        std::fs::remove_file(&file_path)?;
+        std::fs::remove_file(&tmp_path)?;
         Ok(true)
     }
 
@@ -912,12 +931,29 @@ impl super::DeletionControlableClient for LocalClient {
 
     async fn delete_shard_if_tag_matches(&self, hash: &MerkleHash, tag: &ObjectTag) -> Result<bool> {
         let path = self.shard_path_for_hash(hash)?;
-        let current_tag = Self::object_tag_from_path(&path)?;
+
+        let tmp_path = path.with_extension(format!("gc_del_{:x}", rand::random::<u64>()));
+        if std::fs::rename(&path, &tmp_path).is_err() {
+            return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
+        }
+
+        let current_tag = match Self::object_tag_from_path(&tmp_path) {
+            Ok(t) => t,
+            Err(e) => {
+                let _ = std::fs::hard_link(&tmp_path, &path);
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err(e);
+            },
+        };
+
         if &current_tag != tag {
+            let _ = std::fs::hard_link(&tmp_path, &path);
+            let _ = std::fs::remove_file(&tmp_path);
             return Ok(false);
         }
+
         self.remove_file_entries_for_shard(hash)?;
-        std::fs::remove_file(&path)?;
+        std::fs::remove_file(&tmp_path)?;
         Ok(true)
     }
 
