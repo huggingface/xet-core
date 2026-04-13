@@ -338,6 +338,7 @@ impl MDBMinimalShard {
         writer: &mut W,
         with_file_section: bool,
         with_verification: bool,
+        timestamp: Option<SystemTime>,
         expiry: Option<SystemTime>,
         xorb_filter_fn: impl Fn(&MDBXorbInfoView) -> bool,
     ) -> Result<usize> {
@@ -409,7 +410,9 @@ impl MDBMinimalShard {
             xorb_lookup_num_entry: 0,
             chunk_lookup_offset: footer_start,
             chunk_lookup_num_entry: 0,
-            shard_creation_timestamp: current_timestamp(),
+            shard_creation_timestamp: timestamp
+                .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())
+                .unwrap_or_else(current_timestamp),
             shard_key_expiry: expiry
                 .map_or(0, |t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()),
             stored_bytes_on_disk,
@@ -430,7 +433,7 @@ impl MDBMinimalShard {
         writer: &mut W,
         xorb_filter_fn: impl Fn(&MDBXorbInfoView) -> bool,
     ) -> Result<usize> {
-        self.serialize_impl(writer, false, false, None, xorb_filter_fn)
+        self.serialize_impl(writer, false, false, None, None, xorb_filter_fn)
     }
 
     /// Serialize out a shard without file information, with the given expiration time set in the footer.
@@ -441,13 +444,24 @@ impl MDBMinimalShard {
         expiry: Option<SystemTime>,
         xorb_filter_fn: impl Fn(&MDBXorbInfoView) -> bool,
     ) -> Result<usize> {
-        self.serialize_impl(writer, false, false, expiry, xorb_filter_fn)
+        self.serialize_impl(writer, false, false, None, expiry, xorb_filter_fn)
     }
 
     /// Serialize out the given shard, sanitizing and updating the global dedup chunk flags and optionally
     /// dropping the file verification section.
     pub fn serialize<W: Write>(&self, writer: &mut W, with_verification: bool) -> Result<usize> {
-        self.serialize_impl(writer, true, with_verification, None, |_| true)
+        self.serialize_impl(writer, true, with_verification, None, None, |_| true)
+    }
+
+    /// Serialize out the given shard with a preset timestamp, sanitizing and updating the global dedup chunk
+    /// flags and optionally dropping the file verification section.
+    pub fn serialize_with_timestamp<W: Write>(
+        &self,
+        writer: &mut W,
+        with_verification: bool,
+        timestamp: SystemTime,
+    ) -> Result<usize> {
+        self.serialize_impl(writer, true, with_verification, Some(timestamp), None, |_| true)
     }
 
     /// Returns a list of all the global dedup eligible chunks, as given either by the hash value, file starts, or
