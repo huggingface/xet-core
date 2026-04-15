@@ -1,9 +1,5 @@
-use std::collections::HashMap;
-
 use pyo3::prelude::*;
-use xet_pkg::xet_session::{
-    GroupProgressReport, ItemProgressReport, XetDownloadGroupReport, XetDownloadReport, XetFileDownload,
-};
+use xet_pkg::xet_session::{ItemProgressReport, UniqueID, XetDownloadReport, XetFileDownload};
 
 use crate::convert_xet_error;
 use crate::py_xet_session::task_state_to_str;
@@ -37,97 +33,33 @@ impl PyXetFileDownload {
     /// Wait for this download to complete and return its report.
     ///
     /// Releases the GIL.
-    pub fn result(&self, py: Python<'_>) -> PyResult<PyXetDownloadReport> {
+    pub fn result(&self, py: Python<'_>) -> PyResult<XetDownloadReport> {
         let inner = self.inner.clone();
-        let report = py.detach(|| inner.finish_blocking().map_err(convert_xet_error))?;
-        Ok(PyXetDownloadReport::from(report))
+        py.detach(|| inner.finish_blocking().map_err(convert_xet_error))
     }
 
     /// Return the download report without blocking.
     ///
     /// Returns ``None`` if the download has not yet completed.
     /// Raises if the download completed with an error.
-    pub fn try_result(&self) -> PyResult<Option<PyXetDownloadReport>> {
+    pub fn try_result(&self) -> PyResult<Option<XetDownloadReport>> {
         match self.inner.result() {
-            Some(Ok(r)) => Ok(Some(PyXetDownloadReport::from(r))),
+            Some(Ok(r)) => Ok(Some(r)),
             Some(Err(e)) => Err(convert_xet_error(e)),
             None => Ok(None),
         }
     }
 
-    /// The unique task ID for this download, as a string.
+    /// The unique task ID for this download.
     ///
     /// Matches the keys in :attr:`XetDownloadGroupReport.downloads`.
-    pub fn task_id(&self) -> String {
-        self.inner.task_id().to_string()
+    pub fn task_id(&self) -> UniqueID {
+        self.inner.task_id()
     }
 
     /// Cancel this individual download.
     pub fn cancel(&self) {
         self.inner.cancel();
-    }
-}
-
-// ── PyXetDownloadReport ───────────────────────────────────────────────────────
-
-/// Per-file result from a completed download.
-#[pyclass(name = "XetDownloadReport", get_all)]
-#[derive(Clone)]
-pub struct PyXetDownloadReport {
-    /// Local path where the file was written.
-    pub path: Option<String>,
-    /// Content-addressed hash of the downloaded file.
-    pub hash: String,
-    /// File size in bytes.
-    pub file_size: Option<u64>,
-}
-
-#[pymethods]
-impl PyXetDownloadReport {
-    fn __repr__(&self) -> String {
-        format!("XetDownloadReport(hash={:?}, path={:?}, file_size={:?})", self.hash, self.path, self.file_size)
-    }
-}
-
-impl From<XetDownloadReport> for PyXetDownloadReport {
-    fn from(r: XetDownloadReport) -> Self {
-        Self {
-            path: r.path.and_then(|p| p.to_str().map(str::to_owned)),
-            hash: r.file_info.hash().to_owned(),
-            file_size: r.file_info.file_size(),
-        }
-    }
-}
-
-// ── PyXetDownloadGroupReport ──────────────────────────────────────────────────
-
-/// Summary returned by :meth:`XetFileDownloadGroup.finish`.
-#[pyclass(name = "XetDownloadGroupReport", get_all)]
-pub struct PyXetDownloadGroupReport {
-    /// Final aggregate progress at the time the group completed.
-    pub progress: GroupProgressReport,
-    /// Per-file download reports, keyed by an internal task ID string.
-    pub downloads: HashMap<String, PyXetDownloadReport>,
-}
-
-#[pymethods]
-impl PyXetDownloadGroupReport {
-    fn __repr__(&self) -> String {
-        format!("XetDownloadGroupReport({} downloads)", self.downloads.len())
-    }
-}
-
-impl From<XetDownloadGroupReport> for PyXetDownloadGroupReport {
-    fn from(r: XetDownloadGroupReport) -> Self {
-        let downloads = r
-            .downloads
-            .into_iter()
-            .map(|(id, dr)| (id.to_string(), PyXetDownloadReport::from(dr)))
-            .collect();
-        Self {
-            progress: r.progress,
-            downloads,
-        }
     }
 }
 
@@ -159,26 +91,6 @@ mod tests {
     }
 
     #[test]
-    fn test_download_report_repr() {
-        let r = PyXetDownloadReport {
-            path: Some("/tmp/f.bin".into()),
-            hash: "abc".into(),
-            file_size: Some(10),
-        };
-        assert!(r.__repr__().contains("abc"));
-        assert!(r.__repr__().contains("/tmp/f.bin"));
-    }
-
-    #[test]
-    fn test_download_group_report_repr_empty() {
-        let report = PyXetDownloadGroupReport {
-            progress: GroupProgressReport::default(),
-            downloads: HashMap::new(),
-        };
-        assert!(report.__repr__().contains("0 downloads"));
-    }
-
-    #[test]
     fn test_file_download_handle_task_id_and_result() {
         let temp = tempdir().unwrap();
         let endpoint = format!("local://{}", temp.path().join("cas").display());
@@ -193,10 +105,10 @@ mod tests {
         let dest = temp.path().join("out.bin");
         let handle = group.download_file_to_path_blocking(file_info, dest.clone()).unwrap();
         let py_handle = PyXetFileDownload { inner: handle };
-        assert!(!py_handle.task_id().is_empty());
+        assert!(py_handle.task_id().0 > 0);
         Python::attach(|py| {
             let result = py_handle.result(py).unwrap();
-            assert_eq!(result.file_size, Some(11));
+            assert_eq!(result.file_info.file_size, Some(11));
             assert!(dest.exists());
         });
     }

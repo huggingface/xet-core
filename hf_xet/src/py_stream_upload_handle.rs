@@ -1,8 +1,7 @@
 use pyo3::prelude::*;
-use xet_pkg::xet_session::{ItemProgressReport, XetStreamUpload};
+use xet_pkg::xet_session::{ItemProgressReport, UniqueID, XetFileMetadata, XetStreamUpload};
 
 use crate::convert_xet_error;
-use crate::py_file_upload_handle::PyXetFileUploadResult;
 use crate::py_xet_session::task_state_to_str;
 
 // ── PyXetStreamUpload ─────────────────────────────────────────────────────────
@@ -40,15 +39,14 @@ impl PyXetStreamUpload {
     ///
     /// Must be called before :meth:`XetUploadCommit.commit`.
     /// Releases the GIL while waiting.
-    pub fn finish(&self, py: Python<'_>) -> PyResult<PyXetFileUploadResult> {
+    pub fn finish(&self, py: Python<'_>) -> PyResult<XetFileMetadata> {
         let inner = self.inner.clone();
-        let meta = py.detach(|| inner.finish_blocking().map_err(convert_xet_error))?;
-        Ok(PyXetFileUploadResult::from(meta))
+        py.detach(|| inner.finish_blocking().map_err(convert_xet_error))
     }
 
     /// Return upload metadata without blocking, or ``None`` if not yet finished.
-    pub fn try_finish(&self) -> Option<PyXetFileUploadResult> {
-        self.inner.try_finish().map(PyXetFileUploadResult::from)
+    pub fn try_finish(&self) -> Option<XetFileMetadata> {
+        self.inner.try_finish()
     }
 
     /// Per-file progress snapshot, or ``None`` if not yet available.
@@ -61,9 +59,9 @@ impl PyXetStreamUpload {
         task_state_to_str(self.inner.status().map_err(convert_xet_error)?)
     }
 
-    /// The unique task ID for this stream, as a string.
-    pub fn task_id(&self) -> String {
-        self.inner.task_id().to_string()
+    /// The unique task ID for this stream.
+    pub fn task_id(&self) -> UniqueID {
+        self.inner.task_id()
     }
 
     /// Cancel the streaming upload.
@@ -95,12 +93,12 @@ mod tests {
             .upload_stream_blocking(Some("stream.bin".into()), Sha256Policy::Compute)
             .unwrap();
         let py_stream = PyXetStreamUpload { inner: stream_handle };
-        assert!(!py_stream.task_id().is_empty());
+        assert!(py_stream.task_id().0 > 0);
         Python::attach(|py| {
             py_stream.write(py, b"hello world").unwrap();
             let result = py_stream.finish(py).unwrap();
-            assert_eq!(result.file_size, 11);
-            assert!(!result.hash.is_empty());
+            assert_eq!(result.xet_info.file_size, Some(11));
+            assert!(!result.xet_info.hash.is_empty());
         });
     }
 

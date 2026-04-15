@@ -71,6 +71,7 @@ impl AuthGroupBuilder<XetUploadCommit> {
 /// [`XetFileMetadata`] for every file that was successfully ingested,
 /// keyed by [`UniqueID`].
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "python", pyo3::pyclass(get_all))]
 pub struct XetCommitReport {
     /// Aggregate deduplication metrics across all files in this commit.
     pub dedup_metrics: DeduplicationMetrics,
@@ -80,9 +81,18 @@ pub struct XetCommitReport {
     pub uploads: HashMap<UniqueID, XetFileMetadata>,
 }
 
+#[cfg(feature = "python")]
+#[pyo3::pymethods]
+impl XetCommitReport {
+    fn __repr__(&self) -> String {
+        format!("XetCommitReport({} uploads)", self.uploads.len())
+    }
+}
+
 /// Per-file metadata returned by [`XetFileUpload::finalize_ingestion`] and
 /// [`XetStreamUpload::finish`].
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "python", pyo3::pyclass(get_all))]
 pub struct XetFileMetadata {
     /// Unique identifier for the task that produced this metadata.
     #[serde(skip)]
@@ -94,6 +104,14 @@ pub struct XetFileMetadata {
     /// Original file name or designated tracking name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tracking_name: Option<String>,
+}
+
+#[cfg(feature = "python")]
+#[pyo3::pymethods]
+impl XetFileMetadata {
+    fn __repr__(&self) -> String {
+        format!("XetFileMetadata(task_id={}, hash={:?})", self.task_id, self.xet_info.hash)
+    }
 }
 
 // ── XetUploadCommitInner ────────────────────────────────────────────────────

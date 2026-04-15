@@ -13,6 +13,7 @@ use crate::error::XetError;
 /// Per-file download result returned by
 /// [`XetFileDownloadGroup::finish`](crate::xet_session::XetFileDownloadGroup::finish).
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "python", pyo3::pyclass(get_all))]
 pub struct XetDownloadReport {
     /// Unique identifier for this download task.
     pub task_id: UniqueID,
@@ -22,6 +23,19 @@ pub struct XetDownloadReport {
     pub file_info: XetFileInfo,
     /// Per-file progress snapshot at the time of completion.
     pub progress: Option<ItemProgressReport>,
+}
+
+#[cfg(feature = "python")]
+#[pyo3::pymethods]
+impl XetDownloadReport {
+    fn __repr__(&self) -> String {
+        format!(
+            "XetDownloadReport(task_id={}, hash={:?}, path={:?})",
+            self.task_id,
+            self.file_info.hash,
+            self.path.as_ref().and_then(|p| p.to_str())
+        )
+    }
 }
 
 // ── XetFileDownloadInner ────────────────────────────────────────────────────

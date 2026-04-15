@@ -1,17 +1,18 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use http::HeaderMap;
 use pyo3::prelude::*;
 use xet_pkg::xet_session::{
-    GroupProgressReport, ItemProgressReport, XetFileDownload, XetFileDownloadGroup, XetFileDownloadGroupBuilder,
-    XetFileInfo, XetTaskState,
+    GroupProgressReport, ItemProgressReport, UniqueID, XetDownloadGroupReport, XetFileDownload, XetFileDownloadGroup,
+    XetFileDownloadGroupBuilder, XetFileInfo, XetTaskState,
 };
 
-use crate::headers::{build_header_map, build_headers_with_user_agent};
-use crate::py_file_download_handle::{PyXetDownloadGroupReport, PyXetFileDownload};
+use crate::convert_xet_error;
+use crate::headers::{build_header_map, build_headers_with_user_agent, default_headers};
+use crate::py_file_download_handle::PyXetFileDownload;
 use crate::py_xet_session::task_state_to_str;
-use crate::{PyXetDownloadInfo, convert_xet_error};
 
 // ── PyXetFileDownloadGroupBuilder ─────────────────────────────────────────────
 
@@ -43,18 +44,20 @@ use crate::{PyXetDownloadInfo, convert_xet_error};
 ///
 /// report = group.finish()   # blocks until all downloads complete
 ///
-/// for task_id, result in report.downloads.items():
-///     print(task_id, result.hash, result.path, result.file_size)
-///
-/// # or look up a specific file's result via its handle:
+/// # look up a specific file's result via its task id:
 /// result = report.downloads[h1.task_id()]
-/// print(result.hash, result.path)
+/// print(result.hash, result.path, result.file_size)
+///
+/// # or get a specific file's result via its handle:
+/// result = h1.result()
+/// print(result.hash, result.path, result.file_size)
 /// ```
 #[pyclass(name = "XetFileDownloadGroupBuilder")]
 pub struct PyXetFileDownloadGroupBuilder {
     pub(crate) inner: Option<XetFileDownloadGroupBuilder>,
     pub(crate) progress_callback: Option<Py<PyAny>>,
     pub(crate) progress_interval_ms: u64,
+    pub(crate) custom_headers: Option<HeaderMap>,
 }
 
 #[pymethods]
@@ -65,9 +68,7 @@ impl PyXetFileDownloadGroupBuilder {
 
     /// Set the CAS server endpoint URL.
     pub fn with_endpoint<'py>(mut slf: PyRefMut<'py, Self>, endpoint: String) -> PyRefMut<'py, Self> {
-        if let Some(b) = slf.inner.take() {
-            slf.inner = Some(b.with_endpoint(endpoint));
-        }
+        slf.inner = slf.inner.take().map(|b| b.with_endpoint(endpoint));
         slf
     }
 
@@ -77,9 +78,7 @@ impl PyXetFileDownloadGroupBuilder {
         token: String,
         expiry_unix_secs: u64,
     ) -> PyRefMut<'py, Self> {
-        if let Some(b) = slf.inner.take() {
-            slf.inner = Some(b.with_token_info(token, expiry_unix_secs));
-        }
+        slf.inner = slf.inner.take().map(|b| b.with_token_info(token, expiry_unix_secs));
         slf
     }
 
@@ -90,9 +89,7 @@ impl PyXetFileDownloadGroupBuilder {
         headers: HashMap<String, String>,
     ) -> PyResult<PyRefMut<'py, Self>> {
         let header_map = build_header_map(headers)?;
-        if let Some(b) = slf.inner.take() {
-            slf.inner = Some(b.with_token_refresh_url(url, header_map));
-        }
+        slf.inner = slf.inner.take().map(|b| b.with_token_refresh_url(url, header_map));
         Ok(slf)
     }
 
@@ -104,21 +101,17 @@ impl PyXetFileDownloadGroupBuilder {
         mut slf: PyRefMut<'py, Self>,
         headers: HashMap<String, String>,
     ) -> PyResult<PyRefMut<'py, Self>> {
-        let header_map = build_headers_with_user_agent(Some(headers))?;
-        if let Some(b) = slf.inner.take() {
-            slf.inner = Some(b.with_custom_headers(header_map));
-        }
+        slf.custom_headers = Some(build_headers_with_user_agent(Some(headers))?);
         Ok(slf)
     }
 
     /// Register a Python callable to receive periodic progress updates.
     ///
-    /// The callable is invoked approximately every 100 ms for the lifetime of
+    /// The callable is invoked on a configurable interval for the lifetime of
     /// the group with two positional arguments:
     ///
     /// 1. :class:`GroupProgressReport` — aggregate bytes downloaded.
-    /// 2. ``list[ItemProgressReport]`` — one entry per queued file, with ``item_name``, ``total_bytes``, and
-    ///    ``bytes_completed``.
+    /// 2. ``dict[UniqueId, ItemProgressReport]`` — one entry per queued file, keyed by task ID.
     ///
     /// The thread exits automatically once the group reaches a terminal state.
     ///
@@ -130,6 +123,8 @@ impl PyXetFileDownloadGroupBuilder {
     /// def on_progress(group, items):
     ///     bar.n = group.total_bytes_completed
     ///     bar.total = group.total_bytes
+    ///     bar.set_postfix({item.item_name: f"{item.bytes_completed}/{item.total_bytes}"
+    ///                      for item in items.values()})
     ///     bar.refresh()
     ///
     /// with builder.with_progress_callback(on_progress, interval_ms=50).build() as group:
@@ -156,11 +151,16 @@ impl PyXetFileDownloadGroupBuilder {
             .inner
             .take()
             .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("builder already consumed by build()"))?;
-        let group = py.detach(|| builder.build_blocking().map_err(convert_xet_error))?;
+        let custom_headers = self.custom_headers.take().unwrap_or_else(default_headers);
+        let group = py.detach(|| {
+            builder
+                .with_custom_headers(custom_headers)
+                .build_blocking()
+                .map_err(convert_xet_error)
+        })?;
 
-        let download_handles = if self.progress_callback.is_some() {
-            let handles: Arc<Mutex<Vec<XetFileDownload>>> = Arc::new(Mutex::new(Vec::new()));
-            let callback = self.progress_callback.take().unwrap().clone_ref(py);
+        let download_handles = if let Some(callback) = self.progress_callback.take() {
+            let handles: Arc<RwLock<Vec<XetFileDownload>>> = Arc::new(RwLock::new(Vec::new()));
             let inner = group.clone();
             let handles_for_thread = Arc::clone(&handles);
             let interval = Duration::from_millis(self.progress_interval_ms);
@@ -168,8 +168,10 @@ impl PyXetFileDownloadGroupBuilder {
                 loop {
                     std::thread::sleep(interval);
                     let group_report = inner.progress();
-                    let item_reports: Vec<ItemProgressReport> =
-                        handles_for_thread.lock().unwrap().iter().filter_map(|h| h.progress()).collect();
+                    let item_reports: HashMap<UniqueID, ItemProgressReport> = handles_for_thread
+                        .read()
+                        .map(|g| g.iter().filter_map(|h| h.progress().map(|p| (h.task_id(), p))).collect())
+                        .unwrap_or_default();
                     let is_terminal =
                         !matches!(inner.status(), Ok(XetTaskState::Running) | Ok(XetTaskState::Finalizing));
                     let result = Python::attach(|py| callback.call1(py, (group_report, item_reports)));
@@ -206,7 +208,7 @@ impl PyXetFileDownloadGroupBuilder {
 pub struct PyXetFileDownloadGroup {
     pub(crate) inner: XetFileDownloadGroup,
     /// Per-file handles shared with the progress thread; None when no callback was registered.
-    download_handles: Option<Arc<Mutex<Vec<XetFileDownload>>>>,
+    download_handles: Option<Arc<RwLock<Vec<XetFileDownload>>>>,
 }
 
 #[pymethods]
@@ -240,27 +242,28 @@ impl PyXetFileDownloadGroup {
 
     // ── Download methods ─────────────────────────────────────────────────────
 
-    /// Queue a file for download to ``dest_path``.
+    /// Queue a file for download.
     ///
-    /// Accepts a :class:`PyXetDownloadInfo` (the existing download-info type)
-    /// whose ``hash`` and ``file_size`` fields identify the file, and whose
-    /// ``destination_path`` is used as the local output path unless
-    /// ``dest_path`` overrides it.
+    /// ``file_info`` — a :class:`XetFileInfo` identifying the file (hash and size).
     ///
-    /// Returns immediately with a :class:`XetFileDownload` handle.
-    #[pyo3(signature = (file_info, dest_path=None))]
+    /// ``dest_path`` — local filesystem path to write the file to.
+    ///
+    /// Returns immediately with a :class:`XetFileDownload` handle.  Call
+    /// :meth:`finish` (or exit the ``with`` block) to wait for completion.
     pub fn download_file(
         &self,
         py: Python<'_>,
-        file_info: PyRef<'_, PyXetDownloadInfo>,
-        dest_path: Option<String>,
+        file_info: XetFileInfo,
+        dest_path: String,
     ) -> PyResult<PyXetFileDownload> {
-        let xet_info = xet_info_from_download_info(&file_info);
-        let path: std::path::PathBuf = dest_path.as_deref().unwrap_or(&file_info.destination_path).into();
+        let path: std::path::PathBuf = dest_path.into();
         let inner = self.inner.clone();
-        let handle = py.detach(|| inner.download_file_to_path_blocking(xet_info, path).map_err(convert_xet_error))?;
+        let handle = py.detach(|| inner.download_file_to_path_blocking(file_info, path).map_err(convert_xet_error))?;
         if let Some(ref handles) = self.download_handles {
-            handles.lock().unwrap().push(handle.clone());
+            handles
+                .write()
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?
+                .push(handle.clone());
         }
         Ok(PyXetFileDownload { inner: handle })
     }
@@ -273,10 +276,9 @@ impl PyXetFileDownloadGroup {
     /// when exiting a ``with`` block without an exception.
     ///
     /// Releases the GIL while waiting.
-    pub fn finish(&self, py: Python<'_>) -> PyResult<PyXetDownloadGroupReport> {
+    pub fn finish(&self, py: Python<'_>) -> PyResult<XetDownloadGroupReport> {
         let group = self.inner.clone();
-        let report = py.detach(|| group.finish_blocking().map_err(convert_xet_error))?;
-        Ok(PyXetDownloadGroupReport::from(report))
+        py.detach(|| group.finish_blocking().map_err(convert_xet_error))
     }
 
     /// Cancel all active downloads in this group.
@@ -299,65 +301,76 @@ impl PyXetFileDownloadGroup {
     }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-fn xet_info_from_download_info(info: &PyXetDownloadInfo) -> XetFileInfo {
-    match info.file_size {
-        Some(size) => XetFileInfo::new(info.hash.clone(), size),
-        None => XetFileInfo::new_hash_only(info.hash.clone()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use pyo3::Python;
+    use tempfile::tempdir;
+    use xet_pkg::xet_session::XetSessionBuilder;
 
     use super::*;
 
-    #[test]
-    fn test_builder_repr() {
-        let builder = PyXetFileDownloadGroupBuilder {
-            inner: None,
-            progress_callback: None,
-            progress_interval_ms: 100,
-        };
-        assert_eq!(builder.__repr__(), "XetFileDownloadGroupBuilder()");
-    }
+    // ── PyXetFileDownloadGroup ────────────────────────────────────────────────
 
     #[test]
-    fn test_builder_build_when_consumed_returns_error() {
+    fn test_finish_empty_group() {
+        let temp = tempdir().unwrap();
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
+        let session = XetSessionBuilder::new().build().unwrap();
+        let group = PyXetFileDownloadGroup {
+            inner: session
+                .new_file_download_group()
+                .unwrap()
+                .with_endpoint(&endpoint)
+                .build_blocking()
+                .unwrap(),
+            download_handles: None,
+        };
+
         Python::attach(|py| {
-            let mut builder = PyXetFileDownloadGroupBuilder {
-                inner: None,
-                progress_callback: None,
-                progress_interval_ms: 100,
-            };
-            let err = builder.build(py).err().expect("expected error");
-            assert!(err.to_string().contains("already consumed"));
+            let report = group.finish(py).unwrap();
+            assert!(report.downloads.is_empty());
         });
     }
 
     #[test]
-    fn test_xet_info_from_download_info_with_size() {
-        let info = PyXetDownloadInfo {
-            destination_path: "/tmp/out.bin".to_owned(),
-            hash: "abc123".to_owned(),
-            file_size: Some(1024),
+    fn test_abort_makes_finish_fail() {
+        let temp = tempdir().unwrap();
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
+        let session = XetSessionBuilder::new().build().unwrap();
+        let group = PyXetFileDownloadGroup {
+            inner: session
+                .new_file_download_group()
+                .unwrap()
+                .with_endpoint(&endpoint)
+                .build_blocking()
+                .unwrap(),
+            download_handles: None,
         };
-        let xet_info = xet_info_from_download_info(&info);
-        assert_eq!(xet_info.hash(), "abc123");
-        assert_eq!(xet_info.file_size(), Some(1024));
+
+        Python::attach(|py| {
+            group.abort().unwrap();
+            assert!(group.finish(py).is_err());
+        });
     }
 
+    // ── PyXetFileDownloadGroupBuilder ─────────────────────────────────────────
+
     #[test]
-    fn test_xet_info_from_download_info_without_size() {
-        let info = PyXetDownloadInfo {
-            destination_path: "/tmp/out.bin".to_owned(),
-            hash: "abc123".to_owned(),
-            file_size: None,
+    fn test_builder_build_when_consumed_returns_error() {
+        let temp = tempdir().unwrap();
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
+        let session = XetSessionBuilder::new().build().unwrap();
+        let mut builder = PyXetFileDownloadGroupBuilder {
+            inner: Some(session.new_file_download_group().unwrap().with_endpoint(&endpoint)),
+            progress_callback: None,
+            progress_interval_ms: 100,
+            custom_headers: None,
         };
-        let xet_info = xet_info_from_download_info(&info);
-        assert_eq!(xet_info.hash(), "abc123");
-        assert_eq!(xet_info.file_size(), None);
+
+        Python::attach(|py| {
+            builder.build(py).expect("first build should succeed");
+            let err = builder.build(py).err().expect("expected error").to_string();
+            assert!(err.contains("already consumed"));
+        });
     }
 }

@@ -83,7 +83,7 @@ jobs:
         run: |
           source .venv/bin/activate
           pip install pytest
-          pytest hf_xet/tests/test_xet_session.py -v
+          pytest hf_xet/tests/ -v
       - name: Check Cargo.lock has no uncommitted changes
         run: |
           # the build and test steps would update Cargo.lock if it is out of date
@@ -120,7 +120,7 @@ jobs:
         run: |
           source .venv/Scripts/activate
           pip install pytest
-          pytest hf_xet/tests/test_xet_session.py -v
+          pytest hf_xet/tests/ -v
   build_and_test-macos:
     runs-on: macos-latest
     steps:
@@ -156,7 +156,7 @@ jobs:
         run: |
           source .venv/bin/activate
           pip install pytest
-          pytest hf_xet/tests/test_xet_session.py -v
+          pytest hf_xet/tests/ -v
   build_and_test-wasm:
     name: Build WASM
     runs-on: ubuntu-latest

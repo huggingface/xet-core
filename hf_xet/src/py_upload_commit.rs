@@ -1,16 +1,17 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use http::HeaderMap;
 use pyo3::prelude::*;
 use xet_pkg::xet_session::{
-    GroupProgressReport, ItemProgressReport, Sha256Policy, XetCommitReport, XetFileUpload, XetTaskState,
+    GroupProgressReport, ItemProgressReport, Sha256Policy, UniqueID, XetCommitReport, XetFileUpload, XetTaskState,
     XetUploadCommit, XetUploadCommitBuilder,
 };
 
 use crate::convert_xet_error;
-use crate::headers::{build_header_map, build_headers_with_user_agent};
-use crate::py_file_upload_handle::{PyXetFileUpload, PyXetFileUploadResult};
+use crate::headers::{build_header_map, build_headers_with_user_agent, default_headers};
+use crate::py_file_upload_handle::PyXetFileUpload;
 use crate::py_stream_upload_handle::PyXetStreamUpload;
 use crate::py_xet_session::task_state_to_str;
 
@@ -46,18 +47,20 @@ use crate::py_xet_session::task_state_to_str;
 ///
 /// report = commit.commit()   # blocks until all uploads are committed
 ///
-/// for task_id, result in report.uploads.items():
-///     print(task_id, result.hash, result.file_size, result.sha256)
-///
-/// # or look up a specific file's result via its handle:
+/// # look up a specific file's result via its task id:
 /// result = report.uploads[h1.task_id()]
-/// print(result.hash, result.file_size)
+/// print(result.xet_info.hash, result.xet_info.file_size, result.xet_info.sha256)
+///
+/// # or get a specific file's result via its handle:
+/// result = h1.result()
+/// print(result.xet_info.hash, result.xet_info.file_size, result.xet_info.sha256)
 /// ```
 #[pyclass(name = "XetUploadCommitBuilder")]
 pub struct PyXetUploadCommitBuilder {
     pub(crate) inner: Option<XetUploadCommitBuilder>,
     pub(crate) progress_callback: Option<Py<PyAny>>,
     pub(crate) progress_interval_ms: u64,
+    pub(crate) custom_headers: Option<HeaderMap>,
 }
 
 #[pymethods]
@@ -71,9 +74,7 @@ impl PyXetUploadCommitBuilder {
     /// If omitted and a token refresh URL is provided, the endpoint is read
     /// from the first refresh response.
     pub fn with_endpoint<'py>(mut slf: PyRefMut<'py, Self>, endpoint: String) -> PyRefMut<'py, Self> {
-        if let Some(b) = slf.inner.take() {
-            slf.inner = Some(b.with_endpoint(endpoint));
-        }
+        slf.inner = slf.inner.take().map(|b| b.with_endpoint(endpoint));
         slf
     }
 
@@ -83,9 +84,7 @@ impl PyXetUploadCommitBuilder {
         token: String,
         expiry_unix_secs: u64,
     ) -> PyRefMut<'py, Self> {
-        if let Some(b) = slf.inner.take() {
-            slf.inner = Some(b.with_token_info(token, expiry_unix_secs));
-        }
+        slf.inner = slf.inner.take().map(|b| b.with_token_info(token, expiry_unix_secs));
         slf
     }
 
@@ -102,9 +101,7 @@ impl PyXetUploadCommitBuilder {
         headers: HashMap<String, String>,
     ) -> PyResult<PyRefMut<'py, Self>> {
         let header_map = build_header_map(headers)?;
-        if let Some(b) = slf.inner.take() {
-            slf.inner = Some(b.with_token_refresh_url(url, header_map));
-        }
+        slf.inner = slf.inner.take().map(|b| b.with_token_refresh_url(url, header_map));
         Ok(slf)
     }
 
@@ -116,21 +113,17 @@ impl PyXetUploadCommitBuilder {
         mut slf: PyRefMut<'py, Self>,
         headers: HashMap<String, String>,
     ) -> PyResult<PyRefMut<'py, Self>> {
-        let header_map = build_headers_with_user_agent(Some(headers))?;
-        if let Some(b) = slf.inner.take() {
-            slf.inner = Some(b.with_custom_headers(header_map));
-        }
+        slf.custom_headers = Some(build_headers_with_user_agent(Some(headers))?);
         Ok(slf)
     }
 
     /// Register a Python callable to receive periodic progress updates.
     ///
-    /// The callable is invoked approximately every 100 ms during the ``with``
-    /// block with two positional arguments:
+    /// The callable is invoked on a configurable interval for the lifetime of
+    /// the commit with two positional arguments:
     ///
     /// 1. :class:`GroupProgressReport` — aggregate bytes processed / transferred.
-    /// 2. ``list[ItemProgressReport]`` — one entry per queued file, with ``item_name``, ``total_bytes``, and
-    ///    ``bytes_completed``.
+    /// 2. ``dict[UniqueId, ItemProgressReport]`` — one entry per queued file, keyed by task ID.
     ///
     /// The thread exits automatically once the commit reaches a terminal state.
     ///
@@ -142,6 +135,8 @@ impl PyXetUploadCommitBuilder {
     /// def on_progress(group, items):
     ///     bar.n = group.total_bytes_completed
     ///     bar.total = group.total_bytes
+    ///     bar.set_postfix({item.item_name: f"{item.bytes_completed}/{item.total_bytes}"
+    ///                      for item in items.values()})
     ///     bar.refresh()
     ///
     /// with builder.with_progress_callback(on_progress, interval_ms=50).build() as commit:
@@ -168,20 +163,27 @@ impl PyXetUploadCommitBuilder {
             .inner
             .take()
             .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("builder already consumed by build()"))?;
-        let commit = py.detach(|| builder.build_blocking().map_err(convert_xet_error))?;
+        let custom_headers = self.custom_headers.take().unwrap_or_else(default_headers);
+        let commit = py.detach(|| {
+            builder
+                .with_custom_headers(custom_headers)
+                .build_blocking()
+                .map_err(convert_xet_error)
+        })?;
 
-        let upload_handles = if self.progress_callback.is_some() {
-            let handles: Arc<Mutex<Vec<XetFileUpload>>> = Arc::new(Mutex::new(Vec::new()));
-            let callback = self.progress_callback.take().unwrap().clone_ref(py);
+        let upload_handles = if let Some(callback) = self.progress_callback.take() {
+            let handles: Arc<RwLock<Vec<XetFileUpload>>> = Arc::new(RwLock::new(Vec::new()));
             let inner = commit.clone();
-            let handles_for_thread = Arc::clone(&handles);
+            let handles_for_thread = handles.clone();
             let interval = Duration::from_millis(self.progress_interval_ms);
             std::thread::spawn(move || {
                 loop {
                     std::thread::sleep(interval);
                     let group_report = inner.progress();
-                    let item_reports: Vec<ItemProgressReport> =
-                        handles_for_thread.lock().unwrap().iter().filter_map(|h| h.progress()).collect();
+                    let item_reports: HashMap<UniqueID, ItemProgressReport> = handles_for_thread
+                        .read()
+                        .map(|g| g.iter().filter_map(|h| h.progress().map(|p| (h.task_id(), p))).collect())
+                        .unwrap_or_default();
                     let is_terminal =
                         !matches!(inner.status(), Ok(XetTaskState::Running) | Ok(XetTaskState::Finalizing));
                     let result = Python::attach(|py| callback.call1(py, (group_report, item_reports)));
@@ -218,7 +220,7 @@ impl PyXetUploadCommitBuilder {
 pub struct PyXetUploadCommit {
     pub(crate) inner: XetUploadCommit,
     /// Per-file handles shared with the progress thread; None when no callback was registered.
-    upload_handles: Option<Arc<Mutex<Vec<XetFileUpload>>>>,
+    upload_handles: Option<Arc<RwLock<Vec<XetFileUpload>>>>,
 }
 
 #[pymethods]
@@ -269,7 +271,10 @@ impl PyXetUploadCommit {
         let inner = self.inner.clone();
         let handle = py.detach(|| inner.upload_from_path_blocking(path.into(), policy).map_err(convert_xet_error))?;
         if let Some(ref handles) = self.upload_handles {
-            handles.lock().unwrap().push(handle.clone());
+            handles
+                .write()
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?
+                .push(handle.clone());
         }
         Ok(PyXetFileUpload { inner: handle })
     }
@@ -278,19 +283,22 @@ impl PyXetUploadCommit {
     ///
     /// ``name`` is an optional display name used for progress reporting and
     /// telemetry.
-    #[pyo3(signature = (data, name=None, sha256=None))]
+    #[pyo3(signature = (data, sha256=None, name=None))]
     pub fn upload_bytes(
         &self,
         py: Python<'_>,
         data: Vec<u8>,
-        name: Option<String>,
         sha256: Option<PySha256Policy>,
+        name: Option<String>,
     ) -> PyResult<PyXetFileUpload> {
         let policy = sha256.map(|p| p.inner).unwrap_or(Sha256Policy::Compute);
         let inner = self.inner.clone();
         let handle = py.detach(|| inner.upload_bytes_blocking(data, policy, name).map_err(convert_xet_error))?;
         if let Some(ref handles) = self.upload_handles {
-            handles.lock().unwrap().push(handle.clone());
+            handles
+                .write()
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?
+                .push(handle.clone());
         }
         Ok(PyXetFileUpload { inner: handle })
     }
@@ -311,7 +319,7 @@ impl PyXetUploadCommit {
     /// for chunk in produce_chunks():
     ///     stream.write(chunk)
     /// result = stream.finish()   # must be called before commit()
-    /// print(result.hash, result.file_size)
+    /// print(result.xet_info.hash, result.xet_info.file_size)
     /// ```
     #[pyo3(signature = (name=None, sha256=None))]
     pub fn upload_stream(&self, name: Option<String>, sha256: Option<PySha256Policy>) -> PyResult<PyXetStreamUpload> {
@@ -328,10 +336,9 @@ impl PyXetUploadCommit {
     /// exiting a ``with`` block without an exception.
     ///
     /// Releases the GIL while waiting.
-    pub fn commit(&self, py: Python<'_>) -> PyResult<PyXetCommitReport> {
+    pub fn commit(&self, py: Python<'_>) -> PyResult<XetCommitReport> {
         let inner = self.inner.clone();
-        let report = py.detach(|| inner.commit_blocking().map_err(convert_xet_error))?;
-        Ok(PyXetCommitReport::from(report))
+        py.detach(|| inner.commit_blocking().map_err(convert_xet_error))
     }
 
     /// Cancel all active uploads in this commit.
@@ -353,38 +360,6 @@ impl PyXetUploadCommit {
     /// ``"UserCancelled"``.  Raises on error state.
     pub fn status(&self) -> PyResult<&'static str> {
         task_state_to_str(self.inner.status().map_err(convert_xet_error)?)
-    }
-}
-
-// ── PyXetCommitReport ─────────────────────────────────────────────────────────
-
-/// Summary returned by :meth:`XetUploadCommit.commit`.
-#[pyclass(name = "XetCommitReport", get_all)]
-pub struct PyXetCommitReport {
-    /// Final aggregate progress at the time the commit completed.
-    pub progress: GroupProgressReport,
-    /// Per-file upload results, keyed by an internal task ID string.
-    pub uploads: HashMap<String, PyXetFileUploadResult>,
-}
-
-#[pymethods]
-impl PyXetCommitReport {
-    fn __repr__(&self) -> String {
-        format!("XetCommitReport({} uploads)", self.uploads.len())
-    }
-}
-
-impl From<XetCommitReport> for PyXetCommitReport {
-    fn from(r: XetCommitReport) -> Self {
-        let uploads = r
-            .uploads
-            .into_iter()
-            .map(|(id, meta)| (id.to_string(), PyXetFileUploadResult::from(meta)))
-            .collect();
-        Self {
-            progress: r.progress,
-            uploads,
-        }
     }
 }
 
@@ -435,10 +410,8 @@ impl PySha256Policy {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use pyo3::Python;
-    use xet_pkg::xet_session::{GroupProgressReport, Sha256Policy};
+    use xet_pkg::xet_session::Sha256Policy;
 
     use super::*;
 
@@ -461,55 +434,82 @@ mod tests {
         assert!(matches!(PySha256Policy::provided(&valid_hex).inner, Sha256Policy::Provided(_)));
     }
 
+    // ── PyXetUploadCommit ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_upload_bytes_and_commit_report() {
+        use tempfile::tempdir;
+        use xet_pkg::xet_session::XetSessionBuilder;
+
+        let temp = tempdir().unwrap();
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
+        let session = XetSessionBuilder::new().build().unwrap();
+        let commit = PyXetUploadCommit {
+            inner: session
+                .new_upload_commit()
+                .unwrap()
+                .with_endpoint(&endpoint)
+                .build_blocking()
+                .unwrap(),
+            upload_handles: None,
+        };
+
+        Python::attach(|py| {
+            let handle = commit.upload_bytes(py, b"hello world".to_vec(), None, None).unwrap();
+            let task_id = handle.task_id();
+            let report = commit.commit(py).unwrap();
+            assert!(report.uploads.contains_key(&task_id));
+            let meta = &report.uploads[&task_id];
+            assert_eq!(meta.xet_info.file_size, Some(11));
+            assert!(!meta.xet_info.hash.is_empty());
+        });
+    }
+
+    #[test]
+    fn test_abort_makes_commit_fail() {
+        use tempfile::tempdir;
+        use xet_pkg::xet_session::XetSessionBuilder;
+
+        let temp = tempdir().unwrap();
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
+        let session = XetSessionBuilder::new().build().unwrap();
+        let commit = PyXetUploadCommit {
+            inner: session
+                .new_upload_commit()
+                .unwrap()
+                .with_endpoint(&endpoint)
+                .build_blocking()
+                .unwrap(),
+            upload_handles: None,
+        };
+
+        Python::attach(|py| {
+            commit.abort().unwrap();
+            assert!(commit.commit(py).is_err());
+        });
+    }
+
     // ── PyXetUploadCommitBuilder ──────────────────────────────────────────────
 
     #[test]
-    fn test_builder_repr() {
-        let builder = PyXetUploadCommitBuilder {
-            inner: None,
-            progress_callback: None,
-            progress_interval_ms: 100,
-        };
-        assert_eq!(builder.__repr__(), "XetUploadCommitBuilder()");
-    }
-
-    #[test]
     fn test_builder_build_when_consumed_returns_error() {
+        use tempfile::tempdir;
+        use xet_pkg::xet_session::XetSessionBuilder;
+
+        let temp = tempdir().unwrap();
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
+        let session = XetSessionBuilder::new().build().unwrap();
         let mut builder = PyXetUploadCommitBuilder {
-            inner: None,
+            inner: Some(session.new_upload_commit().unwrap().with_endpoint(&endpoint)),
             progress_callback: None,
             progress_interval_ms: 100,
+            custom_headers: None,
         };
-        let err = Python::attach(|py| builder.build(py).err().expect("expected error").to_string());
-        assert!(err.contains("already consumed"));
-    }
 
-    // ── PyXetCommitReport ─────────────────────────────────────────────────────
-
-    #[test]
-    fn test_commit_report_repr_empty() {
-        let report = PyXetCommitReport {
-            progress: GroupProgressReport::default(),
-            uploads: HashMap::new(),
-        };
-        assert_eq!(report.__repr__(), "XetCommitReport(0 uploads)");
-    }
-
-    #[test]
-    fn test_commit_report_repr_with_uploads() {
-        let mut uploads = HashMap::new();
-        uploads.insert(
-            "task-1".into(),
-            PyXetFileUploadResult {
-                hash: "h".into(),
-                file_size: 1,
-                sha256: None,
-            },
-        );
-        let report = PyXetCommitReport {
-            progress: GroupProgressReport::default(),
-            uploads,
-        };
-        assert_eq!(report.__repr__(), "XetCommitReport(1 uploads)");
+        Python::attach(|py| {
+            builder.build(py).expect("first build should succeed");
+            let err = builder.build(py).err().expect("expected error").to_string();
+            assert!(err.contains("already consumed"));
+        });
     }
 }

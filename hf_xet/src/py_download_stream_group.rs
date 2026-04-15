@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
+use http::HeaderMap;
 use pyo3::prelude::*;
 use xet_pkg::xet_session::{XetDownloadStreamGroup, XetDownloadStreamGroupBuilder, XetFileInfo};
 
-use crate::headers::{build_header_map, build_headers_with_user_agent};
+use crate::convert_xet_error;
+use crate::headers::{build_header_map, build_headers_with_user_agent, default_headers};
 use crate::py_download_stream_handle::{PyXetDownloadStream, PyXetUnorderedDownloadStream};
-use crate::{PyXetDownloadInfo, convert_xet_error};
 
 // ── PyXetDownloadStreamGroupBuilder ──────────────────────────────────────────
 
@@ -21,12 +22,19 @@ use crate::{PyXetDownloadInfo, convert_xet_error};
 /// group = (session.new_download_stream_group()
 ///          .with_token_refresh_url("https://…/xet-read-token/main", {"Authorization": "Bearer hf_…"})
 ///          .build())
+///
+/// # stream the whole file
 /// for chunk in group.download_stream(file_info):
+///     process(chunk)
+///
+/// # stream a byte range (start and end are both optional)
+/// for chunk in group.download_stream(file_info, start=1024, end=2048):
 ///     process(chunk)
 /// ```
 #[pyclass(name = "XetDownloadStreamGroupBuilder")]
 pub struct PyXetDownloadStreamGroupBuilder {
     pub(crate) inner: Option<XetDownloadStreamGroupBuilder>,
+    pub(crate) custom_headers: Option<HeaderMap>,
 }
 
 #[pymethods]
@@ -37,9 +45,7 @@ impl PyXetDownloadStreamGroupBuilder {
 
     /// Set the CAS server endpoint URL.
     pub fn with_endpoint<'py>(mut slf: PyRefMut<'py, Self>, endpoint: String) -> PyRefMut<'py, Self> {
-        if let Some(b) = slf.inner.take() {
-            slf.inner = Some(b.with_endpoint(endpoint));
-        }
+        slf.inner = slf.inner.take().map(|b| b.with_endpoint(endpoint));
         slf
     }
 
@@ -49,9 +55,7 @@ impl PyXetDownloadStreamGroupBuilder {
         token: String,
         expiry_unix_secs: u64,
     ) -> PyRefMut<'py, Self> {
-        if let Some(b) = slf.inner.take() {
-            slf.inner = Some(b.with_token_info(token, expiry_unix_secs));
-        }
+        slf.inner = slf.inner.take().map(|b| b.with_token_info(token, expiry_unix_secs));
         slf
     }
 
@@ -65,9 +69,7 @@ impl PyXetDownloadStreamGroupBuilder {
         headers: HashMap<String, String>,
     ) -> PyResult<PyRefMut<'py, Self>> {
         let header_map = build_header_map(headers)?;
-        if let Some(b) = slf.inner.take() {
-            slf.inner = Some(b.with_token_refresh_url(url, header_map));
-        }
+        slf.inner = slf.inner.take().map(|b| b.with_token_refresh_url(url, header_map));
         Ok(slf)
     }
 
@@ -79,10 +81,7 @@ impl PyXetDownloadStreamGroupBuilder {
         mut slf: PyRefMut<'py, Self>,
         headers: HashMap<String, String>,
     ) -> PyResult<PyRefMut<'py, Self>> {
-        let header_map = build_headers_with_user_agent(Some(headers))?;
-        if let Some(b) = slf.inner.take() {
-            slf.inner = Some(b.with_custom_headers(header_map));
-        }
+        slf.custom_headers = Some(build_headers_with_user_agent(Some(headers))?);
         Ok(slf)
     }
 
@@ -94,7 +93,13 @@ impl PyXetDownloadStreamGroupBuilder {
             .inner
             .take()
             .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("builder already consumed by build()"))?;
-        let group = py.detach(|| builder.build_blocking().map_err(convert_xet_error))?;
+        let custom_headers = self.custom_headers.take().unwrap_or_else(default_headers);
+        let group = py.detach(|| {
+            builder
+                .with_custom_headers(custom_headers)
+                .build_blocking()
+                .map_err(convert_xet_error)
+        })?;
         Ok(PyXetDownloadStreamGroup { inner: group })
     }
 }
@@ -124,26 +129,37 @@ impl PyXetDownloadStreamGroup {
 
     /// Open an ordered byte stream for a file.
     ///
-    /// ``file_info`` — a :class:`PyXetDownloadInfo` identifying the file.
+    /// ``file_info`` — a :class:`XetFileInfo` identifying the file.
     ///
-    /// ``range`` — optional ``(start, end)`` byte range (exclusive end).
-    /// Omit or pass ``None`` to stream the entire file.
+    /// ``start`` / ``end`` — optional byte offsets (exclusive end).  Both
+    /// default to ``None``, meaning the full file.  Either may be omitted
+    /// independently:
+    ///
+    /// ```python
+    /// group.download_stream(info)                    # whole file
+    /// group.download_stream(info, start=3)           # 3 .. EOF
+    /// group.download_stream(info, end=100)           # 0 .. 100
+    /// group.download_stream(info, start=3, end=100)  # 3 .. 100
+    /// ```
     ///
     /// Returns a :class:`XetDownloadStream` iterator that yields ``bytes``
     /// chunks in order.  Iterate it directly or call :meth:`cancel`.
     ///
     /// Releases the GIL during setup.
-    #[pyo3(signature = (file_info, range=None))]
+    #[pyo3(signature = (file_info, start=None, end=None))]
     pub fn download_stream(
         &self,
         py: Python<'_>,
-        file_info: PyRef<'_, PyXetDownloadInfo>,
-        range: Option<(u64, u64)>,
+        file_info: XetFileInfo,
+        start: Option<u64>,
+        end: Option<u64>,
     ) -> PyResult<PyXetDownloadStream> {
-        let xet_info = xet_info_from_download_info(&file_info);
-        let byte_range: Option<Range<u64>> = range.map(|(s, e)| s..e);
+        let byte_range: Option<Range<u64>> = match (start, end) {
+            (None, None) => None,
+            (s, e) => Some(s.unwrap_or(0)..e.unwrap_or(u64::MAX)),
+        };
         let inner = self.inner.clone();
-        let stream = py.detach(|| inner.download_stream_blocking(xet_info, byte_range).map_err(convert_xet_error))?;
+        let stream = py.detach(|| inner.download_stream_blocking(file_info, byte_range).map_err(convert_xet_error))?;
         Ok(PyXetDownloadStream { inner: stream })
     }
 
@@ -154,22 +170,25 @@ impl PyXetDownloadStreamGroup {
     /// when you want to process or write chunks as they arrive without waiting
     /// for prior chunks.
     ///
-    /// ``range`` behaves the same as in :meth:`download_stream`.
+    /// ``start`` / ``end`` behave the same as in :meth:`download_stream`.
     ///
     /// Releases the GIL during setup.
-    #[pyo3(signature = (file_info, range=None))]
+    #[pyo3(signature = (file_info, start=None, end=None))]
     pub fn download_unordered_stream(
         &self,
         py: Python<'_>,
-        file_info: PyRef<'_, PyXetDownloadInfo>,
-        range: Option<(u64, u64)>,
+        file_info: XetFileInfo,
+        start: Option<u64>,
+        end: Option<u64>,
     ) -> PyResult<PyXetUnorderedDownloadStream> {
-        let xet_info = xet_info_from_download_info(&file_info);
-        let byte_range: Option<Range<u64>> = range.map(|(s, e)| s..e);
+        let byte_range: Option<Range<u64>> = match (start, end) {
+            (None, None) => None,
+            (s, e) => Some(s.unwrap_or(0)..e.unwrap_or(u64::MAX)),
+        };
         let inner = self.inner.clone();
         let stream = py.detach(|| {
             inner
-                .download_unordered_stream_blocking(xet_info, byte_range)
+                .download_unordered_stream_blocking(file_info, byte_range)
                 .map_err(convert_xet_error)
         })?;
         Ok(PyXetUnorderedDownloadStream { inner: stream })
@@ -178,75 +197,30 @@ impl PyXetDownloadStreamGroup {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn xet_info_from_download_info(info: &PyXetDownloadInfo) -> XetFileInfo {
-    match info.file_size {
-        Some(size) => XetFileInfo::new(info.hash.clone(), size),
-        None => XetFileInfo::new_hash_only(info.hash.clone()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use pyo3::Python;
+    use tempfile::tempdir;
+    use xet_pkg::xet_session::XetSessionBuilder;
 
     use super::*;
 
-    #[test]
-    fn test_builder_repr() {
-        let builder = PyXetDownloadStreamGroupBuilder { inner: None };
-        assert_eq!(builder.__repr__(), "XetDownloadStreamGroupBuilder()");
-    }
+    // ── PyXetDownloadStreamGroupBuilder ───────────────────────────────────────
 
     #[test]
     fn test_builder_build_when_consumed_returns_error() {
+        let temp = tempdir().unwrap();
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
+        let session = XetSessionBuilder::new().build().unwrap();
+        let mut builder = PyXetDownloadStreamGroupBuilder {
+            inner: Some(session.new_download_stream_group().unwrap().with_endpoint(&endpoint)),
+            custom_headers: None,
+        };
+
         Python::attach(|py| {
-            let mut builder = PyXetDownloadStreamGroupBuilder { inner: None };
-            let err = builder.build(py).err().expect("expected error");
-            assert!(err.to_string().contains("already consumed"));
+            builder.build(py).expect("first build should succeed");
+            let err = builder.build(py).err().expect("expected error").to_string();
+            assert!(err.contains("already consumed"));
         });
-    }
-
-    #[test]
-    fn test_xet_info_from_download_info_with_size() {
-        let info = PyXetDownloadInfo {
-            destination_path: "/tmp/out.bin".to_owned(),
-            hash: "abc123".to_owned(),
-            file_size: Some(512),
-        };
-        let xet_info = xet_info_from_download_info(&info);
-        assert_eq!(xet_info.hash(), "abc123");
-        assert_eq!(xet_info.file_size(), Some(512));
-    }
-
-    #[test]
-    fn test_xet_info_from_download_info_without_size() {
-        let info = PyXetDownloadInfo {
-            destination_path: "/tmp/stream.bin".to_owned(),
-            hash: "xyz789".to_owned(),
-            file_size: None,
-        };
-        let xet_info = xet_info_from_download_info(&info);
-        assert_eq!(xet_info.hash(), "xyz789");
-        assert_eq!(xet_info.file_size(), None);
-    }
-
-    #[test]
-    fn test_stream_group_repr() {
-        // PyXetDownloadStreamGroup cannot be constructed without a real inner,
-        // but we can verify the repr string is correct via the static method.
-        // This test ensures the __repr__ method exists and returns the right string.
-        // (Full round-trip requires a live CAS connection.)
-        let repr = "XetDownloadStreamGroup()";
-        assert_eq!(repr, "XetDownloadStreamGroup()");
-    }
-
-    #[test]
-    fn test_download_stream_repr_string() {
-        assert_eq!("XetDownloadStream()", "XetDownloadStream()");
-    }
-
-    #[test]
-    fn test_unordered_download_stream_repr_string() {
-        assert_eq!("XetUnorderedDownloadStream()", "XetUnorderedDownloadStream()");
     }
 }

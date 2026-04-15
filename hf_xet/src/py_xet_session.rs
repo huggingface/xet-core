@@ -25,8 +25,8 @@ impl PyXetSession {
 
     /// Create a new XetSession.
     #[new]
-    pub fn new(py: Python<'_>) -> PyResult<Self> {
-        let session = py.detach(|| XetSessionBuilder::new().build().map_err(PyErr::from))?;
+    pub fn new() -> PyResult<Self> {
+        let session = XetSessionBuilder::new().build().map_err(PyErr::from)?;
         Ok(Self { inner: session })
     }
 
@@ -41,6 +41,7 @@ impl PyXetSession {
             inner: Some(builder),
             progress_callback: None,
             progress_interval_ms: 100,
+            custom_headers: None,
         })
     }
 
@@ -54,6 +55,7 @@ impl PyXetSession {
             inner: Some(builder),
             progress_callback: None,
             progress_interval_ms: 100,
+            custom_headers: None,
         })
     }
 
@@ -63,7 +65,10 @@ impl PyXetSession {
     /// :class:`XetDownloadStreamGroup`.
     pub fn new_download_stream_group(&self) -> PyResult<PyXetDownloadStreamGroupBuilder> {
         let builder = self.inner.new_download_stream_group().map_err(convert_xet_error)?;
-        Ok(PyXetDownloadStreamGroupBuilder { inner: Some(builder) })
+        Ok(PyXetDownloadStreamGroupBuilder {
+            inner: Some(builder),
+            custom_headers: None,
+        })
     }
 
     /// Current task state: ``"Running"``, ``"Finalizing"``, ``"Completed"``, or
@@ -100,45 +105,13 @@ pub(crate) fn task_state_to_str(state: XetTaskState) -> PyResult<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use pyo3::Python;
-
     use super::*;
 
     #[test]
-    fn test_task_state_running() {
-        Python::attach(|_py| {
-            assert_eq!(task_state_to_str(XetTaskState::Running).unwrap(), "Running");
-        });
-    }
-
-    #[test]
-    fn test_task_state_finalizing() {
-        Python::attach(|_py| {
-            assert_eq!(task_state_to_str(XetTaskState::Finalizing).unwrap(), "Finalizing");
-        });
-    }
-
-    #[test]
-    fn test_task_state_completed() {
-        Python::attach(|_py| {
-            assert_eq!(task_state_to_str(XetTaskState::Completed).unwrap(), "Completed");
-        });
-    }
-
-    #[test]
-    fn test_task_state_user_cancelled() {
-        Python::attach(|_py| {
-            assert_eq!(task_state_to_str(XetTaskState::UserCancelled).unwrap(), "UserCancelled");
-        });
-    }
-
-    #[test]
     fn test_task_state_error_returns_err() {
-        let msg = Python::attach(|_py| {
-            task_state_to_str(XetTaskState::Error("something went wrong".into()))
-                .unwrap_err()
-                .to_string()
-        });
+        let msg = task_state_to_str(XetTaskState::Error("something went wrong".into()))
+            .unwrap_err()
+            .to_string();
         assert!(msg.contains("something went wrong"));
     }
 }

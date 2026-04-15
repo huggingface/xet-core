@@ -67,11 +67,20 @@ impl AuthGroupBuilder<XetFileDownloadGroup> {
 /// Contains final progress and per-file results keyed by [`UniqueID`].
 /// Only created when all downloads succeed; any failure propagates as an error.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "python", pyo3::pyclass(get_all))]
 pub struct XetDownloadGroupReport {
     /// Final progress snapshot at the time the group finished.
     pub progress: GroupProgressReport,
     /// Per-file download reports keyed by task ID.
     pub downloads: HashMap<UniqueID, XetDownloadReport>,
+}
+
+#[cfg(feature = "python")]
+#[pyo3::pymethods]
+impl XetDownloadGroupReport {
+    fn __repr__(&self) -> String {
+        format!("XetDownloadGroupReport({} downloads)", self.downloads.len())
+    }
 }
 
 /// API for grouping related file downloads into a single unit of work.
