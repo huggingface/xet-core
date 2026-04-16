@@ -13,46 +13,125 @@ use xet_runtime::error_printer::ErrorPrinter;
 
 use super::runtime::convert_multithreading_error;
 
+/// Python-exposed versions of the per-item and total progress update classes.
+///
+/// Both `PyTotalProgressUpdate` and `PyItemProgressUpdate` are passed
+/// into a Python callback given to the wrapper class below.  For example:
+///
+/// ```python
+/// def update_progress(self, total_update, item_updates):
+///     from rich.progress import Progress, TextColumn, BarColumn, TimeRemainingColumn
+///
+///     # Update overall progress (we assume this has been initialized).
+///     self.progress.update(
+///         self.bytes_processed_task_id,
+///         advance=total_update.total_bytes_completion_increment,
+///         total = total_update.total_bytes
+///     )
+///
+///     # Update upload progress ; the total may have changed so set that too.
+///     self.progress.update(
+///         self.bytes_uploaded_task_id,
+///         advance=total_update.total_transfer_bytes_completion_increment,
+///         total = total_update.total_transfer_bytes
+///     )
+///
+///     # Update each item:
+///     for item in item_updates:
+///         name = item.item_name
+///         if name not in self.item_tasks:
+///             self.item_tasks[name] = self.progress.add_task(
+///                 name, total=item.total_bytes
+///             )
+///         self.progress.update(
+///             self.item_tasks[name],
+///             advance=item.bytes_completion_increment,
+///         )
+/// ```
+///
+/// In addition, the other possible bookkeeping values for everything are contained in this
+/// as needed.
 #[pyclass]
 pub struct PyItemProgressUpdate {
+    /// The name of the item, or a tag that is translated later.
     #[pyo3(get)]
     pub item_name: Py<PyString>,
+
+    /// The total bytes contained in this item.   
     #[pyo3(get)]
     pub total_bytes: u64,
+
+    /// The number of bytes completed so far, either by deduplication or transfer.
     #[pyo3(get)]
     pub bytes_completed: u64,
+
+    /// The change in bytes completed since the last update.
     #[pyo3(get)]
     pub bytes_completion_increment: u64,
 }
 
+/// Update class for total updates
 #[pyclass]
 pub struct PyTotalProgressUpdate {
+    /// The total bytes known for processing and possibly uploaded or downloaded.
     #[pyo3(get)]
     pub total_bytes: u64,
+
+    /// How much total_bytes has changed from the last update.
     #[pyo3(get)]
     pub total_bytes_increment: u64,
+
+    /// How many of the bytes queued for processing have been examined
+    /// and either deduped or queued for upload or download.  
     #[pyo3(get)]
     pub total_bytes_completed: u64,
+
+    /// The change in total_bytes_completed since the same upload.  
     #[pyo3(get)]
     pub total_bytes_completion_increment: u64,
+
+    /// If known, the current completion speed.
     #[pyo3(get)]
     pub total_bytes_completion_rate: Option<f64>,
+
+    /// The total bytes scheduled for transfer; also contained in total_bytes.
     #[pyo3(get)]
     pub total_transfer_bytes: u64,
+
+    /// How much total_transfer_bytes has changed since the last update.
     #[pyo3(get)]
     pub total_transfer_bytes_increment: u64,
+
+    /// The cumulative bytes uploaded or downloaded so far.  Also contained in total_bytes_completed.
     #[pyo3(get)]
     pub total_transfer_bytes_completed: u64,
+
+    /// The change in total_transfer_bytes_completed since the last update.
     #[pyo3(get)]
     pub total_transfer_bytes_completion_increment: u64,
+
+    /// If known, the current completion speed for bytes transferred.
     #[pyo3(get)]
     pub total_transfer_bytes_completion_rate: Option<f64>,
 }
 
+/// A wrapper over a passed-in python function to update
+/// the python process of some download/upload progress
+/// implements the ProgressUpdater trait and should be
+/// passed around as a ProgressUpdater trait object or
+/// as a template parameter
 struct WrappedProgressUpdaterImpl {
+    /// Is this enabled?
     progress_updating_enabled: bool,
+
+    /// the function py_func is responsible for passing in the update value
+    /// into the python context. Expects 1 int (uint64) parameter that
+    /// is a number to increment the progress counter by.
     py_func: Py<PyAny>,
     name: String,
+
+    /// Whether to use the simple incremental progress updating method or
+    /// the more detailed
     update_with_detailed_progress: bool,
 }
 
@@ -66,9 +145,16 @@ const DETAILED_PROGRESS_ARG_NAMES: [&str; 2] = ["total_update", "item_updates"];
 
 impl WrappedProgressUpdaterImpl {
     pub fn new(py_func: Py<PyAny>) -> PyResult<Self> {
+        // Analyze the function to make sure it's the correct form. If it's 4 arguments with
+        // the appropriate names, than we call it using the detailed progress update; if it's
+        // a single function, we assume it's a global increment function and just pass in the update
+        // increment.
+        //
+        // Run on compute thread that doesn't block async workers
         Python::attach(|py| {
             let func = py_func.bind(py);
 
+            // Test if it's enabled first; if None is passed in, then this is disabled.
             if py_func.is_none(py) {
                 return Ok(Self {
                     progress_updating_enabled: false,
@@ -135,6 +221,7 @@ impl WrappedProgressUpdaterImpl {
     }
 
     async fn register_updates_impl(self: Arc<Self>, updates: ProgressUpdate) -> PyResult<()> {
+        // Run on compute thread that doesn't block async workers
         let rt = XetRuntime::current();
         rt.spawn_blocking(move || {
             Python::attach(|py| {
@@ -219,6 +306,7 @@ impl WrappedProgressUpdater {
 impl TrackingProgressUpdater for WrappedProgressUpdater {
     async fn register_updates(&self, updates: ProgressUpdate) {
         let inner = self.inner.clone();
+
         if inner.progress_updating_enabled {
             let _ = inner
                 .register_updates_impl(updates)

@@ -22,6 +22,8 @@ fn install_sigint_handler() -> Result<(), RuntimeError> {
     use signal_hook::consts::SIGINT;
     use signal_hook::flag;
 
+    // Register the SIGINT handler to set our atomic flag.
+    // Using `signal_hook::flag::register` allows us to set the atomic flag when SIGINT is received.
     flag::register(SIGINT, SIGINT_DETECTED.clone())
         .map_err(|e| RuntimeError::Other(format!("Initialization Error: Unable to register SIGINT handler {e:?}")))?;
 
@@ -34,17 +36,24 @@ extern "system" fn console_ctrl_handler(
 ) -> winapi::shared::minwindef::BOOL {
     use winapi::um::wincon;
 
+    // Only handle CTRL_C_EVENT
     if ctrl_type == wincon::CTRL_C_EVENT {
+        // Set the flag to indicate that a SIGINT has been detected, can happen multiple times.
         SIGINT_DETECTED.store(true, Ordering::SeqCst);
     }
 
+    // Always return false so the python signal handler still gets the signal.
     winapi::shared::minwindef::FALSE
 }
 
 #[cfg(windows)]
 fn install_sigint_handler() -> Result<(), RuntimeError> {
     use winapi::um::consoleapi::SetConsoleCtrlHandler;
+    use winapi::um::wincon::CTRL_C_EVENT;
 
+    // Install our handler using Windows API directly (instead of ctrlc).  We want to
+    // always return false so that the signal handler continues to propagate the signal
+    // to the python Ctrl+C handler, which isn't possible with the ctrlc package.
     unsafe {
         if SetConsoleCtrlHandler(Some(console_ctrl_handler), winapi::shared::minwindef::TRUE) == 0 {
             let error = winapi::um::errhandlingapi::GetLastError();
@@ -57,6 +66,9 @@ fn install_sigint_handler() -> Result<(), RuntimeError> {
 }
 
 fn check_sigint_handler() -> Result<(), RuntimeError> {
+    // Clear the sigint flag.  It is possible but unlikely that there will be a race condition here
+    // that will cause a CTRL-C to be temporarily ignored by us.  In such a case, the user
+    // will have to press it again.
     SIGINT_DETECTED.store(false, Ordering::SeqCst);
 
     let stored_pid = SIGINT_HANDLER_INSTALL_PID.0.load(Ordering::SeqCst);
@@ -66,28 +78,36 @@ fn check_sigint_handler() -> Result<(), RuntimeError> {
         return Ok(());
     }
 
+    // Need to install it; acquire a lock to do so.
     let _install_lg = SIGINT_HANDLER_INSTALL_PID.1.lock().unwrap();
 
+    // If another thread beat us to it while we're waiting for the lock.
     let stored_pid = SIGINT_HANDLER_INSTALL_PID.0.load(Ordering::SeqCst);
     if stored_pid == pid {
         return Ok(());
     }
 
     install_sigint_handler()?;
+
+    // Finally, store that we have installed it successfully.
     SIGINT_HANDLER_INSTALL_PID.0.store(pid, Ordering::SeqCst);
 
     Ok(())
 }
 
 pub(crate) fn perform_sigint_shutdown() {
+    // Acquire exclusive access to the runtime.  This will only be released once the runtime is shut down,
+    // meaning that all the tasks have completed or been cancelled.
     let maybe_runtime = MULTITHREADED_RUNTIME.write().unwrap().take();
 
-    if let Some((runtime_pid, ref runtime)) = maybe_runtime
-        && runtime_pid == std::process::id()
-        && runtime.external_executor_count() != 0
-    {
-        eprintln!("Cancellation requested; stopping current tasks.");
-        runtime.perform_sigint_shutdown();
+    // Shut it down gracefully if we own it in this process.
+    if let Some((runtime_pid, ref runtime)) = maybe_runtime {
+        // Only do anything with the runtime if we're on the right process.
+        // Otherwise, it's none of our business.
+        if runtime_pid == std::process::id() && runtime.external_executor_count() != 0 {
+            eprintln!("Cancellation requested; stopping current tasks.");
+            runtime.perform_sigint_shutdown();
+        }
     }
 }
 
@@ -101,46 +121,89 @@ fn signal_check_background_loop() {
     loop {
         std::thread::sleep(SIGNAL_CHECK_INTERVAL);
 
-        if SIGINT_DETECTED.load(Ordering::SeqCst) {
+        let shutdown_runtime = SIGINT_DETECTED.load(Ordering::SeqCst);
+
+        // The keyboard interrupt was raised, so shut down things in a reasonable amount of time and return the runtime
+        // to the uninitialized state.
+        if shutdown_runtime {
+            // Shut this down.
             perform_sigint_shutdown();
+
+            // Clear the flag; we're good to go now.
             SIGINT_DETECTED.store(false, Ordering::SeqCst);
+
+            // Exits this background thread.
             break;
         }
     }
 }
 
+// This should be called once on library load.
 pub fn init_threadpool() -> Result<Arc<XetRuntime>, RuntimeError> {
+    // Need to initialize. Upgrade to write lock.
     let mut guard = MULTITHREADED_RUNTIME.write().unwrap();
+
+    // Has another thread done this already?
     let pid = std::process::id();
 
     if let Some((runtime_pid, existing)) = guard.take() {
         if runtime_pid == pid {
+            // We're OK, so reset it here.
             *guard = Some((pid, existing.clone()));
             return Ok(existing);
         } else {
+            // Ok, discard the previous runtime, as it's effectively poisoned by the
+            // fork-exec, and we simply need to leak it and restart from scratch.  The memory and
+            // resources will be freed up when the child exits.
             existing.discard_runtime();
+
             info!("Runtime restarted due to detected process ID change, likely due to running inside a fork call.");
         }
     }
 
+    // Create a new Tokio runtime.
     let runtime = XetRuntime::new()?;
+
+    // Check the signal handler.  This must be reinstalled on new or after a spawn
     check_sigint_handler()?;
+
+    // Set the runtime in the global tracker.
     *guard = Some((pid, runtime.clone()));
+
+    // Spawn a background non-tokio thread to check the sigint flag.
     std::thread::spawn(signal_check_background_loop);
+
+    // Drop the guard and initialize the logging.
+    //
+    // We want to drop this first is that multiple threads entering this runtime
+    // may cause a deadlock if the thread that has the GIL tries to acquire the runtime,
+    // but then the logging expects the GIL in order to initialize it properly.
+    //
+    // In most cases, this will done on module initialization; however, after CTRL-C, the runtime is
+    // initialized lazily and so putting this here avoids the deadlock (and possibly some info! or other
+    // error statements may not be sent to python if the other thread continues ahead of the logging
+    // being initialized.)
     drop(guard);
 
+    // Return the runtime
     Ok(runtime)
 }
 
+// This function initializes the runtime if not present, otherwise returns the existing one.
 fn get_threadpool() -> Result<Arc<XetRuntime>, RuntimeError> {
+    // First try a read lock to see if it's already initialized.
     {
         let guard = MULTITHREADED_RUNTIME.read().unwrap();
-        if let Some((runtime_pid, ref existing)) = *guard
-            && runtime_pid == std::process::id()
-        {
-            return Ok(existing.clone());
+        if let Some((runtime_pid, ref existing)) = *guard {
+            let pid = std::process::id();
+
+            if runtime_pid == pid {
+                return Ok(existing.clone());
+            }
         }
     }
+
+    // Init and return
 
     init_threadpool()
 }
@@ -156,8 +219,11 @@ where
     Out: Send + Sync + 'static,
 {
     let result: PyResult<Out> = py.detach(move || {
+        // Now, without the GIL, spawn the task on a new OS thread.  This avoids having tokio cache stuff in
+        // thread-local storage that is invalidated after a fork-exec.
         spawn_os_thread(move || {
             let runtime = get_threadpool().map_err(convert_multithreading_error)?;
+
             runtime
                 .external_run_async_task(execution_call)
                 .map_err(convert_multithreading_error)?
@@ -167,6 +233,8 @@ where
         .map_err(convert_multithreading_error)?
     });
 
+    // Now, if we're in the middle of a shutdown, and this is an error, then
+    // just translate that error to a KeyboardInterrupt (or we get a lot of
     if let Err(e) = &result
         && in_sigint_shutdown()
     {
@@ -176,5 +244,6 @@ where
         return Err(PyKeyboardInterrupt::new_err(()));
     }
 
+    // Now return the result.
     result
 }
