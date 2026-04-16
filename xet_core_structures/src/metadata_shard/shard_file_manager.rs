@@ -6,7 +6,7 @@ use std::sync::atomic::AtomicBool;
 
 use tokio::sync::RwLock;
 use tracing::{debug, info, instrument, trace, warn};
-use xet_runtime::core::{XetCommon, XetRuntime};
+use xet_runtime::core::{XetCommon, XetContext};
 use xet_runtime::utils::RwTaskLock;
 
 use super::constants::MDB_SHARD_EXPIRATION_BUFFER;
@@ -108,28 +108,28 @@ pub struct ShardFileManager {
 impl ShardFileManager {
     // Construct in a session directory.
     pub async fn new_in_session_directory(
-        runtime: &XetRuntime,
+        ctx: &XetContext,
         session_directory: impl AsRef<Path>,
         scan_directory: bool,
     ) -> Result<Arc<Self>> {
-        Self::new_impl(runtime, session_directory, false, runtime.config.shard.max_target_size, scan_directory, 0).await
+        Self::new_impl(ctx, session_directory, false, ctx.config.shard.max_target_size, scan_directory, 0).await
     }
 
     // Construction functions
-    pub async fn new_in_cache_directory(runtime: &XetRuntime, cache_directory: impl AsRef<Path>) -> Result<Arc<Self>> {
+    pub async fn new_in_cache_directory(ctx: &XetContext, cache_directory: impl AsRef<Path>) -> Result<Arc<Self>> {
         Self::new_impl(
-            runtime,
+            ctx,
             cache_directory,
             true,
-            runtime.config.shard.max_target_size,
+            ctx.config.shard.max_target_size,
             true,
-            runtime.config.shard.cache_size_limit.as_u64(),
+            ctx.config.shard.cache_size_limit.as_u64(),
         )
         .await
     }
 
     async fn new_impl(
-        runtime: &XetRuntime,
+        ctx: &XetContext,
         directory: impl AsRef<Path>,
         is_cachable: bool,
         target_shard_max_size: u64,
@@ -143,8 +143,8 @@ impl ShardFileManager {
             std::fs::create_dir_all(&shard_directory)?;
         }
 
-        let chunk_index_table_max_size = runtime.config.shard.chunk_index_table_max_size;
-        let shard_file_cache = get_shard_file_cache(&runtime.common);
+        let chunk_index_table_max_size = ctx.config.shard.chunk_index_table_max_size;
+        let shard_file_cache = get_shard_file_cache(&ctx.common);
         let create_new_sfm = || {
             Arc::new(Self {
                 chunk_index_table_max_size,
@@ -162,7 +162,7 @@ impl ShardFileManager {
                 break 'load_sfm create_new_sfm();
             }
 
-            let sfm_cache = get_sfm_cache(&runtime.common);
+            let sfm_cache = get_sfm_cache(&ctx.common);
 
             {
                 let ro_lg = sfm_cache.read().await;
@@ -602,7 +602,7 @@ mod tests {
     use tempfile::TempDir;
     use tokio::runtime::Handle;
     use xet_runtime::config::XetConfig;
-    use xet_runtime::core::XetRuntime;
+    use xet_runtime::core::XetContext;
 
     use super::super::file_structs::FileDataSequenceHeader;
     use super::super::session_directory::{consolidate_shards_in_directory, merge_shards};
@@ -612,8 +612,8 @@ mod tests {
     use super::{get_shard_file_cache, *};
     use crate::error::Result;
 
-    fn test_runtime() -> XetRuntime {
-        XetRuntime::from_external(Handle::current(), XetConfig::new())
+    fn test_runtime() -> XetContext {
+        XetContext::from_external(Handle::current(), XetConfig::new())
     }
 
     #[allow(clippy::type_complexity)]
@@ -663,7 +663,7 @@ mod tests {
 
     // Create n_shards new random shards in the directory pointed
     pub async fn create_random_shard_collection(
-        runtime: &XetRuntime,
+        ctx: &XetContext,
         seed: u64,
         shard_dir: impl AsRef<Path>,
         n_shards: usize,
@@ -674,7 +674,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(seed);
 
         let shard_dir = shard_dir.as_ref();
-        let sfm = ShardFileManager::new_in_session_directory(runtime, shard_dir, false).await?;
+        let sfm = ShardFileManager::new_in_session_directory(ctx, shard_dir, false).await?;
         let mut reference_shard = MDBInMemoryShard::default();
 
         for _ in 0..n_shards {
@@ -805,11 +805,11 @@ mod tests {
     }
 
     async fn sfm_with_target_shard_size(
-        runtime: &XetRuntime,
+        ctx: &XetContext,
         path: impl AsRef<Path>,
         target_size: u64,
     ) -> Result<Arc<ShardFileManager>> {
-        ShardFileManager::new_impl(runtime, path, false, target_size, true, 0).await
+        ShardFileManager::new_impl(ctx, path, false, target_size, true, 0).await
     }
 
     #[tokio::test]
@@ -848,7 +848,7 @@ mod tests {
 
             // Now, merge shards in the background.
             let merged_shards = consolidate_shards_in_directory(
-                &runtime.threadpool,
+                &runtime.runtime,
                 tmp_dir.path(),
                 runtime.config.shard.max_target_size,
                 false,
@@ -933,7 +933,7 @@ mod tests {
 
             {
                 let merged_shards = consolidate_shards_in_directory(
-                    &runtime.threadpool,
+                    &runtime.runtime,
                     tmp_dir.path(),
                     runtime.config.shard.max_target_size,
                     false,
@@ -996,7 +996,7 @@ mod tests {
             let tmp_merge_dir = TempDir::new()?;
 
             let shard_merge_result =
-                merge_shards(&runtime.threadpool, tmp_dir.path(), tmp_merge_dir.path(), 8 * T, false, &sfc)?;
+                merge_shards(&runtime.runtime, tmp_dir.path(), tmp_merge_dir.path(), 8 * T, false, &sfc)?;
             let mut merged_shards = shard_merge_result.merged_shards;
             let m_del_shards = shard_merge_result.obsolete_shards;
 
@@ -1008,7 +1008,7 @@ mod tests {
             assert_eq!(paths.count(), m_del_shards.len());
 
             // This call should be the same, but
-            let mut rv = consolidate_shards_in_directory(&runtime.threadpool, tmp_dir.path(), 8 * T, false, &sfc)?;
+            let mut rv = consolidate_shards_in_directory(&runtime.runtime, tmp_dir.path(), 8 * T, false, &sfc)?;
 
             let paths = std::fs::read_dir(tmp_dir.path()).unwrap();
             let n_paths = paths.count();
@@ -1074,7 +1074,7 @@ mod tests {
             verify_metadata_shards_match(&mdb2, &mdb_in_mem, true).await?;
 
             let merged_shards =
-                consolidate_shards_in_directory(&runtime.threadpool, tmp_dir.path(), target_size, false, &sfc)?;
+                consolidate_shards_in_directory(&runtime.runtime, tmp_dir.path(), target_size, false, &sfc)?;
 
             for si in merged_shards.iter() {
                 assert!(si.path.exists());
@@ -1171,8 +1171,8 @@ mod tests {
         Ok(())
     }
 
-    async fn shard_list_with_timestamp_filtering(runtime: &XetRuntime, path: &Path) -> Result<Vec<Arc<MDBShardFile>>> {
-        ShardFileManager::new_impl(runtime, path, false, runtime.config.shard.max_target_size, true, 0)
+    async fn shard_list_with_timestamp_filtering(ctx: &XetContext, path: &Path) -> Result<Vec<Arc<MDBShardFile>>> {
+        ShardFileManager::new_impl(ctx, path, false, ctx.config.shard.max_target_size, true, 0)
             .await?
             .registered_shard_list()
             .await
@@ -1424,16 +1424,14 @@ mod tests {
                 // Now attempt a merge; this should cause an error.
                 let out_dir_1 = work_dir.join("out_err");
                 std::fs::create_dir_all(&out_dir_1).unwrap();
-                let res =
-                    merge_shards(&runtime.threadpool, &tmp_src_dir, &out_dir_1, base_size * merge_size, false, &sfc);
+                let res = merge_shards(&runtime.runtime, &tmp_src_dir, &out_dir_1, base_size * merge_size, false, &sfc);
                 assert!(res.is_err());
 
                 // Now attempt a merge with error skipping; which should not cause an error.
                 let out_dir_2 = work_dir.join("out_skips");
                 std::fs::create_dir_all(&out_dir_2).unwrap();
-                let res =
-                    merge_shards(&runtime.threadpool, &tmp_src_dir, &out_dir_2, base_size * merge_size, true, &sfc)
-                        .unwrap();
+                let res = merge_shards(&runtime.runtime, &tmp_src_dir, &out_dir_2, base_size * merge_size, true, &sfc)
+                    .unwrap();
 
                 assert_eq!(res.merged_shards.len(), n_merged);
 

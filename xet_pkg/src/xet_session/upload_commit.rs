@@ -559,16 +559,16 @@ mod tests {
         let cas_path = temp.path().join("cas");
         let endpoint = format!("local://{}", cas_path.display());
         let session = XetSessionBuilder::new().build()?;
-        let threadpool = session.inner.runtime.threadpool.clone();
+        let runtime = session.inner.ctx.runtime.clone();
         let commit = session.new_upload_commit()?.with_endpoint(&endpoint).build_blocking()?;
         let commit_for_thread = commit.clone();
-        let threadpool_for_thread = threadpool.clone();
+        let runtime_for_thread = runtime.clone();
 
         let guard = commit.inner.file_handles.lock().unwrap();
 
         let (done_tx, done_rx) = mpsc::channel::<()>();
         let join_handle = std::thread::spawn(move || {
-            let _ = threadpool_for_thread.external_run_async_task(async move { commit_for_thread.commit().await });
+            let _ = runtime_for_thread.external_run_async_task(async move { commit_for_thread.commit().await });
             let _ = done_tx.send(());
         });
 
@@ -1160,7 +1160,7 @@ mod tests {
         let endpoint = format!("local://{}", temp.path().join("cas").display());
         futures::executor::block_on(async {
             let session = XetSessionBuilder::new().build().unwrap();
-            assert_eq!(session.inner.runtime.threadpool.mode(), RuntimeMode::Owned);
+            assert_eq!(session.inner.ctx.runtime.mode(), RuntimeMode::Owned);
 
             let data = b"hello from non-tokio executor";
             let commit = session
@@ -1188,7 +1188,7 @@ mod tests {
         let endpoint = format!("local://{}", temp.path().join("cas").display());
         smol::block_on(async {
             let session = XetSessionBuilder::new().build().unwrap();
-            assert_eq!(session.inner.runtime.threadpool.mode(), RuntimeMode::Owned);
+            assert_eq!(session.inner.ctx.runtime.mode(), RuntimeMode::Owned);
 
             let data = b"hello from smol executor";
             let commit = session
@@ -1216,7 +1216,7 @@ mod tests {
         let endpoint = format!("local://{}", temp.path().join("cas").display());
         async_std::task::block_on(async {
             let session = XetSessionBuilder::new().build().unwrap();
-            assert_eq!(session.inner.runtime.threadpool.mode(), RuntimeMode::Owned);
+            assert_eq!(session.inner.ctx.runtime.mode(), RuntimeMode::Owned);
 
             let data = b"hello from async-std executor";
             let commit = session

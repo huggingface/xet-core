@@ -8,7 +8,7 @@ pub use xet_data::processing::data_client::hash_files_async;
 use xet_data::processing::data_client::{clean_bytes, default_config};
 use xet_data::processing::{FileDownloadSession, FileUploadSession, Sha256Policy, XetFileInfo};
 use xet_data::{DataError, Result};
-use xet_runtime::core::XetRuntime;
+use xet_runtime::core::XetContext;
 use xet_runtime::core::par_utils::run_constrained_with_semaphore;
 
 use super::progress_tracking::{GroupProgressCallbackUpdater, ItemProgressCallbackUpdater, TrackingProgressUpdater};
@@ -16,7 +16,7 @@ use super::progress_tracking::{GroupProgressCallbackUpdater, ItemProgressCallbac
 #[allow(clippy::too_many_arguments)]
 #[instrument(skip_all, name = "data_client::upload_bytes", fields(session_id = tracing::field::Empty, num_files=file_contents.len()))]
 pub async fn upload_bytes_async(
-    runtime: &XetRuntime,
+    ctx: &XetContext,
     file_contents: Vec<Vec<u8>>,
     sha256_policies: Vec<Sha256Policy>,
     endpoint: Option<String>,
@@ -34,8 +34,8 @@ pub async fn upload_bytes_async(
     }
 
     let config = default_config(
-        runtime,
-        endpoint.unwrap_or_else(|| runtime.config.data.default_cas_endpoint.clone()),
+        ctx,
+        endpoint.unwrap_or_else(|| ctx.config.data.default_cas_endpoint.clone()),
         token_info,
         token_refresher,
         custom_headers,
@@ -43,7 +43,7 @@ pub async fn upload_bytes_async(
 
     Span::current().record("session_id", &config.session.session_id);
 
-    let semaphore = runtime.common.file_ingestion_semaphore.clone();
+    let semaphore = ctx.common.file_ingestion_semaphore.clone();
     let upload_session = FileUploadSession::new(config.into()).await?;
 
     let bridge = progress_updater.map(|updater| GroupProgressCallbackUpdater::start(upload_session.clone(), updater));
@@ -76,7 +76,7 @@ pub async fn upload_bytes_async(
     defrag_prevented_dedup_chunks = tracing::field::Empty
     ))]
 pub async fn upload_async(
-    runtime: &XetRuntime,
+    ctx: &XetContext,
     file_paths: Vec<String>,
     sha256_policies: Vec<Sha256Policy>,
     endpoint: Option<String>,
@@ -94,8 +94,8 @@ pub async fn upload_async(
     }
 
     let config = default_config(
-        runtime,
-        endpoint.unwrap_or_else(|| runtime.config.data.default_cas_endpoint.clone()),
+        ctx,
+        endpoint.unwrap_or_else(|| ctx.config.data.default_cas_endpoint.clone()),
         token_info,
         token_refresher,
         custom_headers,
@@ -131,7 +131,7 @@ pub async fn upload_async(
 
 #[instrument(skip_all, name = "data_client::download", fields(session_id = tracing::field::Empty, num_files=file_infos.len()))]
 pub async fn download_async(
-    runtime: &XetRuntime,
+    ctx: &XetContext,
     file_infos: Vec<(XetFileInfo, String)>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
@@ -145,8 +145,8 @@ pub async fn download_async(
         return Err(DataError::ParameterError("updaters are not same length as pointer_files".to_string()));
     }
     let config: Arc<_> = default_config(
-        runtime,
-        endpoint.unwrap_or_else(|| runtime.config.data.default_cas_endpoint.clone()),
+        ctx,
+        endpoint.unwrap_or_else(|| ctx.config.data.default_cas_endpoint.clone()),
         token_info,
         token_refresher,
         custom_headers,

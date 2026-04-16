@@ -7,7 +7,7 @@ use xet_client::cas_client::{Client, ProgressCallback};
 use xet_client::cas_types::{ChunkRange, Key};
 use xet_client::chunk_cache::ChunkCache;
 use xet_core_structures::merklehash::MerkleHash;
-use xet_runtime::core::XetRuntime;
+use xet_runtime::core::XetContext;
 use xet_runtime::utils::UniqueId;
 
 use super::super::error::Result;
@@ -94,7 +94,7 @@ impl XorbBlock {
     /// can retry.
     pub async fn retrieve_data(
         self: Arc<Self>,
-        runtime: XetRuntime,
+        ctx: XetContext,
         client: Arc<dyn Client>,
         url_info: Arc<TermBlockRetrievalURLs>,
         progress_updater: Option<Arc<ItemProgressUpdater>>,
@@ -112,7 +112,7 @@ impl XorbBlock {
                 // blocks (multiple disjoint chunk ranges per block) are cached.
                 if let Some(ref cache) = chunk_cache {
                     let cache_key = Key {
-                        prefix: runtime.config.data.default_prefix.clone(),
+                        prefix: ctx.config.data.default_prefix.clone(),
                         hash: self.xorb_hash,
                     };
                     let chunk_range = chunk_ranges.first().copied().unwrap_or_default();
@@ -134,7 +134,7 @@ impl XorbBlock {
                 let permit = client.acquire_download_permit().await?;
 
                 let url_provider = XorbURLProvider {
-                    runtime: runtime.clone(),
+                    ctx: ctx.clone(),
                     client: client.clone(),
                     url_info,
                     xorb_block_index,
@@ -157,7 +157,7 @@ impl XorbBlock {
                 // Store in chunk cache (best-effort, non-blocking).
                 if let Some(cache) = chunk_cache {
                     let cache_key = Key {
-                        prefix: runtime.config.data.default_prefix.clone(),
+                        prefix: ctx.config.data.default_prefix.clone(),
                         hash: self.xorb_hash,
                     };
                     let chunk_range = chunk_ranges.first().copied().unwrap_or_default();

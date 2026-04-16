@@ -264,7 +264,7 @@ macro_rules! test_set_constants {
 
 #[cfg(not(doctest))]
 /// A macro for **tests** that sets config group environment variables **before**
-/// XetRuntime is initialized. The environment variables follow the pattern
+/// XetContext is initialized. The environment variables follow the pattern
 /// `HF_XET_{GROUP_NAME}_{FIELD_NAME}`.
 ///
 /// This macro uses `ctor` to run on module load, ensuring environment variables

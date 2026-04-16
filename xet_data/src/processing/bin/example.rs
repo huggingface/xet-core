@@ -7,7 +7,7 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use xet_data::processing::configurations::TranslatorConfig;
 use xet_data::processing::{FileUploadSession, Sha256Policy, XetFileInfo};
-use xet_runtime::core::XetRuntime;
+use xet_runtime::core::XetContext;
 
 #[derive(Parser)]
 struct XCommand {
@@ -56,18 +56,15 @@ impl Command {
     }
 }
 
-fn get_xet_context() -> XetRuntime {
-    static CTX: OnceLock<XetRuntime> = OnceLock::new();
-    CTX.get_or_init(|| XetRuntime::default().expect("Error starting multithreaded runtime."))
+fn get_xet_context() -> XetContext {
+    static CTX: OnceLock<XetContext> = OnceLock::new();
+    CTX.get_or_init(|| XetContext::default().expect("Error starting multithreaded runtime."))
         .clone()
 }
 
 fn main() {
     let cli = XCommand::parse();
-    let _ = get_xet_context()
-        .threadpool
-        .bridge_sync(async move { cli.run().await })
-        .unwrap();
+    let _ = get_xet_context().runtime.bridge_sync(async move { cli.run().await }).unwrap();
 }
 
 async fn clean_file(arg: &CleanArg) -> Result<()> {

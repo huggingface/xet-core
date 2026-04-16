@@ -8,7 +8,7 @@ use xet_client::cas_client::auth::TokenRefresher;
 use xet_client::hub_client::Operation;
 use xet_pkg::legacy::progress_tracking::{GroupProgressCallbackUpdater, ProgressUpdate, TrackingProgressUpdater};
 use xet_pkg::legacy::{FileUploadSession, Sha256Policy, clean_file, default_config};
-use xet_runtime::core::XetRuntime;
+use xet_runtime::core::XetContext;
 
 use crate::constants::{
     HF_ENDPOINT_ENV, XET_ACCESS_TOKEN_HEADER, XET_CAS_URL, XET_SESSION_ID, XET_TOKEN_EXPIRATION_HEADER,
@@ -16,9 +16,9 @@ use crate::constants::{
 
 const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
-fn xet_runtime() -> &'static XetRuntime {
-    static RUNTIME: OnceLock<XetRuntime> = OnceLock::new();
-    RUNTIME.get_or_init(|| XetRuntime::default().expect("xet context"))
+fn xet_runtime() -> &'static XetContext {
+    static RUNTIME: OnceLock<XetContext> = OnceLock::new();
+    RUNTIME.get_or_init(|| XetContext::default().expect("xet context"))
 }
 
 use crate::errors::{GitXetError, Result};

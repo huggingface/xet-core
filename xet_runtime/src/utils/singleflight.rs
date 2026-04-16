@@ -407,7 +407,7 @@ pub(crate) mod tests {
 
     use super::super::errors::SingleflightError;
     use super::{Call, Group, OwnerTask};
-    use crate::core::XetRuntime;
+    use crate::core::XetContext;
 
     /// A period of time for waiters to wait for a notification from the owner
     /// task. This is expected to be sufficient time for the test futures to
@@ -428,11 +428,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_simple_with_threadpool() {
-        let runtime = XetRuntime::default().unwrap();
+    fn test_simple_with_xet_runtime() {
+        let ctx = XetContext::default().unwrap();
         let g = Group::new();
-        let res = runtime
-            .threadpool
+        let res = ctx
+            .runtime
             .bridge_sync(async move { g.work("key", return_res()).await })
             .unwrap()
             .0;
@@ -450,17 +450,17 @@ pub(crate) mod tests {
 
     #[test]
     #[cfg_attr(feature = "smoke-test", ignore)]
-    fn test_multiple_threads_with_threadpool() {
+    fn test_multiple_threads_with_xet_runtime() {
         let times_called = Arc::new(AtomicU32::new(0));
-        let runtime = XetRuntime::default().unwrap();
+        let ctx = XetContext::default().unwrap();
         let g: Arc<Group<usize, ()>> = Arc::new(Group::new());
         let mut handlers: Vec<JoinHandle<(usize, bool)>> = Vec::new();
-        let threadpool = runtime.threadpool.clone();
+        let runtime = ctx.runtime.clone();
         let tasks = async move {
             for _ in 0..10 {
                 let g = g.clone();
                 let counter = times_called.clone();
-                handlers.push(threadpool.spawn(async move {
+                handlers.push(runtime.spawn(async move {
                     let tup = g.work("key", expensive_fn(counter, RES)).await;
                     let res = tup.0;
                     let fn_response = res.unwrap();
@@ -480,7 +480,7 @@ pub(crate) mod tests {
             assert_eq!(1, num_callers);
             assert_eq!(1, times_called.load(Ordering::SeqCst));
         };
-        runtime.threadpool.bridge_sync(tasks).unwrap();
+        ctx.runtime.bridge_sync(tasks).unwrap();
     }
 
     #[tokio::test]

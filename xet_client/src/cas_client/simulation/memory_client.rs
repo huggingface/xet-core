@@ -17,7 +17,7 @@ use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::metadata_shard::streaming_shard::MDBMinimalShard;
 use xet_core_structures::metadata_shard::xorb_structs::MDBXorbInfo;
 use xet_core_structures::xorb_object::{SerializedXorbObject, XorbObject};
-use xet_runtime::core::XetRuntime;
+use xet_runtime::core::XetContext;
 
 use super::super::Client;
 use super::super::adaptive_concurrency::AdaptiveConcurrencyController;
@@ -70,12 +70,12 @@ pub struct MemoryClient {
 
 impl MemoryClient {
     /// Create a new in-memory client.
-    pub fn new(runtime: XetRuntime) -> Arc<Self> {
+    pub fn new(ctx: XetContext) -> Arc<Self> {
         Arc::new(Self {
             xorbs: RwLock::new(MerkleHashMap::new()),
             shard: RwLock::new(MDBInMemoryShard::default()),
             global_dedup: RwLock::new(MerkleHashMap::new()),
-            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload(runtime, "memory_uploads"),
+            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload(ctx, "memory_uploads"),
             url_expiration_ms: AtomicU64::new(u64::MAX),
             global_dedup_expiration_secs: AtomicU64::new(0),
             random_ms_delay_window: (AtomicU64::new(0), AtomicU64::new(0)),
@@ -218,12 +218,12 @@ impl MemoryClient {
 
 impl Default for MemoryClient {
     fn default() -> Self {
-        let runtime = XetRuntime::default().expect("runtime");
+        let ctx = XetContext::default().expect("runtime");
         Self {
             xorbs: RwLock::new(MerkleHashMap::new()),
             shard: RwLock::new(MDBInMemoryShard::default()),
             global_dedup: RwLock::new(MerkleHashMap::new()),
-            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload(runtime, "memory_uploads"),
+            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload(ctx, "memory_uploads"),
             url_expiration_ms: AtomicU64::new(u64::MAX),
             global_dedup_expiration_secs: AtomicU64::new(0),
             random_ms_delay_window: (AtomicU64::new(0), AtomicU64::new(0)),
@@ -969,14 +969,14 @@ fn parse_any_fetch_url(url: &str) -> Result<(MerkleHash, Instant)> {
 #[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use xet_runtime::config::XetConfig;
-    use xet_runtime::core::XetRuntime;
+    use xet_runtime::core::XetContext;
 
     use super::super::client_testing_utils::ClientTestingUtils;
     use super::*;
 
-    fn test_ctx() -> XetRuntime {
+    fn test_ctx() -> XetContext {
         let config = XetConfig::new();
-        XetRuntime::from_external(tokio::runtime::Handle::current(), config)
+        XetContext::from_external(tokio::runtime::Handle::current(), config)
     }
 
     fn new_client() -> Arc<dyn super::super::DirectAccessClient> {

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::{error, info};
 use xet_runtime::RuntimeError;
-use xet_runtime::core::XetThreadpool;
+use xet_runtime::core::XetRuntime;
 
 use super::set_operations::shard_set_union;
 use super::shard_file_handle::{MDBShardFile, ShardFileCache};
@@ -20,7 +20,7 @@ use crate::error::Result;
 ///
 /// Ordering of staged shards is preserved.
 pub fn consolidate_shards_in_directory(
-    runtime: &Arc<XetThreadpool>,
+    runtime: &Arc<XetRuntime>,
     session_directory: impl AsRef<Path>,
     target_max_size: u64,
     skip_on_error: bool,
@@ -58,7 +58,7 @@ pub struct ShardMergeResult {
 /// Ordering of staged shards is preserved.
 #[allow(clippy::needless_range_loop)] // The alternative is less readable IMO
 pub fn merge_shards(
-    runtime: &Arc<XetThreadpool>,
+    runtime: &Arc<XetRuntime>,
     source_directory: impl AsRef<Path>,
     target_directory: impl AsRef<Path>,
     target_max_size: u64,
@@ -160,7 +160,7 @@ pub fn merge_shards(
 
 /// Same as above, but performs it in the background and on a io focused thread.
 pub fn merge_shards_background(
-    runtime: Arc<XetThreadpool>,
+    runtime: Arc<XetRuntime>,
     source_directory: impl AsRef<Path>,
     target_directory: impl AsRef<Path>,
     target_max_size: u64,

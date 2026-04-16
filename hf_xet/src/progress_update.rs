@@ -8,7 +8,7 @@ use pyo3::types::{IntoPyDict, PyList, PyString};
 use pyo3::{IntoPyObjectExt, Py, PyAny, PyResult, Python, pyclass};
 use tracing::error;
 use xet_pkg::legacy::progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
-use xet_runtime::core::XetRuntime;
+use xet_runtime::core::XetContext;
 use xet_runtime::error_printer::ErrorPrinter;
 
 use crate::runtime::convert_multithreading_error;
@@ -121,7 +121,7 @@ pub struct PyTotalProgressUpdate {
 /// passed around as a ProgressUpdater trait object or
 /// as a template parameter
 struct WrappedProgressUpdaterImpl {
-    runtime: Arc<XetRuntime>,
+    ctx: Arc<XetContext>,
 
     /// Is this enabled?
     progress_updating_enabled: bool,
@@ -146,7 +146,7 @@ impl Debug for WrappedProgressUpdaterImpl {
 const DETAILED_PROGRESS_ARG_NAMES: [&str; 2] = ["total_update", "item_updates"];
 
 impl WrappedProgressUpdaterImpl {
-    pub fn new(py_func: Py<PyAny>, runtime: Arc<XetRuntime>) -> PyResult<Self> {
+    pub fn new(py_func: Py<PyAny>, ctx: Arc<XetContext>) -> PyResult<Self> {
         // Analyze the function to make sure it's the correct form. If it's 4 arguments with
         // the appropriate names, than we call it using the detailed progress update; if it's
         // a single function, we assume it's a global increment function and just pass in the update
@@ -159,7 +159,7 @@ impl WrappedProgressUpdaterImpl {
             // Test if it's enabled first; if None is passed in, then this is disabled.
             if py_func.is_none(py) {
                 return Ok(Self {
-                    runtime,
+                    ctx,
                     progress_updating_enabled: false,
                     py_func,
                     name: Default::default(),
@@ -215,7 +215,7 @@ impl WrappedProgressUpdaterImpl {
             };
 
             Ok(Self {
-                runtime,
+                ctx,
                 progress_updating_enabled: true,
                 py_func,
                 name,
@@ -225,8 +225,8 @@ impl WrappedProgressUpdaterImpl {
     }
 
     async fn register_updates_impl(self: Arc<Self>, updates: ProgressUpdate) -> PyResult<()> {
-        let threadpool = self.runtime.threadpool.clone();
-        threadpool
+        let runtime = self.ctx.runtime.clone();
+        runtime
             .spawn_blocking(move || {
                 Python::attach(|py| {
                     let f = self.py_func.bind(py);
@@ -299,9 +299,9 @@ pub struct WrappedProgressUpdater {
 }
 
 impl WrappedProgressUpdater {
-    pub fn new(py_func: Py<PyAny>, runtime: Arc<XetRuntime>) -> PyResult<Self> {
+    pub fn new(py_func: Py<PyAny>, ctx: Arc<XetContext>) -> PyResult<Self> {
         Ok(Self {
-            inner: Arc::new(WrappedProgressUpdaterImpl::new(py_func, runtime)?),
+            inner: Arc::new(WrappedProgressUpdaterImpl::new(py_func, ctx)?),
         })
     }
 }

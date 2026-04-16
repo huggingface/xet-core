@@ -1,5 +1,9 @@
 # API Update: Split runtime execution from runtime context (2026-04-02)
 
+## Current layout (follow-up renames)
+
+Types are now `XetContext` (lightweight context: `runtime`, `config`, `common`) and `XetRuntime` (Tokio execution backend). Sources live in `xet_runtime/src/core/context.rs` and `xet_runtime/src/core/runtime.rs`.
+
 ## Overview
 
 This update splits the old monolithic `xet_runtime::core::XetRuntime` into:
@@ -82,7 +86,7 @@ accordingly.
 
 ## Affected Crates
 
-- `xet_runtime` — `runtime.rs` (new lightweight context API), `threadpool.rs` (moved executor behavior), `common.rs` (shared runtime-scoped caches), `config.rs` (removed global accessor), `mod.rs` (re-exports)
+- `xet_runtime` — `context.rs` (`XetContext`), `runtime.rs` (`XetRuntime` execution backend), `common.rs` (shared runtime-scoped caches), `config.rs` (removed global accessor), `mod.rs` (re-exports)
 - `xet_core_structures` — shard manager and session directory APIs now take `&XetRuntime`
 - `xet_client` — `http_client`, `RemoteClient`, `RetryWrapper`, `AdaptiveConcurrencyController`, chunk cache, auth, hub client, and simulation clients updated
 - `xet_data` — `TranslatorConfig`, file upload/download sessions, file reconstruction, deduplication, shard interface

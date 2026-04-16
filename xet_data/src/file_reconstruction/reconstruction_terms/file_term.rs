@@ -8,7 +8,7 @@ use xet_client::cas_client::Client;
 use xet_client::cas_types::{ChunkRange, FileRange, HttpRange};
 use xet_client::chunk_cache::ChunkCache;
 use xet_core_structures::merklehash::MerkleHash;
-use xet_runtime::core::XetRuntime;
+use xet_runtime::core::XetContext;
 use xet_runtime::utils::UniqueId;
 
 use super::super::FileReconstructionError;
@@ -58,7 +58,7 @@ impl FileTerm {
     /// only one download per xorb block (other callers wait without acquiring CAS permits).
     pub async fn get_data_task(
         &self,
-        runtime: XetRuntime,
+        ctx: XetContext,
         client: Arc<dyn Client>,
         progress_updater: Option<Arc<ItemProgressUpdater>>,
         chunk_cache: Option<Arc<dyn ChunkCache>>,
@@ -75,7 +75,7 @@ impl FileTerm {
 
         let task = tokio::task::spawn(async move {
             let xorb_block_data = xorb_block
-                .retrieve_data(runtime, client, url_info, progress_updater, chunk_cache)
+                .retrieve_data(ctx, client, url_info, progress_updater, chunk_cache)
                 .await?;
             Ok(file_term.extract_bytes(&xorb_block_data))
         });
@@ -109,7 +109,7 @@ struct FileTermEntry {
 /// download (with dedup and compression enabled)
 /// along with the Vec<FileTerm>.
 pub async fn retrieve_file_term_block(
-    runtime: &XetRuntime,
+    ctx: &XetContext,
     client: Arc<dyn Client>,
     file_hash: MerkleHash,
     query_file_byte_range: FileRange,
@@ -143,7 +143,7 @@ pub async fn retrieve_file_term_block(
     // Track the current byte offset in the output file as we process terms sequentially.
     let mut cur_file_byte_offset = query_file_byte_range.start;
 
-    let enable_multirange = runtime.config.client.enable_multirange_fetching;
+    let enable_multirange = ctx.config.client.enable_multirange_fetching;
 
     for (local_term_index, term) in raw_reconstruction.terms.iter().enumerate() {
         let xorb_hash: MerkleHash = term.hash.into();
@@ -355,7 +355,7 @@ mod tests {
     use more_asserts::assert_le;
     use xet_client::cas_client::{ClientTestingUtils, LocalClient, RandomFileContents};
     use xet_client::cas_types::{ChunkRange, FileRange};
-    use xet_runtime::core::XetRuntime;
+    use xet_runtime::core::XetContext;
     use xet_runtime::utils::UniqueId;
 
     use super::*;
@@ -385,8 +385,8 @@ mod tests {
 
     /// Creates a test client and uploads a random file with the given term specification.
     /// Returns the client and file contents for verification.
-    async fn setup_test_file(term_spec: &[(u64, (u64, u64))]) -> (XetRuntime, Arc<LocalClient>, RandomFileContents) {
-        let runtime = XetRuntime::default().unwrap();
+    async fn setup_test_file(term_spec: &[(u64, (u64, u64))]) -> (XetContext, Arc<LocalClient>, RandomFileContents) {
+        let runtime = XetContext::default().unwrap();
         let client = LocalClient::temporary(runtime.clone()).await.unwrap();
         let file_contents = client.upload_random_file(term_spec, TEST_CHUNK_SIZE).await.unwrap();
         (runtime, client, file_contents)
@@ -404,7 +404,7 @@ mod tests {
     /// - Cross-references with the known file contents for correctness
     /// - Verifies number of file terms matches expected from term_spec
     async fn retrieve_and_verify(
-        runtime: &XetRuntime,
+        ctx: &XetContext,
         client: &Arc<LocalClient>,
         file_contents: &RandomFileContents,
         requested_range: Option<FileRange>,
@@ -413,7 +413,7 @@ mod tests {
         let dyn_client: Arc<dyn Client> = client.clone();
 
         let (returned_range, _, file_terms) =
-            retrieve_file_term_block(runtime, dyn_client.clone(), file_contents.file_hash, requested_range)
+            retrieve_file_term_block(ctx, dyn_client.clone(), file_contents.file_hash, requested_range)
                 .await
                 .expect("retrieve_file_term_block should succeed")
                 .expect("file_terms should not be None for valid range");
@@ -485,7 +485,7 @@ mod tests {
 
             // Get the data task and await it.
             let data_future = file_term
-                .get_data_task(runtime.clone(), dyn_client.clone(), None, None)
+                .get_data_task(ctx.clone(), dyn_client.clone(), None, None)
                 .await
                 .unwrap();
             let data = data_future.await.unwrap();

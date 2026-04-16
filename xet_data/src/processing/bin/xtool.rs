@@ -17,7 +17,7 @@ use xet_data::processing::data_client::default_config;
 use xet_data::processing::migration_tool::hub_client_token_refresher::HubClientTokenRefresher;
 use xet_data::processing::migration_tool::migrate::migrate_files_impl;
 use xet_runtime::config::XetConfig;
-use xet_runtime::core::{XetRuntime, XetThreadpool};
+use xet_runtime::core::{XetContext, XetRuntime};
 
 const DEFAULT_HF_ENDPOINT: &str = "https://huggingface.co";
 const USER_AGENT: &str = concat!("xtool", "/", env!("CARGO_PKG_VERSION"));
@@ -61,7 +61,7 @@ impl XCommand {
         let mut headers = HeaderMap::new();
         headers.insert(header::USER_AGENT, HeaderValue::from_static(USER_AGENT));
 
-        let runtime = XetRuntime::default()?;
+        let runtime = XetContext::default()?;
         let cred_helper = BearerCredentialHelper::new(token, "");
         let hub_client = HubClient::new(
             runtime.clone(),
@@ -215,17 +215,17 @@ async fn query_reconstruction(
     headers.insert(http::header::USER_AGENT, http::HeaderValue::from_static(USER_AGENT));
 
     let config = XetConfig::new();
-    let threadpool = XetThreadpool::from_external_with_config(tokio::runtime::Handle::current(), &config)?;
-    let runtime = XetRuntime::new(config, threadpool);
+    let executor = XetRuntime::from_external_with_config(tokio::runtime::Handle::current(), &config)?;
+    let ctx = XetContext::new(config, executor);
     let config = default_config(
-        &runtime,
+        &ctx,
         jwt_info.cas_url.clone(),
         Some((jwt_info.access_token, jwt_info.exp)),
         Some(token_refresher),
         Some(Arc::new(headers)),
     )?;
     let remote_client = RemoteClient::new(
-        runtime.clone(),
+        ctx.clone(),
         &jwt_info.cas_url,
         &config.session.auth,
         "",
@@ -260,9 +260,9 @@ fn main() -> Result<()> {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
     }
 
-    let threadpool = XetThreadpool::new(&config)?;
-    let runtime = XetRuntime::new(config, threadpool);
-    runtime.threadpool.bridge_sync(async move { cli.run().await })??;
+    let runtime = XetRuntime::new(&config)?;
+    let ctx = XetContext::new(config, runtime);
+    ctx.runtime.bridge_sync(async move { cli.run().await })??;
 
     Ok(())
 }

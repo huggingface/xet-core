@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use xet_runtime::core::XetRuntime;
+use xet_runtime::core::XetContext;
 
 pub(crate) struct DefragPrevention {
     nranges_in_streaming_fragmentation_estimator: usize,
@@ -24,8 +24,8 @@ pub(crate) struct DefragPrevention {
 }
 
 impl DefragPrevention {
-    pub(crate) fn new(runtime: &XetRuntime) -> Self {
-        let d = &runtime.config.deduplication;
+    pub(crate) fn new(ctx: &XetContext) -> Self {
+        let d = &ctx.config.deduplication;
         Self {
             nranges_in_streaming_fragmentation_estimator: d.nranges_in_streaming_fragmentation_estimator,
             rolling_last_nranges: VecDeque::with_capacity(d.nranges_in_streaming_fragmentation_estimator),

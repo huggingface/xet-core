@@ -11,9 +11,9 @@ pub(crate) async fn create_remote_client(
     dry_run: bool,
 ) -> Result<Arc<dyn Client>> {
     let session = &config.session;
-    let runtime = config.runtime.clone();
+    let runtime = config.ctx.clone();
 
-    if let Some(local_path) = session.local_path(&config.runtime) {
+    if let Some(local_path) = session.local_path(&config.ctx) {
         #[cfg(not(target_family = "wasm"))]
         {
             let xorb_path = local_path.join("xet").join("xorbs");

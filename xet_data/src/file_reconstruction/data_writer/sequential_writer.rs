@@ -8,7 +8,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
 use tokio::task::{JoinHandle, JoinSet};
 use xet_client::cas_types::FileRange;
-use xet_runtime::core::XetRuntime;
+use xet_runtime::core::XetContext;
 use xet_runtime::utils::adjustable_semaphore::AdjustableSemaphorePermit;
 
 use super::super::data_writer::{DataFuture, DataWriter};
@@ -44,7 +44,7 @@ type PendingWrite = (Bytes, Option<AdjustableSemaphorePermit>);
 /// Background writer thread that processes queue items and dispatches data
 /// to an output sink (a `Write` impl or a stream function).
 struct SyncWriterThread {
-    runtime: XetRuntime,
+    ctx: XetContext,
     rx: UnboundedReceiver<SequentialRetrievalItem>,
     bytes_written: Arc<AtomicU64>,
     progress_updater: Option<Arc<ItemProgressUpdater>>,
@@ -55,14 +55,14 @@ struct SyncWriterThread {
 
 impl SyncWriterThread {
     fn new(
-        runtime: XetRuntime,
+        ctx: XetContext,
         rx: UnboundedReceiver<SequentialRetrievalItem>,
         bytes_written: Arc<AtomicU64>,
         progress_updater: Option<Arc<ItemProgressUpdater>>,
         run_state: Arc<RunState>,
     ) -> Self {
         Self {
-            runtime,
+            ctx,
             rx,
             bytes_written,
             progress_updater,
@@ -145,7 +145,7 @@ impl SyncWriterThread {
                 break;
             }
 
-            self.runtime.check_sigint_shutdown()?;
+            self.ctx.check_sigint_shutdown()?;
         }
 
         debug_assert!(self.finished);
@@ -159,7 +159,7 @@ impl SyncWriterThread {
         let mut pending_writes: VecDeque<PendingWrite> = VecDeque::new();
 
         while !self.finished || !pending_writes.is_empty() {
-            self.runtime.check_sigint_shutdown()?;
+            self.ctx.check_sigint_shutdown()?;
 
             // If no pending writes, block to get at least one.
             if pending_writes.is_empty() {
@@ -396,7 +396,7 @@ impl SequentialWriter {
     /// moved to a background thread for blocking I/O operations.
     #[allow(clippy::new_ret_no_self)]
     pub(crate) fn new<W: Write + Send + 'static>(
-        runtime: &XetRuntime,
+        ctx: &XetContext,
         writer: W,
         use_vectorized: bool,
         run_state: Arc<RunState>,
@@ -408,11 +408,11 @@ impl SequentialWriter {
         let run_state_thread = run_state.clone();
         let bytes_written_clone = bytes_written.clone();
         let progress_updater = run_state.progress_updater().cloned();
-        let runtime_thread = runtime.clone();
+        let ctx_thread = ctx.clone();
 
-        let handle = runtime.threadpool.spawn_blocking(move || {
+        let handle = ctx.runtime.spawn_blocking(move || {
             let writer_thread =
-                SyncWriterThread::new(runtime_thread, rx, bytes_written_clone, progress_updater, run_state_thread);
+                SyncWriterThread::new(ctx_thread, rx, bytes_written_clone, progress_updater, run_state_thread);
             let result = if use_vectorized {
                 writer_thread.run_vectorized(writer)
             } else {
@@ -441,13 +441,13 @@ mod tests {
     use std::time::Duration;
 
     use xet_runtime::config::XetConfig;
-    use xet_runtime::core::{XetRuntime, XetThreadpool};
+    use xet_runtime::core::{XetContext, XetRuntime};
     use xet_runtime::utils::adjustable_semaphore::AdjustableSemaphore;
 
     use super::*;
 
-    fn test_runtime() -> XetRuntime {
-        XetRuntime::new(XetConfig::new(), XetThreadpool::from_external(tokio::runtime::Handle::current()))
+    fn test_runtime() -> XetContext {
+        XetContext::new(XetConfig::new(), XetRuntime::from_external(tokio::runtime::Handle::current()))
     }
 
     struct SharedBuffer(Arc<std::sync::Mutex<Vec<u8>>>);

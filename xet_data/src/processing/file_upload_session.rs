@@ -15,7 +15,7 @@ use tracing::{Instrument, Span, info_span, instrument};
 use xet_client::cas_client::{Client, ProgressCallback};
 use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
 use xet_core_structures::xorb_object::SerializedXorbObject;
-use xet_runtime::core::XetRuntime;
+use xet_runtime::core::XetContext;
 
 use super::XetFileInfo;
 use super::configurations::TranslatorConfig;
@@ -35,7 +35,7 @@ use crate::progress_tracking::{GroupProgress, GroupProgressReport, ItemProgressR
 /// that succeeds or fails as a unit;  i.e. all files get uploaded on finalization, and all shards
 /// and xorbs needed to reconstruct those files are properly uploaded and registered.
 pub struct FileUploadSession {
-    pub(crate) runtime: XetRuntime,
+    pub(crate) ctx: XetContext,
     pub(crate) client: Arc<dyn Client + Send + Sync>,
     pub(crate) shard_interface: SessionShardInterface,
 
@@ -69,7 +69,7 @@ impl FileUploadSession {
     }
 
     async fn new_impl(config: Arc<TranslatorConfig>, dry_run: bool) -> Result<Arc<FileUploadSession>> {
-        let runtime = config.runtime.clone();
+        let ctx = config.ctx.clone();
         let session_id = config
             .session
             .session_id
@@ -78,17 +78,17 @@ impl FileUploadSession {
             .unwrap_or_else(|| Cow::Owned(UniqueID::new().to_string()));
 
         let progress = GroupProgress::with_speed_config(
-            runtime.config.data.progress_update_speed_sampling_window,
-            runtime.config.data.progress_update_speed_min_observations,
+            ctx.config.data.progress_update_speed_sampling_window,
+            ctx.config.data.progress_update_speed_min_observations,
         );
         let completion_tracker = Arc::new(CompletionTracker::new(progress.clone()));
 
         let client = create_remote_client(&config, &session_id, dry_run).await?;
 
-        let shard_interface = SessionShardInterface::new(&runtime, config.clone(), client.clone(), dry_run).await?;
+        let shard_interface = SessionShardInterface::new(&ctx, config.clone(), client.clone(), dry_run).await?;
 
         Ok(Arc::new(Self {
-            runtime,
+            ctx,
             shard_interface,
             client,
             completion_tracker,
@@ -116,8 +116,8 @@ impl FileUploadSession {
             let updater = self.progress.new_item(UniqueID::new(), file_name.clone());
             let file_id = self.completion_tracker.register_new_file(updater, Some(file_size));
 
-            let ingestion_concurrency_limiter = self.runtime.common.file_ingestion_semaphore.clone();
-            let ingestion_block_size = *self.runtime.config.data.ingestion_block_size;
+            let ingestion_concurrency_limiter = self.ctx.common.file_ingestion_semaphore.clone();
+            let ingestion_block_size = *self.ctx.config.data.ingestion_block_size;
             let session = self.clone();
 
             cleaning_tasks.push(tokio::spawn(async move {
@@ -247,9 +247,9 @@ impl FileUploadSession {
         let (id, cleaner) = self.start_clean(Some(tracking_name), Some(file_size), sha256)?;
 
         let session = self.clone();
-        let threadpool = self.runtime.threadpool.clone();
-        let semaphore = self.runtime.common.file_ingestion_semaphore.clone();
-        let handle = threadpool.spawn(async move {
+        let runtime = self.ctx.runtime.clone();
+        let semaphore = self.ctx.common.file_ingestion_semaphore.clone();
+        let handle = runtime.spawn(async move {
             let _permit = semaphore.acquire().await?;
             Self::feed_file_to_cleaner(&session, cleaner, &file_path).await
         });
@@ -269,9 +269,9 @@ impl FileUploadSession {
         self.check_not_finalized()?;
         let (id, mut cleaner) = self.start_clean(tracking_name, Some(bytes.len() as u64), sha256)?;
 
-        let threadpool = self.runtime.threadpool.clone();
-        let semaphore = self.runtime.common.file_ingestion_semaphore.clone();
-        let handle = threadpool.spawn(async move {
+        let runtime = self.ctx.runtime.clone();
+        let semaphore = self.ctx.common.file_ingestion_semaphore.clone();
+        let handle = runtime.spawn(async move {
             let _permit = semaphore.acquire().await?;
             cleaner.add_data(&bytes).await?;
             cleaner.finish().await
@@ -287,7 +287,7 @@ impl FileUploadSession {
     ) -> Result<(XetFileInfo, DeduplicationMetrics)> {
         let mut reader = File::open(file_path)?;
         let filesize = reader.metadata()?.len();
-        let mut buffer = vec![0u8; u64::min(filesize, *_session.runtime.config.data.ingestion_block_size) as usize];
+        let mut buffer = vec![0u8; u64::min(filesize, *_session.ctx.config.data.ingestion_block_size) as usize];
 
         loop {
             let n = reader.read(&mut buffer)?;
@@ -347,10 +347,10 @@ impl FileUploadSession {
 
         // Serialize the object; this can be relatively expensive, so run it on a compute thread.
         // XORBs are sent without footer - the server/client reconstructs it from chunk data.
-        let threadpool = self.runtime.threadpool.clone();
-        let compression_policy = self.runtime.config.xorb.compression_policy.clone();
-        let compression_scheme_retest_interval = self.runtime.config.xorb.compression_scheme_retest_interval;
-        let xorb_obj = threadpool
+        let runtime = self.ctx.runtime.clone();
+        let compression_policy = self.ctx.config.xorb.compression_policy.clone();
+        let compression_scheme_retest_interval = self.ctx.config.xorb.compression_scheme_retest_interval;
+        let xorb_obj = runtime
             .spawn_blocking(move || {
                 SerializedXorbObject::from_xorb(
                     xorb,
@@ -363,7 +363,7 @@ impl FileUploadSession {
 
         let session = self.clone();
         let upload_permit = self.client.acquire_upload_permit().await?;
-        let cas_prefix = self.runtime.config.data.default_prefix.clone();
+        let cas_prefix = self.ctx.config.data.default_prefix.clone();
         let completion_tracker = self.completion_tracker.clone();
         let xorb_hash = xorb_obj.hash;
         let raw_num_bytes = xorb_obj.raw_num_bytes;
@@ -614,13 +614,13 @@ mod tests {
     use std::path::Path;
     use std::sync::{Arc, OnceLock};
 
-    use xet_runtime::core::XetRuntime;
+    use xet_runtime::core::XetContext;
 
     use crate::processing::{FileDownloadSession, FileUploadSession, XetFileInfo};
 
-    fn get_xet_context() -> Arc<XetRuntime> {
-        static CTX: OnceLock<Arc<XetRuntime>> = OnceLock::new();
-        CTX.get_or_init(|| Arc::new(XetRuntime::default().expect("Error starting multithreaded runtime.")))
+    fn get_xet_context() -> Arc<XetContext> {
+        static CTX: OnceLock<Arc<XetContext>> = OnceLock::new();
+        CTX.get_or_init(|| Arc::new(XetContext::default().expect("Error starting multithreaded runtime.")))
             .clone()
     }
 
@@ -640,7 +640,7 @@ mod tests {
                 .unwrap(),
         );
 
-        let runtime = XetRuntime::default().unwrap();
+        let runtime = XetContext::default().unwrap();
         let upload_session = FileUploadSession::new(TranslatorConfig::local_config(&runtime, cas_path).unwrap().into())
             .await
             .unwrap();
@@ -672,7 +672,7 @@ mod tests {
 
         let xet_file = serde_json::from_str::<XetFileInfo>(&input).unwrap();
 
-        let runtime = XetRuntime::default().unwrap();
+        let runtime = XetContext::default().unwrap();
         let config = TranslatorConfig::local_config(&runtime, cas_path).unwrap();
         let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
@@ -693,7 +693,7 @@ mod tests {
         let runtime = get_xet_context();
 
         runtime
-            .threadpool
+            .runtime
             .clone()
             .bridge_sync(async move {
                 let cas_path = temp.path().join("cas");
@@ -725,12 +725,12 @@ mod tests {
         let runtime = get_xet_context();
 
         runtime
-            .threadpool
+            .runtime
             .clone()
             .bridge_sync(async move {
                 let cas_path = temp.path().join("cas");
 
-                let session_runtime = XetRuntime::default().unwrap();
+                let session_runtime = XetContext::default().unwrap();
                 let upload_session =
                     FileUploadSession::new(TranslatorConfig::local_config(&session_runtime, &cas_path).unwrap().into())
                         .await

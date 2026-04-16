@@ -5,7 +5,7 @@ use tracing::{Instrument, Span, info_span, instrument};
 use xet_client::cas_client::auth::TokenRefresher;
 use xet_client::hub_client::{BearerCredentialHelper, CredentialHelper, HubClient, Operation, RepoInfo};
 use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
-use xet_runtime::core::XetRuntime;
+use xet_runtime::core::XetContext;
 use xet_runtime::core::par_utils::run_constrained;
 
 use super::super::data_client::{clean_file, default_config};
@@ -37,7 +37,7 @@ pub async fn migrate_with_external_runtime(
     let cred_helper = BearerCredentialHelper::new(hub_token.to_owned(), "");
     let mut headers = header::HeaderMap::new();
     headers.insert(header::USER_AGENT, header::HeaderValue::from_static(USER_AGENT));
-    let runtime = XetRuntime::default()?;
+    let runtime = XetContext::default()?;
     let hub_client = HubClient::new(
         runtime.clone(),
         hub_endpoint,
@@ -77,7 +77,7 @@ pub async fn migrate_files_impl(
     let mut headers = http::HeaderMap::new();
     headers.insert(http::header::USER_AGENT, http::HeaderValue::from_static(USER_AGENT));
 
-    let runtime = XetRuntime::default()?;
+    let runtime = XetContext::default()?;
     let config = default_config(
         &runtime,
         cas,
@@ -90,7 +90,7 @@ pub async fn migrate_files_impl(
     let num_workers = if sequential {
         1
     } else {
-        runtime.threadpool.num_worker_threads()
+        runtime.runtime.num_worker_threads()
     };
     let processor = if dry_run {
         FileUploadSession::dry_run(config.into()).await?

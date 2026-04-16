@@ -38,10 +38,9 @@ pub(super) async fn create_translator_config(
     } = auth_options;
 
     let token_refresher: Option<Arc<dyn TokenRefresher>> = if let Some((url, token_refresh_headers)) = token_refresh {
-        let client =
-            build_http_client(&session.inner.runtime, &session_id, None, Some(Arc::new(token_refresh_headers)))?;
+        let client = build_http_client(&session.inner.ctx, &session_id, None, Some(Arc::new(token_refresh_headers)))?;
         let direct_route_refresher =
-            DirectRefreshRouteTokenRefresher::new(session.inner.runtime.clone(), url, client, None);
+            DirectRefreshRouteTokenRefresher::new(session.inner.ctx.clone(), url, client, None);
 
         if endpoint.is_none() {
             let jwt_info = direct_route_refresher.get_cas_jwt().await?;
@@ -57,10 +56,10 @@ pub(super) async fn create_translator_config(
         None
     };
 
-    let endpoint = endpoint.unwrap_or_else(|| session.inner.runtime.config.data.default_cas_endpoint.clone());
+    let endpoint = endpoint.unwrap_or_else(|| session.inner.ctx.config.data.default_cas_endpoint.clone());
 
     let mut config = xet_data::processing::data_client::default_config(
-        &session.inner.runtime,
+        &session.inner.ctx,
         endpoint,
         token_info,
         token_refresher,

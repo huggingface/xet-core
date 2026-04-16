@@ -20,7 +20,7 @@ use tracing::debug;
 use xet_pkg::XetError;
 use xet_pkg::legacy::progress_tracking::TrackingProgressUpdater;
 use xet_pkg::legacy::{Sha256Policy, XetFileInfo, data_client};
-use xet_runtime::core::{XetRuntime, file_handle_limits};
+use xet_runtime::core::{XetContext, file_handle_limits};
 
 use crate::logging::init_logging;
 use crate::progress_update::WrappedProgressUpdater;
@@ -328,11 +328,11 @@ pub fn force_sigint_shutdown() -> PyResult<()> {
 
 fn try_parse_progress_updaters(
     funcs: Vec<Py<PyAny>>,
-    runtime: Arc<XetRuntime>,
+    ctx: Arc<XetContext>,
 ) -> PyResult<Vec<Arc<dyn TrackingProgressUpdater>>> {
     let mut updaters = Vec::with_capacity(funcs.len());
     for updater_func in funcs {
-        let wrapped = Arc::new(WrappedProgressUpdater::new(updater_func, runtime.clone())?);
+        let wrapped = Arc::new(WrappedProgressUpdater::new(updater_func, ctx.clone())?);
         updaters.push(wrapped as Arc<dyn TrackingProgressUpdater>);
     }
     Ok(updaters)

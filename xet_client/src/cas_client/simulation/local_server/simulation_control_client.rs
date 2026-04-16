@@ -7,7 +7,7 @@ use bytes::Bytes;
 use http::header::HeaderMap;
 use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::xorb_object::XorbObject;
-use xet_runtime::core::XetRuntime;
+use xet_runtime::core::XetContext;
 
 use super::simulation_types::{
     FetchTermDataRequest, FetchTermDataResponse, FileShardsEntry, FileSizeResponse, XorbExistsResponse,
@@ -38,7 +38,7 @@ pub struct SimulationControlClient {
 impl SimulationControlClient {
     /// Creates a new client connected to the given server endpoint URL.
     pub fn new(endpoint: &str) -> Self {
-        let runtime = XetRuntime::default().expect("XetRuntime::new");
+        let runtime = XetContext::default().expect("XetContext::new");
         let mut headers = HeaderMap::new();
         headers.insert(http::header::USER_AGENT, http::header::HeaderValue::from_static("simulation-control-client"));
         let remote_client =

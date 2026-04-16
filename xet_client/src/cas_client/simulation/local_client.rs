@@ -25,7 +25,7 @@ use xet_core_structures::metadata_shard::xorb_structs::MDBXorbInfo;
 use xet_core_structures::metadata_shard::{MDBShardFile, ShardFileManager};
 use xet_core_structures::serialization_utils::read_u32;
 use xet_core_structures::xorb_object::{SerializedXorbObject, XorbObject};
-use xet_runtime::core::{XetCommon, XetRuntime};
+use xet_runtime::core::{XetCommon, XetContext};
 #[cfg(feature = "fd-track")]
 use xet_runtime::fd_diagnostics::{report_fd_count, track_fd_scope};
 use xet_runtime::file_utils::SafeFileCreator;
@@ -166,21 +166,21 @@ pub struct LocalClient {
 impl LocalClient {
     /// Create a local client hosted in a temporary directory for testing.
     /// This is an async function to allow use with current-thread tokio runtime.
-    pub async fn temporary(runtime: XetRuntime) -> Result<Arc<Self>> {
+    pub async fn temporary(ctx: XetContext) -> Result<Arc<Self>> {
         let tmp_dir = TempDir::new().unwrap();
         let path = tmp_dir.path().to_owned();
-        let s = Self::new_internal(runtime, path, Some(tmp_dir)).await?;
+        let s = Self::new_internal(ctx, path, Some(tmp_dir)).await?;
         Ok(Arc::new(s))
     }
 
     /// Create a local client hosted in a directory.  Effectively, this directory
     /// is the CAS endpoint and persists across instances of LocalClient.
-    pub async fn new(runtime: XetRuntime, path: impl AsRef<Path>) -> Result<Arc<Self>> {
+    pub async fn new(ctx: XetContext, path: impl AsRef<Path>) -> Result<Arc<Self>> {
         let path = path.as_ref().to_owned();
-        Ok(Arc::new(Self::new_internal(runtime, path, None).await?))
+        Ok(Arc::new(Self::new_internal(ctx, path, None).await?))
     }
 
-    async fn new_internal(runtime: XetRuntime, path: impl AsRef<Path>, tmp_dir: Option<TempDir>) -> Result<Self> {
+    async fn new_internal(ctx: XetContext, path: impl AsRef<Path>, tmp_dir: Option<TempDir>) -> Result<Self> {
         let base_dir = std::path::absolute(path)?;
         if !base_dir.exists() {
             std::fs::create_dir_all(&base_dir)?;
@@ -205,7 +205,7 @@ impl LocalClient {
         }
 
         let db_path = base_dir.join("global_dedup_lookup.redb");
-        let db_cache = get_db_cache(&runtime.common);
+        let db_cache = get_db_cache(&ctx.common);
         let db = get_or_open_db(&db_cache, &db_path)
             .map_err(|e| ClientError::Other(format!("Error opening redb database: {e}")))?;
         #[cfg(feature = "fd-track")]
@@ -220,7 +220,7 @@ impl LocalClient {
         }
 
         // Open / set up the shard lookup
-        let shard_manager = ShardFileManager::new_in_session_directory(&runtime, shard_dir.clone(), true).await?;
+        let shard_manager = ShardFileManager::new_in_session_directory(&ctx, shard_dir.clone(), true).await?;
         #[cfg(feature = "fd-track")]
         report_fd_count("LocalClient::new_internal after shard manager init");
 
@@ -231,7 +231,7 @@ impl LocalClient {
             shard_manager,
             xorb_dir,
             shard_dir,
-            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload(runtime, "local_uploads"),
+            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload(ctx, "local_uploads"),
             url_expiration_ms: AtomicU64::new(u64::MAX),
             global_dedup_expiration_secs: AtomicU64::new(0),
             random_ms_delay_window: (AtomicU64::new(0), AtomicU64::new(0)),
@@ -1374,13 +1374,13 @@ mod tests {
         ChunkSize, build_and_verify_xorb_object, build_raw_xorb,
     };
     use xet_runtime::config::XetConfig;
-    use xet_runtime::core::XetRuntime;
+    use xet_runtime::core::XetContext;
 
     use super::*;
 
-    fn test_runtime() -> XetRuntime {
+    fn test_runtime() -> XetContext {
         let config = XetConfig::new();
-        XetRuntime::from_external(tokio::runtime::Handle::current(), config)
+        XetContext::from_external(tokio::runtime::Handle::current(), config)
     }
     use crate::cas_client::simulation::DeletionControlableClient;
     use crate::cas_client::simulation::client_testing_utils::ClientTestingUtils;

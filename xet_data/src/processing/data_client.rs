@@ -9,7 +9,7 @@ use tracing::{Instrument, Span, info_span, instrument};
 use ulid::Ulid;
 use xet_client::cas_client::auth::{AuthConfig, TokenRefresher};
 use xet_core_structures::merklehash::MerkleHash;
-use xet_runtime::core::XetRuntime;
+use xet_runtime::core::XetContext;
 use xet_runtime::core::par_utils::run_constrained_with_semaphore;
 
 use super::configurations::{SessionContext, TranslatorConfig};
@@ -19,7 +19,7 @@ use crate::deduplication::{Chunker, DeduplicationMetrics};
 use crate::error::Result;
 
 pub fn default_config(
-    runtime: &XetRuntime,
+    ctx: &XetContext,
     endpoint: String,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
@@ -36,7 +36,7 @@ pub fn default_config(
         session_id: Some(Ulid::new().to_string()),
     };
 
-    TranslatorConfig::new(runtime, session)
+    TranslatorConfig::new(ctx, session)
 }
 
 #[instrument(skip_all, name = "clean_bytes", fields(bytes.len = bytes.len()))]
@@ -62,7 +62,7 @@ pub async fn clean_file(
     let span = Span::current();
     span.record("file.name", filename.as_ref().to_str());
     span.record("file.len", filesize);
-    let mut buffer = vec![0u8; u64::min(filesize, *processor.runtime.config.data.ingestion_block_size) as usize];
+    let mut buffer = vec![0u8; u64::min(filesize, *processor.ctx.config.data.ingestion_block_size) as usize];
 
     let (_id, mut handle) =
         processor.start_clean(Some(filename.as_ref().to_string_lossy().into()), Some(filesize), sha256_policy)?;
@@ -100,7 +100,7 @@ pub async fn clean_file(
 /// - Verify that downloaded files are correctly reassembled
 /// - Check if a file needs to be uploaded (by comparing hashes)
 /// - Generate cache keys for local file operations
-fn hash_single_file(runtime: XetRuntime, filename: String, buffer_size: usize) -> Result<XetFileInfo> {
+fn hash_single_file(ctx: XetContext, filename: String, buffer_size: usize) -> Result<XetFileInfo> {
     let mut reader = File::open(&filename)?;
     let filesize = reader.metadata()?.len();
 
@@ -109,7 +109,7 @@ fn hash_single_file(runtime: XetRuntime, filename: String, buffer_size: usize) -
     let mut chunk_hashes: Vec<(MerkleHash, u64)> = Vec::new();
 
     loop {
-        runtime.check_sigint_shutdown()?;
+        ctx.check_sigint_shutdown()?;
 
         let bytes_read = reader.read(&mut buffer)?;
         if bytes_read == 0 {
@@ -159,17 +159,17 @@ fn hash_single_file(runtime: XetRuntime, filename: String, buffer_size: usize) -
 /// - No authentication or server connection required
 /// - Pure local computation
 #[instrument(skip_all, name = "data_client::hash_files", fields(num_files=file_paths.len()))]
-pub async fn hash_files_async(runtime: &XetRuntime, file_paths: Vec<String>) -> Result<Vec<XetFileInfo>> {
-    let threadpool = runtime.threadpool.clone();
-    let semaphore = runtime.common.file_ingestion_semaphore.clone();
-    let buffer_size = *runtime.config.data.ingestion_block_size as usize;
+pub async fn hash_files_async(ctx: &XetContext, file_paths: Vec<String>) -> Result<Vec<XetFileInfo>> {
+    let runtime = ctx.runtime.clone();
+    let semaphore = ctx.common.file_ingestion_semaphore.clone();
+    let buffer_size = *ctx.config.data.ingestion_block_size as usize;
 
     let hash_futures = file_paths.into_iter().map(|file_path| {
-        let threadpool = threadpool.clone();
         let runtime = runtime.clone();
+        let ctx = ctx.clone();
         async move {
-            threadpool
-                .spawn_blocking(move || hash_single_file(runtime, file_path, buffer_size))
+            runtime
+                .spawn_blocking(move || hash_single_file(ctx, file_path, buffer_size))
                 .await
                 .map_err(|e| std::io::Error::other(e.to_string()))?
         }
@@ -186,7 +186,7 @@ mod tests {
     use dirs::home_dir;
     use serial_test::serial;
     use tempfile::tempdir;
-    use xet_runtime::core::XetRuntime;
+    use xet_runtime::core::XetContext;
     use xet_runtime::utils::EnvVarGuard;
 
     use super::*;
@@ -198,7 +198,7 @@ mod tests {
         let _hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let runtime = XetRuntime::default().unwrap();
+        let runtime = XetContext::default().unwrap();
         let result = default_config(&runtime, endpoint, None, None, None);
 
         assert!(result.is_ok());
@@ -216,7 +216,7 @@ mod tests {
         let hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir_hf_home.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let runtime = XetRuntime::default().unwrap();
+        let runtime = XetContext::default().unwrap();
         let result = default_config(&runtime, endpoint, None, None, None);
 
         assert!(result.is_ok());
@@ -230,7 +230,7 @@ mod tests {
         let _hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let runtime = XetRuntime::default().unwrap();
+        let runtime = XetContext::default().unwrap();
         let result = default_config(&runtime, endpoint, None, None, None);
 
         assert!(result.is_ok());
@@ -245,7 +245,7 @@ mod tests {
         let _hf_xet_cache_guard = EnvVarGuard::set("HF_XET_CACHE", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let runtime = XetRuntime::default().unwrap();
+        let runtime = XetContext::default().unwrap();
         let result = default_config(&runtime, endpoint, None, None, None);
 
         assert!(result.is_ok());
@@ -257,7 +257,7 @@ mod tests {
     #[serial(default_config_env)]
     fn test_default_config_without_env_vars() {
         let endpoint = "http://localhost:8080".to_string();
-        let runtime = XetRuntime::default().unwrap();
+        let runtime = XetContext::default().unwrap();
         let result = default_config(&runtime, endpoint, None, None, None);
 
         let expected = home_dir().unwrap().join(".cache").join("huggingface").join("xet");
@@ -278,7 +278,7 @@ mod tests {
         std::fs::write(&file_path, b"").unwrap();
 
         let buffer_size = 8 * 1024 * 1024; // 8MB
-        let runtime = XetRuntime::default().unwrap();
+        let runtime = XetContext::default().unwrap();
         let result = hash_single_file(runtime, file_path.to_str().unwrap().to_string(), buffer_size);
         assert!(result.is_ok());
 
@@ -295,7 +295,7 @@ mod tests {
         std::fs::write(&file_path, content).unwrap();
 
         let buffer_size = 8 * 1024 * 1024; // 8MB
-        let runtime = XetRuntime::default().unwrap();
+        let runtime = XetContext::default().unwrap();
         let result = hash_single_file(runtime, file_path.to_str().unwrap().to_string(), buffer_size);
         assert!(result.is_ok());
 
@@ -317,7 +317,7 @@ mod tests {
         std::fs::write(&file_path, &content).unwrap();
 
         let file_path_str = file_path.to_str().unwrap().to_string();
-        let runtime = XetRuntime::default().unwrap();
+        let runtime = XetContext::default().unwrap();
 
         // Hash with 8MB buffer size
         let result1 = hash_single_file(runtime.clone(), file_path_str.clone(), 8 * 1024 * 1024);
@@ -338,7 +338,7 @@ mod tests {
     #[tokio::test]
     async fn test_hash_file_not_found() {
         let buffer_size = 8 * 1024 * 1024; // 8MB
-        let runtime = XetRuntime::default().unwrap();
+        let runtime = XetContext::default().unwrap();
         let result = hash_single_file(runtime, "/nonexistent/file.txt".to_string(), buffer_size);
         assert!(result.is_err());
     }
@@ -358,7 +358,7 @@ mod tests {
             file2_path.to_str().unwrap().to_string(),
         ];
 
-        let runtime = XetRuntime::default().unwrap();
+        let runtime = XetContext::default().unwrap();
         let result = hash_files_async(&runtime, file_paths).await;
         assert!(result.is_ok());
 
@@ -384,7 +384,7 @@ mod tests {
         std::fs::write(&file_path, &content).unwrap();
 
         let file_path_str = file_path.to_str().unwrap().to_string();
-        let runtime = XetRuntime::default().unwrap();
+        let runtime = XetContext::default().unwrap();
 
         // Hash with 8MB buffer size - file is exactly 2x buffer size
         let result1 = hash_single_file(runtime.clone(), file_path_str.clone(), 8 * 1024 * 1024);

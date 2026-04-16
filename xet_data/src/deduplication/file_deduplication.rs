@@ -7,7 +7,7 @@ use xet_core_structures::metadata_shard::file_structs::{
     FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, FileVerificationEntry, MDBFileInfo,
 };
 use xet_core_structures::metadata_shard::hash_is_global_dedup_eligible;
-use xet_runtime::core::XetRuntime;
+use xet_runtime::core::XetContext;
 
 use super::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use super::data_aggregator::DataAggregator;
@@ -19,7 +19,7 @@ use crate::progress_tracking::upload_tracking::FileXorbDependency;
 
 pub struct FileDeduper<DataInterfaceType: DeduplicationDataInterface> {
     #[cfg_attr(not(feature = "simulation"), allow(dead_code))]
-    runtime: XetRuntime,
+    ctx: XetContext,
 
     data_mng: DataInterfaceType,
 
@@ -59,9 +59,9 @@ pub struct FileDeduper<DataInterfaceType: DeduplicationDataInterface> {
 }
 
 impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceType> {
-    pub fn new(data_manager: DataInterfaceType, file_id: u64, runtime: XetRuntime) -> Self {
+    pub fn new(data_manager: DataInterfaceType, file_id: u64, ctx: XetContext) -> Self {
         Self {
-            runtime: runtime.clone(),
+            ctx: ctx.clone(),
             data_mng: data_manager,
             file_id,
             new_data: Vec::new(),
@@ -70,7 +70,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
             chunk_hashes: Vec::new(),
             file_info: Vec::new(),
             internally_referencing_entries: Vec::new(),
-            defrag_tracker: DefragPrevention::new(&runtime),
+            defrag_tracker: DefragPrevention::new(&ctx),
             min_spacing_between_global_dedup_queries: 0,
             next_chunk_index_eligible_for_global_dedup_query: 0,
             deduplication_metrics: DeduplicationMetrics::default(),

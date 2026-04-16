@@ -1,18 +1,18 @@
 use sha2::{Digest, Sha256 as sha2Sha256};
 use tokio::task::{JoinError, JoinHandle};
 use xet_core_structures::metadata_shard::Sha256;
-use xet_runtime::core::XetRuntime;
+use xet_runtime::core::XetContext;
 
 /// Helper struct to generate a sha256 hash.
 #[derive(Debug)]
 pub(crate) struct Sha256Generator {
-    runtime: XetRuntime,
+    ctx: XetContext,
     hasher: Option<JoinHandle<Result<sha2Sha256, JoinError>>>,
 }
 
 impl Sha256Generator {
-    pub(crate) fn new(runtime: XetRuntime) -> Self {
-        Self { runtime, hasher: None }
+    pub(crate) fn new(ctx: XetContext) -> Self {
+        Self { ctx, hasher: None }
     }
 
     /// Complete the last block, then hand off the new chunks to the new hasher.
@@ -24,8 +24,8 @@ impl Sha256Generator {
 
         // The previous task returns the hasher; we consume that and pass it on.
         // Use the compute background thread for this process.
-        let threadpool = self.runtime.threadpool.clone();
-        self.hasher = Some(threadpool.spawn_blocking(move || {
+        let runtime = self.ctx.runtime.clone();
+        self.hasher = Some(runtime.spawn_blocking(move || {
             hasher.update(&new_data);
 
             Ok(hasher)
@@ -62,7 +62,7 @@ mod sha_tests {
 
     #[tokio::test]
     async fn test_sha_generation_builder() {
-        let mut sha_generator = Sha256Generator::new(xet_runtime::core::XetRuntime::default().unwrap());
+        let mut sha_generator = Sha256Generator::new(xet_runtime::core::XetContext::default().unwrap());
         sha_generator.update(TEST_DATA.as_bytes()).await.unwrap();
         let hash = sha_generator.finalize().await.unwrap();
 
@@ -71,7 +71,7 @@ mod sha_tests {
 
     #[tokio::test]
     async fn test_sha_generation_build_multiple_chunks() {
-        let mut sha_generator = Sha256Generator::new(xet_runtime::core::XetRuntime::default().unwrap());
+        let mut sha_generator = Sha256Generator::new(xet_runtime::core::XetContext::default().unwrap());
         let td = TEST_DATA.as_bytes();
         sha_generator.update(&td[0..4]).await.unwrap();
         sha_generator.update(&td[4..td.len()]).await.unwrap();
@@ -88,7 +88,7 @@ mod sha_tests {
         let mut rand_data = [0u8; 4096];
         rng().fill(&mut rand_data[..]);
 
-        let mut sha_generator = Sha256Generator::new(xet_runtime::core::XetRuntime::default().unwrap());
+        let mut sha_generator = Sha256Generator::new(xet_runtime::core::XetContext::default().unwrap());
 
         // Add in random chunks.
         let mut pos = 0;

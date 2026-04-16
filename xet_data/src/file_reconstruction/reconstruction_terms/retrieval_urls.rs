@@ -5,7 +5,7 @@ use tracing::{debug, info};
 use xet_client::cas_client::{Client, URLProvider};
 use xet_client::cas_types::{FileRange, HttpRange};
 use xet_core_structures::merklehash::MerkleHash;
-use xet_runtime::core::XetRuntime;
+use xet_runtime::core::XetContext;
 use xet_runtime::utils::UniqueId;
 
 use super::super::FileReconstructionError;
@@ -62,7 +62,7 @@ impl TermBlockRetrievalURLs {
     /// the new request will get a new URL.  
     pub async fn refresh_retrieval_urls(
         &self,
-        runtime: &XetRuntime,
+        ctx: &XetContext,
         client: Arc<dyn Client>,
         acquisition_id: UniqueId,
     ) -> Result<()> {
@@ -97,7 +97,7 @@ impl TermBlockRetrievalURLs {
 
         // Re-fetch the entire block to get fresh URLs, then verify the structure matches.
         let Some((returned_range, _transfer_bytes, file_terms)) =
-            retrieve_file_term_block(runtime, client, self.file_hash, self.byte_range).await?
+            retrieve_file_term_block(ctx, client, self.file_hash, self.byte_range).await?
         else {
             return Err(FileReconstructionError::CorruptedReconstruction(
                 "On URL refresh, the returned reconstruction was None.".to_owned(),
@@ -137,7 +137,7 @@ impl TermBlockRetrievalURLs {
 
 /// Provides download URLs for a xorb block, handling URL refresh on expiration.
 pub struct XorbURLProvider {
-    pub runtime: XetRuntime,
+    pub ctx: XetContext,
     pub client: Arc<dyn Client>,
     pub url_info: Arc<TermBlockRetrievalURLs>,
     pub xorb_block_index: usize,
@@ -155,7 +155,7 @@ impl URLProvider for XorbURLProvider {
 
     async fn refresh_url(&self) -> std::result::Result<(), xet_client::ClientError> {
         self.url_info
-            .refresh_retrieval_urls(&self.runtime, self.client.clone(), *self.last_acquisition_id.lock().await)
+            .refresh_retrieval_urls(&self.ctx, self.client.clone(), *self.last_acquisition_id.lock().await)
             .await
             .map_err(|e| xet_client::ClientError::Other(e.to_string()))
     }
@@ -169,7 +169,7 @@ mod tests {
     use xet_client::cas_client::{ClientTestingUtils, LocalClient, URLProvider};
     use xet_client::cas_types::{FileRange, HttpRange};
     use xet_core_structures::merklehash::MerkleHash;
-    use xet_runtime::core::XetRuntime;
+    use xet_runtime::core::XetContext;
     use xet_runtime::utils::UniqueId;
 
     use super::{TermBlockRetrievalURLs, XorbURLProvider};
@@ -196,7 +196,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_refresh_skipped_when_already_refreshed() {
-        let runtime = XetRuntime::default().unwrap();
+        let runtime = XetContext::default().unwrap();
         let (client, file_contents) = {
             let c = LocalClient::temporary(runtime.clone()).await.unwrap();
             let fc = c.upload_random_file(&[(1, (0, 3))], 64).await.unwrap();
@@ -237,7 +237,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_xorb_url_provider_retrieve_and_refresh() {
-        let runtime = XetRuntime::default().unwrap();
+        let runtime = XetContext::default().unwrap();
         let (client, file_contents) = {
             let c = LocalClient::temporary(runtime.clone()).await.unwrap();
             let fc = c.upload_random_file(&[(1, (0, 3))], 64).await.unwrap();
@@ -256,7 +256,7 @@ mod tests {
         let url_info = file_terms[0].url_info.clone();
 
         let provider = XorbURLProvider {
-            runtime: runtime.clone(),
+            ctx: runtime.clone(),
             client: dyn_client.clone(),
             url_info,
             xorb_block_index: 0,
