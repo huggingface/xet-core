@@ -54,8 +54,17 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<xet_pkg::xet_session::GroupProgressReport>()?;
     m.add_class::<xet_pkg::xet_session::ItemProgressReport>()?;
 
-    // ── Legacy types (kept for backward compatibility) ───────────────────────
+    // ── Legacy types and functions (kept for backward compatibility) ─────────
     m.add_class::<legacy::PyXetDownloadInfo>()?;
+    m.add_class::<legacy::PyXetUploadInfo>()?;
+    m.add_class::<legacy::PyPointerFile>()?;
+    m.add_class::<legacy::PyItemProgressUpdate>()?;
+    m.add_class::<legacy::PyTotalProgressUpdate>()?;
+    m.add_function(wrap_pyfunction!(legacy::upload_bytes, m)?)?;
+    m.add_function(wrap_pyfunction!(legacy::upload_files, m)?)?;
+    m.add_function(wrap_pyfunction!(legacy::hash_files, m)?)?;
+    m.add_function(wrap_pyfunction!(legacy::download_files, m)?)?;
+    m.add_function(wrap_pyfunction!(legacy::force_sigint_shutdown, m)?)?;
 
     // ── Exceptions ───────────────────────────────────────────────────────────
     xet_pkg::register_exceptions(m)?;
