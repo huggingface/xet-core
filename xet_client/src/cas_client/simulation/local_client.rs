@@ -952,7 +952,11 @@ impl super::DeletionControlableClient for LocalClient {
             return Ok(false);
         }
 
-        self.remove_file_entries_for_shard(hash)?;
+        if let Err(e) = self.remove_file_entries_for_shard(hash) {
+            let _ = std::fs::hard_link(&tmp_path, &path);
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(e);
+        }
         std::fs::remove_file(&tmp_path)?;
         Ok(true)
     }
