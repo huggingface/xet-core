@@ -19,7 +19,7 @@ use crate::progress_tracking::upload_tracking::FileXorbDependency;
 
 pub struct FileDeduper<DataInterfaceType: DeduplicationDataInterface> {
     #[cfg_attr(not(feature = "simulation"), allow(dead_code))]
-    ctx: XetRuntime,
+    runtime: XetRuntime,
 
     data_mng: DataInterfaceType,
 
@@ -59,9 +59,9 @@ pub struct FileDeduper<DataInterfaceType: DeduplicationDataInterface> {
 }
 
 impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceType> {
-    pub fn new(data_manager: DataInterfaceType, file_id: u64, ctx: XetRuntime) -> Self {
+    pub fn new(data_manager: DataInterfaceType, file_id: u64, runtime: XetRuntime) -> Self {
         Self {
-            ctx: ctx.clone(),
+            runtime: runtime.clone(),
             data_mng: data_manager,
             file_id,
             new_data: Vec::new(),
@@ -70,7 +70,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
             chunk_hashes: Vec::new(),
             file_info: Vec::new(),
             internally_referencing_entries: Vec::new(),
-            defrag_tracker: DefragPrevention::new(&ctx),
+            defrag_tracker: DefragPrevention::new(&runtime),
             min_spacing_between_global_dedup_queries: 0,
             next_chunk_index_eligible_for_global_dedup_query: 0,
             deduplication_metrics: DeduplicationMetrics::default(),
@@ -92,7 +92,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
 
         #[cfg(feature = "simulation")]
         let xorb_cut_bytes = self
-            .ctx
+            .runtime
             .config
             .xorb
             .simulation_max_bytes
@@ -102,7 +102,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
         let xorb_cut_bytes = *MAX_XORB_BYTES;
         #[cfg(feature = "simulation")]
         let xorb_cut_chunks = self
-            .ctx
+            .runtime
             .config
             .xorb
             .simulation_max_chunks

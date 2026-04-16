@@ -37,9 +37,9 @@ pub async fn migrate_with_external_runtime(
     let cred_helper = BearerCredentialHelper::new(hub_token.to_owned(), "");
     let mut headers = header::HeaderMap::new();
     headers.insert(header::USER_AGENT, header::HeaderValue::from_static(USER_AGENT));
-    let ctx = XetRuntime::default()?;
+    let runtime = XetRuntime::default()?;
     let hub_client = HubClient::new(
-        ctx.clone(),
+        runtime.clone(),
         hub_endpoint,
         RepoInfo::try_from(repo_type, repo_id)?,
         Some("main".to_owned()),
@@ -77,9 +77,9 @@ pub async fn migrate_files_impl(
     let mut headers = http::HeaderMap::new();
     headers.insert(http::header::USER_AGENT, http::HeaderValue::from_static(USER_AGENT));
 
-    let ctx = XetRuntime::default()?;
+    let runtime = XetRuntime::default()?;
     let config = default_config(
-        &ctx,
+        &runtime,
         cas,
         Some((jwt_info.access_token, jwt_info.exp)),
         Some(token_refresher),
@@ -90,7 +90,7 @@ pub async fn migrate_files_impl(
     let num_workers = if sequential {
         1
     } else {
-        ctx.threadpool.num_worker_threads()
+        runtime.threadpool.num_worker_threads()
     };
     let processor = if dry_run {
         FileUploadSession::dry_run(config.into()).await?

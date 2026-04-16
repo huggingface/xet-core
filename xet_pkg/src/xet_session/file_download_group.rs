@@ -400,17 +400,17 @@ mod tests {
     // finish() must block while download_file_to_path() holds the state lock.
     fn test_finish_blocked_while_download_registration_holds_state_lock() -> Result<()> {
         let session = XetSessionBuilder::new().build()?;
-        let runtime = session.inner.ctx.threadpool.clone();
+        let threadpool = session.inner.runtime.threadpool.clone();
         let group = session.new_file_download_group()?.build_blocking()?;
         let group_for_thread = group.clone();
-        let runtime_for_thread = runtime.clone();
+        let threadpool_for_thread = threadpool.clone();
 
         // Hold active_tasks write lock to block finish() drain.
         let guard = group.inner.active_tasks.write().unwrap();
 
         let (done_tx, done_rx) = mpsc::channel::<()>();
         let join_handle = std::thread::spawn(move || {
-            let _ = runtime_for_thread.bridge_sync(async move { group_for_thread.finish().await });
+            let _ = threadpool_for_thread.bridge_sync(async move { group_for_thread.finish().await });
             let _ = done_tx.send(());
         });
 
@@ -722,7 +722,7 @@ mod tests {
         tokio::time::sleep(
             session
                 .inner
-                .ctx
+                .runtime
                 .config
                 .data
                 .progress_update_interval
@@ -842,7 +842,7 @@ mod tests {
         futures::executor::block_on(async {
             let session = XetSessionBuilder::new().build().unwrap();
             let endpoint = format!("local://{}", temp.path().join("cas").display());
-            assert_eq!(session.inner.ctx.threadpool.mode(), RuntimeMode::Owned);
+            assert_eq!(session.inner.runtime.threadpool.mode(), RuntimeMode::Owned);
 
             let data = b"hello from futures executor";
             let file_info = {
@@ -883,7 +883,7 @@ mod tests {
         smol::block_on(async {
             let session = XetSessionBuilder::new().build().unwrap();
             let endpoint = format!("local://{}", temp.path().join("cas").display());
-            assert_eq!(session.inner.ctx.threadpool.mode(), RuntimeMode::Owned);
+            assert_eq!(session.inner.runtime.threadpool.mode(), RuntimeMode::Owned);
 
             let data = b"hello from smol executor";
             let file_info = {
@@ -924,7 +924,7 @@ mod tests {
         async_std::task::block_on(async {
             let session = XetSessionBuilder::new().build().unwrap();
             let endpoint = format!("local://{}", temp.path().join("cas").display());
-            assert_eq!(session.inner.ctx.threadpool.mode(), RuntimeMode::Owned);
+            assert_eq!(session.inner.runtime.threadpool.mode(), RuntimeMode::Owned);
 
             let data = b"hello from async-std executor";
             let file_info = {
@@ -1035,7 +1035,7 @@ mod tests {
         std::thread::sleep(
             session
                 .inner
-                .ctx
+                .runtime
                 .config
                 .data
                 .progress_update_interval
@@ -1125,7 +1125,7 @@ mod tests {
     // download_file_to_path_blocking returns WrongRuntimeMode on an External-mode session.
     async fn test_download_file_to_path_blocking_errors_in_external_mode() {
         let session = XetSessionBuilder::new().build().unwrap();
-        assert_eq!(session.inner.ctx.threadpool.mode(), RuntimeMode::External);
+        assert_eq!(session.inner.runtime.threadpool.mode(), RuntimeMode::External);
         let group = session.new_file_download_group().unwrap().build().await.unwrap();
         let file_info = XetFileInfo {
             hash: String::new(),
@@ -1147,7 +1147,7 @@ mod tests {
     // because tokio sets a thread-local runtime context that it detects and rejects.
     fn test_download_file_to_path_blocking_panics_in_async_context() {
         let session = XetSessionBuilder::new().build().unwrap();
-        assert_eq!(session.inner.ctx.threadpool.mode(), RuntimeMode::Owned);
+        assert_eq!(session.inner.runtime.threadpool.mode(), RuntimeMode::Owned);
         let group = session.new_file_download_group().unwrap().build_blocking().unwrap();
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         let file_info = XetFileInfo {

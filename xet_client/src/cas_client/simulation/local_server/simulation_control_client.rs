@@ -38,11 +38,11 @@ pub struct SimulationControlClient {
 impl SimulationControlClient {
     /// Creates a new client connected to the given server endpoint URL.
     pub fn new(endpoint: &str) -> Self {
-        let ctx = XetRuntime::default().expect("XetRuntime::new");
+        let runtime = XetRuntime::default().expect("XetRuntime::new");
         let mut headers = HeaderMap::new();
         headers.insert(http::header::USER_AGENT, http::header::HeaderValue::from_static("simulation-control-client"));
         let remote_client =
-            RemoteClient::new(ctx, endpoint, &None, "simulation-session", false, Some(Arc::new(headers)));
+            RemoteClient::new(runtime, endpoint, &None, "simulation-session", false, Some(Arc::new(headers)));
 
         Self {
             endpoint: endpoint.to_string(),

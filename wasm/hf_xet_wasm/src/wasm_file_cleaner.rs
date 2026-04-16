@@ -78,7 +78,7 @@ impl SingleFileCleaner {
             dedup_manager: FileDeduper::new(
                 UploadSessionDataManager::new(session.clone()),
                 file_id,
-                session.ctx.clone(),
+                session.runtime.clone(),
             ),
         }
     }
@@ -120,7 +120,7 @@ impl SingleFileCleaner {
             dedup_manager: FileDeduper::new(
                 UploadSessionDataManager::new(session.clone()),
                 file_id,
-                session.ctx.clone(),
+                session.runtime.clone(),
             ),
         }
     }

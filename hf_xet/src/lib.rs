@@ -14,7 +14,7 @@ use pyo3::exceptions::{PyKeyboardInterrupt, PyValueError};
 use pyo3::prelude::*;
 use pyo3::pyfunction;
 use rand::Rng;
-use runtime::{async_run, get_xet_context};
+use runtime::{async_run, get_or_init_runtime};
 use token_refresh::WrappedTokenRefresher;
 use tracing::debug;
 use xet_pkg::XetError;
@@ -112,9 +112,9 @@ pub fn upload_bytes(
     };
 
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
-    let ctx = get_xet_context().map_err(convert_xet_error)?;
+    let runtime = get_or_init_runtime().map_err(convert_xet_error)?;
     let updater = progress_updater
-        .map(|p| WrappedProgressUpdater::new(p, ctx.clone()))
+        .map(|p| WrappedProgressUpdater::new(p, runtime.clone()))
         .transpose()?
         .map(Arc::new);
     let x: u64 = rand::rng().random();
@@ -129,7 +129,7 @@ pub fn upload_bytes(
             file_contents.len(),
         );
         let out: Vec<PyXetUploadInfo> = data_client::upload_bytes_async(
-            &ctx,
+            &runtime,
             file_contents,
             sha256_policies,
             endpoint,
@@ -186,9 +186,9 @@ pub fn upload_files(
     };
 
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
-    let ctx = get_xet_context().map_err(convert_xet_error)?;
+    let runtime = get_or_init_runtime().map_err(convert_xet_error)?;
     let updater = progress_updater
-        .map(|p| WrappedProgressUpdater::new(p, ctx.clone()))
+        .map(|p| WrappedProgressUpdater::new(p, runtime.clone()))
         .transpose()?
         .map(Arc::new);
 
@@ -207,7 +207,7 @@ pub fn upload_files(
             if file_paths.len() > 3 { "..." } else { "." }
         );
         let out: Vec<PyXetUploadInfo> = data_client::upload_async(
-            &ctx,
+            &runtime,
             file_paths,
             sha256_policies,
             endpoint,
@@ -257,8 +257,8 @@ pub fn upload_files(
 #[pyo3(signature = (file_paths), text_signature = "(file_paths: List[str]) -> List[PyXetUploadInfo]")]
 pub fn hash_files(py: Python, file_paths: Vec<String>) -> PyResult<Vec<PyXetUploadInfo>> {
     async_run(py, async move {
-        let ctx = get_xet_context().map_err(convert_xet_error)?;
-        let out: Vec<PyXetUploadInfo> = data_client::hash_files_async(&ctx, file_paths)
+        let runtime = get_or_init_runtime().map_err(convert_xet_error)?;
+        let out: Vec<PyXetUploadInfo> = data_client::hash_files_async(&runtime, file_paths)
             .await
             .map_err(convert_xet_error)?
             .into_iter()
@@ -282,9 +282,9 @@ pub fn download_files(
 ) -> PyResult<Vec<String>> {
     let file_infos: Vec<_> = files.into_iter().map(<(XetFileInfo, DestinationPath)>::from).collect();
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
-    let ctx = get_xet_context().map_err(convert_xet_error)?;
+    let runtime = get_or_init_runtime().map_err(convert_xet_error)?;
     let updaters = progress_updater
-        .map(|f| try_parse_progress_updaters(f, ctx.clone()))
+        .map(|f| try_parse_progress_updaters(f, runtime.clone()))
         .transpose()?;
 
     // Convert Python dict -> Rust HashMap -> HeaderMap and merge with USER_AGENT
@@ -302,7 +302,7 @@ pub fn download_files(
             if file_infos.len() > 3 { "..." } else { "." }
         );
         let out: Vec<String> = data_client::download_async(
-            &ctx,
+            &runtime,
             file_infos,
             endpoint,
             token_info,
@@ -328,11 +328,11 @@ pub fn force_sigint_shutdown() -> PyResult<()> {
 
 fn try_parse_progress_updaters(
     funcs: Vec<Py<PyAny>>,
-    ctx: Arc<XetRuntime>,
+    runtime: Arc<XetRuntime>,
 ) -> PyResult<Vec<Arc<dyn TrackingProgressUpdater>>> {
     let mut updaters = Vec::with_capacity(funcs.len());
     for updater_func in funcs {
-        let wrapped = Arc::new(WrappedProgressUpdater::new(updater_func, ctx.clone())?);
+        let wrapped = Arc::new(WrappedProgressUpdater::new(updater_func, runtime.clone())?);
         updaters.push(wrapped as Arc<dyn TrackingProgressUpdater>);
     }
     Ok(updaters)

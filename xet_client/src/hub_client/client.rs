@@ -36,7 +36,7 @@ impl Operation {
 }
 
 pub struct HubClient {
-    ctx: XetRuntime,
+    runtime: XetRuntime,
     endpoint: String,
     repo_info: RepoInfo,
     reference: Option<String>,
@@ -46,7 +46,7 @@ pub struct HubClient {
 
 impl HubClient {
     pub fn new(
-        ctx: XetRuntime,
+        runtime: XetRuntime,
         endpoint: &str,
         repo_info: RepoInfo,
         reference: Option<String>,
@@ -55,11 +55,11 @@ impl HubClient {
         custom_headers: Option<HeaderMap>,
     ) -> Result<Self> {
         Ok(HubClient {
-            ctx: ctx.clone(),
+            runtime: runtime.clone(),
             endpoint: endpoint.to_owned(),
             repo_info,
             reference,
-            client: build_http_client(&ctx, session_id, None, custom_headers.map(|ch| ch.into()))?,
+            client: build_http_client(&runtime, session_id, None, custom_headers.map(|ch| ch.into()))?,
             cred_helper,
         })
     }
@@ -92,7 +92,7 @@ impl HubClient {
         let client = self.client.clone();
         let cred_helper = self.cred_helper.clone();
 
-        let info: CasJWTInfo = RetryWrapper::new(self.ctx.clone(), "xet-token")
+        let info: CasJWTInfo = RetryWrapper::new(self.runtime.clone(), "xet-token")
             .run_and_extract_json(move || {
                 let url = url.clone();
                 let client = client.clone();
@@ -127,7 +127,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(header::USER_AGENT, HeaderValue::from_static("xtool"));
         let hub_client = HubClient::new(
-            XetRuntime::default().expect("ctx"),
+            XetRuntime::default().expect("runtime"),
             "https://huggingface.co",
             RepoInfo {
                 repo_type: HFRepoType::Model,
@@ -155,7 +155,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(header::USER_AGENT, HeaderValue::from_static("xtool"));
         let hub_client = HubClient::new(
-            XetRuntime::default().expect("ctx"),
+            XetRuntime::default().expect("runtime"),
             "https://huggingface.co",
             RepoInfo {
                 repo_type: HFRepoType::Model,
@@ -183,7 +183,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(header::USER_AGENT, HeaderValue::from_static("xtool"));
         let hub_client = HubClient::new(
-            XetRuntime::default().expect("ctx"),
+            XetRuntime::default().expect("runtime"),
             "https://huggingface.co",
             RepoInfo {
                 repo_type: HFRepoType::Model,

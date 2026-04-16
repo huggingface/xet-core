@@ -24,8 +24,8 @@ pub(crate) struct DefragPrevention {
 }
 
 impl DefragPrevention {
-    pub(crate) fn new(ctx: &XetRuntime) -> Self {
-        let d = &ctx.config.deduplication;
+    pub(crate) fn new(runtime: &XetRuntime) -> Self {
+        let d = &runtime.config.deduplication;
         Self {
             nranges_in_streaming_fragmentation_estimator: d.nranges_in_streaming_fragmentation_estimator,
             rolling_last_nranges: VecDeque::with_capacity(d.nranges_in_streaming_fragmentation_estimator),

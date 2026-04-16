@@ -28,7 +28,7 @@ static UPLOAD_CONCURRENCY: usize = 5;
 /// that succeeds or fails as a unit;  i.e. all files get uploaded on finalization, and all shards
 /// and xorbs needed to reconstruct those files are properly uploaded and registered.
 pub struct FileUploadSession {
-    pub(crate) ctx: XetRuntime,
+    pub(crate) runtime: XetRuntime,
 
     /// The configuration settings, if needed.
     pub(crate) config: Arc<TranslatorConfig>,
@@ -52,9 +52,9 @@ impl FileUploadSession {
             Err(_) => None,
         };
 
-        let ctx = XetRuntime::from_external(tokio::runtime::Handle::current(), XetConfig::new());
+        let runtime = XetRuntime::from_external(tokio::runtime::Handle::current(), XetConfig::new());
         let client = RemoteClient::new(
-            ctx.clone(),
+            runtime.clone(),
             &config.data_config.endpoint,
             &config.data_config.auth,
             &config.session_id,
@@ -66,7 +66,7 @@ impl FileUploadSession {
             Box::new(XorbUploaderSpawnParallel::new(client.clone(), &config.data_config.prefix, UPLOAD_CONCURRENCY));
 
         Self {
-            ctx,
+            runtime,
             session_shard: Mutex::new(MDBInMemoryShard::default()),
             xorb_uploader: Mutex::new(Some(xorb_uploader)),
             config,
@@ -137,7 +137,7 @@ impl FileUploadSession {
             xorb,
             self.config.data_config.compression,
             false,
-            self.ctx.config.xorb.compression_scheme_retest_interval,
+            self.runtime.config.xorb.compression_scheme_retest_interval,
         )?;
 
         let Some(ref mut xorb_uploader) = *self.xorb_uploader.lock().await else {

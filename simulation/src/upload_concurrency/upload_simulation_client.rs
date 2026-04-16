@@ -191,7 +191,7 @@ fn spawn_stats_reporter(
 
 /// Shared context for upload workers.
 struct UploadContext {
-    xet_ctx: XetRuntime,
+    runtime: XetRuntime,
     url: String,
     http_client: reqwest_middleware::ClientWithMiddleware,
     base_data: Bytes,
@@ -208,7 +208,7 @@ struct UploadContext {
 /// Spawns `UPLOAD_TASKS` concurrent upload workers into the given `JoinSet`.
 fn spawn_upload_tasks(join_set: &mut JoinSet<()>, ctx: &UploadContext) {
     for _ in 0..UPLOAD_TASKS {
-        let xet_ctx = ctx.xet_ctx.clone();
+        let runtime = ctx.runtime.clone();
         let concurrency_controller = ctx.concurrency_controller.clone();
         let http_client = ctx.http_client.clone();
         let url = ctx.url.clone();
@@ -250,7 +250,7 @@ fn spawn_upload_tasks(join_set: &mut JoinSet<()>, ctx: &UploadContext) {
                 let do_one_upload = async {
                     counters.retry_wrapper_calls.fetch_add(1, Ordering::Relaxed);
                     let request_start = Instant::now();
-                    let result = RetryWrapper::new(xet_ctx.clone(), "upload_benchmark")
+                    let result = RetryWrapper::new(runtime.clone(), "upload_benchmark")
                         .with_connection_permit(permit, Some(payload_size))
                         .run({
                             let http_client = http_client.clone();
@@ -315,8 +315,8 @@ async fn run_upload_clients_impl(
     let max_data_size = max_data_kb * 1024;
     let client_id = rand::rng().random_range(0..1000000000_u64);
 
-    let xet_ctx = XetRuntime::from_external(tokio::runtime::Handle::current(), XetConfig::new());
-    let http_client = build_http_client(&xet_ctx, "test_session", None, None)?;
+    let runtime = XetRuntime::from_external(tokio::runtime::Handle::current(), XetConfig::new());
+    let http_client = build_http_client(&runtime, "test_session", None, None)?;
 
     let duration_sec = repeat_duration_seconds.unwrap_or(u64::MAX);
     let client_params = serde_json::json!({
@@ -331,7 +331,7 @@ async fn run_upload_clients_impl(
     let params_path = output_dir.join(format!("client_parameters_{}.json", client_id));
     std::fs::write(&params_path, serde_json::to_string_pretty(&client_params)?)?;
 
-    let concurrency_controller = AdaptiveConcurrencyController::new_upload(xet_ctx.clone(), "test_uploads");
+    let concurrency_controller = AdaptiveConcurrencyController::new_upload(runtime.clone(), "test_uploads");
     let start_instant = Arc::new(Mutex::new(Instant::now()));
     let end_duration = Duration::from_secs(duration_sec);
     let counters = UploadCounters::new();
@@ -356,10 +356,10 @@ async fn run_upload_clients_impl(
     let url_base = base_url(server_addr);
     let url = format!("{}{}", url_base.trim_end_matches('/'), DUMMY_UPLOAD_PATH);
 
-    let upload_reporting_block_size = xet_ctx.config.client.upload_reporting_block_size;
+    let upload_reporting_block_size = runtime.config.client.upload_reporting_block_size;
 
     let upload_ctx = UploadContext {
-        xet_ctx,
+        runtime,
         url,
         http_client,
         base_data,

@@ -166,21 +166,21 @@ pub struct LocalClient {
 impl LocalClient {
     /// Create a local client hosted in a temporary directory for testing.
     /// This is an async function to allow use with current-thread tokio runtime.
-    pub async fn temporary(ctx: XetRuntime) -> Result<Arc<Self>> {
+    pub async fn temporary(runtime: XetRuntime) -> Result<Arc<Self>> {
         let tmp_dir = TempDir::new().unwrap();
         let path = tmp_dir.path().to_owned();
-        let s = Self::new_internal(ctx, path, Some(tmp_dir)).await?;
+        let s = Self::new_internal(runtime, path, Some(tmp_dir)).await?;
         Ok(Arc::new(s))
     }
 
     /// Create a local client hosted in a directory.  Effectively, this directory
     /// is the CAS endpoint and persists across instances of LocalClient.
-    pub async fn new(ctx: XetRuntime, path: impl AsRef<Path>) -> Result<Arc<Self>> {
+    pub async fn new(runtime: XetRuntime, path: impl AsRef<Path>) -> Result<Arc<Self>> {
         let path = path.as_ref().to_owned();
-        Ok(Arc::new(Self::new_internal(ctx, path, None).await?))
+        Ok(Arc::new(Self::new_internal(runtime, path, None).await?))
     }
 
-    async fn new_internal(ctx: XetRuntime, path: impl AsRef<Path>, tmp_dir: Option<TempDir>) -> Result<Self> {
+    async fn new_internal(runtime: XetRuntime, path: impl AsRef<Path>, tmp_dir: Option<TempDir>) -> Result<Self> {
         let base_dir = std::path::absolute(path)?;
         if !base_dir.exists() {
             std::fs::create_dir_all(&base_dir)?;
@@ -205,7 +205,7 @@ impl LocalClient {
         }
 
         let db_path = base_dir.join("global_dedup_lookup.redb");
-        let db_cache = get_db_cache(&ctx.common);
+        let db_cache = get_db_cache(&runtime.common);
         let db = get_or_open_db(&db_cache, &db_path)
             .map_err(|e| ClientError::Other(format!("Error opening redb database: {e}")))?;
         #[cfg(feature = "fd-track")]
@@ -220,7 +220,7 @@ impl LocalClient {
         }
 
         // Open / set up the shard lookup
-        let shard_manager = ShardFileManager::new_in_session_directory(&ctx, shard_dir.clone(), true).await?;
+        let shard_manager = ShardFileManager::new_in_session_directory(&runtime, shard_dir.clone(), true).await?;
         #[cfg(feature = "fd-track")]
         report_fd_count("LocalClient::new_internal after shard manager init");
 
@@ -231,7 +231,7 @@ impl LocalClient {
             shard_manager,
             xorb_dir,
             shard_dir,
-            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload(ctx, "local_uploads"),
+            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload(runtime, "local_uploads"),
             url_expiration_ms: AtomicU64::new(u64::MAX),
             global_dedup_expiration_secs: AtomicU64::new(0),
             random_ms_delay_window: (AtomicU64::new(0), AtomicU64::new(0)),
@@ -1378,7 +1378,7 @@ mod tests {
 
     use super::*;
 
-    fn test_ctx() -> XetRuntime {
+    fn test_runtime() -> XetRuntime {
         let config = XetConfig::new();
         XetRuntime::from_external(tokio::runtime::Handle::current(), config)
     }
@@ -1390,7 +1390,7 @@ mod tests {
     #[tokio::test]
     async fn test_common_client_suite() {
         crate::cas_client::simulation::client_unit_testing::test_client_functionality(|| async {
-            LocalClient::temporary(test_ctx()).await.unwrap()
+            LocalClient::temporary(test_runtime()).await.unwrap()
                 as std::sync::Arc<dyn crate::cas_client::simulation::DirectAccessClient>
         })
         .await;
@@ -1409,9 +1409,9 @@ mod tests {
         let link = tmp.path().join("link");
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
-        let ctx = test_ctx();
-        let c1 = LocalClient::new(ctx.clone(), &link).await.unwrap();
-        let c2 = LocalClient::new(ctx, &real).await.unwrap();
+        let runtime = test_runtime();
+        let c1 = LocalClient::new(runtime.clone(), &link).await.unwrap();
+        let c2 = LocalClient::new(runtime, &real).await.unwrap();
         assert!(Arc::ptr_eq(&c1.db, &c2.db));
     }
 
@@ -1422,7 +1422,7 @@ mod tests {
         let xorb_obj = build_and_verify_xorb_object(xorb, CompressionScheme::Auto);
         let hash = xorb_obj.hash;
 
-        let client = LocalClient::temporary(test_ctx()).await.unwrap();
+        let client = LocalClient::temporary(test_runtime()).await.unwrap();
         let permit = client.acquire_upload_permit().await.unwrap();
         client.upload_xorb("default", xorb_obj, None, permit).await.unwrap();
 
@@ -1543,7 +1543,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_url_expiration() {
         super::super::client_unit_testing::test_url_expiration_functionality(|| async {
-            LocalClient::temporary(test_ctx()).await.unwrap()
+            LocalClient::temporary(test_runtime()).await.unwrap()
                 as std::sync::Arc<dyn crate::cas_client::simulation::DirectAccessClient>
         })
         .await;
@@ -1552,7 +1552,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_api_delay() {
         super::super::client_unit_testing::test_api_delay_functionality(|| async {
-            LocalClient::temporary(test_ctx()).await.unwrap()
+            LocalClient::temporary(test_runtime()).await.unwrap()
                 as std::sync::Arc<dyn crate::cas_client::simulation::DirectAccessClient>
         })
         .await;
@@ -1561,7 +1561,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_global_dedup_shard_expiration() {
         super::super::client_unit_testing::test_global_dedup_shard_expiration_functionality(|| async {
-            LocalClient::temporary(test_ctx()).await.unwrap()
+            LocalClient::temporary(test_runtime()).await.unwrap()
                 as std::sync::Arc<dyn crate::cas_client::simulation::DirectAccessClient>
         })
         .await;
@@ -1570,7 +1570,7 @@ mod tests {
     #[tokio::test]
     async fn test_global_dedup_shard_expiration_stress() {
         super::super::client_unit_testing::test_global_dedup_shard_expiration_stress(|| async {
-            LocalClient::temporary(test_ctx()).await.unwrap()
+            LocalClient::temporary(test_runtime()).await.unwrap()
                 as std::sync::Arc<dyn crate::cas_client::simulation::DirectAccessClient>
         })
         .await;
@@ -1579,14 +1579,14 @@ mod tests {
     #[tokio::test]
     async fn test_deletion_suite() {
         super::super::deletion_unit_testing::test_deletion_functionality(|| async {
-            LocalClient::temporary(test_ctx()).await.unwrap()
+            LocalClient::temporary(test_runtime()).await.unwrap()
         })
         .await;
     }
 
     #[tokio::test]
     async fn test_verify_integrity_detects_missing_cas_block_reference() {
-        let client = LocalClient::temporary(test_ctx()).await.unwrap();
+        let client = LocalClient::temporary(test_runtime()).await.unwrap();
         client.upload_random_file(&[(3, (0, 3)), (4, (0, 2))], 2048).await.unwrap();
         client.verify_integrity().await.unwrap();
 
@@ -1601,7 +1601,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_verify_integrity_detects_invalid_chunk_range() {
-        let client = LocalClient::temporary(test_ctx()).await.unwrap();
+        let client = LocalClient::temporary(test_runtime()).await.unwrap();
         client.upload_random_file(&[(5, (0, 3))], 2048).await.unwrap();
         client.verify_integrity().await.unwrap();
 
@@ -1618,7 +1618,7 @@ mod tests {
     /// Verifies that delete_file_entry does not rewrite shard files (shard hashes remain stable).
     #[tokio::test]
     async fn test_delete_file_entry_does_not_rewrite_shards() {
-        let client = LocalClient::temporary(test_ctx()).await.unwrap();
+        let client = LocalClient::temporary(test_runtime()).await.unwrap();
         client.upload_random_file(&[(1, (0, 3))], 2048).await.unwrap();
 
         let shard_hashes_before: Vec<_> = client.shard_file_paths().unwrap().into_iter().map(|(h, _)| h).collect();
@@ -1641,7 +1641,7 @@ mod tests {
 
         let file_hash;
         {
-            let client = LocalClient::new(test_ctx(), &path).await.unwrap();
+            let client = LocalClient::new(test_runtime(), &path).await.unwrap();
             let file = client.upload_random_file(&[(1, (0, 3)), (2, (0, 2))], 2048).await.unwrap();
             file_hash = file.file_hash;
             assert!(!client.list_file_shard_entries().await.unwrap().is_empty());
@@ -1651,7 +1651,7 @@ mod tests {
         }
 
         {
-            let client = LocalClient::new(test_ctx(), &path).await.unwrap();
+            let client = LocalClient::new(test_runtime(), &path).await.unwrap();
             assert!(client.is_file_deleted(&file_hash), "Deletion status should persist across restart");
             assert!(
                 client.list_file_shard_entries().await.unwrap().is_empty(),
@@ -1664,7 +1664,7 @@ mod tests {
     /// in any shard but exists on disk should pass verify_integrity (dedup case).
     #[tokio::test]
     async fn test_verify_integrity_cross_shard_dedup_ok() {
-        let client = LocalClient::temporary(test_ctx()).await.unwrap();
+        let client = LocalClient::temporary(test_runtime()).await.unwrap();
         client.upload_random_file(&[(1, (0, 3))], 2048).await.unwrap();
         client.verify_integrity().await.unwrap();
 
@@ -1682,7 +1682,7 @@ mod tests {
     /// deleted files do not cause false integrity failures.
     #[tokio::test]
     async fn test_verify_integrity_skips_soft_deleted_files() {
-        let client = LocalClient::temporary(test_ctx()).await.unwrap();
+        let client = LocalClient::temporary(test_runtime()).await.unwrap();
         let deleted_file = client.upload_random_file(&[(1, (0, 3))], 2048).await.unwrap();
         let live_file = client.upload_random_file(&[(2, (0, 2))], 2048).await.unwrap();
         client.verify_integrity().await.unwrap();

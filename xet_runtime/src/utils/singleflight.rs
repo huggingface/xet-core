@@ -429,9 +429,9 @@ pub(crate) mod tests {
 
     #[test]
     fn test_simple_with_threadpool() {
-        let ctx = XetRuntime::default().unwrap();
+        let runtime = XetRuntime::default().unwrap();
         let g = Group::new();
-        let res = ctx
+        let res = runtime
             .threadpool
             .bridge_sync(async move { g.work("key", return_res()).await })
             .unwrap()
@@ -452,15 +452,15 @@ pub(crate) mod tests {
     #[cfg_attr(feature = "smoke-test", ignore)]
     fn test_multiple_threads_with_threadpool() {
         let times_called = Arc::new(AtomicU32::new(0));
-        let ctx = XetRuntime::default().unwrap();
+        let runtime = XetRuntime::default().unwrap();
         let g: Arc<Group<usize, ()>> = Arc::new(Group::new());
         let mut handlers: Vec<JoinHandle<(usize, bool)>> = Vec::new();
-        let rt = ctx.threadpool.clone();
+        let threadpool = runtime.threadpool.clone();
         let tasks = async move {
             for _ in 0..10 {
                 let g = g.clone();
                 let counter = times_called.clone();
-                handlers.push(rt.spawn(async move {
+                handlers.push(threadpool.spawn(async move {
                     let tup = g.work("key", expensive_fn(counter, RES)).await;
                     let res = tup.0;
                     let fn_response = res.unwrap();
@@ -480,7 +480,7 @@ pub(crate) mod tests {
             assert_eq!(1, num_callers);
             assert_eq!(1, times_called.load(Ordering::SeqCst));
         };
-        ctx.threadpool.bridge_sync(tasks).unwrap();
+        runtime.threadpool.bridge_sync(tasks).unwrap();
     }
 
     #[tokio::test]

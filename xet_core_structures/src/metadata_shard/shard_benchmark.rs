@@ -51,7 +51,7 @@ fn make_shard(size: u64, seed: &mut u64) -> MDBInMemoryShard {
 }
 
 async fn run_shard_benchmark(
-    ctx: &XetRuntime,
+    runtime: &XetRuntime,
     shard_sizes: Vec<(u64, u64)>,
     file_contiguity: usize,
     contiguity: usize,
@@ -80,7 +80,7 @@ async fn run_shard_benchmark(
 
     // Now, spawn tasks to
     let counter = Arc::new(AtomicUsize::new(0));
-    let mdb = ShardFileManager::new_in_session_directory(ctx, dir, false).await?;
+    let mdb = ShardFileManager::new_in_session_directory(runtime, dir, false).await?;
 
     let start_time = Instant::now();
 
@@ -188,7 +188,7 @@ struct ShardBenchmarkArgs {
 async fn main() {
     let args = ShardBenchmarkArgs::parse();
 
-    let ctx = XetRuntime::from_external(Handle::current(), XetConfig::new());
+    let runtime = XetRuntime::from_external(Handle::current(), XetConfig::new());
 
     let temp_dir = TempDir::with_prefix("git-xet-shard").expect("Failed to create temp dir");
     let dir = args.dir.unwrap_or_else(|| temp_dir.path().into());
@@ -200,7 +200,7 @@ async fn main() {
     assert!(dir.exists());
 
     run_shard_benchmark(
-        &ctx,
+        &runtime,
         args.shard_sizes,
         args.contiguity,
         args.file_contiguity,

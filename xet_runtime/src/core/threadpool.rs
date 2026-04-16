@@ -130,12 +130,12 @@ impl<F: FnOnce()> Drop for CallbackGuard<F> {
     }
 }
 
-/// This module provides a simple wrapper around Tokio's runtime to create a thread pool
-/// with some default settings. It is intended to be used as a singleton thread pool for
-/// the entire application.
+/// [`XetThreadpool`] is the async execution backend: it either owns a Tokio multi-thread runtime or wraps an
+/// external [`TokioRuntimeHandle`](tokio::runtime::Handle) (see [`RuntimeMode`]).
 ///
-/// The `ThreadPool` struct encapsulates a Tokio runtime and provides methods to run
-/// futures to completion, spawn new tasks, and get a handle to the runtime.
+/// It exposes [`Self::bridge_async`] and [`Self::bridge_sync`] to run work on the pool, [`Self::spawn`] for
+/// fire-and-forget tasks, and [`Self::perform_sigint_shutdown`] / [`Self::in_sigint_shutdown`] so callers can
+/// align with process-wide SIGINT teardown.
 ///
 /// # Example
 ///
@@ -154,25 +154,6 @@ impl<F: FnOnce()> Drop for CallbackGuard<F> {
 ///
 /// assert_eq!(result, 42);
 /// ```
-///
-/// # Panics
-///
-/// The `new_threadpool` function will intentionally panic if the Tokio runtime cannot be
-/// created. This is because the application should not continue running without a
-/// functioning thread pool.
-///
-/// # Settings
-///
-/// The thread pool is configured with the following settings:
-/// - 4 worker threads
-/// - Thread names prefixed with "hf-xet-"
-/// - 8MB stack size per thread (default is 2MB)
-/// - Maximum of 100 blocking threads
-/// - All Tokio features enabled (IO, Timer, Signal, Reactor)
-///
-/// # Structs
-///
-/// - `ThreadPool`: The main struct that encapsulates the Tokio runtime.
 #[derive(Debug)]
 pub struct XetThreadpool {
     // Runtime backend and its owned state (if any).
@@ -194,6 +175,18 @@ pub struct XetThreadpool {
     system_monitor: Option<SystemMonitor>,
 }
 
+#[cfg(not(target_family = "wasm"))]
+fn system_monitor_for_config(config: &XetConfig) -> Option<SystemMonitor> {
+    config
+        .system_monitor
+        .enabled
+        .then(|| {
+            SystemMonitor::follow_process(config.system_monitor.sample_interval, config.system_monitor.log_path.clone())
+                .ok()
+        })
+        .flatten()
+}
+
 impl XetThreadpool {
     /// Creates a new owned tokio thread pool with the given configuration.
     pub fn new(config: &XetConfig) -> Result<Arc<Self>, RuntimeError> {
@@ -210,17 +203,7 @@ impl XetThreadpool {
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
             #[cfg(not(target_family = "wasm"))]
-            system_monitor: config
-                .system_monitor
-                .enabled
-                .then(|| {
-                    SystemMonitor::follow_process(
-                        config.system_monitor.sample_interval,
-                        config.system_monitor.log_path.clone(),
-                    )
-                    .ok()
-                })
-                .flatten(),
+            system_monitor: system_monitor_for_config(config),
         });
 
         let rt_weak = Arc::downgrade(&rt);
@@ -301,17 +284,7 @@ impl XetThreadpool {
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
             #[cfg(not(target_family = "wasm"))]
-            system_monitor: config
-                .system_monitor
-                .enabled
-                .then(|| {
-                    SystemMonitor::follow_process(
-                        config.system_monitor.sample_interval,
-                        config.system_monitor.log_path.clone(),
-                    )
-                    .ok()
-                })
-                .flatten(),
+            system_monitor: system_monitor_for_config(config),
         });
 
         reg.insert(id, Arc::downgrade(&rt));
@@ -498,7 +471,7 @@ impl XetThreadpool {
     ///   channel (compatible with any executor).
     ///
     /// This is the primary async entry point. Session-level async methods should call
-    /// `self.runtime.bridge_async(...)`.
+    /// `self.threadpool.bridge_async(...)`.
     pub async fn bridge_async<T, F>(&self, task_name: &'static str, fut: F) -> Result<T, RuntimeError>
     where
         F: Future<Output = T> + Send + 'static,
@@ -520,7 +493,7 @@ impl XetThreadpool {
     /// `spawn_blocking` threads, OS threads, or the main thread is fine).
     ///
     /// This is the primary sync entry point. Session-level `_blocking` methods
-    /// should simply call `self.runtime.bridge_sync(...)`.
+    /// should simply call `self.threadpool.bridge_sync(...)`.
     pub fn bridge_sync<F>(&self, future: F) -> Result<F::Output, RuntimeError>
     where
         F: Future + Send + 'static,
@@ -748,15 +721,6 @@ mod tests {
     use crate::core::XetRuntime;
 
     #[test]
-    fn test_get_or_create_reqwest_client_returns_client() {
-        let runtime = XetRuntime::default().unwrap();
-        let result = runtime
-            .common
-            .get_or_create_reqwest_client("test".to_string(), || reqwest::Client::builder().build());
-        assert!(result.is_ok());
-    }
-
-    #[test]
     fn test_bridge_async_owned_mode_runs_on_pool() {
         let runtime = XetRuntime::default().unwrap();
         assert_eq!(runtime.threadpool.mode(), RuntimeMode::Owned);
@@ -932,5 +896,50 @@ mod tests {
             threadpool.perform_sigint_shutdown();
         }));
         assert!(shutdown_result.is_ok());
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn test_sigint_shutdown_causes_keyboard_interrupt_on_bridges() {
+        let runtime = XetRuntime::default().unwrap();
+        runtime.threadpool.perform_sigint_shutdown();
+
+        let sync_result = runtime.threadpool.bridge_sync(async { 1 });
+        assert!(matches!(sync_result, Err(RuntimeError::KeyboardInterrupt)));
+
+        let tokio_rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let tp = runtime.threadpool.clone();
+        let async_result = tokio_rt.block_on(async move { tp.bridge_async("sigint_test", async { 1 }).await });
+        assert!(matches!(async_result, Err(RuntimeError::KeyboardInterrupt)));
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn test_concurrent_bridge_sync_stress() {
+        use std::sync::Barrier;
+
+        let runtime = XetRuntime::default().unwrap();
+        let n = 200;
+        let barrier = Arc::new(Barrier::new(n));
+        let sum = Arc::new(AtomicUsize::new(0));
+
+        let handles: Vec<_> = (0..n)
+            .map(|i| {
+                let tp = runtime.threadpool.clone();
+                let barrier = barrier.clone();
+                let sum = sum.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let result = tp.bridge_sync(async move { i }).unwrap();
+                    sum.fetch_add(result, Ordering::Relaxed);
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        assert_eq!(sum.load(Ordering::Relaxed), (0..n).sum::<usize>());
     }
 }

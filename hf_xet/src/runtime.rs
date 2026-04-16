@@ -101,12 +101,12 @@ pub(crate) fn perform_sigint_shutdown() {
     let maybe_runtime = MULTITHREADED_RUNTIME.write().unwrap().take();
 
     // Shut it down gracefully if we own it in this process.
-    if let Some((runtime_pid, ref ctx)) = maybe_runtime {
+    if let Some((runtime_pid, ref runtime)) = maybe_runtime {
         // Only do anything with the runtime if we're on the right process.
         // Otherwise, it's none of our business.
-        if runtime_pid == std::process::id() && ctx.threadpool.external_executor_count() != 0 {
+        if runtime_pid == std::process::id() && runtime.threadpool.external_executor_count() != 0 {
             eprintln!("Cancellation requested; stopping current tasks.");
-            ctx.threadpool.perform_sigint_shutdown();
+            runtime.threadpool.perform_sigint_shutdown();
         }
     }
 }
@@ -161,13 +161,13 @@ pub fn init_threadpool() -> Result<Arc<XetRuntime>, RuntimeError> {
         }
     }
 
-    let ctx = Arc::new(XetRuntime::default()?);
+    let runtime = Arc::new(XetRuntime::default()?);
 
     // Check the signal handler.  This must be reinstalled on new or after a spawn
     check_sigint_handler()?;
 
     // Set the runtime in the global tracker.
-    *guard = Some((pid, ctx.clone()));
+    *guard = Some((pid, runtime.clone()));
 
     // Spawn a background non-tokio thread to check the sigint flag.
     std::thread::spawn(signal_check_background_loop);
@@ -184,14 +184,10 @@ pub fn init_threadpool() -> Result<Arc<XetRuntime>, RuntimeError> {
     // being initialized.)
     drop(guard);
 
-    Ok(ctx)
+    Ok(runtime)
 }
 
-pub(crate) fn get_xet_context() -> Result<Arc<XetRuntime>, RuntimeError> {
-    get_threadpool()
-}
-
-fn get_threadpool() -> Result<Arc<XetRuntime>, RuntimeError> {
+pub(crate) fn get_or_init_runtime() -> Result<Arc<XetRuntime>, RuntimeError> {
     // First try a read lock to see if it's already initialized.
     {
         let guard = MULTITHREADED_RUNTIME.read().unwrap();
@@ -223,9 +219,10 @@ where
         // Now, without the GIL, spawn the task on a new OS thread.  This avoids having tokio cache stuff in
         // thread-local storage that is invalidated after a fork-exec.
         spawn_os_thread(move || {
-            let ctx = get_threadpool().map_err(convert_multithreading_error)?;
+            let runtime = get_or_init_runtime().map_err(convert_multithreading_error)?;
 
-            ctx.threadpool
+            runtime
+                .threadpool
                 .external_run_async_task(execution_call)
                 .map_err(convert_multithreading_error)?
                 .into()

@@ -58,7 +58,7 @@ impl FileTerm {
     /// only one download per xorb block (other callers wait without acquiring CAS permits).
     pub async fn get_data_task(
         &self,
-        ctx: XetRuntime,
+        runtime: XetRuntime,
         client: Arc<dyn Client>,
         progress_updater: Option<Arc<ItemProgressUpdater>>,
         chunk_cache: Option<Arc<dyn ChunkCache>>,
@@ -75,7 +75,7 @@ impl FileTerm {
 
         let task = tokio::task::spawn(async move {
             let xorb_block_data = xorb_block
-                .retrieve_data(ctx, client, url_info, progress_updater, chunk_cache)
+                .retrieve_data(runtime, client, url_info, progress_updater, chunk_cache)
                 .await?;
             Ok(file_term.extract_bytes(&xorb_block_data))
         });
@@ -109,7 +109,7 @@ struct FileTermEntry {
 /// download (with dedup and compression enabled)
 /// along with the Vec<FileTerm>.
 pub async fn retrieve_file_term_block(
-    ctx: &XetRuntime,
+    runtime: &XetRuntime,
     client: Arc<dyn Client>,
     file_hash: MerkleHash,
     query_file_byte_range: FileRange,
@@ -143,7 +143,7 @@ pub async fn retrieve_file_term_block(
     // Track the current byte offset in the output file as we process terms sequentially.
     let mut cur_file_byte_offset = query_file_byte_range.start;
 
-    let enable_multirange = ctx.config.client.enable_multirange_fetching;
+    let enable_multirange = runtime.config.client.enable_multirange_fetching;
 
     for (local_term_index, term) in raw_reconstruction.terms.iter().enumerate() {
         let xorb_hash: MerkleHash = term.hash.into();
@@ -386,10 +386,10 @@ mod tests {
     /// Creates a test client and uploads a random file with the given term specification.
     /// Returns the client and file contents for verification.
     async fn setup_test_file(term_spec: &[(u64, (u64, u64))]) -> (XetRuntime, Arc<LocalClient>, RandomFileContents) {
-        let ctx = XetRuntime::default().unwrap();
-        let client = LocalClient::temporary(ctx.clone()).await.unwrap();
+        let runtime = XetRuntime::default().unwrap();
+        let client = LocalClient::temporary(runtime.clone()).await.unwrap();
         let file_contents = client.upload_random_file(term_spec, TEST_CHUNK_SIZE).await.unwrap();
-        (ctx, client, file_contents)
+        (runtime, client, file_contents)
     }
 
     /// Retrieves file terms and thoroughly verifies their correctness.
@@ -404,7 +404,7 @@ mod tests {
     /// - Cross-references with the known file contents for correctness
     /// - Verifies number of file terms matches expected from term_spec
     async fn retrieve_and_verify(
-        ctx: &XetRuntime,
+        runtime: &XetRuntime,
         client: &Arc<LocalClient>,
         file_contents: &RandomFileContents,
         requested_range: Option<FileRange>,
@@ -413,7 +413,7 @@ mod tests {
         let dyn_client: Arc<dyn Client> = client.clone();
 
         let (returned_range, _, file_terms) =
-            retrieve_file_term_block(ctx, dyn_client.clone(), file_contents.file_hash, requested_range)
+            retrieve_file_term_block(runtime, dyn_client.clone(), file_contents.file_hash, requested_range)
                 .await
                 .expect("retrieve_file_term_block should succeed")
                 .expect("file_terms should not be None for valid range");
@@ -485,7 +485,7 @@ mod tests {
 
             // Get the data task and await it.
             let data_future = file_term
-                .get_data_task(ctx.clone(), dyn_client.clone(), None, None)
+                .get_data_task(runtime.clone(), dyn_client.clone(), None, None)
                 .await
                 .unwrap();
             let data = data_future.await.unwrap();
@@ -522,10 +522,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_xorb_block_references_exact() {
-        let (ctx, client, file_contents) = setup_test_file(&[(1, (0, 2)), (1, (2, 4)), (1, (4, 6))]).await;
+        let (runtime, client, file_contents) = setup_test_file(&[(1, (0, 2)), (1, (2, 4)), (1, (4, 6))]).await;
         let file_range = FileRange::new(0, file_contents.data.len() as u64);
         let dyn_client: Arc<dyn Client> = client.clone();
-        let (_, _, file_terms) = retrieve_file_term_block(&ctx, dyn_client, file_contents.file_hash, file_range)
+        let (_, _, file_terms) = retrieve_file_term_block(&runtime, dyn_client, file_contents.file_hash, file_range)
             .await
             .unwrap()
             .unwrap();
@@ -536,13 +536,14 @@ mod tests {
         let expected = vec![ChunkRange::new(0, 2), ChunkRange::new(2, 4), ChunkRange::new(4, 6)];
         assert_eq!(ref_ranges, expected);
 
-        let (ctx2, client2, file_contents2) = setup_test_file(&[(1, (0, 5)), (1, (0, 5))]).await;
+        let (runtime2, client2, file_contents2) = setup_test_file(&[(1, (0, 5)), (1, (0, 5))]).await;
         let file_range2 = FileRange::new(0, file_contents2.data.len() as u64);
         let dyn_client2: Arc<dyn Client> = client2.clone();
-        let (_, _, file_terms2) = retrieve_file_term_block(&ctx2, dyn_client2, file_contents2.file_hash, file_range2)
-            .await
-            .unwrap()
-            .unwrap();
+        let (_, _, file_terms2) =
+            retrieve_file_term_block(&runtime2, dyn_client2, file_contents2.file_hash, file_range2)
+                .await
+                .unwrap()
+                .unwrap();
         verify_xorb_block_references(&file_terms2);
         let block2 = &file_terms2[0].xorb_block;
         let ref_ranges2: Vec<ChunkRange> = block2.references.iter().map(|r| r.term_chunks).collect();
@@ -552,57 +553,58 @@ mod tests {
 
     #[tokio::test]
     async fn test_single_xorb_full_range() {
-        let (ctx, client, file_contents) = setup_test_file(&[(1, (0, 5))]).await;
-        retrieve_and_verify(&ctx, &client, &file_contents, None).await;
+        let (runtime, client, file_contents) = setup_test_file(&[(1, (0, 5))]).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, None).await;
     }
 
     #[tokio::test]
     async fn test_multiple_terms_same_xorb() {
-        let (ctx, client, file_contents) = setup_test_file(&[(1, (0, 2)), (1, (2, 4)), (1, (4, 6))]).await;
-        retrieve_and_verify(&ctx, &client, &file_contents, None).await;
+        let (runtime, client, file_contents) = setup_test_file(&[(1, (0, 2)), (1, (2, 4)), (1, (4, 6))]).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, None).await;
     }
 
     #[tokio::test]
     async fn test_multiple_xorbs() {
-        let (ctx, client, file_contents) = setup_test_file(&[(1, (0, 3)), (2, (0, 2)), (3, (0, 4))]).await;
-        retrieve_and_verify(&ctx, &client, &file_contents, None).await;
+        let (runtime, client, file_contents) = setup_test_file(&[(1, (0, 3)), (2, (0, 2)), (3, (0, 4))]).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, None).await;
     }
 
     #[tokio::test]
     async fn test_overlapping_chunk_ranges() {
-        let (ctx, client, file_contents) = setup_test_file(&[(1, (0, 5)), (1, (1, 3)), (1, (2, 4))]).await;
-        retrieve_and_verify(&ctx, &client, &file_contents, None).await;
+        let (runtime, client, file_contents) = setup_test_file(&[(1, (0, 5)), (1, (1, 3)), (1, (2, 4))]).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, None).await;
     }
 
     #[tokio::test]
     async fn test_partial_range_middle() {
-        let (ctx, client, file_contents) = setup_test_file(&[(1, (0, 10))]).await;
+        let (runtime, client, file_contents) = setup_test_file(&[(1, (0, 10))]).await;
         let file_len = file_contents.data.len() as u64;
-        retrieve_and_verify(&ctx, &client, &file_contents, Some(FileRange::new(file_len / 4, file_len * 3 / 4))).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, Some(FileRange::new(file_len / 4, file_len * 3 / 4)))
+            .await;
     }
 
     #[tokio::test]
     async fn test_partial_range_start() {
-        let (ctx, client, file_contents) = setup_test_file(&[(1, (0, 10))]).await;
+        let (runtime, client, file_contents) = setup_test_file(&[(1, (0, 10))]).await;
         let file_len = file_contents.data.len() as u64;
-        retrieve_and_verify(&ctx, &client, &file_contents, Some(FileRange::new(0, file_len / 2))).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, Some(FileRange::new(0, file_len / 2))).await;
     }
 
     #[tokio::test]
     async fn test_partial_range_end() {
-        let (ctx, client, file_contents) = setup_test_file(&[(1, (0, 10))]).await;
+        let (runtime, client, file_contents) = setup_test_file(&[(1, (0, 10))]).await;
         let file_len = file_contents.data.len() as u64;
-        retrieve_and_verify(&ctx, &client, &file_contents, Some(FileRange::new(file_len / 2, file_len))).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, Some(FileRange::new(file_len / 2, file_len))).await;
     }
 
     #[tokio::test]
     async fn test_beyond_file_end() {
-        let (ctx, client, file_contents) = setup_test_file(&[(1, (0, 3))]).await;
+        let (runtime, client, file_contents) = setup_test_file(&[(1, (0, 3))]).await;
         let file_len = file_contents.data.len() as u64;
         let beyond_range = FileRange::new(file_len + 1000, file_len + 2000);
 
         let dyn_client: Arc<dyn Client> = client.clone();
-        let result = retrieve_file_term_block(&ctx, dyn_client, file_contents.file_hash, beyond_range).await;
+        let result = retrieve_file_term_block(&runtime, dyn_client, file_contents.file_hash, beyond_range).await;
 
         match result {
             Ok(None) => {},
@@ -613,49 +615,50 @@ mod tests {
 
     #[tokio::test]
     async fn test_interleaved_xorbs() {
-        let (ctx, client, file_contents) = setup_test_file(&[(1, (0, 2)), (2, (0, 2)), (1, (2, 4)), (2, (2, 4))]).await;
-        retrieve_and_verify(&ctx, &client, &file_contents, None).await;
+        let (runtime, client, file_contents) =
+            setup_test_file(&[(1, (0, 2)), (2, (0, 2)), (1, (2, 4)), (2, (2, 4))]).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, None).await;
     }
 
     #[tokio::test]
     async fn test_non_contiguous_chunks() {
-        let (ctx, client, file_contents) = setup_test_file(&[(1, (0, 2)), (1, (4, 6))]).await;
-        retrieve_and_verify(&ctx, &client, &file_contents, None).await;
+        let (runtime, client, file_contents) = setup_test_file(&[(1, (0, 2)), (1, (4, 6))]).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, None).await;
     }
 
     #[tokio::test]
     async fn test_adjacent_chunks() {
-        let (ctx, client, file_contents) = setup_test_file(&[(1, (0, 3)), (1, (3, 5))]).await;
-        retrieve_and_verify(&ctx, &client, &file_contents, None).await;
+        let (runtime, client, file_contents) = setup_test_file(&[(1, (0, 3)), (1, (3, 5))]).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, None).await;
     }
 
     #[tokio::test]
     async fn test_single_chunk_terms() {
-        let (ctx, client, file_contents) =
+        let (runtime, client, file_contents) =
             setup_test_file(&[(1, (0, 1)), (1, (1, 2)), (1, (2, 3)), (2, (0, 1)), (2, (1, 2))]).await;
-        retrieve_and_verify(&ctx, &client, &file_contents, None).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, None).await;
     }
 
     #[tokio::test]
     async fn test_large_file_many_xorbs() {
         let term_spec: Vec<(u64, (u64, u64))> = (1..=10).map(|i| (i, (0, 3))).collect();
-        let (ctx, client, file_contents) = setup_test_file(&term_spec).await;
-        retrieve_and_verify(&ctx, &client, &file_contents, None).await;
+        let (runtime, client, file_contents) = setup_test_file(&term_spec).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, None).await;
     }
 
     #[tokio::test]
     async fn test_xorb_block_deduplication() {
-        let (ctx, client, file_contents) = setup_test_file(&[(1, (0, 5)), (1, (0, 5))]).await;
-        retrieve_and_verify(&ctx, &client, &file_contents, None).await;
+        let (runtime, client, file_contents) = setup_test_file(&[(1, (0, 5)), (1, (0, 5))]).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, None).await;
     }
 
     #[tokio::test]
     async fn test_retrieval_url_acquisition() {
-        let (ctx, client, file_contents) = setup_test_file(&[(1, (0, 5))]).await;
+        let (runtime, client, file_contents) = setup_test_file(&[(1, (0, 5))]).await;
         let file_range = FileRange::new(0, file_contents.data.len() as u64);
         let dyn_client: Arc<dyn Client> = client.clone();
 
-        let (_, _, file_terms) = retrieve_file_term_block(&ctx, dyn_client, file_contents.file_hash, file_range)
+        let (_, _, file_terms) = retrieve_file_term_block(&runtime, dyn_client, file_contents.file_hash, file_range)
             .await
             .unwrap()
             .unwrap();
@@ -681,94 +684,95 @@ mod tests {
             (2, (4, 6)),
             (1, (0, 2)),
         ];
-        let (ctx, client, file_contents) = setup_test_file(term_spec).await;
-        retrieve_and_verify(&ctx, &client, &file_contents, None).await;
+        let (runtime, client, file_contents) = setup_test_file(term_spec).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, None).await;
     }
 
     #[tokio::test]
     async fn test_repeated_xorb_different_ranges() {
-        let (ctx, client, file_contents) = setup_test_file(&[(1, (0, 2)), (1, (3, 5)), (1, (1, 3)), (1, (4, 6))]).await;
-        retrieve_and_verify(&ctx, &client, &file_contents, None).await;
+        let (runtime, client, file_contents) =
+            setup_test_file(&[(1, (0, 2)), (1, (3, 5)), (1, (1, 3)), (1, (4, 6))]).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, None).await;
     }
 
     #[tokio::test]
     async fn test_single_chunk_file() {
-        let (ctx, client, file_contents) = setup_test_file(&[(1, (0, 1))]).await;
-        retrieve_and_verify(&ctx, &client, &file_contents, None).await;
+        let (runtime, client, file_contents) = setup_test_file(&[(1, (0, 1))]).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, None).await;
     }
 
     #[tokio::test]
     async fn test_many_small_terms_from_different_xorbs() {
         let term_spec: Vec<(u64, (u64, u64))> = (1..=20).map(|i| (i, (0, 1))).collect();
-        let (ctx, client, file_contents) = setup_test_file(&term_spec).await;
-        retrieve_and_verify(&ctx, &client, &file_contents, None).await;
+        let (runtime, client, file_contents) = setup_test_file(&term_spec).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, None).await;
     }
 
     #[tokio::test]
     async fn test_range_few_bytes_before_end() {
-        let (ctx, client, file_contents) = setup_test_file(&[(1, (0, 5))]).await;
+        let (runtime, client, file_contents) = setup_test_file(&[(1, (0, 5))]).await;
         let file_len = file_contents.data.len() as u64;
 
         let range = FileRange::new(0, file_len - 3);
-        retrieve_and_verify(&ctx, &client, &file_contents, Some(range)).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, Some(range)).await;
 
         let range = FileRange::new(0, file_len - 1);
-        retrieve_and_verify(&ctx, &client, &file_contents, Some(range)).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, Some(range)).await;
     }
 
     #[tokio::test]
     async fn test_range_few_bytes_after_start() {
-        let (ctx, client, file_contents) = setup_test_file(&[(1, (0, 5))]).await;
+        let (runtime, client, file_contents) = setup_test_file(&[(1, (0, 5))]).await;
         let file_len = file_contents.data.len() as u64;
 
         let range = FileRange::new(3, file_len);
-        retrieve_and_verify(&ctx, &client, &file_contents, Some(range)).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, Some(range)).await;
 
         let range = FileRange::new(1, file_len);
-        retrieve_and_verify(&ctx, &client, &file_contents, Some(range)).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, Some(range)).await;
     }
 
     #[tokio::test]
     async fn test_range_few_bytes_offset_both_ends() {
-        let (ctx, client, file_contents) = setup_test_file(&[(1, (0, 5))]).await;
+        let (runtime, client, file_contents) = setup_test_file(&[(1, (0, 5))]).await;
         let file_len = file_contents.data.len() as u64;
 
         let range = FileRange::new(2, file_len - 2);
-        retrieve_and_verify(&ctx, &client, &file_contents, Some(range)).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, Some(range)).await;
 
         let range = FileRange::new(file_len / 2 - 1, file_len / 2 + 1);
-        retrieve_and_verify(&ctx, &client, &file_contents, Some(range)).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, Some(range)).await;
     }
 
     #[tokio::test]
     async fn test_range_single_byte_at_various_positions() {
-        let (ctx, client, file_contents) = setup_test_file(&[(1, (0, 5))]).await;
+        let (runtime, client, file_contents) = setup_test_file(&[(1, (0, 5))]).await;
         let file_len = file_contents.data.len() as u64;
 
-        retrieve_and_verify(&ctx, &client, &file_contents, Some(FileRange::new(0, 1))).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, Some(FileRange::new(0, 1))).await;
 
-        retrieve_and_verify(&ctx, &client, &file_contents, Some(FileRange::new(file_len - 1, file_len))).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, Some(FileRange::new(file_len - 1, file_len))).await;
 
         let mid = file_len / 2;
-        retrieve_and_verify(&ctx, &client, &file_contents, Some(FileRange::new(mid, mid + 1))).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, Some(FileRange::new(mid, mid + 1))).await;
     }
 
     #[tokio::test]
     async fn test_multi_term_range_ends_mid_chunk() {
-        let (ctx, client, file_contents) = setup_test_file(&[(1, (0, 3)), (2, (0, 3)), (3, (0, 3))]).await;
+        let (runtime, client, file_contents) = setup_test_file(&[(1, (0, 3)), (2, (0, 3)), (3, (0, 3))]).await;
         let file_len = file_contents.data.len() as u64;
 
         let range = FileRange::new(0, file_len - 5);
-        retrieve_and_verify(&ctx, &client, &file_contents, Some(range)).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, Some(range)).await;
     }
 
     #[tokio::test]
     async fn test_multi_term_range_starts_mid_chunk() {
-        let (ctx, client, file_contents) = setup_test_file(&[(1, (0, 3)), (2, (0, 3)), (3, (0, 3))]).await;
+        let (runtime, client, file_contents) = setup_test_file(&[(1, (0, 3)), (2, (0, 3)), (3, (0, 3))]).await;
         let file_len = file_contents.data.len() as u64;
 
         let range = FileRange::new(5, file_len);
-        retrieve_and_verify(&ctx, &client, &file_contents, Some(range)).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, Some(range)).await;
     }
 
     // ==================== Multi-Disjoint Range Edge Cases ====================
@@ -777,42 +781,43 @@ mod tests {
     /// This creates one XorbBlock with chunk_ranges = [(0,2), (4,6), (8,10)].
     #[tokio::test]
     async fn test_triple_disjoint_same_xorb() {
-        let (ctx, client, file_contents) = setup_test_file(&[(1, (0, 2)), (1, (4, 6)), (1, (8, 10))]).await;
-        retrieve_and_verify(&ctx, &client, &file_contents, None).await;
+        let (runtime, client, file_contents) = setup_test_file(&[(1, (0, 2)), (1, (4, 6)), (1, (8, 10))]).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, None).await;
     }
 
     /// Triple disjoint ranges with a partial byte range spanning the gap.
     #[tokio::test]
     async fn test_triple_disjoint_partial_range_across_gap() {
-        let (ctx, client, file_contents) = setup_test_file(&[(1, (0, 2)), (1, (4, 6)), (1, (8, 10))]).await;
+        let (runtime, client, file_contents) = setup_test_file(&[(1, (0, 2)), (1, (4, 6)), (1, (8, 10))]).await;
         let file_len = file_contents.data.len() as u64;
         let range = FileRange::new(file_len / 4, file_len * 3 / 4);
-        retrieve_and_verify(&ctx, &client, &file_contents, Some(range)).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, Some(range)).await;
     }
 
     /// Two xorbs, each with two disjoint ranges, interleaved in file order.
     #[tokio::test]
     async fn test_two_xorbs_interleaved_disjoint() {
         let term_spec = &[(1, (0, 2)), (2, (0, 2)), (1, (4, 6)), (2, (4, 6))];
-        let (ctx, client, file_contents) = setup_test_file(term_spec).await;
-        retrieve_and_verify(&ctx, &client, &file_contents, None).await;
+        let (runtime, client, file_contents) = setup_test_file(term_spec).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, None).await;
     }
 
     /// Two xorbs interleaved with disjoint ranges, partial byte range.
     #[tokio::test]
     async fn test_two_xorbs_interleaved_disjoint_partial() {
         let term_spec = &[(1, (0, 2)), (2, (0, 2)), (1, (4, 6)), (2, (4, 6))];
-        let (ctx, client, file_contents) = setup_test_file(term_spec).await;
+        let (runtime, client, file_contents) = setup_test_file(term_spec).await;
         let file_len = file_contents.data.len() as u64;
-        retrieve_and_verify(&ctx, &client, &file_contents, Some(FileRange::new(file_len / 3, file_len * 2 / 3))).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, Some(FileRange::new(file_len / 3, file_len * 2 / 3)))
+            .await;
     }
 
     /// Single xorb with four disjoint ranges, each a single chunk wide.
     #[tokio::test]
     async fn test_four_single_chunk_disjoint() {
         let term_spec = &[(1, (0, 1)), (1, (3, 4)), (1, (6, 7)), (1, (9, 10))];
-        let (ctx, client, file_contents) = setup_test_file(term_spec).await;
-        retrieve_and_verify(&ctx, &client, &file_contents, None).await;
+        let (runtime, client, file_contents) = setup_test_file(term_spec).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, None).await;
     }
 
     /// Mix of contiguous and disjoint ranges from the same xorb.
@@ -820,8 +825,8 @@ mod tests {
     #[tokio::test]
     async fn test_contiguous_then_disjoint() {
         let term_spec = &[(1, (0, 2)), (1, (2, 4)), (1, (8, 10))];
-        let (ctx, client, file_contents) = setup_test_file(term_spec).await;
-        retrieve_and_verify(&ctx, &client, &file_contents, None).await;
+        let (runtime, client, file_contents) = setup_test_file(term_spec).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, None).await;
     }
 
     /// Three xorbs with complex disjoint access patterns.
@@ -835,7 +840,7 @@ mod tests {
             (2, (6, 8)),
             (3, (0, 2)),
         ];
-        let (ctx, client, file_contents) = setup_test_file(term_spec).await;
-        retrieve_and_verify(&ctx, &client, &file_contents, None).await;
+        let (runtime, client, file_contents) = setup_test_file(term_spec).await;
+        retrieve_and_verify(&runtime, &client, &file_contents, None).await;
     }
 }

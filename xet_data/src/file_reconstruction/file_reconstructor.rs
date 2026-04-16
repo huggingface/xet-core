@@ -25,7 +25,7 @@ use crate::progress_tracking::ItemProgressUpdater;
 /// and writing the reassembled data to an output. Supports byte range requests and
 /// uses memory-limited buffering with adaptive prefetching.
 pub struct FileReconstructor {
-    ctx: XetRuntime,
+    runtime: XetRuntime,
     client: Arc<dyn Client>,
     file_hash: MerkleHash,
     byte_range: Option<FileRange>,
@@ -45,14 +45,14 @@ pub struct FileReconstructor {
 }
 
 impl FileReconstructor {
-    pub fn new(ctx: &XetRuntime, client: &Arc<dyn Client>, file_hash: MerkleHash) -> Self {
+    pub fn new(runtime: &XetRuntime, client: &Arc<dyn Client>, file_hash: MerkleHash) -> Self {
         Self {
-            ctx: ctx.clone(),
+            runtime: runtime.clone(),
             client: client.clone(),
             file_hash,
             byte_range: None,
             progress_updater: default_progress_updater(),
-            config: Arc::new(ctx.config.reconstruction.clone()),
+            config: Arc::new(runtime.config.reconstruction.clone()),
             chunk_cache: None,
             custom_buffer_semaphore: None,
             cancellation_token: CancellationToken::new(),
@@ -140,7 +140,7 @@ impl FileReconstructor {
 
         let run_state = RunState::new(self.cancellation_token.clone(), self.file_hash, self.progress_updater.clone());
 
-        let data_writer = SequentialWriter::new(&self.ctx, file, self.config.use_vectored_write, run_state.clone());
+        let data_writer = SequentialWriter::new(&self.runtime, file, self.config.use_vectored_write, run_state.clone());
 
         self.run(data_writer, run_state, false).await
     }
@@ -157,7 +157,8 @@ impl FileReconstructor {
         );
 
         let run_state = RunState::new(self.cancellation_token.clone(), self.file_hash, self.progress_updater.clone());
-        let data_writer = SequentialWriter::new(&self.ctx, writer, self.config.use_vectored_write, run_state.clone());
+        let data_writer =
+            SequentialWriter::new(&self.runtime, writer, self.config.use_vectored_write, run_state.clone());
         self.run(data_writer, run_state, false).await
     }
 
@@ -231,7 +232,7 @@ impl FileReconstructor {
         _is_streaming: bool,
     ) -> std::result::Result<u64, RunError> {
         let Self {
-            ctx,
+            runtime,
             client,
             byte_range,
             config,
@@ -246,7 +247,7 @@ impl FileReconstructor {
         let requested_range = byte_range.unwrap_or_else(FileRange::full);
 
         let mut term_manager = ReconstructionTermManager::new(
-            ctx.clone(),
+            runtime.clone(),
             config.clone(),
             client.clone(),
             file_hash,
@@ -257,7 +258,7 @@ impl FileReconstructor {
 
         let using_global_memory_limit = custom_buffer_semaphore.is_none();
         let download_buffer_semaphore =
-            custom_buffer_semaphore.unwrap_or_else(|| ctx.common.reconstruction_download_buffer.clone());
+            custom_buffer_semaphore.unwrap_or_else(|| runtime.common.reconstruction_download_buffer.clone());
 
         // Dynamic buffer scaling: the target buffer size grows with the number of active
         // downloads: target = (base + n * perfile).min(limit). On start we increment to
@@ -268,7 +269,7 @@ impl FileReconstructor {
         let _download_count_decrement_guard;
 
         if using_global_memory_limit {
-            let active_downloads = ctx.common.active_downloads.clone();
+            let active_downloads = runtime.common.active_downloads.clone();
             let n = active_downloads.fetch_add(1, Ordering::Relaxed) + 1;
 
             let base = config.download_buffer_size.as_u64();
@@ -353,7 +354,7 @@ impl FileReconstructor {
 
                 let data_future = file_term
                     .get_data_task(
-                        ctx.clone(),
+                        runtime.clone(),
                         client.clone(),
                         run_state.progress_updater().cloned(),
                         chunk_cache.clone(),
@@ -1081,9 +1082,9 @@ mod tests {
         // Create a tiny semaphore (1 permit) to force sequential processing
         // This ensures each term is fully written before the next is fetched
         let tiny_semaphore = AdjustableSemaphore::new(1, (1, 1));
-        let ctx = XetRuntime::from_external(Handle::current(), XetConfig::new());
+        let runtime = XetRuntime::from_external(Handle::current(), XetConfig::new());
 
-        FileReconstructor::new(&ctx, &(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+        FileReconstructor::new(&runtime, &(client.clone() as Arc<dyn Client>), file_contents.file_hash)
             .with_config(url_refresh_test_config())
             .with_buffer_semaphore(tiny_semaphore)
             .reconstruct_to_writer(writer)
@@ -1116,9 +1117,9 @@ mod tests {
         let writer_buffer = writer.buffer.clone();
 
         let tiny_semaphore = AdjustableSemaphore::new(1, (1, 1));
-        let ctx = XetRuntime::from_external(Handle::current(), XetConfig::new());
+        let runtime = XetRuntime::from_external(Handle::current(), XetConfig::new());
 
-        FileReconstructor::new(&ctx, &(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+        FileReconstructor::new(&runtime, &(client.clone() as Arc<dyn Client>), file_contents.file_hash)
             .with_config(url_refresh_test_config())
             .with_buffer_semaphore(tiny_semaphore)
             .reconstruct_to_writer(writer)
@@ -1143,9 +1144,9 @@ mod tests {
         let writer_buffer = writer.buffer.clone();
 
         let tiny_semaphore = AdjustableSemaphore::new(1, (1, 1));
-        let ctx = XetRuntime::from_external(Handle::current(), XetConfig::new());
+        let runtime = XetRuntime::from_external(Handle::current(), XetConfig::new());
 
-        FileReconstructor::new(&ctx, &(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+        FileReconstructor::new(&runtime, &(client.clone() as Arc<dyn Client>), file_contents.file_hash)
             .with_config(url_refresh_test_config())
             .with_buffer_semaphore(tiny_semaphore)
             .reconstruct_to_writer(writer)
@@ -1170,9 +1171,9 @@ mod tests {
         let writer_buffer = writer.buffer.clone();
 
         let tiny_semaphore = AdjustableSemaphore::new(1, (1, 1));
-        let ctx = XetRuntime::from_external(Handle::current(), XetConfig::new());
+        let runtime = XetRuntime::from_external(Handle::current(), XetConfig::new());
 
-        FileReconstructor::new(&ctx, &(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+        FileReconstructor::new(&runtime, &(client.clone() as Arc<dyn Client>), file_contents.file_hash)
             .with_config(url_refresh_test_config())
             .with_buffer_semaphore(tiny_semaphore)
             .reconstruct_to_writer(writer)
@@ -1196,11 +1197,11 @@ mod tests {
         let writer_buffer = writer.buffer.clone();
 
         let tiny_semaphore = AdjustableSemaphore::new(1, (0, 1));
-        let ctx = XetRuntime::from_external(Handle::current(), XetConfig::new());
+        let runtime = XetRuntime::from_external(Handle::current(), XetConfig::new());
 
         let range = FileRange::new(file_len / 4, file_len * 3 / 4);
 
-        FileReconstructor::new(&ctx, &(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+        FileReconstructor::new(&runtime, &(client.clone() as Arc<dyn Client>), file_contents.file_hash)
             .with_byte_range(range)
             .with_config(url_refresh_test_config())
             .with_buffer_semaphore(tiny_semaphore)
@@ -1221,31 +1222,32 @@ mod tests {
         let expected_total = runtime_config.reconstruction.download_buffer_limit.as_u64();
 
         let threadpool = XetThreadpool::new(&runtime_config).unwrap();
-        let ctx = XetRuntime::new(runtime_config, threadpool);
-        let rt = ctx.threadpool.clone();
+        let runtime = XetRuntime::new(runtime_config, threadpool);
+        let threadpool = runtime.threadpool.clone();
 
-        rt.bridge_sync(async move {
-            let ctx = ctx.clone();
-            let (client, file_contents) = setup_test_file(&[(1, (0, 2)), (2, (0, 2)), (3, (0, 2))]).await;
-            let sem = ctx.common.reconstruction_download_buffer.clone();
+        threadpool
+            .bridge_sync(async move {
+                let runtime = runtime.clone();
+                let (client, file_contents) = setup_test_file(&[(1, (0, 2)), (2, (0, 2)), (3, (0, 2))]).await;
+                let sem = runtime.common.reconstruction_download_buffer.clone();
 
-            // Pre-grow to max so the run's increment request is a no-op.
-            let p = sem.increment_total_permits(u64::MAX).unwrap();
-            drop(p);
-            assert_eq!(sem.total_permits(), expected_total);
+                // Pre-grow to max so the run's increment request is a no-op.
+                let p = sem.increment_total_permits(u64::MAX).unwrap();
+                drop(p);
+                assert_eq!(sem.total_permits(), expected_total);
 
-            let mut config = test_config();
-            config.download_buffer_perfile_size = xet_runtime::utils::ByteSize::from("8kb");
+                let mut config = test_config();
+                config.download_buffer_perfile_size = xet_runtime::utils::ByteSize::from("8kb");
 
-            let reconstructed = reconstruct_to_vec(&client, file_contents.file_hash, None, &config, None)
-                .await
-                .unwrap();
-            assert_eq!(reconstructed, file_contents.data);
+                let reconstructed = reconstruct_to_vec(&client, file_contents.file_hash, None, &config, None)
+                    .await
+                    .unwrap();
+                assert_eq!(reconstructed, file_contents.data);
 
-            assert_eq!(sem.total_permits(), expected_total);
-            assert_eq!(ctx.common.active_downloads.load(Ordering::Relaxed), 0);
-        })
-        .unwrap();
+                assert_eq!(sem.total_permits(), expected_total);
+                assert_eq!(runtime.common.active_downloads.load(Ordering::Relaxed), 0);
+            })
+            .unwrap();
     }
 
     // ==================== File Output Specific Tests ====================

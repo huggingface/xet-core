@@ -70,12 +70,12 @@ pub struct MemoryClient {
 
 impl MemoryClient {
     /// Create a new in-memory client.
-    pub fn new(ctx: XetRuntime) -> Arc<Self> {
+    pub fn new(runtime: XetRuntime) -> Arc<Self> {
         Arc::new(Self {
             xorbs: RwLock::new(MerkleHashMap::new()),
             shard: RwLock::new(MDBInMemoryShard::default()),
             global_dedup: RwLock::new(MerkleHashMap::new()),
-            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload(ctx, "memory_uploads"),
+            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload(runtime, "memory_uploads"),
             url_expiration_ms: AtomicU64::new(u64::MAX),
             global_dedup_expiration_secs: AtomicU64::new(0),
             random_ms_delay_window: (AtomicU64::new(0), AtomicU64::new(0)),
@@ -218,12 +218,12 @@ impl MemoryClient {
 
 impl Default for MemoryClient {
     fn default() -> Self {
-        let ctx = XetRuntime::default().expect("ctx");
+        let runtime = XetRuntime::default().expect("runtime");
         Self {
             xorbs: RwLock::new(MerkleHashMap::new()),
             shard: RwLock::new(MDBInMemoryShard::default()),
             global_dedup: RwLock::new(MerkleHashMap::new()),
-            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload(ctx, "memory_uploads"),
+            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload(runtime, "memory_uploads"),
             url_expiration_ms: AtomicU64::new(u64::MAX),
             global_dedup_expiration_secs: AtomicU64::new(0),
             random_ms_delay_window: (AtomicU64::new(0), AtomicU64::new(0)),

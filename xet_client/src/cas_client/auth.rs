@@ -69,7 +69,7 @@ impl TokenRefresher for ErrTokenRefresher {
 /// An optional [`CredentialHelper`](crate::common::auth::CredentialHelper) is applied to the
 /// request before it is sent; pass `None` when no additional credentials are needed.
 pub struct DirectRefreshRouteTokenRefresher {
-    ctx: XetRuntime,
+    runtime: XetRuntime,
     refresh_route: String,
     client: ClientWithMiddleware,
     cred_helper: Option<Arc<dyn CredentialHelper>>,
@@ -85,13 +85,13 @@ impl std::fmt::Debug for DirectRefreshRouteTokenRefresher {
 
 impl DirectRefreshRouteTokenRefresher {
     pub fn new(
-        ctx: XetRuntime,
+        runtime: XetRuntime,
         refresh_route: impl Into<String>,
         client: ClientWithMiddleware,
         cred_helper: Option<Arc<dyn CredentialHelper>>,
     ) -> Self {
         Self {
-            ctx,
+            runtime,
             refresh_route: refresh_route.into(),
             client,
             cred_helper,
@@ -104,7 +104,7 @@ impl DirectRefreshRouteTokenRefresher {
         let cred_helper = self.cred_helper.clone();
 
         let jwt_info: crate::hub_client::CasJWTInfo =
-            super::retry_wrapper::RetryWrapper::new(self.ctx.clone(), "xet-token")
+            super::retry_wrapper::RetryWrapper::new(self.runtime.clone(), "xet-token")
                 .run_and_extract_json(move || {
                     let refresh_route = refresh_route.clone();
                     let client = client.clone();

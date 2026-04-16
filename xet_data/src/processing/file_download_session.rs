@@ -25,7 +25,7 @@ use crate::progress_tracking::{GroupProgress, ItemProgressUpdater, UniqueID};
 /// This struct parallels `FileUploadSession` for the download path. It holds the
 /// CAS client and a shared progress group for all downloads in the session.
 pub struct FileDownloadSession {
-    ctx: XetRuntime,
+    runtime: XetRuntime,
     client: Arc<dyn Client>,
     chunk_cache: Option<Arc<dyn ChunkCache>>,
     progress: Arc<GroupProgress>,
@@ -42,15 +42,15 @@ impl FileDownloadSession {
             .map(Cow::Borrowed)
             .unwrap_or_else(|| Cow::Owned(UniqueID::new().to_string()));
 
-        let ctx = config.ctx.clone();
+        let runtime = config.runtime.clone();
         let client = create_remote_client(&config, &session_id, false).await?;
         let progress = GroupProgress::with_speed_config(
-            ctx.config.data.progress_update_speed_sampling_window,
-            ctx.config.data.progress_update_speed_min_observations,
+            runtime.config.data.progress_update_speed_sampling_window,
+            runtime.config.data.progress_update_speed_min_observations,
         );
 
         Ok(Arc::new(Self {
-            ctx,
+            runtime,
             client,
             chunk_cache,
             progress,
@@ -65,13 +65,13 @@ impl FileDownloadSession {
     /// session should inherit the configured speed parameters from the context used
     /// to build [`TranslatorConfig`].
     pub fn from_client(
-        ctx: &XetRuntime,
+        runtime: &XetRuntime,
         client: Arc<dyn Client>,
         chunk_cache: Option<Arc<dyn ChunkCache>>,
     ) -> Arc<Self> {
         let progress = GroupProgress::new();
         Arc::new(Self {
-            ctx: ctx.clone(),
+            runtime: runtime.clone(),
             client,
             chunk_cache,
             progress,
@@ -119,9 +119,9 @@ impl FileDownloadSession {
         self.check_not_finalized()?;
         let id = UniqueID::new();
         let session = self.clone();
-        let rt = self.ctx.threadpool.clone();
-        let semaphore = self.ctx.common.file_download_semaphore.clone();
-        let handle = rt.spawn(async move {
+        let threadpool = self.runtime.threadpool.clone();
+        let semaphore = self.runtime.common.file_download_semaphore.clone();
+        let handle = threadpool.spawn(async move {
             let _permit = semaphore.acquire().await?;
             session.download_file_with_id(&file_info, &write_path, id).await
         });
@@ -301,7 +301,7 @@ impl FileDownloadSession {
     ) -> Result<FileReconstructor> {
         let file_id = file_info.merkle_hash()?;
 
-        let mut reconstructor = FileReconstructor::new(&self.ctx, &self.client, file_id);
+        let mut reconstructor = FileReconstructor::new(&self.runtime, &self.client, file_id);
 
         match range {
             Some(range) if range.end < u64::MAX => {
@@ -400,8 +400,8 @@ mod tests {
     }
 
     async fn upload_data(cas_path: &Path, data: &[u8]) -> XetFileInfo {
-        let ctx = XetRuntime::default().unwrap();
-        let upload_session = FileUploadSession::new(TranslatorConfig::local_config(&ctx, cas_path).unwrap().into())
+        let runtime = XetRuntime::default().unwrap();
+        let upload_session = FileUploadSession::new(TranslatorConfig::local_config(&runtime, cas_path).unwrap().into())
             .await
             .unwrap();
 

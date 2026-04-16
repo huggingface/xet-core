@@ -6,13 +6,13 @@ use xet_runtime::core::XetRuntime;
 /// Helper struct to generate a sha256 hash.
 #[derive(Debug)]
 pub(crate) struct Sha256Generator {
-    ctx: XetRuntime,
+    runtime: XetRuntime,
     hasher: Option<JoinHandle<Result<sha2Sha256, JoinError>>>,
 }
 
 impl Sha256Generator {
-    pub(crate) fn new(ctx: XetRuntime) -> Self {
-        Self { ctx, hasher: None }
+    pub(crate) fn new(runtime: XetRuntime) -> Self {
+        Self { runtime, hasher: None }
     }
 
     /// Complete the last block, then hand off the new chunks to the new hasher.
@@ -24,8 +24,8 @@ impl Sha256Generator {
 
         // The previous task returns the hasher; we consume that and pass it on.
         // Use the compute background thread for this process.
-        let rt = self.ctx.threadpool.clone();
-        self.hasher = Some(rt.spawn_blocking(move || {
+        let threadpool = self.runtime.threadpool.clone();
+        self.hasher = Some(threadpool.spawn_blocking(move || {
             hasher.update(&new_data);
 
             Ok(hasher)

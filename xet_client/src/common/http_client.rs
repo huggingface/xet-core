@@ -157,7 +157,7 @@ fn reqwest_client_raw(
 /// Builds authenticated HTTP Client to talk to CAS.
 #[allow(unused_mut)]
 pub fn build_auth_http_client(
-    ctx: &XetRuntime,
+    runtime: &XetRuntime,
     auth_config: &Option<AuthConfig>,
     session_id: &str,
     unix_socket_path: Option<&str>,
@@ -167,7 +167,7 @@ pub fn build_auth_http_client(
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
 
-    let config_arc = ctx.config.clone();
+    let config_arc = runtime.config.clone();
     let unix_owned = unix_socket_path.map(|s| s.to_string());
     let custom_for_client = custom_headers.clone();
     let socket_path = unix_socket_path
@@ -175,14 +175,14 @@ pub fn build_auth_http_client(
         .or_else(|| config_arc.client.unix_socket_path.clone());
     let tag = format!("{}|{}", socket_path.as_deref().unwrap_or("tcp"), headers_tag(custom_headers.as_deref()));
 
-    let raw_client = ctx.common.get_or_create_reqwest_client(tag, move || {
+    let raw_client = runtime.common.get_or_create_reqwest_client(tag, move || {
         reqwest_client_raw(config_arc.as_ref(), unix_owned.as_deref(), custom_for_client)
     })?;
 
     if socket_path.is_some() {
         info!(socket_path=?socket_path, "HTTP client configured with Unix socket");
     } else {
-        let client_cfg = &ctx.config.client;
+        let client_cfg = &runtime.config.client;
         let custom_headers_log = custom_headers.as_deref().map(redact_headers);
         info!(
             idle_timeout=?client_cfg.idle_connection_timeout,
@@ -214,7 +214,7 @@ pub fn build_auth_http_client(
 #[cfg(not(target_family = "wasm"))]
 #[allow(unused_mut)]
 pub fn build_auth_http_client_no_read_timeout(
-    ctx: &XetRuntime,
+    runtime: &XetRuntime,
     auth_config: &Option<AuthConfig>,
     session_id: &str,
     unix_socket_path: Option<&str>,
@@ -224,7 +224,7 @@ pub fn build_auth_http_client_no_read_timeout(
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
 
-    let raw_client = reqwest_client_no_read_timeout(ctx.config.as_ref(), unix_socket_path, custom_headers)?;
+    let raw_client = reqwest_client_no_read_timeout(runtime.config.as_ref(), unix_socket_path, custom_headers)?;
     let mut builder = ClientBuilder::new(raw_client);
 
     #[cfg(unix)]
@@ -241,12 +241,12 @@ pub fn build_auth_http_client_no_read_timeout(
 
 /// Builds HTTP Client to talk to CAS.
 pub fn build_http_client(
-    ctx: &XetRuntime,
+    runtime: &XetRuntime,
     session_id: &str,
     unix_socket_path: Option<&str>,
     custom_headers: Option<Arc<HeaderMap>>,
 ) -> Result<ClientWithMiddleware> {
-    build_auth_http_client(ctx, &None, session_id, unix_socket_path, custom_headers)
+    build_auth_http_client(runtime, &None, session_id, unix_socket_path, custom_headers)
 }
 
 /// Helper trait to allow the reqwest_middleware client to optionally add a middleware.
@@ -468,8 +468,8 @@ mod tests {
 
     #[test]
     fn test_build_http_client_without_uds() {
-        let ctx = XetRuntime::default().expect("ctx");
-        let result = build_http_client(&ctx, "test-session", None, None);
+        let runtime = XetRuntime::default().expect("runtime");
+        let result = build_http_client(&runtime, "test-session", None, None);
         assert!(result.is_ok());
     }
 
@@ -478,35 +478,36 @@ mod tests {
 
         #[test]
         fn test_build_no_read_timeout_succeeds() {
-            let ctx = XetRuntime::default().expect("ctx");
-            let result = build_auth_http_client_no_read_timeout(&ctx, &None, "test-session", None, None);
+            let runtime = XetRuntime::default().expect("runtime");
+            let result = build_auth_http_client_no_read_timeout(&runtime, &None, "test-session", None, None);
             assert!(result.is_ok());
         }
 
         #[test]
         fn test_build_no_read_timeout_with_empty_session_id() {
-            let ctx = XetRuntime::default().expect("ctx");
-            let result = build_auth_http_client_no_read_timeout(&ctx, &None, "", None, None);
+            let runtime = XetRuntime::default().expect("runtime");
+            let result = build_auth_http_client_no_read_timeout(&runtime, &None, "", None, None);
             assert!(result.is_ok());
         }
 
         #[test]
         fn test_build_no_read_timeout_with_custom_headers() {
-            let ctx = XetRuntime::default().expect("ctx");
+            let runtime = XetRuntime::default().expect("runtime");
             let mut headers = HeaderMap::new();
             headers.insert("X-Custom-Header", HeaderValue::from_static("test-value"));
             headers.insert(reqwest::header::USER_AGENT, HeaderValue::from_static("test-agent/1.0"));
 
             let result =
-                build_auth_http_client_no_read_timeout(&ctx, &None, "test-session", None, Some(Arc::new(headers)));
+                build_auth_http_client_no_read_timeout(&runtime, &None, "test-session", None, Some(Arc::new(headers)));
             assert!(result.is_ok());
         }
 
         #[test]
         fn test_no_read_timeout_client_is_distinct_from_standard_client() {
-            let ctx = XetRuntime::default().expect("ctx");
-            let standard = build_auth_http_client(&ctx, &None, "test-session", None, None).unwrap();
-            let no_timeout = build_auth_http_client_no_read_timeout(&ctx, &None, "test-session", None, None).unwrap();
+            let runtime = XetRuntime::default().expect("runtime");
+            let standard = build_auth_http_client(&runtime, &None, "test-session", None, None).unwrap();
+            let no_timeout =
+                build_auth_http_client_no_read_timeout(&runtime, &None, "test-session", None, None).unwrap();
 
             assert_ne!(
                 format!("{:p}", &standard),

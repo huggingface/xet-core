@@ -28,7 +28,7 @@ struct ConnectionPermitInfo {
 
 pub struct RetryWrapper {
     #[allow(dead_code)]
-    ctx: XetRuntime,
+    runtime: XetRuntime,
     max_attempts: usize,
     base_delay: Duration,
     no_retry_on_429: bool,
@@ -40,11 +40,11 @@ pub struct RetryWrapper {
 }
 
 impl RetryWrapper {
-    pub fn new(ctx: XetRuntime, api_tag: &'static str) -> Self {
-        let max_attempts = ctx.config.client.retry_max_attempts;
-        let base_delay = ctx.config.client.retry_base_delay;
+    pub fn new(runtime: XetRuntime, api_tag: &'static str) -> Self {
+        let max_attempts = runtime.config.client.retry_max_attempts;
+        let base_delay = runtime.config.client.retry_base_delay;
         Self {
-            ctx,
+            runtime,
             max_attempts,
             base_delay,
             no_retry_on_429: false,
@@ -555,13 +555,13 @@ mod tests {
 
     use super::*;
 
-    fn test_ctx() -> XetRuntime {
+    fn test_runtime() -> XetRuntime {
         let config = XetConfig::new();
         XetRuntime::from_external(tokio::runtime::Handle::current(), config)
     }
 
     fn connection_wrapper(api: &'static str) -> RetryWrapper {
-        RetryWrapper::new(test_ctx(), api)
+        RetryWrapper::new(test_runtime(), api)
             .with_base_delay(Duration::from_millis(5))
             .with_max_attempts(3)
     }

@@ -87,9 +87,9 @@ async fn clean(mut reader: impl Read, mut writer: impl Write, size: u64) -> Resu
 
     let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
 
-    let ctx = get_xet_context();
+    let runtime = get_xet_context();
     let translator =
-        FileUploadSession::new(Arc::new(TranslatorConfig::local_config(&ctx, std::env::current_dir()?)?)).await?;
+        FileUploadSession::new(Arc::new(TranslatorConfig::local_config(&runtime, std::env::current_dir()?)?)).await?;
 
     let mut size_read = 0;
     let (_id, mut handle) = translator.start_clean(None, Some(size), Sha256Policy::Compute)?;
@@ -136,8 +136,8 @@ async fn smudge(_name: Arc<str>, mut reader: impl Read, output_path: PathBuf) ->
 
     // Use local config pointing to current directory
     let cas_path = std::env::current_dir()?;
-    let ctx = get_xet_context();
-    let config = TranslatorConfig::local_config(&ctx, cas_path)?;
+    let runtime = get_xet_context();
+    let config = TranslatorConfig::local_config(&runtime, cas_path)?;
     let session = xet_data::processing::FileDownloadSession::new(config.into(), None).await?;
 
     let (_id, _n_bytes) = session.download_file(&xet_file, &output_path).await?;

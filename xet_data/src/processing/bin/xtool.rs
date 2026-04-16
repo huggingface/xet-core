@@ -61,10 +61,10 @@ impl XCommand {
         let mut headers = HeaderMap::new();
         headers.insert(header::USER_AGENT, HeaderValue::from_static(USER_AGENT));
 
-        let ctx = XetRuntime::default()?;
+        let runtime = XetRuntime::default()?;
         let cred_helper = BearerCredentialHelper::new(token, "");
         let hub_client = HubClient::new(
-            ctx.clone(),
+            runtime.clone(),
             &endpoint,
             RepoInfo::try_from(&self.overrides.repo_type, &self.overrides.repo_id)?,
             Some("main".to_owned()),
@@ -216,16 +216,16 @@ async fn query_reconstruction(
 
     let config = XetConfig::new();
     let threadpool = XetThreadpool::from_external_with_config(tokio::runtime::Handle::current(), &config)?;
-    let ctx = XetRuntime::new(config, threadpool);
+    let runtime = XetRuntime::new(config, threadpool);
     let config = default_config(
-        &ctx,
+        &runtime,
         jwt_info.cas_url.clone(),
         Some((jwt_info.access_token, jwt_info.exp)),
         Some(token_refresher),
         Some(Arc::new(headers)),
     )?;
     let remote_client = RemoteClient::new(
-        ctx.clone(),
+        runtime.clone(),
         &jwt_info.cas_url,
         &config.session.auth,
         "",
@@ -261,8 +261,8 @@ fn main() -> Result<()> {
     }
 
     let threadpool = XetThreadpool::new(&config)?;
-    let ctx = XetRuntime::new(config, threadpool);
-    ctx.threadpool.bridge_sync(async move { cli.run().await })??;
+    let runtime = XetRuntime::new(config, threadpool);
+    runtime.threadpool.bridge_sync(async move { cli.run().await })??;
 
     Ok(())
 }

@@ -11,7 +11,7 @@ use crate::utils::adjustable_semaphore::AdjustableSemaphore;
 
 /// Holds shared state that is common across the entire context.
 ///
-/// Accessible via `ctx.common` on a [`super::XetRuntime`].
+/// Accessible via `runtime.common` on a [`super::XetRuntime`].
 pub struct XetCommon {
     /// Limits the number of files being ingested (cleaned/uploaded) concurrently.
     pub file_ingestion_semaphore: Arc<Semaphore>,

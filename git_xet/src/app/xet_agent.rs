@@ -16,9 +16,9 @@ use crate::constants::{
 
 const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
-fn xet_ctx() -> &'static XetRuntime {
-    static CTX: OnceLock<XetRuntime> = OnceLock::new();
-    CTX.get_or_init(|| XetRuntime::default().expect("xet context"))
+fn xet_runtime() -> &'static XetRuntime {
+    static RUNTIME: OnceLock<XetRuntime> = OnceLock::new();
+    RUNTIME.get_or_init(|| XetRuntime::default().expect("xet context"))
 }
 
 use crate::errors::{GitXetError, Result};
@@ -92,7 +92,7 @@ impl TransferAgent for XetAgent {
 
         let session_id = req.action.header.get(XET_SESSION_ID).map(|s| s.as_str()).unwrap_or_default();
         let token_refresher: Arc<dyn TokenRefresher> = Arc::new(new_git_token_refresher(
-            xet_ctx(),
+            xet_runtime(),
             repo,
             self.remote_url.clone(),
             &req.action.href,
@@ -139,7 +139,7 @@ impl TransferAgent for XetAgent {
         let headers = user_agent_headers;
 
         let mut config = default_config(
-            xet_ctx(),
+            xet_runtime(),
             cas_url,
             Some((token, token_expiry)),
             Some(token_refresher),

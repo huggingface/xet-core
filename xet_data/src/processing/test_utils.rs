@@ -188,7 +188,7 @@ pub struct HydrateDehydrateTest {
     pub src_dir: PathBuf,
     pub ptr_dir: PathBuf,
     pub dest_dir: PathBuf,
-    xet_ctx: XetRuntime,
+    runtime: XetRuntime,
     use_test_server: bool,
     /// Kept alive so the test server stays running for the duration of the test.
     #[cfg(feature = "simulation")]
@@ -226,7 +226,7 @@ impl HydrateDehydrateTest {
             src_dir,
             ptr_dir,
             dest_dir,
-            xet_ctx: XetRuntime::default().expect("xet context"),
+            runtime: XetRuntime::default().expect("xet context"),
             _temp_dir,
             use_test_server,
             #[cfg(feature = "simulation")]
@@ -266,7 +266,7 @@ impl HydrateDehydrateTest {
     #[cfg(feature = "simulation")]
     pub async fn ensure_server_created(&mut self) {
         if self.use_test_server && self.test_server.is_none() {
-            let local_client = LocalClient::new(self.xet_ctx.clone(), self.cas_dir.join("xet/xorbs"))
+            let local_client = LocalClient::new(self.runtime.clone(), self.cas_dir.join("xet/xorbs"))
                 .await
                 .unwrap();
             self.test_server = Some(LocalTestServerBuilder::new().with_client(local_client).start().await);
@@ -285,7 +285,7 @@ impl HydrateDehydrateTest {
             #[cfg(feature = "simulation")]
             {
                 if self.test_server.is_none() {
-                    let local_client = LocalClient::new(self.xet_ctx.clone(), self.cas_dir.join("xet/xorbs"))
+                    let local_client = LocalClient::new(self.runtime.clone(), self.cas_dir.join("xet/xorbs"))
                         .await
                         .unwrap();
                     self.test_server = Some(LocalTestServerBuilder::new().with_client(local_client).start().await);
@@ -297,15 +297,14 @@ impl HydrateDehydrateTest {
                 panic!("test server requires the 'simulation' feature");
             }
         } else {
-            LocalClient::new(self.xet_ctx.clone(), self.cas_dir.join("xet/xorbs"))
+            LocalClient::new(self.runtime.clone(), self.cas_dir.join("xet/xorbs"))
                 .await
                 .unwrap() as Arc<dyn Client>
         }
     }
 
     pub async fn new_upload_session(&self) -> Arc<FileUploadSession> {
-        let ctx = XetRuntime::default().unwrap();
-        let config = Arc::new(TranslatorConfig::local_config(&ctx, &self.cas_dir).unwrap());
+        let config = Arc::new(TranslatorConfig::local_config(&self.runtime, &self.cas_dir).unwrap());
         FileUploadSession::new(config.clone()).await.unwrap()
     }
 
@@ -355,8 +354,7 @@ impl HydrateDehydrateTest {
 
     pub async fn hydrate(&mut self) {
         let client = self.get_or_create_client().await;
-        let ctx = XetRuntime::default().unwrap();
-        let session = FileDownloadSession::from_client(&ctx, client, None);
+        let session = FileDownloadSession::from_client(&self.runtime, client, None);
 
         for entry in read_dir(&self.ptr_dir).unwrap() {
             let entry = entry.unwrap();
@@ -369,8 +367,7 @@ impl HydrateDehydrateTest {
 
     pub async fn hydrate_partitioned_writers(&mut self, partitions: usize) {
         let client = self.get_or_create_client().await;
-        let ctx = XetRuntime::default().unwrap();
-        let session = FileDownloadSession::from_client(&ctx, client, None);
+        let session = FileDownloadSession::from_client(&self.runtime, client, None);
 
         for entry in read_dir(&self.ptr_dir).unwrap() {
             let entry = entry.unwrap();
@@ -414,8 +411,7 @@ impl HydrateDehydrateTest {
 
     pub async fn hydrate_stream(&mut self) {
         let client = self.get_or_create_client().await;
-        let ctx = XetRuntime::default().unwrap();
-        let session = FileDownloadSession::from_client(&ctx, client, None);
+        let session = FileDownloadSession::from_client(&self.runtime, client, None);
 
         for entry in read_dir(&self.ptr_dir).unwrap() {
             let entry = entry.unwrap();
@@ -443,7 +439,7 @@ impl HydrateDehydrateTest {
 pub struct TestEnvironment {
     _temp_dir: TempDir,
     pub base_dir: PathBuf,
-    pub ctx: XetRuntime,
+    pub runtime: XetRuntime,
     pub config: Arc<super::configurations::TranslatorConfig>,
     #[cfg(feature = "simulation")]
     _server: Option<LocalTestServer>,
@@ -453,25 +449,29 @@ impl TestEnvironment {
     pub async fn new() -> Self {
         let temp_dir = TempDir::new().unwrap();
         let base_dir = temp_dir.path().to_path_buf();
-        let ctx = XetRuntime::default().unwrap();
+        let runtime = XetRuntime::default().unwrap();
 
         #[cfg(feature = "simulation")]
         let (config, server) = {
             let server = LocalTestServerBuilder::new().start().await;
             let config = Arc::new(
-                super::configurations::TranslatorConfig::test_server_config(&ctx, server.http_endpoint(), &base_dir)
-                    .unwrap(),
+                super::configurations::TranslatorConfig::test_server_config(
+                    &runtime,
+                    server.http_endpoint(),
+                    &base_dir,
+                )
+                .unwrap(),
             );
             (config, Some(server))
         };
 
         #[cfg(not(feature = "simulation"))]
-        let config = Arc::new(super::configurations::TranslatorConfig::local_config(&ctx, &base_dir).unwrap());
+        let config = Arc::new(super::configurations::TranslatorConfig::local_config(&runtime, &base_dir).unwrap());
 
         Self {
             _temp_dir: temp_dir,
             base_dir,
-            ctx,
+            runtime,
             config,
             #[cfg(feature = "simulation")]
             _server: server,

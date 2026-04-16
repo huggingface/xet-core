@@ -242,8 +242,8 @@ impl SimulationScenario {
     /// Waits for the server (and proxy if present) to be ready by GETting the ping endpoint every 100ms.
     /// Errors if not ready within 30s.
     async fn wait_until_ready(&self) -> ScenarioResult<()> {
-        let ctx = XetRuntime::from_external(tokio::runtime::Handle::current(), XetConfig::new());
-        let http_client = build_http_client(&ctx, "simulation_scenario", None, None)
+        let runtime = XetRuntime::from_external(tokio::runtime::Handle::current(), XetConfig::new());
+        let http_client = build_http_client(&runtime, "simulation_scenario", None, None)
             .map_err(|e| ScenarioError::Scenario(e.to_string()))?;
         let server_addr = self.server.http_endpoint();
         let ping_url = format!("{}{}", base_url(server_addr).trim_end_matches('/'), PING_PATH);

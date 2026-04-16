@@ -108,28 +108,28 @@ pub struct ShardFileManager {
 impl ShardFileManager {
     // Construct in a session directory.
     pub async fn new_in_session_directory(
-        ctx: &XetRuntime,
+        runtime: &XetRuntime,
         session_directory: impl AsRef<Path>,
         scan_directory: bool,
     ) -> Result<Arc<Self>> {
-        Self::new_impl(ctx, session_directory, false, ctx.config.shard.max_target_size, scan_directory, 0).await
+        Self::new_impl(runtime, session_directory, false, runtime.config.shard.max_target_size, scan_directory, 0).await
     }
 
     // Construction functions
-    pub async fn new_in_cache_directory(ctx: &XetRuntime, cache_directory: impl AsRef<Path>) -> Result<Arc<Self>> {
+    pub async fn new_in_cache_directory(runtime: &XetRuntime, cache_directory: impl AsRef<Path>) -> Result<Arc<Self>> {
         Self::new_impl(
-            ctx,
+            runtime,
             cache_directory,
             true,
-            ctx.config.shard.max_target_size,
+            runtime.config.shard.max_target_size,
             true,
-            ctx.config.shard.cache_size_limit.as_u64(),
+            runtime.config.shard.cache_size_limit.as_u64(),
         )
         .await
     }
 
     async fn new_impl(
-        ctx: &XetRuntime,
+        runtime: &XetRuntime,
         directory: impl AsRef<Path>,
         is_cachable: bool,
         target_shard_max_size: u64,
@@ -143,8 +143,8 @@ impl ShardFileManager {
             std::fs::create_dir_all(&shard_directory)?;
         }
 
-        let chunk_index_table_max_size = ctx.config.shard.chunk_index_table_max_size;
-        let shard_file_cache = get_shard_file_cache(&ctx.common);
+        let chunk_index_table_max_size = runtime.config.shard.chunk_index_table_max_size;
+        let shard_file_cache = get_shard_file_cache(&runtime.common);
         let create_new_sfm = || {
             Arc::new(Self {
                 chunk_index_table_max_size,
@@ -162,7 +162,7 @@ impl ShardFileManager {
                 break 'load_sfm create_new_sfm();
             }
 
-            let sfm_cache = get_sfm_cache(&ctx.common);
+            let sfm_cache = get_sfm_cache(&runtime.common);
 
             {
                 let ro_lg = sfm_cache.read().await;
@@ -612,7 +612,7 @@ mod tests {
     use super::{get_shard_file_cache, *};
     use crate::error::Result;
 
-    fn test_ctx() -> XetRuntime {
+    fn test_runtime() -> XetRuntime {
         XetRuntime::from_external(Handle::current(), XetConfig::new())
     }
 
@@ -663,7 +663,7 @@ mod tests {
 
     // Create n_shards new random shards in the directory pointed
     pub async fn create_random_shard_collection(
-        ctx: &XetRuntime,
+        runtime: &XetRuntime,
         seed: u64,
         shard_dir: impl AsRef<Path>,
         n_shards: usize,
@@ -674,7 +674,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(seed);
 
         let shard_dir = shard_dir.as_ref();
-        let sfm = ShardFileManager::new_in_session_directory(ctx, shard_dir, false).await?;
+        let sfm = ShardFileManager::new_in_session_directory(runtime, shard_dir, false).await?;
         let mut reference_shard = MDBInMemoryShard::default();
 
         for _ in 0..n_shards {
@@ -805,22 +805,22 @@ mod tests {
     }
 
     async fn sfm_with_target_shard_size(
-        ctx: &XetRuntime,
+        runtime: &XetRuntime,
         path: impl AsRef<Path>,
         target_size: u64,
     ) -> Result<Arc<ShardFileManager>> {
-        ShardFileManager::new_impl(ctx, path, false, target_size, true, 0).await
+        ShardFileManager::new_impl(runtime, path, false, target_size, true, 0).await
     }
 
     #[tokio::test]
     async fn test_basic_retrieval() -> Result<()> {
-        let ctx = test_ctx();
-        let sfc = get_shard_file_cache(&ctx.common);
+        let runtime = test_runtime();
+        let sfc = get_shard_file_cache(&runtime.common);
         let tmp_dir = TempDir::with_prefix("gitxet_shard_test_1")?;
         let mut mdb_in_mem = MDBInMemoryShard::default();
 
         {
-            let mdb = ShardFileManager::new_in_session_directory(&ctx, tmp_dir.path(), true).await?;
+            let mdb = ShardFileManager::new_in_session_directory(&runtime, tmp_dir.path(), true).await?;
 
             fill_with_specific_shard(&mdb, &mut mdb_in_mem, &[(0, &[(11, 5)])], &[(100, &[(200, (0, 5))])]).await?;
 
@@ -836,7 +836,7 @@ mod tests {
         }
         {
             // Now, make sure that this happens if this directory is opened up
-            let mdb2 = ShardFileManager::new_in_session_directory(&ctx, tmp_dir.path(), true).await?;
+            let mdb2 = ShardFileManager::new_in_session_directory(&runtime, tmp_dir.path(), true).await?;
 
             // Make sure it's all in there this round.
             verify_metadata_shards_match(&mdb2, &mdb_in_mem, true).await?;
@@ -848,9 +848,9 @@ mod tests {
 
             // Now, merge shards in the background.
             let merged_shards = consolidate_shards_in_directory(
-                &ctx.threadpool,
+                &runtime.threadpool,
                 tmp_dir.path(),
-                ctx.config.shard.max_target_size,
+                runtime.config.shard.max_target_size,
                 false,
                 &sfc,
             )?;
@@ -869,11 +869,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_larger_simulated() -> Result<()> {
-        let ctx = test_ctx();
-        let sfc = get_shard_file_cache(&ctx.common);
+        let runtime = test_runtime();
+        let sfc = get_shard_file_cache(&runtime.common);
         let tmp_dir = TempDir::with_prefix("gitxet_shard_test_2")?;
         let mut mdb_in_mem = MDBInMemoryShard::default();
-        let mdb = ShardFileManager::new_in_session_directory(&ctx, tmp_dir.path(), true).await?;
+        let mdb = ShardFileManager::new_in_session_directory(&runtime, tmp_dir.path(), true).await?;
 
         for i in 0..10 {
             fill_with_random_shard(&mdb, &mut mdb_in_mem, i, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6]).await?;
@@ -892,7 +892,7 @@ mod tests {
             mdb.flush().await?;
 
             // Now, make sure that this happens if this directory is opened up
-            let mdb2 = ShardFileManager::new_in_session_directory(&ctx, tmp_dir.path(), true).await?;
+            let mdb2 = ShardFileManager::new_in_session_directory(&runtime, tmp_dir.path(), true).await?;
 
             // Make sure it's all in there this round.
             verify_metadata_shards_match(&mdb2, &mdb_in_mem, true).await?;
@@ -902,15 +902,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_session_management() -> Result<()> {
-        let ctx = test_ctx();
-        let sfc = get_shard_file_cache(&ctx.common);
+        let runtime = test_runtime();
+        let sfc = get_shard_file_cache(&runtime.common);
         let tmp_dir = TempDir::with_prefix("gitxet_shard_test_3").unwrap();
         let mut mdb_in_mem = MDBInMemoryShard::default();
 
         for sesh in 0..3 {
             for i in 0..10 {
                 {
-                    let mdb = ShardFileManager::new_in_session_directory(&ctx, tmp_dir.path(), true).await?;
+                    let mdb = ShardFileManager::new_in_session_directory(&runtime, tmp_dir.path(), true).await?;
                     fill_with_random_shard(&mdb, &mut mdb_in_mem, 100 * sesh + i, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6])
                         .await
                         .unwrap();
@@ -933,9 +933,9 @@ mod tests {
 
             {
                 let merged_shards = consolidate_shards_in_directory(
-                    &ctx.threadpool,
+                    &runtime.threadpool,
                     tmp_dir.path(),
-                    ctx.config.shard.max_target_size,
+                    runtime.config.shard.max_target_size,
                     false,
                     &sfc,
                 )
@@ -951,7 +951,7 @@ mod tests {
 
             {
                 // Now, make sure that this happens if this directory is opened up
-                let mdb2 = ShardFileManager::new_in_session_directory(&ctx, tmp_dir.path(), true).await?;
+                let mdb2 = ShardFileManager::new_in_session_directory(&runtime, tmp_dir.path(), true).await?;
 
                 verify_metadata_shards_match(&mdb2, &mdb_in_mem, true).await.unwrap();
             }
@@ -961,20 +961,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_flush_and_consolidation() -> Result<()> {
-        let ctx = test_ctx();
-        let sfc = get_shard_file_cache(&ctx.common);
+        let runtime = test_runtime();
+        let sfc = get_shard_file_cache(&runtime.common);
         let tmp_dir = TempDir::with_prefix("gitxet_shard_test_4b")?;
         let mut mdb_in_mem = MDBInMemoryShard::default();
 
         const T: u64 = 10000;
 
         {
-            let mdb = sfm_with_target_shard_size(&ctx, tmp_dir.path(), T).await?;
+            let mdb = sfm_with_target_shard_size(&runtime, tmp_dir.path(), T).await?;
             fill_with_random_shard(&mdb, &mut mdb_in_mem, 0, &[16; 16], &[16; 16]).await?;
             mdb.flush().await?;
         }
         {
-            let mdb = sfm_with_target_shard_size(&ctx, tmp_dir.path(), 2 * T).await?;
+            let mdb = sfm_with_target_shard_size(&runtime, tmp_dir.path(), 2 * T).await?;
 
             verify_metadata_shards_match(&mdb, &mdb_in_mem, true).await?;
 
@@ -987,7 +987,7 @@ mod tests {
 
         // Reload and verify
         {
-            let mdb = ShardFileManager::new_in_session_directory(&ctx, tmp_dir.path(), true).await?;
+            let mdb = ShardFileManager::new_in_session_directory(&runtime, tmp_dir.path(), true).await?;
             verify_metadata_shards_match(&mdb, &mdb_in_mem, true).await?;
         }
 
@@ -996,7 +996,7 @@ mod tests {
             let tmp_merge_dir = TempDir::new()?;
 
             let shard_merge_result =
-                merge_shards(&ctx.threadpool, tmp_dir.path(), tmp_merge_dir.path(), 8 * T, false, &sfc)?;
+                merge_shards(&runtime.threadpool, tmp_dir.path(), tmp_merge_dir.path(), 8 * T, false, &sfc)?;
             let mut merged_shards = shard_merge_result.merged_shards;
             let m_del_shards = shard_merge_result.obsolete_shards;
 
@@ -1008,7 +1008,7 @@ mod tests {
             assert_eq!(paths.count(), m_del_shards.len());
 
             // This call should be the same, but
-            let mut rv = consolidate_shards_in_directory(&ctx.threadpool, tmp_dir.path(), 8 * T, false, &sfc)?;
+            let mut rv = consolidate_shards_in_directory(&runtime.threadpool, tmp_dir.path(), 8 * T, false, &sfc)?;
 
             let paths = std::fs::read_dir(tmp_dir.path()).unwrap();
             let n_paths = paths.count();
@@ -1030,7 +1030,7 @@ mod tests {
 
         // Reload and verify
         {
-            let mdb = ShardFileManager::new_in_session_directory(&ctx, tmp_dir.path(), true).await?;
+            let mdb = ShardFileManager::new_in_session_directory(&runtime, tmp_dir.path(), true).await?;
             verify_metadata_shards_match(&mdb, &mdb_in_mem, true).await?;
         }
 
@@ -1039,15 +1039,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_size_threshholds() -> Result<()> {
-        let ctx = test_ctx();
-        let sfc = get_shard_file_cache(&ctx.common);
+        let runtime = test_runtime();
+        let sfc = get_shard_file_cache(&runtime.common);
         let tmp_dir = TempDir::with_prefix("gitxet_shard_test_4")?;
         let mut mdb_in_mem = MDBInMemoryShard::default();
 
         const T: u64 = 4096;
 
         for i in 0..5 {
-            let mdb = sfm_with_target_shard_size(&ctx, tmp_dir.path(), T).await?;
+            let mdb = sfm_with_target_shard_size(&runtime, tmp_dir.path(), T).await?;
             fill_with_random_shard(&mdb, &mut mdb_in_mem, i, &[5; 25], &[5; 25]).await?;
 
             verify_metadata_shards_match(&mdb, &mdb_in_mem, true).await?;
@@ -1068,13 +1068,13 @@ mod tests {
         let mut target_size = T;
 
         loop {
-            let mdb2 = sfm_with_target_shard_size(&ctx, tmp_dir.path(), 2 * T).await?;
+            let mdb2 = sfm_with_target_shard_size(&runtime, tmp_dir.path(), 2 * T).await?;
 
             // Make sure it's all in there this round.
             verify_metadata_shards_match(&mdb2, &mdb_in_mem, true).await?;
 
             let merged_shards =
-                consolidate_shards_in_directory(&ctx.threadpool, tmp_dir.path(), target_size, false, &sfc)?;
+                consolidate_shards_in_directory(&runtime.threadpool, tmp_dir.path(), target_size, false, &sfc)?;
 
             for si in merged_shards.iter() {
                 assert!(si.path.exists());
@@ -1101,17 +1101,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_keyed_shard_tooling() -> Result<()> {
-        let ctx = test_ctx();
-        let sfc = get_shard_file_cache(&ctx.common);
+        let runtime = test_runtime();
+        let sfc = get_shard_file_cache(&runtime.common);
         let tmp_dir = TempDir::with_prefix("shard_test_unkeyed")?;
         let tmp_dir_path = tmp_dir.path();
 
         let ref_shard =
-            create_random_shard_collection(&ctx, 0, tmp_dir_path, 2, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6]).await?;
+            create_random_shard_collection(&runtime, 0, tmp_dir_path, 2, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6]).await?;
 
         // First, load all of these with a shard file manager and check them.
         {
-            let shard_file_manager = ShardFileManager::new_in_session_directory(&ctx, tmp_dir_path, true).await?;
+            let shard_file_manager = ShardFileManager::new_in_session_directory(&runtime, tmp_dir_path, true).await?;
             verify_metadata_shards_match(&shard_file_manager, &ref_shard, true).await?;
         }
 
@@ -1162,7 +1162,8 @@ mod tests {
             }
 
             // Now, verify that everything still works great.
-            let shard_file_manager = ShardFileManager::new_in_session_directory(&ctx, tmp_dir_path_keyed, true).await?;
+            let shard_file_manager =
+                ShardFileManager::new_in_session_directory(&runtime, tmp_dir_path_keyed, true).await?;
 
             verify_metadata_shards_match(&shard_file_manager, &ref_shard, include_info).await?;
         }
@@ -1170,8 +1171,8 @@ mod tests {
         Ok(())
     }
 
-    async fn shard_list_with_timestamp_filtering(ctx: &XetRuntime, path: &Path) -> Result<Vec<Arc<MDBShardFile>>> {
-        ShardFileManager::new_impl(ctx, path, false, ctx.config.shard.max_target_size, true, 0)
+    async fn shard_list_with_timestamp_filtering(runtime: &XetRuntime, path: &Path) -> Result<Vec<Arc<MDBShardFile>>> {
+        ShardFileManager::new_impl(runtime, path, false, runtime.config.shard.max_target_size, true, 0)
             .await?
             .registered_shard_list()
             .await
@@ -1180,13 +1181,13 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_timestamp_filtering() -> Result<()> {
-        let ctx = test_ctx();
-        let sfc = get_shard_file_cache(&ctx.common);
+        let runtime = test_runtime();
+        let sfc = get_shard_file_cache(&runtime.common);
         let tmp_dir = TempDir::with_prefix("shard_test_timestamp")?;
         let tmp_dir_path = tmp_dir.path();
 
         // Just create a single shard; we'll key it with other keys and timestamps and then test loading.
-        create_random_shard_collection(&ctx, 0, tmp_dir_path, 1, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6]).await?;
+        create_random_shard_collection(&runtime, 0, tmp_dir_path, 1, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6]).await?;
 
         let path = std::fs::read_dir(tmp_dir_path)?.map(|p| p.unwrap().path()).next().unwrap();
 
@@ -1204,7 +1205,7 @@ mod tests {
             .unwrap();
 
         {
-            let loaded_shards = shard_list_with_timestamp_filtering(&ctx, tmp_dir_path_keyed).await?;
+            let loaded_shards = shard_list_with_timestamp_filtering(&runtime, tmp_dir_path_keyed).await?;
 
             assert_eq!(loaded_shards.len(), 1);
             assert_eq!(loaded_shards[0].shard_hash, out.shard_hash)
@@ -1215,7 +1216,7 @@ mod tests {
         std::thread::sleep(Duration::new(2, 10_000_000));
 
         {
-            let loaded_shards = shard_list_with_timestamp_filtering(&ctx, tmp_dir_path_keyed).await?;
+            let loaded_shards = shard_list_with_timestamp_filtering(&runtime, tmp_dir_path_keyed).await?;
 
             // No shards loaded
             assert!(loaded_shards.is_empty());
@@ -1245,13 +1246,13 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_export_expiration() -> Result<()> {
-        let ctx = test_ctx();
-        let sfc = get_shard_file_cache(&ctx.common);
+        let runtime = test_runtime();
+        let sfc = get_shard_file_cache(&runtime.common);
         let tmp_dir = TempDir::with_prefix("shard_test_timestamp_2")?;
         let tmp_dir_path = tmp_dir.path();
 
         // Just create a single shard; we'll key it with other keys and timestamps and then test loading.
-        create_random_shard_collection(&ctx, 0, tmp_dir_path, 1, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6]).await?;
+        create_random_shard_collection(&runtime, 0, tmp_dir_path, 1, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6]).await?;
 
         let path = std::fs::read_dir(tmp_dir_path)?.map(|p| p.unwrap().path()).next().unwrap();
 
@@ -1264,7 +1265,7 @@ mod tests {
         let out = shard.export_with_expiration(tmp_dir_path_expiry, Duration::new(1, 0), &sfc)?;
 
         {
-            let loaded_shards = shard_list_with_timestamp_filtering(&ctx, tmp_dir_path_expiry).await?;
+            let loaded_shards = shard_list_with_timestamp_filtering(&runtime, tmp_dir_path_expiry).await?;
 
             assert_eq!(loaded_shards.len(), 1);
             assert_eq!(loaded_shards[0].shard_hash, out.shard_hash)
@@ -1275,7 +1276,7 @@ mod tests {
         std::thread::sleep(Duration::new(2, 10_000_000));
 
         {
-            let loaded_shards = shard_list_with_timestamp_filtering(&ctx, tmp_dir_path_expiry).await?;
+            let loaded_shards = shard_list_with_timestamp_filtering(&runtime, tmp_dir_path_expiry).await?;
 
             assert!(loaded_shards.is_empty());
 
@@ -1303,15 +1304,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_size_pruning() {
-        let ctx = test_ctx();
-        let sfc = get_shard_file_cache(&ctx.common);
+        let runtime = test_runtime();
+        let sfc = get_shard_file_cache(&runtime.common);
         let tmp_dir = TempDir::with_prefix("shard_test_cache_size_pruning").unwrap();
 
         let tmp_dir_1 = tmp_dir.path().join("src");
 
         let n_shards = 4;
 
-        create_random_shard_collection(&ctx, 0, &tmp_dir_1, n_shards, &[16; 16], &[16; 16])
+        create_random_shard_collection(&runtime, 0, &tmp_dir_1, n_shards, &[16; 16], &[16; 16])
             .await
             .unwrap();
 
@@ -1337,9 +1338,9 @@ mod tests {
         }
 
         let get_shards = |cache_size: u64| {
-            let ctx = ctx.clone();
+            let runtime = runtime.clone();
             async move {
-                let sfm = ShardFileManager::new_impl(&ctx, tmp_dir_2, false, 64 * 1024, true, cache_size)
+                let sfm = ShardFileManager::new_impl(&runtime, tmp_dir_2, false, 64 * 1024, true, cache_size)
                     .await
                     .unwrap();
                 sfm.registered_shard_list().await.unwrap()
@@ -1376,13 +1377,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_shard_deletion_ok() {
-        let ctx = test_ctx();
-        let sfc = get_shard_file_cache(&ctx.common);
+        let runtime = test_runtime();
+        let sfc = get_shard_file_cache(&runtime.common);
         let tmp_dir = TempDir::with_prefix("shard_test_deletion").unwrap();
 
         let tmp_dir_1 = tmp_dir.path().join("src");
 
-        create_random_shard_collection(&ctx, 0, &tmp_dir_1, 4, &[4; 4], &[4; 4])
+        create_random_shard_collection(&runtime, 0, &tmp_dir_1, 4, &[4; 4], &[4; 4])
             .await
             .unwrap();
 
@@ -1423,14 +1424,16 @@ mod tests {
                 // Now attempt a merge; this should cause an error.
                 let out_dir_1 = work_dir.join("out_err");
                 std::fs::create_dir_all(&out_dir_1).unwrap();
-                let res = merge_shards(&ctx.threadpool, &tmp_src_dir, &out_dir_1, base_size * merge_size, false, &sfc);
+                let res =
+                    merge_shards(&runtime.threadpool, &tmp_src_dir, &out_dir_1, base_size * merge_size, false, &sfc);
                 assert!(res.is_err());
 
                 // Now attempt a merge with error skipping; which should not cause an error.
                 let out_dir_2 = work_dir.join("out_skips");
                 std::fs::create_dir_all(&out_dir_2).unwrap();
-                let res = merge_shards(&ctx.threadpool, &tmp_src_dir, &out_dir_2, base_size * merge_size, true, &sfc)
-                    .unwrap();
+                let res =
+                    merge_shards(&runtime.threadpool, &tmp_src_dir, &out_dir_2, base_size * merge_size, true, &sfc)
+                        .unwrap();
 
                 assert_eq!(res.merged_shards.len(), n_merged);
 
@@ -1451,16 +1454,17 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_new_in_cache_directory_cache_identity_under_concurrency() -> Result<()> {
-        let ctx = test_ctx();
+        let runtime = test_runtime();
         let tmp_dir = TempDir::with_prefix("shard_test_cache_identity")?;
         let shard_dir = tmp_dir.path().to_path_buf();
 
         let mut join_handles = Vec::new();
         for _ in 0..32 {
-            let ctx = ctx.clone();
+            let runtime = runtime.clone();
             let shard_dir = shard_dir.clone();
-            join_handles
-                .push(tokio::spawn(async move { ShardFileManager::new_in_cache_directory(&ctx, &shard_dir).await }));
+            join_handles.push(tokio::spawn(async move {
+                ShardFileManager::new_in_cache_directory(&runtime, &shard_dir).await
+            }));
         }
 
         let mut managers = Vec::new();

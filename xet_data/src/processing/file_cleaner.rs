@@ -53,7 +53,7 @@ impl From<Option<Sha256>> for Sha256Policy {
 
 /// A class that encapsulates the clean and data task around a single file.
 pub struct SingleFileCleaner {
-    ctx: XetRuntime,
+    runtime: XetRuntime,
 
     // File name, if known.
     file_name: Option<Arc<str>>,
@@ -88,17 +88,17 @@ impl SingleFileCleaner {
         sha256: Sha256Policy,
         session: Arc<FileUploadSession>,
     ) -> Self {
-        let ctx = session.ctx.clone();
-        let deduper = FileDeduper::new(UploadSessionDataManager::new(session.clone()), file_id, ctx.clone());
+        let runtime = session.runtime.clone();
+        let deduper = FileDeduper::new(UploadSessionDataManager::new(session.clone()), file_id, runtime.clone());
 
         let (sha_generator, provided_sha256) = match sha256 {
-            Sha256Policy::Compute => (Some(Sha256Generator::new(ctx.clone())), None),
+            Sha256Policy::Compute => (Some(Sha256Generator::new(runtime.clone())), None),
             Sha256Policy::Provided(hash) => (None, Some(hash)),
             Sha256Policy::Skip => (None, None),
         };
 
         Self {
-            ctx,
+            runtime,
             file_name,
             file_id,
             dedup_manager_fut: Box::pin(async move { Ok(deduper) }),
@@ -137,7 +137,7 @@ impl SingleFileCleaner {
     }
 
     pub async fn add_data_from_bytes(&mut self, data: Bytes) -> Result<()> {
-        let block_size = *self.ctx.config.data.ingestion_block_size as usize;
+        let block_size = *self.runtime.config.data.ingestion_block_size as usize;
         if data.len() > block_size {
             let mut pos = 0;
             while pos < data.len() {
@@ -164,9 +164,9 @@ impl SingleFileCleaner {
         let chunk_data_jh = {
             let mut chunker = std::mem::take(&mut self.chunker);
             let data = data.clone();
-            let rt = self.ctx.threadpool.clone();
+            let threadpool = self.runtime.threadpool.clone();
 
-            rt.spawn_blocking(move || {
+            threadpool.spawn_blocking(move || {
                 let chunks: Arc<[Chunk]> = Arc::from(chunker.next_block_bytes(&data, false));
                 (chunks, chunker)
             })
