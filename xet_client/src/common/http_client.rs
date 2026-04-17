@@ -303,16 +303,10 @@ impl AuthMiddleware {
     /// don't have a valid token and thus any calls would fail.
     async fn get_token(&self) -> Result<String> {
         let mut provider = self.token_provider.lock().await;
-        provider
-            .get_valid_token()
-            .await
-            .map_err(|err| {
-                warn!(?err, "Token refresh failed");
-                ClientError::AuthError(err)
-            })
-            .inspect(|_token| {
-                info!("Token refresh successful for CAS authentication");
-            })
+        provider.get_valid_token().await.map_err(|err| {
+            warn!(?err, "Token refresh failed");
+            ClientError::AuthError(err)
+        })
     }
 }
 
