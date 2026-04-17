@@ -77,7 +77,14 @@ where
         match recv_result {
             Ok(result) => return result.map_err(|e| convert_xet_error(e)),
             Err(RecvTimeoutError::Timeout) => py.check_signals()?,
-            Err(RecvTimeoutError::Disconnected) => unreachable!(),
+            // The sender was dropped without sending — the background thread panicked.
+            // Return a recoverable error rather than panicking a second time, which
+            // would crash the Python interpreter in a PyO3 context.
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                    "blocking operation panicked on background thread",
+                ));
+            },
         }
     }
 }
