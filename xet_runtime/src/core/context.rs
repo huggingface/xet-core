@@ -20,7 +20,7 @@ pub struct XetContext {
 }
 
 impl XetContext {
-    /// Creates a runtime from a pre-built thread pool and configuration.
+    /// Creates a context from a pre-built thread pool and configuration.
     pub fn new(config: XetConfig, runtime: Arc<XetRuntime>) -> Self {
         let config = Arc::new(config);
         let common = Arc::new(XetCommon::new(&config));
@@ -31,7 +31,7 @@ impl XetContext {
         }
     }
 
-    /// Creates a runtime with default configuration and an auto-detected thread pool.
+    /// Creates a context with default configuration and an auto-detected thread pool.
     ///
     /// If called from an owned runtime worker thread, reuses that owned [`XetRuntime`].
     /// Otherwise, if called from within an existing tokio runtime, wraps that runtime.
