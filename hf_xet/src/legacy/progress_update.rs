@@ -11,7 +11,7 @@ use xet_pkg::legacy::progress_tracking::{ProgressUpdate, TrackingProgressUpdater
 use xet_runtime::core::XetRuntime;
 use xet_runtime::error_printer::ErrorPrinter;
 
-use crate::runtime::convert_multithreading_error;
+use super::runtime::convert_multithreading_error;
 
 /// Python-exposed versions of the per-item and total progress update classes.
 ///
@@ -137,7 +137,7 @@ struct WrappedProgressUpdaterImpl {
 
 impl Debug for WrappedProgressUpdaterImpl {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "WrappedTokenRefresher({})", self.name)
+        write!(f, "WrappedProgressUpdater({})", self.name)
     }
 }
 
