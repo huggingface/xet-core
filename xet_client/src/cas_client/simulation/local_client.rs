@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs::{File, metadata};
-use std::io::{BufReader, Cursor, Seek, SeekFrom, Write};
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -16,12 +16,13 @@ use tempfile::TempDir;
 use tokio::time::{Duration, Instant};
 use tracing::{error, info, warn};
 use xet_core_structures::merklehash::{MerkleHash, compute_data_hash};
-use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
+use xet_core_structures::metadata_shard::file_structs::{FileDataSequenceHeader, MDBFileInfo, MDBFileInfoView};
+use xet_core_structures::metadata_shard::shard_format::MDB_FILE_INFO_ENTRY_SIZE;
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::metadata_shard::streaming_shard::MDBMinimalShard;
 use xet_core_structures::metadata_shard::utils::{parse_shard_filename, shard_file_name};
 use xet_core_structures::metadata_shard::xorb_structs::MDBXorbInfo;
-use xet_core_structures::metadata_shard::{MDBShardFile, ShardFileManager};
+use xet_core_structures::metadata_shard::{MDBShardFile, MDBShardFileHeader, ShardFileManager};
 use xet_core_structures::serialization_utils::read_u32;
 use xet_core_structures::xorb_object::{SerializedXorbObject, XorbObject};
 #[cfg(feature = "fd-track")]
@@ -105,7 +106,10 @@ const GLOBAL_DEDUP_TABLE: TableDefinition<RedbHash, RedbHash> = TableDefinition:
 /// Maps each active file hash to the shard that owns it.  Absence means deleted.
 const FILE_TO_SHARD_TABLE: TableDefinition<RedbHash, FileShardRef> = TableDefinition::new("file_to_shard");
 
-/// Points a file hash at its canonical shard location.
+/// Points a file hash at the shard that canonically owns it, along with the
+/// byte offset and length of the file entry within the shard.  This enables
+/// direct-seek reads without parsing the entire shard.
+/// Stored as 48 bytes: 32 (shard_hash) + 8 (offset) + 8 (length).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FileShardRef {
     shard_hash: MerkleHash,
@@ -194,6 +198,37 @@ fn get_or_open_db(db_path: &Path) -> std::result::Result<Arc<redb::Database>, re
     #[cfg(feature = "fd-track")]
     report_fd_count("LocalClient::get_or_open_db opened new DB");
     Ok(db)
+}
+
+/// Scans the file-info section of a serialized shard and returns
+/// `(file_hash, byte_offset, byte_length)` for every file entry.
+/// The offset/length pair identifies the contiguous blob (header + data entries +
+/// verification + metadata_ext) that `MDBFileInfoView::new()` can parse directly.
+fn file_entry_byte_ranges(shard_bytes: &[u8]) -> std::result::Result<Vec<(MerkleHash, u64, u64)>, ClientError> {
+    let mut cursor = Cursor::new(shard_bytes);
+    let _ = MDBShardFileHeader::deserialize(&mut cursor)?;
+
+    let mut entries = Vec::new();
+    loop {
+        let start = cursor.position();
+        let header = FileDataSequenceHeader::deserialize(&mut cursor)?;
+        if header.is_bookend() {
+            break;
+        }
+
+        let n = header.num_entries as usize;
+        let mut n_data = n;
+        if header.contains_verification() {
+            n_data += n;
+        }
+        if header.contains_metadata_ext() {
+            n_data += 1;
+        }
+
+        cursor.set_position(cursor.position() + (n_data * MDB_FILE_INFO_ENTRY_SIZE) as u64);
+        entries.push((header.file_hash, start, cursor.position() - start));
+    }
+    Ok(entries)
 }
 
 pub struct LocalClient {
@@ -353,6 +388,23 @@ impl LocalClient {
         Ok(compute_data_hash(&entropy).into())
     }
 
+    /// Restores `tmp_path` back to `original_path`.  Tries `hard_link` first
+    /// (fails with EEXIST if a concurrent upload recreated the path — safe).
+    /// Falls back to `rename` if hard links aren't supported.  Only removes
+    /// `tmp_path` after confirming the original is in place.
+    fn restore_from_tmp(tmp_path: &Path, original_path: &Path) {
+        if std::fs::hard_link(tmp_path, original_path).is_ok() {
+            let _ = std::fs::remove_file(tmp_path);
+        } else if original_path.exists() {
+            // Original path was recreated by a concurrent upload; discard stale copy.
+            let _ = std::fs::remove_file(tmp_path);
+        } else {
+            // hard_link failed (e.g. unsupported fs) and no concurrent upload —
+            // fall back to rename which always works on the same filesystem.
+            let _ = std::fs::rename(tmp_path, original_path);
+        }
+    }
+
     /// Clears the readonly permission on a file so it can be deleted on Windows.
     #[cfg(windows)]
     fn clear_readonly(path: &Path) {
@@ -396,21 +448,20 @@ impl LocalClient {
             let shard_hash = shard.shard_hash;
             self.shard_manager.register_shards(&[shard]).await?;
 
-            // Update FILE_TO_SHARD_TABLE so entries point to the new shard.
+            // Update FILE_TO_SHARD_TABLE with byte-accurate offsets.
             let shard_bytes = std::fs::read(&shard_path)?;
-            let minimal_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&shard_bytes), true, true)?;
+            let file_ranges = file_entry_byte_ranges(&shard_bytes)?;
             let write_txn = self.db.begin_write().map_err(map_redb_db_error)?;
             {
                 let mut file_table = write_txn.open_table(FILE_TO_SHARD_TABLE).map_err(map_redb_db_error)?;
-                for i in 0..minimal_shard.num_files() {
-                    let file_hash = minimal_shard.file(i).unwrap().file_hash();
+                for (file_hash, offset, length) in &file_ranges {
                     file_table
                         .insert(
-                            &RedbHash::from(file_hash),
+                            &RedbHash::from(*file_hash),
                             &FileShardRef {
                                 shard_hash,
-                                offset: 0,
-                                length: 0,
+                                offset: *offset,
+                                length: *length,
                             },
                         )
                         .map_err(map_redb_db_error)?;
@@ -898,18 +949,13 @@ impl super::DeletionControlableClient for LocalClient {
         let current_tag = match Self::object_tag_from_path(&tmp_path) {
             Ok(t) => t,
             Err(e) => {
-                let _ = std::fs::hard_link(&tmp_path, &file_path);
-                let _ = std::fs::remove_file(&tmp_path);
+                Self::restore_from_tmp(&tmp_path, &file_path);
                 return Err(e);
             },
         };
 
         if &current_tag != tag {
-            // Tag mismatch — restore the file.  hard_link fails with EEXIST
-            // if a concurrent upload already recreated the path, in which case
-            // we just discard our stale copy.
-            let _ = std::fs::hard_link(&tmp_path, &file_path);
-            let _ = std::fs::remove_file(&tmp_path);
+            Self::restore_from_tmp(&tmp_path, &file_path);
             return Ok(false);
         }
 
@@ -940,21 +986,18 @@ impl super::DeletionControlableClient for LocalClient {
         let current_tag = match Self::object_tag_from_path(&tmp_path) {
             Ok(t) => t,
             Err(e) => {
-                let _ = std::fs::hard_link(&tmp_path, &path);
-                let _ = std::fs::remove_file(&tmp_path);
+                Self::restore_from_tmp(&tmp_path, &path);
                 return Err(e);
             },
         };
 
         if &current_tag != tag {
-            let _ = std::fs::hard_link(&tmp_path, &path);
-            let _ = std::fs::remove_file(&tmp_path);
+            Self::restore_from_tmp(&tmp_path, &path);
             return Ok(false);
         }
 
         if let Err(e) = self.remove_file_entries_for_shard(hash) {
-            let _ = std::fs::hard_link(&tmp_path, &path);
-            let _ = std::fs::remove_file(&tmp_path);
+            Self::restore_from_tmp(&tmp_path, &path);
             return Err(e);
         }
         std::fs::remove_file(&tmp_path)?;
@@ -1094,75 +1137,76 @@ impl super::DeletionControlableClient for LocalClient {
         }
 
         // Pass 2: validate every file entry registered in FILE_TO_SHARD_TABLE.
-        // Only the canonical (file, shard) pair is checked — stale entries in old
-        // shards are ignored, which is the core fix for the resurrection bug.
-        let read_txn_files = self.db.begin_read().map_err(map_redb_db_error)?;
-        let file_table = read_txn_files.open_table(FILE_TO_SHARD_TABLE).map_err(map_redb_db_error)?;
-
-        let mut shard_cache: HashMap<MerkleHash, MDBMinimalShard> = HashMap::new();
+        // Uses offset/length for direct-seek reads — no full-shard parsing needed.
+        // Reuses `read_txn` from the top so all passes see a consistent MVCC snapshot.
+        let file_table = read_txn.open_table(FILE_TO_SHARD_TABLE).map_err(map_redb_db_error)?;
 
         for entry in file_table.iter().map_err(map_redb_db_error)? {
             let (key, value) = entry.map_err(map_redb_db_error)?;
             let file_hash: MerkleHash = key.value().into();
             let shard_ref: FileShardRef = value.value();
 
-            if let std::collections::hash_map::Entry::Vacant(e) = shard_cache.entry(shard_ref.shard_hash) {
-                let shard_path = self.shard_dir.join(shard_file_name(&shard_ref.shard_hash));
-                if !shard_path.exists() {
-                    return Err(ClientError::Other(format!(
-                        "Integrity error: FILE_TO_SHARD_TABLE maps file {} to shard {} which does not exist on disk",
-                        file_hash.hex(),
-                        shard_ref.shard_hash.hex()
-                    )));
-                }
-                let shard_bytes = std::fs::read(&shard_path)?;
-                let minimal_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&shard_bytes), true, true)?;
-                e.insert(minimal_shard);
-            }
-            let minimal_shard = shard_cache.get(&shard_ref.shard_hash).unwrap();
-
-            let mut found = false;
-            for i in 0..minimal_shard.num_files() {
-                let file_view = minimal_shard.file(i).unwrap();
-                if file_view.file_hash() == file_hash {
-                    found = true;
-                    for seg_idx in 0..file_view.num_entries() {
-                        let segment = file_view.entry(seg_idx);
-                        let xorb_path = self.get_path_for_entry(&segment.xorb_hash);
-
-                        if let Some(&chunk_count) = global_xorb_chunk_counts.get(&segment.xorb_hash) {
-                            if segment.chunk_index_end as usize > chunk_count {
-                                return Err(ClientError::Other(format!(
-                                    "Integrity error: file {} references chunk range {}..{} \
-                                     but XORB block {} only has {} chunks",
-                                    file_hash.hex(),
-                                    segment.chunk_index_start,
-                                    segment.chunk_index_end,
-                                    segment.xorb_hash.hex(),
-                                    chunk_count
-                                )));
-                            }
-                        } else if xorb_path.exists() {
-                            // XORB not in any shard index but file exists — dedup reference, OK.
-                        } else {
-                            return Err(ClientError::Other(format!(
-                                "Integrity error: file {} in shard {} references XORB {} \
-                                 that has no shard index entry and no XORB file on disk",
-                                file_hash.hex(),
-                                shard_ref.shard_hash.hex(),
-                                segment.xorb_hash.hex()
-                            )));
-                        }
-                    }
-                    break;
-                }
-            }
-            if !found {
+            let shard_path = self.shard_dir.join(shard_file_name(&shard_ref.shard_hash));
+            if !shard_path.exists() {
                 return Err(ClientError::Other(format!(
-                    "Integrity error: FILE_TO_SHARD_TABLE maps file {} to shard {} but the shard does not contain this file",
+                    "Integrity error: FILE_TO_SHARD_TABLE maps file {} to shard {} which does not exist on disk",
                     file_hash.hex(),
                     shard_ref.shard_hash.hex()
                 )));
+            }
+
+            let mut shard_file = File::open(&shard_path)?;
+            shard_file.seek(SeekFrom::Start(shard_ref.offset))?;
+            let mut buf = vec![0u8; shard_ref.length as usize];
+            shard_file.read_exact(&mut buf)?;
+
+            let file_view = MDBFileInfoView::new(Bytes::from(buf)).map_err(|e| {
+                ClientError::Other(format!(
+                    "Integrity error: cannot parse file entry for {} in shard {} at offset {}: {}",
+                    file_hash.hex(),
+                    shard_ref.shard_hash.hex(),
+                    shard_ref.offset,
+                    e
+                ))
+            })?;
+
+            if file_view.file_hash() != file_hash {
+                return Err(ClientError::Other(format!(
+                    "Integrity error: FILE_TO_SHARD_TABLE maps file {} to shard {} offset {} but found file {} there",
+                    file_hash.hex(),
+                    shard_ref.shard_hash.hex(),
+                    shard_ref.offset,
+                    file_view.file_hash().hex()
+                )));
+            }
+
+            for seg_idx in 0..file_view.num_entries() {
+                let segment = file_view.entry(seg_idx);
+                let xorb_path = self.get_path_for_entry(&segment.xorb_hash);
+
+                if let Some(&chunk_count) = global_xorb_chunk_counts.get(&segment.xorb_hash) {
+                    if segment.chunk_index_end as usize > chunk_count {
+                        return Err(ClientError::Other(format!(
+                            "Integrity error: file {} references chunk range {}..{} \
+                             but XORB block {} only has {} chunks",
+                            file_hash.hex(),
+                            segment.chunk_index_start,
+                            segment.chunk_index_end,
+                            segment.xorb_hash.hex(),
+                            chunk_count
+                        )));
+                    }
+                } else if xorb_path.exists() {
+                    // XORB not in any shard index but file exists — dedup reference, OK.
+                } else {
+                    return Err(ClientError::Other(format!(
+                        "Integrity error: file {} in shard {} references XORB {} \
+                         that has no shard index entry and no XORB file on disk",
+                        file_hash.hex(),
+                        shard_ref.shard_hash.hex(),
+                        segment.xorb_hash.hex()
+                    )));
+                }
             }
         }
 
@@ -1192,8 +1236,8 @@ impl super::DeletionControlableClient for LocalClient {
 
 impl LocalClient {
     /// Looks up a file hash in FILE_TO_SHARD_TABLE and reads its reconstruction info
-    /// directly from the canonical shard on disk.  Returns `None` if the file is not
-    /// registered (i.e. deleted or never uploaded).
+    /// via a direct-seek into the canonical shard on disk.  Returns `None` if the file
+    /// is not registered (i.e. deleted or never uploaded).
     fn get_file_info_from_table(&self, file_hash: &MerkleHash) -> Result<Option<(MDBFileInfo, MerkleHash)>> {
         let read_txn = self.db.begin_read().map_err(map_redb_db_error)?;
         let table = read_txn.open_table(FILE_TO_SHARD_TABLE).map_err(map_redb_db_error)?;
@@ -1202,15 +1246,14 @@ impl LocalClient {
         };
         let shard_ref: FileShardRef = entry.value();
         let shard_path = self.shard_dir.join(shard_file_name(&shard_ref.shard_hash));
-        let shard_bytes = std::fs::read(&shard_path)?;
-        let minimal_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&shard_bytes), true, true)?;
-        for i in 0..minimal_shard.num_files() {
-            let fv = minimal_shard.file(i).unwrap();
-            if fv.file_hash() == *file_hash {
-                return Ok(Some((MDBFileInfo::from(fv), shard_ref.shard_hash)));
-            }
-        }
-        Ok(None)
+
+        let mut file = File::open(&shard_path)?;
+        file.seek(SeekFrom::Start(shard_ref.offset))?;
+        let mut buf = vec![0u8; shard_ref.length as usize];
+        file.read_exact(&mut buf)?;
+
+        let file_view = MDBFileInfoView::new(Bytes::from(buf))?;
+        Ok(Some((MDBFileInfo::from(&file_view), shard_ref.shard_hash)))
     }
 
     async fn compute_reconstruction_ranges(
@@ -1411,6 +1454,10 @@ impl Client for LocalClient {
         // Get global dedup chunks from the minimal shard
         let chunk_hashes = minimal_shard.global_dedup_eligible_chunks();
 
+        // Compute byte ranges for each file entry in the written shard
+        let written_shard_bytes = std::fs::read(&shard_path)?;
+        let file_ranges = file_entry_byte_ranges(&written_shard_bytes)?;
+
         let shard_hash_redb = RedbHash::from(shard_hash);
         let write_txn = self.db.begin_write().map_err(map_redb_db_error)?;
         {
@@ -1422,15 +1469,14 @@ impl Client for LocalClient {
             }
 
             let mut file_table = write_txn.open_table(FILE_TO_SHARD_TABLE).map_err(map_redb_db_error)?;
-            for i in 0..minimal_shard.num_files() {
-                let file_hash = minimal_shard.file(i).unwrap().file_hash();
+            for (file_hash, offset, length) in &file_ranges {
                 file_table
                     .insert(
-                        &RedbHash::from(file_hash),
+                        &RedbHash::from(*file_hash),
                         &FileShardRef {
                             shard_hash,
-                            offset: 0,
-                            length: 0,
+                            offset: *offset,
+                            length: *length,
                         },
                     )
                     .map_err(map_redb_db_error)?;
