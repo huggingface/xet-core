@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use rand::Rng;
+use rand::{Rng, RngExt};
 use xet_core_structures::xorb_object::byte_grouping::bg4;
 
 // Benchmark results on Apple M2 Max

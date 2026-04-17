@@ -199,7 +199,7 @@ mod tests {
     use std::mem::size_of;
 
     use half::prelude::*;
-    use rand::Rng;
+    use rand::{Rng, RngExt};
 
     use super::*;
 

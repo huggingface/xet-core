@@ -1210,7 +1210,7 @@ pub mod test_routines {
     use std::mem::size_of;
 
     use rand::rngs::{SmallRng, StdRng};
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt, SeedableRng};
 
     use super::super::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, MDBFileInfo};
     use super::super::shard_format::MDBShardInfo;

@@ -359,7 +359,7 @@ mod tests {
     use std::io::Cursor;
 
     use rand::rngs::StdRng;
-    use rand::{Rng, SeedableRng};
+    use rand::{Rng, RngExt, SeedableRng};
 
     use super::*;
 

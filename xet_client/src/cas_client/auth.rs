@@ -3,7 +3,6 @@ use std::sync::Arc;
 #[cfg(not(target_family = "wasm"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use derivative::Derivative;
 use reqwest_middleware::ClientWithMiddleware;
 use thiserror::Error;
 use tracing::info;
@@ -136,16 +135,23 @@ impl TokenRefresher for DirectRefreshRouteTokenRefresher {
 }
 
 /// Shared configuration for token-based auth
-#[derive(Clone, Derivative)]
-#[derivative(Debug)]
+#[derive(Clone)]
 pub struct AuthConfig {
     /// Initial token to use
     pub token: String,
     /// Initial token expiration time in epoch seconds
     pub token_expiration: u64,
     /// A function to refresh tokens.
-    #[derivative(Debug = "ignore")]
     pub token_refresher: Arc<dyn TokenRefresher>,
+}
+
+impl Debug for AuthConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthConfig")
+            .field("token", &self.token)
+            .field("token_expiration", &self.token_expiration)
+            .finish_non_exhaustive()
+    }
 }
 
 impl AuthConfig {

@@ -261,7 +261,7 @@ pub fn bg4_regroup(g: &[u8]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use rand::Rng;
+    use rand::{Rng, RngExt};
 
     use super::*;
 

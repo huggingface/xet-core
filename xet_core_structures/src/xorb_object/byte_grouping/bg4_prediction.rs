@@ -255,7 +255,7 @@ mod tests {
     use std::mem::align_of;
 
     use rand::rngs::StdRng;
-    use rand::{Rng, SeedableRng};
+    use rand::{Rng, RngExt, SeedableRng};
 
     use super::*;
 

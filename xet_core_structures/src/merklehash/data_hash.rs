@@ -13,7 +13,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 #[cfg(not(target_family = "wasm"))]
 use bytemuck::{Pod, Zeroable};
 use rand::rngs::SmallRng;
-use rand::{RngCore, SeedableRng};
+use rand::{Rng, SeedableRng};
 use safe_transmute::{transmute_to_bytes, transmute_to_bytes_mut};
 use serde::{Deserialize, Serialize};
 

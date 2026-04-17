@@ -1002,7 +1002,7 @@ fn split_and_promote(nodes: &[Node], at_start: bool, at_end: bool, promoted: &mu
 #[cfg(test)]
 mod tests {
     use rand::rngs::SmallRng;
-    use rand::{Rng, SeedableRng};
+    use rand::{Rng, RngExt, SeedableRng};
 
     use super::*;
     use crate::merklehash::xorb_hash;
