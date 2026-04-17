@@ -24,6 +24,64 @@ pub(crate) fn convert_xet_error(e: impl Into<XetError>) -> PyErr {
     PyErr::from(e.into())
 }
 
+/// Run `f` on a background thread while periodically calling `py.check_signals()`
+/// so that Ctrl-C is delivered to Python promptly during long-running operations.
+///
+/// Background: Python handles SIGINT by setting a flag that is only checked when
+/// control returns to the interpreter.  While a blocking Rust call holds the GIL
+/// (even via `py.detach()`), that flag is never observed.  By running the blocking
+/// work on a separate thread and polling `py.check_signals()` every 100 ms, we
+/// give CPython a chance to raise `KeyboardInterrupt` during calls like
+/// `commit_blocking()` and `finish_blocking()` that can run for many seconds.
+///
+/// Reference: <https://pyo3.rs/latest/faq.html> — "Ctrl-C doesn't do anything
+/// while my Rust code is executing"
+///
+/// When `KeyboardInterrupt` is raised here:
+/// - It propagates to the Python caller's `except KeyboardInterrupt:` block.
+/// - The caller calls `session.sigint_abort()` → sets `sigint_shutdown = true`.
+/// - The background thread's next await checkpoint returns immediately.
+/// - The thread exits cleanly.
+///
+/// This is the most Pythonic approach: `KeyboardInterrupt` is a standard exception
+/// that propagates through `try/except` like any other.  The cleanup
+/// (`sigint_abort()`) lives in Python where it is visible and auditable — no
+/// hidden global state, no surprise interactions with `signal.signal()`.
+pub(crate) fn blocking_call_with_signal_check<T, E, F>(py: Python<'_>, f: F) -> PyResult<T>
+where
+    T: Send + 'static,
+    E: Into<XetError> + Send + 'static,
+    F: FnOnce() -> Result<T, E> + Send + 'static,
+{
+    use std::sync::mpsc::RecvTimeoutError;
+    use std::time::Duration;
+
+    let (tx, mut rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        tx.send(f()).ok();
+    });
+    loop {
+        // Release the GIL while waiting so that other threads that need it
+        // (e.g. the progress-callback thread, other Python threads) can run.
+        // After `detach` returns we re-hold the GIL for the signal check.
+        //
+        // `Receiver<T>: Send` but `!Sync`, so `&Receiver` is `!Ungil`.  We
+        // satisfy the `Ungil` bound by moving `rx` into a `move` closure and
+        // returning it alongside the result so it can be rebound for the next
+        // iteration.
+        let (rx_back, recv_result) = py.detach(move || {
+            let result = rx.recv_timeout(Duration::from_millis(100));
+            (rx, result)
+        });
+        rx = rx_back;
+        match recv_result {
+            Ok(result) => return result.map_err(|e| convert_xet_error(e)),
+            Err(RecvTimeoutError::Timeout) => py.check_signals()?,
+            Err(RecvTimeoutError::Disconnected) => unreachable!(),
+        }
+    }
+}
+
 // ── Module registration ───────────────────────────────────────────────────────
 
 #[pymodule(gil_used = false)]

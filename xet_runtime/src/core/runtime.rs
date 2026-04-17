@@ -195,6 +195,9 @@ pub struct XetRuntime {
     // Primary configuration struct
     config: Arc<XetConfig>,
 
+    // PID of the process that created this runtime; used in Drop to detect fork.
+    creation_pid: u32,
+
     //  System monitor instance if enabled, monitor starts on initiation
     #[cfg(not(target_family = "wasm"))]
     system_monitor: Option<SystemMonitor>,
@@ -292,6 +295,7 @@ impl XetRuntime {
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
             common: XetCommon::new(&config),
+            creation_pid: std::process::id(),
             #[cfg(not(target_family = "wasm"))]
             system_monitor: config
                 .system_monitor
@@ -424,6 +428,7 @@ impl XetRuntime {
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
             common: XetCommon::new(&config),
+            creation_pid: std::process::id(),
             #[cfg(not(target_family = "wasm"))]
             system_monitor: config
                 .system_monitor
@@ -463,6 +468,7 @@ impl XetRuntime {
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
             common: XetCommon::new(&config),
+            creation_pid: std::process::id(),
             #[cfg(not(target_family = "wasm"))]
             system_monitor: config
                 .system_monitor
@@ -834,6 +840,15 @@ impl Drop for XetRuntime {
         let _fd_scope = track_fd_scope("XetRuntime::drop");
 
         self.handle_ref.take();
+
+        // Fork detection: if we are in a child process the Tokio worker threads from the
+        // parent do not exist here. shutdown_timeout() would block ~5 s waiting on futexes
+        // that never fire. Use discard_runtime() (std::mem::forget) instead — the OS
+        // reclaims all memory when the child exits.
+        if self.creation_pid != std::process::id() {
+            self.discard_runtime();
+            return;
+        }
 
         if let RuntimeBackend::External { handle_id: Some(id) } = &self.backend {
             if let Ok(mut reg) = EXTERNAL_RUNTIME_REGISTRY.write() {

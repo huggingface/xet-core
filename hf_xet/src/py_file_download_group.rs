@@ -9,10 +9,10 @@ use xet_pkg::xet_session::{
     XetFileDownloadGroupBuilder, XetFileInfo, XetTaskState,
 };
 
-use crate::convert_xet_error;
 use crate::headers::{build_header_map, build_headers_with_user_agent, default_headers};
 use crate::py_file_download_handle::PyXetFileDownload;
 use crate::py_xet_session::task_state_to_str;
+use crate::{blocking_call_with_signal_check, convert_xet_error};
 
 // ── PyXetFileDownloadGroupBuilder ─────────────────────────────────────────────
 
@@ -231,9 +231,8 @@ impl PyXetFileDownloadGroup {
         _exc_tb: Bound<'_, pyo3::PyAny>,
     ) -> PyResult<bool> {
         if exc_type.is_none() {
-            // Normal exit: wait for all downloads.
-            let group = self.inner.clone();
-            py.detach(|| group.finish_blocking().map_err(convert_xet_error))?;
+            // Normal exit: wait for all downloads (signal-interruptible).
+            self.finish(py)?;
         } else {
             let _ = self.inner.abort();
         }
@@ -275,10 +274,11 @@ impl PyXetFileDownloadGroup {
     /// Returns a :class:`XetDownloadGroupReport`.  Also called automatically
     /// when exiting a ``with`` block without an exception.
     ///
-    /// Releases the GIL while waiting.
+    /// Releases the GIL while waiting, polling for ``KeyboardInterrupt`` every
+    /// 100 ms so that Ctrl-C is delivered promptly.
     pub fn finish(&self, py: Python<'_>) -> PyResult<XetDownloadGroupReport> {
         let group = self.inner.clone();
-        py.detach(|| group.finish_blocking().map_err(convert_xet_error))
+        blocking_call_with_signal_check(py, move || group.finish_blocking())
     }
 
     /// Cancel all active downloads in this group.

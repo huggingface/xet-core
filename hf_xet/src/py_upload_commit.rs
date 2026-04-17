@@ -9,11 +9,11 @@ use xet_pkg::xet_session::{
     XetUploadCommit, XetUploadCommitBuilder,
 };
 
-use crate::convert_xet_error;
 use crate::headers::{build_header_map, build_headers_with_user_agent, default_headers};
 use crate::py_file_upload_handle::PyXetFileUpload;
 use crate::py_stream_upload_handle::PyXetStreamUpload;
 use crate::py_xet_session::task_state_to_str;
+use crate::{blocking_call_with_signal_check, convert_xet_error};
 
 // ── PyXetUploadCommitBuilder ──────────────────────────────────────────────────
 
@@ -243,9 +243,8 @@ impl PyXetUploadCommit {
         _exc_tb: Bound<'_, pyo3::PyAny>,
     ) -> PyResult<bool> {
         if exc_type.is_none() {
-            // Normal exit: commit all uploads.
-            let inner = self.inner.clone();
-            py.detach(|| inner.commit_blocking().map_err(convert_xet_error))?;
+            // Normal exit: commit all uploads (signal-interruptible).
+            self.commit(py)?;
         } else {
             // Exception: cancel uploads.
             let _ = self.inner.abort();
@@ -335,10 +334,11 @@ impl PyXetUploadCommit {
     /// Returns a :class:`XetCommitReport`.  Also called automatically when
     /// exiting a ``with`` block without an exception.
     ///
-    /// Releases the GIL while waiting.
+    /// Releases the GIL while waiting, polling for ``KeyboardInterrupt`` every
+    /// 100 ms so that Ctrl-C is delivered promptly.
     pub fn commit(&self, py: Python<'_>) -> PyResult<XetCommitReport> {
         let inner = self.inner.clone();
-        py.detach(|| inner.commit_blocking().map_err(convert_xet_error))
+        blocking_call_with_signal_check(py, move || inner.commit_blocking())
     }
 
     /// Cancel all active uploads in this commit.
