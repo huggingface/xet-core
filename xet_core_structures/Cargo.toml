@@ -77,7 +77,7 @@ uuid = { workspace = true, features = ["v4", "js"] }
 web-time = { workspace = true }
 
 [dev-dependencies]
-bincode = { workspace = true }
+postcard = { workspace = true }
 futures-util = { workspace = true }
 half = { workspace = true }
 rand = { workspace = true }

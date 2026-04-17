@@ -334,7 +334,7 @@ mod tests {
     /// - duration: size_mb * 1.0 + noise seconds, where noise = std_dev * random_normal
     fn create_sample_pool(num_samples: usize, scale_std_dev: f64, seed: u64) -> Vec<(u64, Duration)> {
         use rand::rngs::StdRng;
-        use rand::{Rng, SeedableRng};
+        use rand::{Rng, RngExt, SeedableRng};
         use rand_distr::{Distribution, Normal};
         let mut rng = StdRng::seed_from_u64(seed);
         let normal = Normal::new(0.0, scale_std_dev).unwrap();
@@ -361,7 +361,7 @@ mod tests {
     /// Utility function to check if two models are approximately the same
     fn assert_models_similar(p1: &RTTPredictor, p2: &RTTPredictor, seed: u64) {
         use rand::rngs::StdRng;
-        use rand::{Rng, SeedableRng};
+        use rand::{Rng, RngExt, SeedableRng};
         let mut rng = StdRng::seed_from_u64(seed);
 
         // Check regression models are similar
@@ -625,7 +625,7 @@ mod tests {
 
         // Test predictions at various points (should be the same)
         use rand::rngs::StdRng;
-        use rand::{Rng, SeedableRng};
+        use rand::{Rng, RngExt, SeedableRng};
         let mut rng = StdRng::seed_from_u64(100);
         for _ in 0..10 {
             let test_size_mb = rng.random_range(32.0..64.0);
