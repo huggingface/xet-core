@@ -125,3 +125,30 @@ jobs:
         run: |
           # the build steps would update Cargo.lock if it is out of date
           test -z "$(git status --porcelain Cargo.lock)" || (echo "hf_xet_wasm Cargo.lock has uncommitted changes!" && exit 1)
+  check-cargo-lock-changed:
+    name: Check if Cargo.lock changed
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.filter.outputs.cargo_lock }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36  # v3.0.2
+        id: filter
+        with:
+          filters: |
+            cargo_lock:
+              - 'Cargo.lock'
+  cargo-audit:
+    name: Cargo Audit
+    needs: check-cargo-lock-changed
+    if: needs.check-cargo-lock-changed.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
+        with:
+          toolchain: 1.94.1
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit
+      - name: Run cargo audit
+        run: cargo audit
