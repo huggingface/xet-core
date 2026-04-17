@@ -92,7 +92,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
 
         #[cfg(feature = "simulation")]
         let xorb_cut_bytes = self
-            .runtime
+            .ctx
             .config
             .xorb
             .simulation_max_bytes
@@ -102,7 +102,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
         let xorb_cut_bytes = *MAX_XORB_BYTES;
         #[cfg(feature = "simulation")]
         let xorb_cut_chunks = self
-            .runtime
+            .ctx
             .config
             .xorb
             .simulation_max_chunks

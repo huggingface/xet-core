@@ -9,6 +9,7 @@ use tokio::sync::Mutex;
 use xet::legacy::progress_tracking::{ItemProgressUpdate, ProgressUpdate, TrackingProgressUpdater};
 use xet::legacy::{Sha256Policy, XetFileInfo, data_client};
 use xet_client::cas_client::LocalTestServerBuilder;
+use xet_runtime::core::XetContext;
 
 /// A test `TrackingProgressUpdater` that records all updates.
 #[derive(Debug, Default)]
