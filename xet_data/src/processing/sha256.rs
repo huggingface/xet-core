@@ -46,7 +46,7 @@ impl Sha256Generator {
 
 #[cfg(test)]
 mod sha_tests {
-    use rand::{Rng, RngExt, rng};
+    use rand::{RngExt, rng};
 
     use super::*;
 

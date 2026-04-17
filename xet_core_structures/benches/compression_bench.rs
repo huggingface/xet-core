@@ -2,7 +2,7 @@ use std::mem::size_of;
 use std::time::Instant;
 
 use half::prelude::*;
-use rand::{Rng, RngExt};
+use rand::RngExt;
 use xet_core_structures::xorb_object::*;
 
 // Benchmark results on Apple M2 Max

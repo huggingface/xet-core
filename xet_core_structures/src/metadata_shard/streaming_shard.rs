@@ -505,7 +505,7 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use rand::rngs::SmallRng;
-    use rand::{Rng, RngExt, SeedableRng};
+    use rand::{RngExt, SeedableRng};
 
     use super::super::MDBShardInfo;
     use super::super::file_structs::MDBFileInfo;
