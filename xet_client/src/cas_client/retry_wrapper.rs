@@ -27,8 +27,6 @@ struct ConnectionPermitInfo {
 }
 
 pub struct RetryWrapper {
-    #[allow(dead_code)]
-    ctx: XetContext,
     max_attempts: usize,
     base_delay: Duration,
     no_retry_on_429: bool,
@@ -44,7 +42,6 @@ impl RetryWrapper {
         let max_attempts = ctx.config.client.retry_max_attempts;
         let base_delay = ctx.config.client.retry_base_delay;
         Self {
-            ctx,
             max_attempts,
             base_delay,
             no_retry_on_429: false,

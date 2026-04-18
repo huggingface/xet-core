@@ -1064,8 +1064,8 @@ mod tests {
     fn test_reference_size_with_mixed_sizes() {
         let config = XetConfig::new();
 
-        let runtime_small = XetContext::default().expect("test runtime");
-        let mut small_only_state = ConcurrencyControllerState::new(runtime_small);
+        let ctx_small = XetContext::default().expect("test runtime");
+        let mut small_only_state = ConcurrencyControllerState::new_testing(ctx_small);
         for _ in 0..10 {
             small_only_state.update_size_tracking(512 * 1024); // 512 KB
         }

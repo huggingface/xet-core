@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use tokio::runtime::Handle as TokioRuntimeHandle;
+use tracing::info;
 
 use super::XetCommon;
 use super::runtime::XetRuntime;
@@ -44,6 +45,9 @@ impl XetContext {
         } else if let Ok(handle) = TokioRuntimeHandle::try_current()
             && Self::handle_meets_requirements(&handle)
         {
+            info!(
+                "Detected compatible existing Tokio runtime; using external handle instead of creating a new thread pool"
+            );
             XetRuntime::from_external(handle)
         } else {
             XetRuntime::new(&config)?
