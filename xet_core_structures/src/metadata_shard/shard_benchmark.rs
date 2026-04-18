@@ -92,12 +92,13 @@ async fn run_shard_benchmark(
             eprintln!("Worker {t:?} running.");
 
             loop {
-                let start_hash_val = rng.random();
+                let base_hash_val: u64 = rng.random();
 
                 let mut file_info = Vec::<MerkleHash>::with_capacity(file_contiguity);
                 let hit = rng.random_bool(block_hit_proportion);
 
-                for hash_val in start_hash_val..(start_hash_val + file_contiguity as u64) {
+                for i in 0..file_contiguity {
+                    let hash_val = base_hash_val + i as u64;
                     let h_seed = if hit { hash_val % top } else { hash_val };
                     file_info.push(rng_hash(h_seed));
                 }
