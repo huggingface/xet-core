@@ -25,7 +25,7 @@ async fn create_fixture(num_xorbs: usize, chunks_per_xorb: u64, chunk_size: usiz
     let file_size = file_contents.data.len() as u64;
 
     BenchFixture {
-        runtime,
+        ctx: runtime,
         client: client as Arc<dyn Client>,
         file_hash: file_contents.file_hash,
         _file_size: file_size,
@@ -44,7 +44,7 @@ fn bench_sequential_non_vectored(c: &mut Criterion) {
         &fixture,
         |b, fix| {
             b.to_async(&rt).iter(|| {
-                let runtime = fix.runtime.clone();
+                let runtime = fix.ctx.clone();
                 let client = fix.client.clone();
                 let hash = fix.file_hash;
                 let cfg = config.clone();
@@ -74,7 +74,7 @@ fn bench_sequential_vectored(c: &mut Criterion) {
         &fixture,
         |b, fix| {
             b.to_async(&rt).iter(|| {
-                let runtime = fix.runtime.clone();
+                let runtime = fix.ctx.clone();
                 let client = fix.client.clone();
                 let hash = fix.file_hash;
                 let cfg = config.clone();
