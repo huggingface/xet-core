@@ -14,4 +14,9 @@
 ignore = [
     "RUSTSEC-2026-0074",  # libcrux-sha3 0.0.4 — dev-only via russh (ssh for git_xet integration tests)
     "RUSTSEC-2023-0071",  # rsa 0.9.10 — dev-only via russh (ssh for git_xet integration tests)
+    "RUSTSEC-2025-0052",  # async-std discontinued — dev-only via russh → libcrux
+    "RUSTSEC-2023-0089",  # atomic-polyfill unmaintained — dev-only
+    "RUSTSEC-2024-0375",  # atty unmaintained — dev-only
+    "RUSTSEC-2021-0145",  # atty potential unaligned read — dev-only
+    "RUSTSEC-2026-0097",  # rand unsound with custom `log` feature — `log` feature not enabled in our tree (rand 0.8.5 dev-only via russh, rand 0.9.2 via ulid with default features only)
 ]
