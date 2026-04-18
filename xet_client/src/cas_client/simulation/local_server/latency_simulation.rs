@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use rand::Rng;
+use rand::RngExt;
 use rand::rngs::ThreadRng;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;

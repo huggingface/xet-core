@@ -1002,7 +1002,7 @@ fn split_and_promote(nodes: &[Node], at_start: bool, at_end: bool, promoted: &mu
 #[cfg(test)]
 mod tests {
     use rand::rngs::SmallRng;
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt, SeedableRng};
 
     use super::*;
     use crate::merklehash::xorb_hash;
@@ -1621,7 +1621,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(feature = "smoke-test", ignore)]
-    fn test_bincode_round_trip() {
+    fn test_postcard_round_trip() {
         let mut rng = SmallRng::seed_from_u64(42);
 
         for n in [0, 1, 5, 20, 100] {
@@ -1629,8 +1629,8 @@ mod tests {
                 let chunks = random_chunks(&mut rng, n);
                 let original = MerkleHashSubtree::from_chunks(at_start, &chunks, at_end);
 
-                let bytes = bincode::serialize(&original).unwrap();
-                let deserialized: MerkleHashSubtree = bincode::deserialize(&bytes).unwrap();
+                let bytes = postcard::to_allocvec(&original).unwrap();
+                let deserialized: MerkleHashSubtree = postcard::from_bytes(&bytes).unwrap();
 
                 assert_eq!(original.nodes, deserialized.nodes, "n={n}");
                 assert_eq!(original.levels, deserialized.levels, "n={n}");
@@ -1644,13 +1644,13 @@ mod tests {
 
     #[test]
     #[cfg_attr(feature = "smoke-test", ignore)]
-    fn test_bincode_smaller_than_json() {
+    fn test_postcard_smaller_than_json() {
         let mut rng = SmallRng::seed_from_u64(77);
         let chunks = random_chunks(&mut rng, 100);
         let r = MerkleHashSubtree::from_chunks(true, &chunks, true);
 
         let json_bytes = serde_json::to_string(&r).unwrap().len();
-        let bin_bytes = bincode::serialize(&r).unwrap().len();
-        assert!(bin_bytes < json_bytes, "bincode ({bin_bytes}) should be smaller than JSON ({json_bytes})");
+        let bin_bytes = postcard::to_allocvec(&r).unwrap().len();
+        assert!(bin_bytes < json_bytes, "postcard ({bin_bytes}) should be smaller than JSON ({json_bytes})");
     }
 }

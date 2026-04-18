@@ -448,8 +448,8 @@ mod tests {
         table.insert(hash2, 20);
         table.insert(hash3, 30);
 
-        let serialized = bincode::serialize(&table).unwrap();
-        let deserialized: MerkleHashMap<i32> = bincode::deserialize(&serialized).unwrap();
+        let serialized = postcard::to_allocvec(&table).unwrap();
+        let deserialized: MerkleHashMap<i32> = postcard::from_bytes(&serialized).unwrap();
 
         assert_eq!(deserialized.len(), 3);
         assert_eq!(deserialized.get(&hash1), Some(&10));
@@ -461,8 +461,8 @@ mod tests {
     fn test_serialize_deserialize_empty() {
         let table: MerkleHashMap<i32> = MerkleHashMap::new();
 
-        let serialized = bincode::serialize(&table).unwrap();
-        let deserialized: MerkleHashMap<i32> = bincode::deserialize(&serialized).unwrap();
+        let serialized = postcard::to_allocvec(&table).unwrap();
+        let deserialized: MerkleHashMap<i32> = postcard::from_bytes(&serialized).unwrap();
 
         assert!(deserialized.is_empty());
         assert_eq!(deserialized.len(), 0);

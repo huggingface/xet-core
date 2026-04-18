@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use rand::Rng;
+use rand::RngExt;
 use tokio::sync::RwLock;
 use tokio::time::{Duration, Instant};
 use tracing::{error, info};
