@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 use tokio_retry::RetryIf;
 use tokio_retry::strategy::{ExponentialBackoff, jitter};
 use tracing::{error, info};
-use xet_runtime::core::xet_config;
+use xet_runtime::core::XetContext;
 
 use super::adaptive_concurrency::ConnectionPermit;
 use crate::common::http_client::request_id_from_response;
@@ -38,10 +38,12 @@ pub struct RetryWrapper {
 }
 
 impl RetryWrapper {
-    pub fn new(api_tag: &'static str) -> Self {
+    pub fn new(ctx: XetContext, api_tag: &'static str) -> Self {
+        let max_attempts = ctx.config.client.retry_max_attempts;
+        let base_delay = ctx.config.client.retry_base_delay;
         Self {
-            max_attempts: xet_config().client.retry_max_attempts,
-            base_delay: xet_config().client.retry_base_delay,
+            max_attempts,
+            base_delay,
             no_retry_on_429: false,
             retry_on_403: false,
             expected_416: false,
@@ -545,11 +547,18 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+    use xet_runtime::config::XetConfig;
+    use xet_runtime::core::XetContext;
 
     use super::*;
 
+    fn test_runtime() -> XetContext {
+        let config = XetConfig::new();
+        XetContext::from_external(tokio::runtime::Handle::current(), config)
+    }
+
     fn connection_wrapper(api: &'static str) -> RetryWrapper {
-        RetryWrapper::new(api)
+        RetryWrapper::new(test_runtime(), api)
             .with_base_delay(Duration::from_millis(5))
             .with_max_attempts(3)
     }

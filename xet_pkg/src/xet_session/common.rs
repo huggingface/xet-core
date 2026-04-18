@@ -39,8 +39,9 @@ pub(super) async fn create_translator_config(
 
     // Build token refresher
     let token_refresher: Option<Arc<dyn TokenRefresher>> = if let Some((url, token_refresh_headers)) = token_refresh {
-        let client = build_http_client(&session_id, None, Some(Arc::new(token_refresh_headers)))?;
-        let direct_route_refresher = DirectRefreshRouteTokenRefresher::new(url, client, None);
+        let client = build_http_client(&session.inner.ctx, &session_id, None, Some(Arc::new(token_refresh_headers)))?;
+        let direct_route_refresher =
+            DirectRefreshRouteTokenRefresher::new(session.inner.ctx.clone(), url, client, None);
 
         // CAS endpoint is not provided but CAS token refresh endpoint is provided, we
         // refresh once to get the CAS endpoint, and fill the token info if nothing is provided.
@@ -58,9 +59,10 @@ pub(super) async fn create_translator_config(
         None
     };
 
-    let endpoint = endpoint.unwrap_or_else(|| session.inner.config.data.default_cas_endpoint.clone());
+    let endpoint = endpoint.unwrap_or_else(|| session.inner.ctx.config.data.default_cas_endpoint.clone());
 
     let mut config = xet_data::processing::data_client::default_config(
+        &session.inner.ctx,
         endpoint,
         token_info,
         token_refresher,

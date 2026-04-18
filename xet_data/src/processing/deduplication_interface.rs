@@ -25,7 +25,7 @@ impl UploadSessionDataManager {
     }
 
     fn global_dedup_queries_enabled(&self) -> bool {
-        xet_runtime::core::xet_config().deduplication.global_dedup_query_enabled
+        self.session.ctx.config.deduplication.global_dedup_query_enabled
     }
 }
 

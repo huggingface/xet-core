@@ -19,15 +19,16 @@ use xet_core_structures::metadata_shard::session_directory::{
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::metadata_shard::xorb_structs::MDBXorbInfo;
 use xet_core_structures::metadata_shard::{
-    MDB_SHARD_LOCAL_CACHE_EXPIRATION, MDBShardFile, MDBShardFileHeader, ShardFileManager,
+    MDB_SHARD_LOCAL_CACHE_EXPIRATION, MDBShardFile, MDBShardFileHeader, ShardFileManager, get_shard_file_cache,
 };
-use xet_runtime::core::xet_config;
+use xet_runtime::core::XetContext;
 use xet_runtime::error_printer::ErrorPrinter;
 
 use super::configurations::TranslatorConfig;
 use crate::error::Result;
 
 pub struct SessionShardInterface {
+    ctx: XetContext,
     session_shard_manager: Arc<ShardFileManager>,
     cache_shard_manager: Arc<ShardFileManager>,
 
@@ -54,6 +55,7 @@ pub struct SessionShardInterface {
 
 impl SessionShardInterface {
     pub async fn new(
+        ctx: &XetContext,
         config: Arc<TranslatorConfig>,
         client: Arc<dyn Client + Send + Sync>,
         dry_run: bool,
@@ -78,10 +80,12 @@ impl SessionShardInterface {
         let shard_merge_jh = {
             if !dry_run {
                 Some(merge_shards_background(
+                    ctx.runtime.clone(),
                     &xorb_metadata_staging_dir,
                     &session_dir,
-                    xet_config().shard.max_target_size,
+                    ctx.config.shard.max_target_size,
                     true,
+                    get_shard_file_cache(&ctx.common),
                 ))
             } else {
                 None
@@ -89,8 +93,8 @@ impl SessionShardInterface {
         };
 
         // Load the cache and session shard managers.
-        let cache_shard_manager = ShardFileManager::new_in_cache_directory(cache_dir).await?;
-        let session_shard_manager = ShardFileManager::new_in_session_directory(&session_dir, false).await?;
+        let cache_shard_manager = ShardFileManager::new_in_cache_directory(ctx, cache_dir).await?;
+        let session_shard_manager = ShardFileManager::new_in_session_directory(ctx, &session_dir, false).await?;
 
         // Get the new merged shard handles here.
         let shard_merge_result = {
@@ -106,7 +110,7 @@ impl SessionShardInterface {
             if !shard_merge_result.merged_shards.is_empty() {
                 // Create a new shard manager to just hold the resumed session shards
                 let resumed_session_shard_manager =
-                    ShardFileManager::new_in_session_directory(&session_dir, false).await?;
+                    ShardFileManager::new_in_session_directory(ctx, &session_dir, false).await?;
 
                 resumed_session_shard_manager
                     .register_shards(&shard_merge_result.merged_shards)
@@ -122,6 +126,7 @@ impl SessionShardInterface {
             shard_merge_result.obsolete_shards.iter().map(|sfi| sfi.path.clone()).collect();
 
         Ok(Self {
+            ctx: ctx.clone(),
             session_shard_manager,
             cache_shard_manager,
             xorb_metadata_staging_dir,
@@ -138,7 +143,7 @@ impl SessionShardInterface {
     pub async fn query_dedup_shard_by_chunk(&self, chunk_hash: &MerkleHash) -> Result<bool> {
         let Ok(Some(new_shard)) = self
             .client
-            .query_for_global_dedup_shard(&xet_config().data.default_prefix, chunk_hash)
+            .query_for_global_dedup_shard(&self.ctx.config.data.default_prefix, chunk_hash)
             .await
             .info_error("Error attempting to query global dedup lookup.")
         else {
@@ -201,11 +206,11 @@ impl SessionShardInterface {
         xorb_shard.add_xorb_block(xorb_block_contents)?;
 
         let time_now = SystemTime::now();
-        let flush_interval = xet_config().data.session_xorb_metadata_flush_interval;
+        let flush_interval = self.ctx.config.data.session_xorb_metadata_flush_interval;
 
         // Flush if it's time or we've hit enough new shards that we should do the flush
         if *last_flush + flush_interval < time_now
-            || xorb_shard.num_xorb_entries() >= xet_config().data.session_xorb_metadata_flush_max_count
+            || xorb_shard.num_xorb_entries() >= self.ctx.config.data.session_xorb_metadata_flush_max_count
         {
             xorb_shard.write_to_directory(&self.xorb_metadata_staging_dir, Some(*MDB_SHARD_LOCAL_CACHE_EXPIRATION))?;
 
@@ -237,11 +242,11 @@ impl SessionShardInterface {
 
         // First, scan, merge, and fill out any shards in the session directory
         let shard_list = consolidate_shards_in_directory(
+            &self.ctx.runtime,
             self.session_shard_manager.shard_directory(),
-            xet_config().shard.max_target_size,
-            // Here, we want to error out if some of the information isn't present or corrupt, so set skip_on_error to
-            // false.
+            self.ctx.config.shard.max_target_size,
             false,
+            self.session_shard_manager.shard_file_cache(),
         )?;
 
         // Upload all the shards and move each to the common directory.
@@ -286,6 +291,7 @@ impl SessionShardInterface {
                     let new_shard_path = si.export_with_expiration(
                         cache_shard_manager.shard_directory(),
                         *MDB_SHARD_LOCAL_CACHE_EXPIRATION,
+                        cache_shard_manager.shard_file_cache(),
                     )?;
 
                     // Register that new shard in the cache shard manager
@@ -347,7 +353,8 @@ mod tests {
         let mdb_in_mem = MDBInMemoryShard::default();
         let temp_shard_file_path = mdb_in_mem.write_to_directory(tmp_dir_path, None)?;
 
-        let shard_file = MDBShardFile::load_from_file(&temp_shard_file_path)?;
+        let sfc = xet_core_structures::metadata_shard::new_shard_file_cache();
+        let shard_file = MDBShardFile::load_from_file(&temp_shard_file_path, &sfc)?;
         assert_eq!(
             shard_file.shard.header.footer_size,
             size_of::<xet_core_structures::metadata_shard::MDBShardFileFooter>() as u64

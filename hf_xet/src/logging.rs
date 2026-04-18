@@ -36,7 +36,9 @@ pub fn init_logging(py: Python) {
     let xet_cache_directory = xet_runtime::core::xet_cache_root();
     let log_dir = xet_cache_directory.join("logs");
 
-    let cfg = LoggingConfig::default_to_directory(version_info, log_dir);
+    // Called before any XetContext is created, so we use a standalone default config for
+    // early-init logging setup.
+    let cfg = LoggingConfig::from_directory(&xet_runtime::config::XetConfig::new(), version_info, log_dir);
 
     xet_runtime::logging::init(cfg);
 

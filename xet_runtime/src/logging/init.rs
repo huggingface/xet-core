@@ -398,7 +398,7 @@ mod tests {
     #[test]
     fn round_trip_make_and_parse() {
         let dir = Path::new("/tmp");
-        let cfg = LogDirConfig::default();
+        let cfg = LogDirConfig::from_config(&crate::config::XetConfig::new());
         let path = log_file_in_dir(&cfg, dir);
         let (base, ts, pid) = parse_log_file_name(&path).expect("parse");
         assert_eq!(base, cfg.filename_prefix);

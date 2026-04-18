@@ -19,7 +19,7 @@ use simulation::upload_concurrency::run_upload_clients_until_cancelled;
 use tokio::time::sleep;
 use tracing::info;
 use xet_client::cas_client::simulation::local_server::ServerLatencyProfile;
-use xet_runtime::core::XetRuntime;
+use xet_runtime::core::XetContext;
 use xet_runtime::logging::{LoggingConfig, init as init_logging};
 
 #[derive(Parser, Debug)]
@@ -136,27 +136,32 @@ fn setup_logging(out_dir: &Path) {
     let log_dest = format!("{}/", out_dir.display());
     // SAFETY: Called from main() before any threads are spawned.
     unsafe { std::env::set_var("HF_XET_LOG_DEST", &log_dest) };
-    init_logging(LoggingConfig::default_to_directory("run_upload_scenario".to_string(), out_dir));
+    init_logging(LoggingConfig::from_directory(
+        &xet_runtime::config::XetConfig::new(),
+        "run_upload_scenario".to_string(),
+        out_dir,
+    ));
 }
 
-/// Runs an async future on a fresh multi-threaded tokio runtime, using XetRuntime for initialization.
+/// Runs an async future on a fresh multi-threaded tokio runtime, using XetContext for initialization.
 fn run_async<F>(future: F) -> ScenarioResult<()>
 where
     F: Future<Output = ScenarioResult<()>> + Send + 'static,
 {
-    let xet = XetRuntime::new().map_err(|e| ScenarioError::Runtime(e.to_string()))?;
-    xet.bridge_sync(async move {
-        tokio::task::spawn_blocking(move || {
-            tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| ScenarioError::Runtime(e.to_string()))?
-                .block_on(future)
+    let xet = XetContext::default().map_err(|e| ScenarioError::Runtime(e.to_string()))?;
+    xet.runtime
+        .bridge_sync(async move {
+            tokio::task::spawn_blocking(move || {
+                tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| ScenarioError::Runtime(e.to_string()))?
+                    .block_on(future)
+            })
+            .await
+            .map_err(ScenarioError::from)?
         })
-        .await
-        .map_err(ScenarioError::from)?
-    })
-    .map_err(|e| ScenarioError::Runtime(e.to_string()))?
+        .map_err(|e| ScenarioError::Runtime(e.to_string()))?
 }
 
 // ── Entry point ──────────────────────────────────────────────────────────────
