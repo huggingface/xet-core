@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use xet_core_structures::merklehash::MerkleHash;
 
+use crate::cas_client::simulation::deletion_controls::ObjectTag;
 use crate::cas_types::XorbReconstructionFetchInfo;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -60,4 +61,20 @@ pub struct FetchTermDataRequest {
 pub struct FetchTermDataResponse {
     pub data: Vec<u8>,
     pub chunk_byte_indices: Vec<u32>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HashWithTag {
+    pub hash: MerkleHash,
+    pub tag: ObjectTag,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TagDeleteRequest {
+    pub tag: ObjectTag,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TagDeleteResponse {
+    pub deleted: bool,
 }
