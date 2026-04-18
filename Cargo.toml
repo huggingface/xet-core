@@ -88,7 +88,6 @@ reqwest = { version = "0.13.1", features = [
     "socks",
 ], default-features = false }
 reqwest-middleware = "0.5"
-reqwest-retry = "0.9"
 rust-netrc = "0.1"
 safe-transmute = "0.11"
 serde = { version = "1", features = ["derive"] }
