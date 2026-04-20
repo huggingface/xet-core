@@ -6,7 +6,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use http::header::HeaderMap;
 use tracing::{Instrument, Span, info_span, instrument};
-use ulid::Ulid;
+use uuid::Uuid;
 use xet_client::cas_client::auth::{AuthConfig, TokenRefresher};
 use xet_core_structures::merklehash::MerkleHash;
 use xet_runtime::core::par_utils::run_constrained_with_semaphore;
@@ -32,7 +32,7 @@ pub fn default_config(
         auth: auth_cfg,
         custom_headers,
         repo_paths: vec!["".into()],
-        session_id: Some(Ulid::new().to_string()),
+        session_id: Some(Uuid::now_v7().to_string()),
     };
 
     TranslatorConfig::new(session)

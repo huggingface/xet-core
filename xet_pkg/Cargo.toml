@@ -41,7 +41,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["net", "time"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
-ulid = { workspace = true }
+uuid = { workspace = true, features = ["v7"] }
 
 [features]
 smoke-test = []

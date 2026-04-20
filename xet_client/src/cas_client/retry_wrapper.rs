@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use reqwest::{Error as ReqwestError, Response, StatusCode};
-use reqwest_retry::{Retryable, default_on_request_success};
 use tokio::sync::Mutex;
 use tokio_retry::RetryIf;
 use tokio_retry::strategy::{ExponentialBackoff, jitter};
@@ -465,6 +464,31 @@ impl RetryWrapper {
     {
         // Just have the process_fn pass through the response.
         self.run_and_process(make_request, |resp| async move { Ok(resp) }).await
+    }
+}
+
+/// Classifies a response status as retryable.
+///
+/// Equivalent to `reqwest_retry::default_on_request_success`:
+/// * 5XX (server error) -> Transient
+/// * 408 / 429 -> Transient
+/// * Other 4XX -> Fatal
+/// * 2XX -> None
+/// * Everything else -> Fatal
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Retryable {
+    Fatal,
+    Transient,
+}
+
+pub fn default_on_request_success(success: &Response) -> Option<Retryable> {
+    let status = success.status();
+    if status.is_server_error() || status == StatusCode::REQUEST_TIMEOUT || status == StatusCode::TOO_MANY_REQUESTS {
+        Some(Retryable::Transient)
+    } else if status.is_success() {
+        None
+    } else {
+        Some(Retryable::Fatal)
     }
 }
 
