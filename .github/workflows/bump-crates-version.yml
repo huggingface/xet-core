@@ -12,10 +12,6 @@ permissions:
   contents: write
   pull-requests: write
 
-concurrency:
-  group: crates-release
-  cancel-in-progress: false
-
 jobs:
   bump_crates_version:
     name: Bump crate versions and create PR
