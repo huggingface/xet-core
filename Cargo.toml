@@ -103,7 +103,7 @@ sysinfo = "0.38"
 tempfile = "3.25"
 thiserror = "2.0"
 tokio = { version = "1.49" }
-tokio-retry = "0.3.1"
+tokio-retry = "0.3"
 tokio-util = { version = "0.7" }
 tracing = "0.1"
 tracing-appender = "0.2"

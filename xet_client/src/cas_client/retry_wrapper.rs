@@ -483,17 +483,10 @@ pub enum Retryable {
 
 pub fn default_on_request_success(success: &Response) -> Option<Retryable> {
     let status = success.status();
-    if status.is_server_error() {
+    if status.is_server_error() || status == StatusCode::REQUEST_TIMEOUT || status == StatusCode::TOO_MANY_REQUESTS {
         Some(Retryable::Transient)
-    } else if status.is_client_error()
-        && status != StatusCode::REQUEST_TIMEOUT
-        && status != StatusCode::TOO_MANY_REQUESTS
-    {
-        Some(Retryable::Fatal)
     } else if status.is_success() {
         None
-    } else if status == StatusCode::REQUEST_TIMEOUT || status == StatusCode::TOO_MANY_REQUESTS {
-        Some(Retryable::Transient)
     } else {
         Some(Retryable::Fatal)
     }
