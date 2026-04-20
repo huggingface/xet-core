@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 
 use tracing::info;
-use ulid::Ulid;
+use uuid::Uuid;
 use xet_data::progress_tracking::UniqueID;
 use xet_runtime::RuntimeError;
 use xet_runtime::config::XetConfig;
@@ -46,7 +46,7 @@ pub struct XetSessionInner {
     pub(super) active_download_stream_groups: Mutex<HashMap<UniqueID, Weak<XetDownloadStreamGroupInner>>>,
 
     // "id" is used to identify a group of activities on our server, and so needs to be globally unique
-    pub(super) id: Ulid,
+    pub(super) id: Uuid,
 }
 
 /// Builder for [`XetSession`].
@@ -254,7 +254,7 @@ impl XetSession {
                 config,
                 task_runtime,
                 active_download_stream_groups: Mutex::new(HashMap::new()),
-                id: Ulid::new(),
+                id: Uuid::now_v7(),
             }),
         }
     }
@@ -397,7 +397,7 @@ impl XetSession {
         Ok(())
     }
 
-    pub(super) fn id(&self) -> &Ulid {
+    pub(super) fn id(&self) -> &Uuid {
         &self.inner.id
     }
 }
@@ -429,10 +429,11 @@ mod tests {
     }
 
     #[test]
-    // Session ID is a Ulid, to guard future regressions.
-    fn test_session_id_is_ulid() {
+    // Session ID is a UUIDv7, to guard future regressions.
+    fn test_session_id_is_uuid_v7() {
         let s = XetSessionBuilder::new().build().unwrap();
-        assert!(s.inner.id.to_string().parse::<ulid::Ulid>().is_ok());
+        let parsed: uuid::Uuid = s.inner.id.to_string().parse().expect("session id must parse as Uuid");
+        assert_eq!(parsed.get_version(), Some(uuid::Version::SortRand));
     }
 
     // ── Abort behavior ───────────────────────────────────────────────────────

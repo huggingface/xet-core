@@ -45,31 +45,33 @@ pub fn new_file_download_group(&self) -> Result<FileDownloadGroupBuilder, Sessio
 
 Both return `Err(SessionError::UserCancelled)` if the session has been aborted.
 
-### Session ID type: `XetSessionInner::id` is `ulid::Ulid`
+### Session ID type: `XetSessionInner::id` is `uuid::Uuid` (v7)
 
 > ⚠️ **Regression-prone.** This was fixed in PR #738 and regressed once already during
-> a subsequent merge. A dedicated test (`test_session_id_is_ulid`) guards against it.
-> Do **not** change `id: Ulid` back to `UniqueId` or any other type.
+> a subsequent merge. A dedicated test (`test_session_id_is_uuid_v7`) guards against it.
+> Do **not** change `id: Uuid` back to `UniqueId` or any other process-local type.
 
-`XetSessionInner::id` is `ulid::Ulid` (crate `ulid = "1"`, in workspace `Cargo.toml`).
+`XetSessionInner::id` is `uuid::Uuid` generated via `Uuid::now_v7()` (crate `uuid = "1"`
+with the `v7` feature, in workspace `Cargo.toml`).
 
 ```rust
 // xet_pkg/src/xet_session/session.rs — XetSessionInner
-pub(super) id: Ulid,   // ← must stay Ulid
+pub(super) id: Uuid,   // ← must stay Uuid (v7)
 
 // constructed as:
-id: Ulid::new(),
+id: Uuid::now_v7(),
 ```
 
-`Ulid` values are globally unique across processes and machines (128-bit, time-ordered).
+UUIDv7 values are globally unique across processes and machines (128-bit, time-ordered).
 The old `UniqueId` (`xet_runtime::utils::UniqueId`) was a process-local atomic `u64` and
 must **not** be used here. The guard test in `session.rs` is:
 
 ```rust
 #[test]
-fn test_session_id_is_ulid() {
+fn test_session_id_is_uuid_v7() {
     let s = XetSessionBuilder::new().build().unwrap();
-    assert!(s.inner.id.to_string().parse::<ulid::Ulid>().is_ok());
+    let parsed: uuid::Uuid = s.inner.id.to_string().parse().expect("session id must parse as Uuid");
+    assert_eq!(parsed.get_version(), Some(uuid::Version::SortRand));
 }
 ```
 
@@ -316,7 +318,7 @@ the group immediately without needing an explicit finalization call (unlike
 - `xet_runtime::error::RuntimeError` — added `ReqwestError` and `PoisonError` variants
 - `xet_runtime::core::XetRuntime::get_or_create_reqwest_client` — return type changed to `xet_runtime::Result<Client>`
 - `xet_client::error::ClientError` — added `From<xet_runtime::error::RuntimeError>`
-- `xet_pkg::xet_session::{session, common, upload_commit, file_download_group, download_stream_group, download_stream_handle}` — auth moved from session to per-commit/group builders; session-level `download_stream*` methods removed and replaced by `XetDownloadStreamGroup`; `XetSessionInner::id` changed to `Ulid`; the now-deleted `download_streams` module split into `download_stream_group` (`XetDownloadStreamGroup`, `DownloadStreamGroupBuilder`) and new `download_stream_handle` (`XetDownloadStream`, `XetUnorderedDownloadStream`)
+- `xet_pkg::xet_session::{session, common, upload_commit, file_download_group, download_stream_group, download_stream_handle}` — auth moved from session to per-commit/group builders; session-level `download_stream*` methods removed and replaced by `XetDownloadStreamGroup`; `XetSessionInner::id` changed to `Uuid` (v7); the now-deleted `download_streams` module split into `download_stream_group` (`XetDownloadStreamGroup`, `DownloadStreamGroupBuilder`) and new `download_stream_handle` (`XetDownloadStream`, `XetUnorderedDownloadStream`)
 - `git_xet::token_refresher` — now a thin factory delegating to `xet_client`
 - `git_xet::app::xet_agent` — updated to call `new_git_token_refresher`
 - Legacy `hf_xet` Python functions (`upload_bytes`, `upload_files`, `download_files`) are **unchanged**
