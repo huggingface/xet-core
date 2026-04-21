@@ -283,9 +283,7 @@ pub fn download_files(
     let file_infos: Vec<_> = files.into_iter().map(<(XetFileInfo, DestinationPath)>::from).collect();
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let runtime = get_or_init_runtime().map_err(convert_xet_error)?;
-    let updaters = progress_updater
-        .map(|f| try_parse_progress_updaters(f, runtime.clone()))
-        .transpose()?;
+    let updaters = progress_updater.map(|f| try_parse_progress_updaters(f, &runtime)).transpose()?;
 
     // Convert Python dict -> Rust HashMap -> HeaderMap and merge with USER_AGENT
     let header_map = build_headers_with_user_agent(request_headers)?;
@@ -328,7 +326,7 @@ pub fn force_sigint_shutdown() -> PyResult<()> {
 
 fn try_parse_progress_updaters(
     funcs: Vec<Py<PyAny>>,
-    ctx: Arc<XetContext>,
+    ctx: &XetContext,
 ) -> PyResult<Vec<Arc<dyn TrackingProgressUpdater>>> {
     let mut updaters = Vec::with_capacity(funcs.len());
     for updater_func in funcs {

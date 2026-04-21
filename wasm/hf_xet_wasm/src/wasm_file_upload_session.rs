@@ -10,7 +10,6 @@ use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::xorb_object::SerializedXorbObject;
 use xet_core_structures::xorb_object::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use xet_data::deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
-use xet_runtime::config::XetConfig;
 use xet_runtime::core::XetContext;
 
 use super::configurations::TranslatorConfig;
@@ -42,7 +41,7 @@ pub struct FileUploadSession {
 }
 
 impl FileUploadSession {
-    pub fn new(config: Arc<TranslatorConfig>) -> Self {
+    pub fn new(ctx: XetContext, config: Arc<TranslatorConfig>) -> Self {
         let headers = match HeaderValue::from_str(&config.data_config.user_agent) {
             Ok(value) => {
                 let mut headers = http::HeaderMap::new();
@@ -52,7 +51,6 @@ impl FileUploadSession {
             Err(_) => None,
         };
 
-        let ctx = XetContext::from_external(tokio::runtime::Handle::current(), XetConfig::new());
         let client = RemoteClient::new(
             ctx.clone(),
             &config.data_config.endpoint,

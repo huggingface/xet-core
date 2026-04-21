@@ -121,7 +121,7 @@ pub struct PyTotalProgressUpdate {
 /// passed around as a ProgressUpdater trait object or
 /// as a template parameter
 struct WrappedProgressUpdaterImpl {
-    ctx: Arc<XetContext>,
+    ctx: XetContext,
 
     /// Is this enabled?
     progress_updating_enabled: bool,
@@ -146,7 +146,7 @@ impl Debug for WrappedProgressUpdaterImpl {
 const DETAILED_PROGRESS_ARG_NAMES: [&str; 2] = ["total_update", "item_updates"];
 
 impl WrappedProgressUpdaterImpl {
-    pub fn new(py_func: Py<PyAny>, ctx: Arc<XetContext>) -> PyResult<Self> {
+    pub fn new(py_func: Py<PyAny>, ctx: XetContext) -> PyResult<Self> {
         // Analyze the function to make sure it's the correct form. If it's 4 arguments with
         // the appropriate names, than we call it using the detailed progress update; if it's
         // a single function, we assume it's a global increment function and just pass in the update
@@ -299,7 +299,7 @@ pub struct WrappedProgressUpdater {
 }
 
 impl WrappedProgressUpdater {
-    pub fn new(py_func: Py<PyAny>, ctx: Arc<XetContext>) -> PyResult<Self> {
+    pub fn new(py_func: Py<PyAny>, ctx: XetContext) -> PyResult<Self> {
         Ok(Self {
             inner: Arc::new(WrappedProgressUpdaterImpl::new(py_func, ctx)?),
         })

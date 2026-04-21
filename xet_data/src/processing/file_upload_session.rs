@@ -612,17 +612,10 @@ mod tests {
     use std::fs::{File, OpenOptions};
     use std::io::{Read, Write};
     use std::path::Path;
-    use std::sync::{Arc, OnceLock};
 
     use xet_runtime::core::XetContext;
 
     use crate::processing::{FileDownloadSession, FileUploadSession, XetFileInfo};
-
-    fn get_xet_context() -> Arc<XetContext> {
-        static CTX: OnceLock<Arc<XetContext>> = OnceLock::new();
-        CTX.get_or_init(|| Arc::new(XetContext::default().expect("Error starting multithreaded runtime.")))
-            .clone()
-    }
 
     /// Cleans (converts) a regular file into a pointer file.
     ///
@@ -690,10 +683,9 @@ mod tests {
         let temp = tempdir().unwrap();
         let original_data = b"Hello, world!";
 
-        let runtime = get_xet_context();
+        let ctx = XetContext::default().unwrap();
 
-        runtime
-            .runtime
+        ctx.runtime
             .clone()
             .bridge_sync(async move {
                 let cas_path = temp.path().join("cas");
@@ -722,10 +714,9 @@ mod tests {
         let temp = tempdir().unwrap();
         let data = b"Hello, skip sha256!";
 
-        let runtime = get_xet_context();
+        let ctx = XetContext::default().unwrap();
 
-        runtime
-            .runtime
+        ctx.runtime
             .clone()
             .bridge_sync(async move {
                 let cas_path = temp.path().join("cas");

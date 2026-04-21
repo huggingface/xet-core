@@ -14,7 +14,7 @@ use xet_runtime::core::sync_primatives::spawn_os_thread;
 lazy_static! {
     static ref SIGINT_DETECTED: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     static ref SIGINT_HANDLER_INSTALL_PID: (AtomicU32, Mutex<()>) = (AtomicU32::new(0), Mutex::new(()));
-    static ref MULTITHREADED_RUNTIME: RwLock<Option<(u32, Arc<XetContext>)>> = RwLock::new(None);
+    static ref MULTITHREADED_RUNTIME: RwLock<Option<(u32, XetContext)>> = RwLock::new(None);
 }
 
 #[cfg(unix)]
@@ -139,18 +139,16 @@ fn signal_check_background_loop() {
 }
 
 // This should be called once on library load.
-pub fn init_threadpool() -> Result<Arc<XetContext>, RuntimeError> {
+pub fn init_threadpool() -> Result<XetContext, RuntimeError> {
     // Need to initialize. Upgrade to write lock.
     let mut guard = MULTITHREADED_RUNTIME.write().unwrap();
 
     // Has another thread done this already?
     let pid = std::process::id();
 
-    if let Some((runtime_pid, existing)) = guard.take() {
+    if let Some((runtime_pid, ref existing)) = *guard {
         if runtime_pid == pid {
-            // We're OK, so reset it here.
-            *guard = Some((pid, existing.clone()));
-            return Ok(existing);
+            return Ok(existing.clone());
         } else {
             // Ok, discard the previous runtime, as it's effectively poisoned by the
             // fork-exec, and we simply need to leak it and restart from scratch.  The memory and
@@ -161,7 +159,7 @@ pub fn init_threadpool() -> Result<Arc<XetContext>, RuntimeError> {
         }
     }
 
-    let ctx = Arc::new(XetContext::default()?);
+    let ctx = XetContext::default()?;
 
     // Check the signal handler.  This must be reinstalled on new or after a spawn
     check_sigint_handler()?;
@@ -187,7 +185,7 @@ pub fn init_threadpool() -> Result<Arc<XetContext>, RuntimeError> {
     Ok(ctx)
 }
 
-pub(crate) fn get_or_init_runtime() -> Result<Arc<XetContext>, RuntimeError> {
+pub(crate) fn get_or_init_runtime() -> Result<XetContext, RuntimeError> {
     // First try a read lock to see if it's already initialized.
     {
         let guard = MULTITHREADED_RUNTIME.read().unwrap();
@@ -199,8 +197,6 @@ pub(crate) fn get_or_init_runtime() -> Result<Arc<XetContext>, RuntimeError> {
             }
         }
     }
-
-    // Init and return
 
     init_threadpool()
 }
