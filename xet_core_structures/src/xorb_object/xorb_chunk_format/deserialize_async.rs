@@ -131,7 +131,7 @@ where
 mod tests {
     use bytes::Bytes;
     use futures::Stream;
-    use rand::{Rng, rng};
+    use rand::{Rng, RngExt, rng};
 
     use super::super::{CompressionScheme, serialize_chunk};
     use super::deserialize_chunks_to_writer_from_stream;

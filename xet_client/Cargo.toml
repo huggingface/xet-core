@@ -15,8 +15,8 @@ name = "xet_client"
 path = "src/lib.rs"
 
 [dependencies]
-xet-runtime = { version = "1.5.1", path = "../xet_runtime" }
-xet-core-structures = { version = "1.5.1", path = "../xet_core_structures" }
+xet-runtime = { version = "1.5.2", path = "../xet_runtime" }
+xet-core-structures = { version = "1.5.2", path = "../xet_core_structures" }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -24,7 +24,6 @@ base64 = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true }
 crc32fast = { workspace = true }
-derivative = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 lazy_static = { workspace = true }
@@ -32,7 +31,6 @@ more-asserts = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true }
 reqwest-middleware = { workspace = true }
-reqwest-retry = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_repr = { workspace = true }

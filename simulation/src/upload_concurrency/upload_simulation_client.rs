@@ -10,7 +10,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use http::HeaderValue;
 use http::header::CONTENT_LENGTH;
-use rand::Rng;
+use rand::RngExt;
 use reqwest::Body;
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinSet;

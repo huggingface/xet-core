@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, Weak};
 use anyhow::anyhow;
 use async_trait::async_trait;
 use bytes::Bytes;
-use rand::Rng;
+use rand::RngExt;
 use redb::{ReadableDatabase, ReadableTable, TableDefinition};
 use tempfile::TempDir;
 use tokio::time::{Duration, Instant};

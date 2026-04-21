@@ -12,7 +12,7 @@ use std::sync::atomic::AtomicUsize;
 use clap::Parser;
 use csv::Writer;
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use tokio::sync::{Mutex, Semaphore};
 use tokio::task::JoinSet;
 use xet_core_structures::xorb_object::serialize_chunk;

@@ -1387,7 +1387,7 @@ impl SerializedXorbObject {
 }
 
 pub mod test_utils {
-    use rand::Rng;
+    use rand::RngExt;
     use xet_runtime::config::XetConfig;
 
     use super::super::raw_xorb_data::test_utils::raw_xorb_to_vec;
