@@ -164,17 +164,21 @@ impl redb::Value for FileShardRef {
 }
 
 /// Process-global cache of open redb databases, keyed by canonicalized path.
-/// Stores only [`Weak`] pointers so the cache never keeps a database alive;
-/// only [`Arc`]s held by [`LocalClient`] instances do. When the last strong
-/// ref drops, the entry is automatically purged on the next access.
+/// Stores [`Weak`] pointers so the cache never keeps a database alive on its
+/// own; only [`Arc`]s held by [`LocalClient`] instances do.
 ///
-/// Global (rather than per-[`XetContext`]) so that multiple contexts pointing
-/// at the same directory share a single database handle instead of fighting
-/// over the file lock.
+/// Both [`get_or_open_db`] and [`LocalClient::drop`] hold this mutex while
+/// creating/destroying the inner [`redb::Database`], which eliminates the race
+/// window where a database file lock could still be held between a cache miss
+/// and a `Database::create` call.
 static DB_CACHE: std::sync::LazyLock<Mutex<HashMap<PathBuf, Weak<redb::Database>>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Opens or returns a shared [`Arc<redb::Database>`] for `db_path`.
+///
+/// Must be called (and the returned `Arc` kept alive) while no other thread is
+/// dropping the last `Arc` for the same path -- which is guaranteed because
+/// both this function and `LocalClient::drop` serialize on `DB_CACHE`.
 fn get_or_open_db(db_path: &Path) -> std::result::Result<Arc<redb::Database>, redb::DatabaseError> {
     #[cfg(feature = "fd-track")]
     let _fd_scope = track_fd_scope(format!("LocalClient::get_or_open_db({})", db_path.display()));
@@ -182,7 +186,7 @@ fn get_or_open_db(db_path: &Path) -> std::result::Result<Arc<redb::Database>, re
     let mut map = DB_CACHE.lock().unwrap();
 
     if let Some(weak) = map.get(db_path)
-        && let Some(db) = Weak::upgrade(weak)
+        && let Some(db) = weak.upgrade()
     {
         tracing::trace!(target: "xet_client::local_cas_redb", path = %db_path.display(), "DB_CACHE hit");
         #[cfg(feature = "fd-track")]
@@ -190,7 +194,7 @@ fn get_or_open_db(db_path: &Path) -> std::result::Result<Arc<redb::Database>, re
         return Ok(db);
     }
 
-    // Purge dead entries to avoid unbounded cache growth.
+    // Purge dead entries while we hold the lock.
     map.retain(|_, weak| weak.strong_count() > 0);
 
     tracing::trace!(target: "xet_client::local_cas_redb", path = %db_path.display(), "DB_CACHE miss");
@@ -234,7 +238,11 @@ fn file_entry_byte_ranges(shard_bytes: &[u8]) -> std::result::Result<Vec<(Merkle
 }
 
 pub struct LocalClient {
-    db: Arc<redb::Database>,
+    /// Wrapped in `Option` so `Drop` can `take()` it under the `DB_CACHE` lock,
+    /// ensuring the redb file lock is released before another caller can open
+    /// the same path. Always `Some` during normal operation.
+    db: Option<Arc<redb::Database>>,
+    db_path: PathBuf,
     shard_manager: Arc<ShardFileManager>,
     xorb_dir: PathBuf,
     shard_dir: PathBuf,
@@ -312,7 +320,8 @@ impl LocalClient {
         report_fd_count("LocalClient::new_internal after shard manager init");
 
         Ok(Self {
-            db,
+            db: Some(db),
+            db_path,
             shard_manager,
             xorb_dir,
             shard_dir,
@@ -326,6 +335,10 @@ impl LocalClient {
         })
     }
 
+    fn db(&self) -> &redb::Database {
+        self.db.as_deref().expect("db used after close")
+    }
+
     /// Internal function to get the path for a given hash entry
     fn get_path_for_entry(&self, hash: &MerkleHash) -> PathBuf {
         self.xorb_dir.join(format!("default.{hash:?}"))
@@ -333,7 +346,7 @@ impl LocalClient {
 
     #[cfg(test)]
     fn is_file_deleted(&self, file_hash: &MerkleHash) -> bool {
-        let Ok(read_txn) = self.db.begin_read() else {
+        let Ok(read_txn) = self.db().begin_read() else {
             return true;
         };
         let Ok(table) = read_txn.open_table(FILE_TO_SHARD_TABLE) else {
@@ -453,7 +466,7 @@ impl LocalClient {
             // Update FILE_TO_SHARD_TABLE with byte-accurate offsets.
             let shard_bytes = std::fs::read(&shard_path)?;
             let file_ranges = file_entry_byte_ranges(&shard_bytes)?;
-            let write_txn = self.db.begin_write().map_err(map_redb_db_error)?;
+            let write_txn = self.db().begin_write().map_err(map_redb_db_error)?;
             {
                 let mut file_table = write_txn.open_table(FILE_TO_SHARD_TABLE).map_err(map_redb_db_error)?;
                 for (file_hash, offset, length) in &file_ranges {
@@ -480,15 +493,23 @@ impl Drop for LocalClient {
     fn drop(&mut self) {
         #[cfg(feature = "fd-track")]
         let _fd_scope = track_fd_scope(format!("LocalClient::drop({})", self.xorb_dir.display()));
+        #[cfg(feature = "fd-track")]
+        report_fd_count("LocalClient::drop start");
+
+        // Drop the database handle while holding the cache lock. This
+        // serializes with `get_or_open_db`, ensuring the redb file lock is
+        // fully released before any other caller can attempt to reopen the
+        // same path.
+        if let Ok(mut map) = DB_CACHE.lock() {
+            let db = self.db.take();
+            if db.as_ref().is_some_and(|d| Arc::strong_count(d) == 1) {
+                map.remove(&self.db_path);
+            }
+            drop(db);
+        }
 
         #[cfg(feature = "fd-track")]
-        {
-            report_fd_count("LocalClient::drop start");
-            if let Ok(mut map) = DB_CACHE.lock() {
-                map.retain(|_, weak| weak.strong_count() > 0);
-            }
-            report_fd_count("LocalClient::drop end");
-        }
+        report_fd_count("LocalClient::drop end");
     }
 }
 
@@ -794,7 +815,7 @@ impl LocalClient {
     /// Removes all FILE_TO_SHARD_TABLE entries whose shard_hash equals `shard_hash`.
     fn remove_file_entries_for_shard(&self, shard_hash: &MerkleHash) -> Result<()> {
         let to_remove: Vec<RedbHash> = {
-            let read_txn = self.db.begin_read().map_err(map_redb_db_error)?;
+            let read_txn = self.db().begin_read().map_err(map_redb_db_error)?;
             let table = read_txn.open_table(FILE_TO_SHARD_TABLE).map_err(map_redb_db_error)?;
             table
                 .iter()
@@ -805,7 +826,7 @@ impl LocalClient {
                 .collect()
         };
         if !to_remove.is_empty() {
-            let write_txn = self.db.begin_write().map_err(map_redb_db_error)?;
+            let write_txn = self.db().begin_write().map_err(map_redb_db_error)?;
             {
                 let mut table = write_txn.open_table(FILE_TO_SHARD_TABLE).map_err(map_redb_db_error)?;
                 for key in &to_remove {
@@ -838,7 +859,7 @@ impl super::DeletionControlableClient for LocalClient {
     }
 
     async fn list_file_shard_entries(&self) -> Result<Vec<(MerkleHash, MerkleHash)>> {
-        let read_txn = self.db.begin_read().map_err(map_redb_db_error)?;
+        let read_txn = self.db().begin_read().map_err(map_redb_db_error)?;
         let table = read_txn.open_table(FILE_TO_SHARD_TABLE).map_err(map_redb_db_error)?;
         let mut entries = Vec::new();
         for entry in table.iter().map_err(map_redb_db_error)? {
@@ -851,7 +872,7 @@ impl super::DeletionControlableClient for LocalClient {
     }
 
     async fn delete_file_entry(&self, file_hash: &MerkleHash) -> Result<()> {
-        let write_txn = self.db.begin_write().map_err(map_redb_db_error)?;
+        let write_txn = self.db().begin_write().map_err(map_redb_db_error)?;
         {
             let mut table = write_txn.open_table(FILE_TO_SHARD_TABLE).map_err(map_redb_db_error)?;
             table.remove(&RedbHash::from(*file_hash)).map_err(map_redb_db_error)?;
@@ -864,7 +885,7 @@ impl super::DeletionControlableClient for LocalClient {
         let shard_redb = RedbHash::from(*shard_hash);
         for _ in 0..4 {
             let to_delete: Vec<RedbHash> = {
-                let read_txn = self.db.begin_read().map_err(map_redb_db_error)?;
+                let read_txn = self.db().begin_read().map_err(map_redb_db_error)?;
                 let table = read_txn.open_table(GLOBAL_DEDUP_TABLE).map_err(map_redb_db_error)?;
                 table
                     .iter()
@@ -879,7 +900,7 @@ impl super::DeletionControlableClient for LocalClient {
                 return Ok(());
             }
 
-            let write_txn = self.db.begin_write().map_err(map_redb_db_error)?;
+            let write_txn = self.db().begin_write().map_err(map_redb_db_error)?;
             {
                 let mut table = write_txn.open_table(GLOBAL_DEDUP_TABLE).map_err(map_redb_db_error)?;
                 for chunk_hash in &to_delete {
@@ -890,7 +911,7 @@ impl super::DeletionControlableClient for LocalClient {
         }
 
         let still_present = {
-            let read_txn = self.db.begin_read().map_err(map_redb_db_error)?;
+            let read_txn = self.db().begin_read().map_err(map_redb_db_error)?;
             let table = read_txn.open_table(GLOBAL_DEDUP_TABLE).map_err(map_redb_db_error)?;
             table
                 .iter()
@@ -1018,7 +1039,7 @@ impl super::DeletionControlableClient for LocalClient {
         // A file entry in a shard is only considered active if the table maps that
         // file hash to that specific shard, preventing stale entries from resurrecting.
         let file_to_shard: HashMap<MerkleHash, MerkleHash> = {
-            let read_txn = self.db.begin_read().map_err(map_redb_db_error)?;
+            let read_txn = self.db().begin_read().map_err(map_redb_db_error)?;
             let table = read_txn.open_table(FILE_TO_SHARD_TABLE).map_err(map_redb_db_error)?;
             let mut map = HashMap::new();
             for entry in table.iter().map_err(map_redb_db_error)? {
@@ -1110,7 +1131,7 @@ impl super::DeletionControlableClient for LocalClient {
         // a TOCTOU race: upload_shard writes the file then commits the dedup
         // entry, so any entry visible in this MVCC snapshot is guaranteed to
         // have its shard file already on disk when we read the directory below.
-        let read_txn = self.db.begin_read().map_err(map_redb_db_error)?;
+        let read_txn = self.db().begin_read().map_err(map_redb_db_error)?;
 
         let shard_files = self.shard_file_paths()?;
 
@@ -1241,7 +1262,7 @@ impl LocalClient {
     /// via a direct-seek into the canonical shard on disk.  Returns `None` if the file
     /// is not registered (i.e. deleted or never uploaded).
     fn get_file_info_from_table(&self, file_hash: &MerkleHash) -> Result<Option<(MDBFileInfo, MerkleHash)>> {
-        let read_txn = self.db.begin_read().map_err(map_redb_db_error)?;
+        let read_txn = self.db().begin_read().map_err(map_redb_db_error)?;
         let table = read_txn.open_table(FILE_TO_SHARD_TABLE).map_err(map_redb_db_error)?;
         let Some(entry) = table.get(&RedbHash::from(*file_hash)).map_err(map_redb_db_error)? else {
             return Ok(None);
@@ -1389,7 +1410,7 @@ impl Client for LocalClient {
 
     async fn query_for_global_dedup_shard(&self, _prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Bytes>> {
         self.apply_api_delay().await;
-        let read_txn = self.db.begin_read().map_err(map_redb_db_error)?;
+        let read_txn = self.db().begin_read().map_err(map_redb_db_error)?;
         let table = read_txn.open_table(GLOBAL_DEDUP_TABLE).map_err(map_redb_db_error)?;
 
         if let Some(shard) = table.get(&RedbHash::from(*chunk_hash)).map_err(map_redb_db_error)? {
@@ -1461,7 +1482,7 @@ impl Client for LocalClient {
         let file_ranges = file_entry_byte_ranges(&written_shard_bytes)?;
 
         let shard_hash_redb = RedbHash::from(shard_hash);
-        let write_txn = self.db.begin_write().map_err(map_redb_db_error)?;
+        let write_txn = self.db().begin_write().map_err(map_redb_db_error)?;
         {
             let mut dedup_table = write_txn.open_table(GLOBAL_DEDUP_TABLE).map_err(map_redb_db_error)?;
             for chunk in chunk_hashes {
@@ -1752,7 +1773,7 @@ mod tests {
         let runtime = test_runtime();
         let c1 = LocalClient::new(runtime.clone(), &link).await.unwrap();
         let c2 = LocalClient::new(runtime, &real).await.unwrap();
-        assert!(Arc::ptr_eq(&c1.db, &c2.db));
+        assert!(Arc::ptr_eq(c1.db.as_ref().unwrap(), c2.db.as_ref().unwrap()));
     }
 
     #[tokio::test]
