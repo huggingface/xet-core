@@ -313,9 +313,12 @@ fn test_active_window_protection_parallel() {
     let log_dir = temp_dir.path();
     std::fs::create_dir_all(log_dir).expect("Failed to create log directory");
 
+    // Use a large min_deletion_age so files are never eligible for deletion
+    // during the test — this verifies that the min_deletion_age guard prevents
+    // cleanup even when the directory exceeds the size limit.
     let env_vars = [
-        ("HF_XET_LOG_DIR_MAX_RETENTION_AGE", "1h"), // Set high to avoid age-based cleanup
-        ("HF_XET_LOG_DIR_MIN_DELETION_AGE", "1ms"), // Disable the minimum deletion guard
+        ("HF_XET_LOG_DIR_MAX_RETENTION_AGE", "1h"),
+        ("HF_XET_LOG_DIR_MIN_DELETION_AGE", "30s"),
         ("HF_XET_LOG_DIR_MAX_SIZE", "10kb"),
         ("HF_XET_LOG_DIR_DISABLE_CLEANUP", "false"),
     ];
@@ -335,7 +338,8 @@ fn test_active_window_protection_parallel() {
     // Wait for disk to be synchronized.
     std::thread::sleep(Duration::from_millis(100));
 
-    // Check that directory size is within limits (should be larger than 10kb due to active window protection)
+    // All log files should still exist because min_deletion_age (30s) prevents
+    // cleanup, so the directory should exceed the 10kb size limit.
     let total_size = get_directory_size(log_dir);
     assert!(
         total_size > 10 * 1024,

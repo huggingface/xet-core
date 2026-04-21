@@ -21,7 +21,7 @@ use crate::error::Result;
 /// A Client with direct access to XORB and file storage.
 ///
 /// This trait extends the standard Client interface with methods for:
-/// - Direct XORB access (read, list, delete)
+/// - Direct XORB access (read, list)
 /// - File data retrieval
 /// - URL expiration control
 /// - API delay simulation
@@ -91,9 +91,6 @@ pub trait DirectAccessClient: Client + Send + Sync {
 
     /// Returns all XORB hashes stored in this client.
     async fn list_xorbs(&self) -> Result<Vec<MerkleHash>>;
-
-    /// Deletes a XORB by hash.
-    async fn delete_xorb(&self, hash: &MerkleHash);
 
     /// Get all uncompressed bytes from a XORB.
     async fn get_full_xorb(&self, hash: &MerkleHash) -> Result<Bytes>;
