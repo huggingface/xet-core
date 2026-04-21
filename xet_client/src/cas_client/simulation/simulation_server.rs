@@ -67,7 +67,7 @@ use crate::error::Result;
 ///     .await;
 ///
 /// // Use existing client
-/// let client = MemoryClient::new();
+/// let client = MemoryClient::new(ctx);
 /// let server = LocalTestServerBuilder::new()
 ///     .with_client(client)
 ///     .with_ephemeral_socket()

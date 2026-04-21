@@ -1161,7 +1161,7 @@ mod tests {
     }
 
     fn new_deletion_client() -> Arc<MemoryClient> {
-        MemoryClient::new()
+        MemoryClient::new(test_ctx())
     }
 
     #[tokio::test]

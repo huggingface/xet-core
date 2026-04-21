@@ -2077,7 +2077,7 @@ mod tests {
     /// to shard files that have been removed.
     #[tokio::test]
     async fn test_verify_integrity_detects_stale_dedup_shard_reference() {
-        let client = LocalClient::temporary().await.unwrap();
+        let client = LocalClient::temporary(test_runtime()).await.unwrap();
         let file = client.upload_random_file(&[(10, (0, 3))], 2048).await.unwrap();
         client.verify_integrity().await.unwrap();
 
@@ -2110,7 +2110,7 @@ mod tests {
     /// after deleting the original file and its xorbs must not resurrect stale entries.
     #[tokio::test]
     async fn test_reupload_same_file_hash_does_not_resurrect_stale_entries() {
-        let client = LocalClient::temporary().await.unwrap();
+        let client = LocalClient::temporary(test_runtime()).await.unwrap();
 
         // 1. Upload file F in shard S1 referencing xorb X.
         let file = client.upload_random_file(&[(1, (0, 3))], 2048).await.unwrap();
@@ -2154,7 +2154,7 @@ mod tests {
     /// Tests that list_xorbs_and_tags tags change after file re-creation with a timestamp delay.
     #[tokio::test]
     async fn test_list_xorbs_and_tags_timestamp_changes() {
-        let client = LocalClient::temporary().await.unwrap();
+        let client = LocalClient::temporary(test_runtime()).await.unwrap();
 
         let file1 = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
         let xorb_hash = file1.terms[0].xorb_hash;
