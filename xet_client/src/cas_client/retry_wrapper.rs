@@ -31,6 +31,7 @@ pub struct RetryWrapper {
     no_retry_on_429: bool,
     retry_on_403: bool,
     expected_416: bool,
+    expected_404: bool,
     log_errors_as_info: bool,
     api_tag: &'static str,
     connection_permit: Option<Mutex<ConnectionPermitInfo>>,
@@ -46,6 +47,7 @@ impl RetryWrapper {
             no_retry_on_429: false,
             retry_on_403: false,
             expected_416: false,
+            expected_404: false,
             log_errors_as_info: false,
             api_tag,
             connection_permit: None,
@@ -74,6 +76,15 @@ impl RetryWrapper {
 
     pub fn with_expected_416(mut self) -> Self {
         self.expected_416 = true;
+        self
+    }
+
+    /// Mark 404 responses as expected (e.g. `query_dedup` cache miss). When set,
+    /// a 404 is still returned as a fatal (non-retried) error to the caller — which is
+    /// usually handled by the caller converting it to `Ok(None)` — but it is logged as
+    /// a cache miss instead of the misleading `"Fatal Error"`.
+    pub fn with_expected_404(mut self) -> Self {
+        self.expected_404 = true;
         self
     }
 
@@ -165,6 +176,9 @@ impl RetryWrapper {
                     Err(RetryableReqwestError::RetryableError(cas_err))
                 } else if e.status() == Some(StatusCode::RANGE_NOT_SATISFIABLE) && self.expected_416 {
                     let cas_err = process_error("Reached end of reconstruction 416 (Range Not Satisfiable)", e, true);
+                    Err(RetryableReqwestError::FatalError(cas_err))
+                } else if e.status() == Some(StatusCode::NOT_FOUND) && self.expected_404 {
+                    let cas_err = process_error("Not Found (cache miss)", e, true);
                     Err(RetryableReqwestError::FatalError(cas_err))
                 } else {
                     let cas_err = process_error("Fatal Error", e, false);
@@ -855,6 +869,37 @@ mod tests {
         check_429_no_retry(&server).await;
         check_json_reserialization(&server).await;
         check_json_unexpected_eof_retry(&server).await;
+    }
+
+    #[tokio::test]
+    async fn test_404_expected_is_fatal_and_not_retried() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/not_found"))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = make_client();
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_ = counter.clone();
+
+        let result = connection_wrapper("test_404_expected_is_fatal_and_not_retried")
+            .with_max_attempts(3)
+            .with_expected_404()
+            .run(move || {
+                let url = format!("{}/not_found", server.uri());
+                counter_.fetch_add(1, Ordering::Relaxed);
+                client.clone().get(&url).send()
+            })
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.status(), Some(StatusCode::NOT_FOUND));
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

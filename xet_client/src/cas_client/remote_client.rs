@@ -155,6 +155,7 @@ impl RemoteClient {
 
         let result = RetryWrapper::new(self.ctx.clone(), api_tag)
             .with_429_no_retry()
+            .with_expected_404()
             .log_errors_as_info()
             .run(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
             .await;
