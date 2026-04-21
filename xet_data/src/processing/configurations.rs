@@ -204,17 +204,17 @@ mod tests {
 
     #[test]
     fn test_session_context_mode_detection() {
-        let runtime = XetContext::default().unwrap();
+        let ctx = XetContext::default().unwrap();
         let temp_dir = tempdir().unwrap();
-        let local_session = SessionContext::for_local_path(&runtime, temp_dir.path());
-        assert!(local_session.is_local(&runtime));
+        let local_session = SessionContext::for_local_path(&ctx, temp_dir.path());
+        assert!(local_session.is_local(&ctx));
         assert!(!local_session.is_memory());
-        assert_eq!(local_session.local_path(&runtime).unwrap(), temp_dir.path().to_path_buf());
+        assert_eq!(local_session.local_path(&ctx).unwrap(), temp_dir.path().to_path_buf());
 
         let memory_session = SessionContext::for_memory();
         assert!(memory_session.is_memory());
-        assert!(!memory_session.is_local(&runtime));
-        assert!(memory_session.local_path(&runtime).is_none());
+        assert!(!memory_session.is_local(&ctx));
+        assert!(memory_session.local_path(&ctx).is_none());
 
         let remote_session = SessionContext {
             endpoint: "http://localhost:8080".into(),
@@ -223,22 +223,22 @@ mod tests {
             repo_paths: Vec::new(),
             session_id: None,
         };
-        assert!(!remote_session.is_local(&runtime));
+        assert!(!remote_session.is_local(&ctx));
         assert!(!remote_session.is_memory());
-        assert!(remote_session.local_path(&runtime).is_none());
+        assert!(remote_session.local_path(&ctx).is_none());
     }
 
     #[test]
     fn test_memory_and_server_configs_use_base_xet_layout() {
-        let runtime = XetContext::default().unwrap();
+        let ctx = XetContext::default().unwrap();
         let temp_dir = tempdir().unwrap();
 
-        let memory_config = TranslatorConfig::memory_config(&runtime, temp_dir.path()).unwrap();
+        let memory_config = TranslatorConfig::memory_config(&ctx, temp_dir.path()).unwrap();
         assert!(memory_config.shard_cache_directory.starts_with(temp_dir.path().join("xet")));
         assert!(memory_config.shard_session_directory.starts_with(temp_dir.path().join("xet")));
 
         let server_config =
-            TranslatorConfig::test_server_config(&runtime, "http://localhost:8080", temp_dir.path()).unwrap();
+            TranslatorConfig::test_server_config(&ctx, "http://localhost:8080", temp_dir.path()).unwrap();
         assert!(server_config.shard_cache_directory.starts_with(temp_dir.path().join("xet")));
         assert!(server_config.shard_session_directory.starts_with(temp_dir.path().join("xet")));
     }

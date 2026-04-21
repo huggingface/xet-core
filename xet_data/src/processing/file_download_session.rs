@@ -400,8 +400,8 @@ mod tests {
     }
 
     async fn upload_data(cas_path: &Path, data: &[u8]) -> XetFileInfo {
-        let runtime = XetContext::default().unwrap();
-        let upload_session = FileUploadSession::new(TranslatorConfig::local_config(&runtime, cas_path).unwrap().into())
+        let ctx = XetContext::default().unwrap();
+        let upload_session = FileUploadSession::new(TranslatorConfig::local_config(&ctx, cas_path).unwrap().into())
             .await
             .unwrap();
 

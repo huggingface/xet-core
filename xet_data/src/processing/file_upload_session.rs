@@ -633,8 +633,8 @@ mod tests {
                 .unwrap(),
         );
 
-        let runtime = XetContext::default().unwrap();
-        let upload_session = FileUploadSession::new(TranslatorConfig::local_config(&runtime, cas_path).unwrap().into())
+        let ctx = XetContext::default().unwrap();
+        let upload_session = FileUploadSession::new(TranslatorConfig::local_config(&ctx, cas_path).unwrap().into())
             .await
             .unwrap();
 
@@ -665,8 +665,8 @@ mod tests {
 
         let xet_file = serde_json::from_str::<XetFileInfo>(&input).unwrap();
 
-        let runtime = XetContext::default().unwrap();
-        let config = TranslatorConfig::local_config(&runtime, cas_path).unwrap();
+        let ctx = XetContext::default().unwrap();
+        let config = TranslatorConfig::local_config(&ctx, cas_path).unwrap();
         let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
         let (_id, _n_bytes) = session.download_file(&xet_file, output_path).await.unwrap();
@@ -719,9 +719,9 @@ mod tests {
             .bridge_sync(async move {
                 let cas_path = temp.path().join("cas");
 
-                let session_runtime = XetContext::default().unwrap();
+                let session_ctx = XetContext::default().unwrap();
                 let upload_session =
-                    FileUploadSession::new(TranslatorConfig::local_config(&session_runtime, &cas_path).unwrap().into())
+                    FileUploadSession::new(TranslatorConfig::local_config(&session_ctx, &cas_path).unwrap().into())
                         .await
                         .unwrap();
 

@@ -188,7 +188,7 @@ struct ShardBenchmarkArgs {
 async fn main() {
     let args = ShardBenchmarkArgs::parse();
 
-    let runtime = XetContext::from_external(Handle::current(), XetConfig::new());
+    let ctx = XetContext::from_external(Handle::current(), XetConfig::new());
 
     let temp_dir = TempDir::with_prefix("git-xet-shard").expect("Failed to create temp dir");
     let dir = args.dir.unwrap_or_else(|| temp_dir.path().into());
@@ -200,7 +200,7 @@ async fn main() {
     assert!(dir.exists());
 
     run_shard_benchmark(
-        &runtime,
+        &ctx,
         args.shard_sizes,
         args.contiguity,
         args.file_contiguity,

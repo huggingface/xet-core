@@ -198,8 +198,8 @@ mod tests {
         let _hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let runtime = XetContext::default().unwrap();
-        let result = default_config(&runtime, endpoint, None, None, None);
+        let ctx = XetContext::default().unwrap();
+        let result = default_config(&ctx, endpoint, None, None, None);
 
         assert!(result.is_ok());
         let config = result.unwrap();
@@ -216,8 +216,8 @@ mod tests {
         let hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir_hf_home.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let runtime = XetContext::default().unwrap();
-        let result = default_config(&runtime, endpoint, None, None, None);
+        let ctx = XetContext::default().unwrap();
+        let result = default_config(&ctx, endpoint, None, None, None);
 
         assert!(result.is_ok());
         let config = result.unwrap();
@@ -230,8 +230,8 @@ mod tests {
         let _hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let runtime = XetContext::default().unwrap();
-        let result = default_config(&runtime, endpoint, None, None, None);
+        let ctx = XetContext::default().unwrap();
+        let result = default_config(&ctx, endpoint, None, None, None);
 
         assert!(result.is_ok());
         let config = result.unwrap();
@@ -245,8 +245,8 @@ mod tests {
         let _hf_xet_cache_guard = EnvVarGuard::set("HF_XET_CACHE", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let runtime = XetContext::default().unwrap();
-        let result = default_config(&runtime, endpoint, None, None, None);
+        let ctx = XetContext::default().unwrap();
+        let result = default_config(&ctx, endpoint, None, None, None);
 
         assert!(result.is_ok());
         let config = result.unwrap();
@@ -257,8 +257,8 @@ mod tests {
     #[serial(default_config_env)]
     fn test_default_config_without_env_vars() {
         let endpoint = "http://localhost:8080".to_string();
-        let runtime = XetContext::default().unwrap();
-        let result = default_config(&runtime, endpoint, None, None, None);
+        let ctx = XetContext::default().unwrap();
+        let result = default_config(&ctx, endpoint, None, None, None);
 
         let expected = home_dir().unwrap().join(".cache").join("huggingface").join("xet");
 
@@ -278,8 +278,8 @@ mod tests {
         std::fs::write(&file_path, b"").unwrap();
 
         let buffer_size = 8 * 1024 * 1024; // 8MB
-        let runtime = XetContext::default().unwrap();
-        let result = hash_single_file(runtime, file_path.to_str().unwrap().to_string(), buffer_size);
+        let ctx = XetContext::default().unwrap();
+        let result = hash_single_file(ctx, file_path.to_str().unwrap().to_string(), buffer_size);
         assert!(result.is_ok());
 
         let file_info = result.unwrap();
@@ -295,8 +295,8 @@ mod tests {
         std::fs::write(&file_path, content).unwrap();
 
         let buffer_size = 8 * 1024 * 1024; // 8MB
-        let runtime = XetContext::default().unwrap();
-        let result = hash_single_file(runtime, file_path.to_str().unwrap().to_string(), buffer_size);
+        let ctx = XetContext::default().unwrap();
+        let result = hash_single_file(ctx, file_path.to_str().unwrap().to_string(), buffer_size);
         assert!(result.is_ok());
 
         let file_info = result.unwrap();
@@ -317,15 +317,15 @@ mod tests {
         std::fs::write(&file_path, &content).unwrap();
 
         let file_path_str = file_path.to_str().unwrap().to_string();
-        let runtime = XetContext::default().unwrap();
+        let ctx = XetContext::default().unwrap();
 
         // Hash with 8MB buffer size
-        let result1 = hash_single_file(runtime.clone(), file_path_str.clone(), 8 * 1024 * 1024);
+        let result1 = hash_single_file(ctx.clone(), file_path_str.clone(), 8 * 1024 * 1024);
         assert!(result1.is_ok());
         let file_info1 = result1.unwrap();
 
         // Hash with 4MB buffer size
-        let result2 = hash_single_file(runtime.clone(), file_path_str, 4 * 1024 * 1024);
+        let result2 = hash_single_file(ctx.clone(), file_path_str, 4 * 1024 * 1024);
         assert!(result2.is_ok());
         let file_info2 = result2.unwrap();
 
@@ -338,8 +338,8 @@ mod tests {
     #[tokio::test]
     async fn test_hash_file_not_found() {
         let buffer_size = 8 * 1024 * 1024; // 8MB
-        let runtime = XetContext::default().unwrap();
-        let result = hash_single_file(runtime, "/nonexistent/file.txt".to_string(), buffer_size);
+        let ctx = XetContext::default().unwrap();
+        let result = hash_single_file(ctx, "/nonexistent/file.txt".to_string(), buffer_size);
         assert!(result.is_err());
     }
 
@@ -358,8 +358,8 @@ mod tests {
             file2_path.to_str().unwrap().to_string(),
         ];
 
-        let runtime = XetContext::default().unwrap();
-        let result = hash_files_async(&runtime, file_paths).await;
+        let ctx = XetContext::default().unwrap();
+        let result = hash_files_async(&ctx, file_paths).await;
         assert!(result.is_ok());
 
         let file_infos = result.unwrap();
@@ -384,22 +384,22 @@ mod tests {
         std::fs::write(&file_path, &content).unwrap();
 
         let file_path_str = file_path.to_str().unwrap().to_string();
-        let runtime = XetContext::default().unwrap();
+        let ctx = XetContext::default().unwrap();
 
         // Hash with 8MB buffer size - file is exactly 2x buffer size
-        let result1 = hash_single_file(runtime.clone(), file_path_str.clone(), 8 * 1024 * 1024);
+        let result1 = hash_single_file(ctx.clone(), file_path_str.clone(), 8 * 1024 * 1024);
         assert!(result1.is_ok());
         let file_info1 = result1.unwrap();
         assert_eq!(file_info1.file_size(), Some(file_size as u64));
         assert!(!file_info1.hash().is_empty());
 
         // Hash with 4MB buffer size - file is exactly 4x buffer size
-        let result2 = hash_single_file(runtime.clone(), file_path_str.clone(), 4 * 1024 * 1024);
+        let result2 = hash_single_file(ctx.clone(), file_path_str.clone(), 4 * 1024 * 1024);
         assert!(result2.is_ok());
         let file_info2 = result2.unwrap();
 
         // Hash with 2MB buffer size - file is exactly 8x buffer size
-        let result3 = hash_single_file(runtime, file_path_str, 2 * 1024 * 1024);
+        let result3 = hash_single_file(ctx, file_path_str, 2 * 1024 * 1024);
         assert!(result3.is_ok());
         let file_info3 = result3.unwrap();
 

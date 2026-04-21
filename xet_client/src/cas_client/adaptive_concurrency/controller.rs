@@ -238,12 +238,12 @@ impl ConcurrencyControllerState {
 /// use crate::retry_wrapper::RetryWrapper;
 /// use xet_runtime::core::XetContext;
 ///
-/// let runtime = XetContext::default()?;
-/// let upload_controller = AdaptiveConcurrencyController::new_upload(runtime.clone(), "upload");
+/// let ctx = XetContext::default()?;
+/// let upload_controller = AdaptiveConcurrencyController::new_upload(ctx.clone(), "upload");
 ///
 /// let permit = upload_controller.acquire_connection_permit().await?;
 ///
-/// let response: UploadResponse = RetryWrapper::new(runtime, "cas::upload_shard")
+/// let response: UploadResponse = RetryWrapper::new(ctx, "cas::upload_shard")
 ///     .with_connection_permit(permit, Some(shard_data.len() as u64))
 ///     .run_and_extract_json(move |_partial_report_fn| {
 ///         client.post(url.clone()).body(shard_data.clone()).send()

@@ -386,10 +386,10 @@ mod tests {
     /// Creates a test client and uploads a random file with the given term specification.
     /// Returns the client and file contents for verification.
     async fn setup_test_file(term_spec: &[(u64, (u64, u64))]) -> (XetContext, Arc<LocalClient>, RandomFileContents) {
-        let runtime = XetContext::default().unwrap();
-        let client = LocalClient::temporary(runtime.clone()).await.unwrap();
+        let ctx = XetContext::default().unwrap();
+        let client = LocalClient::temporary(ctx.clone()).await.unwrap();
         let file_contents = client.upload_random_file(term_spec, TEST_CHUNK_SIZE).await.unwrap();
-        (runtime, client, file_contents)
+        (ctx, client, file_contents)
     }
 
     /// Retrieves file terms and thoroughly verifies their correctness.

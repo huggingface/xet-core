@@ -445,7 +445,7 @@ mod tests {
 
     use super::*;
 
-    fn test_runtime() -> XetContext {
+    fn test_context() -> XetContext {
         XetContext::default().unwrap()
     }
 
@@ -609,7 +609,7 @@ mod tests {
         let buffer_clone = buffer.clone();
 
         let mut writer = SequentialWriter::new(
-            &test_runtime(),
+            &test_context(),
             Box::new(SharedBuffer(buffer_clone)),
             false,
             RunState::new_for_test(),
@@ -640,7 +640,7 @@ mod tests {
         let buffer_clone = buffer.clone();
 
         let mut writer = SequentialWriter::new(
-            &test_runtime(),
+            &test_context(),
             Box::new(SharedBuffer(buffer_clone)),
             false,
             RunState::new_for_test(),
@@ -670,7 +670,7 @@ mod tests {
     #[tokio::test]
     async fn test_size_mismatch_error() {
         let buffer = std::io::Cursor::new(Vec::new());
-        let mut writer = SequentialWriter::new(&test_runtime(), Box::new(buffer), false, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(buffer), false, RunState::new_for_test());
 
         writer
             .set_next_term_data_source(FileRange::new(0, 10), None, immediate_future(Bytes::from("Hello")))
@@ -694,7 +694,7 @@ mod tests {
         }
 
         let mut writer =
-            SequentialWriter::new(&test_runtime(), Box::new(FailingWriter), false, RunState::new_for_test());
+            SequentialWriter::new(&test_context(), Box::new(FailingWriter), false, RunState::new_for_test());
 
         writer
             .set_next_term_data_source(FileRange::new(0, 4), None, immediate_future(Bytes::from("Test")))
@@ -724,7 +724,7 @@ mod tests {
         }
 
         let writer =
-            SequentialWriter::new(&test_runtime(), Box::new(FlushFailingWriter), false, RunState::new_for_test());
+            SequentialWriter::new(&test_context(), Box::new(FlushFailingWriter), false, RunState::new_for_test());
         let result = writer.finish().await;
         assert!(result.is_err());
         assert!(matches!(result, Err(FileReconstructionError::IoError(_))));
@@ -736,7 +736,7 @@ mod tests {
         let buffer_clone = buffer.clone();
 
         let mut writer = SequentialWriter::new(
-            &test_runtime(),
+            &test_context(),
             Box::new(SharedBuffer(buffer_clone)),
             false,
             RunState::new_for_test(),
@@ -757,7 +757,7 @@ mod tests {
     #[tokio::test]
     async fn test_size_mismatch_too_small() {
         let buffer = std::io::Cursor::new(Vec::new());
-        let mut writer = SequentialWriter::new(&test_runtime(), Box::new(buffer), false, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(buffer), false, RunState::new_for_test());
 
         writer
             .set_next_term_data_source(FileRange::new(0, 10), None, immediate_future(Bytes::from("Hi")))
@@ -771,7 +771,7 @@ mod tests {
     #[tokio::test]
     async fn test_size_mismatch_too_large() {
         let buffer = std::io::Cursor::new(Vec::new());
-        let mut writer = SequentialWriter::new(&test_runtime(), Box::new(buffer), false, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(buffer), false, RunState::new_for_test());
 
         writer
             .set_next_term_data_source(FileRange::new(0, 2), None, immediate_future(Bytes::from("Hello World")))
@@ -788,7 +788,7 @@ mod tests {
         let buffer_clone = buffer.clone();
 
         let mut writer = SequentialWriter::new(
-            &test_runtime(),
+            &test_context(),
             Box::new(SharedBuffer(buffer_clone)),
             false,
             RunState::new_for_test(),
@@ -817,7 +817,7 @@ mod tests {
     #[tokio::test]
     async fn test_non_sequential_range_returns_error() {
         let buffer = std::io::Cursor::new(Vec::new());
-        let mut writer = SequentialWriter::new(&test_runtime(), Box::new(buffer), false, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(buffer), false, RunState::new_for_test());
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
@@ -834,7 +834,7 @@ mod tests {
     #[tokio::test]
     async fn test_first_range_must_start_at_zero() {
         let buffer = std::io::Cursor::new(Vec::new());
-        let mut writer = SequentialWriter::new(&test_runtime(), Box::new(buffer), false, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(buffer), false, RunState::new_for_test());
 
         let result = writer
             .set_next_term_data_source(FileRange::new(5, 10), None, immediate_future(Bytes::from("Hello")))
@@ -850,7 +850,7 @@ mod tests {
         let semaphore = AdjustableSemaphore::new(2, (0, 2));
 
         let mut writer = SequentialWriter::new(
-            &test_runtime(),
+            &test_context(),
             Box::new(SharedBuffer(buffer_clone)),
             false,
             RunState::new_for_test(),
@@ -891,7 +891,7 @@ mod tests {
         let buffer = test_writer.buffer.clone();
         let vectored_count = test_writer.vectored_write_count.clone();
 
-        let mut writer = SequentialWriter::new(&test_runtime(), Box::new(test_writer), true, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(test_writer), true, RunState::new_for_test());
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
@@ -918,7 +918,7 @@ mod tests {
         let test_writer = TestWriter::new(TestWriterConfig::vectorized_partial(3));
         let buffer = test_writer.buffer.clone();
 
-        let mut writer = SequentialWriter::new(&test_runtime(), Box::new(test_writer), true, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(test_writer), true, RunState::new_for_test());
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
@@ -948,7 +948,7 @@ mod tests {
         let test_writer = TestWriter::new(TestWriterConfig::vectorized());
         let buffer = test_writer.buffer.clone();
 
-        let mut writer = SequentialWriter::new(&test_runtime(), Box::new(test_writer), true, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(test_writer), true, RunState::new_for_test());
 
         // Create futures that resolve with different delays
         let f0: DataFuture = Box::pin(async {
@@ -978,7 +978,7 @@ mod tests {
         let buffer = test_writer.buffer.clone();
         let vectored_count = test_writer.vectored_write_count.clone();
 
-        let mut writer = SequentialWriter::new(&test_runtime(), Box::new(test_writer), true, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(test_writer), true, RunState::new_for_test());
 
         // Write 100 single-byte chunks
         for i in 0..100u8 {
@@ -1007,7 +1007,7 @@ mod tests {
         let test_writer = TestWriter::new(TestWriterConfig::vectorized_with_interrupts());
         let buffer = test_writer.buffer.clone();
 
-        let mut writer = SequentialWriter::new(&test_runtime(), Box::new(test_writer), true, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(test_writer), true, RunState::new_for_test());
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
@@ -1034,7 +1034,7 @@ mod tests {
         let buffer = test_writer.buffer.clone();
         let semaphore = AdjustableSemaphore::new(2, (0, 2));
 
-        let mut writer = SequentialWriter::new(&test_runtime(), Box::new(test_writer), true, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(test_writer), true, RunState::new_for_test());
 
         let permit1 = semaphore.acquire().await.unwrap();
         let permit2 = semaphore.acquire().await.unwrap();
@@ -1069,7 +1069,7 @@ mod tests {
         let buffer = test_writer.buffer.clone();
         let semaphore = AdjustableSemaphore::new(3, (0, 3));
 
-        let mut writer = SequentialWriter::new(&test_runtime(), Box::new(test_writer), true, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(test_writer), true, RunState::new_for_test());
 
         let permit1 = semaphore.acquire().await.unwrap();
         let permit2 = semaphore.acquire().await.unwrap();
@@ -1105,7 +1105,7 @@ mod tests {
         let write_count = test_writer.write_count.clone();
         let vectored_count = test_writer.vectored_write_count.clone();
 
-        let mut writer = SequentialWriter::new(&test_runtime(), Box::new(test_writer), false, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(test_writer), false, RunState::new_for_test());
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
@@ -1133,7 +1133,7 @@ mod tests {
         let test_writer = TestWriter::new(TestWriterConfig::partial(3));
         let buffer = test_writer.buffer.clone();
 
-        let mut writer = SequentialWriter::new(&test_runtime(), Box::new(test_writer), false, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(test_writer), false, RunState::new_for_test());
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
@@ -1163,7 +1163,7 @@ mod tests {
         let test_writer = TestWriter::new(TestWriterConfig::vectorized_partial(1));
         let buffer = test_writer.buffer.clone();
 
-        let mut writer = SequentialWriter::new(&test_runtime(), Box::new(test_writer), true, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(test_writer), true, RunState::new_for_test());
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("ABCDE")))
@@ -1186,7 +1186,7 @@ mod tests {
         let test_writer = TestWriter::new(TestWriterConfig::vectorized());
         let buffer = test_writer.buffer.clone();
 
-        let mut writer = SequentialWriter::new(&test_runtime(), Box::new(test_writer), true, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(test_writer), true, RunState::new_for_test());
 
         // Write in chunks of 1000 bytes
         for i in 0..10 {
@@ -1215,7 +1215,7 @@ mod tests {
         let test_writer = TestWriter::new(TestWriterConfig::vectorized_partial(100));
         let buffer = test_writer.buffer.clone();
 
-        let mut writer = SequentialWriter::new(&test_runtime(), Box::new(test_writer), true, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(test_writer), true, RunState::new_for_test());
 
         // Write in chunks of 500 bytes
         for i in 0..10 {
@@ -1242,7 +1242,7 @@ mod tests {
     async fn test_vectorized_exceeded_max_slice() {
         let test_writer = TestWriter::new(TestWriterConfig::vectorized_hard_limit(2)); // hard limit set to 2 slices at a time
 
-        let mut writer = SequentialWriter::new(&test_runtime(), Box::new(test_writer), true, RunState::new_for_test()); // controlled writev at max 24 slices at a time
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(test_writer), true, RunState::new_for_test()); // controlled writev at max 24 slices at a time
 
         // Write in slices of 10 bytes, creating in total 1000 slices
         for i in 0..1000 {
@@ -1275,7 +1275,7 @@ mod tests {
         let test_writer = TestWriter::new(TestWriterConfig::vectorized_hard_limit(40)); // hard limit set to 40 slices at a time
         let buffer = test_writer.buffer.clone();
 
-        let mut writer = SequentialWriter::new(&test_runtime(), Box::new(test_writer), true, RunState::new_for_test()); // controlled writev at max 24 slices at a time
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(test_writer), true, RunState::new_for_test()); // controlled writev at max 24 slices at a time
 
         // Write in slices of 10 bytes, creating in total 1000 slices
         for i in 0..1000 {

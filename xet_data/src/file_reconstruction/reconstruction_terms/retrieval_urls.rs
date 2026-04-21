@@ -196,9 +196,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_refresh_skipped_when_already_refreshed() {
-        let runtime = XetContext::default().unwrap();
+        let ctx = XetContext::default().unwrap();
         let (client, file_contents) = {
-            let c = LocalClient::temporary(runtime.clone()).await.unwrap();
+            let c = LocalClient::temporary(ctx.clone()).await.unwrap();
             let fc = c.upload_random_file(&[(1, (0, 3))], 64).await.unwrap();
             (c, fc)
         };
@@ -207,7 +207,7 @@ mod tests {
         let dyn_client: Arc<dyn xet_client::cas_client::Client> = client.clone();
 
         let (_, _, file_terms) =
-            super::retrieve_file_term_block(&runtime, dyn_client.clone(), file_contents.file_hash, file_range)
+            super::retrieve_file_term_block(&ctx, dyn_client.clone(), file_contents.file_hash, file_range)
                 .await
                 .unwrap()
                 .unwrap();
@@ -220,7 +220,7 @@ mod tests {
         // Refresh with a stale (different) ID should be a no-op.
         let stale_id = UniqueId::new();
         url_info
-            .refresh_retrieval_urls(&runtime, dyn_client.clone(), stale_id)
+            .refresh_retrieval_urls(&ctx, dyn_client.clone(), stale_id)
             .await
             .unwrap();
         let (id_after, _, _) = url_info.get_retrieval_url(0).await;
@@ -228,7 +228,7 @@ mod tests {
 
         // Refresh with the correct ID should update URLs.
         url_info
-            .refresh_retrieval_urls(&runtime, dyn_client.clone(), original_id)
+            .refresh_retrieval_urls(&ctx, dyn_client.clone(), original_id)
             .await
             .unwrap();
         let (refreshed_id, _, _) = url_info.get_retrieval_url(0).await;
@@ -237,9 +237,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_xorb_url_provider_retrieve_and_refresh() {
-        let runtime = XetContext::default().unwrap();
+        let ctx = XetContext::default().unwrap();
         let (client, file_contents) = {
-            let c = LocalClient::temporary(runtime.clone()).await.unwrap();
+            let c = LocalClient::temporary(ctx.clone()).await.unwrap();
             let fc = c.upload_random_file(&[(1, (0, 3))], 64).await.unwrap();
             (c, fc)
         };
@@ -248,7 +248,7 @@ mod tests {
         let dyn_client: Arc<dyn xet_client::cas_client::Client> = client.clone();
 
         let (_, _, file_terms) =
-            super::retrieve_file_term_block(&runtime, dyn_client.clone(), file_contents.file_hash, file_range)
+            super::retrieve_file_term_block(&ctx, dyn_client.clone(), file_contents.file_hash, file_range)
                 .await
                 .unwrap()
                 .unwrap();
@@ -256,7 +256,7 @@ mod tests {
         let url_info = file_terms[0].url_info.clone();
 
         let provider = XorbURLProvider {
-            ctx: runtime.clone(),
+            ctx: ctx.clone(),
             client: dyn_client.clone(),
             url_info,
             xorb_block_index: 0,

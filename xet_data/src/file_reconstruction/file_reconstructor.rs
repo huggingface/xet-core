@@ -1081,9 +1081,9 @@ mod tests {
         // Create a tiny semaphore (1 permit) to force sequential processing
         // This ensures each term is fully written before the next is fetched
         let tiny_semaphore = AdjustableSemaphore::new(1, (1, 1));
-        let runtime = XetContext::from_external(Handle::current(), XetConfig::new());
+        let ctx = XetContext::from_external(Handle::current(), XetConfig::new());
 
-        FileReconstructor::new(&runtime, &(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+        FileReconstructor::new(&ctx, &(client.clone() as Arc<dyn Client>), file_contents.file_hash)
             .with_config(url_refresh_test_config())
             .with_buffer_semaphore(tiny_semaphore)
             .reconstruct_to_writer(writer)
@@ -1116,9 +1116,9 @@ mod tests {
         let writer_buffer = writer.buffer.clone();
 
         let tiny_semaphore = AdjustableSemaphore::new(1, (1, 1));
-        let runtime = XetContext::from_external(Handle::current(), XetConfig::new());
+        let ctx = XetContext::from_external(Handle::current(), XetConfig::new());
 
-        FileReconstructor::new(&runtime, &(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+        FileReconstructor::new(&ctx, &(client.clone() as Arc<dyn Client>), file_contents.file_hash)
             .with_config(url_refresh_test_config())
             .with_buffer_semaphore(tiny_semaphore)
             .reconstruct_to_writer(writer)
@@ -1143,9 +1143,9 @@ mod tests {
         let writer_buffer = writer.buffer.clone();
 
         let tiny_semaphore = AdjustableSemaphore::new(1, (1, 1));
-        let runtime = XetContext::from_external(Handle::current(), XetConfig::new());
+        let ctx = XetContext::from_external(Handle::current(), XetConfig::new());
 
-        FileReconstructor::new(&runtime, &(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+        FileReconstructor::new(&ctx, &(client.clone() as Arc<dyn Client>), file_contents.file_hash)
             .with_config(url_refresh_test_config())
             .with_buffer_semaphore(tiny_semaphore)
             .reconstruct_to_writer(writer)
@@ -1170,9 +1170,9 @@ mod tests {
         let writer_buffer = writer.buffer.clone();
 
         let tiny_semaphore = AdjustableSemaphore::new(1, (1, 1));
-        let runtime = XetContext::from_external(Handle::current(), XetConfig::new());
+        let ctx = XetContext::from_external(Handle::current(), XetConfig::new());
 
-        FileReconstructor::new(&runtime, &(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+        FileReconstructor::new(&ctx, &(client.clone() as Arc<dyn Client>), file_contents.file_hash)
             .with_config(url_refresh_test_config())
             .with_buffer_semaphore(tiny_semaphore)
             .reconstruct_to_writer(writer)
@@ -1196,11 +1196,11 @@ mod tests {
         let writer_buffer = writer.buffer.clone();
 
         let tiny_semaphore = AdjustableSemaphore::new(1, (0, 1));
-        let runtime = XetContext::from_external(Handle::current(), XetConfig::new());
+        let ctx = XetContext::from_external(Handle::current(), XetConfig::new());
 
         let range = FileRange::new(file_len / 4, file_len * 3 / 4);
 
-        FileReconstructor::new(&runtime, &(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+        FileReconstructor::new(&ctx, &(client.clone() as Arc<dyn Client>), file_contents.file_hash)
             .with_byte_range(range)
             .with_config(url_refresh_test_config())
             .with_buffer_semaphore(tiny_semaphore)

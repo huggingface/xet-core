@@ -1739,7 +1739,7 @@ mod tests {
 
     use super::*;
 
-    fn test_runtime() -> XetContext {
+    fn test_context() -> XetContext {
         let config = XetConfig::new();
         XetContext::from_external(tokio::runtime::Handle::current(), config)
     }
@@ -1751,7 +1751,7 @@ mod tests {
     #[tokio::test]
     async fn test_common_client_suite() {
         crate::cas_client::simulation::client_unit_testing::test_client_functionality(|| async {
-            LocalClient::temporary(test_runtime()).await.unwrap()
+            LocalClient::temporary(test_context()).await.unwrap()
                 as std::sync::Arc<dyn crate::cas_client::simulation::DirectAccessClient>
         })
         .await;
@@ -1770,9 +1770,9 @@ mod tests {
         let link = tmp.path().join("link");
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
-        let runtime = test_runtime();
-        let c1 = LocalClient::new(runtime.clone(), &link).await.unwrap();
-        let c2 = LocalClient::new(runtime, &real).await.unwrap();
+        let ctx = test_context();
+        let c1 = LocalClient::new(ctx.clone(), &link).await.unwrap();
+        let c2 = LocalClient::new(ctx, &real).await.unwrap();
         assert!(Arc::ptr_eq(c1.db.as_ref().unwrap(), c2.db.as_ref().unwrap()));
     }
 
@@ -1783,7 +1783,7 @@ mod tests {
         let xorb_obj = build_and_verify_xorb_object(xorb, CompressionScheme::Auto);
         let hash = xorb_obj.hash;
 
-        let client = LocalClient::temporary(test_runtime()).await.unwrap();
+        let client = LocalClient::temporary(test_context()).await.unwrap();
         let permit = client.acquire_upload_permit().await.unwrap();
         client.upload_xorb("default", xorb_obj, None, permit).await.unwrap();
 
@@ -1904,7 +1904,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_url_expiration() {
         super::super::client_unit_testing::test_url_expiration_functionality(|| async {
-            LocalClient::temporary(test_runtime()).await.unwrap()
+            LocalClient::temporary(test_context()).await.unwrap()
                 as std::sync::Arc<dyn crate::cas_client::simulation::DirectAccessClient>
         })
         .await;
@@ -1913,7 +1913,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_api_delay() {
         super::super::client_unit_testing::test_api_delay_functionality(|| async {
-            LocalClient::temporary(test_runtime()).await.unwrap()
+            LocalClient::temporary(test_context()).await.unwrap()
                 as std::sync::Arc<dyn crate::cas_client::simulation::DirectAccessClient>
         })
         .await;
@@ -1922,7 +1922,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_global_dedup_shard_expiration() {
         super::super::client_unit_testing::test_global_dedup_shard_expiration_functionality(|| async {
-            LocalClient::temporary(test_runtime()).await.unwrap()
+            LocalClient::temporary(test_context()).await.unwrap()
                 as std::sync::Arc<dyn crate::cas_client::simulation::DirectAccessClient>
         })
         .await;
@@ -1932,7 +1932,7 @@ mod tests {
     #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_global_dedup_shard_expiration_stress() {
         super::super::client_unit_testing::test_global_dedup_shard_expiration_stress(|| async {
-            LocalClient::temporary(test_runtime()).await.unwrap()
+            LocalClient::temporary(test_context()).await.unwrap()
                 as std::sync::Arc<dyn crate::cas_client::simulation::DirectAccessClient>
         })
         .await;
@@ -1941,14 +1941,14 @@ mod tests {
     #[tokio::test]
     async fn test_deletion_suite() {
         super::super::deletion_unit_testing::test_deletion_functionality(|| async {
-            LocalClient::temporary(test_runtime()).await.unwrap()
+            LocalClient::temporary(test_context()).await.unwrap()
         })
         .await;
     }
 
     #[tokio::test]
     async fn test_verify_integrity_detects_missing_cas_block_reference() {
-        let client = LocalClient::temporary(test_runtime()).await.unwrap();
+        let client = LocalClient::temporary(test_context()).await.unwrap();
         client.upload_random_file(&[(3, (0, 3)), (4, (0, 2))], 2048).await.unwrap();
         client.verify_integrity().await.unwrap();
 
@@ -1963,7 +1963,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_verify_integrity_detects_invalid_chunk_range() {
-        let client = LocalClient::temporary(test_runtime()).await.unwrap();
+        let client = LocalClient::temporary(test_context()).await.unwrap();
         client.upload_random_file(&[(5, (0, 3))], 2048).await.unwrap();
         client.verify_integrity().await.unwrap();
 
@@ -1980,7 +1980,7 @@ mod tests {
     /// Verifies that delete_file_entry does not rewrite shard files (shard hashes remain stable).
     #[tokio::test]
     async fn test_delete_file_entry_does_not_rewrite_shards() {
-        let client = LocalClient::temporary(test_runtime()).await.unwrap();
+        let client = LocalClient::temporary(test_context()).await.unwrap();
         client.upload_random_file(&[(1, (0, 3))], 2048).await.unwrap();
 
         let shard_hashes_before: Vec<_> = client.shard_file_paths().unwrap().into_iter().map(|(h, _)| h).collect();
@@ -2003,7 +2003,7 @@ mod tests {
 
         let file_hash;
         {
-            let client = LocalClient::new(test_runtime(), &path).await.unwrap();
+            let client = LocalClient::new(test_context(), &path).await.unwrap();
             let file = client.upload_random_file(&[(1, (0, 3)), (2, (0, 2))], 2048).await.unwrap();
             file_hash = file.file_hash;
             assert!(!client.list_file_shard_entries().await.unwrap().is_empty());
@@ -2013,7 +2013,7 @@ mod tests {
         }
 
         {
-            let client = LocalClient::new(test_runtime(), &path).await.unwrap();
+            let client = LocalClient::new(test_context(), &path).await.unwrap();
             assert!(
                 client.is_file_deleted(&file_hash),
                 "Entry should be absent from FILE_TO_SHARD_TABLE after restart"
@@ -2029,7 +2029,7 @@ mod tests {
     /// in any shard but exists on disk should pass verify_integrity (dedup case).
     #[tokio::test]
     async fn test_verify_integrity_cross_shard_dedup_ok() {
-        let client = LocalClient::temporary(test_runtime()).await.unwrap();
+        let client = LocalClient::temporary(test_context()).await.unwrap();
         client.upload_random_file(&[(1, (0, 3))], 2048).await.unwrap();
         client.verify_integrity().await.unwrap();
 
@@ -2053,7 +2053,7 @@ mod tests {
     /// so missing XORBs for deleted files do not cause false integrity failures.
     #[tokio::test]
     async fn test_verify_integrity_skips_deleted_files() {
-        let client = LocalClient::temporary(test_runtime()).await.unwrap();
+        let client = LocalClient::temporary(test_context()).await.unwrap();
         let deleted_file = client.upload_random_file(&[(1, (0, 3))], 2048).await.unwrap();
         let live_file = client.upload_random_file(&[(2, (0, 2))], 2048).await.unwrap();
         client.verify_integrity().await.unwrap();
@@ -2093,7 +2093,7 @@ mod tests {
     /// to shard files that have been removed.
     #[tokio::test]
     async fn test_verify_integrity_detects_stale_dedup_shard_reference() {
-        let client = LocalClient::temporary(test_runtime()).await.unwrap();
+        let client = LocalClient::temporary(test_context()).await.unwrap();
         let file = client.upload_random_file(&[(10, (0, 3))], 2048).await.unwrap();
         client.verify_integrity().await.unwrap();
 
@@ -2126,7 +2126,7 @@ mod tests {
     /// after deleting the original file and its xorbs must not resurrect stale entries.
     #[tokio::test]
     async fn test_reupload_same_file_hash_does_not_resurrect_stale_entries() {
-        let client = LocalClient::temporary(test_runtime()).await.unwrap();
+        let client = LocalClient::temporary(test_context()).await.unwrap();
 
         // 1. Upload file F in shard S1 referencing xorb X.
         let file = client.upload_random_file(&[(1, (0, 3))], 2048).await.unwrap();
@@ -2170,7 +2170,7 @@ mod tests {
     /// Tests that list_xorbs_and_tags tags change after file re-creation with a timestamp delay.
     #[tokio::test]
     async fn test_list_xorbs_and_tags_timestamp_changes() {
-        let client = LocalClient::temporary(test_runtime()).await.unwrap();
+        let client = LocalClient::temporary(test_context()).await.unwrap();
 
         let file1 = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
         let xorb_hash = file1.terms[0].xorb_hash;

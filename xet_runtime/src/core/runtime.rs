@@ -721,10 +721,10 @@ mod tests {
 
     #[test]
     fn test_bridge_async_owned_mode_runs_on_pool() {
-        let runtime = XetContext::default().unwrap();
-        assert_eq!(runtime.runtime.mode(), RuntimeMode::Owned);
-        let rt = runtime.runtime.clone();
-        let result = runtime
+        let ctx = XetContext::default().unwrap();
+        assert_eq!(ctx.runtime.mode(), RuntimeMode::Owned);
+        let rt = ctx.runtime.clone();
+        let result = ctx
             .runtime
             .bridge_sync(async move { rt.bridge_async("test", async { 42 }).await.unwrap() });
         assert_eq!(result.unwrap(), 42);
@@ -735,18 +735,18 @@ mod tests {
         let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         let config = XetConfig::new();
         let rt = XetRuntime::from_external_with_config(tokio_rt.handle().clone(), &config).unwrap();
-        let runtime = XetContext::new(config, rt);
-        assert_eq!(runtime.runtime.mode(), RuntimeMode::External);
+        let ctx = XetContext::new(config, rt);
+        assert_eq!(ctx.runtime.mode(), RuntimeMode::External);
 
-        let result = tokio_rt.block_on(async { runtime.runtime.bridge_async("test", async { 99 }).await.unwrap() });
+        let result = tokio_rt.block_on(async { ctx.runtime.bridge_async("test", async { 99 }).await.unwrap() });
         assert_eq!(result, 99);
     }
 
     #[test]
     fn test_bridge_sync_owned_mode() {
-        let runtime = XetContext::default().unwrap();
-        assert_eq!(runtime.runtime.mode(), RuntimeMode::Owned);
-        let result = runtime.runtime.bridge_sync(async { 123 }).unwrap();
+        let ctx = XetContext::default().unwrap();
+        assert_eq!(ctx.runtime.mode(), RuntimeMode::Owned);
+        let result = ctx.runtime.bridge_sync(async { 123 }).unwrap();
         assert_eq!(result, 123);
     }
 
@@ -767,11 +767,11 @@ mod tests {
 
     #[test]
     fn test_bridge_sync_from_spawn_blocking_owned_mode() {
-        let runtime = XetContext::default().unwrap();
-        let rt = runtime.runtime.clone();
-        let rt2 = runtime.runtime.clone();
+        let ctx = XetContext::default().unwrap();
+        let rt = ctx.runtime.clone();
+        let rt2 = ctx.runtime.clone();
         let jh = rt.spawn_blocking(move || rt2.bridge_sync(async { 456 }).unwrap());
-        let result = runtime.runtime.bridge_sync(async { jh.await.unwrap() }).unwrap();
+        let result = ctx.runtime.bridge_sync(async { jh.await.unwrap() }).unwrap();
         assert_eq!(result, 456);
     }
 
@@ -780,10 +780,10 @@ mod tests {
         let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         let config = XetConfig::new();
         let rt = XetRuntime::from_external_with_config(tokio_rt.handle().clone(), &config).unwrap();
-        let runtime = XetContext::new(config, rt);
-        assert_eq!(runtime.runtime.mode(), RuntimeMode::External);
+        let ctx = XetContext::new(config, rt);
+        assert_eq!(ctx.runtime.mode(), RuntimeMode::External);
 
-        let result = runtime.runtime.bridge_sync(async { 789 });
+        let result = ctx.runtime.bridge_sync(async { 789 });
         assert!(matches!(result, Err(RuntimeError::InvalidRuntime(_))));
     }
 
@@ -837,9 +837,9 @@ mod tests {
 
     #[test]
     fn test_bridge_async_owned_mode_catches_panic() {
-        let runtime = XetContext::default().unwrap();
-        let rt = runtime.runtime.clone();
-        let result = runtime.runtime.bridge_sync(async move {
+        let ctx = XetContext::default().unwrap();
+        let rt = ctx.runtime.clone();
+        let result = ctx.runtime.bridge_sync(async move {
             rt.bridge_async("panic_test", async {
                 panic!("intentional test panic");
             })
@@ -855,14 +855,14 @@ mod tests {
         let mut config = XetConfig::new();
         config.data.default_cas_endpoint = "https://test-endpoint.example.com".into();
         let rt = XetRuntime::from_external(tokio_rt.handle().clone());
-        let runtime = XetContext::new(config, rt);
-        assert_eq!(runtime.config.data.default_cas_endpoint, "https://test-endpoint.example.com");
+        let ctx = XetContext::new(config, rt);
+        assert_eq!(ctx.config.data.default_cas_endpoint, "https://test-endpoint.example.com");
     }
 
     #[test]
     fn test_check_sigint_shutdown_not_triggered() {
-        let runtime = XetContext::default().unwrap();
-        assert!(runtime.check_sigint_shutdown().is_ok());
+        let ctx = XetContext::default().unwrap();
+        assert!(ctx.check_sigint_shutdown().is_ok());
     }
 
     #[cfg(not(target_family = "wasm"))]

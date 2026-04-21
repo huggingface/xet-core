@@ -468,8 +468,8 @@ mod tests {
 
     #[test]
     fn test_build_http_client_without_uds() {
-        let runtime = XetContext::default().expect("runtime");
-        let result = build_http_client(&runtime, "test-session", None, None);
+        let ctx = XetContext::default().expect("xet context");
+        let result = build_http_client(&ctx, "test-session", None, None);
         assert!(result.is_ok());
     }
 
@@ -478,36 +478,35 @@ mod tests {
 
         #[test]
         fn test_build_no_read_timeout_succeeds() {
-            let runtime = XetContext::default().expect("runtime");
-            let result = build_auth_http_client_no_read_timeout(&runtime, &None, "test-session", None, None);
+            let ctx = XetContext::default().expect("xet context");
+            let result = build_auth_http_client_no_read_timeout(&ctx, &None, "test-session", None, None);
             assert!(result.is_ok());
         }
 
         #[test]
         fn test_build_no_read_timeout_with_empty_session_id() {
-            let runtime = XetContext::default().expect("runtime");
-            let result = build_auth_http_client_no_read_timeout(&runtime, &None, "", None, None);
+            let ctx = XetContext::default().expect("xet context");
+            let result = build_auth_http_client_no_read_timeout(&ctx, &None, "", None, None);
             assert!(result.is_ok());
         }
 
         #[test]
         fn test_build_no_read_timeout_with_custom_headers() {
-            let runtime = XetContext::default().expect("runtime");
+            let ctx = XetContext::default().expect("xet context");
             let mut headers = HeaderMap::new();
             headers.insert("X-Custom-Header", HeaderValue::from_static("test-value"));
             headers.insert(reqwest::header::USER_AGENT, HeaderValue::from_static("test-agent/1.0"));
 
             let result =
-                build_auth_http_client_no_read_timeout(&runtime, &None, "test-session", None, Some(Arc::new(headers)));
+                build_auth_http_client_no_read_timeout(&ctx, &None, "test-session", None, Some(Arc::new(headers)));
             assert!(result.is_ok());
         }
 
         #[test]
         fn test_no_read_timeout_client_is_distinct_from_standard_client() {
-            let runtime = XetContext::default().expect("runtime");
-            let standard = build_auth_http_client(&runtime, &None, "test-session", None, None).unwrap();
-            let no_timeout =
-                build_auth_http_client_no_read_timeout(&runtime, &None, "test-session", None, None).unwrap();
+            let ctx = XetContext::default().expect("xet context");
+            let standard = build_auth_http_client(&ctx, &None, "test-session", None, None).unwrap();
+            let no_timeout = build_auth_http_client_no_read_timeout(&ctx, &None, "test-session", None, None).unwrap();
 
             assert_ne!(
                 format!("{:p}", &standard),

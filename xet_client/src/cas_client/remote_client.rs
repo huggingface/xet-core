@@ -768,13 +768,13 @@ mod tests {
         let prefix = PREFIX_DEFAULT;
         let raw_xorb = build_raw_xorb(3, ChunkSize::Random(512, 10248));
 
-        let runtime = XetContext::default().unwrap();
-        let client = RemoteClient::new(runtime.clone(), CAS_ENDPOINT, &None, "", false, None);
+        let ctx = XetContext::default().unwrap();
+        let client = RemoteClient::new(ctx.clone(), CAS_ENDPOINT, &None, "", false, None);
 
         let xorb_obj = build_and_verify_xorb_object(raw_xorb, CompressionScheme::LZ4);
 
         // Act
-        let result = runtime
+        let result = ctx
             .runtime
             .bridge_sync(async move {
                 let permit = client.acquire_upload_permit().await.unwrap();

@@ -16,8 +16,8 @@ struct BenchFixture {
 }
 
 async fn create_fixture(num_xorbs: usize, chunks_per_xorb: u64, chunk_size: usize) -> BenchFixture {
-    let runtime = XetContext::default().expect("xet context");
-    let client = MemoryClient::new(runtime.clone());
+    let ctx = XetContext::default().expect("xet context");
+    let client = MemoryClient::new(ctx.clone());
 
     let term_spec: Vec<(u64, (u64, u64))> = (0..num_xorbs).map(|i| ((i + 1) as u64, (0, chunks_per_xorb))).collect();
 
@@ -25,7 +25,7 @@ async fn create_fixture(num_xorbs: usize, chunks_per_xorb: u64, chunk_size: usiz
     let file_size = file_contents.data.len() as u64;
 
     BenchFixture {
-        ctx: runtime,
+        ctx,
         client: client as Arc<dyn Client>,
         file_hash: file_contents.file_hash,
         _file_size: file_size,
@@ -44,14 +44,14 @@ fn bench_sequential_non_vectored(c: &mut Criterion) {
         &fixture,
         |b, fix| {
             b.to_async(&rt).iter(|| {
-                let runtime = fix.ctx.clone();
+                let ctx = fix.ctx.clone();
                 let client = fix.client.clone();
                 let hash = fix.file_hash;
                 let cfg = config.clone();
                 async move {
                     let dir = TempDir::new().unwrap();
                     let path = dir.path().join("out.bin");
-                    FileReconstructor::new(&runtime, &client, hash)
+                    FileReconstructor::new(&ctx, &client, hash)
                         .with_config(cfg)
                         .reconstruct_to_file(&path, None, false)
                         .await
@@ -74,14 +74,14 @@ fn bench_sequential_vectored(c: &mut Criterion) {
         &fixture,
         |b, fix| {
             b.to_async(&rt).iter(|| {
-                let runtime = fix.ctx.clone();
+                let ctx = fix.ctx.clone();
                 let client = fix.client.clone();
                 let hash = fix.file_hash;
                 let cfg = config.clone();
                 async move {
                     let dir = TempDir::new().unwrap();
                     let path = dir.path().join("out.bin");
-                    FileReconstructor::new(&runtime, &client, hash)
+                    FileReconstructor::new(&ctx, &client, hash)
                         .with_config(cfg)
                         .reconstruct_to_file(&path, None, false)
                         .await

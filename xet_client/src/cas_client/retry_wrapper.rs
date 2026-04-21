@@ -576,13 +576,13 @@ mod tests {
 
     use super::*;
 
-    fn test_runtime() -> XetContext {
+    fn test_context() -> XetContext {
         let config = XetConfig::new();
         XetContext::from_external(tokio::runtime::Handle::current(), config)
     }
 
     fn connection_wrapper(api: &'static str) -> RetryWrapper {
-        RetryWrapper::new(test_runtime(), api)
+        RetryWrapper::new(test_context(), api)
             .with_base_delay(Duration::from_millis(5))
             .with_max_attempts(3)
     }
