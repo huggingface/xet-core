@@ -25,7 +25,7 @@ use xet_core_structures::metadata_shard::xorb_structs::MDBXorbInfo;
 use xet_core_structures::metadata_shard::{MDBShardFile, MDBShardFileHeader, ShardFileManager};
 use xet_core_structures::serialization_utils::read_u32;
 use xet_core_structures::xorb_object::{SerializedXorbObject, XorbObject};
-use xet_runtime::core::{XetCommon, XetContext};
+use xet_runtime::core::XetContext;
 #[cfg(feature = "fd-track")]
 use xet_runtime::fd_diagnostics::{report_fd_count, track_fd_scope};
 use xet_runtime::file_utils::SafeFileCreator;
@@ -163,23 +163,23 @@ impl redb::Value for FileShardRef {
     }
 }
 
-/// Weak handle so the cache never keeps a [`redb::Database`] alive; only [`Arc`]s held by
-/// [`LocalClient`] (and clones) do. When the last strong ref drops, the entry can be purged.
-type CachedDbWeak = Weak<redb::Database>;
+/// Process-global cache of open redb databases, keyed by canonicalized path.
+/// Stores only [`Weak`] pointers so the cache never keeps a database alive;
+/// only [`Arc`]s held by [`LocalClient`] instances do. When the last strong
+/// ref drops, the entry is automatically purged on the next access.
+///
+/// Global (rather than per-[`XetContext`]) so that multiple contexts pointing
+/// at the same directory share a single database handle instead of fighting
+/// over the file lock.
+static DB_CACHE: std::sync::LazyLock<Mutex<HashMap<PathBuf, Weak<redb::Database>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
-type DbCache = Arc<Mutex<HashMap<PathBuf, CachedDbWeak>>>;
-
-fn get_db_cache(common: &XetCommon) -> DbCache {
-    common.cache_get_or_create("local_client_db_cache", || Arc::new(Mutex::new(HashMap::new())))
-}
-
-/// Opens or returns a shared [`Arc<redb::Database>`] for `db_path`. The map stores only
-/// [`Weak`] pointers ([`Arc::downgrade`]); on a hit, [`Weak::upgrade`] yields a new strong ref.
-fn get_or_open_db(db_cache: &DbCache, db_path: &Path) -> std::result::Result<Arc<redb::Database>, redb::DatabaseError> {
+/// Opens or returns a shared [`Arc<redb::Database>`] for `db_path`.
+fn get_or_open_db(db_path: &Path) -> std::result::Result<Arc<redb::Database>, redb::DatabaseError> {
     #[cfg(feature = "fd-track")]
     let _fd_scope = track_fd_scope(format!("LocalClient::get_or_open_db({})", db_path.display()));
 
-    let mut map = db_cache.lock().unwrap();
+    let mut map = DB_CACHE.lock().unwrap();
 
     if let Some(weak) = map.get(db_path)
         && let Some(db) = Weak::upgrade(weak)
@@ -235,8 +235,6 @@ fn file_entry_byte_ranges(shard_bytes: &[u8]) -> std::result::Result<Vec<(Merkle
 
 pub struct LocalClient {
     db: Arc<redb::Database>,
-    #[cfg(feature = "fd-track")]
-    db_cache: DbCache,
     shard_manager: Arc<ShardFileManager>,
     xorb_dir: PathBuf,
     shard_dir: PathBuf,
@@ -295,9 +293,8 @@ impl LocalClient {
         }
 
         let db_path = base_dir.join("global_dedup_lookup.redb");
-        let db_cache = get_db_cache(&ctx.common);
-        let db = get_or_open_db(&db_cache, &db_path)
-            .map_err(|e| ClientError::Other(format!("Error opening redb database: {e}")))?;
+        let db =
+            get_or_open_db(&db_path).map_err(|e| ClientError::Other(format!("Error opening redb database: {e}")))?;
         #[cfg(feature = "fd-track")]
         report_fd_count("LocalClient::new_internal after DB open");
 
@@ -316,8 +313,6 @@ impl LocalClient {
 
         Ok(Self {
             db,
-            #[cfg(feature = "fd-track")]
-            db_cache,
             shard_manager,
             xorb_dir,
             shard_dir,
@@ -489,7 +484,7 @@ impl Drop for LocalClient {
         #[cfg(feature = "fd-track")]
         {
             report_fd_count("LocalClient::drop start");
-            if let Ok(mut map) = self.db_cache.lock() {
+            if let Ok(mut map) = DB_CACHE.lock() {
                 map.retain(|_, weak| weak.strong_count() > 0);
             }
             report_fd_count("LocalClient::drop end");
