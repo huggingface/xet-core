@@ -9,6 +9,7 @@ use clap::Parser;
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use tempfile::TempDir;
+use tokio::runtime::Handle;
 use tokio::time;
 use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::metadata_shard::shard_file_manager::ShardFileManager;
@@ -16,6 +17,8 @@ use xet_core_structures::metadata_shard::shard_format::MDBShardInfo;
 use xet_core_structures::metadata_shard::shard_format::test_routines::rng_hash;
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::metadata_shard::xorb_structs::{MDBXorbInfo, XorbChunkSequenceEntry, XorbChunkSequenceHeader};
+use xet_runtime::config::XetConfig;
+use xet_runtime::core::XetContext;
 
 const XORB_BLOCK_SIZE: usize = 512;
 const PAR_TASK: usize = 1;
@@ -48,6 +51,7 @@ fn make_shard(size: u64, seed: &mut u64) -> MDBInMemoryShard {
 }
 
 async fn run_shard_benchmark(
+    ctx: &XetContext,
     shard_sizes: Vec<(u64, u64)>,
     file_contiguity: usize,
     contiguity: usize,
@@ -76,7 +80,7 @@ async fn run_shard_benchmark(
 
     // Now, spawn tasks to
     let counter = Arc::new(AtomicUsize::new(0));
-    let mdb = ShardFileManager::new_in_session_directory(dir, false).await?;
+    let mdb = ShardFileManager::new_in_session_directory(ctx, dir, false).await?;
 
     let start_time = Instant::now();
 
@@ -184,6 +188,8 @@ struct ShardBenchmarkArgs {
 async fn main() {
     let args = ShardBenchmarkArgs::parse();
 
+    let ctx = XetContext::from_external(Handle::current(), XetConfig::new());
+
     let temp_dir = TempDir::with_prefix("git-xet-shard").expect("Failed to create temp dir");
     let dir = args.dir.unwrap_or_else(|| temp_dir.path().into());
     eprintln!("Using dir {dir:?}");
@@ -194,6 +200,7 @@ async fn main() {
     assert!(dir.exists());
 
     run_shard_benchmark(
+        &ctx,
         args.shard_sizes,
         args.contiguity,
         args.file_contiguity,

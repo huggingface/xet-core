@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::u64;
 
 use clap::Parser;
+use xet_runtime::config::XetConfig;
 
 use crate::chunk_cache::{CacheConfig, DiskCache};
 
@@ -19,10 +20,14 @@ fn main() {
 }
 
 fn print_main(root: PathBuf) {
-    let cache = DiskCache::initialize(&CacheConfig {
-        cache_directory: root,
-        cache_size: u64::MAX,
-    })
+    let xet_config = XetConfig::new();
+    let cache = DiskCache::initialize(
+        &xet_config,
+        &CacheConfig {
+            cache_directory: root,
+            cache_size: u64::MAX,
+        },
+    )
     .unwrap();
     cache.print();
 }

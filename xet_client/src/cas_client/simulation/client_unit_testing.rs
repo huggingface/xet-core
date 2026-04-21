@@ -662,7 +662,8 @@ pub async fn test_global_dedup(client: Arc<dyn DirectAccessClient>) {
         .unwrap();
 
     // Verify the returned shard can be loaded and contains the expected data
-    let sf = MDBShardFile::write_out_from_reader(shard_dir_2.clone(), &mut Cursor::new(&new_shard)).unwrap();
+    let sfc = xet_core_structures::metadata_shard::new_shard_file_cache();
+    let sf = MDBShardFile::write_out_from_reader(shard_dir_2.clone(), &mut Cursor::new(&new_shard), &sfc).unwrap();
 
     // Verify the shard has the same dedup hashes (the content matches semantically)
     let returned_dedup_hashes = MDBShardInfo::filter_cas_chunks_for_global_dedup(&mut Cursor::new(&new_shard)).unwrap();

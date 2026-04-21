@@ -10,6 +10,8 @@ use xet_client::cas_client::simulation::NetworkProfileOptions;
 use xet_client::cas_client::simulation::local_server::ServerLatencyProfile;
 use xet_client::cas_client::{LocalTestServer, LocalTestServerBuilder};
 use xet_client::common::http_client::build_http_client;
+use xet_runtime::config::XetConfig;
+use xet_runtime::core::XetContext;
 
 use crate::upload_concurrency::generate_timeline_csv;
 
@@ -240,8 +242,9 @@ impl SimulationScenario {
     /// Waits for the server (and proxy if present) to be ready by GETting the ping endpoint every 100ms.
     /// Errors if not ready within 30s.
     async fn wait_until_ready(&self) -> ScenarioResult<()> {
-        let http_client =
-            build_http_client("simulation_scenario", None, None).map_err(|e| ScenarioError::Scenario(e.to_string()))?;
+        let ctx = XetContext::from_external(tokio::runtime::Handle::current(), XetConfig::new());
+        let http_client = build_http_client(&ctx, "simulation_scenario", None, None)
+            .map_err(|e| ScenarioError::Scenario(e.to_string()))?;
         let server_addr = self.server.http_endpoint();
         let ping_url = format!("{}{}", base_url(server_addr).trim_end_matches('/'), PING_PATH);
         let timeout = Duration::from_secs(SERVER_READY_TIMEOUT_SECS);

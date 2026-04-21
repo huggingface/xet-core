@@ -77,9 +77,9 @@ impl AuthGroupBuilder<XetDownloadStreamGroup> {
 /// API for creating authenticated streaming downloads.
 ///
 /// Obtain via [`XetSession::new_download_stream_group`] — configure per-group
-/// auth on the returned [`DownloadStreamGroupBuilder`], then call
-/// [`build`](DownloadStreamGroupBuilder::build) (async) or
-/// [`build_blocking`](DownloadStreamGroupBuilder::build_blocking) (sync).
+/// auth on the returned [`XetDownloadStreamGroupBuilder`], then call
+/// [`build`](XetDownloadStreamGroupBuilder::build) (async) or
+/// [`build_blocking`](XetDownloadStreamGroupBuilder::build_blocking) (sync).
 ///
 /// Create streams with [`download_stream`](Self::download_stream) /
 /// [`download_stream_blocking`](Self::download_stream_blocking) for ordered

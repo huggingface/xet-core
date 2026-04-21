@@ -5,7 +5,7 @@ use std::mem::size_of;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, Weak};
+use std::sync::{Arc, Mutex, Weak};
 
 use anyhow::anyhow;
 use async_trait::async_trait;
@@ -25,6 +25,7 @@ use xet_core_structures::metadata_shard::xorb_structs::MDBXorbInfo;
 use xet_core_structures::metadata_shard::{MDBShardFile, MDBShardFileHeader, ShardFileManager};
 use xet_core_structures::serialization_utils::read_u32;
 use xet_core_structures::xorb_object::{SerializedXorbObject, XorbObject};
+use xet_runtime::core::XetContext;
 #[cfg(feature = "fd-track")]
 use xet_runtime::fd_diagnostics::{report_fd_count, track_fd_scope};
 use xet_runtime::file_utils::SafeFileCreator;
@@ -162,17 +163,22 @@ impl redb::Value for FileShardRef {
     }
 }
 
-/// Weak handle so the cache never keeps a [`redb::Database`] alive; only [`Arc`]s held by
-/// [`LocalClient`] (and clones) do. When the last strong ref drops, the entry can be purged.
-type CachedDbWeak = Weak<redb::Database>;
+/// Process-global cache of open redb databases, keyed by canonicalized path.
+/// Stores [`Weak`] pointers so the cache never keeps a database alive on its
+/// own; only [`Arc`]s held by [`LocalClient`] instances do.
+///
+/// Both [`get_or_open_db`] and [`LocalClient::drop`] hold this mutex while
+/// creating/destroying the inner [`redb::Database`], which eliminates the race
+/// window where a database file lock could still be held between a cache miss
+/// and a `Database::create` call.
+static DB_CACHE: std::sync::LazyLock<Mutex<HashMap<PathBuf, Weak<redb::Database>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Global cache of redb databases keyed by canonical DB file path.
-/// redb enforces exclusive file locking, so multiple LocalClient instances
-/// pointing at the same directory must share a single Database handle.
-static DB_CACHE: LazyLock<Mutex<HashMap<PathBuf, CachedDbWeak>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
-
-/// Opens or returns a shared [`Arc<redb::Database>`] for `db_path`. The map stores only
-/// [`Weak`] pointers ([`Arc::downgrade`]); on a hit, [`Weak::upgrade`] yields a new strong ref.
+/// Opens or returns a shared [`Arc<redb::Database>`] for `db_path`.
+///
+/// Must be called (and the returned `Arc` kept alive) while no other thread is
+/// dropping the last `Arc` for the same path -- which is guaranteed because
+/// both this function and `LocalClient::drop` serialize on `DB_CACHE`.
 fn get_or_open_db(db_path: &Path) -> std::result::Result<Arc<redb::Database>, redb::DatabaseError> {
     #[cfg(feature = "fd-track")]
     let _fd_scope = track_fd_scope(format!("LocalClient::get_or_open_db({})", db_path.display()));
@@ -180,7 +186,7 @@ fn get_or_open_db(db_path: &Path) -> std::result::Result<Arc<redb::Database>, re
     let mut map = DB_CACHE.lock().unwrap();
 
     if let Some(weak) = map.get(db_path)
-        && let Some(db) = Weak::upgrade(weak)
+        && let Some(db) = weak.upgrade()
     {
         tracing::trace!(target: "xet_client::local_cas_redb", path = %db_path.display(), "DB_CACHE hit");
         #[cfg(feature = "fd-track")]
@@ -188,7 +194,7 @@ fn get_or_open_db(db_path: &Path) -> std::result::Result<Arc<redb::Database>, re
         return Ok(db);
     }
 
-    // Purge dead entries to avoid unbounded cache growth.
+    // Purge dead entries while we hold the lock.
     map.retain(|_, weak| weak.strong_count() > 0);
 
     tracing::trace!(target: "xet_client::local_cas_redb", path = %db_path.display(), "DB_CACHE miss");
@@ -232,7 +238,11 @@ fn file_entry_byte_ranges(shard_bytes: &[u8]) -> std::result::Result<Vec<(Merkle
 }
 
 pub struct LocalClient {
-    db: Arc<redb::Database>,
+    /// Wrapped in `Option` so `Drop` can `take()` it under the `DB_CACHE` lock,
+    /// ensuring the redb file lock is released before another caller can open
+    /// the same path. Always `Some` during normal operation.
+    db: Option<Arc<redb::Database>>,
+    db_path: PathBuf,
     shard_manager: Arc<ShardFileManager>,
     xorb_dir: PathBuf,
     shard_dir: PathBuf,
@@ -252,21 +262,21 @@ pub struct LocalClient {
 impl LocalClient {
     /// Create a local client hosted in a temporary directory for testing.
     /// This is an async function to allow use with current-thread tokio runtime.
-    pub async fn temporary() -> Result<Arc<Self>> {
+    pub async fn temporary(ctx: XetContext) -> Result<Arc<Self>> {
         let tmp_dir = TempDir::new().unwrap();
         let path = tmp_dir.path().to_owned();
-        let s = Self::new_internal(path, Some(tmp_dir)).await?;
+        let s = Self::new_internal(ctx, path, Some(tmp_dir)).await?;
         Ok(Arc::new(s))
     }
 
     /// Create a local client hosted in a directory.  Effectively, this directory
     /// is the CAS endpoint and persists across instances of LocalClient.
-    pub async fn new(path: impl AsRef<Path>) -> Result<Arc<Self>> {
+    pub async fn new(ctx: XetContext, path: impl AsRef<Path>) -> Result<Arc<Self>> {
         let path = path.as_ref().to_owned();
-        Ok(Arc::new(Self::new_internal(path, None).await?))
+        Ok(Arc::new(Self::new_internal(ctx, path, None).await?))
     }
 
-    async fn new_internal(path: impl AsRef<Path>, tmp_dir: Option<TempDir>) -> Result<Self> {
+    async fn new_internal(ctx: XetContext, path: impl AsRef<Path>, tmp_dir: Option<TempDir>) -> Result<Self> {
         let base_dir = std::path::absolute(path)?;
         if !base_dir.exists() {
             std::fs::create_dir_all(&base_dir)?;
@@ -305,16 +315,17 @@ impl LocalClient {
         }
 
         // Open / set up the shard lookup
-        let shard_manager = ShardFileManager::new_in_session_directory(shard_dir.clone(), true).await?;
+        let shard_manager = ShardFileManager::new_in_session_directory(&ctx, shard_dir.clone(), true).await?;
         #[cfg(feature = "fd-track")]
         report_fd_count("LocalClient::new_internal after shard manager init");
 
         Ok(Self {
-            db,
+            db: Some(db),
+            db_path,
             shard_manager,
             xorb_dir,
             shard_dir,
-            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("local_uploads"),
+            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload(ctx, "local_uploads"),
             url_expiration_ms: AtomicU64::new(u64::MAX),
             global_dedup_expiration_secs: AtomicU64::new(0),
             random_ms_delay_window: (AtomicU64::new(0), AtomicU64::new(0)),
@@ -324,6 +335,10 @@ impl LocalClient {
         })
     }
 
+    fn db(&self) -> &redb::Database {
+        self.db.as_deref().expect("db used after close")
+    }
+
     /// Internal function to get the path for a given hash entry
     fn get_path_for_entry(&self, hash: &MerkleHash) -> PathBuf {
         self.xorb_dir.join(format!("default.{hash:?}"))
@@ -331,7 +346,7 @@ impl LocalClient {
 
     #[cfg(test)]
     fn is_file_deleted(&self, file_hash: &MerkleHash) -> bool {
-        let Ok(read_txn) = self.db.begin_read() else {
+        let Ok(read_txn) = self.db().begin_read() else {
             return true;
         };
         let Ok(table) = read_txn.open_table(FILE_TO_SHARD_TABLE) else {
@@ -444,14 +459,14 @@ impl LocalClient {
 
         if !in_memory.is_empty() {
             let shard_path = in_memory.write_to_directory(&self.shard_dir, None)?;
-            let shard = MDBShardFile::load_from_file(&shard_path)?;
+            let shard = MDBShardFile::load_from_file(&shard_path, self.shard_manager.shard_file_cache())?;
             let shard_hash = shard.shard_hash;
             self.shard_manager.register_shards(&[shard]).await?;
 
             // Update FILE_TO_SHARD_TABLE with byte-accurate offsets.
             let shard_bytes = std::fs::read(&shard_path)?;
             let file_ranges = file_entry_byte_ranges(&shard_bytes)?;
-            let write_txn = self.db.begin_write().map_err(map_redb_db_error)?;
+            let write_txn = self.db().begin_write().map_err(map_redb_db_error)?;
             {
                 let mut file_table = write_txn.open_table(FILE_TO_SHARD_TABLE).map_err(map_redb_db_error)?;
                 for (file_hash, offset, length) in &file_ranges {
@@ -478,15 +493,23 @@ impl Drop for LocalClient {
     fn drop(&mut self) {
         #[cfg(feature = "fd-track")]
         let _fd_scope = track_fd_scope(format!("LocalClient::drop({})", self.xorb_dir.display()));
+        #[cfg(feature = "fd-track")]
+        report_fd_count("LocalClient::drop start");
+
+        // Drop the database handle while holding the cache lock. This
+        // serializes with `get_or_open_db`, ensuring the redb file lock is
+        // fully released before any other caller can attempt to reopen the
+        // same path.
+        if let Ok(mut map) = DB_CACHE.lock() {
+            let db = self.db.take();
+            if db.as_ref().is_some_and(|d| Arc::strong_count(d) == 1) {
+                map.remove(&self.db_path);
+            }
+            drop(db);
+        }
 
         #[cfg(feature = "fd-track")]
-        {
-            report_fd_count("LocalClient::drop start");
-            if let Ok(mut map) = DB_CACHE.lock() {
-                map.retain(|_, weak| weak.strong_count() > 0);
-            }
-            report_fd_count("LocalClient::drop end");
-        }
+        report_fd_count("LocalClient::drop end");
     }
 }
 
@@ -792,7 +815,7 @@ impl LocalClient {
     /// Removes all FILE_TO_SHARD_TABLE entries whose shard_hash equals `shard_hash`.
     fn remove_file_entries_for_shard(&self, shard_hash: &MerkleHash) -> Result<()> {
         let to_remove: Vec<RedbHash> = {
-            let read_txn = self.db.begin_read().map_err(map_redb_db_error)?;
+            let read_txn = self.db().begin_read().map_err(map_redb_db_error)?;
             let table = read_txn.open_table(FILE_TO_SHARD_TABLE).map_err(map_redb_db_error)?;
             table
                 .iter()
@@ -803,7 +826,7 @@ impl LocalClient {
                 .collect()
         };
         if !to_remove.is_empty() {
-            let write_txn = self.db.begin_write().map_err(map_redb_db_error)?;
+            let write_txn = self.db().begin_write().map_err(map_redb_db_error)?;
             {
                 let mut table = write_txn.open_table(FILE_TO_SHARD_TABLE).map_err(map_redb_db_error)?;
                 for key in &to_remove {
@@ -836,7 +859,7 @@ impl super::DeletionControlableClient for LocalClient {
     }
 
     async fn list_file_shard_entries(&self) -> Result<Vec<(MerkleHash, MerkleHash)>> {
-        let read_txn = self.db.begin_read().map_err(map_redb_db_error)?;
+        let read_txn = self.db().begin_read().map_err(map_redb_db_error)?;
         let table = read_txn.open_table(FILE_TO_SHARD_TABLE).map_err(map_redb_db_error)?;
         let mut entries = Vec::new();
         for entry in table.iter().map_err(map_redb_db_error)? {
@@ -849,7 +872,7 @@ impl super::DeletionControlableClient for LocalClient {
     }
 
     async fn delete_file_entry(&self, file_hash: &MerkleHash) -> Result<()> {
-        let write_txn = self.db.begin_write().map_err(map_redb_db_error)?;
+        let write_txn = self.db().begin_write().map_err(map_redb_db_error)?;
         {
             let mut table = write_txn.open_table(FILE_TO_SHARD_TABLE).map_err(map_redb_db_error)?;
             table.remove(&RedbHash::from(*file_hash)).map_err(map_redb_db_error)?;
@@ -862,7 +885,7 @@ impl super::DeletionControlableClient for LocalClient {
         let shard_redb = RedbHash::from(*shard_hash);
         for _ in 0..4 {
             let to_delete: Vec<RedbHash> = {
-                let read_txn = self.db.begin_read().map_err(map_redb_db_error)?;
+                let read_txn = self.db().begin_read().map_err(map_redb_db_error)?;
                 let table = read_txn.open_table(GLOBAL_DEDUP_TABLE).map_err(map_redb_db_error)?;
                 table
                     .iter()
@@ -877,7 +900,7 @@ impl super::DeletionControlableClient for LocalClient {
                 return Ok(());
             }
 
-            let write_txn = self.db.begin_write().map_err(map_redb_db_error)?;
+            let write_txn = self.db().begin_write().map_err(map_redb_db_error)?;
             {
                 let mut table = write_txn.open_table(GLOBAL_DEDUP_TABLE).map_err(map_redb_db_error)?;
                 for chunk_hash in &to_delete {
@@ -888,7 +911,7 @@ impl super::DeletionControlableClient for LocalClient {
         }
 
         let still_present = {
-            let read_txn = self.db.begin_read().map_err(map_redb_db_error)?;
+            let read_txn = self.db().begin_read().map_err(map_redb_db_error)?;
             let table = read_txn.open_table(GLOBAL_DEDUP_TABLE).map_err(map_redb_db_error)?;
             table
                 .iter()
@@ -1016,7 +1039,7 @@ impl super::DeletionControlableClient for LocalClient {
         // A file entry in a shard is only considered active if the table maps that
         // file hash to that specific shard, preventing stale entries from resurrecting.
         let file_to_shard: HashMap<MerkleHash, MerkleHash> = {
-            let read_txn = self.db.begin_read().map_err(map_redb_db_error)?;
+            let read_txn = self.db().begin_read().map_err(map_redb_db_error)?;
             let table = read_txn.open_table(FILE_TO_SHARD_TABLE).map_err(map_redb_db_error)?;
             let mut map = HashMap::new();
             for entry in table.iter().map_err(map_redb_db_error)? {
@@ -1108,7 +1131,7 @@ impl super::DeletionControlableClient for LocalClient {
         // a TOCTOU race: upload_shard writes the file then commits the dedup
         // entry, so any entry visible in this MVCC snapshot is guaranteed to
         // have its shard file already on disk when we read the directory below.
-        let read_txn = self.db.begin_read().map_err(map_redb_db_error)?;
+        let read_txn = self.db().begin_read().map_err(map_redb_db_error)?;
 
         let shard_files = self.shard_file_paths()?;
 
@@ -1239,7 +1262,7 @@ impl LocalClient {
     /// via a direct-seek into the canonical shard on disk.  Returns `None` if the file
     /// is not registered (i.e. deleted or never uploaded).
     fn get_file_info_from_table(&self, file_hash: &MerkleHash) -> Result<Option<(MDBFileInfo, MerkleHash)>> {
-        let read_txn = self.db.begin_read().map_err(map_redb_db_error)?;
+        let read_txn = self.db().begin_read().map_err(map_redb_db_error)?;
         let table = read_txn.open_table(FILE_TO_SHARD_TABLE).map_err(map_redb_db_error)?;
         let Some(entry) = table.get(&RedbHash::from(*file_hash)).map_err(map_redb_db_error)? else {
             return Ok(None);
@@ -1387,7 +1410,7 @@ impl Client for LocalClient {
 
     async fn query_for_global_dedup_shard(&self, _prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Bytes>> {
         self.apply_api_delay().await;
-        let read_txn = self.db.begin_read().map_err(map_redb_db_error)?;
+        let read_txn = self.db().begin_read().map_err(map_redb_db_error)?;
         let table = read_txn.open_table(GLOBAL_DEDUP_TABLE).map_err(map_redb_db_error)?;
 
         if let Some(shard) = table.get(&RedbHash::from(*chunk_hash)).map_err(map_redb_db_error)? {
@@ -1446,7 +1469,7 @@ impl Client for LocalClient {
 
         // Write the rebuilt shard to disk (creates proper lookup tables)
         let shard_path = in_memory_shard.write_to_directory(&self.shard_dir, None)?;
-        let shard = MDBShardFile::load_from_file(&shard_path)?;
+        let shard = MDBShardFile::load_from_file(&shard_path, self.shard_manager.shard_file_cache())?;
         let shard_hash = shard.shard_hash;
 
         self.shard_manager.register_shards(&[shard]).await?;
@@ -1459,7 +1482,7 @@ impl Client for LocalClient {
         let file_ranges = file_entry_byte_ranges(&written_shard_bytes)?;
 
         let shard_hash_redb = RedbHash::from(shard_hash);
-        let write_txn = self.db.begin_write().map_err(map_redb_db_error)?;
+        let write_txn = self.db().begin_write().map_err(map_redb_db_error)?;
         {
             let mut dedup_table = write_txn.open_table(GLOBAL_DEDUP_TABLE).map_err(map_redb_db_error)?;
             for chunk in chunk_hashes {
@@ -1711,8 +1734,15 @@ mod tests {
     use xet_core_structures::xorb_object::xorb_format_test_utils::{
         ChunkSize, build_and_verify_xorb_object, build_raw_xorb,
     };
+    use xet_runtime::config::XetConfig;
+    use xet_runtime::core::XetContext;
 
     use super::*;
+
+    fn test_context() -> XetContext {
+        let config = XetConfig::new();
+        XetContext::from_external(tokio::runtime::Handle::current(), config)
+    }
     use crate::cas_client::simulation::DeletionControlableClient;
     use crate::cas_client::simulation::client_testing_utils::ClientTestingUtils;
     use crate::cas_types::{ChunkRange, XorbReconstructionFetchInfo};
@@ -1721,7 +1751,7 @@ mod tests {
     #[tokio::test]
     async fn test_common_client_suite() {
         crate::cas_client::simulation::client_unit_testing::test_client_functionality(|| async {
-            LocalClient::temporary().await.unwrap()
+            LocalClient::temporary(test_context()).await.unwrap()
                 as std::sync::Arc<dyn crate::cas_client::simulation::DirectAccessClient>
         })
         .await;
@@ -1740,9 +1770,10 @@ mod tests {
         let link = tmp.path().join("link");
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
-        let c1 = LocalClient::new(&link).await.unwrap();
-        let c2 = LocalClient::new(&real).await.unwrap();
-        assert!(Arc::ptr_eq(&c1.db, &c2.db));
+        let ctx = test_context();
+        let c1 = LocalClient::new(ctx.clone(), &link).await.unwrap();
+        let c2 = LocalClient::new(ctx, &real).await.unwrap();
+        assert!(Arc::ptr_eq(c1.db.as_ref().unwrap(), c2.db.as_ref().unwrap()));
     }
 
     #[tokio::test]
@@ -1752,7 +1783,7 @@ mod tests {
         let xorb_obj = build_and_verify_xorb_object(xorb, CompressionScheme::Auto);
         let hash = xorb_obj.hash;
 
-        let client = LocalClient::temporary().await.unwrap();
+        let client = LocalClient::temporary(test_context()).await.unwrap();
         let permit = client.acquire_upload_permit().await.unwrap();
         client.upload_xorb("default", xorb_obj, None, permit).await.unwrap();
 
@@ -1873,7 +1904,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_url_expiration() {
         super::super::client_unit_testing::test_url_expiration_functionality(|| async {
-            LocalClient::temporary().await.unwrap()
+            LocalClient::temporary(test_context()).await.unwrap()
                 as std::sync::Arc<dyn crate::cas_client::simulation::DirectAccessClient>
         })
         .await;
@@ -1882,7 +1913,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_api_delay() {
         super::super::client_unit_testing::test_api_delay_functionality(|| async {
-            LocalClient::temporary().await.unwrap()
+            LocalClient::temporary(test_context()).await.unwrap()
                 as std::sync::Arc<dyn crate::cas_client::simulation::DirectAccessClient>
         })
         .await;
@@ -1891,7 +1922,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_global_dedup_shard_expiration() {
         super::super::client_unit_testing::test_global_dedup_shard_expiration_functionality(|| async {
-            LocalClient::temporary().await.unwrap()
+            LocalClient::temporary(test_context()).await.unwrap()
                 as std::sync::Arc<dyn crate::cas_client::simulation::DirectAccessClient>
         })
         .await;
@@ -1901,7 +1932,7 @@ mod tests {
     #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_global_dedup_shard_expiration_stress() {
         super::super::client_unit_testing::test_global_dedup_shard_expiration_stress(|| async {
-            LocalClient::temporary().await.unwrap()
+            LocalClient::temporary(test_context()).await.unwrap()
                 as std::sync::Arc<dyn crate::cas_client::simulation::DirectAccessClient>
         })
         .await;
@@ -1910,14 +1941,14 @@ mod tests {
     #[tokio::test]
     async fn test_deletion_suite() {
         super::super::deletion_unit_testing::test_deletion_functionality(|| async {
-            LocalClient::temporary().await.unwrap()
+            LocalClient::temporary(test_context()).await.unwrap()
         })
         .await;
     }
 
     #[tokio::test]
     async fn test_verify_integrity_detects_missing_cas_block_reference() {
-        let client = LocalClient::temporary().await.unwrap();
+        let client = LocalClient::temporary(test_context()).await.unwrap();
         client.upload_random_file(&[(3, (0, 3)), (4, (0, 2))], 2048).await.unwrap();
         client.verify_integrity().await.unwrap();
 
@@ -1932,7 +1963,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_verify_integrity_detects_invalid_chunk_range() {
-        let client = LocalClient::temporary().await.unwrap();
+        let client = LocalClient::temporary(test_context()).await.unwrap();
         client.upload_random_file(&[(5, (0, 3))], 2048).await.unwrap();
         client.verify_integrity().await.unwrap();
 
@@ -1949,7 +1980,7 @@ mod tests {
     /// Verifies that delete_file_entry does not rewrite shard files (shard hashes remain stable).
     #[tokio::test]
     async fn test_delete_file_entry_does_not_rewrite_shards() {
-        let client = LocalClient::temporary().await.unwrap();
+        let client = LocalClient::temporary(test_context()).await.unwrap();
         client.upload_random_file(&[(1, (0, 3))], 2048).await.unwrap();
 
         let shard_hashes_before: Vec<_> = client.shard_file_paths().unwrap().into_iter().map(|(h, _)| h).collect();
@@ -1972,7 +2003,7 @@ mod tests {
 
         let file_hash;
         {
-            let client = LocalClient::new(&path).await.unwrap();
+            let client = LocalClient::new(test_context(), &path).await.unwrap();
             let file = client.upload_random_file(&[(1, (0, 3)), (2, (0, 2))], 2048).await.unwrap();
             file_hash = file.file_hash;
             assert!(!client.list_file_shard_entries().await.unwrap().is_empty());
@@ -1982,7 +2013,7 @@ mod tests {
         }
 
         {
-            let client = LocalClient::new(&path).await.unwrap();
+            let client = LocalClient::new(test_context(), &path).await.unwrap();
             assert!(
                 client.is_file_deleted(&file_hash),
                 "Entry should be absent from FILE_TO_SHARD_TABLE after restart"
@@ -1998,7 +2029,7 @@ mod tests {
     /// in any shard but exists on disk should pass verify_integrity (dedup case).
     #[tokio::test]
     async fn test_verify_integrity_cross_shard_dedup_ok() {
-        let client = LocalClient::temporary().await.unwrap();
+        let client = LocalClient::temporary(test_context()).await.unwrap();
         client.upload_random_file(&[(1, (0, 3))], 2048).await.unwrap();
         client.verify_integrity().await.unwrap();
 
@@ -2022,7 +2053,7 @@ mod tests {
     /// so missing XORBs for deleted files do not cause false integrity failures.
     #[tokio::test]
     async fn test_verify_integrity_skips_deleted_files() {
-        let client = LocalClient::temporary().await.unwrap();
+        let client = LocalClient::temporary(test_context()).await.unwrap();
         let deleted_file = client.upload_random_file(&[(1, (0, 3))], 2048).await.unwrap();
         let live_file = client.upload_random_file(&[(2, (0, 2))], 2048).await.unwrap();
         client.verify_integrity().await.unwrap();
@@ -2062,7 +2093,7 @@ mod tests {
     /// to shard files that have been removed.
     #[tokio::test]
     async fn test_verify_integrity_detects_stale_dedup_shard_reference() {
-        let client = LocalClient::temporary().await.unwrap();
+        let client = LocalClient::temporary(test_context()).await.unwrap();
         let file = client.upload_random_file(&[(10, (0, 3))], 2048).await.unwrap();
         client.verify_integrity().await.unwrap();
 
@@ -2095,7 +2126,7 @@ mod tests {
     /// after deleting the original file and its xorbs must not resurrect stale entries.
     #[tokio::test]
     async fn test_reupload_same_file_hash_does_not_resurrect_stale_entries() {
-        let client = LocalClient::temporary().await.unwrap();
+        let client = LocalClient::temporary(test_context()).await.unwrap();
 
         // 1. Upload file F in shard S1 referencing xorb X.
         let file = client.upload_random_file(&[(1, (0, 3))], 2048).await.unwrap();
@@ -2139,7 +2170,7 @@ mod tests {
     /// Tests that list_xorbs_and_tags tags change after file re-creation with a timestamp delay.
     #[tokio::test]
     async fn test_list_xorbs_and_tags_timestamp_changes() {
-        let client = LocalClient::temporary().await.unwrap();
+        let client = LocalClient::temporary(test_context()).await.unwrap();
 
         let file1 = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
         let xorb_hash = file1.terms[0].xorb_hash;

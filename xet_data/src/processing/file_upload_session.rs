@@ -15,16 +15,14 @@ use tracing::{Instrument, Span, info_span, instrument};
 use xet_client::cas_client::{Client, ProgressCallback};
 use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
 use xet_core_structures::xorb_object::SerializedXorbObject;
-use xet_runtime::core::{XetRuntime, xet_config};
+use xet_runtime::core::XetContext;
 
 use super::XetFileInfo;
 use super::configurations::TranslatorConfig;
 use super::file_cleaner::{Sha256Policy, SingleFileCleaner};
 use super::remote_client_interface::create_remote_client;
 use super::shard_interface::SessionShardInterface;
-use crate::deduplication::constants::{
-    MAX_XORB_BYTES, MAX_XORB_CHUNKS, XORB_CUT_THRESHOLD_BYTES, XORB_CUT_THRESHOLD_CHUNKS,
-};
+use crate::deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use crate::deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
 use crate::error::{DataError, Result};
 use crate::progress_tracking::upload_tracking::{CompletionTracker, FileXorbDependency};
@@ -37,6 +35,7 @@ use crate::progress_tracking::{GroupProgress, GroupProgressReport, ItemProgressR
 /// that succeeds or fails as a unit;  i.e. all files get uploaded on finalization, and all shards
 /// and xorbs needed to reconstruct those files are properly uploaded and registered.
 pub struct FileUploadSession {
+    pub(crate) ctx: XetContext,
     pub(crate) client: Arc<dyn Client + Send + Sync>,
     pub(crate) shard_interface: SessionShardInterface,
 
@@ -70,6 +69,7 @@ impl FileUploadSession {
     }
 
     async fn new_impl(config: Arc<TranslatorConfig>, dry_run: bool) -> Result<Arc<FileUploadSession>> {
+        let ctx = config.ctx.clone();
         let session_id = config
             .session
             .session_id
@@ -78,16 +78,17 @@ impl FileUploadSession {
             .unwrap_or_else(|| Cow::Owned(UniqueID::new().to_string()));
 
         let progress = GroupProgress::with_speed_config(
-            xet_config().data.progress_update_speed_sampling_window,
-            xet_config().data.progress_update_speed_min_observations,
+            ctx.config.data.progress_update_speed_sampling_window,
+            ctx.config.data.progress_update_speed_min_observations,
         );
         let completion_tracker = Arc::new(CompletionTracker::new(progress.clone()));
 
         let client = create_remote_client(&config, &session_id, dry_run).await?;
 
-        let shard_interface = SessionShardInterface::new(config.clone(), client.clone(), dry_run).await?;
+        let shard_interface = SessionShardInterface::new(&ctx, config.clone(), client.clone(), dry_run).await?;
 
         Ok(Arc::new(Self {
+            ctx,
             shard_interface,
             client,
             completion_tracker,
@@ -115,7 +116,8 @@ impl FileUploadSession {
             let updater = self.progress.new_item(UniqueID::new(), file_name.clone());
             let file_id = self.completion_tracker.register_new_file(updater, Some(file_size));
 
-            let ingestion_concurrency_limiter = XetRuntime::current().common().file_ingestion_semaphore.clone();
+            let ingestion_concurrency_limiter = self.ctx.common.file_ingestion_semaphore.clone();
+            let ingestion_block_size = *self.ctx.config.data.ingestion_block_size;
             let session = self.clone();
 
             cleaning_tasks.push(tokio::spawn(async move {
@@ -144,7 +146,7 @@ impl FileUploadSession {
                     while bytes_read < file_size {
                         // Allocate a block of bytes, read into it.
                         let bytes_left = file_size - bytes_read;
-                        let n_bytes_read = (*xet_config().data.ingestion_block_size).min(bytes_left) as usize;
+                        let n_bytes_read = ingestion_block_size.min(bytes_left) as usize;
 
                         // Read in the data here; we are assuming the file doesn't change size
                         // on the disk while we are reading it.
@@ -244,11 +246,12 @@ impl FileUploadSession {
         let tracking_name: Arc<str> = Arc::from(file_path.to_string_lossy().as_ref());
         let (id, cleaner) = self.start_clean(Some(tracking_name), Some(file_size), sha256)?;
 
-        let rt = XetRuntime::current();
-        let semaphore = rt.common().file_ingestion_semaphore.clone();
-        let handle = rt.spawn(async move {
+        let session = self.clone();
+        let runtime = self.ctx.runtime.clone();
+        let semaphore = self.ctx.common.file_ingestion_semaphore.clone();
+        let handle = runtime.spawn(async move {
             let _permit = semaphore.acquire().await?;
-            Self::feed_file_to_cleaner(cleaner, &file_path).await
+            Self::feed_file_to_cleaner(&session, cleaner, &file_path).await
         });
 
         Ok((id, handle))
@@ -266,9 +269,9 @@ impl FileUploadSession {
         self.check_not_finalized()?;
         let (id, mut cleaner) = self.start_clean(tracking_name, Some(bytes.len() as u64), sha256)?;
 
-        let rt = XetRuntime::current();
-        let semaphore = rt.common().file_ingestion_semaphore.clone();
-        let handle = rt.spawn(async move {
+        let runtime = self.ctx.runtime.clone();
+        let semaphore = self.ctx.common.file_ingestion_semaphore.clone();
+        let handle = runtime.spawn(async move {
             let _permit = semaphore.acquire().await?;
             cleaner.add_data(&bytes).await?;
             cleaner.finish().await
@@ -278,12 +281,13 @@ impl FileUploadSession {
     }
 
     async fn feed_file_to_cleaner(
+        _session: &Arc<Self>,
         mut cleaner: SingleFileCleaner,
         file_path: &Path,
     ) -> Result<(XetFileInfo, DeduplicationMetrics)> {
         let mut reader = File::open(file_path)?;
         let filesize = reader.metadata()?.len();
-        let mut buffer = vec![0u8; u64::min(filesize, *xet_config().data.ingestion_block_size) as usize];
+        let mut buffer = vec![0u8; u64::min(filesize, *_session.ctx.config.data.ingestion_block_size) as usize];
 
         loop {
             let n = reader.read(&mut buffer)?;
@@ -343,13 +347,23 @@ impl FileUploadSession {
 
         // Serialize the object; this can be relatively expensive, so run it on a compute thread.
         // XORBs are sent without footer - the server/client reconstructs it from chunk data.
-        let xorb_obj = XetRuntime::current()
-            .spawn_blocking(move || SerializedXorbObject::from_xorb(xorb, false))
+        let runtime = self.ctx.runtime.clone();
+        let compression_policy = self.ctx.config.xorb.compression_policy.clone();
+        let compression_scheme_retest_interval = self.ctx.config.xorb.compression_scheme_retest_interval;
+        let xorb_obj = runtime
+            .spawn_blocking(move || {
+                SerializedXorbObject::from_xorb(
+                    xorb,
+                    false,
+                    compression_policy.as_str(),
+                    compression_scheme_retest_interval,
+                )
+            })
             .await??;
 
         let session = self.clone();
         let upload_permit = self.client.acquire_upload_permit().await?;
-        let cas_prefix = xet_config().data.default_prefix.clone();
+        let cas_prefix = self.ctx.config.data.default_prefix.clone();
         let completion_tracker = self.completion_tracker.clone();
         let xorb_hash = xorb_obj.hash;
         let raw_num_bytes = xorb_obj.raw_num_bytes;
@@ -397,9 +411,30 @@ impl FileUploadSession {
         {
             let mut current_session_data = self.current_session_data.lock().await;
 
+            #[cfg(feature = "simulation")]
+            let xorb_cut_bytes = self
+                .ctx
+                .config
+                .xorb
+                .simulation_max_bytes
+                .map(|bs| (bs.as_u64() as usize).min(*MAX_XORB_BYTES))
+                .unwrap_or(*MAX_XORB_BYTES);
+            #[cfg(not(feature = "simulation"))]
+            let xorb_cut_bytes = *MAX_XORB_BYTES;
+            #[cfg(feature = "simulation")]
+            let xorb_cut_chunks = self
+                .ctx
+                .config
+                .xorb
+                .simulation_max_chunks
+                .unwrap_or(*MAX_XORB_CHUNKS)
+                .min(*MAX_XORB_CHUNKS);
+            #[cfg(not(feature = "simulation"))]
+            let xorb_cut_chunks = *MAX_XORB_CHUNKS;
+
             // Do we need to cut one of these to a xorb?
-            if current_session_data.num_bytes() + file_data.num_bytes() > *XORB_CUT_THRESHOLD_BYTES
-                || current_session_data.num_chunks() + file_data.num_chunks() > *XORB_CUT_THRESHOLD_CHUNKS
+            if current_session_data.num_bytes() + file_data.num_bytes() > xorb_cut_bytes
+                || current_session_data.num_chunks() + file_data.num_chunks() > xorb_cut_chunks
             {
                 // Cut the larger one as a xorb, uploading it and registering the files.
                 if current_session_data.num_bytes() > file_data.num_bytes() {
@@ -577,19 +612,10 @@ mod tests {
     use std::fs::{File, OpenOptions};
     use std::io::{Read, Write};
     use std::path::Path;
-    use std::sync::{Arc, OnceLock};
 
-    use xet_runtime::core::XetRuntime;
+    use xet_runtime::core::XetContext;
 
     use crate::processing::{FileDownloadSession, FileUploadSession, XetFileInfo};
-
-    /// Return a shared threadpool to be reused as needed.
-    fn get_threadpool() -> Arc<XetRuntime> {
-        static THREADPOOL: OnceLock<Arc<XetRuntime>> = OnceLock::new();
-        THREADPOOL
-            .get_or_init(|| XetRuntime::new().expect("Error starting multithreaded runtime."))
-            .clone()
-    }
 
     /// Cleans (converts) a regular file into a pointer file.
     ///
@@ -607,7 +633,8 @@ mod tests {
                 .unwrap(),
         );
 
-        let upload_session = FileUploadSession::new(TranslatorConfig::local_config(cas_path).unwrap().into())
+        let ctx = XetContext::default().unwrap();
+        let upload_session = FileUploadSession::new(TranslatorConfig::local_config(&ctx, cas_path).unwrap().into())
             .await
             .unwrap();
 
@@ -638,7 +665,8 @@ mod tests {
 
         let xet_file = serde_json::from_str::<XetFileInfo>(&input).unwrap();
 
-        let config = TranslatorConfig::local_config(cas_path).unwrap();
+        let ctx = XetContext::default().unwrap();
+        let config = TranslatorConfig::local_config(&ctx, cas_path).unwrap();
         let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
         let (_id, _n_bytes) = session.download_file(&xet_file, output_path).await.unwrap();
@@ -655,10 +683,9 @@ mod tests {
         let temp = tempdir().unwrap();
         let original_data = b"Hello, world!";
 
-        let runtime = get_threadpool();
+        let ctx = XetContext::default().unwrap();
 
-        runtime
-            .clone()
+        ctx.runtime
             .bridge_sync(async move {
                 let cas_path = temp.path().join("cas");
 
@@ -686,16 +713,17 @@ mod tests {
         let temp = tempdir().unwrap();
         let data = b"Hello, skip sha256!";
 
-        let runtime = get_threadpool();
+        let ctx = XetContext::default().unwrap();
 
-        runtime
-            .clone()
+        ctx.runtime
             .bridge_sync(async move {
                 let cas_path = temp.path().join("cas");
 
-                let upload_session = FileUploadSession::new(TranslatorConfig::local_config(&cas_path).unwrap().into())
-                    .await
-                    .unwrap();
+                let session_ctx = XetContext::default().unwrap();
+                let upload_session =
+                    FileUploadSession::new(TranslatorConfig::local_config(&session_ctx, &cas_path).unwrap().into())
+                        .await
+                        .unwrap();
 
                 let (_id, mut cleaner) = upload_session
                     .start_clean(Some("test".into()), Some(data.len() as u64), Sha256Policy::Skip)

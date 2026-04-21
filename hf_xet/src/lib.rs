@@ -14,13 +14,13 @@ use pyo3::exceptions::{PyKeyboardInterrupt, PyValueError};
 use pyo3::prelude::*;
 use pyo3::pyfunction;
 use rand::Rng;
-use runtime::async_run;
+use runtime::{async_run, get_or_init_runtime};
 use token_refresh::WrappedTokenRefresher;
 use tracing::debug;
 use xet_pkg::XetError;
 use xet_pkg::legacy::progress_tracking::TrackingProgressUpdater;
 use xet_pkg::legacy::{Sha256Policy, XetFileInfo, data_client};
-use xet_runtime::core::file_handle_limits;
+use xet_runtime::core::{XetContext, file_handle_limits};
 
 use crate::logging::init_logging;
 use crate::progress_update::WrappedProgressUpdater;
@@ -112,7 +112,11 @@ pub fn upload_bytes(
     };
 
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
-    let updater = progress_updater.map(WrappedProgressUpdater::new).transpose()?.map(Arc::new);
+    let runtime = get_or_init_runtime().map_err(convert_xet_error)?;
+    let updater = progress_updater
+        .map(|p| WrappedProgressUpdater::new(p, runtime.clone()))
+        .transpose()?
+        .map(Arc::new);
     let x: u64 = rand::rng().random();
 
     // Convert Python dict -> Rust HashMap -> HeaderMap and merge with USER_AGENT
@@ -124,8 +128,8 @@ pub fn upload_bytes(
             std::process::id(),
             file_contents.len(),
         );
-
         let out: Vec<PyXetUploadInfo> = data_client::upload_bytes_async(
+            &runtime,
             file_contents,
             sha256_policies,
             endpoint,
@@ -182,7 +186,11 @@ pub fn upload_files(
     };
 
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
-    let updater = progress_updater.map(WrappedProgressUpdater::new).transpose()?.map(Arc::new);
+    let runtime = get_or_init_runtime().map_err(convert_xet_error)?;
+    let updater = progress_updater
+        .map(|p| WrappedProgressUpdater::new(p, runtime.clone()))
+        .transpose()?
+        .map(Arc::new);
 
     let file_names = file_paths.iter().take(3).join(", ");
 
@@ -198,8 +206,8 @@ pub fn upload_files(
             file_paths.len(),
             if file_paths.len() > 3 { "..." } else { "." }
         );
-
         let out: Vec<PyXetUploadInfo> = data_client::upload_async(
+            &runtime,
             file_paths,
             sha256_policies,
             endpoint,
@@ -249,7 +257,8 @@ pub fn upload_files(
 #[pyo3(signature = (file_paths), text_signature = "(file_paths: List[str]) -> List[PyXetUploadInfo]")]
 pub fn hash_files(py: Python, file_paths: Vec<String>) -> PyResult<Vec<PyXetUploadInfo>> {
     async_run(py, async move {
-        let out: Vec<PyXetUploadInfo> = data_client::hash_files_async(file_paths)
+        let runtime = get_or_init_runtime().map_err(convert_xet_error)?;
+        let out: Vec<PyXetUploadInfo> = data_client::hash_files_async(&runtime, file_paths)
             .await
             .map_err(convert_xet_error)?
             .into_iter()
@@ -273,7 +282,8 @@ pub fn download_files(
 ) -> PyResult<Vec<String>> {
     let file_infos: Vec<_> = files.into_iter().map(<(XetFileInfo, DestinationPath)>::from).collect();
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
-    let updaters = progress_updater.map(try_parse_progress_updaters).transpose()?;
+    let runtime = get_or_init_runtime().map_err(convert_xet_error)?;
+    let updaters = progress_updater.map(|f| try_parse_progress_updaters(f, &runtime)).transpose()?;
 
     // Convert Python dict -> Rust HashMap -> HeaderMap and merge with USER_AGENT
     let header_map = build_headers_with_user_agent(request_headers)?;
@@ -289,8 +299,8 @@ pub fn download_files(
             file_infos.len(),
             if file_infos.len() > 3 { "..." } else { "." }
         );
-
         let out: Vec<String> = data_client::download_async(
+            &runtime,
             file_infos,
             endpoint,
             token_info,
@@ -314,10 +324,13 @@ pub fn force_sigint_shutdown() -> PyResult<()> {
     Err(PyKeyboardInterrupt::new_err(()))
 }
 
-fn try_parse_progress_updaters(funcs: Vec<Py<PyAny>>) -> PyResult<Vec<Arc<dyn TrackingProgressUpdater>>> {
+fn try_parse_progress_updaters(
+    funcs: Vec<Py<PyAny>>,
+    ctx: &XetContext,
+) -> PyResult<Vec<Arc<dyn TrackingProgressUpdater>>> {
     let mut updaters = Vec::with_capacity(funcs.len());
     for updater_func in funcs {
-        let wrapped = Arc::new(WrappedProgressUpdater::new(updater_func)?);
+        let wrapped = Arc::new(WrappedProgressUpdater::new(updater_func, ctx.clone())?);
         updaters.push(wrapped as Arc<dyn TrackingProgressUpdater>);
     }
     Ok(updaters)

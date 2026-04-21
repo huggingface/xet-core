@@ -8,7 +8,7 @@ use pyo3::types::{IntoPyDict, PyList, PyString};
 use pyo3::{IntoPyObjectExt, Py, PyAny, PyResult, Python, pyclass};
 use tracing::error;
 use xet_pkg::legacy::progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
-use xet_runtime::core::XetRuntime;
+use xet_runtime::core::XetContext;
 use xet_runtime::error_printer::ErrorPrinter;
 
 use crate::runtime::convert_multithreading_error;
@@ -121,6 +121,8 @@ pub struct PyTotalProgressUpdate {
 /// passed around as a ProgressUpdater trait object or
 /// as a template parameter
 struct WrappedProgressUpdaterImpl {
+    ctx: XetContext,
+
     /// Is this enabled?
     progress_updating_enabled: bool,
 
@@ -144,7 +146,7 @@ impl Debug for WrappedProgressUpdaterImpl {
 const DETAILED_PROGRESS_ARG_NAMES: [&str; 2] = ["total_update", "item_updates"];
 
 impl WrappedProgressUpdaterImpl {
-    pub fn new(py_func: Py<PyAny>) -> PyResult<Self> {
+    pub fn new(py_func: Py<PyAny>, ctx: XetContext) -> PyResult<Self> {
         // Analyze the function to make sure it's the correct form. If it's 4 arguments with
         // the appropriate names, than we call it using the detailed progress update; if it's
         // a single function, we assume it's a global increment function and just pass in the update
@@ -157,6 +159,7 @@ impl WrappedProgressUpdaterImpl {
             // Test if it's enabled first; if None is passed in, then this is disabled.
             if py_func.is_none(py) {
                 return Ok(Self {
+                    ctx,
                     progress_updating_enabled: false,
                     py_func,
                     name: Default::default(),
@@ -212,6 +215,7 @@ impl WrappedProgressUpdaterImpl {
             };
 
             Ok(Self {
+                ctx,
                 progress_updating_enabled: true,
                 py_func,
                 name,
@@ -221,71 +225,71 @@ impl WrappedProgressUpdaterImpl {
     }
 
     async fn register_updates_impl(self: Arc<Self>, updates: ProgressUpdate) -> PyResult<()> {
-        // Run on compute thread that doesn't block async workers
-        let rt = XetRuntime::current();
-        rt.spawn_blocking(move || {
-            Python::attach(|py| {
-                let f = self.py_func.bind(py);
+        let runtime = self.ctx.runtime.clone();
+        runtime
+            .spawn_blocking(move || {
+                Python::attach(|py| {
+                    let f = self.py_func.bind(py);
 
-                if self.update_with_detailed_progress {
-                    let total_update_report: Py<PyAny> = Py::new(
-                        py,
-                        PyTotalProgressUpdate {
-                            total_bytes: updates.total_bytes,
-                            total_bytes_increment: updates.total_bytes_increment,
-                            total_bytes_completed: updates.total_bytes_completed,
-                            total_bytes_completion_increment: updates.total_bytes_completion_increment,
-                            total_bytes_completion_rate: updates.total_bytes_completion_rate,
-                            total_transfer_bytes: updates.total_transfer_bytes,
-                            total_transfer_bytes_increment: updates.total_transfer_bytes_increment,
-                            total_transfer_bytes_completed: updates.total_transfer_bytes_completed,
-                            total_transfer_bytes_completion_increment: updates
-                                .total_transfer_bytes_completion_increment,
-                            total_transfer_bytes_completion_rate: updates.total_transfer_bytes_completion_rate,
-                        },
-                    )?
-                    .into_py_any(py)?;
+                    if self.update_with_detailed_progress {
+                        let total_update_report: Py<PyAny> = Py::new(
+                            py,
+                            PyTotalProgressUpdate {
+                                total_bytes: updates.total_bytes,
+                                total_bytes_increment: updates.total_bytes_increment,
+                                total_bytes_completed: updates.total_bytes_completed,
+                                total_bytes_completion_increment: updates.total_bytes_completion_increment,
+                                total_bytes_completion_rate: updates.total_bytes_completion_rate,
+                                total_transfer_bytes: updates.total_transfer_bytes,
+                                total_transfer_bytes_increment: updates.total_transfer_bytes_increment,
+                                total_transfer_bytes_completed: updates.total_transfer_bytes_completed,
+                                total_transfer_bytes_completion_increment: updates
+                                    .total_transfer_bytes_completion_increment,
+                                total_transfer_bytes_completion_rate: updates.total_transfer_bytes_completion_rate,
+                            },
+                        )?
+                        .into_py_any(py)?;
 
-                    let item_updates_v: Vec<Py<PyAny>> = updates
-                        .item_updates
-                        .into_iter()
-                        .map(|u| {
-                            Py::new(
-                                py,
-                                PyItemProgressUpdate {
-                                    item_name: PyString::new(py, &u.item_name).into(),
-                                    total_bytes: u.total_bytes,
-                                    bytes_completed: u.bytes_completed,
-                                    bytes_completion_increment: u.bytes_completion_increment,
-                                },
-                            )?
-                            .into_py_any(py)
-                        })
-                        .collect::<PyResult<Vec<_>>>()?;
+                        let item_updates_v: Vec<Py<PyAny>> = updates
+                            .item_updates
+                            .into_iter()
+                            .map(|u| {
+                                Py::new(
+                                    py,
+                                    PyItemProgressUpdate {
+                                        item_name: PyString::new(py, &u.item_name).into(),
+                                        total_bytes: u.total_bytes,
+                                        bytes_completed: u.bytes_completed,
+                                        bytes_completion_increment: u.bytes_completion_increment,
+                                    },
+                                )?
+                                .into_py_any(py)
+                            })
+                            .collect::<PyResult<Vec<_>>>()?;
 
-                    let item_updates: Py<PyAny> = PyList::new(py, item_updates_v)?.into_py_any(py)?;
+                        let item_updates: Py<PyAny> = PyList::new(py, item_updates_v)?.into_py_any(py)?;
 
-                    let argname_total_update: Py<PyAny> = DETAILED_PROGRESS_ARG_NAMES[0].into_py_any(py)?;
-                    let argname_item_updates: Py<PyAny> = DETAILED_PROGRESS_ARG_NAMES[1].into_py_any(py)?;
+                        let argname_total_update: Py<PyAny> = DETAILED_PROGRESS_ARG_NAMES[0].into_py_any(py)?;
+                        let argname_item_updates: Py<PyAny> = DETAILED_PROGRESS_ARG_NAMES[1].into_py_any(py)?;
 
-                    let kwargs = [
-                        (argname_total_update, total_update_report),
-                        (argname_item_updates, item_updates),
-                    ]
-                    .into_py_dict(py)?;
+                        let kwargs = [
+                            (argname_total_update, total_update_report),
+                            (argname_item_updates, item_updates),
+                        ]
+                        .into_py_dict(py)?;
 
-                    f.call((), Some(&kwargs))?;
-                } else {
-                    let update_increment: u64 =
-                        updates.item_updates.iter().map(|pr| pr.bytes_completion_increment).sum();
-                    let _ = f.call1((update_increment,))?;
-                }
+                        f.call((), Some(&kwargs))?;
+                    } else {
+                        let update_increment: u64 =
+                            updates.item_updates.iter().map(|pr| pr.bytes_completion_increment).sum();
+                        let _ = f.call1((update_increment,))?;
+                    }
 
-                Ok(())
+                    Ok(())
+                })
             })
-        })
-        .await
-        .map_err(convert_multithreading_error)?
+            .await
+            .map_err(convert_multithreading_error)?
     }
 }
 
@@ -295,9 +299,9 @@ pub struct WrappedProgressUpdater {
 }
 
 impl WrappedProgressUpdater {
-    pub fn new(py_func: Py<PyAny>) -> PyResult<Self> {
+    pub fn new(py_func: Py<PyAny>, ctx: XetContext) -> PyResult<Self> {
         Ok(Self {
-            inner: Arc::new(WrappedProgressUpdaterImpl::new(py_func)?),
+            inner: Arc::new(WrappedProgressUpdaterImpl::new(py_func, ctx)?),
         })
     }
 }

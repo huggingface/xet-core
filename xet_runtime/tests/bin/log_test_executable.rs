@@ -20,7 +20,7 @@ fn main() {
         use_json: true,
         enable_log_dir_cleanup: true,
         version: "test".to_string(),
-        log_dir_config: LogDirConfig::default(),
+        log_dir_config: LogDirConfig::from_config(&xet_runtime::config::XetConfig::new()),
     };
 
     init(config);
