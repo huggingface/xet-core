@@ -35,6 +35,7 @@ pub struct SimulationControlClient {
     endpoint: String,
     http_client: reqwest::Client,
     remote_client: Arc<RemoteClient>,
+    _keep_alive: Option<Box<dyn std::any::Any + Send + Sync>>,
 }
 
 impl SimulationControlClient {
@@ -50,7 +51,18 @@ impl SimulationControlClient {
             endpoint: endpoint.to_string(),
             http_client: reqwest::Client::new(),
             remote_client,
+            _keep_alive: None,
         }
+    }
+
+    /// Attaches a resource that will be kept alive as long as this client exists.
+    ///
+    /// Primarily used in tests to tie the lifetime of a [`LocalTestServer`] to
+    /// the client so that the server is shut down when the client is dropped,
+    /// preventing file-descriptor leaks.
+    pub fn with_keep_alive(mut self, resource: impl std::any::Any + Send + Sync + 'static) -> Self {
+        self._keep_alive = Some(Box::new(resource));
+        self
     }
 
     /// Constructs a full URL for a `/simulation/` endpoint path.

@@ -1303,17 +1303,6 @@ mod tests {
         assert!(lc.list_xorbs().await.unwrap().is_empty());
     }
 
-    /// Keeps a LocalTestServer alive for the duration of the tokio runtime by
-    /// moving it into a spawned task. Returns the endpoint URL.
-    fn detach_server(server: LocalTestServer) -> String {
-        let endpoint = server.endpoint().to_string();
-        tokio::spawn(async move {
-            let _server = server;
-            futures::future::pending::<()>().await;
-        });
-        endpoint
-    }
-
     /// Runs the common DirectAccessClient test suite via SimulationControlClient.
     #[tokio::test]
     #[cfg_attr(feature = "smoke-test", ignore)]
@@ -1322,8 +1311,8 @@ mod tests {
             let lc = LocalClient::temporary(XetContext::default().expect("runtime")).await.unwrap();
             let dc: Arc<dyn DeletionControlableClient> = lc.clone();
             let server = LocalTestServer::start_with_client_and_deletion(lc, Some(dc)).await;
-            let endpoint = detach_server(server);
-            Arc::new(SimulationControlClient::new(&endpoint)) as Arc<dyn DirectAccessClient>
+            let endpoint = server.endpoint().to_string();
+            Arc::new(SimulationControlClient::new(&endpoint).with_keep_alive(server)) as Arc<dyn DirectAccessClient>
         })
         .await;
     }
@@ -1378,8 +1367,8 @@ mod tests {
             let lc = LocalClient::temporary(XetContext::default().expect("runtime")).await.unwrap();
             let dc: Arc<dyn DeletionControlableClient> = lc.clone();
             let server = LocalTestServer::start_with_client_and_deletion(lc, Some(dc)).await;
-            let endpoint = detach_server(server);
-            Arc::new(SimulationControlClient::new(&endpoint))
+            let endpoint = server.endpoint().to_string();
+            Arc::new(SimulationControlClient::new(&endpoint).with_keep_alive(server))
         })
         .await;
     }
