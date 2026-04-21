@@ -39,7 +39,14 @@ impl XetContext {
     /// If neither is available, spins up a new owned tokio thread pool.
     #[allow(clippy::should_implement_trait)]
     pub fn default() -> Result<Self, RuntimeError> {
-        let config = XetConfig::new();
+        Self::with_config(XetConfig::new())
+    }
+
+    /// Creates a context with the given configuration and an auto-detected thread pool.
+    ///
+    /// Follows the same runtime selection as [`default`](Self::default):
+    /// reuse an owned runtime if available, wrap an existing tokio handle, or create a new one.
+    pub fn with_config(config: XetConfig) -> Result<Self, RuntimeError> {
         let runtime = if let Some(runtime) = XetRuntime::current_if_exists() {
             runtime
         } else if let Ok(handle) = TokioRuntimeHandle::try_current()

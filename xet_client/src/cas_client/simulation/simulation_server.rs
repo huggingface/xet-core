@@ -172,7 +172,7 @@ impl LocalTestServerBuilder {
 
     /// Builds and starts the test server.
     pub async fn start(self) -> LocalTestServer {
-        let runtime = XetContext::default().expect("XetContext::new");
+        let ctx = XetContext::default().expect("XetContext::new");
         #[cfg(unix)]
         let (socket_path, ephemeral_tempdir) = if self.ephemeral_socket {
             let tempdir = TempDir::new().expect("Failed to create temporary directory for ephemeral socket");
@@ -191,11 +191,11 @@ impl LocalTestServerBuilder {
             if let Some(client) = self.client {
                 (client, None)
             } else if self.in_memory {
-                let mc = MemoryClient::new(runtime.clone());
+                let mc = MemoryClient::new(ctx.clone());
                 let dc: Arc<dyn DeletionControlableClient> = mc.clone();
                 (mc, Some(dc))
             } else if self.ephemeral_disk {
-                let lc = LocalClient::temporary(runtime.clone())
+                let lc = LocalClient::temporary(ctx.clone())
                     .await
                     .expect("Failed to create LocalClient with temporary directory");
                 let dc: Arc<dyn DeletionControlableClient> = lc.clone();
@@ -204,7 +204,7 @@ impl LocalTestServerBuilder {
                 let disk_path = self.disk_location.unwrap_or_else(|| {
                     panic!("with_disk_location must be called when in_memory is false and no client is provided")
                 });
-                let lc = LocalClient::new(runtime.clone(), &disk_path)
+                let lc = LocalClient::new(ctx.clone(), &disk_path)
                     .await
                     .expect("Failed to create LocalClient");
                 let dc: Arc<dyn DeletionControlableClient> = lc.clone();
@@ -260,7 +260,7 @@ impl LocalTestServerBuilder {
 
                 let socket_path_str = socket_path.to_string_lossy().to_string();
                 let client = RemoteClient::new_with_socket(
-                    runtime.clone(),
+                    ctx.clone(),
                     &client_endpoint,
                     &None,
                     "test-session",
@@ -272,7 +272,7 @@ impl LocalTestServerBuilder {
                 (client, Some(proxy))
             } else {
                 let client = RemoteClient::new(
-                    runtime.clone(),
+                    ctx.clone(),
                     &client_endpoint,
                     &None,
                     "test-session",
@@ -285,7 +285,7 @@ impl LocalTestServerBuilder {
 
         #[cfg(not(unix))]
         let remote_client =
-            RemoteClient::new(runtime.clone(), &client_endpoint, &None, "test-session", false, custom_headers.clone());
+            RemoteClient::new(ctx.clone(), &client_endpoint, &None, "test-session", false, custom_headers.clone());
 
         let remote_simulation_client = Arc::new(RemoteSimulationClient::new(remote_client));
 

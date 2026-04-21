@@ -263,24 +263,6 @@ impl MemoryClient {
     }
 }
 
-impl Default for MemoryClient {
-    fn default() -> Self {
-        let ctx = XetContext::default().expect("runtime");
-        Self {
-            xorbs: RwLock::new(MerkleHashMap::new()),
-            shard: RwLock::new(MDBInMemoryShard::default()),
-            global_dedup: RwLock::new(MerkleHashMap::new()),
-            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload(ctx, "memory_uploads"),
-            xorb_generation: AtomicU64::new(0),
-            url_expiration_ms: AtomicU64::new(u64::MAX),
-            global_dedup_expiration_secs: AtomicU64::new(0),
-            random_ms_delay_window: (AtomicU64::new(0), AtomicU64::new(0)),
-            max_ranges_per_fetch: AtomicUsize::new(usize::MAX),
-            v2_disabled_status: AtomicU16::new(0),
-        }
-    }
-}
-
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl DirectAccessClient for MemoryClient {

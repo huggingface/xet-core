@@ -440,14 +440,13 @@ mod tests {
     use std::io;
     use std::time::Duration;
 
-    use xet_runtime::config::XetConfig;
-    use xet_runtime::core::{XetContext, XetRuntime};
+    use xet_runtime::core::XetContext;
     use xet_runtime::utils::adjustable_semaphore::AdjustableSemaphore;
 
     use super::*;
 
     fn test_runtime() -> XetContext {
-        XetContext::new(XetConfig::new(), XetRuntime::from_external(tokio::runtime::Handle::current()))
+        XetContext::default().unwrap()
     }
 
     struct SharedBuffer(Arc<std::sync::Mutex<Vec<u8>>>);

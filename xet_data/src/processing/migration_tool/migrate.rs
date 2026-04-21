@@ -37,9 +37,9 @@ pub async fn migrate_with_external_runtime(
     let cred_helper = BearerCredentialHelper::new(hub_token.to_owned(), "");
     let mut headers = header::HeaderMap::new();
     headers.insert(header::USER_AGENT, header::HeaderValue::from_static(USER_AGENT));
-    let runtime = XetContext::default()?;
+    let ctx = XetContext::default()?;
     let hub_client = HubClient::new(
-        runtime.clone(),
+        ctx.clone(),
         hub_endpoint,
         RepoInfo::try_from(repo_type, repo_id)?,
         Some("main".to_owned()),
@@ -48,7 +48,7 @@ pub async fn migrate_with_external_runtime(
         Some(headers),
     )?;
 
-    migrate_files_impl(file_paths, sha256s, false, hub_client, cas_endpoint, false).await?;
+    migrate_files_impl(&ctx, file_paths, sha256s, false, hub_client, cas_endpoint, false).await?;
 
     Ok(())
 }
@@ -58,6 +58,7 @@ pub type MigrationInfo = (Vec<MDBFileInfo>, Vec<(XetFileInfo, u64)>, u64);
 
 #[instrument(skip_all, name = "migrate_files", fields(session_id = tracing::field::Empty, num_files = file_paths.len()))]
 pub async fn migrate_files_impl(
+    ctx: &XetContext,
     file_paths: Vec<String>,
     sha256s: Option<Vec<String>>,
     sequential: bool,
@@ -77,9 +78,8 @@ pub async fn migrate_files_impl(
     let mut headers = http::HeaderMap::new();
     headers.insert(http::header::USER_AGENT, http::HeaderValue::from_static(USER_AGENT));
 
-    let runtime = XetContext::default()?;
     let config = default_config(
-        &runtime,
+        ctx,
         cas,
         Some((jwt_info.access_token, jwt_info.exp)),
         Some(token_refresher),
@@ -90,7 +90,7 @@ pub async fn migrate_files_impl(
     let num_workers = if sequential {
         1
     } else {
-        runtime.runtime.num_worker_threads()
+        ctx.runtime.num_worker_threads()
     };
     let processor = if dry_run {
         FileUploadSession::dry_run(config.into()).await?

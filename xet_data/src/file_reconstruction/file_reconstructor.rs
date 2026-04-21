@@ -428,7 +428,7 @@ mod tests {
     use xet_client::cas_client::{ClientTestingUtils, DirectAccessClient, LocalClient, RandomFileContents};
     use xet_client::cas_types::FileRange;
     use xet_runtime::config::XetConfig;
-    use xet_runtime::core::{XetContext, XetRuntime};
+    use xet_runtime::core::XetContext;
 
     use super::*;
     use crate::progress_tracking::ItemProgressUpdater;
@@ -1220,8 +1220,7 @@ mod tests {
         runtime_config.reconstruction.download_buffer_limit = xet_runtime::utils::ByteSize::from("4kb");
         let expected_total = runtime_config.reconstruction.download_buffer_limit.as_u64();
 
-        let worker_runtime = XetRuntime::new(&runtime_config).unwrap();
-        let ctx = XetContext::new(runtime_config, worker_runtime);
+        let ctx = XetContext::with_config(runtime_config).unwrap();
         let runtime = ctx.runtime.clone();
 
         runtime
@@ -1611,10 +1610,10 @@ mod tests {
     mod multirange_tests {
         use super::*;
 
-        fn with_multirange_config(enable: bool) -> Arc<XetRuntime> {
+        fn with_multirange_config(enable: bool) -> XetContext {
             let mut config = xet_runtime::config::XetConfig::new();
             config.client.enable_multirange_fetching = enable;
-            XetRuntime::new(&config).unwrap()
+            XetContext::with_config(config).unwrap()
         }
 
         /// Exercises multiple disjoint-range scenarios through LocalClient with both
@@ -1622,38 +1621,39 @@ mod tests {
         #[test]
         fn test_multirange_local_client() {
             for enable in [false, true] {
-                let rt = with_multirange_config(enable);
-                rt.bridge_sync(async move {
-                    let scenarios: Vec<Vec<(u64, (u64, u64))>> = vec![
-                        vec![(1, (0, 2)), (1, (4, 6)), (1, (8, 10))],
-                        vec![
-                            (1, (0, 2)),
-                            (2, (0, 2)),
-                            (1, (4, 6)),
-                            (2, (4, 6)),
-                            (1, (8, 10)),
-                            (2, (8, 10)),
-                        ],
-                        vec![
-                            (1, (0, 2)),
-                            (2, (0, 3)),
-                            (3, (2, 5)),
-                            (1, (5, 8)),
-                            (2, (6, 8)),
-                            (3, (0, 2)),
-                        ],
-                    ];
-                    let config = test_config();
-                    for term_spec in &scenarios {
-                        let (client, fc) = setup_test_file(term_spec).await;
-                        reconstruct_and_verify_full(&client, &fc, config.clone()).await;
+                let ctx = with_multirange_config(enable);
+                ctx.runtime
+                    .bridge_sync(async move {
+                        let scenarios: Vec<Vec<(u64, (u64, u64))>> = vec![
+                            vec![(1, (0, 2)), (1, (4, 6)), (1, (8, 10))],
+                            vec![
+                                (1, (0, 2)),
+                                (2, (0, 2)),
+                                (1, (4, 6)),
+                                (2, (4, 6)),
+                                (1, (8, 10)),
+                                (2, (8, 10)),
+                            ],
+                            vec![
+                                (1, (0, 2)),
+                                (2, (0, 3)),
+                                (3, (2, 5)),
+                                (1, (5, 8)),
+                                (2, (6, 8)),
+                                (3, (0, 2)),
+                            ],
+                        ];
+                        let config = test_config();
+                        for term_spec in &scenarios {
+                            let (client, fc) = setup_test_file(term_spec).await;
+                            reconstruct_and_verify_full(&client, &fc, config.clone()).await;
 
-                        let file_len = fc.data.len() as u64;
-                        let range = FileRange::new(file_len / 4, file_len * 3 / 4);
-                        reconstruct_and_verify_range(&client, &fc, range, config.clone()).await;
-                    }
-                })
-                .unwrap();
+                            let file_len = fc.data.len() as u64;
+                            let range = FileRange::new(file_len / 4, file_len * 3 / 4);
+                            reconstruct_and_verify_range(&client, &fc, range, config.clone()).await;
+                        }
+                    })
+                    .unwrap();
             }
         }
 
@@ -1661,19 +1661,20 @@ mod tests {
         #[test]
         fn test_multirange_max_ranges() {
             for enable in [false, true] {
-                let rt = with_multirange_config(enable);
-                rt.bridge_sync(async {
-                    let client = LocalClient::temporary(XetContext::default().unwrap()).await.unwrap();
-                    client.set_max_ranges_per_fetch(2);
+                let ctx = with_multirange_config(enable);
+                ctx.runtime
+                    .bridge_sync(async {
+                        let client = LocalClient::temporary(XetContext::default().unwrap()).await.unwrap();
+                        client.set_max_ranges_per_fetch(2);
 
-                    let term_spec = &[(1, (0, 2)), (1, (4, 6)), (1, (8, 10)), (1, (12, 14))];
-                    let fc = client.upload_random_file(term_spec, TEST_CHUNK_SIZE).await.unwrap();
+                        let term_spec = &[(1, (0, 2)), (1, (4, 6)), (1, (8, 10)), (1, (12, 14))];
+                        let fc = client.upload_random_file(term_spec, TEST_CHUNK_SIZE).await.unwrap();
 
-                    let config = test_config();
-                    let result = reconstruct_to_vec(&client, fc.file_hash, None, &config, None).await.unwrap();
-                    assert_eq!(result, fc.data.as_ref());
-                })
-                .unwrap();
+                        let config = test_config();
+                        let result = reconstruct_to_vec(&client, fc.file_hash, None, &config, None).await.unwrap();
+                        assert_eq!(result, fc.data.as_ref());
+                    })
+                    .unwrap();
             }
         }
     }
@@ -1896,10 +1897,10 @@ mod tests {
 
         // ==================== Multirange via Server ====================
 
-        fn with_multirange_config(enable: bool) -> Arc<XetRuntime> {
+        fn with_multirange_config(enable: bool) -> XetContext {
             let mut config = xet_runtime::config::XetConfig::new();
             config.client.enable_multirange_fetching = enable;
-            XetRuntime::new(&config).unwrap()
+            XetContext::with_config(config).unwrap()
         }
 
         /// Exercises HTTP server path with full, max-ranges-split, and partial-range
@@ -1907,49 +1908,50 @@ mod tests {
         #[test]
         fn test_multirange_via_server() {
             for enable in [false, true] {
-                let rt = with_multirange_config(enable);
-                rt.bridge_sync(async {
-                    let config = test_config();
+                let ctx = with_multirange_config(enable);
+                ctx.runtime
+                    .bridge_sync(async {
+                        let config = test_config();
 
-                    // Full reconstruction with disjoint ranges
-                    let server = xet_client::cas_client::LocalTestServerBuilder::new().start().await;
-                    let fc = server
-                        .remote_client()
-                        .upload_random_file(&[(1, (0, 2)), (1, (4, 6)), (1, (8, 10))], TEST_CHUNK_SIZE)
-                        .await
-                        .unwrap();
-                    let result = reconstruct_via_server(&server, fc.file_hash, None, &config).await.unwrap();
-                    assert_eq!(result, fc.data.as_ref());
+                        // Full reconstruction with disjoint ranges
+                        let server = xet_client::cas_client::LocalTestServerBuilder::new().start().await;
+                        let fc = server
+                            .remote_client()
+                            .upload_random_file(&[(1, (0, 2)), (1, (4, 6)), (1, (8, 10))], TEST_CHUNK_SIZE)
+                            .await
+                            .unwrap();
+                        let result = reconstruct_via_server(&server, fc.file_hash, None, &config).await.unwrap();
+                        assert_eq!(result, fc.data.as_ref());
 
-                    // Multi-xorb with max_ranges_per_fetch=2
-                    let server = xet_client::cas_client::LocalTestServerBuilder::new().start().await;
-                    let fc = server
-                        .remote_client()
-                        .upload_random_file(
-                            &[(1, (0, 2)), (2, (0, 2)), (1, (4, 6)), (2, (4, 6)), (1, (8, 10))],
-                            TEST_CHUNK_SIZE,
-                        )
-                        .await
-                        .unwrap();
-                    server.set_max_ranges_per_fetch(2);
-                    let result = reconstruct_via_server(&server, fc.file_hash, None, &config).await.unwrap();
-                    assert_eq!(result, fc.data.as_ref());
+                        // Multi-xorb with max_ranges_per_fetch=2
+                        let server = xet_client::cas_client::LocalTestServerBuilder::new().start().await;
+                        let fc = server
+                            .remote_client()
+                            .upload_random_file(
+                                &[(1, (0, 2)), (2, (0, 2)), (1, (4, 6)), (2, (4, 6)), (1, (8, 10))],
+                                TEST_CHUNK_SIZE,
+                            )
+                            .await
+                            .unwrap();
+                        server.set_max_ranges_per_fetch(2);
+                        let result = reconstruct_via_server(&server, fc.file_hash, None, &config).await.unwrap();
+                        assert_eq!(result, fc.data.as_ref());
 
-                    // Partial byte range
-                    let server = xet_client::cas_client::LocalTestServerBuilder::new().start().await;
-                    let fc = server
-                        .remote_client()
-                        .upload_random_file(&[(1, (0, 3)), (2, (0, 2)), (1, (3, 5)), (2, (4, 6))], TEST_CHUNK_SIZE)
-                        .await
-                        .unwrap();
-                    let file_len = fc.data.len() as u64;
-                    let range = FileRange::new(file_len / 4, file_len * 3 / 4);
-                    let result = reconstruct_via_server(&server, fc.file_hash, Some(range), &config)
-                        .await
-                        .unwrap();
-                    assert_eq!(result, &fc.data[range.start as usize..range.end as usize]);
-                })
-                .unwrap();
+                        // Partial byte range
+                        let server = xet_client::cas_client::LocalTestServerBuilder::new().start().await;
+                        let fc = server
+                            .remote_client()
+                            .upload_random_file(&[(1, (0, 3)), (2, (0, 2)), (1, (3, 5)), (2, (4, 6))], TEST_CHUNK_SIZE)
+                            .await
+                            .unwrap();
+                        let file_len = fc.data.len() as u64;
+                        let range = FileRange::new(file_len / 4, file_len * 3 / 4);
+                        let result = reconstruct_via_server(&server, fc.file_hash, Some(range), &config)
+                            .await
+                            .unwrap();
+                        assert_eq!(result, &fc.data[range.start as usize..range.end as usize]);
+                    })
+                    .unwrap();
             }
         }
     } // mod server_tests

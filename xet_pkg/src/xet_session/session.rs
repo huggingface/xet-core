@@ -7,7 +7,7 @@ use tracing::info;
 use uuid::Uuid;
 use xet_data::progress_tracking::UniqueID;
 use xet_runtime::config::XetConfig;
-use xet_runtime::core::{XetContext, XetRuntime};
+use xet_runtime::core::XetContext;
 #[cfg(feature = "fd-track")]
 use xet_runtime::fd_diagnostics::{report_fd_count, track_fd_scope};
 
@@ -146,7 +146,7 @@ impl XetSessionBuilder {
     /// an owned thread pool instead.
     ///
     /// Handles can be shared by multiple sessions. Each session gets its own
-    /// [`XetContext`] (`config` + `common`), while the underlying [`XetRuntime`]
+    /// [`XetContext`] (`config` + `common`), while the underlying runtime
     /// may be shared.
     pub fn with_tokio_handle(self, handle: tokio::runtime::Handle) -> Self {
         let accept = XetContext::handle_meets_requirements(&handle);
@@ -162,33 +162,22 @@ impl XetSessionBuilder {
     /// Consume the builder and create a [`XetSession`].
     ///
     /// Threadpool selection order:
-    /// 1. Reuse the current owned [`XetRuntime`] from thread-local storage, when present.
+    /// 1. Reuse the current owned runtime from thread-local storage, when present.
     /// 2. Otherwise, use a provided tokio handle (or auto-detected current handle) if valid.
-    /// 3. Otherwise, create a new owned [`XetRuntime`].
+    /// 3. Otherwise, create a new owned thread pool.
     ///
-    /// Each build creates a fresh [`XetContext`] around the selected [`XetRuntime`], so sessions
+    /// Each build creates a fresh [`XetContext`] around the selected runtime, so sessions
     /// can share the same execution backend while keeping independent config and common state.
     pub fn build(self) -> Result<XetSession, SessionError> {
         #[cfg(feature = "fd-track")]
         let _fd_scope = track_fd_scope("XetSessionBuilder::build");
 
-        let handle = self.tokio_handle.or_else(|| {
-            tokio::runtime::Handle::try_current()
-                .ok()
-                .filter(XetContext::handle_meets_requirements)
-        });
-
-        let runtime = if let Some(shared_pool) = XetRuntime::current_if_exists() {
-            info!("XetSession reusing current owned XetRuntime from thread-local storage");
-            shared_pool
-        } else if let Some(h) = handle {
-            info!("XetSession using External runtime (wrapping caller's tokio handle)");
-            XetRuntime::from_external(h)
+        let ctx = if let Some(h) = self.tokio_handle {
+            info!("XetSession using explicitly provided tokio handle");
+            XetContext::from_external(h, self.config)
         } else {
-            info!("XetSession creating Owned runtime (new thread pool)");
-            XetRuntime::new(&self.config)?
+            XetContext::with_config(self.config)?
         };
-        let ctx = XetContext::new(self.config, runtime);
 
         let session = XetSession::new(ctx);
         info!("Session created, session_id={}", session.inner.id);
