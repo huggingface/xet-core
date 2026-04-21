@@ -418,7 +418,6 @@ mod tests {
     fn test_download_file() {
         let runtime = get_runtime();
         runtime
-            .clone()
             .bridge_sync(async {
                 let temp = tempdir().unwrap();
                 let cas_path = temp.path().join("cas");
@@ -442,7 +441,6 @@ mod tests {
     fn test_download_file_creates_parent_dirs() {
         let runtime = get_runtime();
         runtime
-            .clone()
             .bridge_sync(async {
                 let temp = tempdir().unwrap();
                 let cas_path = temp.path().join("cas");
@@ -467,7 +465,6 @@ mod tests {
     fn test_download_to_writer() {
         let runtime = get_runtime();
         runtime
-            .clone()
             .bridge_sync(async {
                 let temp = tempdir().unwrap();
                 let cas_path = temp.path().join("cas");
@@ -497,7 +494,6 @@ mod tests {
     fn test_download_to_writer_parallel_partitioned_file() {
         let runtime = get_runtime();
         runtime
-            .clone()
             .bridge_sync(async {
                 let temp = tempdir().unwrap();
                 let cas_path = temp.path().join("cas");
@@ -545,7 +541,6 @@ mod tests {
     fn test_download_multiple_files_concurrent() {
         let runtime = get_runtime();
         runtime
-            .clone()
             .bridge_sync(async {
                 let temp = tempdir().unwrap();
                 let cas_path = temp.path().join("cas");
@@ -587,7 +582,6 @@ mod tests {
     fn test_download_stream_async() {
         let runtime = get_runtime();
         runtime
-            .clone()
             .bridge_sync(async {
                 let temp = tempdir().unwrap();
                 let cas_path = temp.path().join("cas");
@@ -614,7 +608,6 @@ mod tests {
     fn test_download_stream_blocking() {
         let runtime = get_runtime();
         runtime
-            .clone()
             .bridge_sync(async {
                 let temp = tempdir().unwrap();
                 let cas_path = temp.path().join("cas");
@@ -647,7 +640,6 @@ mod tests {
     fn test_download_stream_returns_none_after_finish() {
         let runtime = get_runtime();
         runtime
-            .clone()
             .bridge_sync(async {
                 let temp = tempdir().unwrap();
                 let cas_path = temp.path().join("cas");
@@ -673,7 +665,6 @@ mod tests {
     fn test_download_stream_multiple_concurrent() {
         let runtime = get_runtime();
         runtime
-            .clone()
             .bridge_sync(async {
                 let temp = tempdir().unwrap();
                 let cas_path = temp.path().join("cas");
@@ -719,7 +710,6 @@ mod tests {
     fn test_drop_stream_without_reading() {
         let runtime = get_runtime();
         runtime
-            .clone()
             .bridge_sync(async {
                 let temp = tempdir().unwrap();
                 let cas_path = temp.path().join("cas");
@@ -745,7 +735,6 @@ mod tests {
     fn test_drop_stream_multiple_cycles_then_download() {
         let runtime = get_runtime();
         runtime
-            .clone()
             .bridge_sync(async {
                 let temp = tempdir().unwrap();
                 let cas_path = temp.path().join("cas");
@@ -776,7 +765,6 @@ mod tests {
     fn test_drop_stream_blocking_mid_read_then_download() {
         let runtime = get_runtime();
         runtime
-            .clone()
             .bridge_sync(async {
                 let temp = tempdir().unwrap();
                 let cas_path = temp.path().join("cas");
@@ -809,7 +797,6 @@ mod tests {
     fn test_cancel_stream_before_start_returns_none() {
         let runtime = get_runtime();
         runtime
-            .clone()
             .bridge_sync(async {
                 let temp = tempdir().unwrap();
                 let cas_path = temp.path().join("cas");
@@ -832,7 +819,6 @@ mod tests {
     fn test_cancel_stream_after_first_chunk_returns_none() {
         let runtime = get_runtime();
         runtime
-            .clone()
             .bridge_sync(async {
                 let temp = tempdir().unwrap();
                 let cas_path = temp.path().join("cas");

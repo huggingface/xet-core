@@ -686,7 +686,6 @@ mod tests {
         let ctx = XetContext::default().unwrap();
 
         ctx.runtime
-            .clone()
             .bridge_sync(async move {
                 let cas_path = temp.path().join("cas");
 
@@ -717,7 +716,6 @@ mod tests {
         let ctx = XetContext::default().unwrap();
 
         ctx.runtime
-            .clone()
             .bridge_sync(async move {
                 let cas_path = temp.path().join("cas");
 
