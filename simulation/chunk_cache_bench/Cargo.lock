@@ -400,7 +400,7 @@ dependencies = [
  "criterion",
  "r2d2",
  "r2d2_postgres",
- "rand 0.8.5",
+ "rand 0.10.1",
  "sccache",
  "tempfile",
  "tokio",
@@ -5199,7 +5199,7 @@ dependencies = [
 
 [[package]]
 name = "xet-client"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5235,7 +5235,7 @@ dependencies = [
 
 [[package]]
 name = "xet-core-structures"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5270,7 +5270,7 @@ dependencies = [
 
 [[package]]
 name = "xet-runtime"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "anyhow",
  "async-trait",
