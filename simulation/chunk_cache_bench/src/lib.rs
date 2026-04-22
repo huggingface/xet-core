@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use xet_client::chunk_cache::error::ChunkCacheError;
 use xet_client::chunk_cache::{CacheConfig, DiskCache};
+use xet_runtime::config::XetConfig;
 
 pub mod sccache;
 pub mod solid_cache;
@@ -18,7 +19,8 @@ impl ChunkCacheExt for xet_client::chunk_cache::DiskCache {
             cache_directory: cache_root,
             cache_size: capacity,
         };
-        DiskCache::initialize(&config)
+        let xet_config = XetConfig::new();
+        DiskCache::initialize(&xet_config, &config)
     }
 
     fn name() -> &'static str {

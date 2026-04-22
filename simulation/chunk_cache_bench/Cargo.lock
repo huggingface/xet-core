@@ -405,6 +405,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "xet-client",
+ "xet-runtime",
 ]
 
 [[package]]
