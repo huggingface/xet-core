@@ -14,7 +14,7 @@ permissions:
 
 concurrency:
   group: crates-release
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   publish:
