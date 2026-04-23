@@ -65,9 +65,7 @@ pub async fn run(cli: &Cli, ctx: &XetContext, ep: &EndpointConfig, args: &DedupA
 
     if dry_run {
         let mut writer: Box<dyn Write> = if let Some(ref path) = args.output {
-            Box::new(BufWriter::new(
-                File::options().create(true).write(true).truncate(true).open(path)?,
-            ))
+            Box::new(BufWriter::new(File::options().create(true).write(true).truncate(true).open(path)?))
         } else {
             Box::new(std::io::stdout())
         };
@@ -91,11 +89,7 @@ pub async fn run(cli: &Cli, ctx: &XetContext, ep: &EndpointConfig, args: &DedupA
     Ok(())
 }
 
-type DedupResult = (
-    Vec<xet_core_structures::metadata_shard::file_structs::MDBFileInfo>,
-    Vec<(XetFileInfo, u64)>,
-    u64,
-);
+type DedupResult = (Vec<xet_core_structures::metadata_shard::file_structs::MDBFileInfo>, Vec<(XetFileInfo, u64)>, u64);
 
 async fn run_dedup_direct(
     ctx: &XetContext,

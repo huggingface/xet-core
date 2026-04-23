@@ -1,20 +1,26 @@
+#[cfg(not(target_family = "wasm"))]
 use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
+#[cfg(not(target_family = "wasm"))]
+use std::sync::OnceLock;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use chrono::{DateTime, FixedOffset, Local, Utc};
 use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
 use tracing::{debug, error, info, warn};
+#[cfg(not(target_family = "wasm"))]
 use tracing_appender::{non_blocking, rolling};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
 
 use super::config::*;
-use super::constants::{DEFAULT_LOG_LEVEL_CONSOLE, DEFAULT_LOG_LEVEL_FILE};
+use super::constants::DEFAULT_LOG_LEVEL_CONSOLE;
+#[cfg(not(target_family = "wasm"))]
+use super::constants::DEFAULT_LOG_LEVEL_FILE;
 use crate::error_printer::ErrorPrinter;
 use crate::utils::ByteSize;
 
@@ -97,6 +103,7 @@ fn init_logging_to_console(cfg: &LoggingConfig) {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn init_logging_to_file(path: &Path, use_json: bool) -> Result<(), std::io::Error> {
     // Set up logging to a file.
     let (path, file_name) = match path.file_name() {
@@ -152,6 +159,11 @@ fn init_logging_to_file(path: &Path, use_json: bool) -> Result<(), std::io::Erro
     };
 
     Ok(())
+}
+
+#[cfg(target_family = "wasm")]
+fn init_logging_to_file(_path: &Path, _use_json: bool) -> Result<(), std::io::Error> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "file logging is not supported on wasm targets"))
 }
 
 /// Build `<prefix>_<YYYYMMDD>T<HHMMSS><mmm><+/-HHMM>_<pid>.log` in `dir`.

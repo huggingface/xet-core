@@ -39,10 +39,9 @@ impl EndpointConfig {
     /// Resolve the endpoint from CLI options.
     ///
     /// Two mutually exclusive modes:
-    /// - **Direct**: `--endpoint` without `--repo-type`/`--repo-id`. The endpoint
-    ///   is the CAS endpoint directly.
-    /// - **Hub**: `--repo-type` + `--repo-id` (with optional `--endpoint` for Hub URL).
-    ///   Builds a `HubClient`, calls `get_cas_jwt` to resolve the CAS endpoint and token.
+    /// - **Direct**: `--endpoint` without `--repo-type`/`--repo-id`. The endpoint is the CAS endpoint directly.
+    /// - **Hub**: `--repo-type` + `--repo-id` (with optional `--endpoint` for Hub URL). Builds a `HubClient`, calls
+    ///   `get_cas_jwt` to resolve the CAS endpoint and token.
     pub async fn resolve(cli: &Cli, ctx: &XetContext, operation: Operation) -> Result<Self> {
         if cli.is_hub_mode() {
             let repo_type = cli

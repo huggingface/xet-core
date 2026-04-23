@@ -2025,7 +2025,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
- "ulid",
  "uuid",
  "walkdir",
  "wiremock",
@@ -5248,16 +5247,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "214ca0b2191785cbc06209b9ca1861e048e39b5ba33574b3cedd58363d5bb5f6"
 
 [[package]]
-name = "ulid"
-version = "1.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "470dbf6591da1b39d43c14523b2b469c86879a53e8b758c8e090a470fe7b1fbe"
-dependencies = [
- "rand 0.9.4",
- "web-time",
-]
-
-[[package]]
 name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6189,7 +6178,6 @@ dependencies = [
  "tracing-test",
  "url",
  "uuid",
- "walkdir",
  "xet-client",
  "xet-core-structures",
  "xet-runtime",

@@ -1,6 +1,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::time::Duration;
 
 use tempfile::{TempDir, tempdir};
 
@@ -37,6 +38,35 @@ fn xtool_ok(cas_dir: &Path, args: &[&str]) -> String {
         String::from_utf8_lossy(&out.stderr),
     );
     String::from_utf8(out.stdout).unwrap()
+}
+
+fn xtool_ok_with_redb_lock_retry(cas_dir: &Path, args: &[&str]) -> String {
+    const MAX_ATTEMPTS: u32 = 100;
+    const LOCK_MSG: &str = "Database already open. Cannot acquire lock.";
+
+    for attempt in 0..MAX_ATTEMPTS {
+        let out = xtool_cmd(cas_dir, args);
+        if out.status.success() {
+            return String::from_utf8(out.stdout).unwrap();
+        }
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if stderr.contains(LOCK_MSG) && attempt + 1 < MAX_ATTEMPTS {
+            let delay_ms = (5u64 << attempt.min(5)).min(100);
+            std::thread::sleep(Duration::from_millis(delay_ms));
+            continue;
+        }
+
+        assert!(
+            out.status.success(),
+            "xtool {:?} failed:\nstdout: {}\nstderr: {}",
+            args,
+            String::from_utf8_lossy(&out.stdout),
+            stderr,
+        );
+    }
+
+    unreachable!("retry loop returns on success or assertion failure");
 }
 
 fn xtool_ok_stderr(cas_dir: &Path, args: &[&str]) -> (String, String) {
@@ -487,7 +517,7 @@ fn test_cli_parallel_upload_download_stress() {
         let expected = files[i].1.clone();
         workers.push(std::thread::spawn(move || {
             let dest = dest_root.join(format!("out_{i}.bin"));
-            xtool_ok(&cas_path, &["file", "download", &hash, "-o", dest.to_str().unwrap()]);
+            xtool_ok_with_redb_lock_retry(&cas_path, &["file", "download", &hash, "-o", dest.to_str().unwrap()]);
             let downloaded = std::fs::read(&dest).unwrap();
             assert_eq!(downloaded, expected);
         }));

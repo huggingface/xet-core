@@ -39,7 +39,6 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true, features = ["v7"] }
-walkdir = { workspace = true }
 pyo3 = { version = "0.26", features = ["abi3-py37"], optional = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]

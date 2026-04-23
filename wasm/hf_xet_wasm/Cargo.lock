@@ -3453,7 +3453,6 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
- "walkdir",
  "xet-client",
  "xet-core-structures",
  "xet-runtime",

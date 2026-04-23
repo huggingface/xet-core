@@ -48,7 +48,6 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-ulid = { workspace = true }
 walkdir = { workspace = true }
 uuid = { workspace = true, features = ["v7"] }
 
