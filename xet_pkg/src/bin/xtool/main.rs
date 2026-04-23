@@ -175,8 +175,8 @@ fn main() -> Result<()> {
         config = config.with_config(key, val)?;
     }
 
-    if let TopLevel::Dedup(ref args) = cli.command {
-        if let Some(c) = args.compression {
+    if let TopLevel::Dedup(ref args) = cli.command
+        && let Some(c) = args.compression {
             use xet_core_structures::xorb_object::CompressionScheme;
             let scheme = CompressionScheme::try_from(c).map_err(|_| {
                 anyhow::anyhow!(
@@ -189,7 +189,6 @@ fn main() -> Result<()> {
                 .try_set(<&str>::from(scheme))
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
         }
-    }
 
     let runtime = XetRuntime::new(&config).map_err(|e| anyhow::anyhow!(e))?;
     let ctx = XetContext::new(config, runtime.clone());
