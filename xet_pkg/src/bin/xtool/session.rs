@@ -11,13 +11,6 @@ use xet_runtime::core::{XetContext, xet_cache_root};
 
 const LOCAL_SCHEME: &str = "local://";
 
-/// Build a XetSession for upload/download commands.
-///
-/// The CAS endpoint is set per operation via
-/// [`XetUploadCommitBuilder::with_endpoint`](xet::xet_session::XetUploadCommitBuilder::with_endpoint) and related
-/// builder methods. Auth tokens are supplied the same way; see
-/// [`XetUploadCommitBuilder::with_token_info`](xet::xet_session::XetUploadCommitBuilder::with_token_info)
-/// and [`XetDownloadStreamGroupBuilder::with_token_info`](xet::xet_session::XetDownloadStreamGroupBuilder::with_token_info).
 pub fn build_xet_session(ctx: &XetContext) -> Result<XetSession> {
     let session = XetSessionBuilder::new_with_config(ctx.config.as_ref().clone())
         .with_tokio_handle(ctx.runtime.handle().clone())
@@ -26,15 +19,11 @@ pub fn build_xet_session(ctx: &XetContext) -> Result<XetSession> {
     Ok(session)
 }
 
-/// Build a TranslatorConfig for the stats (dry-run) command.
 pub fn build_translator_config(ctx: &XetContext, endpoint: &str) -> Result<Arc<TranslatorConfig>> {
     let config = if endpoint.starts_with(LOCAL_SCHEME) {
         let path = endpoint.strip_prefix(LOCAL_SCHEME).unwrap();
         TranslatorConfig::local_config(ctx, path)?
     } else {
-        // For stats (dry-run), no data is sent to the remote endpoint.
-        // We use a local shard-cache directory so the translator config
-        // has a place to stage data. No network calls are made.
         let cache_dir = xet_cache_root().join("xet-cli-stats");
         std::fs::create_dir_all(&cache_dir)?;
         TranslatorConfig::local_config(ctx, &cache_dir)?
@@ -42,16 +31,9 @@ pub fn build_translator_config(ctx: &XetContext, endpoint: &str) -> Result<Arc<T
     Ok(Arc::new(config))
 }
 
-/// Build a raw CAS client for the query command.
-/// Upload/download use `build_xet_session` instead (which constructs its own
-/// client internally via `XetSessionBuilder`). This is only for commands that
-/// need direct `Client` trait access without a full `XetSession`.
 pub async fn build_cas_client(ctx: &XetContext, endpoint: &str, token: Option<String>) -> Result<Arc<dyn Client>> {
     if endpoint.starts_with(LOCAL_SCHEME) {
         let base_path = endpoint.strip_prefix(LOCAL_SCHEME).unwrap();
-        // The FileUploadSession stores data under <base_path>/xet/xorbs (see
-        // xet_data::processing::remote_client_interface::create_remote_client).
-        // Point LocalClient at the same sub-directory so it can find the shards and xorbs.
         let client_path = std::path::Path::new(base_path).join("xet").join("xorbs");
         let client: Arc<dyn Client> = LocalClient::new(ctx.clone(), client_path)
             .await

@@ -8,6 +8,7 @@ use xet_data::processing::Sha256Policy;
 use xet_runtime::core::XetContext;
 
 use super::Cli;
+use super::endpoint::EndpointConfig;
 
 #[derive(Args)]
 pub struct UploadArgs {
@@ -27,9 +28,9 @@ pub struct UploadArgs {
     pub output: Option<PathBuf>,
 }
 
-pub async fn run(cli: &Cli, ctx: XetContext, args: &UploadArgs) -> Result<()> {
-    let session = super::session::build_xet_session(&ctx)?;
-    let results = run_upload(&session, &cli.resolved_endpoint(), args, cli.resolved_token()).await?;
+pub async fn run(cli: &Cli, ctx: &XetContext, ep: &EndpointConfig, args: &UploadArgs) -> Result<()> {
+    let session = super::session::build_xet_session(ctx)?;
+    let results = run_upload(&session, &ep.cas_endpoint, args, ep.token.clone()).await?;
 
     if let Some(ref output_path) = args.output {
         let json = serde_json::to_string_pretty(&results)?;

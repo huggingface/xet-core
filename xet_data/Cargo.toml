@@ -64,9 +64,6 @@ sha2 = { workspace = true }
 name = "x"
 path = "src/processing/bin/example.rs"
 
-[[bin]]
-name = "xtool"
-path = "src/processing/bin/xtool.rs"
 
 [[example]]
 name = "chunk"

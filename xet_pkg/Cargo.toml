@@ -26,8 +26,8 @@ name = "xet"
 path = "src/lib.rs"
 
 [[bin]]
-name = "xet"
-path = "src/bin/xet/main.rs"
+name = "xtool"
+path = "src/bin/xtool/main.rs"
 
 [dependencies]
 xet-runtime = { version = "1.5.2", path = "../xet_runtime" }

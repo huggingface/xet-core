@@ -4,34 +4,34 @@ use std::process::{Command, Output, Stdio};
 
 use tempfile::{TempDir, tempdir};
 
-fn xet_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_xet"))
+fn xtool_bin() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_xtool"))
 }
 
-fn xet_cmd(cas_dir: &Path, args: &[&str]) -> Output {
+fn xtool_cmd(cas_dir: &Path, args: &[&str]) -> Output {
     let endpoint = format!("local://{}", cas_dir.display());
-    Command::new(xet_bin())
+    Command::new(xtool_bin())
         .arg("--endpoint")
         .arg(&endpoint)
         .args(args)
         .output()
-        .expect("failed to execute xet binary")
+        .expect("failed to execute xtool binary")
 }
 
-fn xet_cmd_with_env(args: &[&str], env_vars: &[(&str, &str)]) -> Output {
-    let mut cmd = Command::new(xet_bin());
+fn xtool_cmd_with_env(args: &[&str], env_vars: &[(&str, &str)]) -> Output {
+    let mut cmd = Command::new(xtool_bin());
     cmd.args(args);
     for (key, value) in env_vars {
         cmd.env(key, value);
     }
-    cmd.output().expect("failed to execute xet binary")
+    cmd.output().expect("failed to execute xtool binary")
 }
 
-fn xet_ok(cas_dir: &Path, args: &[&str]) -> String {
-    let out = xet_cmd(cas_dir, args);
+fn xtool_ok(cas_dir: &Path, args: &[&str]) -> String {
+    let out = xtool_cmd(cas_dir, args);
     assert!(
         out.status.success(),
-        "xet {:?} failed:\nstdout: {}\nstderr: {}",
+        "xtool {:?} failed:\nstdout: {}\nstderr: {}",
         args,
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
@@ -39,11 +39,11 @@ fn xet_ok(cas_dir: &Path, args: &[&str]) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
-fn xet_ok_stderr(cas_dir: &Path, args: &[&str]) -> (String, String) {
-    let out = xet_cmd(cas_dir, args);
+fn xtool_ok_stderr(cas_dir: &Path, args: &[&str]) -> (String, String) {
+    let out = xtool_cmd(cas_dir, args);
     assert!(
         out.status.success(),
-        "xet {:?} failed:\nstdout: {}\nstderr: {}",
+        "xtool {:?} failed:\nstdout: {}\nstderr: {}",
         args,
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
@@ -52,11 +52,11 @@ fn xet_ok_stderr(cas_dir: &Path, args: &[&str]) -> (String, String) {
 }
 
 #[allow(dead_code)]
-fn xet_err(cas_dir: &Path, args: &[&str]) -> String {
-    let out = xet_cmd(cas_dir, args);
+fn xtool_err(cas_dir: &Path, args: &[&str]) -> String {
+    let out = xtool_cmd(cas_dir, args);
     assert!(
         !out.status.success(),
-        "xet {:?} unexpectedly succeeded:\nstdout: {}\nstderr: {}",
+        "xtool {:?} unexpectedly succeeded:\nstdout: {}\nstderr: {}",
         args,
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
@@ -69,7 +69,7 @@ fn xet_err(cas_dir: &Path, args: &[&str]) -> String {
 /// Upload a file via CLI and parse the stderr output line to extract hash and size.
 /// Output format on stderr: `<name>  hash=<hex>  size=<n>  sha256=<hex|->`
 fn upload_file(cas_dir: &Path, file_path: &Path) -> (String, u64) {
-    let (_stdout, stderr) = xet_ok_stderr(cas_dir, &["file", "upload", file_path.to_str().unwrap()]);
+    let (_stdout, stderr) = xtool_ok_stderr(cas_dir, &["file", "upload", file_path.to_str().unwrap()]);
     parse_upload_line(&stderr)
 }
 
@@ -98,21 +98,23 @@ fn write_test_file(dir: &TempDir, name: &str, content: &[u8]) -> PathBuf {
 
 #[test]
 fn test_cli_help() {
-    let out = Command::new(xet_bin())
+    let out = Command::new(xtool_bin())
         .arg("--help")
         .output()
-        .expect("failed to run xet --help");
+        .expect("failed to run xtool --help");
     assert!(out.status.success());
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(stdout.contains("file"));
+    assert!(stdout.contains("dedup"));
+    assert!(stdout.contains("query"));
 }
 
 #[test]
 fn test_cli_file_help() {
-    let out = Command::new(xet_bin())
+    let out = Command::new(xtool_bin())
         .args(["file", "--help"])
         .output()
-        .expect("failed to run xet file --help");
+        .expect("failed to run xtool file --help");
     assert!(out.status.success());
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(stdout.contains("upload"));
@@ -133,7 +135,7 @@ fn test_cli_upload_and_download_roundtrip() {
 
     let dest_dir = tempdir().unwrap();
     let dest = dest_dir.path().join("downloaded.txt");
-    xet_ok(
+    xtool_ok(
         cas_dir.path(),
         &[
             "file",
@@ -158,7 +160,7 @@ fn test_cli_download_to_stdout() {
 
     let (hash, _size) = upload_file(cas_dir.path(), &src);
 
-    let stdout_bytes = xet_ok(cas_dir.path(), &["file", "download", &hash]);
+    let stdout_bytes = xtool_ok(cas_dir.path(), &["file", "download", &hash]);
     assert_eq!(stdout_bytes.as_bytes(), content);
 }
 
@@ -173,7 +175,7 @@ fn test_cli_download_source_range() {
 
     let dest_dir = tempdir().unwrap();
     let dest = dest_dir.path().join("range_out.bin");
-    xet_ok(
+    xtool_ok(
         cas_dir.path(),
         &[
             "file",
@@ -204,7 +206,7 @@ fn test_cli_download_write_range() {
     let mut initial = b"................".to_vec();
     std::fs::write(&dest, &initial).unwrap();
 
-    xet_ok(
+    xtool_ok(
         cas_dir.path(),
         &[
             "file",
@@ -230,7 +232,7 @@ fn test_cli_download_write_range_requires_output() {
     let src = write_test_file(&src_dir, "write_range_required.bin", b"abcdef");
     let (hash, _size) = upload_file(cas_dir.path(), &src);
 
-    let out = xet_cmd(cas_dir.path(), &["file", "download", &hash, "--write-range", "0..4"]);
+    let out = xtool_cmd(cas_dir.path(), &["file", "download", &hash, "--write-range", "0..4"]);
     assert!(!out.status.success());
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(stderr.contains("--output"));
@@ -242,7 +244,7 @@ fn test_cli_upload_from_stdin() {
     let content = b"piped stdin content for upload";
 
     let endpoint = format!("local://{}", cas_dir.path().display());
-    let mut child = Command::new(xet_bin())
+    let mut child = Command::new(xtool_bin())
         .arg("--endpoint")
         .arg(&endpoint)
         .args(["file", "upload", "-"])
@@ -250,13 +252,13 @@ fn test_cli_upload_from_stdin() {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("failed to spawn xet");
+        .expect("failed to spawn xtool");
 
     child.stdin.take().unwrap().write_all(content).unwrap();
     let out = child.wait_with_output().unwrap();
     assert!(
         out.status.success(),
-        "xet file upload - failed:\nstdout: {}\nstderr: {}",
+        "xtool file upload - failed:\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
     );
@@ -265,8 +267,7 @@ fn test_cli_upload_from_stdin() {
     let (hash, size) = parse_upload_line(&stderr);
     assert_eq!(size, content.len() as u64);
 
-    // Download and verify
-    let stdout_bytes = xet_ok(cas_dir.path(), &["file", "download", &hash]);
+    let stdout_bytes = xtool_ok(cas_dir.path(), &["file", "download", &hash]);
     assert_eq!(stdout_bytes.as_bytes(), content);
 }
 
@@ -282,7 +283,7 @@ fn test_cli_upload_multiple_files() {
     let file_args: Vec<&str> = files.iter().map(|p| p.to_str().unwrap()).collect();
     let mut args = vec!["file", "upload"];
     args.extend(&file_args);
-    let (_stdout, stderr) = xet_ok_stderr(cas_dir.path(), &args);
+    let (_stdout, stderr) = xtool_ok_stderr(cas_dir.path(), &args);
 
     let lines: Vec<&str> = stderr.lines().filter(|l| l.contains("hash=")).collect();
     assert_eq!(lines.len(), 3);
@@ -297,7 +298,7 @@ fn test_cli_upload_json_output() {
     let out_dir = tempdir().unwrap();
     let json_path = out_dir.path().join("results.json");
 
-    xet_ok(
+    xtool_ok(
         cas_dir.path(),
         &[
             "file",
@@ -321,7 +322,7 @@ fn test_cli_download_bad_hash() {
     let cas_dir = tempdir().unwrap();
 
     let fake_hash = "0".repeat(64);
-    let out = xet_cmd(cas_dir.path(), &["file", "download", &fake_hash]);
+    let out = xtool_cmd(cas_dir.path(), &["file", "download", &fake_hash]);
     assert!(out.stdout.is_empty(), "expected no stdout for nonexistent hash");
 }
 
@@ -331,7 +332,7 @@ fn test_cli_scan_basic() {
     let src_dir = tempdir().unwrap();
     let src = write_test_file(&src_dir, "scan_test.bin", &vec![7u8; 4096]);
 
-    let stdout = xet_ok(cas_dir.path(), &["file", "scan", src.to_str().unwrap()]);
+    let stdout = xtool_ok(cas_dir.path(), &["file", "scan", src.to_str().unwrap()]);
     assert!(stdout.contains("total_bytes=4096"));
 }
 
@@ -343,9 +344,8 @@ fn test_cli_dump_reconstruction_after_upload() {
 
     let (hash, _size) = upload_file(cas_dir.path(), &src);
 
-    let stdout = xet_ok(cas_dir.path(), &["file", "dump-reconstruction", &hash]);
+    let stdout = xtool_ok(cas_dir.path(), &["file", "dump-reconstruction", &hash]);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    // JSON output should contain reconstruction data or be null
     if !parsed.is_null() {
         assert!(parsed["terms"].is_array());
     }
@@ -358,7 +358,7 @@ fn test_cli_dump_reconstruction_with_source_range() {
     let src = write_test_file(&src_dir, "recon_range.bin", &vec![9u8; 4096]);
 
     let (hash, _size) = upload_file(cas_dir.path(), &src);
-    let stdout = xet_ok(cas_dir.path(), &["file", "dump-reconstruction", &hash, "--source-range", "0..512"]);
+    let stdout = xtool_ok(cas_dir.path(), &["file", "dump-reconstruction", &hash, "--source-range", "0..512"]);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert!(!parsed.is_null());
     let terms = parsed["terms"].as_array().unwrap();
@@ -371,7 +371,7 @@ fn test_cli_dump_reconstruction_with_source_range() {
 fn test_cli_dump_reconstruction_nonexistent_hash() {
     let cas_dir = tempdir().unwrap();
     let fake_hash = "0".repeat(64);
-    let stdout = xet_ok(cas_dir.path(), &["file", "dump-reconstruction", &fake_hash]);
+    let stdout = xtool_ok(cas_dir.path(), &["file", "dump-reconstruction", &fake_hash]);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     if !parsed.is_null()
         && let Some(t) = parsed["terms"].as_array()
@@ -386,7 +386,7 @@ fn test_cli_quiet_mode() {
     let src_dir = tempdir().unwrap();
     let src = write_test_file(&src_dir, "quiet.txt", b"quiet test");
 
-    let out = xet_cmd(cas_dir.path(), &["--quiet", "file", "upload", src.to_str().unwrap()]);
+    let out = xtool_cmd(cas_dir.path(), &["--quiet", "file", "upload", src.to_str().unwrap()]);
     assert!(out.status.success());
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(stderr.is_empty(), "expected no stderr in quiet mode, got: {stderr}");
@@ -399,14 +399,14 @@ fn test_cli_config_override_accepted() {
     let src = write_test_file(&src_dir, "config_test.txt", b"config test");
 
     let endpoint = format!("local://{}", cas_dir.path().display());
-    let out = Command::new(xet_bin())
+    let out = Command::new(xtool_bin())
         .arg("--endpoint")
         .arg(&endpoint)
         .arg("-c")
         .arg("client.enable_multirange_fetching=true")
         .args(["file", "upload", src.to_str().unwrap()])
         .output()
-        .expect("failed to execute xet");
+        .expect("failed to execute xtool");
 
     assert!(out.status.success(), "config override failed:\nstderr: {}", String::from_utf8_lossy(&out.stderr));
 }
@@ -419,13 +419,13 @@ fn test_cli_hf_endpoint_env_fallback() {
     let content = b"hf endpoint fallback";
     let src = write_test_file(&src_dir, "env_fallback.txt", content);
 
-    let out = xet_cmd_with_env(&["file", "upload", src.to_str().unwrap()], &[("HF_ENDPOINT", &endpoint)]);
+    let out = xtool_cmd_with_env(&["file", "upload", src.to_str().unwrap()], &[("HF_ENDPOINT", &endpoint)]);
     assert!(out.status.success());
     let stderr = String::from_utf8(out.stderr).unwrap();
     let (hash, size) = parse_upload_line(&stderr);
     assert_eq!(size, content.len() as u64);
 
-    let downloaded = xet_ok(cas_dir.path(), &["file", "download", &hash]);
+    let downloaded = xtool_ok(cas_dir.path(), &["file", "download", &hash]);
     assert_eq!(downloaded.as_bytes(), content);
 }
 
@@ -439,7 +439,7 @@ fn test_cli_endpoint_flag_overrides_hf_endpoint() {
     let content = b"endpoint override";
     let src = write_test_file(&src_dir, "override.txt", content);
 
-    let out = xet_cmd_with_env(
+    let out = xtool_cmd_with_env(
         &["--endpoint", &flag_endpoint, "file", "upload", src.to_str().unwrap()],
         &[("HF_ENDPOINT", &env_endpoint)],
     );
@@ -447,10 +447,10 @@ fn test_cli_endpoint_flag_overrides_hf_endpoint() {
     let stderr = String::from_utf8(out.stderr).unwrap();
     let (hash, _size) = parse_upload_line(&stderr);
 
-    let downloaded = xet_ok(flag_cas_dir.path(), &["file", "download", &hash]);
+    let downloaded = xtool_ok(flag_cas_dir.path(), &["file", "download", &hash]);
     assert_eq!(downloaded.as_bytes(), content);
 
-    let env_downloaded = xet_ok(env_cas_dir.path(), &["file", "download", &hash]);
+    let env_downloaded = xtool_ok(env_cas_dir.path(), &["file", "download", &hash]);
     assert!(env_downloaded.is_empty());
 }
 
@@ -471,7 +471,7 @@ fn test_cli_parallel_upload_download_stress() {
     let file_args: Vec<&str> = files.iter().map(|(p, _)| p.to_str().unwrap()).collect();
     let mut args = vec!["file", "upload", "--no-sha256"];
     args.extend(&file_args);
-    let (_stdout, stderr) = xet_ok_stderr(cas_dir.path(), &args);
+    let (_stdout, stderr) = xtool_ok_stderr(cas_dir.path(), &args);
 
     let upload_lines: Vec<&str> = stderr.lines().filter(|l| l.contains("hash=")).collect();
     assert_eq!(upload_lines.len(), n);
@@ -487,7 +487,7 @@ fn test_cli_parallel_upload_download_stress() {
         let expected = files[i].1.clone();
         workers.push(std::thread::spawn(move || {
             let dest = dest_root.join(format!("out_{i}.bin"));
-            xet_ok(&cas_path, &["file", "download", &hash, "-o", dest.to_str().unwrap()]);
+            xtool_ok(&cas_path, &["file", "download", &hash, "-o", dest.to_str().unwrap()]);
             let downloaded = std::fs::read(&dest).unwrap();
             assert_eq!(downloaded, expected);
         }));

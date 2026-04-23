@@ -10,6 +10,7 @@ use xet_data::processing::{FileUploadSession, Sha256Policy};
 use xet_runtime::core::XetContext;
 
 use super::Cli;
+use super::endpoint::EndpointConfig;
 
 #[derive(Args)]
 pub struct ScanArgs {
@@ -25,8 +26,8 @@ pub struct ScanArgs {
     pub output: Option<PathBuf>,
 }
 
-pub async fn run(cli: &Cli, ctx: XetContext, args: &ScanArgs) -> Result<()> {
-    let config = super::session::build_translator_config(&ctx, &cli.resolved_endpoint())?;
+pub async fn run(cli: &Cli, ctx: &XetContext, ep: &EndpointConfig, args: &ScanArgs) -> Result<()> {
+    let config = super::session::build_translator_config(ctx, &ep.cas_endpoint)?;
     let metrics = run_scan(config, args).await?;
     if let Some(output_path) = &args.output {
         let json = serde_json::to_string_pretty(&metrics)?;

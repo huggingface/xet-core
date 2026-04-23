@@ -10,6 +10,7 @@ use xet_data::processing::XetFileInfo;
 use xet_runtime::core::XetContext;
 
 use super::Cli;
+use super::endpoint::EndpointConfig;
 
 fn parse_range(s: &str) -> Result<Range<u64>> {
     let (start, end) = super::parse_byte_range(s)?;
@@ -40,9 +41,9 @@ pub struct DownloadArgs {
     pub size: Option<u64>,
 }
 
-pub async fn run(cli: &Cli, ctx: XetContext, args: &DownloadArgs) -> Result<()> {
-    let session = super::session::build_xet_session(&ctx)?;
-    run_download(&session, &cli.resolved_endpoint(), args, cli.quiet, cli.resolved_token()).await
+pub async fn run(cli: &Cli, ctx: &XetContext, ep: &EndpointConfig, args: &DownloadArgs) -> Result<()> {
+    let session = super::session::build_xet_session(ctx)?;
+    run_download(&session, &ep.cas_endpoint, args, cli.quiet, ep.token.clone()).await
 }
 
 pub async fn run_download(
@@ -232,8 +233,6 @@ pub(crate) mod tests {
             size: None,
         };
         let _ = run_download(&session, &endpoint, &args, false, None).await;
-        // LocalClient returns empty reconstruction for unknown hashes;
-        // the output file should exist but be empty.
         let content = std::fs::read(&dest).unwrap_or_default();
         assert!(content.is_empty());
     }

@@ -7,7 +7,7 @@ use xet_client::cas_types::{FileRange, QueryReconstructionResponseV2};
 use xet_core_structures::merklehash::MerkleHash;
 use xet_runtime::core::XetContext;
 
-use super::Cli;
+use super::endpoint::EndpointConfig;
 
 #[derive(Args)]
 pub struct DumpReconstructionArgs {
@@ -19,8 +19,8 @@ pub struct DumpReconstructionArgs {
     pub source_range: Option<String>,
 }
 
-pub async fn run(cli: &Cli, ctx: XetContext, args: &DumpReconstructionArgs) -> Result<()> {
-    let client = super::session::build_cas_client(&ctx, &cli.resolved_endpoint(), cli.resolved_token()).await?;
+pub async fn run(ctx: &XetContext, ep: &EndpointConfig, args: &DumpReconstructionArgs) -> Result<()> {
+    let client = super::session::build_cas_client(ctx, &ep.cas_endpoint, ep.token.clone()).await?;
     let response = run_query(client, args).await?;
     let json = serde_json::to_string_pretty(&response)?;
     println!("{json}");
