@@ -176,19 +176,18 @@ fn main() -> Result<()> {
     }
 
     if let TopLevel::Dedup(ref args) = cli.command
-        && let Some(c) = args.compression {
-            use xet_core_structures::xorb_object::CompressionScheme;
-            let scheme = CompressionScheme::try_from(c).map_err(|_| {
-                anyhow::anyhow!(
-                    "Invalid compression value {c}; expected one of: 0 (none), 1 (lz4), 2 (bg4-lz4), 99 (auto)"
-                )
-            })?;
-            config
-                .xorb
-                .compression_policy
-                .try_set(<&str>::from(scheme))
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-        }
+        && let Some(c) = args.compression
+    {
+        use xet_core_structures::xorb_object::CompressionScheme;
+        let scheme = CompressionScheme::try_from(c).map_err(|_| {
+            anyhow::anyhow!("Invalid compression value {c}; expected one of: 0 (none), 1 (lz4), 2 (bg4-lz4), 99 (auto)")
+        })?;
+        config
+            .xorb
+            .compression_policy
+            .try_set(<&str>::from(scheme))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
 
     let runtime = XetRuntime::new(&config).map_err(|e| anyhow::anyhow!(e))?;
     let ctx = XetContext::new(config, runtime.clone());
