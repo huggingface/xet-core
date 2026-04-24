@@ -4,6 +4,7 @@ use anyhow::Result;
 use clap::Args;
 use xet_client::cas_client::Client;
 use xet_client::cas_types::{FileRange, QueryReconstructionResponseV2};
+use xet_client::hub_client::Operation;
 use xet_core_structures::merklehash::MerkleHash;
 use xet_runtime::core::XetContext;
 
@@ -20,7 +21,13 @@ pub struct DumpReconstructionArgs {
 }
 
 pub async fn run(ctx: &XetContext, ep: &EndpointConfig, args: &DumpReconstructionArgs) -> Result<()> {
-    let client = super::session::build_cas_client(ctx, &ep.cas_endpoint, ep.token.clone()).await?;
+    let client = super::session::build_cas_client(
+        ctx,
+        &ep.cas_endpoint,
+        ep.token_info(),
+        ep.token_refresh(Operation::Download)?,
+    )
+    .await?;
     let response = run_query(client, args).await?;
     let json = serde_json::to_string_pretty(&response)?;
     println!("{json}");
@@ -56,7 +63,7 @@ mod tests {
         let (endpoint, hash, file_size) = upload_test_file(&cas_dir, "query_test.bin", &vec![1u8; 4096]).await;
 
         let ctx = XetContext::default().unwrap();
-        let client = build_cas_client(&ctx, &endpoint, None).await.unwrap();
+        let client = build_cas_client(&ctx, &endpoint, None, None).await.unwrap();
         let args = DumpReconstructionArgs {
             hash,
             source_range: None,
@@ -74,7 +81,7 @@ mod tests {
         let endpoint = format!("local://{}", cas_dir.path().display());
 
         let ctx = XetContext::default().unwrap();
-        let client = build_cas_client(&ctx, &endpoint, None).await.unwrap();
+        let client = build_cas_client(&ctx, &endpoint, None, None).await.unwrap();
         let args = DumpReconstructionArgs {
             hash: "0".repeat(64),
             source_range: None,

@@ -1,11 +1,13 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use http::HeaderMap;
 use xet::xet_session::{XetSession, XetSessionBuilder};
 use xet_client::cas_client::Client;
-use xet_client::cas_client::auth::AuthConfig;
+use xet_client::cas_client::auth::{AuthConfig, DirectRefreshRouteTokenRefresher, TokenRefresher};
 use xet_client::cas_client::remote_client::RemoteClient;
 use xet_client::cas_client::simulation::LocalClient;
+use xet_client::common::http_client::build_http_client;
 use xet_data::processing::configurations::TranslatorConfig;
 use xet_runtime::core::{XetContext, xet_cache_root};
 
@@ -31,7 +33,12 @@ pub fn build_translator_config(ctx: &XetContext, endpoint: &str) -> Result<Arc<T
     Ok(Arc::new(config))
 }
 
-pub async fn build_cas_client(ctx: &XetContext, endpoint: &str, token: Option<String>) -> Result<Arc<dyn Client>> {
+pub async fn build_cas_client(
+    ctx: &XetContext,
+    endpoint: &str,
+    token_info: Option<(String, u64)>,
+    token_refresh: Option<(String, HeaderMap)>,
+) -> Result<Arc<dyn Client>> {
     if endpoint.starts_with(LOCAL_SCHEME) {
         let base_path = endpoint.strip_prefix(LOCAL_SCHEME).unwrap();
         let client_path = std::path::Path::new(base_path).join("xet").join("xorbs");
@@ -40,7 +47,19 @@ pub async fn build_cas_client(ctx: &XetContext, endpoint: &str, token: Option<St
             .context("Failed to create LocalClient")?;
         Ok(client)
     } else {
-        let auth = AuthConfig::maybe_new(token, None, None);
+        let token_refresher = if let Some((refresh_url, refresh_headers)) = token_refresh {
+            let refresh_client = build_http_client(ctx, "", None, Some(Arc::new(refresh_headers)))?;
+            Some(Arc::new(DirectRefreshRouteTokenRefresher::new(ctx.clone(), refresh_url, refresh_client, None))
+                as Arc<dyn TokenRefresher>)
+        } else {
+            None
+        };
+
+        let (token, expiry) = match token_info {
+            Some((token, expiry)) => (Some(token), Some(expiry)),
+            None => (None, None),
+        };
+        let auth = AuthConfig::maybe_new(token, expiry, token_refresher);
         let client: Arc<dyn Client> = RemoteClient::new(ctx.clone(), endpoint, &auth, "", false, None);
         Ok(client)
     }
@@ -79,7 +98,7 @@ mod tests {
         let ctx = XetContext::default().unwrap();
         let dir = tempdir().unwrap();
         let endpoint = format!("local://{}", dir.path().display());
-        let client = build_cas_client(&ctx, &endpoint, None).await;
+        let client = build_cas_client(&ctx, &endpoint, None, None).await;
         assert!(client.is_ok(), "expected Ok, got {:?}", client.err());
     }
 }

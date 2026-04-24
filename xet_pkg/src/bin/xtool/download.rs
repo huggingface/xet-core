@@ -5,7 +5,9 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::Args;
+use http::HeaderMap;
 use xet::xet_session::XetSession;
+use xet_client::hub_client::Operation;
 use xet_data::processing::XetFileInfo;
 use xet_runtime::core::XetContext;
 
@@ -43,7 +45,8 @@ pub struct DownloadArgs {
 
 pub async fn run(cli: &Cli, ctx: &XetContext, ep: &EndpointConfig, args: &DownloadArgs) -> Result<()> {
     let session = super::session::build_xet_session(ctx)?;
-    run_download(&session, &ep.cas_endpoint, args, cli.quiet, ep.token.clone()).await
+    run_download(&session, &ep.cas_endpoint, args, cli.quiet, ep.token_info(), ep.token_refresh(Operation::Download)?)
+        .await
 }
 
 pub async fn run_download(
@@ -51,7 +54,8 @@ pub async fn run_download(
     endpoint: &str,
     args: &DownloadArgs,
     quiet: bool,
-    token: Option<String>,
+    token_info: Option<(String, u64)>,
+    token_refresh: Option<(String, HeaderMap)>,
 ) -> Result<()> {
     if args.write_range.is_some() && args.output.is_none() {
         anyhow::bail!("--write-range requires --output");
@@ -68,8 +72,11 @@ pub async fn run_download(
         .new_download_stream_group()
         .map_err(|e| anyhow::anyhow!(e))?
         .with_endpoint(endpoint);
-    if let Some(tok) = token {
-        group_builder = group_builder.with_token_info(tok, u64::MAX);
+    if let Some((tok, exp)) = token_info {
+        group_builder = group_builder.with_token_info(tok, exp);
+    }
+    if let Some((refresh_url, refresh_headers)) = token_refresh {
+        group_builder = group_builder.with_token_refresh_url(refresh_url, refresh_headers);
     }
     let group = group_builder.build().await.map_err(|e| anyhow::anyhow!(e))?;
     let mut stream = group
@@ -166,7 +173,7 @@ pub(crate) mod tests {
             dump_stats: false,
             output: None,
         };
-        let results = run_upload(&session, &endpoint, &upload_args, None).await.unwrap();
+        let results = run_upload(&session, &endpoint, &upload_args, None, None).await.unwrap();
         let meta = &results[0];
         (endpoint, meta.xet_info.hash.clone(), meta.xet_info.file_size.unwrap_or(0))
     }
@@ -189,7 +196,7 @@ pub(crate) mod tests {
             write_range: None,
             size: Some(size),
         };
-        run_download(&session, &endpoint, &args, false, None).await.unwrap();
+        run_download(&session, &endpoint, &args, false, None, None).await.unwrap();
         assert_eq!(std::fs::read(&dest).unwrap(), content);
     }
 
@@ -211,7 +218,7 @@ pub(crate) mod tests {
             write_range: None,
             size: None,
         };
-        run_download(&session, &endpoint, &args, false, None).await.unwrap();
+        run_download(&session, &endpoint, &args, false, None, None).await.unwrap();
         assert_eq!(std::fs::read(&dest).unwrap(), content);
     }
 
@@ -232,7 +239,7 @@ pub(crate) mod tests {
             write_range: None,
             size: None,
         };
-        let _ = run_download(&session, &endpoint, &args, false, None).await;
+        let _ = run_download(&session, &endpoint, &args, false, None, None).await;
         let content = std::fs::read(&dest).unwrap_or_default();
         assert!(content.is_empty());
     }

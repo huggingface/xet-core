@@ -111,7 +111,6 @@ tracing-log = "0.2"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 url = "2.5"
 urlencoding = "2.1"
-ulid = "1"
 uuid = "1"
 walkdir = "2"
 web-time = "1.1"

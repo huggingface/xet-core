@@ -40,7 +40,7 @@ pub struct DedupArgs {
     /// 1: LZ4 compression;
     /// 2: 4 byte groups with LZ4 compression.
     /// If not specified, this will be determined by the repo type.
-    #[arg(short, long)]
+    #[arg(long)]
     pub compression: Option<u8>,
 
     /// Migrate the files by actually uploading them to the CAS server.
@@ -98,7 +98,7 @@ async fn run_dedup_direct(
     sequential: bool,
     dry_run: bool,
 ) -> Result<DedupResult> {
-    let token_info = ep.token.as_ref().map(|t| (t.clone(), u64::MAX));
+    let token_info = ep.token_info();
 
     let config = default_config(ctx, ep.cas_endpoint.clone(), token_info, None, None)?;
 

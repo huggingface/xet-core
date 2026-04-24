@@ -216,7 +216,9 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_endpoint, parse_byte_range, resolve_endpoint, resolve_token};
+    use clap::CommandFactory;
+
+    use super::{Cli, normalize_endpoint, parse_byte_range, resolve_endpoint, resolve_token};
 
     #[test]
     fn test_normalize_endpoint() {
@@ -260,5 +262,10 @@ mod tests {
         assert_eq!(resolve_token(Some("flag-token"), Some("env-token")), Some("flag-token".to_owned()));
         assert_eq!(resolve_token(None, Some("env-token")), Some("env-token".to_owned()));
         assert_eq!(resolve_token(Some(""), Some("env-token")), None);
+    }
+
+    #[test]
+    fn test_cli_definition_has_no_conflicting_flags() {
+        Cli::command().debug_assert();
     }
 }

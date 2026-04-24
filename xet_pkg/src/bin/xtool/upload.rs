@@ -3,7 +3,9 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Args;
+use http::HeaderMap;
 use xet::xet_session::{XetFileMetadata, XetSession};
+use xet_client::hub_client::Operation;
 use xet_data::processing::Sha256Policy;
 use xet_runtime::core::XetContext;
 
@@ -30,7 +32,8 @@ pub struct UploadArgs {
 
 pub async fn run(cli: &Cli, ctx: &XetContext, ep: &EndpointConfig, args: &UploadArgs) -> Result<()> {
     let session = super::session::build_xet_session(ctx)?;
-    let results = run_upload(&session, &ep.cas_endpoint, args, ep.token.clone()).await?;
+    let results =
+        run_upload(&session, &ep.cas_endpoint, args, ep.token_info(), ep.token_refresh(Operation::Upload)?).await?;
 
     if let Some(ref output_path) = args.output {
         let json = serde_json::to_string_pretty(&results)?;
@@ -53,7 +56,8 @@ pub async fn run_upload(
     session: &XetSession,
     endpoint: &str,
     args: &UploadArgs,
-    token: Option<String>,
+    token_info: Option<(String, u64)>,
+    token_refresh: Option<(String, HeaderMap)>,
 ) -> Result<Vec<XetFileMetadata>> {
     let sha256 = if args.no_sha256 {
         Sha256Policy::Skip
@@ -65,8 +69,11 @@ pub async fn run_upload(
         .new_upload_commit()
         .map_err(|e| anyhow::anyhow!(e))?
         .with_endpoint(endpoint);
-    if let Some(tok) = token {
-        commit_builder = commit_builder.with_token_info(tok, u64::MAX);
+    if let Some((tok, exp)) = token_info {
+        commit_builder = commit_builder.with_token_info(tok, exp);
+    }
+    if let Some((refresh_url, refresh_headers)) = token_refresh {
+        commit_builder = commit_builder.with_token_refresh_url(refresh_url, refresh_headers);
     }
     let commit = commit_builder.build().await.map_err(|e| anyhow::anyhow!(e))?;
     let mut handles = vec![];
@@ -144,7 +151,7 @@ mod tests {
             dump_stats: false,
             output: None,
         };
-        let results = run_upload(&session, &_endpoint, &args, None).await.unwrap();
+        let results = run_upload(&session, &_endpoint, &args, None, None).await.unwrap();
 
         assert_eq!(results.len(), 1);
         let meta = &results[0];
@@ -173,7 +180,7 @@ mod tests {
             dump_stats: false,
             output: None,
         };
-        let results = run_upload(&session, &_endpoint, &args, None).await.unwrap();
+        let results = run_upload(&session, &_endpoint, &args, None, None).await.unwrap();
 
         assert_eq!(results.len(), 5);
         for (i, meta) in results.iter().enumerate() {
@@ -197,7 +204,7 @@ mod tests {
             dump_stats: false,
             output: None,
         };
-        let with_sha = run_upload(&session, &endpoint, &args, None).await.unwrap();
+        let with_sha = run_upload(&session, &endpoint, &args, None, None).await.unwrap();
         assert!(with_sha[0].xet_info.sha256.is_some());
 
         let cas_dir2 = tempdir().unwrap();
@@ -208,7 +215,7 @@ mod tests {
             dump_stats: false,
             output: None,
         };
-        let without_sha = run_upload(&session2, &endpoint2, &args, None).await.unwrap();
+        let without_sha = run_upload(&session2, &endpoint2, &args, None, None).await.unwrap();
         assert!(without_sha[0].xet_info.sha256.is_none());
     }
 
@@ -230,7 +237,7 @@ mod tests {
             dump_stats: false,
             output: Some(json_path.clone()),
         };
-        let results = run_upload(&session, &_endpoint, &args, None).await.unwrap();
+        let results = run_upload(&session, &_endpoint, &args, None, None).await.unwrap();
         let json = serde_json::to_string_pretty(&results).unwrap();
         std::fs::write(&json_path, &json).unwrap();
 
