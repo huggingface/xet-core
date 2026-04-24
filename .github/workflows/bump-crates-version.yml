@@ -53,6 +53,9 @@ jobs:
       - name: Check workspace compiles
         run: cargo build
 
+      - name: Run tests
+        run: cargo test --workspace
+
       - uses: ./.github/actions/build-wasm
 
       - name: Build hf-xet wheel
