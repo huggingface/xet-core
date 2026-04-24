@@ -200,7 +200,12 @@ fn main() -> Result<()> {
             let operation = operation_for_command(&cli.command);
 
             if cli.is_hub_mode()
-                && matches!(&cli.command, TopLevel::File { command: FileCommands::Upload(_) })
+                && matches!(
+                    &cli.command,
+                    TopLevel::File {
+                        command: FileCommands::Upload(_)
+                    }
+                )
             {
                 anyhow::bail!("Uploading files allowed only through huggingface hub APIs.");
             }
