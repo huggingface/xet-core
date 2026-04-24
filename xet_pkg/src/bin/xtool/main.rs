@@ -198,6 +198,13 @@ fn main() -> Result<()> {
         let cli = cli.clone();
         async move {
             let operation = operation_for_command(&cli.command);
+
+            if cli.is_hub_mode()
+                && matches!(&cli.command, TopLevel::File { command: FileCommands::Upload(_) })
+            {
+                anyhow::bail!("Uploading files allowed only through huggingface hub APIs.");
+            }
+
             let endpoint_config = EndpointConfig::resolve(&cli, &ctx, operation).await?;
 
             match &cli.command {
