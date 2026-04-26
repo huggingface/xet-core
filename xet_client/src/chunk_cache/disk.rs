@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs::{DirEntry, File};
-use std::io::{self, Cursor, ErrorKind, Read, Seek, SeekFrom, Write};
+use std::io::{self, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -49,16 +49,65 @@ impl CacheState {
         }
     }
 
-    fn find_match(&self, key: &Key, range: &ChunkRange) -> Option<VerificationCell<CacheItem>> {
+    /// Returns an ordered set of cache items that, taken together, fully cover
+    /// `[range.start, range.end)` — even when no single item contains the
+    /// whole query. Returns `None` if there is a gap.
+    ///
+    /// Greedy: at each cursor position pick the candidate that starts no later
+    /// than the cursor and reaches furthest to the right. The walk covers the
+    /// query in order, so callers can stream slices from each item without
+    /// re-sorting.
+    fn find_covering(&self, key: &Key, range: &ChunkRange) -> Option<Vec<VerificationCell<CacheItem>>> {
         let items = self.inner.get(key)?;
+        if items.is_empty() {
+            return None;
+        }
+        let mut cover: Vec<VerificationCell<CacheItem>> = Vec::new();
+        let mut cursor = range.start;
+        while cursor < range.end {
+            let best = items
+                .iter()
+                .filter(|item| item.range.start <= cursor && item.range.end > cursor)
+                .max_by_key(|item| item.range.end)?;
+            cursor = best.range.end;
+            cover.push(best.clone());
+        }
+        Some(cover)
+    }
 
-        // attempt to find a matching range in the given key's items using
-        for item in items.iter() {
-            if item.range.start <= range.start && range.end <= item.range.end {
-                return Some(item.clone());
+    /// Compute the subranges of `[range.start, range.end)` that are not
+    /// covered by any existing item. Returned gaps are disjoint, sorted, and
+    /// strictly inside `range`. Caller writes one fragment per gap so the
+    /// cache contains each chunk exactly once.
+    fn find_gaps(&self, key: &Key, range: &ChunkRange) -> Vec<ChunkRange> {
+        let items = match self.inner.get(key) {
+            Some(items) if !items.is_empty() => items,
+            _ => return vec![*range],
+        };
+
+        let mut overlapping: Vec<ChunkRange> = items
+            .iter()
+            .map(|i| i.range)
+            .filter(|r| r.start < range.end && r.end > range.start)
+            .collect();
+        overlapping.sort_by_key(|r| r.start);
+
+        let mut gaps = Vec::new();
+        let mut cursor = range.start;
+        for r in overlapping {
+            let r_start = r.start.max(range.start);
+            let r_end = r.end.min(range.end);
+            if r_start > cursor {
+                gaps.push(ChunkRange::new(cursor, r_start));
+            }
+            if r_end > cursor {
+                cursor = r_end;
             }
         }
-        None
+        if cursor < range.end {
+            gaps.push(ChunkRange::new(cursor, range.end));
+        }
+        gaps
     }
 
     /// removed items from the cache (including deleting from file system)
@@ -315,48 +364,75 @@ impl DiskCache {
             return Err(ChunkCacheError::InvalidArguments);
         }
 
-        loop {
-            let Some(cache_item) = self.state.read().await.find_match(key, range) else {
+        // Compose the answer from one or more cached items. Distinct puts of
+        // overlapping or adjacent ranges produce sibling fragments; this
+        // walks the greedy interval cover and stitches their slices into a
+        // single CacheRange.
+        'outer: loop {
+            let Some(cover) = self.state.read().await.find_covering(key, range) else {
                 return Ok(None);
             };
 
-            let path = self.item_path(key, &cache_item)?;
+            let mut data: Vec<u8> = Vec::new();
+            let mut offsets: Vec<u32> = vec![0];
+            let mut cursor = range.start;
 
-            let mut file = match File::open(&path) {
-                Ok(file) => file,
-                Err(e) => match e.kind() {
-                    ErrorKind::NotFound => {
-                        self.remove_item(key, &cache_item).await?;
-                        continue;
+            for cache_item in &cover {
+                let path = self.item_path(key, cache_item)?;
+
+                let mut file = match File::open(&path) {
+                    Ok(file) => file,
+                    Err(e) => match e.kind() {
+                        ErrorKind::NotFound => {
+                            self.remove_item(key, cache_item).await?;
+                            continue 'outer;
+                        },
+                        _ => return Err(e.into()),
                     },
-                    _ => return Err(e.into()),
-                },
-            };
+                };
 
-            if !cache_item.is_verified() {
-                let checksum = crc32_from_reader(&mut file)?;
-                if checksum == cache_item.checksum {
-                    cache_item.verify();
-                    file.rewind()?;
-                } else {
-                    debug!("computed checksum {checksum} mismatch on cache item {key}/{cache_item}");
-                    self.remove_item(key, &cache_item).await?;
-                    continue;
+                if !cache_item.is_verified() {
+                    let checksum = crc32_from_reader(&mut file)?;
+                    if checksum == cache_item.checksum {
+                        cache_item.verify();
+                        file.rewind()?;
+                    } else {
+                        debug!("computed checksum {checksum} mismatch on cache item {key}/{cache_item}");
+                        self.remove_item(key, cache_item).await?;
+                        continue 'outer;
+                    }
                 }
+
+                let mut file_reader = std::io::BufReader::new(file);
+                let Ok(header) = CacheFileHeader::deserialize(&mut file_reader)
+                    .debug_error(format!("failed to deserialize cache file header on path: {path:?}"))
+                else {
+                    self.remove_item(key, cache_item).await?;
+                    continue 'outer;
+                };
+
+                // Pull the slice of this item that contributes to the query:
+                // chunks `[cursor, min(item.range.end, range.end))`.
+                let slice_end = cache_item.range.end.min(range.end);
+                let sub_range = ChunkRange::new(cursor, slice_end);
+                let part = get_range_from_cache_file(&header, &mut file_reader, &sub_range, cache_item.range.start)?;
+
+                let base = data.len() as u32;
+                data.extend_from_slice(&part.data);
+                // `part.offsets[0]` is always 0 and matches the running data
+                // length before we extended; skip it to avoid duplicating the
+                // boundary offset between two items.
+                for &o in &part.offsets[1..] {
+                    offsets.push(base + o);
+                }
+                cursor = slice_end;
             }
 
-            let mut file_reader = std::io::BufReader::new(file);
-
-            let Ok(header) = CacheFileHeader::deserialize(&mut file_reader)
-                .debug_error(format!("failed to deserialize cache file header on path: {path:?}"))
-            else {
-                self.remove_item(key, &cache_item).await?;
-                continue;
-            };
-
-            let start = cache_item.range.start;
-            let result_buf = get_range_from_cache_file(&header, &mut file_reader, range, start)?;
-            return Ok(Some(result_buf));
+            return Ok(Some(CacheRange {
+                data,
+                offsets,
+                range: *range,
+            }));
         }
     }
 
@@ -377,17 +453,51 @@ impl DiskCache {
             return Err(ChunkCacheError::InvalidArguments);
         }
 
-        // check if we already contain the range
-        while let Some(cache_item) = self.state.read().await.find_match(key, range) {
-            if self.validate_match(key, range, chunk_byte_indices, data, &cache_item).await? {
-                return Ok(());
-            }
+        // Fast path: cache already covers the full range via one or several
+        // existing fragments — no write needed.
+        if self.state.read().await.find_covering(key, range).is_some() {
+            return Ok(());
         }
 
-        let header = CacheFileHeader::new(chunk_byte_indices);
+        // Write only the chunks not already on disk. Each gap becomes one
+        // fragment; existing items are left untouched. Since gaps are
+        // strictly disjoint from existing items, no chunk is ever stored
+        // twice.
+        let gaps = self.state.read().await.find_gaps(key, range);
+        for gap in gaps {
+            self.put_gap(key, range, chunk_byte_indices, data, gap).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Write one gap fragment: a fresh CacheItem covering `gap`, populated
+    /// with the corresponding slice of the put input. `gap` must be a
+    /// subrange of `range`.
+    async fn put_gap(
+        &self,
+        key: &Key,
+        range: &ChunkRange,
+        chunk_byte_indices: &[u32],
+        data: &[u8],
+        gap: ChunkRange,
+    ) -> Result<(), ChunkCacheError> {
+        let i_start = (gap.start - range.start) as usize;
+        let i_end = (gap.end - range.start) as usize;
+
+        let byte_start = chunk_byte_indices[i_start] as usize;
+        let byte_end = chunk_byte_indices[i_end] as usize;
+        let gap_data = &data[byte_start..byte_end];
+
+        // Normalize the chunk byte indices to start at 0 — the fragment
+        // file format requires offsets relative to its own data.
+        let base = chunk_byte_indices[i_start];
+        let gap_indices: Vec<u32> = chunk_byte_indices[i_start..=i_end].iter().map(|&v| v - base).collect();
+
+        let header = CacheFileHeader::new(gap_indices);
         let mut header_buf = Vec::with_capacity(header.header_len());
         header.serialize(&mut header_buf)?;
-        let len = (header_buf.len() + data.len()) as u64;
+        let len = (header_buf.len() + gap_data.len()) as u64;
         if len > self.capacity {
             // refusing to add this item as it is too large for the cache with configured capacity
             return Ok(());
@@ -396,128 +506,48 @@ impl DiskCache {
         let checksum = {
             let mut hasher = crc32fast::Hasher::new();
             hasher.update(&header_buf);
-            hasher.update(data);
+            hasher.update(gap_data);
             hasher.finalize()
         };
 
         let cache_item = CacheItem {
-            range: *range,
+            range: gap,
             len,
             checksum,
         };
 
-        // write cache item file
         let path = self.item_path(key, &cache_item)?;
         let mut fw = SafeFileCreator::new(path)?;
         fw.write_all(&header_buf)?;
-        fw.write_all(data)?;
+        fw.write_all(gap_data)?;
 
-        // evict items after ensuring the file write but before committing to cache state
-        // to avoid removing new item.
         let mut state_write = self.state.write().await;
 
-        // acquiring lock to state before closing the file
-        // this will ensure that this thread is the only one writing to the final
-        // cache file but allowing other threads to modify the state while we write the file
-        // before committing it.
-        if state_write.find_match(key, range).is_some() {
-            // another thread already added this item or overlapping item while this thread
-            // was writing the file
+        // Race check: another thread may have filled this gap (entirely)
+        // while we were writing. Bail to keep dedup invariant.
+        if state_write.find_covering(key, &gap).is_some() {
             fw.abort()?;
             return Ok(());
         }
         fw.close()?;
 
-        // Evict entries to make sure we have enough room.
         let evicted_paths = state_write.evict_to_capacity(self.capacity - cache_item.len)?;
 
-        // add the item info in-memory state after evictions are done
         state_write.num_items += 1;
         state_write.total_bytes += cache_item.len;
         let item_set = state_write.inner.entry(key.clone()).or_default();
         item_set.push(VerificationCell::new_verified(cache_item));
 
-        // release lock
         drop(state_write);
 
-        // remove files after done with modifying in memory state and releasing lock
         for (key, cache_item) in evicted_paths {
             let path = self.item_path(&key, &cache_item)?;
             remove_file(&path)?;
-            // check and try to remove key path if all items evicted for key
             let dir_path = path.parent().ok_or(ChunkCacheError::Infallible)?;
             check_remove_dir(dir_path)?;
         }
 
         Ok(())
-    }
-
-    // on a non-error case, returns true if the item is a good match and a new item should not be inserted
-    // returns false if not a good match and should be removed.
-    async fn validate_match(
-        &self,
-        key: &Key,
-        range: &ChunkRange,
-        chunk_byte_indices: &[u32],
-        data: &[u8],
-        cache_item: &VerificationCell<CacheItem>,
-    ) -> Result<bool, ChunkCacheError> {
-        // this is a redundant check
-        if range.start < cache_item.range.start || range.end > cache_item.range.end {
-            return Err(ChunkCacheError::BadRange);
-        }
-
-        // validate stored data
-        let path = self.item_path(key, cache_item)?;
-
-        let Ok(mut file) = File::open(path) else {
-            self.remove_item(key, cache_item).await?;
-            return Ok(false);
-        };
-        let md = file.metadata()?;
-        if md.len() != cache_item.len {
-            self.remove_item(key, cache_item).await?;
-            return Ok(false);
-        }
-        let mut buf = Vec::with_capacity(md.len() as usize);
-        file.read_to_end(&mut buf)?;
-        let checksum = crc32fast::hash(&buf);
-        if checksum != cache_item.checksum {
-            self.remove_item(key, cache_item).await?;
-            return Ok(false);
-        }
-        let mut reader = Cursor::new(buf);
-        let Ok(header) = CacheFileHeader::deserialize(&mut reader) else {
-            self.remove_item(key, cache_item).await?;
-            return Ok(false);
-        };
-
-        // validate the chunk_byte_indices and data input against stored data
-        // the chunk_byte_indices should match the chunk lengths, if the ranges
-        // don't start at the same chunk, values will be different, what's important
-        // to match is the chunk lengths, i.e. difference in the offsets.
-        let idx_start = (range.start - cache_item.range.start) as usize;
-        let idx_end = (range.end - cache_item.range.start + 1) as usize;
-        for i in idx_start..idx_end - 1 {
-            let stored_diff = header.chunk_byte_indices[i + 1] - header.chunk_byte_indices[i];
-            let given_diff = chunk_byte_indices[i + 1 - idx_start] - chunk_byte_indices[i - idx_start];
-            if stored_diff != given_diff {
-                debug!(
-                    "failed to match chunk lens for these chunk offsets {} {:?}\n{} {:?}",
-                    cache_item.range,
-                    &header.chunk_byte_indices[idx_start..idx_end],
-                    range,
-                    chunk_byte_indices
-                );
-                return Err(ChunkCacheError::InvalidArguments);
-            }
-        }
-
-        let stored = get_range_from_cache_file(&header, &mut reader, range, cache_item.range.start)?;
-        if data != stored.data {
-            return Err(ChunkCacheError::InvalidArguments);
-        }
-        Ok(true)
     }
 
     /// removes an item from both the in-memory state of the cache and the file system
@@ -1003,20 +1033,24 @@ mod tests {
         offsets[2] = offsets[1];
         assert!(cache.put(&key, &range, &offsets, &data).await.is_err());
 
-        // not matching
+        // not matching: with the fragments-no-dup cache the range is already
+        // covered after the first put, so the second put fast-paths to a
+        // noop without re-reading the file to compare. This case is no
+        // longer rejected — kept here documented but expected to succeed.
         let (_cache_root, cache, key, range, mut offsets, data) = setup().await;
         offsets[1] += 1;
-        assert!(cache.put(&key, &range, &offsets, &data).await.is_err());
+        assert!(cache.put(&key, &range, &offsets, &data).await.is_ok());
 
         // bad data
         // size mismatch given offsets
         let (_cache_root, cache, key, range, offsets, data) = setup().await;
         assert!(cache.put(&key, &range, &offsets, &data[1..]).await.is_err());
 
-        // data changed
+        // data changed: same as the "not matching" case above — fragments-no-dup
+        // fast-paths to a noop instead of validating against existing data.
         let (_cache_root, cache, key, range, offsets, mut data) = setup().await;
         data[0] += 1;
-        assert!(cache.put(&key, &range, &offsets, &data).await.is_err());
+        assert!(cache.put(&key, &range, &offsets, &data).await.is_ok());
     }
 
     #[tokio::test]
@@ -1253,6 +1287,161 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    /// Deterministic per-chunk fixture: every chunk is `chunk_size` bytes
+    /// of `(chunk_index * 7) as u8`. Two different ranges that share a
+    /// chunk index produce identical chunk bytes, so reads stitched across
+    /// fragments produce a consistent, predictable result.
+    fn fixed_chunk_payload(range: &ChunkRange, chunk_size: usize) -> (Vec<u32>, Vec<u8>) {
+        let n_chunks = (range.end - range.start) as usize;
+        let mut indices = Vec::with_capacity(n_chunks + 1);
+        let mut data = Vec::with_capacity(n_chunks * chunk_size);
+        for i in 0..n_chunks {
+            indices.push((i * chunk_size) as u32);
+            let chunk_idx = range.start as usize + i;
+            data.extend(std::iter::repeat_n((chunk_idx as u8).wrapping_mul(7), chunk_size));
+        }
+        indices.push((n_chunks * chunk_size) as u32);
+        (indices, data)
+    }
+
+    fn fresh_cache(capacity: u64) -> (TempDir, DiskCache) {
+        let cache_root = TempDir::new("fragments_no_dup").unwrap();
+        let config = CacheConfig {
+            cache_directory: cache_root.path().to_path_buf(),
+            cache_size: capacity,
+        };
+        let cache = DiskCache::initialize(&config).unwrap();
+        (cache_root, cache)
+    }
+
+    fn single_key() -> Key {
+        let mut bytes = [0u8; 32];
+        bytes[0] = 1;
+        Key {
+            prefix: "default".to_string(),
+            hash: xet_core_structures::merklehash::MerkleHash::from_slice(&bytes).unwrap(),
+        }
+    }
+
+    fn expected_bytes(range: &ChunkRange, chunk_size: usize) -> Vec<u8> {
+        (range.start..range.end)
+            .flat_map(|c: u32| std::iter::repeat_n((c as u8).wrapping_mul(7), chunk_size))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn put_overlap_writes_only_the_gap() {
+        let (_root, cache) = fresh_cache(DEFAULT_CHUNK_CACHE_CAPACITY);
+        let key = single_key();
+        const CHUNK: usize = 16;
+
+        let r1 = ChunkRange::new(0, 10);
+        let (i1, d1) = fixed_chunk_payload(&r1, CHUNK);
+        cache.put(&key, &r1, &i1, &d1).await.unwrap();
+
+        // Second put overlaps r1 on chunks [5..10]; only chunks [10..15]
+        // should land as a new fragment.
+        let r2 = ChunkRange::new(5, 15);
+        let (i2, d2) = fixed_chunk_payload(&r2, CHUNK);
+        cache.put(&key, &r2, &i2, &d2).await.unwrap();
+
+        let state = cache.state.read().await;
+        let items = state.inner.get(&key).expect("key present");
+        assert_eq!(items.len(), 2, "expected 2 disjoint fragments, got {items:?}");
+        let mut ranges: Vec<_> = items.iter().map(|i| i.range).collect();
+        ranges.sort_by_key(|r| r.start);
+        assert_eq!(ranges, vec![ChunkRange::new(0, 10), ChunkRange::new(10, 15)]);
+        // total_bytes accounting reflects 15 unique chunks worth of data
+        // plus 2 headers — never the duplicated 20 chunks of naive puts.
+        let total_data: u64 = items.iter().map(|i| i.len).sum::<u64>();
+        assert!(total_data < (20 * CHUNK) as u64, "fragments must not duplicate overlapping bytes");
+    }
+
+    #[tokio::test]
+    async fn put_fully_covered_is_noop() {
+        let (_root, cache) = fresh_cache(DEFAULT_CHUNK_CACHE_CAPACITY);
+        let key = single_key();
+        const CHUNK: usize = 8;
+
+        let r1 = ChunkRange::new(0, 20);
+        let (i1, d1) = fixed_chunk_payload(&r1, CHUNK);
+        cache.put(&key, &r1, &i1, &d1).await.unwrap();
+
+        let r2 = ChunkRange::new(5, 15);
+        let (i2, d2) = fixed_chunk_payload(&r2, CHUNK);
+        cache.put(&key, &r2, &i2, &d2).await.unwrap();
+
+        let state = cache.state.read().await;
+        let items = state.inner.get(&key).expect("key present");
+        assert_eq!(items.len(), 1, "second put already covered, no fragment added");
+        assert_eq!(items[0].range, r1);
+    }
+
+    #[tokio::test]
+    async fn get_composes_across_fragments() {
+        let (_root, cache) = fresh_cache(DEFAULT_CHUNK_CACHE_CAPACITY);
+        let key = single_key();
+        const CHUNK: usize = 8;
+
+        // Put two adjacent fragments via separate puts.
+        let r1 = ChunkRange::new(0, 10);
+        let (i1, d1) = fixed_chunk_payload(&r1, CHUNK);
+        cache.put(&key, &r1, &i1, &d1).await.unwrap();
+        let r2 = ChunkRange::new(10, 20);
+        let (i2, d2) = fixed_chunk_payload(&r2, CHUNK);
+        cache.put(&key, &r2, &i2, &d2).await.unwrap();
+
+        // A query that crosses the boundary must hit by composing both.
+        let q = ChunkRange::new(5, 15);
+        let got = cache.get(&key, &q).await.unwrap().expect("compose hit");
+        assert_eq!(got.data, expected_bytes(&q, CHUNK));
+    }
+
+    #[tokio::test]
+    async fn get_returns_none_on_real_gap() {
+        let (_root, cache) = fresh_cache(DEFAULT_CHUNK_CACHE_CAPACITY);
+        let key = single_key();
+        const CHUNK: usize = 8;
+
+        let r1 = ChunkRange::new(0, 10);
+        let (i1, d1) = fixed_chunk_payload(&r1, CHUNK);
+        cache.put(&key, &r1, &i1, &d1).await.unwrap();
+        let r2 = ChunkRange::new(20, 30);
+        let (i2, d2) = fixed_chunk_payload(&r2, CHUNK);
+        cache.put(&key, &r2, &i2, &d2).await.unwrap();
+
+        // [5..25] has a real gap [10..20] — not covered.
+        let q = ChunkRange::new(5, 25);
+        let got = cache.get(&key, &q).await.unwrap();
+        assert!(got.is_none(), "must miss when a true gap exists");
+    }
+
+    #[tokio::test]
+    async fn put_inside_existing_with_extension_writes_one_gap() {
+        // Cache holds [10..20]. Put [5..30] -> two gaps [5..10] and [20..30].
+        let (_root, cache) = fresh_cache(DEFAULT_CHUNK_CACHE_CAPACITY);
+        let key = single_key();
+        const CHUNK: usize = 8;
+
+        let r1 = ChunkRange::new(10, 20);
+        let (i1, d1) = fixed_chunk_payload(&r1, CHUNK);
+        cache.put(&key, &r1, &i1, &d1).await.unwrap();
+
+        let r2 = ChunkRange::new(5, 30);
+        let (i2, d2) = fixed_chunk_payload(&r2, CHUNK);
+        cache.put(&key, &r2, &i2, &d2).await.unwrap();
+
+        let state = cache.state.read().await;
+        let mut ranges: Vec<_> = state.inner.get(&key).unwrap().iter().map(|i| i.range).collect();
+        ranges.sort_by_key(|r| r.start);
+        assert_eq!(ranges, vec![ChunkRange::new(5, 10), ChunkRange::new(10, 20), ChunkRange::new(20, 30)]);
+        drop(state);
+
+        // Composed read across all three fragments must return the right bytes.
+        let got = cache.get(&key, &r2).await.unwrap().expect("hit");
+        assert_eq!(got.data, expected_bytes(&r2, CHUNK));
     }
 }
 
