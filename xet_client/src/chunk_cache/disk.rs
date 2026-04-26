@@ -61,6 +61,17 @@ impl CacheState {
         None
     }
 
+    /// Returns every cache item whose range overlaps or is adjacent to `range`.
+    /// Used by `put_impl` to coalesce fragments of the same xorb into one item
+    /// instead of accumulating sibling fragments that `find_match` can't
+    /// compose at lookup time.
+    fn find_touching(&self, key: &Key, range: &ChunkRange) -> Vec<VerificationCell<CacheItem>> {
+        let Some(items) = self.inner.get(key) else {
+            return Vec::new();
+        };
+        items.iter().filter(|item| ranges_touch(&item.range, range)).cloned().collect()
+    }
+
     /// removed items from the cache (including deleting from file system)
     /// until at least to_remove number of bytes have been removed
     ///
@@ -384,10 +395,48 @@ impl DiskCache {
             }
         }
 
-        let header = CacheFileHeader::new(chunk_byte_indices);
+        // Coalesce with overlapping/adjacent siblings so the cache converges
+        // to one item per touched portion of the xorb. Without this,
+        // distinct byte-range queries against the same xorb produce sibling
+        // fragments that `find_match` cannot compose at lookup time.
+        let touching = self.state.read().await.find_touching(key, range);
+        let mut loaded = Vec::with_capacity(touching.len());
+        let mut replaced_items: Vec<VerificationCell<CacheItem>> = Vec::with_capacity(touching.len());
+        for item in &touching {
+            if let Some(li) = self.load_item_for_merge(key, item).await? {
+                loaded.push(li);
+                replaced_items.push(item.clone());
+            } else {
+                self.remove_item(key, item).await?;
+            }
+        }
+
+        let new_only = || MergedRecord {
+            range: *range,
+            chunk_byte_indices: chunk_byte_indices.to_vec(),
+            data: data.to_vec(),
+        };
+        let mut merged = if loaded.is_empty() {
+            new_only()
+        } else {
+            merge_chunks(range, chunk_byte_indices, data, &loaded)?
+        };
+
+        let mut header = CacheFileHeader::new(merged.chunk_byte_indices.clone());
         let mut header_buf = Vec::with_capacity(header.header_len());
         header.serialize(&mut header_buf)?;
-        let len = (header_buf.len() + data.len()) as u64;
+        let mut len = (header_buf.len() + merged.data.len()) as u64;
+        // If coalescing pushed the merged record past capacity, fall back to
+        // storing the new range on its own — the original range may still
+        // fit, even if the union with existing siblings doesn't.
+        if len > self.capacity && !loaded.is_empty() {
+            merged = new_only();
+            replaced_items.clear();
+            header = CacheFileHeader::new(merged.chunk_byte_indices.clone());
+            header_buf.clear();
+            header.serialize(&mut header_buf)?;
+            len = (header_buf.len() + merged.data.len()) as u64;
+        }
         if len > self.capacity {
             // refusing to add this item as it is too large for the cache with configured capacity
             return Ok(());
@@ -396,12 +445,12 @@ impl DiskCache {
         let checksum = {
             let mut hasher = crc32fast::Hasher::new();
             hasher.update(&header_buf);
-            hasher.update(data);
+            hasher.update(&merged.data);
             hasher.finalize()
         };
 
         let cache_item = CacheItem {
-            range: *range,
+            range: merged.range,
             len,
             checksum,
         };
@@ -410,7 +459,7 @@ impl DiskCache {
         let path = self.item_path(key, &cache_item)?;
         let mut fw = SafeFileCreator::new(path)?;
         fw.write_all(&header_buf)?;
-        fw.write_all(data)?;
+        fw.write_all(&merged.data)?;
 
         // evict items after ensuring the file write but before committing to cache state
         // to avoid removing new item.
@@ -420,13 +469,35 @@ impl DiskCache {
         // this will ensure that this thread is the only one writing to the final
         // cache file but allowing other threads to modify the state while we write the file
         // before committing it.
-        if state_write.find_match(key, range).is_some() {
+        if state_write.find_match(key, &merged.range).is_some() {
             // another thread already added this item or overlapping item while this thread
             // was writing the file
             fw.abort()?;
             return Ok(());
         }
         fw.close()?;
+
+        // Replace the items we just folded into the merged record.
+        let mut paths_to_remove = Vec::with_capacity(replaced_items.len());
+        let mut bytes_freed = 0u64;
+        let mut items_freed = 0usize;
+        let mut key_now_empty = false;
+        if let Some(items) = state_write.inner.get_mut(key) {
+            for replaced in &replaced_items {
+                if let Some(idx) = index_of(items, replaced) {
+                    let removed = items.swap_remove(idx);
+                    bytes_freed += removed.len;
+                    items_freed += 1;
+                    paths_to_remove.push(self.item_path(key, &removed)?);
+                }
+            }
+            key_now_empty = items.is_empty();
+        }
+        state_write.total_bytes = state_write.total_bytes.saturating_sub(bytes_freed);
+        state_write.num_items = state_write.num_items.saturating_sub(items_freed);
+        if key_now_empty {
+            state_write.inner.remove(key);
+        }
 
         // Evict entries to make sure we have enough room.
         let evicted_paths = state_write.evict_to_capacity(self.capacity - cache_item.len)?;
@@ -441,6 +512,10 @@ impl DiskCache {
         drop(state_write);
 
         // remove files after done with modifying in memory state and releasing lock
+        for path in paths_to_remove {
+            // best-effort: a concurrent put may have already removed the file
+            let _ = remove_file(&path);
+        }
         for (key, cache_item) in evicted_paths {
             let path = self.item_path(&key, &cache_item)?;
             remove_file(&path)?;
@@ -450,6 +525,58 @@ impl DiskCache {
         }
 
         Ok(())
+    }
+
+    /// Open a cache item from disk and verify its size + CRC + header. Returns
+    /// `Ok(None)` for missing or corrupt entries (caller decides whether to
+    /// remove). The full file buffer is returned alongside the parsed header
+    /// because some callers need the chunk data and others need to seek into
+    /// it; reading the file once amortizes the syscall cost.
+    fn read_and_verify_cache_file(
+        &self,
+        key: &Key,
+        cache_item: &VerificationCell<CacheItem>,
+    ) -> Result<Option<(CacheFileHeader, Vec<u8>)>, ChunkCacheError> {
+        let path = self.item_path(key, cache_item)?;
+        let Ok(mut file) = File::open(&path) else {
+            return Ok(None);
+        };
+        let md = file.metadata()?;
+        if md.len() != cache_item.len {
+            return Ok(None);
+        }
+        let mut buf = Vec::with_capacity(md.len() as usize);
+        file.read_to_end(&mut buf)?;
+        if crc32fast::hash(&buf) != cache_item.checksum {
+            return Ok(None);
+        }
+        let mut reader = Cursor::new(&buf[..]);
+        let Ok(header) = CacheFileHeader::deserialize(&mut reader) else {
+            return Ok(None);
+        };
+        if buf.len() < header.header_len() {
+            return Ok(None);
+        }
+        Ok(Some((header, buf)))
+    }
+
+    /// Load an existing cache item's header and chunk data so `merge_chunks`
+    /// can fold it into a freshly-fetched range. Returns `Ok(None)` for
+    /// missing or corrupt entries; the caller drops them via `remove_item`.
+    async fn load_item_for_merge(
+        &self,
+        key: &Key,
+        cache_item: &VerificationCell<CacheItem>,
+    ) -> Result<Option<LoadedItem>, ChunkCacheError> {
+        let Some((header, buf)) = self.read_and_verify_cache_file(key, cache_item)? else {
+            return Ok(None);
+        };
+        let chunk_data = buf[header.header_len()..].to_vec();
+        Ok(Some(LoadedItem {
+            range: cache_item.range,
+            header,
+            chunk_data,
+        }))
     }
 
     // on a non-error case, returns true if the item is a good match and a new item should not be inserted
@@ -467,30 +594,11 @@ impl DiskCache {
             return Err(ChunkCacheError::BadRange);
         }
 
-        // validate stored data
-        let path = self.item_path(key, cache_item)?;
-
-        let Ok(mut file) = File::open(path) else {
+        let Some((header, buf)) = self.read_and_verify_cache_file(key, cache_item)? else {
             self.remove_item(key, cache_item).await?;
             return Ok(false);
         };
-        let md = file.metadata()?;
-        if md.len() != cache_item.len {
-            self.remove_item(key, cache_item).await?;
-            return Ok(false);
-        }
-        let mut buf = Vec::with_capacity(md.len() as usize);
-        file.read_to_end(&mut buf)?;
-        let checksum = crc32fast::hash(&buf);
-        if checksum != cache_item.checksum {
-            self.remove_item(key, cache_item).await?;
-            return Ok(false);
-        }
         let mut reader = Cursor::new(buf);
-        let Ok(header) = CacheFileHeader::deserialize(&mut reader) else {
-            self.remove_item(key, cache_item).await?;
-            return Ok(false);
-        };
 
         // validate the chunk_byte_indices and data input against stored data
         // the chunk_byte_indices should match the chunk lengths, if the ranges
@@ -586,6 +694,88 @@ fn strictly_increasing(chunk_byte_indices: &[u32]) -> bool {
         }
     }
     true
+}
+
+/// Two chunk ranges touch if they overlap or are immediately adjacent
+/// (i.e. their union is a single contiguous range). End is exclusive.
+fn ranges_touch(a: &ChunkRange, b: &ChunkRange) -> bool {
+    a.start <= b.end && b.start <= a.end
+}
+
+/// In-memory snapshot of a cache item's chunk-level data, used as input to
+/// `merge_chunks` when coalescing fragments on put.
+struct LoadedItem {
+    range: ChunkRange,
+    header: CacheFileHeader,
+    chunk_data: Vec<u8>,
+}
+
+/// Result of merging a freshly-fetched range with overlapping/adjacent
+/// existing items.
+struct MergedRecord {
+    range: ChunkRange,
+    chunk_byte_indices: Vec<u32>,
+    data: Vec<u8>,
+}
+
+/// Merge a freshly-fetched range with overlapping/adjacent existing items
+/// into a single contiguous cache record. The new range wins on chunks that
+/// appear in multiple sources (it is the most recent CAS data we hold).
+///
+/// Preconditions:
+/// - `chunk_byte_indices.len() == range.end - range.start + 1` and `chunk_byte_indices[0] == 0`.
+/// - Each item in `others` "touches" `range` (overlap or adjacency, see [`ranges_touch`]).
+fn merge_chunks(
+    range: &ChunkRange,
+    chunk_byte_indices: &[u32],
+    data: &[u8],
+    others: &[LoadedItem],
+) -> Result<MergedRecord, ChunkCacheError> {
+    let mut min_start = range.start;
+    let mut max_end = range.end;
+    let mut total_bytes = data.len();
+    for o in others {
+        min_start = min_start.min(o.range.start);
+        max_end = max_end.max(o.range.end);
+        total_bytes += o.chunk_data.len();
+    }
+
+    let total_chunks = (max_end - min_start) as usize;
+    let mut merged_indices: Vec<u32> = Vec::with_capacity(total_chunks + 1);
+    let mut merged_data: Vec<u8> = Vec::with_capacity(total_bytes);
+    merged_indices.push(0);
+
+    for chunk_idx in min_start..max_end {
+        let chunk_bytes: &[u8] = if chunk_idx >= range.start && chunk_idx < range.end {
+            let i = (chunk_idx - range.start) as usize;
+            let s = chunk_byte_indices[i] as usize;
+            let e = chunk_byte_indices[i + 1] as usize;
+            &data[s..e]
+        } else {
+            others
+                .iter()
+                .find(|o| chunk_idx >= o.range.start && chunk_idx < o.range.end)
+                .map(|o| {
+                    let i = (chunk_idx - o.range.start) as usize;
+                    let s = o.header.chunk_byte_indices[i] as usize;
+                    let e = o.header.chunk_byte_indices[i + 1] as usize;
+                    &o.chunk_data[s..e]
+                })
+                // The merged range is bounded by `range ∪ others`, so every
+                // chunk in [min_start, max_end) is provably covered. A miss
+                // here would mean a touching invariant was violated.
+                .ok_or(ChunkCacheError::Infallible)?
+        };
+        merged_data.extend_from_slice(chunk_bytes);
+        let last = *merged_indices.last().unwrap();
+        merged_indices.push(last + chunk_bytes.len() as u32);
+    }
+
+    Ok(MergedRecord {
+        range: ChunkRange::new(min_start, max_end),
+        chunk_byte_indices: merged_indices,
+        data: merged_data,
+    })
 }
 
 fn get_range_from_cache_file<R: Read + Seek>(
@@ -817,6 +1007,7 @@ mod tests {
     use rand::SeedableRng;
     use rand::rngs::StdRng;
     use tempdir::TempDir;
+    use xet_core_structures::merklehash::MerkleHash;
     use xet_runtime::utils::output_bytes;
 
     use super::super::{CacheConfig, ChunkCache};
@@ -1253,6 +1444,183 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    /// Deterministic per-chunk fixture: every chunk is `chunk_size` bytes
+    /// of `(chunk_index * 7) as u8`. Two different ranges that share a chunk
+    /// index produce identical chunk bytes, so coalescing produces a
+    /// consistent merged record that round-trips through the cache.
+    fn fixed_chunk_payload(range: &ChunkRange, chunk_size: usize) -> (Vec<u32>, Vec<u8>) {
+        let n_chunks = (range.end - range.start) as usize;
+        let mut indices = Vec::with_capacity(n_chunks + 1);
+        let mut data = Vec::with_capacity(n_chunks * chunk_size);
+        for i in 0..n_chunks {
+            indices.push((i * chunk_size) as u32);
+            let chunk_idx = range.start as usize + i;
+            data.extend(std::iter::repeat_n((chunk_idx as u8).wrapping_mul(7), chunk_size));
+        }
+        indices.push((n_chunks * chunk_size) as u32);
+        (indices, data)
+    }
+
+    fn fresh_cache(capacity: u64) -> (TempDir, DiskCache) {
+        let cache_root = TempDir::new("coalesce").unwrap();
+        let config = CacheConfig {
+            cache_directory: cache_root.path().to_path_buf(),
+            cache_size: capacity,
+        };
+        let cache = DiskCache::initialize(&config).unwrap();
+        (cache_root, cache)
+    }
+
+    fn single_key() -> Key {
+        let mut bytes = [0u8; 32];
+        bytes[0] = 1;
+        Key {
+            prefix: "default".to_string(),
+            hash: MerkleHash::from_slice(&bytes).unwrap(),
+        }
+    }
+
+    #[tokio::test]
+    async fn coalesce_overlapping_ranges_into_one_item() {
+        let (_root, cache) = fresh_cache(DEFAULT_CHUNK_CACHE_CAPACITY);
+        let key = single_key();
+        const CHUNK: usize = 16;
+
+        let r1 = ChunkRange::new(0, 10);
+        let (i1, d1) = fixed_chunk_payload(&r1, CHUNK);
+        cache.put(&key, &r1, &i1, &d1).await.unwrap();
+
+        let r2 = ChunkRange::new(5, 15);
+        let (i2, d2) = fixed_chunk_payload(&r2, CHUNK);
+        cache.put(&key, &r2, &i2, &d2).await.unwrap();
+
+        // After coalescing, exactly one item should remain, covering [0, 15).
+        let state = cache.state.read().await;
+        let items = state.inner.get(&key).expect("key present");
+        assert_eq!(items.len(), 1, "expected one merged item, got {items:?}");
+        assert_eq!(items[0].range, ChunkRange::new(0, 15));
+        drop(state);
+
+        // The merged record must serve queries that previously fragmented.
+        let query = ChunkRange::new(2, 13);
+        let got = cache.get(&key, &query).await.unwrap().expect("merged hit");
+        let expected: Vec<u8> = (2..13)
+            .flat_map(|c: u32| std::iter::repeat_n((c as u8).wrapping_mul(7), CHUNK))
+            .collect();
+        assert_eq!(got.data, expected);
+    }
+
+    #[tokio::test]
+    async fn coalesce_adjacent_ranges_into_one_item() {
+        let (_root, cache) = fresh_cache(DEFAULT_CHUNK_CACHE_CAPACITY);
+        let key = single_key();
+        const CHUNK: usize = 8;
+
+        let r1 = ChunkRange::new(0, 10);
+        let (i1, d1) = fixed_chunk_payload(&r1, CHUNK);
+        cache.put(&key, &r1, &i1, &d1).await.unwrap();
+
+        let r2 = ChunkRange::new(10, 20);
+        let (i2, d2) = fixed_chunk_payload(&r2, CHUNK);
+        cache.put(&key, &r2, &i2, &d2).await.unwrap();
+
+        let state = cache.state.read().await;
+        let items = state.inner.get(&key).expect("key present");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].range, ChunkRange::new(0, 20));
+        drop(state);
+
+        let got = cache
+            .get(&key, &ChunkRange::new(8, 12))
+            .await
+            .unwrap()
+            .expect("hit across former boundary");
+        let expected: Vec<u8> = (8..12)
+            .flat_map(|c: u32| std::iter::repeat_n((c as u8).wrapping_mul(7), CHUNK))
+            .collect();
+        assert_eq!(got.data, expected);
+    }
+
+    #[tokio::test]
+    async fn coalesce_three_overlapping_ranges() {
+        let (_root, cache) = fresh_cache(DEFAULT_CHUNK_CACHE_CAPACITY);
+        let key = single_key();
+        const CHUNK: usize = 4;
+
+        for r in [ChunkRange::new(0, 10), ChunkRange::new(8, 15), ChunkRange::new(14, 20)] {
+            let (i, d) = fixed_chunk_payload(&r, CHUNK);
+            cache.put(&key, &r, &i, &d).await.unwrap();
+        }
+
+        let state = cache.state.read().await;
+        let items = state.inner.get(&key).expect("key present");
+        assert_eq!(items.len(), 1, "all three should collapse: {items:?}");
+        assert_eq!(items[0].range, ChunkRange::new(0, 20));
+    }
+
+    #[tokio::test]
+    async fn disjoint_ranges_are_not_merged() {
+        let (_root, cache) = fresh_cache(DEFAULT_CHUNK_CACHE_CAPACITY);
+        let key = single_key();
+        const CHUNK: usize = 4;
+
+        let r1 = ChunkRange::new(0, 10);
+        let (i1, d1) = fixed_chunk_payload(&r1, CHUNK);
+        cache.put(&key, &r1, &i1, &d1).await.unwrap();
+
+        let r2 = ChunkRange::new(20, 30);
+        let (i2, d2) = fixed_chunk_payload(&r2, CHUNK);
+        cache.put(&key, &r2, &i2, &d2).await.unwrap();
+
+        let state = cache.state.read().await;
+        let items = state.inner.get(&key).expect("key present");
+        assert_eq!(items.len(), 2, "disjoint ranges must stay separate");
+    }
+
+    #[tokio::test]
+    async fn merged_too_large_falls_back_to_new_range_only() {
+        // Capacity holds one 10-chunk item plus header but not the 20-chunk
+        // union of two overlapping items.
+        const CHUNK: usize = 16;
+        let cap = (10 * CHUNK + 64) as u64;
+        let (_root, cache) = fresh_cache(cap);
+        let key = single_key();
+
+        let r1 = ChunkRange::new(0, 10);
+        let (i1, d1) = fixed_chunk_payload(&r1, CHUNK);
+        cache.put(&key, &r1, &i1, &d1).await.unwrap();
+
+        // Merged union [0..15] = 15 chunks (240 B + header) -> exceeds cap.
+        // Without the fallback the new range would silently no-op; with it
+        // the new range survives, even if the old one gets evicted.
+        let r2 = ChunkRange::new(5, 15);
+        let (i2, d2) = fixed_chunk_payload(&r2, CHUNK);
+        cache.put(&key, &r2, &i2, &d2).await.unwrap();
+
+        let hit = cache.get(&key, &r2).await.unwrap();
+        assert!(hit.is_some(), "new range must survive even when merged would overflow capacity");
+    }
+
+    #[tokio::test]
+    async fn coalesce_preserves_total_bytes_accounting() {
+        let (_root, cache) = fresh_cache(DEFAULT_CHUNK_CACHE_CAPACITY);
+        let key = single_key();
+        const CHUNK: usize = 8;
+
+        let r1 = ChunkRange::new(0, 10);
+        let (i1, d1) = fixed_chunk_payload(&r1, CHUNK);
+        cache.put(&key, &r1, &i1, &d1).await.unwrap();
+        let r2 = ChunkRange::new(8, 18);
+        let (i2, d2) = fixed_chunk_payload(&r2, CHUNK);
+        cache.put(&key, &r2, &i2, &d2).await.unwrap();
+
+        // num_items and total_bytes must reflect a single merged entry.
+        let state = cache.state.read().await;
+        assert_eq!(state.num_items, 1);
+        let items = state.inner.get(&key).unwrap();
+        assert_eq!(state.total_bytes, items[0].len);
     }
 }
 
