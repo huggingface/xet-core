@@ -3,6 +3,7 @@ mod disk;
 pub mod error;
 
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use async_trait::async_trait;
 pub use cache_manager::get_cache;
@@ -77,6 +78,43 @@ pub trait ChunkCache: Sync + Send {
 pub struct CacheConfig {
     pub cache_directory: PathBuf,
     pub cache_size: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum CacheEvictionPolicy {
+    #[default]
+    Random,
+    Lru,
+    Lfu,
+}
+
+impl FromStr for CacheEvictionPolicy {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "random" => Ok(Self::Random),
+            "lru" => Ok(Self::Lru),
+            "lfu" => Ok(Self::Lfu),
+            _ => Err(format!("unknown chunk cache eviction policy: {value}")),
+        }
+    }
+}
+
+impl std::fmt::Display for CacheEvictionPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Random => write!(f, "random"),
+            Self::Lru => write!(f, "lru"),
+            Self::Lfu => write!(f, "lfu"),
+        }
+    }
+}
+
+impl CacheEvictionPolicy {
+    pub(crate) fn from_xet_config(config: &XetConfig) -> Result<Self, ChunkCacheError> {
+        config.chunk_cache.eviction_policy.parse().map_err(ChunkCacheError::general)
+    }
 }
 
 impl CacheConfig {

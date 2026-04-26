@@ -6,7 +6,7 @@ use std::sync::{Arc, LazyLock, Mutex, Weak};
 use xet_runtime::config::XetConfig;
 
 use super::error::ChunkCacheError;
-use super::{CacheConfig, ChunkCache, DiskCache};
+use super::{CacheConfig, CacheEvictionPolicy, ChunkCache, DiskCache};
 
 // single instance of CACHE_MANAGER not exposed to outside users that
 // dedupes cache instances based on configurations
@@ -18,7 +18,24 @@ pub fn get_cache(xet_config: &XetConfig, config: &CacheConfig) -> Result<Arc<dyn
 }
 
 struct CacheManager {
-    vals: Mutex<HashMap<PathBuf, RefCell<Weak<dyn ChunkCache>>>>,
+    vals: Mutex<HashMap<CacheManagerKey, RefCell<Weak<dyn ChunkCache>>>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct CacheManagerKey {
+    cache_directory: PathBuf,
+    cache_size: u64,
+    eviction_policy: CacheEvictionPolicy,
+}
+
+impl CacheManagerKey {
+    fn new(xet_config: &XetConfig, config: &CacheConfig) -> Result<Self, ChunkCacheError> {
+        Ok(Self {
+            cache_directory: config.cache_directory.clone(),
+            cache_size: config.cache_size,
+            eviction_policy: CacheEvictionPolicy::from_xet_config(xet_config)?,
+        })
+    }
 }
 
 impl CacheManager {
@@ -29,12 +46,13 @@ impl CacheManager {
     }
 
     /// get takes a CacheConfig and checks if there exists a valid `DiskCache` with a matching
-    /// cache_directory then it will return an Arc to that `DiskCache` instance. If it doesn't exist
-    /// or the `DiskCache` instance has been deallocated (CacheManager only holds a weak pointer)
-    /// then it creates a new instance based on the provided config.
+    /// cache directory, capacity, and eviction policy. If it doesn't exist or the `DiskCache`
+    /// instance has been deallocated (CacheManager only holds a weak pointer), then it creates a
+    /// new instance based on the provided config.
     fn get(&self, xet_config: &XetConfig, config: &CacheConfig) -> Result<Arc<dyn ChunkCache>, ChunkCacheError> {
+        let cache_key = CacheManagerKey::new(xet_config, config)?;
         let mut vals = self.vals.lock()?;
-        if let Some(v) = vals.get_mut(&config.cache_directory) {
+        if let Some(v) = vals.get_mut(&cache_key) {
             let weak = v.borrow().clone();
             // if upgrade from Weak to Arc is successful, returns the upgraded pointer
             if let Some(value) = weak.upgrade() {
@@ -48,7 +66,7 @@ impl CacheManager {
         } else {
             // create a new Cache and insert weak pointer to managed map
             let result: Arc<dyn ChunkCache> = Arc::new(DiskCache::initialize(xet_config, config)?);
-            vals.insert(config.cache_directory.clone(), RefCell::new(Arc::downgrade(&result)));
+            vals.insert(cache_key, RefCell::new(Arc::downgrade(&result)));
             Ok(result)
         }
     }

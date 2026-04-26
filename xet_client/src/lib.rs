@@ -2,7 +2,7 @@
 //!
 //! Includes the [`cas_client`] for uploading/downloading Xorb objects and
 //! metadata shards, the [`hub_client`] for Hugging Face Hub API
-//! interactions, and a local [`chunk_cache`] with LRU eviction.
+//! interactions, and a local [`chunk_cache`] with configurable eviction.
 
 #![cfg_attr(feature = "strict", deny(warnings))]
 
