@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::GeneralPurpose;
 use base64::engine::general_purpose::URL_SAFE;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, error};
 use xet_core_structures::merklehash::MerkleHash;
 use xet_runtime::config::XetConfig;
@@ -42,25 +42,16 @@ struct CacheAccessStats {
 type CacheAccessStatsByKey = HashMap<Key, HashMap<CacheItem, CacheAccessStats>>;
 
 #[derive(Debug, Clone)]
-struct CacheState {
-    inner: HashMap<Key, Vec<VerificationCell<CacheItem>>>,
-    num_items: usize,
-    total_bytes: u64,
-    eviction_policy: CacheEvictionPolicy,
+struct CacheAccessState {
     access_clock: u64,
     access_stats: CacheAccessStatsByKey,
 }
 
-impl CacheState {
-    fn new(
-        state: HashMap<Key, Vec<VerificationCell<CacheItem>>>,
-        num_items: usize,
-        total_bytes: u64,
-        eviction_policy: CacheEvictionPolicy,
-    ) -> Self {
+impl CacheAccessState {
+    fn new(state: &HashMap<Key, Vec<VerificationCell<CacheItem>>>, num_items: usize) -> Self {
         let mut access_clock = 0u64;
         let mut access_stats: CacheAccessStatsByKey = HashMap::with_capacity(state.len());
-        for (key, items) in &state {
+        for (key, items) in state.iter() {
             for item in items {
                 access_clock = access_clock.saturating_add(1);
                 access_stats.entry(key.clone()).or_default().insert(
@@ -76,31 +67,9 @@ impl CacheState {
         debug_assert_eq!(access_stats.values().map(HashMap::len).sum::<usize>(), num_items);
 
         Self {
-            inner: state,
-            num_items,
-            total_bytes,
-            eviction_policy,
             access_clock,
             access_stats,
         }
-    }
-
-    fn find_match(&self, key: &Key, range: &ChunkRange) -> Option<VerificationCell<CacheItem>> {
-        let items = self.inner.get(key)?;
-
-        // attempt to find a matching range in the given key's items using
-        for item in items.iter() {
-            if item.range.start <= range.start && range.end <= item.range.end {
-                return Some(item.clone());
-            }
-        }
-        None
-    }
-
-    fn find_match_and_record_access(&mut self, key: &Key, range: &ChunkRange) -> Option<VerificationCell<CacheItem>> {
-        let item = self.find_match(key, range)?;
-        self.record_access(key, item.as_ref());
-        Some(item)
     }
 
     fn record_access(&mut self, key: &Key, item: &CacheItem) {
@@ -161,6 +130,42 @@ impl CacheState {
         self.access_clock = self.access_clock.saturating_add(1);
         self.access_clock
     }
+}
+
+#[derive(Debug, Clone)]
+struct CacheState {
+    inner: HashMap<Key, Vec<VerificationCell<CacheItem>>>,
+    num_items: usize,
+    total_bytes: u64,
+    eviction_policy: CacheEvictionPolicy,
+}
+
+impl CacheState {
+    fn new(
+        state: HashMap<Key, Vec<VerificationCell<CacheItem>>>,
+        num_items: usize,
+        total_bytes: u64,
+        eviction_policy: CacheEvictionPolicy,
+    ) -> Self {
+        Self {
+            inner: state,
+            num_items,
+            total_bytes,
+            eviction_policy,
+        }
+    }
+
+    fn find_match(&self, key: &Key, range: &ChunkRange) -> Option<VerificationCell<CacheItem>> {
+        let items = self.inner.get(key)?;
+
+        // attempt to find a matching range in the given key's items using
+        for item in items.iter() {
+            if item.range.start <= range.start && range.end <= item.range.end {
+                return Some(item.clone());
+            }
+        }
+        None
+    }
 
     /// removed items from the cache (including deleting from file system)
     /// until at least to_remove number of bytes have been removed
@@ -170,12 +175,13 @@ impl CacheState {
     fn evict_to_capacity(
         &mut self,
         max_total_bytes: u64,
+        access_state: &mut CacheAccessState,
     ) -> Result<Vec<(Key, VerificationCell<CacheItem>)>, ChunkCacheError> {
         let original_total_bytes = self.total_bytes;
         let mut ret = Vec::new();
 
         while self.total_bytes > max_total_bytes {
-            let Some((key, idx)) = self.item_to_evict() else {
+            let Some((key, idx)) = self.item_to_evict(access_state) else {
                 error!("attempted to evict item, but no item could be found to be evicted");
                 break;
             };
@@ -185,7 +191,7 @@ impl CacheState {
                 (cache_item, items.is_empty())
             };
             let len = cache_item.len;
-            self.remove_access_stats(&key, cache_item.as_ref());
+            access_state.remove_access_stats(&key, cache_item.as_ref());
 
             if remove_key {
                 self.inner.remove(&key);
@@ -205,11 +211,11 @@ impl CacheState {
         Ok(ret)
     }
 
-    fn item_to_evict(&self) -> Option<(Key, usize)> {
+    fn item_to_evict(&self, access_state: &CacheAccessState) -> Option<(Key, usize)> {
         match self.eviction_policy {
             CacheEvictionPolicy::Random => self.random_item(),
-            CacheEvictionPolicy::Lru => self.least_recently_used_item(),
-            CacheEvictionPolicy::Lfu => self.least_frequently_used_item(),
+            CacheEvictionPolicy::Lru => self.least_recently_used_item(access_state),
+            CacheEvictionPolicy::Lfu => self.least_frequently_used_item(access_state),
         }
     }
 
@@ -238,12 +244,12 @@ impl CacheState {
         None
     }
 
-    fn least_recently_used_item(&self) -> Option<(Key, usize)> {
-        self.min_by_access_stats(|candidate, best| candidate.last_access_tick < best.last_access_tick)
+    fn least_recently_used_item(&self, access_state: &CacheAccessState) -> Option<(Key, usize)> {
+        self.min_by_access_stats(access_state, |candidate, best| candidate.last_access_tick < best.last_access_tick)
     }
 
-    fn least_frequently_used_item(&self) -> Option<(Key, usize)> {
-        self.min_by_access_stats(|candidate, best| {
+    fn least_frequently_used_item(&self, access_state: &CacheAccessState) -> Option<(Key, usize)> {
+        self.min_by_access_stats(access_state, |candidate, best| {
             candidate.access_count < best.access_count
                 || candidate.access_count == best.access_count && candidate.last_access_tick < best.last_access_tick
         })
@@ -251,13 +257,14 @@ impl CacheState {
 
     fn min_by_access_stats(
         &self,
+        access_state: &CacheAccessState,
         should_replace: impl Fn(CacheAccessStats, CacheAccessStats) -> bool,
     ) -> Option<(Key, usize)> {
         let mut selected = None;
 
         for (key, items) in &self.inner {
             for (idx, item) in items.iter().enumerate() {
-                let stats = self.access_stats_for_item(key, item.as_ref());
+                let stats = access_state.access_stats_for_item(key, item.as_ref());
 
                 let replace = match selected {
                     Some((_, _, best_stats)) => should_replace(stats, best_stats),
@@ -274,6 +281,16 @@ impl CacheState {
     }
 }
 
+fn new_cache_state(
+    state: HashMap<Key, Vec<VerificationCell<CacheItem>>>,
+    num_items: usize,
+    total_bytes: u64,
+    eviction_policy: CacheEvictionPolicy,
+) -> (CacheState, CacheAccessState) {
+    let access_state = CacheAccessState::new(&state, num_items);
+    (CacheState::new(state, num_items, total_bytes, eviction_policy), access_state)
+}
+
 /// DiskCache is a ChunkCache implementor that saves data on the file system
 #[derive(Debug, Clone)]
 pub struct DiskCache {
@@ -281,6 +298,7 @@ pub struct DiskCache {
     capacity: u64,
     eviction_policy: CacheEvictionPolicy,
     state: Arc<RwLock<CacheState>>,
+    access_state: Arc<Mutex<CacheAccessState>>,
 }
 
 // helper for analysis binary to print inner state
@@ -363,10 +381,11 @@ impl DiskCache {
         let eviction_policy = CacheEvictionPolicy::from_xet_config(xet_config)?;
 
         // May take a while; don't block the runtime for this.
-        let state = Self::initialize_state(&cache_root, capacity, eviction_policy, xet_config)?;
+        let (state, access_state) = Self::initialize_state(&cache_root, capacity, eviction_policy, xet_config)?;
 
         Ok(Self {
             state: Arc::new(RwLock::new(state)),
+            access_state: Arc::new(Mutex::new(access_state)),
             cache_root: config.cache_directory.clone(),
             capacity,
             eviction_policy,
@@ -378,14 +397,14 @@ impl DiskCache {
         capacity: u64,
         eviction_policy: CacheEvictionPolicy,
         xet_config: &XetConfig,
-    ) -> Result<CacheState, ChunkCacheError> {
+    ) -> Result<(CacheState, CacheAccessState), ChunkCacheError> {
         let mut state = HashMap::new();
         let mut total_bytes = 0;
         let mut num_items = 0;
         let max_num_bytes = 2 * capacity;
 
         let Some(cache_root_readdir) = read_dir(cache_root)? else {
-            return Ok(CacheState::new(state, 0, 0, eviction_policy));
+            return Ok(new_cache_state(state, 0, 0, eviction_policy));
         };
 
         // loop through cache root directory, first level containing "prefix" directories
@@ -453,7 +472,7 @@ impl DiskCache {
                     // if already filled capacity, stop iterating over cache items
                     if total_bytes >= max_num_bytes {
                         state.insert(key, items);
-                        return Ok(CacheState::new(state, num_items, total_bytes, eviction_policy));
+                        return Ok(new_cache_state(state, num_items, total_bytes, eviction_policy));
                     }
                 }
 
@@ -463,7 +482,7 @@ impl DiskCache {
             }
         }
 
-        Ok(CacheState::new(state, num_items, total_bytes, eviction_policy))
+        Ok(new_cache_state(state, num_items, total_bytes, eviction_policy))
     }
 
     async fn get_impl(&self, key: &Key, range: &ChunkRange) -> OptionResult<CacheRange, ChunkCacheError> {
@@ -584,17 +603,20 @@ impl DiskCache {
         }
         fw.close()?;
 
+        let mut access_state = self.access_state.lock().await;
+
         // Evict entries to make sure we have enough room.
-        let evicted_paths = state_write.evict_to_capacity(self.capacity - cache_item.len)?;
+        let evicted_paths = state_write.evict_to_capacity(self.capacity - cache_item.len, &mut access_state)?;
 
         // add the item info in-memory state after evictions are done
         state_write.num_items += 1;
         state_write.total_bytes += cache_item.len;
-        state_write.record_insert(key, &cache_item);
+        access_state.record_insert(key, &cache_item);
         let item_set = state_write.inner.entry(key.clone()).or_default();
         item_set.push(VerificationCell::new_verified(cache_item));
 
         // release lock
+        drop(access_state);
         drop(state_write);
 
         // remove files after done with modifying in memory state and releasing lock
@@ -681,7 +703,10 @@ impl DiskCache {
         match self.eviction_policy {
             CacheEvictionPolicy::Random => self.state.read().await.find_match(key, range),
             CacheEvictionPolicy::Lru | CacheEvictionPolicy::Lfu => {
-                self.state.write().await.find_match_and_record_access(key, range)
+                let state = self.state.read().await;
+                let item = state.find_match(key, range)?;
+                self.access_state.lock().await.record_access(key, item.as_ref());
+                Some(item)
             },
         }
     }
@@ -706,7 +731,7 @@ impl DiskCache {
             };
 
             if let Some(removed_item) = removed_item {
-                state.remove_access_stats(key, removed_item.as_ref());
+                self.access_state.lock().await.remove_access_stats(key, removed_item.as_ref());
                 if remove_key {
                     state.inner.remove(key);
                 }
