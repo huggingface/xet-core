@@ -33,26 +33,13 @@ const PREFIX_DIR_NAME_LEN: usize = 2;
 
 type OptionResult<T, E> = Result<Option<T>, E>;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct CacheItemKey {
-    key: Key,
-    item: CacheItem,
-}
-
-impl CacheItemKey {
-    fn new(key: &Key, item: &CacheItem) -> Self {
-        Self {
-            key: key.clone(),
-            item: item.clone(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, Default)]
 struct CacheAccessStats {
     last_access_tick: u64,
     access_count: u64,
 }
+
+type CacheAccessStatsByKey = HashMap<Key, HashMap<CacheItem, CacheAccessStats>>;
 
 #[derive(Debug, Clone)]
 struct CacheState {
@@ -61,7 +48,7 @@ struct CacheState {
     total_bytes: u64,
     eviction_policy: CacheEvictionPolicy,
     access_clock: u64,
-    access_stats: HashMap<CacheItemKey, CacheAccessStats>,
+    access_stats: CacheAccessStatsByKey,
 }
 
 impl CacheState {
@@ -72,12 +59,12 @@ impl CacheState {
         eviction_policy: CacheEvictionPolicy,
     ) -> Self {
         let mut access_clock = 0u64;
-        let mut access_stats = HashMap::with_capacity(num_items);
+        let mut access_stats: CacheAccessStatsByKey = HashMap::with_capacity(state.len());
         for (key, items) in &state {
             for item in items {
                 access_clock = access_clock.saturating_add(1);
-                access_stats.insert(
-                    CacheItemKey::new(key, item.as_ref()),
+                access_stats.entry(key.clone()).or_default().insert(
+                    item.as_ref().clone(),
                     CacheAccessStats {
                         last_access_tick: access_clock,
                         access_count: 0,
@@ -86,7 +73,7 @@ impl CacheState {
             }
         }
 
-        debug_assert_eq!(access_stats.len(), num_items);
+        debug_assert_eq!(access_stats.values().map(HashMap::len).sum::<usize>(), num_items);
 
         Self {
             inner: state,
@@ -118,20 +105,56 @@ impl CacheState {
 
     fn record_access(&mut self, key: &Key, item: &CacheItem) {
         let access_tick = self.next_access_tick();
-        let stats = self.access_stats.entry(CacheItemKey::new(key, item)).or_default();
-        stats.last_access_tick = access_tick;
-        stats.access_count = stats.access_count.saturating_add(1);
+        if let Some(stats) = self.access_stats.get_mut(key).and_then(|item_stats| item_stats.get_mut(item)) {
+            stats.last_access_tick = access_tick;
+            stats.access_count = stats.access_count.saturating_add(1);
+        } else {
+            self.set_access_stats(
+                key,
+                item,
+                CacheAccessStats {
+                    last_access_tick: access_tick,
+                    access_count: 1,
+                },
+            );
+        }
     }
 
     fn record_insert(&mut self, key: &Key, item: &CacheItem) {
         let access_tick = self.next_access_tick();
-        self.access_stats.insert(
-            CacheItemKey::new(key, item),
+        self.set_access_stats(
+            key,
+            item,
             CacheAccessStats {
                 last_access_tick: access_tick,
                 access_count: 1,
             },
         );
+    }
+
+    fn set_access_stats(&mut self, key: &Key, item: &CacheItem, stats: CacheAccessStats) {
+        self.access_stats.entry(key.clone()).or_default().insert(item.clone(), stats);
+    }
+
+    fn access_stats_for_item(&self, key: &Key, item: &CacheItem) -> CacheAccessStats {
+        self.access_stats
+            .get(key)
+            .and_then(|item_stats| item_stats.get(item))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    fn remove_access_stats(&mut self, key: &Key, item: &CacheItem) {
+        let remove_key_stats = if let Some(item_stats) = self.access_stats.get_mut(key) {
+            item_stats.remove(item);
+            item_stats.is_empty()
+        } else {
+            false
+        };
+
+        if remove_key_stats {
+            self.access_stats.remove(key);
+        }
     }
 
     fn next_access_tick(&mut self) -> u64 {
@@ -156,12 +179,15 @@ impl CacheState {
                 error!("attempted to evict item, but no item could be found to be evicted");
                 break;
             };
-            let items = self.inner.get_mut(&key).ok_or(ChunkCacheError::Infallible)?;
-            let cache_item = items.swap_remove(idx);
+            let (cache_item, remove_key) = {
+                let items = self.inner.get_mut(&key).ok_or(ChunkCacheError::Infallible)?;
+                let cache_item = items.swap_remove(idx);
+                (cache_item, items.is_empty())
+            };
             let len = cache_item.len;
-            self.access_stats.remove(&CacheItemKey::new(&key, cache_item.as_ref()));
+            self.remove_access_stats(&key, cache_item.as_ref());
 
-            if items.is_empty() {
+            if remove_key {
                 self.inner.remove(&key);
             }
 
@@ -231,11 +257,7 @@ impl CacheState {
 
         for (key, items) in &self.inner {
             for (idx, item) in items.iter().enumerate() {
-                let stats = self
-                    .access_stats
-                    .get(&CacheItemKey::new(key, item.as_ref()))
-                    .copied()
-                    .unwrap_or_default();
+                let stats = self.access_stats_for_item(key, item.as_ref());
 
                 let replace = match selected {
                     Some((_, _, best_stats)) => should_replace(stats, best_stats),
@@ -243,12 +265,12 @@ impl CacheState {
                 };
 
                 if replace {
-                    selected = Some((key.clone(), idx, stats));
+                    selected = Some((key, idx, stats));
                 }
             }
         }
 
-        selected.map(|(key, idx, _)| (key, idx))
+        selected.map(|(key, idx, _)| (key.clone(), idx))
     }
 }
 
@@ -656,23 +678,12 @@ impl DiskCache {
     }
 
     async fn find_match_for_access(&self, key: &Key, range: &ChunkRange) -> Option<VerificationCell<CacheItem>> {
-        let matched = self.state.read().await.find_match(key, range);
-
-        if matched.is_some() {
-            match self.eviction_policy {
-                CacheEvictionPolicy::Random => {}
-                CacheEvictionPolicy::Lru | CacheEvictionPolicy::Lfu => {
-                    let state = Arc::clone(&self.state);
-                    let key = key.clone();
-                    let range = range.clone();
-                    tokio::spawn(async move {
-                        let _ = state.write().await.find_match_and_record_access(&key, &range);
-                    });
-                },
-            }
+        match self.eviction_policy {
+            CacheEvictionPolicy::Random => self.state.read().await.find_match(key, range),
+            CacheEvictionPolicy::Lru | CacheEvictionPolicy::Lfu => {
+                self.state.write().await.find_match_and_record_access(key, range)
+            },
         }
-
-        matched
     }
 
     /// removes an item from both the in-memory state of the cache and the file system
@@ -695,7 +706,7 @@ impl DiskCache {
             };
 
             if let Some(removed_item) = removed_item {
-                state.access_stats.remove(&CacheItemKey::new(key, removed_item.as_ref()));
+                state.remove_access_stats(key, removed_item.as_ref());
                 if remove_key {
                     state.inner.remove(key);
                 }
