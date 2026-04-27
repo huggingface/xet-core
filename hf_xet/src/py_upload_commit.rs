@@ -9,6 +9,62 @@ use xet_pkg::xet_session::{
     XetUploadCommit, XetUploadCommitBuilder,
 };
 
+// ── SHA-256 policy sentinels ──────────────────────────────────────────────────
+
+/// Sentinel: compute SHA-256 from the file data (default behaviour).
+///
+/// Pass this as the ``sha256`` argument to :meth:`XetUploadCommit.upload_file`,
+/// :meth:`XetUploadCommit.upload_bytes`, or :meth:`XetUploadCommit.upload_stream`.
+#[pyclass(frozen, name = "_ComputeSha256Type")]
+pub struct PyComputeSha256;
+
+#[pymethods]
+impl PyComputeSha256 {
+    fn __repr__(&self) -> &'static str {
+        "COMPUTE_SHA256"
+    }
+}
+
+/// Sentinel: skip SHA-256 computation entirely.
+///
+/// Pass this as the ``sha256`` argument to :meth:`XetUploadCommit.upload_file`,
+/// :meth:`XetUploadCommit.upload_bytes`, or :meth:`XetUploadCommit.upload_stream`.
+#[pyclass(frozen, name = "_SkipSha256Type")]
+pub struct PySkipSha256;
+
+#[pymethods]
+impl PySkipSha256 {
+    fn __repr__(&self) -> &'static str {
+        "SKIP_SHA256"
+    }
+}
+
+/// Convert the Python ``sha256`` argument to a :type:`Sha256Policy`.
+///
+/// Accepts:
+/// - ``None`` or :data:`COMPUTE_SHA256` → compute from data
+/// - :data:`SKIP_SHA256` → skip
+/// - ``str`` → treat as a pre-computed hex digest
+fn parse_sha256(py: Python<'_>, sha256: Option<Py<PyAny>>) -> PyResult<Sha256Policy> {
+    match sha256 {
+        None => Ok(Sha256Policy::Compute),
+        Some(obj) => {
+            let obj = obj.bind(py);
+            if obj.is_instance_of::<PyComputeSha256>() {
+                Ok(Sha256Policy::Compute)
+            } else if obj.is_instance_of::<PySkipSha256>() {
+                Ok(Sha256Policy::Skip)
+            } else if let Ok(hex) = obj.extract::<String>() {
+                Ok(Sha256Policy::from_hex(&hex))
+            } else {
+                Err(pyo3::exceptions::PyTypeError::new_err(
+                    "sha256 must be a str, COMPUTE_SHA256, or SKIP_SHA256",
+                ))
+            }
+        },
+    }
+}
+
 use crate::headers::{build_header_map, build_headers_with_user_agent, default_headers};
 use crate::py_file_upload_handle::PyXetFileUpload;
 use crate::py_stream_upload_handle::PyXetStreamUpload;
@@ -259,14 +315,20 @@ impl PyXetUploadCommit {
     /// Returns immediately with a :class:`XetFileUpload` handle.  The upload
     /// runs in the background.  Call :meth:`XetUploadCommit.commit` (or exit
     /// the ``with`` block) to wait for all uploads to complete.
+    ///
+    /// ``sha256`` controls how the SHA-256 digest is handled:
+    ///
+    /// - ``sha256="f2358d9a…"`` — pre-computed hex string (most common for models/datasets)
+    /// - ``sha256=hf_xet.COMPUTE_SHA256`` — compute from file data (default when omitted)
+    /// - ``sha256=hf_xet.SKIP_SHA256`` — skip SHA-256 entirely
     #[pyo3(signature = (path, sha256=None))]
     pub fn upload_file(
         &self,
         py: Python<'_>,
         path: String,
-        sha256: Option<PySha256Policy>,
+        sha256: Option<Py<PyAny>>,
     ) -> PyResult<PyXetFileUpload> {
-        let policy = sha256.map(|p| p.inner).unwrap_or(Sha256Policy::Compute);
+        let policy = parse_sha256(py, sha256)?;
         let inner = self.inner.clone();
         let handle = py.detach(|| inner.upload_from_path_blocking(path.into(), policy).map_err(convert_xet_error))?;
         if let Some(ref handles) = self.upload_handles {
@@ -281,16 +343,16 @@ impl PyXetUploadCommit {
     /// Queue raw bytes for upload.
     ///
     /// ``name`` is an optional display name used for progress reporting and
-    /// telemetry.
+    /// telemetry.  ``sha256`` accepts the same values as :meth:`upload_file`.
     #[pyo3(signature = (data, sha256=None, name=None))]
     pub fn upload_bytes(
         &self,
         py: Python<'_>,
         data: Vec<u8>,
-        sha256: Option<PySha256Policy>,
+        sha256: Option<Py<PyAny>>,
         name: Option<String>,
     ) -> PyResult<PyXetFileUpload> {
-        let policy = sha256.map(|p| p.inner).unwrap_or(Sha256Policy::Compute);
+        let policy = parse_sha256(py, sha256)?;
         let inner = self.inner.clone();
         let handle = py.detach(|| inner.upload_bytes_blocking(data, policy, name).map_err(convert_xet_error))?;
         if let Some(ref handles) = self.upload_handles {
@@ -309,7 +371,7 @@ impl PyXetUploadCommit {
     /// **before** calling :meth:`XetUploadCommit.commit`.
     ///
     /// ``name`` is an optional display name used for progress reporting and
-    /// telemetry.
+    /// telemetry.  ``sha256`` accepts the same values as :meth:`upload_file`.
     ///
     /// Example:
     ///
@@ -321,8 +383,13 @@ impl PyXetUploadCommit {
     /// print(result.xet_info.hash, result.xet_info.file_size)
     /// ```
     #[pyo3(signature = (name=None, sha256=None))]
-    pub fn upload_stream(&self, name: Option<String>, sha256: Option<PySha256Policy>) -> PyResult<PyXetStreamUpload> {
-        let policy = sha256.map(|p| p.inner).unwrap_or(Sha256Policy::Compute);
+    pub fn upload_stream(
+        &self,
+        py: Python<'_>,
+        name: Option<String>,
+        sha256: Option<Py<PyAny>>,
+    ) -> PyResult<PyXetStreamUpload> {
+        let policy = parse_sha256(py, sha256)?;
         let handle = self.inner.upload_stream_blocking(name, policy).map_err(convert_xet_error)?;
         Ok(PyXetStreamUpload { inner: handle })
     }
@@ -363,50 +430,6 @@ impl PyXetUploadCommit {
     }
 }
 
-// ── PySha256Policy ────────────────────────────────────────────────────────────
-
-/// Controls how SHA-256 is handled during upload.
-///
-/// Pass one of the three factory methods to ``upload_file`` or
-/// ``upload_bytes``:
-///
-/// ```text
-/// commit.upload_file("model.bin", sha256=hf_xet.Sha256Policy.compute())
-/// commit.upload_file("model.bin", sha256=hf_xet.Sha256Policy.provided("a1b2…"))
-/// commit.upload_file("model.bin", sha256=hf_xet.Sha256Policy.skip())
-/// ```
-#[pyclass(name = "Sha256Policy")]
-#[derive(Clone)]
-pub struct PySha256Policy {
-    pub(crate) inner: Sha256Policy,
-}
-
-#[pymethods]
-impl PySha256Policy {
-    /// Compute SHA-256 from the file data (default).
-    #[staticmethod]
-    pub fn compute() -> Self {
-        Self {
-            inner: Sha256Policy::Compute,
-        }
-    }
-
-    /// Use a pre-computed SHA-256 hex string.
-    #[staticmethod]
-    pub fn provided(hex: &str) -> Self {
-        Self {
-            inner: Sha256Policy::from_hex(hex),
-        }
-    }
-
-    /// Skip SHA-256 entirely.
-    #[staticmethod]
-    pub fn skip() -> Self {
-        Self {
-            inner: Sha256Policy::Skip,
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -415,23 +438,53 @@ mod tests {
 
     use super::*;
 
-    // ── PySha256Policy ────────────────────────────────────────────────────────
+    // ── parse_sha256 ──────────────────────────────────────────────────────────
 
     #[test]
-    fn test_sha256_policy_compute() {
-        assert!(matches!(PySha256Policy::compute().inner, Sha256Policy::Compute));
+    fn test_parse_sha256_none_gives_compute() {
+        Python::attach(|py| {
+            let policy = parse_sha256(py, None).unwrap();
+            assert!(matches!(policy, Sha256Policy::Compute));
+        });
     }
 
     #[test]
-    fn test_sha256_policy_skip() {
-        assert!(matches!(PySha256Policy::skip().inner, Sha256Policy::Skip));
+    fn test_parse_sha256_compute_sentinel() {
+        Python::attach(|py| {
+            let sentinel: Py<PyAny> = Py::new(py, PyComputeSha256).unwrap().into();
+            let policy = parse_sha256(py, Some(sentinel)).unwrap();
+            assert!(matches!(policy, Sha256Policy::Compute));
+        });
     }
 
     #[test]
-    fn test_sha256_policy_provided() {
-        // Must be a valid 64-char sha256 hex string.
-        let valid_hex = "a".repeat(64);
-        assert!(matches!(PySha256Policy::provided(&valid_hex).inner, Sha256Policy::Provided(_)));
+    fn test_parse_sha256_skip_sentinel() {
+        Python::attach(|py| {
+            let sentinel: Py<PyAny> = Py::new(py, PySkipSha256).unwrap().into();
+            let policy = parse_sha256(py, Some(sentinel)).unwrap();
+            assert!(matches!(policy, Sha256Policy::Skip));
+        });
+    }
+
+    #[test]
+    fn test_parse_sha256_provided_hex_string() {
+        Python::attach(|py| {
+            let hex = "a".repeat(64);
+            let obj: Py<PyAny> = hex.into_pyobject(py).unwrap().into_any().unbind();
+            let policy = parse_sha256(py, Some(obj)).unwrap();
+            assert!(matches!(policy, Sha256Policy::Provided(_)));
+        });
+    }
+
+    #[test]
+    fn test_parse_sha256_invalid_type_returns_type_error() {
+        Python::attach(|py| {
+            let obj: Py<PyAny> = 42i64.into_pyobject(py).unwrap().into_any().unbind();
+            match parse_sha256(py, Some(obj)) {
+                Ok(_) => panic!("expected TypeError"),
+                Err(e) => assert!(e.is_instance_of::<pyo3::exceptions::PyTypeError>(py)),
+            }
+        });
     }
 
     // ── PyXetUploadCommit ─────────────────────────────────────────────────────

@@ -1,5 +1,5 @@
 """
-Tests for XetUploadCommit: upload_file, upload_bytes, upload_stream, Sha256Policy.
+Tests for XetUploadCommit: upload_file, upload_bytes, upload_stream, sha256 sentinels.
 
 Not covered here (require a real CAS server):
   - with_token_info / with_token_refresh_url / with_custom_headers on the builder
@@ -8,22 +8,19 @@ Not covered here (require a real CAS server):
 import hf_xet
 
 
-# ── Sha256Policy ──────────────────────────────────────────────────────────────
+# ── sha256 sentinels ──────────────────────────────────────────────────────────
 
-class TestSha256Policy:
-    def test_compute_is_default_variant(self):
-        # Verify construction doesn't raise; the variant is opaque from Python.
-        policy = hf_xet.Sha256Policy.compute()
-        assert policy is not None
+class TestSha256Sentinels:
+    def test_compute_sentinel_is_not_none(self):
+        assert hf_xet.COMPUTE_SHA256 is not None
 
-    def test_skip_is_constructable(self):
-        policy = hf_xet.Sha256Policy.skip()
-        assert policy is not None
+    def test_skip_sentinel_is_not_none(self):
+        assert hf_xet.SKIP_SHA256 is not None
 
-    def test_provided_accepts_64_char_hex(self):
-        hex_str = "a" * 64
-        policy = hf_xet.Sha256Policy.provided(hex_str)
-        assert policy is not None
+    def test_sentinels_have_repr(self):
+        assert repr(hf_xet.COMPUTE_SHA256) == "COMPUTE_SHA256"
+        assert repr(hf_xet.SKIP_SHA256) == "SKIP_SHA256"
+
 
 
 # ── upload_file ───────────────────────────────────────────────────────────────
@@ -34,7 +31,7 @@ class TestUploadFile:
         src = tmp_path / "src.bin"
         src.write_bytes(data)
         commit = hf_xet.XetSession().new_upload_commit().with_endpoint(endpoint).build()
-        h = commit.upload_file(str(src), sha256=hf_xet.Sha256Policy.skip())
+        h = commit.upload_file(str(src), sha256=hf_xet.SKIP_SHA256)
         commit.commit()
         result = h.result()
         assert result.xet_info.file_size == len(data)
@@ -45,17 +42,26 @@ class TestUploadFile:
         src = tmp_path / "src.bin"
         src.write_bytes(b"sha256 file")
         commit = hf_xet.XetSession().new_upload_commit().with_endpoint(endpoint).build()
-        h = commit.upload_file(str(src), sha256=hf_xet.Sha256Policy.compute())
+        h = commit.upload_file(str(src), sha256=hf_xet.COMPUTE_SHA256)
         commit.commit()
         result = h.result()
         assert result.xet_info.sha256 is not None
         assert len(result.xet_info.sha256) == 64
 
+    def test_sha256_provided_as_string_for_file(self, endpoint, tmp_path):
+        src = tmp_path / "src.bin"
+        src.write_bytes(b"provided sha256 file")
+        commit = hf_xet.XetSession().new_upload_commit().with_endpoint(endpoint).build()
+        precomputed = "b" * 64
+        h = commit.upload_file(str(src), sha256=precomputed)
+        commit.commit()
+        assert h.result().xet_info.sha256 == precomputed
+
     def test_try_result_after_commit(self, endpoint, tmp_path):
         src = tmp_path / "src.bin"
         src.write_bytes(b"try result")
         commit = hf_xet.XetSession().new_upload_commit().with_endpoint(endpoint).build()
-        h = commit.upload_file(str(src), sha256=hf_xet.Sha256Policy.skip())
+        h = commit.upload_file(str(src), sha256=hf_xet.SKIP_SHA256)
         commit.commit()
         result = h.try_result()
         assert result is not None
@@ -65,7 +71,7 @@ class TestUploadFile:
         src = tmp_path / "src.bin"
         src.write_bytes(b"task id")
         commit = hf_xet.XetSession().new_upload_commit().with_endpoint(endpoint).build()
-        h = commit.upload_file(str(src), sha256=hf_xet.Sha256Policy.skip())
+        h = commit.upload_file(str(src), sha256=hf_xet.SKIP_SHA256)
         commit.commit()
         assert h.task_id() is not None
 
@@ -76,7 +82,7 @@ class TestUploadBytes:
     def test_result_has_correct_file_size(self, endpoint):
         data = b"hello upload bytes"
         commit = hf_xet.XetSession().new_upload_commit().with_endpoint(endpoint).build()
-        h = commit.upload_bytes(data, name="f.bin", sha256=hf_xet.Sha256Policy.skip())
+        h = commit.upload_bytes(data, name="f.bin", sha256=hf_xet.SKIP_SHA256)
         commit.commit()
         result = h.result()
         assert result.xet_info.file_size == len(data)
@@ -84,22 +90,29 @@ class TestUploadBytes:
 
     def test_sha256_computed_when_requested(self, endpoint):
         commit = hf_xet.XetSession().new_upload_commit().with_endpoint(endpoint).build()
-        h = commit.upload_bytes(b"compute sha256", sha256=hf_xet.Sha256Policy.compute())
+        h = commit.upload_bytes(b"compute sha256", sha256=hf_xet.COMPUTE_SHA256)
         commit.commit()
         result = h.result()
         assert result.xet_info.sha256 is not None
         assert len(result.xet_info.sha256) == 64
 
+    def test_sha256_provided_as_string(self, endpoint):
+        commit = hf_xet.XetSession().new_upload_commit().with_endpoint(endpoint).build()
+        precomputed = "a" * 64
+        h = commit.upload_bytes(b"provided sha256", sha256=precomputed)
+        commit.commit()
+        assert h.result().xet_info.sha256 == precomputed
+
     def test_sha256_skipped_when_requested(self, endpoint):
         commit = hf_xet.XetSession().new_upload_commit().with_endpoint(endpoint).build()
-        h = commit.upload_bytes(b"skip sha256", sha256=hf_xet.Sha256Policy.skip())
+        h = commit.upload_bytes(b"skip sha256", sha256=hf_xet.SKIP_SHA256)
         commit.commit()
         assert h.result().xet_info.sha256 is None
 
     def test_commit_report_contains_result(self, endpoint):
         data = b"report content"
         commit = hf_xet.XetSession().new_upload_commit().with_endpoint(endpoint).build()
-        h = commit.upload_bytes(data, sha256=hf_xet.Sha256Policy.skip())
+        h = commit.upload_bytes(data, sha256=hf_xet.SKIP_SHA256)
         report = commit.commit()
         result = report.uploads[h.task_id()]
         assert result.xet_info.file_size == len(data)
@@ -108,7 +121,7 @@ class TestUploadBytes:
     def test_multiple_files_in_one_commit(self, endpoint):
         files = {f"f{i}.bin": f"content {i}".encode() for i in range(4)}
         commit = hf_xet.XetSession().new_upload_commit().with_endpoint(endpoint).build()
-        handles = {name: commit.upload_bytes(data, name=name, sha256=hf_xet.Sha256Policy.skip())
+        handles = {name: commit.upload_bytes(data, name=name, sha256=hf_xet.SKIP_SHA256)
                    for name, data in files.items()}
         commit.commit()
         for name, h in handles.items():
@@ -134,7 +147,7 @@ class TestUploadBytes:
 
     def test_context_manager_commits_on_normal_exit(self, endpoint):
         with hf_xet.XetSession().new_upload_commit().with_endpoint(endpoint).build() as commit:
-            h = commit.upload_bytes(b"context manager", sha256=hf_xet.Sha256Policy.skip())
+            h = commit.upload_bytes(b"context manager", sha256=hf_xet.SKIP_SHA256)
         result = h.result()
         assert result.xet_info.file_size == len(b"context manager")
         assert result.xet_info.hash
@@ -143,7 +156,7 @@ class TestUploadBytes:
         raised = False
         try:
             with hf_xet.XetSession().new_upload_commit().with_endpoint(endpoint).build() as commit:
-                commit.upload_bytes(b"will be aborted", sha256=hf_xet.Sha256Policy.skip())
+                commit.upload_bytes(b"will be aborted", sha256=hf_xet.SKIP_SHA256)
                 raise ValueError("intentional error")
         except ValueError:
             raised = True

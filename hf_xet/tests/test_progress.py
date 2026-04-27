@@ -51,8 +51,8 @@ class TestUploadProgressCallback:
                   .with_endpoint(endpoint)
                   .with_progress_callback(on_progress, interval_ms=10)
                   .build())
-        commit.upload_bytes(b"file a", name="a.bin", sha256=hf_xet.Sha256Policy.skip())
-        commit.upload_bytes(b"file b", name="b.bin", sha256=hf_xet.Sha256Policy.skip())
+        commit.upload_bytes(b"file a", name="a.bin", sha256=hf_xet.SKIP_SHA256)
+        commit.upload_bytes(b"file b", name="b.bin", sha256=hf_xet.SKIP_SHA256)
         commit.commit()
 
         fired.wait(timeout=1.0)
@@ -73,7 +73,7 @@ class TestUploadProgressCallback:
                   .with_endpoint(endpoint)
                   .with_progress_callback(on_progress, interval_ms=10)
                   .build())
-        commit.upload_bytes(b"progress fields", name="p.bin", sha256=hf_xet.Sha256Policy.skip())
+        commit.upload_bytes(b"progress fields", name="p.bin", sha256=hf_xet.SKIP_SHA256)
         commit.commit()
 
         fired.wait(timeout=1.0)

@@ -96,7 +96,10 @@ where
 pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // ── New XetSession API ───────────────────────────────────────────────────
     m.add_class::<py_xet_session::PyXetSession>()?;
-    m.add_class::<py_upload_commit::PySha256Policy>()?;
+    m.add_class::<py_upload_commit::PyComputeSha256>()?;
+    m.add_class::<py_upload_commit::PySkipSha256>()?;
+    m.add("COMPUTE_SHA256", py_upload_commit::PyComputeSha256)?;
+    m.add("SKIP_SHA256", py_upload_commit::PySkipSha256)?;
     m.add_class::<py_upload_commit::PyXetUploadCommitBuilder>()?;
     m.add_class::<py_upload_commit::PyXetUploadCommit>()?;
     m.add_class::<py_file_upload_handle::PyXetFileUpload>()?;
