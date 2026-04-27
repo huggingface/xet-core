@@ -656,12 +656,23 @@ impl DiskCache {
     }
 
     async fn find_match_for_access(&self, key: &Key, range: &ChunkRange) -> Option<VerificationCell<CacheItem>> {
-        match self.eviction_policy {
-            CacheEvictionPolicy::Random => self.state.read().await.find_match(key, range),
-            CacheEvictionPolicy::Lru | CacheEvictionPolicy::Lfu => {
-                self.state.write().await.find_match_and_record_access(key, range)
-            },
+        let matched = self.state.read().await.find_match(key, range);
+
+        if matched.is_some() {
+            match self.eviction_policy {
+                CacheEvictionPolicy::Random => {}
+                CacheEvictionPolicy::Lru | CacheEvictionPolicy::Lfu => {
+                    let state = Arc::clone(&self.state);
+                    let key = key.clone();
+                    let range = range.clone();
+                    tokio::spawn(async move {
+                        let _ = state.write().await.find_match_and_record_access(&key, &range);
+                    });
+                },
+            }
         }
+
+        matched
     }
 
     /// removes an item from both the in-memory state of the cache and the file system
