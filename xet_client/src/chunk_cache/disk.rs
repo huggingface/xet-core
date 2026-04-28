@@ -33,15 +33,8 @@ const PREFIX_DIR_NAME_LEN: usize = 2;
 
 type OptionResult<T, E> = Result<Option<T>, E>;
 
-#[derive(Debug, Clone, Copy, Default)]
-struct CacheAccessStats {
-    last_access_tick: u64,
-    access_count: u64,
-}
-
 #[derive(Debug, Clone, Copy)]
 struct CacheAccessEntry {
-    stats: CacheAccessStats,
     item_index: usize,
     lru_node_index: usize,
 }
@@ -58,7 +51,6 @@ struct LruNode {
 
 #[derive(Debug, Clone)]
 struct CacheAccessState {
-    access_clock: u64,
     access_entries: CacheAccessEntriesByKey,
     lru_nodes: Vec<LruNode>,
     free_lru_nodes: Vec<usize>,
@@ -70,7 +62,6 @@ struct CacheAccessState {
 impl CacheAccessState {
     fn new(state: &HashMap<Key, Vec<VerificationCell<CacheItem>>>, num_items: usize) -> Self {
         let mut access_state = Self {
-            access_clock: 0,
             access_entries: HashMap::with_capacity(state.len()),
             lru_nodes: Vec::with_capacity(num_items),
             free_lru_nodes: Vec::new(),
@@ -81,16 +72,7 @@ impl CacheAccessState {
 
         for (key, items) in state.iter() {
             for (item_index, item) in items.iter().enumerate() {
-                let access_tick = access_state.next_access_tick();
-                access_state.set_access_entry(
-                    key,
-                    item.as_ref(),
-                    item_index,
-                    CacheAccessStats {
-                        last_access_tick: access_tick,
-                        access_count: 0,
-                    },
-                );
+                access_state.set_access_entry(key, item.as_ref(), item_index);
             }
         }
 
@@ -101,14 +83,11 @@ impl CacheAccessState {
     }
 
     fn record_access(&mut self, key: &Key, item: &CacheItem, item_index: usize) {
-        let access_tick = self.next_access_tick();
         let lru_node_index = if let Some(entry) = self
             .access_entries
             .get_mut(key)
             .and_then(|item_entries| item_entries.get_mut(item))
         {
-            entry.stats.last_access_tick = access_tick;
-            entry.stats.access_count = entry.stats.access_count.saturating_add(1);
             entry.item_index = item_index;
             Some(entry.lru_node_index)
         } else {
@@ -118,36 +97,15 @@ impl CacheAccessState {
         if let Some(lru_node_index) = lru_node_index {
             self.move_lru_node_to_tail(lru_node_index);
         } else {
-            self.set_access_stats(
-                key,
-                item,
-                item_index,
-                CacheAccessStats {
-                    last_access_tick: access_tick,
-                    access_count: 1,
-                },
-            );
+            self.set_access_entry(key, item, item_index);
         }
     }
 
     fn record_insert(&mut self, key: &Key, item: &CacheItem, item_index: usize) {
-        let access_tick = self.next_access_tick();
-        self.set_access_stats(
-            key,
-            item,
-            item_index,
-            CacheAccessStats {
-                last_access_tick: access_tick,
-                access_count: 1,
-            },
-        );
+        self.set_access_entry(key, item, item_index);
     }
 
-    fn set_access_stats(&mut self, key: &Key, item: &CacheItem, item_index: usize, stats: CacheAccessStats) {
-        self.set_access_entry(key, item, item_index, stats);
-    }
-
-    fn set_access_entry(&mut self, key: &Key, item: &CacheItem, item_index: usize, stats: CacheAccessStats) {
+    fn set_access_entry(&mut self, key: &Key, item: &CacheItem, item_index: usize) {
         if let Some(lru_node_index) = self
             .access_entries
             .get(key)
@@ -161,19 +119,10 @@ impl CacheAccessState {
         self.access_entries.entry(key.clone()).or_default().insert(
             item.clone(),
             CacheAccessEntry {
-                stats,
                 item_index,
                 lru_node_index,
             },
         );
-    }
-
-    fn access_stats_for_item(&self, key: &Key, item: &CacheItem) -> CacheAccessStats {
-        self.access_entries
-            .get(key)
-            .and_then(|item_entries| item_entries.get(item))
-            .map(|entry| entry.stats)
-            .unwrap_or_default()
     }
 
     fn item_index(&self, key: &Key, item: &CacheItem) -> Option<usize> {
@@ -207,7 +156,7 @@ impl CacheAccessState {
         Some((node.key.clone(), item_index))
     }
 
-    fn remove_access_stats(&mut self, key: &Key, item: &CacheItem) {
+    fn remove_access_entry(&mut self, key: &Key, item: &CacheItem) {
         let (entry, remove_key_entries) = if let Some(item_entries) = self.access_entries.get_mut(key) {
             let entry = item_entries.remove(item);
             (entry, item_entries.is_empty())
@@ -222,11 +171,6 @@ impl CacheAccessState {
         if let Some(entry) = entry {
             self.remove_lru_node(entry.lru_node_index);
         }
-    }
-
-    fn next_access_tick(&mut self) -> u64 {
-        self.access_clock = self.access_clock.saturating_add(1);
-        self.access_clock
     }
 
     fn push_lru_node(&mut self, key: Key, item: CacheItem) -> usize {
@@ -366,7 +310,7 @@ impl CacheState {
                 if let Some(swapped_item) = swapped_item {
                     access_state.set_item_index(&key, &swapped_item, idx);
                 }
-                access_state.remove_access_stats(&key, cache_item.as_ref());
+                access_state.remove_access_entry(&key, cache_item.as_ref());
             }
 
             if remove_key {
@@ -392,9 +336,6 @@ impl CacheState {
             CacheEvictionPolicy::Random => self.random_item(),
             CacheEvictionPolicy::Lru => {
                 self.least_recently_used_item(access_state.expect("LRU eviction requires cache access state"))
-            },
-            CacheEvictionPolicy::Lfu => {
-                self.least_frequently_used_item(access_state.expect("LFU eviction requires cache access state"))
             },
         }
     }
@@ -427,38 +368,6 @@ impl CacheState {
     fn least_recently_used_item(&self, access_state: &CacheAccessState) -> Option<(Key, usize)> {
         access_state.least_recently_used_item()
     }
-
-    fn least_frequently_used_item(&self, access_state: &CacheAccessState) -> Option<(Key, usize)> {
-        self.min_by_access_stats(access_state, |candidate, best| {
-            candidate.access_count < best.access_count
-                || candidate.access_count == best.access_count && candidate.last_access_tick < best.last_access_tick
-        })
-    }
-
-    fn min_by_access_stats(
-        &self,
-        access_state: &CacheAccessState,
-        should_replace: impl Fn(CacheAccessStats, CacheAccessStats) -> bool,
-    ) -> Option<(Key, usize)> {
-        let mut selected = None;
-
-        for (key, items) in &self.inner {
-            for (idx, item) in items.iter().enumerate() {
-                let stats = access_state.access_stats_for_item(key, item.as_ref());
-
-                let replace = match selected {
-                    Some((_, _, best_stats)) => should_replace(stats, best_stats),
-                    None => true,
-                };
-
-                if replace {
-                    selected = Some((key, idx, stats));
-                }
-            }
-        }
-
-        selected.map(|(key, idx, _)| (key.clone(), idx))
-    }
 }
 
 fn new_cache_state(
@@ -469,7 +378,7 @@ fn new_cache_state(
 ) -> (CacheState, Option<CacheAccessState>) {
     let access_state = match eviction_policy {
         CacheEvictionPolicy::Random => None,
-        CacheEvictionPolicy::Lru | CacheEvictionPolicy::Lfu => Some(CacheAccessState::new(&state, num_items)),
+        CacheEvictionPolicy::Lru => Some(CacheAccessState::new(&state, num_items)),
     };
     (CacheState::new(state, num_items, total_bytes, eviction_policy), access_state)
 }
@@ -892,12 +801,12 @@ impl DiskCache {
     async fn find_match_for_access(&self, key: &Key, range: &ChunkRange) -> Option<VerificationCell<CacheItem>> {
         match self.eviction_policy {
             CacheEvictionPolicy::Random => self.state.read().await.find_match(key, range),
-            CacheEvictionPolicy::Lru | CacheEvictionPolicy::Lfu => {
+            CacheEvictionPolicy::Lru => {
                 let state = self.state.read().await;
                 let (item_index, item) = state.find_match_with_index(key, range)?;
                 self.access_state
                     .as_ref()
-                    .expect("LRU/LFU eviction requires cache access state")
+                    .expect("LRU eviction requires cache access state")
                     .lock()
                     .await
                     .record_access(key, item.as_ref(), item_index);
@@ -934,7 +843,7 @@ impl DiskCache {
 
             if let Some(removed_item) = removed_item {
                 if let Some(access_state) = access_state.as_deref_mut() {
-                    access_state.remove_access_stats(key, removed_item.as_ref());
+                    access_state.remove_access_entry(key, removed_item.as_ref());
                 }
                 if remove_key {
                     state.inner.remove(key);
@@ -1261,9 +1170,6 @@ mod tests {
 
         let lru_cache = DiskCache::initialize(&xet_config_with_eviction_policy("lru"), &config).unwrap();
         assert!(lru_cache.access_state.is_some());
-
-        let lfu_cache = DiskCache::initialize(&xet_config_with_eviction_policy("lfu"), &config).unwrap();
-        assert!(lfu_cache.access_state.is_some());
     }
 
     #[tokio::test]
@@ -1447,35 +1353,6 @@ mod tests {
         assert!(cache.get(&key, &range_b).await.unwrap().is_none());
         assert!(cache.get(&key, &range_c).await.unwrap().is_some());
         assert!(cache.get(&key, &range_d).await.unwrap().is_some());
-    }
-
-    #[tokio::test]
-    async fn test_lfu_eviction_keeps_frequently_used_item() {
-        let cache_root = TempDir::new().unwrap();
-        let config = CacheConfig {
-            cache_directory: cache_root.path().to_path_buf(),
-            cache_size: policy_test_capacity(),
-        };
-        let xet_config = xet_config_with_eviction_policy("lfu");
-        let cache = DiskCache::initialize(&xet_config, &config).unwrap();
-        let mut entries = RandomEntryIterator::std_from_seed(RANDOM_SEED)
-            .with_range_len(POLICY_TEST_DATA_LEN)
-            .with_one_chunk_ranges(true);
-
-        let (key_a, range_a, offsets_a, data_a) = entries.next().unwrap();
-        let (key_b, range_b, offsets_b, data_b) = entries.next().unwrap();
-        let (key_c, range_c, offsets_c, data_c) = entries.next().unwrap();
-
-        cache.put(&key_a, &range_a, &offsets_a, &data_a).await.unwrap();
-        cache.put(&key_b, &range_b, &offsets_b, &data_b).await.unwrap();
-        assert!(cache.get(&key_a, &range_a).await.unwrap().is_some());
-        assert!(cache.get(&key_a, &range_a).await.unwrap().is_some());
-
-        cache.put(&key_c, &range_c, &offsets_c, &data_c).await.unwrap();
-
-        assert!(cache.get(&key_a, &range_a).await.unwrap().is_some());
-        assert!(cache.get(&key_b, &range_b).await.unwrap().is_none());
-        assert!(cache.get(&key_c, &range_c).await.unwrap().is_some());
     }
 
     #[tokio::test]

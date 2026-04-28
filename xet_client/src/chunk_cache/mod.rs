@@ -85,7 +85,6 @@ pub enum CacheEvictionPolicy {
     #[default]
     Random,
     Lru,
-    Lfu,
 }
 
 impl FromStr for CacheEvictionPolicy {
@@ -95,7 +94,6 @@ impl FromStr for CacheEvictionPolicy {
         match value.trim().to_ascii_lowercase().as_str() {
             "random" => Ok(Self::Random),
             "lru" => Ok(Self::Lru),
-            "lfu" => Ok(Self::Lfu),
             _ => Err(format!("unknown chunk cache eviction policy: {value}")),
         }
     }
@@ -106,7 +104,6 @@ impl std::fmt::Display for CacheEvictionPolicy {
         match self {
             Self::Random => write!(f, "random"),
             Self::Lru => write!(f, "lru"),
-            Self::Lfu => write!(f, "lfu"),
         }
     }
 }

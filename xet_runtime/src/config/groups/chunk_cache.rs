@@ -12,8 +12,8 @@ crate::config_group!({
     ref size_bytes: u64 = DEFAULT_CHUNK_CACHE_CAPACITY;
 
     /// Eviction policy used when the chunk cache exceeds its configured capacity.
-    /// Valid values: "random", "lru", "lfu".
+    /// Valid values: "random", "lru".
     ///
     /// Use the environment variable `HF_XET_CHUNK_CACHE_EVICTION_POLICY` to set this value.
-    ref eviction_policy: ConfigEnum = ConfigEnum::new("random", &["random", "lru", "lfu"]);
+    ref eviction_policy: ConfigEnum = ConfigEnum::new("random", &["random", "lru"]);
 });

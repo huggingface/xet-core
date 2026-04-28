@@ -9,7 +9,7 @@ use super::error::ChunkCacheError;
 use super::{CacheConfig, CacheEvictionPolicy, ChunkCache, DiskCache};
 
 // single instance of CACHE_MANAGER not exposed to outside users that
-// dedupes cache instances based on configurations
+// dedupes cache instances by cache directory
 static CACHE_MANAGER: LazyLock<CacheManager> = LazyLock::new(CacheManager::new);
 
 /// get_cache attempts to return a cache given the provided config parameter
@@ -18,24 +18,7 @@ pub fn get_cache(xet_config: &XetConfig, config: &CacheConfig) -> Result<Arc<dyn
 }
 
 struct CacheManager {
-    vals: Mutex<HashMap<CacheManagerKey, RefCell<Weak<dyn ChunkCache>>>>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct CacheManagerKey {
-    cache_directory: PathBuf,
-    cache_size: u64,
-    eviction_policy: CacheEvictionPolicy,
-}
-
-impl CacheManagerKey {
-    fn new(xet_config: &XetConfig, config: &CacheConfig) -> Result<Self, ChunkCacheError> {
-        Ok(Self {
-            cache_directory: config.cache_directory.clone(),
-            cache_size: config.cache_size,
-            eviction_policy: CacheEvictionPolicy::from_xet_config(xet_config)?,
-        })
-    }
+    vals: Mutex<HashMap<PathBuf, RefCell<Weak<dyn ChunkCache>>>>,
 }
 
 impl CacheManager {
@@ -46,11 +29,16 @@ impl CacheManager {
     }
 
     /// get takes a CacheConfig and checks if there exists a valid `DiskCache` with a matching
-    /// cache directory, capacity, and eviction policy. If it doesn't exist or the `DiskCache`
+    /// cache directory. If it doesn't exist or the `DiskCache`
     /// instance has been deallocated (CacheManager only holds a weak pointer), then it creates a
     /// new instance based on the provided config.
     fn get(&self, xet_config: &XetConfig, config: &CacheConfig) -> Result<Arc<dyn ChunkCache>, ChunkCacheError> {
-        let cache_key = CacheManagerKey::new(xet_config, config)?;
+        CacheEvictionPolicy::from_xet_config(xet_config)?;
+        if config.cache_size == 0 {
+            return Err(ChunkCacheError::InvalidArguments);
+        }
+
+        let cache_key = config.cache_directory.clone();
         let mut vals = self.vals.lock()?;
         if let Some(v) = vals.get_mut(&cache_key) {
             let weak = v.borrow().clone();
