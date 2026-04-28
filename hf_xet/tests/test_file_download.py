@@ -2,7 +2,7 @@
 Tests for XetFileDownloadGroup and XetFileDownload handles.
 
 Not covered here (require a real CAS server):
-  - with_token_info / with_token_refresh_url / with_custom_headers on the builder
+  - token, token_refresh_url, custom_headers kwargs
 """
 
 import hf_xet
@@ -16,7 +16,7 @@ class TestFileDownloadGroup:
         data = b"download file content"
         info = upload_bytes_get_info(endpoint, data)
         dest = tmp_path / "out.bin"
-        with hf_xet.XetSession().new_file_download_group().with_endpoint(endpoint).build() as group:
+        with hf_xet.XetSession().new_file_download_group(endpoint=endpoint) as group:
             group.download_file(info, str(dest))
         assert dest.exists()
         assert dest.read_bytes() == data
@@ -25,7 +25,7 @@ class TestFileDownloadGroup:
         data = b"result check"
         info = upload_bytes_get_info(endpoint, data)
         dest = tmp_path / "out.bin"
-        group = hf_xet.XetSession().new_file_download_group().with_endpoint(endpoint).build()
+        group = hf_xet.XetSession().new_file_download_group(endpoint=endpoint)
         h = group.download_file(info, str(dest))
         group.finish()
         result = h.result()
@@ -35,7 +35,7 @@ class TestFileDownloadGroup:
     def test_task_id_matches_group_report(self, endpoint, tmp_path):
         data = b"report match"
         info = upload_bytes_get_info(endpoint, data)
-        group = hf_xet.XetSession().new_file_download_group().with_endpoint(endpoint).build()
+        group = hf_xet.XetSession().new_file_download_group(endpoint=endpoint)
         h = group.download_file(info, str(tmp_path / "out.bin"))
         report = group.finish()
         assert h.task_id() in report.downloads
@@ -43,7 +43,7 @@ class TestFileDownloadGroup:
     def test_multiple_files(self, endpoint, tmp_path):
         payloads = [f"file {i}".encode() for i in range(3)]
         infos = [upload_bytes_get_info(endpoint, d) for d in payloads]
-        group = hf_xet.XetSession().new_file_download_group().with_endpoint(endpoint).build()
+        group = hf_xet.XetSession().new_file_download_group(endpoint=endpoint)
         handles = [group.download_file(info, str(tmp_path / f"out{i}.bin"))
                    for i, info in enumerate(infos)]
         group.finish()
@@ -54,7 +54,7 @@ class TestFileDownloadGroup:
         payloads = [f"upload_file content {i}".encode() for i in range(3)]
         infos = [upload_file_get_info(endpoint, tmp_path, d) for d in payloads]
         dests = [tmp_path / f"out{i}.bin" for i in range(len(payloads))]
-        with hf_xet.XetSession().new_file_download_group().with_endpoint(endpoint).build() as group:
+        with hf_xet.XetSession().new_file_download_group(endpoint=endpoint) as group:
             for info, dest in zip(infos, dests):
                 group.download_file(info, str(dest))
         for dest, data in zip(dests, payloads):
@@ -64,7 +64,7 @@ class TestFileDownloadGroup:
         payloads = [f"upload_stream content {i}".encode() for i in range(3)]
         infos = [upload_stream_get_info(endpoint, d) for d in payloads]
         dests = [tmp_path / f"out{i}.bin" for i in range(len(payloads))]
-        with hf_xet.XetSession().new_file_download_group().with_endpoint(endpoint).build() as group:
+        with hf_xet.XetSession().new_file_download_group(endpoint=endpoint) as group:
             for info, dest in zip(infos, dests):
                 group.download_file(info, str(dest))
         for dest, data in zip(dests, payloads):
@@ -72,19 +72,19 @@ class TestFileDownloadGroup:
 
     def test_status_is_valid_string(self, endpoint, tmp_path):
         info = upload_bytes_get_info(endpoint, b"status check")
-        group = hf_xet.XetSession().new_file_download_group().with_endpoint(endpoint).build()
+        group = hf_xet.XetSession().new_file_download_group(endpoint=endpoint)
         group.download_file(info, str(tmp_path / "out.bin"))
         assert group.status() in ("Running", "Finalizing", "Completed", "UserCancelled")
         group.finish()
 
     def test_progress_returns_report(self, endpoint):
-        group = hf_xet.XetSession().new_file_download_group().with_endpoint(endpoint).build()
+        group = hf_xet.XetSession().new_file_download_group(endpoint=endpoint)
         report = group.progress()
         assert hasattr(report, "total_bytes_completed")
         group.finish()
 
     def test_abort_makes_finish_fail(self, endpoint):
-        group = hf_xet.XetSession().new_file_download_group().with_endpoint(endpoint).build()
+        group = hf_xet.XetSession().new_file_download_group(endpoint=endpoint)
         group.abort()
         try:
             group.finish()
@@ -96,7 +96,7 @@ class TestFileDownloadGroup:
         info = upload_bytes_get_info(endpoint, b"abort download")
         raised = False
         try:
-            with hf_xet.XetSession().new_file_download_group().with_endpoint(endpoint).build() as group:
+            with hf_xet.XetSession().new_file_download_group(endpoint=endpoint) as group:
                 group.download_file(info, str(tmp_path / "out.bin"))
                 raise RuntimeError("intentional error")
         except RuntimeError:
@@ -109,7 +109,7 @@ class TestFileDownloadGroup:
 class TestFileDownloadHandle:
     def test_try_result_after_finish_is_not_none(self, endpoint, tmp_path):
         info = upload_bytes_get_info(endpoint, b"try result data")
-        group = hf_xet.XetSession().new_file_download_group().with_endpoint(endpoint).build()
+        group = hf_xet.XetSession().new_file_download_group(endpoint=endpoint)
         h = group.download_file(info, str(tmp_path / "out.bin"))
         group.finish()
         result = h.try_result()
@@ -118,33 +118,22 @@ class TestFileDownloadHandle:
 
     def test_cancel_does_not_raise(self, endpoint, tmp_path):
         info = upload_bytes_get_info(endpoint, b"cancel target")
-        group = hf_xet.XetSession().new_file_download_group().with_endpoint(endpoint).build()
+        group = hf_xet.XetSession().new_file_download_group(endpoint=endpoint)
         h = group.download_file(info, str(tmp_path / "out.bin"))
         h.cancel()  # should not raise; download may or may not have completed
 
     def test_status_is_valid_string(self, endpoint, tmp_path):
         info = upload_bytes_get_info(endpoint, b"status data")
-        group = hf_xet.XetSession().new_file_download_group().with_endpoint(endpoint).build()
+        group = hf_xet.XetSession().new_file_download_group(endpoint=endpoint)
         h = group.download_file(info, str(tmp_path / "out.bin"))
         group.finish()
         assert h.status() in ("Running", "Finalizing", "Completed", "UserCancelled")
 
     def test_task_id_is_not_none(self, endpoint, tmp_path):
         info = upload_bytes_get_info(endpoint, b"task id data")
-        group = hf_xet.XetSession().new_file_download_group().with_endpoint(endpoint).build()
+        group = hf_xet.XetSession().new_file_download_group(endpoint=endpoint)
         h = group.download_file(info, str(tmp_path / "out.bin"))
         assert h.task_id() is not None
         group.finish()
 
 
-# ── XetFileDownloadGroupBuilder ───────────────────────────────────────────────
-
-class TestFileDownloadGroupBuilder:
-    def test_double_build_raises(self, endpoint):
-        builder = hf_xet.XetSession().new_file_download_group().with_endpoint(endpoint)
-        builder.build()
-        try:
-            builder.build()
-            assert False, "expected ValueError on second build()"
-        except Exception as e:
-            assert "already consumed" in str(e)

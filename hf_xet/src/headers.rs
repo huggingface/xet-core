@@ -6,13 +6,6 @@ use pyo3::exceptions::PyValueError;
 
 const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
-/// Build a HeaderMap containing only the USER_AGENT header.
-pub(crate) fn default_headers() -> HeaderMap {
-    let mut map = HeaderMap::new();
-    map.insert(header::USER_AGENT, HeaderValue::from_static(USER_AGENT));
-    map
-}
-
 /// Build a HeaderMap from a Python dict and merge in the USER_AGENT.
 pub(crate) fn build_headers_with_user_agent(request_headers: Option<HashMap<String, String>>) -> PyResult<HeaderMap> {
     let mut map = request_headers.map(build_header_map).transpose()?.unwrap_or_default();
@@ -47,14 +40,6 @@ pub(crate) fn build_header_map(headers: HashMap<String, String>) -> PyResult<Hea
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_default_headers_contains_user_agent() {
-        let headers = default_headers();
-        assert_eq!(headers.len(), 1);
-        let ua = headers.get(header::USER_AGENT).unwrap().to_str().unwrap();
-        assert!(ua.starts_with("hf_xet/"), "expected 'hf_xet/<version>', got '{ua}'");
-    }
 
     #[test]
     fn test_build_headers_with_none_empty_hashmap() {

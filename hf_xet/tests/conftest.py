@@ -20,7 +20,7 @@ def endpoint(tmp_path):
 
 def upload_bytes_get_info(endpoint: str, data: bytes) -> hf_xet.XetFileInfo:
     """Upload raw bytes, commit, and return the resulting XetFileInfo."""
-    commit = hf_xet.XetSession().new_upload_commit().with_endpoint(endpoint).build()
+    commit = hf_xet.XetSession().new_upload_commit(endpoint=endpoint)
     h = commit.upload_bytes(data, sha256=hf_xet.SKIP_SHA256)
     commit.commit()
     return h.result().xet_info
@@ -30,7 +30,7 @@ def upload_file_get_info(endpoint: str, tmp_path, data: bytes) -> hf_xet.XetFile
     """Write data to a temp file, upload it, and return the resulting XetFileInfo."""
     src = tmp_path / "upload_src.bin"
     src.write_bytes(data)
-    commit = hf_xet.XetSession().new_upload_commit().with_endpoint(endpoint).build()
+    commit = hf_xet.XetSession().new_upload_commit(endpoint=endpoint)
     h = commit.upload_file(str(src), sha256=hf_xet.SKIP_SHA256)
     commit.commit()
     return h.result().xet_info
@@ -38,7 +38,7 @@ def upload_file_get_info(endpoint: str, tmp_path, data: bytes) -> hf_xet.XetFile
 
 def upload_stream_get_info(endpoint: str, data: bytes) -> hf_xet.XetFileInfo:
     """Upload data via upload_stream and return the resulting XetFileInfo."""
-    commit = hf_xet.XetSession().new_upload_commit().with_endpoint(endpoint).build()
+    commit = hf_xet.XetSession().new_upload_commit(endpoint=endpoint)
     stream = commit.upload_stream()
     stream.write(data)
     r = stream.finish()

@@ -1,10 +1,12 @@
+use std::collections::HashMap;
+
 use pyo3::prelude::*;
 use xet_pkg::xet_session::{XetSession, XetSessionBuilder, XetTaskState};
 
 use crate::convert_xet_error;
-use crate::py_download_stream_group::PyXetDownloadStreamGroupBuilder;
-use crate::py_file_download_group::PyXetFileDownloadGroupBuilder;
-use crate::py_upload_commit::PyXetUploadCommitBuilder;
+use crate::py_download_stream_group::{build_download_stream_group, PyXetDownloadStreamGroup};
+use crate::py_file_download_group::{build_file_download_group, PyXetFileDownloadGroup};
+use crate::py_upload_commit::{build_upload_commit, PyXetUploadCommit};
 
 // ── PyXetSession ─────────────────────────────────────────────────────────────
 
@@ -30,45 +32,147 @@ impl PyXetSession {
         Ok(Self { inner: session })
     }
 
-    /// Return a builder for a new upload commit.
+    /// Create a new :class:`XetUploadCommit` and establish the CAS connection.
     ///
-    /// Configure auth on the builder (``with_endpoint``, ``with_token_info``,
-    /// ``with_token_refresh_url``), then call ``build()`` to get an
-    /// :class:`XetUploadCommit`.
-    pub fn new_upload_commit(&self) -> PyResult<PyXetUploadCommitBuilder> {
-        let builder = self.inner.new_upload_commit().map_err(convert_xet_error)?;
-        Ok(PyXetUploadCommitBuilder {
-            inner: Some(builder),
-            progress_callback: None,
-            progress_interval_ms: 100,
-            custom_headers: None,
-        })
+    /// All parameters are optional.  Releases the GIL during the blocking
+    /// network handshake.
+    ///
+    /// ``token`` and ``token_expiry_unix_secs`` must be provided together; if
+    /// either is absent the token is not seeded.
+    ///
+    /// ``token_refresh_headers`` defaults to ``{}`` when ``token_refresh_url``
+    /// is provided but headers are omitted.
+    ///
+    /// Example:
+    ///
+    /// ```text
+    /// with session.new_upload_commit(
+    ///         endpoint="https://cas.xethub.hf.co",
+    ///         token="jwt", token_expiry_unix_secs=9999999999,
+    ///         token_refresh_url="https://…/xet-write-token/main",
+    ///         token_refresh_headers={"Authorization": "Bearer hf_…"},
+    ///         progress_callback=on_progress,
+    ///     ) as commit:
+    ///     commit.upload_file("/path/to/model.bin")
+    /// ```
+    #[pyo3(signature = (
+        endpoint=None, token=None, token_expiry_unix_secs=None,
+        token_refresh_url=None, token_refresh_headers=None,
+        custom_headers=None, progress_callback=None, progress_interval_ms=100
+    ))]
+    pub fn new_upload_commit(
+        &self,
+        py: Python<'_>,
+        endpoint: Option<String>,
+        token: Option<String>,
+        token_expiry_unix_secs: Option<u64>,
+        token_refresh_url: Option<String>,
+        token_refresh_headers: Option<HashMap<String, String>>,
+        custom_headers: Option<HashMap<String, String>>,
+        progress_callback: Option<Py<PyAny>>,
+        progress_interval_ms: u64,
+    ) -> PyResult<PyXetUploadCommit> {
+        build_upload_commit(
+            py,
+            &self.inner,
+            endpoint,
+            token,
+            token_expiry_unix_secs,
+            token_refresh_url,
+            token_refresh_headers,
+            custom_headers,
+            progress_callback,
+            progress_interval_ms,
+        )
     }
 
-    /// Return a builder for a new file download group.
+    /// Create a new :class:`XetFileDownloadGroup` and establish the CAS connection.
     ///
-    /// Configure auth on the builder, then call ``build()`` to get an
-    /// :class:`XetFileDownloadGroup`.
-    pub fn new_file_download_group(&self) -> PyResult<PyXetFileDownloadGroupBuilder> {
-        let builder = self.inner.new_file_download_group().map_err(convert_xet_error)?;
-        Ok(PyXetFileDownloadGroupBuilder {
-            inner: Some(builder),
-            progress_callback: None,
-            progress_interval_ms: 100,
-            custom_headers: None,
-        })
+    /// All parameters are optional.  Releases the GIL during the blocking
+    /// network handshake.  See :meth:`new_upload_commit` for parameter details.
+    ///
+    /// Example:
+    ///
+    /// ```text
+    /// with session.new_file_download_group(
+    ///         endpoint="https://cas.xethub.hf.co",
+    ///         token_refresh_url="https://…/xet-read-token/main",
+    ///         token_refresh_headers={"Authorization": "Bearer hf_…"},
+    ///     ) as group:
+    ///     group.download_file(file_info, "/tmp/out.bin")
+    /// ```
+    #[pyo3(signature = (
+        endpoint=None, token=None, token_expiry_unix_secs=None,
+        token_refresh_url=None, token_refresh_headers=None,
+        custom_headers=None, progress_callback=None, progress_interval_ms=100
+    ))]
+    pub fn new_file_download_group(
+        &self,
+        py: Python<'_>,
+        endpoint: Option<String>,
+        token: Option<String>,
+        token_expiry_unix_secs: Option<u64>,
+        token_refresh_url: Option<String>,
+        token_refresh_headers: Option<HashMap<String, String>>,
+        custom_headers: Option<HashMap<String, String>>,
+        progress_callback: Option<Py<PyAny>>,
+        progress_interval_ms: u64,
+    ) -> PyResult<PyXetFileDownloadGroup> {
+        build_file_download_group(
+            py,
+            &self.inner,
+            endpoint,
+            token,
+            token_expiry_unix_secs,
+            token_refresh_url,
+            token_refresh_headers,
+            custom_headers,
+            progress_callback,
+            progress_interval_ms,
+        )
     }
 
-    /// Return a builder for a new streaming download group.
+    /// Create a new :class:`XetDownloadStreamGroup` and establish the CAS connection.
     ///
-    /// Configure auth on the builder, then call ``build()`` to get an
-    /// :class:`XetDownloadStreamGroup`.
-    pub fn new_download_stream_group(&self) -> PyResult<PyXetDownloadStreamGroupBuilder> {
-        let builder = self.inner.new_download_stream_group().map_err(convert_xet_error)?;
-        Ok(PyXetDownloadStreamGroupBuilder {
-            inner: Some(builder),
-            custom_headers: None,
-        })
+    /// All parameters are optional.  Releases the GIL during the blocking
+    /// network handshake.  See :meth:`new_upload_commit` for parameter details.
+    ///
+    /// Example:
+    ///
+    /// ```text
+    /// group = session.new_download_stream_group(
+    ///     endpoint="https://cas.xethub.hf.co",
+    ///     token_refresh_url="https://…/xet-read-token/main",
+    ///     token_refresh_headers={"Authorization": "Bearer hf_…"},
+    /// )
+    /// for chunk in group.download_stream(file_info):
+    ///     process(chunk)
+    /// ```
+    #[pyo3(signature = (
+        endpoint=None, token=None, token_expiry_unix_secs=None,
+        token_refresh_url=None, token_refresh_headers=None,
+        custom_headers=None
+    ))]
+    pub fn new_download_stream_group(
+        &self,
+        py: Python<'_>,
+        endpoint: Option<String>,
+        token: Option<String>,
+        token_expiry_unix_secs: Option<u64>,
+        token_refresh_url: Option<String>,
+        token_refresh_headers: Option<HashMap<String, String>>,
+        custom_headers: Option<HashMap<String, String>>,
+    ) -> PyResult<PyXetDownloadStreamGroup> {
+        build_download_stream_group(
+            py,
+            &self.inner,
+            endpoint,
+            token,
+            token_expiry_unix_secs,
+            token_refresh_url,
+            token_refresh_headers,
+            custom_headers,
+        )
     }
 
     /// Current task state: ``"Running"``, ``"Finalizing"``, ``"Completed"``, or

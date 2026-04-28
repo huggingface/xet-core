@@ -1,5 +1,5 @@
 """
-Tests for XetSession itself: status, abort, sigint_abort, and builder creation.
+Tests for XetSession itself: status, abort, sigint_abort, and factory methods.
 """
 
 import hf_xet
@@ -19,18 +19,14 @@ class TestXetSession:
         session = hf_xet.XetSession()
         session.sigint_abort()  # should not raise
 
-    def test_new_upload_commit_returns_builder(self, endpoint):
-        builder = hf_xet.XetSession().new_upload_commit()
-        assert builder is not None
-        # Chain with_endpoint to verify the builder is usable.
-        builder.with_endpoint(endpoint).build()
+    def test_new_upload_commit_creates_commit(self, endpoint):
+        commit = hf_xet.XetSession().new_upload_commit(endpoint=endpoint)
+        assert commit is not None
 
-    def test_new_file_download_group_returns_builder(self, endpoint):
-        builder = hf_xet.XetSession().new_file_download_group()
-        assert builder is not None
-        builder.with_endpoint(endpoint).build()
+    def test_new_file_download_group_creates_group(self, endpoint):
+        group = hf_xet.XetSession().new_file_download_group(endpoint=endpoint)
+        assert group is not None
 
-    def test_new_download_stream_group_returns_builder(self, endpoint):
-        builder = hf_xet.XetSession().new_download_stream_group()
-        assert builder is not None
-        builder.with_endpoint(endpoint).build()
+    def test_new_download_stream_group_creates_group(self, endpoint):
+        group = hf_xet.XetSession().new_download_stream_group(endpoint=endpoint)
+        assert group is not None

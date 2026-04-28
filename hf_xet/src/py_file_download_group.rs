@@ -2,194 +2,81 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use http::HeaderMap;
 use pyo3::prelude::*;
 use xet_pkg::xet_session::{
     GroupProgressReport, ItemProgressReport, UniqueID, XetDownloadGroupReport, XetFileDownload, XetFileDownloadGroup,
-    XetFileDownloadGroupBuilder, XetFileInfo, XetTaskState,
+    XetFileInfo, XetSession, XetTaskState,
 };
 
-use crate::headers::{build_header_map, build_headers_with_user_agent, default_headers};
+use crate::headers::{build_header_map, build_headers_with_user_agent};
 use crate::py_file_download_handle::PyXetFileDownload;
 use crate::py_xet_session::task_state_to_str;
 use crate::{blocking_call_with_signal_check, convert_xet_error};
 
-// ── PyXetFileDownloadGroupBuilder ─────────────────────────────────────────────
+// ── build_file_download_group ─────────────────────────────────────────────────
 
-/// Fluent builder for :class:`XetFileDownloadGroup`.
+/// Create an :class:`XetFileDownloadGroup` from a session and optional configuration.
 ///
-/// Obtain via :meth:`XetSession.new_file_download_group`.  Chain configuration
-/// methods, then call :meth:`build` to create the group.
-///
-/// Example — context manager (finish called automatically on exit):
-///
-/// ```text
-/// with (session.new_file_download_group()
-///       .with_token_info("jwt", 9999999999)
-///       .with_token_refresh_url("https://…/xet-read-token/main", {"Authorization": "Bearer hf_…"})
-///       .build()) as group:
-///     group.download_file(info, "/tmp/out.bin")
-/// ```
-///
-/// Example — explicit finish to retrieve the report and per-file metadata:
-///
-/// ```text
-/// group = (session.new_file_download_group()
-///          .with_token_info("jwt", 9999999999)
-///          .with_token_refresh_url("https://…/xet-read-token/main", {"Authorization": "Bearer hf_…"})
-///          .build())
-///
-/// h1 = group.download_file(info1, "/tmp/model.bin")
-/// h2 = group.download_file(info2, "/tmp/config.json")
-///
-/// report = group.finish()   # blocks until all downloads complete
-///
-/// # look up a specific file's result via its task id:
-/// result = report.downloads[h1.task_id()]
-/// print(result.hash, result.path, result.file_size)
-///
-/// # or get a specific file's result via its handle:
-/// result = h1.result()
-/// print(result.hash, result.path, result.file_size)
-/// ```
-#[pyclass(name = "XetFileDownloadGroupBuilder")]
-pub struct PyXetFileDownloadGroupBuilder {
-    pub(crate) inner: Option<XetFileDownloadGroupBuilder>,
-    pub(crate) progress_callback: Option<Py<PyAny>>,
-    pub(crate) progress_interval_ms: u64,
-    pub(crate) custom_headers: Option<HeaderMap>,
-}
-
-#[pymethods]
-impl PyXetFileDownloadGroupBuilder {
-    fn __repr__(&self) -> &'static str {
-        "XetFileDownloadGroupBuilder()"
+/// Called by :meth:`XetSession.new_file_download_group`.  The Rust builder type is
+/// created and consumed entirely here — it never surfaces in any public API.
+pub(crate) fn build_file_download_group(
+    py: Python<'_>,
+    session: &XetSession,
+    endpoint: Option<String>,
+    token: Option<String>,
+    token_expiry_unix_secs: Option<u64>,
+    token_refresh_url: Option<String>,
+    token_refresh_headers: Option<HashMap<String, String>>,
+    custom_headers: Option<HashMap<String, String>>,
+    progress_callback: Option<Py<PyAny>>,
+    progress_interval_ms: u64,
+) -> PyResult<PyXetFileDownloadGroup> {
+    let mut builder = session.new_file_download_group().map_err(convert_xet_error)?;
+    if let Some(ep) = endpoint {
+        builder = builder.with_endpoint(ep);
     }
-
-    /// Set the CAS server endpoint URL.
-    pub fn with_endpoint<'py>(mut slf: PyRefMut<'py, Self>, endpoint: String) -> PyRefMut<'py, Self> {
-        slf.inner = slf.inner.take().map(|b| b.with_endpoint(endpoint));
-        slf
+    if let (Some(tok), Some(exp)) = (token, token_expiry_unix_secs) {
+        builder = builder.with_token_info(tok, exp);
     }
-
-    /// Seed an initial CAS access token and its Unix expiry timestamp.
-    pub fn with_token_info<'py>(
-        mut slf: PyRefMut<'py, Self>,
-        token: String,
-        expiry_unix_secs: u64,
-    ) -> PyRefMut<'py, Self> {
-        slf.inner = slf.inner.take().map(|b| b.with_token_info(token, expiry_unix_secs));
-        slf
+    if let Some(url) = token_refresh_url {
+        let headers = build_header_map(token_refresh_headers.unwrap_or_default())?;
+        builder = builder.with_token_refresh_url(url, headers);
     }
+    let merged_headers = build_headers_with_user_agent(custom_headers)?;
+    let group = py.detach(move || {
+        builder.with_custom_headers(merged_headers).build_blocking().map_err(convert_xet_error)
+    })?;
 
-    /// Set a URL for automatic token refresh.
-    pub fn with_token_refresh_url<'py>(
-        mut slf: PyRefMut<'py, Self>,
-        url: String,
-        headers: HashMap<String, String>,
-    ) -> PyResult<PyRefMut<'py, Self>> {
-        let header_map = build_header_map(headers)?;
-        slf.inner = slf.inner.take().map(|b| b.with_token_refresh_url(url, header_map));
-        Ok(slf)
-    }
-
-    /// Attach custom HTTP headers forwarded with every CAS request.
-    ///
-    /// A ``User-Agent: hf_xet/<version>`` header is automatically merged in
-    /// (appended to any existing ``User-Agent`` value you supply).
-    pub fn with_custom_headers<'py>(
-        mut slf: PyRefMut<'py, Self>,
-        headers: HashMap<String, String>,
-    ) -> PyResult<PyRefMut<'py, Self>> {
-        slf.custom_headers = Some(build_headers_with_user_agent(Some(headers))?);
-        Ok(slf)
-    }
-
-    /// Register a Python callable to receive periodic progress updates.
-    ///
-    /// The callable is invoked on a configurable interval for the lifetime of
-    /// the group with two positional arguments:
-    ///
-    /// 1. :class:`GroupProgressReport` — aggregate bytes downloaded.
-    /// 2. ``dict[UniqueId, ItemProgressReport]`` — one entry per queued file, keyed by task ID.
-    ///
-    /// The thread exits automatically once the group reaches a terminal state.
-    ///
-    /// ``interval_ms`` controls the polling interval in milliseconds (default: 100).
-    ///
-    /// Example:
-    ///
-    /// ```text
-    /// def on_progress(group, items):
-    ///     bar.n = group.total_bytes_completed
-    ///     bar.total = group.total_bytes
-    ///     bar.set_postfix({item.item_name: f"{item.bytes_completed}/{item.total_bytes}"
-    ///                      for item in items.values()})
-    ///     bar.refresh()
-    ///
-    /// with builder.with_progress_callback(on_progress, interval_ms=50).build() as group:
-    ///     group.download_file(info, "/tmp/out.bin")
-    /// ```
-    #[pyo3(signature = (callback, interval_ms = 100))]
-    pub fn with_progress_callback<'py>(
-        mut slf: PyRefMut<'py, Self>,
-        callback: Py<PyAny>,
-        interval_ms: u64,
-    ) -> PyRefMut<'py, Self> {
-        slf.progress_callback = Some(callback);
-        slf.progress_interval_ms = interval_ms;
-        slf
-    }
-
-    /// Build the :class:`XetFileDownloadGroup`, establishing the CAS connection.
-    ///
-    /// Releases the GIL during the blocking network handshake.  If a progress
-    /// callback was registered, the polling thread is started immediately so
-    /// that progress is reported for the full lifetime of the group.
-    pub fn build(&mut self, py: Python<'_>) -> PyResult<PyXetFileDownloadGroup> {
-        let builder = self
-            .inner
-            .take()
-            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("builder already consumed by build()"))?;
-        let custom_headers = self.custom_headers.take().unwrap_or_else(default_headers);
-        let group = py.detach(|| {
-            builder
-                .with_custom_headers(custom_headers)
-                .build_blocking()
-                .map_err(convert_xet_error)
-        })?;
-
-        let download_handles = if let Some(callback) = self.progress_callback.take() {
-            let handles: Arc<RwLock<Vec<XetFileDownload>>> = Arc::new(RwLock::new(Vec::new()));
-            let inner = group.clone();
-            let handles_for_thread = Arc::clone(&handles);
-            let interval = Duration::from_millis(self.progress_interval_ms);
-            std::thread::spawn(move || {
-                loop {
-                    std::thread::sleep(interval);
-                    let group_report = inner.progress();
-                    let item_reports: HashMap<UniqueID, ItemProgressReport> = handles_for_thread
-                        .read()
-                        .map(|g| g.iter().filter_map(|h| h.progress().map(|p| (h.task_id(), p))).collect())
-                        .unwrap_or_default();
-                    let is_terminal =
-                        !matches!(inner.status(), Ok(XetTaskState::Running) | Ok(XetTaskState::Finalizing));
-                    let result = Python::attach(|py| callback.call1(py, (group_report, item_reports)));
-                    if result.is_err() || is_terminal {
-                        break;
-                    }
+    let download_handles = if let Some(callback) = progress_callback {
+        let handles: Arc<RwLock<Vec<XetFileDownload>>> = Arc::new(RwLock::new(Vec::new()));
+        let inner = group.clone();
+        let handles_for_thread = Arc::clone(&handles);
+        let interval = Duration::from_millis(progress_interval_ms);
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(interval);
+                let group_report = inner.progress();
+                let item_reports: HashMap<UniqueID, ItemProgressReport> = handles_for_thread
+                    .read()
+                    .map(|g| g.iter().filter_map(|h| h.progress().map(|p| (h.task_id(), p))).collect())
+                    .unwrap_or_default();
+                let is_terminal =
+                    !matches!(inner.status(), Ok(XetTaskState::Running) | Ok(XetTaskState::Finalizing));
+                let result = Python::attach(|py| callback.call1(py, (group_report, item_reports)));
+                if result.is_err() || is_terminal {
+                    break;
                 }
-            });
-            Some(handles)
-        } else {
-            None
-        };
+            }
+        });
+        Some(handles)
+    } else {
+        None
+    };
 
-        Ok(PyXetFileDownloadGroup {
-            inner: group,
-            download_handles,
-        })
-    }
+    Ok(PyXetFileDownloadGroup {
+        inner: group,
+        download_handles,
+    })
 }
 
 // ── PyXetFileDownloadGroup ────────────────────────────────────────────────────
@@ -199,7 +86,7 @@ impl PyXetFileDownloadGroupBuilder {
 /// Implements the context-manager protocol.
 ///
 /// ```text
-/// with group_builder.build() as group:
+/// with session.new_file_download_group(endpoint="...") as group:
 ///     h = group.download_file(info, "/tmp/out.bin")
 /// # on normal exit: finish() is called automatically
 /// # on exception:   abort() is called automatically
@@ -353,24 +240,4 @@ mod tests {
         });
     }
 
-    // ── PyXetFileDownloadGroupBuilder ─────────────────────────────────────────
-
-    #[test]
-    fn test_builder_build_when_consumed_returns_error() {
-        let temp = tempdir().unwrap();
-        let endpoint = format!("local://{}", temp.path().join("cas").display());
-        let session = XetSessionBuilder::new().build().unwrap();
-        let mut builder = PyXetFileDownloadGroupBuilder {
-            inner: Some(session.new_file_download_group().unwrap().with_endpoint(&endpoint)),
-            progress_callback: None,
-            progress_interval_ms: 100,
-            custom_headers: None,
-        };
-
-        Python::attach(|py| {
-            builder.build(py).expect("first build should succeed");
-            let err = builder.build(py).err().expect("expected error").to_string();
-            assert!(err.contains("already consumed"));
-        });
-    }
 }

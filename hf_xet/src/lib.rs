@@ -100,14 +100,11 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<py_upload_commit::PySkipSha256>()?;
     m.add("COMPUTE_SHA256", py_upload_commit::PyComputeSha256)?;
     m.add("SKIP_SHA256", py_upload_commit::PySkipSha256)?;
-    m.add_class::<py_upload_commit::PyXetUploadCommitBuilder>()?;
     m.add_class::<py_upload_commit::PyXetUploadCommit>()?;
     m.add_class::<py_file_upload_handle::PyXetFileUpload>()?;
     m.add_class::<py_stream_upload_handle::PyXetStreamUpload>()?;
-    m.add_class::<py_file_download_group::PyXetFileDownloadGroupBuilder>()?;
     m.add_class::<py_file_download_group::PyXetFileDownloadGroup>()?;
     m.add_class::<py_file_download_handle::PyXetFileDownload>()?;
-    m.add_class::<py_download_stream_group::PyXetDownloadStreamGroupBuilder>()?;
     m.add_class::<py_download_stream_group::PyXetDownloadStreamGroup>()?;
     m.add_class::<py_download_stream_handle::PyXetDownloadStream>()?;
     m.add_class::<py_download_stream_handle::PyXetUnorderedDownloadStream>()?;

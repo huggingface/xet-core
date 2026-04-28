@@ -24,10 +24,7 @@ class TestUploadProgressCallback:
             fired.set()
 
         (hf_xet.XetSession()
-         .new_upload_commit()
-         .with_endpoint(endpoint)
-         .with_progress_callback(on_progress, interval_ms=10)
-         .build()
+         .new_upload_commit(endpoint=endpoint, progress_callback=on_progress, progress_interval_ms=10)
          .commit())
 
         fired.wait(timeout=1.0)
@@ -46,11 +43,9 @@ class TestUploadProgressCallback:
                 seen_names.add(item.item_name)
             fired.set()
 
-        commit = (hf_xet.XetSession()
-                  .new_upload_commit()
-                  .with_endpoint(endpoint)
-                  .with_progress_callback(on_progress, interval_ms=10)
-                  .build())
+        commit = hf_xet.XetSession().new_upload_commit(
+            endpoint=endpoint, progress_callback=on_progress, progress_interval_ms=10
+        )
         commit.upload_bytes(b"file a", name="a.bin", sha256=hf_xet.SKIP_SHA256)
         commit.upload_bytes(b"file b", name="b.bin", sha256=hf_xet.SKIP_SHA256)
         commit.commit()
@@ -68,11 +63,9 @@ class TestUploadProgressCallback:
                 items_seen.append(item)
             fired.set()
 
-        commit = (hf_xet.XetSession()
-                  .new_upload_commit()
-                  .with_endpoint(endpoint)
-                  .with_progress_callback(on_progress, interval_ms=10)
-                  .build())
+        commit = hf_xet.XetSession().new_upload_commit(
+            endpoint=endpoint, progress_callback=on_progress, progress_interval_ms=10
+        )
         commit.upload_bytes(b"progress fields", name="p.bin", sha256=hf_xet.SKIP_SHA256)
         commit.commit()
 
@@ -99,11 +92,9 @@ class TestDownloadProgressCallback:
             calls.append((group, items))
             fired.set()
 
-        with (hf_xet.XetSession()
-              .new_file_download_group()
-              .with_endpoint(endpoint)
-              .with_progress_callback(on_progress, interval_ms=10)
-              .build()) as group:
+        with hf_xet.XetSession().new_file_download_group(
+            endpoint=endpoint, progress_callback=on_progress, progress_interval_ms=10
+        ) as group:
             group.download_file(info, str(dest))
 
         fired.wait(timeout=1.0)
@@ -125,11 +116,9 @@ class TestDownloadProgressCallback:
                 seen_names.add(item.item_name)
             fired.set()
 
-        with (hf_xet.XetSession()
-              .new_file_download_group()
-              .with_endpoint(endpoint)
-              .with_progress_callback(on_progress, interval_ms=10)
-              .build()) as group:
+        with hf_xet.XetSession().new_file_download_group(
+            endpoint=endpoint, progress_callback=on_progress, progress_interval_ms=10
+        ) as group:
             for name, info in infos.items():
                 group.download_file(info, str(tmp_path / name))
 
