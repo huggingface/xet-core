@@ -39,48 +39,89 @@ struct CacheAccessStats {
     access_count: u64,
 }
 
-type CacheAccessStatsByKey = HashMap<Key, HashMap<CacheItem, CacheAccessStats>>;
+#[derive(Debug, Clone, Copy)]
+struct CacheAccessEntry {
+    stats: CacheAccessStats,
+    item_index: usize,
+    lru_node_index: usize,
+}
+
+type CacheAccessEntriesByKey = HashMap<Key, HashMap<CacheItem, CacheAccessEntry>>;
+
+#[derive(Debug, Clone)]
+struct LruNode {
+    key: Key,
+    item: CacheItem,
+    prev: Option<usize>,
+    next: Option<usize>,
+}
 
 #[derive(Debug, Clone)]
 struct CacheAccessState {
     access_clock: u64,
-    access_stats: CacheAccessStatsByKey,
+    access_entries: CacheAccessEntriesByKey,
+    lru_nodes: Vec<LruNode>,
+    free_lru_nodes: Vec<usize>,
+    lru_head: Option<usize>,
+    lru_tail: Option<usize>,
+    lru_len: usize,
 }
 
 impl CacheAccessState {
     fn new(state: &HashMap<Key, Vec<VerificationCell<CacheItem>>>, num_items: usize) -> Self {
-        let mut access_clock = 0u64;
-        let mut access_stats: CacheAccessStatsByKey = HashMap::with_capacity(state.len());
+        let mut access_state = Self {
+            access_clock: 0,
+            access_entries: HashMap::with_capacity(state.len()),
+            lru_nodes: Vec::with_capacity(num_items),
+            free_lru_nodes: Vec::new(),
+            lru_head: None,
+            lru_tail: None,
+            lru_len: 0,
+        };
+
         for (key, items) in state.iter() {
-            for item in items {
-                access_clock = access_clock.saturating_add(1);
-                access_stats.entry(key.clone()).or_default().insert(
-                    item.as_ref().clone(),
+            for (item_index, item) in items.iter().enumerate() {
+                let access_tick = access_state.next_access_tick();
+                access_state.set_access_entry(
+                    key,
+                    item.as_ref(),
+                    item_index,
                     CacheAccessStats {
-                        last_access_tick: access_clock,
+                        last_access_tick: access_tick,
                         access_count: 0,
                     },
                 );
             }
         }
 
-        debug_assert_eq!(access_stats.values().map(HashMap::len).sum::<usize>(), num_items);
+        debug_assert_eq!(access_state.access_entries.values().map(HashMap::len).sum::<usize>(), num_items);
+        debug_assert_eq!(access_state.lru_len, num_items);
 
-        Self {
-            access_clock,
-            access_stats,
-        }
+        access_state
     }
 
-    fn record_access(&mut self, key: &Key, item: &CacheItem) {
+    fn record_access(&mut self, key: &Key, item: &CacheItem, item_index: usize) {
         let access_tick = self.next_access_tick();
-        if let Some(stats) = self.access_stats.get_mut(key).and_then(|item_stats| item_stats.get_mut(item)) {
-            stats.last_access_tick = access_tick;
-            stats.access_count = stats.access_count.saturating_add(1);
+        let lru_node_index = if let Some(entry) = self
+            .access_entries
+            .get_mut(key)
+            .and_then(|item_entries| item_entries.get_mut(item))
+        {
+            entry.stats.last_access_tick = access_tick;
+            entry.stats.access_count = entry.stats.access_count.saturating_add(1);
+            entry.item_index = item_index;
+            Some(entry.lru_node_index)
+        } else {
+            None
+        };
+
+        if let Some(lru_node_index) = lru_node_index {
+            self.move_lru_node_to_tail(lru_node_index);
         } else {
             self.set_access_stats(
                 key,
                 item,
+                item_index,
                 CacheAccessStats {
                     last_access_tick: access_tick,
                     access_count: 1,
@@ -89,11 +130,12 @@ impl CacheAccessState {
         }
     }
 
-    fn record_insert(&mut self, key: &Key, item: &CacheItem) {
+    fn record_insert(&mut self, key: &Key, item: &CacheItem, item_index: usize) {
         let access_tick = self.next_access_tick();
         self.set_access_stats(
             key,
             item,
+            item_index,
             CacheAccessStats {
                 last_access_tick: access_tick,
                 access_count: 1,
@@ -101,34 +143,158 @@ impl CacheAccessState {
         );
     }
 
-    fn set_access_stats(&mut self, key: &Key, item: &CacheItem, stats: CacheAccessStats) {
-        self.access_stats.entry(key.clone()).or_default().insert(item.clone(), stats);
+    fn set_access_stats(&mut self, key: &Key, item: &CacheItem, item_index: usize, stats: CacheAccessStats) {
+        self.set_access_entry(key, item, item_index, stats);
+    }
+
+    fn set_access_entry(&mut self, key: &Key, item: &CacheItem, item_index: usize, stats: CacheAccessStats) {
+        if let Some(lru_node_index) = self
+            .access_entries
+            .get(key)
+            .and_then(|item_entries| item_entries.get(item))
+            .map(|entry| entry.lru_node_index)
+        {
+            self.remove_lru_node(lru_node_index);
+        }
+
+        let lru_node_index = self.push_lru_node(key.clone(), item.clone());
+        self.access_entries.entry(key.clone()).or_default().insert(
+            item.clone(),
+            CacheAccessEntry {
+                stats,
+                item_index,
+                lru_node_index,
+            },
+        );
     }
 
     fn access_stats_for_item(&self, key: &Key, item: &CacheItem) -> CacheAccessStats {
-        self.access_stats
+        self.access_entries
             .get(key)
-            .and_then(|item_stats| item_stats.get(item))
-            .copied()
+            .and_then(|item_entries| item_entries.get(item))
+            .map(|entry| entry.stats)
             .unwrap_or_default()
     }
 
-    fn remove_access_stats(&mut self, key: &Key, item: &CacheItem) {
-        let remove_key_stats = if let Some(item_stats) = self.access_stats.get_mut(key) {
-            item_stats.remove(item);
-            item_stats.is_empty()
-        } else {
-            false
+    fn item_index(&self, key: &Key, item: &CacheItem) -> Option<usize> {
+        self.access_entries
+            .get(key)
+            .and_then(|item_entries| item_entries.get(item))
+            .map(|entry| entry.item_index)
+    }
+
+    fn set_item_index(&mut self, key: &Key, item: &CacheItem, item_index: usize) {
+        let Some(entry) = self
+            .access_entries
+            .get_mut(key)
+            .and_then(|item_entries| item_entries.get_mut(item))
+        else {
+            debug_assert!(false, "cache access state missing item index for {key}/{item}");
+            return;
         };
 
-        if remove_key_stats {
-            self.access_stats.remove(key);
+        entry.item_index = item_index;
+    }
+
+    fn least_recently_used_item(&self) -> Option<(Key, usize)> {
+        let node_index = self.lru_head?;
+        let node = &self.lru_nodes[node_index];
+        let Some(item_index) = self.item_index(&node.key, &node.item) else {
+            debug_assert!(false, "cache access state missing LRU head item index");
+            return None;
+        };
+
+        Some((node.key.clone(), item_index))
+    }
+
+    fn remove_access_stats(&mut self, key: &Key, item: &CacheItem) {
+        let (entry, remove_key_entries) = if let Some(item_entries) = self.access_entries.get_mut(key) {
+            let entry = item_entries.remove(item);
+            (entry, item_entries.is_empty())
+        } else {
+            (None, false)
+        };
+
+        if remove_key_entries {
+            self.access_entries.remove(key);
+        }
+
+        if let Some(entry) = entry {
+            self.remove_lru_node(entry.lru_node_index);
         }
     }
 
     fn next_access_tick(&mut self) -> u64 {
         self.access_clock = self.access_clock.saturating_add(1);
         self.access_clock
+    }
+
+    fn push_lru_node(&mut self, key: Key, item: CacheItem) -> usize {
+        let lru_node = LruNode {
+            key,
+            item,
+            prev: None,
+            next: None,
+        };
+        let node_index = if let Some(node_index) = self.free_lru_nodes.pop() {
+            self.lru_nodes[node_index] = lru_node;
+            node_index
+        } else {
+            self.lru_nodes.push(lru_node);
+            self.lru_nodes.len() - 1
+        };
+
+        self.append_lru_node_to_tail(node_index);
+        self.lru_len += 1;
+        node_index
+    }
+
+    fn move_lru_node_to_tail(&mut self, node_index: usize) {
+        if self.lru_tail == Some(node_index) {
+            return;
+        }
+
+        self.detach_lru_node(node_index);
+        self.append_lru_node_to_tail(node_index);
+    }
+
+    fn remove_lru_node(&mut self, node_index: usize) {
+        self.detach_lru_node(node_index);
+        self.free_lru_nodes.push(node_index);
+        self.lru_len -= 1;
+    }
+
+    fn detach_lru_node(&mut self, node_index: usize) {
+        let prev = self.lru_nodes[node_index].prev;
+        let next = self.lru_nodes[node_index].next;
+
+        if let Some(prev) = prev {
+            self.lru_nodes[prev].next = next;
+        } else {
+            self.lru_head = next;
+        }
+
+        if let Some(next) = next {
+            self.lru_nodes[next].prev = prev;
+        } else {
+            self.lru_tail = prev;
+        }
+
+        self.lru_nodes[node_index].prev = None;
+        self.lru_nodes[node_index].next = None;
+    }
+
+    fn append_lru_node_to_tail(&mut self, node_index: usize) {
+        self.lru_nodes[node_index].prev = self.lru_tail;
+        self.lru_nodes[node_index].next = None;
+
+        if let Some(tail) = self.lru_tail {
+            self.lru_nodes[tail].next = Some(node_index);
+        } else {
+            self.lru_head = Some(node_index);
+        }
+
+        self.lru_tail = Some(node_index);
     }
 }
 
@@ -156,12 +322,16 @@ impl CacheState {
     }
 
     fn find_match(&self, key: &Key, range: &ChunkRange) -> Option<VerificationCell<CacheItem>> {
+        self.find_match_with_index(key, range).map(|(_, item)| item)
+    }
+
+    fn find_match_with_index(&self, key: &Key, range: &ChunkRange) -> Option<(usize, VerificationCell<CacheItem>)> {
         let items = self.inner.get(key)?;
 
         // attempt to find a matching range in the given key's items using
-        for item in items.iter() {
+        for (item_index, item) in items.iter().enumerate() {
             if item.range.start <= range.start && range.end <= item.range.end {
-                return Some(item.clone());
+                return Some((item_index, item.clone()));
             }
         }
         None
@@ -185,12 +355,16 @@ impl CacheState {
                 error!("attempted to evict item, but no item could be found to be evicted");
                 break;
             };
-            let (cache_item, remove_key) = {
+            let (cache_item, remove_key, swapped_item) = {
                 let items = self.inner.get_mut(&key).ok_or(ChunkCacheError::Infallible)?;
                 let cache_item = items.swap_remove(idx);
-                (cache_item, items.is_empty())
+                let swapped_item = items.get(idx).map(|item| item.as_ref().clone());
+                (cache_item, items.is_empty(), swapped_item)
             };
             let len = cache_item.len;
+            if let Some(swapped_item) = swapped_item {
+                access_state.set_item_index(&key, &swapped_item, idx);
+            }
             access_state.remove_access_stats(&key, cache_item.as_ref());
 
             if remove_key {
@@ -245,7 +419,7 @@ impl CacheState {
     }
 
     fn least_recently_used_item(&self, access_state: &CacheAccessState) -> Option<(Key, usize)> {
-        self.min_by_access_stats(access_state, |candidate, best| candidate.last_access_tick < best.last_access_tick)
+        access_state.least_recently_used_item()
     }
 
     fn least_frequently_used_item(&self, access_state: &CacheAccessState) -> Option<(Key, usize)> {
@@ -611,9 +785,10 @@ impl DiskCache {
         // add the item info in-memory state after evictions are done
         state_write.num_items += 1;
         state_write.total_bytes += cache_item.len;
-        access_state.record_insert(key, &cache_item);
         let item_set = state_write.inner.entry(key.clone()).or_default();
-        item_set.push(VerificationCell::new_verified(cache_item));
+        let item_index = item_set.len();
+        item_set.push(VerificationCell::new_verified(cache_item.clone()));
+        access_state.record_insert(key, &cache_item, item_index);
 
         // release lock
         drop(access_state);
@@ -704,8 +879,8 @@ impl DiskCache {
             CacheEvictionPolicy::Random => self.state.read().await.find_match(key, range),
             CacheEvictionPolicy::Lru | CacheEvictionPolicy::Lfu => {
                 let state = self.state.read().await;
-                let item = state.find_match(key, range)?;
-                self.access_state.lock().await.record_access(key, item.as_ref());
+                let (item_index, item) = state.find_match_with_index(key, range)?;
+                self.access_state.lock().await.record_access(key, item.as_ref(), item_index);
                 Some(item)
             },
         }
@@ -715,6 +890,7 @@ impl DiskCache {
     async fn remove_item(&self, key: &Key, cache_item: &VerificationCell<CacheItem>) -> Result<(), ChunkCacheError> {
         {
             let mut state = self.state.write().await;
+            let mut access_state = self.access_state.lock().await;
             let mut remove_key = false;
             let removed_item = if let Some(items) = state.inner.get_mut(key) {
                 let idx = match index_of(items, cache_item) {
@@ -724,6 +900,9 @@ impl DiskCache {
                 };
 
                 let removed_item = items.swap_remove(idx);
+                if let Some(swapped_item) = items.get(idx) {
+                    access_state.set_item_index(key, swapped_item.as_ref(), idx);
+                }
                 remove_key = items.is_empty();
                 Some(removed_item)
             } else {
@@ -731,7 +910,7 @@ impl DiskCache {
             };
 
             if let Some(removed_item) = removed_item {
-                self.access_state.lock().await.remove_access_stats(key, removed_item.as_ref());
+                access_state.remove_access_stats(key, removed_item.as_ref());
                 if remove_key {
                     state.inner.remove(key);
                 }
@@ -1193,6 +1372,38 @@ mod tests {
         assert!(cache.get(&key_a, &range_a).await.unwrap().is_some());
         assert!(cache.get(&key_b, &range_b).await.unwrap().is_none());
         assert!(cache.get(&key_c, &range_c).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_lru_eviction_updates_swapped_item_index() {
+        let cache_root = TempDir::new().unwrap();
+        let config = CacheConfig {
+            cache_directory: cache_root.path().to_path_buf(),
+            cache_size: policy_test_capacity(),
+        };
+        let xet_config = xet_config_with_eviction_policy("lru");
+        let cache = DiskCache::initialize(&xet_config, &config).unwrap();
+        let mut rng = StdRng::seed_from_u64(RANDOM_SEED);
+        let key = random_key(&mut rng);
+
+        let range_a = ChunkRange::new(0, 1);
+        let range_b = ChunkRange::new(1, 2);
+        let range_c = ChunkRange::new(2, 3);
+        let range_d = ChunkRange::new(3, 4);
+        let (offsets_a, data_a) = random_bytes(&mut rng, &range_a, POLICY_TEST_DATA_LEN);
+        let (offsets_b, data_b) = random_bytes(&mut rng, &range_b, POLICY_TEST_DATA_LEN);
+        let (offsets_c, data_c) = random_bytes(&mut rng, &range_c, POLICY_TEST_DATA_LEN);
+        let (offsets_d, data_d) = random_bytes(&mut rng, &range_d, POLICY_TEST_DATA_LEN);
+
+        cache.put(&key, &range_a, &offsets_a, &data_a).await.unwrap();
+        cache.put(&key, &range_b, &offsets_b, &data_b).await.unwrap();
+        cache.put(&key, &range_c, &offsets_c, &data_c).await.unwrap();
+        cache.put(&key, &range_d, &offsets_d, &data_d).await.unwrap();
+
+        assert!(cache.get(&key, &range_a).await.unwrap().is_none());
+        assert!(cache.get(&key, &range_b).await.unwrap().is_none());
+        assert!(cache.get(&key, &range_c).await.unwrap().is_some());
+        assert!(cache.get(&key, &range_d).await.unwrap().is_some());
     }
 
     #[tokio::test]
