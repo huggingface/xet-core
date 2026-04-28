@@ -345,13 +345,13 @@ impl CacheState {
     fn evict_to_capacity(
         &mut self,
         max_total_bytes: u64,
-        access_state: &mut CacheAccessState,
+        mut access_state: Option<&mut CacheAccessState>,
     ) -> Result<Vec<(Key, VerificationCell<CacheItem>)>, ChunkCacheError> {
         let original_total_bytes = self.total_bytes;
         let mut ret = Vec::new();
 
         while self.total_bytes > max_total_bytes {
-            let Some((key, idx)) = self.item_to_evict(access_state) else {
+            let Some((key, idx)) = self.item_to_evict(access_state.as_deref()) else {
                 error!("attempted to evict item, but no item could be found to be evicted");
                 break;
             };
@@ -362,10 +362,12 @@ impl CacheState {
                 (cache_item, items.is_empty(), swapped_item)
             };
             let len = cache_item.len;
-            if let Some(swapped_item) = swapped_item {
-                access_state.set_item_index(&key, &swapped_item, idx);
+            if let Some(access_state) = access_state.as_deref_mut() {
+                if let Some(swapped_item) = swapped_item {
+                    access_state.set_item_index(&key, &swapped_item, idx);
+                }
+                access_state.remove_access_stats(&key, cache_item.as_ref());
             }
-            access_state.remove_access_stats(&key, cache_item.as_ref());
 
             if remove_key {
                 self.inner.remove(&key);
@@ -385,11 +387,15 @@ impl CacheState {
         Ok(ret)
     }
 
-    fn item_to_evict(&self, access_state: &CacheAccessState) -> Option<(Key, usize)> {
+    fn item_to_evict(&self, access_state: Option<&CacheAccessState>) -> Option<(Key, usize)> {
         match self.eviction_policy {
             CacheEvictionPolicy::Random => self.random_item(),
-            CacheEvictionPolicy::Lru => self.least_recently_used_item(access_state),
-            CacheEvictionPolicy::Lfu => self.least_frequently_used_item(access_state),
+            CacheEvictionPolicy::Lru => {
+                self.least_recently_used_item(access_state.expect("LRU eviction requires cache access state"))
+            },
+            CacheEvictionPolicy::Lfu => {
+                self.least_frequently_used_item(access_state.expect("LFU eviction requires cache access state"))
+            },
         }
     }
 
@@ -460,8 +466,11 @@ fn new_cache_state(
     num_items: usize,
     total_bytes: u64,
     eviction_policy: CacheEvictionPolicy,
-) -> (CacheState, CacheAccessState) {
-    let access_state = CacheAccessState::new(&state, num_items);
+) -> (CacheState, Option<CacheAccessState>) {
+    let access_state = match eviction_policy {
+        CacheEvictionPolicy::Random => None,
+        CacheEvictionPolicy::Lru | CacheEvictionPolicy::Lfu => Some(CacheAccessState::new(&state, num_items)),
+    };
     (CacheState::new(state, num_items, total_bytes, eviction_policy), access_state)
 }
 
@@ -472,7 +481,7 @@ pub struct DiskCache {
     capacity: u64,
     eviction_policy: CacheEvictionPolicy,
     state: Arc<RwLock<CacheState>>,
-    access_state: Arc<Mutex<CacheAccessState>>,
+    access_state: Option<Arc<Mutex<CacheAccessState>>>,
 }
 
 // helper for analysis binary to print inner state
@@ -559,7 +568,7 @@ impl DiskCache {
 
         Ok(Self {
             state: Arc::new(RwLock::new(state)),
-            access_state: Arc::new(Mutex::new(access_state)),
+            access_state: access_state.map(|state| Arc::new(Mutex::new(state))),
             cache_root: config.cache_directory.clone(),
             capacity,
             eviction_policy,
@@ -571,7 +580,7 @@ impl DiskCache {
         capacity: u64,
         eviction_policy: CacheEvictionPolicy,
         xet_config: &XetConfig,
-    ) -> Result<(CacheState, CacheAccessState), ChunkCacheError> {
+    ) -> Result<(CacheState, Option<CacheAccessState>), ChunkCacheError> {
         let mut state = HashMap::new();
         let mut total_bytes = 0;
         let mut num_items = 0;
@@ -777,10 +786,14 @@ impl DiskCache {
         }
         fw.close()?;
 
-        let mut access_state = self.access_state.lock().await;
+        let mut access_state = match &self.access_state {
+            Some(access_state) => Some(access_state.lock().await),
+            None => None,
+        };
 
         // Evict entries to make sure we have enough room.
-        let evicted_paths = state_write.evict_to_capacity(self.capacity - cache_item.len, &mut access_state)?;
+        let evicted_paths =
+            state_write.evict_to_capacity(self.capacity - cache_item.len, access_state.as_deref_mut())?;
 
         // add the item info in-memory state after evictions are done
         state_write.num_items += 1;
@@ -788,7 +801,9 @@ impl DiskCache {
         let item_set = state_write.inner.entry(key.clone()).or_default();
         let item_index = item_set.len();
         item_set.push(VerificationCell::new_verified(cache_item.clone()));
-        access_state.record_insert(key, &cache_item, item_index);
+        if let Some(access_state) = access_state.as_deref_mut() {
+            access_state.record_insert(key, &cache_item, item_index);
+        }
 
         // release lock
         drop(access_state);
@@ -880,7 +895,12 @@ impl DiskCache {
             CacheEvictionPolicy::Lru | CacheEvictionPolicy::Lfu => {
                 let state = self.state.read().await;
                 let (item_index, item) = state.find_match_with_index(key, range)?;
-                self.access_state.lock().await.record_access(key, item.as_ref(), item_index);
+                self.access_state
+                    .as_ref()
+                    .expect("LRU/LFU eviction requires cache access state")
+                    .lock()
+                    .await
+                    .record_access(key, item.as_ref(), item_index);
                 Some(item)
             },
         }
@@ -890,7 +910,10 @@ impl DiskCache {
     async fn remove_item(&self, key: &Key, cache_item: &VerificationCell<CacheItem>) -> Result<(), ChunkCacheError> {
         {
             let mut state = self.state.write().await;
-            let mut access_state = self.access_state.lock().await;
+            let mut access_state = match &self.access_state {
+                Some(access_state) => Some(access_state.lock().await),
+                None => None,
+            };
             let mut remove_key = false;
             let removed_item = if let Some(items) = state.inner.get_mut(key) {
                 let idx = match index_of(items, cache_item) {
@@ -900,7 +923,7 @@ impl DiskCache {
                 };
 
                 let removed_item = items.swap_remove(idx);
-                if let Some(swapped_item) = items.get(idx) {
+                if let (Some(access_state), Some(swapped_item)) = (access_state.as_deref_mut(), items.get(idx)) {
                     access_state.set_item_index(key, swapped_item.as_ref(), idx);
                 }
                 remove_key = items.is_empty();
@@ -910,7 +933,9 @@ impl DiskCache {
             };
 
             if let Some(removed_item) = removed_item {
-                access_state.remove_access_stats(key, removed_item.as_ref());
+                if let Some(access_state) = access_state.as_deref_mut() {
+                    access_state.remove_access_stats(key, removed_item.as_ref());
+                }
                 if remove_key {
                     state.inner.remove(key);
                 }
@@ -1221,6 +1246,24 @@ mod tests {
 
     fn xet_config_with_eviction_policy(policy: &str) -> XetConfig {
         XetConfig::default().with_config("chunk_cache.eviction_policy", policy).unwrap()
+    }
+
+    #[test]
+    fn test_access_state_initialized_only_for_access_tracking_policies() {
+        let cache_root = TempDir::new().unwrap();
+        let config = CacheConfig {
+            cache_directory: cache_root.path().to_path_buf(),
+            cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
+        };
+
+        let random_cache = DiskCache::initialize(&XetConfig::new(), &config).unwrap();
+        assert!(random_cache.access_state.is_none());
+
+        let lru_cache = DiskCache::initialize(&xet_config_with_eviction_policy("lru"), &config).unwrap();
+        assert!(lru_cache.access_state.is_some());
+
+        let lfu_cache = DiskCache::initialize(&xet_config_with_eviction_policy("lfu"), &config).unwrap();
+        assert!(lfu_cache.access_state.is_some());
     }
 
     #[tokio::test]
