@@ -36,10 +36,7 @@ impl PyXetDownloadStream {
     //   XetDownloadStream(task_id=5, bytes_completed=?/?)   ← before first progress report
     fn __repr__(&self) -> String {
         let prog = progress_display(self.inner.progress());
-        format!(
-            "XetDownloadStream(task_id={}, bytes_completed={})",
-            self.inner.task_id(), prog
-        )
+        format!("XetDownloadStream(task_id={}, bytes_completed={})", self.inner.task_id(), prog)
     }
 
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
@@ -99,10 +96,7 @@ impl PyXetUnorderedDownloadStream {
     //   XetUnorderedDownloadStream(task_id=7, bytes_completed=?/?)   ← before first progress report
     fn __repr__(&self) -> String {
         let prog = progress_display(self.inner.progress());
-        format!(
-            "XetUnorderedDownloadStream(task_id={}, bytes_completed={})",
-            self.inner.task_id(), prog
-        )
+        format!("XetUnorderedDownloadStream(task_id={}, bytes_completed={})", self.inner.task_id(), prog)
     }
 
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {

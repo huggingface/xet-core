@@ -2,7 +2,6 @@ mod headers;
 mod legacy;
 mod logging;
 mod py_download_stream_group;
-pub(crate) mod utils;
 mod py_download_stream_handle;
 mod py_file_download_group;
 mod py_file_download_handle;
@@ -10,6 +9,7 @@ mod py_file_upload_handle;
 mod py_stream_upload_handle;
 mod py_upload_commit;
 mod py_xet_session;
+pub(crate) mod utils;
 
 use pyo3::prelude::*;
 use xet_pkg::XetError;

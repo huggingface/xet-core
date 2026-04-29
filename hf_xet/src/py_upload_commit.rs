@@ -12,8 +12,8 @@ use xet_pkg::xet_session::{
 
 /// Sentinel: compute SHA-256 from the file data (default behaviour).
 ///
-/// Pass this as the ``sha256`` argument to :meth:`XetUploadCommit.upload_file`,
-/// :meth:`XetUploadCommit.upload_bytes`, or :meth:`XetUploadCommit.upload_stream`.
+/// Pass this as the ``sha256`` argument to :meth:`XetUploadCommit.start_upload_file`,
+/// :meth:`XetUploadCommit.start_upload_bytes`, or :meth:`XetUploadCommit.start_upload_stream`.
 #[pyclass(frozen, name = "_ComputeSha256Type")]
 pub struct PyComputeSha256;
 
@@ -26,8 +26,8 @@ impl PyComputeSha256 {
 
 /// Sentinel: skip SHA-256 computation entirely.
 ///
-/// Pass this as the ``sha256`` argument to :meth:`XetUploadCommit.upload_file`,
-/// :meth:`XetUploadCommit.upload_bytes`, or :meth:`XetUploadCommit.upload_stream`.
+/// Pass this as the ``sha256`` argument to :meth:`XetUploadCommit.start_upload_file`,
+/// :meth:`XetUploadCommit.start_upload_bytes`, or :meth:`XetUploadCommit.start_upload_stream`.
 #[pyclass(frozen, name = "_SkipSha256Type")]
 pub struct PySkipSha256;
 
@@ -74,6 +74,7 @@ use crate::{blocking_call_with_signal_check, convert_xet_error};
 ///
 /// Called by :meth:`XetSession.new_upload_commit`.  The Rust builder type is
 /// created and consumed entirely here — it never surfaces in any public API.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_upload_commit(
     py: Python<'_>,
     session: &XetSession,
@@ -144,8 +145,8 @@ pub(crate) fn build_upload_commit(
 ///
 /// ```text
 /// with session.new_upload_commit(endpoint="...") as commit:
-///     h = commit.upload_file("/path/to/file.bin")
-/// # on normal exit: commit() is called automatically
+///     h = commit.start_upload_file("/path/to/file.bin")
+/// # on normal exit: wait_to_finish() is called automatically
 /// # on exception:   abort() is called automatically
 /// ```
 #[pyclass(name = "XetUploadCommit")]
@@ -158,7 +159,8 @@ pub struct PyXetUploadCommit {
 #[pymethods]
 impl PyXetUploadCommit {
     // Example output:
-    //   XetUploadCommit(status="Running", uploads=[(1, "/path/model.bin", bytes_completed=1024/4096), (2, None, bytes_completed=?/?)])
+    //   XetUploadCommit(status="Running", uploads=[(1, "/path/model.bin", bytes_completed=1024/4096), (2, None,
+    // bytes_completed=?/?)])
     //
     // Each upload entry is (task_id, path_or_None, bytes_completed/total_bytes).
     // Path is None for uploads started from bytes rather than a file path.
@@ -196,7 +198,7 @@ impl PyXetUploadCommit {
     ) -> PyResult<bool> {
         if exc_type.is_none() {
             // Normal exit: commit all uploads (signal-interruptible).
-            self.commit(py)?;
+            self.wait_to_finish(py)?;
         } else {
             // Exception: cancel uploads.
             let _ = self.inner.abort();
@@ -218,7 +220,12 @@ impl PyXetUploadCommit {
     /// - ``sha256=hf_xet.COMPUTE_SHA256`` — compute from file data (default when omitted)
     /// - ``sha256=hf_xet.SKIP_SHA256`` — skip SHA-256 entirely
     #[pyo3(signature = (path, sha256=None))]
-    pub fn upload_file(&self, py: Python<'_>, path: String, sha256: Option<Py<PyAny>>) -> PyResult<PyXetFileUpload> {
+    pub fn start_upload_file(
+        &self,
+        py: Python<'_>,
+        path: String,
+        sha256: Option<Py<PyAny>>,
+    ) -> PyResult<PyXetFileUpload> {
         let policy = parse_sha256(py, sha256)?;
         let inner = self.inner.clone();
         let handle = py.detach(|| inner.upload_from_path_blocking(path.into(), policy).map_err(convert_xet_error))?;
@@ -233,10 +240,10 @@ impl PyXetUploadCommit {
 
     /// Queue raw bytes for upload.
     ///
-    /// ``name`` is an optional display name used for progress reporting and
-    /// telemetry.  ``sha256`` accepts the same values as :meth:`upload_file`.
+    /// ``name`` is an optional display name used for progress reporting.
+    /// ``sha256`` accepts the same values as :meth:`start_upload_file`.
     #[pyo3(signature = (data, sha256=None, name=None))]
-    pub fn upload_bytes(
+    pub fn start_upload_bytes(
         &self,
         py: Python<'_>,
         data: Vec<u8>,
@@ -261,20 +268,20 @@ impl PyXetUploadCommit {
     /// with :meth:`XetStreamUpload.write`, then call :meth:`XetStreamUpload.finish`
     /// **before** calling :meth:`XetUploadCommit.commit`.
     ///
-    /// ``name`` is an optional display name used for progress reporting and
-    /// telemetry.  ``sha256`` accepts the same values as :meth:`upload_file`.
+    /// ``name`` is an optional display name used for progress reporting.
+    /// ``sha256`` accepts the same values as :meth:`start_upload_file`.
     ///
     /// Example:
     ///
     /// ```text
-    /// stream = commit.upload_stream(name="model.bin")
+    /// stream = commit.start_upload_stream(name="model.bin")
     /// for chunk in produce_chunks():
     ///     stream.write(chunk)
-    /// result = stream.finish()   # must be called before commit()
+    /// result = stream.finish()   # must be called before wait_to_finish()
     /// print(result.xet_info.hash, result.xet_info.file_size)
     /// ```
     #[pyo3(signature = (name=None, sha256=None))]
-    pub fn upload_stream(
+    pub fn start_upload_stream(
         &self,
         py: Python<'_>,
         name: Option<String>,
@@ -294,7 +301,7 @@ impl PyXetUploadCommit {
     ///
     /// Releases the GIL while waiting, polling for ``KeyboardInterrupt`` every
     /// 100 ms so that Ctrl-C is delivered promptly.
-    pub fn commit(&self, py: Python<'_>) -> PyResult<XetCommitReport> {
+    pub fn wait_to_finish(&self, py: Python<'_>) -> PyResult<XetCommitReport> {
         let inner = self.inner.clone();
         blocking_call_with_signal_check(py, move || inner.commit_blocking())
     }
@@ -380,7 +387,7 @@ mod tests {
     // ── PyXetUploadCommit ─────────────────────────────────────────────────────
 
     #[test]
-    fn test_upload_bytes_and_commit_report() {
+    fn test_start_upload_bytes_and_commit_report() {
         use tempfile::tempdir;
         use xet_pkg::xet_session::XetSessionBuilder;
 
@@ -398,9 +405,9 @@ mod tests {
         };
 
         Python::attach(|py| {
-            let handle = commit.upload_bytes(py, b"hello world".to_vec(), None, None).unwrap();
+            let handle = commit.start_upload_bytes(py, b"hello world".to_vec(), None, None).unwrap();
             let task_id = handle.task_id();
-            let report = commit.commit(py).unwrap();
+            let report = commit.wait_to_finish(py).unwrap();
             assert!(report.uploads.contains_key(&task_id));
             let meta = &report.uploads[&task_id];
             assert_eq!(meta.xet_info.file_size, Some(11));
@@ -428,7 +435,7 @@ mod tests {
 
         Python::attach(|py| {
             commit.abort().unwrap();
-            assert!(commit.commit(py).is_err());
+            assert!(commit.wait_to_finish(py).is_err());
         });
     }
 }

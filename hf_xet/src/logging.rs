@@ -3,7 +3,7 @@ use pyo3::types::PyAnyMethods;
 use tracing::info;
 
 fn get_version_info_string(py: Python<'_>) -> String {
-    // populate remote telemetry calls with versions for python and hf_hub if possible
+    // populate version info for the User-Agent header
     let mut version_info = String::new();
 
     // Get Python version

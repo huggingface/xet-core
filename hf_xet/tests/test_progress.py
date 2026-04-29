@@ -25,7 +25,7 @@ class TestUploadProgressCallback:
 
         (hf_xet.XetSession()
          .new_upload_commit(endpoint=endpoint, progress_callback=on_progress, progress_interval_ms=10)
-         .commit())
+         .wait_to_finish())
 
         fired.wait(timeout=1.0)
         assert len(calls) > 0
@@ -46,9 +46,9 @@ class TestUploadProgressCallback:
         commit = hf_xet.XetSession().new_upload_commit(
             endpoint=endpoint, progress_callback=on_progress, progress_interval_ms=10
         )
-        commit.upload_bytes(b"file a", name="a.bin", sha256=hf_xet.SKIP_SHA256)
-        commit.upload_bytes(b"file b", name="b.bin", sha256=hf_xet.SKIP_SHA256)
-        commit.commit()
+        commit.start_upload_bytes(b"file a", name="a.bin", sha256=hf_xet.SKIP_SHA256)
+        commit.start_upload_bytes(b"file b", name="b.bin", sha256=hf_xet.SKIP_SHA256)
+        commit.wait_to_finish()
 
         fired.wait(timeout=1.0)
         assert "a.bin" in seen_names
@@ -66,8 +66,8 @@ class TestUploadProgressCallback:
         commit = hf_xet.XetSession().new_upload_commit(
             endpoint=endpoint, progress_callback=on_progress, progress_interval_ms=10
         )
-        commit.upload_bytes(b"progress fields", name="p.bin", sha256=hf_xet.SKIP_SHA256)
-        commit.commit()
+        commit.start_upload_bytes(b"progress fields", name="p.bin", sha256=hf_xet.SKIP_SHA256)
+        commit.wait_to_finish()
 
         fired.wait(timeout=1.0)
         assert len(items_seen) > 0
@@ -95,7 +95,7 @@ class TestDownloadProgressCallback:
         with hf_xet.XetSession().new_file_download_group(
             endpoint=endpoint, progress_callback=on_progress, progress_interval_ms=10
         ) as group:
-            group.download_file(info, str(dest))
+            group.start_download_file(info, str(dest))
 
         fired.wait(timeout=1.0)
         assert len(calls) > 0
@@ -120,7 +120,7 @@ class TestDownloadProgressCallback:
             endpoint=endpoint, progress_callback=on_progress, progress_interval_ms=10
         ) as group:
             for name, info in infos.items():
-                group.download_file(info, str(tmp_path / name))
+                group.start_download_file(info, str(tmp_path / name))
 
         fired.wait(timeout=1.0)
         assert len(seen_names) == len(payloads)

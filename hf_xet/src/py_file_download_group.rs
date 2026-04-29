@@ -19,6 +19,7 @@ use crate::{blocking_call_with_signal_check, convert_xet_error};
 ///
 /// Called by :meth:`XetSession.new_file_download_group`.  The Rust builder type is
 /// created and consumed entirely here — it never surfaces in any public API.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_file_download_group(
     py: Python<'_>,
     session: &XetSession,
@@ -44,7 +45,10 @@ pub(crate) fn build_file_download_group(
     }
     let merged_headers = build_headers_with_user_agent(custom_headers)?;
     let group = py.detach(move || {
-        builder.with_custom_headers(merged_headers).build_blocking().map_err(convert_xet_error)
+        builder
+            .with_custom_headers(merged_headers)
+            .build_blocking()
+            .map_err(convert_xet_error)
     })?;
 
     let download_handles = if let Some(callback) = progress_callback {
@@ -60,8 +64,7 @@ pub(crate) fn build_file_download_group(
                     .read()
                     .map(|g| g.iter().filter_map(|h| h.progress().map(|p| (h.task_id(), p))).collect())
                     .unwrap_or_default();
-                let is_terminal =
-                    !matches!(inner.status(), Ok(XetTaskState::Running) | Ok(XetTaskState::Finalizing));
+                let is_terminal = !matches!(inner.status(), Ok(XetTaskState::Running) | Ok(XetTaskState::Finalizing));
                 let result = Python::attach(|py| callback.call1(py, (group_report, item_reports)));
                 if result.is_err() || is_terminal {
                     break;
@@ -87,8 +90,8 @@ pub(crate) fn build_file_download_group(
 ///
 /// ```text
 /// with session.new_file_download_group(endpoint="...") as group:
-///     h = group.download_file(info, "/tmp/out.bin")
-/// # on normal exit: finish() is called automatically
+///     h = group.start_download_file(info, "/tmp/out.bin")
+/// # on normal exit: wait_to_finish() is called automatically
 /// # on exception:   abort() is called automatically
 /// ```
 #[pyclass(name = "XetFileDownloadGroup")]
@@ -101,7 +104,8 @@ pub struct PyXetFileDownloadGroup {
 #[pymethods]
 impl PyXetFileDownloadGroup {
     // Example output:
-    //   XetFileDownloadGroup(status="Running", downloads=[(3, "/tmp/model.bin", bytes_completed=1024/4096), (4, "/tmp/data.bin", bytes_completed=?/?)])
+    //   XetFileDownloadGroup(status="Running", downloads=[(3, "/tmp/model.bin", bytes_completed=1024/4096), (4,
+    // "/tmp/data.bin", bytes_completed=?/?)])
     //
     // Each download entry is (task_id, dest_path, bytes_completed/total_bytes).
     // Progress shows "?/?" before the first report arrives.
@@ -134,7 +138,7 @@ impl PyXetFileDownloadGroup {
     ) -> PyResult<bool> {
         if exc_type.is_none() {
             // Normal exit: wait for all downloads (signal-interruptible).
-            self.finish(py)?;
+            self.wait_to_finish(py)?;
         } else {
             let _ = self.inner.abort();
         }
@@ -151,7 +155,7 @@ impl PyXetFileDownloadGroup {
     ///
     /// Returns immediately with a :class:`XetFileDownload` handle.  Call
     /// :meth:`finish` (or exit the ``with`` block) to wait for completion.
-    pub fn download_file(
+    pub fn start_download_file(
         &self,
         py: Python<'_>,
         file_info: XetFileInfo,
@@ -178,7 +182,7 @@ impl PyXetFileDownloadGroup {
     ///
     /// Releases the GIL while waiting, polling for ``KeyboardInterrupt`` every
     /// 100 ms so that Ctrl-C is delivered promptly.
-    pub fn finish(&self, py: Python<'_>) -> PyResult<XetDownloadGroupReport> {
+    pub fn wait_to_finish(&self, py: Python<'_>) -> PyResult<XetDownloadGroupReport> {
         let group = self.inner.clone();
         blocking_call_with_signal_check(py, move || group.finish_blocking())
     }
@@ -229,7 +233,7 @@ mod tests {
         };
 
         Python::attach(|py| {
-            let report = group.finish(py).unwrap();
+            let report = group.wait_to_finish(py).unwrap();
             assert!(report.downloads.is_empty());
         });
     }
@@ -251,8 +255,7 @@ mod tests {
 
         Python::attach(|py| {
             group.abort().unwrap();
-            assert!(group.finish(py).is_err());
+            assert!(group.wait_to_finish(py).is_err());
         });
     }
-
 }

@@ -59,7 +59,11 @@ mod tests {
 
     #[test]
     fn test_progress_display_some() {
-        let report = ItemProgressReport { item_name: "f".into(), total_bytes: 100, bytes_completed: 42 };
+        let report = ItemProgressReport {
+            item_name: "f".into(),
+            total_bytes: 100,
+            bytes_completed: 42,
+        };
         assert_eq!(progress_display(Some(report)), "42/100");
     }
 

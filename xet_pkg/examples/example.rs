@@ -140,7 +140,7 @@ async fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: O
     for r in report.downloads.values() {
         println!(
             "  {} ({:?} bytes)",
-            r.path.as_ref().map_or("?".into(), |p| p.display().to_string()),
+            r.path.display(),
             r.file_info.file_size
         );
     }

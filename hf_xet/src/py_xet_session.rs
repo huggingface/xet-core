@@ -4,9 +4,9 @@ use pyo3::prelude::*;
 use xet_pkg::xet_session::{XetSession, XetSessionBuilder};
 
 use crate::convert_xet_error;
-use crate::py_download_stream_group::{build_download_stream_group, PyXetDownloadStreamGroup};
-use crate::py_file_download_group::{build_file_download_group, PyXetFileDownloadGroup};
-use crate::py_upload_commit::{build_upload_commit, PyXetUploadCommit};
+use crate::py_download_stream_group::{PyXetDownloadStreamGroup, build_download_stream_group};
+use crate::py_file_download_group::{PyXetFileDownloadGroup, build_file_download_group};
+use crate::py_upload_commit::{PyXetUploadCommit, build_upload_commit};
 use crate::utils::{task_state_display, task_state_to_str};
 
 // ── PyXetSession ─────────────────────────────────────────────────────────────
@@ -67,8 +67,9 @@ impl PyXetSession {
     ///         token_refresh_headers={"Authorization": "Bearer hf_…"},
     ///         progress_callback=on_progress,
     ///     ) as commit:
-    ///     commit.upload_file("/path/to/model.bin")
+    ///     commit.start_upload_file("/path/to/model.bin")
     /// ```
+    #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (
         endpoint=None, token=None, token_expiry_unix_secs=None,
         token_refresh_url=None, token_refresh_headers=None,
@@ -115,6 +116,7 @@ impl PyXetSession {
     ///     ) as group:
     ///     group.download_file(file_info, "/tmp/out.bin")
     /// ```
+    #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (
         endpoint=None, token=None, token_expiry_unix_secs=None,
         token_refresh_url=None, token_refresh_headers=None,
@@ -162,6 +164,7 @@ impl PyXetSession {
     /// for chunk in group.download_stream(file_info):
     ///     process(chunk)
     /// ```
+    #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (
         endpoint=None, token=None, token_expiry_unix_secs=None,
         token_refresh_url=None, token_refresh_headers=None,
@@ -200,4 +203,3 @@ impl PyXetSession {
         self.inner.sigint_abort().map_err(convert_xet_error)
     }
 }
-

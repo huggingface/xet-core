@@ -14,6 +14,7 @@ use crate::py_download_stream_handle::{PyXetDownloadStream, PyXetUnorderedDownlo
 ///
 /// Called by :meth:`XetSession.new_download_stream_group`.  The Rust builder type is
 /// created and consumed entirely here — it never surfaces in any public API.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_download_stream_group(
     py: Python<'_>,
     session: &XetSession,
@@ -37,7 +38,10 @@ pub(crate) fn build_download_stream_group(
     }
     let merged_headers = build_headers_with_user_agent(custom_headers)?;
     let group = py.detach(move || {
-        builder.with_custom_headers(merged_headers).build_blocking().map_err(convert_xet_error)
+        builder
+            .with_custom_headers(merged_headers)
+            .build_blocking()
+            .map_err(convert_xet_error)
     })?;
     Ok(PyXetDownloadStreamGroup { inner: group })
 }
@@ -132,4 +136,3 @@ impl PyXetDownloadStreamGroup {
         Ok(PyXetUnorderedDownloadStream { inner: stream })
     }
 }
-

@@ -79,7 +79,8 @@ pub struct XetDownloadGroupReport {
 #[pyo3::pymethods]
 impl XetDownloadGroupReport {
     // Example output:
-    //   XetDownloadGroupReport(files=2, bytes_completed=5120/8192, downloads=[(3, "/tmp/model.bin", bytes_completed=4096/4096), (4, "/tmp/data.bin", bytes_completed=?/?)])
+    //   XetDownloadGroupReport(files=2, bytes_completed=5120/8192,
+    //       downloads=[(3, "/tmp/model.bin", bytes_completed=4096/4096), (4, "/tmp/data.bin", bytes_completed=?/?)])
     //   XetDownloadGroupReport(files=0, bytes_completed=0/0, downloads=[])
     //
     // Each download entry is (task_id, dest_path, bytes_completed/total_bytes).
