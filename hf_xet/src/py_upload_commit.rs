@@ -56,9 +56,7 @@ fn parse_sha256(py: Python<'_>, sha256: Option<Py<PyAny>>) -> PyResult<Sha256Pol
             } else if let Ok(hex) = obj.extract::<String>() {
                 Ok(Sha256Policy::from_hex(&hex))
             } else {
-                Err(pyo3::exceptions::PyTypeError::new_err(
-                    "sha256 must be a str, COMPUTE_SHA256, or SKIP_SHA256",
-                ))
+                Err(pyo3::exceptions::PyTypeError::new_err("sha256 must be a str, COMPUTE_SHA256, or SKIP_SHA256"))
             }
         },
     }
@@ -67,7 +65,7 @@ fn parse_sha256(py: Python<'_>, sha256: Option<Py<PyAny>>) -> PyResult<Sha256Pol
 use crate::headers::{build_header_map, build_headers_with_user_agent};
 use crate::py_file_upload_handle::PyXetFileUpload;
 use crate::py_stream_upload_handle::PyXetStreamUpload;
-use crate::py_xet_session::task_state_to_str;
+use crate::utils::{progress_display, task_state_display, task_state_to_str};
 use crate::{blocking_call_with_signal_check, convert_xet_error};
 
 // ── build_upload_commit ───────────────────────────────────────────────────────
@@ -101,7 +99,10 @@ pub(crate) fn build_upload_commit(
     }
     let merged_headers = build_headers_with_user_agent(custom_headers)?;
     let commit = py.detach(move || {
-        builder.with_custom_headers(merged_headers).build_blocking().map_err(convert_xet_error)
+        builder
+            .with_custom_headers(merged_headers)
+            .build_blocking()
+            .map_err(convert_xet_error)
     })?;
 
     let upload_handles = if let Some(callback) = progress_callback {
@@ -117,8 +118,7 @@ pub(crate) fn build_upload_commit(
                     .read()
                     .map(|g| g.iter().filter_map(|h| h.progress().map(|p| (h.task_id(), p))).collect())
                     .unwrap_or_default();
-                let is_terminal =
-                    !matches!(inner.status(), Ok(XetTaskState::Running) | Ok(XetTaskState::Finalizing));
+                let is_terminal = !matches!(inner.status(), Ok(XetTaskState::Running) | Ok(XetTaskState::Finalizing));
                 let result = Python::attach(|py| callback.call1(py, (group_report, item_reports)));
                 if result.is_err() || is_terminal {
                     break;
@@ -157,8 +157,28 @@ pub struct PyXetUploadCommit {
 
 #[pymethods]
 impl PyXetUploadCommit {
-    fn __repr__(&self) -> &'static str {
-        "XetUploadCommit()"
+    // Example output:
+    //   XetUploadCommit(status="Running", uploads=[(1, "/path/model.bin", bytes_completed=1024/4096), (2, None, bytes_completed=?/?)])
+    //
+    // Each upload entry is (task_id, path_or_None, bytes_completed/total_bytes).
+    // Path is None for uploads started from bytes rather than a file path.
+    // Progress shows "?/?" before the first report arrives.
+    fn __repr__(&self) -> String {
+        let status = task_state_display(self.inner.status());
+        let uploads: Vec<String> = self
+            .inner
+            .active_upload_info()
+            .into_iter()
+            .map(|(id, path, progress)| {
+                let p = match path {
+                    Some(pb) => format!("\"{}\"", pb.display()),
+                    None => "None".to_string(),
+                };
+                let prog = progress_display(progress);
+                format!("({id}, {p}, bytes_completed={prog})")
+            })
+            .collect();
+        format!("XetUploadCommit(status=\"{}\", uploads=[{}])", status, uploads.join(", "))
     }
 
     // ── Context manager ──────────────────────────────────────────────────────
@@ -198,12 +218,7 @@ impl PyXetUploadCommit {
     /// - ``sha256=hf_xet.COMPUTE_SHA256`` — compute from file data (default when omitted)
     /// - ``sha256=hf_xet.SKIP_SHA256`` — skip SHA-256 entirely
     #[pyo3(signature = (path, sha256=None))]
-    pub fn upload_file(
-        &self,
-        py: Python<'_>,
-        path: String,
-        sha256: Option<Py<PyAny>>,
-    ) -> PyResult<PyXetFileUpload> {
+    pub fn upload_file(&self, py: Python<'_>, path: String, sha256: Option<Py<PyAny>>) -> PyResult<PyXetFileUpload> {
         let policy = parse_sha256(py, sha256)?;
         let inner = self.inner.clone();
         let handle = py.detach(|| inner.upload_from_path_blocking(path.into(), policy).map_err(convert_xet_error))?;
@@ -305,7 +320,6 @@ impl PyXetUploadCommit {
         task_state_to_str(self.inner.status().map_err(convert_xet_error)?)
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -417,5 +431,4 @@ mod tests {
             assert!(commit.commit(py).is_err());
         });
     }
-
 }

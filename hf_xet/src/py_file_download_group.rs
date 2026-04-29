@@ -10,7 +10,7 @@ use xet_pkg::xet_session::{
 
 use crate::headers::{build_header_map, build_headers_with_user_agent};
 use crate::py_file_download_handle::PyXetFileDownload;
-use crate::py_xet_session::task_state_to_str;
+use crate::utils::{progress_display, task_state_display, task_state_to_str};
 use crate::{blocking_call_with_signal_check, convert_xet_error};
 
 // ── build_file_download_group ─────────────────────────────────────────────────
@@ -100,8 +100,23 @@ pub struct PyXetFileDownloadGroup {
 
 #[pymethods]
 impl PyXetFileDownloadGroup {
-    fn __repr__(&self) -> &'static str {
-        "XetFileDownloadGroup()"
+    // Example output:
+    //   XetFileDownloadGroup(status="Running", downloads=[(3, "/tmp/model.bin", bytes_completed=1024/4096), (4, "/tmp/data.bin", bytes_completed=?/?)])
+    //
+    // Each download entry is (task_id, dest_path, bytes_completed/total_bytes).
+    // Progress shows "?/?" before the first report arrives.
+    fn __repr__(&self) -> String {
+        let status = task_state_display(self.inner.status());
+        let downloads: Vec<String> = self
+            .inner
+            .active_download_info()
+            .into_iter()
+            .map(|(id, path, progress)| {
+                let prog = progress_display(progress);
+                format!("({id}, \"{}\", bytes_completed={prog})", path.display())
+            })
+            .collect();
+        format!("XetFileDownloadGroup(status=\"{}\", downloads=[{}])", status, downloads.join(", "))
     }
 
     // ── Context manager ──────────────────────────────────────────────────────

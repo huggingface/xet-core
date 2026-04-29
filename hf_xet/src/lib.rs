@@ -2,6 +2,7 @@ mod headers;
 mod legacy;
 mod logging;
 mod py_download_stream_group;
+pub(crate) mod utils;
 mod py_download_stream_handle;
 mod py_file_download_group;
 mod py_file_download_handle;

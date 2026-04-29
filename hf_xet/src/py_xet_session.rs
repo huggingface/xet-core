@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 
 use pyo3::prelude::*;
-use xet_pkg::xet_session::{XetSession, XetSessionBuilder, XetTaskState};
+use xet_pkg::xet_session::{XetSession, XetSessionBuilder};
 
 use crate::convert_xet_error;
 use crate::py_download_stream_group::{build_download_stream_group, PyXetDownloadStreamGroup};
 use crate::py_file_download_group::{build_file_download_group, PyXetFileDownloadGroup};
 use crate::py_upload_commit::{build_upload_commit, PyXetUploadCommit};
+use crate::utils::{task_state_display, task_state_to_str};
 
 // ── PyXetSession ─────────────────────────────────────────────────────────────
 
@@ -21,8 +22,21 @@ pub struct PyXetSession {
 
 #[pymethods]
 impl PyXetSession {
-    fn __repr__(&self) -> &'static str {
-        "XetSession()"
+    // Example output:
+    //   XetSession(id="01JBQW...", status="Running", config={data.max_concurrent_file_ingestion=4, ...})
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        let status = task_state_display(self.inner.status());
+        let id = self.inner.id();
+        let items = self.inner.config().all_items_to_python(py)?;
+        let config_str = items
+            .into_iter()
+            .map(|(k, v)| {
+                let repr = v.bind(py).repr().map(|r| r.to_string()).unwrap_or_else(|_| "?".to_string());
+                format!("{k}={repr}")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        Ok(format!("XetSession(id=\"{id}\", status=\"{status}\", config={{{config_str}}})"))
     }
 
     /// Create a new XetSession.
@@ -181,41 +195,9 @@ impl PyXetSession {
         task_state_to_str(self.inner.status().map_err(convert_xet_error)?)
     }
 
-    /// Cancel all active operations on this session.
-    ///
-    /// The session remains usable after abort — new commits and groups can be
-    /// created.
-    pub fn abort(&self) -> PyResult<()> {
-        self.inner.abort().map_err(convert_xet_error)
-    }
-
     /// SIGINT-style abort: shuts down the runtime and cancels all tasks.
     pub fn sigint_abort(&self) -> PyResult<()> {
         self.inner.sigint_abort().map_err(convert_xet_error)
     }
 }
 
-// ── Internal helpers ──────────────────────────────────────────────────────────
-
-pub(crate) fn task_state_to_str(state: XetTaskState) -> PyResult<&'static str> {
-    match state {
-        XetTaskState::Running => Ok("Running"),
-        XetTaskState::Finalizing => Ok("Finalizing"),
-        XetTaskState::Completed => Ok("Completed"),
-        XetTaskState::UserCancelled => Ok("UserCancelled"),
-        XetTaskState::Error(msg) => Err(convert_xet_error(xet_pkg::XetError::TaskError(msg))),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_task_state_error_returns_err() {
-        let msg = task_state_to_str(XetTaskState::Error("something went wrong".into()))
-            .unwrap_err()
-            .to_string();
-        assert!(msg.contains("something went wrong"));
-    }
-}

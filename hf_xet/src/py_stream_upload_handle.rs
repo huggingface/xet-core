@@ -2,7 +2,7 @@ use pyo3::prelude::*;
 use xet_pkg::xet_session::{ItemProgressReport, UniqueID, XetFileMetadata, XetStreamUpload};
 
 use crate::convert_xet_error;
-use crate::py_xet_session::task_state_to_str;
+use crate::utils::{progress_display, task_state_display, task_state_to_str};
 
 // ── PyXetStreamUpload ─────────────────────────────────────────────────────────
 
@@ -19,8 +19,14 @@ pub struct PyXetStreamUpload {
 
 #[pymethods]
 impl PyXetStreamUpload {
+    // Example output:
+    //   XetStreamUpload(task_id=1, status="Running", bytes_completed=512/4096)
+    //   XetStreamUpload(task_id=2, status="Completed", bytes_completed=4096/4096)
+    //   XetStreamUpload(task_id=3, status="Running", bytes_completed=?/?)   ← before first progress report
     fn __repr__(&self) -> String {
-        format!("XetStreamUpload(task_id={:?})", self.inner.task_id().to_string())
+        let status = task_state_display(self.inner.status());
+        let prog = progress_display(self.inner.progress());
+        format!("XetStreamUpload(task_id={}, status=\"{}\", bytes_completed={})", self.inner.task_id(), status, prog)
     }
 
     /// Feed a chunk of data into the upload pipeline.

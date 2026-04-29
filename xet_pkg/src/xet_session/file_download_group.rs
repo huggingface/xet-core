@@ -6,7 +6,7 @@ use std::sync::{Arc, RwLock};
 
 use tracing::info;
 use xet_data::processing::{FileDownloadSession, XetFileInfo};
-use xet_data::progress_tracking::{GroupProgressReport, UniqueID};
+use xet_data::progress_tracking::{GroupProgressReport, ItemProgressReport, UniqueID};
 
 use super::auth_group_builder::{AuthGroupBuilder, AuthOptions};
 use super::common::create_translator_config;
@@ -78,8 +78,32 @@ pub struct XetDownloadGroupReport {
 #[cfg(feature = "python")]
 #[pyo3::pymethods]
 impl XetDownloadGroupReport {
+    // Example output:
+    //   XetDownloadGroupReport(files=2, bytes_completed=5120/8192, downloads=[(3, "/tmp/model.bin", bytes_completed=4096/4096), (4, "/tmp/data.bin", bytes_completed=?/?)])
+    //   XetDownloadGroupReport(files=0, bytes_completed=0/0, downloads=[])
+    //
+    // Each download entry is (task_id, dest_path, bytes_completed/total_bytes).
+    // Progress shows "?/?" when no snapshot was captured.
     fn __repr__(&self) -> String {
-        format!("XetDownloadGroupReport({} downloads)", self.downloads.len())
+        let per_file: Vec<String> = self
+            .downloads
+            .iter()
+            .map(|(id, r)| {
+                let path = r.path.display();
+                let prog = match &r.progress {
+                    Some(p) => format!("{}/{}", p.bytes_completed, p.total_bytes),
+                    None => "?/?".to_string(),
+                };
+                format!("({id}, \"{path}\", bytes_completed={prog})")
+            })
+            .collect();
+        format!(
+            "XetDownloadGroupReport(files={}, bytes_completed={}/{}, downloads=[{}])",
+            self.downloads.len(),
+            self.progress.total_bytes_completed,
+            self.progress.total_bytes,
+            per_file.join(", ")
+        )
     }
 }
 
@@ -204,6 +228,18 @@ impl XetFileDownloadGroup {
         self.task_runtime.status()
     }
 
+    /// Return `(task_id, dest_path, progress)` for every queued file download.
+    ///
+    /// `progress` is `None` if the download has not started reporting yet.
+    /// Used for display and diagnostics (e.g. `__repr__`).
+    pub fn active_download_info(&self) -> Vec<(UniqueID, PathBuf, Option<ItemProgressReport>)> {
+        self.inner
+            .active_tasks
+            .read()
+            .map(|tasks| tasks.values().map(|h| (h.task_id(), h.file_path(), h.progress())).collect())
+            .unwrap_or_default()
+    }
+
     /// Wait for all downloads to complete and return a report.
     ///
     /// Returns an [`XetDownloadGroupReport`] with per-file
@@ -315,7 +351,7 @@ impl XetFileDownloadGroupInner {
                     match join_result {
                         Ok(Ok(n_bytes)) => Ok(XetDownloadReport {
                             task_id,
-                            path: Some(dp),
+                            path: dp,
                             file_info: XetFileInfo {
                                 hash: fi.hash,
                                 file_size: Some(n_bytes),

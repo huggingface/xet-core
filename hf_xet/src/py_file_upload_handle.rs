@@ -2,7 +2,7 @@ use pyo3::prelude::*;
 use xet_pkg::xet_session::{ItemProgressReport, UniqueID, XetFileMetadata, XetFileUpload};
 
 use crate::convert_xet_error;
-use crate::py_xet_session::task_state_to_str;
+use crate::utils::{progress_display, task_state_display, task_state_to_str};
 
 // ── PyXetFileUpload ───────────────────────────────────────────────────────────
 
@@ -17,8 +17,14 @@ pub struct PyXetFileUpload {
 
 #[pymethods]
 impl PyXetFileUpload {
+    // Example output:
+    //   XetFileUpload(task_id=1, status="Running", bytes_completed=1024/4096)
+    //   XetFileUpload(task_id=2, status="Completed", bytes_completed=4096/4096)
+    //   XetFileUpload(task_id=3, status="Running", bytes_completed=?/?)   ← before first progress report
     fn __repr__(&self) -> String {
-        format!("XetFileUpload(task_id={:?})", self.inner.task_id().to_string())
+        let status = task_state_display(self.inner.status());
+        let prog = progress_display(self.inner.progress());
+        format!("XetFileUpload(task_id={}, status=\"{}\", bytes_completed={})", self.inner.task_id(), status, prog)
     }
 
     /// Per-file progress, or ``None`` if not yet available.

@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tracing::{error, info};
 use xet_data::deduplication::DeduplicationMetrics;
 use xet_data::processing::{FileUploadSession, Sha256Policy, XetFileInfo};
-use xet_data::progress_tracking::{GroupProgressReport, UniqueID};
+use xet_data::progress_tracking::{GroupProgressReport, ItemProgressReport, UniqueID};
 
 use super::auth_group_builder::{AuthGroupBuilder, AuthOptions};
 use super::common::create_translator_config;
@@ -85,7 +85,22 @@ pub struct XetCommitReport {
 #[pyo3::pymethods]
 impl XetCommitReport {
     fn __repr__(&self) -> String {
-        format!("XetCommitReport({} uploads)", self.uploads.len())
+        let per_file: Vec<String> = self
+            .uploads
+            .iter()
+            .map(|(id, m)| {
+                let name = m.tracking_name.as_deref().unwrap_or("None");
+                let size = m.xet_info.file_size.map_or("?".to_string(), |s| s.to_string());
+                format!("({id}, \"{name}\", hash=\"{}\", size={size})", m.xet_info.hash)
+            })
+            .collect();
+        format!(
+            "XetCommitReport(files={}, total_bytes={}, deduped_bytes={}, uploads=[{}])",
+            self.uploads.len(),
+            self.dedup_metrics.total_bytes,
+            self.dedup_metrics.deduped_bytes,
+            per_file.join(", ")
+        )
     }
 }
 
@@ -110,7 +125,12 @@ pub struct XetFileMetadata {
 #[pyo3::pymethods]
 impl XetFileMetadata {
     fn __repr__(&self) -> String {
-        format!("XetFileMetadata(task_id={}, hash={:?})", self.task_id, self.xet_info.hash)
+        let name = self.tracking_name.as_deref().unwrap_or("None");
+        let size = self.xet_info.file_size.map_or("?".to_string(), |s| s.to_string());
+        format!(
+            "XetFileMetadata(task_id={}, name=\"{}\", hash=\"{}\", size={})",
+            self.task_id, name, self.xet_info.hash, size
+        )
     }
 }
 
@@ -161,10 +181,7 @@ impl XetUploadCommitInner {
             task_runtime,
         };
 
-        self.stream_handles
-            .lock()
-            .expect("stream_handles lock poisoned")
-            .push(handle.clone());
+        self.stream_handles.lock()?.push(handle.clone());
 
         Ok(handle)
     }
@@ -226,13 +243,10 @@ impl XetUploadCommitInner {
             }),
         });
 
-        self.file_handles
-            .lock()
-            .expect("file_handles lock poisoned")
-            .push(XetFileUpload {
-                inner: inner.clone(),
-                task_runtime: task_runtime.clone(),
-            });
+        self.file_handles.lock()?.push(XetFileUpload {
+            inner: inner.clone(),
+            task_runtime: task_runtime.clone(),
+        });
 
         Ok(XetFileUpload { inner, task_runtime })
     }
@@ -451,6 +465,19 @@ impl XetUploadCommit {
 
     pub fn status(&self) -> Result<XetTaskState, XetError> {
         self.task_runtime.status()
+    }
+
+    /// Return `(task_id, file_path, progress)` for every queued file upload.
+    ///
+    /// `file_path` is `Some` for path/bytes uploads and `None` for stream uploads.
+    /// `progress` is `None` if the upload has not started reporting yet.
+    /// Used for display and diagnostics (e.g. `__repr__`).
+    pub fn active_upload_info(&self) -> Vec<(UniqueID, Option<PathBuf>, Option<ItemProgressReport>)> {
+        self.inner
+            .file_handles
+            .lock()
+            .map(|handles| handles.iter().map(|h| (h.task_id(), h.file_path(), h.progress())).collect())
+            .unwrap_or_default()
     }
 
     /// Wait for all uploads to complete and push metadata to the CAS server.

@@ -1,5 +1,5 @@
 """
-Tests for XetSession itself: status, abort, sigint_abort, and factory methods.
+Tests for XetSession itself: status, sigint_abort, and factory methods.
 """
 
 import hf_xet
@@ -9,10 +9,6 @@ class TestXetSession:
     def test_status_returns_valid_string(self):
         session = hf_xet.XetSession()
         assert session.status() in ("Running", "Finalizing", "Completed", "UserCancelled")
-
-    def test_abort_does_not_raise(self):
-        session = hf_xet.XetSession()
-        session.abort()  # should not raise
 
     def test_sigint_abort_does_not_raise(self):
         # Uses a dedicated session; sigint_abort shuts down the internal runtime.

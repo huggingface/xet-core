@@ -17,8 +17,8 @@ use crate::error::XetError;
 pub struct XetDownloadReport {
     /// Unique identifier for this download task.
     pub task_id: UniqueID,
-    /// Local path where the file was written, if applicable.
-    pub path: Option<PathBuf>,
+    /// Local path where the file was written.
+    pub path: PathBuf,
     /// Xet file hash and size of the downloaded file.
     pub file_info: XetFileInfo,
     /// Per-file progress snapshot at the time of completion.
@@ -33,7 +33,7 @@ impl XetDownloadReport {
             "XetDownloadReport(task_id={}, hash={:?}, path={:?})",
             self.task_id,
             self.file_info.hash,
-            self.path.as_ref().and_then(|p| p.to_str())
+            self.path.display()
         )
     }
 }

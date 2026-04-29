@@ -3,6 +3,7 @@ use pyo3::types::PyBytes;
 use xet_pkg::xet_session::{ItemProgressReport, XetDownloadStream, XetUnorderedDownloadStream};
 
 use crate::convert_xet_error;
+use crate::utils::progress_display;
 
 // ── PyXetDownloadStream ───────────────────────────────────────────────────────
 
@@ -30,8 +31,15 @@ pub struct PyXetDownloadStream {
 
 #[pymethods]
 impl PyXetDownloadStream {
-    fn __repr__(&self) -> &'static str {
-        "XetDownloadStream()"
+    // Example output:
+    //   XetDownloadStream(task_id=4, bytes_completed=512/2048)
+    //   XetDownloadStream(task_id=5, bytes_completed=?/?)   ← before first progress report
+    fn __repr__(&self) -> String {
+        let prog = progress_display(self.inner.progress());
+        format!(
+            "XetDownloadStream(task_id={}, bytes_completed={})",
+            self.inner.task_id(), prog
+        )
     }
 
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
@@ -56,8 +64,8 @@ impl PyXetDownloadStream {
         self.inner.cancel();
     }
 
-    /// Current download progress for this stream.
-    pub fn progress(&self) -> ItemProgressReport {
+    /// Current download progress for this stream, or ``None`` if not yet available.
+    pub fn progress(&self) -> Option<ItemProgressReport> {
         self.inner.progress()
     }
 }
@@ -86,8 +94,15 @@ pub struct PyXetUnorderedDownloadStream {
 
 #[pymethods]
 impl PyXetUnorderedDownloadStream {
-    fn __repr__(&self) -> &'static str {
-        "XetUnorderedDownloadStream()"
+    // Example output:
+    //   XetUnorderedDownloadStream(task_id=6, bytes_completed=4096/16384)
+    //   XetUnorderedDownloadStream(task_id=7, bytes_completed=?/?)   ← before first progress report
+    fn __repr__(&self) -> String {
+        let prog = progress_display(self.inner.progress());
+        format!(
+            "XetUnorderedDownloadStream(task_id={}, bytes_completed={})",
+            self.inner.task_id(), prog
+        )
     }
 
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
@@ -114,8 +129,8 @@ impl PyXetUnorderedDownloadStream {
         self.inner.cancel();
     }
 
-    /// Current download progress for this stream.
-    pub fn progress(&self) -> ItemProgressReport {
+    /// Current download progress for this stream, or ``None`` if not yet available.
+    pub fn progress(&self) -> Option<ItemProgressReport> {
         self.inner.progress()
     }
 }

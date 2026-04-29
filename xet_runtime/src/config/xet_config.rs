@@ -110,7 +110,7 @@ macro_rules! impl_xet_config_group_dispatch {
             }
 
             #[cfg(feature = "python")]
-            fn all_items_to_python(
+            pub fn all_items_to_python(
                 &self,
                 py: pyo3::Python<'_>,
             ) -> pyo3::PyResult<Vec<(String, pyo3::Py<pyo3::PyAny>)>> {

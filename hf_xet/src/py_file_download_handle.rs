@@ -2,7 +2,7 @@ use pyo3::prelude::*;
 use xet_pkg::xet_session::{ItemProgressReport, UniqueID, XetDownloadReport, XetFileDownload};
 
 use crate::convert_xet_error;
-use crate::py_xet_session::task_state_to_str;
+use crate::utils::{progress_display, task_state_display, task_state_to_str};
 
 // ── PyXetFileDownload ─────────────────────────────────────────────────────────
 
@@ -16,8 +16,14 @@ pub struct PyXetFileDownload {
 
 #[pymethods]
 impl PyXetFileDownload {
+    // Example output:
+    //   XetFileDownload(task_id=3, status="Running", bytes_completed=1024/4096)
+    //   XetFileDownload(task_id=4, status="Completed", bytes_completed=2048/2048)
+    //   XetFileDownload(task_id=5, status="Running", bytes_completed=?/?)   ← before first progress report
     fn __repr__(&self) -> String {
-        format!("XetFileDownload(task_id={:?})", self.inner.task_id().to_string())
+        let status = task_state_display(self.inner.status());
+        let prog = progress_display(self.inner.progress());
+        format!("XetFileDownload(task_id={}, status=\"{}\", bytes_completed={})", self.inner.task_id(), status, prog)
     }
 
     /// Per-file progress, or ``None`` if not yet available.

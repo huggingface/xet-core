@@ -397,8 +397,12 @@ impl XetSession {
         Ok(())
     }
 
-    pub(super) fn id(&self) -> &Ulid {
+    pub fn id(&self) -> &Ulid {
         &self.inner.id
+    }
+
+    pub fn config(&self) -> &XetConfig {
+        &self.inner.config
     }
 }
 
