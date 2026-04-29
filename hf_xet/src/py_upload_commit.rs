@@ -114,12 +114,12 @@ pub(crate) fn build_upload_commit(
         std::thread::spawn(move || {
             loop {
                 std::thread::sleep(interval);
+                let is_terminal = !matches!(inner.status(), Ok(XetTaskState::Running) | Ok(XetTaskState::Finalizing));
                 let group_report = inner.progress();
                 let item_reports: HashMap<UniqueID, ItemProgressReport> = handles_for_thread
                     .read()
                     .map(|g| g.iter().filter_map(|h| h.progress().map(|p| (h.task_id(), p))).collect())
                     .unwrap_or_default();
-                let is_terminal = !matches!(inner.status(), Ok(XetTaskState::Running) | Ok(XetTaskState::Finalizing));
                 let result = Python::attach(|py| callback.call1(py, (group_report, item_reports)));
                 if result.is_err() || is_terminal {
                     break;
