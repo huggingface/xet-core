@@ -1,3 +1,4 @@
+pub mod config;
 mod headers;
 mod legacy;
 mod logging;
@@ -56,6 +57,10 @@ pub enum PyXetTaskState {
 #[pymodule(gil_used = false)]
 #[allow(unused_variables)]
 pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // ── Configuration ────────────────────────────────────────────────────────
+    m.add_class::<config::PyXetConfig>()?;
+    m.add_class::<config::PyXetConfigIter>()?;
+
     // ── New XetSession API ───────────────────────────────────────────────────
     m.add_class::<py_xet_session::PyXetSession>()?;
     m.add_class::<py_upload_commit::PyComputeSha256>()?;

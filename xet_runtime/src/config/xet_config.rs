@@ -23,7 +23,7 @@ macro_rules! impl_xet_config_group_dispatch {
             }
 
             #[cfg(feature = "python")]
-            fn split_path_for_python(path: &str) -> pyo3::PyResult<(&str, &str)> {
+            pub fn split_path_for_python(path: &str) -> pyo3::PyResult<(&str, &str)> {
                 Self::split_path(path).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
             }
 
@@ -49,7 +49,7 @@ macro_rules! impl_xet_config_group_dispatch {
             }
 
             #[cfg(feature = "python")]
-            fn update_field_from_python(
+            pub fn update_field_from_python(
                 &mut self,
                 path: &str,
                 value: &pyo3::Bound<'_, pyo3::PyAny>,
@@ -66,7 +66,7 @@ macro_rules! impl_xet_config_group_dispatch {
             }
 
             #[cfg(feature = "python")]
-            fn get_field_to_python(
+            pub fn get_field_to_python(
                 &self,
                 path: &str,
                 py: pyo3::Python<'_>,
@@ -386,135 +386,5 @@ mod tests {
         assert_eq!(config.get("system_monitor.enabled").unwrap(), "true");
         assert_eq!(config.get("system_monitor.sample_interval").unwrap(), "2s");
         assert_eq!(config.get("system_monitor.log_path").unwrap(), "~/logs/monitor_{PID}.log");
-    }
-}
-
-#[cfg(feature = "python")]
-pub mod py_xet_config {
-    use pyo3::prelude::*;
-    use pyo3::types::PyDict;
-
-    use super::*;
-
-    #[pyclass(name = "XetConfig")]
-    pub struct PyXetConfig {
-        inner: XetConfig,
-    }
-
-    impl From<XetConfig> for PyXetConfig {
-        fn from(inner: XetConfig) -> Self {
-            Self { inner }
-        }
-    }
-
-    impl PyXetConfig {
-        pub fn inner(&self) -> &XetConfig {
-            &self.inner
-        }
-    }
-
-    #[pymethods]
-    impl PyXetConfig {
-        #[new]
-        fn py_new() -> Self {
-            Self {
-                inner: XetConfig::new(),
-            }
-        }
-
-        /// Return a new XetConfig with one or more values updated.
-        ///
-        /// Can be called in two ways:
-        ///   config.with_config("group.field", value)          -- single update
-        ///   config.with_config({"group.field": value, ...})   -- batch update
-        #[pyo3(name = "with_config")]
-        #[pyo3(signature = (name_or_dict, value=None))]
-        fn py_with_config(&self, name_or_dict: &Bound<'_, PyAny>, value: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
-            let mut new_inner = self.inner.clone();
-
-            if let Ok(dict) = name_or_dict.downcast::<PyDict>() {
-                if value.is_some() {
-                    return Err(pyo3::exceptions::PyTypeError::new_err(
-                        "with_config(dict) does not accept a second argument",
-                    ));
-                }
-                for (key, val) in dict.iter() {
-                    let key_str: String = key.extract()?;
-                    new_inner.update_field_from_python(&key_str, &val)?;
-                }
-            } else {
-                let name: String = name_or_dict.extract()?;
-                let val = value.ok_or_else(|| {
-                    pyo3::exceptions::PyTypeError::new_err("with_config(name, value) requires a value argument")
-                })?;
-                new_inner.update_field_from_python(&name, val)?;
-            }
-
-            Ok(Self { inner: new_inner })
-        }
-
-        /// Get a configuration value as its native Python type by dotted path
-        /// (e.g. "data.max_concurrent_file_ingestion").
-        #[pyo3(name = "get")]
-        fn py_get(&self, py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
-            self.inner.get_field_to_python(path, py)
-        }
-
-        fn __getitem__(&self, py: Python<'_>, key: &str) -> PyResult<Py<PyAny>> {
-            self.inner
-                .get_field_to_python(key, py)
-                .map_err(|_| pyo3::exceptions::PyKeyError::new_err(key.to_owned()))
-        }
-
-        /// Return all (key, value) pairs as a list of tuples.
-        /// Keys are dotted paths like "data.max_concurrent_file_ingestion".
-        fn items(&self, py: Python<'_>) -> PyResult<Vec<(String, Py<PyAny>)>> {
-            self.inner.all_items_to_python(py)
-        }
-
-        /// Return all dotted-path keys.
-        fn keys(&self) -> Vec<String> {
-            self.inner.all_keys()
-        }
-
-        fn __len__(&self) -> usize {
-            self.inner.all_keys().len()
-        }
-
-        fn __iter__(slf: PyRef<'_, Self>, py: Python<'_>) -> PyResult<Py<PyXetConfigIter>> {
-            let items = slf.inner.all_items_to_python(py)?;
-            Py::new(py, PyXetConfigIter { items, index: 0 })
-        }
-
-        fn __repr__(&self) -> String {
-            format!("XetConfig({:?})", self.inner)
-        }
-
-        fn __str__(&self) -> String {
-            format!("{:?}", self.inner)
-        }
-    }
-
-    #[pyclass]
-    struct PyXetConfigIter {
-        items: Vec<(String, Py<PyAny>)>,
-        index: usize,
-    }
-
-    #[pymethods]
-    impl PyXetConfigIter {
-        fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
-            slf
-        }
-
-        fn __next__(&mut self, py: Python<'_>) -> Option<(String, Py<PyAny>)> {
-            if self.index < self.items.len() {
-                let (key, value) = &self.items[self.index];
-                self.index += 1;
-                Some((key.clone(), value.clone_ref(py)))
-            } else {
-                None
-            }
-        }
     }
 }

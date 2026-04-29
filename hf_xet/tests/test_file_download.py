@@ -74,12 +74,7 @@ class TestFileDownloadGroup:
         info = upload_bytes_get_info(endpoint, b"status check")
         group = hf_xet.XetSession().new_file_download_group(endpoint=endpoint)
         group.start_download_file(info, str(tmp_path / "out.bin"))
-        assert group.status() in (
-            hf_xet.XetTaskState.Running,
-            hf_xet.XetTaskState.Finalizing,
-            hf_xet.XetTaskState.Completed,
-            hf_xet.XetTaskState.UserCancelled,
-        )
+        assert group.status() == hf_xet.XetTaskState.Running
         group.wait_to_finish()
 
     def test_progress_returns_report(self, endpoint):
@@ -132,12 +127,7 @@ class TestFileDownloadHandle:
         group = hf_xet.XetSession().new_file_download_group(endpoint=endpoint)
         h = group.start_download_file(info, str(tmp_path / "out.bin"))
         group.wait_to_finish()
-        assert h.status() in (
-            hf_xet.XetTaskState.Running,
-            hf_xet.XetTaskState.Finalizing,
-            hf_xet.XetTaskState.Completed,
-            hf_xet.XetTaskState.UserCancelled,
-        )
+        assert h.status() == hf_xet.XetTaskState.Completed
 
     def test_task_id_is_not_none(self, endpoint, tmp_path):
         info = upload_bytes_get_info(endpoint, b"task id data")

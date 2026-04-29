@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use pyo3::prelude::*;
 use xet_pkg::xet_session::{XetSession, XetSessionBuilder};
+use xet_runtime::config::XetConfig;
 
 use crate::py_download_stream_group::{PyXetDownloadStreamGroup, build_download_stream_group};
 use crate::py_file_download_group::{PyXetFileDownloadGroup, build_file_download_group};
@@ -40,9 +41,16 @@ impl PyXetSession {
     }
 
     /// Create a new XetSession.
+    ///
+    /// ``config`` is an optional :class:`XetConfig` instance.  When omitted, a
+    /// default config (with environment-variable overrides applied) is used.
     #[new]
-    pub fn new() -> PyResult<Self> {
-        let session = XetSessionBuilder::new().build().map_err(PyErr::from)?;
+    #[pyo3(signature = (config=None))]
+    pub fn new(config: Option<crate::config::PyXetConfig>) -> PyResult<Self> {
+        #[allow(clippy::unwrap_or_default)]
+        // XetConfig::new starts from default() and applies HF_XET_* environment variable overrides
+        let xet_config = config.map(|c| c.into_inner()).unwrap_or_else(XetConfig::new);
+        let session = XetSessionBuilder::new_with_config(xet_config).build().map_err(PyErr::from)?;
         Ok(Self { inner: session })
     }
 
