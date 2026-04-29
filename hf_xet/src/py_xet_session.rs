@@ -3,11 +3,11 @@ use std::collections::HashMap;
 use pyo3::prelude::*;
 use xet_pkg::xet_session::{XetSession, XetSessionBuilder};
 
-use crate::convert_xet_error;
 use crate::py_download_stream_group::{PyXetDownloadStreamGroup, build_download_stream_group};
 use crate::py_file_download_group::{PyXetFileDownloadGroup, build_file_download_group};
 use crate::py_upload_commit::{PyXetUploadCommit, build_upload_commit};
-use crate::utils::{task_state_display, task_state_to_str};
+use crate::utils::{task_state_display, task_state_to_pystate};
+use crate::{PyXetTaskState, convert_xet_error};
 
 // ── PyXetSession ─────────────────────────────────────────────────────────────
 
@@ -192,13 +192,20 @@ impl PyXetSession {
         )
     }
 
-    /// Current task state: ``"Running"``, ``"Finalizing"``, ``"Completed"``, or
-    /// ``"UserCancelled"``.  Raises on error state.
-    pub fn status(&self) -> PyResult<&'static str> {
-        task_state_to_str(self.inner.status().map_err(convert_xet_error)?)
+    /// Current task state as a :class:`XetTaskState` enum value.  Raises on error.
+    pub fn status(&self) -> PyResult<PyXetTaskState> {
+        task_state_to_pystate(self.inner.status())
     }
 
-    /// SIGINT-style abort: shuts down the runtime and cancels all tasks.
+    /// Cancel all in-progress operations and shut down the underlying runtime.
+    ///
+    /// Unlike :meth:`XetUploadCommit.abort` or :meth:`XetFileDownloadGroup.abort`,
+    /// which cancel a single operation while leaving the session usable, this
+    /// method destroys the session's runtime entirely.  The :class:`XetSession`
+    /// object must be discarded and a new one created before issuing further
+    /// uploads or downloads.
+    ///
+    /// Intended for use in ``except KeyboardInterrupt:`` handlers.
     pub fn sigint_abort(&self) -> PyResult<()> {
         self.inner.sigint_abort().map_err(convert_xet_error)
     }

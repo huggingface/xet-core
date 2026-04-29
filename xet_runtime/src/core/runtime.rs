@@ -665,6 +665,13 @@ impl XetRuntime {
         T: Send + 'static,
     {
         self.check_sigint()?;
+        if std::process::id() != self.creation_pid {
+            return Err(RuntimeError::InvalidRuntime(format!(
+                "XetRuntime was created in process {} but is being used in process {}",
+                self.creation_pid,
+                std::process::id(),
+            )));
+        }
         match &self.backend {
             RuntimeBackend::External { .. } => Ok(fut.await),
             RuntimeBackend::OwnedThreadPool { .. } => self.bridge_to_owned(task_name, fut).await,
@@ -687,6 +694,13 @@ impl XetRuntime {
         F::Output: Send + 'static,
     {
         self.check_sigint()?;
+        if std::process::id() != self.creation_pid {
+            return Err(RuntimeError::InvalidRuntime(format!(
+                "XetRuntime was created in process {} but is being used in process {}",
+                self.creation_pid,
+                std::process::id(),
+            )));
+        }
         if matches!(self.backend, RuntimeBackend::External { .. }) {
             return Err(RuntimeError::InvalidRuntime(
                 "bridge_sync() cannot be called on an External-mode runtime; \

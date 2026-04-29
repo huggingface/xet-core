@@ -65,8 +65,8 @@ fn parse_sha256(py: Python<'_>, sha256: Option<Py<PyAny>>) -> PyResult<Sha256Pol
 use crate::headers::{build_header_map, build_headers_with_user_agent};
 use crate::py_file_upload_handle::PyXetFileUpload;
 use crate::py_stream_upload_handle::PyXetStreamUpload;
-use crate::utils::{progress_display, task_state_display, task_state_to_str};
-use crate::{blocking_call_with_signal_check, convert_xet_error};
+use crate::utils::{progress_display, task_state_display, task_state_to_pystate};
+use crate::{PyXetTaskState, blocking_call_with_signal_check, convert_xet_error};
 
 // ── build_upload_commit ───────────────────────────────────────────────────────
 
@@ -201,7 +201,9 @@ impl PyXetUploadCommit {
             self.wait_to_finish(py)?;
         } else {
             // Exception: cancel uploads.
-            let _ = self.inner.abort();
+            if let Err(e) = self.inner.abort() {
+                tracing::warn!("abort() failed during __exit__ exception path: {e}");
+            }
         }
         Ok(false) // do not suppress the exception
     }
@@ -288,7 +290,8 @@ impl PyXetUploadCommit {
         sha256: Option<Py<PyAny>>,
     ) -> PyResult<PyXetStreamUpload> {
         let policy = parse_sha256(py, sha256)?;
-        let handle = self.inner.upload_stream_blocking(name, policy).map_err(convert_xet_error)?;
+        let inner = self.inner.clone();
+        let handle = py.detach(|| inner.upload_stream_blocking(name, policy).map_err(convert_xet_error))?;
         Ok(PyXetStreamUpload { inner: handle })
     }
 
@@ -321,10 +324,9 @@ impl PyXetUploadCommit {
         self.inner.progress()
     }
 
-    /// Current task state: ``"Running"``, ``"Finalizing"``, ``"Completed"``, or
-    /// ``"UserCancelled"``.  Raises on error state.
-    pub fn status(&self) -> PyResult<&'static str> {
-        task_state_to_str(self.inner.status().map_err(convert_xet_error)?)
+    /// Current task state as a :class:`XetTaskState` enum value.  Raises on error.
+    pub fn status(&self) -> PyResult<PyXetTaskState> {
+        task_state_to_pystate(self.inner.status())
     }
 }
 

@@ -138,11 +138,7 @@ async fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: O
     let report = group.finish().await?;
 
     for r in report.downloads.values() {
-        println!(
-            "  {} ({:?} bytes)",
-            r.path.display(),
-            r.file_info.file_size
-        );
+        println!("  {} ({:?} bytes)", r.path.display(), r.file_info.file_size);
     }
 
     Ok(())

@@ -6,9 +6,14 @@ import hf_xet
 
 
 class TestXetSession:
-    def test_status_returns_valid_string(self):
+    def test_status_returns_valid_state(self):
         session = hf_xet.XetSession()
-        assert session.status() in ("Running", "Finalizing", "Completed", "UserCancelled")
+        assert session.status() in (
+            hf_xet.XetTaskState.Running,
+            hf_xet.XetTaskState.Finalizing,
+            hf_xet.XetTaskState.Completed,
+            hf_xet.XetTaskState.UserCancelled,
+        )
 
     def test_sigint_abort_does_not_raise(self):
         # Uses a dedicated session; sigint_abort shuts down the internal runtime.

@@ -70,11 +70,16 @@ class TestFileDownloadGroup:
         for dest, data in zip(dests, payloads):
             assert dest.read_bytes() == data
 
-    def test_status_is_valid_string(self, endpoint, tmp_path):
+    def test_status_is_valid_state(self, endpoint, tmp_path):
         info = upload_bytes_get_info(endpoint, b"status check")
         group = hf_xet.XetSession().new_file_download_group(endpoint=endpoint)
         group.start_download_file(info, str(tmp_path / "out.bin"))
-        assert group.status() in ("Running", "Finalizing", "Completed", "UserCancelled")
+        assert group.status() in (
+            hf_xet.XetTaskState.Running,
+            hf_xet.XetTaskState.Finalizing,
+            hf_xet.XetTaskState.Completed,
+            hf_xet.XetTaskState.UserCancelled,
+        )
         group.wait_to_finish()
 
     def test_progress_returns_report(self, endpoint):
@@ -122,12 +127,17 @@ class TestFileDownloadHandle:
         h = group.start_download_file(info, str(tmp_path / "out.bin"))
         h.cancel()  # should not raise; download may or may not have completed
 
-    def test_status_is_valid_string(self, endpoint, tmp_path):
+    def test_status_is_valid_state(self, endpoint, tmp_path):
         info = upload_bytes_get_info(endpoint, b"status data")
         group = hf_xet.XetSession().new_file_download_group(endpoint=endpoint)
         h = group.start_download_file(info, str(tmp_path / "out.bin"))
         group.wait_to_finish()
-        assert h.status() in ("Running", "Finalizing", "Completed", "UserCancelled")
+        assert h.status() in (
+            hf_xet.XetTaskState.Running,
+            hf_xet.XetTaskState.Finalizing,
+            hf_xet.XetTaskState.Completed,
+            hf_xet.XetTaskState.UserCancelled,
+        )
 
     def test_task_id_is_not_none(self, endpoint, tmp_path):
         info = upload_bytes_get_info(endpoint, b"task id data")

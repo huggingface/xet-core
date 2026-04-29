@@ -127,9 +127,14 @@ class TestUploadBytes:
         for name, h in handles.items():
             assert h.result().xet_info.file_size == len(files[name])
 
-    def test_status_is_valid_string(self, endpoint):
+    def test_status_is_valid_state(self, endpoint):
         commit = hf_xet.XetSession().new_upload_commit(endpoint=endpoint)
-        assert commit.status() in ("Running", "Finalizing", "Completed", "UserCancelled")
+        assert commit.status() in (
+            hf_xet.XetTaskState.Running,
+            hf_xet.XetTaskState.Finalizing,
+            hf_xet.XetTaskState.Completed,
+            hf_xet.XetTaskState.UserCancelled,
+        )
 
     def test_progress_returns_report(self, endpoint):
         commit = hf_xet.XetSession().new_upload_commit(endpoint=endpoint)
@@ -208,7 +213,11 @@ class TestUploadStream:
     def test_status_while_open(self, endpoint):
         commit = hf_xet.XetSession().new_upload_commit(endpoint=endpoint)
         stream = commit.start_upload_stream()
-        assert stream.status() in ("Running", "Finalizing", "Completed")
+        assert stream.status() in (
+            hf_xet.XetTaskState.Running,
+            hf_xet.XetTaskState.Finalizing,
+            hf_xet.XetTaskState.Completed,
+        )
 
     def test_task_id_is_not_none(self, endpoint):
         commit = hf_xet.XetSession().new_upload_commit(endpoint=endpoint)

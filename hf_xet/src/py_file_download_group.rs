@@ -10,8 +10,8 @@ use xet_pkg::xet_session::{
 
 use crate::headers::{build_header_map, build_headers_with_user_agent};
 use crate::py_file_download_handle::PyXetFileDownload;
-use crate::utils::{progress_display, task_state_display, task_state_to_str};
-use crate::{blocking_call_with_signal_check, convert_xet_error};
+use crate::utils::{progress_display, task_state_display, task_state_to_pystate};
+use crate::{PyXetTaskState, blocking_call_with_signal_check, convert_xet_error};
 
 // ── build_file_download_group ─────────────────────────────────────────────────
 
@@ -140,7 +140,9 @@ impl PyXetFileDownloadGroup {
             // Normal exit: wait for all downloads (signal-interruptible).
             self.wait_to_finish(py)?;
         } else {
-            let _ = self.inner.abort();
+            if let Err(e) = self.inner.abort() {
+                tracing::warn!("abort() failed during __exit__ exception path: {e}");
+            }
         }
         Ok(false)
     }
@@ -201,9 +203,9 @@ impl PyXetFileDownloadGroup {
         self.inner.progress()
     }
 
-    /// Current task state (same values as :meth:`XetSession.status`).
-    pub fn status(&self) -> PyResult<&'static str> {
-        task_state_to_str(self.inner.status().map_err(convert_xet_error)?)
+    /// Current task state as a :class:`XetTaskState` enum value.  Raises on error.
+    pub fn status(&self) -> PyResult<PyXetTaskState> {
+        task_state_to_pystate(self.inner.status())
     }
 }
 
