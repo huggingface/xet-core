@@ -29,6 +29,35 @@ impl PyXetStreamUpload {
         format!("XetStreamUpload(task_id={}, status=\"{}\", bytes_completed={})", self.inner.task_id(), status, prog)
     }
 
+    // ── Context manager ──────────────────────────────────────────────────────
+
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    /// On normal exit: finalise the stream (equivalent to calling :meth:`finish`).
+    /// On exception: abort the upload.
+    /// Never suppresses the exception (returns ``False``).
+    fn __exit__(
+        &self,
+        py: Python<'_>,
+        exc_type: Bound<'_, pyo3::PyAny>,
+        _exc_val: Bound<'_, pyo3::PyAny>,
+        _exc_tb: Bound<'_, pyo3::PyAny>,
+    ) -> PyResult<bool> {
+        if exc_type.is_none() {
+            // Normal exit: finalise the stream (GIL-releasing).
+            let inner = self.inner.clone();
+            py.detach(|| inner.finish_blocking().map_err(convert_xet_error))?;
+        } else {
+            // Exception path: cancel the upload (infallible).
+            self.inner.abort();
+        }
+        Ok(false) // do not suppress the exception
+    }
+
+    // ── Upload methods ───────────────────────────────────────────────────────
+
     /// Feed a chunk of data into the upload pipeline.
     ///
     /// May be called any number of times before :meth:`finish`.

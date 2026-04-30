@@ -221,4 +221,24 @@ class TestUploadStream:
         stream.write(b"to be aborted")
         stream.abort()  # should not raise
 
+    def test_context_manager_finishes_on_normal_exit(self, endpoint):
+        commit = hf_xet.XetSession().new_upload_commit(endpoint=endpoint)
+        with commit.start_upload_stream(name="cm.bin") as stream:
+            stream.write(b"context manager data")
+        # finish() was called automatically; result is accessible via try_finish()
+        result = stream.try_finish()
+        assert result is not None
+        assert result.xet_info.file_size == len(b"context manager data")
+
+    def test_context_manager_aborts_on_exception(self, endpoint):
+        raised = False
+        commit = hf_xet.XetSession().new_upload_commit(endpoint=endpoint)
+        try:
+            with commit.start_upload_stream(name="abort.bin") as stream:
+                stream.write(b"will be aborted")
+                raise ValueError("intentional error")
+        except ValueError:
+            raised = True
+        assert raised  # exception must propagate
+
 
