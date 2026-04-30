@@ -23,12 +23,12 @@ pyo3 = { version = "0.26", features = [
     "abi3-py37",
     "auto-initialize",
 ] }
-tracing = "0.1"
-http = "1"
 async-trait = "0.1"
+http = "1"
 itertools = "0.14"
 lazy_static = "1.5"
-rand = "0.9"
+rand = "0.10"
+tracing = "0.1"
 
 # Unix-specific dependencies
 [target.'cfg(unix)'.dependencies]

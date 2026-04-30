@@ -28,7 +28,8 @@ def upload_bytes_get_info(endpoint: str, data: bytes) -> hf_xet.XetFileInfo:
 
 def upload_file_get_info(endpoint: str, tmp_path, data: bytes) -> hf_xet.XetFileInfo:
     """Write data to a temp file, upload it, and return the resulting XetFileInfo."""
-    src = tmp_path / "upload_src.bin"
+    import uuid
+    src = tmp_path / f"upload_src_{uuid.uuid4().hex}.bin"
     src.write_bytes(data)
     commit = hf_xet.XetSession().new_upload_commit(endpoint=endpoint)
     h = commit.start_upload_file(str(src), sha256=hf_xet.SKIP_SHA256)

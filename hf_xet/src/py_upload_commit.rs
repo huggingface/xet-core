@@ -121,7 +121,11 @@ pub(crate) fn build_upload_commit(
                     .map(|g| g.iter().filter_map(|h| h.progress().map(|p| (h.task_id(), p))).collect())
                     .unwrap_or_default();
                 let result = Python::attach(|py| callback.call1(py, (group_report, item_reports)));
-                if result.is_err() || is_terminal {
+                if let Err(e) = result {
+                    Python::attach(|py| e.print(py));
+                    break;
+                }
+                if is_terminal {
                     break;
                 }
             }

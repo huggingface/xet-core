@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use pyo3::exceptions::PyKeyboardInterrupt;
 use pyo3::prelude::*;
-use rand::Rng;
+use rand::RngExt;
 use tracing::debug;
 use xet_pkg::legacy::progress_tracking::TrackingProgressUpdater;
 use xet_pkg::legacy::{Sha256Policy, XetFileInfo, data_client};

@@ -79,7 +79,7 @@ oneshot = "0.1"
 pin-project = "1"
 pyo3 = { version = "0.26", features = ["abi3-py37", "multiple-pymethods"] }
 rand = "0.10"
-rand_chacha = "0.9"
+rand_chacha = "0.10"
 regex = "1"
 reqwest = { version = "0.13.1", features = [
     "json",
