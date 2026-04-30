@@ -8,7 +8,7 @@ use crate::{PyXetTaskState, convert_xet_error};
 
 /// Handle for a background file-download task.
 ///
-/// Returned by :meth:`XetFileDownloadGroup.download_file`.
+/// Returned by :meth:`XetFileDownloadGroup.start_download_file`.
 #[pyclass(name = "XetFileDownload")]
 pub struct PyXetFileDownload {
     pub(crate) inner: XetFileDownload,

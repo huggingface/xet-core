@@ -59,11 +59,29 @@ impl PyXetSession {
     /// All parameters are optional.  Releases the GIL during the blocking
     /// network handshake.
     ///
-    /// ``token`` and ``token_expiry_unix_secs`` must be provided together; if
-    /// either is absent the token is not seeded.
+    /// ``endpoint`` — Xet CAS server URL (e.g. ``"https://cas.xethub.hf.co"``).  If
+    /// omitted but ``token_refresh_url`` is provided, the endpoint is fetched
+    /// automatically from the token refresh response.
     ///
-    /// ``token_refresh_headers`` defaults to ``{}`` when ``token_refresh_url``
-    /// is provided but headers are omitted.
+    /// ``token`` and ``token_expiry_unix_secs`` — seed an initial CAS access token and
+    /// its expiry as a Unix timestamp (seconds).  Both must be supplied together; if
+    /// either is absent the token is not pre-seeded.  When ``token_refresh_url`` is also
+    /// provided, the refresh response's token is used only if no token was pre-seeded here.
+    ///
+    /// ``token_refresh_url`` — URL called with an HTTP GET whenever the current CAS token
+    /// is about to expire.  The response must be JSON:
+    /// ``{"accessToken": "…", "exp": <unix_secs>, "casUrl": "…"}``.
+    ///
+    /// ``token_refresh_headers`` — HTTP headers sent with every token refresh request
+    /// (e.g. ``{"Authorization": "Bearer hf_…"}``).  Defaults to ``{}`` when
+    /// ``token_refresh_url`` is set but headers are omitted.
+    ///
+    /// ``custom_headers`` — additional HTTP headers forwarded with every CAS request.
+    ///
+    /// ``progress_callback`` — callable invoked every ``progress_interval_ms``
+    /// milliseconds with ``(GroupProgressReport, dict[UniqueID, ItemProgressReport])``.
+    ///
+    /// ``progress_interval_ms`` — milliseconds between progress callbacks (default ``100``).
     ///
     /// Example:
     ///
@@ -112,7 +130,31 @@ impl PyXetSession {
     /// Create a new :class:`XetFileDownloadGroup` and establish the CAS connection.
     ///
     /// All parameters are optional.  Releases the GIL during the blocking
-    /// network handshake.  See :meth:`new_upload_commit` for parameter details.
+    /// network handshake.
+    ///
+    /// ``endpoint`` — Xet CAS server URL (e.g. ``"https://cas.xethub.hf.co"``).  If
+    /// omitted but ``token_refresh_url`` is provided, the endpoint is fetched
+    /// automatically from the token refresh response.
+    ///
+    /// ``token`` and ``token_expiry_unix_secs`` — seed an initial CAS access token and
+    /// its expiry as a Unix timestamp (seconds).  Both must be supplied together; if
+    /// either is absent the token is not pre-seeded.  When ``token_refresh_url`` is also
+    /// provided, the refresh response's token is used only if no token was pre-seeded here.
+    ///
+    /// ``token_refresh_url`` — URL called with an HTTP GET whenever the current CAS token
+    /// is about to expire.  The response must be JSON:
+    /// ``{"accessToken": "…", "exp": <unix_secs>, "casUrl": "…"}``.
+    ///
+    /// ``token_refresh_headers`` — HTTP headers sent with every token refresh request
+    /// (e.g. ``{"Authorization": "Bearer hf_…"}``).  Defaults to ``{}`` when
+    /// ``token_refresh_url`` is set but headers are omitted.
+    ///
+    /// ``custom_headers`` — additional HTTP headers forwarded with every CAS request.
+    ///
+    /// ``progress_callback`` — callable invoked every ``progress_interval_ms``
+    /// milliseconds with ``(GroupProgressReport, dict[UniqueID, ItemProgressReport])``.
+    ///
+    /// ``progress_interval_ms`` — milliseconds between progress callbacks (default ``100``).
     ///
     /// Example:
     ///
@@ -122,7 +164,7 @@ impl PyXetSession {
     ///         token_refresh_url="https://…/xet-read-token/main",
     ///         token_refresh_headers={"Authorization": "Bearer hf_…"},
     ///     ) as group:
-    ///     group.download_file(file_info, "/tmp/out.bin")
+    ///     group.start_download_file(file_info, "/tmp/out.bin")
     /// ```
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (
@@ -159,7 +201,26 @@ impl PyXetSession {
     /// Create a new :class:`XetDownloadStreamGroup` and establish the CAS connection.
     ///
     /// All parameters are optional.  Releases the GIL during the blocking
-    /// network handshake.  See :meth:`new_upload_commit` for parameter details.
+    /// network handshake.
+    ///
+    /// ``endpoint`` — Xet CAS server URL (e.g. ``"https://cas.xethub.hf.co"``).  If
+    /// omitted but ``token_refresh_url`` is provided, the endpoint is fetched
+    /// automatically from the token refresh response.
+    ///
+    /// ``token`` and ``token_expiry_unix_secs`` — seed an initial CAS access token and
+    /// its expiry as a Unix timestamp (seconds).  Both must be supplied together; if
+    /// either is absent the token is not pre-seeded.  When ``token_refresh_url`` is also
+    /// provided, the refresh response's token is used only if no token was pre-seeded here.
+    ///
+    /// ``token_refresh_url`` — URL called with an HTTP GET whenever the current CAS token
+    /// is about to expire.  The response must be JSON:
+    /// ``{"accessToken": "…", "exp": <unix_secs>, "casUrl": "…"}``.
+    ///
+    /// ``token_refresh_headers`` — HTTP headers sent with every token refresh request
+    /// (e.g. ``{"Authorization": "Bearer hf_…"}``).  Defaults to ``{}`` when
+    /// ``token_refresh_url`` is set but headers are omitted.
+    ///
+    /// ``custom_headers`` — additional HTTP headers forwarded with every CAS request.
     ///
     /// Example:
     ///

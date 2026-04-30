@@ -8,8 +8,8 @@ use crate::{PyXetTaskState, convert_xet_error};
 
 /// Handle for a background file-upload task.
 ///
-/// Returned by :meth:`XetUploadCommit.upload_file` and
-/// :meth:`XetUploadCommit.upload_bytes`.
+/// Returned by :meth:`XetUploadCommit.start_upload_file` and
+/// :meth:`XetUploadCommit.start_upload_bytes`.
 #[pyclass(name = "XetFileUpload")]
 pub struct PyXetFileUpload {
     pub(crate) inner: XetFileUpload,
@@ -39,7 +39,7 @@ impl PyXetFileUpload {
 
     /// Wait for ingestion to complete and return upload metadata.
     ///
-    /// Releases the GIL.  Call after :meth:`XetUploadCommit.commit` to get
+    /// Releases the GIL.  Call after :meth:`XetUploadCommit.wait_to_finish` to get
     /// the final :class:`XetFileMetadata`.
     pub fn result(&self, py: Python<'_>) -> PyResult<XetFileMetadata> {
         let inner = self.inner.clone();

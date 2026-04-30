@@ -21,7 +21,7 @@ use crate::utils::progress_display;
 /// Or with a byte range:
 ///
 /// ```text
-/// for chunk in group.download_stream(file_info, range=(0, 1024)):
+/// for chunk in group.download_stream(file_info, start=0, end=1024):
 ///     process(chunk)
 /// ```
 #[pyclass(name = "XetDownloadStream")]

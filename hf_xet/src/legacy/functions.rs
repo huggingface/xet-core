@@ -47,7 +47,7 @@ impl From<PyXetDownloadInfo> for (XetFileInfo, DestinationPath) {
 /// Upload raw bytes to Xet storage.
 ///
 /// .. deprecated::
-///     Use :class:`XetSession` and :meth:`XetUploadCommit.upload_bytes` instead.
+///     Use :class:`XetSession` and :meth:`XetUploadCommit.start_upload_bytes` instead.
 #[pyfunction]
 #[pyo3(signature = (file_contents, endpoint, token_info, token_refresher, progress_updater, _repo_type, request_headers=None, sha256s=None, skip_sha256=false),
        text_signature = "(file_contents, endpoint, token_info, token_refresher, progress_updater, _repo_type, request_headers=None, sha256s=None, skip_sha256=False)")]
@@ -66,7 +66,7 @@ pub fn upload_bytes(
 ) -> PyResult<Vec<PyXetUploadInfo>> {
     emit_deprecation(
         py,
-        "hf_xet.upload_bytes() is deprecated. Use XetSession().new_upload_commit().build().upload_bytes() instead.",
+        "hf_xet.upload_bytes() is deprecated. Use XetSession().new_upload_commit().start_upload_bytes() instead.",
     )?;
 
     if skip_sha256 && sha256s.is_some() {
@@ -129,7 +129,7 @@ pub fn upload_bytes(
 /// Upload files from disk to Xet storage.
 ///
 /// .. deprecated::
-///     Use :class:`XetSession` and :meth:`XetUploadCommit.upload_file` instead.
+///     Use :class:`XetSession` and :meth:`XetUploadCommit.start_upload_file` instead.
 #[pyfunction]
 #[pyo3(signature = (file_paths, endpoint, token_info, token_refresher, progress_updater, _repo_type, request_headers=None, sha256s=None, skip_sha256=false),
        text_signature = "(file_paths, endpoint, token_info, token_refresher, progress_updater, _repo_type, request_headers=None, sha256s=None, skip_sha256=False)")]
@@ -148,7 +148,7 @@ pub fn upload_files(
 ) -> PyResult<Vec<PyXetUploadInfo>> {
     emit_deprecation(
         py,
-        "hf_xet.upload_files() is deprecated. Use XetSession().new_upload_commit().build().upload_file() instead.",
+        "hf_xet.upload_files() is deprecated. Use XetSession().new_upload_commit().start_upload_file() instead.",
     )?;
 
     if skip_sha256 && sha256s.is_some() {
@@ -229,7 +229,7 @@ pub fn hash_files(py: Python, file_paths: Vec<String>) -> PyResult<Vec<PyXetUplo
 /// Download files from Xet storage to local paths.
 ///
 /// .. deprecated::
-///     Use :class:`XetSession` and :meth:`XetFileDownloadGroup.download_file` instead.
+///     Use :class:`XetSession` and :meth:`XetFileDownloadGroup.start_download_file` instead.
 #[pyfunction]
 #[pyo3(signature = (files, endpoint, token_info, token_refresher, progress_updater, request_headers=None),
        text_signature = "(files, endpoint, token_info, token_refresher, progress_updater, request_headers=None)")]
@@ -244,7 +244,7 @@ pub fn download_files(
 ) -> PyResult<Vec<String>> {
     emit_deprecation(
         py,
-        "hf_xet.download_files() is deprecated. Use XetSession().new_file_download_group().build().download_file() instead.",
+        "hf_xet.download_files() is deprecated. Use XetSession().new_file_download_group().start_download_file() instead.",
     )?;
 
     let ctx = super::runtime::get_or_init_runtime().map_err(super::runtime::convert_multithreading_error)?;

@@ -8,9 +8,9 @@ use crate::{PyXetTaskState, convert_xet_error};
 
 /// Handle for a streaming upload within an :class:`XetUploadCommit`.
 ///
-/// Returned by :meth:`XetUploadCommit.upload_stream`.  Feed data incrementally
+/// Returned by :meth:`XetUploadCommit.start_upload_stream`.  Feed data incrementally
 /// with :meth:`write`, then call :meth:`finish` to finalise ingestion.
-/// **:meth:`finish` must be called before** :meth:`XetUploadCommit.commit`.
+/// **:meth:`finish` must be called before** :meth:`XetUploadCommit.wait_to_finish`.
 #[pyclass(name = "XetStreamUpload")]
 #[derive(Clone)]
 pub struct PyXetStreamUpload {
@@ -43,7 +43,7 @@ impl PyXetStreamUpload {
 
     /// Finalise the stream and return per-file upload metadata.
     ///
-    /// Must be called before :meth:`XetUploadCommit.commit`.
+    /// Must be called before :meth:`XetUploadCommit.wait_to_finish`.
     /// Releases the GIL while waiting.
     pub fn finish(&self, py: Python<'_>) -> PyResult<XetFileMetadata> {
         let inner = self.inner.clone();

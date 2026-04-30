@@ -217,7 +217,7 @@ impl PyXetUploadCommit {
     /// Queue a file from disk for upload.
     ///
     /// Returns immediately with a :class:`XetFileUpload` handle.  The upload
-    /// runs in the background.  Call :meth:`XetUploadCommit.commit` (or exit
+    /// runs in the background.  Call :meth:`XetUploadCommit.wait_to_finish` (or exit
     /// the ``with`` block) to wait for all uploads to complete.
     ///
     /// ``sha256`` controls how the SHA-256 digest is handled:
@@ -272,7 +272,7 @@ impl PyXetUploadCommit {
     ///
     /// Returns a :class:`XetStreamUpload` handle.  Feed data incrementally
     /// with :meth:`XetStreamUpload.write`, then call :meth:`XetStreamUpload.finish`
-    /// **before** calling :meth:`XetUploadCommit.commit`.
+    /// **before** calling :meth:`XetUploadCommit.wait_to_finish`.
     ///
     /// ``name`` is an optional display name used for progress reporting.
     /// ``sha256`` accepts the same values as :meth:`start_upload_file`.
