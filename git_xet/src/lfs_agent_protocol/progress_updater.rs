@@ -10,7 +10,7 @@ use super::{LFSProtocolResponseEvent, ProgressResponse, to_line_delimited_json_s
 /// This updater ensures that these messages contain monotonic increasing progress
 /// regardless of reordered/unordered underlying progress registrations due to scheduling.
 ///
-/// The implemention handles concurrent updates correctly and is "wait-free": concurrent callers
+/// The implementation handles concurrent updates correctly and is "wait-free": concurrent callers
 /// to `update_bytes_so_far` don't wait for turns to use the update message channel, only the
 /// first that acquires the lock gets to send a message with the latest progress.
 pub struct ProgressUpdater<W: Write + Send + Sync + 'static> {

@@ -42,5 +42,5 @@ pub fn init_logging(py: Python) {
 
     xet_runtime::logging::init(cfg);
 
-    info!("hf_xet logging cofigured.");
+    info!("hf_xet logging configured.");
 }

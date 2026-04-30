@@ -391,7 +391,7 @@ impl RetryWrapper {
     ///
     /// The `make_request` function returns a future that resolves to a Result<Response> object as is returned by the
     /// client middleware.  For example, `|| client.clone().get(url).send()` returns a future (as `send()` is async)
-    /// that will then be evaluatated to get the response.
+    /// that will then be evaluated to get the response.
     ///
     /// This functions acts just like the bytes() function on a client response, but retries the entire connection on
     /// transient errors.

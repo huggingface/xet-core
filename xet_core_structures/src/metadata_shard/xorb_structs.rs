@@ -131,7 +131,7 @@ impl XorbChunkSequenceEntry {
         }
     }
 
-    // Is this chunk elegible for a global dedup query?
+    // Is this chunk eligible for a global dedup query?
     pub fn is_global_dedup_eligible(&self) -> bool {
         (self.flags & MDB_CHUNK_WITH_GLOBAL_DEDUP_FLAG) != 0 || hash_is_global_dedup_eligible(&self.chunk_hash)
     }
