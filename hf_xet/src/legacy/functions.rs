@@ -89,8 +89,12 @@ pub fn upload_bytes(
         None => vec![Sha256Policy::Compute; file_contents.len()],
     };
 
+    let ctx = super::runtime::get_or_init_runtime().map_err(super::runtime::convert_multithreading_error)?;
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
-    let updater = progress_updater.map(WrappedProgressUpdater::new).transpose()?.map(Arc::new);
+    let updater = progress_updater
+        .map(|f| WrappedProgressUpdater::new(f, ctx.clone()))
+        .transpose()?
+        .map(Arc::new);
     let header_map = legacy_headers(request_headers)?;
     let x: u64 = rand::rng().random();
 
@@ -102,6 +106,7 @@ pub fn upload_bytes(
         );
 
         let out: Vec<PyXetUploadInfo> = data_client::upload_bytes_async(
+            &ctx,
             file_contents,
             sha256_policies,
             endpoint,
@@ -166,8 +171,12 @@ pub fn upload_files(
         None => vec![Sha256Policy::Compute; file_paths.len()],
     };
 
+    let ctx = super::runtime::get_or_init_runtime().map_err(super::runtime::convert_multithreading_error)?;
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
-    let updater = progress_updater.map(WrappedProgressUpdater::new).transpose()?.map(Arc::new);
+    let updater = progress_updater
+        .map(|f| WrappedProgressUpdater::new(f, ctx.clone()))
+        .transpose()?
+        .map(Arc::new);
     let header_map = legacy_headers(request_headers)?;
     let x: u64 = rand::rng().random();
 
@@ -179,6 +188,7 @@ pub fn upload_files(
         );
 
         let out: Vec<PyXetUploadInfo> = data_client::upload_async(
+            &ctx,
             file_paths,
             sha256_policies,
             endpoint,
@@ -202,8 +212,10 @@ pub fn upload_files(
 #[pyfunction]
 #[pyo3(signature = (file_paths), text_signature = "(file_paths)")]
 pub fn hash_files(py: Python, file_paths: Vec<String>) -> PyResult<Vec<PyXetUploadInfo>> {
+    let ctx = super::runtime::get_or_init_runtime().map_err(super::runtime::convert_multithreading_error)?;
+
     async_run(py, async move {
-        let out: Vec<PyXetUploadInfo> = data_client::hash_files_async(file_paths)
+        let out: Vec<PyXetUploadInfo> = data_client::hash_files_async(&ctx, file_paths)
             .await
             .map_err(convert_xet_error)?
             .into_iter()
@@ -235,9 +247,12 @@ pub fn download_files(
         "hf_xet.download_files() is deprecated. Use XetSession().new_file_download_group().build().download_file() instead.",
     )?;
 
+    let ctx = super::runtime::get_or_init_runtime().map_err(super::runtime::convert_multithreading_error)?;
     let file_infos: Vec<_> = files.into_iter().map(<(XetFileInfo, DestinationPath)>::from).collect();
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
-    let updaters = progress_updater.map(try_parse_progress_updaters).transpose()?;
+    let updaters = progress_updater
+        .map(|fs| try_parse_progress_updaters(fs, ctx.clone()))
+        .transpose()?;
     let header_map = legacy_headers(request_headers)?;
     let x: u64 = rand::rng().random();
 
@@ -249,6 +264,7 @@ pub fn download_files(
         );
 
         let out = data_client::download_async(
+            &ctx,
             file_infos,
             endpoint,
             token_info,
@@ -275,10 +291,13 @@ pub fn force_sigint_shutdown(py: Python) -> PyResult<()> {
     Err(PyKeyboardInterrupt::new_err(()))
 }
 
-fn try_parse_progress_updaters(funcs: Vec<Py<PyAny>>) -> PyResult<Vec<Arc<dyn TrackingProgressUpdater>>> {
+fn try_parse_progress_updaters(
+    funcs: Vec<Py<PyAny>>,
+    ctx: xet_runtime::core::XetContext,
+) -> PyResult<Vec<Arc<dyn TrackingProgressUpdater>>> {
     let mut updaters = Vec::with_capacity(funcs.len());
     for func in funcs {
-        updaters.push(Arc::new(WrappedProgressUpdater::new(func)?) as Arc<dyn TrackingProgressUpdater>);
+        updaters.push(Arc::new(WrappedProgressUpdater::new(func, ctx.clone())?) as Arc<dyn TrackingProgressUpdater>);
     }
     Ok(updaters)
 }

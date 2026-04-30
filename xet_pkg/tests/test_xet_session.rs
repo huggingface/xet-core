@@ -6,7 +6,7 @@
 //! - **Tokio async** (External mode): standard `#[tokio::test]` tests.
 //! - **Blocking** (Owned mode): sync `build()` + `_blocking` methods.
 //! - **Non-tokio async bridge** (Owned mode): `futures::executor`, `smol`, `async-std` driving async methods via
-//!   `XetRuntime::bridge_async`.
+//!   `XetContext::bridge_async`.
 //! - **Deficient tokio runtime** (fallback to Owned mode): tokio runtimes missing IO/time drivers or using
 //!   `current_thread` flavor.
 //! - **Blocking from non-tokio executors**: `_blocking` methods called from within smol/async-std/futures executor
@@ -784,7 +784,7 @@ fn blocking_multiple_commits_and_groups() {
 // ── 3. Non-tokio async bridge tests (Owned mode) ────────────────────────
 //
 // build() from a non-tokio executor creates an Owned-mode runtime.
-// Async methods use XetRuntime::bridge_async: the future runs on the owned tokio
+// Async methods use XetContext::bridge_async: the future runs on the owned tokio
 // pool while the caller's executor polls the oneshot receiver.
 
 #[test]
@@ -2089,8 +2089,7 @@ fn fd_leak_single_session_roundtrip() {
 #[test]
 #[serial(fd_leak)]
 fn fd_leak_isolate_components() {
-    use xet_runtime::config::XetConfig;
-    use xet_runtime::core::XetRuntime;
+    use xet_runtime::core::XetContext;
 
     let report_nonzero_delta = |label: &str, baseline: usize| {
         let delta = fd_delta_from_baseline(baseline);
@@ -2101,14 +2100,14 @@ fn fd_leak_isolate_components() {
 
     // Warmup: first runtime creation installs signal handlers / global state.
     {
-        let rt = XetRuntime::new_with_config(XetConfig::new()).unwrap();
-        drop(rt);
+        let ctx = XetContext::default().unwrap();
+        drop(ctx);
     }
 
     let before = count_open_fds();
     {
-        let rt = XetRuntime::new_with_config(XetConfig::new()).unwrap();
-        drop(rt);
+        let ctx = XetContext::default().unwrap();
+        drop(ctx);
     }
     assert_fd_delta_eventually_le("runtime create/drop", before, FD_TOLERANCE);
 

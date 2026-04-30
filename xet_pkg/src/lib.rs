@@ -64,6 +64,14 @@ pub mod xet_session;
 /// are no-ops — the global subscriber is installed only once.
 pub fn init_logging(version_info: String) {
     let log_dir = xet_runtime::core::xet_cache_root().join("logs");
-    let cfg = xet_runtime::logging::LoggingConfig::default_to_directory(version_info, log_dir);
+
+    // Called before any XetContext is created, so we use a standalone default config for
+    // early-init logging setup.
+    let cfg = xet_runtime::logging::LoggingConfig::from_directory(
+        &xet_runtime::config::XetConfig::new(),
+        version_info,
+        log_dir,
+    );
+
     xet_runtime::logging::init(cfg);
 }

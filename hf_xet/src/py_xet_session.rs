@@ -31,7 +31,7 @@ impl PyXetSession {
         let items = self.inner.config().all_items_to_python(py)?;
         let config_str = items
             .into_iter()
-            .map(|(k, v)| {
+            .map(|(k, v): (String, Py<PyAny>)| {
                 let repr = v.bind(py).repr().map(|r| r.to_string()).unwrap_or_else(|_| "?".to_string());
                 format!("{k}={repr}")
             })

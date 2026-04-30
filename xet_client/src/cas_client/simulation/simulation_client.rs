@@ -9,7 +9,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use http::HeaderValue;
 use http::header::CONTENT_LENGTH;
-use rand::Rng;
+use rand::RngExt;
 use reqwest::{Body, Url};
 use serde_json;
 
@@ -80,11 +80,11 @@ impl RemoteSimulationClient {
         let random_bytes = Bytes::from(random_data);
 
         let n_upload_bytes = random_bytes.len() as u64;
-        let block_size = xet_runtime::core::xet_config().client.upload_reporting_block_size;
+        let block_size = self.inner.ctx.config.client.upload_reporting_block_size;
 
         let api_tag = "simulation::dummy_upload";
 
-        RetryWrapper::new(api_tag)
+        RetryWrapper::new(self.inner.ctx.clone(), api_tag)
             .with_connection_permit(upload_permit, Some(n_upload_bytes))
             .run(move || {
                 let upload_stream = UploadProgressStream::new(random_bytes.clone(), block_size);

@@ -10,6 +10,8 @@ use std::time::Duration;
 use tracing::debug;
 
 use super::file_structs::*;
+#[cfg(debug_assertions)]
+use super::shard_file_handle::{MDBShardFile, new_shard_file_cache};
 use super::shard_format::MDBShardInfo;
 use super::utils::{shard_file_name, temp_shard_file_name};
 use super::xorb_structs::*;
@@ -258,8 +260,8 @@ impl MDBInMemoryShard {
 
         #[cfg(debug_assertions)]
         {
-            use super::MDBShardFile;
-            let shard_file = MDBShardFile::load_from_file(&full_file_name)?;
+            let cache = new_shard_file_cache();
+            let shard_file = MDBShardFile::load_from_file(&full_file_name, &cache)?;
             shard_file.verify_shard_integrity();
         }
 

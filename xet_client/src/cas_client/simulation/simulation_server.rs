@@ -14,6 +14,7 @@ use http::header::{self, HeaderMap, HeaderValue};
 #[cfg(unix)]
 use tempfile::TempDir;
 use tokio::sync::oneshot;
+use xet_runtime::core::XetContext;
 
 use super::super::RemoteClient;
 use super::super::interface::Client;
@@ -66,7 +67,7 @@ use crate::error::Result;
 ///     .await;
 ///
 /// // Use existing client
-/// let client = MemoryClient::new();
+/// let client = MemoryClient::new(ctx);
 /// let server = LocalTestServerBuilder::new()
 ///     .with_client(client)
 ///     .with_ephemeral_socket()
@@ -171,6 +172,7 @@ impl LocalTestServerBuilder {
 
     /// Builds and starts the test server.
     pub async fn start(self) -> LocalTestServer {
+        let ctx = XetContext::default().expect("XetContext::new");
         #[cfg(unix)]
         let (socket_path, ephemeral_tempdir) = if self.ephemeral_socket {
             let tempdir = TempDir::new().expect("Failed to create temporary directory for ephemeral socket");
@@ -183,15 +185,17 @@ impl LocalTestServerBuilder {
         #[cfg(not(unix))]
         let _socket_path = if self.ephemeral_socket { None } else { self.socket_path };
 
-        // Build client + optional deletion_client. LocalClient supports both interfaces;
-        // MemoryClient and pre-supplied clients only support DirectAccessClient.
+        // Build client + optional deletion_client. LocalClient and MemoryClient both support
+        // DirectAccessClient + DeletionControlableClient; pre-supplied clients only support DirectAccessClient.
         let (client, deletion_client): (Arc<dyn DirectAccessClient>, Option<Arc<dyn DeletionControlableClient>>) =
             if let Some(client) = self.client {
                 (client, None)
             } else if self.in_memory {
-                (MemoryClient::new(), None)
+                let mc = MemoryClient::new(ctx.clone());
+                let dc: Arc<dyn DeletionControlableClient> = mc.clone();
+                (mc, Some(dc))
             } else if self.ephemeral_disk {
-                let lc = LocalClient::temporary()
+                let lc = LocalClient::temporary(ctx.clone())
                     .await
                     .expect("Failed to create LocalClient with temporary directory");
                 let dc: Arc<dyn DeletionControlableClient> = lc.clone();
@@ -200,7 +204,9 @@ impl LocalTestServerBuilder {
                 let disk_path = self.disk_location.unwrap_or_else(|| {
                     panic!("with_disk_location must be called when in_memory is false and no client is provided")
                 });
-                let lc = LocalClient::new(&disk_path).await.expect("Failed to create LocalClient");
+                let lc = LocalClient::new(ctx.clone(), &disk_path)
+                    .await
+                    .expect("Failed to create LocalClient");
                 let dc: Arc<dyn DeletionControlableClient> = lc.clone();
                 (lc, Some(dc))
             };
@@ -254,6 +260,7 @@ impl LocalTestServerBuilder {
 
                 let socket_path_str = socket_path.to_string_lossy().to_string();
                 let client = RemoteClient::new_with_socket(
+                    ctx.clone(),
                     &client_endpoint,
                     &None,
                     "test-session",
@@ -264,13 +271,21 @@ impl LocalTestServerBuilder {
 
                 (client, Some(proxy))
             } else {
-                let client = RemoteClient::new(&client_endpoint, &None, "test-session", false, custom_headers.clone());
+                let client = RemoteClient::new(
+                    ctx.clone(),
+                    &client_endpoint,
+                    &None,
+                    "test-session",
+                    false,
+                    custom_headers.clone(),
+                );
                 (client, None)
             }
         };
 
         #[cfg(not(unix))]
-        let remote_client = RemoteClient::new(&client_endpoint, &None, "test-session", false, custom_headers.clone());
+        let remote_client =
+            RemoteClient::new(ctx.clone(), &client_endpoint, &None, "test-session", false, custom_headers.clone());
 
         let remote_simulation_client = Arc::new(RemoteSimulationClient::new(remote_client));
 
@@ -572,10 +587,6 @@ impl DirectAccessClient for LocalTestServer {
 
     async fn list_xorbs(&self) -> Result<Vec<xet_core_structures::merklehash::MerkleHash>> {
         self.client.list_xorbs().await
-    }
-
-    async fn delete_xorb(&self, hash: &xet_core_structures::merklehash::MerkleHash) {
-        self.client.delete_xorb(hash).await;
     }
 
     async fn get_full_xorb(&self, hash: &xet_core_structures::merklehash::MerkleHash) -> Result<bytes::Bytes> {

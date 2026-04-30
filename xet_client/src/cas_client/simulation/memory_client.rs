@@ -6,22 +6,27 @@ use std::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use rand::Rng;
+use rand::RngExt;
 use tokio::sync::RwLock;
 use tokio::time::{Duration, Instant};
 use tracing::{error, info};
 use xet_core_structures::MerkleHashMap;
 use xet_core_structures::merklehash::MerkleHash;
+#[cfg(not(target_family = "wasm"))]
+use xet_core_structures::merklehash::compute_data_hash;
 use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::metadata_shard::streaming_shard::MDBMinimalShard;
 use xet_core_structures::metadata_shard::xorb_structs::MDBXorbInfo;
 use xet_core_structures::xorb_object::{SerializedXorbObject, XorbObject};
+use xet_runtime::core::XetContext;
 
 use super::super::Client;
 use super::super::adaptive_concurrency::AdaptiveConcurrencyController;
 use super::super::progress_tracked_streams::ProgressCallback;
 use super::client_testing_utils::{FileTermReference, RandomFileContents};
+#[cfg(not(target_family = "wasm"))]
+use super::deletion_controls::ObjectTag;
 use super::direct_access_client::DirectAccessClient;
 use super::random_xorb::RandomXorb;
 use super::xorb_utils::{self, REFERENCE_INSTANT, duration_to_expiration_secs_ceil};
@@ -38,11 +43,12 @@ struct MaterializedXorb {
 }
 
 /// Storage for a XORB - either fully materialized or generated on-the-fly.
+/// Each variant carries a monotonic `generation` counter that is bumped on
+/// every insert, so the tag changes even when content is identical (matching
+/// production ETag semantics).
 enum XorbStorage {
-    /// Fully materialized XORB data stored in memory.
-    Materialized(MaterializedXorb),
-    /// XORB data generated on-the-fly from random seeds.
-    Random(RandomXorb),
+    Materialized { entry: MaterializedXorb, generation: u64 },
+    Random { xorb: RandomXorb, generation: u64 },
 }
 
 /// In-memory client for testing purposes. Stores all data in memory using hash tables.
@@ -55,6 +61,8 @@ pub struct MemoryClient {
     global_dedup: RwLock<MerkleHashMap<Bytes>>,
     /// Upload concurrency controller
     upload_concurrency_controller: Arc<AdaptiveConcurrencyController>,
+    /// Monotonic counter for xorb upload generations (tag freshness).
+    xorb_generation: AtomicU64,
     /// URL expiration in milliseconds
     url_expiration_ms: AtomicU64,
     /// Global dedup shard expiration in seconds (0 = disabled).
@@ -69,12 +77,13 @@ pub struct MemoryClient {
 
 impl MemoryClient {
     /// Create a new in-memory client.
-    pub fn new() -> Arc<Self> {
+    pub fn new(ctx: XetContext) -> Arc<Self> {
         Arc::new(Self {
             xorbs: RwLock::new(MerkleHashMap::new()),
             shard: RwLock::new(MDBInMemoryShard::default()),
             global_dedup: RwLock::new(MerkleHashMap::new()),
-            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("memory_uploads"),
+            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload(ctx, "memory_uploads"),
+            xorb_generation: AtomicU64::new(0),
             url_expiration_ms: AtomicU64::new(u64::MAX),
             global_dedup_expiration_secs: AtomicU64::new(0),
             random_ms_delay_window: (AtomicU64::new(0), AtomicU64::new(0)),
@@ -126,7 +135,8 @@ impl MemoryClient {
             shard.add_xorb_block(cas_info)?;
         }
 
-        self.xorbs.write().await.insert(hash, XorbStorage::Random(xorb));
+        let generation = self.xorb_generation.fetch_add(1, Ordering::Relaxed);
+        self.xorbs.write().await.insert(hash, XorbStorage::Random { xorb, generation });
         Ok(hash)
     }
 
@@ -213,20 +223,42 @@ impl MemoryClient {
             terms: term_infos,
         })
     }
-}
 
-impl Default for MemoryClient {
-    fn default() -> Self {
-        Self {
-            xorbs: RwLock::new(MerkleHashMap::new()),
-            shard: RwLock::new(MDBInMemoryShard::default()),
-            global_dedup: RwLock::new(MerkleHashMap::new()),
-            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("memory_uploads"),
-            url_expiration_ms: AtomicU64::new(u64::MAX),
-            global_dedup_expiration_secs: AtomicU64::new(0),
-            random_ms_delay_window: (AtomicU64::new(0), AtomicU64::new(0)),
-            max_ranges_per_fetch: AtomicUsize::new(usize::MAX),
-            v2_disabled_status: AtomicU16::new(0),
+    #[cfg(not(target_family = "wasm"))]
+    fn current_shard_hash_and_bytes(shard: &MDBInMemoryShard) -> Result<Option<(MerkleHash, Bytes)>> {
+        if shard.is_empty() {
+            return Ok(None);
+        }
+        let bytes = Bytes::from(shard.to_bytes()?);
+        let hash = compute_data_hash(bytes.as_ref());
+        Ok(Some((hash, bytes)))
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn object_tag_from_key_and_payload(prefix: &[u8], key: &MerkleHash, payload: &[u8]) -> ObjectTag {
+        let key_bytes: [u8; 32] = (*key).into();
+        let payload_hash: [u8; 32] = compute_data_hash(payload).into();
+        let mut entropy = Vec::with_capacity(prefix.len() + key_bytes.len() + payload_hash.len());
+        entropy.extend_from_slice(prefix);
+        entropy.extend_from_slice(&key_bytes);
+        entropy.extend_from_slice(&payload_hash);
+        compute_data_hash(&entropy).into()
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn xorb_tag(hash: &MerkleHash, storage: &XorbStorage) -> ObjectTag {
+        match storage {
+            XorbStorage::Materialized { entry, generation } => {
+                let mut payload = Vec::from(entry.serialized_data.as_ref());
+                payload.extend_from_slice(&generation.to_le_bytes());
+                Self::object_tag_from_key_and_payload(b"xorb", hash, &payload)
+            },
+            XorbStorage::Random { xorb, generation } => {
+                let mut entropy = Vec::with_capacity(16);
+                entropy.extend_from_slice(&xorb.num_chunks().to_le_bytes());
+                entropy.extend_from_slice(&generation.to_le_bytes());
+                Self::object_tag_from_key_and_payload(b"xorb", hash, &entropy)
+            },
         }
     }
 }
@@ -309,10 +341,6 @@ impl DirectAccessClient for MemoryClient {
         Ok(self.xorbs.read().await.keys().copied().collect())
     }
 
-    async fn delete_xorb(&self, hash: &MerkleHash) {
-        self.xorbs.write().await.remove(hash);
-    }
-
     async fn get_full_xorb(&self, hash: &MerkleHash) -> Result<Bytes> {
         let xorbs = self.xorbs.read().await;
         let storage = xorbs.get(hash).ok_or_else(|| {
@@ -321,13 +349,13 @@ impl DirectAccessClient for MemoryClient {
         })?;
 
         match storage {
-            XorbStorage::Materialized(entry) => {
+            XorbStorage::Materialized { entry, .. } => {
                 let mut reader = BufReader::new(Cursor::new(&entry.serialized_data));
                 let xorb_obj = XorbObject::deserialize(&mut reader)?;
                 let result = xorb_obj.get_all_bytes(&mut reader)?;
                 Ok(Bytes::from(result))
             },
-            XorbStorage::Random(xorb) => xorb
+            XorbStorage::Random { xorb, .. } => xorb
                 .get_chunk_range_data(0, xorb.num_chunks())
                 .ok_or(ClientError::XORBNotFound(*hash)),
         }
@@ -345,7 +373,7 @@ impl DirectAccessClient for MemoryClient {
         })?;
 
         match storage {
-            XorbStorage::Materialized(entry) => {
+            XorbStorage::Materialized { entry, .. } => {
                 let mut reader = BufReader::new(Cursor::new(&entry.serialized_data));
                 let xorb_obj = XorbObject::deserialize(&mut reader)?;
 
@@ -360,7 +388,7 @@ impl DirectAccessClient for MemoryClient {
                 }
                 Ok(ret)
             },
-            XorbStorage::Random(xorb) => {
+            XorbStorage::Random { xorb, .. } => {
                 let mut ret: Vec<Bytes> = Vec::new();
                 for r in chunk_ranges {
                     if r.0 >= r.1 {
@@ -392,8 +420,8 @@ impl DirectAccessClient for MemoryClient {
         })?;
 
         match storage {
-            XorbStorage::Materialized(entry) => Ok(entry.xorb_object.clone()),
-            XorbStorage::Random(xorb) => Ok(xorb.get_xorb_object()),
+            XorbStorage::Materialized { entry, .. } => Ok(entry.xorb_object.clone()),
+            XorbStorage::Random { xorb, .. } => Ok(xorb.get_xorb_object()),
         }
     }
 
@@ -445,7 +473,7 @@ impl DirectAccessClient for MemoryClient {
         let storage = xorbs.get(hash).ok_or(ClientError::XORBNotFound(*hash))?;
 
         match storage {
-            XorbStorage::Materialized(entry) => {
+            XorbStorage::Materialized { entry, .. } => {
                 let data = &entry.serialized_data;
 
                 let start = byte_range.as_ref().map(|r| r.start as usize).unwrap_or(0);
@@ -461,7 +489,7 @@ impl DirectAccessClient for MemoryClient {
 
                 Ok(data.slice(start..end))
             },
-            XorbStorage::Random(xorb) => {
+            XorbStorage::Random { xorb, .. } => {
                 let total_len = xorb.serialized_length();
                 let start = byte_range.as_ref().map(|r| r.start).unwrap_or(0);
                 let end = byte_range.as_ref().map(|r| r.end).unwrap_or(total_len).min(total_len);
@@ -480,8 +508,8 @@ impl DirectAccessClient for MemoryClient {
         let storage = xorbs.get(hash).ok_or(ClientError::XORBNotFound(*hash))?;
 
         match storage {
-            XorbStorage::Materialized(entry) => Ok(entry.serialized_data.len() as u64),
-            XorbStorage::Random(xorb) => Ok(xorb.serialized_length()),
+            XorbStorage::Materialized { entry, .. } => Ok(entry.serialized_data.len() as u64),
+            XorbStorage::Random { xorb, .. } => Ok(xorb.serialized_length()),
         }
     }
 
@@ -515,14 +543,14 @@ impl DirectAccessClient for MemoryClient {
         })?;
 
         let (data, xorb_obj) = match storage {
-            XorbStorage::Materialized(entry) => {
+            XorbStorage::Materialized { entry, .. } => {
                 let mut reader = BufReader::new(Cursor::new(&entry.serialized_data));
                 let xorb_obj = XorbObject::deserialize(&mut reader)?;
                 let data =
                     xorb_obj.get_bytes_by_chunk_range(&mut reader, fetch_term.range.start, fetch_term.range.end)?;
                 (Bytes::from(data), xorb_obj)
             },
-            XorbStorage::Random(xorb) => {
+            XorbStorage::Random { xorb, .. } => {
                 let data = xorb
                     .get_chunk_range_data(fetch_term.range.start, fetch_term.range.end)
                     .ok_or(ClientError::XORBNotFound(hash))?;
@@ -570,8 +598,8 @@ impl MemoryClient {
                 ClientError::XORBNotFound(*hash)
             })?;
             Ok(match storage {
-                XorbStorage::Materialized(entry) => entry.xorb_object.clone(),
-                XorbStorage::Random(xorb) => xorb.get_xorb_object(),
+                XorbStorage::Materialized { entry, .. } => entry.xorb_object.clone(),
+                XorbStorage::Random { xorb, .. } => xorb.get_xorb_object(),
             })
         })
     }
@@ -767,25 +795,19 @@ impl Client for MemoryClient {
         let footer_start = serialized_xorb_object.footer_start;
         let serialized_data = serialized_xorb_object.serialized_data;
 
-        // Check if already exists
-        {
-            let xorbs = self.xorbs.read().await;
-            if xorbs.contains_key(&hash) {
-                info!("object {hash:?} already exists in Memory CAS; returning.");
-                return Ok(0);
-            }
-        }
+        // Always overwrite: even if the xorb already exists, we must store it
+        // with a fresh generation so its tag changes, matching production ETag
+        // semantics and ensuring delete_xorb_if_tag_matches is safe under
+        // concurrent uploads.
 
         info!("Storing XORB {hash:?} in memory");
 
         // Reconstruct XorbObject from chunk data if no footer, or deserialize if footer present
         let (xorb_obj, serialized_data) = if footer_start.is_some() {
-            // Data has footer - deserialize directly
             let mut reader = Cursor::new(&serialized_data);
             let xorb_obj = XorbObject::deserialize(&mut reader)?;
             (xorb_obj, serialized_data)
         } else {
-            // No footer - reconstruct XorbObject from chunk data and append footer
             let mut data_with_footer = Vec::new();
             let (xorb_obj, computed_hash) = xet_core_structures::xorb_object::reconstruct_xorb_with_footer(
                 &mut data_with_footer,
@@ -802,16 +824,19 @@ impl Client for MemoryClient {
         };
 
         let bytes_written = serialized_data.len();
+        let generation = self.xorb_generation.fetch_add(1, Ordering::Relaxed);
 
-        // Store the xorb
         {
             let mut xorbs = self.xorbs.write().await;
             xorbs.insert(
                 hash,
-                XorbStorage::Materialized(MaterializedXorb {
-                    serialized_data: Bytes::from(serialized_data),
-                    xorb_object: xorb_obj,
-                }),
+                XorbStorage::Materialized {
+                    entry: MaterializedXorb {
+                        serialized_data: Bytes::from(serialized_data),
+                        xorb_object: xorb_obj,
+                    },
+                    generation,
+                },
             );
         }
 
@@ -892,11 +917,11 @@ impl Client for MemoryClient {
             total_transfer += http_range.length();
 
             let (data, chunk_indices) = match storage {
-                XorbStorage::Materialized(entry) => {
+                XorbStorage::Materialized { entry, .. } => {
                     let range_data = &entry.serialized_data[start..end];
                     xet_core_structures::xorb_object::deserialize_chunks(&mut Cursor::new(range_data))?
                 },
-                XorbStorage::Random(xorb) => {
+                XorbStorage::Random { xorb, .. } => {
                     let range_data = xorb.get_serialized_range(start as u64, end as u64);
                     xet_core_structures::xorb_object::deserialize_chunks(&mut Cursor::new(range_data.as_ref()))?
                 },
@@ -924,6 +949,141 @@ impl Client for MemoryClient {
             cb(total_transfer, total_transfer, total_transfer);
         }
         Ok((Bytes::from(all_decompressed), all_chunk_indices))
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+#[async_trait]
+impl super::DeletionControlableClient for MemoryClient {
+    async fn list_shard_entries(&self) -> Result<Vec<MerkleHash>> {
+        let shard = self.shard.read().await;
+        Ok(Self::current_shard_hash_and_bytes(&shard)?
+            .map(|(h, _)| vec![h])
+            .unwrap_or_default())
+    }
+
+    async fn get_shard_bytes(&self, hash: &MerkleHash) -> Result<Bytes> {
+        let shard = self.shard.read().await;
+        let Some((current_hash, bytes)) = Self::current_shard_hash_and_bytes(&shard)? else {
+            return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
+        };
+        if &current_hash != hash {
+            return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
+        }
+        Ok(bytes)
+    }
+
+    async fn delete_shard_entry(&self, hash: &MerkleHash) -> Result<()> {
+        let mut shard = self.shard.write().await;
+        let Some((current_hash, _)) = Self::current_shard_hash_and_bytes(&shard)? else {
+            return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
+        };
+        if &current_hash != hash {
+            return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
+        }
+        *shard = MDBInMemoryShard::default();
+        Ok(())
+    }
+
+    async fn list_file_shard_entries(&self) -> Result<Vec<(MerkleHash, MerkleHash)>> {
+        let shard = self.shard.read().await;
+        let Some((shard_hash, _)) = Self::current_shard_hash_and_bytes(&shard)? else {
+            return Ok(Vec::new());
+        };
+        Ok(shard
+            .file_content
+            .keys()
+            .copied()
+            .map(|file_hash| (file_hash, shard_hash))
+            .collect())
+    }
+
+    async fn delete_file_entry(&self, file_hash: &MerkleHash) -> Result<()> {
+        let mut shard = self.shard.write().await;
+        if shard.file_content.remove(file_hash).is_some() {
+            shard.recalculate_shard_size();
+        }
+        Ok(())
+    }
+
+    async fn remove_shard_dedup_entries(&self, shard_hash: &MerkleHash) -> Result<()> {
+        let shard = self.shard.read().await;
+        let Some((current_hash, _)) = Self::current_shard_hash_and_bytes(&shard)? else {
+            return Ok(());
+        };
+        if &current_hash != shard_hash {
+            return Ok(());
+        }
+        drop(shard);
+
+        self.global_dedup.write().await.clear();
+        Ok(())
+    }
+
+    async fn delete_xorb(&self, hash: &MerkleHash) {
+        self.xorbs.write().await.remove(hash);
+    }
+
+    async fn list_xorbs_and_tags(&self) -> Result<Vec<(MerkleHash, ObjectTag)>> {
+        let xorbs = self.xorbs.read().await;
+        Ok(xorbs
+            .iter()
+            .map(|(hash, storage)| (*hash, Self::xorb_tag(hash, storage)))
+            .collect())
+    }
+
+    async fn delete_xorb_if_tag_matches(&self, hash: &MerkleHash, tag: &ObjectTag) -> Result<bool> {
+        let mut xorbs = self.xorbs.write().await;
+        let Some(storage) = xorbs.get(hash) else {
+            return Err(ClientError::XORBNotFound(*hash));
+        };
+        if &Self::xorb_tag(hash, storage) != tag {
+            return Ok(false);
+        }
+        xorbs.remove(hash);
+        Ok(true)
+    }
+
+    async fn list_shards_with_tags(&self) -> Result<Vec<(MerkleHash, ObjectTag)>> {
+        let shard = self.shard.read().await;
+        let Some((shard_hash, shard_bytes)) = Self::current_shard_hash_and_bytes(&shard)? else {
+            return Ok(Vec::new());
+        };
+        let tag = Self::object_tag_from_key_and_payload(b"shard", &shard_hash, shard_bytes.as_ref());
+        Ok(vec![(shard_hash, tag)])
+    }
+
+    async fn delete_shard_if_tag_matches(&self, hash: &MerkleHash, tag: &ObjectTag) -> Result<bool> {
+        let mut shard = self.shard.write().await;
+        let Some((current_hash, shard_bytes)) = Self::current_shard_hash_and_bytes(&shard)? else {
+            return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
+        };
+        if &current_hash != hash {
+            return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
+        }
+        let current_tag = Self::object_tag_from_key_and_payload(b"shard", &current_hash, shard_bytes.as_ref());
+        if &current_tag != tag {
+            return Ok(false);
+        }
+        *shard = MDBInMemoryShard::default();
+        Ok(true)
+    }
+
+    async fn verify_integrity(&self) -> Result<()> {
+        let xorbs = self.xorbs.read().await;
+        let shard = self.shard.read().await;
+        for file_info in shard.file_content.values() {
+            for segment in &file_info.segments {
+                if !xorbs.contains_key(&segment.xorb_hash) {
+                    return Err(ClientError::XORBNotFound(segment.xorb_hash));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn verify_all_reachable(&self) -> Result<()> {
+        self.verify_integrity().await
     }
 }
 
@@ -966,16 +1126,58 @@ fn parse_any_fetch_url(url: &str) -> Result<(MerkleHash, Instant)> {
 
 #[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
+    use xet_runtime::config::XetConfig;
+    use xet_runtime::core::XetContext;
+
     use super::super::client_testing_utils::ClientTestingUtils;
+    use super::super::deletion_controls::DeletionControlableClient;
     use super::*;
 
+    fn test_ctx() -> XetContext {
+        let config = XetConfig::new();
+        XetContext::from_external(tokio::runtime::Handle::current(), config)
+    }
+
     fn new_client() -> Arc<dyn super::super::DirectAccessClient> {
-        MemoryClient::new()
+        MemoryClient::new(test_ctx())
+    }
+
+    fn new_deletion_client() -> Arc<MemoryClient> {
+        MemoryClient::new(test_ctx())
     }
 
     #[tokio::test]
     async fn test_common_client_suite() {
         super::super::client_unit_testing::test_client_functionality(|| async { new_client() }).await;
+    }
+
+    #[tokio::test]
+    async fn test_memory_deletion_controls_basic() {
+        let client = new_deletion_client();
+        let file = client.upload_random_file(&[(1, (0, 3))], 2048).await.unwrap();
+
+        let xorbs_and_tags = client.list_xorbs_and_tags().await.unwrap();
+        assert!(!xorbs_and_tags.is_empty());
+        let (xorb_hash, tag) = xorbs_and_tags[0];
+
+        let wrong_tag = [0xABu8; 32];
+        assert!(!client.delete_xorb_if_tag_matches(&xorb_hash, &wrong_tag).await.unwrap());
+        assert!(client.xorb_exists(&xorb_hash).await.unwrap());
+
+        assert!(client.delete_xorb_if_tag_matches(&xorb_hash, &tag).await.unwrap());
+        assert!(!client.xorb_exists(&xorb_hash).await.unwrap());
+
+        // file deletion is idempotent for parity with the disk-backed behavior.
+        client.delete_file_entry(&file.file_hash).await.unwrap();
+        client.delete_file_entry(&file.file_hash).await.unwrap();
+
+        let shards_and_tags = client.list_shards_with_tags().await.unwrap();
+        if !shards_and_tags.is_empty() {
+            let (shard_hash, shard_tag) = shards_and_tags[0];
+            assert!(!client.delete_shard_if_tag_matches(&shard_hash, &wrong_tag).await.unwrap());
+            assert!(client.delete_shard_if_tag_matches(&shard_hash, &shard_tag).await.unwrap());
+            assert!(client.list_shard_entries().await.unwrap().is_empty());
+        }
     }
 
     #[tokio::test(start_paused = true)]
@@ -995,6 +1197,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_global_dedup_shard_expiration_stress() {
         super::super::client_unit_testing::test_global_dedup_shard_expiration_stress(|| async { new_client() }).await;
     }
@@ -1002,7 +1205,7 @@ mod tests {
     /// Comprehensive test for RandomXorb insertion and data access.
     #[tokio::test]
     async fn test_random_xorb() {
-        let client = MemoryClient::new();
+        let client = MemoryClient::new(test_ctx());
 
         // Basic insertion and existence
         let xorb = RandomXorb::from_seed(42, 5, 1024);
@@ -1036,16 +1239,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(partial, xorb.get_serialized_range(10, 50));
-
-        // Deletion
-        client.delete_xorb(&xorb_hash).await;
-        assert!(!client.xorb_exists(&xorb_hash).await.unwrap());
     }
 
     /// Test RandomXorb with large chunk count and scattered range access.
     #[tokio::test]
     async fn test_random_xorb_large() {
-        let client = MemoryClient::new();
+        let client = MemoryClient::new(test_ctx());
         let xorb = RandomXorb::from_seed(12345, 100, 4096);
         let xorb_hash = client.insert_random_xorb(xorb.clone()).await.unwrap();
 
@@ -1060,7 +1259,7 @@ mod tests {
     /// Comprehensive test for lazy file insertion with on-the-fly xorb generation.
     #[tokio::test]
     async fn test_lazy_file() {
-        let client = MemoryClient::new();
+        let client = MemoryClient::new(test_ctx());
 
         // Single-term file
         let file = client.insert_random_lazy_file(&[(1, (0, 3))], 256).await.unwrap();
@@ -1105,8 +1304,14 @@ mod tests {
     #[tokio::test]
     async fn test_lazy_file_deterministic() {
         let term_spec = &[(999, (0, 4))];
-        let file1 = MemoryClient::new().insert_random_lazy_file(term_spec, 512).await.unwrap();
-        let file2 = MemoryClient::new().insert_random_lazy_file(term_spec, 512).await.unwrap();
+        let file1 = MemoryClient::new(test_ctx())
+            .insert_random_lazy_file(term_spec, 512)
+            .await
+            .unwrap();
+        let file2 = MemoryClient::new(test_ctx())
+            .insert_random_lazy_file(term_spec, 512)
+            .await
+            .unwrap();
         assert_eq!(file1.file_hash, file2.file_hash);
         assert_eq!(file1.data, file2.data);
     }
@@ -1114,7 +1319,7 @@ mod tests {
     /// Verify materialized and random xorbs coexist correctly.
     #[tokio::test]
     async fn test_mixed_xorb_types() {
-        let client = MemoryClient::new();
+        let client = MemoryClient::new(test_ctx());
 
         let random_xorb = RandomXorb::from_seed(111, 3, 256);
         let random_hash = client.insert_random_xorb(random_xorb).await.unwrap();

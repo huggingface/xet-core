@@ -547,33 +547,17 @@ pub async fn test_missing_xorb(client: Arc<dyn DirectAccessClient>) {
     assert!(matches!(result, Err(ClientError::XORBNotFound(_))));
 }
 
-/// Tests list_xorbs and delete_xorb operations.
+/// Tests list_xorbs operations.
 pub async fn test_xorb_list_and_delete(client: Arc<dyn DirectAccessClient>) {
-    // Initially should be empty
     let initial_list = client.list_xorbs().await.unwrap();
     assert!(initial_list.is_empty());
 
-    // Upload a file which creates xorbs
     let file = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
     let xorb_hash = file.term_xorb_hash(0).unwrap();
 
-    // Now should have one xorb
     let list = client.list_xorbs().await.unwrap();
     assert_eq!(list.len(), 1);
     assert!(list.contains(&xorb_hash));
-
-    // Delete the xorb
-    client.delete_xorb(&xorb_hash).await;
-
-    // Should be empty again
-    let final_list = client.list_xorbs().await.unwrap();
-    assert!(final_list.is_empty());
-
-    // xorb should no longer exist
-    assert!(!client.xorb_exists(&xorb_hash).await.unwrap());
-
-    // Deleting non-existent xorb should not fail
-    client.delete_xorb(&xorb_hash).await;
 }
 
 /// Tests get_file_data returns correct data.
@@ -678,7 +662,8 @@ pub async fn test_global_dedup(client: Arc<dyn DirectAccessClient>) {
         .unwrap();
 
     // Verify the returned shard can be loaded and contains the expected data
-    let sf = MDBShardFile::write_out_from_reader(shard_dir_2.clone(), &mut Cursor::new(&new_shard)).unwrap();
+    let sfc = xet_core_structures::metadata_shard::new_shard_file_cache();
+    let sf = MDBShardFile::write_out_from_reader(shard_dir_2.clone(), &mut Cursor::new(&new_shard), &sfc).unwrap();
 
     // Verify the shard has the same dedup hashes (the content matches semantically)
     let returned_dedup_hashes = MDBShardInfo::filter_cas_chunks_for_global_dedup(&mut Cursor::new(&new_shard)).unwrap();

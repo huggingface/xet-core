@@ -6,10 +6,11 @@ use std::sync::Arc;
 
 use tokio::task::JoinHandle;
 use tracing::{error, info};
-use xet_runtime::core::{XetRuntime, check_sigint_shutdown};
+use xet_runtime::RuntimeError;
+use xet_runtime::core::XetRuntime;
 
 use super::set_operations::shard_set_union;
-use super::shard_file_handle::MDBShardFile;
+use super::shard_file_handle::{MDBShardFile, ShardFileCache};
 use super::{MDBShardFileFooter, MDBShardFileHeader, MDBShardInfo};
 use crate::error::Result;
 
@@ -19,13 +20,16 @@ use crate::error::Result;
 ///
 /// Ordering of staged shards is preserved.
 pub fn consolidate_shards_in_directory(
+    runtime: &Arc<XetRuntime>,
     session_directory: impl AsRef<Path>,
     target_max_size: u64,
     skip_on_error: bool,
+    cache: &ShardFileCache,
 ) -> Result<Vec<Arc<MDBShardFile>>> {
     let session_directory = session_directory.as_ref();
     // Get the new shards and the shards in the original list to remove.
-    let shard_merge_result = merge_shards(session_directory, session_directory, target_max_size, skip_on_error)?;
+    let shard_merge_result =
+        merge_shards(runtime, session_directory, session_directory, target_max_size, skip_on_error, cache)?;
 
     // Now, go through and remove all the shards in the delete list.
     for sfi in shard_merge_result.obsolete_shards {
@@ -54,12 +58,14 @@ pub struct ShardMergeResult {
 /// Ordering of staged shards is preserved.
 #[allow(clippy::needless_range_loop)] // The alternative is less readable IMO
 pub fn merge_shards(
+    runtime: &Arc<XetRuntime>,
     source_directory: impl AsRef<Path>,
     target_directory: impl AsRef<Path>,
     target_max_size: u64,
     skip_on_error: bool,
+    cache: &ShardFileCache,
 ) -> Result<ShardMergeResult> {
-    let mut shards: Vec<_> = MDBShardFile::load_all_valid(source_directory.as_ref())?;
+    let mut shards: Vec<_> = MDBShardFile::load_all_valid(source_directory.as_ref(), cache)?;
 
     shards.sort_unstable_by_key(|si| si.last_modified_time);
 
@@ -80,7 +86,9 @@ pub fn merge_shards(
     let mut cur_si = MDBShardInfo::default();
 
     for sfi in shards {
-        check_sigint_shutdown()?;
+        if runtime.in_sigint_shutdown() {
+            return Err(RuntimeError::KeyboardInterrupt.into());
+        }
 
         // Now, load the new shard data in.  To be resiliant to the possibility of shards
         // being deleted under us (as can happen in shard session resume with multiple
@@ -120,7 +128,7 @@ pub fn merge_shards(
             swap(&mut out_data, &mut cur_data);
         } else {
             // Flush everything out and replace the new.
-            let out_sfi = MDBShardFile::write_out_from_reader(&target_directory, &mut Cursor::new(&cur_data))?;
+            let out_sfi = MDBShardFile::write_out_from_reader(&target_directory, &mut Cursor::new(&cur_data), cache)?;
             dest_shards.push(out_sfi);
 
             // Move the loaded data into the current buffer.
@@ -131,7 +139,7 @@ pub fn merge_shards(
 
     // If there is any left over at the end, flush that as well.
     if !cur_data.is_empty() {
-        let out_sfi = MDBShardFile::write_out_from_reader(&target_directory, &mut Cursor::new(&cur_data))?;
+        let out_sfi = MDBShardFile::write_out_from_reader(&target_directory, &mut Cursor::new(&cur_data), cache)?;
         dest_shards.push(out_sfi);
     }
 
@@ -152,14 +160,17 @@ pub fn merge_shards(
 
 /// Same as above, but performs it in the background and on a io focused thread.
 pub fn merge_shards_background(
+    runtime: Arc<XetRuntime>,
     source_directory: impl AsRef<Path>,
     target_directory: impl AsRef<Path>,
     target_max_size: u64,
     skip_on_error: bool,
+    cache: ShardFileCache,
 ) -> JoinHandle<Result<ShardMergeResult>> {
     let source_directory = source_directory.as_ref().to_owned();
     let target_directory = target_directory.as_ref().to_owned();
-
-    XetRuntime::current()
-        .spawn_blocking(move || merge_shards(source_directory, target_directory, target_max_size, skip_on_error))
+    let rt = runtime.clone();
+    runtime.spawn_blocking(move || {
+        merge_shards(&rt, &source_directory, &target_directory, target_max_size, skip_on_error, &cache)
+    })
 }

@@ -4,12 +4,11 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use reqwest::{Error as ReqwestError, Response, StatusCode};
-use reqwest_retry::{Retryable, default_on_request_success};
 use tokio::sync::Mutex;
 use tokio_retry::RetryIf;
 use tokio_retry::strategy::{ExponentialBackoff, jitter};
 use tracing::{error, info};
-use xet_runtime::core::xet_config;
+use xet_runtime::core::XetContext;
 
 use super::adaptive_concurrency::ConnectionPermit;
 use crate::common::http_client::request_id_from_response;
@@ -38,10 +37,12 @@ pub struct RetryWrapper {
 }
 
 impl RetryWrapper {
-    pub fn new(api_tag: &'static str) -> Self {
+    pub fn new(ctx: XetContext, api_tag: &'static str) -> Self {
+        let max_attempts = ctx.config.client.retry_max_attempts;
+        let base_delay = ctx.config.client.retry_base_delay;
         Self {
-            max_attempts: xet_config().client.retry_max_attempts,
-            base_delay: xet_config().client.retry_base_delay,
+            max_attempts,
+            base_delay,
             no_retry_on_429: false,
             retry_on_403: false,
             expected_416: false,
@@ -468,6 +469,31 @@ impl RetryWrapper {
     }
 }
 
+/// Classifies a response status as retryable.
+///
+/// Equivalent to `reqwest_retry::default_on_request_success`:
+/// * 5XX (server error) -> Transient
+/// * 408 / 429 -> Transient
+/// * Other 4XX -> Fatal
+/// * 2XX -> None
+/// * Everything else -> Fatal
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Retryable {
+    Fatal,
+    Transient,
+}
+
+pub fn default_on_request_success(success: &Response) -> Option<Retryable> {
+    let status = success.status();
+    if status.is_server_error() || status == StatusCode::REQUEST_TIMEOUT || status == StatusCode::TOO_MANY_REQUESTS {
+        Some(Retryable::Transient)
+    } else if status.is_success() {
+        None
+    } else {
+        Some(Retryable::Fatal)
+    }
+}
+
 /// Like [request_middleware::default_on_request_failure], but retries all IOErrors instead of a
 /// subset. There are a few errors that can occur on certain systems that we will want to retry
 /// (e.g. `No buffer space available: (os error 55)`).
@@ -545,11 +571,18 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+    use xet_runtime::config::XetConfig;
+    use xet_runtime::core::XetContext;
 
     use super::*;
 
+    fn test_context() -> XetContext {
+        let config = XetConfig::new();
+        XetContext::from_external(tokio::runtime::Handle::current(), config)
+    }
+
     fn connection_wrapper(api: &'static str) -> RetryWrapper {
-        RetryWrapper::new(api)
+        RetryWrapper::new(test_context(), api)
             .with_base_delay(Duration::from_millis(5))
             .with_max_attempts(3)
     }

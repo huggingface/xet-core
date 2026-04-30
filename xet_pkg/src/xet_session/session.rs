@@ -4,11 +4,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 
 use tracing::info;
-use ulid::Ulid;
+use uuid::Uuid;
 use xet_data::progress_tracking::UniqueID;
-use xet_runtime::RuntimeError;
 use xet_runtime::config::XetConfig;
-use xet_runtime::core::XetRuntime;
+use xet_runtime::core::XetContext;
 #[cfg(feature = "fd-track")]
 use xet_runtime::fd_diagnostics::{report_fd_count, track_fd_scope};
 
@@ -24,11 +23,7 @@ use super::upload_commit::XetUploadCommitBuilder;
 /// Lives behind `Arc<XetSessionInner>` — do not use this type directly.
 #[doc(hidden)]
 pub struct XetSessionInner {
-    // Independently cloned by background tasks, so needs its own Arc.
-    pub(super) runtime: Arc<XetRuntime>,
-
-    // Only accessed through &self; no independent cloning needed.
-    pub(super) config: XetConfig,
+    pub(super) ctx: XetContext,
 
     // Root of the cancellation tree. Child commits/groups create child TaskRuntimes via
     // task_runtime.child(), which links their cancellation tokens to this root. Calling
@@ -46,7 +41,7 @@ pub struct XetSessionInner {
     pub(super) active_download_stream_groups: Mutex<HashMap<UniqueID, Weak<XetDownloadStreamGroupInner>>>,
 
     // "id" is used to identify a group of activities on our server, and so needs to be globally unique
-    pub(super) id: Ulid,
+    pub(super) id: Uuid,
 }
 
 /// Builder for [`XetSession`].
@@ -150,11 +145,11 @@ impl XetSessionBuilder {
     /// drivers), it is silently ignored and [`build`](Self::build) will fall back to creating
     /// an owned thread pool instead.
     ///
-    /// If the handle is already in use by another live `XetSession`, [`build`](Self::build) will
-    /// also fall back to creating an owned thread pool — the duplicate is logged at `INFO` level
-    /// and no error is returned.
+    /// Handles can be shared by multiple sessions. Each session gets its own
+    /// [`XetContext`] (`config` + `common`), while the underlying runtime
+    /// may be shared.
     pub fn with_tokio_handle(self, handle: tokio::runtime::Handle) -> Self {
-        let accept = XetRuntime::handle_meets_requirements(&handle);
+        let accept = XetContext::handle_meets_requirements(&handle);
         if !accept {
             info!("supplied tokio handle rejected (missing drivers or wrong flavor); falling back to Owned mode");
         }
@@ -166,48 +161,25 @@ impl XetSessionBuilder {
 
     /// Consume the builder and create a [`XetSession`].
     ///
-    /// If a tokio runtime handle is available (either from
-    /// [`with_tokio_handle`](Self::with_tokio_handle) or auto-detected via
-    /// `Handle::try_current()`), and it meets requirements, the session wraps
-    /// it — no second thread pool is created. Otherwise, an owned multi-thread
-    /// runtime is created; async methods use an internal bridge and work from
-    /// any executor, and `_blocking` methods are available.
+    /// Threadpool selection order:
+    /// 1. Reuse the current owned runtime from thread-local storage, when present.
+    /// 2. Otherwise, use a provided tokio handle (or auto-detected current handle) if valid.
+    /// 3. Otherwise, create a new owned thread pool.
     ///
-    /// If the detected or provided handle is already registered to another live `XetSession`,
-    /// the duplicate attach is silently rejected and an owned runtime is created instead.
-    /// This prevents two sessions from fighting over the same tokio runtime's task scheduler.
+    /// Each build creates a fresh [`XetContext`] around the selected runtime, so sessions
+    /// can share the same execution backend while keeping independent config and common state.
     pub fn build(self) -> Result<XetSession, SessionError> {
         #[cfg(feature = "fd-track")]
         let _fd_scope = track_fd_scope("XetSessionBuilder::build");
 
-        let handle = self.tokio_handle.or_else(|| {
-            tokio::runtime::Handle::try_current()
-                .ok()
-                .filter(XetRuntime::handle_meets_requirements)
-        });
-
-        let runtime = match handle {
-            Some(h) => {
-                info!("XetSession using External runtime (wrapping caller's tokio handle)");
-                let result = XetRuntime::from_external_with_config(h, self.config.clone());
-                match result {
-                    Ok(runtime) => runtime,
-                    Err(RuntimeError::ExternalAlreadyAttached(_)) => {
-                        info!(
-                            "An existing XetSession already wraps caller's tokio handle, switching to creating Owned runtime"
-                        );
-                        XetRuntime::new_with_config(self.config.clone())?
-                    },
-                    Err(e) => Err(e)?,
-                }
-            },
-            None => {
-                info!("XetSession creating Owned runtime (new thread pool)");
-                XetRuntime::new_with_config(self.config.clone())?
-            },
+        let ctx = if let Some(h) = self.tokio_handle {
+            info!("XetSession using explicitly provided tokio handle");
+            XetContext::from_external(h, self.config)
+        } else {
+            XetContext::with_config(self.config)?
         };
 
-        let session = XetSession::new(self.config, runtime);
+        let session = XetSession::new(ctx);
         info!("Session created, session_id={}", session.inner.id);
         #[cfg(feature = "fd-track")]
         report_fd_count("XetSessionBuilder::build complete");
@@ -218,8 +190,8 @@ impl XetSessionBuilder {
 /// Handle for managing file uploads and downloads.
 ///
 /// `XetSession` is the top-level entry point for the xet-session API.  It
-/// owns a `XetRuntime` (tokio thread pool) and shared HTTP settings (endpoint,
-/// custom headers).  Auth tokens are configured per-operation on the builder
+/// owns a [`XetContext`] (configuration and tokio thread pool). CAS endpoints,
+/// custom headers, and auth tokens are configured per-operation on the builder
 /// types returned by each factory method, not on the session itself, so uploads,
 /// file downloads, and streaming downloads can each carry a different access-level
 /// token from the same session.
@@ -246,15 +218,14 @@ pub struct XetSession {
 
 impl XetSession {
     /// Low-level constructor used by [`XetSessionBuilder::build`].
-    fn new(config: XetConfig, runtime: Arc<XetRuntime>) -> Self {
-        let task_runtime = TaskRuntime::new_root(runtime.clone());
+    fn new(ctx: XetContext) -> Self {
+        let task_runtime = TaskRuntime::new_root(ctx.runtime.clone());
         Self {
             inner: Arc::new(XetSessionInner {
-                runtime,
-                config,
+                ctx,
                 task_runtime,
                 active_download_stream_groups: Mutex::new(HashMap::new()),
-                id: Ulid::new(),
+                id: Uuid::now_v7(),
             }),
         }
     }
@@ -367,7 +338,7 @@ impl XetSession {
         let _fd_scope = track_fd_scope(format!("XetSession::sigint_abort({})", self.inner.id));
 
         info!("Session SIGINT abort, session_id={}", self.inner.id);
-        self.inner.runtime.perform_sigint_shutdown();
+        self.inner.ctx.runtime.perform_sigint_shutdown();
 
         let active_download_stream_groups = std::mem::take(&mut *self.inner.active_download_stream_groups.lock()?);
         for (_id, weak_group) in active_download_stream_groups {
@@ -383,7 +354,7 @@ impl XetSession {
 
     #[cfg(test)]
     pub(super) fn check_alive(&self) -> Result<(), SessionError> {
-        if self.inner.runtime.in_sigint_shutdown() {
+        if self.inner.ctx.runtime.in_sigint_shutdown() {
             return Err(SessionError::KeyboardInterrupt);
         }
         self.inner.task_runtime.check_state("session")
@@ -397,12 +368,12 @@ impl XetSession {
         Ok(())
     }
 
-    pub fn id(&self) -> &Ulid {
+    pub fn id(&self) -> &Uuid {
         &self.inner.id
     }
 
     pub fn config(&self) -> &XetConfig {
-        &self.inner.config
+        &self.inner.ctx.config
     }
 }
 
@@ -410,7 +381,7 @@ impl XetSession {
 mod tests {
     use tempfile::tempdir;
     use xet_data::processing::{Sha256Policy, XetFileInfo};
-    use xet_runtime::core::{RuntimeMode, XetRuntime};
+    use xet_runtime::core::{RuntimeMode, XetContext};
 
     use super::*;
 
@@ -433,10 +404,11 @@ mod tests {
     }
 
     #[test]
-    // Session ID is a Ulid, to guard future regressions.
-    fn test_session_id_is_ulid() {
+    // Session ID is a UUIDv7, to guard future regressions.
+    fn test_session_id_is_uuid_v7() {
         let s = XetSessionBuilder::new().build().unwrap();
-        assert!(s.inner.id.to_string().parse::<ulid::Ulid>().is_ok());
+        let parsed: uuid::Uuid = s.inner.id.to_string().parse().expect("session id must parse as Uuid");
+        assert_eq!(parsed.get_version(), Some(uuid::Version::SortRand));
     }
 
     // ── Abort behavior ───────────────────────────────────────────────────────
@@ -490,13 +462,13 @@ mod tests {
         assert!(matches!(group_err, SessionError::UserCancelled(_)));
     }
 
-    // ── XetRuntime::handle_meets_requirements ────────────────────────────────
+    // ── XetContext::handle_meets_requirements ────────────────────────────────
 
     #[test]
     // A multi-thread runtime with enable_all() meets all requirements.
     fn test_handle_multi_thread_all_features_returns_true() {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        assert!(XetRuntime::handle_meets_requirements(rt.handle()));
+        assert!(XetContext::handle_meets_requirements(rt.handle()));
     }
 
     #[test]
@@ -504,28 +476,28 @@ mod tests {
     // A current_thread runtime is rejected even when enable_all() is set.
     fn test_handle_current_thread_returns_false() {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        assert!(!XetRuntime::handle_meets_requirements(rt.handle()));
+        assert!(!XetContext::handle_meets_requirements(rt.handle()));
     }
 
     #[test]
     // A multi-thread runtime with no drivers enabled returns false.
     fn test_handle_without_any_driver_returns_false() {
         let rt = tokio::runtime::Builder::new_multi_thread().build().unwrap();
-        assert!(!XetRuntime::handle_meets_requirements(rt.handle()));
+        assert!(!XetContext::handle_meets_requirements(rt.handle()));
     }
 
     #[test]
     // A multi-thread runtime with only enable_time() is missing the IO driver.
     fn test_handle_without_io_driver_returns_false() {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_time().build().unwrap();
-        assert!(!XetRuntime::handle_meets_requirements(rt.handle()));
+        assert!(!XetContext::handle_meets_requirements(rt.handle()));
     }
 
     #[test]
     // A multi-thread runtime with only enable_io() is missing the time driver.
     fn test_handle_without_time_driver_returns_false() {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_io().build().unwrap();
-        assert!(!XetRuntime::handle_meets_requirements(rt.handle()));
+        assert!(!XetContext::handle_meets_requirements(rt.handle()));
     }
 
     // ── External-mode _blocking guard ────────────────────────────────────────
@@ -534,7 +506,7 @@ mod tests {
     // build_blocking on an External-mode session returns WrongRuntimeMode.
     async fn test_new_upload_commit_blocking_errors_in_external_mode() {
         let session = XetSessionBuilder::new().build().unwrap();
-        assert_eq!(session.inner.runtime.mode(), RuntimeMode::External);
+        assert_eq!(session.inner.ctx.runtime.mode(), RuntimeMode::External);
         let err = session.new_upload_commit().unwrap().build_blocking().err().unwrap();
         assert!(matches!(err, SessionError::WrongRuntimeMode(_)));
     }
@@ -543,7 +515,7 @@ mod tests {
     // build_blocking on an External-mode session returns WrongRuntimeMode.
     async fn test_new_file_download_group_blocking_errors_in_external_mode() {
         let session = XetSessionBuilder::new().build().unwrap();
-        assert_eq!(session.inner.runtime.mode(), RuntimeMode::External);
+        assert_eq!(session.inner.ctx.runtime.mode(), RuntimeMode::External);
         let err = session.new_file_download_group().unwrap().build_blocking().err().unwrap();
         assert!(matches!(err, SessionError::WrongRuntimeMode(_)));
     }
@@ -554,7 +526,7 @@ mod tests {
     // build_blocking panics when called from within a tokio runtime on an Owned-mode session.
     fn test_new_upload_commit_blocking_panics_in_async_context() {
         let session = XetSessionBuilder::new().build().unwrap();
-        assert_eq!(session.inner.runtime.mode(), RuntimeMode::Owned);
+        assert_eq!(session.inner.ctx.runtime.mode(), RuntimeMode::Owned);
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             rt.block_on(async { session.new_upload_commit().unwrap().build_blocking() })
@@ -566,7 +538,7 @@ mod tests {
     // build_blocking panics when called from within a tokio runtime on an Owned-mode session.
     fn test_new_file_download_group_blocking_panics_in_async_context() {
         let session = XetSessionBuilder::new().build().unwrap();
-        assert_eq!(session.inner.runtime.mode(), RuntimeMode::Owned);
+        assert_eq!(session.inner.ctx.runtime.mode(), RuntimeMode::Owned);
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             rt.block_on(async { session.new_file_download_group().unwrap().build_blocking() })
@@ -770,31 +742,28 @@ mod tests {
         assert_eq!(collected_b, data_b);
     }
 
-    // ── Duplicate tokio handle rejection ─────────────────────────────────────
+    // ── Shared tokio handle behavior ──────────────────────────────────────────
 
     #[test]
-    // Building a second session with the same tokio handle while the first is alive must
-    // fall back to Owned mode rather than returning an error — the duplicate is handled
-    // gracefully so callers do not need to track handle ownership.
-    fn test_build_with_same_handle_falls_back_to_owned() {
+    // Building multiple sessions with the same tokio handle is allowed.
+    fn test_build_with_same_handle_stays_external() {
         let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         let handle = tokio_rt.handle().clone();
 
         let first = XetSessionBuilder::new().with_tokio_handle(handle.clone()).build().unwrap();
-        assert_eq!(first.inner.runtime.mode(), RuntimeMode::External, "first build must use External runtime");
+        assert_eq!(first.inner.ctx.runtime.mode(), RuntimeMode::External, "first build must use External runtime");
 
         let second = XetSessionBuilder::new().with_tokio_handle(handle).build();
         assert!(second.is_ok(), "second build with the same tokio handle must still succeed");
         assert_eq!(
-            second.unwrap().inner.runtime.mode(),
-            RuntimeMode::Owned,
-            "second build must fall back to Owned runtime when External handle is already in use"
+            second.unwrap().inner.ctx.runtime.mode(),
+            RuntimeMode::External,
+            "second build should remain External when sharing the same tokio handle"
         );
     }
 
     #[test]
-    // After the first session is dropped (deregistering the handle), a new session can
-    // attach to the same tokio handle successfully.
+    // Dropping one session must not affect creating another session with the same handle.
     fn test_build_with_same_handle_succeeds_after_first_is_dropped() {
         let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         let handle = tokio_rt.handle().clone();

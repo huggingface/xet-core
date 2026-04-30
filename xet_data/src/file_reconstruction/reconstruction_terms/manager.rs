@@ -11,6 +11,7 @@ use xet_client::cas_types::FileRange;
 use xet_core_structures::ExpWeightedMovingAvg;
 use xet_core_structures::merklehash::MerkleHash;
 use xet_runtime::config::ReconstructionConfig;
+use xet_runtime::core::XetContext;
 
 use super::super::FileReconstructionError;
 use super::super::error::Result;
@@ -23,6 +24,7 @@ type RawFetchedFileTerms = Result<Option<(Vec<FileTerm>, u64, u64)>>;
 /// Prefetches reconstruction blocks ahead of consumption based on observed completion rates
 /// to minimize download latency while controlling memory usage.
 pub struct ReconstructionTermManager {
+    ctx: XetContext,
     config: Arc<ReconstructionConfig>,
     client: Arc<dyn Client>,
     file_hash: MerkleHash,
@@ -40,6 +42,7 @@ pub struct ReconstructionTermManager {
 
 impl ReconstructionTermManager {
     pub async fn new(
+        ctx: XetContext,
         config: Arc<ReconstructionConfig>,
         client: Arc<dyn Client>,
         file_hash: MerkleHash,
@@ -52,6 +55,7 @@ impl ReconstructionTermManager {
         let requested_byte_range = file_byte_range;
 
         let mut s = Self {
+            ctx,
             config,
             client,
             file_hash,
@@ -281,9 +285,10 @@ impl ReconstructionTermManager {
         let known_final_byte_position = self.known_final_byte_position.clone();
         let client = self.client.clone();
         let file_hash = self.file_hash;
+        let runtime = self.ctx.clone();
 
         let jh = tokio::task::spawn(async move {
-            let result = retrieve_file_term_block(client, file_hash, prefetch_block_range).await;
+            let result = retrieve_file_term_block(&runtime, client, file_hash, prefetch_block_range).await;
 
             // See if we're done with the file.
             if let Ok(Some((ref returned_range, transfer_bytes, ref file_terms))) = result {

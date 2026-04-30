@@ -163,22 +163,26 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - name: Install Rust nightly
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
-        with:
-          toolchain: nightly
-          targets: wasm32-unknown-unknown
-          components: rust-src
-      - uses: ./.github/actions/cache-rust-build
-      - name: Install wasm-bindgen-cli and wasm-pack
-        run: |
-          cargo install --version 0.2.100 wasm-bindgen-cli
-          cargo install --version 0.13.1 wasm-pack
-      - name: Build hf_xet_thin_wasm
+      - uses: ./.github/actions/build-wasm
+      - name: Check hf_xet_thin_wasm Cargo.lock has no uncommitted changes
         working-directory: wasm/hf_xet_thin_wasm
         run: |
-          ./build_wasm.sh
-      - name: Build hf_xet_wasm
+          # the build steps would update Cargo.lock if it is out of date
+          test -z "$(git status --porcelain Cargo.lock)" || (echo "hf_xet_thin_wasm Cargo.lock has uncommitted changes!" && exit 1)
+      - name: Check hf_xet_wasm Cargo.lock has no uncommitted changes
         working-directory: wasm/hf_xet_wasm
         run: |
-          ./build_wasm.sh
+          # the build steps would update Cargo.lock if it is out of date
+          test -z "$(git status --porcelain Cargo.lock)" || (echo "hf_xet_wasm Cargo.lock has uncommitted changes!" && exit 1)
+  cargo-audit:
+    name: Cargo Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
+        with:
+          toolchain: 1.94.1
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit
+      - name: Run cargo audit
+        run: cargo audit -D warnings

@@ -2,7 +2,7 @@ use std::path::Path;
 
 use rand::rngs::{StdRng, ThreadRng};
 use rand::seq::SliceRandom;
-use rand::{Rng, SeedableRng, rng};
+use rand::{Rng, RngExt, SeedableRng, rng};
 use xet_core_structures::merklehash::MerkleHash;
 
 use crate::cas_types::{ChunkRange, Key};
