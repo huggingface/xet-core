@@ -41,7 +41,7 @@ pub trait DeduplicationDataInterface: Send + Sync + 'static {
 
     /// Register a set of xorb dependencies; this is called periodically during the dedup
     /// process with a list of (xorb hash, n_bytes).  As the final bit may get
-    /// returned as a partial xorb without a hash yet, it is not gauranteed that the
+    /// returned as a partial xorb without a hash yet, it is not guaranteed that the
     /// sum of the n_bytes across all the dependencies will equal the size of the file.
     async fn register_xorb_dependencies(&mut self, dependencies: &[FileXorbDependency]);
 }
