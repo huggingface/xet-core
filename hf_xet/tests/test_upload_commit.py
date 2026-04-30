@@ -240,5 +240,15 @@ class TestUploadStream:
         except ValueError:
             raised = True
         assert raised  # exception must propagate
+        assert stream.try_finish() is None  # abort() ran, not finish()
+
+    def test_context_manager_idempotent_when_finish_called_inside(self, endpoint):
+        # Calling finish() explicitly inside the with-block must not cause a double-finish error.
+        commit = hf_xet.XetSession().new_upload_commit(endpoint=endpoint)
+        with commit.start_upload_stream(name="early.bin") as stream:
+            stream.write(b"early finish")
+            result = stream.finish()  # explicit finish inside the block
+        # __exit__ skipped the second finish; result is still valid
+        assert result.xet_info.file_size == len(b"early finish")
 
 
