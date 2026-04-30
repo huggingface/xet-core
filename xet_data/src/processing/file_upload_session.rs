@@ -16,6 +16,7 @@ use xet_client::cas_client::{Client, ProgressCallback};
 use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
 use xet_core_structures::xorb_object::SerializedXorbObject;
 use xet_runtime::core::XetContext;
+use xet_runtime::utils::UniqueId;
 
 use super::XetFileInfo;
 use super::configurations::TranslatorConfig;
@@ -26,7 +27,7 @@ use crate::deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use crate::deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
 use crate::error::{DataError, Result};
 use crate::progress_tracking::upload_tracking::{CompletionTracker, FileXorbDependency};
-use crate::progress_tracking::{GroupProgress, GroupProgressReport, ItemProgressReport, UniqueID};
+use crate::progress_tracking::{GroupProgress, GroupProgressReport, ItemProgressReport};
 
 /// Manages the translation of files between the
 /// MerkleDB / pointer file format and the materialized version.
@@ -75,7 +76,7 @@ impl FileUploadSession {
             .session_id
             .as_ref()
             .map(Cow::Borrowed)
-            .unwrap_or_else(|| Cow::Owned(UniqueID::new().to_string()));
+            .unwrap_or_else(|| Cow::Owned(UniqueId::new().to_string()));
 
         let progress = GroupProgress::with_speed_config(
             ctx.config.data.progress_update_speed_sampling_window,
@@ -113,7 +114,7 @@ impl FileUploadSession {
 
             let file_size = std::fs::metadata(&file_path)?.len();
 
-            let updater = self.progress.new_item(UniqueID::new(), file_name.clone());
+            let updater = self.progress.new_item(UniqueId::new(), file_name.clone());
             let file_id = self.completion_tracker.register_new_file(updater, Some(file_size));
 
             let ingestion_concurrency_limiter = self.ctx.common.file_ingestion_semaphore.clone();
@@ -214,16 +215,16 @@ impl FileUploadSession {
         tracking_name: Option<Arc<str>>,
         size: Option<u64>,
         sha256: Sha256Policy,
-    ) -> Result<(UniqueID, SingleFileCleaner)> {
+    ) -> Result<(UniqueId, SingleFileCleaner)> {
         self.check_not_finalized()?;
-        let id = UniqueID::new();
+        let id = UniqueId::new();
         let cleaner = self.start_clean_with_id(id, tracking_name, size, sha256);
         Ok((id, cleaner))
     }
 
     fn start_clean_with_id(
         self: &Arc<Self>,
-        id: UniqueID,
+        id: UniqueId,
         tracking_name: Option<Arc<str>>,
         size: Option<u64>,
         sha256: Sha256Policy,
@@ -240,7 +241,7 @@ impl FileUploadSession {
         self: &Arc<Self>,
         file_path: PathBuf,
         sha256: Sha256Policy,
-    ) -> Result<(UniqueID, JoinHandle<Result<(XetFileInfo, DeduplicationMetrics)>>)> {
+    ) -> Result<(UniqueId, JoinHandle<Result<(XetFileInfo, DeduplicationMetrics)>>)> {
         self.check_not_finalized()?;
         let file_size = std::fs::metadata(&file_path)?.len();
         let tracking_name: Arc<str> = Arc::from(file_path.to_string_lossy().as_ref());
@@ -265,7 +266,7 @@ impl FileUploadSession {
         bytes: Vec<u8>,
         sha256: Sha256Policy,
         tracking_name: Option<Arc<str>>,
-    ) -> Result<(UniqueID, JoinHandle<Result<(XetFileInfo, DeduplicationMetrics)>>)> {
+    ) -> Result<(UniqueId, JoinHandle<Result<(XetFileInfo, DeduplicationMetrics)>>)> {
         self.check_not_finalized()?;
         let (id, mut cleaner) = self.start_clean(tracking_name, Some(bytes.len() as u64), sha256)?;
 
@@ -584,11 +585,11 @@ impl FileUploadSession {
         self.progress.report()
     }
 
-    pub fn item_report(&self, id: UniqueID) -> Option<ItemProgressReport> {
+    pub fn item_report(&self, id: UniqueId) -> Option<ItemProgressReport> {
         self.progress.item_report(id)
     }
 
-    pub fn item_reports(&self) -> HashMap<UniqueID, ItemProgressReport> {
+    pub fn item_reports(&self) -> HashMap<UniqueId, ItemProgressReport> {
         self.progress.item_reports()
     }
 

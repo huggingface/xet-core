@@ -4,7 +4,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use more_asserts::{assert_ge, assert_le};
 use tokio::sync::Mutex;
-use xet_data::progress_tracking::UniqueID;
+use xet_runtime::utils::UniqueId;
 
 use super::{ProgressUpdate, TrackingProgressUpdater};
 
@@ -17,7 +17,7 @@ struct ItemProgressData {
 
 #[derive(Debug, Default)]
 pub struct ProgressUpdaterVerificationWrapperImpl {
-    items: HashMap<UniqueID, (Arc<str>, ItemProgressData)>,
+    items: HashMap<UniqueId, (Arc<str>, ItemProgressData)>,
     total_transfer_bytes: u64,
     total_transfer_bytes_completed: u64,
     total_bytes: u64,
@@ -211,8 +211,8 @@ mod tests {
         let logger = Arc::new(DummyLogger::default());
         let wrapper = ProgressUpdaterVerificationWrapper::new(logger.clone());
 
-        let file_a = (UniqueID::new(), "fileA");
-        let file_b = (UniqueID::new(), "fileB");
+        let file_a = (UniqueId::new(), "fileA");
+        let file_b = (UniqueId::new(), "fileB");
 
         wrapper
             .register_updates(ProgressUpdate {

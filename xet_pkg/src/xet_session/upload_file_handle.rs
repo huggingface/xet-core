@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use tracing::info;
 use xet_data::processing::FileUploadSession;
-use xet_data::progress_tracking::{ItemProgressReport, UniqueID};
+use xet_data::progress_tracking::ItemProgressReport;
+use xet_runtime::utils::UniqueId;
 
 use super::task_runtime::{BackgroundTaskState, TaskRuntime, XetTaskState};
 use super::upload_commit::XetFileMetadata;
@@ -15,7 +16,7 @@ use crate::error::XetError;
 // ── XetFileUploadInner ──────────────────────────────────────────────────────
 
 pub(super) struct XetFileUploadInner {
-    pub(super) task_id: UniqueID,
+    pub(super) task_id: UniqueId,
     pub(super) file_path: Option<PathBuf>,
     pub(super) upload_session: Arc<FileUploadSession>,
     pub(super) state: tokio::sync::Mutex<BackgroundTaskState<XetFileMetadata>>,
@@ -49,7 +50,7 @@ impl fmt::Debug for XetFileUpload {
 
 impl XetFileUpload {
     /// Unique identifier for this upload task, usable for progress lookups.
-    pub fn task_id(&self) -> UniqueID {
+    pub fn task_id(&self) -> UniqueId {
         self.inner.task_id
     }
 

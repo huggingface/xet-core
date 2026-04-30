@@ -6,7 +6,8 @@ use std::sync::{Arc, RwLock};
 
 use tracing::info;
 use xet_data::processing::{FileDownloadSession, XetFileInfo};
-use xet_data::progress_tracking::{GroupProgressReport, ItemProgressReport, UniqueID};
+use xet_data::progress_tracking::{GroupProgressReport, ItemProgressReport};
+use xet_runtime::utils::UniqueId;
 
 use super::auth_group_builder::{AuthGroupBuilder, AuthOptions};
 use super::common::create_translator_config;
@@ -64,7 +65,7 @@ impl AuthGroupBuilder<XetFileDownloadGroup> {
 
 /// Report returned by [`XetFileDownloadGroup::finish`].
 ///
-/// Contains final progress and per-file results keyed by [`UniqueID`].
+/// Contains final progress and per-file results keyed by [`UniqueId`].
 /// Only created when all downloads succeed; any failure propagates as an error.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "python", pyo3::pyclass(get_all))]
@@ -72,7 +73,7 @@ pub struct XetDownloadGroupReport {
     /// Final progress snapshot at the time the group finished.
     pub progress: GroupProgressReport,
     /// Per-file download reports keyed by task ID.
-    pub downloads: HashMap<UniqueID, XetDownloadReport>,
+    pub downloads: HashMap<UniqueId, XetDownloadReport>,
 }
 
 #[cfg(feature = "python")]
@@ -147,7 +148,7 @@ impl XetFileDownloadGroup {
         task_runtime: Arc<TaskRuntime>,
         auth_options: AuthOptions,
     ) -> Result<Self, XetError> {
-        let group_id = UniqueID::new();
+        let group_id = UniqueId::new();
         let config = create_translator_config(&session, auth_options).await?;
         let download_session = FileDownloadSession::new(Arc::new(config), None).await?;
 
@@ -165,7 +166,7 @@ impl XetFileDownloadGroup {
     }
 
     /// Unique identifier for this download group.
-    pub fn id(&self) -> UniqueID {
+    pub fn id(&self) -> UniqueId {
         self.inner.group_id
     }
 
@@ -233,7 +234,7 @@ impl XetFileDownloadGroup {
     ///
     /// `progress` is `None` if the download has not started reporting yet.
     /// Used for display and diagnostics (e.g. `__repr__`).
-    pub fn active_download_info(&self) -> Vec<(UniqueID, PathBuf, Option<ItemProgressReport>)> {
+    pub fn active_download_info(&self) -> Vec<(UniqueId, PathBuf, Option<ItemProgressReport>)> {
         self.inner
             .active_tasks
             .read()
@@ -314,8 +315,8 @@ impl XetFileDownloadGroup {
 }
 
 pub(super) struct XetFileDownloadGroupInner {
-    group_id: UniqueID,
-    active_tasks: RwLock<HashMap<UniqueID, XetFileDownload>>,
+    group_id: UniqueId,
+    active_tasks: RwLock<HashMap<UniqueId, XetFileDownload>>,
     pub(super) download_session: Arc<FileDownloadSession>,
 }
 
@@ -387,7 +388,7 @@ impl XetFileDownloadGroupInner {
         Ok(XetFileDownload { inner, task_runtime })
     }
 
-    pub(super) async fn handle_finish(self: &Arc<Self>) -> Result<HashMap<UniqueID, XetDownloadReport>, XetError> {
+    pub(super) async fn handle_finish(self: &Arc<Self>) -> Result<HashMap<UniqueId, XetDownloadReport>, XetError> {
         let active_tasks = std::mem::take(&mut *self.active_tasks.write()?);
 
         let mut results = HashMap::new();

@@ -1,5 +1,5 @@
 use pyo3::prelude::*;
-use xet_pkg::xet_session::{ItemProgressReport, UniqueID, XetFileMetadata, XetFileUpload};
+use xet_pkg::xet_session::{ItemProgressReport, UniqueId, XetFileMetadata, XetFileUpload};
 
 use crate::utils::{progress_display, task_state_display, task_state_to_pystate};
 use crate::{PyXetTaskState, convert_xet_error};
@@ -54,7 +54,7 @@ impl PyXetFileUpload {
     /// The unique task ID for this upload.
     ///
     /// Matches the keys in :attr:`XetCommitReport.uploads`.
-    pub fn task_id(&self) -> UniqueID {
+    pub fn task_id(&self) -> UniqueId {
         self.inner.task_id()
     }
 }
