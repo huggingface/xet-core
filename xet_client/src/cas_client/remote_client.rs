@@ -789,22 +789,6 @@ impl Client for RemoteClient {
 
         Ok(response)
     }
-
-    async fn xorb_chunk_hash_sizes(
-        &self,
-        _xorb_hash: &MerkleHash,
-        _chunk_index_start: u32,
-        _chunk_index_end: u32,
-    ) -> Result<Vec<(MerkleHash, u64)>> {
-        // No remote endpoint exists today for "give me per-chunk sizes within a xorb". The
-        // composition path in `upload_ranges` only needs this for the 1–2 boundary segments
-        // per dirty window, so a follow-up server endpoint or piggy-backing on reconstruction
-        // info is the natural fix. For now, fail loudly so callers know to use simulation
-        // clients only.
-        Err(ClientError::Other(
-            "RemoteClient::xorb_chunk_hash_sizes not yet implemented; use a simulation client".into(),
-        ))
-    }
 }
 
 #[cfg(test)]

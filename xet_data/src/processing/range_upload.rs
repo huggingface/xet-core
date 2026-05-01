@@ -6,9 +6,8 @@ use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tracing::{debug, info};
 use xet_client::cas_client::Client;
-use xet_client::cas_types::FileRange;
-use xet_core_structures::merklehash::{ChunkHashList, MerkleHash, file_hash};
-use xet_core_structures::metadata_shard::chunk_verification::range_hash_from_chunks;
+use xet_client::cas_types::{FileChunkHashesResponse, FileRange};
+use xet_core_structures::merklehash::{ChunkHashList, MerkleHash, MerkleHashSubtree};
 use xet_core_structures::metadata_shard::file_structs::{
     FileDataSequenceEntry, FileDataSequenceHeader, FileVerificationEntry, MDBFileInfo,
 };
@@ -33,25 +32,13 @@ pub struct DirtyInput {
 /// Size of blocks read from the dirty source and fed to the cleaner.
 const STREAM_BLOCK_SIZE: usize = 4 * 1024 * 1024; // 4 MB
 
-/// A dirty byte range expanded to chunk-aligned boundaries.
-struct DirtyRegion {
-    dirty_start: u64,
-    dirty_end: u64,
-    first_chunk: usize, // inclusive
-    last_chunk: usize,  // exclusive
-}
-
-/// Result of uploading a single dirty region through the cleaner.
-struct UploadedRegion {
-    region: DirtyRegion,
+/// A dirty window the server told us to re-upload, augmented with the bytes the cleaner
+/// produced and the resulting per-window file info. `start`/`end` are file byte offsets
+/// extended for append/truncation past `original_size` if needed.
+struct UploadedWindow {
+    start: u64,
+    end: u64,
     info: XetFileInfo,
-    chunks: ChunkHashList,
-}
-
-/// A dirty region paired with its MDBFileInfo and chunk hashes.
-struct ComposedRegion {
-    region: DirtyRegion,
-    mdb: MDBFileInfo,
     chunks: ChunkHashList,
 }
 
@@ -99,42 +86,36 @@ pub async fn upload_ranges(
         return Ok(XetFileInfo::new(original_hash.hex(), original_size));
     }
 
-    // Extract ranges for validation and build_dirty_regions.
-    let dirty_ranges: Vec<(u64, u64)> = dirty_inputs.iter().map(|d| (d.range.start, d.range.end)).collect();
+    // Validate the caller-provided dirty ranges.
+    let dirty_ranges_pairs: Vec<(u64, u64)> = dirty_inputs.iter().map(|d| (d.range.start, d.range.end)).collect();
 
-    if !dirty_ranges.windows(2).all(|w| w[0].1 <= w[1].0) {
+    if !dirty_ranges_pairs.windows(2).all(|w| w[0].1 <= w[1].0) {
         return Err(DataError::InternalError(format!(
-            "dirty_ranges must be sorted and non-overlapping, got: {dirty_ranges:?}"
+            "dirty_ranges must be sorted and non-overlapping, got: {dirty_ranges_pairs:?}"
         )));
     }
-    if !dirty_ranges.iter().all(|&(s, e)| s < e) {
+    if !dirty_ranges_pairs.iter().all(|&(s, e)| s < e) {
         return Err(DataError::InternalError(format!(
-            "dirty_ranges must be non-empty intervals, got: {dirty_ranges:?}"
+            "dirty_ranges must be non-empty intervals, got: {dirty_ranges_pairs:?}"
         )));
     }
-    if let Some(&(_, last_end)) = dirty_ranges.last()
+    if let Some(&(_, last_end)) = dirty_ranges_pairs.last()
         && last_end > total_size
     {
         return Err(DataError::InternalError(format!(
             "dirty_range end ({last_end}) exceeds total_size ({total_size})"
         )));
     }
-
-    // Appended bytes must be fully covered by dirty_inputs (CAS has no data beyond original_size).
-    // Check that: (1) inputs reach total_size, and (2) no gap exists beyond original_size.
     if total_size > original_size {
-        let last_input_end = dirty_ranges.last().map_or(0, |&(_, e)| e);
+        let last_input_end = dirty_ranges_pairs.last().map_or(0, |&(_, e)| e);
         if last_input_end < total_size {
             return Err(DataError::InternalError(format!(
                 "total_size ({total_size}) > original_size ({original_size}) but dirty_inputs \
                  only cover up to byte {last_input_end} (must reach total_size)"
             )));
         }
-
-        // Verify no gaps beyond original_size between inputs. Walk the append region
-        // [original_size, total_size) and ensure it is fully covered.
         let mut covered_up_to = original_size;
-        for &(start, end) in &dirty_ranges {
+        for &(start, end) in &dirty_ranges_pairs {
             if start > covered_up_to && covered_up_to >= original_size {
                 return Err(DataError::InternalError(format!(
                     "gap in append region: bytes [{covered_up_to}, {start}) are beyond \
@@ -145,189 +126,131 @@ pub async fn upload_ranges(
         }
     }
 
-    // 1. Fetch reconstruction info and rebuild the per-chunk (hash, size) list locally by walking the original file's
-    //    segments and querying each xorb's chunk metadata. The previous flat `get_file_chunk_hashes` server endpoint
-    //    was replaced by the windows + gap-subtree response in xetcas PR #987; until we migrate the rest of this
-    //    function to that response shape, we recompose the original chunk list here so the existing composition logic
-    //    keeps working unchanged. Hot follow-up: drop this local reconstitution and use `MerkleHashSubtree::merge` over
-    //    windows + gap ranges for the final hash.
+    // 1. Fetch the original file's MDB. We need the segments to compose the new file's MDBFileInfo and to compute
+    //    segment byte boundaries for snapping.
     let recon_result = cas_client.get_file_reconstruction_info(&original_hash).await?;
     let original_mdb = recon_result
         .map(|(mdb, _)| mdb)
         .ok_or_else(|| DataError::InternalError("no reconstruction info for original file".into()))?;
-    let original_chunks = collect_original_chunks(&cas_client, &original_mdb).await?;
 
-    // 2. Map chunks to cumulative byte offsets.
-    // This builds a sorted array of byte boundaries, where chunk_offsets[i] is the
-    // start byte of chunk[i]. chunk_offsets has len = original_chunks.len() + 1,
-    // and chunk_offsets[i+1] is the end byte of chunk[i].
-    //
-    // Example with 3 chunks of sizes [100, 200, 150]:
-    //   chunk_offsets = [0, 100, 300, 450]
-    //                     ^   ^    ^    ^
-    //                     |   |    |    +-- end of chunk[2]
-    //                     |   |    +------ end of chunk[1] = start of chunk[2]
-    //                     |   +---------- end of chunk[0] = start of chunk[1]
-    //                     +-------------- start of chunk[0]
-    let mut chunk_offsets: Vec<u64> = Vec::with_capacity(original_chunks.len() + 1);
-    let mut offset = 0u64;
-    chunk_offsets.push(0);
-    for (_, size) in &original_chunks {
-        offset += size;
-        chunk_offsets.push(offset);
+    // Cumulative byte boundaries between segments. `seg_byte_starts[i]` is the first byte
+    // of segment `i`; `seg_byte_starts[segments.len()]` equals `original_size`.
+    let mut seg_byte_starts: Vec<u64> = Vec::with_capacity(original_mdb.segments.len() + 1);
+    seg_byte_starts.push(0);
+    let mut acc = 0u64;
+    for s in &original_mdb.segments {
+        acc += s.unpacked_segment_bytes as u64;
+        seg_byte_starts.push(acc);
     }
+    debug_assert_eq!(*seg_byte_starts.last().unwrap_or(&0), original_size, "segments must sum to original_size");
 
-    // 3. Build effective dirty ranges.
-    //
-    // INVARIANT: dirty_ranges only contains ranges whose bytes are provided by
-    // dirty_inputs. Internally needed ranges (truncation boundary) are handled via
-    // injected DirtyRegions with empty dirty spans, so CAS provides the bytes.
-    // For appends, the caller must include the appended region in dirty_inputs.
-
-    let num_chunks = original_chunks.len();
-    // Number of original chunks to keep in the final composition.
-    let mut compose_num_chunks = num_chunks;
-    let mut truncation_boundary: Option<(u64, usize)> = None;
-
+    // 2. Build segment-aligned dirty ranges to send to the server. Snapping to segment boundaries (rather than just
+    //    chunk boundaries) lets us swap whole segments during composition, so we never need to truncate a segment
+    //    mid-chunk on the client. This is strictly safe: segment boundaries are also chunk boundaries, so the server's
+    //    chunk-aligned windows come back equal to our snapped ranges.
+    let mut snapped: Vec<(u64, u64)> = Vec::new();
+    for &(start, end) in &dirty_ranges_pairs {
+        let in_start = start.min(original_size);
+        let in_end = end.min(original_size);
+        if in_start >= in_end {
+            continue;
+        }
+        snapped
+            .push((snap_to_segment_start(&seg_byte_starts, in_start), snap_to_segment_end(&seg_byte_starts, in_end)));
+    }
+    // Truncation: ensure the segment containing the cut is in the upload set so we
+    // can re-upload it with its truncated tail.
     if total_size < original_size {
-        // Truncation: when the cut point falls mid-chunk, we can't reuse that chunk
-        // (CAS chunks are immutable). We re-upload bytes from the last full chunk
-        // boundary up to total_size, and only keep chunks entirely before the cut.
-        //
-        // Example: truncate from 450 to 250 bytes.
-        //
-        //   chunk[0]=[0,100)  chunk[1]=[100,300)  chunk[2]=[300,450)
-        //                                  ^--- cut at 250 falls here
-        //
-        //   chunk[0]: fully before cut  -> reuse (stable)
-        //   chunk[1]: partially before  -> re-upload bytes [100, 250)
-        //   chunk[2]: fully after cut   -> discard
-        let last_full = chunk_offsets.iter().rposition(|&o| o <= total_size).unwrap_or(0);
-        compose_num_chunks = last_full;
-        let boundary = chunk_offsets[last_full];
-        if boundary < total_size {
-            // Cut falls mid-chunk: the partial chunk [boundary, total_size) must be
-            // re-uploaded. We track it here and inject a DirtyRegion after
-            // build_dirty_regions, rather than adding it to dirty_ranges,
-            // because the bytes live in CAS (not in the caller's staging file).
-            truncation_boundary = Some((boundary, last_full));
+        let snap_start = snap_to_segment_start(&seg_byte_starts, total_size);
+        if snap_start < original_size {
+            let snap_end = seg_byte_starts
+                .iter()
+                .copied()
+                .find(|&s| s > total_size)
+                .unwrap_or(original_size);
+            snapped.push((snap_start, snap_end));
         }
     }
-    // For appends (total_size > original_size), the caller must include the appended bytes
-    // in dirty_inputs. The last original chunk is re-chunked automatically via the
-    // first_chunk adjustment in build_dirty_regions, with its bytes read from CAS via
-    // the boundary prefix mechanism.
-
-    // Note: if dirty_ranges is empty here, it means pure truncation (no dirty ranges,
-    // file shrunk). We still proceed to compose a new file from the truncated chunk set.
-
-    // 4. Expand dirty byte ranges to chunk-aligned boundaries.
-    //
-    // A dirty range rarely starts/ends on a chunk boundary. Since CAS chunks are
-    // atomic (can't reuse half a chunk), we expand each range to cover every chunk
-    // it touches. Adjacent/overlapping regions are then coalesced.
-    //
-    //   chunk[0]=[0,100)  chunk[1]=[100,300)  chunk[2]=[300,450)
-    //
-    //   dirty bytes [150, 350)
-    //                 ^    ^
-    //                 |    +-- inside chunk[2]
-    //                 +------- inside chunk[1]
-    //
-    //   -> expand to chunks [1, 3)  (chunks 1 and 2 must be re-uploaded)
-    let mut dirty_regions = build_dirty_regions(&dirty_ranges, &chunk_offsets, num_chunks, original_size, total_size)?;
-
-    // If truncation cuts mid-chunk and no caller dirty range already covers that
-    // chunk, inject a DirtyRegion with an empty dirty range. The processing loop's
-    // suffix logic will read [boundary, total_size) from CAS automatically.
-    if let Some((boundary, trunc_chunk)) = truncation_boundary {
-        let already_covered = dirty_regions
-            .iter()
-            .any(|r| r.first_chunk <= trunc_chunk && trunc_chunk < r.last_chunk);
-        if !already_covered {
-            dirty_regions.push(DirtyRegion {
-                dirty_start: boundary,
-                dirty_end: boundary, // empty: no staging bytes needed
-                first_chunk: trunc_chunk,
-                last_chunk: trunc_chunk + 1,
-            });
-            dirty_regions.sort_by_key(|r| r.first_chunk);
-        }
+    // Pure append (no in-original modifications, total_size > original_size): re-upload
+    // the last original segment so the appended bytes cleanly extend its boundary.
+    if snapped.is_empty() && total_size > original_size && !original_mdb.segments.is_empty() {
+        let n = original_mdb.segments.len();
+        snapped.push((seg_byte_starts[n - 1], seg_byte_starts[n]));
     }
 
-    // 5. Process each dirty region: download boundary, stream dirty bytes, upload. Collect the resulting middle file
-    //    infos and chunk hashes. A single upload session is shared across all dirty regions.
+    // Coalesce overlapping/touching ranges.
+    snapped.sort_by_key(|&(s, _)| s);
+    let mut coalesced: Vec<(u64, u64)> = Vec::new();
+    for r in snapped {
+        if let Some(last) = coalesced.last_mut()
+            && r.0 <= last.1
+        {
+            last.1 = last.1.max(r.1);
+            continue;
+        }
+        coalesced.push(r);
+    }
+
+    let server_query: Vec<FileRange> = coalesced.iter().map(|&(s, e)| FileRange::new(s, e)).collect();
+    if server_query.is_empty() {
+        // Should not happen: we either had dirty inputs, or total_size != original_size which
+        // produced a synthetic range above.
+        return Err(DataError::InternalError(
+            "internal: no server query computed for non-trivial upload_ranges call".into(),
+        ));
+    }
+
+    // 3. Ask the server for chunk-aligned dirty windows + opaque gap subtrees.
+    let response: FileChunkHashesResponse =
+        cas_client.get_file_chunk_hashes(&original_hash, server_query.clone()).await?;
+    debug_assert_eq!(response.windows.len(), server_query.len(), "server windows must match segment-aligned query");
+    debug_assert_eq!(response.hash_ranges.len(), response.windows.len() + 1, "expected N+1 hash ranges for N windows");
+
+    // 4. Process each window: stream prefix + dirty bytes + suffix into a fresh cleaner.
     let ctx = config.ctx.clone();
     let session = FileUploadSession::new(config.clone()).await?;
-
-    let mut uploaded_regions: Vec<UploadedRegion> = Vec::with_capacity(dirty_regions.len());
-    let mut dirty_inputs = dirty_inputs;
     let mut input_idx = 0usize;
+    let mut dirty_inputs = dirty_inputs;
+    let mut uploaded: Vec<UploadedWindow> = Vec::with_capacity(response.windows.len());
 
-    for region in dirty_regions {
-        let boundary_start = *chunk_offsets.get(region.first_chunk).ok_or_else(|| {
-            DataError::InternalError(format!(
-                "first_chunk {} out of bounds ({})",
-                region.first_chunk,
-                chunk_offsets.len()
-            ))
-        })?;
-        let boundary_end = *chunk_offsets.get(region.last_chunk).ok_or_else(|| {
-            DataError::InternalError(format!(
-                "last_chunk {} out of bounds ({})",
-                region.last_chunk,
-                chunk_offsets.len()
-            ))
-        })?;
-        debug_assert!(region.dirty_start >= boundary_start, "dirty_start before boundary_start");
-        debug_assert!(region.dirty_end <= total_size, "dirty_end exceeds total_size");
+    let last_idx = response.windows.len() - 1;
+    for (idx, window) in response.windows.iter().enumerate() {
+        let w_start = window.dirty_byte_range[0];
+        let w_end_in_original = window.dirty_byte_range[1];
 
-        // The cleaner processes a "middle" file that spans [boundary_start, middle_end).
-        // We stream it in three parts directly, without buffering boundary data:
-        //
-        //   a) Prefix:  CAS stream [boundary_start, dirty_start)  ← stable bytes before edit
-        //   b) Dirty:   staging file [dirty_start, dirty_end)     ← modified bytes
-        //   c) Suffix:  CAS stream [dirty_end, boundary_end)      ← stable bytes after edit
-        //
-        // Example: dirty region [200, 400), boundary [100, 500)
-        //   a) CAS stream [100..200)   → cleaner
-        //   b) staging    [200..400)   → cleaner (in 4MB blocks)
-        //   c) CAS stream [400..500)   → cleaner
-        let effective_boundary_end = boundary_end.min(total_size);
-        let middle_end = effective_boundary_end.max(region.dirty_end).min(total_size);
-        let middle_size = middle_end.saturating_sub(boundary_start);
+        // Last window stretches to total_size for append, shrinks to total_size for truncation.
+        let effective_end = if idx == last_idx
+            && ((total_size > original_size && w_end_in_original == original_size)
+                || (total_size < original_size && total_size <= w_end_in_original))
+        {
+            total_size
+        } else {
+            w_end_in_original
+        };
+
+        // For truncation we must not stream past `effective_end`, even if the segment runs
+        // further; the cleaner was told the file has exactly `middle_size` bytes.
+        let original_window_end = w_end_in_original.min(original_size).min(effective_end);
+        let middle_size = effective_end - w_start;
 
         let (_id, mut cleaner) = session.start_clean(None, Some(middle_size), Sha256Policy::Skip)?;
 
-        // a) Boundary prefix: stable bytes before the dirty range.
-        //
-        // We clamp the CAS read to original_size because chunk sizes from
-        // get_file_chunk_hashes may exceed the logical file size (e.g. after a
-        // truncation, the composed file inherits the original chunk layout).
-        if region.dirty_start > boundary_start && boundary_start < original_size {
-            let prefix_end = region.dirty_start.min(original_size);
-            stream_cas_range(&ctx, &cas_client, original_hash, boundary_start, prefix_end, &mut cleaner).await?;
-        }
-
-        // b) Dirty bytes from async readers.
-        //
-        // A merged DirtyRegion may span multiple inputs (when adjacent dirty ranges
-        // touch the same chunks). We consume readers in order, filling CAS gaps
-        // between them if the gap falls within the original file.
-        let mut cursor = region.dirty_start;
-        while input_idx < dirty_inputs.len() && dirty_inputs[input_idx].range.start < region.dirty_end {
+        let mut cursor = w_start;
+        while input_idx < dirty_inputs.len() {
+            let input_range_start = dirty_inputs[input_idx].range.start;
+            if input_range_start >= effective_end {
+                break;
+            }
             let input = &mut dirty_inputs[input_idx];
-            let input_start = input.range.start.max(region.dirty_start);
-            let input_end = input.range.end.min(region.dirty_end);
+            let input_start = input.range.start.max(w_start);
+            let input_end = input.range.end.min(effective_end);
 
             // CAS gap before this input (within the original file).
             if cursor < input_start {
-                if cursor < original_size {
-                    let gap_end = input_start.min(original_size);
+                let gap_end = input_start.min(original_window_end);
+                if cursor < gap_end {
                     stream_cas_range(&ctx, &cas_client, original_hash, cursor, gap_end, &mut cleaner).await?;
                 }
-                // Gap beyond original_size means the caller didn't provide bytes
-                // for part of the appended region. This would produce a corrupted file.
                 if input_start > original_size && cursor < input_start {
                     return Err(DataError::InternalError(format!(
                         "gap in dirty_inputs: no data for bytes [{cursor}, {input_start}) \
@@ -336,10 +259,10 @@ pub async fn upload_ranges(
                 }
             }
 
-            // Stream bytes from the async reader.
+            // Stream the dirty bytes from the async reader.
             let bytes_to_read = (input_end - input_start) as usize;
             let mut remaining = bytes_to_read;
-            let mut buf = vec![0u8; STREAM_BLOCK_SIZE.min(remaining)];
+            let mut buf = vec![0u8; STREAM_BLOCK_SIZE.min(remaining.max(1))];
             while remaining > 0 {
                 let to_read = buf.len().min(remaining);
                 input.reader.read_exact(&mut buf[..to_read]).await.map_err(|err| {
@@ -353,164 +276,151 @@ pub async fn upload_ranges(
             }
 
             cursor = input_end;
-            // Only advance to next input if we fully consumed this one within the region.
-            if input.range.end <= region.dirty_end {
+            if input.range.end <= effective_end {
                 input_idx += 1;
             } else {
                 break;
             }
         }
 
-        // c) Boundary suffix: stable bytes after the dirty range.
-        //
-        // Same clamping as prefix: CAS chunk may extend past original_size.
-        let suffix_start = region.dirty_end.min(effective_boundary_end);
-        if suffix_start < effective_boundary_end && suffix_start < original_size {
-            let suffix_end = effective_boundary_end.min(original_size);
-            stream_cas_range(&ctx, &cas_client, original_hash, suffix_start, suffix_end, &mut cleaner).await?;
+        // CAS suffix: stable bytes after the last input within the original portion.
+        if cursor < original_window_end {
+            stream_cas_range(&ctx, &cas_client, original_hash, cursor, original_window_end, &mut cleaner).await?;
         }
 
         let (info, chunks, _metrics) = cleaner.finish().await?;
-        uploaded_regions.push(UploadedRegion { region, info, chunks });
-    }
-
-    // Checkpoint: flush xorbs without consuming the session, then retrieve MDBFileInfos.
-    // TODO: the middle files are registered in the shard as real files, but nobody will
-    // ever reference them. Check if GC cleans up unreferenced file entries, or find a way
-    // to retrieve segments from the session without persisting them to the shard.
-    session.checkpoint().await?;
-    let middle_file_infos = session.file_info_list().await?;
-
-    // Pair each uploaded region with its MDBFileInfo from the session.
-    // Match by content hash. The shard manager deduplicates by file_hash (BTreeMap),
-    // so two regions with identical content produce only ONE MDBFileInfo entry.
-    // This is correct: same hash = same bytes = same chunks = same segments,
-    // so we clone the same MDBFileInfo for all regions sharing that hash.
-    let mdb_by_hash: HashMap<MerkleHash, MDBFileInfo> =
-        middle_file_infos.into_iter().map(|mdb| (mdb.metadata.file_hash, mdb)).collect();
-
-    let mut composed_regions: Vec<ComposedRegion> = Vec::with_capacity(uploaded_regions.len());
-    for uploaded in uploaded_regions {
-        let middle_hash = MerkleHash::from_hex(uploaded.info.hash())?;
-        let mdb = mdb_by_hash
-            .get(&middle_hash)
-            .cloned()
-            .ok_or_else(|| DataError::InternalError(format!("no MDBFileInfo for middle hash {}", middle_hash.hex())))?;
-        composed_regions.push(ComposedRegion {
-            region: uploaded.region,
-            mdb,
-            chunks: uploaded.chunks,
+        uploaded.push(UploadedWindow {
+            start: w_start,
+            end: effective_end,
+            info,
+            chunks,
         });
     }
 
-    // 6. Compose the final file: interleave stable regions with middle results.
-    //
-    // The final file is built by alternating:
-    //   [Stable chunks] [Re-uploaded chunks] [Stable chunks] [Re-uploaded chunks] ...
-    //
-    // Example:
-    //   Original: [chunk[0], chunk[1], chunk[2], chunk[3]]  (4 chunks)
-    //   Dirty region affects chunks [1..3]
-    //   Composition:
-    //     [chunk[0]]  <-- stable, reuse from original
-    //     [middle chunks for region]  <-- re-uploaded, from cleaner
-    //     [chunk[3]]  <-- stable suffix, reuse from original
-    //
-    let mut all_chunks: Vec<(MerkleHash, u64)> = Vec::new();
-    let mut all_segments: Vec<FileDataSequenceEntry> = Vec::new();
-    let mut all_verification = Vec::new();
-    let mut chunk_cursor = 0usize;
-    let mut seg_cursor = 0usize;
-    let mut seg_chunk_cursor = 0usize;
+    // Pull the per-window MDBs from the session.
+    session.checkpoint().await?;
+    let mdb_list = session.file_info_list().await?;
+    let mdb_by_hash: HashMap<MerkleHash, MDBFileInfo> =
+        mdb_list.into_iter().map(|m| (m.metadata.file_hash, m)).collect();
 
-    for composed in &composed_regions {
-        // Stable region before this dirty region.
-        if composed.region.first_chunk > chunk_cursor {
-            let (segments, verification_hashes) = extract_segments(
-                &original_mdb,
-                &original_chunks,
-                chunk_cursor,
-                composed.region.first_chunk,
-                &mut seg_cursor,
-                &mut seg_chunk_cursor,
-            );
-            all_chunks.extend_from_slice(&original_chunks[chunk_cursor..composed.region.first_chunk]);
-            all_segments.extend(segments);
-            all_verification.extend(verification_hashes);
+    // 5. Compose the final hash by merging server-provided gap subtrees with locally-built window subtrees. Sequence:
+    //    [gap0, w0, gap1, w1, ..., gapN]. Empty gaps are skipped. For truncation, drop the trailing gap (it covers
+    //    bytes that no longer exist).
+    let keep_trailing_gap = total_size >= original_size;
+    let trailing_gap = if keep_trailing_gap {
+        response.hash_ranges.get(uploaded.len()).cloned().flatten()
+    } else {
+        None
+    };
+
+    let leading_gap = response.hash_ranges.first().cloned().flatten();
+    let first_window_at_start = leading_gap.is_none();
+    let last_window_at_end = trailing_gap.is_none();
+
+    let mut merge_seq: Vec<MerkleHashSubtree> = Vec::with_capacity(2 * uploaded.len() + 1);
+    for (i, w) in uploaded.iter().enumerate() {
+        if let Some(gap) = response.hash_ranges.get(i).and_then(|g| g.as_ref()) {
+            merge_seq.push(gap.clone());
         }
-
-        // Middle (dirty) region.
-        all_chunks.extend_from_slice(&composed.chunks);
-        all_segments.extend_from_slice(&composed.mdb.segments);
-        all_verification.extend_from_slice(&composed.mdb.verification);
-
-        chunk_cursor = composed.region.last_chunk;
+        let at_start = i == 0 && first_window_at_start;
+        let at_end = i == uploaded.len() - 1 && last_window_at_end;
+        merge_seq.push(MerkleHashSubtree::from_chunks(at_start, &w.chunks, at_end));
+    }
+    if let Some(g) = trailing_gap {
+        merge_seq.push(g);
     }
 
-    // Stable suffix after the last dirty region.
-    if chunk_cursor < compose_num_chunks {
-        let (segments, verification_hashes) = extract_segments(
-            &original_mdb,
-            &original_chunks,
-            chunk_cursor,
-            compose_num_chunks,
-            &mut seg_cursor,
-            &mut seg_chunk_cursor,
-        );
-        all_chunks.extend_from_slice(&original_chunks[chunk_cursor..compose_num_chunks]);
-        all_segments.extend(segments);
-        all_verification.extend(verification_hashes);
-    }
+    let merged = MerkleHashSubtree::merge(&merge_seq)
+        .map_err(|err| DataError::InternalError(format!("MerkleHashSubtree::merge failed: {err}")))?;
+    // `final_hash()` returns the aggregated chunk hash; the file hash is its HMAC with the
+    // zero salt (matching `file_hash` / cleaner output for files without an SHA-256 metadata
+    // extension, which is the only flavor `upload_ranges` produces).
+    let aggregated_hash = merged.final_hash().ok_or_else(|| {
+        DataError::InternalError("merged subtree is not fully closed; cannot derive final hash".into())
+    })?;
+    let combined_hash = aggregated_hash.hmac(MerkleHash::default());
 
-    let combined_hash = file_hash(&all_chunks);
+    // 6. Compose the MDBFileInfo by walking the original segments, swapping the ones a window covers for that window's
+    //    segments. Segment-aligned windows guarantee that every original segment is either entirely outside or entirely
+    //    inside a window.
+    //
+    //    Verification entries are 1:1 with segments when the original file was registered
+    //    with verification on; when it wasn't (some legacy / test files), the original
+    //    verification vec is empty and we degrade gracefully by emitting no verification
+    //    for the composed file either.
+    let original_has_verification = original_mdb.verification.len() == original_mdb.segments.len();
+    let mut all_segments: Vec<FileDataSequenceEntry> = Vec::new();
+    let mut all_verification: Vec<FileVerificationEntry> = Vec::new();
+    let mut seg_idx = 0usize;
+    let n_segs = original_mdb.segments.len();
+    for w in &uploaded {
+        while seg_idx < n_segs && seg_byte_starts[seg_idx] < w.start {
+            debug_assert!(
+                seg_byte_starts[seg_idx + 1] <= w.start,
+                "segment straddles window start (not segment-aligned)"
+            );
+            all_segments.push(original_mdb.segments[seg_idx].clone());
+            if original_has_verification {
+                all_verification.push(original_mdb.verification[seg_idx].clone());
+            }
+            seg_idx += 1;
+        }
+        let original_window_end = w.end.min(original_size);
+        while seg_idx < n_segs && seg_byte_starts[seg_idx] < original_window_end {
+            seg_idx += 1;
+        }
+        let middle_hash = MerkleHash::from_hex(w.info.hash())?;
+        let middle_mdb = mdb_by_hash
+            .get(&middle_hash)
+            .ok_or_else(|| DataError::InternalError(format!("no MDBFileInfo for window hash {}", middle_hash.hex())))?;
+        all_segments.extend_from_slice(&middle_mdb.segments);
+        if original_has_verification {
+            all_verification.extend_from_slice(&middle_mdb.verification);
+        }
+    }
+    if total_size >= original_size {
+        while seg_idx < n_segs {
+            all_segments.push(original_mdb.segments[seg_idx].clone());
+            if original_has_verification {
+                all_verification.push(original_mdb.verification[seg_idx].clone());
+            }
+            seg_idx += 1;
+        }
+    }
+    // Truncation: trailing segments are intentionally dropped.
+
+    let contains_verification = original_has_verification && all_verification.len() == all_segments.len();
 
     debug!(
-        "upload_ranges: composed hash={}, {} segments, {} dirty regions",
+        "upload_ranges: composed hash={}, {} segments, {} windows",
         combined_hash.hex(),
         all_segments.len(),
-        composed_regions.len()
+        uploaded.len()
     );
 
     let composed_mdb = MDBFileInfo {
-        metadata: FileDataSequenceHeader::new(combined_hash, all_segments.len(), true, false),
+        metadata: FileDataSequenceHeader::new(combined_hash, all_segments.len(), contains_verification, false),
         segments: all_segments,
         verification: all_verification,
-        // SHA-256 metadata_ext is intentionally omitted: the file content changed
-        // so the original SHA-256 is no longer valid, and recomputing it would require
-        // reading the full file.
+        // SHA-256 is intentionally omitted: the file content changed, and recomputing it
+        // would require reading the full file.
         metadata_ext: None,
     };
 
-    // 7. Register composed file and finalize on the same session.
     session.register_composed_file(composed_mdb).await?;
     session.finalize().await?;
 
-    let total_dirty: u64 = dirty_ranges.iter().map(|(s, e)| e - s).sum();
+    let total_dirty: u64 = dirty_ranges_pairs.iter().map(|(s, e)| e - s).sum();
     info!(
-        "upload_ranges: hash={} size={} (original={}, {} dirty regions, {} dirty bytes)",
+        "upload_ranges: hash={} size={} (original={}, {} windows, {} dirty bytes)",
         combined_hash.hex(),
         total_size,
         original_size,
-        composed_regions.len(),
+        uploaded.len(),
         total_dirty
     );
 
     Ok(XetFileInfo::new(combined_hash.hex(), total_size))
-}
-
-/// Rebuild the per-chunk `(hash, size)` list for the given file by querying each
-/// segment's xorb metadata. Replaces the old flat `get_file_chunk_hashes` response
-/// while the rest of `upload_ranges` is migrated to use the new windows + gap-subtree
-/// response shape.
-async fn collect_original_chunks(cas_client: &Arc<dyn Client>, original_mdb: &MDBFileInfo) -> Result<ChunkHashList> {
-    let mut chunks = Vec::new();
-    for segment in &original_mdb.segments {
-        let pairs = cas_client
-            .xorb_chunk_hash_sizes(&segment.xorb_hash, segment.chunk_index_start, segment.chunk_index_end)
-            .await?;
-        chunks.extend(pairs);
-    }
-    Ok(chunks)
 }
 
 /// Stream a byte range from CAS into the cleaner.
@@ -530,134 +440,18 @@ async fn stream_cas_range(
     Ok(())
 }
 
-/// Expand dirty byte ranges to chunk-aligned boundaries and coalesce overlapping regions.
-///
-/// Each dirty range is mapped to the chunks it touches (since CAS chunks are atomic),
-/// then adjacent/overlapping chunk ranges are merged to avoid uploading the same
-/// boundary chunks twice.
-fn build_dirty_regions(
-    dirty_ranges: &[(u64, u64)],
-    chunk_offsets: &[u64],
-    num_chunks: usize,
-    original_size: u64,
-    total_size: u64,
-) -> Result<Vec<DirtyRegion>> {
-    let mut raw = Vec::with_capacity(dirty_ranges.len());
-    for &(dirty_start, dirty_end) in dirty_ranges {
-        // Find the first chunk whose end offset exceeds dirty_start.
-        let mut first_chunk = chunk_offsets[1..].partition_point(|&o| o <= dirty_start);
-        debug_assert!(first_chunk <= num_chunks, "first_chunk {first_chunk} out of bounds ({num_chunks} chunks)");
-
-        // For append regions (dirty_start >= original_size), include the last original
-        // chunk so it gets re-chunked with the appended data. The last chunk was
-        // terminated by EOF (not by the rolling hash), so its boundary is artificial.
-        // The boundary prefix mechanism will download its bytes from CAS.
-        if total_size > original_size && dirty_start >= original_size && first_chunk > 0 {
-            first_chunk -= 1;
-        }
-
-        // Find the last chunk (exclusive) that starts before dirty_end.
-        debug_assert!(dirty_end <= total_size, "dirty_end ({dirty_end}) exceeds total_size ({total_size})");
-        let clamped_end = dirty_end.min(original_size);
-        let last_chunk = chunk_offsets[..num_chunks].partition_point(|&o| o < clamped_end);
-        if last_chunk == 0 {
-            return Err(DataError::InternalError(format!(
-                "no chunk starts before clamped_end ({clamped_end}), chunks may be inconsistent"
-            )));
-        }
-        raw.push(DirtyRegion {
-            dirty_start,
-            dirty_end,
-            first_chunk,
-            last_chunk,
-        });
-    }
-
-    // Coalesce dirty regions whose chunk ranges overlap or are adjacent.
-    // This prevents uploading the same boundary chunks twice.
-    let mut merged: Vec<DirtyRegion> = Vec::with_capacity(raw.len());
-    for region in raw {
-        if let Some(last) = merged.last_mut()
-            && region.first_chunk <= last.last_chunk
-        {
-            last.dirty_end = last.dirty_end.max(region.dirty_end);
-            last.last_chunk = last.last_chunk.max(region.last_chunk);
-            continue;
-        }
-        merged.push(region);
-    }
-    Ok(merged)
+/// Largest segment-start byte that is `<= byte`. Used to snap a dirty-range start back
+/// to its enclosing segment boundary.
+fn snap_to_segment_start(seg_byte_starts: &[u64], byte: u64) -> u64 {
+    let idx = seg_byte_starts.partition_point(|&s| s <= byte);
+    seg_byte_starts[idx.saturating_sub(1)]
 }
 
-/// Extract segments and verification entries for chunks `[chunk_start, chunk_end)`
-/// from the original reconstruction plan, truncating segments at boundaries.
-///
-/// `seg_cursor` tracks the current position in the segment list across calls. Pass
-/// `&mut 0` on the first call; subsequent calls resume from where the last left off.
-/// This avoids re-scanning segments from the beginning on each call (O(S) total
-/// instead of O(K*S) for K calls).
-fn extract_segments(
-    original_mdb: &MDBFileInfo,
-    original_chunks: &[(MerkleHash, u64)],
-    chunk_start: usize,
-    chunk_end: usize,
-    seg_cursor: &mut usize,
-    seg_chunk_cursor: &mut usize,
-) -> (Vec<FileDataSequenceEntry>, Vec<FileVerificationEntry>) {
-    let mut segments = Vec::new();
-    let mut verification = Vec::new();
-
-    let mut chunk_cursor = *seg_chunk_cursor;
-
-    // Walk segments starting from seg_cursor, extracting the overlap with [chunk_start, chunk_end).
-    //
-    // Example: segments cover chunks [0,3), [3,7), [7,10). We want chunks [2, 8).
-    //   seg[0]: covers [0,3), overlap with [2,8) = [2,3) -> truncate to 1 chunk
-    //   seg[1]: covers [3,7), overlap with [2,8) = [3,7) -> keep whole segment
-    //   seg[2]: covers [7,10), overlap with [2,8) = [7,8) -> truncate to 1 chunk
-    for seg in &original_mdb.segments[*seg_cursor..] {
-        let seg_count = (seg.chunk_index_end - seg.chunk_index_start) as usize;
-        let seg_end = chunk_cursor + seg_count;
-
-        if chunk_cursor >= chunk_end {
-            break;
-        }
-
-        // Compute the overlap between this segment and the requested range.
-        let overlap_start = chunk_cursor.max(chunk_start);
-        let overlap_end = seg_end.min(chunk_end);
-        if overlap_start < overlap_end {
-            // Truncate the segment to only cover the overlapping chunks.
-            let count = overlap_end - overlap_start;
-            let mut truncated = seg.clone();
-            truncated.chunk_index_start += (overlap_start - chunk_cursor) as u32;
-            truncated.chunk_index_end = truncated.chunk_index_start + count as u32;
-            let overlap = &original_chunks[overlap_start..overlap_end];
-            let mut bytes = 0u64;
-            let mut hashes = Vec::with_capacity(overlap.len());
-            for &(hash, size) in overlap {
-                bytes += size;
-                hashes.push(hash);
-            }
-            // u32 cast: unpacked_segment_bytes is u32 in the shard format.
-            // Safe because CDC parameters prevent segments from exceeding u32::MAX.
-            truncated.unpacked_segment_bytes = bytes as u32;
-            segments.push(truncated);
-
-            // Recompute the verification hash for the truncated chunk range.
-            verification.push(FileVerificationEntry::new(range_hash_from_chunks(&hashes)));
-        }
-
-        chunk_cursor = seg_end;
-        // Only advance seg_cursor if this segment is fully consumed.
-        // If it extends beyond chunk_end, a later call may need its suffix.
-        if seg_end <= chunk_end {
-            *seg_cursor += 1;
-            *seg_chunk_cursor = seg_end;
-        }
-    }
-
-    (segments, verification)
+/// Smallest segment-start byte that is `>= byte`. Used to snap a dirty-range end forward
+/// to the segment boundary that fully contains it.
+fn snap_to_segment_end(seg_byte_starts: &[u64], byte: u64) -> u64 {
+    let idx = seg_byte_starts.partition_point(|&s| s < byte);
+    seg_byte_starts[idx]
 }
 
 #[cfg(test)]
@@ -681,12 +475,12 @@ mod tests {
         Arc::new(TranslatorConfig::test_server_config(&ctx, endpoint, base_dir).unwrap())
     }
 
-    /// Test helper: rebuild the per-chunk `(hash, size)` list for a file by walking its
-    /// segments. Mirrors `super::collect_original_chunks` but takes the file hash directly
-    /// so callers don't have to plumb the reconstruction info themselves.
-    async fn fetch_original_chunks(cas_client: &Arc<dyn Client>, hash: &MerkleHash) -> super::ChunkHashList {
+    /// Test helper: fetch the original file's per-segment byte sizes. Tests use these to
+    /// build dirty ranges that align with segment (== chunk-group) boundaries — handy for
+    /// scenarios that want to overwrite or truncate exactly on a boundary.
+    async fn fetch_segment_sizes(cas_client: &Arc<dyn Client>, hash: &MerkleHash) -> Vec<u64> {
         let (mdb, _) = cas_client.get_file_reconstruction_info(hash).await.unwrap().unwrap();
-        super::collect_original_chunks(cas_client, &mdb).await.unwrap()
+        mdb.segments.iter().map(|s| s.unpacked_segment_bytes as u64).collect()
     }
 
     /// Build `DirtyInput`s from a source buffer and range list. Each input gets
@@ -932,102 +726,6 @@ mod tests {
         assert_eq!(result.hash(), clean_hash.hex(), "hash mismatch with clean upload");
     }
 
-    // original: [chunk0][chunk1][chunk2][chunk3][...]
-    // dirty:            [0xBB ]        [0xBB ]
-    //                   ^--- same content, same hash -> dedup collision
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_two_regions_identical_hash_collision() {
-        // Two dirty regions that produce the same content (and thus the same hash)
-        // must not collide in the mdb_by_hash mapping. The shard manager deduplicates
-        // MDBFileInfo entries by file_hash, so both regions share the same entry.
-        //
-        // We use chunk-aligned dirty ranges with identical fill to guarantee
-        // the cleaner produces identical hashes for both regions.
-        let server = LocalTestServerBuilder::new().start().await;
-        let base_dir = TempDir::new().unwrap();
-        let config = test_config(server.http_endpoint(), base_dir.path());
-        let cas_client: Arc<dyn Client> = Arc::new(server);
-
-        // Create an original file of pseudo-random bytes so CDC produces multiple chunks.
-        // 512 KB of random data to reliably produce >= 4 CDC chunks.
-        let original_data = random_data(47, 512 * 1024);
-        let original_hash = upload_file(&config, &original_data).await;
-        let original_size = original_data.len() as u64;
-
-        let chunks = fetch_original_chunks(&cas_client, &original_hash).await;
-        assert!(chunks.len() >= 4, "expected at least 4 chunks, got {}", chunks.len());
-
-        let mut offsets = vec![0u64];
-        for (_, size) in &chunks {
-            offsets.push(offsets.last().unwrap() + size);
-        }
-
-        // Region 1: overwrite chunk[1] entirely. Region 2: overwrite chunk[3] entirely.
-        // Both get the same 0xBB fill, and since each spans exactly one full chunk
-        // boundary, the cleaner input is byte-identical -> same hash.
-        let r1_start = offsets[1] as usize;
-        let r1_end = offsets[2] as usize;
-        let r2_start = offsets[3] as usize;
-        let r2_end = offsets[4].min(original_size) as usize;
-
-        let mut modified_data = original_data.clone();
-        modified_data[r1_start..r1_end].fill(0xBB);
-        modified_data[r2_start..r2_end].fill(0xBB);
-        let result = upload_ranges(
-            config.clone(),
-            cas_client.clone(),
-            original_hash,
-            original_size,
-            make_dirty_inputs(&[(r1_start as u64, r1_end as u64), (r2_start as u64, r2_end as u64)], &modified_data),
-            modified_data.len() as u64,
-        )
-        .await
-        .unwrap();
-
-        let downloaded =
-            download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), modified_data.len() as u64).await;
-        assert_eq!(downloaded.len(), modified_data.len(), "downloaded length mismatch");
-        assert_eq!(&downloaded[..], &modified_data[..], "content mismatch: file was corrupted");
-
-        let clean_hash = upload_file(&config, &modified_data).await;
-        assert_eq!(result.hash(), clean_hash.hex(), "hash mismatch with clean upload");
-    }
-
-    // original: [chunk0][chunk1][chunk2][...]
-    // result:   [chunk0]
-    //                   ^ cut exactly on chunk boundary, no re-upload needed
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_truncation_on_chunk_boundary() {
-        let server = LocalTestServerBuilder::new().start().await;
-        let base_dir = TempDir::new().unwrap();
-        let config = test_config(server.http_endpoint(), base_dir.path());
-        let cas_client: Arc<dyn Client> = Arc::new(server);
-
-        let original_data = random_data(99, 256 * 1024);
-        let original_hash = upload_file(&config, &original_data).await;
-        let original_size = original_data.len() as u64;
-
-        let chunks = fetch_original_chunks(&cas_client, &original_hash).await;
-        assert!(chunks.len() >= 2, "need at least 2 chunks for this test");
-
-        // Truncate exactly at the boundary after the first chunk.
-        let truncated_size: u64 = chunks[0].1;
-        let truncated_data = &original_data[..truncated_size as usize];
-
-        let result =
-            upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, vec![], truncated_size)
-                .await
-                .unwrap();
-
-        assert_eq!(result.file_size(), Some(truncated_size));
-
-        let downloaded = download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), truncated_size).await;
-        assert_eq!(&downloaded[..], truncated_data);
-
-        let clean_hash = upload_file(&config, truncated_data).await;
-        assert_eq!(result.hash(), clean_hash.hex(), "hash mismatch with clean upload");
-    }
-
     // original: [======== 100 KB ========]
     // inputs:   [======== 100 KB ========][000][=4K written=]
     //                                     ^ gap (zeros from seek past EOF)
@@ -1191,10 +889,10 @@ mod tests {
                 })
                 .collect();
             let original_hash = upload_file(&config, &original).await;
-            let chunks = fetch_original_chunks(&cas_client, &original_hash).await;
-            if chunks.len() >= 3 {
-                let boundary: u64 = chunks[0].1 + chunks[1].1;
-                let dirty_end = boundary + chunks[2].1;
+            let seg_sizes = fetch_segment_sizes(&cas_client, &original_hash).await;
+            if seg_sizes.len() >= 3 {
+                let boundary: u64 = seg_sizes[0] + seg_sizes[1];
+                let dirty_end = boundary + seg_sizes[2];
                 let mut expected = original.clone();
                 expected[boundary as usize..dirty_end as usize].fill(0xFF);
                 let size = original.len() as u64;
@@ -1357,54 +1055,6 @@ mod tests {
         assert!(err.is_err());
         let msg = format!("{}", err.unwrap_err());
         assert!(msg.contains("gap in append region"), "expected gap-in-append-region error, got: {msg}");
-    }
-
-    #[test]
-    fn test_build_dirty_regions_coalesces_adjacent() {
-        // 5 chunks of 100 bytes each: offsets [0, 100, 200, 300, 400, 500]
-        let chunk_offsets = vec![0u64, 100, 200, 300, 400, 500];
-        let num_chunks = 5;
-        let original_size = 500;
-        let total_size = 500;
-
-        // Three adjacent dirty ranges, all inside chunk[2] = [200, 300).
-        let ranges = vec![(210u64, 230), (230, 250), (250, 270)];
-        let regions = build_dirty_regions(&ranges, &chunk_offsets, num_chunks, original_size, total_size).unwrap();
-
-        // All three touch the same chunk, so they must coalesce into one region.
-        assert_eq!(regions.len(), 1, "expected 1 coalesced region, got {}", regions.len());
-        assert_eq!(regions[0].dirty_start, 210);
-        assert_eq!(regions[0].dirty_end, 270);
-    }
-
-    #[test]
-    fn test_build_dirty_regions_no_coalesce_when_separated() {
-        // 5 chunks of 100 bytes each.
-        let chunk_offsets = vec![0u64, 100, 200, 300, 400, 500];
-        let num_chunks = 5;
-        let original_size = 500;
-        let total_size = 500;
-
-        // Two dirty ranges in non-adjacent chunks: chunk[1] and chunk[3].
-        let ranges = vec![(110u64, 130), (310, 330)];
-        let regions = build_dirty_regions(&ranges, &chunk_offsets, num_chunks, original_size, total_size).unwrap();
-
-        assert_eq!(regions.len(), 2, "expected 2 separate regions, got {}", regions.len());
-    }
-
-    #[test]
-    fn test_build_dirty_regions_rejects_inconsistent_chunks() {
-        // chunk_offsets = [0, 100] but dirty range ends at 200 (clamped to original_size=100).
-        // No chunk has start < 100 except chunk[0] at offset 0... actually chunk[0]
-        // starts at 0 < 100, so that works. Use an empty chunk list instead.
-        let chunk_offsets = vec![0u64]; // 0 chunks, only the initial offset
-        let num_chunks = 0;
-        let original_size = 0;
-        let total_size = 100;
-
-        let ranges = vec![(0u64, 100)];
-        let result = build_dirty_regions(&ranges, &chunk_offsets, num_chunks, original_size, total_size);
-        assert!(result.is_err(), "should fail with inconsistent/empty chunk data");
     }
 
     // original: [chunk0][chunk1][chunk2][chunk3][...more chunks...]

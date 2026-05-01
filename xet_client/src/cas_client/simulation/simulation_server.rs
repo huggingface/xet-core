@@ -549,17 +549,6 @@ impl Client for LocalTestServer {
     ) -> Result<crate::cas_types::FileChunkHashesResponse> {
         self.client.get_file_chunk_hashes(file_id, dirty_ranges).await
     }
-
-    async fn xorb_chunk_hash_sizes(
-        &self,
-        xorb_hash: &xet_core_structures::merklehash::MerkleHash,
-        chunk_index_start: u32,
-        chunk_index_end: u32,
-    ) -> Result<Vec<(xet_core_structures::merklehash::MerkleHash, u64)>> {
-        self.client
-            .xorb_chunk_hash_sizes(xorb_hash, chunk_index_start, chunk_index_end)
-            .await
-    }
 }
 
 #[async_trait]

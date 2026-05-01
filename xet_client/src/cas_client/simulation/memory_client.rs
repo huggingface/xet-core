@@ -1020,23 +1020,6 @@ impl Client for MemoryClient {
             hash_ranges,
         })
     }
-
-    async fn xorb_chunk_hash_sizes(
-        &self,
-        xorb_hash: &MerkleHash,
-        chunk_index_start: u32,
-        chunk_index_end: u32,
-    ) -> Result<Vec<(MerkleHash, u64)>> {
-        let xorbs = self.xorbs.read().await;
-        let storage = xorbs.get(xorb_hash).ok_or(ClientError::XORBNotFound(*xorb_hash))?;
-        let xorb_obj = match storage {
-            XorbStorage::Materialized { entry, .. } => std::borrow::Cow::Borrowed(&entry.xorb_object),
-            XorbStorage::Random { xorb, .. } => std::borrow::Cow::Owned(xorb.get_xorb_object()),
-        };
-        xorb_obj
-            .chunk_hash_sizes(chunk_index_start, chunk_index_end)
-            .map_err(|err| ClientError::Other(format!("chunk_hash_sizes error: {err}")))
-    }
 }
 
 #[cfg(not(target_family = "wasm"))]

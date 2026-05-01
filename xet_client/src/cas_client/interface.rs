@@ -85,15 +85,4 @@ pub trait Client: Send + Sync {
         file_id: &MerkleHash,
         dirty_ranges: Vec<FileRange>,
     ) -> Result<FileChunkHashesResponse>;
-
-    /// Fetch the (chunk_hash, unpacked_size) pairs for `[chunk_index_start, chunk_index_end)`
-    /// inside the given xorb. Used by clients that need per-chunk sizing for boundary segments
-    /// (e.g. `upload_ranges` composition). Sim clients answer locally from xorb metadata; the
-    /// remote client has no dedicated endpoint for this and currently errors.
-    async fn xorb_chunk_hash_sizes(
-        &self,
-        xorb_hash: &MerkleHash,
-        chunk_index_start: u32,
-        chunk_index_end: u32,
-    ) -> Result<Vec<(MerkleHash, u64)>>;
 }

@@ -1750,18 +1750,6 @@ impl Client for LocalClient {
             hash_ranges,
         })
     }
-
-    async fn xorb_chunk_hash_sizes(
-        &self,
-        xorb_hash: &MerkleHash,
-        chunk_index_start: u32,
-        chunk_index_end: u32,
-    ) -> Result<Vec<(MerkleHash, u64)>> {
-        let xorb_obj = self.xorb_footer(xorb_hash).await?;
-        xorb_obj
-            .chunk_hash_sizes(chunk_index_start, chunk_index_end)
-            .map_err(|err| ClientError::Other(format!("chunk_hash_sizes error: {err}")))
-    }
 }
 
 fn map_redb_db_error(e: impl std::fmt::Debug) -> ClientError {
