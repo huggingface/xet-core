@@ -206,7 +206,7 @@ pub struct QueryReconstructionResponse {
     // For range query [a, b) into a file content, the location
     // of "a" into the first range.
     pub offset_into_first_range: u64,
-    // Series of terms describing a xorb hash and chunk range to be retreived
+    // Series of terms describing a xorb hash and chunk range to be retrieved
     // to reconstruct the file
     pub terms: Vec<XorbReconstructionTerm>,
     // information to fetch xorb ranges to reconstruct the file
@@ -284,7 +284,7 @@ pub type BatchQueryReconstructionRequest = HashSet<HexKey>;
 // Response type for querying reconstruction for a batch of files
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BatchQueryReconstructionResponse {
-    // Map of FileID to series of terms describing a xorb hash and chunk range to be retreived
+    // Map of FileID to series of terms describing a xorb hash and chunk range to be retrieved
     // to reconstruct the file
     pub files: HashMap<HexMerkleHash, Vec<XorbReconstructionTerm>>,
     // information to fetch xorb ranges to reconstruct the file

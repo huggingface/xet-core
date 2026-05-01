@@ -636,7 +636,7 @@ fn read_dir(path: impl AsRef<Path>) -> OptionResult<std::fs::ReadDir, ChunkCache
 
 // returns Ok(Some(_)) if result dirent is a directory, Ok(None) if was removed
 // also returns an Ok(None) if the dirent is not a directory, in which case we should
-//   not remove it in case the user put something inadvertantly or intentionally,
+//   not remove it in case the user put something inadvertently or intentionally,
 //   but not attempt to parse it as a valid cache directory.
 // Err(_) if an unrecoverable error occurred
 fn is_ok_dir(dir_result: Result<DirEntry, io::Error>) -> OptionResult<DirEntry, ChunkCacheError> {

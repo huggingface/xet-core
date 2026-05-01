@@ -137,7 +137,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
                     self.data_mng.chunk_hash_dedup_query(&chunk_hashes[local_chunk_index..]).await?
                 {
                     if !first_pass {
-                        // This means new shards were discovered; so these are global dedup elegible.  We'll record
+                        // This means new shards were discovered; so these are global dedup eligible.  We'll record
                         // the rest later on
                         dedup_metrics.deduped_chunks_by_global_dedup += n_deduped as u64;
                         dedup_metrics.deduped_bytes_by_global_dedup += fse.unpacked_segment_bytes as u64;

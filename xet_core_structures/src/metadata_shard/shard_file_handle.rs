@@ -27,7 +27,7 @@ pub struct MDBShardFile {
     pub shard: MDBShardInfo,
     pub last_modified_time: SystemTime,
 
-    // On occation, to test a corrupt shard, we need to disable the verification process.
+    // On occasion, to test a corrupt shard, we need to disable the verification process.
     #[cfg(debug_assertions)]
     pub disable_verifications: std::sync::atomic::AtomicBool,
 }
@@ -307,7 +307,7 @@ impl MDBShardFile {
 
             s.verify_shard_integrity_debug_only();
             callback(s)?;
-            debug!("Registerd shard file '{file_name:?}'.");
+            debug!("Registered shard file '{file_name:?}'.");
             Ok(())
         };
 
