@@ -238,7 +238,19 @@ impl Client for RemoteSimulationClient {
     async fn get_file_chunk_hashes(
         &self,
         file_id: &xet_core_structures::merklehash::MerkleHash,
-    ) -> Result<xet_core_structures::merklehash::ChunkHashList> {
-        self.inner.get_file_chunk_hashes(file_id).await
+        dirty_ranges: Vec<crate::cas_types::FileRange>,
+    ) -> Result<crate::cas_types::FileChunkHashesResponse> {
+        self.inner.get_file_chunk_hashes(file_id, dirty_ranges).await
+    }
+
+    async fn xorb_chunk_hash_sizes(
+        &self,
+        xorb_hash: &xet_core_structures::merklehash::MerkleHash,
+        chunk_index_start: u32,
+        chunk_index_end: u32,
+    ) -> Result<Vec<(xet_core_structures::merklehash::MerkleHash, u64)>> {
+        self.inner
+            .xorb_chunk_hash_sizes(xorb_hash, chunk_index_start, chunk_index_end)
+            .await
     }
 }

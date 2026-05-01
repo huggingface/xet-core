@@ -8,9 +8,8 @@ use http::HeaderValue;
 use http::header::{CONTENT_LENGTH, HeaderMap, RANGE};
 use reqwest::{Body, Response, StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
-use serde::Deserialize;
 use tracing::{event, info, instrument};
-use xet_core_structures::merklehash::{ChunkHashList, MerkleHash};
+use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::metadata_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use xet_core_structures::xorb_object::SerializedXorbObject;
 use xet_runtime::core::XetContext;
@@ -24,8 +23,9 @@ use super::progress_tracked_streams::{
 use super::retry_wrapper::{RetryWrapper, RetryableReqwestError};
 use super::{Client, INFORMATION_LOG_LEVEL};
 use crate::cas_types::{
-    BatchQueryReconstructionResponse, FileRange, HttpRange, Key, QueryReconstructionResponse,
+    BatchQueryReconstructionResponse, FileChunkHashesResponse, FileRange, HttpRange, Key, QueryReconstructionResponse,
     QueryReconstructionResponseV2, UploadShardResponse, UploadShardResponseType, UploadXorbResponse,
+    X_RANGE_DIRTY_HEADER,
 };
 use crate::common::http_client::{self, Api};
 use crate::error::{ClientError, Result};
@@ -749,44 +749,62 @@ impl Client for RemoteClient {
         Ok(n_upload_bytes)
     }
 
-    #[instrument(skip_all, name = "RemoteClient::get_file_chunk_hashes", fields(file.hash = file_id.hex()))]
-    async fn get_file_chunk_hashes(&self, file_id: &MerkleHash) -> Result<ChunkHashList> {
+    #[instrument(skip_all, name = "RemoteClient::get_file_chunk_hashes", fields(file.hash = file_id.hex(), n_ranges = dirty_ranges.len()))]
+    async fn get_file_chunk_hashes(
+        &self,
+        file_id: &MerkleHash,
+        dirty_ranges: Vec<FileRange>,
+    ) -> Result<FileChunkHashesResponse> {
+        if dirty_ranges.is_empty() {
+            return Err(ClientError::Other("get_file_chunk_hashes requires at least one dirty range".into()));
+        }
+
         let url = Url::parse(&format!("{}/v2/file-chunk-hashes/{}", self.endpoint, file_id.hex()))?;
+
+        // Encode the dirty ranges as a multi-range `bytes=A-B,C-D` value (HTTP convention is
+        // inclusive-end, so we subtract 1 from each FileRange's exclusive end).
+        let header_value = format!(
+            "bytes={}",
+            dirty_ranges
+                .iter()
+                .map(|r| format!("{}-{}", r.start, r.end.saturating_sub(1)))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let header_value = HeaderValue::from_str(&header_value)
+            .map_err(|err| ClientError::Other(format!("invalid X-Range-Dirty header value: {err}")))?;
 
         let api_tag = "cas::get_file_chunk_hashes";
         let client = self.authenticated_http_client.clone();
 
         let response: FileChunkHashesResponse = RetryWrapper::new(self.ctx.clone(), api_tag)
-            .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
+            .run_and_extract_json(move || {
+                client
+                    .get(url.clone())
+                    .header(X_RANGE_DIRTY_HEADER, header_value.clone())
+                    .with_extension(Api(api_tag))
+                    .send()
+            })
             .await?;
 
-        let chunks = response.chunks.into_iter().map(|entry| (entry.hash, entry.size)).collect();
-
-        Ok(chunks)
+        Ok(response)
     }
-}
 
-/// Response from `GET /v2/file-chunk-hashes/{file_id}`.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct FileChunkHashesResponse {
-    chunks: Vec<ChunkHashEntry>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ChunkHashEntry {
-    #[serde(deserialize_with = "deserialize_merkle_hash")]
-    hash: MerkleHash,
-    size: u64,
-}
-
-fn deserialize_merkle_hash<'de, D>(deserializer: D) -> std::result::Result<MerkleHash, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let s = String::deserialize(deserializer)?;
-    MerkleHash::from_hex(&s).map_err(serde::de::Error::custom)
+    async fn xorb_chunk_hash_sizes(
+        &self,
+        _xorb_hash: &MerkleHash,
+        _chunk_index_start: u32,
+        _chunk_index_end: u32,
+    ) -> Result<Vec<(MerkleHash, u64)>> {
+        // No remote endpoint exists today for "give me per-chunk sizes within a xorb". The
+        // composition path in `upload_ranges` only needs this for the 1–2 boundary segments
+        // per dirty window, so a follow-up server endpoint or piggy-backing on reconstruction
+        // info is the natural fix. For now, fail loudly so callers know to use simulation
+        // clients only.
+        Err(ClientError::Other(
+            "RemoteClient::xorb_chunk_hash_sizes not yet implemented; use a simulation client".into(),
+        ))
+    }
 }
 
 #[cfg(test)]

@@ -11,9 +11,9 @@ use tokio::sync::RwLock;
 use tokio::time::{Duration, Instant};
 use tracing::{error, info};
 use xet_core_structures::MerkleHashMap;
+use xet_core_structures::merklehash::MerkleHash;
 #[cfg(not(target_family = "wasm"))]
 use xet_core_structures::merklehash::compute_data_hash;
-use xet_core_structures::merklehash::{ChunkHashList, MerkleHash};
 use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::metadata_shard::streaming_shard::MDBMinimalShard;
@@ -30,9 +30,11 @@ use super::deletion_controls::ObjectTag;
 use super::direct_access_client::DirectAccessClient;
 use super::random_xorb::RandomXorb;
 use super::xorb_utils::{self, REFERENCE_INSTANT, duration_to_expiration_secs_ceil};
+use crate::cas_client::chunk_window_builder::ChunkWindowBuilder;
 use crate::cas_types::{
-    BatchQueryReconstructionResponse, FileRange, HexMerkleHash, HttpRange, QueryReconstructionResponse,
-    QueryReconstructionResponseV2, XorbMultiRangeFetch, XorbRangeDescriptor, XorbReconstructionFetchInfo,
+    BatchQueryReconstructionResponse, ChunkWindow, FileChunkHashesResponse, FileRange, HexMerkleHash, HttpRange,
+    QueryReconstructionResponse, QueryReconstructionResponseV2, XorbMultiRangeFetch, XorbRangeDescriptor,
+    XorbReconstructionFetchInfo,
 };
 use crate::error::{ClientError, Result};
 
@@ -951,7 +953,11 @@ impl Client for MemoryClient {
         Ok((Bytes::from(all_decompressed), all_chunk_indices))
     }
 
-    async fn get_file_chunk_hashes(&self, file_id: &MerkleHash) -> Result<ChunkHashList> {
+    async fn get_file_chunk_hashes(
+        &self,
+        file_id: &MerkleHash,
+        dirty_ranges: Vec<FileRange>,
+    ) -> Result<FileChunkHashesResponse> {
         self.apply_api_delay().await;
 
         let file_info = {
@@ -961,8 +967,20 @@ impl Client for MemoryClient {
                 .ok_or(ClientError::FileNotFound(*file_id))?
         };
 
+        let file_size: u64 = file_info.segments.iter().map(|s| s.unpacked_segment_bytes as u64).sum();
+        let dirty_ranges: Vec<FileRange> = dirty_ranges
+            .into_iter()
+            .map(|r| FileRange::new(r.start, r.end.min(file_size)))
+            .filter(|r| r.start < r.end && r.start < file_size)
+            .collect();
+        if dirty_ranges.is_empty() {
+            return Err(ClientError::Other("no valid dirty ranges".into()));
+        }
+
         let xorbs = self.xorbs.read().await;
-        let mut result = Vec::new();
+        let mut builder = ChunkWindowBuilder::new(&dirty_ranges);
+        let mut cumulative_bytes: u64 = 0;
+        let mut total_chunks: u64 = 0;
 
         for segment in &file_info.segments {
             let storage = xorbs
@@ -977,10 +995,47 @@ impl Client for MemoryClient {
             let pairs = xorb_obj
                 .chunk_hash_sizes(segment.chunk_index_start, segment.chunk_index_end)
                 .map_err(|err| ClientError::Other(format!("chunk_hash_sizes error: {err}")))?;
-            result.extend(pairs);
+
+            for (hash, size) in pairs {
+                cumulative_bytes += size;
+                builder.process_chunk(hash, size, cumulative_bytes);
+                total_chunks += 1;
+            }
         }
 
-        Ok(result)
+        let (windows, hash_ranges) = builder.finish();
+        if windows.is_empty() {
+            return Err(ClientError::Other("dirty ranges do not overlap any chunks".into()));
+        }
+
+        Ok(FileChunkHashesResponse {
+            total_chunks,
+            file_size,
+            windows: windows
+                .into_iter()
+                .map(|r| ChunkWindow {
+                    dirty_byte_range: [r.start, r.end],
+                })
+                .collect(),
+            hash_ranges,
+        })
+    }
+
+    async fn xorb_chunk_hash_sizes(
+        &self,
+        xorb_hash: &MerkleHash,
+        chunk_index_start: u32,
+        chunk_index_end: u32,
+    ) -> Result<Vec<(MerkleHash, u64)>> {
+        let xorbs = self.xorbs.read().await;
+        let storage = xorbs.get(xorb_hash).ok_or(ClientError::XORBNotFound(*xorb_hash))?;
+        let xorb_obj = match storage {
+            XorbStorage::Materialized { entry, .. } => std::borrow::Cow::Borrowed(&entry.xorb_object),
+            XorbStorage::Random { xorb, .. } => std::borrow::Cow::Owned(xorb.get_xorb_object()),
+        };
+        xorb_obj
+            .chunk_hash_sizes(chunk_index_start, chunk_index_end)
+            .map_err(|err| ClientError::Other(format!("chunk_hash_sizes error: {err}")))
     }
 }
 

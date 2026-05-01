@@ -15,7 +15,7 @@ use redb::{ReadableDatabase, ReadableTable, TableDefinition};
 use tempfile::TempDir;
 use tokio::time::{Duration, Instant};
 use tracing::{error, info, warn};
-use xet_core_structures::merklehash::{ChunkHashList, MerkleHash, compute_data_hash};
+use xet_core_structures::merklehash::{MerkleHash, compute_data_hash};
 use xet_core_structures::metadata_shard::file_structs::{FileDataSequenceHeader, MDBFileInfo, MDBFileInfoView};
 use xet_core_structures::metadata_shard::shard_file_reconstructor::FileReconstructor;
 use xet_core_structures::metadata_shard::shard_format::MDB_FILE_INFO_ENTRY_SIZE;
@@ -36,10 +36,12 @@ use super::direct_access_client::DirectAccessClient;
 use super::xorb_utils::{self, REFERENCE_INSTANT, duration_to_expiration_secs_ceil};
 use crate::cas_client::Client;
 use crate::cas_client::adaptive_concurrency::AdaptiveConcurrencyController;
+use crate::cas_client::chunk_window_builder::ChunkWindowBuilder;
 use crate::cas_client::progress_tracked_streams::ProgressCallback;
 use crate::cas_types::{
-    BatchQueryReconstructionResponse, FileRange, HexMerkleHash, HttpRange, QueryReconstructionResponse,
-    QueryReconstructionResponseV2, XorbMultiRangeFetch, XorbRangeDescriptor, XorbReconstructionFetchInfo,
+    BatchQueryReconstructionResponse, ChunkWindow, FileChunkHashesResponse, FileRange, HexMerkleHash, HttpRange,
+    QueryReconstructionResponse, QueryReconstructionResponseV2, XorbMultiRangeFetch, XorbRangeDescriptor,
+    XorbReconstructionFetchInfo,
 };
 use crate::error::{ClientError, Result};
 
@@ -1694,23 +1696,71 @@ impl Client for LocalClient {
         Err(ClientError::PresignedUrlExpirationError)
     }
 
-    async fn get_file_chunk_hashes(&self, file_id: &MerkleHash) -> Result<ChunkHashList> {
+    async fn get_file_chunk_hashes(
+        &self,
+        file_id: &MerkleHash,
+        dirty_ranges: Vec<FileRange>,
+    ) -> Result<FileChunkHashesResponse> {
         self.apply_api_delay().await;
 
         let Some((file_info, _)) = self.shard_manager.get_file_reconstruction_info(file_id).await? else {
             return Err(ClientError::FileNotFound(*file_id));
         };
 
-        let mut result = Vec::new();
+        let file_size: u64 = file_info.segments.iter().map(|s| s.unpacked_segment_bytes as u64).sum();
+        let dirty_ranges: Vec<FileRange> = dirty_ranges
+            .into_iter()
+            .map(|r| FileRange::new(r.start, r.end.min(file_size)))
+            .filter(|r| r.start < r.end && r.start < file_size)
+            .collect();
+        if dirty_ranges.is_empty() {
+            return Err(ClientError::Other("no valid dirty ranges".into()));
+        }
+
+        let mut builder = ChunkWindowBuilder::new(&dirty_ranges);
+        let mut cumulative_bytes: u64 = 0;
+        let mut total_chunks: u64 = 0;
+
         for segment in &file_info.segments {
             let xorb_obj = self.xorb_footer(&segment.xorb_hash).await?;
             let pairs = xorb_obj
                 .chunk_hash_sizes(segment.chunk_index_start, segment.chunk_index_end)
                 .map_err(|err| ClientError::Other(format!("chunk_hash_sizes error: {err}")))?;
-            result.extend(pairs);
+            for (hash, size) in pairs {
+                cumulative_bytes += size;
+                builder.process_chunk(hash, size, cumulative_bytes);
+                total_chunks += 1;
+            }
         }
 
-        Ok(result)
+        let (windows, hash_ranges) = builder.finish();
+        if windows.is_empty() {
+            return Err(ClientError::Other("dirty ranges do not overlap any chunks".into()));
+        }
+
+        Ok(FileChunkHashesResponse {
+            total_chunks,
+            file_size,
+            windows: windows
+                .into_iter()
+                .map(|r| ChunkWindow {
+                    dirty_byte_range: [r.start, r.end],
+                })
+                .collect(),
+            hash_ranges,
+        })
+    }
+
+    async fn xorb_chunk_hash_sizes(
+        &self,
+        xorb_hash: &MerkleHash,
+        chunk_index_start: u32,
+        chunk_index_end: u32,
+    ) -> Result<Vec<(MerkleHash, u64)>> {
+        let xorb_obj = self.xorb_footer(xorb_hash).await?;
+        xorb_obj
+            .chunk_hash_sizes(chunk_index_start, chunk_index_end)
+            .map_err(|err| ClientError::Other(format!("chunk_hash_sizes error: {err}")))
     }
 }
 

@@ -145,14 +145,17 @@ pub async fn upload_ranges(
         }
     }
 
-    // 1. Fetch chunk hashes and reconstruction info in parallel.
-    let (original_chunks, recon_result) = tokio::try_join!(
-        cas_client.get_file_chunk_hashes(&original_hash),
-        cas_client.get_file_reconstruction_info(&original_hash),
-    )?;
+    // 1. Fetch reconstruction info and rebuild the per-chunk (hash, size) list locally by walking the original file's
+    //    segments and querying each xorb's chunk metadata. The previous flat `get_file_chunk_hashes` server endpoint
+    //    was replaced by the windows + gap-subtree response in xetcas PR #987; until we migrate the rest of this
+    //    function to that response shape, we recompose the original chunk list here so the existing composition logic
+    //    keeps working unchanged. Hot follow-up: drop this local reconstitution and use `MerkleHashSubtree::merge` over
+    //    windows + gap ranges for the final hash.
+    let recon_result = cas_client.get_file_reconstruction_info(&original_hash).await?;
     let original_mdb = recon_result
         .map(|(mdb, _)| mdb)
         .ok_or_else(|| DataError::InternalError("no reconstruction info for original file".into()))?;
+    let original_chunks = collect_original_chunks(&cas_client, &original_mdb).await?;
 
     // 2. Map chunks to cumulative byte offsets.
     // This builds a sorted array of byte boundaries, where chunk_offsets[i] is the
@@ -495,6 +498,21 @@ pub async fn upload_ranges(
     Ok(XetFileInfo::new(combined_hash.hex(), total_size))
 }
 
+/// Rebuild the per-chunk `(hash, size)` list for the given file by querying each
+/// segment's xorb metadata. Replaces the old flat `get_file_chunk_hashes` response
+/// while the rest of `upload_ranges` is migrated to use the new windows + gap-subtree
+/// response shape.
+async fn collect_original_chunks(cas_client: &Arc<dyn Client>, original_mdb: &MDBFileInfo) -> Result<ChunkHashList> {
+    let mut chunks = Vec::new();
+    for segment in &original_mdb.segments {
+        let pairs = cas_client
+            .xorb_chunk_hash_sizes(&segment.xorb_hash, segment.chunk_index_start, segment.chunk_index_end)
+            .await?;
+        chunks.extend(pairs);
+    }
+    Ok(chunks)
+}
+
 /// Stream a byte range from CAS into the cleaner.
 async fn stream_cas_range(
     ctx: &XetContext,
@@ -661,6 +679,14 @@ mod tests {
     fn test_config(endpoint: impl AsRef<str>, base_dir: impl AsRef<Path>) -> Arc<TranslatorConfig> {
         let ctx = XetContext::default().unwrap();
         Arc::new(TranslatorConfig::test_server_config(&ctx, endpoint, base_dir).unwrap())
+    }
+
+    /// Test helper: rebuild the per-chunk `(hash, size)` list for a file by walking its
+    /// segments. Mirrors `super::collect_original_chunks` but takes the file hash directly
+    /// so callers don't have to plumb the reconstruction info themselves.
+    async fn fetch_original_chunks(cas_client: &Arc<dyn Client>, hash: &MerkleHash) -> super::ChunkHashList {
+        let (mdb, _) = cas_client.get_file_reconstruction_info(hash).await.unwrap().unwrap();
+        super::collect_original_chunks(cas_client, &mdb).await.unwrap()
     }
 
     /// Build `DirtyInput`s from a source buffer and range list. Each input gets
@@ -928,7 +954,7 @@ mod tests {
         let original_hash = upload_file(&config, &original_data).await;
         let original_size = original_data.len() as u64;
 
-        let chunks = cas_client.get_file_chunk_hashes(&original_hash).await.unwrap();
+        let chunks = fetch_original_chunks(&cas_client, &original_hash).await;
         assert!(chunks.len() >= 4, "expected at least 4 chunks, got {}", chunks.len());
 
         let mut offsets = vec![0u64];
@@ -981,7 +1007,7 @@ mod tests {
         let original_hash = upload_file(&config, &original_data).await;
         let original_size = original_data.len() as u64;
 
-        let chunks = cas_client.get_file_chunk_hashes(&original_hash).await.unwrap();
+        let chunks = fetch_original_chunks(&cas_client, &original_hash).await;
         assert!(chunks.len() >= 2, "need at least 2 chunks for this test");
 
         // Truncate exactly at the boundary after the first chunk.
@@ -1165,7 +1191,7 @@ mod tests {
                 })
                 .collect();
             let original_hash = upload_file(&config, &original).await;
-            let chunks = cas_client.get_file_chunk_hashes(&original_hash).await.unwrap();
+            let chunks = fetch_original_chunks(&cas_client, &original_hash).await;
             if chunks.len() >= 3 {
                 let boundary: u64 = chunks[0].1 + chunks[1].1;
                 let dirty_end = boundary + chunks[2].1;

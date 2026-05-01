@@ -1,11 +1,13 @@
 use bytes::Bytes;
-use xet_core_structures::merklehash::{ChunkHashList, MerkleHash};
+use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
 use xet_core_structures::xorb_object::SerializedXorbObject;
 
 use super::adaptive_concurrency::ConnectionPermit;
 use super::progress_tracked_streams::ProgressCallback;
-use crate::cas_types::{BatchQueryReconstructionResponse, FileRange, HttpRange, QueryReconstructionResponseV2};
+use crate::cas_types::{
+    BatchQueryReconstructionResponse, FileChunkHashesResponse, FileRange, HttpRange, QueryReconstructionResponseV2,
+};
 use crate::error::Result;
 
 #[async_trait::async_trait]
@@ -71,7 +73,27 @@ pub trait Client: Send + Sync {
         upload_permit: ConnectionPermit,
     ) -> Result<u64>;
 
-    /// Retrieve the chunk hashes and sizes for a file stored in CAS.
-    /// Returns a list of (chunk_hash, chunk_uncompressed_size) pairs.
-    async fn get_file_chunk_hashes(&self, file_id: &MerkleHash) -> Result<ChunkHashList>;
+    /// Compute chunk-aligned dirty windows + opaque gap [`MerkleHashSubtree`] summaries for the
+    /// given file, narrowed to `dirty_ranges`.
+    ///
+    /// `dirty_ranges` must be sorted and non-overlapping. Per-chunk hashes are never returned;
+    /// the response carries only `windows.len()` dirty windows and `windows.len() + 1` gap
+    /// subtrees, which the client merges with locally-recomputed window subtrees to obtain the
+    /// new file hash.
+    async fn get_file_chunk_hashes(
+        &self,
+        file_id: &MerkleHash,
+        dirty_ranges: Vec<FileRange>,
+    ) -> Result<FileChunkHashesResponse>;
+
+    /// Fetch the (chunk_hash, unpacked_size) pairs for `[chunk_index_start, chunk_index_end)`
+    /// inside the given xorb. Used by clients that need per-chunk sizing for boundary segments
+    /// (e.g. `upload_ranges` composition). Sim clients answer locally from xorb metadata; the
+    /// remote client has no dedicated endpoint for this and currently errors.
+    async fn xorb_chunk_hash_sizes(
+        &self,
+        xorb_hash: &MerkleHash,
+        chunk_index_start: u32,
+        chunk_index_end: u32,
+    ) -> Result<Vec<(MerkleHash, u64)>>;
 }

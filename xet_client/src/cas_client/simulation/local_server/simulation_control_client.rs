@@ -5,7 +5,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use http::header::HeaderMap;
-use xet_core_structures::merklehash::{ChunkHashList, MerkleHash};
+use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::xorb_object::XorbObject;
 use xet_runtime::core::XetContext;
 
@@ -19,7 +19,9 @@ use crate::cas_client::interface::Client;
 use crate::cas_client::simulation::deletion_controls::ObjectTag;
 use crate::cas_client::simulation::xorb_utils::duration_to_expiration_secs_ceil;
 use crate::cas_client::simulation::{DeletionControlableClient, DirectAccessClient};
-use crate::cas_types::{FileRange, HexMerkleHash, QueryReconstructionResponseV2, XorbReconstructionFetchInfo};
+use crate::cas_types::{
+    FileChunkHashesResponse, FileRange, HexMerkleHash, QueryReconstructionResponseV2, XorbReconstructionFetchInfo,
+};
 use crate::error::{ClientError, Result};
 
 const CONFIG_POST_MAX_ATTEMPTS: usize = 4;
@@ -244,8 +246,23 @@ impl Client for SimulationControlClient {
             .await
     }
 
-    async fn get_file_chunk_hashes(&self, file_id: &MerkleHash) -> Result<ChunkHashList> {
-        self.remote_client.get_file_chunk_hashes(file_id).await
+    async fn get_file_chunk_hashes(
+        &self,
+        file_id: &MerkleHash,
+        dirty_ranges: Vec<FileRange>,
+    ) -> Result<FileChunkHashesResponse> {
+        self.remote_client.get_file_chunk_hashes(file_id, dirty_ranges).await
+    }
+
+    async fn xorb_chunk_hash_sizes(
+        &self,
+        xorb_hash: &MerkleHash,
+        chunk_index_start: u32,
+        chunk_index_end: u32,
+    ) -> Result<Vec<(MerkleHash, u64)>> {
+        self.remote_client
+            .xorb_chunk_hash_sizes(xorb_hash, chunk_index_start, chunk_index_end)
+            .await
     }
 }
 
