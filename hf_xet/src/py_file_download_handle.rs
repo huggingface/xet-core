@@ -1,5 +1,5 @@
 use pyo3::prelude::*;
-use xet_pkg::xet_session::{ItemProgressReport, UniqueID, XetDownloadReport, XetFileDownload};
+use xet_pkg::xet_session::{ItemProgressReport, UniqueId, XetDownloadReport, XetFileDownload};
 
 use crate::utils::{progress_display, task_state_display, task_state_to_pystate};
 use crate::{PyXetTaskState, convert_xet_error};
@@ -59,7 +59,7 @@ impl PyXetFileDownload {
     /// The unique task ID for this download.
     ///
     /// Matches the keys in :attr:`XetDownloadGroupReport.downloads`.
-    pub fn task_id(&self) -> UniqueID {
+    pub fn task_id(&self) -> UniqueId {
         self.inner.task_id()
     }
 

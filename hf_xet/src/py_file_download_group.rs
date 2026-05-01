@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use pyo3::prelude::*;
 use xet_pkg::xet_session::{
-    GroupProgressReport, ItemProgressReport, UniqueID, XetDownloadGroupReport, XetFileDownload, XetFileDownloadGroup,
+    GroupProgressReport, ItemProgressReport, UniqueId, XetDownloadGroupReport, XetFileDownload, XetFileDownloadGroup,
     XetFileInfo, XetSession, XetTaskState,
 };
 
@@ -61,7 +61,7 @@ pub(crate) fn build_file_download_group(
                 std::thread::sleep(interval);
                 let is_terminal = !matches!(inner.status(), Ok(XetTaskState::Running) | Ok(XetTaskState::Finalizing));
                 let group_report = inner.progress();
-                let item_reports: HashMap<UniqueID, ItemProgressReport> = handles_for_thread
+                let item_reports: HashMap<UniqueId, ItemProgressReport> = handles_for_thread
                     .read()
                     .map(|g| g.iter().filter_map(|h| h.progress().map(|p| (h.task_id(), p))).collect())
                     .unwrap_or_default();

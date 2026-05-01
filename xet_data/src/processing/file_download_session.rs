@@ -12,13 +12,14 @@ use xet_client::cas_client::Client;
 use xet_client::cas_types::FileRange;
 use xet_client::chunk_cache::ChunkCache;
 use xet_runtime::core::XetContext;
+use xet_runtime::utils::UniqueId;
 
 use super::XetFileInfo;
 use super::configurations::TranslatorConfig;
 use super::remote_client_interface::create_remote_client;
 use crate::error::{DataError, Result};
 use crate::file_reconstruction::{DownloadStream, FileReconstructor, UnorderedDownloadStream};
-use crate::progress_tracking::{GroupProgress, ItemProgressUpdater, UniqueID};
+use crate::progress_tracking::{GroupProgress, ItemProgressUpdater};
 
 /// Manages the downloading of files from CAS storage.
 ///
@@ -29,7 +30,7 @@ pub struct FileDownloadSession {
     client: Arc<dyn Client>,
     chunk_cache: Option<Arc<dyn ChunkCache>>,
     progress: Arc<GroupProgress>,
-    active_stream_abort_callbacks: Mutex<HashMap<UniqueID, Box<dyn Fn() + Send + Sync>>>,
+    active_stream_abort_callbacks: Mutex<HashMap<UniqueId, Box<dyn Fn() + Send + Sync>>>,
     finalized: AtomicBool,
 }
 
@@ -40,7 +41,7 @@ impl FileDownloadSession {
             .session_id
             .as_ref()
             .map(Cow::Borrowed)
-            .unwrap_or_else(|| Cow::Owned(UniqueID::new().to_string()));
+            .unwrap_or_else(|| Cow::Owned(UniqueId::new().to_string()));
 
         let ctx = config.ctx.clone();
         let client = create_remote_client(&config, &session_id, false).await?;
@@ -84,19 +85,19 @@ impl FileDownloadSession {
         self.progress.report()
     }
 
-    pub fn item_report(&self, id: UniqueID) -> Option<crate::progress_tracking::ItemProgressReport> {
+    pub fn item_report(&self, id: UniqueId) -> Option<crate::progress_tracking::ItemProgressReport> {
         self.progress.item_report(id)
     }
 
-    pub fn item_reports(&self) -> HashMap<UniqueID, crate::progress_tracking::ItemProgressReport> {
+    pub fn item_reports(&self) -> HashMap<UniqueId, crate::progress_tracking::ItemProgressReport> {
         self.progress.item_reports()
     }
 
-    fn register_stream_abort_callback(&self, id: UniqueID, callback: Box<dyn Fn() + Send + Sync>) {
+    fn register_stream_abort_callback(&self, id: UniqueId, callback: Box<dyn Fn() + Send + Sync>) {
         self.active_stream_abort_callbacks.lock().unwrap().insert(id, callback);
     }
 
-    pub fn unregister_stream_abort_callback(&self, id: UniqueID) {
+    pub fn unregister_stream_abort_callback(&self, id: UniqueId) {
         self.active_stream_abort_callbacks.lock().unwrap().remove(&id);
     }
 
@@ -115,9 +116,9 @@ impl FileDownloadSession {
         self: &Arc<Self>,
         file_info: XetFileInfo,
         write_path: PathBuf,
-    ) -> Result<(UniqueID, JoinHandle<Result<u64>>)> {
+    ) -> Result<(UniqueId, JoinHandle<Result<u64>>)> {
         self.check_not_finalized()?;
-        let id = UniqueID::new();
+        let id = UniqueId::new();
         let session = self.clone();
         let runtime = self.ctx.runtime.clone();
         let semaphore = self.ctx.common.file_download_semaphore.clone();
@@ -130,14 +131,14 @@ impl FileDownloadSession {
 
     /// Downloads a complete file to the given path.
     #[instrument(skip_all, name = "FileDownloadSession::download_file", fields(hash = file_info.hash()))]
-    pub async fn download_file(&self, file_info: &XetFileInfo, write_path: &Path) -> Result<(UniqueID, u64)> {
+    pub async fn download_file(&self, file_info: &XetFileInfo, write_path: &Path) -> Result<(UniqueId, u64)> {
         self.check_not_finalized()?;
-        let id = UniqueID::new();
+        let id = UniqueId::new();
         let n_bytes = self.download_file_with_id(file_info, write_path, id).await?;
         Ok((id, n_bytes))
     }
 
-    async fn download_file_with_id(&self, file_info: &XetFileInfo, write_path: &Path, id: UniqueID) -> Result<u64> {
+    async fn download_file_with_id(&self, file_info: &XetFileInfo, write_path: &Path, id: UniqueId) -> Result<u64> {
         let name = Arc::from(write_path.to_string_lossy().as_ref());
         let progress_updater = self.progress.new_item(id, name);
         let reconstructor = self.setup_reconstructor(file_info, None, Some(progress_updater))?;
@@ -169,7 +170,7 @@ impl FileDownloadSession {
         file_info: &XetFileInfo,
         source_range: impl RangeBounds<u64>,
         writer: W,
-    ) -> Result<(UniqueID, u64)> {
+    ) -> Result<(UniqueId, u64)> {
         self.check_not_finalized()?;
         let range = range_bounds_to_file_range(&source_range)?;
         if let Some(ref r) = range {
@@ -177,7 +178,7 @@ impl FileDownloadSession {
             span.record("range_start", r.start);
             span.record("range_end", r.end);
         }
-        let id = UniqueID::new();
+        let id = UniqueId::new();
         let name = Arc::from("");
         let progress_updater = self.progress.new_item(id, name);
         let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater))?;
@@ -217,9 +218,9 @@ impl FileDownloadSession {
         &self,
         file_info: &XetFileInfo,
         source_range: Option<Range<u64>>,
-    ) -> Result<(UniqueID, DownloadStream)> {
+    ) -> Result<(UniqueId, DownloadStream)> {
         self.check_not_finalized()?;
-        let id = UniqueID::new();
+        let id = UniqueId::new();
         let progress_updater = self.progress.new_item(id, "stream");
         let range = source_range.map(|r| FileRange::new(r.start, r.end));
         let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater))?;
@@ -245,9 +246,9 @@ impl FileDownloadSession {
         &self,
         file_info: &XetFileInfo,
         source_range: Option<Range<u64>>,
-    ) -> Result<(UniqueID, UnorderedDownloadStream)> {
+    ) -> Result<(UniqueId, UnorderedDownloadStream)> {
         self.check_not_finalized()?;
-        let id = UniqueID::new();
+        let id = UniqueId::new();
         let progress_updater = self.progress.new_item(id, "unordered_stream");
         let range = source_range.map(|r| FileRange::new(r.start, r.end));
         let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater))?;
@@ -266,10 +267,10 @@ impl FileDownloadSession {
         &self,
         file_info: &XetFileInfo,
         range: impl RangeBounds<u64>,
-    ) -> Result<(UniqueID, DownloadStream)> {
+    ) -> Result<(UniqueId, DownloadStream)> {
         self.check_not_finalized()?;
         let file_range = range_bounds_to_file_range(&range)?;
-        let id = UniqueID::new();
+        let id = UniqueId::new();
         let progress_updater = self.progress.new_item(id, "stream");
         let reconstructor = self.setup_reconstructor(file_info, file_range, Some(progress_updater))?;
         let stream = reconstructor.reconstruct_to_stream();

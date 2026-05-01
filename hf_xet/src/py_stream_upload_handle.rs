@@ -1,5 +1,5 @@
 use pyo3::prelude::*;
-use xet_pkg::xet_session::{ItemProgressReport, UniqueID, XetFileMetadata, XetStreamUpload};
+use xet_pkg::xet_session::{ItemProgressReport, UniqueId, XetFileMetadata, XetStreamUpload};
 
 use crate::utils::{progress_display, task_state_display, task_state_to_pystate};
 use crate::{PyXetTaskState, convert_xet_error};
@@ -66,7 +66,7 @@ impl PyXetStreamUpload {
     }
 
     /// The unique task ID for this stream.
-    pub fn task_id(&self) -> UniqueID {
+    pub fn task_id(&self) -> UniqueId {
         self.inner.task_id()
     }
 

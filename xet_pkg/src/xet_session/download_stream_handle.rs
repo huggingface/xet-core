@@ -4,7 +4,8 @@ use bytes::Bytes;
 use tracing::{debug, info};
 use xet_data::DataError;
 use xet_data::processing::{DownloadStream, FileDownloadSession, UnorderedDownloadStream};
-use xet_data::progress_tracking::{ItemProgressReport, UniqueID};
+use xet_data::progress_tracking::ItemProgressReport;
+use xet_runtime::utils::UniqueId;
 
 use super::errors::SessionError;
 use super::task_runtime::TaskRuntime;
@@ -26,7 +27,7 @@ use super::task_runtime::TaskRuntime;
 pub struct XetDownloadStream {
     inner: DownloadStream,
     download_session: Arc<FileDownloadSession>,
-    id: UniqueID,
+    id: UniqueId,
     task_runtime: Arc<TaskRuntime>,
 }
 
@@ -34,7 +35,7 @@ impl XetDownloadStream {
     pub(super) fn new(
         inner: DownloadStream,
         download_session: Arc<FileDownloadSession>,
-        id: UniqueID,
+        id: UniqueId,
         task_runtime: Arc<TaskRuntime>,
     ) -> Self {
         Self {
@@ -89,7 +90,7 @@ impl XetDownloadStream {
     }
 
     /// Returns the unique task ID for this stream.
-    pub fn task_id(&self) -> UniqueID {
+    pub fn task_id(&self) -> UniqueId {
         self.id
     }
 
@@ -127,7 +128,7 @@ impl Drop for XetDownloadStream {
 pub struct XetUnorderedDownloadStream {
     inner: UnorderedDownloadStream,
     download_session: Arc<FileDownloadSession>,
-    id: UniqueID,
+    id: UniqueId,
     task_runtime: Arc<TaskRuntime>,
 }
 
@@ -135,7 +136,7 @@ impl XetUnorderedDownloadStream {
     pub(super) fn new(
         inner: UnorderedDownloadStream,
         download_session: Arc<FileDownloadSession>,
-        id: UniqueID,
+        id: UniqueId,
         task_runtime: Arc<TaskRuntime>,
     ) -> Self {
         Self {
@@ -191,7 +192,7 @@ impl XetUnorderedDownloadStream {
     }
 
     /// Returns the unique task ID for this stream.
-    pub fn task_id(&self) -> UniqueID {
+    pub fn task_id(&self) -> UniqueId {
         self.id
     }
 

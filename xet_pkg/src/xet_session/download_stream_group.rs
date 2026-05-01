@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use tracing::info;
 use xet_data::processing::{FileDownloadSession, XetFileInfo};
-use xet_data::progress_tracking::UniqueID;
+use xet_runtime::utils::UniqueId;
 
 use super::auth_group_builder::{AuthGroupBuilder, AuthOptions};
 use super::common::create_translator_config;
@@ -106,7 +106,7 @@ pub struct XetDownloadStreamGroup {
 #[doc(hidden)]
 pub(super) struct XetDownloadStreamGroupInner {
     session: XetSession,
-    group_id: UniqueID,
+    group_id: UniqueId,
     download_session: Arc<FileDownloadSession>,
 }
 
@@ -123,7 +123,7 @@ impl XetDownloadStreamGroup {
         task_runtime: Arc<TaskRuntime>,
         auth_options: AuthOptions,
     ) -> Result<Self, XetError> {
-        let group_id = UniqueID::new();
+        let group_id = UniqueId::new();
         let config = create_translator_config(&session, auth_options).await?;
         let download_session = FileDownloadSession::new(Arc::new(config), None).await?;
 
@@ -137,7 +137,7 @@ impl XetDownloadStreamGroup {
     }
 
     /// Returns the unique ID for this stream group.
-    pub(super) fn id(&self) -> UniqueID {
+    pub(super) fn id(&self) -> UniqueId {
         self.inner.group_id
     }
 

@@ -7,7 +7,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tracing::{error, info};
 use xet_data::deduplication::DeduplicationMetrics;
 use xet_data::processing::{FileUploadSession, Sha256Policy, XetFileInfo};
-use xet_data::progress_tracking::{GroupProgressReport, ItemProgressReport, UniqueID};
+use xet_data::progress_tracking::{GroupProgressReport, ItemProgressReport};
+use xet_runtime::utils::UniqueId;
 
 use super::auth_group_builder::{AuthGroupBuilder, AuthOptions};
 use super::common::create_translator_config;
@@ -69,7 +70,7 @@ impl AuthGroupBuilder<XetUploadCommit> {
 ///
 /// Contains aggregate deduplication metrics, final progress, and per-file
 /// [`XetFileMetadata`] for every file that was successfully ingested,
-/// keyed by [`UniqueID`].
+/// keyed by [`UniqueId`].
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "python", pyo3::pyclass(get_all))]
 pub struct XetCommitReport {
@@ -78,7 +79,7 @@ pub struct XetCommitReport {
     /// Final progress snapshot at the time the commit completed.
     pub progress: GroupProgressReport,
     /// Per-file metadata keyed by task ID, one entry per successfully ingested file.
-    pub uploads: HashMap<UniqueID, XetFileMetadata>,
+    pub uploads: HashMap<UniqueId, XetFileMetadata>,
 }
 
 #[cfg(feature = "python")]
@@ -111,7 +112,7 @@ impl XetCommitReport {
 pub struct XetFileMetadata {
     /// Unique identifier for the task that produced this metadata.
     #[serde(skip)]
-    pub task_id: UniqueID,
+    pub task_id: UniqueId,
     /// Xet file information: hash, size, and optional SHA-256.
     pub xet_info: XetFileInfo,
     /// Per-file deduplication and chunking metrics.
@@ -137,7 +138,7 @@ impl XetFileMetadata {
 // ── XetUploadCommitInner ────────────────────────────────────────────────────
 
 pub(super) struct XetUploadCommitInner {
-    commit_id: UniqueID,
+    commit_id: UniqueId,
     pub(super) session: XetSession,
     pub(super) task_runtime: Arc<TaskRuntime>,
     upload_session: Arc<FileUploadSession>,
@@ -200,7 +201,7 @@ impl XetUploadCommitInner {
 
     fn register_spawned_task(
         &self,
-        task_id: UniqueID,
+        task_id: UniqueId,
         join_handle: tokio::task::JoinHandle<Result<(XetFileInfo, DeduplicationMetrics), xet_data::DataError>>,
         tracking_name: Option<String>,
         file_path: Option<PathBuf>,
@@ -360,7 +361,7 @@ impl XetUploadCommit {
         task_runtime: Arc<TaskRuntime>,
         auth_options: AuthOptions,
     ) -> Result<Self, XetError> {
-        let commit_id = UniqueID::new();
+        let commit_id = UniqueId::new();
         let config = create_translator_config(&session, auth_options).await?;
         let upload_session = FileUploadSession::new(Arc::new(config)).await?;
 
@@ -377,7 +378,7 @@ impl XetUploadCommit {
     }
 
     /// Unique identifier for this upload commit.
-    pub fn id(&self) -> UniqueID {
+    pub fn id(&self) -> UniqueId {
         self.inner.commit_id
     }
 
@@ -472,7 +473,7 @@ impl XetUploadCommit {
     /// `file_path` is `Some` for path/bytes uploads and `None` for stream uploads.
     /// `progress` is `None` if the upload has not started reporting yet.
     /// Used for display and diagnostics (e.g. `__repr__`).
-    pub fn active_upload_info(&self) -> Vec<(UniqueID, Option<PathBuf>, Option<ItemProgressReport>)> {
+    pub fn active_upload_info(&self) -> Vec<(UniqueId, Option<PathBuf>, Option<ItemProgressReport>)> {
         self.inner
             .file_handles
             .lock()

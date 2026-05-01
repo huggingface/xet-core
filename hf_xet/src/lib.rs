@@ -80,7 +80,7 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyXetTaskState>()?;
 
     // ── Report types (pyclass-annotated in xet_pkg with "python" feature) ────
-    m.add_class::<xet_pkg::xet_session::UniqueID>()?;
+    m.add_class::<xet_pkg::xet_session::UniqueId>()?;
     m.add_class::<xet_pkg::xet_session::XetFileInfo>()?;
     m.add_class::<xet_pkg::xet_session::DeduplicationMetrics>()?;
     m.add_class::<xet_pkg::xet_session::XetFileMetadata>()?;

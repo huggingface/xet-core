@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use xet_data::processing::{FileDownloadSession, XetFileInfo};
-use xet_data::progress_tracking::{ItemProgressReport, UniqueID};
+use xet_data::progress_tracking::ItemProgressReport;
+use xet_runtime::utils::UniqueId;
 
 use super::task_runtime::{BackgroundTaskState, TaskRuntime, XetTaskState};
 use crate::error::XetError;
@@ -16,7 +17,7 @@ use crate::error::XetError;
 #[cfg_attr(feature = "python", pyo3::pyclass(get_all))]
 pub struct XetDownloadReport {
     /// Unique identifier for this download task.
-    pub task_id: UniqueID,
+    pub task_id: UniqueId,
     /// Local path where the file was written.
     pub path: PathBuf,
     /// Xet file hash and size of the downloaded file.
@@ -41,7 +42,7 @@ impl XetDownloadReport {
 // ── XetFileDownloadInner ────────────────────────────────────────────────────
 
 pub(super) struct XetFileDownloadInner {
-    pub(super) task_id: UniqueID,
+    pub(super) task_id: UniqueId,
     pub(super) dest_path: PathBuf,
     pub(super) download_session: Arc<FileDownloadSession>,
     pub(super) state: tokio::sync::Mutex<BackgroundTaskState<XetDownloadReport>>,
@@ -65,7 +66,7 @@ pub struct XetFileDownload {
 }
 
 impl XetFileDownload {
-    pub fn task_id(&self) -> UniqueID {
+    pub fn task_id(&self) -> UniqueId {
         self.inner.task_id
     }
 

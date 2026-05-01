@@ -3,7 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::Notify;
-use xet_data::progress_tracking::{GroupProgressReport, ItemProgressReport, UniqueID};
+use xet_data::progress_tracking::{GroupProgressReport, ItemProgressReport};
+use xet_runtime::utils::UniqueId;
 
 use super::{ItemProgressUpdate, ProgressUpdate, TrackingProgressUpdater};
 
@@ -14,8 +15,8 @@ use super::{ItemProgressUpdate, ProgressUpdate, TrackingProgressUpdater};
 /// legacy `TrackingProgressUpdater` callbacks.
 pub trait ProgressReporter: Send + Sync {
     fn report(&self) -> GroupProgressReport;
-    fn item_reports(&self) -> HashMap<UniqueID, ItemProgressReport>;
-    fn item_report(&self, id: UniqueID) -> Option<ItemProgressReport> {
+    fn item_reports(&self) -> HashMap<UniqueId, ItemProgressReport>;
+    fn item_report(&self, id: UniqueId) -> Option<ItemProgressReport> {
         self.item_reports().remove(&id)
     }
 }
@@ -24,10 +25,10 @@ impl ProgressReporter for xet_data::processing::FileDownloadSession {
     fn report(&self) -> GroupProgressReport {
         self.report()
     }
-    fn item_reports(&self) -> HashMap<UniqueID, ItemProgressReport> {
+    fn item_reports(&self) -> HashMap<UniqueId, ItemProgressReport> {
         self.item_reports()
     }
-    fn item_report(&self, id: UniqueID) -> Option<ItemProgressReport> {
+    fn item_report(&self, id: UniqueId) -> Option<ItemProgressReport> {
         self.item_report(id)
     }
 }
@@ -36,7 +37,7 @@ impl ProgressReporter for xet_data::processing::FileUploadSession {
     fn report(&self) -> GroupProgressReport {
         self.report()
     }
-    fn item_reports(&self) -> HashMap<UniqueID, ItemProgressReport> {
+    fn item_reports(&self) -> HashMap<UniqueId, ItemProgressReport> {
         self.item_reports()
     }
 }
@@ -45,7 +46,7 @@ impl ProgressReporter for xet_data::processing::FileUploadSession {
 
 struct GroupBridgeState {
     prev_group: GroupProgressReport,
-    prev_items: HashMap<UniqueID, ItemProgressReport>,
+    prev_items: HashMap<UniqueId, ItemProgressReport>,
 }
 
 impl GroupBridgeState {
@@ -59,7 +60,7 @@ impl GroupBridgeState {
     fn compute_diff(
         &mut self,
         group: GroupProgressReport,
-        items: HashMap<UniqueID, ItemProgressReport>,
+        items: HashMap<UniqueId, ItemProgressReport>,
     ) -> ProgressUpdate {
         let total_bytes_increment = group.total_bytes.saturating_sub(self.prev_group.total_bytes);
         let total_bytes_completion_increment = group
@@ -120,7 +121,7 @@ impl ItemBridgeState {
         Self { prev: None }
     }
 
-    fn compute_diff(&mut self, item_id: UniqueID, report: ItemProgressReport) -> ProgressUpdate {
+    fn compute_diff(&mut self, item_id: UniqueId, report: ItemProgressReport) -> ProgressUpdate {
         let prev_completed = self.prev.as_ref().map_or(0, |p| p.bytes_completed);
         let prev_total = self.prev.as_ref().map_or(0, |p| p.total_bytes);
 
@@ -265,7 +266,7 @@ impl ItemProgressCallbackUpdater {
     /// diffs to `updater`.
     pub fn start(
         reporter: Arc<dyn ProgressReporter>,
-        item_id: UniqueID,
+        item_id: UniqueId,
         updater: Arc<dyn TrackingProgressUpdater>,
     ) -> Self {
         let (updater, _verifier) = wrap_updater(updater);
@@ -353,7 +354,7 @@ mod tests {
     #[test]
     fn test_group_bridge_first_diff() {
         let mut state = GroupBridgeState::new();
-        let id = UniqueID::new();
+        let id = UniqueId::new();
 
         let group = make_group_report(1000, 200, 800, 100);
         let items = HashMap::from([(id, make_item_report("a.bin", 1000, 200))]);
@@ -377,7 +378,7 @@ mod tests {
     #[test]
     fn test_group_bridge_incremental_diff() {
         let mut state = GroupBridgeState::new();
-        let id = UniqueID::new();
+        let id = UniqueId::new();
 
         let group1 = make_group_report(1000, 200, 800, 100);
         let items1 = HashMap::from([(id, make_item_report("a.bin", 1000, 200))]);
@@ -398,7 +399,7 @@ mod tests {
     #[test]
     fn test_group_bridge_no_change_is_empty() {
         let mut state = GroupBridgeState::new();
-        let id = UniqueID::new();
+        let id = UniqueId::new();
 
         let group = make_group_report(1000, 500, 800, 300);
         let items = HashMap::from([(id, make_item_report("a.bin", 1000, 500))]);
@@ -412,8 +413,8 @@ mod tests {
     #[test]
     fn test_group_bridge_new_item_appears() {
         let mut state = GroupBridgeState::new();
-        let id1 = UniqueID::new();
-        let id2 = UniqueID::new();
+        let id1 = UniqueId::new();
+        let id2 = UniqueId::new();
 
         let group1 = make_group_report(100, 50, 0, 0);
         let items1 = HashMap::from([(id1, make_item_report("a.bin", 100, 50))]);
@@ -435,7 +436,7 @@ mod tests {
     #[test]
     fn test_item_bridge_first_diff() {
         let mut state = ItemBridgeState::new();
-        let id = UniqueID::new();
+        let id = UniqueId::new();
         let report = make_item_report("file.bin", 500, 100);
 
         let update = state.compute_diff(id, report);
@@ -451,7 +452,7 @@ mod tests {
     #[test]
     fn test_item_bridge_incremental_diff() {
         let mut state = ItemBridgeState::new();
-        let id = UniqueID::new();
+        let id = UniqueId::new();
 
         state.compute_diff(id, make_item_report("file.bin", 500, 100));
 
@@ -465,7 +466,7 @@ mod tests {
     #[test]
     fn test_item_bridge_no_change_is_empty() {
         let mut state = ItemBridgeState::new();
-        let id = UniqueID::new();
+        let id = UniqueId::new();
 
         state.compute_diff(id, make_item_report("file.bin", 500, 200));
         let update = state.compute_diff(id, make_item_report("file.bin", 500, 200));
@@ -476,7 +477,7 @@ mod tests {
     #[test]
     fn test_item_bridge_total_grows() {
         let mut state = ItemBridgeState::new();
-        let id = UniqueID::new();
+        let id = UniqueId::new();
 
         state.compute_diff(id, make_item_report("file.bin", 500, 100));
         let update = state.compute_diff(id, make_item_report("file.bin", 800, 100));
