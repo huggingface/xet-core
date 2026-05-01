@@ -761,18 +761,19 @@ impl Client for RemoteClient {
 
         let url = Url::parse(&format!("{}/v2/file-chunk-hashes/{}", self.endpoint, file_id.hex()))?;
 
-        // Encode the dirty ranges as a multi-range `bytes=A-B,C-D` value (HTTP convention is
-        // inclusive-end, so we subtract 1 from each FileRange's exclusive end).
-        let header_value = format!(
+        // Multi-range `bytes=A-B,C-D` value. `HttpRange` is inclusive-end and `Display`s as
+        // `start-end`; conversion from `FileRange` does the +1/-1 for us.
+        let header_value = HeaderValue::from_str(&format!(
             "bytes={}",
             dirty_ranges
                 .iter()
-                .map(|r| format!("{}-{}", r.start, r.end.saturating_sub(1)))
+                .copied()
+                .map(HttpRange::from)
+                .map(|r| r.to_string())
                 .collect::<Vec<_>>()
                 .join(",")
-        );
-        let header_value = HeaderValue::from_str(&header_value)
-            .map_err(|err| ClientError::Other(format!("invalid X-Range-Dirty header value: {err}")))?;
+        ))
+        .map_err(|err| ClientError::Other(format!("invalid X-Range-Dirty header value: {err}")))?;
 
         let api_tag = "cas::get_file_chunk_hashes";
         let client = self.authenticated_http_client.clone();

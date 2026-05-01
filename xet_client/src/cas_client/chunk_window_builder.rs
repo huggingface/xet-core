@@ -1,21 +1,11 @@
-//! State machine that classifies chunks into dirty windows and gap subtrees.
-//!
-//! Mirrors the server-side state machine used by `GET /v2/file-chunk-hashes/{file_id}`
-//! (xetcas PR #987). We need it on the client too so that the simulation clients
-//! (`MemoryClient`, `LocalClient`) can produce a [`FileChunkHashesResponse`] without
-//! routing through HTTP.
-//!
-//! The result is `windows.len()` chunk-aligned dirty `FileRange`s and `windows.len() + 1`
-//! gap subtrees (`None` for empty gaps). The producer feeds chunks in file order;
-//! `finish()` returns both vectors.
-//!
-//! Memory note: `gap_chunks` accumulates every chunk in the current gap before being
-//! rolled up into a [`MerkleHashSubtree`]. Peak memory scales with the largest contiguous
-//! gap.
+//! Server-side state machine for `GET /v2/file-chunk-hashes/{file_id}` (mirrored from
+//! xetcas PR #987) plus a small driver helper used by simulation clients to produce a
+//! [`FileChunkHashesResponse`] without routing through HTTP.
 
 use xet_core_structures::merklehash::{MerkleHash, MerkleHashSubtree};
 
-use crate::cas_types::FileRange;
+use crate::cas_types::{ChunkWindow, FileChunkHashesResponse, FileRange};
+use crate::error::{ClientError, Result};
 
 pub struct ChunkWindowBuilder<'a> {
     dirty_ranges: &'a [FileRange],
@@ -132,6 +122,51 @@ impl<'a> ChunkWindowBuilder<'a> {
     }
 
     fn to_option(hr: MerkleHashSubtree) -> Option<MerkleHashSubtree> {
-        if hr.num_nodes() > 0 { Some(hr) } else { None }
+        if hr.is_empty() { None } else { Some(hr) }
     }
+}
+
+/// Drive [`ChunkWindowBuilder`] over a flat list of `(chunk_hash, size)` pairs and
+/// assemble the [`FileChunkHashesResponse`]. Simulation clients pre-collect the chunks for
+/// the file (typically by walking segments + xorb metadata) and call this to answer
+/// `Client::get_file_chunk_hashes` locally.
+pub fn build_file_chunk_hashes_response(
+    file_size: u64,
+    dirty_ranges: Vec<FileRange>,
+    chunks: impl IntoIterator<Item = (MerkleHash, u64)>,
+) -> Result<FileChunkHashesResponse> {
+    let dirty_ranges: Vec<FileRange> = dirty_ranges
+        .into_iter()
+        .map(|r| FileRange::new(r.start, r.end.min(file_size)))
+        .filter(|r| r.start < r.end && r.start < file_size)
+        .collect();
+    if dirty_ranges.is_empty() {
+        return Err(ClientError::Other("no valid dirty ranges".into()));
+    }
+
+    let mut builder = ChunkWindowBuilder::new(&dirty_ranges);
+    let mut cumulative_bytes: u64 = 0;
+    let mut total_chunks: u64 = 0;
+    for (hash, size) in chunks {
+        cumulative_bytes += size;
+        builder.process_chunk(hash, size, cumulative_bytes);
+        total_chunks += 1;
+    }
+
+    let (windows, hash_ranges) = builder.finish();
+    if windows.is_empty() {
+        return Err(ClientError::Other("dirty ranges do not overlap any chunks".into()));
+    }
+
+    Ok(FileChunkHashesResponse {
+        total_chunks,
+        file_size,
+        windows: windows
+            .into_iter()
+            .map(|r| ChunkWindow {
+                dirty_byte_range: [r.start, r.end],
+            })
+            .collect(),
+        hash_ranges,
+    })
 }

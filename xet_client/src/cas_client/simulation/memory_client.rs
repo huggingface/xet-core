@@ -30,9 +30,9 @@ use super::deletion_controls::ObjectTag;
 use super::direct_access_client::DirectAccessClient;
 use super::random_xorb::RandomXorb;
 use super::xorb_utils::{self, REFERENCE_INSTANT, duration_to_expiration_secs_ceil};
-use crate::cas_client::chunk_window_builder::ChunkWindowBuilder;
+use crate::cas_client::chunk_window_builder::build_file_chunk_hashes_response;
 use crate::cas_types::{
-    BatchQueryReconstructionResponse, ChunkWindow, FileChunkHashesResponse, FileRange, HexMerkleHash, HttpRange,
+    BatchQueryReconstructionResponse, FileChunkHashesResponse, FileRange, HexMerkleHash, HttpRange,
     QueryReconstructionResponse, QueryReconstructionResponseV2, XorbMultiRangeFetch, XorbRangeDescriptor,
     XorbReconstructionFetchInfo,
 };
@@ -967,58 +967,24 @@ impl Client for MemoryClient {
                 .ok_or(ClientError::FileNotFound(*file_id))?
         };
 
-        let file_size: u64 = file_info.segments.iter().map(|s| s.unpacked_segment_bytes as u64).sum();
-        let dirty_ranges: Vec<FileRange> = dirty_ranges
-            .into_iter()
-            .map(|r| FileRange::new(r.start, r.end.min(file_size)))
-            .filter(|r| r.start < r.end && r.start < file_size)
-            .collect();
-        if dirty_ranges.is_empty() {
-            return Err(ClientError::Other("no valid dirty ranges".into()));
-        }
-
         let xorbs = self.xorbs.read().await;
-        let mut builder = ChunkWindowBuilder::new(&dirty_ranges);
-        let mut cumulative_bytes: u64 = 0;
-        let mut total_chunks: u64 = 0;
-
+        let mut chunks: Vec<(MerkleHash, u64)> = Vec::new();
         for segment in &file_info.segments {
             let storage = xorbs
                 .get(&segment.xorb_hash)
                 .ok_or(ClientError::XORBNotFound(segment.xorb_hash))?;
-
             let xorb_obj = match storage {
                 XorbStorage::Materialized { entry, .. } => std::borrow::Cow::Borrowed(&entry.xorb_object),
                 XorbStorage::Random { xorb, .. } => std::borrow::Cow::Owned(xorb.get_xorb_object()),
             };
-
-            let pairs = xorb_obj
-                .chunk_hash_sizes(segment.chunk_index_start, segment.chunk_index_end)
-                .map_err(|err| ClientError::Other(format!("chunk_hash_sizes error: {err}")))?;
-
-            for (hash, size) in pairs {
-                cumulative_bytes += size;
-                builder.process_chunk(hash, size, cumulative_bytes);
-                total_chunks += 1;
-            }
+            chunks.extend(
+                xorb_obj
+                    .chunk_hash_sizes(segment.chunk_index_start, segment.chunk_index_end)
+                    .map_err(|err| ClientError::Other(format!("chunk_hash_sizes error: {err}")))?,
+            );
         }
 
-        let (windows, hash_ranges) = builder.finish();
-        if windows.is_empty() {
-            return Err(ClientError::Other("dirty ranges do not overlap any chunks".into()));
-        }
-
-        Ok(FileChunkHashesResponse {
-            total_chunks,
-            file_size,
-            windows: windows
-                .into_iter()
-                .map(|r| ChunkWindow {
-                    dirty_byte_range: [r.start, r.end],
-                })
-                .collect(),
-            hash_ranges,
-        })
+        build_file_chunk_hashes_response(file_info.file_size(), dirty_ranges, chunks)
     }
 }
 

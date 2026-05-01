@@ -79,7 +79,7 @@ pub async fn upload_ranges(
     cas_client: Arc<dyn Client>,
     original_hash: MerkleHash,
     original_size: u64,
-    dirty_inputs: Vec<DirtyInput>,
+    mut dirty_inputs: Vec<DirtyInput>,
     total_size: u64,
 ) -> Result<XetFileInfo> {
     if dirty_inputs.is_empty() && total_size == original_size {
@@ -126,15 +126,13 @@ pub async fn upload_ranges(
         }
     }
 
-    // 1. Fetch the original file's MDB. We need the segments to compose the new file's MDBFileInfo and to compute
-    //    segment byte boundaries for snapping.
     let recon_result = cas_client.get_file_reconstruction_info(&original_hash).await?;
     let original_mdb = recon_result
         .map(|(mdb, _)| mdb)
         .ok_or_else(|| DataError::InternalError("no reconstruction info for original file".into()))?;
+    debug_assert_eq!(original_mdb.file_size(), original_size, "reconstruction info disagrees with original_size");
 
-    // Cumulative byte boundaries between segments. `seg_byte_starts[i]` is the first byte
-    // of segment `i`; `seg_byte_starts[segments.len()]` equals `original_size`.
+    // `seg_byte_starts[i]` is the first byte of segment `i`; the trailing entry equals `original_size`.
     let mut seg_byte_starts: Vec<u64> = Vec::with_capacity(original_mdb.segments.len() + 1);
     seg_byte_starts.push(0);
     let mut acc = 0u64;
@@ -142,13 +140,12 @@ pub async fn upload_ranges(
         acc += s.unpacked_segment_bytes as u64;
         seg_byte_starts.push(acc);
     }
-    debug_assert_eq!(*seg_byte_starts.last().unwrap_or(&0), original_size, "segments must sum to original_size");
 
-    // 2. Build segment-aligned dirty ranges to send to the server. Snapping to segment boundaries (rather than just
-    //    chunk boundaries) lets us swap whole segments during composition, so we never need to truncate a segment
-    //    mid-chunk on the client. This is strictly safe: segment boundaries are also chunk boundaries, so the server's
-    //    chunk-aligned windows come back equal to our snapped ranges.
-    let mut snapped: Vec<(u64, u64)> = Vec::new();
+    // Snapping to *segment* boundaries (rather than chunk boundaries) lets us swap whole
+    // segments during composition, so the client never has to truncate a segment mid-chunk.
+    // Safe to send to the server because segment edges are chunk edges, so the server's
+    // chunk-aligned windows come back identical to our snapped ranges.
+    let mut snapped: Vec<(u64, u64)> = Vec::with_capacity(dirty_ranges_pairs.len() + 1);
     for &(start, end) in &dirty_ranges_pairs {
         let in_start = start.min(original_size);
         let in_end = end.min(original_size);
@@ -158,29 +155,22 @@ pub async fn upload_ranges(
         snapped
             .push((snap_to_segment_start(&seg_byte_starts, in_start), snap_to_segment_end(&seg_byte_starts, in_end)));
     }
-    // Truncation: ensure the segment containing the cut is in the upload set so we
-    // can re-upload it with its truncated tail.
     if total_size < original_size {
         let snap_start = snap_to_segment_start(&seg_byte_starts, total_size);
         if snap_start < original_size {
-            let snap_end = seg_byte_starts
-                .iter()
-                .copied()
-                .find(|&s| s > total_size)
-                .unwrap_or(original_size);
+            // total_size+1 forces the snap forward to the first boundary strictly past the cut.
+            let snap_end = snap_to_segment_end(&seg_byte_starts, total_size + 1);
             snapped.push((snap_start, snap_end));
         }
     }
-    // Pure append (no in-original modifications, total_size > original_size): re-upload
-    // the last original segment so the appended bytes cleanly extend its boundary.
     if snapped.is_empty() && total_size > original_size && !original_mdb.segments.is_empty() {
+        // Pure append: re-upload the last segment so the appended bytes extend its boundary.
         let n = original_mdb.segments.len();
         snapped.push((seg_byte_starts[n - 1], seg_byte_starts[n]));
     }
 
-    // Coalesce overlapping/touching ranges.
     snapped.sort_by_key(|&(s, _)| s);
-    let mut coalesced: Vec<(u64, u64)> = Vec::new();
+    let mut coalesced: Vec<(u64, u64)> = Vec::with_capacity(snapped.len());
     for r in snapped {
         if let Some(last) = coalesced.last_mut()
             && r.0 <= last.1
@@ -193,43 +183,34 @@ pub async fn upload_ranges(
 
     let server_query: Vec<FileRange> = coalesced.iter().map(|&(s, e)| FileRange::new(s, e)).collect();
     if server_query.is_empty() {
-        // Should not happen: we either had dirty inputs, or total_size != original_size which
-        // produced a synthetic range above.
         return Err(DataError::InternalError(
             "internal: no server query computed for non-trivial upload_ranges call".into(),
         ));
     }
 
-    // 3. Ask the server for chunk-aligned dirty windows + opaque gap subtrees.
-    let response: FileChunkHashesResponse =
-        cas_client.get_file_chunk_hashes(&original_hash, server_query.clone()).await?;
-    debug_assert_eq!(response.windows.len(), server_query.len(), "server windows must match segment-aligned query");
-    debug_assert_eq!(response.hash_ranges.len(), response.windows.len() + 1, "expected N+1 hash ranges for N windows");
+    let n_windows = server_query.len();
+    let response: FileChunkHashesResponse = cas_client.get_file_chunk_hashes(&original_hash, server_query).await?;
+    debug_assert_eq!(response.windows.len(), n_windows, "server windows must match segment-aligned query");
+    debug_assert_eq!(response.hash_ranges.len(), n_windows + 1, "expected N+1 hash ranges for N windows");
 
-    // 4. Process each window: stream prefix + dirty bytes + suffix into a fresh cleaner.
     let ctx = config.ctx.clone();
     let session = FileUploadSession::new(config.clone()).await?;
     let mut input_idx = 0usize;
-    let mut dirty_inputs = dirty_inputs;
-    let mut uploaded: Vec<UploadedWindow> = Vec::with_capacity(response.windows.len());
+    let mut uploaded: Vec<UploadedWindow> = Vec::with_capacity(n_windows);
 
-    let last_idx = response.windows.len() - 1;
+    let last_idx = n_windows - 1;
     for (idx, window) in response.windows.iter().enumerate() {
         let w_start = window.dirty_byte_range[0];
         let w_end_in_original = window.dirty_byte_range[1];
 
-        // Last window stretches to total_size for append, shrinks to total_size for truncation.
-        let effective_end = if idx == last_idx
-            && ((total_size > original_size && w_end_in_original == original_size)
-                || (total_size < original_size && total_size <= w_end_in_original))
-        {
+        let effective_end = if idx == last_idx && total_size != original_size {
             total_size
         } else {
             w_end_in_original
         };
 
-        // For truncation we must not stream past `effective_end`, even if the segment runs
-        // further; the cleaner was told the file has exactly `middle_size` bytes.
+        // Cleaner was sized to exactly `middle_size`; never stream past it (matters for truncation
+        // where the segment runs further than `effective_end`).
         let original_window_end = w_end_in_original.min(original_size).min(effective_end);
         let middle_size = effective_end - w_start;
 
@@ -297,33 +278,29 @@ pub async fn upload_ranges(
         });
     }
 
-    // Pull the per-window MDBs from the session.
     session.checkpoint().await?;
     let mdb_list = session.file_info_list().await?;
     let mdb_by_hash: HashMap<MerkleHash, MDBFileInfo> =
         mdb_list.into_iter().map(|m| (m.metadata.file_hash, m)).collect();
 
-    // 5. Compose the final hash by merging server-provided gap subtrees with locally-built window subtrees. Sequence:
-    //    [gap0, w0, gap1, w1, ..., gapN]. Empty gaps are skipped. For truncation, drop the trailing gap (it covers
-    //    bytes that no longer exist).
-    let keep_trailing_gap = total_size >= original_size;
-    let trailing_gap = if keep_trailing_gap {
-        response.hash_ranges.get(uploaded.len()).cloned().flatten()
+    // Merge sequence: [gap0, w0, gap1, w1, ..., gapN]. Empty gaps (`None`) are skipped.
+    // For truncation, the trailing gap covers bytes that no longer exist and is dropped.
+    let mut hash_ranges = response.hash_ranges;
+    let trailing_gap = if total_size >= original_size {
+        hash_ranges.pop().flatten()
     } else {
-        None
+        hash_ranges.pop().and(None)
     };
-
-    let leading_gap = response.hash_ranges.first().cloned().flatten();
-    let first_window_at_start = leading_gap.is_none();
+    let first_window_at_start = hash_ranges.first().is_some_and(Option::is_none);
     let last_window_at_end = trailing_gap.is_none();
 
-    let mut merge_seq: Vec<MerkleHashSubtree> = Vec::with_capacity(2 * uploaded.len() + 1);
-    for (i, w) in uploaded.iter().enumerate() {
-        if let Some(gap) = response.hash_ranges.get(i).and_then(|g| g.as_ref()) {
-            merge_seq.push(gap.clone());
+    let mut merge_seq: Vec<MerkleHashSubtree> = Vec::with_capacity(2 * n_windows + 1);
+    for (i, (w, gap)) in uploaded.iter().zip(hash_ranges.into_iter()).enumerate() {
+        if let Some(g) = gap {
+            merge_seq.push(g);
         }
         let at_start = i == 0 && first_window_at_start;
-        let at_end = i == uploaded.len() - 1 && last_window_at_end;
+        let at_end = i == last_idx && last_window_at_end;
         merge_seq.push(MerkleHashSubtree::from_chunks(at_start, &w.chunks, at_end));
     }
     if let Some(g) = trailing_gap {
@@ -332,37 +309,37 @@ pub async fn upload_ranges(
 
     let merged = MerkleHashSubtree::merge(&merge_seq)
         .map_err(|err| DataError::InternalError(format!("MerkleHashSubtree::merge failed: {err}")))?;
-    // `final_hash()` returns the aggregated chunk hash; the file hash is its HMAC with the
-    // zero salt (matching `file_hash` / cleaner output for files without an SHA-256 metadata
-    // extension, which is the only flavor `upload_ranges` produces).
+    // `final_hash()` is the aggregated chunk hash; the file hash is its HMAC with the zero
+    // salt (matching `file_hash` / the cleaner's output for files without SHA-256 metadata,
+    // the only flavor `upload_ranges` produces).
     let aggregated_hash = merged.final_hash().ok_or_else(|| {
         DataError::InternalError("merged subtree is not fully closed; cannot derive final hash".into())
     })?;
     let combined_hash = aggregated_hash.hmac(MerkleHash::default());
 
-    // 6. Compose the MDBFileInfo by walking the original segments, swapping the ones a window covers for that window's
-    //    segments. Segment-aligned windows guarantee that every original segment is either entirely outside or entirely
-    //    inside a window.
-    //
-    //    Verification entries are 1:1 with segments when the original file was registered
-    //    with verification on; when it wasn't (some legacy / test files), the original
-    //    verification vec is empty and we degrade gracefully by emitting no verification
-    //    for the composed file either.
-    let original_has_verification = original_mdb.verification.len() == original_mdb.segments.len();
+    // Walk original segments; replace those a window covers with the window's segments.
+    // Segment-aligned windows guarantee every original segment is wholly inside or outside a
+    // window. Verification entries are 1:1 with segments when the original file had them on;
+    // legacy / test files registered without verification yield an empty vec, in which case
+    // we emit a verification-less composed MDB.
+    let with_verification = original_mdb.verification.len() == original_mdb.segments.len();
     let mut all_segments: Vec<FileDataSequenceEntry> = Vec::new();
     let mut all_verification: Vec<FileVerificationEntry> = Vec::new();
     let mut seg_idx = 0usize;
     let n_segs = original_mdb.segments.len();
+    let emit_seg = |idx: usize, segs: &mut Vec<FileDataSequenceEntry>, vers: &mut Vec<FileVerificationEntry>| {
+        segs.push(original_mdb.segments[idx].clone());
+        if with_verification {
+            vers.push(original_mdb.verification[idx].clone());
+        }
+    };
     for w in &uploaded {
         while seg_idx < n_segs && seg_byte_starts[seg_idx] < w.start {
             debug_assert!(
                 seg_byte_starts[seg_idx + 1] <= w.start,
                 "segment straddles window start (not segment-aligned)"
             );
-            all_segments.push(original_mdb.segments[seg_idx].clone());
-            if original_has_verification {
-                all_verification.push(original_mdb.verification[seg_idx].clone());
-            }
+            emit_seg(seg_idx, &mut all_segments, &mut all_verification);
             seg_idx += 1;
         }
         let original_window_end = w.end.min(original_size);
@@ -374,22 +351,16 @@ pub async fn upload_ranges(
             .get(&middle_hash)
             .ok_or_else(|| DataError::InternalError(format!("no MDBFileInfo for window hash {}", middle_hash.hex())))?;
         all_segments.extend_from_slice(&middle_mdb.segments);
-        if original_has_verification {
+        if with_verification {
             all_verification.extend_from_slice(&middle_mdb.verification);
         }
     }
     if total_size >= original_size {
         while seg_idx < n_segs {
-            all_segments.push(original_mdb.segments[seg_idx].clone());
-            if original_has_verification {
-                all_verification.push(original_mdb.verification[seg_idx].clone());
-            }
+            emit_seg(seg_idx, &mut all_segments, &mut all_verification);
             seg_idx += 1;
         }
     }
-    // Truncation: trailing segments are intentionally dropped.
-
-    let contains_verification = original_has_verification && all_verification.len() == all_segments.len();
 
     debug!(
         "upload_ranges: composed hash={}, {} segments, {} windows",
@@ -399,7 +370,7 @@ pub async fn upload_ranges(
     );
 
     let composed_mdb = MDBFileInfo {
-        metadata: FileDataSequenceHeader::new(combined_hash, all_segments.len(), contains_verification, false),
+        metadata: FileDataSequenceHeader::new(combined_hash, all_segments.len(), with_verification, false),
         segments: all_segments,
         verification: all_verification,
         // SHA-256 is intentionally omitted: the file content changed, and recomputing it
