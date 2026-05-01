@@ -93,50 +93,13 @@ pub async fn upload_ranges(
         return upload_fresh_file(config, dirty_inputs, total_size).await;
     }
 
-    // Validate the caller-provided dirty ranges.
     let dirty_ranges_pairs: Vec<(u64, u64)> = dirty_inputs.iter().map(|d| (d.range.start, d.range.end)).collect();
-
-    if !dirty_ranges_pairs.windows(2).all(|w| w[0].1 <= w[1].0) {
-        return Err(DataError::InternalError(format!(
-            "dirty_ranges must be sorted and non-overlapping, got: {dirty_ranges_pairs:?}"
-        )));
-    }
-    if !dirty_ranges_pairs.iter().all(|&(s, e)| s < e) {
-        return Err(DataError::InternalError(format!(
-            "dirty_ranges must be non-empty intervals, got: {dirty_ranges_pairs:?}"
-        )));
-    }
-    if let Some(&(_, last_end)) = dirty_ranges_pairs.last()
-        && last_end > total_size
-    {
-        return Err(DataError::InternalError(format!(
-            "dirty_range end ({last_end}) exceeds total_size ({total_size})"
-        )));
-    }
-    if total_size > original_size {
-        let last_input_end = dirty_ranges_pairs.last().map_or(0, |&(_, e)| e);
-        if last_input_end < total_size {
-            return Err(DataError::InternalError(format!(
-                "total_size ({total_size}) > original_size ({original_size}) but dirty_inputs \
-                 only cover up to byte {last_input_end} (must reach total_size)"
-            )));
-        }
-        let mut covered_up_to = original_size;
-        for &(start, end) in &dirty_ranges_pairs {
-            if start > covered_up_to && covered_up_to >= original_size {
-                return Err(DataError::InternalError(format!(
-                    "gap in append region: bytes [{covered_up_to}, {start}) are beyond \
-                     original_size ({original_size}) and not covered by any dirty input"
-                )));
-            }
-            covered_up_to = covered_up_to.max(end);
-        }
-    }
+    validate_dirty_ranges(&dirty_ranges_pairs, original_size, total_size)?;
 
     let recon_result = cas_client.get_file_reconstruction_info(&original_hash).await?;
     let original_mdb = recon_result
         .map(|(mdb, _)| mdb)
-        .ok_or_else(|| DataError::InternalError("no reconstruction info for original file".into()))?;
+        .ok_or_else(|| DataError::ParameterError("file not found".into()))?;
     debug_assert_eq!(original_mdb.file_size(), original_size, "reconstruction info disagrees with original_size");
 
     // `seg_byte_starts[i]` is the first byte of segment `i`; the trailing entry equals `original_size`.
@@ -411,6 +374,54 @@ pub async fn upload_ranges(
     Ok(XetFileInfo::new(combined_hash.hex(), total_size))
 }
 
+/// Validate the caller-provided dirty ranges.
+///
+/// `dirty_ranges` must be sorted, non-overlapping, and contain only non-empty intervals
+/// whose end is `<= total_size`. When `total_size > original_size` (append), the inputs
+/// must reach `total_size` and cover the entire `[original_size, total_size)` tail with
+/// no gap.
+fn validate_dirty_ranges(dirty_ranges: &[(u64, u64)], original_size: u64, total_size: u64) -> Result<()> {
+    if !dirty_ranges.windows(2).all(|w| w[0].1 <= w[1].0) {
+        return Err(DataError::ParameterError(format!(
+            "dirty_ranges must be sorted and non-overlapping, got: {dirty_ranges:?}"
+        )));
+    }
+    if !dirty_ranges.iter().all(|&(s, e)| s < e) {
+        return Err(DataError::ParameterError(format!(
+            "dirty_ranges must be non-empty intervals, got: {dirty_ranges:?}"
+        )));
+    }
+    if let Some(&(_, last_end)) = dirty_ranges.last()
+        && last_end > total_size
+    {
+        return Err(DataError::ParameterError(format!(
+            "dirty_range end ({last_end}) exceeds total_size ({total_size})"
+        )));
+    }
+    if total_size > original_size {
+        let last_input_end = dirty_ranges.last().map_or(0, |&(_, e)| e);
+        if last_input_end < total_size {
+            return Err(DataError::ParameterError(format!(
+                "total_size ({total_size}) > original_size ({original_size}) but dirty_inputs \
+                 only cover up to byte {last_input_end} (must reach total_size)"
+            )));
+        }
+        // Walk the append tail. `covered_up_to` starts at `original_size` and only ever
+        // grows, so any range whose `start` runs ahead of it leaves an uncovered gap.
+        let mut covered_up_to = original_size;
+        for &(start, end) in dirty_ranges {
+            if start > covered_up_to {
+                return Err(DataError::ParameterError(format!(
+                    "gap in append region: bytes [{covered_up_to}, {start}) are beyond \
+                     original_size ({original_size}) and not covered by any dirty input"
+                )));
+            }
+            covered_up_to = covered_up_to.max(end);
+        }
+    }
+    Ok(())
+}
+
 /// Upload a brand-new file from `dirty_inputs` (no original to compose against).
 /// Used when the original file is empty: the caller-provided inputs already cover
 /// `[0, total_size)` (verified here), so we just stream them through the cleaner and
@@ -423,7 +434,7 @@ async fn upload_fresh_file(
     let mut cursor = 0u64;
     for input in &dirty_inputs {
         if input.range.start > cursor {
-            return Err(DataError::InternalError(format!(
+            return Err(DataError::ParameterError(format!(
                 "empty original: gap in dirty_inputs at [{cursor}, {})",
                 input.range.start
             )));
@@ -431,7 +442,7 @@ async fn upload_fresh_file(
         cursor = input.range.end;
     }
     if cursor < total_size {
-        return Err(DataError::InternalError(format!(
+        return Err(DataError::ParameterError(format!(
             "empty original: dirty_inputs only cover up to byte {cursor} (must reach total_size {total_size})"
         )));
     }
