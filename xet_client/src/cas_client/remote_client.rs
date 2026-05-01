@@ -13,11 +13,10 @@ use tracing::{event, info, instrument};
 use xet_core_structures::merklehash::{ChunkHashList, MerkleHash};
 use xet_core_structures::metadata_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use xet_core_structures::xorb_object::SerializedXorbObject;
-use xet_runtime::core::xet_config;
+use xet_runtime::core::XetContext;
 
 use super::adaptive_concurrency::{AdaptiveConcurrencyController, ConnectionPermit};
 use super::auth::AuthConfig;
-use super::http_client::{self, Api};
 use super::interface::URLProvider;
 use super::progress_tracked_streams::{
     DownloadProgressStream, ProgressCallback, StreamProgressReporter, UploadProgressStream,
@@ -28,6 +27,7 @@ use crate::cas_types::{
     BatchQueryReconstructionResponse, FileRange, HttpRange, Key, QueryReconstructionResponse,
     QueryReconstructionResponseV2, UploadShardResponse, UploadShardResponseType, UploadXorbResponse,
 };
+use crate::common::http_client::{self, Api};
 use crate::error::{ClientError, Result};
 
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
@@ -40,6 +40,7 @@ lazy_static! {
 }
 
 pub struct RemoteClient {
+    pub(crate) ctx: XetContext,
     endpoint: String,
     dry_run: bool,
     http_client: Arc<ClientWithMiddleware>,
@@ -65,6 +66,7 @@ impl RemoteClient {
     /// * `unix_socket_path` - Optional Unix socket path for proxying connections (ignored on non-Unix platforms)
     /// * `custom_headers` - Optional custom headers to include in HTTP requests (should include User-Agent)
     pub fn new_with_socket(
+        ctx: XetContext,
         endpoint: &str,
         auth: &Option<AuthConfig>,
         session_id: &str,
@@ -73,22 +75,29 @@ impl RemoteClient {
         custom_headers: Option<Arc<HeaderMap>>,
     ) -> Arc<Self> {
         Arc::new(Self {
+            ctx: ctx.clone(),
             endpoint: endpoint.to_string(),
             dry_run,
             authenticated_http_client: Arc::new(
-                http_client::build_auth_http_client(auth, session_id, unix_socket_path, custom_headers.clone())
+                http_client::build_auth_http_client(&ctx, auth, session_id, unix_socket_path, custom_headers.clone())
                     .unwrap(),
             ),
             http_client: Arc::new(
-                http_client::build_http_client(session_id, unix_socket_path, custom_headers.clone()).unwrap(),
+                http_client::build_http_client(&ctx, session_id, unix_socket_path, custom_headers.clone()).unwrap(),
             ),
             #[cfg(not(target_family = "wasm"))]
             shard_upload_http_client: Arc::new(
-                http_client::build_auth_http_client_no_read_timeout(auth, session_id, unix_socket_path, custom_headers)
-                    .unwrap(),
+                http_client::build_auth_http_client_no_read_timeout(
+                    &ctx,
+                    auth,
+                    session_id,
+                    unix_socket_path,
+                    custom_headers,
+                )
+                .unwrap(),
             ),
-            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("upload"),
-            download_concurrency_controller: AdaptiveConcurrencyController::new_download("download"),
+            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload(ctx.clone(), "upload"),
+            download_concurrency_controller: AdaptiveConcurrencyController::new_download(ctx.clone(), "download"),
             detected_reconstruction_api_version: AtomicU32::new(0),
         })
     }
@@ -105,13 +114,14 @@ impl RemoteClient {
     /// * `dry_run` - Whether to run in dry-run mode
     /// * `custom_headers` - Optional custom headers to include in HTTP requests (should include User-Agent)
     pub fn new(
+        ctx: XetContext,
         endpoint: &str,
         auth: &Option<AuthConfig>,
         session_id: &str,
         dry_run: bool,
         custom_headers: Option<Arc<HeaderMap>>,
     ) -> Arc<Self> {
-        Self::new_with_socket(endpoint, auth, session_id, dry_run, None, custom_headers)
+        Self::new_with_socket(ctx, endpoint, auth, session_id, dry_run, None, custom_headers)
     }
 
     /// Get the endpoint URL.
@@ -119,6 +129,7 @@ impl RemoteClient {
         &self.endpoint
     }
 
+    #[cfg(feature = "simulation")]
     pub(crate) fn http_client(&self) -> Arc<ClientWithMiddleware> {
         self.http_client.clone()
     }
@@ -143,7 +154,7 @@ impl RemoteClient {
         let client = self.authenticated_http_client.clone();
         let api_tag = "cas::query_dedup";
 
-        let result = RetryWrapper::new(api_tag)
+        let result = RetryWrapper::new(self.ctx.clone(), api_tag)
             .with_429_no_retry()
             .log_errors_as_info()
             .run(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
@@ -206,7 +217,8 @@ impl RemoteClient {
 
         let client = self.authenticated_http_client.clone();
 
-        let result: Result<T> = RetryWrapper::new(api_tag)
+        let result: Result<T> = RetryWrapper::new(self.ctx.clone(), api_tag)
+            .with_expected_416()
             .run_and_extract_json(move || {
                 let mut request = client.get(url.clone()).with_extension(Api(api_tag));
                 if let Some(range) = bytes_range {
@@ -303,7 +315,7 @@ impl Client for RemoteClient {
         file_id: &MerkleHash,
         bytes_range: Option<FileRange>,
     ) -> Result<Option<QueryReconstructionResponseV2>> {
-        let forced_version = xet_config().client.reconstruction_api_version;
+        let forced_version = self.ctx.config.client.reconstruction_api_version;
         self.get_reconstruction_with_version_override(file_id, bytes_range, forced_version)
             .await
     }
@@ -330,7 +342,7 @@ impl Client for RemoteClient {
         let api_tag = "cas::batch_get_reconstruction";
         let client = self.authenticated_http_client.clone();
 
-        let response: BatchQueryReconstructionResponse = RetryWrapper::new(api_tag)
+        let response: BatchQueryReconstructionResponse = RetryWrapper::new(self.ctx.clone(), api_tag)
             .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
             .await?;
 
@@ -367,7 +379,7 @@ impl Client for RemoteClient {
             transfer_reporter = transfer_reporter.with_progress_callback(cb);
         }
 
-        let result = RetryWrapper::new(api_tag)
+        let result = RetryWrapper::new(self.ctx.clone(), api_tag)
             .with_retry_on_403()
             .with_connection_permit(download_permit, None)
             .run_and_extract_custom(
@@ -517,7 +529,7 @@ impl Client for RemoteClient {
         let api_tag = "cas::get_reconstruction_info";
         let client = self.authenticated_http_client.clone();
 
-        let response: QueryReconstructionResponse = RetryWrapper::new(api_tag)
+        let response: QueryReconstructionResponse = RetryWrapper::new(self.ctx.clone(), api_tag)
             .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
             .await?;
 
@@ -578,7 +590,7 @@ impl Client for RemoteClient {
         #[cfg(target_family = "wasm")]
         let client = self.authenticated_http_client.clone();
 
-        let response: UploadShardResponse = RetryWrapper::new(api_tag)
+        let response: UploadShardResponse = RetryWrapper::new(self.ctx.clone(), api_tag)
             .with_connection_permit(upload_permit, Some(shard_data.len() as u64))
             .run_and_extract_json(move || {
                 client
@@ -646,7 +658,7 @@ impl Client for RemoteClient {
         let n_transfer_bytes = serialized_xorb_object.serialized_data.len() as u64;
 
         let serialized_data = serialized_xorb_object.serialized_data.clone();
-        let block_size = xet_config().client.upload_reporting_block_size;
+        let block_size = self.ctx.config.client.upload_reporting_block_size;
 
         let mut upload_reporter = StreamProgressReporter::new(n_transfer_bytes)
             .with_adaptive_concurrency_reporter(upload_permit.get_partial_completion_reporting_function());
@@ -660,7 +672,7 @@ impl Client for RemoteClient {
 
                 let api_tag = "cas::upload_xorb";
 
-                let response: UploadXorbResponse = RetryWrapper::new(api_tag)
+                let response: UploadXorbResponse = RetryWrapper::new(self.ctx.clone(), api_tag)
                     .with_connection_permit(upload_permit, Some(n_transfer_bytes))
                     .run_and_extract_json(move || {
                         let upload_stream = UploadProgressStream::wrap_bytes_as_stream(
@@ -744,7 +756,7 @@ impl Client for RemoteClient {
         let api_tag = "cas::get_file_chunk_hashes";
         let client = self.authenticated_http_client.clone();
 
-        let response: FileChunkHashesResponse = RetryWrapper::new(api_tag)
+        let response: FileChunkHashesResponse = RetryWrapper::new(self.ctx.clone(), api_tag)
             .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
             .await?;
 
@@ -785,7 +797,6 @@ mod tests {
     use xet_core_structures::xorb_object::xorb_format_test_utils::{
         ChunkSize, build_and_verify_xorb_object, build_raw_xorb,
     };
-    use xet_runtime::core::XetRuntime;
 
     use super::*;
 
@@ -797,14 +808,15 @@ mod tests {
         let prefix = PREFIX_DEFAULT;
         let raw_xorb = build_raw_xorb(3, ChunkSize::Random(512, 10248));
 
-        let threadpool = XetRuntime::new().unwrap();
-        let client = RemoteClient::new(CAS_ENDPOINT, &None, "", false, None);
+        let ctx = XetContext::default().unwrap();
+        let client = RemoteClient::new(ctx.clone(), CAS_ENDPOINT, &None, "", false, None);
 
         let xorb_obj = build_and_verify_xorb_object(raw_xorb, CompressionScheme::LZ4);
 
         // Act
-        let result = threadpool
-            .external_run_async_task(async move {
+        let result = ctx
+            .runtime
+            .bridge_sync(async move {
                 let permit = client.acquire_upload_permit().await.unwrap();
                 client.upload_xorb(prefix, xorb_obj, None, permit).await
             })

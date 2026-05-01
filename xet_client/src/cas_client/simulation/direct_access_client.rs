@@ -21,7 +21,7 @@ use crate::error::Result;
 /// A Client with direct access to XORB and file storage.
 ///
 /// This trait extends the standard Client interface with methods for:
-/// - Direct XORB access (read, list, delete)
+/// - Direct XORB access (read, list)
 /// - File data retrieval
 /// - URL expiration control
 /// - API delay simulation
@@ -49,6 +49,14 @@ pub trait DirectAccessClient: Client + Send + Sync {
     /// ranges for each xorb are grouped into entries of at most N ranges.
     /// This simulates the CloudFront URL length limit that forces splitting.
     fn set_max_ranges_per_fetch(&self, max_ranges: usize);
+
+    /// Sets the expiration duration for global dedup shards.
+    ///
+    /// When set, `query_for_global_dedup_shard` will set the shard footer's
+    /// `shard_key_expiry` to `now + expiration`
+    ///
+    /// Pass `None` to disable (default: returns full shards with no expiration).
+    fn set_global_dedup_shard_expiration(&self, expiration: Option<Duration>);
 
     /// Disables V2 reconstruction responses with the given HTTP status code.
     /// When disabled, the V2 endpoint returns this status, forcing clients to
@@ -83,9 +91,6 @@ pub trait DirectAccessClient: Client + Send + Sync {
 
     /// Returns all XORB hashes stored in this client.
     async fn list_xorbs(&self) -> Result<Vec<MerkleHash>>;
-
-    /// Deletes a XORB by hash.
-    async fn delete_xorb(&self, hash: &MerkleHash);
 
     /// Get all uncompressed bytes from a XORB.
     async fn get_full_xorb(&self, hash: &MerkleHash) -> Result<Bytes>;

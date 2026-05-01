@@ -130,11 +130,11 @@ impl<T: ParsableConfigValue> ParsableConfigValue for Option<T> {
 
 /// Implement proper parsing for Duration types as well.
 ///
-/// Now the following suffixes are supported [y, mon, d, h, m, s, ms];
-/// see the duration_str crate for the full list.
+/// Now the following suffixes are supported: s, ms, us, ns, m, h, d, etc.;
+/// see the humantime crate for the full list.
 impl ParsableConfigValue for std::time::Duration {
     fn parse_user_value(value: &str) -> Option<Self> {
-        duration_str::parse(value).ok()
+        humantime::parse_duration(value).ok()
     }
 
     fn to_config_string(&self) -> String {
@@ -264,7 +264,7 @@ macro_rules! test_set_constants {
 
 #[cfg(not(doctest))]
 /// A macro for **tests** that sets config group environment variables **before**
-/// XetRuntime is initialized. The environment variables follow the pattern
+/// XetContext is initialized. The environment variables follow the pattern
 /// `HF_XET_{GROUP_NAME}_{FIELD_NAME}`.
 ///
 /// This macro uses `ctor` to run on module load, ensuring environment variables

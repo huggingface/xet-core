@@ -1,4 +1,7 @@
-#[derive(Default, Debug, Clone, Copy)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Default, Debug, Clone, Copy, Serialize, Deserialize)]
+#[cfg_attr(feature = "python", pyo3::pyclass(get_all))]
 pub struct DeduplicationMetrics {
     pub total_bytes: u64,
     pub deduped_bytes: u64,

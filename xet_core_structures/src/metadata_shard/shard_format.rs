@@ -1210,7 +1210,7 @@ pub mod test_routines {
     use std::mem::size_of;
 
     use rand::rngs::{SmallRng, StdRng};
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt, SeedableRng};
 
     use super::super::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, MDBFileInfo};
     use super::super::shard_format::MDBShardInfo;
@@ -1586,7 +1586,7 @@ pub mod test_routines {
             // Make sure two queries return same results.
             assert_eq!(result_m, result_f);
 
-            // Make sure retriving the expected file.
+            // Make sure retrieving the expected file.
             if let Some(rm) = result_m {
                 assert_eq!(rm.metadata.file_hash, *k);
                 assert_eq!(result_f.unwrap().metadata.file_hash, *k);

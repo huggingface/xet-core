@@ -26,15 +26,17 @@ jobs:
           - runner: ubuntu-22.04-arm
             target: aarch64
     steps:
-      - uses: actions/checkout@v6
-      - name: Install Rust 1.89
-        uses: dtolnay/rust-toolchain@1.89.0
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - name: Install Rust 1.94
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
+        with:
+          toolchain: 1.94.1
       - uses: ./.github/actions/cache-rust-build
       - name: Build
         run: |
           cargo build --release
       - name: Upload binary
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6
         with:
           name: git-xet-linux-${{ matrix.platform.target }}
           path: target/release/git-xet
@@ -49,9 +51,11 @@ jobs:
           - runner: macos-15
             target: aarch64
     steps:
-      - uses: actions/checkout@v6
-      - name: Install Rust 1.89
-        uses: dtolnay/rust-toolchain@1.89.0
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - name: Install Rust 1.94
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
+        with:
+          toolchain: 1.94.1
       - uses: ./.github/actions/cache-rust-build
       - name: Build
         run: |
@@ -60,7 +64,7 @@ jobs:
           cp target/release/git-xet dist/
           cp git_xet/entitlements.xml dist/
       - name: Codesign and Notarization
-        uses: lando/code-sign-action@v3
+        uses: lando/code-sign-action@a5703d3b5486ada6e8efd08912110f8756e873e8  # v3
         with:
           file: dist/git-xet
           certificate-data: ${{ secrets.CLI_MACOS_CERTIFICATE }}
@@ -71,7 +75,7 @@ jobs:
           apple-product-id: co.huggingface.gitxet
           options: --options runtime --entitlements dist/entitlements.xml
       - name: Upload binary
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6
         with:
           name: git-xet-macos-${{ matrix.platform.target }}
           path: dist/git-xet
@@ -88,9 +92,11 @@ jobs:
             target: aarch64
             wix_arch: arm64
     steps:
-      - uses: actions/checkout@v6
-      - name: Install Rust 1.89
-        uses: dtolnay/rust-toolchain@1.89.0
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - name: Install Rust 1.94
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
+        with:
+          toolchain: 1.94.1
       - uses: ./.github/actions/cache-rust-build
       - name: Install WiX
         run: |
@@ -111,7 +117,7 @@ jobs:
         run: |
           cp git_xet/windows_installer/Package.wxs dist/
           cd dist
-          wix build Package.wxs -o bin\git-xet-windows-installer -arch ${{ matrix.platform.wix_arch }}
+          wix build -acceptEula wix7 Package.wxs -o bin\git-xet-windows-installer -arch ${{ matrix.platform.wix_arch }}
       - name: Codesign the installer
         uses: ./.github/actions/windows-codesign
         with:
@@ -120,12 +126,12 @@ jobs:
           azure_client_id: ${{ secrets.AZURE_CLIENT_ID }}
           azure_client_secret: ${{ secrets.AZURE_CLIENT_SECRET }}
       - name: Upload binary
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6
         with:
           name: git-xet-windows-${{ matrix.platform.target }}
           path: dist/git-xet.exe
       - name: Upload installer
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6
         with:
           name: git-xet-windows-installer-${{ matrix.platform.target }}
           path: dist/bin/git-xet-windows-installer.msi
@@ -138,8 +144,8 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     needs: [linux, windows, macos]
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/download-artifact@v7
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7
         with:
           path: dist
       - name: Create GitHub Release

@@ -6,7 +6,10 @@ use std::sync::Arc;
 use itertools::multizip;
 use rand::prelude::*;
 use tempfile::TempDir;
-use xet_client::cas_client::{Client, LocalClient, LocalTestServer, LocalTestServerBuilder};
+use xet_client::cas_client::{Client, LocalClient};
+#[cfg(feature = "simulation")]
+use xet_client::cas_client::{LocalTestServer, LocalTestServerBuilder};
+use xet_runtime::core::XetContext;
 
 use super::configurations::TranslatorConfig;
 use super::data_client::clean_file;
@@ -24,8 +27,11 @@ use super::{FileDownloadSession, FileUploadSession, XetFileInfo};
 #[derive(Debug, Clone, Copy)]
 pub enum HydrationMode {
     DirectClient,
+    #[cfg(feature = "simulation")]
     ServerV2,
+    #[cfg(feature = "simulation")]
     ServerV1Fallback,
+    #[cfg(feature = "simulation")]
     ServerMaxRanges2,
 }
 
@@ -33,14 +39,21 @@ impl HydrationMode {
     pub fn all() -> &'static [HydrationMode] {
         &[
             HydrationMode::DirectClient,
+            #[cfg(feature = "simulation")]
             HydrationMode::ServerV2,
+            #[cfg(feature = "simulation")]
             HydrationMode::ServerV1Fallback,
+            #[cfg(feature = "simulation")]
             HydrationMode::ServerMaxRanges2,
         ]
     }
 
     pub fn uses_server(&self) -> bool {
-        !matches!(self, HydrationMode::DirectClient)
+        match self {
+            HydrationMode::DirectClient => false,
+            #[cfg(feature = "simulation")]
+            _ => true,
+        }
     }
 }
 
@@ -48,8 +61,11 @@ impl std::fmt::Display for HydrationMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             HydrationMode::DirectClient => write!(f, "direct_client"),
+            #[cfg(feature = "simulation")]
             HydrationMode::ServerV2 => write!(f, "server_v2"),
+            #[cfg(feature = "simulation")]
             HydrationMode::ServerV1Fallback => write!(f, "server_v1_fallback"),
+            #[cfg(feature = "simulation")]
             HydrationMode::ServerMaxRanges2 => write!(f, "server_max_ranges_2"),
         }
     }
@@ -78,7 +94,7 @@ pub fn create_random_file(path: impl AsRef<Path>, size: usize, seed: u64) -> usi
     size
 }
 
-/// Creates a collection of random files, each with a deterministic seed.  
+/// Creates a collection of random files, each with a deterministic seed.
 /// the total number of bytes written for all files combined.
 pub fn create_random_files(dir: impl AsRef<Path>, files: &[(impl AsRef<str>, usize)], seed: u64) -> usize {
     let dir = dir.as_ref();
@@ -172,8 +188,10 @@ pub struct HydrateDehydrateTest {
     pub src_dir: PathBuf,
     pub ptr_dir: PathBuf,
     pub dest_dir: PathBuf,
+    ctx: XetContext,
     use_test_server: bool,
     /// Kept alive so the test server stays running for the duration of the test.
+    #[cfg(feature = "simulation")]
     test_server: Option<LocalTestServer>,
 }
 
@@ -208,8 +226,10 @@ impl HydrateDehydrateTest {
             src_dir,
             ptr_dir,
             dest_dir,
+            ctx: XetContext::default().expect("xet context"),
             _temp_dir,
             use_test_server,
+            #[cfg(feature = "simulation")]
             test_server: None,
         }
     }
@@ -224,13 +244,16 @@ impl HydrateDehydrateTest {
     pub async fn apply_hydration_mode(&mut self, mode: HydrationMode) {
         match mode {
             HydrationMode::DirectClient => {},
+            #[cfg(feature = "simulation")]
             HydrationMode::ServerV2 => {
                 self.ensure_server_created().await;
             },
+            #[cfg(feature = "simulation")]
             HydrationMode::ServerV1Fallback => {
                 self.ensure_server_created().await;
                 self.test_server.as_ref().unwrap().client().disable_v2_reconstruction(404);
             },
+            #[cfg(feature = "simulation")]
             HydrationMode::ServerMaxRanges2 => {
                 self.ensure_server_created().await;
                 self.test_server.as_ref().unwrap().client().set_max_ranges_per_fetch(2);
@@ -240,14 +263,18 @@ impl HydrateDehydrateTest {
 
     /// Ensures the test server is running, creating it if necessary.
     /// Call this before configuring the server (e.g., disabling V2 or setting max ranges).
+    #[cfg(feature = "simulation")]
     pub async fn ensure_server_created(&mut self) {
         if self.use_test_server && self.test_server.is_none() {
-            let local_client = LocalClient::new(self.cas_dir.join("xet/xorbs")).await.unwrap();
+            let local_client = LocalClient::new(self.ctx.clone(), self.cas_dir.join("xet/xorbs"))
+                .await
+                .unwrap();
             self.test_server = Some(LocalTestServerBuilder::new().with_client(local_client).start().await);
         }
     }
 
     /// Returns a reference to the test server, if one has been created.
+    #[cfg(feature = "simulation")]
     pub fn test_server(&self) -> Option<&LocalTestServer> {
         self.test_server.as_ref()
     }
@@ -255,18 +282,29 @@ impl HydrateDehydrateTest {
     /// Lazily initializes the test server (if needed) and returns a CAS client.
     async fn get_or_create_client(&mut self) -> Arc<dyn Client> {
         if self.use_test_server {
-            if self.test_server.is_none() {
-                let local_client = LocalClient::new(self.cas_dir.join("xet/xorbs")).await.unwrap();
-                self.test_server = Some(LocalTestServerBuilder::new().with_client(local_client).start().await);
+            #[cfg(feature = "simulation")]
+            {
+                if self.test_server.is_none() {
+                    let local_client = LocalClient::new(self.ctx.clone(), self.cas_dir.join("xet/xorbs"))
+                        .await
+                        .unwrap();
+                    self.test_server = Some(LocalTestServerBuilder::new().with_client(local_client).start().await);
+                }
+                self.test_server.as_ref().unwrap().remote_client().clone() as Arc<dyn Client>
             }
-            self.test_server.as_ref().unwrap().remote_client().clone() as Arc<dyn Client>
+            #[cfg(not(feature = "simulation"))]
+            {
+                panic!("test server requires the 'simulation' feature");
+            }
         } else {
-            LocalClient::new(self.cas_dir.join("xet/xorbs")).await.unwrap() as Arc<dyn Client>
+            LocalClient::new(self.ctx.clone(), self.cas_dir.join("xet/xorbs"))
+                .await
+                .unwrap() as Arc<dyn Client>
         }
     }
 
     pub async fn new_upload_session(&self) -> Arc<FileUploadSession> {
-        let config = Arc::new(TranslatorConfig::local_config(&self.cas_dir).unwrap());
+        let config = Arc::new(TranslatorConfig::local_config(&self.ctx, &self.cas_dir).unwrap());
         FileUploadSession::new(config.clone()).await.unwrap()
     }
 
@@ -316,7 +354,7 @@ impl HydrateDehydrateTest {
 
     pub async fn hydrate(&mut self) {
         let client = self.get_or_create_client().await;
-        let session = FileDownloadSession::from_client(client);
+        let session = FileDownloadSession::from_client(&self.ctx, client, None);
 
         for entry in read_dir(&self.ptr_dir).unwrap() {
             let entry = entry.unwrap();
@@ -329,7 +367,7 @@ impl HydrateDehydrateTest {
 
     pub async fn hydrate_partitioned_writers(&mut self, partitions: usize) {
         let client = self.get_or_create_client().await;
-        let session = FileDownloadSession::from_client(client);
+        let session = FileDownloadSession::from_client(&self.ctx, client, None);
 
         for entry in read_dir(&self.ptr_dir).unwrap() {
             let entry = entry.unwrap();
@@ -373,14 +411,14 @@ impl HydrateDehydrateTest {
 
     pub async fn hydrate_stream(&mut self) {
         let client = self.get_or_create_client().await;
-        let session = FileDownloadSession::from_client(client);
+        let session = FileDownloadSession::from_client(&self.ctx, client, None);
 
         for entry in read_dir(&self.ptr_dir).unwrap() {
             let entry = entry.unwrap();
             let out_filename = self.dest_dir.join(entry.file_name());
 
             let xf: XetFileInfo = serde_json::from_reader(File::open(entry.path()).unwrap()).unwrap();
-            let (_id, mut stream) = session.download_stream(&xf).await.unwrap();
+            let (_id, mut stream) = session.download_stream(&xf, None).await.unwrap();
 
             let mut file = File::create(&out_filename).unwrap();
             while let Some(chunk) = stream.next().await.unwrap() {
@@ -391,5 +429,48 @@ impl HydrateDehydrateTest {
 
     pub fn verify_src_dest_match(&self) {
         verify_directories_match(&self.src_dir, &self.dest_dir);
+    }
+}
+
+/// Provides a test environment with a config suitable for `FileUploadSession` / `FileDownloadSession`.
+///
+/// When the `simulation` feature is enabled the environment spins up a `LocalTestServer` and
+/// returns a server-backed config; otherwise it falls back to `LocalClient` via `local_config`.
+pub struct TestEnvironment {
+    _temp_dir: TempDir,
+    pub base_dir: PathBuf,
+    pub ctx: XetContext,
+    pub config: Arc<super::configurations::TranslatorConfig>,
+    #[cfg(feature = "simulation")]
+    _server: Option<LocalTestServer>,
+}
+
+impl TestEnvironment {
+    pub async fn new() -> Self {
+        let temp_dir = TempDir::new().unwrap();
+        let base_dir = temp_dir.path().to_path_buf();
+        let ctx = XetContext::default().unwrap();
+
+        #[cfg(feature = "simulation")]
+        let (config, server) = {
+            let server = LocalTestServerBuilder::new().start().await;
+            let config = Arc::new(
+                super::configurations::TranslatorConfig::test_server_config(&ctx, server.http_endpoint(), &base_dir)
+                    .unwrap(),
+            );
+            (config, Some(server))
+        };
+
+        #[cfg(not(feature = "simulation"))]
+        let config = Arc::new(super::configurations::TranslatorConfig::local_config(&ctx, &base_dir).unwrap());
+
+        Self {
+            _temp_dir: temp_dir,
+            base_dir,
+            ctx,
+            config,
+            #[cfg(feature = "simulation")]
+            _server: server,
+        }
     }
 }

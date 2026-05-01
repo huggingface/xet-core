@@ -10,7 +10,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use http::HeaderValue;
 use http::header::CONTENT_LENGTH;
-use rand::Rng;
+use rand::RngExt;
 use reqwest::Body;
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinSet;
@@ -18,10 +18,11 @@ use tokio_util::sync::CancellationToken;
 use xet_client::cas_client::adaptive_concurrency::{
     AdaptiveConcurrencyController, CCLatencyModelState, CCSuccessModelState,
 };
-use xet_client::cas_client::http_client::build_http_client;
 use xet_client::cas_client::progress_tracked_streams::UploadProgressStream;
 use xet_client::cas_client::retry_wrapper::RetryWrapper;
-use xet_runtime::core::xet_config;
+use xet_client::common::http_client::build_http_client;
+use xet_runtime::config::XetConfig;
+use xet_runtime::core::XetContext;
 
 use crate::scenario::base_url;
 
@@ -190,11 +191,13 @@ fn spawn_stats_reporter(
 
 /// Shared context for upload workers.
 struct UploadContext {
+    ctx: XetContext,
     url: String,
     http_client: reqwest_middleware::ClientWithMiddleware,
     base_data: Bytes,
     min_data_size: u64,
     max_data_size: u64,
+    upload_reporting_block_size: usize,
     counters: UploadCounters,
     concurrency_controller: Arc<AdaptiveConcurrencyController>,
     start_instant: Arc<Mutex<Instant>>,
@@ -203,18 +206,20 @@ struct UploadContext {
 }
 
 /// Spawns `UPLOAD_TASKS` concurrent upload workers into the given `JoinSet`.
-fn spawn_upload_tasks(join_set: &mut JoinSet<()>, ctx: &UploadContext) {
+fn spawn_upload_tasks(join_set: &mut JoinSet<()>, upload: &UploadContext) {
     for _ in 0..UPLOAD_TASKS {
-        let concurrency_controller = ctx.concurrency_controller.clone();
-        let http_client = ctx.http_client.clone();
-        let url = ctx.url.clone();
-        let counters = ctx.counters.clone();
-        let base_data = ctx.base_data.clone();
-        let task_cancel = ctx.cancel.clone();
-        let task_start = Arc::clone(&ctx.start_instant);
-        let end_duration = ctx.end_duration;
-        let min_data_size = ctx.min_data_size;
-        let max_data_size = ctx.max_data_size;
+        let xet_ctx = upload.ctx.clone();
+        let concurrency_controller = upload.concurrency_controller.clone();
+        let http_client = upload.http_client.clone();
+        let url = upload.url.clone();
+        let counters = upload.counters.clone();
+        let base_data = upload.base_data.clone();
+        let task_cancel = upload.cancel.clone();
+        let task_start = Arc::clone(&upload.start_instant);
+        let end_duration = upload.end_duration;
+        let min_data_size = upload.min_data_size;
+        let max_data_size = upload.max_data_size;
+        let upload_reporting_block_size = upload.upload_reporting_block_size;
 
         join_set.spawn(async move {
             loop {
@@ -245,14 +250,14 @@ fn spawn_upload_tasks(join_set: &mut JoinSet<()>, ctx: &UploadContext) {
                 let do_one_upload = async {
                     counters.retry_wrapper_calls.fetch_add(1, Ordering::Relaxed);
                     let request_start = Instant::now();
-                    let result = RetryWrapper::new("upload_benchmark")
+                    let result = RetryWrapper::new(xet_ctx.clone(), "upload_benchmark")
                         .with_connection_permit(permit, Some(payload_size))
                         .run({
                             let http_client = http_client.clone();
                             let url = url.clone();
                             let payload_data = payload_data.clone();
                             let http_calls = counters.http_calls.clone();
-                            let block_size = xet_config().client.upload_reporting_block_size;
+                            let block_size = upload_reporting_block_size;
                             move || {
                                 let http_client = http_client.clone();
                                 let url = url.clone();
@@ -310,7 +315,8 @@ async fn run_upload_clients_impl(
     let max_data_size = max_data_kb * 1024;
     let client_id = rand::rng().random_range(0..1000000000_u64);
 
-    let http_client = build_http_client("test_session", None, None)?;
+    let ctx = XetContext::from_external(tokio::runtime::Handle::current(), XetConfig::new());
+    let http_client = build_http_client(&ctx, "test_session", None, None)?;
 
     let duration_sec = repeat_duration_seconds.unwrap_or(u64::MAX);
     let client_params = serde_json::json!({
@@ -325,7 +331,7 @@ async fn run_upload_clients_impl(
     let params_path = output_dir.join(format!("client_parameters_{}.json", client_id));
     std::fs::write(&params_path, serde_json::to_string_pretty(&client_params)?)?;
 
-    let concurrency_controller = AdaptiveConcurrencyController::new_upload("test_uploads");
+    let concurrency_controller = AdaptiveConcurrencyController::new_upload(ctx.clone(), "test_uploads");
     let start_instant = Arc::new(Mutex::new(Instant::now()));
     let end_duration = Duration::from_secs(duration_sec);
     let counters = UploadCounters::new();
@@ -350,12 +356,16 @@ async fn run_upload_clients_impl(
     let url_base = base_url(server_addr);
     let url = format!("{}{}", url_base.trim_end_matches('/'), DUMMY_UPLOAD_PATH);
 
+    let upload_reporting_block_size = ctx.config.client.upload_reporting_block_size;
+
     let upload_ctx = UploadContext {
+        ctx,
         url,
         http_client,
         base_data,
         min_data_size,
         max_data_size,
+        upload_reporting_block_size,
         counters,
         concurrency_controller,
         start_instant,
@@ -390,6 +400,7 @@ mod tests {
     /// Runs a full scenario: start server, add upload client, run 3s, shutdown, then verify
     /// output directory has network_stats.json, timeline.csv, client_parameters_*.json, client_stats_*.json.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     async fn scenario_run_3_seconds_shutdown_verify_output() {
         let temp = tempfile::tempdir().unwrap();
         let out_dir = temp.path().to_path_buf();

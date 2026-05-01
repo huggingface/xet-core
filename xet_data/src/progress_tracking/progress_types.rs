@@ -4,14 +4,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use more_asserts::debug_assert_le;
+use xet_runtime::utils::UniqueId;
 
-use super::UniqueID;
 use super::speed_tracker::{DEFAULT_MIN_OBSERVATIONS_FOR_RATE, DEFAULT_SPEED_HALF_LIFE, SpeedTracker};
 use super::upload_tracking::CompletionTracker;
 
 /// Per-item atomic progress counters. Created by `GroupProgress::new_item()`.
 pub struct ItemProgress {
-    pub id: UniqueID,
+    pub id: UniqueId,
     pub name: Arc<str>,
     pub total_bytes: AtomicU64,
     pub bytes_completed: AtomicU64,
@@ -21,7 +21,7 @@ pub struct ItemProgress {
 }
 
 impl ItemProgress {
-    fn new(id: UniqueID, name: Arc<str>) -> Self {
+    fn new(id: UniqueId, name: Arc<str>) -> Self {
         Self {
             id,
             name,
@@ -70,7 +70,7 @@ pub struct GroupProgress {
     pub total_bytes_completed: AtomicU64,
     pub total_transfer_bytes: AtomicU64,
     pub total_transfer_bytes_completed: AtomicU64,
-    items: Mutex<HashMap<UniqueID, Arc<ItemProgress>>>,
+    items: Mutex<HashMap<UniqueId, Arc<ItemProgress>>>,
     speed_tracker: Mutex<SpeedTracker>,
 }
 
@@ -94,7 +94,7 @@ impl GroupProgress {
 
     /// Create a new tracked item and register it in the items map.
     /// Returns an `ItemProgressUpdater` handle for the caller to report progress.
-    pub fn new_item(self: &Arc<Self>, id: UniqueID, name: impl Into<Arc<str>>) -> Arc<ItemProgressUpdater> {
+    pub fn new_item(self: &Arc<Self>, id: UniqueId, name: impl Into<Arc<str>>) -> Arc<ItemProgressUpdater> {
         let item = Arc::new(ItemProgress::new(id, name.into()));
         self.items.lock().unwrap().insert(id, item.clone());
         Arc::new(ItemProgressUpdater {
@@ -141,13 +141,13 @@ impl GroupProgress {
     }
 
     /// Snapshot of all per-item progress.
-    pub fn item_reports(&self) -> HashMap<UniqueID, ItemProgressReport> {
+    pub fn item_reports(&self) -> HashMap<UniqueId, ItemProgressReport> {
         let items = self.items.lock().unwrap();
         items.iter().map(|(id, item)| (*id, item.report())).collect()
     }
 
     /// Snapshot of one item's progress.
-    pub fn item_report(&self, id: UniqueID) -> Option<ItemProgressReport> {
+    pub fn item_report(&self, id: UniqueId) -> Option<ItemProgressReport> {
         let items = self.items.lock().unwrap();
         items.get(&id).map(|item| item.report())
     }
@@ -224,10 +224,10 @@ pub struct ItemProgressUpdater {
 impl ItemProgressUpdater {
     /// Create a standalone updater for debug/testing purposes.
     /// Creates its own throwaway GroupProgress.
-    #[cfg(test)]
+    #[cfg(any(debug_assertions, test))]
     pub fn new_standalone(name: &str) -> Arc<Self> {
         let group = GroupProgress::new();
-        let item = Arc::new(ItemProgress::new(UniqueID::new(), Arc::from(name)));
+        let item = Arc::new(ItemProgress::new(UniqueId::new(), Arc::from(name)));
         Arc::new(Self { item, group })
     }
 
@@ -391,7 +391,7 @@ mod tests {
     #[test]
     fn test_group_progress_new_item() {
         let group = GroupProgress::new();
-        let updater = group.new_item(UniqueID::new(), "test.bin");
+        let updater = group.new_item(UniqueId::new(), "test.bin");
         updater.update_item_size(100, true);
 
         assert_eq!(group.total_bytes.load(Ordering::Relaxed), 100);
@@ -400,7 +400,7 @@ mod tests {
     #[test]
     fn test_item_progress_updater_bytes() {
         let group = GroupProgress::new();
-        let updater = group.new_item(UniqueID::new(), "test.bin");
+        let updater = group.new_item(UniqueId::new(), "test.bin");
         updater.update_item_size(100, true);
         updater.report_bytes_completed(50);
 
@@ -411,7 +411,7 @@ mod tests {
     #[test]
     fn test_item_progress_updater_transfer() {
         let group = GroupProgress::new();
-        let updater = group.new_item(UniqueID::new(), "test.bin");
+        let updater = group.new_item(UniqueId::new(), "test.bin");
         updater.update_item_size(100, true);
         updater.update_transfer_size(80);
         updater.report_transfer_bytes_completed(30);
@@ -423,7 +423,7 @@ mod tests {
     #[test]
     fn test_update_item_size_finalized() {
         let group = GroupProgress::new();
-        let updater = group.new_item(UniqueID::new(), "test.bin");
+        let updater = group.new_item(UniqueId::new(), "test.bin");
         updater.update_item_size(100, true);
         updater.update_item_size(200, false);
 
@@ -434,7 +434,7 @@ mod tests {
     #[test]
     fn test_update_item_size_monotonic_increase() {
         let group = GroupProgress::new();
-        let updater = group.new_item(UniqueID::new(), "test.bin");
+        let updater = group.new_item(UniqueId::new(), "test.bin");
         updater.update_item_size(100, false);
         updater.update_item_size(300, false);
 
@@ -445,7 +445,7 @@ mod tests {
     #[test]
     fn test_update_item_size_same_value_noop() {
         let group = GroupProgress::new();
-        let updater = group.new_item(UniqueID::new(), "test.bin");
+        let updater = group.new_item(UniqueId::new(), "test.bin");
         updater.update_item_size(100, false);
         updater.update_item_size(100, false);
 
@@ -455,7 +455,7 @@ mod tests {
     #[test]
     fn test_report_snapshot() {
         let group = GroupProgress::new();
-        let updater = group.new_item(UniqueID::new(), "file.bin");
+        let updater = group.new_item(UniqueId::new(), "file.bin");
         updater.update_item_size(1000, true);
         updater.update_transfer_size(800);
         updater.report_bytes_completed(500);
@@ -471,8 +471,8 @@ mod tests {
     #[test]
     fn test_item_reports() {
         let group = GroupProgress::new();
-        let id1 = UniqueID::new();
-        let id2 = UniqueID::new();
+        let id1 = UniqueId::new();
+        let id2 = UniqueId::new();
 
         let u1 = group.new_item(id1, "a.bin");
         let u2 = group.new_item(id2, "b.bin");
@@ -491,8 +491,8 @@ mod tests {
     #[test]
     fn test_multiple_items_group_totals() {
         let group = GroupProgress::new();
-        let u1 = group.new_item(UniqueID::new(), "a.bin");
-        let u2 = group.new_item(UniqueID::new(), "b.bin");
+        let u1 = group.new_item(UniqueId::new(), "a.bin");
+        let u2 = group.new_item(UniqueId::new(), "b.bin");
 
         u1.update_item_size(100, true);
         u2.update_item_size(200, true);
@@ -506,7 +506,7 @@ mod tests {
     #[test]
     fn test_assert_complete() {
         let group = GroupProgress::new();
-        let updater = group.new_item(UniqueID::new(), "test.bin");
+        let updater = group.new_item(UniqueId::new(), "test.bin");
         updater.update_item_size(100, true);
         updater.update_transfer_size(80);
         updater.report_bytes_completed(100);
@@ -519,7 +519,7 @@ mod tests {
     #[test]
     fn test_zero_increment_noop() {
         let group = GroupProgress::new();
-        let updater = group.new_item(UniqueID::new(), "test.bin");
+        let updater = group.new_item(UniqueId::new(), "test.bin");
         updater.update_item_size(100, true);
         updater.report_bytes_completed(0);
 
@@ -530,7 +530,7 @@ mod tests {
     #[test]
     fn test_report_bytes_written_alias() {
         let group = GroupProgress::new();
-        let updater = group.new_item(UniqueID::new(), "test.bin");
+        let updater = group.new_item(UniqueId::new(), "test.bin");
         updater.update_item_size(100, true);
         updater.report_bytes_written(50);
 
@@ -540,7 +540,7 @@ mod tests {
     #[test]
     fn test_report_transfer_progress_alias() {
         let group = GroupProgress::new();
-        let updater = group.new_item(UniqueID::new(), "test.bin");
+        let updater = group.new_item(UniqueId::new(), "test.bin");
         updater.update_item_size(100, true);
         updater.update_transfer_size(90);
         updater.report_transfer_progress(40);
@@ -554,7 +554,7 @@ mod tests {
         pause();
 
         let group = GroupProgress::with_speed_config(Duration::from_secs(10), 3);
-        let updater = group.new_item(UniqueID::new(), "test.bin");
+        let updater = group.new_item(UniqueId::new(), "test.bin");
         updater.update_item_size(10_000, true);
         updater.update_transfer_size(10_000);
 

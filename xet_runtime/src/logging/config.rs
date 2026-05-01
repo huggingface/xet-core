@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::core::xet_config;
+use crate::config::XetConfig;
 use crate::utils::TemplatedPathBuf;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -11,9 +11,7 @@ pub enum LoggingMode {
     Console,
 }
 
-/// The log directory cleanup configuration.  By default, the values
-/// are loaded from environment variables.
-
+/// The log directory cleanup configuration.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LogDirConfig {
     pub min_deletion_age: Duration,
@@ -22,14 +20,13 @@ pub struct LogDirConfig {
     pub filename_prefix: String,
 }
 
-impl Default for LogDirConfig {
-    fn default() -> Self {
-        // Load the defaults from the environmental config.
+impl LogDirConfig {
+    pub fn from_config(config: &XetConfig) -> Self {
         Self {
-            min_deletion_age: xet_config().log.dir_min_deletion_age,
-            max_retention_age: xet_config().log.dir_max_retention_age,
-            size_limit: xet_config().log.dir_max_size.as_u64(),
-            filename_prefix: xet_config().log.prefix.to_string(),
+            min_deletion_age: config.log.dir_min_deletion_age,
+            max_retention_age: config.log.dir_max_retention_age,
+            size_limit: config.log.dir_max_size.as_u64(),
+            filename_prefix: config.log.prefix.to_string(),
         }
     }
 }
@@ -44,11 +41,10 @@ pub struct LoggingConfig {
 }
 
 impl LoggingConfig {
-    /// Set up logging to a directory.  Note that this can be overwritten by environmental
-    pub fn default_to_directory(version: String, log_directory: impl AsRef<Path>) -> LoggingConfig {
-        // Choose the logging mode.
+    /// Set up logging to a directory using the given config.
+    pub fn from_directory(config: &XetConfig, version: String, log_directory: impl AsRef<Path>) -> LoggingConfig {
         let logging_mode = {
-            if let Some(log_dest) = &xet_config().log.dest {
+            if let Some(log_dest) = &config.log.dest {
                 if log_dest.as_str().is_empty() {
                     LoggingMode::Console
                 } else {
@@ -69,7 +65,7 @@ impl LoggingConfig {
         };
 
         let use_json = {
-            if let Some(format) = &xet_config().log.format {
+            if let Some(format) = &config.log.format {
                 format.as_str().to_ascii_lowercase().trim() == "json"
             } else {
                 logging_mode != LoggingMode::Console
@@ -77,14 +73,14 @@ impl LoggingConfig {
         };
 
         let enable_log_dir_cleanup =
-            matches!(logging_mode, LoggingMode::Directory(_)) && !xet_config().log.dir_disable_cleanup;
+            matches!(logging_mode, LoggingMode::Directory(_)) && !config.log.dir_disable_cleanup;
 
         Self {
             logging_mode,
             use_json,
             enable_log_dir_cleanup,
             version,
-            log_dir_config: LogDirConfig::default(),
+            log_dir_config: LogDirConfig::from_config(config),
         }
     }
 }

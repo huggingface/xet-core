@@ -407,7 +407,7 @@ pub(crate) mod tests {
 
     use super::super::errors::SingleflightError;
     use super::{Call, Group, OwnerTask};
-    use crate::core::XetRuntime;
+    use crate::core::XetContext;
 
     /// A period of time for waiters to wait for a notification from the owner
     /// task. This is expected to be sufficient time for the test futures to
@@ -428,11 +428,12 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_simple_with_threadpool() {
-        let threadpool = Arc::new(XetRuntime::new().unwrap());
+    fn test_simple_with_xet_runtime() {
+        let ctx = XetContext::default().unwrap();
         let g = Group::new();
-        let res = threadpool
-            .external_run_async_task(async move { g.work("key", return_res()).await })
+        let res = ctx
+            .runtime
+            .bridge_sync(async move { g.work("key", return_res()).await })
             .unwrap()
             .0;
         let r = res.unwrap();
@@ -448,17 +449,18 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_multiple_threads_with_threadpool() {
+    #[cfg_attr(feature = "smoke-test", ignore)]
+    fn test_multiple_threads_with_xet_runtime() {
         let times_called = Arc::new(AtomicU32::new(0));
-        let threadpool = Arc::new(XetRuntime::new().unwrap());
+        let ctx = XetContext::default().unwrap();
         let g: Arc<Group<usize, ()>> = Arc::new(Group::new());
         let mut handlers: Vec<JoinHandle<(usize, bool)>> = Vec::new();
-        let threadpool_ = threadpool.clone();
+        let runtime = ctx.runtime.clone();
         let tasks = async move {
             for _ in 0..10 {
                 let g = g.clone();
                 let counter = times_called.clone();
-                handlers.push(threadpool_.spawn(async move {
+                handlers.push(runtime.spawn(async move {
                     let tup = g.work("key", expensive_fn(counter, RES)).await;
                     let res = tup.0;
                     let fn_response = res.unwrap();
@@ -478,10 +480,11 @@ pub(crate) mod tests {
             assert_eq!(1, num_callers);
             assert_eq!(1, times_called.load(Ordering::SeqCst));
         };
-        threadpool.external_run_async_task(tasks).unwrap();
+        ctx.runtime.bridge_sync(tasks).unwrap();
     }
 
     #[tokio::test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_multiple_threads() {
         let times_called = Arc::new(AtomicU32::new(0));
         let g: Arc<Group<usize, ()>> = Arc::new(Group::new());
@@ -511,6 +514,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_error() {
         let times_called = Arc::new(AtomicU32::new(0));
 
@@ -540,6 +544,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(feature = "smoke-test", ignore)]
     async fn test_multiple_keys() {
         let times_called_x = Arc::new(AtomicU32::new(0));
         let times_called_y = Arc::new(AtomicU32::new(0));

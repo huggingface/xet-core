@@ -111,7 +111,7 @@ impl Chunker {
                 // We must enforce that the next boundary is actually past the minimum chunk size.
                 // Because of how the rolling hash is computed, bytes before HASH_WINDOW_SIZE don't affect the hash,
                 // so with the above skip we depend on it running for at least HASH_WINDOW_SIZE bytes before triggering
-                // a boundary.   However, in rare occurances, there can be a boundary triggered before HASH_WINDOW_SIZE
+                // a boundary.   However, in rare occurrences, there can be a boundary triggered before HASH_WINDOW_SIZE
                 // bytes have been processed, which means the boundary is triggered based on the previous state of the
                 // hasher rather than on the current chunk content.  Thus we ensure this can't happen by ensuring that
                 // we have processed at least HASH_WINDOW_SIZE bytes.
@@ -144,7 +144,7 @@ impl Chunker {
     }
 
     fn reset_state(&mut self) {
-        // Strictly speaking, this is unneccesary, as we should always hash 64 bytes out making the previous state
+        // Strictly speaking, this is unnecessary, as we should always hash 64 bytes out making the previous state
         // of the hasher irrelevant.  However, this explicitly declares we're resetting things to the
         // initial state.
         self.hash.set_hash(0);
@@ -359,7 +359,7 @@ mod tests {
     use std::io::Cursor;
 
     use rand::rngs::StdRng;
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt, SeedableRng};
 
     use super::*;
 
@@ -561,7 +561,7 @@ mod tests {
     fn create_random_data(n: usize, seed: u64) -> Vec<u8> {
         // This test will actually need to be run in different environments, so to generate
         // the table below, create random data using a simple SplitMix rng that can be ported here
-        // as is without dependening on other po
+        // as is without depending on other po
         let mut ret = Vec::with_capacity(n + 7);
 
         let mut state = seed;

@@ -26,6 +26,11 @@ lazy_static::lazy_static! {
     };
 }
 
+/// Whole seconds for an optional duration, rounding up. [`None`] maps to `0`.
+pub(crate) fn duration_to_expiration_secs_ceil(expiration: Option<Duration>) -> u64 {
+    expiration.map_or(0, |d| d.as_secs_f64().ceil() as u64)
+}
+
 /// A merged byte/chunk range for a single xorb.
 #[derive(Clone, Debug)]
 pub(crate) struct MergedRange {

@@ -65,7 +65,11 @@ impl XetSession {
             },
             session_id: uuid::Uuid::new_v4().to_string(),
         };
-        let upload = FileUploadSession::new(Arc::new(config));
+        let ctx = xet_runtime::core::XetContext::from_external(
+            tokio::runtime::Handle::current(),
+            xet_runtime::config::XetConfig::new(),
+        );
+        let upload = FileUploadSession::new(ctx, Arc::new(config));
 
         Self {
             upload: Arc::new(upload),

@@ -20,24 +20,28 @@ clap = { workspace = true }
 git-url-parse = { workspace = true }
 git2 = { workspace = true }
 http = { workspace = true }
-rand_core = { workspace = true }
+rand_core = { workspace = true, optional = true }
 reqwest = { workspace = true }
 reqwest-middleware = { workspace = true }
-russh = { workspace = true }
 rust-netrc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 shell-words = { workspace = true }
-tempfile = { workspace = true }
+russh = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+rand_core = { workspace = true }
+russh = { workspace = true }
 serial_test = { workspace = true }
+tempfile = { workspace = true }
 
 [features]
-git-xet-for-integration-test = []
+smoke-test = []
+git-xet-for-integration-test = ["russh", "rand_core"]
 git2-vendored-openssl = ["git2/vendored-openssl"]
+simulation = ["xet-data/simulation", "xet-client/simulation", "xet-pkg/simulation"]
 
 # tell cargo-machete a renamed crate
 [package.metadata.cargo-machete.renamed]

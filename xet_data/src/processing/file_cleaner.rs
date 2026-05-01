@@ -8,7 +8,7 @@ use tracing::{Instrument, debug_span, info, instrument};
 use xet_core_structures::merklehash::ChunkHashList;
 use xet_core_structures::metadata_shard::Sha256;
 use xet_core_structures::metadata_shard::file_structs::FileMetadataExt;
-use xet_runtime::core::{XetRuntime, xet_config};
+use xet_runtime::core::XetContext;
 
 use super::XetFileInfo;
 use super::deduplication_interface::UploadSessionDataManager;
@@ -54,6 +54,8 @@ impl From<Option<Sha256>> for Sha256Policy {
 
 /// A class that encapsulates the clean and data task around a single file.
 pub struct SingleFileCleaner {
+    ctx: XetContext,
+
     // File name, if known.
     file_name: Option<Arc<str>>,
 
@@ -87,15 +89,17 @@ impl SingleFileCleaner {
         sha256: Sha256Policy,
         session: Arc<FileUploadSession>,
     ) -> Self {
-        let deduper = FileDeduper::new(UploadSessionDataManager::new(session.clone()), file_id);
+        let ctx = session.ctx.clone();
+        let deduper = FileDeduper::new(UploadSessionDataManager::new(session.clone()), file_id, ctx.clone());
 
         let (sha_generator, provided_sha256) = match sha256 {
-            Sha256Policy::Compute => (Some(Sha256Generator::default()), None),
+            Sha256Policy::Compute => (Some(Sha256Generator::new(ctx.clone())), None),
             Sha256Policy::Provided(hash) => (None, Some(hash)),
             Sha256Policy::Skip => (None, None),
         };
 
         Self {
+            ctx,
             file_name,
             file_id,
             dedup_manager_fut: Box::pin(async move { Ok(deduper) }),
@@ -130,23 +134,27 @@ impl SingleFileCleaner {
     }
 
     pub async fn add_data(&mut self, data: &[u8]) -> Result<()> {
-        let block_size = *xet_config().data.ingestion_block_size as usize;
+        self.add_data_from_bytes(Bytes::copy_from_slice(data)).await
+    }
+
+    pub async fn add_data_from_bytes(&mut self, data: Bytes) -> Result<()> {
+        let block_size = *self.ctx.config.data.ingestion_block_size as usize;
         if data.len() > block_size {
             let mut pos = 0;
             while pos < data.len() {
                 let next_pos = usize::min(pos + block_size, data.len());
-                self.add_data_impl(Bytes::copy_from_slice(&data[pos..next_pos])).await?;
+                self.add_data_chunk_impl(data.slice(pos..next_pos)).await?;
                 pos = next_pos;
             }
         } else {
-            self.add_data_impl(Bytes::copy_from_slice(data)).await?;
+            self.add_data_chunk_impl(data).await?;
         }
 
         Ok(())
     }
 
     #[instrument(skip_all, level="debug", name = "FileCleaner::add_data", fields(file_name=self.file_name.as_ref().map(|s|s.to_string()), len=data.len()))]
-    pub(crate) async fn add_data_impl(&mut self, data: Bytes) -> Result<()> {
+    async fn add_data_chunk_impl(&mut self, data: Bytes) -> Result<()> {
         // If the file size was not specified at the beginning, then incrementally update tho total size with
         // how much data we know about.
         self.session
@@ -157,9 +165,9 @@ impl SingleFileCleaner {
         let chunk_data_jh = {
             let mut chunker = std::mem::take(&mut self.chunker);
             let data = data.clone();
-            let rt = XetRuntime::current();
+            let runtime = self.ctx.runtime.clone();
 
-            rt.spawn_blocking(move || {
+            runtime.spawn_blocking(move || {
                 let chunks: Arc<[Chunk]> = Arc::from(chunker.next_block_bytes(&data, false));
                 (chunks, chunker)
             })

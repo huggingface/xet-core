@@ -79,4 +79,5 @@ crate::config_group!({
     ///
     /// Use the environment variable `HF_XET_RECONSTRUCTION_USE_VECTORED_WRITE` to set this value.
     ref use_vectored_write: bool = true;
+
 });

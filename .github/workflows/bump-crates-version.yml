@@ -1,0 +1,86 @@
+name: Crates.io Release — Bump versions
+run-name: crates.io version bump ${{ inputs.version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g. 1.6.0, no v prefix)'
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump_crates_version:
+    name: Bump crate versions and create PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - name: Install Rust 1.94
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
+        with:
+          toolchain: 1.94.1
+      - uses: ./.github/actions/cache-rust-build
+
+      - name: Update crate versions
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          # Update version only within [workspace.package] section
+          awk -v ver="$VERSION" '
+            /^\[workspace\.package\]/ { in_wp=1 }
+            /^\[/ && !/^\[workspace\.package\]/ { in_wp=0 }
+            in_wp && /^version = / { printf "version = \"%s\"\n", ver; next }
+            { print }
+          ' Cargo.toml > Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml
+
+          # Update dependency version fields for the four released crates only
+          find . -name "Cargo.toml" \
+            -not -path "./hf_xet/*" \
+            -not -path "./git_xet/*" \
+            -not -path "./wasm/*" \
+            -not -path "./target/*" \
+            -exec sed -i \
+              -e 's/\(xet-runtime = { version = "\)[^"]*"/\1'"$VERSION"'"/g' \
+              -e 's/\(xet-core-structures = { version = "\)[^"]*"/\1'"$VERSION"'"/g' \
+              -e 's/\(xet-client = { version = "\)[^"]*"/\1'"$VERSION"'"/g' \
+              -e 's/\(xet-data = { version = "\)[^"]*"/\1'"$VERSION"'"/g' \
+              {} +
+
+      - name: Check workspace compiles
+        run: cargo build
+
+      - name: Run tests
+        run: cargo test --workspace
+
+      - uses: ./.github/actions/build-wasm
+
+      - name: Build hf-xet wheel
+        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1
+        with:
+          command: develop
+          sccache: 'true'
+          working-directory: hf_xet
+
+      - name: Create version bump PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          BRANCH="crates-release/${VERSION}"
+          git config user.name "Hugging Face Bot (Crates release)"
+          git config user.email "bot+xet@huggingface.co"
+          git checkout -b "$BRANCH"
+          git add -u
+          git commit -m "chore: bump crate versions to ${VERSION}"
+          git push origin "$BRANCH"
+          PR_URL=$(gh pr create \
+            --title "chore: bump crate versions to ${VERSION}" \
+            --body "Automated version bump to ${VERSION} for crates.io release. After merging, manually trigger the \`crates-release\` workflow to publish to crates.io." \
+            --base main \
+            --head "$BRANCH")
+          echo "Created PR: ${PR_URL}"
+          echo "Merge this PR, then manually trigger the crates-release workflow to publish."

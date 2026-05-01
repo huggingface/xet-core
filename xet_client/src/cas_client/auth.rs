@@ -3,8 +3,12 @@ use std::sync::Arc;
 #[cfg(not(target_family = "wasm"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use derivative::Derivative;
+use reqwest_middleware::ClientWithMiddleware;
 use thiserror::Error;
+use tracing::info;
+use xet_runtime::core::XetContext;
+
+use crate::common::auth::CredentialHelper;
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -59,17 +63,100 @@ impl TokenRefresher for ErrTokenRefresher {
     }
 }
 
+/// Token refresher that fetches a new token by making an authenticated GET request to a URL.
+///
+/// An optional [`CredentialHelper`](crate::common::auth::CredentialHelper) is applied to the
+/// request before it is sent; pass `None` when no additional credentials are needed.
+pub struct DirectRefreshRouteTokenRefresher {
+    ctx: XetContext,
+    refresh_route: String,
+    client: ClientWithMiddleware,
+    cred_helper: Option<Arc<dyn CredentialHelper>>,
+}
+
+impl std::fmt::Debug for DirectRefreshRouteTokenRefresher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DirectRefreshRouteTokenRefresher")
+            .field("refresh_route", &self.refresh_route)
+            .finish_non_exhaustive()
+    }
+}
+
+impl DirectRefreshRouteTokenRefresher {
+    pub fn new(
+        ctx: XetContext,
+        refresh_route: impl Into<String>,
+        client: ClientWithMiddleware,
+        cred_helper: Option<Arc<dyn CredentialHelper>>,
+    ) -> Self {
+        Self {
+            ctx,
+            refresh_route: refresh_route.into(),
+            client,
+            cred_helper,
+        }
+    }
+
+    pub async fn get_cas_jwt(&self) -> Result<crate::hub_client::CasJWTInfo, crate::ClientError> {
+        let client = self.client.clone();
+        let refresh_route = self.refresh_route.clone();
+        let cred_helper = self.cred_helper.clone();
+
+        let jwt_info: crate::hub_client::CasJWTInfo =
+            super::retry_wrapper::RetryWrapper::new(self.ctx.clone(), "xet-token")
+                .run_and_extract_json(move || {
+                    let refresh_route = refresh_route.clone();
+                    let client = client.clone();
+                    let cred_helper = cred_helper.clone();
+                    async move {
+                        let req = client
+                            .get(&refresh_route)
+                            .with_extension(crate::common::http_client::Api("xet-token"));
+                        let req = if let Some(helper) = cred_helper {
+                            helper
+                                .fill_credential(req)
+                                .await
+                                .map_err(reqwest_middleware::Error::middleware)?
+                        } else {
+                            req
+                        };
+                        req.send().await
+                    }
+                })
+                .await?;
+
+        Ok(jwt_info)
+    }
+}
+
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
+impl TokenRefresher for DirectRefreshRouteTokenRefresher {
+    async fn refresh(&self) -> Result<TokenInfo, AuthError> {
+        let jwt_info = self.get_cas_jwt().await.map_err(AuthError::token_refresh_failure)?;
+
+        Ok((jwt_info.access_token, jwt_info.exp))
+    }
+}
+
 /// Shared configuration for token-based auth
-#[derive(Clone, Derivative)]
-#[derivative(Debug)]
+#[derive(Clone)]
 pub struct AuthConfig {
     /// Initial token to use
     pub token: String,
     /// Initial token expiration time in epoch seconds
     pub token_expiration: u64,
     /// A function to refresh tokens.
-    #[derivative(Debug = "ignore")]
     pub token_refresher: Arc<dyn TokenRefresher>,
+}
+
+impl Debug for AuthConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthConfig")
+            .field("token", &self.token)
+            .field("token_expiration", &self.token_expiration)
+            .finish_non_exhaustive()
+    }
 }
 
 impl AuthConfig {
@@ -118,6 +205,7 @@ impl TokenProvider {
             let (new_token, new_expiry) = self.refresher.refresh().await?;
             self.token = new_token;
             self.expiration = new_expiry;
+            info!(new_expiry = new_expiry, "Token refreshed");
         }
         Ok(self.token.clone())
     }

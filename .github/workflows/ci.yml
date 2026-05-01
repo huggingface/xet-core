@@ -15,8 +15,8 @@ jobs:
     name: Rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
         with:
           toolchain: nightly
           components: rustfmt
@@ -27,17 +27,30 @@ jobs:
   detect-unused-dependencies:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - name: Machete
-        uses: bnjbvr/cargo-machete@main
+        uses: bnjbvr/cargo-machete@b81ce1560c5fbd0210cb66d88bf210329ff04266  # main
+  check-bench-compiles:
+    name: Check benchmarks compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
+        with:
+          toolchain: 1.94.1
+      - uses: ./.github/actions/cache-rust-build
+      - name: Compile benchmarks
+        run: |
+          cargo bench --no-run --workspace --exclude git_xet
   build_and_test-linux:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
-      - name: Install Rust 1.89
-        uses: dtolnay/rust-toolchain@1.89.0
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - name: Install Rust 1.94
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
         with:
+          toolchain: 1.94.1
           components: clippy
       - uses: ./.github/actions/cache-rust-build
       - name: Lint
@@ -51,13 +64,26 @@ jobs:
           git lfs install
       - name: Build and Test
         run: |
-          cargo test --verbose --no-fail-fast --features "strict git-xet-for-integration-test"
+          cargo test --verbose --no-fail-fast --features "strict simulation git-xet-for-integration-test"
       - name: Build and Test hf_xet
         run: |
           cd hf_xet && cargo test --verbose --no-fail-fast
-      - name: Check benchmarks compile
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: '3.10'
+      - name: Create venv
+        run: python3 -m venv .venv
+      - name: Build wheel
+        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1
+        with:
+          command: develop
+          sccache: 'true'
+          working-directory: hf_xet
+      - name: Python integration tests (hf_xet)
         run: |
-          cargo bench --no-run
+          source .venv/bin/activate
+          pip install pytest
+          pytest hf_xet/tests/ -v
       - name: Check Cargo.lock has no uncommitted changes
         run: |
           # the build and test steps would update Cargo.lock if it is out of date
@@ -66,30 +92,44 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
-      - name: Install Rust 1.89
-        uses: dtolnay/rust-toolchain@1.89.0
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - name: Install Rust 1.94
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
         with:
-          components: clippy
+          toolchain: 1.94.1
       - uses: ./.github/actions/cache-rust-build
       - name: Build and Test
         run: |
-          cargo test --verbose --no-fail-fast --features "strict git-xet-for-integration-test"
+          cargo test --verbose --no-fail-fast --features "strict simulation git-xet-for-integration-test"
       - name: Build and Test hf_xet
         run: |
           cd hf_xet && cargo test --verbose --no-fail-fast
-      - name: Check benchmarks compile
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: '3.10'
+      - name: Create venv
+        run: python -m venv .venv
+      - name: Build wheel
+        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1
+        with:
+          command: develop
+          sccache: 'true'
+          working-directory: hf_xet
+      - name: Python integration tests (hf_xet)
+        shell: bash
         run: |
-          cargo bench --no-run
+          source .venv/Scripts/activate
+          pip install pytest
+          pytest hf_xet/tests/ -v
   build_and_test-macos:
     runs-on: macos-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
-      - name: Install Rust 1.89
-        uses: dtolnay/rust-toolchain@1.89.0
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - name: Install Rust 1.94
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
         with:
-          components: clippy
+          toolchain: 1.94.1
       - name: Set up Git LFS
         run: |
           brew install git-lfs
@@ -97,34 +137,52 @@ jobs:
       - uses: ./.github/actions/cache-rust-build
       - name: Build and Test
         run: |
-          cargo test --verbose --no-fail-fast --features "strict git-xet-for-integration-test"
+          cargo test --verbose --no-fail-fast --features "strict simulation git-xet-for-integration-test"
       - name: Build and Test hf_xet
         run: |
           cd hf_xet && cargo test --verbose --no-fail-fast
-      - name: Check benchmarks compile
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: '3.10'
+      - name: Create venv
+        run: python3 -m venv .venv
+      - name: Build wheel
+        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1
+        with:
+          command: develop
+          sccache: 'true'
+          working-directory: hf_xet
+      - name: Python integration tests (hf_xet)
         run: |
-          cargo bench --no-run
+          source .venv/bin/activate
+          pip install pytest
+          pytest hf_xet/tests/ -v
   build_and_test-wasm:
     name: Build WASM
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
-      - name: Install Rust nightly
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          targets: wasm32-unknown-unknown
-          components: rust-src
-      - uses: ./.github/actions/cache-rust-build
-      - name: Install wasm-bindgen-cli and wasm-pack
-        run: |
-          cargo install --version 0.2.100 wasm-bindgen-cli
-          cargo install --version 0.13.1 wasm-pack
-      - name: Build hf_xet_thin_wasm
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: ./.github/actions/build-wasm
+      - name: Check hf_xet_thin_wasm Cargo.lock has no uncommitted changes
         working-directory: wasm/hf_xet_thin_wasm
         run: |
-          ./build_wasm.sh
-      - name: Build hf_xet_wasm
+          # the build steps would update Cargo.lock if it is out of date
+          test -z "$(git status --porcelain Cargo.lock)" || (echo "hf_xet_thin_wasm Cargo.lock has uncommitted changes!" && exit 1)
+      - name: Check hf_xet_wasm Cargo.lock has no uncommitted changes
         working-directory: wasm/hf_xet_wasm
         run: |
-          ./build_wasm.sh
+          # the build steps would update Cargo.lock if it is out of date
+          test -z "$(git status --porcelain Cargo.lock)" || (echo "hf_xet_wasm Cargo.lock has uncommitted changes!" && exit 1)
+  cargo-audit:
+    name: Cargo Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
+        with:
+          toolchain: 1.94.1
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit
+      - name: Run cargo audit
+        run: cargo audit -D warnings

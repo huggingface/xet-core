@@ -3,8 +3,12 @@ name = "xet-runtime"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+homepage.workspace = true
 repository.workspace = true
-description = "Async runtime, configuration, logging, and utility infrastructure for the Hugging Face Xet client tools"
+description = "Async runtime, configuration, logging, and utility infrastructure for the Hugging Face Xet client tools."
+readme = "README.md"
+keywords = ["huggingface"]
+categories = ["artificial-intelligence", "asynchronous"]
 
 [lib]
 name = "xet_runtime"
@@ -17,7 +21,7 @@ colored = { workspace = true }
 const-str = "1.1"
 ctor = { workspace = true }
 dirs = { workspace = true }
-duration-str = { workspace = true }
+humantime = { workspace = true }
 git-version = { workspace = true }
 konst = "0.4"
 lazy_static = { workspace = true }
@@ -32,7 +36,6 @@ sysinfo = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
-futures-util = { workspace = true }
 pin-project = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -49,11 +52,25 @@ winapi = { workspace = true }
 whoami = { workspace = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
-tokio = { workspace = true, features = ["sync", "macros", "io-util", "rt", "time"] }
+tokio = { workspace = true, features = [
+    "sync",
+    "macros",
+    "io-util",
+    "rt",
+    "time",
+] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 shellexpand = { workspace = true, features = ["path"] }
-tokio = { workspace = true, features = ["time", "rt", "macros", "sync", "test-util", "io-util", "rt-multi-thread"] }
+tokio = { workspace = true, features = [
+    "time",
+    "rt",
+    "macros",
+    "sync",
+    "test-util",
+    "io-util",
+    "rt-multi-thread",
+] }
 tokio-util = { workspace = true, features = ["io"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -61,18 +78,20 @@ libc = { workspace = true }
 
 [features]
 strict = []
+smoke-test = []
 elevated_information_level = []
 no-default-cache = []
+fd-track = []
 python = ["dep:pyo3"]
 tokio-console = ["dep:console-subscriber"]
+simulation = []
 
 [[bin]]
 name = "log_test_executable"
 path = "tests/bin/log_test_executable.rs"
 
 [dev-dependencies]
-xet-core-structures = { version = "1.4.0", path = "../xet_core_structures" }
-
+futures-util = { workspace = true }
 rand = { workspace = true }
 serial_test = { workspace = true }
 tempfile = { workspace = true }

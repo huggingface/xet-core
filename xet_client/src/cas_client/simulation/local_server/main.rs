@@ -47,6 +47,7 @@ use anyhow::Result;
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 use xet_client::cas_client::{LocalServer, LocalServerConfig};
+use xet_runtime::core::XetContext;
 
 /// A local HTTP server that wraps a DirectAccessClient for testing and development.
 ///
@@ -116,7 +117,8 @@ async fn main() -> Result<()> {
     }
     tracing::info!("Listening on: {}:{}", config.host, config.port);
 
-    let server: xet_client::cas_client::LocalServer = LocalServer::new(config).await?;
+    let ctx = XetContext::default().map_err(|e| anyhow::anyhow!("{e}"))?;
+    let server: xet_client::cas_client::LocalServer = LocalServer::new(ctx, config).await?;
     server.run().await?;
 
     Ok(())

@@ -10,8 +10,8 @@ use http::header::RANGE;
 use super::handlers::{FileRangeVariant, ServerState, error_to_response, parse_range_header};
 use super::simulation_types::{
     ConfigDelayRangeRequest, ConfigDurationRequest, FetchTermDataRequest, FetchTermDataResponse, FileShardsEntry,
-    FileSizeResponse, XorbExistsResponse, XorbLengthResponse, XorbRangesRequest, XorbRangesResponse,
-    XorbRawLengthResponse,
+    FileSizeResponse, HashWithTag, TagDeleteRequest, TagDeleteResponse, XorbExistsResponse, XorbLengthResponse,
+    XorbRangesRequest, XorbRangesResponse, XorbRawLengthResponse,
 };
 use crate::cas_types::{FileRange, HexMerkleHash};
 
@@ -36,11 +36,17 @@ pub fn simulation_routes() -> Router<ServerState> {
         .route("/config/api_delay", post(set_api_delay))
         .route("/fetch_term_data", post(fetch_term_data))
         // DeletionControlableClient routes
+        .route("/xorbs_with_tags", get(list_xorbs_and_tags))
+        .route("/xorbs/{hash}/tag_delete", post(delete_xorb_if_tag_matches))
         .route("/shards", get(list_shard_entries))
+        .route("/shards_with_tags", get(list_shards_with_tags))
         .route("/shards/{hash}", get(get_shard_bytes).delete(delete_shard_entry))
+        .route("/shards/{hash}/tag_delete", post(delete_shard_if_tag_matches))
+        .route("/shards/{hash}/dedup_entries", delete(remove_shard_dedup_entries))
         .route("/file_entries", get(list_file_shard_entries))
         .route("/file_entries/{hash}", delete(delete_file_entry))
         .route("/verify_integrity", post(verify_integrity))
+        .route("/verify_all_reachable", post(verify_all_reachable))
 }
 
 // ---------------------------------------------------------------------------
@@ -52,11 +58,6 @@ async fn list_xorbs(State(state): State<ServerState>) -> Response {
         Ok(hashes) => Json(hashes).into_response(),
         Err(e) => error_to_response(e),
     }
-}
-
-async fn delete_xorb(State(state): State<ServerState>, Path(HexMerkleHash(hash)): Path<HexMerkleHash>) -> Response {
-    state.client.delete_xorb(&hash).await;
-    StatusCode::NO_CONTENT.into_response()
 }
 
 async fn get_full_xorb(State(state): State<ServerState>, Path(HexMerkleHash(hash)): Path<HexMerkleHash>) -> Response {
@@ -194,6 +195,68 @@ async fn fetch_term_data(State(state): State<ServerState>, Json(body): Json<Fetc
 // DeletionControlableClient handlers
 // ---------------------------------------------------------------------------
 
+async fn delete_xorb(State(state): State<ServerState>, Path(HexMerkleHash(hash)): Path<HexMerkleHash>) -> Response {
+    let Some(dc) = &state.deletion_client else {
+        return not_implemented();
+    };
+    dc.delete_xorb(&hash).await;
+    StatusCode::NO_CONTENT.into_response()
+}
+
+async fn list_xorbs_and_tags(State(state): State<ServerState>) -> Response {
+    let Some(dc) = &state.deletion_client else {
+        return not_implemented();
+    };
+    match dc.list_xorbs_and_tags().await {
+        Ok(entries) => {
+            let response: Vec<HashWithTag> = entries.into_iter().map(|(hash, tag)| HashWithTag { hash, tag }).collect();
+            Json(response).into_response()
+        },
+        Err(e) => error_to_response(e),
+    }
+}
+
+async fn delete_xorb_if_tag_matches(
+    State(state): State<ServerState>,
+    Path(HexMerkleHash(hash)): Path<HexMerkleHash>,
+    Json(body): Json<TagDeleteRequest>,
+) -> Response {
+    let Some(dc) = &state.deletion_client else {
+        return not_implemented();
+    };
+    match dc.delete_xorb_if_tag_matches(&hash, &body.tag).await {
+        Ok(deleted) => Json(TagDeleteResponse { deleted }).into_response(),
+        Err(e) => error_to_response(e),
+    }
+}
+
+async fn list_shards_with_tags(State(state): State<ServerState>) -> Response {
+    let Some(dc) = &state.deletion_client else {
+        return not_implemented();
+    };
+    match dc.list_shards_with_tags().await {
+        Ok(entries) => {
+            let response: Vec<HashWithTag> = entries.into_iter().map(|(hash, tag)| HashWithTag { hash, tag }).collect();
+            Json(response).into_response()
+        },
+        Err(e) => error_to_response(e),
+    }
+}
+
+async fn delete_shard_if_tag_matches(
+    State(state): State<ServerState>,
+    Path(HexMerkleHash(hash)): Path<HexMerkleHash>,
+    Json(body): Json<TagDeleteRequest>,
+) -> Response {
+    let Some(dc) = &state.deletion_client else {
+        return not_implemented();
+    };
+    match dc.delete_shard_if_tag_matches(&hash, &body.tag).await {
+        Ok(deleted) => Json(TagDeleteResponse { deleted }).into_response(),
+        Err(e) => error_to_response(e),
+    }
+}
+
 async fn list_shard_entries(State(state): State<ServerState>) -> Response {
     let Some(dc) = &state.deletion_client else {
         return not_implemented();
@@ -256,11 +319,34 @@ async fn delete_file_entry(
     }
 }
 
+async fn remove_shard_dedup_entries(
+    State(state): State<ServerState>,
+    Path(HexMerkleHash(hash)): Path<HexMerkleHash>,
+) -> Response {
+    let Some(dc) = &state.deletion_client else {
+        return not_implemented();
+    };
+    match dc.remove_shard_dedup_entries(&hash).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => error_to_response(e),
+    }
+}
+
 async fn verify_integrity(State(state): State<ServerState>) -> Response {
     let Some(dc) = &state.deletion_client else {
         return not_implemented();
     };
     match dc.verify_integrity().await {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(e) => error_to_response(e),
+    }
+}
+
+async fn verify_all_reachable(State(state): State<ServerState>) -> Response {
+    let Some(dc) = &state.deletion_client else {
+        return not_implemented();
+    };
+    match dc.verify_all_reachable().await {
         Ok(()) => StatusCode::OK.into_response(),
         Err(e) => error_to_response(e),
     }

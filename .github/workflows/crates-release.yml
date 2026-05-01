@@ -1,0 +1,52 @@
+name: Crates.io Release — Publish
+# Triggered manually after merging the version-bump PR created by bump-crates-version.yml.
+
+# Trusted Publishing via OIDC — no long-lived secrets required.
+# Configure once per crate on crates.io: Settings → Trusted Publishing → Add GitHub.
+# Set Owner, Repository, Workflow name (crates-release.yml), and Environment (crates-release).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: crates-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    environment: crates-release
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: main
+
+      - name: Install Rust 1.94
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
+        with:
+          toolchain: 1.94.1
+
+      - name: Authenticate to crates.io
+        id: auth
+        uses: rust-lang/crates-io-auth-action@bbd81622f20ce9e2dd9622e3218b975523e45bbe # v1.0.4
+
+      - name: Publish crates
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          # Publish in dependency order, sleeping between each to allow the
+          # crates.io index to propagate before dependent crates are published.
+          cargo publish -p xet-runtime
+          sleep 30
+          cargo publish -p xet-core-structures
+          sleep 30
+          cargo publish -p xet-client
+          sleep 30
+          cargo publish -p xet-data
+          sleep 30
+          cargo publish -p hf-xet

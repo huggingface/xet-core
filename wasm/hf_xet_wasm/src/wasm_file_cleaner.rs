@@ -75,7 +75,11 @@ impl SingleFileCleaner {
             _file_id: file_id,
             session: session.clone(),
             cpu_task: CPUTask::CurrentThread((Chunker::default(), ShaGeneration::new(sha256))),
-            dedup_manager: FileDeduper::new(UploadSessionDataManager::new(session), file_id),
+            dedup_manager: FileDeduper::new(
+                UploadSessionDataManager::new(session.clone()),
+                file_id,
+                session.ctx.clone(),
+            ),
         }
     }
 
@@ -113,7 +117,11 @@ impl SingleFileCleaner {
             _file_id: file_id,
             session: session.clone(),
             cpu_task,
-            dedup_manager: FileDeduper::new(UploadSessionDataManager::new(session), file_id),
+            dedup_manager: FileDeduper::new(
+                UploadSessionDataManager::new(session.clone()),
+                file_id,
+                session.ctx.clone(),
+            ),
         }
     }
 

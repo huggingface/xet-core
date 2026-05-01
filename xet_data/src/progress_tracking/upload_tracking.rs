@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 use more_asserts::{debug_assert_ge, debug_assert_le};
 use xet_core_structures::MerkleHashMap;
 use xet_core_structures::merklehash::MerkleHash;
+use xet_runtime::utils::UniqueId;
 
-use super::UniqueID;
 use super::progress_types::{GroupProgress, ItemProgressUpdater};
 
 pub struct FileXorbDependency {
@@ -47,7 +47,7 @@ struct XorbPartCompletionStats {
 
 /// Represents a file that depends on one or more xorbs.
 struct FileDependency {
-    tracking_id: UniqueID,
+    tracking_id: UniqueId,
     updater: Arc<ItemProgressUpdater>,
     name: Arc<str>,
     total_bytes: u64,
@@ -422,10 +422,10 @@ mod tests {
         let group = GroupProgress::new();
         let tracker = CompletionTracker::new(group.clone());
 
-        let updater_a = group.new_item(UniqueID::new(), "fileA");
+        let updater_a = group.new_item(UniqueId::new(), "fileA");
         let file_a = tracker.register_new_file(updater_a, Some(100));
 
-        let updater_b = group.new_item(UniqueID::new(), "fileB");
+        let updater_b = group.new_item(UniqueId::new(), "fileB");
         let file_b = tracker.register_new_file(updater_b, Some(50));
 
         let (done, total) = tracker.status();
@@ -475,10 +475,10 @@ mod tests {
         let group = GroupProgress::new();
         let tracker = CompletionTracker::new(group.clone());
 
-        let updater_a = group.new_item(UniqueID::new(), "fileA");
+        let updater_a = group.new_item(UniqueId::new(), "fileA");
         let file_a = tracker.register_new_file(updater_a, Some(200));
 
-        let updater_b = group.new_item(UniqueID::new(), "fileB");
+        let updater_b = group.new_item(UniqueId::new(), "fileB");
         let file_b = tracker.register_new_file(updater_b, Some(300));
 
         let (done, total) = tracker.status();
@@ -557,7 +557,7 @@ mod tests {
         let group = GroupProgress::new();
         let tracker = CompletionTracker::new(group.clone());
 
-        let updater = group.new_item(UniqueID::new(), "bigFile");
+        let updater = group.new_item(UniqueId::new(), "bigFile");
         let f = tracker.register_new_file(updater, Some(300));
 
         let x1 = MerkleHash::random_from_seed(1);
@@ -614,7 +614,7 @@ mod tests {
         let group = GroupProgress::new();
         let tracker = CompletionTracker::new(group.clone());
 
-        let updater = group.new_item(UniqueID::new(), "lateFile");
+        let updater = group.new_item(UniqueId::new(), "lateFile");
         let file_id = tracker.register_new_file(updater, Some(50));
 
         let x = MerkleHash::random_from_seed(999);
@@ -643,7 +643,7 @@ mod tests {
         let group = GroupProgress::new();
         let tracker = CompletionTracker::new(group.clone());
 
-        let updater = group.new_item(UniqueID::new(), "someFile");
+        let updater = group.new_item(UniqueId::new(), "someFile");
         let file_id = tracker.register_new_file(updater, Some(100));
         let x = MerkleHash::random_from_seed(123);
 
@@ -672,7 +672,7 @@ mod tests {
         let group = GroupProgress::new();
         let tracker = CompletionTracker::new(group.clone());
 
-        let updater = group.new_item(UniqueID::new(), "growingFile");
+        let updater = group.new_item(UniqueId::new(), "growingFile");
         let file_id = tracker.register_new_file(updater, None);
 
         let (done, total) = tracker.status();
@@ -716,7 +716,7 @@ mod tests {
         let group = GroupProgress::new();
         let tracker = CompletionTracker::new(group.clone());
 
-        let updater = group.new_item(UniqueID::new(), "streamFile");
+        let updater = group.new_item(UniqueId::new(), "streamFile");
         let file_id = tracker.register_new_file(updater, None);
 
         let x1 = MerkleHash::random_from_seed(10);
@@ -769,10 +769,10 @@ mod tests {
         let group = GroupProgress::new();
         let tracker = CompletionTracker::new(group.clone());
 
-        let updater_a = group.new_item(UniqueID::new(), "fileA");
+        let updater_a = group.new_item(UniqueId::new(), "fileA");
         let file_a = tracker.register_new_file(updater_a, Some(100));
 
-        let updater_b = group.new_item(UniqueID::new(), "fileB");
+        let updater_b = group.new_item(UniqueId::new(), "fileB");
         let file_b = tracker.register_new_file(updater_b, None);
 
         let (done, total) = tracker.status();
@@ -821,7 +821,7 @@ mod tests {
         let group = GroupProgress::new();
         let tracker = CompletionTracker::new(group.clone());
 
-        let updater = group.new_item(UniqueID::new(), "fixedFile");
+        let updater = group.new_item(UniqueId::new(), "fixedFile");
         let file_id = tracker.register_new_file(updater, Some(100));
 
         tracker.increment_file_size(file_id, 999);
@@ -846,7 +846,7 @@ mod tests {
         let group = GroupProgress::new();
         let tracker = CompletionTracker::new(group.clone());
 
-        let updater = group.new_item(UniqueID::new(), "partialFile");
+        let updater = group.new_item(UniqueId::new(), "partialFile");
         let file_id = tracker.register_new_file(updater, None);
 
         let x = MerkleHash::random_from_seed(42);

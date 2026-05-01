@@ -5,30 +5,30 @@ use xet_client::cas_client::{Client, RemoteClient};
 use super::configurations::TranslatorConfig;
 use crate::error::Result;
 
-pub(crate) async fn create_remote_client(
+pub async fn create_remote_client(
     config: &TranslatorConfig,
     session_id: &str,
     dry_run: bool,
 ) -> Result<Arc<dyn Client>> {
     let session = &config.session;
+    let runtime = config.ctx.clone();
 
-    if let Some(local_path) = session.local_path() {
+    if let Some(local_path) = session.local_path(&config.ctx) {
         #[cfg(not(target_family = "wasm"))]
         {
             let xorb_path = local_path.join("xet").join("xorbs");
-            Ok(xet_client::cas_client::LocalClient::new(xorb_path).await?)
+            Ok(xet_client::cas_client::LocalClient::new(runtime, xorb_path).await?)
         }
         #[cfg(target_family = "wasm")]
-        unimplemented!("Local file system access is not supported in WASM builds")
-    } else if session.is_memory() {
-        #[cfg(not(target_family = "wasm"))]
         {
-            Ok(xet_client::cas_client::MemoryClient::new())
+            let _ = local_path;
+            unimplemented!("Local file system access is not available in WASM")
         }
-        #[cfg(target_family = "wasm")]
-        unimplemented!("In-memory client is not supported in WASM builds")
+    } else if session.is_memory() {
+        Ok(xet_client::cas_client::MemoryClient::new(runtime))
     } else {
         Ok(RemoteClient::new(
+            runtime,
             &session.endpoint,
             &session.auth,
             session_id,

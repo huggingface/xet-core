@@ -1,3 +1,4 @@
+#![cfg(feature = "simulation")]
 //! Integration tests for the shard upload no-read-timeout client (XET-885).
 //!
 //! Verifies that shard uploads succeed even when the server takes a long time to process,
@@ -28,6 +29,7 @@ async fn test_shard_upload_succeeds_with_no_server_delay() {
 }
 
 #[tokio::test]
+#[cfg_attr(feature = "smoke-test", ignore)]
 async fn test_shard_upload_succeeds_with_slow_server() {
     let server = LocalTestServerBuilder::new().start().await;
 

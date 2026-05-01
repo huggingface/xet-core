@@ -9,17 +9,17 @@ use std::sync::Arc;
 use bytes::Bytes;
 use http::HeaderValue;
 use http::header::CONTENT_LENGTH;
-use rand::Rng;
+use rand::RngExt;
 use reqwest::{Body, Url};
 use serde_json;
 
 use super::super::adaptive_concurrency::ConnectionPermit;
-use super::super::http_client::Api;
 use super::super::interface::Client;
 use super::super::progress_tracked_streams::{ProgressCallback, UploadProgressStream};
 use super::super::remote_client::RemoteClient;
 use super::super::retry_wrapper::RetryWrapper;
 use super::local_server::ServerLatencyProfile;
+use crate::common::http_client::Api;
 use crate::error::{ClientError, Result};
 
 /// A wrapper around `RemoteClient` that provides simulation-specific methods for controlling
@@ -80,11 +80,11 @@ impl RemoteSimulationClient {
         let random_bytes = Bytes::from(random_data);
 
         let n_upload_bytes = random_bytes.len() as u64;
-        let block_size = xet_runtime::core::xet_config().client.upload_reporting_block_size;
+        let block_size = self.inner.ctx.config.client.upload_reporting_block_size;
 
         let api_tag = "simulation::dummy_upload";
 
-        RetryWrapper::new(api_tag)
+        RetryWrapper::new(self.inner.ctx.clone(), api_tag)
             .with_connection_permit(upload_permit, Some(n_upload_bytes))
             .run(move || {
                 let upload_stream = UploadProgressStream::new(random_bytes.clone(), block_size);
@@ -101,6 +101,54 @@ impl RemoteSimulationClient {
             .map_err(|e| ClientError::Other(format!("Failed to upload dummy data: {e}")))?;
 
         Ok(n_upload_bytes)
+    }
+
+    /// Triggers server-side integrity verification via `/simulation/verify_integrity`.
+    pub async fn simulation_verify_integrity(&self) -> Result<()> {
+        let url = Url::parse(&format!("{}/simulation/verify_integrity", self.inner.endpoint()))?;
+        let client = self.inner.http_client();
+
+        let response = client
+            .post(url)
+            .with_extension(Api("simulation::verify_integrity"))
+            .send()
+            .await
+            .map_err(|e| ClientError::Other(format!("Failed to send verify_integrity request: {e}")))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(ClientError::Other(format!(
+                "verify_integrity request failed with status {}: {}",
+                status, error_text
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Triggers server-side reachability verification via `/simulation/verify_all_reachable`.
+    pub async fn simulation_verify_all_reachable(&self) -> Result<()> {
+        let url = Url::parse(&format!("{}/simulation/verify_all_reachable", self.inner.endpoint()))?;
+        let client = self.inner.http_client();
+
+        let response = client
+            .post(url)
+            .with_extension(Api("simulation::verify_all_reachable"))
+            .send()
+            .await
+            .map_err(|e| ClientError::Other(format!("Failed to send verify_all_reachable request: {e}")))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(ClientError::Other(format!(
+                "verify_all_reachable request failed with status {}: {}",
+                status, error_text
+            )));
+        }
+
+        Ok(())
     }
 }
 

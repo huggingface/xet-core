@@ -7,7 +7,7 @@ use chunk_cache_bench::solid_cache::SolidCache;
 use chunk_cache_bench::ChunkCacheExt;
 use criterion::{criterion_group, BenchmarkId, Criterion};
 use rand::rngs::StdRng;
-use rand::{thread_rng, SeedableRng};
+use rand::{rng, SeedableRng};
 use tokio::task::JoinSet;
 
 const SEED: u64 = 42;
@@ -23,16 +23,17 @@ fn benchmark_cache_get<T: ChunkCacheExt>(c: &mut Criterion) {
     let mut rng = StdRng::seed_from_u64(SEED);
     let mut it: RandomEntryIterator<StdRng> = RandomEntryIterator::from_seed(SEED).with_range_len(RANGE_LEN);
 
+    let rt = tokio::runtime::Runtime::new().unwrap();
     for _ in 0..NUM_PUTS {
         let (key, range, offsets, data) = it.next().unwrap();
-        cache.put(&key, &range, &offsets, &data).unwrap();
+        rt.block_on(cache.put(&key, &range, &offsets, &data)).unwrap();
     }
     let name = format!("cache_get_{}", T::name());
     c.bench_function(name.as_str(), |b| {
         b.iter(|| {
             let key = random_key(&mut rng);
             let range = random_range(&mut rng);
-            cache.get(&key, &range).unwrap();
+            rt.block_on(cache.get(&key, &range)).unwrap();
         })
     });
 }
@@ -43,23 +44,23 @@ fn benchmark_cache_get_mt<T: ChunkCacheExt + 'static>(c: &mut Criterion) {
 
     let mut it: RandomEntryIterator<StdRng> = RandomEntryIterator::from_seed(SEED).with_range_len(RANGE_LEN);
 
+    let rt = tokio::runtime::Runtime::new().unwrap();
     for _ in 0..NUM_PUTS {
         let (key, range, offsets, data) = it.next().unwrap();
-        cache.put(&key, &range, &offsets, &data).unwrap();
+        rt.block_on(cache.put(&key, &range, &offsets, &data)).unwrap();
     }
-
-    let rt = tokio::runtime::Runtime::new().unwrap();
 
     c.bench_with_input(BenchmarkId::new("cache_get_mt", T::name()), &0, |b, _| {
         b.to_async(&rt).iter(|| async {
             let mut handles = JoinSet::new();
             for _ in 0..NUM_CONCURRENT_TASKS {
                 let c = cache.clone();
+                let (key, range) = {
+                    let mut rng = rng();
+                    (random_key(&mut rng), random_range(&mut rng))
+                };
                 handles.spawn(async move {
-                    let mut rng = thread_rng();
-                    let key = random_key(&mut rng);
-                    let range = random_range(&mut rng);
-                    c.get(&key, &range).unwrap()
+                    c.get(&key, &range).await.unwrap()
                 });
             }
             handles.join_all().await;
@@ -72,23 +73,25 @@ fn benchmark_cache_put_mt<T: ChunkCacheExt + 'static>(c: &mut Criterion) {
     let cache = T::_initialize(cache_root.path().to_path_buf(), CAPACITY).unwrap();
     let mut it: RandomEntryIterator<StdRng> = RandomEntryIterator::from_seed(SEED);
     let mut total_bytes = 0;
-    while total_bytes < CAPACITY {
-        let (key, range, chunk_byte_indices, data) = it.next().unwrap();
-        cache.put(&key, &range, &chunk_byte_indices, &data).unwrap();
-        total_bytes += data.len() as u64;
-    }
 
     let rt = tokio::runtime::Runtime::new().unwrap();
+    while total_bytes < CAPACITY {
+        let (key, range, chunk_byte_indices, data) = it.next().unwrap();
+        rt.block_on(cache.put(&key, &range, &chunk_byte_indices, &data)).unwrap();
+        total_bytes += data.len() as u64;
+    }
 
     c.bench_with_input(BenchmarkId::new("cache_put_mt", T::name()), &0, |b, _| {
         b.to_async(&rt).iter(|| async {
             let mut handles = JoinSet::new();
             for _ in 0..NUM_CONCURRENT_TASKS {
                 let c = cache.clone();
+                let (key, range, offsets, data) = {
+                    let mut it = RandomEntryIterator::new(rng());
+                    it.next().unwrap()
+                };
                 handles.spawn(async move {
-                    let mut it = RandomEntryIterator::new(thread_rng());
-                    let (key, range, offsets, data) = it.next().unwrap();
-                    c.put(&key, &range, &offsets, &data).unwrap();
+                    c.put(&key, &range, &offsets, &data).await.unwrap();
                 });
             }
             handles.join_all().await;
@@ -102,9 +105,11 @@ fn benchmark_cache_put<T: ChunkCacheExt + 'static>(c: &mut Criterion) {
 
     let mut it: RandomEntryIterator<StdRng> = RandomEntryIterator::from_seed(SEED);
     let mut total_bytes = 0;
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
     while total_bytes < CAPACITY {
         let (key, range, chunk_byte_indices, data) = it.next().unwrap();
-        cache.put(&key, &range, &chunk_byte_indices, &data).unwrap();
+        rt.block_on(cache.put(&key, &range, &chunk_byte_indices, &data)).unwrap();
         total_bytes += data.len() as u64;
     }
 
@@ -112,7 +117,7 @@ fn benchmark_cache_put<T: ChunkCacheExt + 'static>(c: &mut Criterion) {
     c.bench_function(name.as_str(), |b| {
         b.iter(|| {
             let (key, range, offsets, data) = it.next().unwrap();
-            cache.put(&key, &range, &offsets, &data).unwrap();
+            rt.block_on(cache.put(&key, &range, &offsets, &data)).unwrap();
         })
     });
 }
@@ -123,10 +128,11 @@ fn benchmark_cache_get_hits<T: ChunkCacheExt + 'static>(c: &mut Criterion) {
 
     let mut it: RandomEntryIterator<StdRng> = RandomEntryIterator::from_seed(SEED).with_range_len(RANGE_LEN);
 
+    let rt = tokio::runtime::Runtime::new().unwrap();
     let mut kr = Vec::with_capacity(NUM_PUTS as usize);
     for _ in 0..NUM_PUTS {
         let (key, range, offsets, data) = it.next().unwrap();
-        cache.put(&key, &range, &offsets, &data).unwrap();
+        rt.block_on(cache.put(&key, &range, &offsets, &data)).unwrap();
         kr.push((key, range));
     }
 
@@ -135,7 +141,7 @@ fn benchmark_cache_get_hits<T: ChunkCacheExt + 'static>(c: &mut Criterion) {
     c.bench_function(name.as_str(), |b| {
         b.iter(|| {
             let (key, range) = &kr[i];
-            cache.get(key, range).unwrap().unwrap();
+            rt.block_on(cache.get(key, range)).unwrap().unwrap();
             i = (i + 1) % NUM_PUTS as usize;
         })
     });

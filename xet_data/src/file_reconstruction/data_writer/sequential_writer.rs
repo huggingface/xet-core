@@ -5,10 +5,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytes::Bytes;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::oneshot;
 use tokio::task::{JoinHandle, JoinSet};
 use xet_client::cas_types::FileRange;
-use xet_runtime::core::{XetRuntime, check_sigint_shutdown};
+use xet_runtime::core::XetContext;
 use xet_runtime::utils::adjustable_semaphore::AdjustableSemaphorePermit;
 
 use super::super::data_writer::{DataFuture, DataWriter};
@@ -44,23 +44,29 @@ type PendingWrite = (Bytes, Option<AdjustableSemaphorePermit>);
 /// Background writer thread that processes queue items and dispatches data
 /// to an output sink (a `Write` impl or a stream function).
 struct SyncWriterThread {
+    ctx: XetContext,
     rx: UnboundedReceiver<SequentialRetrievalItem>,
     bytes_written: Arc<AtomicU64>,
     progress_updater: Option<Arc<ItemProgressUpdater>>,
+    run_state: Arc<RunState>,
     pending: Option<SequentialRetrievalItem>,
     finished: bool,
 }
 
 impl SyncWriterThread {
     fn new(
+        ctx: XetContext,
         rx: UnboundedReceiver<SequentialRetrievalItem>,
         bytes_written: Arc<AtomicU64>,
         progress_updater: Option<Arc<ItemProgressUpdater>>,
+        run_state: Arc<RunState>,
     ) -> Self {
         Self {
+            ctx,
             rx,
             bytes_written,
             progress_updater,
+            run_state,
             pending: None,
             finished: false,
         }
@@ -88,11 +94,15 @@ impl SyncWriterThread {
         match self.pending.take() {
             Some(SequentialRetrievalItem::Data { mut receiver, permit }) => {
                 if should_block {
-                    let data = receiver.blocking_recv().map_err(|_| {
-                        FileReconstructionError::InternalWriterError(
-                            "Data sender was dropped before sending data.".to_string(),
-                        )
-                    })?;
+                    let data = match receiver.blocking_recv() {
+                        Ok(data) => data,
+                        Err(_) => {
+                            self.run_state.check_error()?;
+                            return Err(FileReconstructionError::InternalWriterError(
+                                "Data sender was dropped before sending data.".to_string(),
+                            ));
+                        },
+                    };
                     Ok(Some((data, permit)))
                 } else {
                     // Non-blocking: try to receive data.
@@ -103,9 +113,12 @@ impl SyncWriterThread {
                             self.pending = Some(SequentialRetrievalItem::Data { receiver, permit });
                             Ok(None)
                         },
-                        Err(oneshot::error::TryRecvError::Closed) => Err(FileReconstructionError::InternalWriterError(
-                            "Data sender was dropped before sending data.".to_string(),
-                        )),
+                        Err(oneshot::error::TryRecvError::Closed) => {
+                            self.run_state.check_error()?;
+                            Err(FileReconstructionError::InternalWriterError(
+                                "Data sender was dropped before sending data.".to_string(),
+                            ))
+                        },
                     }
                 }
             },
@@ -132,7 +145,7 @@ impl SyncWriterThread {
                 break;
             }
 
-            check_sigint_shutdown()?;
+            self.ctx.check_sigint_shutdown()?;
         }
 
         debug_assert!(self.finished);
@@ -146,7 +159,7 @@ impl SyncWriterThread {
         let mut pending_writes: VecDeque<PendingWrite> = VecDeque::new();
 
         while !self.finished || !pending_writes.is_empty() {
-            check_sigint_shutdown()?;
+            self.ctx.check_sigint_shutdown()?;
 
             // If no pending writes, block to get at least one.
             if pending_writes.is_empty() {
@@ -207,27 +220,24 @@ impl SyncWriterThread {
     }
 }
 
-/// Mutable state for the writing queue, protected by a mutex.
-struct WritingQueueState {
-    sender: UnboundedSender<SequentialRetrievalItem>,
-    next_position: u64,
-    finished: bool,
-}
-
 /// Writes data sequentially to an output stream from async data futures.
 /// Spawns async tasks to resolve futures and a background thread to perform
 /// blocking writes, allowing out-of-order future resolution with in-order writes.
 pub struct SequentialWriter {
-    queue_state: Mutex<WritingQueueState>,
-    background_handle: Mutex<Option<JoinHandle<()>>>,
+    sender: UnboundedSender<SequentialRetrievalItem>,
+    next_position: u64,
+    background_handle: Option<JoinHandle<()>>,
     run_state: Arc<RunState>,
     bytes_written: Arc<AtomicU64>,
-    active_tasks: Arc<Mutex<JoinSet<Result<()>>>>,
+    active_tasks: JoinSet<Result<()>>,
+    finished: bool,
 }
 
 impl Drop for SequentialWriter {
     fn drop(&mut self) {
-        self.run_state.cancel();
+        if !self.finished {
+            self.run_state.cancel();
+        }
     }
 }
 
@@ -237,56 +247,38 @@ impl DataWriter for SequentialWriter {
     /// can be executing in the background.  This must be the next one sequentially,
     /// otherwise it will error out.
     async fn set_next_term_data_source(
-        &self,
+        &mut self,
         byte_range: FileRange,
         permit: Option<AdjustableSemaphorePermit>,
         data_future: DataFuture,
     ) -> Result<()> {
         self.run_state.check_error()?;
 
-        // Check for any errors from previously spawned tasks.
-        {
-            let mut tasks = self.active_tasks.lock().await;
-            while let Some(result) = tasks.try_join_next() {
-                result.map_err(|e| FileReconstructionError::InternalError(format!("Task join error: {e}")))??;
-            }
+        while let Some(result) = self.active_tasks.try_join_next() {
+            result.map_err(|e| FileReconstructionError::InternalError(format!("Task join error: {e}")))??;
         }
 
-        let (sender, expected_size) = {
-            let mut state = self.queue_state.lock().await;
+        if self.finished {
+            return Err(FileReconstructionError::InternalWriterError("Writer has already finished".to_string()));
+        }
 
-            if state.finished {
-                return Err(FileReconstructionError::InternalWriterError("Writer has already finished".to_string()));
-            }
+        if byte_range.start != self.next_position {
+            return Err(FileReconstructionError::InternalWriterError(format!(
+                "Byte range not sequential: expected start at {}, got {}",
+                self.next_position, byte_range.start
+            )));
+        }
 
-            if byte_range.start != state.next_position {
-                return Err(FileReconstructionError::InternalWriterError(format!(
-                    "Byte range not sequential: expected start at {}, got {}",
-                    state.next_position, byte_range.start
-                )));
-            }
+        let expected_size = byte_range.end - byte_range.start;
+        self.next_position = byte_range.end;
 
-            let expected_size = byte_range.end - byte_range.start;
-            state.next_position = byte_range.end;
+        let (sender, receiver) = oneshot::channel();
 
-            let (sender, receiver) = oneshot::channel();
+        if self.sender.send(SequentialRetrievalItem::Data { receiver, permit }).is_err() {
+            self.run_state.check_error()?;
+            return Err(FileReconstructionError::InternalWriterError("Background writer channel closed".to_string()));
+        }
 
-            if state.sender.send(SequentialRetrievalItem::Data { receiver, permit }).is_err() {
-                // The background writer exited. Return the original error that
-                // killed it (stored in RunState) instead of a generic message.
-                drop(state);
-                self.run_state.check_error()?;
-                return Err(FileReconstructionError::InternalWriterError(
-                    "Background writer channel closed".to_string(),
-                ));
-            }
-
-            (sender, expected_size)
-        };
-
-        // Spawn a task to evaluate the future and send the result.
-        // On error, set_error() stores the error and cancels the token,
-        // immediately waking the main reconstruction loop.
         let run_state = self.run_state.clone();
         let task = async move {
             let result = async {
@@ -319,48 +311,34 @@ impl DataWriter for SequentialWriter {
             result
         };
 
-        {
-            let mut tasks = self.active_tasks.lock().await;
-            tasks.spawn(task);
-        }
+        self.active_tasks.spawn(task);
 
         Ok(())
     }
 
     /// Wait for the background writer to finish and all tasks to complete.
     /// Returns the number of bytes written.
-    async fn finish(&self) -> Result<u64> {
+    async fn finish(mut self: Box<Self>) -> Result<u64> {
         self.run_state.check_error()?;
 
-        let expected_bytes = {
-            let mut state = self.queue_state.lock().await;
-
-            if state.finished {
-                return Err(FileReconstructionError::InternalWriterError("Writer has already finished".to_string()));
-            }
-
-            state.finished = true;
-
-            if state.sender.send(SequentialRetrievalItem::Finish).is_err() {
-                drop(state);
-                self.run_state.check_error()?;
-                return Err(FileReconstructionError::InternalWriterError(
-                    "Background writer channel closed".to_string(),
-                ));
-            }
-
-            state.next_position
-        };
-
-        // Wait for all spawned data-fetching tasks to complete.
-        {
-            let mut tasks = self.active_tasks.lock().await;
-            while let Some(result) = tasks.join_next().await {
-                result.map_err(|e| FileReconstructionError::InternalError(format!("Task join error: {e}")))??;
-            }
+        if self.finished {
+            return Err(FileReconstructionError::InternalWriterError("Writer has already finished".to_string()));
         }
 
-        match self.background_handle.lock().await.take() {
+        self.finished = true;
+
+        if self.sender.send(SequentialRetrievalItem::Finish).is_err() {
+            self.run_state.check_error()?;
+            return Err(FileReconstructionError::InternalWriterError("Background writer channel closed".to_string()));
+        }
+
+        let expected_bytes = self.next_position;
+
+        while let Some(result) = self.active_tasks.join_next().await {
+            result.map_err(|e| FileReconstructionError::InternalError(format!("Task join error: {e}")))??;
+        }
+
+        match self.background_handle.take() {
             Some(handle) => {
                 handle.await.map_err(|e| {
                     FileReconstructionError::InternalWriterError(format!("Background writer task failed: {e}"))
@@ -395,25 +373,20 @@ impl SequentialWriter {
     /// values that the caller (typically a `DownloadStream`) consumes directly.
     pub(crate) fn new_streaming(
         run_state: Arc<RunState>,
-    ) -> (Arc<dyn DataWriter>, UnboundedReceiver<SequentialRetrievalItem>) {
+    ) -> (Box<dyn DataWriter>, UnboundedReceiver<SequentialRetrievalItem>) {
         let (tx, rx) = unbounded_channel::<SequentialRetrievalItem>();
-        let bytes_written = Arc::new(AtomicU64::new(0));
 
-        let writing_queue_state = WritingQueueState {
+        let writer = Self {
             sender: tx,
             next_position: 0,
+            background_handle: None,
+            run_state,
+            bytes_written: Arc::new(AtomicU64::new(0)),
+            active_tasks: JoinSet::new(),
             finished: false,
         };
 
-        let writer = Self {
-            queue_state: Mutex::new(writing_queue_state),
-            background_handle: Mutex::new(None),
-            run_state,
-            bytes_written,
-            active_tasks: Arc::new(Mutex::new(JoinSet::new())),
-        };
-
-        (Arc::new(writer), rx)
+        (Box::new(writer), rx)
     }
 
     /// Creates a sequential writer backed by the given `Write` impl.
@@ -423,19 +396,23 @@ impl SequentialWriter {
     /// moved to a background thread for blocking I/O operations.
     #[allow(clippy::new_ret_no_self)]
     pub(crate) fn new<W: Write + Send + 'static>(
+        ctx: &XetContext,
         writer: W,
         use_vectorized: bool,
         run_state: Arc<RunState>,
-    ) -> Arc<dyn DataWriter> {
+    ) -> Box<dyn DataWriter> {
         let (tx, rx) = unbounded_channel::<SequentialRetrievalItem>();
         let bytes_written = Arc::new(AtomicU64::new(0));
 
         let run_state_clone = run_state.clone();
+        let run_state_thread = run_state.clone();
         let bytes_written_clone = bytes_written.clone();
         let progress_updater = run_state.progress_updater().cloned();
+        let ctx_thread = ctx.clone();
 
-        let handle = XetRuntime::current().spawn_blocking(move || {
-            let writer_thread = SyncWriterThread::new(rx, bytes_written_clone, progress_updater);
+        let handle = ctx.runtime.spawn_blocking(move || {
+            let writer_thread =
+                SyncWriterThread::new(ctx_thread, rx, bytes_written_clone, progress_updater, run_state_thread);
             let result = if use_vectorized {
                 writer_thread.run_vectorized(writer)
             } else {
@@ -446,18 +423,14 @@ impl SequentialWriter {
             }
         });
 
-        let writing_queue_state = WritingQueueState {
+        Box::new(Self {
             sender: tx,
             next_position: 0,
-            finished: false,
-        };
-
-        Arc::new(Self {
-            queue_state: Mutex::new(writing_queue_state),
-            background_handle: Mutex::new(Some(handle)),
+            background_handle: Some(handle),
             run_state,
             bytes_written,
-            active_tasks: Arc::new(Mutex::new(JoinSet::new())),
+            active_tasks: JoinSet::new(),
+            finished: false,
         })
     }
 }
@@ -467,9 +440,14 @@ mod tests {
     use std::io;
     use std::time::Duration;
 
+    use xet_runtime::core::XetContext;
     use xet_runtime::utils::adjustable_semaphore::AdjustableSemaphore;
 
     use super::*;
+
+    fn test_context() -> XetContext {
+        XetContext::default().unwrap()
+    }
 
     struct SharedBuffer(Arc<std::sync::Mutex<Vec<u8>>>);
 
@@ -630,7 +608,12 @@ mod tests {
         let buffer = Arc::new(std::sync::Mutex::new(Vec::new()));
         let buffer_clone = buffer.clone();
 
-        let writer = SequentialWriter::new(Box::new(SharedBuffer(buffer_clone)), false, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(
+            &test_context(),
+            Box::new(SharedBuffer(buffer_clone)),
+            false,
+            RunState::new_for_test(),
+        );
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
@@ -656,7 +639,12 @@ mod tests {
         let buffer = Arc::new(std::sync::Mutex::new(Vec::new()));
         let buffer_clone = buffer.clone();
 
-        let writer = SequentialWriter::new(Box::new(SharedBuffer(buffer_clone)), false, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(
+            &test_context(),
+            Box::new(SharedBuffer(buffer_clone)),
+            false,
+            RunState::new_for_test(),
+        );
 
         // Create futures that resolve with delays
         let f0: DataFuture = Box::pin(async {
@@ -682,7 +670,7 @@ mod tests {
     #[tokio::test]
     async fn test_size_mismatch_error() {
         let buffer = std::io::Cursor::new(Vec::new());
-        let writer = SequentialWriter::new(Box::new(buffer), false, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(buffer), false, RunState::new_for_test());
 
         writer
             .set_next_term_data_source(FileRange::new(0, 10), None, immediate_future(Bytes::from("Hello")))
@@ -705,7 +693,8 @@ mod tests {
             }
         }
 
-        let writer = SequentialWriter::new(Box::new(FailingWriter), false, RunState::new_for_test());
+        let mut writer =
+            SequentialWriter::new(&test_context(), Box::new(FailingWriter), false, RunState::new_for_test());
 
         writer
             .set_next_term_data_source(FileRange::new(0, 4), None, immediate_future(Bytes::from("Test")))
@@ -723,30 +712,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_finish_twice_returns_error() {
-        let buffer = std::io::Cursor::new(Vec::new());
-        let writer = SequentialWriter::new(Box::new(buffer), false, RunState::new_for_test());
-
-        writer.finish().await.unwrap();
-        let result = writer.finish().await;
-        assert!(result.is_err());
-        assert!(matches!(result, Err(FileReconstructionError::InternalWriterError(_))));
-    }
-
-    #[tokio::test]
-    async fn test_write_after_finish_returns_error() {
-        let buffer = std::io::Cursor::new(Vec::new());
-        let writer = SequentialWriter::new(Box::new(buffer), false, RunState::new_for_test());
-
-        writer.finish().await.unwrap();
-        let result = writer
-            .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
-            .await;
-        assert!(result.is_err());
-        assert!(matches!(result, Err(FileReconstructionError::InternalWriterError(_))));
-    }
-
-    #[tokio::test]
     async fn test_flush_error_propagates() {
         struct FlushFailingWriter;
         impl Write for FlushFailingWriter {
@@ -758,7 +723,8 @@ mod tests {
             }
         }
 
-        let writer = SequentialWriter::new(Box::new(FlushFailingWriter), false, RunState::new_for_test());
+        let writer =
+            SequentialWriter::new(&test_context(), Box::new(FlushFailingWriter), false, RunState::new_for_test());
         let result = writer.finish().await;
         assert!(result.is_err());
         assert!(matches!(result, Err(FileReconstructionError::IoError(_))));
@@ -769,7 +735,12 @@ mod tests {
         let buffer = Arc::new(std::sync::Mutex::new(Vec::new()));
         let buffer_clone = buffer.clone();
 
-        let writer = SequentialWriter::new(Box::new(SharedBuffer(buffer_clone)), false, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(
+            &test_context(),
+            Box::new(SharedBuffer(buffer_clone)),
+            false,
+            RunState::new_for_test(),
+        );
 
         let failing_future: DataFuture =
             Box::pin(async { Err(FileReconstructionError::InternalError("Simulated future error".to_string())) });
@@ -786,7 +757,7 @@ mod tests {
     #[tokio::test]
     async fn test_size_mismatch_too_small() {
         let buffer = std::io::Cursor::new(Vec::new());
-        let writer = SequentialWriter::new(Box::new(buffer), false, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(buffer), false, RunState::new_for_test());
 
         writer
             .set_next_term_data_source(FileRange::new(0, 10), None, immediate_future(Bytes::from("Hi")))
@@ -800,7 +771,7 @@ mod tests {
     #[tokio::test]
     async fn test_size_mismatch_too_large() {
         let buffer = std::io::Cursor::new(Vec::new());
-        let writer = SequentialWriter::new(Box::new(buffer), false, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(buffer), false, RunState::new_for_test());
 
         writer
             .set_next_term_data_source(FileRange::new(0, 2), None, immediate_future(Bytes::from("Hello World")))
@@ -816,7 +787,12 @@ mod tests {
         let buffer = Arc::new(std::sync::Mutex::new(Vec::new()));
         let buffer_clone = buffer.clone();
 
-        let writer = SequentialWriter::new(Box::new(SharedBuffer(buffer_clone)), false, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(
+            &test_context(),
+            Box::new(SharedBuffer(buffer_clone)),
+            false,
+            RunState::new_for_test(),
+        );
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
@@ -841,7 +817,7 @@ mod tests {
     #[tokio::test]
     async fn test_non_sequential_range_returns_error() {
         let buffer = std::io::Cursor::new(Vec::new());
-        let writer = SequentialWriter::new(Box::new(buffer), false, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(buffer), false, RunState::new_for_test());
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
@@ -858,7 +834,7 @@ mod tests {
     #[tokio::test]
     async fn test_first_range_must_start_at_zero() {
         let buffer = std::io::Cursor::new(Vec::new());
-        let writer = SequentialWriter::new(Box::new(buffer), false, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(buffer), false, RunState::new_for_test());
 
         let result = writer
             .set_next_term_data_source(FileRange::new(5, 10), None, immediate_future(Bytes::from("Hello")))
@@ -873,7 +849,12 @@ mod tests {
         let buffer_clone = buffer.clone();
         let semaphore = AdjustableSemaphore::new(2, (0, 2));
 
-        let writer = SequentialWriter::new(Box::new(SharedBuffer(buffer_clone)), false, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(
+            &test_context(),
+            Box::new(SharedBuffer(buffer_clone)),
+            false,
+            RunState::new_for_test(),
+        );
 
         let permit1 = semaphore.acquire().await.unwrap();
         let permit2 = semaphore.acquire().await.unwrap();
@@ -910,7 +891,7 @@ mod tests {
         let buffer = test_writer.buffer.clone();
         let vectored_count = test_writer.vectored_write_count.clone();
 
-        let writer = SequentialWriter::new(Box::new(test_writer), true, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(test_writer), true, RunState::new_for_test());
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
@@ -937,7 +918,7 @@ mod tests {
         let test_writer = TestWriter::new(TestWriterConfig::vectorized_partial(3));
         let buffer = test_writer.buffer.clone();
 
-        let writer = SequentialWriter::new(Box::new(test_writer), true, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(test_writer), true, RunState::new_for_test());
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
@@ -967,7 +948,7 @@ mod tests {
         let test_writer = TestWriter::new(TestWriterConfig::vectorized());
         let buffer = test_writer.buffer.clone();
 
-        let writer = SequentialWriter::new(Box::new(test_writer), true, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(test_writer), true, RunState::new_for_test());
 
         // Create futures that resolve with different delays
         let f0: DataFuture = Box::pin(async {
@@ -997,7 +978,7 @@ mod tests {
         let buffer = test_writer.buffer.clone();
         let vectored_count = test_writer.vectored_write_count.clone();
 
-        let writer = SequentialWriter::new(Box::new(test_writer), true, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(test_writer), true, RunState::new_for_test());
 
         // Write 100 single-byte chunks
         for i in 0..100u8 {
@@ -1026,7 +1007,7 @@ mod tests {
         let test_writer = TestWriter::new(TestWriterConfig::vectorized_with_interrupts());
         let buffer = test_writer.buffer.clone();
 
-        let writer = SequentialWriter::new(Box::new(test_writer), true, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(test_writer), true, RunState::new_for_test());
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
@@ -1053,7 +1034,7 @@ mod tests {
         let buffer = test_writer.buffer.clone();
         let semaphore = AdjustableSemaphore::new(2, (0, 2));
 
-        let writer = SequentialWriter::new(Box::new(test_writer), true, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(test_writer), true, RunState::new_for_test());
 
         let permit1 = semaphore.acquire().await.unwrap();
         let permit2 = semaphore.acquire().await.unwrap();
@@ -1088,7 +1069,7 @@ mod tests {
         let buffer = test_writer.buffer.clone();
         let semaphore = AdjustableSemaphore::new(3, (0, 3));
 
-        let writer = SequentialWriter::new(Box::new(test_writer), true, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(test_writer), true, RunState::new_for_test());
 
         let permit1 = semaphore.acquire().await.unwrap();
         let permit2 = semaphore.acquire().await.unwrap();
@@ -1124,7 +1105,7 @@ mod tests {
         let write_count = test_writer.write_count.clone();
         let vectored_count = test_writer.vectored_write_count.clone();
 
-        let writer = SequentialWriter::new(Box::new(test_writer), false, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(test_writer), false, RunState::new_for_test());
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
@@ -1152,7 +1133,7 @@ mod tests {
         let test_writer = TestWriter::new(TestWriterConfig::partial(3));
         let buffer = test_writer.buffer.clone();
 
-        let writer = SequentialWriter::new(Box::new(test_writer), false, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(test_writer), false, RunState::new_for_test());
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
@@ -1182,7 +1163,7 @@ mod tests {
         let test_writer = TestWriter::new(TestWriterConfig::vectorized_partial(1));
         let buffer = test_writer.buffer.clone();
 
-        let writer = SequentialWriter::new(Box::new(test_writer), true, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(test_writer), true, RunState::new_for_test());
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("ABCDE")))
@@ -1205,7 +1186,7 @@ mod tests {
         let test_writer = TestWriter::new(TestWriterConfig::vectorized());
         let buffer = test_writer.buffer.clone();
 
-        let writer = SequentialWriter::new(Box::new(test_writer), true, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(test_writer), true, RunState::new_for_test());
 
         // Write in chunks of 1000 bytes
         for i in 0..10 {
@@ -1234,7 +1215,7 @@ mod tests {
         let test_writer = TestWriter::new(TestWriterConfig::vectorized_partial(100));
         let buffer = test_writer.buffer.clone();
 
-        let writer = SequentialWriter::new(Box::new(test_writer), true, RunState::new_for_test());
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(test_writer), true, RunState::new_for_test());
 
         // Write in chunks of 500 bytes
         for i in 0..10 {
@@ -1261,7 +1242,7 @@ mod tests {
     async fn test_vectorized_exceeded_max_slice() {
         let test_writer = TestWriter::new(TestWriterConfig::vectorized_hard_limit(2)); // hard limit set to 2 slices at a time
 
-        let writer = SequentialWriter::new(Box::new(test_writer), true, RunState::new_for_test()); // controlled writev at max 24 slices at a time
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(test_writer), true, RunState::new_for_test()); // controlled writev at max 24 slices at a time
 
         // Write in slices of 10 bytes, creating in total 1000 slices
         for i in 0..1000 {
@@ -1294,7 +1275,7 @@ mod tests {
         let test_writer = TestWriter::new(TestWriterConfig::vectorized_hard_limit(40)); // hard limit set to 40 slices at a time
         let buffer = test_writer.buffer.clone();
 
-        let writer = SequentialWriter::new(Box::new(test_writer), true, RunState::new_for_test()); // controlled writev at max 24 slices at a time
+        let mut writer = SequentialWriter::new(&test_context(), Box::new(test_writer), true, RunState::new_for_test()); // controlled writev at max 24 slices at a time
 
         // Write in slices of 10 bytes, creating in total 1000 slices
         for i in 0..1000 {

@@ -10,14 +10,14 @@ use walkdir::WalkDir;
 use xet_client::cas_client::RemoteClient;
 use xet_client::cas_client::auth::TokenRefresher;
 use xet_client::cas_types::{FileRange, QueryReconstructionResponse};
-use xet_client::hub_client::{BearerCredentialHelper, HubClient, Operation, RepoInfo};
+use xet_client::hub_client::{BearerCredentialHelper, CredentialHelper, HubClient, Operation, RepoInfo};
 use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::xorb_object::CompressionScheme;
 use xet_data::processing::data_client::default_config;
 use xet_data::processing::migration_tool::hub_client_token_refresher::HubClientTokenRefresher;
 use xet_data::processing::migration_tool::migrate::migrate_files_impl;
 use xet_runtime::config::XetConfig;
-use xet_runtime::core::XetRuntime;
+use xet_runtime::core::XetContext;
 
 const DEFAULT_HF_ENDPOINT: &str = "https://huggingface.co";
 const USER_AGENT: &str = concat!("xtool", "/", env!("CARGO_PKG_VERSION"));
@@ -48,7 +48,7 @@ struct CliOverrides {
 }
 
 impl XCommand {
-    async fn run(self) -> Result<()> {
+    async fn run(self, ctx: &XetContext) -> Result<()> {
         let endpoint = self
             .overrides
             .endpoint
@@ -63,15 +63,16 @@ impl XCommand {
 
         let cred_helper = BearerCredentialHelper::new(token, "");
         let hub_client = HubClient::new(
+            ctx.clone(),
             &endpoint,
             RepoInfo::try_from(&self.overrides.repo_type, &self.overrides.repo_id)?,
             Some("main".to_owned()),
             "",
-            cred_helper,
-            Some(Arc::new(headers)),
+            Some(cred_helper as Arc<dyn CredentialHelper>),
+            Some(headers),
         )?;
 
-        self.command.run(hub_client).await
+        self.command.run(ctx, hub_client).await
     }
 }
 
@@ -122,14 +123,14 @@ struct QueryArg {
 }
 
 impl Command {
-    async fn run(self, hub_client: HubClient) -> Result<()> {
+    async fn run(self, ctx: &XetContext, hub_client: HubClient) -> Result<()> {
         match self {
             Command::Dedup(arg) => {
                 let file_paths = walk_files(arg.files, arg.recursive);
                 eprintln!("Dedupping {} files...", file_paths.len());
 
                 let (all_file_info, clean_ret, total_bytes_trans) =
-                    migrate_files_impl(file_paths, None, arg.sequential, hub_client, None, !arg.migrate).await?;
+                    migrate_files_impl(ctx, file_paths, None, arg.sequential, hub_client, None, !arg.migrate).await?;
 
                 // Print file info for analysis
                 if !arg.migrate {
@@ -158,7 +159,7 @@ impl Command {
             },
             Command::Query(arg) => {
                 let file_hash = MerkleHash::from_hex(&arg.hash)?;
-                let ret = query_reconstruction(file_hash, arg.bytes_range, hub_client).await?;
+                let ret = query_reconstruction(ctx, file_hash, arg.bytes_range, hub_client).await?;
 
                 eprintln!("{ret:?}");
 
@@ -197,6 +198,7 @@ fn is_git_special_files(path: &str) -> bool {
 }
 
 async fn query_reconstruction(
+    ctx: &XetContext,
     file_hash: MerkleHash,
     bytes_range: Option<FileRange>,
     hub_client: HubClient,
@@ -213,13 +215,20 @@ async fn query_reconstruction(
     headers.insert(http::header::USER_AGENT, http::HeaderValue::from_static(USER_AGENT));
 
     let config = default_config(
+        ctx,
         jwt_info.cas_url.clone(),
         Some((jwt_info.access_token, jwt_info.exp)),
         Some(token_refresher),
         Some(Arc::new(headers)),
     )?;
-    let remote_client =
-        RemoteClient::new(&jwt_info.cas_url, &config.session.auth, "", true, config.session.custom_headers.clone());
+    let remote_client = RemoteClient::new(
+        ctx.clone(),
+        &jwt_info.cas_url,
+        &config.session.auth,
+        "",
+        true,
+        config.session.custom_headers.clone(),
+    );
 
     // Use V1 directly so the query tool returns the raw QueryReconstructionResponse for inspection.
     remote_client
@@ -248,8 +257,9 @@ fn main() -> Result<()> {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
     }
 
-    let threadpool = XetRuntime::new_with_config(config)?;
-    threadpool.external_run_async_task(async move { cli.run().await })??;
+    let ctx = XetContext::with_config(config)?;
+    let ctx_ref = ctx.clone();
+    ctx.runtime.bridge_sync(async move { cli.run(&ctx_ref).await })??;
 
     Ok(())
 }

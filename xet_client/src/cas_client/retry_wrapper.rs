@@ -4,15 +4,14 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use reqwest::{Error as ReqwestError, Response, StatusCode};
-use reqwest_retry::{Retryable, default_on_request_success};
 use tokio::sync::Mutex;
 use tokio_retry::RetryIf;
 use tokio_retry::strategy::{ExponentialBackoff, jitter};
 use tracing::{error, info};
-use xet_runtime::core::xet_config;
+use xet_runtime::core::XetContext;
 
 use super::adaptive_concurrency::ConnectionPermit;
-use super::http_client::request_id_from_response;
+use crate::common::http_client::request_id_from_response;
 use crate::error::{ClientError, Result};
 
 #[derive(Debug)]
@@ -31,18 +30,22 @@ pub struct RetryWrapper {
     base_delay: Duration,
     no_retry_on_429: bool,
     retry_on_403: bool,
+    expected_416: bool,
     log_errors_as_info: bool,
     api_tag: &'static str,
     connection_permit: Option<Mutex<ConnectionPermitInfo>>,
 }
 
 impl RetryWrapper {
-    pub fn new(api_tag: &'static str) -> Self {
+    pub fn new(ctx: XetContext, api_tag: &'static str) -> Self {
+        let max_attempts = ctx.config.client.retry_max_attempts;
+        let base_delay = ctx.config.client.retry_base_delay;
         Self {
-            max_attempts: xet_config().client.retry_max_attempts,
-            base_delay: xet_config().client.retry_base_delay,
+            max_attempts,
+            base_delay,
             no_retry_on_429: false,
             retry_on_403: false,
+            expected_416: false,
             log_errors_as_info: false,
             api_tag,
             connection_permit: None,
@@ -66,6 +69,11 @@ impl RetryWrapper {
 
     pub fn with_retry_on_403(mut self) -> Self {
         self.retry_on_403 = true;
+        self
+    }
+
+    pub fn with_expected_416(mut self) -> Self {
+        self.expected_416 = true;
         self
     }
 
@@ -155,6 +163,9 @@ impl RetryWrapper {
                 if e.status() == Some(StatusCode::FORBIDDEN) && self.retry_on_403 {
                     let cas_err = process_error("Retry on 403 (Forbidden) enabled)", e, true);
                     Err(RetryableReqwestError::RetryableError(cas_err))
+                } else if e.status() == Some(StatusCode::RANGE_NOT_SATISFIABLE) && self.expected_416 {
+                    let cas_err = process_error("Reached end of reconstruction 416 (Range Not Satisfiable)", e, true);
+                    Err(RetryableReqwestError::FatalError(cas_err))
                 } else {
                     let cas_err = process_error("Fatal Error", e, false);
                     Err(RetryableReqwestError::FatalError(cas_err))
@@ -380,7 +391,7 @@ impl RetryWrapper {
     ///
     /// The `make_request` function returns a future that resolves to a Result<Response> object as is returned by the
     /// client middleware.  For example, `|| client.clone().get(url).send()` returns a future (as `send()` is async)
-    /// that will then be evaluatated to get the response.
+    /// that will then be evaluated to get the response.
     ///
     /// This functions acts just like the bytes() function on a client response, but retries the entire connection on
     /// transient errors.
@@ -455,6 +466,31 @@ impl RetryWrapper {
     {
         // Just have the process_fn pass through the response.
         self.run_and_process(make_request, |resp| async move { Ok(resp) }).await
+    }
+}
+
+/// Classifies a response status as retryable.
+///
+/// Equivalent to `reqwest_retry::default_on_request_success`:
+/// * 5XX (server error) -> Transient
+/// * 408 / 429 -> Transient
+/// * Other 4XX -> Fatal
+/// * 2XX -> None
+/// * Everything else -> Fatal
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Retryable {
+    Fatal,
+    Transient,
+}
+
+pub fn default_on_request_success(success: &Response) -> Option<Retryable> {
+    let status = success.status();
+    if status.is_server_error() || status == StatusCode::REQUEST_TIMEOUT || status == StatusCode::TOO_MANY_REQUESTS {
+        Some(Retryable::Transient)
+    } else if status.is_success() {
+        None
+    } else {
+        Some(Retryable::Fatal)
     }
 }
 
@@ -535,11 +571,18 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+    use xet_runtime::config::XetConfig;
+    use xet_runtime::core::XetContext;
 
     use super::*;
 
+    fn test_context() -> XetContext {
+        let config = XetConfig::new();
+        XetContext::from_external(tokio::runtime::Handle::current(), config)
+    }
+
     fn connection_wrapper(api: &'static str) -> RetryWrapper {
-        RetryWrapper::new(api)
+        RetryWrapper::new(test_context(), api)
             .with_base_delay(Duration::from_millis(5))
             .with_max_attempts(3)
     }

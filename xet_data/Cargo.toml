@@ -3,8 +3,12 @@ name = "xet-data"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+homepage.workspace = true
 repository.workspace = true
-description = "Data processing pipeline for chunking, deduplication, and file reconstruction; used in the Hugging Face Xet client tools"
+description = "Data processing pipeline for chunking, deduplication, and file reconstruction; used in the Hugging Face Xet client tools.  Intended to be used through the API in the hf-xet package."
+readme = "README.md"
+keywords = ["huggingface"]
+categories = ["artificial-intelligence", "data-structures", "filesystem"]
 
 [lib]
 name = "xet_data"
@@ -12,9 +16,9 @@ path = "src/lib.rs"
 doctest = false
 
 [dependencies]
-xet-runtime = { version = "1.4.0", path = "../xet_runtime" }
-xet-core-structures = { version = "1.4.0", path = "../xet_core_structures" }
-xet-client = { version = "1.4.0", path = "../xet_client" }
+xet-runtime = { version = "1.5.2", path = "../xet_runtime" }
+xet-core-structures = { version = "1.5.2", path = "../xet_core_structures" }
+xet-client = { version = "1.5.2", path = "../xet_client" }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -26,22 +30,26 @@ http = { workspace = true }
 itertools = { workspace = true }
 lazy_static = { workspace = true }
 more-asserts = { workspace = true }
-prometheus = { workspace = true }
 rand = { workspace = true }
-regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
-ulid = {workspace = true }
 url = { workspace = true }
+uuid = { workspace = true, features = ["v7"] }
 walkdir = { workspace = true }
 pyo3 = { version = "0.26", features = ["abi3-py37"], optional = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
-tokio = { workspace = true, features = ["sync", "macros", "io-util", "rt", "time"] }
+tokio = { workspace = true, features = [
+    "sync",
+    "macros",
+    "io-util",
+    "rt",
+    "time",
+] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "rt", "time"] }
@@ -73,14 +81,23 @@ name = "xorb-check"
 path = "examples/xorb-check/main.rs"
 
 [dev-dependencies]
+criterion = { version = "0.4", features = ["async_tokio"] }
 ctor = { workspace = true }
 dirs = { workspace = true }
 rand = { workspace = true }
+regex = { workspace = true }
 serial_test = { workspace = true }
 tempfile = { workspace = true }
 tracing-test = { workspace = true }
 
+[[bench]]
+name = "reconstruction_bench"
+harness = false
+
 [features]
 strict = []
+smoke-test = []
 expensive_tests = []
+fd-track = ["xet-runtime/fd-track", "xet-client/fd-track"]
 python = ["dep:pyo3"]
+simulation = ["xet-client/simulation", "xet-core-structures/simulation"]

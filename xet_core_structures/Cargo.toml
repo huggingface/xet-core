@@ -3,8 +3,12 @@ name = "xet-core-structures"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+homepage.workspace = true
 repository.workspace = true
-description = "Core data structures including MerkleHash, metadata shards, and xorb objects"
+description = "Core data structures including MerkleHash, metadata shards, and Xorb objects."
+readme = "README.md"
+keywords = ["huggingface"]
+categories = ["artificial-intelligence", "data-structures"]
 
 [lib]
 name = "xet_core_structures"
@@ -21,7 +25,7 @@ harness = false
 bench = true
 
 [dependencies]
-xet-runtime = { version = "1.4.0", path = "../xet_runtime" }
+xet-runtime = { version = "1.5.2", path = "../xet_runtime" }
 
 async-trait = { workspace = true }
 base64 = { workspace = true }
@@ -32,13 +36,12 @@ countio = { workspace = true }
 csv = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
-half = { workspace = true }
 heapify = { workspace = true }
 itertools = { workspace = true }
 lazy_static = { workspace = true }
 lz4_flex = { workspace = true }
 more-asserts = { workspace = true }
-rand = { workspace = true, features = ["small_rng"] }
+rand = { workspace = true }
 regex = { workspace = true }
 safe-transmute = { workspace = true }
 serde = { workspace = true }
@@ -48,23 +51,37 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-bincode = { workspace = true }
 bytemuck = { workspace = true }
-heed = { workspace = true }
-tokio = { workspace = true, features = ["time", "rt", "macros", "sync", "test-util", "io-util", "rt-multi-thread"] }
+tokio = { workspace = true, features = [
+    "time",
+    "rt",
+    "macros",
+    "sync",
+    "test-util",
+    "io-util",
+    "rt-multi-thread",
+] }
 tokio-util = { workspace = true, features = ["io"] }
 uuid = { workspace = true, features = ["v4"] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 getrandom = { workspace = true, features = ["wasm_js"] }
-tokio = { workspace = true, features = ["sync", "macros", "io-util", "rt", "time"] }
+tokio = { workspace = true, features = [
+    "sync",
+    "macros",
+    "io-util",
+    "rt",
+    "time",
+] }
 uuid = { workspace = true, features = ["v4", "js"] }
 web-time = { workspace = true }
 
 [dev-dependencies]
-bincode = { workspace = true }
+postcard = { workspace = true }
 futures-util = { workspace = true }
+half = { workspace = true }
 rand = { workspace = true }
+serde_json = { workspace = true }
 serial_test = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
@@ -85,3 +102,5 @@ name = "bg4_prediction_benchmark"
 
 [features]
 strict = []
+smoke-test = []
+simulation = ["xet-runtime/simulation"]

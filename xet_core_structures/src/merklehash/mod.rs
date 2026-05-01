@@ -52,9 +52,11 @@ pub type MerkleHash = DataHash;
 pub type ChunkHashList = Vec<(MerkleHash, u64)>;
 
 mod aggregated_hashes;
+pub mod merkle_hash_subtree;
 pub mod passthrough_hasher;
 pub mod passthrough_hashmap;
 
 pub use aggregated_hashes::{file_hash, file_hash_with_salt, xorb_hash};
+pub use merkle_hash_subtree::MerkleHashSubtree;
 pub use passthrough_hasher::{U64DirectHasher, U64HashExtractable};
 pub use passthrough_hashmap::PassThroughHashMap;

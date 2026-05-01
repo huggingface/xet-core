@@ -201,6 +201,26 @@ struct CandidateLogFile {
     age: Duration,
 }
 
+/// Returns true if a running process with `pid` plausibly owns the log file named with
+/// `log_timestamp` (embedded in the filename at creation time).
+///
+/// PIDs are recycled on Windows and other OSes; [`System::process`] alone would treat a
+/// stale log file as protected whenever an unrelated process reuses the same PID. If the
+/// process start time is clearly after the log's embedded timestamp, the PID no longer
+/// refers to the process that created this file.
+fn pid_protects_log_file(sys: &System, pid: u32, log_timestamp: DateTime<FixedOffset>) -> bool {
+    let Some(proc) = sys.process(Pid::from_u32(pid)) else {
+        return false;
+    };
+    let log_epoch_secs = log_timestamp.timestamp();
+    let proc_start_secs = i64::try_from(proc.start_time()).unwrap_or(i64::MAX);
+    if proc_start_secs > log_epoch_secs {
+        debug!("PID {pid} likely reused: process start {proc_start_secs}s > log timestamp {log_epoch_secs}s");
+        return false;
+    }
+    true
+}
+
 fn run_log_directory_cleanup_background(cfg: LogDirConfig, log_dir: &Path) {
     // Spawn run_log_directory_cleanup as background thread, logging any errors as a warn!
     let log_dir = log_dir.to_path_buf();
@@ -284,8 +304,8 @@ fn run_log_directory_cleanup(cfg: LogDirConfig, log_dir: &Path) -> io::Result<()
             continue;
         }
 
-        // Skip if there is an active PID associated with the file.
-        if sys.process(Pid::from_u32(pid)).is_some() {
+        // Skip if there is an active PID associated with the file (and not PID reuse).
+        if pid_protects_log_file(&sys, pid, timestamp) {
             debug!("Skipping deletion for log file {path:?} with active associated PID.");
             continue;
         }
@@ -378,7 +398,7 @@ mod tests {
     #[test]
     fn round_trip_make_and_parse() {
         let dir = Path::new("/tmp");
-        let cfg = LogDirConfig::default();
+        let cfg = LogDirConfig::from_config(&crate::config::XetConfig::new());
         let path = log_file_in_dir(&cfg, dir);
         let (base, ts, pid) = parse_log_file_name(&path).expect("parse");
         assert_eq!(base, cfg.filename_prefix);

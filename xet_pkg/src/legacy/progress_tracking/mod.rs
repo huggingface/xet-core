@@ -7,7 +7,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 pub use callback_bridge::{GroupProgressCallbackUpdater, ItemProgressCallbackUpdater, ProgressReporter};
 pub use progress_verification_wrapper::ProgressUpdaterVerificationWrapper;
-use xet_data::progress_tracking::UniqueID;
+use xet_runtime::utils::UniqueId;
 
 /// The trait that a progress updater that reports per-item progress completion.
 #[async_trait]
@@ -23,7 +23,7 @@ pub trait TrackingProgressUpdater: Send + Sync {
 /// A class to make all the bookkeeping clear with progress updating.
 #[derive(Clone, Debug)]
 pub struct ItemProgressUpdate {
-    pub tracking_id: UniqueID,
+    pub tracking_id: UniqueId,
     pub item_name: Arc<str>,
 
     // The total bytes in this item, independent from the total bytes of all items.

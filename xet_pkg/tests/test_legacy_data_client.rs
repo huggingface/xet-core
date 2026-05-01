@@ -1,3 +1,4 @@
+#![cfg(feature = "simulation")]
 use std::fs;
 use std::sync::Arc;
 
@@ -8,6 +9,7 @@ use tokio::sync::Mutex;
 use xet::legacy::progress_tracking::{ItemProgressUpdate, ProgressUpdate, TrackingProgressUpdater};
 use xet::legacy::{Sha256Policy, XetFileInfo, data_client};
 use xet_client::cas_client::LocalTestServerBuilder;
+use xet_runtime::core::XetContext;
 
 /// A test `TrackingProgressUpdater` that records all updates.
 #[derive(Debug, Default)]
@@ -37,8 +39,13 @@ fn make_endpoint(server: &xet_client::cas_client::LocalTestServer) -> Option<Str
 mod tests {
     use super::*;
 
+    fn test_context() -> XetContext {
+        XetContext::default().expect("xet context")
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_upload_bytes_and_download_roundtrip() {
+        let ctx = test_context();
         let server = LocalTestServerBuilder::new().start().await;
         let endpoint = make_endpoint(&server);
 
@@ -46,7 +53,7 @@ mod tests {
         let policies = vec![Sha256Policy::Compute; contents.len()];
 
         let file_infos =
-            data_client::upload_bytes_async(contents.clone(), policies, endpoint.clone(), None, None, None, None)
+            data_client::upload_bytes_async(&ctx, contents.clone(), policies, endpoint.clone(), None, None, None, None)
                 .await
                 .unwrap();
 
@@ -66,7 +73,7 @@ mod tests {
             })
             .collect();
 
-        let paths = data_client::download_async(download_pairs, endpoint, None, None, None, None)
+        let paths = data_client::download_async(&ctx, download_pairs, endpoint, None, None, None, None)
             .await
             .unwrap();
 
@@ -79,6 +86,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_upload_files_and_download_roundtrip() {
+        let ctx = test_context();
         let server = LocalTestServerBuilder::new().start().await;
         let endpoint = make_endpoint(&server);
 
@@ -98,9 +106,10 @@ mod tests {
             policies.push(Sha256Policy::Compute);
         }
 
-        let file_infos = data_client::upload_async(file_paths, policies, endpoint.clone(), None, None, None, None)
-            .await
-            .unwrap();
+        let file_infos =
+            data_client::upload_async(&ctx, file_paths, policies, endpoint.clone(), None, None, None, None)
+                .await
+                .unwrap();
 
         assert_eq!(file_infos.len(), 3);
 
@@ -114,7 +123,7 @@ mod tests {
             })
             .collect();
 
-        let paths = data_client::download_async(download_pairs, endpoint, None, None, None, None)
+        let paths = data_client::download_async(&ctx, download_pairs, endpoint, None, None, None, None)
             .await
             .unwrap();
 
@@ -126,6 +135,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_upload_bytes_with_progress_updater() {
+        let ctx = test_context();
         let server = LocalTestServerBuilder::new().start().await;
         let endpoint = make_endpoint(&server);
 
@@ -133,10 +143,18 @@ mod tests {
         let policies = vec![Sha256Policy::Compute; contents.len()];
         let updater = Arc::new(RecordingUpdater::default());
 
-        let file_infos =
-            data_client::upload_bytes_async(contents, policies, endpoint, None, None, Some(updater.clone()), None)
-                .await
-                .unwrap();
+        let file_infos = data_client::upload_bytes_async(
+            &ctx,
+            contents,
+            policies,
+            endpoint,
+            None,
+            None,
+            Some(updater.clone()),
+            None,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(file_infos.len(), 2);
 
@@ -156,6 +174,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_download_with_per_file_progress_updaters() {
+        let ctx = test_context();
         let server = LocalTestServerBuilder::new().start().await;
         let endpoint = make_endpoint(&server);
 
@@ -163,7 +182,7 @@ mod tests {
         let policies = vec![Sha256Policy::Compute; contents.len()];
 
         let file_infos =
-            data_client::upload_bytes_async(contents.clone(), policies, endpoint.clone(), None, None, None, None)
+            data_client::upload_bytes_async(&ctx, contents.clone(), policies, endpoint.clone(), None, None, None, None)
                 .await
                 .unwrap();
 
@@ -183,7 +202,7 @@ mod tests {
         let updaters: Vec<Arc<dyn TrackingProgressUpdater>> =
             vec![updater_a.clone() as Arc<dyn TrackingProgressUpdater>, updater_b.clone()];
 
-        let paths = data_client::download_async(download_pairs, endpoint, None, None, Some(updaters), None)
+        let paths = data_client::download_async(&ctx, download_pairs, endpoint, None, None, Some(updaters), None)
             .await
             .unwrap();
 
@@ -201,6 +220,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_upload_files_with_progress_updater() {
+        let ctx = test_context();
         let server = LocalTestServerBuilder::new().start().await;
         let endpoint = make_endpoint(&server);
 
@@ -218,10 +238,18 @@ mod tests {
 
         let updater = Arc::new(RecordingUpdater::default());
 
-        let file_infos =
-            data_client::upload_async(file_paths, policies, endpoint.clone(), None, None, Some(updater.clone()), None)
-                .await
-                .unwrap();
+        let file_infos = data_client::upload_async(
+            &ctx,
+            file_paths,
+            policies,
+            endpoint.clone(),
+            None,
+            None,
+            Some(updater.clone()),
+            None,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(file_infos.len(), 2);
 
@@ -234,6 +262,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_upload_download_large_files() {
+        let ctx = test_context();
         let server = LocalTestServerBuilder::new().start().await;
         let endpoint = make_endpoint(&server);
 
@@ -244,6 +273,7 @@ mod tests {
         fs::write(&path, &large_data).unwrap();
 
         let file_infos = data_client::upload_async(
+            &ctx,
             vec![path.to_string_lossy().to_string()],
             vec![Sha256Policy::Compute],
             endpoint.clone(),
@@ -262,6 +292,7 @@ mod tests {
         let out_path = download_dir.path().join("large_out.bin");
 
         let paths = data_client::download_async(
+            &ctx,
             vec![(file_infos[0].clone(), out_path.to_string_lossy().to_string())],
             endpoint,
             None,
@@ -278,6 +309,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_progress_updates_are_monotonic() {
+        let ctx = test_context();
         let server = LocalTestServerBuilder::new().start().await;
         let endpoint = make_endpoint(&server);
 
@@ -289,6 +321,7 @@ mod tests {
         let updater = Arc::new(RecordingUpdater::default());
 
         data_client::upload_async(
+            &ctx,
             vec![path.to_string_lossy().to_string()],
             vec![Sha256Policy::Compute],
             endpoint,

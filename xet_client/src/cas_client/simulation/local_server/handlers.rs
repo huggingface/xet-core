@@ -14,18 +14,18 @@
 //! Errors are mapped to appropriate HTTP status codes via `error_to_response`.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Json;
 use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::http::header::HOST;
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bytes::Bytes;
 use futures_util::StreamExt;
-use http::header::RANGE;
+use http::header::{HOST, RANGE};
+use http::{HeaderMap, HeaderValue, StatusCode, Uri};
 use xet_core_structures::merklehash::MerkleHash;
 
 use super::super::super::{DeletionControlableClient, DirectAccessClient};
@@ -338,11 +338,7 @@ fn transform_v2_xorb_urls(response: &mut QueryReconstructionResponseV2, base_url
 /// Response: Map of file ID -> reconstruction info
 ///
 /// The URLs in fetch_info are transformed from local file paths to HTTP URLs.
-pub async fn batch_get_reconstruction(
-    State(state): State<ServerState>,
-    uri: axum::http::Uri,
-    headers: HeaderMap,
-) -> Response {
+pub async fn batch_get_reconstruction(State(state): State<ServerState>, uri: Uri, headers: HeaderMap) -> Response {
     let connection_guard = state.latency_simulation.register_connection().await;
     if let Some(simulated_error) = connection_guard.simulate_error() {
         return simulated_error;
@@ -391,7 +387,7 @@ pub async fn batch_get_reconstruction(
 /// concatenated in order, allowing a single request to serve multi-range blocks.
 ///
 /// Returns raw (compressed) bytes that the client will decompress.
-pub async fn fetch_term(State(state): State<ServerState>, uri: axum::http::Uri, headers: HeaderMap) -> Response {
+pub async fn fetch_term(State(state): State<ServerState>, uri: Uri, headers: HeaderMap) -> Response {
     let connection_guard = state.latency_simulation.register_connection().await;
     if let Some(simulated_error) = connection_guard.simulate_error() {
         return simulated_error;
@@ -679,7 +675,7 @@ async fn collect_body(body: Body) -> Result<Bytes, String> {
 
 /// Parses a duration range string in the format "(min, max)" where min and max are duration strings.
 ///
-/// Supports duration formats like "10ms", "1s", "500us", etc. (via duration_str crate).
+/// Supports duration formats like "10ms", "1s", "500us", etc. (via humantime crate).
 ///
 /// Examples:
 /// - "(10ms, 100ms)" -> Duration range from 10ms to 100ms
@@ -701,8 +697,8 @@ fn parse_duration_range(value: &str) -> Result<std::ops::Range<std::time::Durati
         return Err(format!("Expected format '(min, max)' with two duration values, got: {value}"));
     }
 
-    let min = duration_str::parse(parts[0]).map_err(|e| format!("Invalid min duration '{}': {e}", parts[0]))?;
-    let max = duration_str::parse(parts[1]).map_err(|e| format!("Invalid max duration '{}': {e}", parts[1]))?;
+    let min = humantime::parse_duration(parts[0]).map_err(|e| format!("Invalid min duration '{}': {e}", parts[0]))?;
+    let max = humantime::parse_duration(parts[1]).map_err(|e| format!("Invalid max duration '{}': {e}", parts[1]))?;
 
     if min > max {
         return Err(format!("Min duration ({:?}) cannot be greater than max ({:?})", min, max));
@@ -711,12 +707,9 @@ fn parse_duration_range(value: &str) -> Result<std::ops::Range<std::time::Durati
     Ok(min..max)
 }
 
-pub async fn set_config(State(state): State<ServerState>, uri: axum::http::Uri, body: Body) -> Response {
+pub async fn set_config(State(state): State<ServerState>, uri: Uri, body: Body) -> Response {
     // Try to parse as JSON body first
-    let body_bytes = match axum::body::to_bytes(body, 1_048_576).await {
-        Ok(bytes) => bytes,
-        Err(_) => Bytes::new(),
-    };
+    let body_bytes = axum::body::to_bytes(body, 1_048_576).await.unwrap_or_else(|_| Bytes::new());
 
     if !body_bytes.is_empty() {
         match serde_json::from_slice::<ServerLatencyProfile>(&body_bytes) {
@@ -775,9 +768,58 @@ pub async fn set_config(State(state): State<ServerState>, uri: axum::http::Uri, 
             },
             Err(e) => (StatusCode::BAD_REQUEST, format!("Invalid random_delay value: {e}")).into_response(),
         },
+        "global_dedup_shard_expiration" => match value.parse::<u64>() {
+            Ok(secs) => {
+                let expiration = if secs == 0 {
+                    None
+                } else {
+                    Some(Duration::from_secs(secs))
+                };
+                state.client.set_global_dedup_shard_expiration(expiration);
+                (StatusCode::OK, "Global dedup shard expiration set").into_response()
+            },
+            Err(e) => (StatusCode::BAD_REQUEST, format!("Invalid seconds value: {e}")).into_response(),
+        },
+        "max_ranges_per_fetch" => match value.parse::<usize>() {
+            Ok(n) => {
+                state.client.set_max_ranges_per_fetch(n);
+                (StatusCode::OK, "Max ranges per fetch set").into_response()
+            },
+            Err(e) => (StatusCode::BAD_REQUEST, format!("Invalid usize value: {e}")).into_response(),
+        },
+        "disable_v2_reconstruction" => match value.parse::<u16>() {
+            Ok(code) => {
+                state.client.disable_v2_reconstruction(code);
+                (StatusCode::OK, "V2 reconstruction config set").into_response()
+            },
+            Err(e) => (StatusCode::BAD_REQUEST, format!("Invalid status code: {e}")).into_response(),
+        },
+        "api_delay" => match parse_random_delay_value(value) {
+            Ok((min_ms, max_ms)) => {
+                let range = if min_ms == 0 && max_ms == 0 {
+                    None
+                } else {
+                    Some(Duration::from_millis(min_ms)..Duration::from_millis(max_ms))
+                };
+                state.client.set_api_delay_range(range);
+                (StatusCode::OK, "API delay set").into_response()
+            },
+            Err(e) => (StatusCode::BAD_REQUEST, format!("Invalid api_delay value: {e}")).into_response(),
+        },
+        "url_expiration" => match value.parse::<u64>() {
+            Ok(ms) => {
+                state.client.set_fetch_term_url_expiration(Duration::from_millis(ms));
+                (StatusCode::OK, "URL expiration set").into_response()
+            },
+            Err(e) => (StatusCode::BAD_REQUEST, format!("Invalid millis value: {e}")).into_response(),
+        },
         _ => (
             StatusCode::BAD_REQUEST,
-            format!("Unknown config: {config_name}. Supported: congestion, random_delay"),
+            format!(
+                "Unknown config: {config_name}. Supported: congestion, random_delay, \
+                 global_dedup_shard_expiration, max_ranges_per_fetch, \
+                 disable_v2_reconstruction, api_delay, url_expiration"
+            ),
         )
             .into_response(),
     }
@@ -796,8 +838,10 @@ fn parse_random_delay_value(value: &str) -> Result<(u64, u64), String> {
     if parts.len() != 2 {
         return Err(format!("Expected format '(min, max)' with two duration values, got: {value}"));
     }
-    let min_dur = duration_str::parse(parts[0]).map_err(|e| format!("Invalid min duration '{}': {e}", parts[0]))?;
-    let max_dur = duration_str::parse(parts[1]).map_err(|e| format!("Invalid max duration '{}': {e}", parts[1]))?;
+    let min_dur =
+        humantime::parse_duration(parts[0]).map_err(|e| format!("Invalid min duration '{}': {e}", parts[0]))?;
+    let max_dur =
+        humantime::parse_duration(parts[1]).map_err(|e| format!("Invalid max duration '{}': {e}", parts[1]))?;
     if min_dur > max_dur {
         return Err("Min duration cannot be greater than max".to_string());
     }

@@ -3,16 +3,20 @@ name = "xet-client"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+homepage.workspace = true
 repository.workspace = true
-description = "HTTPS client for communicating with Hugging Face Xet storage servers"
+description = "Client library for communicating with Hugging Face Xet storage servers.  Use through the hf-xet crate."
+readme = "README.md"
+keywords = ["huggingface"]
+categories = ["artificial-intelligence", "network-programming"]
 
 [lib]
 name = "xet_client"
 path = "src/lib.rs"
 
 [dependencies]
-xet-runtime = { version = "1.4.0", path = "../xet_runtime" }
-xet-core-structures = { version = "1.4.0", path = "../xet_core_structures" }
+xet-runtime = { version = "1.5.2", path = "../xet_runtime" }
+xet-core-structures = { version = "1.5.2", path = "../xet_core_structures" }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -20,17 +24,13 @@ base64 = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true }
 crc32fast = { workspace = true }
-derivative = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 lazy_static = { workspace = true }
-mockall = { workspace = true }
 more-asserts = { workspace = true }
-once_cell = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true }
 reqwest-middleware = { workspace = true }
-reqwest-retry = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_repr = { workspace = true }
@@ -44,32 +44,48 @@ url = { workspace = true }
 urlencoding = { workspace = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
-tokio = { workspace = true, features = ["sync", "macros", "io-util", "rt", "time"] }
+tokio = { workspace = true, features = [
+    "sync",
+    "macros",
+    "io-util",
+    "rt",
+    "time",
+] }
 web-time = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-axum = { workspace = true }
-duration-str = { workspace = true }
-futures-util = { workspace = true }
-heed = { workspace = true }
-human-bandwidth = { workspace = true }
+axum = { workspace = true, optional = true }
+humantime = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
+redb = { workspace = true }
+human-bandwidth = { workspace = true, optional = true }
 hyper = { workspace = true }
 tokio = { workspace = true }
-tower-http = { version = "0.6", features = ["cors"] }
-warp = { workspace = true }
+tower-http = { version = "0.6", features = ["cors"], optional = true }
 
 [features]
 strict = []
+smoke-test = []
 default = ["rustls-tls"]
 elevated_information_level = []
+fd-track = ["xet-runtime/fd-track"]
 rustls-tls = ["reqwest/rustls"]
 native-tls = ["reqwest/native-tls"]
 native-tls-vendored = ["reqwest/native-tls-vendored"]
 analysis = []
+simulation = [
+    "dep:axum",
+    "dep:humantime",
+    "dep:futures-util",
+    "dep:human-bandwidth",
+    "dep:tower-http",
+    "xet-core-structures/simulation",
+]
 
 [[bin]]
 name = "local_cas_server"
 path = "src/cas_client/simulation/local_server/main.rs"
+required-features = ["simulation"]
 
 [[bin]]
 name = "cache_analysis"
@@ -79,10 +95,10 @@ required-features = ["analysis"]
 [dev-dependencies]
 approx = { workspace = true }
 ctor = { workspace = true }
+mockall = { workspace = true }
 httpmock = { workspace = true }
 rand_distr = { workspace = true }
 serde_json = { workspace = true }
-tempdir = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing-test = { workspace = true }
 wiremock = { workspace = true }

@@ -7,7 +7,7 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use xet_data::processing::configurations::TranslatorConfig;
 use xet_data::processing::{FileUploadSession, Sha256Policy, XetFileInfo};
-use xet_runtime::core::XetRuntime;
+use xet_runtime::core::XetContext;
 
 #[derive(Parser)]
 struct XCommand {
@@ -56,18 +56,15 @@ impl Command {
     }
 }
 
-fn get_threadpool() -> Arc<XetRuntime> {
-    static THREADPOOL: OnceLock<Arc<XetRuntime>> = OnceLock::new();
-    THREADPOOL
-        .get_or_init(|| XetRuntime::new().expect("Error starting multithreaded runtime."))
+fn get_xet_context() -> XetContext {
+    static CTX: OnceLock<XetContext> = OnceLock::new();
+    CTX.get_or_init(|| XetContext::default().expect("Error starting multithreaded runtime."))
         .clone()
 }
 
 fn main() {
     let cli = XCommand::parse();
-    let _ = get_threadpool()
-        .external_run_async_task(async move { cli.run().await })
-        .unwrap();
+    let _ = get_xet_context().runtime.bridge_sync(async move { cli.run().await }).unwrap();
 }
 
 async fn clean_file(arg: &CleanArg) -> Result<()> {
@@ -87,10 +84,12 @@ async fn clean(mut reader: impl Read, mut writer: impl Write, size: u64) -> Resu
 
     let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
 
-    let translator = FileUploadSession::new(TranslatorConfig::local_config(std::env::current_dir()?)?.into()).await?;
+    let runtime = get_xet_context();
+    let translator =
+        FileUploadSession::new(Arc::new(TranslatorConfig::local_config(&runtime, std::env::current_dir()?)?)).await?;
 
     let mut size_read = 0;
-    let (_id, mut handle) = translator.start_clean(None, size, Sha256Policy::Compute)?;
+    let (_id, mut handle) = translator.start_clean(None, Some(size), Sha256Policy::Compute)?;
 
     loop {
         let bytes = reader.read(&mut read_buf)?;
@@ -134,8 +133,9 @@ async fn smudge(_name: Arc<str>, mut reader: impl Read, output_path: PathBuf) ->
 
     // Use local config pointing to current directory
     let cas_path = std::env::current_dir()?;
-    let config = TranslatorConfig::local_config(cas_path)?;
-    let session = xet_data::processing::FileDownloadSession::new(config.into()).await?;
+    let runtime = get_xet_context();
+    let config = TranslatorConfig::local_config(&runtime, cas_path)?;
+    let session = xet_data::processing::FileDownloadSession::new(config.into(), None).await?;
 
     let (_id, _n_bytes) = session.download_file(&xet_file, &output_path).await?;
 

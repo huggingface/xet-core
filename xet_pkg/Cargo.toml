@@ -3,34 +3,56 @@ name = "hf-xet"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+homepage.workspace = true
 repository.workspace = true
-description = "Client library and tooling for the Hugging Face Xet data storage system"
-keywords = ["huggingface", "xet", "data", "ai"]
-categories = ["api-bindings"]
+description = "Client library and tooling for the Hugging Face Xet data storage system."
+readme = "README.md"
+keywords = [
+    "huggingface",
+    "datasets",
+    "large-files",
+    "deduplication",
+    "cloud-storage",
+]
+categories = [
+    "artificial-intelligence",
+    "asynchronous",
+    "data-structures",
+    "filesystem",
+]
 
 [lib]
 name = "xet"
 path = "src/lib.rs"
 
 [dependencies]
-xet-runtime = { version = "1.4.0", path = "../xet_runtime" }
-xet-core-structures = { version = "1.4.0", path = "../xet_core_structures" }
-xet-client = { version = "1.4.0", path = "../xet_client" }
-xet-data = { version = "1.4.0", path = "../xet_data" }
+xet-runtime = { version = "1.5.2", path = "../xet_runtime" }
+xet-core-structures = { version = "1.5.2", path = "../xet_core_structures" }
+xet-client = { version = "1.5.2", path = "../xet_client" }
+xet-data = { version = "1.5.2", path = "../xet_data" }
 
-anyhow = { workspace = true }
 async-trait = { workspace = true }
+bytes = { workspace = true }
 http = { workspace = true }
 more-asserts = { workspace = true }
+pyo3 = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["net", "time"] }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
-ulid = { workspace = true }
-pyo3 = { workspace = true, optional = true }
+uuid = { workspace = true, features = ["v7"] }
 
 [features]
-python = ["xet-runtime/python", "dep:pyo3"]
+smoke-test = []
+fd-track = ["xet-runtime/fd-track", "xet-client/fd-track", "xet-data/fd-track"]
+python = ["xet-runtime/python", "xet-data/python", "dep:pyo3"]
+simulation = ["xet-client/simulation"]
+native-tls = ["xet-client/native-tls"]
+native-tls-vendored = ["xet-client/native-tls-vendored"]
+elevated_information_level = ["xet-client/elevated_information_level", "xet-runtime/elevated_information_level"]
+no-default-cache = ["xet-runtime/no-default-cache"]
+tokio-console = ["xet-runtime/tokio-console"]
 
 [dev-dependencies]
 anyhow = { workspace = true }
@@ -42,5 +64,11 @@ serde_json = { workspace = true }
 serial_test = { workspace = true }
 smol = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "rt", "time", "macros"] }
+tokio = { workspace = true, features = [
+    "rt-multi-thread",
+    "rt",
+    "time",
+    "macros",
+] }
 tracing-subscriber = { workspace = true }
+wiremock = { workspace = true }

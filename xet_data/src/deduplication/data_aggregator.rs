@@ -121,7 +121,7 @@ impl DataAggregator {
             for fi in file_info.0.segments.iter_mut() {
                 // To transfer the cas chunks from the other data aggregator to this one,
                 // shift chunk indices so the new index start and end values reflect the
-                // append opperation above.
+                // append operation above.
                 if fi.xorb_hash == MerkleHash::marker() {
                     fi.chunk_index_start += shift;
                     fi.chunk_index_end += shift;

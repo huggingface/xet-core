@@ -14,6 +14,7 @@ use http::header::{self, HeaderMap, HeaderValue};
 #[cfg(unix)]
 use tempfile::TempDir;
 use tokio::sync::oneshot;
+use xet_runtime::core::XetContext;
 
 use super::super::RemoteClient;
 use super::super::interface::Client;
@@ -22,7 +23,7 @@ use super::local_server::{LocalServer, ServerLatencyProfile};
 use super::network_simulation::{NetworkProfile, NetworkSimulationProxy};
 #[cfg(unix)]
 use super::socket_proxy::UnixSocketProxy;
-use super::{DirectAccessClient, LocalClient, MemoryClient, RemoteSimulationClient};
+use super::{DeletionControlableClient, DirectAccessClient, LocalClient, MemoryClient, RemoteSimulationClient};
 use crate::error::Result;
 
 /// Builder for creating a `LocalTestServer` with various configuration options.
@@ -66,7 +67,7 @@ use crate::error::Result;
 ///     .await;
 ///
 /// // Use existing client
-/// let client = MemoryClient::new();
+/// let client = MemoryClient::new(ctx);
 /// let server = LocalTestServerBuilder::new()
 ///     .with_client(client)
 ///     .with_ephemeral_socket()
@@ -171,6 +172,7 @@ impl LocalTestServerBuilder {
 
     /// Builds and starts the test server.
     pub async fn start(self) -> LocalTestServer {
+        let ctx = XetContext::default().expect("XetContext::new");
         #[cfg(unix)]
         let (socket_path, ephemeral_tempdir) = if self.ephemeral_socket {
             let tempdir = TempDir::new().expect("Failed to create temporary directory for ephemeral socket");
@@ -183,20 +185,31 @@ impl LocalTestServerBuilder {
         #[cfg(not(unix))]
         let _socket_path = if self.ephemeral_socket { None } else { self.socket_path };
 
-        let client: Arc<dyn DirectAccessClient> = if let Some(client) = self.client {
-            client
-        } else if self.in_memory {
-            MemoryClient::new()
-        } else if self.ephemeral_disk {
-            LocalClient::temporary()
-                .await
-                .expect("Failed to create LocalClient with temporary directory")
-        } else {
-            let disk_path = self.disk_location.unwrap_or_else(|| {
-                panic!("with_disk_location must be called when in_memory is false and no client is provided")
-            });
-            LocalClient::new(&disk_path).await.expect("Failed to create LocalClient")
-        };
+        // Build client + optional deletion_client. LocalClient and MemoryClient both support
+        // DirectAccessClient + DeletionControlableClient; pre-supplied clients only support DirectAccessClient.
+        let (client, deletion_client): (Arc<dyn DirectAccessClient>, Option<Arc<dyn DeletionControlableClient>>) =
+            if let Some(client) = self.client {
+                (client, None)
+            } else if self.in_memory {
+                let mc = MemoryClient::new(ctx.clone());
+                let dc: Arc<dyn DeletionControlableClient> = mc.clone();
+                (mc, Some(dc))
+            } else if self.ephemeral_disk {
+                let lc = LocalClient::temporary(ctx.clone())
+                    .await
+                    .expect("Failed to create LocalClient with temporary directory");
+                let dc: Arc<dyn DeletionControlableClient> = lc.clone();
+                (lc, Some(dc))
+            } else {
+                let disk_path = self.disk_location.unwrap_or_else(|| {
+                    panic!("with_disk_location must be called when in_memory is false and no client is provided")
+                });
+                let lc = LocalClient::new(ctx.clone(), &disk_path)
+                    .await
+                    .expect("Failed to create LocalClient");
+                let dc: Arc<dyn DeletionControlableClient> = lc.clone();
+                (lc, Some(dc))
+            };
 
         let port = LocalTestServer::find_available_port();
         let host = "127.0.0.1".to_string();
@@ -223,7 +236,7 @@ impl LocalTestServerBuilder {
                 (None, tcp_endpoint.clone())
             };
 
-        let server = LocalServer::from_client(client.clone(), None, host, port);
+        let server = LocalServer::from_client(client.clone(), deletion_client.clone(), host, port);
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         tokio::spawn(async move {
             let _ = server.run_until_stopped(shutdown_rx).await;
@@ -247,6 +260,7 @@ impl LocalTestServerBuilder {
 
                 let socket_path_str = socket_path.to_string_lossy().to_string();
                 let client = RemoteClient::new_with_socket(
+                    ctx.clone(),
                     &client_endpoint,
                     &None,
                     "test-session",
@@ -257,13 +271,21 @@ impl LocalTestServerBuilder {
 
                 (client, Some(proxy))
             } else {
-                let client = RemoteClient::new(&client_endpoint, &None, "test-session", false, custom_headers.clone());
+                let client = RemoteClient::new(
+                    ctx.clone(),
+                    &client_endpoint,
+                    &None,
+                    "test-session",
+                    false,
+                    custom_headers.clone(),
+                );
                 (client, None)
             }
         };
 
         #[cfg(not(unix))]
-        let remote_client = RemoteClient::new(&client_endpoint, &None, "test-session", false, custom_headers.clone());
+        let remote_client =
+            RemoteClient::new(ctx.clone(), &client_endpoint, &None, "test-session", false, custom_headers.clone());
 
         let remote_simulation_client = Arc::new(RemoteSimulationClient::new(remote_client));
 
@@ -273,6 +295,7 @@ impl LocalTestServerBuilder {
             server_shutdown_tx: Some(shutdown_tx),
             remote_simulation_client,
             client,
+            deletion_client,
             socket_proxy,
             _ephemeral_socket_tempdir: ephemeral_tempdir,
             network_simulation_proxy: proxy_guard.clone(),
@@ -284,6 +307,7 @@ impl LocalTestServerBuilder {
             server_shutdown_tx: Some(shutdown_tx),
             remote_simulation_client,
             client,
+            deletion_client,
             network_simulation_proxy: proxy_guard,
         };
 
@@ -336,6 +360,7 @@ pub struct LocalTestServer {
     server_shutdown_tx: Option<oneshot::Sender<()>>,
     remote_simulation_client: Arc<RemoteSimulationClient>,
     client: Arc<dyn DirectAccessClient>,
+    deletion_client: Option<Arc<dyn DeletionControlableClient>>,
     network_simulation_proxy: Option<Arc<NetworkSimulationProxy>>,
 
     #[cfg(unix)]
@@ -415,6 +440,22 @@ impl LocalTestServer {
     /// Returns an error if the profile cannot be applied.
     pub async fn set_server_latency_profile(&self, profile: ServerLatencyProfile) -> Result<()> {
         self.remote_simulation_client().simulation_set_latency_profile(profile).await
+    }
+
+    /// Verifies referential integrity by calling through to the underlying `DeletionControlableClient`.
+    pub async fn verify_integrity(&self) -> Result<()> {
+        match &self.deletion_client {
+            Some(dc) => dc.verify_integrity().await,
+            None => Ok(()),
+        }
+    }
+
+    /// Verifies all on-disk data is reachable by calling through to the underlying `DeletionControlableClient`.
+    pub async fn verify_all_reachable(&self) -> Result<()> {
+        match &self.deletion_client {
+            Some(dc) => dc.verify_all_reachable().await,
+            None => Ok(()),
+        }
     }
 
     fn find_available_port() -> u16 {
@@ -515,6 +556,10 @@ impl DirectAccessClient for LocalTestServer {
         self.client.set_fetch_term_url_expiration(expiration);
     }
 
+    fn set_global_dedup_shard_expiration(&self, expiration: Option<std::time::Duration>) {
+        self.client.set_global_dedup_shard_expiration(expiration);
+    }
+
     fn set_api_delay_range(&self, delay_range: Option<std::ops::Range<std::time::Duration>>) {
         self.client.set_api_delay_range(delay_range);
     }
@@ -549,10 +594,6 @@ impl DirectAccessClient for LocalTestServer {
 
     async fn list_xorbs(&self) -> Result<Vec<xet_core_structures::merklehash::MerkleHash>> {
         self.client.list_xorbs().await
-    }
-
-    async fn delete_xorb(&self, hash: &xet_core_structures::merklehash::MerkleHash) {
-        self.client.delete_xorb(hash).await;
     }
 
     async fn get_full_xorb(&self, hash: &xet_core_structures::merklehash::MerkleHash) -> Result<bytes::Bytes> {
@@ -936,43 +977,30 @@ mod tests {
         }
     }
 
-    /// Tests the /simulation/set_config endpoint for setting random_delay.
+    async fn post_set_config(server: &LocalTestServer, config: &str, value: &str) -> reqwest::StatusCode {
+        let http_client = reqwest::Client::new();
+        let url = format!(
+            "{}/simulation/set_config?config={}&value={}",
+            server.http_endpoint(),
+            urlencoding::encode(config),
+            urlencoding::encode(value),
+        );
+        http_client.post(&url).send().await.unwrap().status()
+    }
+
+    /// Tests the /simulation/set_config endpoint for all supported configs.
     async fn check_simulation_set_config(server: &LocalTestServer) {
         let http_client = reqwest::Client::new();
 
-        // Test setting random_delay with valid value
-        let response = http_client
-            .post(format!("{}/simulation/set_config?config=random_delay&value=(10ms,100ms)", server.http_endpoint()))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        // --- random_delay ---
+        assert_eq!(post_set_config(server, "random_delay", "(10ms,100ms)").await, reqwest::StatusCode::OK);
+        assert_eq!(post_set_config(server, "RANDOM_DELAY", "(5ms,50ms)").await, reqwest::StatusCode::OK);
+        assert_eq!(post_set_config(server, "random_delay", "invalid").await, reqwest::StatusCode::BAD_REQUEST);
 
-        // Test case insensitivity
-        let response = http_client
-            .post(format!("{}/simulation/set_config?config=RANDOM_DELAY&value=(5ms,50ms)", server.http_endpoint()))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        // Unknown config
+        assert_eq!(post_set_config(server, "unknown_config", "test").await, reqwest::StatusCode::BAD_REQUEST);
 
-        // Test unknown config
-        let response = http_client
-            .post(format!("{}/simulation/set_config?config=unknown_config&value=test", server.http_endpoint()))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
-
-        // Test invalid random_delay value
-        let response = http_client
-            .post(format!("{}/simulation/set_config?config=random_delay&value=invalid", server.http_endpoint()))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
-
-        // Test missing config parameter
+        // Missing config parameter
         let response = http_client
             .post(format!("{}/simulation/set_config?value=test", server.http_endpoint()))
             .send()
@@ -980,7 +1008,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
 
-        // Test missing value parameter
+        // Missing value parameter
         let response = http_client
             .post(format!("{}/simulation/set_config?config=random_delay", server.http_endpoint()))
             .send()
@@ -988,13 +1016,92 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
 
-        // Reset delay to zero for subsequent tests
-        let response = http_client
-            .post(format!("{}/simulation/set_config?config=random_delay&value=(0ms,0ms)", server.http_endpoint()))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        // Reset delay
+        assert_eq!(post_set_config(server, "random_delay", "(0ms,0ms)").await, reqwest::StatusCode::OK);
+
+        // --- global_dedup_shard_expiration ---
+        assert_eq!(post_set_config(server, "global_dedup_shard_expiration", "300").await, reqwest::StatusCode::OK);
+        // Verify effect: upload a shard, query dedup, check expiry is set and file data stripped
+        {
+            use std::io::Cursor;
+
+            use xet_core_structures::metadata_shard::MDBShardInfo;
+            use xet_core_structures::metadata_shard::streaming_shard::MDBMinimalShard;
+
+            let file = server.client().upload_random_file(&[(1, (0, 5))], CHUNK_SIZE).await.unwrap();
+            let first_chunk = file.terms[0].chunk_hashes[0];
+            let shard_bytes = server
+                .client()
+                .query_for_global_dedup_shard("default", &first_chunk)
+                .await
+                .unwrap()
+                .unwrap();
+
+            let minimal_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&shard_bytes), true, true).unwrap();
+            assert_eq!(minimal_shard.num_files(), 0);
+            assert_ne!(minimal_shard.num_xorb(), 0);
+
+            let shard_info = MDBShardInfo::load_from_reader(&mut Cursor::new(&shard_bytes)).unwrap();
+            let now_epoch = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            assert_ne!(shard_info.metadata.shard_key_expiry, 0);
+            assert!(shard_info.metadata.shard_key_expiry >= now_epoch + 295);
+            assert!(shard_info.metadata.shard_key_expiry <= now_epoch + 305);
+        }
+        // Disable it again
+        assert_eq!(post_set_config(server, "global_dedup_shard_expiration", "0").await, reqwest::StatusCode::OK);
+        assert_eq!(
+            post_set_config(server, "global_dedup_shard_expiration", "not_a_number").await,
+            reqwest::StatusCode::BAD_REQUEST
+        );
+
+        // --- max_ranges_per_fetch ---
+        assert_eq!(post_set_config(server, "max_ranges_per_fetch", "10").await, reqwest::StatusCode::OK);
+        assert_eq!(post_set_config(server, "max_ranges_per_fetch", "abc").await, reqwest::StatusCode::BAD_REQUEST);
+        // Reset
+        assert_eq!(
+            post_set_config(server, "max_ranges_per_fetch", &usize::MAX.to_string()).await,
+            reqwest::StatusCode::OK
+        );
+
+        // --- disable_v2_reconstruction ---
+        assert_eq!(post_set_config(server, "disable_v2_reconstruction", "503").await, reqwest::StatusCode::OK);
+        // Verify effect: V2 reconstruction via HTTP should return 503
+        {
+            let file = server.client().upload_random_file(&[(1, (0, 3))], CHUNK_SIZE).await.unwrap();
+            let v2_url = format!("{}/v2/reconstructions/{:?}", server.http_endpoint(), file.file_hash);
+            let resp = http_client.get(&v2_url).send().await.unwrap();
+            assert_eq!(resp.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        }
+        // Re-enable
+        assert_eq!(post_set_config(server, "disable_v2_reconstruction", "0").await, reqwest::StatusCode::OK);
+        assert_eq!(post_set_config(server, "disable_v2_reconstruction", "xyz").await, reqwest::StatusCode::BAD_REQUEST);
+
+        // --- api_delay ---
+        assert_eq!(post_set_config(server, "api_delay", "(50ms, 50ms)").await, reqwest::StatusCode::OK);
+        // Verify effect: a Client-trait API call should take at least 40ms
+        {
+            let file = server.client().upload_random_file(&[(1, (0, 3))], CHUNK_SIZE).await.unwrap();
+            let first_chunk = file.terms[0].chunk_hashes[0];
+            let start = std::time::Instant::now();
+            let _ = server.client().query_for_global_dedup_shard("default", &first_chunk).await;
+            assert!(
+                start.elapsed() >= std::time::Duration::from_millis(40),
+                "Expected delay of ~50ms, but got {:?}",
+                start.elapsed()
+            );
+        }
+        // Disable
+        assert_eq!(post_set_config(server, "api_delay", "(0ms, 0ms)").await, reqwest::StatusCode::OK);
+        assert_eq!(post_set_config(server, "api_delay", "invalid").await, reqwest::StatusCode::BAD_REQUEST);
+
+        // --- url_expiration ---
+        assert_eq!(post_set_config(server, "url_expiration", "5000").await, reqwest::StatusCode::OK);
+        assert_eq!(post_set_config(server, "url_expiration", "not_a_number").await, reqwest::StatusCode::BAD_REQUEST);
+        // Reset to large value
+        assert_eq!(post_set_config(server, "url_expiration", &u64::MAX.to_string()).await, reqwest::StatusCode::OK);
     }
 
     /// Tests the /simulation/dummy_upload endpoint.

@@ -14,6 +14,7 @@ mod ssh;
 
 use git::GitCredentialHelper;
 use ssh::SSHCredentialHelper;
+#[cfg(any(test, feature = "git-xet-for-integration-test"))]
 pub use ssh::{GitLFSAuthentationResponseHeader, GitLFSAuthenticateResponse};
 
 // This mod derives credentials for the Xet CAS token API on HF Hub from the local repository's credentials.
@@ -35,7 +36,7 @@ pub use ssh::{GitLFSAuthentationResponseHeader, GitLFSAuthenticateResponse};
 // If set to "basic" then credentials will be requested before making batch requests to this url,
 // otherwise a public request will initially be attempted.
 // If set to "none" then credentials are not needed. For this case we don't want to prompt the user
-// for any crendential.
+// for any credential.
 //
 // See https://github.com/git-lfs/git-lfs/blob/main/docs/man/git-lfs-config.adoc and
 // https://github.com/git-lfs/git-lfs/blob/463ed9727d21155585721489fdb8cc81030f979b/lfsapi/auth.go#L151

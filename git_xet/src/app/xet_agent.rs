@@ -8,19 +8,26 @@ use xet_client::cas_client::auth::TokenRefresher;
 use xet_client::hub_client::Operation;
 use xet_pkg::legacy::progress_tracking::{GroupProgressCallbackUpdater, ProgressUpdate, TrackingProgressUpdater};
 use xet_pkg::legacy::{FileUploadSession, Sha256Policy, clean_file, default_config};
+use xet_runtime::core::XetContext;
 
 use crate::constants::{
     HF_ENDPOINT_ENV, XET_ACCESS_TOKEN_HEADER, XET_CAS_URL, XET_SESSION_ID, XET_TOKEN_EXPIRATION_HEADER,
 };
 
 const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
+
+fn xet_runtime() -> &'static XetContext {
+    static RUNTIME: OnceLock<XetContext> = OnceLock::new();
+    RUNTIME.get_or_init(|| XetContext::default().expect("xet context"))
+}
+
 use crate::errors::{GitXetError, Result};
 use crate::git_repo::GitRepo;
 use crate::git_url::{GitUrl, Scheme};
 use crate::lfs_agent_protocol::{
     GitLFSProtocolError, InitRequestInner, ProgressUpdater, TransferAgent, TransferRequest,
 };
-use crate::token_refresher::DirectRefreshRouteTokenRefresher;
+use crate::token_refresher::new_git_token_refresher;
 
 // This implements a Git LFS custom transfer agent that uploads and downloads files using the Xet protocol.
 #[derive(Default)]
@@ -84,7 +91,8 @@ impl TransferAgent for XetAgent {
         };
 
         let session_id = req.action.header.get(XET_SESSION_ID).map(|s| s.as_str()).unwrap_or_default();
-        let token_refresher: Arc<dyn TokenRefresher> = Arc::new(DirectRefreshRouteTokenRefresher::new(
+        let token_refresher: Arc<dyn TokenRefresher> = Arc::new(new_git_token_refresher(
+            xet_runtime(),
             repo,
             self.remote_url.clone(),
             &req.action.href,
@@ -130,9 +138,14 @@ impl TransferAgent for XetAgent {
 
         let headers = user_agent_headers;
 
-        let mut config =
-            default_config(cas_url, Some((token, token_expiry)), Some(token_refresher), Some(Arc::new(headers)))?
-                .disable_progress_aggregation();
+        let mut config = default_config(
+            xet_runtime(),
+            cas_url,
+            Some((token, token_expiry)),
+            Some(token_refresher),
+            Some(Arc::new(headers)),
+        )?
+        .disable_progress_aggregation();
         if !session_id.is_empty() {
             config.session.session_id = Some(session_id.to_owned());
         }

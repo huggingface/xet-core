@@ -7,6 +7,7 @@ use xet_core_structures::metadata_shard::file_structs::{
     FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, FileVerificationEntry, MDBFileInfo,
 };
 use xet_core_structures::metadata_shard::hash_is_global_dedup_eligible;
+use xet_runtime::core::XetContext;
 
 use super::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use super::data_aggregator::DataAggregator;
@@ -17,6 +18,9 @@ use super::{Chunk, RawXorbData};
 use crate::progress_tracking::upload_tracking::FileXorbDependency;
 
 pub struct FileDeduper<DataInterfaceType: DeduplicationDataInterface> {
+    #[cfg_attr(not(feature = "simulation"), allow(dead_code))]
+    ctx: XetContext,
+
     data_mng: DataInterfaceType,
 
     /// A tag for tracking the file externally
@@ -55,8 +59,9 @@ pub struct FileDeduper<DataInterfaceType: DeduplicationDataInterface> {
 }
 
 impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceType> {
-    pub fn new(data_manager: DataInterfaceType, file_id: u64) -> Self {
+    pub fn new(data_manager: DataInterfaceType, file_id: u64, ctx: XetContext) -> Self {
         Self {
+            ctx: ctx.clone(),
             data_mng: data_manager,
             file_id,
             new_data: Vec::new(),
@@ -65,7 +70,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
             chunk_hashes: Vec::new(),
             file_info: Vec::new(),
             internally_referencing_entries: Vec::new(),
-            defrag_tracker: DefragPrevention::default(),
+            defrag_tracker: DefragPrevention::new(&ctx),
             min_spacing_between_global_dedup_queries: 0,
             next_chunk_index_eligible_for_global_dedup_query: 0,
             deduplication_metrics: DeduplicationMetrics::default(),
@@ -84,6 +89,27 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
 
         // All the previous chunk are stored here, use it as the global chunk index start.
         let global_chunk_index_start = self.chunk_hashes.len();
+
+        #[cfg(feature = "simulation")]
+        let xorb_cut_bytes = self
+            .ctx
+            .config
+            .xorb
+            .simulation_max_bytes
+            .map(|bs| (bs.as_u64() as usize).min(*MAX_XORB_BYTES))
+            .unwrap_or(*MAX_XORB_BYTES);
+        #[cfg(not(feature = "simulation"))]
+        let xorb_cut_bytes = *MAX_XORB_BYTES;
+        #[cfg(feature = "simulation")]
+        let xorb_cut_chunks = self
+            .ctx
+            .config
+            .xorb
+            .simulation_max_chunks
+            .unwrap_or(*MAX_XORB_CHUNKS)
+            .min(*MAX_XORB_CHUNKS);
+        #[cfg(not(feature = "simulation"))]
+        let xorb_cut_chunks = *MAX_XORB_CHUNKS;
 
         let chunk_hashes = Vec::from_iter(chunks.iter().map(|c| c.hash));
 
@@ -111,7 +137,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
                     self.data_mng.chunk_hash_dedup_query(&chunk_hashes[local_chunk_index..]).await?
                 {
                     if !first_pass {
-                        // This means new shards were discovered; so these are global dedup elegible.  We'll record
+                        // This means new shards were discovered; so these are global dedup eligible.  We'll record
                         // the rest later on
                         dedup_metrics.deduped_chunks_by_global_dedup += n_deduped as u64;
                         dedup_metrics.deduped_bytes_by_global_dedup += fse.unpacked_segment_bytes as u64;
@@ -213,7 +239,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
             dedup_metrics.new_chunks += 1;
 
             // Do we need to cut a new xorb first?
-            if self.new_data_size + n_bytes > *MAX_XORB_BYTES || self.new_data.len() + 1 > *MAX_XORB_CHUNKS {
+            if self.new_data_size + n_bytes > xorb_cut_bytes || self.new_data.len() + 1 > xorb_cut_chunks {
                 let new_xorb = self.cut_new_xorb();
                 xorb_dependencies.push(FileXorbDependency {
                     file_id: self.file_id,

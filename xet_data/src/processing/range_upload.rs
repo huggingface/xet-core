@@ -12,6 +12,7 @@ use xet_core_structures::metadata_shard::chunk_verification::range_hash_from_chu
 use xet_core_structures::metadata_shard::file_structs::{
     FileDataSequenceEntry, FileDataSequenceHeader, FileVerificationEntry, MDBFileInfo,
 };
+use xet_runtime::core::XetContext;
 
 use super::XetFileInfo;
 use super::configurations::TranslatorConfig;
@@ -253,6 +254,7 @@ pub async fn upload_ranges(
 
     // 5. Process each dirty region: download boundary, stream dirty bytes, upload. Collect the resulting middle file
     //    infos and chunk hashes. A single upload session is shared across all dirty regions.
+    let ctx = config.ctx.clone();
     let session = FileUploadSession::new(config.clone()).await?;
 
     let mut uploaded_regions: Vec<UploadedRegion> = Vec::with_capacity(dirty_regions.len());
@@ -292,7 +294,7 @@ pub async fn upload_ranges(
         let middle_end = effective_boundary_end.max(region.dirty_end).min(total_size);
         let middle_size = middle_end.saturating_sub(boundary_start);
 
-        let (_id, mut cleaner) = session.start_clean(None, middle_size, Sha256Policy::Skip)?;
+        let (_id, mut cleaner) = session.start_clean(None, Some(middle_size), Sha256Policy::Skip)?;
 
         // a) Boundary prefix: stable bytes before the dirty range.
         //
@@ -301,7 +303,7 @@ pub async fn upload_ranges(
         // truncation, the composed file inherits the original chunk layout).
         if region.dirty_start > boundary_start && boundary_start < original_size {
             let prefix_end = region.dirty_start.min(original_size);
-            stream_cas_range(&cas_client, original_hash, boundary_start, prefix_end, &mut cleaner).await?;
+            stream_cas_range(&ctx, &cas_client, original_hash, boundary_start, prefix_end, &mut cleaner).await?;
         }
 
         // b) Dirty bytes from async readers.
@@ -319,7 +321,7 @@ pub async fn upload_ranges(
             if cursor < input_start {
                 if cursor < original_size {
                     let gap_end = input_start.min(original_size);
-                    stream_cas_range(&cas_client, original_hash, cursor, gap_end, &mut cleaner).await?;
+                    stream_cas_range(&ctx, &cas_client, original_hash, cursor, gap_end, &mut cleaner).await?;
                 }
                 // Gap beyond original_size means the caller didn't provide bytes
                 // for part of the appended region. This would produce a corrupted file.
@@ -362,7 +364,7 @@ pub async fn upload_ranges(
         let suffix_start = region.dirty_end.min(effective_boundary_end);
         if suffix_start < effective_boundary_end && suffix_start < original_size {
             let suffix_end = effective_boundary_end.min(original_size);
-            stream_cas_range(&cas_client, original_hash, suffix_start, suffix_end, &mut cleaner).await?;
+            stream_cas_range(&ctx, &cas_client, original_hash, suffix_start, suffix_end, &mut cleaner).await?;
         }
 
         let (info, chunks, _metrics) = cleaner.finish().await?;
@@ -495,13 +497,14 @@ pub async fn upload_ranges(
 
 /// Stream a byte range from CAS into the cleaner.
 async fn stream_cas_range(
+    ctx: &XetContext,
     cas_client: &Arc<dyn Client>,
     file_hash: MerkleHash,
     start: u64,
     end: u64,
     cleaner: &mut super::SingleFileCleaner,
 ) -> Result<()> {
-    let reconstructor = FileReconstructor::new(cas_client, file_hash).with_byte_range(FileRange::new(start, end));
+    let reconstructor = FileReconstructor::new(ctx, cas_client, file_hash).with_byte_range(FileRange::new(start, end));
     let mut stream = reconstructor.reconstruct_to_stream();
     while let Some(chunk) = stream.next().await? {
         cleaner.add_data(&chunk).await?;
@@ -642,6 +645,7 @@ fn extract_segments(
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
+    use std::path::Path;
     use std::sync::Arc;
 
     use tempfile::TempDir;
@@ -653,6 +657,11 @@ mod tests {
     use crate::processing::file_cleaner::Sha256Policy;
     use crate::processing::file_download_session::FileDownloadSession;
     use crate::processing::file_upload_session::FileUploadSession;
+
+    fn test_config(endpoint: impl AsRef<str>, base_dir: impl AsRef<Path>) -> Arc<TranslatorConfig> {
+        let ctx = XetContext::default().unwrap();
+        Arc::new(TranslatorConfig::test_server_config(&ctx, endpoint, base_dir).unwrap())
+    }
 
     /// Build `DirtyInput`s from a source buffer and range list. Each input gets
     /// a `Cursor` over the corresponding slice of `data`.
@@ -689,7 +698,7 @@ mod tests {
         let server = LocalTestServerBuilder::new().start().await;
         let base_dir = TempDir::new().unwrap();
         let endpoint = server.http_endpoint().to_string();
-        let config = Arc::new(TranslatorConfig::test_server_config(&endpoint, base_dir.path()).unwrap());
+        let config = test_config(&endpoint, base_dir.path());
 
         // Use the server directly as the CAS client (bypasses HTTP for get_file_chunk_hashes).
         let cas_client: Arc<dyn Client> = Arc::new(server);
@@ -699,7 +708,7 @@ mod tests {
         let original_hash = {
             let upload_session = FileUploadSession::new(config.clone()).await.unwrap();
             let (_id, mut cleaner) = upload_session
-                .start_clean(Some("original".into()), original_data.len() as u64, Sha256Policy::Skip)
+                .start_clean(Some("original".into()), Some(original_data.len() as u64), Sha256Policy::Skip)
                 .unwrap();
             cleaner.add_data(&original_data).await.unwrap();
             let (xfi, _chunks, _metrics) = cleaner.finish().await.unwrap();
@@ -729,7 +738,7 @@ mod tests {
 
         // 3. Download and verify the composed file.
         let composed_hash = MerkleHash::from_hex(result.hash()).unwrap();
-        let session = FileDownloadSession::new(config.clone()).await.unwrap();
+        let session = FileDownloadSession::new(config.clone(), None).await.unwrap();
         let file_info = crate::processing::XetFileInfo::new(composed_hash.hex(), total_size);
         let out_path = base_dir.path().join("output");
         session.download_file(&file_info, &out_path).await.unwrap();
@@ -750,7 +759,7 @@ mod tests {
     async fn test_upload_ranges_truncation() {
         let server = LocalTestServerBuilder::new().start().await;
         let base_dir = TempDir::new().unwrap();
-        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let config = test_config(server.http_endpoint(), base_dir.path());
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
         // Upload 256 KB file.
@@ -783,7 +792,7 @@ mod tests {
     async fn test_upload_ranges_append() {
         let server = LocalTestServerBuilder::new().start().await;
         let base_dir = TempDir::new().unwrap();
-        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let config = test_config(server.http_endpoint(), base_dir.path());
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
         // Upload 100 KB file.
@@ -823,7 +832,7 @@ mod tests {
     async fn test_upload_ranges_at_file_start() {
         let server = LocalTestServerBuilder::new().start().await;
         let base_dir = TempDir::new().unwrap();
-        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let config = test_config(server.http_endpoint(), base_dir.path());
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
         // Upload 256 KB file.
@@ -863,7 +872,7 @@ mod tests {
     async fn test_upload_ranges_multiple_regions() {
         let server = LocalTestServerBuilder::new().start().await;
         let base_dir = TempDir::new().unwrap();
-        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let config = test_config(server.http_endpoint(), base_dir.path());
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
         // Upload 256 KB file.
@@ -910,7 +919,7 @@ mod tests {
         // the cleaner produces identical hashes for both regions.
         let server = LocalTestServerBuilder::new().start().await;
         let base_dir = TempDir::new().unwrap();
-        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let config = test_config(server.http_endpoint(), base_dir.path());
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
         // Create an original file of pseudo-random bytes so CDC produces multiple chunks.
@@ -965,7 +974,7 @@ mod tests {
     async fn test_truncation_on_chunk_boundary() {
         let server = LocalTestServerBuilder::new().start().await;
         let base_dir = TempDir::new().unwrap();
-        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let config = test_config(server.http_endpoint(), base_dir.path());
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
         let original_data = random_data(99, 256 * 1024);
@@ -1003,7 +1012,7 @@ mod tests {
     async fn test_append_with_gap_before_dirty_range() {
         let server = LocalTestServerBuilder::new().start().await;
         let base_dir = TempDir::new().unwrap();
-        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let config = test_config(server.http_endpoint(), base_dir.path());
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
         let original_data = random_data(50, 100 * 1024);
@@ -1048,7 +1057,7 @@ mod tests {
     async fn test_append_sparse_staging_file() {
         let server = LocalTestServerBuilder::new().start().await;
         let base_dir = TempDir::new().unwrap();
-        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let config = test_config(server.http_endpoint(), base_dir.path());
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
         let original_data = vec![0xDDu8; 100 * 1024];
@@ -1089,7 +1098,7 @@ mod tests {
     async fn test_data_integrity_scenarios() {
         let server = LocalTestServerBuilder::new().start().await;
         let base_dir = TempDir::new().unwrap();
-        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let config = test_config(server.http_endpoint(), base_dir.path());
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
         // original: [========================= 256 KB =========================]
@@ -1187,7 +1196,7 @@ mod tests {
     async fn test_noop_returns_original_hash() {
         let server = LocalTestServerBuilder::new().start().await;
         let base_dir = TempDir::new().unwrap();
-        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let config = test_config(server.http_endpoint(), base_dir.path());
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
         let data = random_data(70, 256 * 1024);
@@ -1204,7 +1213,7 @@ mod tests {
     async fn test_rejects_dirty_range_past_total_size() {
         let server = LocalTestServerBuilder::new().start().await;
         let base_dir = TempDir::new().unwrap();
-        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let config = test_config(server.http_endpoint(), base_dir.path());
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
         let data = random_data(71, 256 * 1024);
@@ -1218,7 +1227,7 @@ mod tests {
     async fn test_rejects_overlapping_dirty_ranges() {
         let server = LocalTestServerBuilder::new().start().await;
         let base_dir = TempDir::new().unwrap();
-        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let config = test_config(server.http_endpoint(), base_dir.path());
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
         let data = random_data(60, 256 * 1024);
@@ -1233,7 +1242,7 @@ mod tests {
     async fn test_rejects_empty_dirty_range() {
         let server = LocalTestServerBuilder::new().start().await;
         let base_dir = TempDir::new().unwrap();
-        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let config = test_config(server.http_endpoint(), base_dir.path());
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
         let data = random_data(61, 256 * 1024);
@@ -1247,7 +1256,7 @@ mod tests {
     async fn test_rejects_unsorted_dirty_ranges() {
         let server = LocalTestServerBuilder::new().start().await;
         let base_dir = TempDir::new().unwrap();
-        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let config = test_config(server.http_endpoint(), base_dir.path());
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
         let data = random_data(62, 256 * 1024);
@@ -1263,7 +1272,7 @@ mod tests {
     async fn test_rejects_append_without_dirty_inputs() {
         let server = LocalTestServerBuilder::new().start().await;
         let base_dir = TempDir::new().unwrap();
-        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let config = test_config(server.http_endpoint(), base_dir.path());
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
         let data = random_data(63, 256 * 1024);
@@ -1302,7 +1311,7 @@ mod tests {
     async fn test_rejects_append_with_gap_after_original_size() {
         let server = LocalTestServerBuilder::new().start().await;
         let base_dir = TempDir::new().unwrap();
-        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let config = test_config(server.http_endpoint(), base_dir.path());
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
         let original_data = random_data(42, 256 * 1024);
@@ -1382,7 +1391,7 @@ mod tests {
     async fn test_single_input_spanning_many_chunks() {
         let server = LocalTestServerBuilder::new().start().await;
         let base_dir = TempDir::new().unwrap();
-        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let config = test_config(server.http_endpoint(), base_dir.path());
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
         let original_data = random_data(99, 256 * 1024);
@@ -1424,7 +1433,7 @@ mod tests {
     async fn test_upload_ranges_small_file_mid_edit() {
         let server = LocalTestServerBuilder::new().start().await;
         let base_dir = TempDir::new().unwrap();
-        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let config = test_config(server.http_endpoint(), base_dir.path());
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
         let original_data = b"AAAA_HEADER_AAAA|";
@@ -1471,7 +1480,7 @@ mod tests {
     async fn test_upload_ranges_truncation_empty_staging() {
         let server = LocalTestServerBuilder::new().start().await;
         let base_dir = TempDir::new().unwrap();
-        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let config = test_config(server.http_endpoint(), base_dir.path());
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
         let original_data = random_data(77, 256 * 1024);
@@ -1511,7 +1520,7 @@ mod tests {
     async fn test_upload_ranges_truncation_with_overlapping_dirty() {
         let server = LocalTestServerBuilder::new().start().await;
         let base_dir = TempDir::new().unwrap();
-        let config = Arc::new(TranslatorConfig::test_server_config(server.http_endpoint(), base_dir.path()).unwrap());
+        let config = test_config(server.http_endpoint(), base_dir.path());
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
         let original_data = random_data(88, 256 * 1024);
@@ -1563,7 +1572,7 @@ mod tests {
     async fn upload_file(config: &Arc<TranslatorConfig>, data: &[u8]) -> MerkleHash {
         let session = FileUploadSession::new(config.clone()).await.unwrap();
         let (_id, mut cleaner) = session
-            .start_clean(Some("test".into()), data.len() as u64, Sha256Policy::Skip)
+            .start_clean(Some("test".into()), Some(data.len() as u64), Sha256Policy::Skip)
             .unwrap();
         cleaner.add_data(data).await.unwrap();
         let (xfi, _chunks, _metrics) = cleaner.finish().await.unwrap();
@@ -1572,7 +1581,7 @@ mod tests {
     }
 
     async fn download_file(config: &Arc<TranslatorConfig>, hash: MerkleHash, size: u64) -> Vec<u8> {
-        let session = FileDownloadSession::new(config.clone()).await.unwrap();
+        let session = FileDownloadSession::new(config.clone(), None).await.unwrap();
         let xfi = crate::processing::XetFileInfo::new(hash.hex(), size);
         let dir = TempDir::new().unwrap();
         let out = dir.path().join("out");
