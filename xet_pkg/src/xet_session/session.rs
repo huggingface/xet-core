@@ -368,8 +368,12 @@ impl XetSession {
         Ok(())
     }
 
-    pub(super) fn id(&self) -> &Uuid {
+    pub fn id(&self) -> &Uuid {
         &self.inner.id
+    }
+
+    pub fn config(&self) -> &XetConfig {
+        &self.inner.ctx.config
     }
 }
 
@@ -660,7 +664,7 @@ mod tests {
             .download_stream(file_info, None)
             .await
             .unwrap();
-        let initial = stream.progress();
+        let initial = stream.progress().unwrap();
         assert_eq!(initial.total_bytes, original.len() as u64);
         assert_eq!(initial.bytes_completed, 0);
 
@@ -670,7 +674,7 @@ mod tests {
         }
         assert_eq!(collected, original);
 
-        let final_progress = stream.progress();
+        let final_progress = stream.progress().unwrap();
         assert_eq!(final_progress.total_bytes, original.len() as u64);
         assert_eq!(final_progress.bytes_completed, original.len() as u64);
     }
@@ -699,7 +703,7 @@ mod tests {
         }
         assert_eq!(collected, original);
 
-        let final_progress = stream.progress();
+        let final_progress = stream.progress().unwrap();
         assert_eq!(final_progress.total_bytes, original.len() as u64);
         assert_eq!(final_progress.bytes_completed, original.len() as u64);
     }

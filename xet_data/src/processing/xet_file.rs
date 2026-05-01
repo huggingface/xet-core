@@ -4,6 +4,7 @@ use xet_runtime::error_printer::ErrorPrinter;
 
 /// A struct that wraps a the Xet file information.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "python", pyo3::pyclass(get_all))]
 pub struct XetFileInfo {
     /// The Merkle hash of the file
     pub hash: String,
@@ -15,6 +16,21 @@ pub struct XetFileInfo {
     /// The SHA-256 hash of the file, if available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
+}
+
+#[cfg_attr(feature = "python", pyo3::pymethods)]
+impl XetFileInfo {
+    /// Python constructor: ``XetFileInfo(hash, file_size=None)``
+    #[cfg(feature = "python")]
+    #[new]
+    #[pyo3(signature = (hash, file_size=None))]
+    fn py_new(hash: String, file_size: Option<u64>) -> Self {
+        Self {
+            hash,
+            file_size,
+            sha256: None,
+        }
+    }
 }
 
 impl XetFileInfo {

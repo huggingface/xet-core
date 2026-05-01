@@ -88,15 +88,19 @@ impl XetDownloadStream {
         self.inner.cancel();
     }
 
-    /// Returns a snapshot of this stream's download progress.
+    /// Returns the unique task ID for this stream.
+    pub fn task_id(&self) -> UniqueID {
+        self.id
+    }
+
+    /// Returns a snapshot of this stream's download progress, or `None` if
+    /// the progress item is not yet available.
     ///
     /// The returned [`ItemProgressReport`] contains the item name,
     /// total bytes, and bytes completed so far. This method is lock-free
     /// (reads atomic counters) and safe to call from any thread.
-    pub fn progress(&self) -> ItemProgressReport {
-        self.download_session
-            .item_report(self.id)
-            .expect("progress item was registered at stream creation and is never removed")
+    pub fn progress(&self) -> Option<ItemProgressReport> {
+        self.download_session.item_report(self.id)
     }
 }
 
@@ -186,15 +190,19 @@ impl XetUnorderedDownloadStream {
         self.inner.cancel();
     }
 
-    /// Returns a snapshot of this stream's download progress.
+    /// Returns the unique task ID for this stream.
+    pub fn task_id(&self) -> UniqueID {
+        self.id
+    }
+
+    /// Returns a snapshot of this stream's download progress, or `None` if
+    /// the progress item is not yet available.
     ///
     /// The returned [`ItemProgressReport`] contains the item name,
     /// total bytes, and bytes completed so far. This method is lock-free
     /// (reads atomic counters) and safe to call from any thread.
-    pub fn progress(&self) -> ItemProgressReport {
-        self.download_session
-            .item_report(self.id)
-            .expect("progress item was registered at stream creation and is never removed")
+    pub fn progress(&self) -> Option<ItemProgressReport> {
+        self.download_session.item_report(self.id)
     }
 }
 

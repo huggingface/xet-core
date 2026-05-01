@@ -1256,13 +1256,13 @@ async fn async_stream_progress_tracking() {
     let group = async_stream_group(&session, &endpoint).await;
     let mut stream = group.download_stream(file_info, None).await.unwrap();
 
-    let initial = stream.progress();
+    let initial = stream.progress().unwrap();
     assert_eq!(initial.total_bytes, data.len() as u64);
     assert_eq!(initial.bytes_completed, 0);
 
     let _ = collect_stream(&mut stream).await;
 
-    let final_progress = stream.progress();
+    let final_progress = stream.progress().unwrap();
     assert_eq!(final_progress.total_bytes, data.len() as u64);
     assert_eq!(final_progress.bytes_completed, data.len() as u64);
 }
@@ -1372,7 +1372,7 @@ fn blocking_stream_progress_tracking() {
     let mut stream = group.download_stream_blocking(file_info, None).unwrap();
     let _ = collect_stream_blocking(&mut stream);
 
-    let final_progress = stream.progress();
+    let final_progress = stream.progress().unwrap();
     assert_eq!(final_progress.total_bytes, data.len() as u64);
     assert_eq!(final_progress.bytes_completed, data.len() as u64);
 }
@@ -1540,13 +1540,13 @@ async fn async_unordered_stream_progress_tracking() {
     let group = async_stream_group(&session, &endpoint).await;
     let mut stream = group.download_unordered_stream(file_info, None).await.unwrap();
 
-    let initial = stream.progress();
+    let initial = stream.progress().unwrap();
     assert_eq!(initial.total_bytes, data.len() as u64);
     assert_eq!(initial.bytes_completed, 0);
 
     let _ = collect_unordered_stream(&mut stream, data.len()).await;
 
-    let final_progress = stream.progress();
+    let final_progress = stream.progress().unwrap();
     assert_eq!(final_progress.total_bytes, data.len() as u64);
     assert_eq!(final_progress.bytes_completed, data.len() as u64);
 }
@@ -1637,7 +1637,7 @@ fn blocking_unordered_stream_progress_tracking() {
     let mut stream = group.download_unordered_stream_blocking(file_info, None).unwrap();
     let _ = collect_unordered_stream_blocking(&mut stream, data.len());
 
-    let final_progress = stream.progress();
+    let final_progress = stream.progress().unwrap();
     assert_eq!(final_progress.total_bytes, data.len() as u64);
     assert_eq!(final_progress.bytes_completed, data.len() as u64);
 }
@@ -1793,13 +1793,13 @@ async fn async_stream_range_progress() {
     let group = async_stream_group(&session, &endpoint).await;
     let mut stream = group.download_stream(file_info, Some(50..150)).await.unwrap();
 
-    let initial = stream.progress();
+    let initial = stream.progress().unwrap();
     assert_eq!(initial.total_bytes, 100);
     assert_eq!(initial.bytes_completed, 0);
 
     let _ = collect_stream(&mut stream).await;
 
-    let final_progress = stream.progress();
+    let final_progress = stream.progress().unwrap();
     assert_eq!(final_progress.total_bytes, 100);
     assert_eq!(final_progress.bytes_completed, 100);
 }
@@ -1827,7 +1827,7 @@ fn blocking_stream_range_progress() {
     let mut stream = group.download_stream_blocking(file_info, Some(10..110)).unwrap();
     let _ = collect_stream_blocking(&mut stream);
 
-    let final_progress = stream.progress();
+    let final_progress = stream.progress().unwrap();
     assert_eq!(final_progress.total_bytes, 100);
     assert_eq!(final_progress.bytes_completed, 100);
 }
@@ -1878,13 +1878,13 @@ async fn async_unordered_stream_range_progress() {
     let group = async_stream_group(&session, &endpoint).await;
     let mut stream = group.download_unordered_stream(file_info, Some(50..150)).await.unwrap();
 
-    let initial = stream.progress();
+    let initial = stream.progress().unwrap();
     assert_eq!(initial.total_bytes, 100);
     assert_eq!(initial.bytes_completed, 0);
 
     let _ = collect_unordered_stream(&mut stream, 100).await;
 
-    let final_progress = stream.progress();
+    let final_progress = stream.progress().unwrap();
     assert_eq!(final_progress.total_bytes, 100);
     assert_eq!(final_progress.bytes_completed, 100);
 }
@@ -1912,7 +1912,7 @@ fn blocking_unordered_stream_range_progress() {
     let mut stream = group.download_unordered_stream_blocking(file_info, Some(10..110)).unwrap();
     let _ = collect_unordered_stream_blocking(&mut stream, 100);
 
-    let final_progress = stream.progress();
+    let final_progress = stream.progress().unwrap();
     assert_eq!(final_progress.total_bytes, 100);
     assert_eq!(final_progress.bytes_completed, 100);
 }

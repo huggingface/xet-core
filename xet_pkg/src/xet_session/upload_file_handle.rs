@@ -31,6 +31,9 @@ pub(super) struct XetFileUploadInner {
 ///
 /// Important: ingestion completion means the file has been chunked/deduplicated.
 /// The file is not uploaded to CAS until [`XetUploadCommit::commit`] is called.
+///
+/// Cloning is cheap — all clones share the same underlying state via `Arc`.
+#[derive(Clone)]
 pub struct XetFileUpload {
     pub(super) inner: Arc<XetFileUploadInner>,
     pub(super) task_runtime: Arc<TaskRuntime>,
