@@ -86,6 +86,13 @@ pub async fn upload_ranges(
         return Ok(XetFileInfo::new(original_hash.hex(), original_size));
     }
 
+    // Empty original: nothing to compose against — upload as a fresh file. Validation below
+    // still runs (via the early return path inside `upload_fresh_file`) to enforce that the
+    // caller provided coverage of `[0, total_size)`.
+    if original_size == 0 {
+        return upload_fresh_file(config, dirty_inputs, total_size).await;
+    }
+
     // Validate the caller-provided dirty ranges.
     let dirty_ranges_pairs: Vec<(u64, u64)> = dirty_inputs.iter().map(|d| (d.range.start, d.range.end)).collect();
 
@@ -163,8 +170,12 @@ pub async fn upload_ranges(
             snapped.push((snap_start, snap_end));
         }
     }
-    if snapped.is_empty() && total_size > original_size && !original_mdb.segments.is_empty() {
-        // Pure append: re-upload the last segment so the appended bytes extend its boundary.
+    if total_size > original_size && !original_mdb.segments.is_empty() {
+        // Append: always include the last original segment in the upload set so its boundary
+        // extends past `original_size` into the appended bytes. Needed both for pure append
+        // and for mid-edit-plus-append (otherwise the last existing window would be the one
+        // we extend to `total_size`, which corrupts files with a stable tail before the
+        // appended region). Coalescing below merges this with any overlapping range.
         let n = original_mdb.segments.len();
         snapped.push((seg_byte_starts[n - 1], seg_byte_starts[n]));
     }
@@ -295,7 +306,7 @@ pub async fn upload_ranges(
     let last_window_at_end = trailing_gap.is_none();
 
     let mut merge_seq: Vec<MerkleHashSubtree> = Vec::with_capacity(2 * n_windows + 1);
-    for (i, (w, gap)) in uploaded.iter().zip(hash_ranges.into_iter()).enumerate() {
+    for (i, (w, gap)) in uploaded.iter().zip(hash_ranges).enumerate() {
         if let Some(g) = gap {
             merge_seq.push(g);
         }
@@ -311,11 +322,17 @@ pub async fn upload_ranges(
         .map_err(|err| DataError::InternalError(format!("MerkleHashSubtree::merge failed: {err}")))?;
     // `final_hash()` is the aggregated chunk hash; the file hash is its HMAC with the zero
     // salt (matching `file_hash` / the cleaner's output for files without SHA-256 metadata,
-    // the only flavor `upload_ranges` produces).
+    // the only flavor `upload_ranges` produces). Empty content is the one exception:
+    // `file_hash([])` short-circuits to `MerkleHash::default()` *without* HMAC, so we mirror
+    // that here when the result is zero-length (e.g. truncating to empty).
     let aggregated_hash = merged.final_hash().ok_or_else(|| {
         DataError::InternalError("merged subtree is not fully closed; cannot derive final hash".into())
     })?;
-    let combined_hash = aggregated_hash.hmac(MerkleHash::default());
+    let combined_hash = if total_size == 0 {
+        MerkleHash::default()
+    } else {
+        aggregated_hash.hmac(MerkleHash::default())
+    };
 
     // Walk original segments; replace those a window covers with the window's segments.
     // Segment-aligned windows guarantee every original segment is wholly inside or outside a
@@ -392,6 +409,53 @@ pub async fn upload_ranges(
     );
 
     Ok(XetFileInfo::new(combined_hash.hex(), total_size))
+}
+
+/// Upload a brand-new file from `dirty_inputs` (no original to compose against).
+/// Used when the original file is empty: the caller-provided inputs already cover
+/// `[0, total_size)` (verified here), so we just stream them through the cleaner and
+/// finalize the session.
+async fn upload_fresh_file(
+    config: Arc<TranslatorConfig>,
+    mut dirty_inputs: Vec<DirtyInput>,
+    total_size: u64,
+) -> Result<XetFileInfo> {
+    let mut cursor = 0u64;
+    for input in &dirty_inputs {
+        if input.range.start > cursor {
+            return Err(DataError::InternalError(format!(
+                "empty original: gap in dirty_inputs at [{cursor}, {})",
+                input.range.start
+            )));
+        }
+        cursor = input.range.end;
+    }
+    if cursor < total_size {
+        return Err(DataError::InternalError(format!(
+            "empty original: dirty_inputs only cover up to byte {cursor} (must reach total_size {total_size})"
+        )));
+    }
+
+    let session = FileUploadSession::new(config).await?;
+    let (_id, mut cleaner) = session.start_clean(None, Some(total_size), Sha256Policy::Skip)?;
+    for input in &mut dirty_inputs {
+        let mut remaining = (input.range.end - input.range.start) as usize;
+        let mut buf = vec![0u8; STREAM_BLOCK_SIZE.min(remaining.max(1))];
+        while remaining > 0 {
+            let to_read = buf.len().min(remaining);
+            input.reader.read_exact(&mut buf[..to_read]).await.map_err(|err| {
+                DataError::InternalError(format!(
+                    "failed to read dirty input [{}, {}): {err}",
+                    input.range.start, input.range.end
+                ))
+            })?;
+            cleaner.add_data(&buf[..to_read]).await?;
+            remaining -= to_read;
+        }
+    }
+    let (info, _chunks, _metrics) = cleaner.finish().await?;
+    session.finalize().await?;
+    Ok(info)
 }
 
 /// Stream a byte range from CAS into the cleaner.
@@ -1275,5 +1339,97 @@ mod tests {
 
         let clean_hash = upload_file(config, expected).await;
         assert_eq!(result.hash(), clean_hash.hex(), "hash mismatch with clean upload");
+    }
+
+    // Regression: mid-file edit + tail append in a single call. Codex caught that the last
+    // existing window (covering the mid-file edit) was being stretched to `total_size`,
+    // dropping the stable bytes between the edit and the appended region.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_mid_edit_plus_append() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = test_config(server.http_endpoint(), base_dir.path());
+        let cas_client: Arc<dyn Client> = Arc::new(server);
+
+        let original_data = random_data(7, 256 * 1024);
+        let original_hash = upload_file(&config, &original_data).await;
+        let original_size = original_data.len() as u64;
+
+        let dirty_start = 50_000usize;
+        let dirty_end = 51_000usize;
+        let append_extra: Vec<u8> = (0..16 * 1024).map(|i| (i % 251) as u8).collect();
+        let mut expected = original_data.clone();
+        expected[dirty_start..dirty_end].fill(0xAA);
+        expected.extend_from_slice(&append_extra);
+        let total_size = expected.len() as u64;
+
+        let inputs = vec![
+            DirtyInput {
+                range: dirty_start as u64..dirty_end as u64,
+                reader: Box::pin(Cursor::new(expected[dirty_start..dirty_end].to_vec())),
+            },
+            DirtyInput {
+                range: original_size..total_size,
+                reader: Box::pin(Cursor::new(append_extra)),
+            },
+        ];
+        let result =
+            upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, inputs, total_size)
+                .await
+                .unwrap();
+
+        let downloaded = download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), total_size).await;
+        assert_eq!(downloaded, expected, "content mismatch (mid-edit + append regression)");
+        let clean_hash = upload_file(&config, &expected).await;
+        assert_eq!(result.hash(), clean_hash.hex(), "hash mismatch with clean upload");
+    }
+
+    // Regression: empty original + append. Codex caught that we'd return an internal error
+    // instead of treating it as a fresh upload.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_empty_original_append() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = test_config(server.http_endpoint(), base_dir.path());
+        let cas_client: Arc<dyn Client> = Arc::new(server);
+
+        let original_data: &[u8] = &[];
+        let original_hash = upload_file(&config, original_data).await;
+        let new_data: Vec<u8> = (0..32 * 1024).map(|i| (i % 251) as u8).collect();
+        let total_size = new_data.len() as u64;
+
+        let inputs = vec![DirtyInput {
+            range: 0..total_size,
+            reader: Box::pin(Cursor::new(new_data.clone())),
+        }];
+        let result = upload_ranges(config.clone(), cas_client.clone(), original_hash, 0, inputs, total_size)
+            .await
+            .unwrap();
+
+        let downloaded = download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), total_size).await;
+        assert_eq!(downloaded, new_data);
+        let clean_hash = upload_file(&config, &new_data).await;
+        assert_eq!(result.hash(), clean_hash.hex(), "hash mismatch with clean upload");
+    }
+
+    // Regression: truncating to empty must produce the canonical empty-file hash
+    // (`MerkleHash::default()` without HMAC), not `default.hmac(default)`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_truncate_to_empty_matches_clean_empty() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = test_config(server.http_endpoint(), base_dir.path());
+        let cas_client: Arc<dyn Client> = Arc::new(server);
+
+        let original_data = random_data(11, 64 * 1024);
+        let original_hash = upload_file(&config, &original_data).await;
+        let original_size = original_data.len() as u64;
+
+        let result = upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, vec![], 0)
+            .await
+            .unwrap();
+
+        let clean_empty = upload_file(&config, &[]).await;
+        assert_eq!(result.hash(), clean_empty.hex(), "truncate-to-empty must match clean empty upload hash");
     }
 }
