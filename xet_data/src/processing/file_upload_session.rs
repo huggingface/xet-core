@@ -172,7 +172,7 @@ impl FileUploadSession {
                     }
 
                     // Finish and return the result.
-                    let (xfi, _chunk_hashes, metrics) = cleaner.finish().await?;
+                    let (xfi, metrics) = cleaner.finish().await?;
 
                     // Record dedup information.
                     let span = Span::current();
@@ -275,7 +275,7 @@ impl FileUploadSession {
         let handle = runtime.spawn(async move {
             let _permit = semaphore.acquire().await?;
             cleaner.add_data(&bytes).await?;
-            let (file_info, _chunks, metrics) = cleaner.finish().await?;
+            let (file_info, metrics) = cleaner.finish().await?;
             Ok((file_info, metrics))
         });
 
@@ -298,7 +298,7 @@ impl FileUploadSession {
             }
             cleaner.add_data(&buffer[..n]).await?;
         }
-        let (file_info, _chunks, metrics) = cleaner.finish().await?;
+        let (file_info, metrics) = cleaner.finish().await?;
         Ok((file_info, metrics))
     }
 
@@ -661,7 +661,7 @@ mod tests {
         // Read blocks from the source file and hand them to the cleaning handle
         cleaner.add_data(&read_data[..]).await.unwrap();
 
-        let (xet_file_info, _chunk_hashes, _metrics) = cleaner.finish().await.unwrap();
+        let (xet_file_info, _metrics) = cleaner.finish().await.unwrap();
         upload_session.finalize().await.unwrap();
 
         pf_out

@@ -235,7 +235,7 @@ pub async fn upload_ranges(
             stream_cas_range(&ctx, &cas_client, original_hash, cursor, w_end, &mut cleaner).await?;
         }
 
-        let (info, chunks, _metrics) = cleaner.finish().await?;
+        let (info, chunks, _metrics) = cleaner.finish_with_chunks().await?;
         uploaded.push(UploadedWindow {
             start: w_start,
             end: w_end,
@@ -423,7 +423,7 @@ async fn upload_fresh_file(
             remaining -= to_read;
         }
     }
-    let (info, _chunks, _metrics) = cleaner.finish().await?;
+    let (info, _metrics) = cleaner.finish().await?;
     session.finalize().await?;
     Ok(info)
 }
@@ -583,7 +583,7 @@ mod tests {
                 .start_clean(Some("original".into()), Some(original_data.len() as u64), Sha256Policy::Skip)
                 .unwrap();
             cleaner.add_data(&original_data).await.unwrap();
-            let (xfi, _chunks, _metrics) = cleaner.finish().await.unwrap();
+            let (xfi, _metrics) = cleaner.finish().await.unwrap();
             upload_session.finalize().await.unwrap();
             MerkleHash::from_hex(xfi.hash()).unwrap()
         };
@@ -1246,7 +1246,7 @@ mod tests {
             .start_clean(Some("test".into()), Some(data.len() as u64), Sha256Policy::Skip)
             .unwrap();
         cleaner.add_data(data).await.unwrap();
-        let (xfi, _chunks, _metrics) = cleaner.finish().await.unwrap();
+        let (xfi, _metrics) = cleaner.finish().await.unwrap();
         session.finalize().await.unwrap();
         MerkleHash::from_hex(xfi.hash()).unwrap()
     }

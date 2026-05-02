@@ -44,7 +44,7 @@ impl XetStreamUploadInner {
         drop(guard);
 
         match cleaner.finish().await {
-            Ok((xet_info, _chunks, dedup_metrics)) => Ok(XetFileMetadata {
+            Ok((xet_info, dedup_metrics)) => Ok(XetFileMetadata {
                 task_id: self.task_id,
                 xet_info,
                 dedup_metrics,

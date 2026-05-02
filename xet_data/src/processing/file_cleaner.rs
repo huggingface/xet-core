@@ -202,8 +202,17 @@ impl SingleFileCleaner {
     }
 
     /// Return the representation of the file after clean as a pointer file instance.
-    #[instrument(skip_all, name = "FileCleaner::finish", fields(file_name=self.file_name.as_ref().map(|s|s.to_string())))]
-    pub async fn finish(mut self) -> Result<(XetFileInfo, ChunkHashList, DeduplicationMetrics)> {
+    pub async fn finish(self) -> Result<(XetFileInfo, DeduplicationMetrics)> {
+        let (info, _chunks, metrics) = self.finish_with_chunks().await?;
+        Ok((info, metrics))
+    }
+
+    /// Same as [`finish`], but also returns the per-chunk hash list produced during CDC.
+    /// Only needed by composition flows (e.g. `upload_ranges`) that build partial
+    /// `MerkleHashSubtree` nodes for newly-uploaded windows; regular uploads should call
+    /// [`finish`] instead.
+    #[instrument(skip_all, name = "FileCleaner::finish_with_chunks", fields(file_name=self.file_name.as_ref().map(|s|s.to_string())))]
+    pub async fn finish_with_chunks(mut self) -> Result<(XetFileInfo, ChunkHashList, DeduplicationMetrics)> {
         // Chunk the rest of the data.
         if let Some(chunk) = self.chunker.finish() {
             let data = Arc::new([chunk]);
