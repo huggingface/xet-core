@@ -110,7 +110,12 @@ pub async fn upload_ranges(
     let original_mdb = recon_result
         .map(|(mdb, _)| mdb)
         .ok_or_else(|| DataError::ParameterError("file not found".into()))?;
-    debug_assert_eq!(original_mdb.file_size(), original_size, "reconstruction info disagrees with original_size");
+    if original_mdb.file_size() != original_size {
+        return Err(DataError::ParameterError(format!(
+            "caller said original_size={original_size} but reconstruction info reports {}",
+            original_mdb.file_size()
+        )));
+    }
 
     // `seg_byte_starts[i]` is the first byte of segment `i`; the trailing entry equals `original_size`.
     let mut seg_byte_starts: Vec<u64> = Vec::with_capacity(original_mdb.segments.len() + 1);
@@ -166,8 +171,22 @@ pub async fn upload_ranges(
 
     let n_windows = server_query.len();
     let response: FileChunkHashesResponse = cas_client.get_file_chunk_hashes(&original_hash, server_query).await?;
-    debug_assert_eq!(response.windows.len(), n_windows, "server windows must match segment-aligned query");
-    debug_assert_eq!(response.hash_ranges.len(), n_windows + 1, "expected N+1 hash ranges for N windows");
+    // These invariants are part of the server contract; violating them silently truncates
+    // the merge sequence (`zip` would drop windows) and produces a wrong file hash, so we
+    // bail loudly instead of trusting the response.
+    if response.windows.len() != n_windows {
+        return Err(DataError::InternalError(format!(
+            "server returned {} windows, expected {n_windows} (one per dirty range)",
+            response.windows.len()
+        )));
+    }
+    if response.hash_ranges.len() != n_windows + 1 {
+        return Err(DataError::InternalError(format!(
+            "server returned {} hash_ranges, expected {} (n_windows + 1)",
+            response.hash_ranges.len(),
+            n_windows + 1
+        )));
+    }
 
     let ctx = config.ctx.clone();
     let session = FileUploadSession::new(config.clone()).await?;
@@ -303,10 +322,16 @@ pub async fn upload_ranges(
     };
     for w in &uploaded {
         while seg_idx < n_segs && seg_byte_starts[seg_idx] < w.start {
-            debug_assert!(
-                seg_byte_starts[seg_idx + 1] <= w.start,
-                "segment straddles window start (not segment-aligned)"
-            );
+            if seg_byte_starts[seg_idx + 1] > w.start {
+                return Err(DataError::InternalError(format!(
+                    "server returned a window starting at {} that straddles segment {} \
+                     ({}..{}); composition requires segment-aligned windows",
+                    w.start,
+                    seg_idx,
+                    seg_byte_starts[seg_idx],
+                    seg_byte_starts[seg_idx + 1]
+                )));
+            }
             emit_seg(seg_idx, &mut all_segments, &mut all_verification);
             seg_idx += 1;
         }
