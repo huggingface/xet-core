@@ -263,6 +263,17 @@ pub async fn upload_ranges(
         });
     }
 
+    // Every edit must have been assigned to exactly one window. If the server
+    // returned narrower `dirty_byte_range`s than requested, leftover edits would
+    // silently drop and produce a corrupt file with no error.
+    if input_idx != dirty_inputs.len() {
+        return Err(DataError::InternalError(format!(
+            "{} dirty edits not assigned to any window (input_idx={input_idx}, total={})",
+            dirty_inputs.len() - input_idx,
+            dirty_inputs.len()
+        )));
+    }
+
     session.checkpoint().await?;
     let mdb_list = session.file_info_list().await?;
     let mdb_by_hash: HashMap<MerkleHash, MDBFileInfo> =
