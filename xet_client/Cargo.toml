@@ -93,6 +93,10 @@ name = "cache_analysis"
 path = "src/chunk_cache/bin/analysis.rs"
 required-features = ["analysis"]
 
+[[bench]]
+name = "chunk_cache_lru_bench"
+harness = false
+
 [dev-dependencies]
 approx = { workspace = true }
 ctor = { workspace = true }
