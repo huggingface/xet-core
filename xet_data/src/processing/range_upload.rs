@@ -20,13 +20,21 @@ use super::file_upload_session::FileUploadSession;
 use crate::error::{DataError, Result};
 use crate::file_reconstruction::FileReconstructor;
 
-/// A dirty byte range paired with an async reader that provides the modified bytes.
+/// A single edit applied to the original file: replace `original_range` with `new_length`
+/// bytes from `reader`.
 ///
-/// Each `DirtyInput` represents a contiguous region of the file that was modified by the
-/// caller. The `reader` must yield exactly `range.end - range.start` bytes.
+/// All three combinations are supported:
+/// - `original_range.len() == new_length` → in-place edit (no file size change).
+/// - `original_range.len() != new_length` → resize edit (file grows or shrinks).
+/// - `original_range.start == original_range.end` → pure insert at that position.
+/// - `new_length == 0` → pure delete of `original_range`.
+///
+/// Pure append at end of file is `{ original_range: original_size..original_size, new_length: N, reader: ... }`.
+/// Pure truncate-to-N is `{ original_range: N..original_size, new_length: 0, reader: empty }`.
 pub struct DirtyInput {
-    pub range: Range<u64>,
+    pub original_range: Range<u64>,
     pub reader: Pin<Box<dyn AsyncRead + Send>>,
+    pub new_length: u64,
 }
 
 /// Size of blocks read from the dirty source and fed to the cleaner.
@@ -42,31 +50,34 @@ struct UploadedWindow {
     chunks: ChunkHashList,
 }
 
-/// Upload modified ranges of an existing file, composing the result with
-/// the original file's CAS segments. Only the dirty regions (plus CDC boundary
-/// chunks) are re-uploaded; stable regions between and around dirty ranges are
-/// reused from the original file's reconstruction plan.
+/// Upload an edited version of an existing file, reusing the unchanged regions from the
+/// original file's CAS segments and only re-uploading the parts the caller actually
+/// rewrites.
+///
+/// `dirty_inputs` is a list of edits expressed in the **original file's coordinates**.
+/// Each edit replaces `original_range` with `new_length` bytes from its reader; resize
+/// edits (including pure inserts and pure deletes) are supported. The output file size is
+/// derived from the inputs.
 ///
 /// # When to use
 ///
-/// - **Mid-file edit**: pass modified byte ranges in `dirty_inputs`, same `total_size`.
-/// - **Append**: include `[original_size, total_size)` in `dirty_inputs` with a reader for the new bytes (including
-///   sparse gaps). The last original chunk is automatically re-chunked.
-/// - **Truncation**: pass `dirty_inputs = vec![]`, `total_size < original_size`. The boundary chunk at the cut point is
-///   re-uploaded from CAS automatically.
-/// - **No change**: pass `dirty_inputs = vec![]`, `total_size == original_size`. Returns the original hash immediately
-///   (no CAS calls).
+/// - **In-place edit**: `original_range.len() == new_length`, file size unchanged.
+/// - **Resize edit**: any `new_length`. Replaces `original_range.len()` original bytes with `new_length` new bytes.
+/// - **Pure insert**: `original_range.start == original_range.end`, `new_length > 0`.
+/// - **Pure delete**: `original_range.start < original_range.end`, `new_length == 0`.
+/// - **Append**: `original_range == original_size..original_size`, `new_length > 0`.
+/// - **Truncate to N**: `original_range == N..original_size`, `new_length == 0`.
+/// - **No change**: empty `dirty_inputs`. Returns the original hash without any CAS call.
 ///
 /// # Arguments
 ///
 /// * `config` - Translator configuration for creating upload sessions.
-/// * `cas_client` - CAS client for fetching original file metadata and downloading boundary chunks.
+/// * `cas_client` - CAS client for fetching original file metadata and downloading boundary bytes.
 /// * `original_hash` - Merkle hash of the original file in CAS.
 /// * `original_size` - Size of the original file in bytes.
-/// * `dirty_inputs` - Sorted, non-overlapping dirty ranges, each paired with an async reader that yields exactly the
-///   bytes for that range. Bytes outside these ranges within `[0, original_size)` are reconstructed from CAS. Each
+/// * `dirty_inputs` - Edits to apply. Must be sorted by `original_range.start` and non-overlapping
+///   (`prev.original_range.end <= next.original_range.start`). Each reader must yield exactly `new_length` bytes. Each
 ///   reader is consumed exactly once.
-/// * `total_size` - Total size of the modified file.
 ///
 /// # Limitations
 ///
@@ -80,21 +91,20 @@ pub async fn upload_ranges(
     original_hash: MerkleHash,
     original_size: u64,
     mut dirty_inputs: Vec<DirtyInput>,
-    total_size: u64,
 ) -> Result<XetFileInfo> {
-    if dirty_inputs.is_empty() && total_size == original_size {
+    validate_dirty_ranges(&dirty_inputs, original_size)?;
+    let total_size = compute_total_size(original_size, &dirty_inputs);
+
+    if dirty_inputs.is_empty() {
+        debug_assert_eq!(total_size, original_size);
         return Ok(XetFileInfo::new(original_hash.hex(), original_size));
     }
 
-    // Empty original: nothing to compose against — upload as a fresh file. Validation below
-    // still runs (via the early return path inside `upload_fresh_file`) to enforce that the
-    // caller provided coverage of `[0, total_size)`.
+    // Empty original: nothing to compose against — upload as a fresh file (concatenation of
+    // the edits' new bytes, since every `original_range` must be `0..0`).
     if original_size == 0 {
         return upload_fresh_file(config, dirty_inputs, total_size).await;
     }
-
-    let dirty_ranges_pairs: Vec<(u64, u64)> = dirty_inputs.iter().map(|d| (d.range.start, d.range.end)).collect();
-    validate_dirty_ranges(&dirty_ranges_pairs, original_size, total_size)?;
 
     let recon_result = cas_client.get_file_reconstruction_info(&original_hash).await?;
     let original_mdb = recon_result
@@ -115,32 +125,26 @@ pub async fn upload_ranges(
     // segments during composition, so the client never has to truncate a segment mid-chunk.
     // Safe to send to the server because segment edges are chunk edges, so the server's
     // chunk-aligned windows come back identical to our snapped ranges.
-    let mut snapped: Vec<(u64, u64)> = Vec::with_capacity(dirty_ranges_pairs.len() + 1);
-    for &(start, end) in &dirty_ranges_pairs {
-        let in_start = start.min(original_size);
-        let in_end = end.min(original_size);
-        if in_start >= in_end {
-            continue;
-        }
-        snapped
-            .push((snap_to_segment_start(&seg_byte_starts, in_start), snap_to_segment_end(&seg_byte_starts, in_end)));
-    }
-    if total_size < original_size {
-        let snap_start = snap_to_segment_start(&seg_byte_starts, total_size);
-        if snap_start < original_size {
-            // total_size+1 forces the snap forward to the first boundary strictly past the cut.
-            let snap_end = snap_to_segment_end(&seg_byte_starts, total_size + 1);
-            snapped.push((snap_start, snap_end));
-        }
-    }
-    if total_size > original_size && !original_mdb.segments.is_empty() {
-        // Append: always include the last original segment in the upload set so its boundary
-        // extends past `original_size` into the appended bytes. Needed both for pure append
-        // and for mid-edit-plus-append (otherwise the last existing window would be the one
-        // we extend to `total_size`, which corrupts files with a stable tail before the
-        // appended region). Coalescing below merges this with any overlapping range.
-        let n = original_mdb.segments.len();
-        snapped.push((seg_byte_starts[n - 1], seg_byte_starts[n]));
+    //
+    // Pure inserts (`original_range.start == original_range.end`) snap to the segment that
+    // owns the insert position so the cleaner has enough surrounding bytes to re-chunk
+    // around the insertion. An insert at `original_size` snaps to the last segment.
+    let n_segs = original_mdb.segments.len();
+    let mut snapped: Vec<(u64, u64)> = Vec::with_capacity(dirty_inputs.len());
+    for input in &dirty_inputs {
+        let r = &input.original_range;
+        let (s, e) = if r.start == r.end {
+            // Pure insert: pick the segment containing `r.start`. At end-of-file, fall back to
+            // the last segment.
+            if r.start == original_size {
+                (seg_byte_starts[n_segs - 1], seg_byte_starts[n_segs])
+            } else {
+                (snap_to_segment_start(&seg_byte_starts, r.start), snap_to_segment_end(&seg_byte_starts, r.start + 1))
+            }
+        } else {
+            (snap_to_segment_start(&seg_byte_starts, r.start), snap_to_segment_end(&seg_byte_starts, r.end))
+        };
+        snapped.push((s, e));
     }
 
     snapped.sort_by_key(|&(s, _)| s);
@@ -157,9 +161,7 @@ pub async fn upload_ranges(
 
     let server_query: Vec<FileRange> = coalesced.iter().map(|&(s, e)| FileRange::new(s, e)).collect();
     if server_query.is_empty() {
-        return Err(DataError::InternalError(
-            "internal: no server query computed for non-trivial upload_ranges call".into(),
-        ));
+        return Err(DataError::InternalError("internal: non-empty dirty_inputs produced no server query".into()));
     }
 
     let n_windows = server_query.len();
@@ -172,81 +174,71 @@ pub async fn upload_ranges(
     let mut input_idx = 0usize;
     let mut uploaded: Vec<UploadedWindow> = Vec::with_capacity(n_windows);
 
-    let last_idx = n_windows - 1;
-    for (idx, window) in response.windows.iter().enumerate() {
+    let mut buf = vec![0u8; STREAM_BLOCK_SIZE];
+    for window in response.windows.iter() {
         let w_start = window.dirty_byte_range[0];
-        let w_end_in_original = window.dirty_byte_range[1];
+        let w_end = window.dirty_byte_range[1];
 
-        let effective_end = if idx == last_idx && total_size != original_size {
-            total_size
-        } else {
-            w_end_in_original
-        };
+        // Find the slice of edits that land in this window. A pure insert at exactly
+        // `w_end` belongs here only when `w_end == original_size` (no later window can
+        // take it); anywhere else it belongs to the next window starting at that byte.
+        let edits_end = dirty_inputs[input_idx..]
+            .iter()
+            .take_while(|d| {
+                let r = &d.original_range;
+                if r.start == r.end {
+                    r.start < w_end || (r.start == w_end && w_end == original_size)
+                } else {
+                    r.end <= w_end
+                }
+            })
+            .count()
+            + input_idx;
+        let window_edits = &mut dirty_inputs[input_idx..edits_end];
 
-        // Cleaner was sized to exactly `middle_size`; never stream past it (matters for truncation
-        // where the segment runs further than `effective_end`).
-        let original_window_end = w_end_in_original.min(original_size).min(effective_end);
-        let middle_size = effective_end - w_start;
+        let (removed, added): (u64, u64) = window_edits
+            .iter()
+            .map(|d| (d.original_range.end - d.original_range.start, d.new_length))
+            .fold((0, 0), |(rm, ad), (r, a)| (rm + r, ad + a));
+        let middle_size = (w_end - w_start) + added - removed;
 
         let (_id, mut cleaner) = session.start_clean(None, Some(middle_size), Sha256Policy::Skip)?;
 
         let mut cursor = w_start;
-        while input_idx < dirty_inputs.len() {
-            let input_range_start = dirty_inputs[input_idx].range.start;
-            if input_range_start >= effective_end {
-                break;
-            }
-            let input = &mut dirty_inputs[input_idx];
-            let input_start = input.range.start.max(w_start);
-            let input_end = input.range.end.min(effective_end);
+        for input in window_edits.iter_mut() {
+            let edit_start = input.original_range.start;
+            let edit_end = input.original_range.end;
+            debug_assert!(edit_start >= w_start && edit_end <= w_end, "edit straddles window (validation bug)");
 
-            // CAS gap before this input (within the original file).
-            if cursor < input_start {
-                let gap_end = input_start.min(original_window_end);
-                if cursor < gap_end {
-                    stream_cas_range(&ctx, &cas_client, original_hash, cursor, gap_end, &mut cleaner).await?;
-                }
-                if input_start > original_size && cursor < input_start {
-                    return Err(DataError::InternalError(format!(
-                        "gap in dirty_inputs: no data for bytes [{cursor}, {input_start}) \
-                         (beyond original_size {original_size})"
-                    )));
-                }
+            if cursor < edit_start {
+                stream_cas_range(&ctx, &cas_client, original_hash, cursor, edit_start, &mut cleaner).await?;
             }
 
-            // Stream the dirty bytes from the async reader.
-            let bytes_to_read = (input_end - input_start) as usize;
-            let mut remaining = bytes_to_read;
-            let mut buf = vec![0u8; STREAM_BLOCK_SIZE.min(remaining.max(1))];
+            let mut remaining = input.new_length as usize;
             while remaining > 0 {
                 let to_read = buf.len().min(remaining);
                 input.reader.read_exact(&mut buf[..to_read]).await.map_err(|err| {
                     DataError::InternalError(format!(
                         "failed to read dirty input [{}, {}): {err}",
-                        input.range.start, input.range.end
+                        input.original_range.start, input.original_range.end
                     ))
                 })?;
                 cleaner.add_data(&buf[..to_read]).await?;
                 remaining -= to_read;
             }
 
-            cursor = input_end;
-            if input.range.end <= effective_end {
-                input_idx += 1;
-            } else {
-                break;
-            }
+            cursor = edit_end;
         }
+        input_idx = edits_end;
 
-        // CAS suffix: stable bytes after the last input within the original portion.
-        if cursor < original_window_end {
-            stream_cas_range(&ctx, &cas_client, original_hash, cursor, original_window_end, &mut cleaner).await?;
+        if cursor < w_end {
+            stream_cas_range(&ctx, &cas_client, original_hash, cursor, w_end, &mut cleaner).await?;
         }
 
         let (info, chunks, _metrics) = cleaner.finish().await?;
         uploaded.push(UploadedWindow {
             start: w_start,
-            end: effective_end,
+            end: w_end,
             info,
             chunks,
         });
@@ -258,15 +250,11 @@ pub async fn upload_ranges(
         mdb_list.into_iter().map(|m| (m.metadata.file_hash, m)).collect();
 
     // Merge sequence: [gap0, w0, gap1, w1, ..., gapN]. Empty gaps (`None`) are skipped.
-    // For truncation, the trailing gap covers bytes that no longer exist and is dropped.
     let mut hash_ranges = response.hash_ranges;
-    let trailing_gap = if total_size >= original_size {
-        hash_ranges.pop().flatten()
-    } else {
-        hash_ranges.pop().and(None)
-    };
+    let trailing_gap = hash_ranges.pop().flatten();
     let first_window_at_start = hash_ranges.first().is_some_and(Option::is_none);
     let last_window_at_end = trailing_gap.is_none();
+    let last_idx = uploaded.len() - 1;
 
     let mut merge_seq: Vec<MerkleHashSubtree> = Vec::with_capacity(2 * n_windows + 1);
     for (i, (w, gap)) in uploaded.iter().zip(hash_ranges).enumerate() {
@@ -335,11 +323,9 @@ pub async fn upload_ranges(
             all_verification.extend_from_slice(&middle_mdb.verification);
         }
     }
-    if total_size >= original_size {
-        while seg_idx < n_segs {
-            emit_seg(seg_idx, &mut all_segments, &mut all_verification);
-            seg_idx += 1;
-        }
+    while seg_idx < n_segs {
+        emit_seg(seg_idx, &mut all_segments, &mut all_verification);
+        seg_idx += 1;
     }
 
     debug!(
@@ -361,7 +347,7 @@ pub async fn upload_ranges(
     session.register_composed_file(composed_mdb).await?;
     session.finalize().await?;
 
-    let total_dirty: u64 = dirty_ranges_pairs.iter().map(|(s, e)| e - s).sum();
+    let total_dirty: u64 = dirty_inputs.iter().map(|d| d.new_length).sum();
     info!(
         "upload_ranges: hash={} size={} (original={}, {} windows, {} dirty bytes)",
         combined_hash.hex(),
@@ -376,89 +362,62 @@ pub async fn upload_ranges(
 
 /// Validate the caller-provided dirty ranges.
 ///
-/// `dirty_ranges` must be sorted, non-overlapping, and contain only non-empty intervals
-/// whose end is `<= total_size`. When `total_size > original_size` (append), the inputs
-/// must reach `total_size` and cover the entire `[original_size, total_size)` tail with
-/// no gap.
-fn validate_dirty_ranges(dirty_ranges: &[(u64, u64)], original_size: u64, total_size: u64) -> Result<()> {
-    if !dirty_ranges.windows(2).all(|w| w[0].1 <= w[1].0) {
-        return Err(DataError::ParameterError(format!(
-            "dirty_ranges must be sorted and non-overlapping, got: {dirty_ranges:?}"
-        )));
-    }
-    if !dirty_ranges.iter().all(|&(s, e)| s < e) {
-        return Err(DataError::ParameterError(format!(
-            "dirty_ranges must be non-empty intervals, got: {dirty_ranges:?}"
-        )));
-    }
-    if let Some(&(_, last_end)) = dirty_ranges.last()
-        && last_end > total_size
-    {
-        return Err(DataError::ParameterError(format!(
-            "dirty_range end ({last_end}) exceeds total_size ({total_size})"
-        )));
-    }
-    if total_size > original_size {
-        let last_input_end = dirty_ranges.last().map_or(0, |&(_, e)| e);
-        if last_input_end < total_size {
+/// `dirty_inputs` must be sorted by `original_range.start`, non-overlapping
+/// (`prev.original_range.end <= next.original_range.start`), and every
+/// `original_range.end <= original_size`. Empty ranges (pure inserts) are allowed at any
+/// position including `original_size` (append).
+fn validate_dirty_ranges(dirty_inputs: &[DirtyInput], original_size: u64) -> Result<()> {
+    let mut prev_end = 0u64;
+    for (i, input) in dirty_inputs.iter().enumerate() {
+        let r = &input.original_range;
+        if r.start > r.end {
             return Err(DataError::ParameterError(format!(
-                "total_size ({total_size}) > original_size ({original_size}) but dirty_inputs \
-                 only cover up to byte {last_input_end} (must reach total_size)"
+                "dirty_inputs[{i}].original_range is reversed: {}..{}",
+                r.start, r.end
             )));
         }
-        // Walk the append tail. `covered_up_to` starts at `original_size` and only ever
-        // grows, so any range whose `start` runs ahead of it leaves an uncovered gap.
-        let mut covered_up_to = original_size;
-        for &(start, end) in dirty_ranges {
-            if start > covered_up_to {
-                return Err(DataError::ParameterError(format!(
-                    "gap in append region: bytes [{covered_up_to}, {start}) are beyond \
-                     original_size ({original_size}) and not covered by any dirty input"
-                )));
-            }
-            covered_up_to = covered_up_to.max(end);
+        if r.end > original_size {
+            return Err(DataError::ParameterError(format!(
+                "dirty_inputs[{i}].original_range end ({}) exceeds original_size ({original_size})",
+                r.end
+            )));
         }
+        if i > 0 && r.start < prev_end {
+            return Err(DataError::ParameterError(format!(
+                "dirty_inputs[{i}].original_range overlaps the previous edit (starts at {} < {prev_end})",
+                r.start
+            )));
+        }
+        prev_end = r.end;
     }
     Ok(())
 }
 
+/// Compute the resulting file size: `original_size` minus bytes removed plus bytes added.
+fn compute_total_size(original_size: u64, dirty_inputs: &[DirtyInput]) -> u64 {
+    let (removed, added) = dirty_inputs
+        .iter()
+        .fold((0u64, 0u64), |(r, a), d| (r + (d.original_range.end - d.original_range.start), a + d.new_length));
+    original_size + added - removed
+}
+
 /// Upload a brand-new file from `dirty_inputs` (no original to compose against).
-/// Used when the original file is empty: the caller-provided inputs already cover
-/// `[0, total_size)` (verified here), so we just stream them through the cleaner and
-/// finalize the session.
+/// Used when the original file is empty: every edit's `original_range` is `0..0`, so we
+/// just stream their new bytes through the cleaner.
 async fn upload_fresh_file(
     config: Arc<TranslatorConfig>,
     mut dirty_inputs: Vec<DirtyInput>,
     total_size: u64,
 ) -> Result<XetFileInfo> {
-    let mut cursor = 0u64;
-    for input in &dirty_inputs {
-        if input.range.start > cursor {
-            return Err(DataError::ParameterError(format!(
-                "empty original: gap in dirty_inputs at [{cursor}, {})",
-                input.range.start
-            )));
-        }
-        cursor = input.range.end;
-    }
-    if cursor < total_size {
-        return Err(DataError::ParameterError(format!(
-            "empty original: dirty_inputs only cover up to byte {cursor} (must reach total_size {total_size})"
-        )));
-    }
-
     let session = FileUploadSession::new(config).await?;
     let (_id, mut cleaner) = session.start_clean(None, Some(total_size), Sha256Policy::Skip)?;
     for input in &mut dirty_inputs {
-        let mut remaining = (input.range.end - input.range.start) as usize;
+        let mut remaining = input.new_length as usize;
         let mut buf = vec![0u8; STREAM_BLOCK_SIZE.min(remaining.max(1))];
         while remaining > 0 {
             let to_read = buf.len().min(remaining);
             input.reader.read_exact(&mut buf[..to_read]).await.map_err(|err| {
-                DataError::InternalError(format!(
-                    "failed to read dirty input [{}, {}): {err}",
-                    input.range.start, input.range.end
-                ))
+                DataError::InternalError(format!("failed to read dirty input at {}: {err}", input.original_range.start))
             })?;
             cleaner.add_data(&buf[..to_read]).await?;
             remaining -= to_read;
@@ -529,15 +488,16 @@ mod tests {
         mdb.segments.iter().map(|s| s.unpacked_segment_bytes as u64).collect()
     }
 
-    /// Build `DirtyInput`s from a source buffer and range list. Each input gets
-    /// a `Cursor` over the corresponding slice of `data`.
+    /// Build in-place `DirtyInput`s (each edit's `new_length` matches its `original_range`
+    /// length, so the file size doesn't change) from a source buffer and range list.
     fn make_dirty_inputs(ranges: &[(u64, u64)], data: &[u8]) -> Vec<DirtyInput> {
         ranges
             .iter()
             .map(|&(start, end)| {
                 let slice = data[start as usize..end as usize].to_vec();
                 DirtyInput {
-                    range: start..end,
+                    original_range: start..end,
+                    new_length: end - start,
                     reader: Box::pin(Cursor::new(slice)),
                 }
             })
@@ -550,10 +510,56 @@ mod tests {
         ranges
             .iter()
             .map(|&(start, end)| DirtyInput {
-                range: start..end,
+                original_range: start..end,
+                new_length: end - start,
                 reader: Box::pin(Cursor::new(Vec::new())),
             })
             .collect()
+    }
+
+    /// Bridge the old `(start, end)` + `total_size`-shaped test cases into the new edit
+    /// model. `(start, end)` indexes into `data` AND describes the output byte range.
+    /// Handles in-place edits, pure appends, mid-edit-plus-append spans (split into two
+    /// edits), and trailing truncations.
+    fn make_legacy_inputs(specs: &[(u64, u64)], data: &[u8], original_size: u64, total_size: u64) -> Vec<DirtyInput> {
+        let mut out: Vec<DirtyInput> = Vec::new();
+        for &(start, end) in specs {
+            let bytes = data[start as usize..end as usize].to_vec();
+            if end <= original_size {
+                out.push(DirtyInput {
+                    original_range: start..end,
+                    new_length: bytes.len() as u64,
+                    reader: Box::pin(Cursor::new(bytes)),
+                });
+            } else if start >= original_size {
+                out.push(DirtyInput {
+                    original_range: original_size..original_size,
+                    new_length: bytes.len() as u64,
+                    reader: Box::pin(Cursor::new(bytes)),
+                });
+            } else {
+                let split = (original_size - start) as usize;
+                let (head, tail) = bytes.split_at(split);
+                out.push(DirtyInput {
+                    original_range: start..original_size,
+                    new_length: head.len() as u64,
+                    reader: Box::pin(Cursor::new(head.to_vec())),
+                });
+                out.push(DirtyInput {
+                    original_range: original_size..original_size,
+                    new_length: tail.len() as u64,
+                    reader: Box::pin(Cursor::new(tail.to_vec())),
+                });
+            }
+        }
+        if total_size < original_size {
+            out.push(DirtyInput {
+                original_range: total_size..original_size,
+                new_length: 0,
+                reader: Box::pin(Cursor::new(Vec::new())),
+            });
+        }
+        out
     }
 
     // original: [=========================== 256 KB ===========================]
@@ -594,8 +600,7 @@ mod tests {
             cas_client.clone(),
             original_hash,
             original_size,
-            make_dirty_inputs(&[(dirty_start as u64, dirty_end as u64)], &modified_data),
-            total_size,
+            make_legacy_inputs(&[(dirty_start as u64, dirty_end as u64)], &modified_data, original_size, total_size),
         )
         .await
         .unwrap();
@@ -635,10 +640,15 @@ mod tests {
 
         // Truncate to 100 KB (no dirty ranges, pure truncation).
         let truncated_size = 100_000u64;
-        let result =
-            upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, vec![], truncated_size)
-                .await
-                .unwrap();
+        let result = upload_ranges(
+            config.clone(),
+            cas_client.clone(),
+            original_hash,
+            original_size,
+            make_legacy_inputs(&[], &[], original_size, truncated_size),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(result.file_size(), Some(truncated_size));
 
@@ -675,8 +685,7 @@ mod tests {
             cas_client.clone(),
             original_hash,
             original_size,
-            make_dirty_inputs(&[(original_size, total_size)], &full_data),
-            total_size,
+            make_legacy_inputs(&[(original_size, total_size)], &full_data, original_size, total_size),
         )
         .await
         .unwrap();
@@ -715,8 +724,7 @@ mod tests {
             cas_client.clone(),
             original_hash,
             original_size,
-            make_dirty_inputs(&[(0, 4096)], &modified_data),
-            total_size,
+            make_legacy_inputs(&[(0, 4096)], &modified_data, original_size, total_size),
         )
         .await
         .unwrap();
@@ -756,8 +764,7 @@ mod tests {
             cas_client.clone(),
             original_hash,
             original_size,
-            make_dirty_inputs(&[(10_000, 12_000), (200_000, 202_000)], &modified_data),
-            total_size,
+            make_legacy_inputs(&[(10_000, 12_000), (200_000, 202_000)], &modified_data, original_size, total_size),
         )
         .await
         .unwrap();
@@ -803,8 +810,7 @@ mod tests {
             cas_client.clone(),
             original_hash,
             original_size,
-            make_dirty_inputs(&[(original_size, total_size)], &full_data),
-            total_size,
+            make_legacy_inputs(&[(original_size, total_size)], &full_data, original_size, total_size),
         )
         .await
         .unwrap();
@@ -846,8 +852,7 @@ mod tests {
             cas_client.clone(),
             original_hash,
             original_size,
-            make_dirty_inputs(&[(original_size, total_size)], &sparse_staging),
-            total_size,
+            make_legacy_inputs(&[(original_size, total_size)], &sparse_staging, original_size, total_size),
         )
         .await
         .unwrap();
@@ -947,8 +952,7 @@ mod tests {
                     cas_client.clone(),
                     original_hash,
                     size,
-                    make_dirty_inputs(&[(boundary, dirty_end)], &expected),
-                    size,
+                    make_legacy_inputs(&[(boundary, dirty_end)], &expected, size, size),
                 )
                 .await
                 .unwrap();
@@ -972,7 +976,9 @@ mod tests {
         let data = random_data(70, 256 * 1024);
         let hash = upload_file(&config, &data).await;
         let size = data.len() as u64;
-        let result = upload_ranges(config, cas_client, hash, size, vec![], size).await.unwrap();
+        let result = upload_ranges(config, cas_client, hash, size, make_legacy_inputs(&[], &[], size, size))
+            .await
+            .unwrap();
 
         assert_eq!(result.hash(), hash.hex());
         assert_eq!(result.file_size(), Some(size));
@@ -989,7 +995,7 @@ mod tests {
         let data = random_data(71, 256 * 1024);
         let hash = upload_file(&config, &data).await;
         let size = data.len() as u64;
-        let err = upload_ranges(config, cas_client, hash, size, make_dummy_inputs(&[(100, size + 1)]), size).await;
+        let err = upload_ranges(config, cas_client, hash, size, make_dummy_inputs(&[(100, size + 1)])).await;
         assert!(err.is_err(), "dirty range past total_size should be rejected");
     }
 
@@ -1003,23 +1009,37 @@ mod tests {
         let data = random_data(60, 256 * 1024);
         let hash = upload_file(&config, &data).await;
         let size = data.len() as u64;
-        let err =
-            upload_ranges(config, cas_client, hash, size, make_dummy_inputs(&[(100, 300), (200, 400)]), size).await;
+        let err = upload_ranges(config, cas_client, hash, size, make_dummy_inputs(&[(100, 300), (200, 400)])).await;
         assert!(err.is_err(), "overlapping ranges should be rejected");
     }
 
+    // Regression: validation must run *before* the `original_size == 0` short-circuit, or
+    // the empty-original path silently accepts ranges that exceed `original_size`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_rejects_empty_dirty_range() {
+    async fn test_empty_original_validates_ranges() {
         let server = LocalTestServerBuilder::new().start().await;
         let base_dir = TempDir::new().unwrap();
         let config = test_config(server.http_endpoint(), base_dir.path());
         let cas_client: Arc<dyn Client> = Arc::new(server);
 
-        let data = random_data(61, 256 * 1024);
-        let hash = upload_file(&config, &data).await;
-        let size = data.len() as u64;
-        let err = upload_ranges(config, cas_client, hash, size, make_dummy_inputs(&[(100, 100)]), size).await;
-        assert!(err.is_err(), "empty range (start == end) should be rejected");
+        let original_hash = upload_file(&config, &[]).await;
+
+        // `0..10` and `5..15` both have `end > original_size == 0`; either would corrupt
+        // the upload if validation didn't fire.
+        let inputs = vec![
+            DirtyInput {
+                original_range: 0..10,
+                new_length: 10,
+                reader: Box::pin(Cursor::new(vec![0xAA; 10])),
+            },
+            DirtyInput {
+                original_range: 5..15,
+                new_length: 10,
+                reader: Box::pin(Cursor::new(vec![0xBB; 10])),
+            },
+        ];
+        let err = upload_ranges(config, cas_client, original_hash, 0, inputs).await;
+        assert!(err.is_err(), "ranges with end > original_size must be rejected for empty originals too");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1032,83 +1052,15 @@ mod tests {
         let data = random_data(62, 256 * 1024);
         let hash = upload_file(&config, &data).await;
         let size = data.len() as u64;
-        let err =
-            upload_ranges(config, cas_client, hash, size, make_dummy_inputs(&[(300, 400), (100, 200)]), size).await;
+        let err = upload_ranges(config, cas_client, hash, size, make_dummy_inputs(&[(300, 400), (100, 200)])).await;
         assert!(err.is_err(), "unsorted ranges should be rejected");
-    }
-
-    // total_size > original_size but dirty_inputs don't cover appended region -> rejected.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_rejects_append_without_dirty_inputs() {
-        let server = LocalTestServerBuilder::new().start().await;
-        let base_dir = TempDir::new().unwrap();
-        let config = test_config(server.http_endpoint(), base_dir.path());
-        let cas_client: Arc<dyn Client> = Arc::new(server);
-
-        let data = random_data(63, 256 * 1024);
-        let hash = upload_file(&config, &data).await;
-        let size = data.len() as u64;
-        let bigger = size + 1000;
-
-        // No dirty inputs but total_size > original_size.
-        let err = upload_ranges(config.clone(), cas_client.clone(), hash, size, vec![], bigger).await;
-        assert!(err.is_err(), "append without dirty_inputs covering appended bytes should be rejected");
-
-        // Dirty input stops before total_size.
-        let partial = make_dirty_inputs(&[(size, size + 500)], &vec![0xEEu8; bigger as usize]);
-        let err = upload_ranges(config.clone(), cas_client.clone(), hash, size, partial, bigger).await;
-        assert!(err.is_err(), "append with partial coverage should be rejected");
-
-        // Dirty input covers end but leaves gap after original_size.
-        let gap_start = make_dirty_inputs(&[(size + 100, bigger)], &vec![0xEEu8; bigger as usize]);
-        let err = upload_ranges(config, cas_client, hash, size, gap_start, bigger).await;
-        assert!(err.is_err(), "append with gap at start of append region should be rejected");
-    }
-
-    // Regression: dirty_inputs = [(original_size + 100, total_size)] passes the old
-    // "last input reaches total_size" check, but leaves a gap [original_size, original_size + 100)
-    // that is beyond original_size (CAS can't fill it) and not covered by any input.
-    // Without validation, the cleaner silently skips those bytes → corrupted file.
-    //
-    // Original: [################]  (256 KB)
-    // Append:                    [--gap--][=====dirty=====]
-    //                            ^        ^                ^
-    //                       original   +100          total_size
-    //                       = 256KB   = 256KB+100    = 256KB+50KB
-    //
-    // The gap [256KB, 256KB+100) has no source: CAS stops at 256KB, no input covers it.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_rejects_append_with_gap_after_original_size() {
-        let server = LocalTestServerBuilder::new().start().await;
-        let base_dir = TempDir::new().unwrap();
-        let config = test_config(server.http_endpoint(), base_dir.path());
-        let cas_client: Arc<dyn Client> = Arc::new(server);
-
-        let original_data = random_data(42, 256 * 1024);
-        let original_hash = upload_file(&config, &original_data).await;
-        let original_size = original_data.len() as u64;
-        let total_size = original_size + 50_000;
-        let gap = 100u64;
-
-        // Input starts at original_size + gap, leaving [original_size, original_size + gap) uncovered.
-        let append_data = vec![0xBBu8; (total_size - original_size - gap) as usize];
-        let inputs = vec![DirtyInput {
-            range: (original_size + gap)..total_size,
-            reader: Box::pin(std::io::Cursor::new(append_data)),
-        }];
-
-        let err = upload_ranges(config, cas_client, original_hash, original_size, inputs, total_size).await;
-        assert!(err.is_err());
-        let msg = format!("{}", err.unwrap_err());
-        assert!(msg.contains("gap in append region"), "expected gap-in-append-region error, got: {msg}");
     }
 
     // original: [chunk0][chunk1][chunk2][chunk3][...more chunks...]
     // input:              [========= single large write ==========]
     //
-    // A single DirtyInput that spans many chunks. Verifies that the reader is
-    // consumed correctly even when build_dirty_regions merges multiple chunk
-    // ranges into one DirtyRegion.
+    // A single DirtyInput that spans many segments. Verifies the reader is consumed
+    // correctly across the multi-segment window.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_single_input_spanning_many_chunks() {
         let server = LocalTestServerBuilder::new().start().await;
@@ -1131,8 +1083,7 @@ mod tests {
             cas_client.clone(),
             original_hash,
             original_size,
-            make_dirty_inputs(&[(dirty_start, dirty_end)], &modified),
-            original_size,
+            make_legacy_inputs(&[(dirty_start, dirty_end)], &modified, original_size, original_size),
         )
         .await
         .unwrap();
@@ -1164,20 +1115,14 @@ mod tests {
 
         let dirty_data = b"SPARSE";
         let dirty_inputs = vec![DirtyInput {
-            range: 5..11,
+            original_range: 5..11,
+            new_length: dirty_data.len() as u64,
             reader: Box::pin(Cursor::new(dirty_data.to_vec())),
         }];
 
-        let result = upload_ranges(
-            config.clone(),
-            cas_client.clone(),
-            original_hash,
-            original_size,
-            dirty_inputs,
-            original_size,
-        )
-        .await
-        .unwrap();
+        let result = upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, dirty_inputs)
+            .await
+            .unwrap();
 
         assert_eq!(result.file_size(), Some(original_size));
 
@@ -1211,10 +1156,15 @@ mod tests {
 
         let truncated_size = 100_000u64;
 
-        let result =
-            upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, vec![], truncated_size)
-                .await
-                .unwrap();
+        let result = upload_ranges(
+            config.clone(),
+            cas_client.clone(),
+            original_hash,
+            original_size,
+            make_legacy_inputs(&[], &[], original_size, truncated_size),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(result.file_size(), Some(truncated_size));
 
@@ -1264,8 +1214,7 @@ mod tests {
             cas_client.clone(),
             original_hash,
             original_size,
-            make_dirty_inputs(&[(dirty_start, dirty_end)], &staging),
-            truncated_size,
+            make_legacy_inputs(&[(dirty_start, dirty_end)], &staging, original_size, truncated_size),
         )
         .await
         .unwrap();
@@ -1311,6 +1260,33 @@ mod tests {
         std::fs::read(&out).unwrap()
     }
 
+    /// Empty `Box::pin(Cursor::new(Vec::new()))` for delete / dummy edits.
+    fn empty_reader() -> Pin<Box<dyn AsyncRead + Send>> {
+        Box::pin(Cursor::new(Vec::<u8>::new()))
+    }
+
+    /// End-to-end check: upload `original`, apply `inputs` via `upload_ranges`, download,
+    /// compare against `expected`, and verify the hash matches a clean upload of `expected`.
+    async fn assert_edits(
+        config: &Arc<TranslatorConfig>,
+        cas_client: &Arc<dyn Client>,
+        original: &[u8],
+        inputs: Vec<DirtyInput>,
+        expected: &[u8],
+    ) {
+        let original_hash = upload_file(config, original).await;
+        let original_size = original.len() as u64;
+        let result = upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, inputs)
+            .await
+            .unwrap();
+        assert_eq!(result.file_size(), Some(expected.len() as u64), "file size mismatch");
+        let downloaded =
+            download_file(config, MerkleHash::from_hex(result.hash()).unwrap(), expected.len() as u64).await;
+        assert_eq!(downloaded, expected, "content mismatch");
+        let clean = upload_file(config, expected).await;
+        assert_eq!(result.hash(), clean.hex(), "hash diverges from clean upload");
+    }
+
     async fn assert_range_edit(
         config: &Arc<TranslatorConfig>,
         cas_client: &Arc<dyn Client>,
@@ -1325,23 +1301,34 @@ mod tests {
         // Build dirty inputs from the caller's ranges.
         let mut inputs = make_dirty_inputs(dirty_ranges, expected);
 
-        // For appends, ensure the appended region is included as a dirty input.
+        // For appends, ensure the appended region is included as a pure-insert edit at the
+        // end of the original.
         if total_size > original_size {
             let append_start = original_size;
             let already_covered = dirty_ranges.iter().any(|&(s, e)| s <= append_start && e >= total_size);
             if !already_covered {
                 inputs.push(DirtyInput {
-                    range: append_start..total_size,
+                    original_range: original_size..original_size,
+                    new_length: total_size - original_size,
                     reader: Box::pin(Cursor::new(expected[append_start as usize..total_size as usize].to_vec())),
                 });
-                inputs.sort_by_key(|d| d.range.start);
+                inputs.sort_by_key(|d| d.original_range.start);
             }
         }
 
-        let result =
-            upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, inputs, total_size)
-                .await
-                .unwrap();
+        // Truncation: drop bytes past `total_size` from the original via a pure-delete edit.
+        if total_size < original_size {
+            inputs.push(DirtyInput {
+                original_range: total_size..original_size,
+                new_length: 0,
+                reader: empty_reader(),
+            });
+            inputs.sort_by_key(|d| d.original_range.start);
+        }
+
+        let result = upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, inputs)
+            .await
+            .unwrap();
 
         assert_eq!(result.file_size(), Some(total_size), "file size mismatch");
         let downloaded = download_file(config, MerkleHash::from_hex(result.hash()).unwrap(), total_size).await;
@@ -1376,18 +1363,19 @@ mod tests {
 
         let inputs = vec![
             DirtyInput {
-                range: dirty_start as u64..dirty_end as u64,
+                original_range: dirty_start as u64..dirty_end as u64,
+                new_length: (dirty_end - dirty_start) as u64,
                 reader: Box::pin(Cursor::new(expected[dirty_start..dirty_end].to_vec())),
             },
             DirtyInput {
-                range: original_size..total_size,
+                original_range: original_size..original_size,
+                new_length: append_extra.len() as u64,
                 reader: Box::pin(Cursor::new(append_extra)),
             },
         ];
-        let result =
-            upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, inputs, total_size)
-                .await
-                .unwrap();
+        let result = upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, inputs)
+            .await
+            .unwrap();
 
         let downloaded = download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), total_size).await;
         assert_eq!(downloaded, expected, "content mismatch (mid-edit + append regression)");
@@ -1410,10 +1398,11 @@ mod tests {
         let total_size = new_data.len() as u64;
 
         let inputs = vec![DirtyInput {
-            range: 0..total_size,
+            original_range: 0..0,
+            new_length: total_size,
             reader: Box::pin(Cursor::new(new_data.clone())),
         }];
-        let result = upload_ranges(config.clone(), cas_client.clone(), original_hash, 0, inputs, total_size)
+        let result = upload_ranges(config.clone(), cas_client.clone(), original_hash, 0, inputs)
             .await
             .unwrap();
 
@@ -1436,11 +1425,315 @@ mod tests {
         let original_hash = upload_file(&config, &original_data).await;
         let original_size = original_data.len() as u64;
 
-        let result = upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, vec![], 0)
-            .await
-            .unwrap();
+        let result = upload_ranges(
+            config.clone(),
+            cas_client.clone(),
+            original_hash,
+            original_size,
+            make_legacy_inputs(&[], &[], original_size, 0),
+        )
+        .await
+        .unwrap();
 
         let clean_empty = upload_file(&config, &[]).await;
         assert_eq!(result.hash(), clean_empty.hex(), "truncate-to-empty must match clean empty upload hash");
+    }
+
+    // The three small examples that motivated the resize-edit API: replace, insert, delete
+    // on a tiny 3-byte file. Each produces an output of a different length than the input.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_resize_edits_abc() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = test_config(server.http_endpoint(), base_dir.path());
+        let cas_client: Arc<dyn Client> = Arc::new(server);
+
+        // abc + replace [0, 1) with "foo" => "foobc"
+        assert_edits(
+            &config,
+            &cas_client,
+            b"abc",
+            vec![DirtyInput {
+                original_range: 0..1,
+                new_length: 3,
+                reader: Box::pin(Cursor::new(b"foo".to_vec())),
+            }],
+            b"foobc",
+        )
+        .await;
+
+        // abc + insert "foo" at 0 => "fooabc"
+        assert_edits(
+            &config,
+            &cas_client,
+            b"abc",
+            vec![DirtyInput {
+                original_range: 0..0,
+                new_length: 3,
+                reader: Box::pin(Cursor::new(b"foo".to_vec())),
+            }],
+            b"fooabc",
+        )
+        .await;
+
+        // abc + delete [0, 1) => "bc"
+        assert_edits(
+            &config,
+            &cas_client,
+            b"abc",
+            vec![DirtyInput {
+                original_range: 0..1,
+                new_length: 0,
+                reader: empty_reader(),
+            }],
+            b"bc",
+        )
+        .await;
+    }
+
+    // original: [============= 256 KB =============]
+    // edit:                [== 4K stale ==]
+    //                      ^ replaced with 32 K (resize +28 K)
+    // result:   [== prefix ==][== 32K new ==][== suffix ==]
+    //
+    // Big in-place replace where new_length >> original_range.len(); exercises the
+    // resize branch with a multi-segment-touching window.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_resize_large_replace_grows_file() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = test_config(server.http_endpoint(), base_dir.path());
+        let cas_client: Arc<dyn Client> = Arc::new(server);
+
+        let original = random_data(101, 256 * 1024);
+        let drop_start = 100_000usize;
+        let drop_end = 104_000usize;
+        let new_bytes: Vec<u8> = (0..32 * 1024).map(|i| (i % 251) as u8).collect();
+        let mut expected = Vec::with_capacity(original.len() - (drop_end - drop_start) + new_bytes.len());
+        expected.extend_from_slice(&original[..drop_start]);
+        expected.extend_from_slice(&new_bytes);
+        expected.extend_from_slice(&original[drop_end..]);
+
+        assert_edits(
+            &config,
+            &cas_client,
+            &original,
+            vec![DirtyInput {
+                original_range: drop_start as u64..drop_end as u64,
+                new_length: new_bytes.len() as u64,
+                reader: Box::pin(Cursor::new(new_bytes)),
+            }],
+            &expected,
+        )
+        .await;
+    }
+
+    // original: [============= 256 KB =============]
+    // edit:                [============= 80 KB stale =============]
+    //                      ^ replaced with 4 K (resize -76 K)
+    // result:   [== prefix ==][4 K new][== suffix ==]
+    //
+    // Big in-place replace where new_length << original_range.len(); shrink case.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_resize_large_replace_shrinks_file() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = test_config(server.http_endpoint(), base_dir.path());
+        let cas_client: Arc<dyn Client> = Arc::new(server);
+
+        let original = random_data(102, 256 * 1024);
+        let drop_start = 80_000usize;
+        let drop_end = 160_000usize;
+        let new_bytes: Vec<u8> = (0..4 * 1024).map(|i| (0xCC ^ i) as u8).collect();
+        let mut expected = Vec::with_capacity(original.len() - (drop_end - drop_start) + new_bytes.len());
+        expected.extend_from_slice(&original[..drop_start]);
+        expected.extend_from_slice(&new_bytes);
+        expected.extend_from_slice(&original[drop_end..]);
+
+        assert_edits(
+            &config,
+            &cas_client,
+            &original,
+            vec![DirtyInput {
+                original_range: drop_start as u64..drop_end as u64,
+                new_length: new_bytes.len() as u64,
+                reader: Box::pin(Cursor::new(new_bytes)),
+            }],
+            &expected,
+        )
+        .await;
+    }
+
+    // original: [============= 100 KB =============]
+    // edit:                  [insert 8 KB here]
+    // result:   [== prefix ==][== 8 KB new ==][======= suffix =======]
+    //
+    // Pure mid-file insert (range start == end), large payload that forces re-chunking
+    // around the insertion point.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_resize_mid_file_insert() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = test_config(server.http_endpoint(), base_dir.path());
+        let cas_client: Arc<dyn Client> = Arc::new(server);
+
+        let original = random_data(103, 100 * 1024);
+        let at = 40_000usize;
+        let new_bytes: Vec<u8> = (0..8u32 * 1024).map(|i| (i.wrapping_mul(13) % 251) as u8).collect();
+        let mut expected = Vec::with_capacity(original.len() + new_bytes.len());
+        expected.extend_from_slice(&original[..at]);
+        expected.extend_from_slice(&new_bytes);
+        expected.extend_from_slice(&original[at..]);
+
+        assert_edits(
+            &config,
+            &cas_client,
+            &original,
+            vec![DirtyInput {
+                original_range: at as u64..at as u64,
+                new_length: new_bytes.len() as u64,
+                reader: Box::pin(Cursor::new(new_bytes)),
+            }],
+            &expected,
+        )
+        .await;
+    }
+
+    // original: [============= 256 KB =============]
+    // edit:                [== 64 KB hole ==]
+    //                      ^ delete this slice (no replacement)
+    // result:   [== prefix ==][== suffix ==]
+    //
+    // Pure mid-file delete: shrinks the file without touching the tail boundary.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_resize_mid_file_delete() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = test_config(server.http_endpoint(), base_dir.path());
+        let cas_client: Arc<dyn Client> = Arc::new(server);
+
+        let original = random_data(104, 256 * 1024);
+        let drop_start = 80_000usize;
+        let drop_end = 144_000usize;
+        let mut expected = Vec::with_capacity(original.len() - (drop_end - drop_start));
+        expected.extend_from_slice(&original[..drop_start]);
+        expected.extend_from_slice(&original[drop_end..]);
+
+        assert_edits(
+            &config,
+            &cas_client,
+            &original,
+            vec![DirtyInput {
+                original_range: drop_start as u64..drop_end as u64,
+                new_length: 0,
+                reader: empty_reader(),
+            }],
+            &expected,
+        )
+        .await;
+    }
+
+    // original: [== seg0 ==][== seg1 ==][== seg2 ==]
+    // edits:        [shrink][grow][   delete   ]
+    //
+    // Three independent edits in one call: an in-place shrink, a pure insert in seg1, and
+    // a pure delete in seg2. Mix of resize directions, far enough apart that they don't
+    // coalesce into one window.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_resize_multi_edit_mix() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = test_config(server.http_endpoint(), base_dir.path());
+        let cas_client: Arc<dyn Client> = Arc::new(server);
+
+        let original = random_data(105, 384 * 1024);
+        let (a_start, a_end) = (10 * 1024usize, 20 * 1024usize);
+        let a_new: Vec<u8> = vec![0xAA; 2 * 1024];
+        let b_at = 150 * 1024usize;
+        let b_new: Vec<u8> = vec![0xBB; 4 * 1024];
+        let (c_start, c_end) = (300 * 1024usize, 320 * 1024usize);
+
+        let mut expected = Vec::with_capacity(original.len() + b_new.len());
+        expected.extend_from_slice(&original[..a_start]);
+        expected.extend_from_slice(&a_new);
+        expected.extend_from_slice(&original[a_end..b_at]);
+        expected.extend_from_slice(&b_new);
+        expected.extend_from_slice(&original[b_at..c_start]);
+        expected.extend_from_slice(&original[c_end..]);
+
+        assert_edits(
+            &config,
+            &cas_client,
+            &original,
+            vec![
+                DirtyInput {
+                    original_range: a_start as u64..a_end as u64,
+                    new_length: a_new.len() as u64,
+                    reader: Box::pin(Cursor::new(a_new)),
+                },
+                DirtyInput {
+                    original_range: b_at as u64..b_at as u64,
+                    new_length: b_new.len() as u64,
+                    reader: Box::pin(Cursor::new(b_new)),
+                },
+                DirtyInput {
+                    original_range: c_start as u64..c_end as u64,
+                    new_length: 0,
+                    reader: empty_reader(),
+                },
+            ],
+            &expected,
+        )
+        .await;
+    }
+
+    // original: [== seg0 ==][== seg1 ==]
+    //                       ^ insert here, exactly on segment boundary
+    // result:   [== seg0 ==][== inserted ==][== seg1 ==]
+    //
+    // Pure insert on a segment boundary mid-file. Snap picks the segment starting at the
+    // boundary; insert lands at `w_start` of that window.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_resize_insert_at_segment_boundary() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = test_config(server.http_endpoint(), base_dir.path());
+        let cas_client: Arc<dyn Client> = Arc::new(server);
+
+        let original = random_data(106, 200 * 1024);
+        let original_hash = upload_file(&config, &original).await;
+        let original_size = original.len() as u64;
+
+        // Pick the first interior segment boundary; bail if the file lands in one segment.
+        let seg_sizes = fetch_segment_sizes(&cas_client, &original_hash).await;
+        let Some(boundary) = seg_sizes
+            .iter()
+            .scan(0u64, |acc, s| {
+                *acc += s;
+                Some(*acc)
+            })
+            .find(|&b| b > 0 && b < original_size)
+        else {
+            return;
+        };
+
+        let new_bytes: Vec<u8> = vec![0x42; 4 * 1024];
+        let mut expected = Vec::with_capacity(original.len() + new_bytes.len());
+        expected.extend_from_slice(&original[..boundary as usize]);
+        expected.extend_from_slice(&new_bytes);
+        expected.extend_from_slice(&original[boundary as usize..]);
+
+        assert_edits(
+            &config,
+            &cas_client,
+            &original,
+            vec![DirtyInput {
+                original_range: boundary..boundary,
+                new_length: new_bytes.len() as u64,
+                reader: Box::pin(Cursor::new(new_bytes)),
+            }],
+            &expected,
+        )
+        .await;
     }
 }
