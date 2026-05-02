@@ -309,6 +309,11 @@ mod tests {
         let config = XetConfig::default().with_config("chunk_cache.eviction_policy", "lru").unwrap();
         assert_eq!(config.get("chunk_cache.eviction_policy").unwrap(), "lru");
 
+        let config = XetConfig::default()
+            .with_config("chunk_cache.access_update_interval_ns", "0")
+            .unwrap();
+        assert_eq!(config.get("chunk_cache.access_update_interval_ns").unwrap(), "0");
+
         let config = XetConfig::default().with_config("client.retry_max_attempts", "10").unwrap();
         assert_eq!(config.get("client.retry_max_attempts").unwrap(), "10");
 
@@ -349,6 +354,7 @@ mod tests {
             "deduplication.min_n_chunks_per_range",
             "chunk_cache.size_bytes",
             "chunk_cache.eviction_policy",
+            "chunk_cache.access_update_interval_ns",
             "client.retry_max_attempts",
             "log.dest",
             "reconstruction.target_block_completion_time",

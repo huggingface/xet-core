@@ -60,6 +60,7 @@ futures-util = { workspace = true, optional = true }
 redb = { workspace = true }
 human-bandwidth = { workspace = true, optional = true }
 hyper = { workspace = true }
+rusqlite = { workspace = true }
 tokio = { workspace = true }
 tower-http = { version = "0.6", features = ["cors"], optional = true }
 
