@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::ops::Range;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -46,8 +45,8 @@ const STREAM_BLOCK_SIZE: usize = 4 * 1024 * 1024; // 4 MB
 struct UploadedWindow {
     start: u64,
     end: u64,
-    info: XetFileInfo,
     chunks: ChunkHashList,
+    mdb: MDBFileInfo,
 }
 
 /// Upload an edited version of an existing file, reusing the unchanged regions from the
@@ -255,12 +254,12 @@ pub async fn upload_ranges(
             stream_cas_range(&ctx, &cas_client, original_hash, cursor, w_end, &mut cleaner).await?;
         }
 
-        let (info, chunks, _metrics) = cleaner.finish_with_chunks().await?;
+        let (_info, chunks, mdb, _metrics) = cleaner.finish_with_chunks_detached().await?;
         uploaded.push(UploadedWindow {
             start: w_start,
             end: w_end,
-            info,
             chunks,
+            mdb,
         });
     }
 
@@ -274,12 +273,6 @@ pub async fn upload_ranges(
             dirty_inputs.len()
         )));
     }
-
-    session.checkpoint().await?;
-    let mdb_list = session.file_info_list().await?;
-    // Hash collision between two windows implies identical content, so dedup is correct.
-    let mdb_by_hash: HashMap<MerkleHash, MDBFileInfo> =
-        mdb_list.into_iter().map(|m| (m.metadata.file_hash, m)).collect();
 
     // Merge sequence: [gap0, w0, gap1, w1, ..., gapN]. Empty gaps (`None`) are skipped.
     let mut hash_ranges = response.hash_ranges;
@@ -364,21 +357,16 @@ pub async fn upload_ranges(
         while seg_idx < n_segs && seg_byte_starts[seg_idx] < original_window_end {
             seg_idx += 1;
         }
-        let middle_hash = MerkleHash::from_hex(w.info.hash())?;
-        let middle_mdb = mdb_by_hash
-            .get(&middle_hash)
-            .ok_or_else(|| DataError::InternalError(format!("no MDBFileInfo for window hash {}", middle_hash.hex())))?;
-        all_segments.extend_from_slice(&middle_mdb.segments);
+        all_segments.extend_from_slice(&w.mdb.segments);
         if original_has_verification {
-            if middle_mdb.verification.len() != middle_mdb.segments.len() {
+            if w.mdb.verification.len() != w.mdb.segments.len() {
                 return Err(DataError::InternalError(format!(
-                    "window MDB for {} has {} segments but {} verification entries",
-                    middle_hash.hex(),
-                    middle_mdb.segments.len(),
-                    middle_mdb.verification.len()
+                    "window MDB has {} segments but {} verification entries",
+                    w.mdb.segments.len(),
+                    w.mdb.verification.len()
                 )));
             }
-            all_verification.extend_from_slice(&middle_mdb.verification);
+            all_verification.extend_from_slice(&w.mdb.verification);
         }
     }
     while seg_idx < n_segs {
