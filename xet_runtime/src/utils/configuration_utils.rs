@@ -229,7 +229,7 @@ macro_rules! test_set_constants {
     )+) => {
         use $crate::configuration_utils::ctor_reexport as ctor;
 
-        #[ctor::ctor]
+        #[ctor::ctor(unsafe)]
         fn set_constants_on_load() {
             $(
                 let val = $val;
