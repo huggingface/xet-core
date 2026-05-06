@@ -316,12 +316,10 @@ pub async fn upload_ranges(
         aggregated_hash.hmac(MerkleHash::default())
     };
 
-    // The composed shard must carry a verification section if either side has one: the
-    // server populates `gap_verification` whenever the original file's segments had verif
-    // entries, and the locally-fetched `original_mdb` (sim path) populates
-    // `verification` directly. Real prod always takes the first half; sim tests the second.
-    let original_has_verification =
-        !gap_verification.is_empty() || original_mdb.verification.len() == original_mdb.segments.len();
+    // The composed shard MUST carry a verification section: the CAS server rejects any
+    // shard without one. The cleaner always produces verification entries for window
+    // segments, and the server provides `gap_verification` for stable segments.
+    let original_has_verification = true;
     let mut all_segments: Vec<FileDataSequenceEntry> = Vec::new();
     let mut all_verification: Vec<FileVerificationEntry> = Vec::new();
     let mut seg_idx = 0usize;
