@@ -1,0 +1,106 @@
+name: "macOS Codesign and Notarize"
+description: "Sign and notarize a macOS binary using local tools only (no external action dependencies)"
+
+inputs:
+  file:
+    description: "The file to sign (relative or absolute path)"
+    required: true
+  certificate-data:
+    description: "Base64-encoded p12 certificate contents"
+    required: true
+  certificate-password:
+    description: "Password to unlock the certificate"
+    required: true
+  certificate-id:
+    description: "Signing identity (Apple Team ID); used as -s argument for codesign and --team-id for notarytool"
+    required: true
+  apple-notary-user:
+    description: "Apple Developer account email for notarization"
+    required: true
+  apple-notary-password:
+    description: "Apple Developer account app-specific password for notarization"
+    required: true
+  options:
+    description: "Extra options to pass to codesign (e.g. --options runtime --entitlements path/to/entitlements.xml)"
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve absolute file path
+      id: resolve
+      shell: bash
+      env:
+        INPUT_FILE: ${{ inputs.file }}
+      run: echo "file=$(realpath "$INPUT_FILE")" >> "$GITHUB_OUTPUT"
+
+    - name: Codesign
+      shell: bash
+      env:
+        FILE: ${{ steps.resolve.outputs.file }}
+        INPUT_CERT_DATA: ${{ inputs.certificate-data }}
+        INPUT_CERT_PWD: ${{ inputs.certificate-password }}
+        INPUT_CERT_ID: ${{ inputs.certificate-id }}
+        INPUT_OPTIONS: ${{ inputs.options }}
+      run: |
+        if [ ! -f "$FILE" ]; then
+          echo "::error::File does not exist: $FILE"
+          exit 1
+        fi
+
+        CERT_PATH="$RUNNER_TEMP/signcert.p12"
+        echo "$INPUT_CERT_DATA" | base64 --decode > "$CERT_PATH"
+
+        security create-keychain -p actions macos-build.keychain
+        security default-keychain -s macos-build.keychain
+        security unlock-keychain -p actions macos-build.keychain
+        security set-keychain-settings -t 3600 -u macos-build.keychain
+
+        # Fallback for non-standard p12 formats: split into key + cert and import separately
+        if ! security import "$CERT_PATH" -k ~/Library/Keychains/macos-build.keychain \
+            -P "$INPUT_CERT_PWD" -T /usr/bin/codesign -T /usr/bin/productsign; then
+          openssl pkcs12 -in "$CERT_PATH" -nocerts -out "$RUNNER_TEMP/codesign.key" \
+            -nodes -password pass:"$INPUT_CERT_PWD"
+          openssl pkcs12 -in "$CERT_PATH" -clcerts -nokeys -out "$RUNNER_TEMP/codesign.crt" \
+            -password pass:"$INPUT_CERT_PWD"
+          security import "$RUNNER_TEMP/codesign.key" -k ~/Library/Keychains/macos-build.keychain \
+            -T /usr/bin/codesign
+          security import "$RUNNER_TEMP/codesign.crt" -k ~/Library/Keychains/macos-build.keychain \
+            -T /usr/bin/codesign
+        fi
+
+        # Required to allow codesign to access the keychain without an interactive prompt
+        security set-key-partition-list -S apple-tool:,apple: -s -k actions macos-build.keychain
+
+        # shellcheck disable=SC2086
+        codesign --force $INPUT_OPTIONS -s "$INPUT_CERT_ID" "$FILE"
+        codesign -v "$FILE" --verbose
+
+    - name: Notarize
+      shell: bash
+      env:
+        FILE: ${{ steps.resolve.outputs.file }}
+        INPUT_CERT_ID: ${{ inputs.certificate-id }}
+        INPUT_NOTARY_USER: ${{ inputs.apple-notary-user }}
+        INPUT_NOTARY_PWD: ${{ inputs.apple-notary-password }}
+      run: |
+        # notarytool requires .app/.pkg/.dmg or a .zip; -j strips directory paths from the archive
+        ZIP_PATH="$RUNNER_TEMP/notarize-submit.zip"
+        zip -j "$ZIP_PATH" "$FILE"
+
+        xcrun notarytool submit "$ZIP_PATH" \
+          --apple-id "$INPUT_NOTARY_USER" \
+          --password "$INPUT_NOTARY_PWD" \
+          --team-id "$INPUT_CERT_ID" \
+          --wait
+
+        rm -f "$ZIP_PATH"
+
+    - name: Verify notarization
+      shell: bash
+      env:
+        FILE: ${{ steps.resolve.outputs.file }}
+      run: |
+        # Stapling is not possible for plain binaries; verify notarization status online instead
+        codesign -vvvv -R="notarized" --check-notarization "$FILE"
