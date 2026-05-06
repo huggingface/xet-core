@@ -341,6 +341,12 @@ pub struct FileChunkHashesResponse {
     pub file_size: u64,
     pub windows: Vec<ChunkWindow>,
     pub hash_ranges: Vec<Option<MerkleHashSubtree>>,
+    /// One range hash per **stable original segment** (= a segment that lies in a gap
+    /// between dirty windows or before/after them, in segment order). Wraps each into a
+    /// `FileVerificationEntry` to populate the composed shard's verification section.
+    /// Empty when the original file has no verification section (legacy files).
+    #[serde(default)]
+    pub gap_verification: Vec<HexMerkleHash>,
 }
 
 #[cfg(test)]

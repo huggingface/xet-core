@@ -3,6 +3,7 @@
 //! [`FileChunkHashesResponse`] without routing through HTTP.
 
 use xet_core_structures::merklehash::{MerkleHash, MerkleHashSubtree};
+use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
 
 use crate::cas_types::{ChunkWindow, FileChunkHashesResponse, FileRange};
 use crate::error::{ClientError, Result};
@@ -130,11 +131,19 @@ impl<'a> ChunkWindowBuilder<'a> {
 /// assemble the [`FileChunkHashesResponse`]. Simulation clients pre-collect the chunks for
 /// the file (typically by walking segments + xorb metadata) and call this to answer
 /// `Client::get_file_chunk_hashes` locally.
+///
+/// Also emits `gap_verification`: for each **stable** original segment (one that lies
+/// entirely outside the dirty windows), the corresponding `FileVerificationEntry` from
+/// `file_info.verification` is copied into `gap_verification` in segment order. The
+/// composed shard built by `upload_ranges` uses these to reconstruct its own verification
+/// section without needing per-chunk hashes for the stable segments. When `file_info`
+/// has no verification entries (legacy / test files), `gap_verification` is empty.
 pub fn build_file_chunk_hashes_response(
-    file_size: u64,
+    file_info: &MDBFileInfo,
     dirty_ranges: Vec<FileRange>,
     chunks: impl IntoIterator<Item = (MerkleHash, u64)>,
 ) -> Result<FileChunkHashesResponse> {
+    let file_size = file_info.file_size();
     let dirty_ranges: Vec<FileRange> = dirty_ranges
         .into_iter()
         .map(|r| FileRange::new(r.start, r.end.min(file_size)))
@@ -158,6 +167,29 @@ pub fn build_file_chunk_hashes_response(
         return Err(ClientError::Other("dirty ranges do not overlap any chunks".into()));
     }
 
+    // Emit one range hash per stable segment (= no overlap with any window).
+    // Segments and windows are both monotonic, so a two-pointer walk is O(S+W).
+    let gap_verification = if file_info.verification.len() == file_info.segments.len() {
+        let mut gv = Vec::new();
+        let mut acc = 0u64;
+        let mut wi = 0usize;
+        for (idx, seg) in file_info.segments.iter().enumerate() {
+            let seg_start = acc;
+            let seg_end = acc + seg.unpacked_segment_bytes as u64;
+            acc = seg_end;
+            while wi < windows.len() && windows[wi].end <= seg_start {
+                wi += 1;
+            }
+            let overlaps = wi < windows.len() && windows[wi].start < seg_end;
+            if !overlaps {
+                gv.push(crate::cas_types::HexMerkleHash::from(file_info.verification[idx].range_hash));
+            }
+        }
+        gv
+    } else {
+        Vec::new()
+    };
+
     Ok(FileChunkHashesResponse {
         total_chunks,
         file_size,
@@ -168,5 +200,6 @@ pub fn build_file_chunk_hashes_response(
             })
             .collect(),
         hash_ranges,
+        gap_verification,
     })
 }

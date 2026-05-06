@@ -1717,7 +1717,7 @@ impl Client for LocalClient {
             );
         }
 
-        build_file_chunk_hashes_response(file_info.file_size(), dirty_ranges, chunks)
+        build_file_chunk_hashes_response(&file_info, dirty_ranges, chunks)
     }
 }
 

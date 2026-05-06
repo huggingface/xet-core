@@ -187,6 +187,7 @@ pub async fn upload_ranges(
             n_windows + 1
         )));
     }
+    let gap_verification = response.gap_verification;
 
     let ctx = config.ctx.clone();
     let session = FileUploadSession::new(config.clone()).await?;
@@ -315,21 +316,34 @@ pub async fn upload_ranges(
         aggregated_hash.hmac(MerkleHash::default())
     };
 
-    // Walk original segments; replace those a window covers with the window's segments.
-    // Segment-aligned windows guarantee every original segment is wholly inside or outside a
-    // window. Verification entries are 1:1 with segments when the original file had them on;
-    // legacy / test files registered without verification yield an empty vec, in which case
-    // we emit a verification-less composed MDB.
-    let with_verification = original_mdb.verification.len() == original_mdb.segments.len();
+    // The composed shard must carry a verification section if either side has one: the
+    // server populates `gap_verification` whenever the original file's segments had verif
+    // entries, and the locally-fetched `original_mdb` (sim path) populates
+    // `verification` directly. Real prod always takes the first half; sim tests the second.
+    let original_has_verification =
+        !gap_verification.is_empty() || original_mdb.verification.len() == original_mdb.segments.len();
     let mut all_segments: Vec<FileDataSequenceEntry> = Vec::new();
     let mut all_verification: Vec<FileVerificationEntry> = Vec::new();
     let mut seg_idx = 0usize;
     let n_segs = original_mdb.segments.len();
-    let emit_seg = |idx: usize, segs: &mut Vec<FileDataSequenceEntry>, vers: &mut Vec<FileVerificationEntry>| {
+    let mut gap_idx = 0usize;
+    let push_stable = |idx: usize,
+                       gap_idx: &mut usize,
+                       segs: &mut Vec<FileDataSequenceEntry>,
+                       vers: &mut Vec<FileVerificationEntry>|
+     -> Result<()> {
         segs.push(original_mdb.segments[idx].clone());
-        if with_verification {
-            vers.push(original_mdb.verification[idx].clone());
+        if original_has_verification {
+            let entry = gap_verification.get(*gap_idx).ok_or_else(|| {
+                DataError::InternalError(format!(
+                    "ran out of gap_verification entries at stable segment {idx}; \
+                     server response is inconsistent with the segment layout"
+                ))
+            })?;
+            vers.push(FileVerificationEntry::new(entry.into()));
+            *gap_idx += 1;
         }
+        Ok(())
     };
     for w in &uploaded {
         while seg_idx < n_segs && seg_byte_starts[seg_idx] < w.start {
@@ -343,7 +357,7 @@ pub async fn upload_ranges(
                     seg_byte_starts[seg_idx + 1]
                 )));
             }
-            emit_seg(seg_idx, &mut all_segments, &mut all_verification);
+            push_stable(seg_idx, &mut gap_idx, &mut all_segments, &mut all_verification)?;
             seg_idx += 1;
         }
         let original_window_end = w.end.min(original_size);
@@ -355,13 +369,28 @@ pub async fn upload_ranges(
             .get(&middle_hash)
             .ok_or_else(|| DataError::InternalError(format!("no MDBFileInfo for window hash {}", middle_hash.hex())))?;
         all_segments.extend_from_slice(&middle_mdb.segments);
-        if with_verification {
+        if original_has_verification {
+            if middle_mdb.verification.len() != middle_mdb.segments.len() {
+                return Err(DataError::InternalError(format!(
+                    "window MDB for {} has {} segments but {} verification entries",
+                    middle_hash.hex(),
+                    middle_mdb.segments.len(),
+                    middle_mdb.verification.len()
+                )));
+            }
             all_verification.extend_from_slice(&middle_mdb.verification);
         }
     }
     while seg_idx < n_segs {
-        emit_seg(seg_idx, &mut all_segments, &mut all_verification);
+        push_stable(seg_idx, &mut gap_idx, &mut all_segments, &mut all_verification)?;
         seg_idx += 1;
+    }
+    if gap_idx < gap_verification.len() {
+        return Err(DataError::InternalError(format!(
+            "server returned {} gap_verification entries but only {} stable segments were emitted",
+            gap_verification.len(),
+            gap_idx
+        )));
     }
 
     debug!(
@@ -371,8 +400,10 @@ pub async fn upload_ranges(
         uploaded.len()
     );
 
+    debug_assert!(!original_has_verification || all_segments.len() == all_verification.len());
+
     let composed_mdb = MDBFileInfo {
-        metadata: FileDataSequenceHeader::new(combined_hash, all_segments.len(), with_verification, false),
+        metadata: FileDataSequenceHeader::new(combined_hash, all_segments.len(), original_has_verification, false),
         segments: all_segments,
         verification: all_verification,
         // SHA-256 is intentionally omitted: the file content changed, and recomputing it
