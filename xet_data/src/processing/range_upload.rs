@@ -93,7 +93,7 @@ pub async fn upload_ranges(
     mut dirty_inputs: Vec<DirtyInput>,
 ) -> Result<XetFileInfo> {
     validate_dirty_ranges(&dirty_inputs, original_size)?;
-    let total_size = compute_total_size(original_size, &dirty_inputs);
+    let total_size = compute_total_size(original_size, &dirty_inputs)?;
 
     if dirty_inputs.is_empty() {
         debug_assert_eq!(total_size, original_size);
@@ -277,12 +277,14 @@ pub async fn upload_ranges(
 
     session.checkpoint().await?;
     let mdb_list = session.file_info_list().await?;
+    // Hash collision between two windows implies identical content, so dedup is correct.
     let mdb_by_hash: HashMap<MerkleHash, MDBFileInfo> =
         mdb_list.into_iter().map(|m| (m.metadata.file_hash, m)).collect();
 
     // Merge sequence: [gap0, w0, gap1, w1, ..., gapN]. Empty gaps (`None`) are skipped.
     let mut hash_ranges = response.hash_ranges;
     let trailing_gap = hash_ranges.pop().flatten();
+    // Leading gap is empty (None) => first window starts at byte 0.
     let first_window_at_start = hash_ranges.first().is_some_and(Option::is_none);
     let last_window_at_end = trailing_gap.is_none();
     let last_idx = uploaded.len() - 1;
@@ -459,11 +461,18 @@ fn validate_dirty_ranges(dirty_inputs: &[DirtyInput], original_size: u64) -> Res
 }
 
 /// Compute the resulting file size: `original_size` minus bytes removed plus bytes added.
-fn compute_total_size(original_size: u64, dirty_inputs: &[DirtyInput]) -> u64 {
+fn compute_total_size(original_size: u64, dirty_inputs: &[DirtyInput]) -> Result<u64> {
     let (removed, added) = dirty_inputs
         .iter()
         .fold((0u64, 0u64), |(r, a), d| (r + (d.original_range.end - d.original_range.start), a + d.new_length));
-    original_size + added - removed
+    original_size
+        .checked_add(added)
+        .and_then(|s| s.checked_sub(removed))
+        .ok_or_else(|| {
+            DataError::ParameterError(format!(
+                "total size overflows: original_size={original_size}, added={added}, removed={removed}"
+            ))
+        })
 }
 
 /// Upload a brand-new file from `dirty_inputs` (no original to compose against).
