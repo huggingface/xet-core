@@ -12,7 +12,7 @@ members = [
     "git_xet",
     "simulation",
 ]
-exclude = ["simulation/chunk_cache_bench", "hf_xet", "wasm/hf_xet_wasm", "wasm/hf_xet_thin_wasm"]
+exclude = ["simulation/chunk_cache_bench", "hf_xet", "wasm/hf_xet_wasm", "wasm/hf_xet_thin_wasm", "examples/xet_pkg_napi"]
 
 [workspace.package]
 version = "1.5.2"
