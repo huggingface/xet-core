@@ -34,7 +34,7 @@ TARGET_RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals \
   -C link-arg=--export=__tls_base \
   --cfg getrandom_backend=\"wasm_js\"" \
 CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="$TARGET_RUSTFLAGS" \
-cargo +nightly build \
+cargo build \
     --example simple \
     --target wasm32-unknown-unknown \
     --release \
