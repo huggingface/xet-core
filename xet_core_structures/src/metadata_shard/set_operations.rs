@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::env::current_dir;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
@@ -6,9 +7,7 @@ use std::path::Path;
 
 use uuid::Uuid;
 
-use super::file_structs::{
-    FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, FileVerificationEntry, SupersetResult,
-};
+use super::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, FileVerificationEntry};
 use super::shard_file::MDB_FILE_INFO_ENTRY_SIZE;
 use super::shard_format::{MDBShardFileFooter, MDBShardFileHeader, MDBShardInfo};
 use super::utils::truncate_hash;
@@ -27,7 +26,6 @@ enum NextAction {
     CopyToOut,
     SkipOver,
     Nothing,
-    Merge,
 }
 
 #[inline]
@@ -68,36 +66,6 @@ fn get_next_actions_for_file_info(
     h2: Option<&FileDataSequenceHeader>,
     op: MDBSetOperation,
 ) -> Option<[NextAction; 2]> {
-    // Special case for union operation on file info with same file hash.
-    if let (Some(ft0), Some(ft1)) = (h1, h2)
-        && std::cmp::Ordering::Equal == ft0.file_hash.cmp(&ft1.file_hash)
-        && op == MDBSetOperation::Union
-    {
-        // Now two parties have the same file hash, and union should produce only one copy.
-        // Which one to use is a bit tricky as we have multiple optional pieces of information.
-        // We can leverage whether one party's flags are a superset of the other to directly
-        // copy over one of the file info. If neither party's flags are a superset, we will
-        // need to merge both infos into a single, complete info with info from both parties.
-        //
-        // Note: we make an assumption that if info exists in both places, it is the same
-        // since we can't make a distinction of what is valid and what isn't.
-        let superset = FileDataSequenceHeader::compare_flag_superset(ft0, ft1);
-        return match superset {
-            SupersetResult::SuperA | SupersetResult::Equal => {
-                // use ft0 since it has more info
-                Some([NextAction::CopyToOut, NextAction::SkipOver])
-            },
-            SupersetResult::SuperB => {
-                // use ft1 since it has more info
-                Some([NextAction::SkipOver, NextAction::CopyToOut])
-            },
-            SupersetResult::Neither => {
-                // need to merge as both have some info the other doesn't
-                Some([NextAction::Merge, NextAction::Nothing]) // Note: merge advances both entries
-            },
-        };
-    }
-
     get_next_actions(h1.map(|f| &f.file_hash), h2.map(|f| &f.file_hash), op)
 }
 
@@ -130,12 +98,27 @@ fn set_operation<R: Read + Seek, W: Write>(
 
         let mut current_index = 0;
 
-        let load_next = |_r: &mut R, _s: &MDBShardInfo| -> Result<_> {
-            let fdsh = FileDataSequenceHeader::deserialize(_r)?;
-            if fdsh.is_bookend() { Ok(None) } else { Ok(Some(fdsh)) }
+        let load_next = |_r: &mut R, seen_file_hashes: &mut HashSet<MerkleHash>| -> Result<_> {
+            loop {
+                let fdsh = FileDataSequenceHeader::deserialize(_r)?;
+                if fdsh.is_bookend() {
+                    return Ok(None);
+                }
+
+                if seen_file_hashes.insert(fdsh.file_hash) {
+                    return Ok(Some(fdsh));
+                }
+
+                _r.seek(SeekFrom::Current(
+                    (fdsh.num_info_entry_following() as i64) * (MDB_FILE_INFO_ENTRY_SIZE as i64),
+                ))?;
+            }
         };
 
-        let mut file_data_header = [load_next(r[0], s[0])?, load_next(r[1], s[1])?];
+        let mut seen_file_hashes = [HashSet::new(), HashSet::new()];
+        let h0 = load_next(r[0], &mut seen_file_hashes[0])?;
+        let h1 = load_next(r[1], &mut seen_file_hashes[1])?;
+        let mut file_data_header = [h0, h1];
 
         while let Some(action) =
             get_next_actions_for_file_info(file_data_header[0].as_ref(), file_data_header[1].as_ref(), op)
@@ -172,84 +155,16 @@ fn set_operation<R: Read + Seek, W: Write>(
                         file_lookup_data.push((truncate_hash(&fh.file_hash), current_index));
 
                         current_index += 1 + fh.num_info_entry_following();
-                        file_data_header[i] = load_next(r[i], s[i])?;
+                        file_data_header[i] = load_next(r[i], &mut seen_file_hashes[i])?;
                     },
                     NextAction::SkipOver => {
                         let fh = file_data_header[i].as_ref().unwrap();
                         r[i].seek(SeekFrom::Current(
                             (fh.num_info_entry_following() as i64) * (MDB_FILE_INFO_ENTRY_SIZE as i64),
                         ))?;
-                        file_data_header[i] = load_next(r[i], s[i])?;
+                        file_data_header[i] = load_next(r[i], &mut seen_file_hashes[i])?;
                     },
                     NextAction::Nothing => {},
-                    NextAction::Merge => {
-                        let fh0 = file_data_header[0].as_ref().unwrap();
-                        let fh1 = file_data_header[1].as_ref().unwrap();
-                        FileDataSequenceHeader::verify_same_file(fh0, fh1);
-                        let has_verification = fh0.contains_verification() || fh1.contains_verification();
-                        let has_metadata_ext = fh0.contains_metadata_ext() || fh1.contains_metadata_ext();
-
-                        let header = FileDataSequenceHeader::new(
-                            fh0.file_hash,
-                            fh0.num_entries,
-                            has_verification,
-                            has_metadata_ext,
-                        );
-                        out_offset += header.serialize(out)? as u64;
-
-                        // copy over the entries from fh0 and advance forward with fh1
-                        for _ in 0..fh0.num_entries {
-                            let entry = FileDataSequenceEntry::deserialize(r[0])?;
-                            footer.materialized_bytes += entry.unpacked_segment_bytes as u64;
-                            entry.serialize(out)?;
-                        }
-
-                        out_offset += (fh0.num_entries as u64) * (size_of::<FileDataSequenceEntry>() as u64);
-                        r[1].seek(SeekFrom::Current((fh1.num_entries as i64) * (MDB_FILE_INFO_ENTRY_SIZE as i64)))?;
-
-                        // if we have verification entries, copy them over from the appropriate shard and
-                        // advance the other reader
-                        if has_verification {
-                            let (read_idx, advance_idx) = if fh0.contains_verification() { (0, 1) } else { (1, 0) };
-                            let (read_header, advance_header) = if fh0.contains_verification() {
-                                (fh0, fh1)
-                            } else {
-                                (fh1, fh0)
-                            };
-                            for _ in 0..read_header.num_entries {
-                                let entry = FileVerificationEntry::deserialize(r[read_idx])?;
-                                out_offset += entry.serialize(out)? as u64;
-                            }
-                            if advance_header.contains_verification() {
-                                r[advance_idx].seek(SeekFrom::Current(
-                                    (advance_header.num_entries as i64) * (MDB_FILE_INFO_ENTRY_SIZE as i64),
-                                ))?;
-                            }
-                        }
-
-                        // if we have metadata_ext, copy it over from the appropriate shard and advance the
-                        // other reader
-                        if has_metadata_ext {
-                            let (read_idx, advance_idx) = if fh0.contains_metadata_ext() { (0, 1) } else { (1, 0) };
-                            let (_read_header, advance_header) = if fh0.contains_metadata_ext() {
-                                (fh0, fh1)
-                            } else {
-                                (fh1, fh0)
-                            };
-                            let entry = FileMetadataExt::deserialize(r[read_idx])?;
-                            out_offset += entry.serialize(out)? as u64;
-                            if advance_header.contains_metadata_ext() {
-                                r[advance_idx].seek(SeekFrom::Current(MDB_FILE_INFO_ENTRY_SIZE as i64))?;
-                            }
-                        }
-
-                        file_lookup_data.push((truncate_hash(&fh0.file_hash), current_index));
-                        current_index += 1 + header.num_info_entry_following();
-
-                        // load the next items
-                        file_data_header[0] = load_next(r[0], s[0])?;
-                        file_data_header[1] = load_next(r[1], s[1])?;
-                    },
                 };
             }
         }
@@ -312,7 +227,6 @@ fn set_operation<R: Read + Seek, W: Write>(
                         xorb_data_header[i] = load_next(r[i], s[i])?;
                     },
                     NextAction::Nothing => {},
-                    NextAction::Merge => {},
                 };
             }
         }
@@ -460,13 +374,46 @@ mod tests {
     use std::panic::catch_unwind;
 
     use itertools::iproduct;
+    use rand::SeedableRng;
     use tempfile::TempDir;
 
+    use super::super::file_structs::MDBFileInfo;
     use super::super::shard_format::test_routines::*;
     use super::super::shard_in_memory::MDBInMemoryShard;
     use super::*;
     use crate::error::Result;
     use crate::merklehash::compute_data_hash;
+
+    fn file_only_shard(file_infos: &[MDBFileInfo]) -> Result<Vec<u8>> {
+        let mut buffer = Vec::new();
+        let mut out_offset = MDBShardFileHeader::default().serialize(&mut buffer)? as u64;
+
+        let mut footer = MDBShardFileFooter {
+            file_info_offset: out_offset,
+            ..Default::default()
+        };
+
+        for file_info in file_infos {
+            out_offset += file_info.serialize(&mut buffer)? as u64;
+        }
+        out_offset += FileDataSequenceHeader::bookend().serialize(&mut buffer)? as u64;
+
+        footer.xorb_info_offset = out_offset;
+        out_offset += XorbChunkSequenceHeader::bookend().serialize(&mut buffer)? as u64;
+
+        footer.file_lookup_offset = out_offset;
+        footer.xorb_lookup_offset = out_offset;
+        footer.chunk_lookup_offset = out_offset;
+        footer.footer_offset = out_offset;
+        footer.serialize(&mut buffer)?;
+
+        Ok(buffer)
+    }
+
+    fn read_file_infos(buffer: &[u8]) -> Result<Vec<MDBFileInfo>> {
+        let shard_info = MDBShardInfo::load_from_reader(&mut Cursor::new(buffer))?;
+        shard_info.read_all_file_info_sections(&mut Cursor::new(buffer))
+    }
 
     fn test_operations(mem_shard_1: &MDBInMemoryShard, mem_shard_2: &MDBInMemoryShard) -> Result<()> {
         let disk_shard_1 = convert_to_file(mem_shard_1)?;
@@ -551,6 +498,46 @@ mod tests {
                 gen_specific_shard(xorb_nodes, file_nodes, Some(verifications), Some(metadata_exts))?,
             ),
         ])
+    }
+
+    #[test]
+    fn test_union_skips_duplicate_file_infos_within_input() -> Result<()> {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(21);
+        let first = gen_random_file_info(&mut rng, &2, false, false);
+        let mut duplicate = gen_random_file_info(&mut rng, &3, true, true);
+        duplicate.metadata.file_hash = first.metadata.file_hash;
+
+        let left = file_only_shard(&[first.clone(), duplicate])?;
+        let right = file_only_shard(&[])?;
+        let left_info = MDBShardInfo::load_from_reader(&mut Cursor::new(&left))?;
+        let right_info = MDBShardInfo::load_from_reader(&mut Cursor::new(&right))?;
+
+        let mut out = Vec::new();
+        shard_set_union(&left_info, &mut Cursor::new(&left), &right_info, &mut Cursor::new(&right), &mut out)?;
+
+        assert_eq!(read_file_infos(&out)?, vec![first]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_union_keeps_left_file_info_for_duplicate_hash_across_inputs() -> Result<()> {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(22);
+        let first = gen_random_file_info(&mut rng, &2, false, false);
+        let mut duplicate = gen_random_file_info(&mut rng, &3, true, true);
+        duplicate.metadata.file_hash = first.metadata.file_hash;
+
+        let left = file_only_shard(std::slice::from_ref(&first))?;
+        let right = file_only_shard(&[duplicate])?;
+        let left_info = MDBShardInfo::load_from_reader(&mut Cursor::new(&left))?;
+        let right_info = MDBShardInfo::load_from_reader(&mut Cursor::new(&right))?;
+
+        let mut out = Vec::new();
+        shard_set_union(&left_info, &mut Cursor::new(&left), &right_info, &mut Cursor::new(&right), &mut out)?;
+
+        assert_eq!(read_file_infos(&out)?, vec![first]);
+
+        Ok(())
     }
 
     #[test]

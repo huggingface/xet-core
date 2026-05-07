@@ -47,6 +47,10 @@ impl MDBInMemoryShard {
     }
 
     pub fn add_file_reconstruction_info(&mut self, file_info: MDBFileInfo) -> Result<()> {
+        if self.file_content.contains_key(&file_info.metadata.file_hash) {
+            return Ok(());
+        }
+
         self.current_shard_file_size += file_info.num_bytes();
         self.current_shard_file_size += (size_of::<u64>() + size_of::<u32>()) as u64;
 
@@ -63,12 +67,7 @@ impl MDBInMemoryShard {
 
         let mut file_content = self.file_content.clone();
         for (k, v) in &other.file_content {
-            if let Some(mut old_v) = file_content.insert(*k, v.clone()) {
-                // merge the contents to ensure we have all the information between
-                // the two file contents (e.g. verification and metadata_ext)
-                old_v.merge_from(v)?;
-                file_content.insert(*k, old_v);
-            };
+            file_content.entry(*k).or_insert_with(|| v.clone());
         }
 
         let mut chunk_hash_lookup = self.chunk_hash_lookup.clone();
@@ -273,5 +272,55 @@ impl MDBInMemoryShard {
         let mut buf = Vec::new();
         MDBShardInfo::serialize_from(&mut buf, self, None)?;
         Ok(buf)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
+
+    use super::super::shard_format::test_routines::gen_random_file_info;
+    use super::*;
+
+    #[test]
+    fn add_file_reconstruction_info_keeps_first_duplicate_and_size() -> Result<()> {
+        let mut rng = StdRng::seed_from_u64(11);
+        let first = gen_random_file_info(&mut rng, &2, false, false);
+        let mut duplicate = gen_random_file_info(&mut rng, &3, true, true);
+        duplicate.metadata.file_hash = first.metadata.file_hash;
+
+        let mut shard = MDBInMemoryShard::default();
+        shard.add_file_reconstruction_info(first.clone())?;
+        let size_after_first = shard.shard_file_size();
+
+        shard.add_file_reconstruction_info(duplicate)?;
+
+        assert_eq!(shard.num_file_entries(), 1);
+        assert_eq!(shard.get_file_reconstruction_info(&first.metadata.file_hash), Some(first));
+        assert_eq!(shard.shard_file_size(), size_after_first);
+
+        Ok(())
+    }
+
+    #[test]
+    fn union_keeps_left_file_info_for_duplicate_hash() -> Result<()> {
+        let mut rng = StdRng::seed_from_u64(12);
+        let first = gen_random_file_info(&mut rng, &2, false, false);
+        let mut duplicate = gen_random_file_info(&mut rng, &3, true, true);
+        duplicate.metadata.file_hash = first.metadata.file_hash;
+
+        let mut left = MDBInMemoryShard::default();
+        left.add_file_reconstruction_info(first.clone())?;
+
+        let mut right = MDBInMemoryShard::default();
+        right.add_file_reconstruction_info(duplicate)?;
+
+        let union = left.union(&right)?;
+
+        assert_eq!(union.num_file_entries(), 1);
+        assert_eq!(union.get_file_reconstruction_info(&first.metadata.file_hash), Some(first));
+
+        Ok(())
     }
 }
