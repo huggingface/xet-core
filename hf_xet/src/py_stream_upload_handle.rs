@@ -9,8 +9,20 @@ use crate::{PyXetTaskState, convert_xet_error};
 /// Handle for a streaming upload within an :class:`XetUploadCommit`.
 ///
 /// Returned by :meth:`XetUploadCommit.start_upload_stream`.  Feed data incrementally
-/// with :meth:`write`, then call :meth:`finish` to finalise ingestion.
-/// **:meth:`finish` must be called before** :meth:`XetUploadCommit.wait_to_finish`.
+/// with :meth:`write`, then finalise with either:
+///
+/// - :meth:`finish` (explicit call), or
+/// - the context manager, which calls :meth:`finish` automatically on normal exit and :meth:`abort` on exception.
+///
+/// **:meth:`finish` (or the context manager) must complete before**
+/// :meth:`XetUploadCommit.wait_to_finish` is called.
+///
+/// ```python
+/// with commit.start_upload_stream(name="big.bin") as stream:
+///     for chunk in produce_chunks():
+///         stream.write(chunk)
+/// # finish() was called automatically
+/// ```
 #[pyclass(name = "XetStreamUpload")]
 #[derive(Clone)]
 pub struct PyXetStreamUpload {
@@ -28,6 +40,36 @@ impl PyXetStreamUpload {
         let prog = progress_display(self.inner.progress());
         format!("XetStreamUpload(task_id={}, status=\"{}\", bytes_completed={})", self.inner.task_id(), status, prog)
     }
+
+    // ── Context manager ──────────────────────────────────────────────────────
+
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    /// Calls :meth:`finish` on normal exit (idempotent if already finished) or :meth:`abort` on
+    /// exception; never suppresses the exception.
+    fn __exit__(
+        &self,
+        py: Python<'_>,
+        exc_type: Bound<'_, pyo3::PyAny>,
+        _exc_val: Bound<'_, pyo3::PyAny>,
+        _exc_tb: Bound<'_, pyo3::PyAny>,
+    ) -> PyResult<bool> {
+        if exc_type.is_none() {
+            // Normal exit: finalise the stream only if not already done (idempotent — avoids a
+            // double-finish error when the caller explicitly called finish() inside the with-block).
+            if self.inner.try_finish().is_none() {
+                self.finish(py)?;
+            }
+        } else {
+            // Exception path: cancel the upload (infallible).
+            self.inner.abort();
+        }
+        Ok(false) // do not suppress the exception
+    }
+
+    // ── Upload methods ───────────────────────────────────────────────────────
 
     /// Feed a chunk of data into the upload pipeline.
     ///
