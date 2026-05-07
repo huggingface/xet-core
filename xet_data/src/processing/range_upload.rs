@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tracing::{debug, info};
 use xet_client::cas_client::Client;
-use xet_client::cas_types::{FileChunkHashesResponse, FileRange};
+use xet_client::cas_types::{FileChunkHashesResponse, FileRange, HexMerkleHash};
 use xet_core_structures::merklehash::{ChunkHashList, MerkleHash, MerkleHashSubtree};
 use xet_core_structures::metadata_shard::file_structs::{
     FileDataSequenceEntry, FileDataSequenceHeader, FileVerificationEntry, MDBFileInfo,
@@ -108,7 +108,7 @@ pub async fn upload_ranges(
     let recon_result = cas_client.get_file_reconstruction_info(&original_hash).await?;
     let original_mdb = recon_result
         .map(|(mdb, _)| mdb)
-        .ok_or_else(|| DataError::ParameterError("file not found".into()))?;
+        .ok_or_else(|| DataError::ParameterError(format!("file {} not found in CAS", original_hash.hex())))?;
     if original_mdb.file_size() != original_size {
         return Err(DataError::ParameterError(format!(
             "caller said original_size={original_size} but reconstruction info reports {}",
@@ -311,93 +311,15 @@ pub async fn upload_ranges(
         aggregated_hash.hmac(MerkleHash::default())
     };
 
-    // The composed shard MUST carry a verification section: the CAS server rejects any
-    // shard without one. The cleaner always produces verification entries for window
-    // segments, and the server provides `gap_verification` for stable segments.
-    let original_has_verification = true;
-    let mut all_segments: Vec<FileDataSequenceEntry> = Vec::new();
-    let mut all_verification: Vec<FileVerificationEntry> = Vec::new();
-    let mut seg_idx = 0usize;
-    let n_segs = original_mdb.segments.len();
-    let mut gap_idx = 0usize;
-    let push_stable = |idx: usize,
-                       gap_idx: &mut usize,
-                       segs: &mut Vec<FileDataSequenceEntry>,
-                       vers: &mut Vec<FileVerificationEntry>|
-     -> Result<()> {
-        segs.push(original_mdb.segments[idx].clone());
-        if original_has_verification {
-            let entry = gap_verification.get(*gap_idx).ok_or_else(|| {
-                DataError::InternalError(format!(
-                    "ran out of gap_verification entries at stable segment {idx}; \
-                     server response is inconsistent with the segment layout"
-                ))
-            })?;
-            vers.push(FileVerificationEntry::new(entry.into()));
-            *gap_idx += 1;
-        }
-        Ok(())
-    };
-    for w in &uploaded {
-        while seg_idx < n_segs && seg_byte_starts[seg_idx] < w.start {
-            if seg_byte_starts[seg_idx + 1] > w.start {
-                return Err(DataError::InternalError(format!(
-                    "server returned a window starting at {} that straddles segment {} \
-                     ({}..{}); composition requires segment-aligned windows",
-                    w.start,
-                    seg_idx,
-                    seg_byte_starts[seg_idx],
-                    seg_byte_starts[seg_idx + 1]
-                )));
-            }
-            push_stable(seg_idx, &mut gap_idx, &mut all_segments, &mut all_verification)?;
-            seg_idx += 1;
-        }
-        let original_window_end = w.end.min(original_size);
-        while seg_idx < n_segs && seg_byte_starts[seg_idx] < original_window_end {
-            seg_idx += 1;
-        }
-        all_segments.extend_from_slice(&w.mdb.segments);
-        if original_has_verification {
-            if w.mdb.verification.len() != w.mdb.segments.len() {
-                return Err(DataError::InternalError(format!(
-                    "window MDB has {} segments but {} verification entries",
-                    w.mdb.segments.len(),
-                    w.mdb.verification.len()
-                )));
-            }
-            all_verification.extend_from_slice(&w.mdb.verification);
-        }
-    }
-    while seg_idx < n_segs {
-        push_stable(seg_idx, &mut gap_idx, &mut all_segments, &mut all_verification)?;
-        seg_idx += 1;
-    }
-    if gap_idx < gap_verification.len() {
-        return Err(DataError::InternalError(format!(
-            "server returned {} gap_verification entries but only {} stable segments were emitted",
-            gap_verification.len(),
-            gap_idx
-        )));
-    }
+    let composed_mdb =
+        compose_mdb(&original_mdb, &seg_byte_starts, &uploaded, gap_verification, combined_hash, original_size)?;
 
     debug!(
         "upload_ranges: composed hash={}, {} segments, {} windows",
         combined_hash.hex(),
-        all_segments.len(),
+        composed_mdb.segments.len(),
         uploaded.len()
     );
-
-    debug_assert!(!original_has_verification || all_segments.len() == all_verification.len());
-
-    let composed_mdb = MDBFileInfo {
-        metadata: FileDataSequenceHeader::new(combined_hash, all_segments.len(), original_has_verification, false),
-        segments: all_segments,
-        verification: all_verification,
-        // SHA-256 is intentionally omitted: the file content changed, and recomputing it
-        // would require reading the full file.
-        metadata_ext: None,
-    };
 
     session.register_composed_file(composed_mdb).await?;
     session.finalize().await?;
@@ -413,6 +335,90 @@ pub async fn upload_ranges(
     );
 
     Ok(XetFileInfo::new(combined_hash.hex(), total_size))
+}
+
+/// Assemble the composed MDB by splicing uploaded window segments into the original
+/// file's segment list, pulling verification entries from the server (for stable gaps)
+/// and from the cleaner (for re-uploaded windows).
+fn compose_mdb(
+    original_mdb: &MDBFileInfo,
+    seg_byte_starts: &[u64],
+    uploaded: &[UploadedWindow],
+    gap_verification: Vec<HexMerkleHash>,
+    combined_hash: MerkleHash,
+    original_size: u64,
+) -> Result<MDBFileInfo> {
+    let mut all_segments: Vec<FileDataSequenceEntry> = Vec::new();
+    let mut all_verification: Vec<FileVerificationEntry> = Vec::new();
+    let mut seg_idx = 0usize;
+    let n_segs = original_mdb.segments.len();
+    let mut gap_idx = 0usize;
+
+    for w in uploaded {
+        while seg_idx < n_segs && seg_byte_starts[seg_idx] < w.start {
+            if seg_byte_starts[seg_idx + 1] > w.start {
+                return Err(DataError::InternalError(format!(
+                    "server returned a window starting at {} that straddles segment {} \
+                     ({}..{}); composition requires segment-aligned windows",
+                    w.start,
+                    seg_idx,
+                    seg_byte_starts[seg_idx],
+                    seg_byte_starts[seg_idx + 1]
+                )));
+            }
+            all_segments.push(original_mdb.segments[seg_idx].clone());
+            let entry = gap_verification.get(gap_idx).ok_or_else(|| {
+                DataError::InternalError(format!(
+                    "ran out of gap_verification entries at stable segment {seg_idx}; \
+                     server response is inconsistent with the segment layout"
+                ))
+            })?;
+            all_verification.push(FileVerificationEntry::new(entry.into()));
+            gap_idx += 1;
+            seg_idx += 1;
+        }
+        let original_window_end = w.end.min(original_size);
+        while seg_idx < n_segs && seg_byte_starts[seg_idx] < original_window_end {
+            seg_idx += 1;
+        }
+        if w.mdb.verification.len() != w.mdb.segments.len() {
+            return Err(DataError::InternalError(format!(
+                "window MDB has {} segments but {} verification entries",
+                w.mdb.segments.len(),
+                w.mdb.verification.len()
+            )));
+        }
+        all_segments.extend_from_slice(&w.mdb.segments);
+        all_verification.extend_from_slice(&w.mdb.verification);
+    }
+    while seg_idx < n_segs {
+        all_segments.push(original_mdb.segments[seg_idx].clone());
+        let entry = gap_verification.get(gap_idx).ok_or_else(|| {
+            DataError::InternalError(format!(
+                "ran out of gap_verification entries at stable segment {seg_idx}; \
+                 server response is inconsistent with the segment layout"
+            ))
+        })?;
+        all_verification.push(FileVerificationEntry::new(entry.into()));
+        gap_idx += 1;
+        seg_idx += 1;
+    }
+    if gap_idx < gap_verification.len() {
+        return Err(DataError::InternalError(format!(
+            "server returned {} gap_verification entries but only {} stable segments were emitted",
+            gap_verification.len(),
+            gap_idx
+        )));
+    }
+
+    debug_assert_eq!(all_segments.len(), all_verification.len());
+
+    Ok(MDBFileInfo {
+        metadata: FileDataSequenceHeader::new(combined_hash, all_segments.len(), true, false),
+        segments: all_segments,
+        verification: all_verification,
+        metadata_ext: None,
+    })
 }
 
 /// Validate the caller-provided dirty ranges.
