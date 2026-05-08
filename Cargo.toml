@@ -12,7 +12,12 @@ members = [
     "git_xet",
     "simulation",
 ]
-exclude = ["simulation/chunk_cache_bench", "hf_xet", "wasm/hf_xet_wasm", "wasm/hf_xet_thin_wasm"]
+exclude = [
+    "simulation/chunk_cache_bench",
+    "hf_xet",
+    "wasm/hf_xet_wasm",
+    "wasm/hf_xet_thin_wasm",
+]
 
 [workspace.package]
 version = "1.5.2"
@@ -52,7 +57,7 @@ console-subscriber = "0.5"
 countio = { version = "0.3", features = ["futures"] }
 crc32fast = "1.5"
 csv = "1"
-ctor = "0.6"
+ctor = "1"
 dirs = "6.0"
 futures = "0.3"
 humantime = "2.1"
