@@ -155,6 +155,7 @@ impl RemoteClient {
 
         let result = RetryWrapper::new(self.ctx.clone(), api_tag)
             .with_429_no_retry()
+            .with_expected_404()
             .log_errors_as_info()
             .run(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
             .await;
@@ -582,7 +583,7 @@ impl Client for RemoteClient {
         // Use the no-read-timeout client for shard uploads. reqwest's per-request timeout()
         // does NOT override the client-level read_timeout(), so we use a separate client
         // with no read_timeout. Server-side shard processing scales linearly with file entry
-        // count and can exceed the global read_timeout (120s) for large shards.
+        // count and can exceed the global read_timeout (300s) for large shards.
         #[cfg(not(target_family = "wasm"))]
         let client = self.shard_upload_http_client.clone();
 
