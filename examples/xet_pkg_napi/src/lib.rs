@@ -2,10 +2,8 @@
 //!
 //! Exposes:
 //!   - `initLogging(version)`  — install xet's tracing subscriber
-//!   - `smokeTest()`           — build a `XetSession` and runtime helpers
-//!                               without doing any I/O
-//!   - `downloadFile(opts)`    — actually download a Xet-stored file from
-//!                               the HuggingFace Hub to a local path
+//!   - `smokeTest()`           — build a `XetSession` and runtime helpers without doing any I/O
+//!   - `downloadFile(opts)`    — actually download a Xet-stored file from the HuggingFace Hub to a local path
 //!
 //! `downloadFile` is intentionally synchronous: it blocks the caller until the
 //! download completes, internally using `xet`'s `*_blocking` APIs which run on
@@ -14,8 +12,7 @@
 //! should wrap this in `napi::Task` / `tokio::task::spawn_blocking` so the JS
 //! event loop stays responsive.
 
-use napi::Error as NapiError;
-use napi::Status;
+use napi::{Error as NapiError, Status};
 use napi_derive::napi;
 use xet::xet_session::{HeaderMap, HeaderValue, XetFileInfo, XetSessionBuilder, header};
 
@@ -100,11 +97,7 @@ pub fn download_file(opts: DownloadFileOptions) -> Result<DownloadFileResult, Na
         .map_err(to_napi_err)?;
     let report = group.finish_blocking().map_err(to_napi_err)?;
 
-    let bytes_downloaded: i64 = report
-        .progress
-        .total_bytes_completed
-        .try_into()
-        .unwrap_or(i64::MAX);
+    let bytes_downloaded: i64 = report.progress.total_bytes_completed.try_into().unwrap_or(i64::MAX);
 
     Ok(DownloadFileResult {
         dest_path: opts.dest_path,
