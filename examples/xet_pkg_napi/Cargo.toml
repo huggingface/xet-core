@@ -18,14 +18,18 @@ crate-type = ["cdylib"]
 [dependencies]
 # hf-xet is published as `hf-xet` but the lib name is `xet`. Pull it via path.
 hf-xet = { path = "../../xet_pkg" }
-xet-runtime = { path = "../../xet_runtime" }
 
 # napi-rs 2.x — the standard for Rust → Node.js native addons.
+
 napi = { version = "2", default-features = false, features = ["napi8"] }
 napi-derive = "2"
 
 [build-dependencies]
 napi-build = "2"
+
+# cargo-machete can't match `hf-xet` (package name) to `xet::` (lib name in source).
+[package.metadata.cargo-machete]
+ignored = ["hf-xet"]
 
 [profile.release]
 lto = true
