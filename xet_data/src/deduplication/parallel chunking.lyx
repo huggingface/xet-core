@@ -827,9 +827,58 @@ Now, with this implementation, can we still perform parallel chunking?
 \end_layout
 
 \begin_layout Standard
-I do not believe so.
- Due to the hash disagreement, under adverserial settings it is possible
- to construct two chunk sequences which will *never* align.
+
+\series bold
+Update:
+\series default
+ The implementation has been fixed.
+ Instead of skipping 
+\begin_inset Formula $m$
+\end_inset
+
+ bytes (setting HashStreamStart = 
+\begin_inset Formula $i+m$
+\end_inset
+
+), the chunker now starts feeding the hash at 
+\begin_inset Formula $m-k-1$
+\end_inset
+
+ bytes from the chunk start.
+ This ensures the hash window has been fed at least 
+\begin_inset Formula $k+1$
+\end_inset
+
+ bytes by position 
+\begin_inset Formula $m$
+\end_inset
+
+, so the hash output at every accepted trigger position (
+\begin_inset Formula $\ge m$
+\end_inset
+
+ from chunk start) depends only on the last 
+\begin_inset Formula $k$
+\end_inset
+
+ bytes of data, independent of the chunk starting point.
+ Therefore 
+\begin_inset Formula $H(a_{1},b)=H(a_{2},b)$
+\end_inset
+
+ for all 
+\begin_inset Formula $b$
+\end_inset
+
+ where 
+\begin_inset Formula $b-a_{1}\ge m$
+\end_inset
+
+ and 
+\begin_inset Formula $b-a_{2}\ge m$
+\end_inset
+
+, and the parallel chunking proof in Section 2 holds.
 \end_layout
 
 \end_body
