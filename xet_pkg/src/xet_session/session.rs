@@ -341,8 +341,7 @@ impl XetSession {
 
         #[cfg(not(target_family = "wasm"))]
         {
-            let active_download_stream_groups =
-                std::mem::take(&mut *self.inner.active_download_stream_groups.lock()?);
+            let active_download_stream_groups = std::mem::take(&mut *self.inner.active_download_stream_groups.lock()?);
             for (_id, weak_group) in active_download_stream_groups {
                 if let Some(inner) = weak_group.upgrade() {
                     inner.abort();
