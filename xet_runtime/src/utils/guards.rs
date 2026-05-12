@@ -1,5 +1,8 @@
+#[cfg(not(target_family = "wasm"))]
 use std::env;
+#[cfg(not(target_family = "wasm"))]
 use std::ffi::OsStr;
+#[cfg(not(target_family = "wasm"))]
 use std::path::{Path, PathBuf};
 
 /// Guard that temporarily sets an environment variable and restores the previous value on drop.
@@ -25,11 +28,13 @@ use std::path::{Path, PathBuf};
 /// // Environment variable is set here
 /// // When _guard is dropped, the previous value (or absence) is restored
 /// ```
+#[cfg(not(target_family = "wasm"))]
 pub struct EnvVarGuard {
     key: &'static str,
     prev: Option<String>,
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl EnvVarGuard {
     pub fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
         let prev = env::var(key).ok();
@@ -40,6 +45,7 @@ impl EnvVarGuard {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl Drop for EnvVarGuard {
     fn drop(&mut self) {
         if let Some(v) = &self.prev {
@@ -79,10 +85,12 @@ impl Drop for EnvVarGuard {
 /// // When _guard is dropped, the previous directory is restored
 /// # Ok::<(), std::io::Error>(())
 /// ```
+#[cfg(not(target_family = "wasm"))]
 pub struct CwdGuard {
     prev: PathBuf,
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl CwdGuard {
     pub fn set(new_dir: &Path) -> std::io::Result<Self> {
         let prev = env::current_dir()?;
@@ -91,6 +99,7 @@ impl CwdGuard {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl Drop for CwdGuard {
     fn drop(&mut self) {
         let _ = env::set_current_dir(&self.prev);

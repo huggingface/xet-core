@@ -38,6 +38,7 @@ thiserror = { workspace = true }
 tokio-util = { workspace = true }
 tokio_with_wasm = { workspace = true }
 tracing = { workspace = true }
+web-time = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true, features = ["v7"] }
 walkdir = { workspace = true }

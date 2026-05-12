@@ -43,11 +43,11 @@ pub mod singleflight;
 pub mod rw_task_lock;
 pub use rw_task_lock::{RwTaskLock, RwTaskLockError, RwTaskLockReadGuard};
 
-#[cfg(not(target_family = "wasm"))]
 mod guards;
 
 #[cfg(not(target_family = "wasm"))]
-pub use guards::{ClosureGuard, CwdGuard, EnvVarGuard};
+pub use guards::{CwdGuard, EnvVarGuard};
+pub use guards::ClosureGuard;
 
 #[cfg(not(target_family = "wasm"))]
 pub mod pipe;

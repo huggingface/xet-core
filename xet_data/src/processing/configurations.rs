@@ -4,7 +4,9 @@ use std::sync::Arc;
 use http::HeaderMap;
 use tracing::info;
 use xet_client::cas_client::auth::AuthConfig;
-use xet_runtime::core::{XetContext, xet_cache_root};
+use xet_runtime::core::XetContext;
+#[cfg(not(target_family = "wasm"))]
+use xet_runtime::core::xet_cache_root;
 
 use crate::error::Result;
 
@@ -89,6 +91,7 @@ impl TranslatorConfig {
     }
 
     /// Creates a new TranslatorConfig from a SessionContext, computing all derived paths.
+    #[cfg(not(target_family = "wasm"))]
     pub fn new(ctx: &XetContext, session: SessionContext) -> Result<Self> {
         let config = ctx.config.as_ref();
 
@@ -125,6 +128,28 @@ impl TranslatorConfig {
             session,
             shard_cache_directory,
             shard_session_directory,
+            force_disable_progress_aggregation: false,
+        })
+    }
+
+    /// Creates a new TranslatorConfig from a SessionContext.
+    ///
+    /// On WASM, no filesystem directories are created. Shard cache and session
+    /// directories are set to empty paths since the WASM build does not exercise
+    /// upload or shard-cache paths.
+    #[cfg(target_family = "wasm")]
+    pub fn new(ctx: &XetContext, session: SessionContext) -> Result<Self> {
+        info!(
+            endpoint = %session.endpoint,
+            session_id = ?session.session_id,
+            "TranslatorConfig initialized (wasm)"
+        );
+
+        Ok(Self {
+            ctx: ctx.clone(),
+            session,
+            shard_cache_directory: PathBuf::new(),
+            shard_session_directory: PathBuf::new(),
             force_disable_progress_aggregation: false,
         })
     }
@@ -180,6 +205,7 @@ impl TranslatorConfig {
 }
 
 /// Computes a cache-safe path from an endpoint URL.
+#[cfg(not(target_family = "wasm"))]
 fn compute_cache_path(endpoint: &str) -> PathBuf {
     let cache_root = xet_cache_root();
 

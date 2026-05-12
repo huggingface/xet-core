@@ -30,6 +30,10 @@ pub enum FileReconstructionError {
     #[error("Task Join Error: {0}")]
     TaskJoinError(Arc<tokio::task::JoinError>),
 
+    #[cfg(target_family = "wasm")]
+    #[error("Task Join Error (wasm): {0}")]
+    WasmTaskJoinError(Arc<tokio_with_wasm::task::JoinError>),
+
     #[error("Runtime Error: {0}")]
     RuntimeError(Arc<xet_runtime::RuntimeError>),
 }
@@ -57,6 +61,13 @@ impl From<xet_runtime::utils::RwTaskLockError> for FileReconstructionError {
 impl From<tokio::task::JoinError> for FileReconstructionError {
     fn from(err: tokio::task::JoinError) -> Self {
         FileReconstructionError::TaskJoinError(Arc::new(err))
+    }
+}
+
+#[cfg(target_family = "wasm")]
+impl From<tokio_with_wasm::task::JoinError> for FileReconstructionError {
+    fn from(err: tokio_with_wasm::task::JoinError) -> Self {
+        FileReconstructionError::WasmTaskJoinError(Arc::new(err))
     }
 }
 
