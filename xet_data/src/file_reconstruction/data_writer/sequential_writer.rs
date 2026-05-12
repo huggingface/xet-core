@@ -43,10 +43,12 @@ pub(crate) enum SequentialRetrievalItem {
 }
 
 /// Pending write data with its associated permit.
+#[cfg(not(target_family = "wasm"))]
 type PendingWrite = (Bytes, Option<AdjustableSemaphorePermit>);
 
 /// Background writer thread that processes queue items and dispatches data
 /// to an output sink (a `Write` impl or a stream function).
+#[cfg(not(target_family = "wasm"))]
 struct SyncWriterThread {
     ctx: XetContext,
     rx: UnboundedReceiver<SequentialRetrievalItem>,
@@ -57,6 +59,7 @@ struct SyncWriterThread {
     finished: bool,
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl SyncWriterThread {
     fn new(
         ctx: XetContext,
@@ -399,6 +402,7 @@ impl SequentialWriter {
     /// When `use_vectorized` is true, the background thread batches pending
     /// writes and uses `write_vectored` for fewer syscalls. The writer is
     /// moved to a background thread for blocking I/O operations.
+    #[cfg(not(target_family = "wasm"))]
     #[allow(clippy::new_ret_no_self)]
     pub(crate) fn new<W: Write + Send + 'static>(
         ctx: &XetContext,

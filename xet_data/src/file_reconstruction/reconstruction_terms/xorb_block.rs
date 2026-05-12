@@ -155,6 +155,8 @@ impl XorbBlock {
                     .await?;
 
                 // Store in chunk cache (best-effort, non-blocking).
+                // The disk-backed ChunkCache is only available on non-wasm targets.
+                #[cfg(not(target_family = "wasm"))]
                 if let Some(cache) = chunk_cache {
                     let cache_key = Key {
                         prefix: ctx.config.data.default_prefix.clone(),

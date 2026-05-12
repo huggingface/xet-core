@@ -118,6 +118,7 @@ impl DownloadStream {
     /// `tokio::spawn` or `async fn`). Use from a regular thread or from
     /// [`tokio::task::spawn_blocking`] instead. For the async-safe variant,
     /// use [`next`](Self::next).
+    #[cfg(not(target_family = "wasm"))]
     pub fn blocking_next(&mut self) -> Result<Option<Bytes>> {
         if self.finished {
             return Ok(None);

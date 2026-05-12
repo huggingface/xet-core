@@ -127,6 +127,7 @@ impl UnorderedDownloadStream {
     /// Panics if called from within an async runtime context. Use from a
     /// regular thread or from [`tokio::task::spawn_blocking`] instead.
     /// For the async-safe variant, use [`next`](Self::next).
+    #[cfg(not(target_family = "wasm"))]
     pub fn blocking_next(&mut self) -> Result<Option<(u64, Bytes)>> {
         if self.finished {
             return Ok(None);
