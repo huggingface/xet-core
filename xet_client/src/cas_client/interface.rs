@@ -8,7 +8,8 @@ use super::progress_tracked_streams::ProgressCallback;
 use crate::cas_types::{BatchQueryReconstructionResponse, FileRange, HttpRange, QueryReconstructionResponseV2};
 use crate::error::Result;
 
-#[async_trait::async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 pub trait URLProvider: Send + Sync {
     /// Retrieves the URL and the byte ranges to fetch.
     /// For single-range (V1) blocks, the Vec has one entry.

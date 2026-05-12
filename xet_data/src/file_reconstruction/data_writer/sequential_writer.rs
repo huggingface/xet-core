@@ -241,7 +241,8 @@ impl Drop for SequentialWriter {
     }
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl DataWriter for SequentialWriter {
     /// Sets the source for the next block of data; this is a future that
     /// can be executing in the background.  This must be the next one sequentially,
