@@ -1,12 +1,17 @@
+#[cfg(not(target_family = "wasm"))]
 mod cache_manager;
+#[cfg(not(target_family = "wasm"))]
 mod disk;
 pub mod error;
 
 use std::path::PathBuf;
 
 use async_trait::async_trait;
+#[cfg(not(target_family = "wasm"))]
 pub use cache_manager::get_cache;
+#[cfg(not(target_family = "wasm"))]
 pub use disk::DiskCache;
+#[cfg(not(target_family = "wasm"))]
 pub use disk::test_utils::*;
 use error::ChunkCacheError;
 #[cfg(test)]
