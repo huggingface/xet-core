@@ -1,0 +1,5 @@
+# Matches wasm/hf_xet_wasm — must build with the same nightly + wasm32 target.
+[toolchain]
+channel = "nightly"
+components = ["rust-src", "rustfmt"]
+targets = ["wasm32-unknown-unknown"]

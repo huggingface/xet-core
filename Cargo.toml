@@ -16,6 +16,7 @@ exclude = [
     "simulation/chunk_cache_bench",
     "hf_xet",
     "wasm/hf_xet_wasm",
+    "wasm/hf_xet_wasm_download",
     "wasm/hf_xet_thin_wasm",
     "examples/xet_pkg_napi",
 ]

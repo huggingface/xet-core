@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>hf_xet_wasm_download — manual test</title>
+  <style>
+    body { font-family: monospace; max-width: 800px; margin: 2rem auto; padding: 0 1rem; }
+    label { display: block; margin: 0.5rem 0 0.2rem; }
+    input, textarea { width: 100%; box-sizing: border-box; padding: 0.3rem; }
+    textarea { height: 6rem; }
+    button { margin-top: 1rem; padding: 0.5rem 1rem; }
+    #log { margin-top: 1rem; white-space: pre-wrap; background: #f4f4f4; padding: 1rem; min-height: 4rem; }
+  </style>
+</head>
+<body>
+  <h1>XetSession download test</h1>
+  <p>Build the WASM package first: <code>./build_wasm.sh</code>, then serve this
+  directory with a static server, e.g. <code>python3 -m http.server 8080</code>
+  and open <code>http://localhost:8080/examples/download.html</code>.</p>
+
+  <label>CAS endpoint</label>
+  <input id="endpoint" value="https://cas-server.xethub.com" />
+
+  <label>CAS token</label>
+  <input id="token" placeholder="paste CAS JWT here" />
+
+  <label>Token expiry (Unix seconds, 0 = no expiry)</label>
+  <input id="expiry" type="number" value="0" />
+
+  <label>XetFileInfo (JSON, e.g. {"hash":"...","file_size":...})</label>
+  <textarea id="fileInfo" placeholder='{"hash":"...","file_size":...}'></textarea>
+
+  <button id="downloadBtn">Download</button>
+  <button id="saveBtn" style="display:none">Save file</button>
+
+  <div id="log">Ready.</div>
+
+  <script type="module">
+    import init, { XetSession } from '../pkg/hf_xet_wasm_download.js';
+
+    await init();
+
+    let downloadedBytes = null;
+
+    document.getElementById('downloadBtn').addEventListener('click', async () => {
+      const log = document.getElementById('log');
+      const saveBtn = document.getElementById('saveBtn');
+      log.textContent = 'Starting download...\n';
+      saveBtn.style.display = 'none';
+      downloadedBytes = null;
+
+      try {
+        const endpoint = document.getElementById('endpoint').value.trim();
+        const token = document.getElementById('token').value.trim();
+        const expiry = parseFloat(document.getElementById('expiry').value);
+        const fileInfo = JSON.parse(document.getElementById('fileInfo').value);
+
+        const session = new XetSession(endpoint, token, expiry);
+        const stream = await session.downloadStream(fileInfo);
+
+        const chunks = [];
+        let totalBytes = 0;
+        while (true) {
+          const chunk = await stream.next();
+          if (chunk === undefined) break;
+          chunks.push(chunk);
+          totalBytes += chunk.byteLength;
+          log.textContent += `  received ${chunk.byteLength} bytes (total: ${totalBytes})\n`;
+        }
+
+        downloadedBytes = new Blob(chunks);
+        log.textContent += `\nDone — ${totalBytes} bytes total.`;
+        saveBtn.style.display = 'inline';
+      } catch (e) {
+        log.textContent += `\nERROR: ${e}`;
+      }
+    });
+
+    document.getElementById('saveBtn').addEventListener('click', () => {
+      if (!downloadedBytes) return;
+      const url = URL.createObjectURL(downloadedBytes);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'download.bin';
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+  </script>
+</body>
+</html>
