@@ -111,6 +111,7 @@ thiserror = "2.0"
 tokio = { version = "1.49" }
 tokio-retry = "0.3"
 tokio-util = { version = "0.7" }
+tokio_with_wasm = "0.8"
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-log = "0.2"
