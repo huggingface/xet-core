@@ -2,7 +2,6 @@ pub mod configurations;
 pub mod data_client;
 #[cfg(not(target_family = "wasm"))]
 mod deduplication_interface;
-#[cfg(not(target_family = "wasm"))]
 mod file_cleaner;
 mod file_download_session;
 #[cfg(not(target_family = "wasm"))]
@@ -16,8 +15,9 @@ mod shard_interface;
 mod xet_file;
 
 // Reexport this one for now
+pub use file_cleaner::Sha256Policy;
 #[cfg(not(target_family = "wasm"))]
-pub use file_cleaner::{Sha256Policy, SingleFileCleaner};
+pub use file_cleaner::SingleFileCleaner;
 pub use file_download_session::FileDownloadSession;
 #[cfg(not(target_family = "wasm"))]
 pub use file_upload_session::FileUploadSession;

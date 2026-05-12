@@ -1,20 +1,35 @@
+#[cfg(not(target_family = "wasm"))]
 use std::future::{self, Future};
+#[cfg(not(target_family = "wasm"))]
 use std::pin::Pin;
+#[cfg(not(target_family = "wasm"))]
 use std::sync::Arc;
 
+#[cfg(not(target_family = "wasm"))]
 use bytes::Bytes;
+#[cfg(not(target_family = "wasm"))]
 use chrono::{DateTime, Utc};
+#[cfg(not(target_family = "wasm"))]
 use tracing::{Instrument, debug_span, info, instrument};
 use xet_core_structures::metadata_shard::Sha256;
+#[cfg(not(target_family = "wasm"))]
 use xet_core_structures::metadata_shard::file_structs::FileMetadataExt;
+#[cfg(not(target_family = "wasm"))]
 use xet_runtime::core::XetContext;
 
+#[cfg(not(target_family = "wasm"))]
 use super::XetFileInfo;
+#[cfg(not(target_family = "wasm"))]
 use super::deduplication_interface::UploadSessionDataManager;
+#[cfg(not(target_family = "wasm"))]
 use super::file_upload_session::FileUploadSession;
+#[cfg(not(target_family = "wasm"))]
 use super::sha256::Sha256Generator;
+#[cfg(not(target_family = "wasm"))]
 use crate::deduplication::{Chunk, Chunker, DeduplicationMetrics, FileDeduper};
+#[cfg(not(target_family = "wasm"))]
 use crate::error::Result;
+#[cfg(not(target_family = "wasm"))]
 use crate::progress_tracking::upload_tracking::CompletionTrackerFileId;
 
 /// Controls how SHA-256 is handled during file cleaning.
@@ -52,6 +67,7 @@ impl From<Option<Sha256>> for Sha256Policy {
 }
 
 /// A class that encapsulates the clean and data task around a single file.
+#[cfg(not(target_family = "wasm"))]
 pub struct SingleFileCleaner {
     ctx: XetContext,
 
@@ -81,6 +97,7 @@ pub struct SingleFileCleaner {
     start_time: DateTime<Utc>,
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl SingleFileCleaner {
     pub(crate) fn new(
         file_name: Option<Arc<str>>,
