@@ -2,6 +2,7 @@ use thiserror::Error;
 use xet_client::ClientError;
 use xet_core_structures::CoreError;
 use xet_data::DataError;
+#[cfg(not(target_family = "wasm"))]
 use xet_data::file_reconstruction::FileReconstructionError;
 use xet_runtime::RuntimeError;
 use xet_runtime::utils::UniqueId;
@@ -140,6 +141,7 @@ impl XetError {
         }
     }
 
+    #[cfg(not(target_family = "wasm"))]
     fn from_file_reconstruction_error_ref(fre: &FileReconstructionError) -> Self {
         match fre {
             FileReconstructionError::ClientError(ce) => XetError::from_client_error_ref(ce),
@@ -171,6 +173,7 @@ impl XetError {
             DataError::HashNotFound => XetError::NotFound(de.to_string()),
             DataError::HashStringParsingFailure(_) => XetError::DataIntegrity(de.to_string()),
             DataError::InvalidOperation(_) => XetError::Configuration(de.to_string()),
+            #[cfg(not(target_family = "wasm"))]
             DataError::FileReconstructionError(fre) => XetError::from_file_reconstruction_error_ref(fre),
             _ => XetError::Internal(de.to_string()),
         }
@@ -203,6 +206,7 @@ impl From<DataError> for XetError {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl From<FileReconstructionError> for XetError {
     fn from(e: FileReconstructionError) -> Self {
         XetError::from_file_reconstruction_error_ref(&e)

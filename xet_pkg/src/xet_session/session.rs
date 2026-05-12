@@ -1,7 +1,10 @@
 //! XetSession - manages runtime and configuration
 
+#[cfg(not(target_family = "wasm"))]
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::Arc;
+#[cfg(not(target_family = "wasm"))]
+use std::sync::{Mutex, Weak};
 
 use tracing::info;
 use uuid::Uuid;
@@ -11,6 +14,7 @@ use xet_runtime::core::XetContext;
 use xet_runtime::fd_diagnostics::{report_fd_count, track_fd_scope};
 use xet_runtime::utils::UniqueId;
 
+#[cfg(not(target_family = "wasm"))]
 use super::download_stream_group::{
     XetDownloadStreamGroup, XetDownloadStreamGroupBuilder, XetDownloadStreamGroupInner,
 };
@@ -40,6 +44,7 @@ pub struct XetSessionInner {
     // Weak references so that dropping all user-held XetDownloadStreamGroup clones frees the group
     // immediately, without needing an explicit finalization call. abort() upgrades live weak refs
     // to cancel active streams.
+    #[cfg(not(target_family = "wasm"))]
     pub(super) active_download_stream_groups: Mutex<HashMap<UniqueId, Weak<XetDownloadStreamGroupInner>>>,
 
     // "id" is used to identify a group of activities on our server, and so needs to be globally unique
@@ -236,6 +241,7 @@ impl XetSession {
             inner: Arc::new(XetSessionInner {
                 ctx,
                 task_runtime,
+                #[cfg(not(target_family = "wasm"))]
                 active_download_stream_groups: Mutex::new(HashMap::new()),
                 id: Uuid::now_v7(),
             }),
@@ -310,6 +316,7 @@ impl XetSession {
     /// [`download_unordered_stream`](XetDownloadStreamGroup::download_unordered_stream).
     ///
     /// Returns `Err(SessionError::UserCancelled)` if the session has been aborted.
+    #[cfg(not(target_family = "wasm"))]
     pub fn new_download_stream_group(&self) -> Result<XetDownloadStreamGroupBuilder, SessionError> {
         self.inner.task_runtime.check_state("new_download_stream_group")?;
         #[cfg(feature = "fd-track")]
@@ -332,10 +339,14 @@ impl XetSession {
         info!("Session abort, session_id={}", self.inner.id);
         self.inner.task_runtime.cancel_subtree()?;
 
-        let active_download_stream_groups = std::mem::take(&mut *self.inner.active_download_stream_groups.lock()?);
-        for (_id, weak_group) in active_download_stream_groups {
-            if let Some(inner) = weak_group.upgrade() {
-                inner.abort();
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let active_download_stream_groups =
+                std::mem::take(&mut *self.inner.active_download_stream_groups.lock()?);
+            for (_id, weak_group) in active_download_stream_groups {
+                if let Some(inner) = weak_group.upgrade() {
+                    inner.abort();
+                }
             }
         }
         #[cfg(feature = "fd-track")]
@@ -375,6 +386,7 @@ impl XetSession {
         self.inner.task_runtime.check_state("session")
     }
 
+    #[cfg(not(target_family = "wasm"))]
     pub(super) fn register_download_stream_group(&self, group: &XetDownloadStreamGroup) -> Result<(), SessionError> {
         self.inner
             .active_download_stream_groups
