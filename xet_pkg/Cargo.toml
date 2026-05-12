@@ -38,7 +38,6 @@ more-asserts = { workspace = true }
 pyo3 = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["net", "time"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["v7"] }
@@ -53,6 +52,12 @@ native-tls-vendored = ["xet-client/native-tls-vendored"]
 elevated_information_level = ["xet-client/elevated_information_level", "xet-runtime/elevated_information_level"]
 no-default-cache = ["xet-runtime/no-default-cache"]
 tokio-console = ["xet-runtime/tokio-console"]
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+tokio = { workspace = true, features = ["net", "time"] }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+tokio = { workspace = true, features = ["sync", "rt", "time", "macros"] }
 
 [dev-dependencies]
 anyhow = { workspace = true }
