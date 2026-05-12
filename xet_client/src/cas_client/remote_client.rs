@@ -23,8 +23,9 @@ use super::progress_tracked_streams::{
 use super::retry_wrapper::{RetryWrapper, RetryableReqwestError};
 use super::{Client, INFORMATION_LOG_LEVEL};
 use crate::cas_types::{
-    BatchQueryReconstructionResponse, FileRange, HttpRange, Key, QueryReconstructionResponse,
+    BatchQueryReconstructionResponse, FileChunkHashesResponse, FileRange, HttpRange, Key, QueryReconstructionResponse,
     QueryReconstructionResponseV2, UploadShardResponse, UploadShardResponseType, UploadXorbResponse,
+    X_RANGE_DIRTY_HEADER,
 };
 use crate::common::http_client::{self, Api};
 use crate::error::{ClientError, Result};
@@ -746,6 +747,48 @@ impl Client for RemoteClient {
             .await?;
 
         Ok(n_upload_bytes)
+    }
+
+    #[instrument(skip_all, name = "RemoteClient::get_file_chunk_hashes", fields(file.hash = file_id.hex(), n_ranges = dirty_ranges.len()))]
+    async fn get_file_chunk_hashes(
+        &self,
+        file_id: &MerkleHash,
+        dirty_ranges: Vec<FileRange>,
+    ) -> Result<FileChunkHashesResponse> {
+        if dirty_ranges.is_empty() {
+            return Err(ClientError::Other("get_file_chunk_hashes requires at least one dirty range".into()));
+        }
+
+        let url = Url::parse(&format!("{}/v2/file-chunk-hashes/{}", self.endpoint, file_id.hex()))?;
+
+        // Multi-range `bytes=A-B,C-D` value. `HttpRange` is inclusive-end and `Display`s as
+        // `start-end`; conversion from `FileRange` does the +1/-1 for us.
+        let header_value = HeaderValue::from_str(&format!(
+            "bytes={}",
+            dirty_ranges
+                .iter()
+                .copied()
+                .map(HttpRange::from)
+                .map(|r| r.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        ))
+        .map_err(|err| ClientError::Other(format!("invalid X-Range-Dirty header value: {err}")))?;
+
+        let api_tag = "cas::get_file_chunk_hashes";
+        let client = self.authenticated_http_client.clone();
+
+        let response: FileChunkHashesResponse = RetryWrapper::new(self.ctx.clone(), api_tag)
+            .run_and_extract_json(move || {
+                client
+                    .get(url.clone())
+                    .header(X_RANGE_DIRTY_HEADER, header_value.clone())
+                    .with_extension(Api(api_tag))
+                    .send()
+            })
+            .await?;
+
+        Ok(response)
     }
 }
 

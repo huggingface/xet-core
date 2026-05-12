@@ -7,7 +7,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use thiserror::Error;
-use xet_core_structures::merklehash::MerkleHash;
+use xet_core_structures::merklehash::{MerkleHash, MerkleHashSubtree};
 
 mod key;
 pub use key::*;
@@ -309,6 +309,42 @@ pub struct UploadShardResponse {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct QueryChunkResponse {
     pub shard: MerkleHash,
+}
+
+/// HTTP header carrying the dirty byte ranges to feed to `GET /v2/file-chunk-hashes/{file_id}`.
+///
+/// Distinct from the standard `Range` header (which scopes the response body): this header tags
+/// regions that the client intends to re-chunk, and the response covers the whole file (windows +
+/// gap subtrees). Value uses the same `bytes=A-B,C-D` syntax as `Range`.
+pub const X_RANGE_DIRTY_HEADER: &str = "x-range-dirty";
+
+/// One chunk-aligned dirty window of a file, returned by `GET /v2/file-chunk-hashes/{file_id}`.
+///
+/// `dirty_byte_range` is `[start, end)` and is expanded outward to the chunk boundaries that
+/// fully contain the requested dirty range, so the client must re-chunk the entire span.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ChunkWindow {
+    pub dirty_byte_range: [u64; 2],
+}
+
+/// Response shape for `GET /v2/file-chunk-hashes/{file_id}`.
+///
+/// Contains `windows.len()` dirty windows interleaved with `windows.len() + 1` opaque
+/// `MerkleHashSubtree` summaries for the surrounding gaps. To reconstruct the new file hash,
+/// merge `[hash_ranges[0], window0_subtree, hash_ranges[1], window1_subtree, ..., hash_ranges[N]]`
+/// using `MerkleHashSubtree::merge`. Per-chunk hashes are never transferred.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FileChunkHashesResponse {
+    pub total_chunks: u64,
+    pub file_size: u64,
+    pub windows: Vec<ChunkWindow>,
+    pub hash_ranges: Vec<Option<MerkleHashSubtree>>,
+    /// One range hash per **stable original segment** (= a segment that lies in a gap
+    /// between dirty windows or before/after them, in segment order). Wraps each into a
+    /// `FileVerificationEntry` to populate the composed shard's verification section.
+    pub gap_verification: Vec<HexMerkleHash>,
 }
 
 #[cfg(test)]

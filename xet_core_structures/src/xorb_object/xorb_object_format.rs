@@ -13,7 +13,7 @@ use super::constants::{TARGET_CHUNK_SIZE, XORB_BLOCK_SIZE};
 use super::xorb_chunk_format::{deserialize_chunk, deserialize_chunk_header, serialize_chunk, write_chunk_header};
 use super::{CompressionScheme, RawXorbData, XorbChunkHeader};
 use crate::error::{CoreError, Validate};
-use crate::merklehash::{DataHash, MerkleHash};
+use crate::merklehash::{ChunkHashList, DataHash, MerkleHash};
 use crate::metadata_shard::chunk_verification::range_hash_from_chunks;
 use crate::serialization_utils::*;
 
@@ -1238,6 +1238,21 @@ impl XorbObject {
         };
         let incl_end = self.info.unpacked_chunk_offsets[chunk_index_end as usize - 1];
         Ok(incl_end - before_start)
+    }
+
+    /// Returns (chunk_hash, uncompressed_size) pairs for chunks in [start, end).
+    pub fn chunk_hash_sizes(&self, start: u32, end: u32) -> Result<ChunkHashList, CoreError> {
+        self.validate_xorb_object_info()?;
+        if end > self.info.num_chunks || start > end {
+            return Err(CoreError::InvalidArguments);
+        }
+        (start..end)
+            .map(|i| {
+                let hash = self.info.chunk_hashes[i as usize];
+                let size = self.uncompressed_chunk_length(i)? as u64;
+                Ok((hash, size))
+            })
+            .collect()
     }
 
     /// Helper method to verify that info object is complete

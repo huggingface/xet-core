@@ -19,7 +19,9 @@ use crate::cas_client::interface::Client;
 use crate::cas_client::simulation::deletion_controls::ObjectTag;
 use crate::cas_client::simulation::xorb_utils::duration_to_expiration_secs_ceil;
 use crate::cas_client::simulation::{DeletionControlableClient, DirectAccessClient};
-use crate::cas_types::{FileRange, HexMerkleHash, QueryReconstructionResponseV2, XorbReconstructionFetchInfo};
+use crate::cas_types::{
+    FileChunkHashesResponse, FileRange, HexMerkleHash, QueryReconstructionResponseV2, XorbReconstructionFetchInfo,
+};
 use crate::error::{ClientError, Result};
 
 const CONFIG_POST_MAX_ATTEMPTS: usize = 4;
@@ -242,6 +244,14 @@ impl Client for SimulationControlClient {
         self.remote_client
             .upload_xorb(prefix, serialized_xorb_object, progress_callback, upload_permit)
             .await
+    }
+
+    async fn get_file_chunk_hashes(
+        &self,
+        file_id: &MerkleHash,
+        dirty_ranges: Vec<FileRange>,
+    ) -> Result<FileChunkHashesResponse> {
+        self.remote_client.get_file_chunk_hashes(file_id, dirty_ranges).await
     }
 }
 

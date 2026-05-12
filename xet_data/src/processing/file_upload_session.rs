@@ -275,7 +275,8 @@ impl FileUploadSession {
         let handle = runtime.spawn(async move {
             let _permit = semaphore.acquire().await?;
             cleaner.add_data(&bytes).await?;
-            cleaner.finish().await
+            let (file_info, metrics) = cleaner.finish().await?;
+            Ok((file_info, metrics))
         });
 
         Ok((id, handle))
@@ -297,7 +298,8 @@ impl FileUploadSession {
             }
             cleaner.add_data(&buffer[..n]).await?;
         }
-        cleaner.finish().await
+        let (file_info, metrics) = cleaner.finish().await?;
+        Ok((file_info, metrics))
     }
 
     /// Registers a new xorb for upload, returning true if the xorb was added to the upload queue and false
@@ -467,36 +469,74 @@ impl FileUploadSession {
         Ok(())
     }
 
+    /// Like `register_single_file_clean_completion`, but does NOT register the MDBFileInfo
+    /// in the session shard. Returns the finalized MDBFileInfo instead.
+    /// Used by composition flows where only the final composed file should appear in the shard.
+    pub(crate) async fn register_single_file_clean_completion_detached(
+        self: &Arc<Self>,
+        file_data: DataAggregator,
+        dedup_metrics: &DeduplicationMetrics,
+    ) -> Result<MDBFileInfo> {
+        // Always cut a dedicated xorb for detached files. This avoids mixing with other
+        // files in current_session_data whose MDBFileInfo must still be registered.
+        let file_infos = self.process_aggregated_data_as_xorb_detached(file_data).await?;
+
+        self.deduplication_metrics.lock().await.merge_in(dedup_metrics);
+
+        debug_assert_eq!(file_infos.len(), 1);
+        file_infos
+            .into_iter()
+            .next()
+            .ok_or_else(|| DataError::InternalError("detached completion produced no file info".into()))
+    }
+
     /// Process the aggregated data, uploading the data as a xorb and registering the files
     async fn process_aggregated_data_as_xorb(self: &Arc<Self>, data_agg: DataAggregator) -> Result<()> {
+        self.process_aggregated_data_as_xorb_impl(data_agg, true).await.map(|_| ())
+    }
+
+    /// Upload the xorb data but do NOT register file reconstruction info in the shard.
+    /// Returns the finalized MDBFileInfo for each file in the aggregator.
+    async fn process_aggregated_data_as_xorb_detached(
+        self: &Arc<Self>,
+        data_agg: DataAggregator,
+    ) -> Result<Vec<MDBFileInfo>> {
+        self.process_aggregated_data_as_xorb_impl(data_agg, false).await
+    }
+
+    async fn process_aggregated_data_as_xorb_impl(
+        self: &Arc<Self>,
+        data_agg: DataAggregator,
+        register_files: bool,
+    ) -> Result<Vec<MDBFileInfo>> {
         let (xorb, new_files) = data_agg.finalize();
         let xorb_hash = xorb.hash();
 
         debug_assert_le!(xorb.num_bytes(), *MAX_XORB_BYTES);
         debug_assert_le!(xorb.data.len(), *MAX_XORB_CHUNKS);
 
-        // Now, we need to scan all the file dependencies for dependencies on this xorb, as
-        // these would not have been registered yet as we just got the xorb hash.
         let mut new_dependencies = Vec::with_capacity(new_files.len());
+        let mut file_infos = Vec::with_capacity(new_files.len());
 
-        {
-            for (file_id, fi, bytes_in_xorb) in new_files {
-                new_dependencies.push(FileXorbDependency {
-                    file_id,
-                    xorb_hash,
-                    n_bytes: bytes_in_xorb,
-                    is_external: false,
-                });
+        for (file_id, fi, bytes_in_xorb) in new_files {
+            new_dependencies.push(FileXorbDependency {
+                file_id,
+                xorb_hash,
+                n_bytes: bytes_in_xorb,
+                is_external: false,
+            });
 
-                // Record the reconstruction.
+            if register_files {
                 self.shard_interface.add_file_reconstruction_info(fi).await?;
+            } else {
+                file_infos.push(fi);
             }
         }
 
         // Register the xorb and start the upload process.
         self.register_new_xorb(xorb, &new_dependencies).await?;
 
-        Ok(())
+        Ok(file_infos)
     }
 
     /// Register a xorb dependencies that is given as part of the dedup process.
@@ -568,6 +608,13 @@ impl FileUploadSession {
         }
 
         Ok(())
+    }
+
+    /// Register a pre-composed file reconstruction plan (MDBFileInfo) with this session.
+    /// Used for append-aware writes where the caller builds the reconstruction plan
+    /// from existing segments + newly uploaded segments.
+    pub(crate) async fn register_composed_file(self: &Arc<Self>, file_info: MDBFileInfo) -> Result<()> {
+        self.shard_interface.add_file_reconstruction_info(file_info).await
     }
 
     fn check_not_finalized(&self) -> Result<()> {
@@ -730,7 +777,7 @@ mod tests {
                     .start_clean(Some("test".into()), Some(data.len() as u64), Sha256Policy::Skip)
                     .unwrap();
                 cleaner.add_data(data).await.unwrap();
-                cleaner.finish().await.unwrap();
+                let _ = cleaner.finish().await.unwrap();
 
                 // Verify that the shard has no metadata_ext (no SHA-256).
                 let (_metrics, file_infos) = upload_session.finalize_with_file_info().await.unwrap();

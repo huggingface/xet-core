@@ -493,6 +493,14 @@ impl Client for LocalTestServer {
             .upload_xorb(prefix, serialized_xorb_object, progress_callback, upload_permit)
             .await
     }
+
+    async fn get_file_chunk_hashes(
+        &self,
+        file_id: &xet_core_structures::merklehash::MerkleHash,
+        dirty_ranges: Vec<crate::cas_types::FileRange>,
+    ) -> Result<crate::cas_types::FileChunkHashesResponse> {
+        self.client.get_file_chunk_hashes(file_id, dirty_ranges).await
+    }
 }
 
 #[cfg(test)]

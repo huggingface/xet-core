@@ -2,7 +2,7 @@ use std::result::Result;
 
 use more_asserts::{debug_assert_le, debug_assert_lt};
 use xet_core_structures::MerkleHashMap;
-use xet_core_structures::merklehash::{MerkleHash, file_hash};
+use xet_core_structures::merklehash::{ChunkHashList, MerkleHash, file_hash};
 use xet_core_structures::metadata_shard::file_structs::{
     FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, FileVerificationEntry, MDBFileInfo,
 };
@@ -36,7 +36,7 @@ pub struct FileDeduper<DataInterfaceType: DeduplicationDataInterface> {
     new_data_hash_lookup: MerkleHashMap<usize>,
 
     /// The current chunk hashes for this file.
-    chunk_hashes: Vec<(MerkleHash, u64)>,
+    chunk_hashes: ChunkHashList,
 
     /// The current file data entries.
     file_info: Vec<FileDataSequenceEntry>,
@@ -399,8 +399,11 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
     /// and remaining data.  Also returns the aggregated deduplication metrics and the list of xorb hashes that were
     /// registered as part of this run.
     ///
-    /// Returns (file hash, data aggregation, deduplication metrics)
-    pub fn finalize(self, metadata_ext: Option<FileMetadataExt>) -> (MerkleHash, DataAggregator, DeduplicationMetrics) {
+    /// Returns (file hash, chunk_hashes, data aggregation, deduplication metrics)
+    pub fn finalize(
+        self,
+        metadata_ext: Option<FileMetadataExt>,
+    ) -> (MerkleHash, ChunkHashList, DataAggregator, DeduplicationMetrics) {
         let file_hash = file_hash(&self.chunk_hashes);
 
         let metadata = FileDataSequenceHeader::new(file_hash, self.file_info.len(), true, metadata_ext.is_some());
@@ -434,6 +437,6 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
 
         let remaining_data = DataAggregator::new(self.new_data, fi, self.internally_referencing_entries, self.file_id);
 
-        (file_hash, remaining_data, self.deduplication_metrics)
+        (file_hash, self.chunk_hashes, remaining_data, self.deduplication_metrics)
     }
 }

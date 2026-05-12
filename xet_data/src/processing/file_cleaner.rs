@@ -5,8 +5,9 @@ use std::sync::Arc;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use tracing::{Instrument, debug_span, info, instrument};
+use xet_core_structures::merklehash::ChunkHashList;
 use xet_core_structures::metadata_shard::Sha256;
-use xet_core_structures::metadata_shard::file_structs::FileMetadataExt;
+use xet_core_structures::metadata_shard::file_structs::{FileMetadataExt, MDBFileInfo};
 use xet_runtime::core::XetContext;
 
 use super::XetFileInfo;
@@ -201,24 +202,48 @@ impl SingleFileCleaner {
     }
 
     /// Return the representation of the file after clean as a pointer file instance.
-    #[instrument(skip_all, name = "FileCleaner::finish", fields(file_name=self.file_name.as_ref().map(|s|s.to_string())))]
-    pub async fn finish(mut self) -> Result<(XetFileInfo, DeduplicationMetrics)> {
-        // Chunk the rest of the data.
-        if let Some(chunk) = self.chunker.finish() {
+    pub async fn finish(self) -> Result<(XetFileInfo, DeduplicationMetrics)> {
+        let (info, _chunks, metrics) = self.finish_with_chunks().await?;
+        Ok((info, metrics))
+    }
+
+    /// Same as [`finish`], but also returns the per-chunk hash list produced during CDC.
+    /// Only needed by composition flows (e.g. `upload_ranges`) that build partial
+    /// `MerkleHashSubtree` nodes for newly-uploaded windows; regular uploads should call
+    /// [`finish`] instead.
+    #[instrument(skip_all, name = "FileCleaner::finish_with_chunks", fields(file_name=self.file_name.as_ref().map(|s|s.to_string())))]
+    pub async fn finish_with_chunks(self) -> Result<(XetFileInfo, ChunkHashList, DeduplicationMetrics)> {
+        let (file_info, chunk_hashes, _, deduplication_metrics) = Self::finish_inner(self, true).await?;
+        Ok((file_info, chunk_hashes, deduplication_metrics))
+    }
+
+    /// Like `finish_with_chunks`, but does NOT register the file's MDBFileInfo in the
+    /// session shard. Returns the MDBFileInfo directly so the caller can compose it into a
+    /// larger file without creating orphan shard entries.
+    pub async fn finish_with_chunks_detached(
+        self,
+    ) -> Result<(XetFileInfo, ChunkHashList, MDBFileInfo, DeduplicationMetrics)> {
+        Self::finish_inner(self, false).await
+    }
+
+    async fn finish_inner(
+        mut this: Self,
+        register: bool,
+    ) -> Result<(XetFileInfo, ChunkHashList, MDBFileInfo, DeduplicationMetrics)> {
+        if let Some(chunk) = this.chunker.finish() {
             let data = Arc::new([chunk]);
-            self.deduper_process_chunks(data).await?;
+            this.deduper_process_chunks(data).await?;
         }
 
-        // Resolve the SHA-256: computed, provided, or skipped.
-        let sha256 = if let Some(generator) = self.sha_generator.take() {
+        let sha256 = if let Some(generator) = this.sha_generator.take() {
             Some(generator.finalize().await?)
         } else {
-            self.provided_sha256
+            this.provided_sha256
         };
         let metadata_ext = sha256.map(FileMetadataExt::new);
 
-        let (file_hash, remaining_file_data, deduplication_metrics) =
-            self.dedup_manager_fut.await?.finalize(metadata_ext);
+        let (file_hash, chunk_hashes, remaining_file_data, deduplication_metrics) =
+            this.dedup_manager_fut.await?.finalize(metadata_ext);
 
         let file_info = XetFileInfo {
             hash: file_hash.hex(),
@@ -226,34 +251,33 @@ impl SingleFileCleaner {
             sha256: sha256.map(|s| s.hex()),
         };
 
-        // Let's check some things that should be invariants
         #[cfg(debug_assertions)]
         {
-            // There should be exactly one file referenced in the remaining file data.
             debug_assert_eq!(remaining_file_data.pending_file_info.len(), 1);
-
-            // The size should be total bytes
             debug_assert_eq!(remaining_file_data.pending_file_info[0].0.file_size(), deduplication_metrics.total_bytes)
         }
 
-        // Now, return all this information to the
-        self.session
-            .register_single_file_clean_completion(remaining_file_data, &deduplication_metrics)
-            .await?;
-
-        // NB: xorb upload is happening in the background, this number is optimistic since it does
-        // not count transfer time of the uploaded xorbs, which is why `end_processing_ts`
+        let mdb_file_info = if register {
+            this.session
+                .register_single_file_clean_completion(remaining_file_data, &deduplication_metrics)
+                .await?;
+            MDBFileInfo::default()
+        } else {
+            this.session
+                .register_single_file_clean_completion_detached(remaining_file_data, &deduplication_metrics)
+                .await?
+        };
 
         info!(
             target: "client_telemetry",
             action = "clean",
-            file_name = self.file_name.unwrap_or_default().to_string(),
+            file_name = this.file_name.as_deref().unwrap_or_default().to_string(),
             file_size_count = deduplication_metrics.total_bytes,
             new_bytes_count = deduplication_metrics.new_bytes,
-            start_ts = self.start_time.to_rfc3339(),
+            start_ts = this.start_time.to_rfc3339(),
             end_processing_ts = Utc::now().to_rfc3339(),
         );
 
-        Ok((file_info, deduplication_metrics))
+        Ok((file_info, chunk_hashes, mdb_file_info, deduplication_metrics))
     }
 }

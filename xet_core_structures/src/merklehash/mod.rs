@@ -48,6 +48,9 @@ pub mod data_hash;
 pub use data_hash::*;
 pub type MerkleHash = DataHash;
 
+/// List of (chunk_hash, chunk_uncompressed_size) pairs for a file or xorb range.
+pub type ChunkHashList = Vec<(MerkleHash, u64)>;
+
 mod aggregated_hashes;
 pub mod merkle_hash_subtree;
 pub mod passthrough_hasher;
