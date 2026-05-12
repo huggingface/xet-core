@@ -236,9 +236,11 @@ impl MDBMinimalShard {
         let mut seen_file_hashes = HashSet::new();
         process_shard_file_info_section_async(reader, |fiv: MDBFileInfoView| {
             // register the offset here to the file entries
-            if include_files && seen_file_hashes.insert(fiv.file_hash()) {
+            if include_files {
                 file_callback(&fiv)?;
-                file_info_views.push(fiv);
+                if seen_file_hashes.insert(fiv.file_hash()) {
+                    file_info_views.push(fiv);
+                }
             }
             Ok(())
         })
@@ -685,19 +687,19 @@ mod tests {
         let mut duplicate = gen_random_file_info(&mut rng, &3, true, true);
         duplicate.metadata.file_hash = first.metadata.file_hash;
 
-        let buffer = file_info_stream(&[first.clone(), duplicate]);
+        let buffer = file_info_stream(&[first.clone(), duplicate.clone()]);
 
         let min_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&buffer), true, true).unwrap();
         assert_eq!(min_shard.num_files(), 1);
         assert_eq!(MDBFileInfo::from(min_shard.file(0).unwrap()), first);
 
-        let mut callback_file_hashes = Vec::new();
+        let mut callback_file_infos = Vec::new();
         let min_shard_async = MDBMinimalShard::from_reader_async_with_custom_callbacks(
             &mut &buffer[..],
             true,
             true,
             |f| {
-                callback_file_hashes.push(f.file_hash());
+                callback_file_infos.push(MDBFileInfo::from(f));
                 Ok(())
             },
             |_| Ok(()),
@@ -706,7 +708,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(min_shard, min_shard_async);
-        assert_eq!(callback_file_hashes, vec![first.metadata.file_hash]);
+        assert_eq!(callback_file_infos, vec![first.clone(), duplicate]);
 
         let mut reserialized = Vec::new();
         min_shard.serialize(&mut reserialized, false).unwrap();
