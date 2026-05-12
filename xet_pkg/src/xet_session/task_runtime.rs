@@ -61,6 +61,7 @@ impl<T: Clone> BackgroundTaskState<T> {
 }
 
 pub(super) struct TaskRuntime {
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     runtime: Arc<XetRuntime>,
     cancellation_token: CancellationToken,
     state: Mutex<XetTaskState>,
@@ -154,6 +155,7 @@ impl TaskRuntime {
         }
     }
 
+    #[cfg(not(target_family = "wasm"))]
     fn run_inner_async<T, F>(
         &self,
         task_name: &'static str,
@@ -180,6 +182,28 @@ impl TaskRuntime {
         }
     }
 
+    #[cfg(target_family = "wasm")]
+    fn run_inner_async<T, F>(
+        &self,
+        task_name: &'static str,
+        fut: F,
+    ) -> impl Future<Output = Result<T, XetError>> + 'static
+    where
+        F: Future<Output = Result<T, XetError>> + 'static,
+        T: 'static,
+    {
+        let token = self.cancellation_token.clone();
+        async move {
+            tokio::select! {
+                _ = token.cancelled() => Err(XetError::UserCancelled(
+                    format!("{task_name} cancelled by user"),
+                )),
+                result = fut => result,
+            }
+        }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
     pub(super) async fn bridge_async<T, F>(&self, task_name: &'static str, fut: F) -> Result<T, XetError>
     where
         F: Future<Output = Result<T, XetError>> + Send + 'static,
@@ -193,6 +217,21 @@ impl TaskRuntime {
         result
     }
 
+    #[cfg(target_family = "wasm")]
+    pub(super) async fn bridge_async<T, F>(&self, task_name: &'static str, fut: F) -> Result<T, XetError>
+    where
+        F: Future<Output = Result<T, XetError>> + 'static,
+        T: 'static,
+    {
+        self.check_state(task_name)?;
+        let result = self.run_inner_async(task_name, fut).await;
+        if let Err(ref e) = result {
+            self.update_state_on_error(e)?;
+        }
+        result
+    }
+
+    #[cfg(not(target_family = "wasm"))]
     pub(super) fn bridge_sync<T, F>(&self, task_name: &'static str, fut: F) -> Result<T, XetError>
     where
         F: Future<Output = Result<T, XetError>> + Send + 'static,
@@ -217,6 +256,7 @@ impl TaskRuntime {
         result
     }
 
+    #[cfg(not(target_family = "wasm"))]
     pub(super) async fn bridge_async_finalizing<T, F>(
         &self,
         task_name: &'static str,
@@ -240,6 +280,31 @@ impl TaskRuntime {
         result
     }
 
+    #[cfg(target_family = "wasm")]
+    pub(super) async fn bridge_async_finalizing<T, F>(
+        &self,
+        task_name: &'static str,
+        allow_repeat: bool,
+        fut: F,
+    ) -> Result<T, XetError>
+    where
+        F: Future<Output = Result<T, XetError>> + 'static,
+        T: 'static,
+    {
+        self.transition_to_finalizing(task_name, allow_repeat)?;
+
+        let result = self.run_inner_async(task_name, fut).await;
+        match &result {
+            Ok(_) => self.set_state(XetTaskState::Completed)?,
+            Err(XetError::UserCancelled(_)) => {
+                self.set_state(XetTaskState::UserCancelled)?;
+            },
+            Err(e) => self.set_state(XetTaskState::Error(e.to_string()))?,
+        }
+        result
+    }
+
+    #[cfg(not(target_family = "wasm"))]
     pub(super) fn bridge_sync_finalizing<T, F>(
         &self,
         task_name: &'static str,
