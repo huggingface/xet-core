@@ -1,8 +1,12 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
+#[cfg(not(target_family = "wasm"))]
+use tokio as wasmtokio;
 use tokio::sync::Notify;
 use tokio::sync::mpsc::UnboundedReceiver;
+#[cfg(target_family = "wasm")]
+use tokio_with_wasm::alias as wasmtokio;
 use tracing::info;
 
 use super::super::error::{FileReconstructionError, Result};
@@ -53,7 +57,7 @@ impl DownloadStream {
 
         let signal = start_signal.clone();
         let rs = run_state.clone();
-        tokio::spawn(async move {
+        wasmtokio::task::spawn(async move {
             signal.notified().await;
             info!(file_hash = %rs.file_hash(), "Starting download stream");
             let _ = reconstructor.run(data_writer, rs, true).await;

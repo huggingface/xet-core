@@ -3,7 +3,11 @@ use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
 use bytes::Bytes;
+#[cfg(not(target_family = "wasm"))]
+use tokio as wasmtokio;
 use tokio::sync::OnceCell;
+#[cfg(target_family = "wasm")]
+use tokio_with_wasm::alias as wasmtokio;
 use xet_client::cas_client::Client;
 use xet_client::cas_types::{ChunkRange, FileRange, HttpRange};
 use xet_client::chunk_cache::ChunkCache;
@@ -73,7 +77,7 @@ impl FileTerm {
         let url_info = self.url_info.clone();
         let xorb_block = self.xorb_block.clone();
 
-        let task = tokio::task::spawn(async move {
+        let task = wasmtokio::task::spawn(async move {
             let xorb_block_data = xorb_block
                 .retrieve_data(ctx, client, url_info, progress_updater, chunk_cache)
                 .await?;

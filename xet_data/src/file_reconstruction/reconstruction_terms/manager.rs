@@ -3,8 +3,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use more_asserts::*;
-use tokio::task::JoinHandle;
-use tokio::time::Instant;
+#[cfg(not(target_family = "wasm"))]
+use tokio as wasmtokio;
+#[cfg(target_family = "wasm")]
+use tokio_with_wasm::alias as wasmtokio;
+use wasmtokio::task::JoinHandle;
+use wasmtokio::time::Instant;
 use tracing::{debug, info};
 use xet_client::cas_client::Client;
 use xet_client::cas_types::FileRange;
@@ -287,7 +291,7 @@ impl ReconstructionTermManager {
         let file_hash = self.file_hash;
         let runtime = self.ctx.clone();
 
-        let jh = tokio::task::spawn(async move {
+        let jh = wasmtokio::task::spawn(async move {
             let result = retrieve_file_term_block(&runtime, client, file_hash, prefetch_block_range).await;
 
             // See if we're done with the file.

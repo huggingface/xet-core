@@ -4,9 +4,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytes::Bytes;
+#[cfg(not(target_family = "wasm"))]
+use tokio as wasmtokio;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
-use tokio::task::{JoinHandle, JoinSet};
+#[cfg(target_family = "wasm")]
+use tokio_with_wasm::alias as wasmtokio;
+use wasmtokio::task::{JoinHandle, JoinSet};
 use xet_client::cas_types::FileRange;
 use xet_runtime::core::XetContext;
 use xet_runtime::utils::adjustable_semaphore::AdjustableSemaphorePermit;

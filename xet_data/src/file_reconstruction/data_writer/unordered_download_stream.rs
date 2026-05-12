@@ -2,8 +2,12 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use bytes::Bytes;
+#[cfg(not(target_family = "wasm"))]
+use tokio as wasmtokio;
 use tokio::sync::Notify;
 use tokio::sync::mpsc::UnboundedReceiver;
+#[cfg(target_family = "wasm")]
+use tokio_with_wasm::alias as wasmtokio;
 use tracing::info;
 
 use super::super::error::Result;
@@ -62,7 +66,7 @@ impl UnorderedDownloadStream {
 
         let signal = start_signal.clone();
         let rs = run_state.clone();
-        tokio::spawn(async move {
+        wasmtokio::task::spawn(async move {
             signal.notified().await;
             info!(file_hash = %rs.file_hash(), "Starting unordered download stream");
             let _ = reconstructor.run(writer, rs, true).await;
