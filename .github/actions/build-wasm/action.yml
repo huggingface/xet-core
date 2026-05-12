@@ -29,6 +29,14 @@ runs:
       working-directory: wasm/hf_xet_wasm
       run: |
         ./build_wasm.sh
+    - name: Check hf-xet compiles for wasm32-unknown-unknown
+      shell: bash
+      run: |
+        CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals --cfg getrandom_backend=\"wasm_js\"" \
+        cargo +nightly check \
+          --target wasm32-unknown-unknown \
+          -p hf-xet \
+          -Z build-std=std,panic_abort
     - name: Restore default toolchain
       shell: bash
       run: rustup default ${{ steps.save-toolchain.outputs.toolchain }}
