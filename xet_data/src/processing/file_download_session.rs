@@ -1,11 +1,14 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
+#[cfg(not(target_family = "wasm"))]
 use std::io::Write;
 use std::ops::{Bound, Range, RangeBounds};
+#[cfg(not(target_family = "wasm"))]
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+#[cfg(not(target_family = "wasm"))]
 use tokio::task::JoinHandle;
 use tracing::instrument;
 use xet_client::cas_client::Client;
@@ -112,6 +115,7 @@ impl FileDownloadSession {
     ///
     /// Acquires a permit from the global download semaphore before starting.
     /// Returns the tracking ID and the join handle for the spawned task.
+    #[cfg(not(target_family = "wasm"))]
     pub async fn download_file_background(
         self: &Arc<Self>,
         file_info: XetFileInfo,
@@ -130,6 +134,7 @@ impl FileDownloadSession {
     }
 
     /// Downloads a complete file to the given path.
+    #[cfg(not(target_family = "wasm"))]
     #[instrument(skip_all, name = "FileDownloadSession::download_file", fields(hash = file_info.hash()))]
     pub async fn download_file(&self, file_info: &XetFileInfo, write_path: &Path) -> Result<(UniqueId, u64)> {
         self.check_not_finalized()?;
@@ -138,6 +143,7 @@ impl FileDownloadSession {
         Ok((id, n_bytes))
     }
 
+    #[cfg(not(target_family = "wasm"))]
     async fn download_file_with_id(&self, file_info: &XetFileInfo, write_path: &Path, id: UniqueId) -> Result<u64> {
         let name = Arc::from(write_path.to_string_lossy().as_ref());
         let progress_updater = self.progress.new_item(id, name);
@@ -163,6 +169,7 @@ impl FileDownloadSession {
     /// `4..12`, `5..`, `..100`, or `..` (full file).
     ///
     /// This path does not acquire the session-level file download semaphore.
+    #[cfg(not(target_family = "wasm"))]
     #[instrument(skip_all, name = "FileDownloadSession::download_to_writer",
         fields(hash = file_info.hash(), range_start = tracing::field::Empty, range_end = tracing::field::Empty))]
     pub async fn download_to_writer<W: Write + Send + 'static>(

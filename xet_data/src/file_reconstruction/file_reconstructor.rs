@@ -117,6 +117,7 @@ impl FileReconstructor {
     /// When `write_offset` is `Some(offset)`, writing begins at that byte
     /// position regardless of the byte range. When `None`, writing begins at
     /// the byte range start (or 0 for a full-file reconstruction).
+    #[cfg(not(target_family = "wasm"))]
     pub async fn reconstruct_to_file(self, path: &Path, write_offset: Option<u64>, truncate_file: bool) -> Result<u64> {
         info!(
             file_hash = %self.file_hash,
@@ -149,6 +150,7 @@ impl FileReconstructor {
     ///
     /// The writer receives data starting from its current position (position 0
     /// for a fresh writer), regardless of the byte range being reconstructed.
+    #[cfg(not(target_family = "wasm"))]
     pub async fn reconstruct_to_writer<W: Write + Send + 'static>(self, writer: W) -> Result<u64> {
         info!(
             file_hash = %self.file_hash,
