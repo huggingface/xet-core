@@ -23,9 +23,9 @@ pub use file_download_session::FileDownloadSession;
 pub use file_upload_session::FileUploadSession;
 pub use remote_client_interface::create_remote_client;
 pub use xet_client::cas_client::Client as CasClient;
-pub use xet_client::chunk_cache::{CacheConfig, ChunkCache};
 #[cfg(not(target_family = "wasm"))]
 pub use xet_client::chunk_cache::get_cache;
+pub use xet_client::chunk_cache::{CacheConfig, ChunkCache};
 pub use xet_file::XetFileInfo;
 
 #[cfg(not(target_family = "wasm"))]

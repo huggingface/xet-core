@@ -7,8 +7,8 @@ use more_asserts::*;
 use tokio as wasmtokio;
 #[cfg(target_family = "wasm")]
 use tokio_with_wasm::alias as wasmtokio;
-use wasmtokio::task::JoinHandle;
 use tracing::{debug, info};
+use wasmtokio::task::JoinHandle;
 use web_time::Instant;
 use xet_client::cas_client::Client;
 use xet_client::cas_types::FileRange;

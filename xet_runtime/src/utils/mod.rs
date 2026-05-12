@@ -45,9 +45,9 @@ pub use rw_task_lock::{RwTaskLock, RwTaskLockError, RwTaskLockReadGuard};
 
 mod guards;
 
+pub use guards::ClosureGuard;
 #[cfg(not(target_family = "wasm"))]
 pub use guards::{CwdGuard, EnvVarGuard};
-pub use guards::ClosureGuard;
 
 #[cfg(not(target_family = "wasm"))]
 pub mod pipe;
