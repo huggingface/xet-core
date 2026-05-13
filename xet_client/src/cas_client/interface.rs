@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use bytes::Bytes;
 use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
@@ -17,6 +19,63 @@ pub trait URLProvider: Send + Sync {
 
     /// Asks for a refresh of the URL; triggered on 403 errors.
     async fn refresh_url(&self) -> Result<()>;
+}
+
+/// A `URLProvider` wrapper that exposes exactly one of the byte ranges returned by an inner
+/// provider as if it were a single-range fetch.
+///
+/// This is used by `RemoteClient::get_file_term_data` as a fallback when a multi-range signed
+/// URL is rejected by the storage backend (some CDN edges reject multi-range Range headers
+/// with 403 before the request reaches the origin). Splitting the failed multi-range fetch
+/// into N independent single-range GETs against the same URL travels the same single-range
+/// code path that V1 reconstruction already uses, and avoids the broken multi-range path.
+///
+/// `refresh_url` is delegated to the inner provider so that signature refresh semantics are
+/// preserved.
+pub struct SingleRangeURLProvider {
+    inner: Arc<Box<dyn URLProvider>>,
+    range_index: usize,
+}
+
+impl SingleRangeURLProvider {
+    pub fn new(inner: Arc<Box<dyn URLProvider>>, range_index: usize) -> Self {
+        Self { inner, range_index }
+    }
+}
+
+#[async_trait::async_trait]
+impl URLProvider for SingleRangeURLProvider {
+    async fn retrieve_url(&self) -> Result<(String, Vec<HttpRange>)> {
+        let (url, ranges) = self.inner.retrieve_url().await?;
+        // The inner provider's range count can change across a refresh; clamp defensively
+        // rather than panic. If the index is out of bounds we fall back to a single-range
+        // request using the last available range, which keeps the fetch a valid GET — the
+        // caller will detect a content-length mismatch if anything is off.
+        let range = ranges
+            .get(self.range_index)
+            .copied()
+            .or_else(|| ranges.last().copied())
+            .ok_or_else(|| crate::error::ClientError::Other("URLProvider returned no ranges".to_string()))?;
+        Ok((url, vec![range]))
+    }
+
+    async fn refresh_url(&self) -> Result<()> {
+        self.inner.refresh_url().await
+    }
+}
+
+/// Build a fan-out of single-range URL providers from a multi-range provider, one per range
+/// reported by the inner provider's most recent `retrieve_url()` call.
+///
+/// Returns an empty vec if the inner provider has no ranges (caller should treat this as an
+/// error condition).
+pub async fn split_into_single_range_providers(
+    inner: Arc<Box<dyn URLProvider>>,
+) -> Result<Vec<Box<dyn URLProvider>>> {
+    let (_, ranges) = inner.retrieve_url().await?;
+    Ok((0..ranges.len())
+        .map(|i| Box::new(SingleRangeURLProvider::new(inner.clone(), i)) as Box<dyn URLProvider>)
+        .collect())
 }
 
 /// A Client to the Shard service. The shard service

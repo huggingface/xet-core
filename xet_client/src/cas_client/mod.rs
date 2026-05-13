@@ -1,4 +1,4 @@
-pub use interface::{Client, URLProvider};
+pub use interface::{Client, SingleRangeURLProvider, URLProvider, split_into_single_range_providers};
 pub use remote_client::RemoteClient;
 pub use simulation::{ClientTestingUtils, DirectAccessClient, MemoryClient, RandomFileContents, RandomXorb};
 #[cfg(not(target_family = "wasm"))]
