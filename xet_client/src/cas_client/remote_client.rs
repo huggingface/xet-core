@@ -856,13 +856,20 @@ impl Client for RemoteClient {
 #[cfg(test)]
 #[cfg(not(target_family = "wasm"))]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use async_trait::async_trait;
     use tracing_test::traced_test;
-    use xet_core_structures::xorb_object::CompressionScheme;
+    use wiremock::matchers::{header, headers, method, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
     use xet_core_structures::xorb_object::xorb_format_test_utils::{
         ChunkSize, build_and_verify_xorb_object, build_raw_xorb,
     };
+    use xet_core_structures::xorb_object::{CompressionScheme, serialize_chunk};
+    use xet_runtime::config::XetConfig;
 
     use super::*;
+    use crate::cas_client::interface::URLProvider;
 
     #[ignore = "requires a running CAS server"]
     #[traced_test]
@@ -888,5 +895,234 @@ mod tests {
 
         // Assert
         assert!(result.is_ok());
+    }
+
+    // --- multi-range 403 fallback tests --------------------------------------------------
+
+    /// Test-only URLProvider that returns a fixed URL + ranges. `refresh_url` is a no-op
+    /// counter so tests can assert how many times refresh was triggered without forcing a
+    /// real reconstruction re-query.
+    struct StaticURLProvider {
+        url: String,
+        ranges: Vec<HttpRange>,
+        refresh_count: AtomicUsize,
+    }
+
+    impl StaticURLProvider {
+        fn new(url: String, ranges: Vec<HttpRange>) -> Self {
+            Self {
+                url,
+                ranges,
+                refresh_count: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl URLProvider for StaticURLProvider {
+        async fn retrieve_url(&self) -> Result<(String, Vec<HttpRange>)> {
+            Ok((self.url.clone(), self.ranges.clone()))
+        }
+
+        async fn refresh_url(&self) -> Result<()> {
+            self.refresh_count.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    /// Build a single uncompressed chunk in xorb chunk format (header + body). Each "subrange"
+    /// in the multi-range fetch is independently parseable by `deserialize_chunks`.
+    fn build_one_chunk(payload: &[u8]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        serialize_chunk(payload, &mut buf, CompressionScheme::None).expect("serialize_chunk");
+        buf
+    }
+
+    fn test_remote_client() -> Arc<RemoteClient> {
+        // Tight retry budget to keep the failure-path tests fast.
+        let config = XetConfig::new()
+            .with_config("client.retry_max_attempts", "2")
+            .unwrap()
+            .with_config("client.retry_base_delay", "5ms")
+            .unwrap();
+        let ctx = XetContext::from_external(tokio::runtime::Handle::current(), config);
+        // The CAS endpoint isn't exercised in get_file_term_data tests (we call the storage GET
+        // path directly via a URLProvider pointing at the mock server).
+        RemoteClient::new(ctx, "http://unused", &None, "test-session", false, None)
+    }
+
+    #[tokio::test]
+    async fn test_get_file_term_data_multi_range_happy_path() {
+        let server = MockServer::start().await;
+
+        let chunk_a = b"chunk-a-payload-bytes!".to_vec();
+        let chunk_b = b"chunk-b-payload-bytes!!!".to_vec();
+        let serialized_a = build_one_chunk(&chunk_a);
+        let serialized_b = build_one_chunk(&chunk_b);
+
+        // The mock storage object is the two serialized chunks concatenated. The multi-range
+        // GET asks for [0..serialized_a.len()-1] and [serialized_a.len()..total-1].
+        let len_a = serialized_a.len();
+        let object = [serialized_a.as_slice(), serialized_b.as_slice()].concat();
+        let total = object.len();
+
+        // wiremock's `header()` matcher splits the actual header value on commas, so a
+        // multi-range header `bytes=0-29,30-61` is matched as two parts: `bytes=0-29` and
+        // `30-61`. Use the `headers()` (multi-value) matcher to match accordingly.
+        let multi_range_parts = vec![format!("bytes=0-{}", len_a - 1), format!("{}-{}", len_a, total - 1)];
+
+        // Build a multipart/byteranges response so the multi-range parser path is exercised.
+        let boundary = "TESTBOUNDARY";
+        let mut body = Vec::new();
+        for (start, end, slice) in [
+            (0u64, (len_a - 1) as u64, &object[..len_a]),
+            (len_a as u64, (total - 1) as u64, &object[len_a..]),
+        ] {
+            body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+            body.extend_from_slice(b"Content-Type: application/octet-stream\r\n");
+            body.extend_from_slice(format!("Content-Range: bytes {start}-{end}/{total}\r\n\r\n").as_bytes());
+            body.extend_from_slice(slice);
+            body.extend_from_slice(b"\r\n");
+        }
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/storage/xorb$"))
+            .and(headers("range", multi_range_parts))
+            .respond_with(
+                ResponseTemplate::new(206)
+                    .insert_header("content-type", format!("multipart/byteranges; boundary={boundary}"))
+                    .set_body_bytes(body),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let url = format!("{}/storage/xorb", server.uri());
+        let provider: Box<dyn URLProvider> = Box::new(StaticURLProvider::new(
+            url,
+            vec![
+                HttpRange::new(0, (len_a - 1) as u64),
+                HttpRange::new(len_a as u64, (total - 1) as u64),
+            ],
+        ));
+
+        let client = test_remote_client();
+        let permit = client.acquire_download_permit().await.unwrap();
+        let (bytes, _indices) = client.get_file_term_data(provider, permit, None, None).await.unwrap();
+
+        // Concatenated uncompressed chunk bodies.
+        let expected: Vec<u8> = [chunk_a.as_slice(), chunk_b.as_slice()].concat();
+        assert_eq!(bytes.as_ref(), expected.as_slice(), "happy-path bytes should match");
+    }
+
+    #[tokio::test]
+    async fn test_get_file_term_data_multi_range_403_falls_back_to_single_range() {
+        let server = MockServer::start().await;
+
+        let chunk_a = b"first-range-bytes".to_vec();
+        let chunk_b = b"second-range-bytes!!".to_vec();
+        let serialized_a = build_one_chunk(&chunk_a);
+        let serialized_b = build_one_chunk(&chunk_b);
+
+        let len_a = serialized_a.len();
+        let len_b = serialized_b.len();
+        let total = len_a + len_b;
+
+        let multi_range_parts = vec![format!("bytes=0-{}", len_a - 1), format!("{}-{}", len_a, total - 1)];
+        let single_range_header_a = format!("bytes=0-{}", len_a - 1);
+        let single_range_header_b = format!("bytes={}-{}", len_a, total - 1);
+
+        // The multi-range request always 403s — modeling the CloudFront-edge behavior.
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/storage/xorb$"))
+            .and(headers("range", multi_range_parts))
+            .respond_with(ResponseTemplate::new(403).set_body_string("Invalid Range Specified"))
+            // 2 retry_max_attempts => up to 3 attempts on the multi-range path.
+            .expect(1..=3)
+            .mount(&server)
+            .await;
+
+        // Each single-range subrange GET returns its slice as a plain 206.
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/storage/xorb$"))
+            .and(header("range", single_range_header_a.as_str()))
+            .respond_with(ResponseTemplate::new(206).set_body_bytes(serialized_a.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/storage/xorb$"))
+            .and(header("range", single_range_header_b.as_str()))
+            .respond_with(ResponseTemplate::new(206).set_body_bytes(serialized_b.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let url = format!("{}/storage/xorb", server.uri());
+        let provider: Box<dyn URLProvider> = Box::new(StaticURLProvider::new(
+            url,
+            vec![
+                HttpRange::new(0, (len_a - 1) as u64),
+                HttpRange::new(len_a as u64, (total - 1) as u64),
+            ],
+        ));
+
+        let client = test_remote_client();
+        let permit = client.acquire_download_permit().await.unwrap();
+        let (bytes, _indices) = client.get_file_term_data(provider, permit, None, None).await.unwrap();
+
+        let expected: Vec<u8> = [chunk_a.as_slice(), chunk_b.as_slice()].concat();
+        assert_eq!(bytes.as_ref(), expected.as_slice(), "fallback should concatenate single-range results in order");
+    }
+
+    #[tokio::test]
+    async fn test_get_file_term_data_single_range_fallback_errors_propagate() {
+        let server = MockServer::start().await;
+
+        // Use tiny payloads — they don't have to decode successfully, since the test exits with
+        // a 403 before reaching the parser.
+        let len_a: usize = 16;
+        let len_b: usize = 32;
+        let total = len_a + len_b;
+
+        let multi_range_parts = vec![format!("bytes=0-{}", len_a - 1), format!("{}-{}", len_a, total - 1)];
+
+        // The multi-range request 403s.
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/storage/xorb$"))
+            .and(headers("range", multi_range_parts))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+
+        // Every single-range request also 403s — fallback should propagate, not recurse.
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/storage/xorb$"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+
+        let url = format!("{}/storage/xorb", server.uri());
+        let provider: Box<dyn URLProvider> = Box::new(StaticURLProvider::new(
+            url,
+            vec![
+                HttpRange::new(0, (len_a - 1) as u64),
+                HttpRange::new(len_a as u64, (total - 1) as u64),
+            ],
+        ));
+
+        let client = test_remote_client();
+        let permit = client.acquire_download_permit().await.unwrap();
+        let result = client.get_file_term_data(provider, permit, None, None).await;
+
+        assert!(result.is_err(), "expected error when all paths 403, got Ok");
+        let err = result.unwrap_err();
+        assert_eq!(err.status(), Some(StatusCode::FORBIDDEN), "error should preserve 403 status: {err:?}");
+
+        // Sanity: the server received a bounded number of requests overall — no infinite loop.
+        let recv_count = server.received_requests().await.unwrap().len();
+        assert!(recv_count < 20, "too many requests, possible loop: {recv_count}");
     }
 }
