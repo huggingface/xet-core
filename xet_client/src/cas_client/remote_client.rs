@@ -16,7 +16,7 @@ use xet_runtime::core::XetContext;
 
 use super::adaptive_concurrency::{AdaptiveConcurrencyController, ConnectionPermit};
 use super::auth::AuthConfig;
-use super::interface::URLProvider;
+use super::interface::{URLProvider, split_into_single_range_providers};
 use super::progress_tracked_streams::{
     DownloadProgressStream, ProgressCallback, StreamProgressReporter, UploadProgressStream,
 };
@@ -304,70 +304,21 @@ impl RemoteClient {
             other => Err(ClientError::InternalError(anyhow!("unsupported reconstruction API version: {other}"))),
         }
     }
-}
 
-#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
-impl Client for RemoteClient {
-    async fn get_reconstruction(
+    /// Issue a (possibly multi-range) GET against `url_info`, parse the response into
+    /// decompressed bytes + chunk byte indices, retrying on transient errors.
+    ///
+    /// This is the per-xorb fetch primitive used both by the default multi-range path and
+    /// by the multi-range 403 fallback (which calls this once per subrange).
+    async fn fetch_xorb_via_provider(
         &self,
-        file_id: &MerkleHash,
-        bytes_range: Option<FileRange>,
-    ) -> Result<Option<QueryReconstructionResponseV2>> {
-        let forced_version = self.ctx.config.client.reconstruction_api_version;
-        self.get_reconstruction_with_version_override(file_id, bytes_range, forced_version)
-            .await
-    }
-
-    async fn batch_get_reconstruction(&self, file_ids: &[MerkleHash]) -> Result<BatchQueryReconstructionResponse> {
-        let mut url_str = format!("{}/reconstructions?", self.endpoint);
-        let mut is_first = true;
-        let mut file_id_list = Vec::new();
-        for hash in file_ids {
-            file_id_list.push(hash.hex());
-            if is_first {
-                is_first = false;
-            } else {
-                url_str.push('&');
-            }
-            url_str.push_str("file_id=");
-            url_str.push_str(hash.hex().as_str());
-        }
-        let url: Url = url_str.parse()?;
-
-        let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
-        info!(call_id, file_ids=?file_id_list, "Starting batch_get_reconstruction API call");
-
-        let api_tag = "cas::batch_get_reconstruction";
-        let client = self.authenticated_http_client.clone();
-
-        let response: BatchQueryReconstructionResponse = RetryWrapper::new(self.ctx.clone(), api_tag)
-            .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
-            .await?;
-
-        info!(call_id,
-            file_ids=?file_id_list,
-            response_count=response.files.len(),
-            "Completed batch_get_reconstruction API call",
-        );
-
-        Ok(response)
-    }
-
-    async fn acquire_download_permit(&self) -> Result<ConnectionPermit> {
-        self.download_concurrency_controller.acquire_connection_permit().await
-    }
-
-    async fn get_file_term_data(
-        &self,
-        url_info: Box<dyn URLProvider>,
+        url_info: Arc<Box<dyn URLProvider>>,
         download_permit: ConnectionPermit,
         progress_callback: Option<ProgressCallback>,
         uncompressed_size_if_known: Option<usize>,
     ) -> Result<(Bytes, Vec<u32>)> {
         let api_tag = "s3::get_range";
         let http_client = self.http_client.clone();
-        let url_info = Arc::new(url_info);
 
         let (_, url_ranges) = url_info.retrieve_url().await?;
         let total_download_bytes: u64 = url_ranges.iter().map(|r| r.length()).sum();
@@ -378,7 +329,7 @@ impl Client for RemoteClient {
             transfer_reporter = transfer_reporter.with_progress_callback(cb);
         }
 
-        let result = RetryWrapper::new(self.ctx.clone(), api_tag)
+        RetryWrapper::new(self.ctx.clone(), api_tag)
             .with_retry_on_403()
             .with_connection_permit(download_permit, None)
             .run_and_extract_custom(
@@ -510,9 +461,162 @@ impl Client for RemoteClient {
                     }
                 },
             )
+            .await
+    }
+
+    /// Multi-range 403 fallback: split the multi-range provider into N single-range providers
+    /// and fetch each as an independent single-range GET. Concatenate the decompressed bytes
+    /// in range order to produce the same result the original multi-range fetch would have.
+    ///
+    /// Each subrange fetch goes through the standard single-range retry path. If any subrange
+    /// fetch ultimately fails (including 403 after retries), the error is propagated rather
+    /// than recursively re-attempted — there is no further client-side fallback.
+    async fn fetch_xorb_via_single_range_fallback(
+        &self,
+        url_info: Arc<Box<dyn URLProvider>>,
+        progress_callback: Option<ProgressCallback>,
+        uncompressed_size_if_known: Option<usize>,
+    ) -> Result<(Bytes, Vec<u32>)> {
+        let single_range_providers = split_into_single_range_providers(url_info).await?;
+        if single_range_providers.is_empty() {
+            return Err(ClientError::Other(
+                "multi-range 403 fallback: URLProvider returned no ranges to split".to_string(),
+            ));
+        }
+
+        let mut all_decompressed = Vec::with_capacity(uncompressed_size_if_known.unwrap_or(0));
+        let mut all_chunk_indices = Vec::<u32>::new();
+
+        for (idx, provider) in single_range_providers.into_iter().enumerate() {
+            // Each subrange fetch gets its own permit so that the adaptive concurrency
+            // controller observes each as an independent successful/failed transfer.
+            let permit = self.acquire_download_permit_internal().await?;
+            let provider_arc: Arc<Box<dyn URLProvider>> = Arc::new(provider);
+
+            // Pass through the original progress callback; it observes only `delta` so it is
+            // safe to share across the N subrange fetches.
+            let (data, chunk_indices) = self
+                .fetch_xorb_via_provider(provider_arc, permit, progress_callback.clone(), None)
+                .await
+                .map_err(|e| {
+                    info!("multi-range 403 fallback: subrange {idx} fetch failed: {e}");
+                    e
+                })?;
+
+            xet_core_structures::xorb_object::append_chunk_segment(
+                &mut all_decompressed,
+                &mut all_chunk_indices,
+                &data,
+                &chunk_indices,
+            );
+        }
+
+        if let Some(expected) = uncompressed_size_if_known
+            && expected != all_decompressed.len()
+        {
+            return Err(ClientError::Other(format!(
+                "get_file_term_data: expected {expected} uncompressed bytes after single-range fallback, got {}",
+                all_decompressed.len()
+            )));
+        }
+
+        Ok((Bytes::from(all_decompressed), all_chunk_indices))
+    }
+
+    async fn acquire_download_permit_internal(&self) -> Result<ConnectionPermit> {
+        self.download_concurrency_controller.acquire_connection_permit().await
+    }
+}
+
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
+impl Client for RemoteClient {
+    async fn get_reconstruction(
+        &self,
+        file_id: &MerkleHash,
+        bytes_range: Option<FileRange>,
+    ) -> Result<Option<QueryReconstructionResponseV2>> {
+        let forced_version = self.ctx.config.client.reconstruction_api_version;
+        self.get_reconstruction_with_version_override(file_id, bytes_range, forced_version)
+            .await
+    }
+
+    async fn batch_get_reconstruction(&self, file_ids: &[MerkleHash]) -> Result<BatchQueryReconstructionResponse> {
+        let mut url_str = format!("{}/reconstructions?", self.endpoint);
+        let mut is_first = true;
+        let mut file_id_list = Vec::new();
+        for hash in file_ids {
+            file_id_list.push(hash.hex());
+            if is_first {
+                is_first = false;
+            } else {
+                url_str.push('&');
+            }
+            url_str.push_str("file_id=");
+            url_str.push_str(hash.hex().as_str());
+        }
+        let url: Url = url_str.parse()?;
+
+        let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
+        info!(call_id, file_ids=?file_id_list, "Starting batch_get_reconstruction API call");
+
+        let api_tag = "cas::batch_get_reconstruction";
+        let client = self.authenticated_http_client.clone();
+
+        let response: BatchQueryReconstructionResponse = RetryWrapper::new(self.ctx.clone(), api_tag)
+            .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
             .await?;
 
-        Ok(result)
+        info!(call_id,
+            file_ids=?file_id_list,
+            response_count=response.files.len(),
+            "Completed batch_get_reconstruction API call",
+        );
+
+        Ok(response)
+    }
+
+    async fn acquire_download_permit(&self) -> Result<ConnectionPermit> {
+        self.download_concurrency_controller.acquire_connection_permit().await
+    }
+
+    async fn get_file_term_data(
+        &self,
+        url_info: Box<dyn URLProvider>,
+        download_permit: ConnectionPermit,
+        progress_callback: Option<ProgressCallback>,
+        uncompressed_size_if_known: Option<usize>,
+    ) -> Result<(Bytes, Vec<u32>)> {
+        let url_info = Arc::new(url_info);
+
+        let (_, url_ranges) = url_info.retrieve_url().await?;
+        let is_multi_range = url_ranges.len() > 1;
+
+        // Try the multi-range fetch first. This is the fast path that minimizes the number
+        // of storage requests; if the URL is single-range to begin with, this is the only
+        // path we take.
+        match self
+            .fetch_xorb_via_provider(
+                url_info.clone(),
+                download_permit,
+                progress_callback.clone(),
+                uncompressed_size_if_known,
+            )
+            .await
+        {
+            Ok(result) => Ok(result),
+            Err(e) if is_multi_range && e.status() == Some(StatusCode::FORBIDDEN) => {
+                // Some storage backends (CloudFront edges in particular) reject multi-range
+                // Range headers with 403 before the request reaches the origin. After the
+                // multi-range retry budget (`with_retry_on_403`) is exhausted, fall back to
+                // fetching each subrange as an independent single-range GET against the
+                // same xorb. This travels the existing V1 single-range code path.
+                info!("Multi-range GET 403'd after retries; falling back to {} single-range fetches", url_ranges.len());
+                self.fetch_xorb_via_single_range_fallback(url_info, progress_callback, uncompressed_size_if_known)
+                    .await
+            },
+            Err(e) => Err(e),
+        }
     }
 
     #[instrument(skip_all, name = "RemoteClient::get_file_reconstruction", fields(file.hash = file_hash.hex()

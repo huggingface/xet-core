@@ -69,9 +69,7 @@ impl URLProvider for SingleRangeURLProvider {
 ///
 /// Returns an empty vec if the inner provider has no ranges (caller should treat this as an
 /// error condition).
-pub async fn split_into_single_range_providers(
-    inner: Arc<Box<dyn URLProvider>>,
-) -> Result<Vec<Box<dyn URLProvider>>> {
+pub async fn split_into_single_range_providers(inner: Arc<Box<dyn URLProvider>>) -> Result<Vec<Box<dyn URLProvider>>> {
     let (_, ranges) = inner.retrieve_url().await?;
     Ok((0..ranges.len())
         .map(|i| Box::new(SingleRangeURLProvider::new(inner.clone(), i)) as Box<dyn URLProvider>)
