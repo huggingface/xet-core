@@ -112,7 +112,7 @@ HF_XET_LOG_FILE=/tmp/xet.log # write logs to a file (defaults to stdout)
 * [`xet_runtime/`](./xet_runtime) (`xet-runtime`): Async runtime, configuration, logging, and utilities.
 * [`hf_xet/`](./hf_xet): Python bindings (maturin/PyO3), produces the `hf-xet` PyPI package.
 * [`git_xet/`](./git_xet): Git LFS compatible CLI tool (`git-xet`).
-* [`wasm/`](./wasm): WebAssembly builds (`hf_xet_wasm`, `hf_xet_thin_wasm`).
+* [`wasm/`](./wasm): WebAssembly builds (`hf_xet_wasm`, `hf_xet_thin_wasm`, `hf_xet_wasm_download`).
 * [`simulation/`](./simulation): Simulation and benchmarking infrastructure.
 
 ### Build, Test & Benchmark
@@ -199,6 +199,23 @@ Note: You may need to install x86_64: `rustup target add x86_64-apple-darwin`
 ### Testing
 
 Unit-tests are run with `cargo test`, benchmarks are run with `cargo bench`. Some crates have a main.rs that can be run for manual testing.
+
+### WebAssembly compatibility
+
+`xet_pkg` (`hf-xet`), `xet_client`, `xet_data`, `xet_core_structures`, and `xet_runtime` must compile cleanly for `wasm32-unknown-unknown` so that the `wasm/hf_xet_wasm_download` JS-binding crate (and downstream consumers like `hf-hub` on the web) keep working. CI enforces this via `cargo +nightly check --target wasm32-unknown-unknown -p hf-xet` plus the `wasm-pack`-style builds under `wasm/`.
+
+When adding or modifying code in those crates, please keep the wasm build green:
+
+- Prefer `web_time::Instant` over `std::time::Instant` / `tokio::time::Instant` on code paths reachable from wasm (the std and tokio variants panic on wasm32).
+- Use `wasm_bindgen_futures::spawn_local` via the `tokio_with_wasm::alias as wasmtokio` shim instead of bare `tokio::spawn` / `JoinSet::spawn`. The browser's reqwest backend produces `!Send` futures.
+- Apply the conditional `?Send` pattern to `#[async_trait]` definitions whose methods touch HTTP / I/O:
+  ```rust
+  #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+  #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
+  ```
+- Gate filesystem-only code (`std::fs`, `tokio::fs`, `OpenOptions`, `spawn_blocking`, disk caches, file-path download methods) with `#[cfg(not(target_family = "wasm"))]`.
+
+See `wasm/hf_xet_wasm_download/` for the JS-binding crate and `examples/download.html` for a browser-based test.
 
 ## References & History
 
