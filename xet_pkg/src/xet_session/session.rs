@@ -192,7 +192,14 @@ impl XetSessionBuilder {
 
     #[cfg(target_family = "wasm")]
     pub fn build(self) -> Result<XetSession, SessionError> {
-        let ctx = XetContext::from_external(tokio::runtime::Handle::current(), self.config);
+        // On wasm we don't assume the caller is already inside a tokio runtime
+        // (there is no "current" handle to capture from a plain JS callback).
+        // `XetContext::with_config` constructs a current_thread runtime internally
+        // when none exists, which is what we want — our wasm bridge variants in
+        // `task_runtime.rs` then `.await` the future directly via wasm_bindgen_futures
+        // and never actually drive the tokio runtime, so this is a lightweight
+        // bookkeeping object.
+        let ctx = XetContext::with_config(self.config)?;
         let session = XetSession::new(ctx);
         info!("Session created, session_id={}", session.inner.id);
         Ok(session)

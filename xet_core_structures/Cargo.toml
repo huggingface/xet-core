@@ -49,6 +49,7 @@ static_assertions = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+web-time = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 bytemuck = { workspace = true }
@@ -74,7 +75,6 @@ tokio = { workspace = true, features = [
     "time",
 ] }
 uuid = { workspace = true, features = ["v4", "js"] }
-web-time = { workspace = true }
 
 [dev-dependencies]
 postcard = { workspace = true }

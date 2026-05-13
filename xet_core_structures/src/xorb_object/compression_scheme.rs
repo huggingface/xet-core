@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::fmt::Display;
 use std::io::{Cursor, Read, Write, copy};
 use std::str::FromStr;
-use std::time::Instant;
+use web_time::Instant;
 
 use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 

@@ -1,4 +1,15 @@
-use tokio::time::{Duration, Instant};
+use std::time::Duration;
+
+// On native we use `tokio::time::Instant` because the tests rely on
+// `tokio::time::{advance, pause}` to simulate clock movement, which only
+// affects `tokio::time::Instant`. On wasm we use `web_time::Instant`
+// because `tokio::time::Instant::now()` falls through to `std::time::Instant`
+// which panics on `wasm32-unknown-unknown` ("time not implemented on this
+// platform").
+#[cfg(not(target_family = "wasm"))]
+use tokio::time::Instant;
+#[cfg(target_family = "wasm")]
+use web_time::Instant;
 
 /// Mode for exponentially-weighted moving average decay.
 #[derive(Debug)]
