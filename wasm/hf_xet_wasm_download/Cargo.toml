@@ -9,7 +9,6 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 hf-xet = { path = "../../xet_pkg" }
 
-bytes = "1"
 console_error_panic_hook = "0.1.7"
 console_log = { version = "1.0.0", features = ["color"] }
 getrandom = { version = "0.3", features = ["wasm_js"] }
@@ -23,4 +22,8 @@ wasm-bindgen-futures = "0.4"
 targets = ["wasm32-unknown-unknown"]
 
 [package.metadata.cargo-machete]
-ignored = ["getrandom"]
+# cargo-machete picks up the crate by its [package] name (hf-xet) but we import it via
+# its lib name `xet`. wasm-bindgen-futures is referenced by the `wasm_bindgen` macro
+# expansion for async fns. getrandom features are set so transitive deps pick up the
+# wasm_js backend; we don't reference the crate directly.
+ignored = ["hf-xet", "wasm-bindgen-futures", "getrandom"]
