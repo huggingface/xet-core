@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>hf_xet_wasm_download — CI smoke test</title>
+</head>
+<body>
+<script type="module">
+  import init, { XetSession } from '../../pkg/hf_xet_wasm_download.js';
+
+  await init();
+
+  const HUB_BASE = 'https://huggingface.co';
+
+  async function fetchPathInfo({ hfToken, repoType, namespace, repo, revision, filepath }) {
+    const url = `${HUB_BASE}/api/${repoType}s/${namespace}/${repo}/paths-info/${revision}`;
+    const headers = { 'Content-Type': 'application/json' };
+    if (hfToken) headers['Authorization'] = `Bearer ${hfToken}`;
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ paths: [filepath], expand: false }),
+    });
+    if (!resp.ok) throw new Error(`paths-info ${resp.status}: ${await resp.text()}`);
+    const arr = await resp.json();
+    const entry = arr.find((e) => e.path === filepath);
+    if (!entry?.xetHash) {
+      throw new Error(`paths-info returned no xetHash for ${filepath}: ${JSON.stringify(entry)}`);
+    }
+    return { xetHash: entry.xetHash, size: entry.size };
+  }
+
+  async function fetchXetReadToken({ hfToken, repoType, namespace, repo, revision }) {
+    const url = `${HUB_BASE}/api/${repoType}s/${namespace}/${repo}/xet-read-token/${revision}`;
+    const headers = {};
+    if (hfToken) headers['Authorization'] = `Bearer ${hfToken}`;
+    const resp = await fetch(url, { method: 'GET', headers });
+    if (!resp.ok) throw new Error(`xet-read-token ${resp.status}: ${await resp.text()}`);
+    const json = await resp.json();
+    if (!json.accessToken || !json.casUrl) {
+      throw new Error(`xet-read-token missing fields: ${JSON.stringify(json)}`);
+    }
+    return json;
+  }
+
+  function toHex(buf) {
+    return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  window.runTest = async function runTest(hfToken) {
+    try {
+      const params = {
+        hfToken,
+        repoType: 'dataset',
+        namespace: 'xet-team',
+        repo: 'xet-spec-reference-files',
+        revision: 'main',
+        filepath: 'Electric_Vehicle_Population_Data_20250917.csv',
+      };
+
+      console.log('paths-info...');
+      const { xetHash, size } = await fetchPathInfo(params);
+      console.log(`paths-info ok: xetHash=${xetHash} size=${size}`);
+
+      console.log('xet-read-token...');
+      const { accessToken, exp, casUrl } = await fetchXetReadToken(params);
+      console.log(`token ok: casUrl=${casUrl}`);
+
+      const session = new XetSession(casUrl, accessToken, exp);
+      const stream = await session.downloadStream({ hash: xetHash, file_size: size });
+
+      const chunks = [];
+      let total = 0;
+      while (true) {
+        const chunk = await stream.next();
+        if (chunk === undefined) break;
+        chunks.push(chunk);
+        total += chunk.byteLength;
+      }
+      console.log(`download ok: ${total} bytes`);
+
+      const buf = await new Blob(chunks).arrayBuffer();
+      const sha256 = toHex(await crypto.subtle.digest('SHA-256', buf));
+      console.log(`sha256=${sha256}`);
+
+      return { ok: true, byteCount: total, sha256, xetHash, expectedSize: size };
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e), stack: e?.stack };
+    }
+  };
+
+  console.log('test page ready');
+</script>
+</body>
+</html>

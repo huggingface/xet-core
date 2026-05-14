@@ -179,6 +179,23 @@ jobs:
         run: |
           # the build steps would update Cargo.lock if it is out of date
           test -z "$(git status --porcelain Cargo.lock)" || (echo "hf_xet_wasm_download Cargo.lock has uncommitted changes!" && exit 1)
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5.0.0
+        with:
+          node-version: '20'
+      - name: WASM download smoke test (prod hub + CAS)
+        # Skipped on forks (no secret); non-blocking on a real flake / hub outage.
+        continue-on-error: true
+        env:
+          HF_TOKEN: ${{ secrets.XET_WASM_SMOKE_HF_TOKEN }}
+        working-directory: wasm/hf_xet_wasm_download/tests/ci-smoke
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "XET_WASM_SMOKE_HF_TOKEN not set (likely a fork PR); skipping."
+            exit 0
+          fi
+          npm ci
+          npx playwright install --with-deps chromium
+          node run.mjs
   cargo-audit:
     name: Cargo Audit
     runs-on: ubuntu-latest
