@@ -82,6 +82,9 @@ rmSync(destPath, { force: true });
 
 addon.initLogging("xet_pkg_napi/0.0.1 smoke");
 
+const smokeResult = addon.smokeTest();
+console.log(`smokeTest: ${smokeResult}`);
+
 console.log(`\nDownloading -> ${destPath}`);
 const t0 = Date.now();
 const result = addon.downloadFile({

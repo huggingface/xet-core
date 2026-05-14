@@ -25,7 +25,7 @@ than `cargo build`.
 
 ## Build & run
 
-Requires Node ≥ 16, a Rust toolchain, and outbound network access to
+Requires Node ≥ 18, a Rust toolchain, and outbound network access to
 `huggingface.co` and `cas-bridge.xethub.hf.co`.
 
 ```sh
@@ -75,6 +75,7 @@ Fetching xet metadata for model:hf-internal-testing/tiny-random-bert/pytorch_mod
   xet-hash:    75402e74462600f62ca4a08b91c9218f36075860d5f6d7eb07f4c29ed7fa4ad6
   size:        540,217 bytes
   sha256:      9922e8996d0c7e24c7f4e7a5d9c5b7303549f4ee94de0f1138b103014b51be13
+smokeTest: xet session built; runtime initialized
 
 Downloading -> downloads/pytorch_model.bin
 
