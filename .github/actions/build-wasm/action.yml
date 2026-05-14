@@ -14,6 +14,19 @@ runs:
         targets: wasm32-unknown-unknown
         components: rust-src
     - uses: ./.github/actions/cache-rust-build
+    # Cache the cargo-installed tool binaries themselves so we skip the
+    # ~1-2 min `cargo install` rebuilds on cache hit. Keyed on the exact
+    # versions below; bump the key when bumping versions.
+    - name: Cache wasm-bindgen-cli and wasm-pack
+      uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5
+      with:
+        path: |
+          ~/.cargo/bin/wasm-bindgen
+          ~/.cargo/bin/wasm-bindgen-test-runner
+          ~/.cargo/bin/wasm-pack
+          ~/.cargo/.crates.toml
+          ~/.cargo/.crates2.json
+        key: ${{ runner.os }}-${{ runner.arch }}-cargo-tools-wbg-0.2.121-wp-0.14.0
     - name: Install wasm-bindgen-cli and wasm-pack
       shell: bash
       run: |
