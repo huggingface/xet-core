@@ -186,11 +186,11 @@ jobs:
         # Skipped on forks (no secret); non-blocking on a real flake / hub outage.
         continue-on-error: true
         env:
-          HF_TOKEN: ${{ secrets.XET_WASM_SMOKE_HF_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         working-directory: wasm/hf_xet_wasm_download/tests/ci-smoke
         run: |
           if [ -z "$HF_TOKEN" ]; then
-            echo "XET_WASM_SMOKE_HF_TOKEN not set (likely a fork PR); skipping."
+            echo "HF_TOKEN not set (likely a fork PR); skipping."
             exit 0
           fi
           npm ci
