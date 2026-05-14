@@ -1,15 +1,17 @@
 use std::collections::HashMap;
-use std::fs::{DirEntry, File};
+use std::fs::{DirEntry, File, OpenOptions};
 use std::io::{self, Cursor, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::GeneralPurpose;
 use base64::engine::general_purpose::URL_SAFE;
-use tokio::sync::RwLock;
+use serde::{Deserialize, Serialize};
+use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, error};
 use xet_core_structures::merklehash::MerkleHash;
 use xet_runtime::config::XetConfig;
@@ -19,19 +21,40 @@ use xet_runtime::utils::output_bytes;
 
 use self::cache_file_header::CacheFileHeader;
 use self::cache_item::{CacheItem, VerificationCell};
+use self::cache_metadata::{CacheMetadataDb, CacheMetadataTransaction};
 use super::error::ChunkCacheError;
-use super::{CacheConfig, CacheRange, ChunkCache};
+use super::{CacheConfig, CacheEvictionPolicy, CacheRange, ChunkCache};
 use crate::cas_types::{ChunkRange, Key};
 
 mod cache_file_header;
 mod cache_item;
+mod cache_metadata;
 pub mod test_utils;
 
 // consistently use URL_SAFE (also file path safe) base64 codec
 pub(crate) const BASE64_ENGINE: GeneralPurpose = URL_SAFE;
 const PREFIX_DIR_NAME_LEN: usize = 2;
+const CACHE_DIRECTORY_CONFIG_FILE_NAME: &str = ".chunk_cache_config.json";
+const CACHE_DIRECTORY_CONFIG_VERSION: u32 = 1;
 
 type OptionResult<T, E> = Result<Option<T>, E>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct CacheDirectoryConfig {
+    version: u32,
+    cache_size: u64,
+    eviction_policy: String,
+}
+
+impl CacheDirectoryConfig {
+    fn new(cache_size: u64, eviction_policy: CacheEvictionPolicy) -> Self {
+        Self {
+            version: CACHE_DIRECTORY_CONFIG_VERSION,
+            cache_size,
+            eviction_policy: eviction_policy.to_string(),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 struct CacheState {
@@ -53,7 +76,7 @@ impl CacheState {
         let items = self.inner.get(key)?;
 
         // attempt to find a matching range in the given key's items using
-        for item in items.iter() {
+        for item in items {
             if item.range.start <= range.start && range.end <= item.range.end {
                 return Some(item.clone());
             }
@@ -78,11 +101,14 @@ impl CacheState {
                 error!("attempted to evict item, but no item could be found to be evicted");
                 break;
             };
-            let items = self.inner.get_mut(&key).ok_or(ChunkCacheError::Infallible)?;
-            let cache_item = items.swap_remove(idx);
+            let (cache_item, remove_key) = {
+                let items = self.inner.get_mut(&key).ok_or(ChunkCacheError::Infallible)?;
+                let cache_item = items.swap_remove(idx);
+                (cache_item, items.is_empty())
+            };
             let len = cache_item.len;
 
-            if items.is_empty() {
+            if remove_key {
                 self.inner.remove(&key);
             }
 
@@ -98,6 +124,69 @@ impl CacheState {
         );
 
         Ok(ret)
+    }
+
+    fn evict_lru_to_capacity(
+        &mut self,
+        max_total_bytes: u64,
+        metadata: &CacheMetadataTransaction,
+    ) -> Result<Vec<(Key, VerificationCell<CacheItem>)>, ChunkCacheError> {
+        let original_total_bytes = metadata.total_bytes()?;
+        let mut total_bytes = original_total_bytes;
+        let mut ret = Vec::new();
+
+        while total_bytes > max_total_bytes {
+            let Some((key, cache_item)) = self.lru_metadata_item_to_evict(metadata)? else {
+                error!("attempted to evict LRU item, but no item could be found to be evicted");
+                break;
+            };
+
+            metadata.delete_item(&key, &cache_item)?;
+            total_bytes = total_bytes.saturating_sub(cache_item.len);
+            let removed_item = self.remove_item_from_state(&key, &cache_item);
+            ret.push((key, removed_item.unwrap_or_else(|| VerificationCell::new_unverified(cache_item))));
+        }
+
+        debug!(
+            "cache LRU evicting {} items totaling {}",
+            ret.len(),
+            output_bytes(original_total_bytes.saturating_sub(total_bytes))
+        );
+
+        Ok(ret)
+    }
+
+    fn lru_metadata_item_to_evict(
+        &self,
+        metadata: &CacheMetadataTransaction,
+    ) -> Result<Option<(Key, CacheItem)>, ChunkCacheError> {
+        Ok(metadata
+            .least_recently_used_items(32)?
+            .into_iter()
+            .next()
+            .map(|metadata_item| (metadata_item.key, metadata_item.item)))
+    }
+
+    fn remove_item_from_state(&mut self, key: &Key, cache_item: &CacheItem) -> Option<VerificationCell<CacheItem>> {
+        let mut remove_key = false;
+        let removed_item = if let Some(items) = self.inner.get_mut(key) {
+            let idx = items.iter().position(|item| item.as_ref() == cache_item)?;
+            let removed_item = items.swap_remove(idx);
+            remove_key = items.is_empty();
+            Some(removed_item)
+        } else {
+            None
+        };
+
+        if let Some(removed_item) = &removed_item {
+            if remove_key {
+                self.inner.remove(key);
+            }
+            self.total_bytes = self.total_bytes.saturating_sub(removed_item.len);
+            self.num_items = self.num_items.saturating_sub(1);
+        }
+
+        removed_item
     }
 
     /// returns the key and index within that key for a random item
@@ -126,12 +215,21 @@ impl CacheState {
     }
 }
 
+fn new_cache_state(
+    state: HashMap<Key, Vec<VerificationCell<CacheItem>>>,
+    num_items: usize,
+    total_bytes: u64,
+) -> CacheState {
+    CacheState::new(state, num_items, total_bytes)
+}
+
 /// DiskCache is a ChunkCache implementor that saves data on the file system
 #[derive(Debug, Clone)]
 pub struct DiskCache {
     cache_root: PathBuf,
     capacity: u64,
     state: Arc<RwLock<CacheState>>,
+    metadata_db: Option<Arc<Mutex<CacheMetadataDb>>>,
 }
 
 // helper for analysis binary to print inner state
@@ -211,12 +309,24 @@ impl DiskCache {
         }
         let capacity = config.cache_size;
         let cache_root = config.cache_directory.clone();
+        let eviction_policy = CacheEvictionPolicy::from_xet_config(xet_config)?;
+        ensure_cache_directory_config(&cache_root, capacity, eviction_policy)?;
 
         // May take a while; don't block the runtime for this.
         let state = Self::initialize_state(&cache_root, capacity, xet_config)?;
+        let metadata_db = match eviction_policy {
+            CacheEvictionPolicy::Random => None,
+            CacheEvictionPolicy::Lru => {
+                let mut metadata_db =
+                    CacheMetadataDb::open(&cache_root, xet_config.chunk_cache.access_update_interval_ns)?;
+                metadata_db.reconcile(&state.inner)?;
+                Some(Arc::new(Mutex::new(metadata_db)))
+            },
+        };
 
         Ok(Self {
             state: Arc::new(RwLock::new(state)),
+            metadata_db,
             cache_root: config.cache_directory.clone(),
             capacity,
         })
@@ -233,7 +343,7 @@ impl DiskCache {
         let max_num_bytes = 2 * capacity;
 
         let Some(cache_root_readdir) = read_dir(cache_root)? else {
-            return Ok(CacheState::new(state, 0, 0));
+            return Ok(new_cache_state(state, 0, 0));
         };
 
         // loop through cache root directory, first level containing "prefix" directories
@@ -301,7 +411,7 @@ impl DiskCache {
                     // if already filled capacity, stop iterating over cache items
                     if total_bytes >= max_num_bytes {
                         state.insert(key, items);
-                        return Ok(CacheState::new(state, num_items, total_bytes));
+                        return Ok(new_cache_state(state, num_items, total_bytes));
                     }
                 }
 
@@ -311,7 +421,7 @@ impl DiskCache {
             }
         }
 
-        Ok(CacheState::new(state, num_items, total_bytes))
+        Ok(new_cache_state(state, num_items, total_bytes))
     }
 
     async fn get_impl(&self, key: &Key, range: &ChunkRange) -> OptionResult<CacheRange, ChunkCacheError> {
@@ -320,7 +430,7 @@ impl DiskCache {
         }
 
         loop {
-            let Some(cache_item) = self.state.read().await.find_match(key, range) else {
+            let Some(cache_item) = self.find_match_for_access(key, range).await else {
                 return Ok(None);
             };
 
@@ -360,6 +470,7 @@ impl DiskCache {
 
             let start = cache_item.range.start;
             let result_buf = get_range_from_cache_file(&header, &mut file_reader, range, start)?;
+            self.record_persistent_access(key, cache_item.as_ref()).await?;
             return Ok(Some(result_buf));
         }
     }
@@ -382,8 +493,9 @@ impl DiskCache {
         }
 
         // check if we already contain the range
-        while let Some(cache_item) = self.state.read().await.find_match(key, range) {
+        while let Some(cache_item) = self.find_match_for_access(key, range).await {
             if self.validate_match(key, range, chunk_byte_indices, data, &cache_item).await? {
+                self.record_persistent_access(key, cache_item.as_ref()).await?;
                 return Ok(());
             }
         }
@@ -432,16 +544,27 @@ impl DiskCache {
         }
         fw.close()?;
 
-        // Evict entries to make sure we have enough room.
-        let evicted_paths = state_write.evict_to_capacity(self.capacity - cache_item.len)?;
+        let mut metadata_db = match &self.metadata_db {
+            Some(metadata_db) => Some(metadata_db.lock().await),
+            None => None,
+        };
 
-        // add the item info in-memory state after evictions are done
-        state_write.num_items += 1;
-        state_write.total_bytes += cache_item.len;
-        let item_set = state_write.inner.entry(key.clone()).or_default();
-        item_set.push(VerificationCell::new_verified(cache_item));
+        let evicted_paths = if let Some(metadata_db) = metadata_db.as_deref_mut() {
+            metadata_db.with_write_transaction(|metadata| {
+                let evicted_paths = state_write.evict_lru_to_capacity(self.capacity - cache_item.len, metadata)?;
+                insert_cache_item_into_state(&mut state_write, key, &cache_item);
+                metadata.record_insert(key, &cache_item)?;
+                Ok(evicted_paths)
+            })?
+        } else {
+            // Evict entries to make sure we have enough room.
+            let evicted_paths = state_write.evict_to_capacity(self.capacity - cache_item.len)?;
+            insert_cache_item_into_state(&mut state_write, key, &cache_item);
+            evicted_paths
+        };
 
         // release lock
+        drop(metadata_db);
         drop(state_write);
 
         // remove files after done with modifying in memory state and releasing lock
@@ -524,24 +647,21 @@ impl DiskCache {
         Ok(true)
     }
 
+    async fn find_match_for_access(&self, key: &Key, range: &ChunkRange) -> Option<VerificationCell<CacheItem>> {
+        self.state.read().await.find_match(key, range)
+    }
+
     /// removes an item from both the in-memory state of the cache and the file system
     async fn remove_item(&self, key: &Key, cache_item: &VerificationCell<CacheItem>) -> Result<(), ChunkCacheError> {
         {
             let mut state = self.state.write().await;
-            if let Some(items) = state.inner.get_mut(key) {
-                let idx = match index_of(items, cache_item) {
-                    Some(idx) => idx,
-                    // item is no longer in the state
-                    None => return Ok(()),
-                };
-
-                items.swap_remove(idx);
-                if items.is_empty() {
-                    state.inner.remove(key);
-                }
-                state.total_bytes -= cache_item.len;
-                state.num_items -= 1;
+            if state.remove_item_from_state(key, cache_item.as_ref()).is_none() {
+                return Ok(());
             }
+        }
+
+        if let Some(metadata_db) = &self.metadata_db {
+            metadata_db.lock().await.delete_item(key, cache_item.as_ref())?;
         }
 
         let path = self.item_path(key, cache_item)?;
@@ -557,6 +677,20 @@ impl DiskCache {
     fn item_path(&self, key: &Key, cache_item: &CacheItem) -> Result<PathBuf, ChunkCacheError> {
         Ok(self.cache_root.join(key_dir(key)).join(cache_item.file_name()?))
     }
+
+    async fn record_persistent_access(&self, key: &Key, cache_item: &CacheItem) -> Result<(), ChunkCacheError> {
+        if let Some(metadata_db) = &self.metadata_db {
+            metadata_db.lock().await.record_access(key, cache_item)?;
+        }
+        Ok(())
+    }
+}
+
+fn insert_cache_item_into_state(state: &mut CacheState, key: &Key, cache_item: &CacheItem) {
+    state.num_items += 1;
+    state.total_bytes += cache_item.len;
+    let item_set = state.inner.entry(key.clone()).or_default();
+    item_set.push(VerificationCell::new_verified(cache_item.clone()));
 }
 
 fn crc32_from_reader(reader: &mut impl Read) -> Result<u32, ChunkCacheError> {
@@ -571,16 +705,6 @@ fn crc32_from_reader(reader: &mut impl Read) -> Result<u32, ChunkCacheError> {
         hasher.update(&buf[..num_read])
     }
     Ok(hasher.finalize())
-}
-
-#[inline]
-fn index_of<T: PartialEq>(list: &[T], value: &T) -> Option<usize> {
-    for (i, list_value) in list.iter().enumerate() {
-        if list_value == value {
-            return Some(i);
-        }
-    }
-    None
 }
 
 fn strictly_increasing(chunk_byte_indices: &[u32]) -> bool {
@@ -801,6 +925,90 @@ fn key_dir(key: &Key) -> PathBuf {
     PathBuf::from(dir_str)
 }
 
+fn ensure_cache_directory_config(
+    cache_root: &Path,
+    cache_size: u64,
+    eviction_policy: CacheEvictionPolicy,
+) -> Result<(), ChunkCacheError> {
+    std::fs::create_dir_all(cache_root)?;
+    let expected = CacheDirectoryConfig::new(cache_size, eviction_policy);
+    let config_path = cache_root.join(CACHE_DIRECTORY_CONFIG_FILE_NAME);
+
+    if let Some(existing) = read_cache_directory_config(&config_path)? {
+        return validate_cache_directory_config(cache_root, &existing, &expected);
+    }
+
+    install_cache_directory_config_if_missing(cache_root, &config_path, &expected)?;
+    let existing = read_cache_directory_config(&config_path)?.ok_or_else(|| {
+        ChunkCacheError::general(format!("failed to create cache directory config at {}", config_path.display()))
+    })?;
+    validate_cache_directory_config(cache_root, &existing, &expected)
+}
+
+fn read_cache_directory_config(config_path: &Path) -> Result<Option<CacheDirectoryConfig>, ChunkCacheError> {
+    let bytes = match std::fs::read(config_path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|e| ChunkCacheError::general(format!("failed to parse {}: {e}", config_path.display())))
+}
+
+fn install_cache_directory_config_if_missing(
+    cache_root: &Path,
+    config_path: &Path,
+    config: &CacheDirectoryConfig,
+) -> Result<(), ChunkCacheError> {
+    let tmp_path = cache_root.join(format!(
+        "{CACHE_DIRECTORY_CONFIG_FILE_NAME}.{}.{}.tmp",
+        std::process::id(),
+        cache_config_tmp_nonce()
+    ));
+    let mut payload = serde_json::to_vec_pretty(config).map_err(ChunkCacheError::general)?;
+    payload.push(b'\n');
+
+    {
+        let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp_path)?;
+        file.write_all(&payload)?;
+        file.sync_all()?;
+    }
+
+    let result = match std::fs::hard_link(&tmp_path, config_path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(e.into()),
+    };
+    let _ = remove_file(&tmp_path);
+    result
+}
+
+fn validate_cache_directory_config(
+    cache_root: &Path,
+    existing: &CacheDirectoryConfig,
+    expected: &CacheDirectoryConfig,
+) -> Result<(), ChunkCacheError> {
+    if existing == expected {
+        return Ok(());
+    }
+
+    Err(ChunkCacheError::general(format!(
+        "cache directory {} is already configured with cache_size={} and eviction_policy={}, \
+         but this process requested cache_size={} and eviction_policy={}",
+        cache_root.display(),
+        existing.cache_size,
+        existing.eviction_policy,
+        expected.cache_size,
+        expected.eviction_policy
+    )))
+}
+
+fn cache_config_tmp_nonce() -> u128 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos()
+}
+
 #[async_trait]
 impl ChunkCache for DiskCache {
     async fn get(&self, key: &Key, range: &ChunkRange) -> Result<Option<CacheRange>, ChunkCacheError> {
@@ -821,6 +1029,8 @@ impl ChunkCache for DiskCache {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    use std::mem::size_of;
+    use std::time::Duration;
 
     use rand::SeedableRng;
     use rand::rngs::StdRng;
@@ -830,12 +1040,54 @@ mod tests {
 
     use super::super::{CacheConfig, ChunkCache};
     use super::test_utils::*;
-    use super::{DiskCache, try_parse_key};
+    use super::{CacheItem, DiskCache, try_parse_key};
     use crate::cas_types::{ChunkRange, Key};
 
     const RANDOM_SEED: u64 = 9089 << 20 | 120043;
 
     const DEFAULT_CHUNK_CACHE_CAPACITY: u64 = 10_000_000_000;
+    const POLICY_TEST_DATA_LEN: u32 = 100;
+
+    fn policy_test_capacity() -> u64 {
+        let cache_file_header_len = (2 + 1) * size_of::<u32>() as u64;
+        (POLICY_TEST_DATA_LEN as u64 + cache_file_header_len) * 2
+    }
+
+    fn xet_config_with_eviction_policy(policy: &str) -> XetConfig {
+        XetConfig::default().with_config("chunk_cache.eviction_policy", policy).unwrap()
+    }
+
+    #[test]
+    fn test_metadata_db_initialized_only_for_lru_policy() {
+        let random_cache_root = TempDir::new().unwrap();
+        let random_config = CacheConfig {
+            cache_directory: random_cache_root.path().to_path_buf(),
+            cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
+        };
+
+        let random_cache = DiskCache::initialize(&XetConfig::new(), &random_config).unwrap();
+        assert!(random_cache.metadata_db.is_none());
+
+        let lru_cache_root = TempDir::new().unwrap();
+        let lru_config = CacheConfig {
+            cache_directory: lru_cache_root.path().to_path_buf(),
+            cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
+        };
+        let lru_cache = DiskCache::initialize(&xet_config_with_eviction_policy("lru"), &lru_config).unwrap();
+        assert!(lru_cache.metadata_db.is_some());
+    }
+
+    #[test]
+    fn test_initialize_rejects_eviction_policy_change() {
+        let cache_root = TempDir::new().unwrap();
+        let config = CacheConfig {
+            cache_directory: cache_root.path().to_path_buf(),
+            cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
+        };
+
+        DiskCache::initialize(&XetConfig::new(), &config).unwrap();
+        assert!(DiskCache::initialize(&xet_config_with_eviction_policy("lru"), &config).is_err());
+    }
 
     #[tokio::test]
     async fn test_get_cache_empty() {
@@ -961,6 +1213,143 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_lru_eviction_keeps_recently_used_item() {
+        let cache_root = TempDir::new().unwrap();
+        let config = CacheConfig {
+            cache_directory: cache_root.path().to_path_buf(),
+            cache_size: policy_test_capacity(),
+        };
+        let xet_config = xet_config_with_eviction_policy("lru");
+        let cache = DiskCache::initialize(&xet_config, &config).unwrap();
+        let mut entries = RandomEntryIterator::std_from_seed(RANDOM_SEED)
+            .with_range_len(POLICY_TEST_DATA_LEN)
+            .with_one_chunk_ranges(true);
+
+        let (key_a, range_a, offsets_a, data_a) = entries.next().unwrap();
+        let (key_b, range_b, offsets_b, data_b) = entries.next().unwrap();
+        let (key_c, range_c, offsets_c, data_c) = entries.next().unwrap();
+
+        cache.put(&key_a, &range_a, &offsets_a, &data_a).await.unwrap();
+        cache.put(&key_b, &range_b, &offsets_b, &data_b).await.unwrap();
+        assert!(cache.get(&key_a, &range_a).await.unwrap().is_some());
+
+        cache.put(&key_c, &range_c, &offsets_c, &data_c).await.unwrap();
+
+        assert!(cache.get(&key_a, &range_a).await.unwrap().is_some());
+        assert!(cache.get(&key_b, &range_b).await.unwrap().is_none());
+        assert!(cache.get(&key_c, &range_c).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_lru_eviction_uses_persisted_metadata() {
+        let cache_root = TempDir::new().unwrap();
+        let config = CacheConfig {
+            cache_directory: cache_root.path().to_path_buf(),
+            cache_size: policy_test_capacity(),
+        };
+        let xet_config = xet_config_with_eviction_policy("lru");
+        let mut entries = RandomEntryIterator::std_from_seed(RANDOM_SEED)
+            .with_range_len(POLICY_TEST_DATA_LEN)
+            .with_one_chunk_ranges(true);
+
+        let (key_a, range_a, offsets_a, data_a) = entries.next().unwrap();
+        let (key_b, range_b, offsets_b, data_b) = entries.next().unwrap();
+        let (key_c, range_c, offsets_c, data_c) = entries.next().unwrap();
+
+        let cache = DiskCache::initialize(&xet_config, &config).unwrap();
+        cache.put(&key_a, &range_a, &offsets_a, &data_a).await.unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+        cache.put(&key_b, &range_b, &offsets_b, &data_b).await.unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+        assert!(cache.get(&key_a, &range_a).await.unwrap().is_some());
+        drop(cache);
+
+        let cache = DiskCache::initialize(&xet_config, &config).unwrap();
+        cache.put(&key_c, &range_c, &offsets_c, &data_c).await.unwrap();
+
+        assert!(cache.get(&key_a, &range_a).await.unwrap().is_some());
+        assert!(cache.get(&key_b, &range_b).await.unwrap().is_none());
+        assert!(cache.get(&key_c, &range_c).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_lru_eviction_prunes_stale_metadata_rows() {
+        let cache_root = TempDir::new().unwrap();
+        let config = CacheConfig {
+            cache_directory: cache_root.path().to_path_buf(),
+            cache_size: policy_test_capacity(),
+        };
+        let xet_config = xet_config_with_eviction_policy("lru");
+        let cache = DiskCache::initialize(&xet_config, &config).unwrap();
+        let mut rng = StdRng::seed_from_u64(RANDOM_SEED);
+        let stale_key = random_key(&mut rng);
+        let stale_item = CacheItem {
+            range: ChunkRange::new(0, 1),
+            len: policy_test_capacity(),
+            checksum: 1,
+        };
+
+        {
+            let mut metadata_db = cache.metadata_db.as_ref().unwrap().lock().await;
+            metadata_db
+                .with_write_transaction(|metadata| {
+                    metadata.record_insert(&stale_key, &stale_item)?;
+                    Ok(())
+                })
+                .unwrap();
+        }
+
+        let mut entries = RandomEntryIterator::std_from_seed(RANDOM_SEED + 1)
+            .with_range_len(POLICY_TEST_DATA_LEN)
+            .with_one_chunk_ranges(true);
+        let (key, range, offsets, data) = entries.next().unwrap();
+
+        cache.put(&key, &range, &offsets, &data).await.unwrap();
+
+        assert!(cache.get(&key, &range).await.unwrap().is_some());
+        let candidates = {
+            let mut metadata_db = cache.metadata_db.as_ref().unwrap().lock().await;
+            metadata_db
+                .with_write_transaction(|metadata| metadata.least_recently_used_items(10))
+                .unwrap()
+        };
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].key, key);
+    }
+
+    #[tokio::test]
+    async fn test_lru_eviction_handles_multiple_ranges_per_key() {
+        let cache_root = TempDir::new().unwrap();
+        let config = CacheConfig {
+            cache_directory: cache_root.path().to_path_buf(),
+            cache_size: policy_test_capacity(),
+        };
+        let xet_config = xet_config_with_eviction_policy("lru");
+        let cache = DiskCache::initialize(&xet_config, &config).unwrap();
+        let mut rng = StdRng::seed_from_u64(RANDOM_SEED);
+        let key = random_key(&mut rng);
+
+        let range_a = ChunkRange::new(0, 1);
+        let range_b = ChunkRange::new(1, 2);
+        let range_c = ChunkRange::new(2, 3);
+        let range_d = ChunkRange::new(3, 4);
+        let (offsets_a, data_a) = random_bytes(&mut rng, &range_a, POLICY_TEST_DATA_LEN);
+        let (offsets_b, data_b) = random_bytes(&mut rng, &range_b, POLICY_TEST_DATA_LEN);
+        let (offsets_c, data_c) = random_bytes(&mut rng, &range_c, POLICY_TEST_DATA_LEN);
+        let (offsets_d, data_d) = random_bytes(&mut rng, &range_d, POLICY_TEST_DATA_LEN);
+
+        cache.put(&key, &range_a, &offsets_a, &data_a).await.unwrap();
+        cache.put(&key, &range_b, &offsets_b, &data_b).await.unwrap();
+        cache.put(&key, &range_c, &offsets_c, &data_c).await.unwrap();
+        cache.put(&key, &range_d, &offsets_d, &data_d).await.unwrap();
+
+        assert!(cache.get(&key, &range_a).await.unwrap().is_none());
+        assert!(cache.get(&key, &range_b).await.unwrap().is_none());
+        assert!(cache.get(&key, &range_c).await.unwrap().is_some());
+        assert!(cache.get(&key, &range_d).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
     async fn test_same_puts_noop() {
         let cache_root = TempDir::new().unwrap();
         let config = CacheConfig {
@@ -1061,7 +1450,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_initialize_too_large_file() {
+    async fn test_initialize_rejects_cache_size_change() {
         const LARGE_FILE: u64 = 1000;
         let cache_root = TempDir::new().unwrap();
         let config = CacheConfig {
@@ -1078,13 +1467,11 @@ mod tests {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: LARGE_FILE - 1,
         };
-        let cache2 = DiskCache::initialize(&xet_config, &config).unwrap();
-
-        assert_eq!(cache2.total_bytes().await, 0);
+        assert!(DiskCache::initialize(&xet_config, &config).is_err());
     }
 
     #[tokio::test]
-    async fn test_initialize_stops_loading_early_with_too_many_files() {
+    async fn test_initialize_rejects_cache_size_change_with_existing_files() {
         const LARGE_FILE: u64 = 1000;
         let cache_root = TempDir::new().unwrap();
         let xet_config = XetConfig::new();
@@ -1104,9 +1491,7 @@ mod tests {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: cap2,
         };
-        let cache2 = DiskCache::initialize(&xet_config, &config).unwrap();
-
-        assert!(cache2.total_bytes().await < cap2 * 3, "{} < {}", cache2.total_bytes().await, cap2 * 3);
+        assert!(DiskCache::initialize(&xet_config, &config).is_err());
     }
 
     #[test]

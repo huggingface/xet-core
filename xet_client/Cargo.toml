@@ -60,6 +60,7 @@ futures-util = { workspace = true, optional = true }
 redb = { workspace = true }
 human-bandwidth = { workspace = true, optional = true }
 hyper = { workspace = true }
+rusqlite = { workspace = true }
 tokio = { workspace = true }
 tower-http = { version = "0.6", features = ["cors"], optional = true }
 
@@ -91,6 +92,10 @@ required-features = ["simulation"]
 name = "cache_analysis"
 path = "src/chunk_cache/bin/analysis.rs"
 required-features = ["analysis"]
+
+[[bench]]
+name = "chunk_cache_lru_bench"
+harness = false
 
 [dev-dependencies]
 approx = { workspace = true }
