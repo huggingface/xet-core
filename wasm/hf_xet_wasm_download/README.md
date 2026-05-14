@@ -42,7 +42,7 @@ The full token / file-id derivation is described in the
 Outputs `pkg/{hf_xet_wasm_download.js, hf_xet_wasm_download.d.ts,
 hf_xet_wasm_download_bg.wasm}`.
 
-Requires the same nightly toolchain + `wasm-bindgen-cli` 0.2.100 as
+Requires the same nightly toolchain + `wasm-bindgen-cli` 0.2.121 as
 [`hf_xet_wasm`](../hf_xet_wasm).
 
 ## Manual browser test

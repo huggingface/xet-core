@@ -7,7 +7,7 @@ set -ex
 #  - enables atomics/bulk-memory/mutable-globals features
 #  - runs wasm-bindgen to produce ES modules for web targets
 
-WASM_BINDGEN_VERSION="0.2.100"
+WASM_BINDGEN_VERSION="0.2.121"
 
 if command -v wasm-bindgen >/dev/null 2>&1; then
     INSTALLED_WASM_BINDGEN_VERSION="$(wasm-bindgen --version | awk '{print $2}')"

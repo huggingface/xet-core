@@ -17,8 +17,8 @@ runs:
     - name: Install wasm-bindgen-cli and wasm-pack
       shell: bash
       run: |
-        cargo install --version 0.2.100 wasm-bindgen-cli
-        cargo install --version 0.13.1 wasm-pack
+        cargo install --version 0.2.121 wasm-bindgen-cli
+        cargo install --version 0.14.0 wasm-pack
     - name: Build hf_xet_thin_wasm
       shell: bash
       working-directory: wasm/hf_xet_thin_wasm
