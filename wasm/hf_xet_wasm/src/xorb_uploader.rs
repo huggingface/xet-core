@@ -2,7 +2,7 @@ use std::result::Result as stdResult;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio_with_wasm::alias as wasmtokio;
+use tokio_with_wasm::alias as tokio;
 use xet_client::ClientError;
 use xet_client::cas_client::Client;
 use xet_core_structures::xorb_object::SerializedXorbObject;
@@ -50,7 +50,7 @@ impl XorbUploader for XorbUploaderLocalSequential {
 pub struct XorbUploaderSpawnParallel {
     client: Arc<dyn Client + Send + Sync>,
     cas_prefix: String,
-    tasks: wasmtokio::task::JoinSet<stdResult<u64, ClientError>>,
+    tasks: tokio::task::JoinSet<stdResult<u64, ClientError>>,
 }
 
 impl XorbUploaderSpawnParallel {
@@ -58,7 +58,7 @@ impl XorbUploaderSpawnParallel {
         Self {
             client,
             cas_prefix: cas_prefix.to_owned(),
-            tasks: wasmtokio::task::JoinSet::new(),
+            tasks: tokio::task::JoinSet::new(),
         }
     }
 }

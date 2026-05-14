@@ -2,6 +2,10 @@ use std::borrow::Cow;
 use std::fmt::Display;
 use std::io::{Cursor, Read, Write, copy};
 use std::str::FromStr;
+#[cfg(not(target_family = "wasm"))]
+use std::time::Instant;
+
+#[cfg(target_family = "wasm")]
 use web_time::Instant;
 
 use lz4_flex::frame::{FrameDecoder, FrameEncoder};

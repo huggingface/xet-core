@@ -36,9 +36,7 @@ serde_json = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio-util = { workspace = true }
-tokio_with_wasm = { workspace = true }
 tracing = { workspace = true }
-web-time = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true, features = ["v7"] }
 walkdir = { workspace = true }
@@ -52,7 +50,8 @@ tokio = { workspace = true, features = [
     "rt",
     "time",
 ] }
-tokio_with_wasm = { workspace = true, features = ["rt"] }
+tokio_with_wasm = { workspace = true, features = ["rt", "sync", "macros"] }
+web-time = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "rt", "time"] }

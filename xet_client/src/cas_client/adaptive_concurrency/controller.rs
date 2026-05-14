@@ -4,13 +4,11 @@ use std::time::Duration;
 
 use more_asserts::debug_assert_le;
 use serde::{Deserialize, Serialize};
-#[cfg(not(target_family = "wasm"))]
-use tokio as wasmtokio;
 use tokio::sync::Mutex;
 #[cfg(not(target_family = "wasm"))]
 use tokio::time::Instant;
 #[cfg(target_family = "wasm")]
-use tokio_with_wasm::alias as wasmtokio;
+use tokio_with_wasm::alias as tokio;
 use tracing::info;
 #[cfg(target_family = "wasm")]
 use web_time::Instant;
@@ -678,7 +676,7 @@ impl ConnectionPermit {
                 0.0
             };
 
-            wasmtokio::task::spawn(async move {
+            tokio::task::spawn(async move {
                 // The weight that gets passed to the controller is PARTIAL_REPORT_WEIGHT_RATIO * portion_completed for
                 // partial reports, allowing at least the remaining weight to be given to the final
                 // completed report.

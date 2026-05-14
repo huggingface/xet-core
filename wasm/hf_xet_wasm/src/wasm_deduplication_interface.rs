@@ -4,7 +4,7 @@ use std::result::Result as stdResult;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio_with_wasm::alias as wasmtokio;
+use tokio_with_wasm::alias as tokio;
 use xet_client::ClientError;
 use xet_core_structures::merklehash::{HMACKey, MerkleHash};
 use xet_core_structures::metadata_shard::MDBShardInfo;
@@ -19,7 +19,7 @@ use super::wasm_file_upload_session::FileUploadSession;
 pub struct UploadSessionDataManager {
     session: Arc<FileUploadSession>,
     shard: HashMap<HMACKey, MDBInMemoryShard>,
-    query_tasks: wasmtokio::task::JoinSet<stdResult<Option<bytes::Bytes>, ClientError>>,
+    query_tasks: tokio::task::JoinSet<stdResult<Option<bytes::Bytes>, ClientError>>,
 }
 
 impl UploadSessionDataManager {
@@ -27,7 +27,7 @@ impl UploadSessionDataManager {
         Self {
             session,
             shard: HashMap::default(),
-            query_tasks: wasmtokio::task::JoinSet::new(),
+            query_tasks: tokio::task::JoinSet::new(),
         }
     }
 }

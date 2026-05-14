@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
+use tokio_with_wasm::alias as tokio;
+
 use tokio::sync::mpsc;
-use tokio_with_wasm::alias as wasmtokio;
 use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::metadata_shard::file_structs::FileMetadataExt;
 use xet_data::deduplication::{Chunk, Chunker, DeduplicationMetrics, FileDeduper};
@@ -13,7 +14,7 @@ use crate::sha256::ShaGeneration;
 use crate::wasm_timer::ConsoleTimer;
 
 type WorkerThreadTask = (
-    wasmtokio::task::JoinHandle<Result<MerkleHash>>,
+    tokio::task::JoinHandle<Result<MerkleHash>>,
     mpsc::UnboundedSender<Vec<u8>>,
     mpsc::UnboundedReceiver<Vec<Chunk>>,
     u64,
@@ -91,7 +92,7 @@ impl SingleFileCleaner {
         let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let (chunks_tx, chunks_rx) = mpsc::unbounded_channel::<Vec<Chunk>>();
 
-        let cpu_worker = wasmtokio::task::spawn_blocking(move || {
+        let cpu_worker = tokio::task::spawn_blocking(move || {
             futures::executor::block_on(async move {
                 let mut chunker = Chunker::default();
                 let mut sha_generation = ShaGeneration::new(sha256);

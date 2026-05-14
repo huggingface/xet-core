@@ -4127,6 +4127,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-retry",
+ "tokio_with_wasm",
  "tracing",
  "tracing-subscriber",
  "url",

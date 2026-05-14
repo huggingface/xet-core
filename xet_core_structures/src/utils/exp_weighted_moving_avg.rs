@@ -1,11 +1,7 @@
 use std::time::Duration;
 
-// On native we use `tokio::time::Instant` because the tests rely on
-// `tokio::time::{advance, pause}` to simulate clock movement, which only
-// affects `tokio::time::Instant`. On wasm we use `web_time::Instant`
-// because `tokio::time::Instant::now()` falls through to `std::time::Instant`
-// which panics on `wasm32-unknown-unknown` ("time not implemented on this
-// platform").
+// Native: `tokio::time::Instant` so tests can use `tokio::time::{advance, pause}`.
+// Wasm: `web_time::Instant` since `std::time::Instant` panics on `wasm32-unknown-unknown`.
 #[cfg(not(target_family = "wasm"))]
 use tokio::time::Instant;
 #[cfg(target_family = "wasm")]
