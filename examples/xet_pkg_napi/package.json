@@ -1,0 +1,22 @@
+{
+  "name": "xet-pkg-napi",
+  "version": "0.0.1",
+  "description": "napi-rs smoke test for hf-xet",
+  "private": true,
+  "main": "index.js",
+  "type": "commonjs",
+  "napi": {
+    "name": "xet-pkg-napi"
+  },
+  "scripts": {
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform",
+    "smoke": "node smoke.mjs"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.4"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
