@@ -183,16 +183,13 @@ jobs:
         with:
           node-version: '20'
       - name: WASM download smoke test (prod hub + CAS)
-        # Skipped on forks (no secret); non-blocking on a real flake / hub outage.
+        # Non-blocking: a hub blip shouldn't fail unrelated PRs.
+        # Token is optional — the pinned file is in a public dataset.
         continue-on-error: true
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         working-directory: wasm/hf_xet_wasm_download/tests/ci-smoke
         run: |
-          if [ -z "$HF_TOKEN" ]; then
-            echo "HF_TOKEN not set (likely a fork PR); skipping."
-            exit 0
-          fi
           npm ci
           npx playwright install --with-deps chromium
           node run.mjs

@@ -19,11 +19,10 @@ const EXPECTED_SIZE = 63527244;
 const EXPECTED_SHA256 = 'f41255b252f776125f2b657136654e4d4d5d2ccf8ef4db0ec186bd1981b69734';
 const TEST_TIMEOUT_MS = 5 * 60 * 1000;
 
-const token = process.env.HF_TOKEN;
-if (!token) {
-  console.error('HF_TOKEN not set');
-  process.exit(2);
-}
+// Token is optional: the pinned file lives in a public dataset, so the hub
+// paths-info / xet-read-token endpoints work anonymously. We still forward
+// HF_TOKEN when set (avoids stricter anonymous rate limits).
+const token = process.env.HF_TOKEN || '';
 
 const server = spawn('node', [path.join(__dirname, 'server.mjs'), CRATE_ROOT], {
   env: { ...process.env, PORT: String(PORT) },
