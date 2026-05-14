@@ -15,11 +15,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CRATE_ROOT = path.resolve(__dirname, '../..');
 const PORT = parseInt(process.env.PORT || '8765', 10);
 
-const EXPECTED_SIZE = 63527244;
-const EXPECTED_SHA256 = 'f41255b252f776125f2b657136654e4d4d5d2ccf8ef4db0ec186bd1981b69734';
-const TEST_TIMEOUT_MS = 5 * 60 * 1000;
+const EXPECTED_SIZE = 540217;
+const EXPECTED_SHA256 = '9922e8996d0c7e24c7f4e7a5d9c5b7303549f4ee94de0f1138b103014b51be13';
+const TEST_TIMEOUT_MS = 2 * 60 * 1000;
 
-// Token is optional: the pinned file lives in a public dataset, so the hub
+// Token is optional: the pinned file lives in a public repo, so the hub
 // paths-info / xet-read-token endpoints work anonymously. We still forward
 // HF_TOKEN when set (avoids stricter anonymous rate limits).
 const token = process.env.HF_TOKEN || '';
