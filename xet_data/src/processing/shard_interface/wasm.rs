@@ -85,13 +85,15 @@ impl SessionShardInterface {
     /// Serializes the in-memory shard and uploads it via the CAS client.
     /// Returns the byte count uploaded.
     pub async fn upload_and_register_session_shards(&self) -> Result<u64> {
-        let guard = self.session_shard.lock().await;
-        if guard.is_empty() {
-            return Ok(0);
-        }
-
-        let shard_data = guard.to_bytes()?;
-        let n_bytes = shard_data.len() as u64;
+        let (shard_data, n_bytes) = {
+            let guard = self.session_shard.lock().await;
+            if guard.is_empty() {
+                return Ok(0);
+            }
+            let data = guard.to_bytes()?;
+            let n = data.len() as u64;
+            (data, n)
+        };
 
         if self.dry_run {
             return Ok(n_bytes);
