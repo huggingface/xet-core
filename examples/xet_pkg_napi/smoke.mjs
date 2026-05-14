@@ -89,10 +89,10 @@ console.log(`\nDownloading -> ${destPath}`);
 const t0 = Date.now();
 const result = addon.downloadFile({
     tokenRefreshUrl,
-    authToken: token,
+    ...(token ? { authToken: token } : {}),
     xetHash,
     fileSize,
-    sha256,
+    ...(sha256 ? { sha256 } : {}),
     destPath,
 });
 const elapsedSec = (Date.now() - t0) / 1000;
