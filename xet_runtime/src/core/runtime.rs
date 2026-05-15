@@ -3,13 +3,13 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock, OnceLock, Weak};
 #[cfg(not(target_family = "wasm"))]
 use std::{
     pin::pin,
     task::{Context, Waker},
 };
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock, OnceLock, Weak};
 
 use futures::FutureExt;
 #[cfg(not(target_family = "wasm"))]
@@ -466,7 +466,6 @@ impl XetRuntime {
             RuntimeBackend::OwnedThreadPool { .. } => RuntimeMode::Owned,
         }
     }
-
 }
 
 // Native runtime construction and capabilities: owns a multi-thread tokio

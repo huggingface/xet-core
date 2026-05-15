@@ -1,13 +1,13 @@
+use std::sync::Arc;
 #[cfg(not(target_family = "wasm"))]
 use std::{fs::File, io::Read, path::Path};
-use std::sync::Arc;
 
 #[cfg(not(target_family = "wasm"))]
 use bytes::Bytes;
 use http::header::HeaderMap;
+use tracing::instrument;
 #[cfg(not(target_family = "wasm"))]
 use tracing::{Instrument, Span, info_span};
-use tracing::instrument;
 use uuid::Uuid;
 use xet_client::cas_client::auth::{AuthConfig, TokenRefresher};
 #[cfg(not(target_family = "wasm"))]

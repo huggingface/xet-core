@@ -1,7 +1,7 @@
 use sha2::{Digest, Sha256 as sha2Sha256};
+use tokio::task::{JoinError, JoinHandle};
 #[cfg(target_family = "wasm")]
 use tokio_with_wasm::alias as tokio;
-use tokio::task::{JoinError, JoinHandle};
 use xet_core_structures::metadata_shard::Sha256;
 use xet_runtime::core::XetContext;
 
