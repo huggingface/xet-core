@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -22,7 +23,10 @@ use crate::utils::TemplatedPathBuf;
 #[derive(Debug)]
 pub struct SystemMonitor {
     sample_interval: Duration,
-    _log_path: Option<TemplatedPathBuf>,
+    // `log_path` is accepted by the constructor for native API parity but
+    // unused on wasm (output always goes through `tracing::info!`). The
+    // PhantomData marker makes the parity intent explicit.
+    _log_path: PhantomData<TemplatedPathBuf>,
     stop: Arc<AtomicBool>,
     running: Arc<AtomicBool>,
 }
@@ -49,14 +53,14 @@ impl SystemMonitor {
     /// the native API are absent here. `log_path` is accepted for API
     /// parity with the native variant and is ignored — output is always
     /// emitted via `tracing::info!(system_usage = json)`.
-    pub fn follow_process(sample_interval: Duration, log_path: Option<TemplatedPathBuf>) -> Result<Self> {
+    pub fn follow_process(sample_interval: Duration, _log_path: Option<TemplatedPathBuf>) -> Result<Self> {
         // Probe the global scope eagerly so callers see configuration errors at
         // construction time rather than from the background loop.
         let _ = global_scope()?;
 
         let ret = Self {
             sample_interval,
-            _log_path: log_path,
+            _log_path: PhantomData,
             stop: Arc::new(AtomicBool::new(false)),
             running: Arc::new(AtomicBool::new(false)),
         };

@@ -31,8 +31,8 @@ impl TemplatedPathBuf {
         Self { template: path.into() }
     }
 
-    pub fn evaluate(path: impl AsRef<std::path::Path>) -> std::path::PathBuf {
-        path.as_ref().to_path_buf()
+    pub fn evaluate(path: impl Into<std::path::PathBuf>) -> std::path::PathBuf {
+        path.into()
     }
 
     pub fn template_string(&self) -> String {
