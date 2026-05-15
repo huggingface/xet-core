@@ -18,7 +18,6 @@ use super::errors::SessionError;
 #[cfg(not(target_family = "wasm"))]
 use super::file_download_group::XetFileDownloadGroupBuilder;
 use super::task_runtime::{TaskRuntime, XetTaskState};
-#[cfg(not(target_family = "wasm"))]
 use super::upload_commit::XetUploadCommitBuilder;
 
 /// All shared state for a session.
@@ -265,7 +264,6 @@ impl XetSession {
     /// [`build_blocking`](XetUploadCommitBuilder::build_blocking) (sync).
     ///
     /// Returns `Err(SessionError::UserCancelled)` if the session has been aborted.
-    #[cfg(not(target_family = "wasm"))]
     pub fn new_upload_commit(&self) -> Result<XetUploadCommitBuilder, SessionError> {
         self.inner.task_runtime.check_state("new_upload_commit")?;
         #[cfg(feature = "fd-track")]

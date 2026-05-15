@@ -1,5 +1,5 @@
 name: Build WASM
-description: Build hf_xet_wasm and hf_xet_thin_wasm
+description: Build hf_xet_thin_wasm, hf_xet_wasm_download, and hf_xet_wasm_upload
 runs:
   using: "composite"
   steps:
@@ -37,14 +37,14 @@ runs:
       working-directory: wasm/hf_xet_thin_wasm
       run: |
         ./build_wasm.sh
-    - name: Build hf_xet_wasm
-      shell: bash
-      working-directory: wasm/hf_xet_wasm
-      run: |
-        ./build_wasm.sh
     - name: Build hf_xet_wasm_download
       shell: bash
       working-directory: wasm/hf_xet_wasm_download
+      run: |
+        ./build_wasm.sh
+    - name: Build hf_xet_wasm_upload
+      shell: bash
+      working-directory: wasm/hf_xet_wasm_upload
       run: |
         ./build_wasm.sh
     - name: Check hf-xet compiles for wasm32-unknown-unknown
