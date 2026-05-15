@@ -4,9 +4,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use tracing::{error, info};
 #[cfg(target_family = "wasm")]
 use tokio_with_wasm::alias as tokio;
+use tracing::{error, info};
 use xet_data::deduplication::DeduplicationMetrics;
 use xet_data::processing::{FileUploadSession, Sha256Policy, XetFileInfo};
 use xet_data::progress_tracking::{GroupProgressReport, ItemProgressReport};

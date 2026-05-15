@@ -2,9 +2,9 @@ use std::future::Future;
 use std::sync::{Arc, Mutex, Weak};
 
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 #[cfg(target_family = "wasm")]
 use tokio_with_wasm::alias as tokio;
-use tokio_util::sync::CancellationToken;
 use xet_runtime::core::XetRuntime;
 
 use crate::error::XetError;
