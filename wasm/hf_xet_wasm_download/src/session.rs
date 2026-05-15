@@ -13,6 +13,21 @@ fn js_err(e: impl std::fmt::Debug) -> JsValue {
 ///
 /// Construct one with `new(endpoint, token, tokenExpiry)`, then call
 /// `downloadStream(fileInfo)` to begin streaming a file.
+///
+/// ## No automatic token refresh
+///
+/// This wrapper does **not** expose
+/// [`with_token_refresh_url`](xet::xet_session::AuthGroupBuilder::with_token_refresh_url),
+/// so the session has no way to obtain a fresh CAS token mid-stream. If
+/// `tokenExpiry` is reached during a download the underlying request will
+/// fail with an auth error. Callers are responsible for fetching a new
+/// `xet-read-token` from the Hub and constructing a fresh `XetSession`
+/// before expiry.
+///
+/// Wiring `with_token_refresh_url` here would need either a JS-callback
+/// bridge (so JS can mint and return a token via `Promise`) or a
+/// URL-based refresher backed by a route the wasm reqwest client can hit
+/// directly; both are out of scope for the initial download-only wrapper.
 #[wasm_bindgen(js_name = "XetSession")]
 pub struct XetSession {
     inner: InnerSession,

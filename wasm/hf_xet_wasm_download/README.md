@@ -3,7 +3,7 @@
 `cdylib + rlib` crate that wraps `xet_pkg::XetSession` with `#[wasm_bindgen]` and
 exposes a download-only API to JavaScript.
 
-This complements [`hf_xet_wasm`](../hf_xet_wasm), which is upload-only.
+This complements [`hf_xet_wasm_upload`](../hf_xet_wasm_upload), which is upload-only.
 
 ## JS API
 
@@ -42,8 +42,21 @@ The full token / file-id derivation is described in the
 Outputs `pkg/{hf_xet_wasm_download.js, hf_xet_wasm_download.d.ts,
 hf_xet_wasm_download_bg.wasm}`.
 
-Requires the same nightly toolchain + `wasm-bindgen-cli` 0.2.121 as
-[`hf_xet_wasm`](../hf_xet_wasm).
+Requires the same nightly toolchain + `wasm-bindgen-cli` 0.2.121 as the
+other `wasm/*` crates in this repo.
+
+## Token refresh
+
+This wrapper does **not** expose `XetDownloadStreamGroupBuilder::with_token_refresh_url`.
+The CAS token passed to `new XetSession(...)` is used as-is and is **not** refreshed
+mid-stream. If `tokenExpiry` is reached during a download the underlying request will
+fail with an auth error; callers must fetch a new `xet-read-token` from the Hub and
+construct a fresh `XetSession` before expiry.
+
+Wiring an automatic refresh through `wasm_bindgen` would need either a JS-callback
+bridge (so JS can mint and return a token via `Promise`) or a URL-based refresher
+backed by a route the wasm `reqwest` client can hit directly; both are out of scope
+for the initial wrapper.
 
 ## Manual browser test
 
