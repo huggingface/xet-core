@@ -2,7 +2,7 @@
 
 set -ex
 
-# Build script for hf_xet_wasm_download. Mirrors wasm/hf_xet_wasm/build_wasm.sh:
+# Build script for hf_xet_wasm_upload. Mirrors wasm/hf_xet_wasm_download/build_wasm.sh:
 #  - rebuilds std with atomics enabled
 #  - enables atomics/bulk-memory/mutable-globals features
 #  - runs wasm-bindgen to produce ES modules for web targets
