@@ -1,4 +1,6 @@
 use std::string::FromUtf8Error;
+#[cfg(target_family = "wasm")]
+use std::sync::Arc;
 use std::sync::mpsc::RecvError;
 
 use thiserror::Error;
@@ -52,6 +54,10 @@ pub enum DataError {
     #[error("Subtask scheduling error: {0}")]
     JoinError(#[from] tokio::task::JoinError),
 
+    #[cfg(target_family = "wasm")]
+    #[error("Subtask scheduling error (wasm): {0}")]
+    WasmJoinError(Arc<tokio_with_wasm::task::JoinError>),
+
     #[error("Non-small file not cleaned: {0}")]
     FileNotCleanedError(#[from] FromUtf8Error),
 
@@ -89,6 +95,13 @@ pub enum DataError {
 }
 
 pub type Result<T> = std::result::Result<T, DataError>;
+
+#[cfg(target_family = "wasm")]
+impl From<tokio_with_wasm::task::JoinError> for DataError {
+    fn from(err: tokio_with_wasm::task::JoinError) -> Self {
+        DataError::WasmJoinError(Arc::new(err))
+    }
+}
 
 impl From<SingleflightError<DataError>> for DataError {
     fn from(value: SingleflightError<DataError>) -> Self {
