@@ -395,26 +395,6 @@ impl XetUploadCommit {
 
     // ===== Async public API =====
 
-    /// Queue a file for upload from a path on disk.
-    ///
-    /// The file is read in a background task. Returns a [`XetFileUpload`]
-    /// whose [`finalize_ingestion`](XetFileUpload::finalize_ingestion) method yields per-file
-    /// [`XetFileMetadata`] once ingestion completes.
-    ///
-    /// # Parameters
-    ///
-    /// - `file_path`: path to the file. Resolved to an absolute path so the upload is unaffected by later
-    ///   working-directory changes.
-    /// - `sha256`: SHA-256 handling policy for this file.
-    #[cfg(not(target_family = "wasm"))]
-    pub async fn upload_from_path(&self, file_path: PathBuf, sha256: Sha256Policy) -> Result<XetFileUpload, XetError> {
-        info!(commit_id = %self.id(), path = ?file_path, "Upload from path");
-        let inner = Arc::clone(&self.inner);
-        self.task_runtime
-            .bridge_async("upload_from_path", async move { inner.upload_from_path(file_path, sha256).await })
-            .await
-    }
-
     /// Begin an incremental streaming upload.
     ///
     /// Returns an [`XetStreamUpload`] for writing data in chunks.  Call
@@ -508,7 +488,35 @@ impl XetUploadCommit {
         matches!(self.inner.task_runtime.status(), Ok(XetTaskState::Completed))
     }
 
-    // ===== Blocking (sync) variants =====
+    /// Cancel all active uploads in this commit.
+    pub fn abort(&self) -> Result<(), XetError> {
+        info!(commit_id = %self.id(), "Commit abort");
+        self.inner.abort()
+    }
+}
+
+// Native upload paths — require std::path::PathBuf and the multi-threaded
+// sync bridge; have no wasm equivalents.
+#[cfg(not(target_family = "wasm"))]
+impl XetUploadCommit {
+    /// Queue a file for upload from a path on disk.
+    ///
+    /// The file is read in a background task. Returns a [`XetFileUpload`]
+    /// whose [`finalize_ingestion`](XetFileUpload::finalize_ingestion) method yields per-file
+    /// [`XetFileMetadata`] once ingestion completes.
+    ///
+    /// # Parameters
+    ///
+    /// - `file_path`: path to the file. Resolved to an absolute path so the upload is unaffected by later
+    ///   working-directory changes.
+    /// - `sha256`: SHA-256 handling policy for this file.
+    pub async fn upload_from_path(&self, file_path: PathBuf, sha256: Sha256Policy) -> Result<XetFileUpload, XetError> {
+        info!(commit_id = %self.id(), path = ?file_path, "Upload from path");
+        let inner = Arc::clone(&self.inner);
+        self.task_runtime
+            .bridge_async("upload_from_path", async move { inner.upload_from_path(file_path, sha256).await })
+            .await
+    }
 
     /// Blocking version of [`upload_from_path`](Self::upload_from_path).
     ///
@@ -518,7 +526,6 @@ impl XetUploadCommit {
     /// # Panics
     ///
     /// Panics if called from within a tokio async runtime.
-    #[cfg(not(target_family = "wasm"))]
     pub fn upload_from_path_blocking(
         &self,
         file_path: PathBuf,
@@ -537,7 +544,6 @@ impl XetUploadCommit {
     /// # Panics
     ///
     /// Panics if called from within a tokio async runtime.
-    #[cfg(not(target_family = "wasm"))]
     pub fn upload_stream_blocking(
         &self,
         tracking_name: Option<String>,
@@ -556,7 +562,6 @@ impl XetUploadCommit {
     /// # Panics
     ///
     /// Panics if called from within a tokio async runtime.
-    #[cfg(not(target_family = "wasm"))]
     pub fn upload_bytes_blocking(
         &self,
         bytes: Vec<u8>,
@@ -582,18 +587,11 @@ impl XetUploadCommit {
     /// # Panics
     ///
     /// Panics if called from within a tokio async runtime.
-    #[cfg(not(target_family = "wasm"))]
     pub fn commit_blocking(&self) -> Result<XetCommitReport, XetError> {
         info!(commit_id = %self.id(), "Commit starting");
         let inner = Arc::clone(&self.inner);
         self.task_runtime
             .bridge_sync_finalizing("commit_blocking", false, async move { inner.commit().await })
-    }
-
-    /// Cancel all active uploads in this commit.
-    pub fn abort(&self) -> Result<(), XetError> {
-        info!(commit_id = %self.id(), "Commit abort");
-        self.inner.abort()
     }
 }
 

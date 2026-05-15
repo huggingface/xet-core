@@ -56,7 +56,7 @@ pub enum DataError {
 
     #[cfg(target_family = "wasm")]
     #[error("Subtask scheduling error (wasm): {0}")]
-    WasmJoinError(Arc<tokio_with_wasm::task::JoinError>),
+    WasmTaskJoinError(Arc<tokio_with_wasm::task::JoinError>),
 
     #[error("Non-small file not cleaned: {0}")]
     FileNotCleanedError(#[from] FromUtf8Error),
@@ -99,7 +99,7 @@ pub type Result<T> = std::result::Result<T, DataError>;
 #[cfg(target_family = "wasm")]
 impl From<tokio_with_wasm::task::JoinError> for DataError {
     fn from(err: tokio_with_wasm::task::JoinError) -> Self {
-        DataError::WasmJoinError(Arc::new(err))
+        DataError::WasmTaskJoinError(Arc::new(err))
     }
 }
 
