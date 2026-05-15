@@ -227,6 +227,17 @@ impl From<tokio::task::JoinError> for XetError {
     }
 }
 
+#[cfg(target_family = "wasm")]
+impl From<tokio_with_wasm::task::JoinError> for XetError {
+    fn from(e: tokio_with_wasm::task::JoinError) -> Self {
+        if e.is_cancelled() {
+            XetError::Cancelled(format!("Task cancelled: {e}"))
+        } else {
+            XetError::Internal(format!("Task join error: {e}"))
+        }
+    }
+}
+
 impl From<tokio::sync::AcquireError> for XetError {
     fn from(e: tokio::sync::AcquireError) -> Self {
         XetError::Cancelled(format!("Semaphore closed: {e}"))

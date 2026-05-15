@@ -11,6 +11,7 @@ runs:
           ~/.cargo/git
           target
           hf_xet/target
-          wasm/hf_xet_wasm/target
           wasm/hf_xet_thin_wasm/target
+          wasm/hf_xet_wasm_download/target
+          wasm/hf_xet_wasm_upload/target
         key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}

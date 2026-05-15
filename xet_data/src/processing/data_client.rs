@@ -1,21 +1,27 @@
-use std::fs::File;
-use std::io::Read;
-use std::path::Path;
 use std::sync::Arc;
+#[cfg(not(target_family = "wasm"))]
+use std::{fs::File, io::Read, path::Path};
 
+#[cfg(not(target_family = "wasm"))]
 use bytes::Bytes;
 use http::header::HeaderMap;
-use tracing::{Instrument, Span, info_span, instrument};
+use tracing::instrument;
+#[cfg(not(target_family = "wasm"))]
+use tracing::{Instrument, Span, info_span};
 use uuid::Uuid;
 use xet_client::cas_client::auth::{AuthConfig, TokenRefresher};
+#[cfg(not(target_family = "wasm"))]
 use xet_core_structures::merklehash::MerkleHash;
 use xet_runtime::core::XetContext;
+#[cfg(not(target_family = "wasm"))]
 use xet_runtime::core::par_utils::run_constrained_with_semaphore;
 
 use super::configurations::{SessionContext, TranslatorConfig};
 use super::file_cleaner::Sha256Policy;
 use super::{FileUploadSession, XetFileInfo};
-use crate::deduplication::{Chunker, DeduplicationMetrics};
+#[cfg(not(target_family = "wasm"))]
+use crate::deduplication::Chunker;
+use crate::deduplication::DeduplicationMetrics;
 use crate::error::Result;
 
 pub fn default_config(
@@ -50,6 +56,7 @@ pub async fn clean_bytes(
     handle.finish().await
 }
 
+#[cfg(not(target_family = "wasm"))]
 #[instrument(skip_all, name = "clean_file", fields(file.name = tracing::field::Empty, file.len = tracing::field::Empty))]
 pub async fn clean_file(
     processor: Arc<FileUploadSession>,
@@ -100,6 +107,7 @@ pub async fn clean_file(
 /// - Verify that downloaded files are correctly reassembled
 /// - Check if a file needs to be uploaded (by comparing hashes)
 /// - Generate cache keys for local file operations
+#[cfg(not(target_family = "wasm"))]
 fn hash_single_file(ctx: XetContext, filename: String, buffer_size: usize) -> Result<XetFileInfo> {
     let mut reader = File::open(&filename)?;
     let filesize = reader.metadata()?.len();
@@ -158,6 +166,7 @@ fn hash_single_file(ctx: XetContext, filename: String, buffer_size: usize) -> Re
 /// - Uses `file_ingestion_semaphore` to control parallelism
 /// - No authentication or server connection required
 /// - Pure local computation
+#[cfg(not(target_family = "wasm"))]
 #[instrument(skip_all, name = "data_client::hash_files", fields(num_files=file_paths.len()))]
 pub async fn hash_files_async(ctx: &XetContext, file_paths: Vec<String>) -> Result<Vec<XetFileInfo>> {
     let runtime = ctx.runtime.clone();

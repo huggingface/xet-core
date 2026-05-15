@@ -1,17 +1,25 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
+#[cfg(not(target_family = "wasm"))]
 use std::fs::File;
+#[cfg(not(target_family = "wasm"))]
 use std::io::Read;
 use std::mem::{swap, take};
+#[cfg(not(target_family = "wasm"))]
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(not(target_family = "wasm"))]
 use bytes::Bytes;
 use more_asserts::*;
 use tokio::sync::Mutex;
 use tokio::task::{JoinHandle, JoinSet};
-use tracing::{Instrument, Span, info_span, instrument};
+#[cfg(target_family = "wasm")]
+use tokio_with_wasm::alias as tokio;
+#[cfg(not(target_family = "wasm"))]
+use tracing::Span;
+use tracing::{Instrument, info_span, instrument};
 use xet_client::cas_client::{Client, ProgressCallback};
 use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
 use xet_core_structures::xorb_object::SerializedXorbObject;
@@ -101,6 +109,7 @@ impl FileUploadSession {
         }))
     }
 
+    #[cfg(not(target_family = "wasm"))]
     pub async fn upload_files(
         self: &Arc<Self>,
         files_and_sha256: impl IntoIterator<Item = (impl AsRef<Path>, Sha256Policy)> + Send,
@@ -237,6 +246,7 @@ impl FileUploadSession {
     /// Spawns a task that reads `file_path` and uploads it.
     ///
     /// Returns the tracking ID and a join handle for the spawned task.
+    #[cfg(not(target_family = "wasm"))]
     pub async fn spawn_upload_from_path(
         self: &Arc<Self>,
         file_path: PathBuf,
@@ -270,9 +280,19 @@ impl FileUploadSession {
         self.check_not_finalized()?;
         let (id, mut cleaner) = self.start_clean(tracking_name, Some(bytes.len() as u64), sha256)?;
 
-        let runtime = self.ctx.runtime.clone();
         let semaphore = self.ctx.common.file_ingestion_semaphore.clone();
-        let handle = runtime.spawn(async move {
+        // Route through XetRuntime on native so the task participates in SIGINT
+        // shutdown and FD accounting. On wasm, XetRuntime has no handle (the
+        // wasm `XetRuntime::new` stub leaves `handle_ref` empty), so spawn via
+        // the `tokio_with_wasm::alias as tokio` shim instead.
+        #[cfg(not(target_family = "wasm"))]
+        let handle = self.ctx.runtime.spawn(async move {
+            let _permit = semaphore.acquire().await?;
+            cleaner.add_data(&bytes).await?;
+            cleaner.finish().await
+        });
+        #[cfg(target_family = "wasm")]
+        let handle = tokio::task::spawn(async move {
             let _permit = semaphore.acquire().await?;
             cleaner.add_data(&bytes).await?;
             cleaner.finish().await
@@ -281,6 +301,7 @@ impl FileUploadSession {
         Ok((id, handle))
     }
 
+    #[cfg(not(target_family = "wasm"))]
     async fn feed_file_to_cleaner(
         _session: &Arc<Self>,
         mut cleaner: SingleFileCleaner,
@@ -418,7 +439,7 @@ impl FileUploadSession {
                 .config
                 .xorb
                 .simulation_max_bytes
-                .map(|bs| (bs.as_u64() as usize).min(*MAX_XORB_BYTES))
+                .map(|bs| bs.as_u64().min(*MAX_XORB_BYTES as u64) as usize)
                 .unwrap_or(*MAX_XORB_BYTES);
             #[cfg(not(feature = "simulation"))]
             let xorb_cut_bytes = *MAX_XORB_BYTES;
@@ -608,7 +629,7 @@ impl FileUploadSession {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use std::fs::{File, OpenOptions};
     use std::io::{Read, Write};

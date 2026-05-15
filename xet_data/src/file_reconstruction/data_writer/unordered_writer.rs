@@ -4,6 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use bytes::Bytes;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::task::JoinSet;
+#[cfg(target_family = "wasm")]
+use tokio_with_wasm::alias as tokio;
 use xet_client::cas_types::FileRange;
 use xet_runtime::utils::adjustable_semaphore::AdjustableSemaphorePermit;
 
@@ -67,7 +69,8 @@ impl Drop for UnorderedWriter {
     }
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl DataWriter for UnorderedWriter {
     async fn set_next_term_data_source(
         &mut self,

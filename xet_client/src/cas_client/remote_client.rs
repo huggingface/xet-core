@@ -624,7 +624,6 @@ impl Client for RemoteClient {
         }
     }
 
-    #[cfg(not(target_family = "wasm"))]
     #[instrument(skip_all, name = "RemoteClient::upload_xorb", fields(key = Key{prefix : prefix.to_string(), hash : serialized_xorb_object.hash}.to_string(),
                  xorb.len = serialized_xorb_object.serialized_data.len(), xorb.num_chunks = serialized_xorb_object.num_chunks
     ))]
@@ -657,6 +656,8 @@ impl Client for RemoteClient {
         let n_transfer_bytes = serialized_xorb_object.serialized_data.len() as u64;
 
         let serialized_data = serialized_xorb_object.serialized_data.clone();
+
+        #[cfg(not(target_family = "wasm"))]
         let block_size = self.ctx.config.client.upload_reporting_block_size;
 
         let mut upload_reporter = StreamProgressReporter::new(n_transfer_bytes)
@@ -674,21 +675,37 @@ impl Client for RemoteClient {
                 let response: UploadXorbResponse = RetryWrapper::new(self.ctx.clone(), api_tag)
                     .with_connection_permit(upload_permit, Some(n_transfer_bytes))
                     .run_and_extract_json(move || {
-                        let upload_stream = UploadProgressStream::wrap_bytes_as_stream(
-                            serialized_data.clone(),
-                            block_size,
-                            upload_reporter.clone(),
-                        );
                         let url = url.clone();
+                        let serialized_data = serialized_data.clone();
 
-                        client
-                            .post(url)
-                            .with_extension(Api(api_tag))
-                            .header(CONTENT_LENGTH, HeaderValue::from(n_upload_bytes)) // must be set because of streaming
-                            .body(Body::wrap_stream(upload_stream))
-                            .send()
+                        #[cfg(not(target_family = "wasm"))]
+                        let request = {
+                            let upload_stream = UploadProgressStream::wrap_bytes_as_stream(
+                                serialized_data,
+                                block_size,
+                                upload_reporter.clone(),
+                            );
+                            client
+                                .post(url)
+                                .with_extension(Api(api_tag))
+                                .header(CONTENT_LENGTH, HeaderValue::from(n_upload_bytes)) // must be set because of streaming
+                                .body(Body::wrap_stream(upload_stream))
+                        };
+
+                        // reqwest's wasm backend does not support streaming request bodies;
+                        // pass the raw Bytes directly (CONTENT_LENGTH is set by reqwest from the body length).
+                        #[cfg(target_family = "wasm")]
+                        let request = client.post(url).with_extension(Api(api_tag)).body(serialized_data);
+
+                        request.send()
                     })
                     .await?;
+
+                // Wasm has no per-chunk progress hook (no streaming body); emit one bulk
+                // event after success so the user callback and adaptive-concurrency
+                // reporter both observe the full byte count.
+                #[cfg(target_family = "wasm")]
+                upload_reporter.report_progress(n_transfer_bytes as usize);
 
                 response.was_inserted
             } else {
@@ -716,34 +733,6 @@ impl Client for RemoteClient {
                 "Completed upload_xorb API call",
             );
         }
-
-        Ok(n_upload_bytes)
-    }
-
-    #[cfg(target_family = "wasm")]
-    async fn upload_xorb(
-        &self,
-        prefix: &str,
-        serialized_xorb_object: SerializedXorbObject,
-        _progress_callback: Option<ProgressCallback>,
-        _upload_permit: ConnectionPermit,
-    ) -> Result<u64> {
-        let key = Key {
-            prefix: prefix.to_string(),
-            hash: serialized_xorb_object.hash,
-        };
-
-        let url = Url::parse(&format!("{}/v1/xorbs/{key}", self.endpoint))?;
-
-        let n_upload_bytes = serialized_xorb_object.serialized_data.len() as u64;
-
-        let xorb_uploaded = self
-            .authenticated_http_client
-            .post(url)
-            .with_extension(Api("cas::upload_xorb"))
-            .body(serialized_xorb_object.serialized_data)
-            .send()
-            .await?;
 
         Ok(n_upload_bytes)
     }

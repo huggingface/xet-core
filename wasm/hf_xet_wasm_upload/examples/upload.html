@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>hf_xet_wasm_upload — manual test</title>
+  <style>
+    body { font-family: monospace; max-width: 800px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { margin-bottom: 0; }
+    p.sub { margin-top: 0.25rem; color: #555; }
+    label { display: block; margin: 0.5rem 0 0.2rem; font-weight: bold; }
+    input, textarea { width: 100%; box-sizing: border-box; padding: 0.3rem; }
+    .row { display: flex; gap: 0.5rem; }
+    .row > * { flex: 1; }
+    button { margin-top: 1rem; padding: 0.5rem 1rem; }
+    #log { margin-top: 1rem; white-space: pre-wrap; background: #f4f4f4; padding: 1rem; min-height: 4rem; max-height: 400px; overflow-y: auto; }
+    code { background: #eee; padding: 0 0.2rem; }
+    .warn { background: #fff7d6; border-left: 4px solid #d4a800; padding: 0.5rem 0.75rem; margin: 0.75rem 0; }
+  </style>
+</head>
+<body>
+  <h1>XetSession upload test</h1>
+  <p class="sub">Build the WASM package first: <code>./build_wasm.sh</code>, then serve this
+  directory with a static server (e.g. <code>python3 -m http.server 8080</code>) and open
+  <code>http://localhost:8080/examples/upload.html</code>.</p>
+
+  <p class="warn">Manual smoke test only &mdash; this does NOT commit the uploaded data to a Hub
+  repo. It pushes xorbs + shard to CAS, prints per-file metadata and the commit report, then
+  stops. To actually land the data in a repo you would have to take the returned metadata and
+  call the Hub commit API yourself.</p>
+
+  <p class="sub">The page calls one Hugging Face Hub endpoint to derive the inputs needed by
+  <code>XetSession</code>:</p>
+  <ol style="margin-top: 0; color: #555;">
+    <li><code>GET /api/{repo_type}s/{namespace}/{repo}/xet-write-token/{revision}</code> &mdash;
+        returns <code>{ accessToken, exp, casUrl }</code></li>
+  </ol>
+
+  <label>Hugging Face Hub token (write scope)</label>
+  <input id="hfToken" placeholder="hf_xxxxxxxxxxxxxxxxxxx" />
+
+  <div class="row">
+    <div>
+      <label>Repo type</label>
+      <input id="repoType" value="model" />
+    </div>
+    <div>
+      <label>Namespace</label>
+      <input id="namespace" value="" placeholder="your-username" />
+    </div>
+  </div>
+
+  <div class="row">
+    <div>
+      <label>Repository</label>
+      <input id="repo" value="" placeholder="some-repo" />
+    </div>
+    <div>
+      <label>Revision (branch / tag / commit)</label>
+      <input id="revision" value="main" />
+    </div>
+  </div>
+
+  <label>File to upload</label>
+  <input id="file" type="file" />
+
+  <button id="uploadBtn">Upload</button>
+
+  <div id="log">Ready.</div>
+
+  <script type="module">
+    import init, { XetSession } from '../pkg/hf_xet_wasm_upload.js';
+
+    await init();
+
+    const HUB_BASE = 'https://huggingface.co';
+
+    const log = document.getElementById('log');
+    function append(line) {
+      log.textContent += line + '\n';
+      log.scrollTop = log.scrollHeight;
+    }
+    function appendJSON(label, obj) {
+      append(`${label}:`);
+      append(JSON.stringify(obj, null, 2));
+    }
+
+    /**
+     * GET /api/{repo_type}s/{namespace}/{repo}/xet-write-token/{revision}
+     * Same response shape as xet-read-token: { accessToken, exp, casUrl }.
+     */
+    async function fetchXetWriteToken({ hfToken, repoType, namespace, repo, revision }) {
+      const url = `${HUB_BASE}/api/${repoType}s/${namespace}/${repo}/xet-write-token/${revision}`;
+      const headers = {};
+      if (hfToken) headers['Authorization'] = `Bearer ${hfToken}`;
+      const resp = await fetch(url, { method: 'GET', headers });
+      if (!resp.ok) {
+        throw new Error(`xet-write-token ${resp.status}: ${await resp.text()}`);
+      }
+      const json = await resp.json();
+      if (!json.accessToken || !json.casUrl) {
+        throw new Error(`xet-write-token response missing fields: ${JSON.stringify(json)}`);
+      }
+      return json;
+    }
+
+    document.getElementById('uploadBtn').addEventListener('click', async () => {
+      log.textContent = '';
+
+      const fileInput = document.getElementById('file');
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) {
+        append('ERROR: pick a file first.');
+        return;
+      }
+
+      const inputs = {
+        hfToken: document.getElementById('hfToken').value.trim(),
+        repoType: document.getElementById('repoType').value.trim(),
+        namespace: document.getElementById('namespace').value.trim(),
+        repo: document.getElementById('repo').value.trim(),
+        revision: document.getElementById('revision').value.trim(),
+      };
+
+      try {
+        append(`Reading ${file.name} (${file.size} bytes)...`);
+        const buf = await file.arrayBuffer();
+        const bytes = new Uint8Array(buf);
+
+        append(`Fetching xet write token for ${inputs.namespace}/${inputs.repo}@${inputs.revision}...`);
+        const { accessToken, exp, casUrl } = await fetchXetWriteToken(inputs);
+        append(`  casUrl  = ${casUrl}`);
+        append(`  exp     = ${exp} (in ${Math.max(0, exp - Math.floor(Date.now() / 1000))}s)`);
+
+        append(`Constructing XetSession against ${casUrl}`);
+        const session = new XetSession(casUrl, accessToken, exp);
+
+        append(`Opening new upload commit...`);
+        const commit = await session.newUploadCommit();
+
+        append(`Uploading ${bytes.byteLength} bytes (sha256 policy = "compute") as "${file.name}"...`);
+        const metadata = await commit.uploadBytes(bytes, "compute", file.name);
+        appendJSON('Per-file metadata', metadata);
+
+        append(`Finalizing commit (push xorbs + shard to CAS)...`);
+        const report = await commit.commit();
+        appendJSON('Commit report', report);
+
+        append(`\nDone.`);
+      } catch (e) {
+        append(`\nERROR: ${e && e.message ? e.message : e}`);
+        console.error(e);
+      }
+    });
+  </script>
+</body>
+</html>

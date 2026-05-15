@@ -15,6 +15,7 @@ use super::download_stream_group::{
     XetDownloadStreamGroup, XetDownloadStreamGroupBuilder, XetDownloadStreamGroupInner,
 };
 use super::errors::SessionError;
+#[cfg(not(target_family = "wasm"))]
 use super::file_download_group::XetFileDownloadGroupBuilder;
 use super::task_runtime::{TaskRuntime, XetTaskState};
 use super::upload_commit::XetUploadCommitBuilder;
@@ -108,6 +109,10 @@ pub struct XetSessionInner {
 /// override runtime settings such as cache directories or concurrency limits.
 pub struct XetSessionBuilder {
     config: XetConfig,
+    // `with_tokio_handle` and the `_blocking` factory methods are non-wasm-only;
+    // the field is still constructed unconditionally so the struct shape stays
+    // identical across targets.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     tokio_handle: Option<tokio::runtime::Handle>,
 }
 
@@ -148,6 +153,7 @@ impl XetSessionBuilder {
     /// Handles can be shared by multiple sessions. Each session gets its own
     /// [`XetContext`] (`config` + `common`), while the underlying runtime
     /// may be shared.
+    #[cfg(not(target_family = "wasm"))]
     pub fn with_tokio_handle(self, handle: tokio::runtime::Handle) -> Self {
         let accept = XetContext::handle_meets_requirements(&handle);
         if !accept {
@@ -168,6 +174,7 @@ impl XetSessionBuilder {
     ///
     /// Each build creates a fresh [`XetContext`] around the selected runtime, so sessions
     /// can share the same execution backend while keeping independent config and common state.
+    #[cfg(not(target_family = "wasm"))]
     pub fn build(self) -> Result<XetSession, SessionError> {
         #[cfg(feature = "fd-track")]
         let _fd_scope = track_fd_scope("XetSessionBuilder::build");
@@ -183,6 +190,20 @@ impl XetSessionBuilder {
         info!("Session created, session_id={}", session.inner.id);
         #[cfg(feature = "fd-track")]
         report_fd_count("XetSessionBuilder::build complete");
+        Ok(session)
+    }
+
+    #[cfg(target_family = "wasm")]
+    pub fn build(self) -> Result<XetSession, SessionError> {
+        // On wasm no tokio runtime is instantiated at all: `XetRuntime::new` is a
+        // stub that leaves `handle_ref` empty and `RuntimeBackend::OwnedThreadPool`
+        // holding `None`. The wasm bridge variants in `task_runtime.rs` `.await`
+        // futures directly via `wasm_bindgen_futures::spawn_local` and never call
+        // back into `XetRuntime::handle()`, so the `XetContext` is purely a
+        // bookkeeping object (config + common state + cancellation tokens).
+        let ctx = XetContext::with_config(self.config)?;
+        let session = XetSession::new(ctx);
+        info!("Session created, session_id={}", session.inner.id);
         Ok(session)
     }
 }
@@ -269,6 +290,7 @@ impl XetSession {
     /// [`build_blocking`](XetFileDownloadGroupBuilder::build_blocking) (sync).
     ///
     /// Returns `Err(SessionError::UserCancelled)` if the session has been aborted.
+    #[cfg(not(target_family = "wasm"))]
     pub fn new_file_download_group(&self) -> Result<XetFileDownloadGroupBuilder, SessionError> {
         self.inner.task_runtime.check_state("new_file_download_group")?;
         #[cfg(feature = "fd-track")]
@@ -333,6 +355,7 @@ impl XetSession {
     ///
     /// Performs runtime SIGINT shutdown and clears session registrations.
     /// This does not call per-commit/group local abort hooks.
+    #[cfg(not(target_family = "wasm"))]
     pub fn sigint_abort(&self) -> Result<(), SessionError> {
         #[cfg(feature = "fd-track")]
         let _fd_scope = track_fd_scope(format!("XetSession::sigint_abort({})", self.inner.id));

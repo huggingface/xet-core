@@ -55,6 +55,7 @@ pub use error::{XetAuthenticationError, XetObjectNotFoundError, register_excepti
 
 // Legacy helpers re-exported for backward compatibility with `hf_xet` (Python bindings)
 // and `git_xet`.  New code should use the [`xet_session`] API instead.
+#[cfg(not(target_family = "wasm"))]
 pub mod legacy;
 pub mod xet_session;
 
@@ -62,6 +63,7 @@ pub mod xet_session;
 ///
 /// Reads `HF_XET_LOG_FILE` / `RUST_LOG` environment variables.  Repeated calls
 /// are no-ops — the global subscriber is installed only once.
+#[cfg(not(target_family = "wasm"))]
 pub fn init_logging(version_info: String) {
     let log_dir = xet_runtime::core::xet_cache_root().join("logs");
 

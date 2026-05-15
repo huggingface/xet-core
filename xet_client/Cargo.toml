@@ -51,6 +51,7 @@ tokio = { workspace = true, features = [
     "rt",
     "time",
 ] }
+tokio_with_wasm = { workspace = true, features = ["rt", "sync"] }
 web-time = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]

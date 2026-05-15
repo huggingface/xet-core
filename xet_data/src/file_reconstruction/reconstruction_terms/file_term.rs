@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use tokio::sync::OnceCell;
+#[cfg(target_family = "wasm")]
+use tokio_with_wasm::alias as tokio;
 use xet_client::cas_client::Client;
 use xet_client::cas_types::{ChunkRange, FileRange, HttpRange};
 use xet_client::chunk_cache::ChunkCache;

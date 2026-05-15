@@ -169,11 +169,41 @@ jobs:
         run: |
           # the build steps would update Cargo.lock if it is out of date
           test -z "$(git status --porcelain Cargo.lock)" || (echo "hf_xet_thin_wasm Cargo.lock has uncommitted changes!" && exit 1)
-      - name: Check hf_xet_wasm Cargo.lock has no uncommitted changes
-        working-directory: wasm/hf_xet_wasm
+      - name: Check hf_xet_wasm_download Cargo.lock has no uncommitted changes
+        working-directory: wasm/hf_xet_wasm_download
         run: |
           # the build steps would update Cargo.lock if it is out of date
-          test -z "$(git status --porcelain Cargo.lock)" || (echo "hf_xet_wasm Cargo.lock has uncommitted changes!" && exit 1)
+          test -z "$(git status --porcelain Cargo.lock)" || (echo "hf_xet_wasm_download Cargo.lock has uncommitted changes!" && exit 1)
+      - name: Check hf_xet_wasm_upload Cargo.lock has no uncommitted changes
+        working-directory: wasm/hf_xet_wasm_upload
+        run: |
+          # the build steps would update Cargo.lock if it is out of date
+          test -z "$(git status --porcelain Cargo.lock)" || (echo "hf_xet_wasm_upload Cargo.lock has uncommitted changes!" && exit 1)
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5.0.0
+        with:
+          node-version: '20'
+      - name: WASM download smoke test (prod hub + CAS)
+        # Non-blocking: a hub blip shouldn't fail unrelated PRs.
+        # Token is optional — the pinned file is in a public dataset.
+        continue-on-error: true
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        working-directory: wasm/hf_xet_wasm_download/tests/ci-smoke
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          node run.mjs
+      - name: WASM upload smoke test (local data-prep regression guard)
+        # Regression guard for the wasm upload data-prep path
+        # (XetRuntime::spawn_blocking). uploadBytes is local-only, so no
+        # HF/CAS network is touched — failures are real regressions.
+        working-directory: wasm/hf_xet_wasm_upload/tests/ci-smoke
+        run: |
+          npm ci
+          # System deps were installed by the download smoke step; just
+          # ensure the browser binary is present (no-op if cached).
+          npx playwright install chromium
+          node run.mjs
   cargo-audit:
     name: Cargo Audit
     runs-on: ubuntu-latest

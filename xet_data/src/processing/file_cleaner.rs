@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
+#[cfg(target_family = "wasm")]
+use tokio_with_wasm::alias as tokio;
 use tracing::{Instrument, debug_span, info, instrument};
 use xet_core_structures::metadata_shard::Sha256;
 use xet_core_structures::metadata_shard::file_structs::FileMetadataExt;

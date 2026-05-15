@@ -1,5 +1,20 @@
 //! Session-based file upload and download API for XetHub / HuggingFace Hub.
 //!
+//! ## WASM availability
+//!
+//! On `wasm32-unknown-unknown` targets the surface is a strict subset:
+//!
+//! - **Async only** — no `_blocking` variants. Wasm cannot block the host thread, and the bridged `_blocking` methods
+//!   are gated to non-wasm.
+//! - **No filesystem entrypoints** — `upload_from_path`, `XetFileDownloadGroup`, and `XetFileDownload` are
+//!   non-wasm-only. Wasm callers use `upload_bytes` / `upload_stream` and `XetDownloadStreamGroup` instead.
+//! - **No external tokio handle** — `XetSessionBuilder::with_tokio_handle` is non-wasm-only.
+//!
+//! The `[`...`]` doc links below resolve on every target, but the rendered
+//! `_blocking` and path-based names point at items that don't exist when
+//! building docs for wasm. See the per-method `#[cfg(...)]` attributes for
+//! the authoritative target gate.
+//!
 //! This crate exposes a three-level hierarchy that maps naturally onto batch
 //! file operations:
 //!
@@ -254,7 +269,9 @@ mod common;
 mod download_stream_group;
 mod download_stream_handle;
 mod errors;
+#[cfg(not(target_family = "wasm"))]
 mod file_download_group;
+#[cfg(not(target_family = "wasm"))]
 mod file_download_handle;
 mod session;
 mod task_runtime;
@@ -265,7 +282,9 @@ mod upload_stream_handle;
 pub use download_stream_group::{XetDownloadStreamGroup, XetDownloadStreamGroupBuilder};
 pub use download_stream_handle::{XetDownloadStream, XetUnorderedDownloadStream};
 pub use errors::SessionError;
+#[cfg(not(target_family = "wasm"))]
 pub use file_download_group::{XetDownloadGroupReport, XetFileDownloadGroup, XetFileDownloadGroupBuilder};
+#[cfg(not(target_family = "wasm"))]
 pub use file_download_handle::{XetDownloadReport, XetFileDownload};
 pub use http::{HeaderMap, HeaderValue, header};
 pub use session::{XetSession, XetSessionBuilder};

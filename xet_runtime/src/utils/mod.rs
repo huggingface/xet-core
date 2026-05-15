@@ -15,14 +15,28 @@ mod file_paths;
 #[cfg(not(target_family = "wasm"))]
 pub use file_paths::TemplatedPathBuf;
 
-/// On wasm, path templates and expansion are not supported. Use plain PathBuf.
+/// On wasm, path templates and expansion are not supported. The stub keeps the
+/// surface needed by the config system (`new`, `template_string`) so the
+/// `system_monitor` config group compiles on both targets; `evaluate()`
+/// returns the input path unchanged.
 #[cfg(target_family = "wasm")]
-pub struct TemplatedPathBuf(std::path::PathBuf);
+#[derive(Debug, Clone)]
+pub struct TemplatedPathBuf {
+    template: std::path::PathBuf,
+}
 
 #[cfg(target_family = "wasm")]
 impl TemplatedPathBuf {
-    pub fn evaluate(path: impl AsRef<std::path::Path>) -> std::path::PathBuf {
-        path.as_ref().to_path_buf()
+    pub fn new(path: impl Into<std::path::PathBuf>) -> Self {
+        Self { template: path.into() }
+    }
+
+    pub fn evaluate(path: impl Into<std::path::PathBuf>) -> std::path::PathBuf {
+        path.into()
+    }
+
+    pub fn template_string(&self) -> String {
+        self.template.to_string_lossy().into_owned()
     }
 }
 
@@ -43,11 +57,11 @@ pub mod singleflight;
 pub mod rw_task_lock;
 pub use rw_task_lock::{RwTaskLock, RwTaskLockError, RwTaskLockReadGuard};
 
-#[cfg(not(target_family = "wasm"))]
 mod guards;
 
+pub use guards::ClosureGuard;
 #[cfg(not(target_family = "wasm"))]
-pub use guards::{ClosureGuard, CwdGuard, EnvVarGuard};
+pub use guards::{CwdGuard, EnvVarGuard};
 
 #[cfg(not(target_family = "wasm"))]
 pub mod pipe;

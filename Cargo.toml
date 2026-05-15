@@ -15,7 +15,8 @@ members = [
 exclude = [
     "simulation/chunk_cache_bench",
     "hf_xet",
-    "wasm/hf_xet_wasm",
+    "wasm/hf_xet_wasm_download",
+    "wasm/hf_xet_wasm_upload",
     "wasm/hf_xet_thin_wasm",
     "examples/xet_pkg_napi",
 ]
@@ -111,6 +112,14 @@ thiserror = "2.0"
 tokio = { version = "1.49" }
 tokio-retry = "0.3"
 tokio-util = { version = "0.7" }
+tokio_with_wasm = "0.8"
+# wasm-bindgen runtime version must match the wasm-bindgen-cli version used in
+# wasm/*/build_wasm.sh — bump them together (and the cargo-tools cache key in
+# .github/actions/build-wasm/action.yml). The wasm/* subcrates are separate
+# workspaces (see [workspace.exclude] above) and pin these versions directly.
+wasm-bindgen = "=0.2.121"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-log = "0.2"

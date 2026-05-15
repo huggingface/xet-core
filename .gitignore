@@ -20,3 +20,4 @@ debug/
 venv
 **/*.env
 .worktrees/
+**/node_modules/

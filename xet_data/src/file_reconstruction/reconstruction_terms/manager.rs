@@ -1,11 +1,16 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(not(target_family = "wasm"))]
+use std::time::Instant;
 
 use more_asserts::*;
 use tokio::task::JoinHandle;
-use tokio::time::Instant;
+#[cfg(target_family = "wasm")]
+use tokio_with_wasm::alias as tokio;
 use tracing::{debug, info};
+#[cfg(target_family = "wasm")]
+use web_time::Instant;
 use xet_client::cas_client::Client;
 use xet_client::cas_types::FileRange;
 use xet_core_structures::ExpWeightedMovingAvg;

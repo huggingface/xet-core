@@ -3,15 +3,18 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
-#[cfg(not(target_family = "wasm"))]
-use std::pin::pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, OnceLock, Weak};
 #[cfg(not(target_family = "wasm"))]
-use std::task::{Context, Waker};
+use std::{
+    pin::pin,
+    task::{Context, Waker},
+};
 
 use futures::FutureExt;
-use tokio::runtime::{Builder as TokioRuntimeBuilder, Handle as TokioRuntimeHandle, Runtime as TokioRuntime};
+#[cfg(not(target_family = "wasm"))]
+use tokio::runtime::Builder as TokioRuntimeBuilder;
+use tokio::runtime::{Handle as TokioRuntimeHandle, Runtime as TokioRuntime};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tracing::debug;
@@ -22,54 +25,11 @@ use crate::config::XetConfig;
 use crate::error::RuntimeError;
 #[cfg(feature = "fd-track")]
 use crate::fd_diagnostics::{report_fd_count, track_fd_scope};
-#[cfg(not(target_family = "wasm"))]
 use crate::logging::SystemMonitor;
-#[cfg(not(target_family = "wasm"))]
 use crate::utils::ClosureGuard as CallbackGuard;
 
 const THREADPOOL_THREAD_ID_PREFIX: &str = "hf-xet"; // thread names will be hf-xet-0, hf-xet-1, etc.
 const THREADPOOL_STACK_SIZE: usize = 8_000_000; // 8MB stack size
-
-/// Cap the number of tokio threads to 32 to avoid massive expansion on huge CPUs; can be overridden with
-/// TOKIO_WORKER_THREADS.
-///
-/// Note that the compute intensive parts of the code get offloaded to blocking threads, which don't count against this
-/// limit.
-#[cfg(not(target_family = "wasm"))]
-const THREADPOOL_MAX_ASYNC_THREADS: usize = 32;
-
-/// Returns the number of Tokio worker threads to use:
-/// 1) If `TOKIO_WORKER_THREADS` is set to a positive integer, use that.
-/// 2) Otherwise, use `min(available_parallelism, THREADPOOL_MAX_ASYNC_THREADS)`, with a floor of 2.
-#[cfg(not(target_family = "wasm"))]
-fn get_num_tokio_worker_threads() -> usize {
-    use std::num::NonZeroUsize;
-
-    // Allow TOKIO_WORKER_THREADS to override this value.
-    if let Ok(val) = std::env::var("TOKIO_WORKER_THREADS") {
-        match val.parse::<usize>() {
-            Ok(n) if n > 0 => {
-                info!("Using {n} async threads from TOKIO_WORKER_THREADS");
-                return n;
-            },
-            _ => {
-                use tracing::warn;
-
-                warn!(
-                    value = %val,
-                    "Invalid TOKIO_WORKER_THREADS; must be a positive integer. Falling back to auto."
-                );
-            },
-        }
-    }
-
-    let cores = std::thread::available_parallelism().map(NonZeroUsize::get).unwrap_or(1);
-
-    // Minimum 2 threads needed to run everything
-    let n = cores.clamp(2, THREADPOOL_MAX_ASYNC_THREADS);
-    info!("Using {n} async threads for tokio runtime");
-    n
-}
 
 /// Whether the runtime owns its tokio thread pool or wraps an external handle.
 ///
@@ -104,29 +64,6 @@ static EXTERNAL_THREADPOOL_REGISTRY: LazyLock<std::sync::RwLock<HashMap<tokio::r
 enum RuntimeBackend {
     External { handle_id: Option<tokio::runtime::Id> },
     OwnedThreadPool { runtime: OwnedRuntimeCell },
-}
-
-#[cfg(target_family = "wasm")]
-struct CallbackGuard<F: FnOnce()> {
-    callback: Option<F>,
-}
-
-#[cfg(target_family = "wasm")]
-impl<F: FnOnce()> CallbackGuard<F> {
-    fn new(callback: F) -> Self {
-        Self {
-            callback: Some(callback),
-        }
-    }
-}
-
-#[cfg(target_family = "wasm")]
-impl<F: FnOnce()> Drop for CallbackGuard<F> {
-    fn drop(&mut self) {
-        if let Some(callback) = self.callback.take() {
-            callback();
-        }
-    }
 }
 
 /// [`XetRuntime`] is the async execution backend: it either owns a Tokio multi-thread runtime or wraps an
@@ -173,96 +110,39 @@ pub struct XetRuntime {
     creation_pid: u32,
 
     //  System monitor instance if enabled, monitor starts on initiation
-    #[cfg(not(target_family = "wasm"))]
     system_monitor: Option<SystemMonitor>,
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn system_monitor_for_config(config: &XetConfig) -> Option<SystemMonitor> {
-    config
-        .system_monitor
-        .enabled
-        .then(|| {
-            SystemMonitor::follow_process(config.system_monitor.sample_interval, config.system_monitor.log_path.clone())
-                .ok()
-        })
-        .flatten()
+    if !config.system_monitor.enabled {
+        return None;
+    }
+    match SystemMonitor::follow_process(config.system_monitor.sample_interval, config.system_monitor.log_path.clone()) {
+        Ok(m) => Some(m),
+        Err(e) => {
+            debug!("SystemMonitor disabled: follow_process failed: {e}");
+            None
+        },
+    }
+}
+
+/// Returns a stable process ID for fork detection on native platforms.
+/// WASM has no concept of pids, so we return 0 unconditionally there — the
+/// fork-check codepaths on `Drop` are themselves non-WASM, so this value is
+/// only ever observed as the `creation_pid` field (allow(dead_code) on WASM).
+#[inline]
+fn current_pid() -> u32 {
+    #[cfg(not(target_family = "wasm"))]
+    {
+        std::process::id()
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        0
+    }
 }
 
 impl XetRuntime {
-    /// Creates a new owned tokio thread pool with the given configuration.
-    pub fn new(config: &XetConfig) -> Result<Arc<Self>, RuntimeError> {
-        #[cfg(feature = "fd-track")]
-        let _fd_scope = track_fd_scope("XetRuntime::new");
-
-        let runtime = Arc::new(std::sync::RwLock::new(None));
-
-        let rt = Arc::new(Self {
-            backend: RuntimeBackend::OwnedThreadPool {
-                runtime: runtime.clone(),
-            },
-            handle_ref: OnceLock::new(),
-            external_executor_count: 0.into(),
-            sigint_shutdown: false.into(),
-            creation_pid: std::process::id(),
-            #[cfg(not(target_family = "wasm"))]
-            system_monitor: system_monitor_for_config(config),
-        });
-
-        let rt_weak = Arc::downgrade(&rt);
-        let pid = std::process::id();
-        let set_threadlocal_reference = move || {
-            THREAD_THREADPOOL_REF.set(Some((pid, rt_weak.clone())));
-        };
-
-        let thread_id = AtomicUsize::new(0);
-        let get_thread_name = move || {
-            let id = thread_id.fetch_add(1, Ordering::Relaxed);
-            format!("{THREADPOOL_THREAD_ID_PREFIX}-{id}")
-        };
-
-        let mut tokio_rt_builder = {
-            #[cfg(not(target_family = "wasm"))]
-            {
-                TokioRuntimeBuilder::new_multi_thread()
-            }
-
-            #[cfg(target_family = "wasm")]
-            {
-                TokioRuntimeBuilder::new_current_thread()
-            }
-        };
-        #[cfg(not(target_family = "wasm"))]
-        {
-            tokio_rt_builder.worker_threads(get_num_tokio_worker_threads());
-        }
-
-        #[cfg(not(target_family = "wasm"))]
-        let tokio_rt_builder = tokio_rt_builder
-            .on_thread_start(set_threadlocal_reference)
-            .thread_keep_alive(std::time::Duration::from_millis(100));
-
-        #[cfg(target_family = "wasm")]
-        let tokio_rt_builder = tokio_rt_builder.on_thread_start(set_threadlocal_reference);
-
-        let tokio_rt = tokio_rt_builder
-            .thread_name_fn(get_thread_name)
-            .thread_stack_size(THREADPOOL_STACK_SIZE)
-            .enable_all()
-            .build()
-            .map_err(RuntimeError::RuntimeInit)?;
-
-        let handle = tokio_rt.handle().clone();
-        let tokio_rt = Arc::new(tokio_rt);
-        *runtime.write().unwrap() = Some(tokio_rt);
-        rt.handle_ref.set(handle).unwrap();
-
-        #[cfg(feature = "fd-track")]
-        report_fd_count("XetRuntime::new complete");
-
-        Ok(rt)
-    }
-
     /// Wraps an existing tokio handle with a new `XetRuntime`, using the config for
     /// system monitor setup.
     pub fn from_external_with_config(
@@ -286,8 +166,7 @@ impl XetRuntime {
             handle_ref: rt_handle.into(),
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
-            creation_pid: std::process::id(),
-            #[cfg(not(target_family = "wasm"))]
+            creation_pid: current_pid(),
             system_monitor: system_monitor_for_config(config),
         });
 
@@ -306,8 +185,7 @@ impl XetRuntime {
             handle_ref: rt_handle.into(),
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
-            creation_pid: std::process::id(),
-            #[cfg(not(target_family = "wasm"))]
+            creation_pid: current_pid(),
             system_monitor: None,
         })
     }
@@ -318,7 +196,7 @@ impl XetRuntime {
     /// threads created by an owned runtime. External runtimes do not set this.
     #[inline]
     pub fn current_if_exists() -> Option<Arc<Self>> {
-        let pid = std::process::id();
+        let pid = current_pid();
         THREAD_THREADPOOL_REF.with_borrow(|entry| {
             entry
                 .as_ref()
@@ -361,10 +239,7 @@ impl XetRuntime {
 
         // External mode wraps a caller-owned runtime and has no owned runtime to tear down.
         let Some(runtime_cell) = self.runtime_cell_if_owned() else {
-            #[cfg(not(target_family = "wasm"))]
-            if let Some(monitor) = &self.system_monitor {
-                let _ = monitor.stop();
-            }
+            self.stop_system_monitor();
             return;
         };
 
@@ -380,10 +255,7 @@ impl XetRuntime {
 
         let Some(runtime) = maybe_runtime else {
             eprintln!("WARNING: perform_sigint_shutdown called on runtime that has already been shut down.");
-            #[cfg(not(target_family = "wasm"))]
-            if let Some(monitor) = &self.system_monitor {
-                let _ = monitor.stop();
-            }
+            self.stop_system_monitor();
             return;
         };
 
@@ -392,10 +264,7 @@ impl XetRuntime {
         drop(runtime);
 
         // Stops the system monitor loop if there is one running.
-        #[cfg(not(target_family = "wasm"))]
-        if let Some(monitor) = &self.system_monitor {
-            let _ = monitor.stop();
-        }
+        self.stop_system_monitor();
     }
 
     /// Discards the runtime without shutdown; to be used after fork-exec or spawn.
@@ -483,11 +352,11 @@ impl XetRuntime {
         T: Send + 'static,
     {
         self.check_sigint()?;
-        if std::process::id() != self.creation_pid {
+        if current_pid() != self.creation_pid {
             return Err(RuntimeError::InvalidRuntime(format!(
                 "XetRuntime was created in process {} but is being used in process {}",
                 self.creation_pid,
-                std::process::id(),
+                current_pid(),
             )));
         }
         match &self.backend {
@@ -512,11 +381,11 @@ impl XetRuntime {
         F::Output: Send + 'static,
     {
         self.check_sigint()?;
-        if std::process::id() != self.creation_pid {
+        if current_pid() != self.creation_pid {
             return Err(RuntimeError::InvalidRuntime(format!(
                 "XetRuntime was created in process {} but is being used in process {}",
                 self.creation_pid,
-                std::process::id(),
+                current_pid(),
             )));
         }
         if matches!(self.backend, RuntimeBackend::External { .. }) {
@@ -582,19 +451,11 @@ impl XetRuntime {
         }
     }
 
-    /// Spawn a blocking task on the runtime's blocking thread pool. Installs a weak thread-local
-    /// reference to this pool for the duration of `f`.
-    pub fn spawn_blocking<F, R>(self: &Arc<Self>, f: F) -> JoinHandle<R>
-    where
-        F: FnOnce() -> R + Send + 'static,
-        R: Send + 'static,
-    {
-        let pool_weak = Arc::downgrade(self);
-        self.handle().spawn_blocking(move || {
-            let pid = std::process::id();
-            THREAD_THREADPOOL_REF.set(Some((pid, pool_weak)));
-            f()
-        })
+    #[inline]
+    fn stop_system_monitor(&self) {
+        if let Some(monitor) = &self.system_monitor {
+            let _ = monitor.stop();
+        }
     }
 
     /// Returns the runtime mode (Owned or External).
@@ -605,11 +466,116 @@ impl XetRuntime {
             RuntimeBackend::OwnedThreadPool { .. } => RuntimeMode::Owned,
         }
     }
+}
+
+// Native runtime construction and capabilities: owns a multi-thread tokio
+// runtime with thread-local registration and a real blocking thread pool.
+#[cfg(not(target_family = "wasm"))]
+impl XetRuntime {
+    /// Creates a new owned tokio thread pool with the given configuration.
+    pub fn new(config: &XetConfig) -> Result<Arc<Self>, RuntimeError> {
+        /// Cap the number of tokio threads to 32 to avoid massive expansion on huge
+        /// CPUs; can be overridden with TOKIO_WORKER_THREADS. Compute-intensive code
+        /// gets offloaded to blocking threads, which don't count against this limit.
+        const THREADPOOL_MAX_ASYNC_THREADS: usize = 32;
+
+        /// Returns the number of Tokio worker threads to use:
+        /// 1) If `TOKIO_WORKER_THREADS` is set to a positive integer, use that.
+        /// 2) Otherwise, `min(available_parallelism, THREADPOOL_MAX_ASYNC_THREADS)`, with a floor of 2.
+        fn get_num_tokio_worker_threads() -> usize {
+            use std::num::NonZeroUsize;
+
+            // Allow TOKIO_WORKER_THREADS to override this value.
+            if let Ok(val) = std::env::var("TOKIO_WORKER_THREADS") {
+                match val.parse::<usize>() {
+                    Ok(n) if n > 0 => {
+                        info!("Using {n} async threads from TOKIO_WORKER_THREADS");
+                        return n;
+                    },
+                    _ => {
+                        use tracing::warn;
+
+                        warn!(
+                            value = %val,
+                            "Invalid TOKIO_WORKER_THREADS; must be a positive integer. Falling back to auto."
+                        );
+                    },
+                }
+            }
+
+            let cores = std::thread::available_parallelism().map(NonZeroUsize::get).unwrap_or(1);
+
+            // Minimum 2 threads needed to run everything
+            let n = cores.clamp(2, THREADPOOL_MAX_ASYNC_THREADS);
+            info!("Using {n} async threads for tokio runtime");
+            n
+        }
+
+        #[cfg(feature = "fd-track")]
+        let _fd_scope = track_fd_scope("XetRuntime::new");
+
+        let runtime = Arc::new(std::sync::RwLock::new(None));
+
+        let rt = Arc::new(Self {
+            backend: RuntimeBackend::OwnedThreadPool {
+                runtime: runtime.clone(),
+            },
+            handle_ref: OnceLock::new(),
+            external_executor_count: 0.into(),
+            sigint_shutdown: false.into(),
+            creation_pid: current_pid(),
+            system_monitor: system_monitor_for_config(config),
+        });
+
+        let rt_weak = Arc::downgrade(&rt);
+        let pid = current_pid();
+        let set_threadlocal_reference = move || {
+            THREAD_THREADPOOL_REF.set(Some((pid, rt_weak.clone())));
+        };
+
+        let thread_id = AtomicUsize::new(0);
+        let get_thread_name = move || {
+            let id = thread_id.fetch_add(1, Ordering::Relaxed);
+            format!("{THREADPOOL_THREAD_ID_PREFIX}-{id}")
+        };
+
+        let tokio_rt = TokioRuntimeBuilder::new_multi_thread()
+            .thread_keep_alive(std::time::Duration::from_millis(100))
+            .worker_threads(get_num_tokio_worker_threads())
+            .on_thread_start(set_threadlocal_reference)
+            .thread_name_fn(get_thread_name)
+            .thread_stack_size(THREADPOOL_STACK_SIZE)
+            .enable_all()
+            .build()
+            .map_err(RuntimeError::RuntimeInit)?;
+
+        let handle = tokio_rt.handle().clone();
+        let tokio_rt = Arc::new(tokio_rt);
+        *runtime.write().unwrap() = Some(tokio_rt);
+        rt.handle_ref.set(handle).unwrap();
+
+        #[cfg(feature = "fd-track")]
+        report_fd_count("XetRuntime::new complete");
+
+        Ok(rt)
+    }
+
+    /// Spawn a blocking task on the runtime's blocking thread pool. Installs a weak thread-local
+    /// reference to this pool for the duration of `f`.
+    pub fn spawn_blocking<F, R>(self: &Arc<Self>, f: F) -> JoinHandle<R>
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        let pool_weak = Arc::downgrade(self);
+        self.handle().spawn_blocking(move || {
+            let pid = current_pid();
+            THREAD_THREADPOOL_REF.set(Some((pid, pool_weak)));
+            f()
+        })
+    }
 
     /// Wraps a caller-provided tokio handle after validating that it meets requirements.
-    ///
-    /// Not available on WASM targets.
-    #[cfg(not(target_family = "wasm"))]
     pub fn from_validated_external(
         rt_handle: TokioRuntimeHandle,
         config: &XetConfig,
@@ -640,16 +606,6 @@ impl XetRuntime {
     /// synchronously on the first poll of `tokio::time::sleep` /
     /// `tokio::net::TcpListener::bind` when the corresponding driver is absent.
     /// This is undocumented internal behavior validated against tokio 1.x.
-    ///
-    /// On WASM targets the only available flavor is `current_thread` and
-    /// there are no separate IO/time drivers to probe, so any handle is accepted.
-    #[cfg(target_family = "wasm")]
-    pub fn handle_meets_requirements(_handle: &TokioRuntimeHandle) -> bool {
-        true
-    }
-
-    /// Not available on WASM targets (WASM always uses `current_thread`).
-    #[cfg(not(target_family = "wasm"))]
     pub fn handle_meets_requirements(handle: &TokioRuntimeHandle) -> bool {
         if matches!(handle.runtime_flavor(), tokio::runtime::RuntimeFlavor::CurrentThread) {
             return false;
@@ -675,6 +631,48 @@ impl XetRuntime {
     }
 }
 
+// Wasm runtime: keeps the XetRuntime shape consistent for XetContext but does
+// not actually drive a tokio runtime — task_runtime.rs bridge methods .await
+// futures directly via wasm_bindgen_futures::spawn_local.
+#[cfg(target_family = "wasm")]
+impl XetRuntime {
+    /// On wasm, no tokio runtime is actually instantiated — the bridge methods
+    /// in `task_runtime.rs` use cfg-gated variants that `.await` directly via
+    /// `wasm_bindgen_futures::spawn_local`, never driving the inner runtime.
+    /// This stub keeps the `XetRuntime` shape consistent so `XetContext` can
+    /// hold an `Arc<XetRuntime>` field on all targets without further gating.
+    pub fn new(config: &XetConfig) -> Result<Arc<Self>, RuntimeError> {
+        Ok(Arc::new(Self {
+            backend: RuntimeBackend::OwnedThreadPool {
+                runtime: Arc::new(std::sync::RwLock::new(None)),
+            },
+            handle_ref: OnceLock::new(),
+            external_executor_count: 0.into(),
+            sigint_shutdown: false.into(),
+            creation_pid: current_pid(),
+            system_monitor: system_monitor_for_config(config),
+        }))
+    }
+
+    /// Wasm has no real blocking thread pool — `tokio_with_wasm::task::spawn_blocking`
+    /// runs `f` inline and returns a completed `JoinHandle`. We don't go through
+    /// `self.handle()` because `handle_ref` is intentionally empty on wasm (see
+    /// `Self::new` above).
+    pub fn spawn_blocking<F, R>(self: &Arc<Self>, f: F) -> tokio_with_wasm::task::JoinHandle<R>
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        tokio_with_wasm::task::spawn_blocking(f)
+    }
+
+    /// On WASM targets the only available flavor is `current_thread` and
+    /// there are no separate IO/time drivers to probe, so any handle is accepted.
+    pub fn handle_meets_requirements(_handle: &TokioRuntimeHandle) -> bool {
+        true
+    }
+}
+
 impl Drop for XetRuntime {
     fn drop(&mut self) {
         #[cfg(feature = "fd-track")]
@@ -686,7 +684,7 @@ impl Drop for XetRuntime {
         // parent do not exist here. shutdown_timeout() would block ~5 s waiting on futexes
         // that never fire. Use discard_runtime() (std::mem::forget) instead — the OS
         // reclaims all memory when the child exits.
-        if self.creation_pid != std::process::id() {
+        if self.creation_pid != current_pid() {
             self.discard_runtime();
             return;
         }
@@ -818,54 +816,6 @@ mod tests {
         assert!(matches!(result, Err(RuntimeError::InvalidRuntime(_))));
     }
 
-    #[cfg(not(target_family = "wasm"))]
-    #[test]
-    fn test_handle_meets_requirements_multi_thread_all() {
-        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        assert!(XetRuntime::handle_meets_requirements(rt.handle()));
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    #[test]
-    fn test_handle_meets_requirements_current_thread_rejected() {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        assert!(!XetRuntime::handle_meets_requirements(rt.handle()));
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    #[test]
-    fn test_handle_meets_requirements_no_drivers_rejected() {
-        let rt = tokio::runtime::Builder::new_multi_thread().build().unwrap();
-        assert!(!XetRuntime::handle_meets_requirements(rt.handle()));
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    #[test]
-    fn test_from_validated_external_accepts_valid_handle() {
-        let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        let config = XetConfig::new();
-        let rt = XetRuntime::from_validated_external(tokio_rt.handle().clone(), &config).unwrap();
-        assert_eq!(rt.mode(), RuntimeMode::External);
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    #[test]
-    fn test_from_validated_external_rejects_current_thread_runtime() {
-        let tokio_rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let config = XetConfig::new();
-        let result = XetRuntime::from_validated_external(tokio_rt.handle().clone(), &config);
-        assert!(matches!(result, Err(RuntimeError::InvalidRuntime(_))));
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    #[test]
-    fn test_from_validated_external_rejects_runtime_without_drivers() {
-        let tokio_rt = tokio::runtime::Builder::new_multi_thread().build().unwrap();
-        let config = XetConfig::new();
-        let result = XetRuntime::from_validated_external(tokio_rt.handle().clone(), &config);
-        assert!(matches!(result, Err(RuntimeError::InvalidRuntime(_))));
-    }
-
     #[test]
     fn test_bridge_async_owned_mode_catches_panic() {
         let ctx = XetContext::default().unwrap();
@@ -897,79 +847,122 @@ mod tests {
     }
 
     #[cfg(not(target_family = "wasm"))]
-    #[test]
-    fn test_from_external_with_config_rejects_second_attach() {
-        let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        let config = XetConfig::new();
+    mod multi_thread_tokio {
+        use super::*;
 
-        let first = XetRuntime::from_external_with_config(tokio_rt.handle().clone(), &config).unwrap();
-        let second = XetRuntime::from_external_with_config(tokio_rt.handle().clone(), &config);
-
-        assert!(matches!(second, Err(RuntimeError::ExternalAlreadyAttached(_))));
-        drop(first);
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    #[test]
-    fn test_perform_sigint_shutdown_tolerates_poisoned_runtime_lock() {
-        let ctx = XetContext::default().unwrap();
-        let runtime = ctx.runtime.clone();
-        let runtime_cell = runtime.runtime_cell_if_owned().unwrap().clone();
-
-        let _ = std::thread::spawn(move || {
-            let _guard = runtime_cell.write().unwrap();
-            panic!("intentional poison for test");
-        })
-        .join();
-
-        let shutdown_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            runtime.perform_sigint_shutdown();
-        }));
-        assert!(shutdown_result.is_ok());
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    #[test]
-    fn test_sigint_shutdown_causes_keyboard_interrupt_on_bridges() {
-        let ctx = XetContext::default().unwrap();
-        ctx.runtime.perform_sigint_shutdown();
-
-        let sync_result = ctx.runtime.bridge_sync(async { 1 });
-        assert!(matches!(sync_result, Err(RuntimeError::KeyboardInterrupt)));
-
-        let tokio_rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let tp = ctx.runtime.clone();
-        let async_result = tokio_rt.block_on(async move { tp.bridge_async("sigint_test", async { 1 }).await });
-        assert!(matches!(async_result, Err(RuntimeError::KeyboardInterrupt)));
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    #[test]
-    fn test_concurrent_bridge_sync_stress() {
-        use std::sync::Barrier;
-
-        let ctx = XetContext::default().unwrap();
-        let n = 200;
-        let barrier = Arc::new(Barrier::new(n));
-        let sum = Arc::new(AtomicUsize::new(0));
-
-        let handles: Vec<_> = (0..n)
-            .map(|i| {
-                let tp = ctx.runtime.clone();
-                let barrier = barrier.clone();
-                let sum = sum.clone();
-                std::thread::spawn(move || {
-                    barrier.wait();
-                    let result = tp.bridge_sync(async move { i }).unwrap();
-                    sum.fetch_add(result, Ordering::Relaxed);
-                })
-            })
-            .collect();
-
-        for h in handles {
-            h.join().unwrap();
+        #[test]
+        fn test_handle_meets_requirements_multi_thread_all() {
+            let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+            assert!(XetRuntime::handle_meets_requirements(rt.handle()));
         }
 
-        assert_eq!(sum.load(Ordering::Relaxed), (0..n).sum::<usize>());
+        #[test]
+        fn test_handle_meets_requirements_current_thread_rejected() {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            assert!(!XetRuntime::handle_meets_requirements(rt.handle()));
+        }
+
+        #[test]
+        fn test_handle_meets_requirements_no_drivers_rejected() {
+            let rt = tokio::runtime::Builder::new_multi_thread().build().unwrap();
+            assert!(!XetRuntime::handle_meets_requirements(rt.handle()));
+        }
+
+        #[test]
+        fn test_from_validated_external_accepts_valid_handle() {
+            let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+            let config = XetConfig::new();
+            let rt = XetRuntime::from_validated_external(tokio_rt.handle().clone(), &config).unwrap();
+            assert_eq!(rt.mode(), RuntimeMode::External);
+        }
+
+        #[test]
+        fn test_from_validated_external_rejects_current_thread_runtime() {
+            let tokio_rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            let config = XetConfig::new();
+            let result = XetRuntime::from_validated_external(tokio_rt.handle().clone(), &config);
+            assert!(matches!(result, Err(RuntimeError::InvalidRuntime(_))));
+        }
+
+        #[test]
+        fn test_from_validated_external_rejects_runtime_without_drivers() {
+            let tokio_rt = tokio::runtime::Builder::new_multi_thread().build().unwrap();
+            let config = XetConfig::new();
+            let result = XetRuntime::from_validated_external(tokio_rt.handle().clone(), &config);
+            assert!(matches!(result, Err(RuntimeError::InvalidRuntime(_))));
+        }
+
+        #[test]
+        fn test_from_external_with_config_rejects_second_attach() {
+            let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+            let config = XetConfig::new();
+
+            let first = XetRuntime::from_external_with_config(tokio_rt.handle().clone(), &config).unwrap();
+            let second = XetRuntime::from_external_with_config(tokio_rt.handle().clone(), &config);
+
+            assert!(matches!(second, Err(RuntimeError::ExternalAlreadyAttached(_))));
+            drop(first);
+        }
+
+        #[test]
+        fn test_perform_sigint_shutdown_tolerates_poisoned_runtime_lock() {
+            let ctx = XetContext::default().unwrap();
+            let runtime = ctx.runtime.clone();
+            let runtime_cell = runtime.runtime_cell_if_owned().unwrap().clone();
+
+            let _ = std::thread::spawn(move || {
+                let _guard = runtime_cell.write().unwrap();
+                panic!("intentional poison for test");
+            })
+            .join();
+
+            let shutdown_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                runtime.perform_sigint_shutdown();
+            }));
+            assert!(shutdown_result.is_ok());
+        }
+
+        #[test]
+        fn test_sigint_shutdown_causes_keyboard_interrupt_on_bridges() {
+            let ctx = XetContext::default().unwrap();
+            ctx.runtime.perform_sigint_shutdown();
+
+            let sync_result = ctx.runtime.bridge_sync(async { 1 });
+            assert!(matches!(sync_result, Err(RuntimeError::KeyboardInterrupt)));
+
+            let tokio_rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            let tp = ctx.runtime.clone();
+            let async_result = tokio_rt.block_on(async move { tp.bridge_async("sigint_test", async { 1 }).await });
+            assert!(matches!(async_result, Err(RuntimeError::KeyboardInterrupt)));
+        }
+
+        #[test]
+        fn test_concurrent_bridge_sync_stress() {
+            use std::sync::Barrier;
+
+            let ctx = XetContext::default().unwrap();
+            let n = 200;
+            let barrier = Arc::new(Barrier::new(n));
+            let sum = Arc::new(AtomicUsize::new(0));
+
+            let handles: Vec<_> = (0..n)
+                .map(|i| {
+                    let tp = ctx.runtime.clone();
+                    let barrier = barrier.clone();
+                    let sum = sum.clone();
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        let result = tp.bridge_sync(async move { i }).unwrap();
+                        sum.fetch_add(result, Ordering::Relaxed);
+                    })
+                })
+                .collect();
+
+            for h in handles {
+                h.join().unwrap();
+            }
+
+            assert_eq!(sum.load(Ordering::Relaxed), (0..n).sum::<usize>());
+        }
     }
 }

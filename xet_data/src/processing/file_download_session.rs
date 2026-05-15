@@ -1,11 +1,14 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
+#[cfg(not(target_family = "wasm"))]
 use std::io::Write;
 use std::ops::{Bound, Range, RangeBounds};
+#[cfg(not(target_family = "wasm"))]
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+#[cfg(not(target_family = "wasm"))]
 use tokio::task::JoinHandle;
 use tracing::instrument;
 use xet_client::cas_client::Client;
@@ -106,99 +109,6 @@ impl FileDownloadSession {
         for callback in callbacks.values() {
             callback();
         }
-    }
-
-    /// Spawns a download task that writes `file_info` to `write_path`.
-    ///
-    /// Acquires a permit from the global download semaphore before starting.
-    /// Returns the tracking ID and the join handle for the spawned task.
-    pub async fn download_file_background(
-        self: &Arc<Self>,
-        file_info: XetFileInfo,
-        write_path: PathBuf,
-    ) -> Result<(UniqueId, JoinHandle<Result<u64>>)> {
-        self.check_not_finalized()?;
-        let id = UniqueId::new();
-        let session = self.clone();
-        let runtime = self.ctx.runtime.clone();
-        let semaphore = self.ctx.common.file_download_semaphore.clone();
-        let handle = runtime.spawn(async move {
-            let _permit = semaphore.acquire().await?;
-            session.download_file_with_id(&file_info, &write_path, id).await
-        });
-        Ok((id, handle))
-    }
-
-    /// Downloads a complete file to the given path.
-    #[instrument(skip_all, name = "FileDownloadSession::download_file", fields(hash = file_info.hash()))]
-    pub async fn download_file(&self, file_info: &XetFileInfo, write_path: &Path) -> Result<(UniqueId, u64)> {
-        self.check_not_finalized()?;
-        let id = UniqueId::new();
-        let n_bytes = self.download_file_with_id(file_info, write_path, id).await?;
-        Ok((id, n_bytes))
-    }
-
-    async fn download_file_with_id(&self, file_info: &XetFileInfo, write_path: &Path, id: UniqueId) -> Result<u64> {
-        let name = Arc::from(write_path.to_string_lossy().as_ref());
-        let progress_updater = self.progress.new_item(id, name);
-        let reconstructor = self.setup_reconstructor(file_info, None, Some(progress_updater))?;
-        let n_bytes = reconstructor.reconstruct_to_file(write_path, None, true).await?;
-        // Caller is responsible for cleaning up the file on error (consistent
-        // with other error paths); see download_group.rs error handling.
-        if let Some(expected_size) = file_info.file_size()
-            && n_bytes != expected_size
-        {
-            return Err(DataError::SizeMismatch {
-                expected: expected_size,
-                actual: n_bytes,
-            });
-        }
-        Ok(n_bytes)
-    }
-
-    /// Downloads a byte range of a file and writes it to the provided writer.
-    ///
-    /// The provided `source_range` is interpreted against the original file; output
-    /// starts at the writer's current position. Accepts any `RangeBounds<u64>`:
-    /// `4..12`, `5..`, `..100`, or `..` (full file).
-    ///
-    /// This path does not acquire the session-level file download semaphore.
-    #[instrument(skip_all, name = "FileDownloadSession::download_to_writer",
-        fields(hash = file_info.hash(), range_start = tracing::field::Empty, range_end = tracing::field::Empty))]
-    pub async fn download_to_writer<W: Write + Send + 'static>(
-        &self,
-        file_info: &XetFileInfo,
-        source_range: impl RangeBounds<u64>,
-        writer: W,
-    ) -> Result<(UniqueId, u64)> {
-        self.check_not_finalized()?;
-        let range = range_bounds_to_file_range(&source_range)?;
-        if let Some(ref r) = range {
-            let span = tracing::Span::current();
-            span.record("range_start", r.start);
-            span.record("range_end", r.end);
-        }
-        let id = UniqueId::new();
-        let name = Arc::from("");
-        let progress_updater = self.progress.new_item(id, name);
-        let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater))?;
-        let n_bytes = reconstructor.reconstruct_to_writer(writer).await?;
-
-        let expected_size = match range {
-            Some(r) if r.end < u64::MAX => Some(r.end - r.start),
-            None => file_info.file_size(),
-            _ => None,
-        };
-        if let Some(expected) = expected_size
-            && n_bytes != expected
-        {
-            return Err(DataError::SizeMismatch {
-                expected,
-                actual: n_bytes,
-            });
-        }
-
-        Ok((id, n_bytes))
     }
 
     /// Creates a streaming download of a file, optionally restricted to a
@@ -343,6 +253,104 @@ impl FileDownloadSession {
         }
 
         Ok(reconstructor)
+    }
+}
+
+// Native filesystem download methods — require std::path / std::io::Write /
+// tokio::JoinHandle and have no wasm equivalent.
+#[cfg(not(target_family = "wasm"))]
+impl FileDownloadSession {
+    /// Spawns a download task that writes `file_info` to `write_path`.
+    ///
+    /// Acquires a permit from the global download semaphore before starting.
+    /// Returns the tracking ID and the join handle for the spawned task.
+    pub async fn download_file_background(
+        self: &Arc<Self>,
+        file_info: XetFileInfo,
+        write_path: PathBuf,
+    ) -> Result<(UniqueId, JoinHandle<Result<u64>>)> {
+        self.check_not_finalized()?;
+        let id = UniqueId::new();
+        let session = self.clone();
+        let runtime = self.ctx.runtime.clone();
+        let semaphore = self.ctx.common.file_download_semaphore.clone();
+        let handle = runtime.spawn(async move {
+            let _permit = semaphore.acquire().await?;
+            session.download_file_with_id(&file_info, &write_path, id).await
+        });
+        Ok((id, handle))
+    }
+
+    /// Downloads a complete file to the given path.
+    #[instrument(skip_all, name = "FileDownloadSession::download_file", fields(hash = file_info.hash()))]
+    pub async fn download_file(&self, file_info: &XetFileInfo, write_path: &Path) -> Result<(UniqueId, u64)> {
+        self.check_not_finalized()?;
+        let id = UniqueId::new();
+        let n_bytes = self.download_file_with_id(file_info, write_path, id).await?;
+        Ok((id, n_bytes))
+    }
+
+    async fn download_file_with_id(&self, file_info: &XetFileInfo, write_path: &Path, id: UniqueId) -> Result<u64> {
+        let name = Arc::from(write_path.to_string_lossy().as_ref());
+        let progress_updater = self.progress.new_item(id, name);
+        let reconstructor = self.setup_reconstructor(file_info, None, Some(progress_updater))?;
+        let n_bytes = reconstructor.reconstruct_to_file(write_path, None, true).await?;
+        // Caller is responsible for cleaning up the file on error (consistent
+        // with other error paths); see download_group.rs error handling.
+        if let Some(expected_size) = file_info.file_size()
+            && n_bytes != expected_size
+        {
+            return Err(DataError::SizeMismatch {
+                expected: expected_size,
+                actual: n_bytes,
+            });
+        }
+        Ok(n_bytes)
+    }
+
+    /// Downloads a byte range of a file and writes it to the provided writer.
+    ///
+    /// The provided `source_range` is interpreted against the original file; output
+    /// starts at the writer's current position. Accepts any `RangeBounds<u64>`:
+    /// `4..12`, `5..`, `..100`, or `..` (full file).
+    ///
+    /// This path does not acquire the session-level file download semaphore.
+    #[instrument(skip_all, name = "FileDownloadSession::download_to_writer",
+        fields(hash = file_info.hash(), range_start = tracing::field::Empty, range_end = tracing::field::Empty))]
+    pub async fn download_to_writer<W: Write + Send + 'static>(
+        &self,
+        file_info: &XetFileInfo,
+        source_range: impl RangeBounds<u64>,
+        writer: W,
+    ) -> Result<(UniqueId, u64)> {
+        self.check_not_finalized()?;
+        let range = range_bounds_to_file_range(&source_range)?;
+        if let Some(ref r) = range {
+            let span = tracing::Span::current();
+            span.record("range_start", r.start);
+            span.record("range_end", r.end);
+        }
+        let id = UniqueId::new();
+        let name = Arc::from("");
+        let progress_updater = self.progress.new_item(id, name);
+        let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater))?;
+        let n_bytes = reconstructor.reconstruct_to_writer(writer).await?;
+
+        let expected_size = match range {
+            Some(r) if r.end < u64::MAX => Some(r.end - r.start),
+            None => file_info.file_size(),
+            _ => None,
+        };
+        if let Some(expected) = expected_size
+            && n_bytes != expected
+        {
+            return Err(DataError::SizeMismatch {
+                expected,
+                actual: n_bytes,
+            });
+        }
+
+        Ok((id, n_bytes))
     }
 }
 

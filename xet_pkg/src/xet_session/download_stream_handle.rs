@@ -74,6 +74,7 @@ impl XetDownloadStream {
     ///
     /// Panics if called from within an async runtime context. Use
     /// [`next`](Self::next) for async contexts.
+    #[cfg(not(target_family = "wasm"))]
     pub fn blocking_next(&mut self) -> Result<Option<Bytes>, SessionError> {
         debug!(stream_id = %self.id, "Download stream next");
         self.inner.blocking_next().map_err(|e| SessionError::from(DataError::from(e)))
@@ -176,6 +177,7 @@ impl XetUnorderedDownloadStream {
     ///
     /// Panics if called from within an async runtime context. Use
     /// [`next`](Self::next) for async contexts.
+    #[cfg(not(target_family = "wasm"))]
     pub fn blocking_next(&mut self) -> Result<Option<(u64, Bytes)>, SessionError> {
         debug!(stream_id = %self.id, "Download stream next");
         self.inner.blocking_next().map_err(|e| SessionError::from(DataError::from(e)))

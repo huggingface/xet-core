@@ -57,6 +57,7 @@ impl AuthGroupBuilder<XetDownloadStreamGroup> {
     /// # Panics
     ///
     /// Panics if called from within a tokio async runtime on an Owned-mode session.
+    #[cfg(not(target_family = "wasm"))]
     pub fn build_blocking(self) -> Result<XetDownloadStreamGroup, XetError> {
         let AuthGroupBuilder {
             session, auth_options, ..
@@ -194,6 +195,7 @@ impl XetDownloadStreamGroup {
     /// # Panics
     ///
     /// Panics if called from within a tokio async runtime on an Owned-mode session.
+    #[cfg(not(target_family = "wasm"))]
     pub fn download_stream_blocking(
         &self,
         file_info: XetFileInfo,
@@ -253,6 +255,7 @@ impl XetDownloadStreamGroup {
     /// # Panics
     ///
     /// Panics if called from within a tokio async runtime on an Owned-mode session.
+    #[cfg(not(target_family = "wasm"))]
     pub fn download_unordered_stream_blocking(
         &self,
         file_info: XetFileInfo,

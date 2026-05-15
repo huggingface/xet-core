@@ -3,6 +3,8 @@ use std::sync::{Arc, Mutex, Weak};
 
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+#[cfg(target_family = "wasm")]
+use tokio_with_wasm::alias as tokio;
 use xet_runtime::core::XetRuntime;
 
 use crate::error::XetError;
@@ -61,6 +63,7 @@ impl<T: Clone> BackgroundTaskState<T> {
 }
 
 pub(super) struct TaskRuntime {
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     runtime: Arc<XetRuntime>,
     cancellation_token: CancellationToken,
     state: Mutex<XetTaskState>,
@@ -154,6 +157,78 @@ impl TaskRuntime {
         }
     }
 
+    // ── Background task helpers ──────────────────────────────────────────────
+
+    pub(super) fn status_from_background_task<T>(
+        &self,
+        state: &tokio::sync::Mutex<BackgroundTaskState<T>>,
+    ) -> Result<XetTaskState, XetError> {
+        let runtime_state = self.status()?;
+        if !matches!(runtime_state, XetTaskState::Running | XetTaskState::Finalizing) {
+            return Ok(runtime_state);
+        }
+        let state_guard = match state.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => return Ok(XetTaskState::Running),
+        };
+        let status = match &*state_guard {
+            BackgroundTaskState::Running { .. } => XetTaskState::Running,
+            BackgroundTaskState::Success(_) => XetTaskState::Completed,
+            BackgroundTaskState::Error(msg) => XetTaskState::Error(msg.clone()),
+        };
+        Ok(status)
+    }
+
+    pub(super) fn background_success<T: Clone>(&self, state: &tokio::sync::Mutex<BackgroundTaskState<T>>) -> Option<T> {
+        let guard = state.try_lock().ok()?;
+        match &*guard {
+            BackgroundTaskState::Success(value) => Some(value.clone()),
+            _ => None,
+        }
+    }
+
+    // Used only by native-only handle accessors (e.g. `_blocking` variants);
+    // intentionally retained on wasm so handles keep the same shape.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    pub(super) fn background_result<T: Clone>(
+        &self,
+        state: &tokio::sync::Mutex<BackgroundTaskState<T>>,
+    ) -> Option<Result<T, XetError>> {
+        let guard = state.try_lock().ok()?;
+        match &*guard {
+            BackgroundTaskState::Success(value) => Some(Ok(value.clone())),
+            BackgroundTaskState::Error(msg) => Some(Err(XetError::TaskError(msg.clone()))),
+            BackgroundTaskState::Running { .. } => None,
+        }
+    }
+
+    // Cancellation entrypoint for per-handle abort methods.
+    // We intentionally rely on subtree token propagation (plus bridge select
+    // points) instead of mutating per-handle background state directly.
+    pub(super) fn cancel_background_task(&self) {
+        let _ = self.cancel_subtree();
+    }
+
+    fn live_children(&self) -> Result<Vec<Arc<TaskRuntime>>, XetError> {
+        let mut guard = self.children.lock()?;
+        let mut live = Vec::with_capacity(guard.len());
+        guard.retain(|weak| {
+            if let Some(child) = weak.upgrade() {
+                live.push(child);
+                true
+            } else {
+                false
+            }
+        });
+        Ok(live)
+    }
+}
+
+// Native task bridging: routes futures through XetRuntime's multithreaded
+// executor and requires Send + 'static bounds. Sync bridging only exists
+// here — wasm has no blocking model.
+#[cfg(not(target_family = "wasm"))]
+impl TaskRuntime {
     fn run_inner_async<T, F>(
         &self,
         task_name: &'static str,
@@ -273,67 +348,66 @@ impl TaskRuntime {
         }
         result
     }
+}
 
-    // ── Background task helpers ──────────────────────────────────────────────
-
-    pub(super) fn status_from_background_task<T>(
+// Wasm task bridging: runs futures inline on the single-threaded executor
+// (no XetRuntime offload), dropping the Send bound. There is no sync
+// counterpart on wasm.
+#[cfg(target_family = "wasm")]
+impl TaskRuntime {
+    fn run_inner_async<T, F>(
         &self,
-        state: &tokio::sync::Mutex<BackgroundTaskState<T>>,
-    ) -> Result<XetTaskState, XetError> {
-        let runtime_state = self.status()?;
-        if !matches!(runtime_state, XetTaskState::Running | XetTaskState::Finalizing) {
-            return Ok(runtime_state);
-        }
-        let state_guard = match state.try_lock() {
-            Ok(guard) => guard,
-            Err(_) => return Ok(XetTaskState::Running),
-        };
-        let status = match &*state_guard {
-            BackgroundTaskState::Running { .. } => XetTaskState::Running,
-            BackgroundTaskState::Success(_) => XetTaskState::Completed,
-            BackgroundTaskState::Error(msg) => XetTaskState::Error(msg.clone()),
-        };
-        Ok(status)
-    }
-
-    pub(super) fn background_success<T: Clone>(&self, state: &tokio::sync::Mutex<BackgroundTaskState<T>>) -> Option<T> {
-        let guard = state.try_lock().ok()?;
-        match &*guard {
-            BackgroundTaskState::Success(value) => Some(value.clone()),
-            _ => None,
-        }
-    }
-
-    pub(super) fn background_result<T: Clone>(
-        &self,
-        state: &tokio::sync::Mutex<BackgroundTaskState<T>>,
-    ) -> Option<Result<T, XetError>> {
-        let guard = state.try_lock().ok()?;
-        match &*guard {
-            BackgroundTaskState::Success(value) => Some(Ok(value.clone())),
-            BackgroundTaskState::Error(msg) => Some(Err(XetError::TaskError(msg.clone()))),
-            BackgroundTaskState::Running { .. } => None,
-        }
-    }
-
-    // Cancellation entrypoint for per-handle abort methods.
-    // We intentionally rely on subtree token propagation (plus bridge select
-    // points) instead of mutating per-handle background state directly.
-    pub(super) fn cancel_background_task(&self) {
-        let _ = self.cancel_subtree();
-    }
-
-    fn live_children(&self) -> Result<Vec<Arc<TaskRuntime>>, XetError> {
-        let mut guard = self.children.lock()?;
-        let mut live = Vec::with_capacity(guard.len());
-        guard.retain(|weak| {
-            if let Some(child) = weak.upgrade() {
-                live.push(child);
-                true
-            } else {
-                false
+        task_name: &'static str,
+        fut: F,
+    ) -> impl Future<Output = Result<T, XetError>> + 'static
+    where
+        F: Future<Output = Result<T, XetError>> + 'static,
+        T: 'static,
+    {
+        let token = self.cancellation_token.clone();
+        async move {
+            tokio::select! {
+                _ = token.cancelled() => Err(XetError::UserCancelled(
+                    format!("{task_name} cancelled by user"),
+                )),
+                result = fut => result,
             }
-        });
-        Ok(live)
+        }
+    }
+
+    pub(super) async fn bridge_async<T, F>(&self, task_name: &'static str, fut: F) -> Result<T, XetError>
+    where
+        F: Future<Output = Result<T, XetError>> + 'static,
+        T: 'static,
+    {
+        self.check_state(task_name)?;
+        let result = self.run_inner_async(task_name, fut).await;
+        if let Err(ref e) = result {
+            self.update_state_on_error(e)?;
+        }
+        result
+    }
+
+    pub(super) async fn bridge_async_finalizing<T, F>(
+        &self,
+        task_name: &'static str,
+        allow_repeat: bool,
+        fut: F,
+    ) -> Result<T, XetError>
+    where
+        F: Future<Output = Result<T, XetError>> + 'static,
+        T: 'static,
+    {
+        self.transition_to_finalizing(task_name, allow_repeat)?;
+
+        let result = self.run_inner_async(task_name, fut).await;
+        match &result {
+            Ok(_) => self.set_state(XetTaskState::Completed)?,
+            Err(XetError::UserCancelled(_)) => {
+                self.set_state(XetTaskState::UserCancelled)?;
+            },
+            Err(e) => self.set_state(XetTaskState::Error(e.to_string()))?,
+        }
+        result
     }
 }
