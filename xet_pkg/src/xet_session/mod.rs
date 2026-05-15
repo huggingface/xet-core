@@ -11,7 +11,7 @@
 //!   Wasm callers use `upload_bytes` / `upload_stream` and
 //!   `XetDownloadStreamGroup` instead.
 //! - **No external tokio handle** — `XetSessionBuilder::with_tokio_handle`
-//!   and `XetSession::new_from_external_runtime` are non-wasm-only.
+//!   is non-wasm-only.
 //!
 //! The `[`...`]` doc links below resolve on every target, but the rendered
 //! `_blocking` and path-based names point at items that don't exist when
