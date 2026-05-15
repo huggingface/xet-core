@@ -58,6 +58,7 @@ tokio = { workspace = true, features = ["net", "time"] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 tokio = { workspace = true, features = ["sync", "rt", "time", "macros"] }
+tokio_with_wasm = { workspace = true, features = ["rt", "sync"] }
 
 [dev-dependencies]
 anyhow = { workspace = true }

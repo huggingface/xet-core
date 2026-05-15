@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use tracing::{error, info};
+#[cfg(target_family = "wasm")]
+use tokio_with_wasm::alias as tokio;
 use xet_data::deduplication::DeduplicationMetrics;
 use xet_data::processing::{FileUploadSession, Sha256Policy, XetFileInfo};
 use xet_data::progress_tracking::{GroupProgressReport, ItemProgressReport};
@@ -49,6 +51,7 @@ impl AuthGroupBuilder<XetUploadCommit> {
     /// # Panics
     ///
     /// Panics if called from within a tokio async runtime on an Owned-mode session.
+    #[cfg(not(target_family = "wasm"))]
     pub fn build_blocking(self) -> Result<XetUploadCommit, XetError> {
         let AuthGroupBuilder {
             session, auth_options, ..
@@ -147,6 +150,7 @@ pub(super) struct XetUploadCommitInner {
 }
 
 impl XetUploadCommitInner {
+    #[cfg(not(target_family = "wasm"))]
     async fn upload_from_path(
         self: &Arc<Self>,
         file_path: PathBuf,
@@ -399,6 +403,7 @@ impl XetUploadCommit {
     /// - `file_path`: path to the file. Resolved to an absolute path so the upload is unaffected by later
     ///   working-directory changes.
     /// - `sha256`: SHA-256 handling policy for this file.
+    #[cfg(not(target_family = "wasm"))]
     pub async fn upload_from_path(&self, file_path: PathBuf, sha256: Sha256Policy) -> Result<XetFileUpload, XetError> {
         info!(commit_id = %self.id(), path = ?file_path, "Upload from path");
         let inner = Arc::clone(&self.inner);
@@ -510,6 +515,7 @@ impl XetUploadCommit {
     /// # Panics
     ///
     /// Panics if called from within a tokio async runtime.
+    #[cfg(not(target_family = "wasm"))]
     pub fn upload_from_path_blocking(
         &self,
         file_path: PathBuf,
@@ -528,6 +534,7 @@ impl XetUploadCommit {
     /// # Panics
     ///
     /// Panics if called from within a tokio async runtime.
+    #[cfg(not(target_family = "wasm"))]
     pub fn upload_stream_blocking(
         &self,
         tracking_name: Option<String>,
@@ -546,6 +553,7 @@ impl XetUploadCommit {
     /// # Panics
     ///
     /// Panics if called from within a tokio async runtime.
+    #[cfg(not(target_family = "wasm"))]
     pub fn upload_bytes_blocking(
         &self,
         bytes: Vec<u8>,
@@ -571,6 +579,7 @@ impl XetUploadCommit {
     /// # Panics
     ///
     /// Panics if called from within a tokio async runtime.
+    #[cfg(not(target_family = "wasm"))]
     pub fn commit_blocking(&self) -> Result<XetCommitReport, XetError> {
         info!(commit_id = %self.id(), "Commit starting");
         let inner = Arc::clone(&self.inner);
@@ -585,7 +594,7 @@ impl XetUploadCommit {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use std::path::PathBuf;
     use std::sync::mpsc;

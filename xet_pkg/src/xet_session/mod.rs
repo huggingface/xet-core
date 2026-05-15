@@ -260,11 +260,8 @@ mod file_download_group;
 mod file_download_handle;
 mod session;
 mod task_runtime;
-#[cfg(not(target_family = "wasm"))]
 mod upload_commit;
-#[cfg(not(target_family = "wasm"))]
 mod upload_file_handle;
-#[cfg(not(target_family = "wasm"))]
 mod upload_stream_handle;
 
 pub use download_stream_group::{XetDownloadStreamGroup, XetDownloadStreamGroupBuilder};
@@ -277,11 +274,8 @@ pub use file_download_handle::{XetDownloadReport, XetFileDownload};
 pub use http::{HeaderMap, HeaderValue, header};
 pub use session::{XetSession, XetSessionBuilder};
 pub use task_runtime::XetTaskState;
-#[cfg(not(target_family = "wasm"))]
 pub use upload_commit::{XetCommitReport, XetFileMetadata, XetUploadCommit, XetUploadCommitBuilder};
-#[cfg(not(target_family = "wasm"))]
 pub use upload_file_handle::XetFileUpload;
-#[cfg(not(target_family = "wasm"))]
 pub use upload_stream_handle::XetStreamUpload;
 pub use xet_data::deduplication::DeduplicationMetrics;
 pub use xet_data::processing::{Sha256Policy, XetFileInfo};
