@@ -112,7 +112,7 @@ HF_XET_LOG_FILE=/tmp/xet.log # write logs to a file (defaults to stdout)
 * [`xet_runtime/`](./xet_runtime) (`xet-runtime`): Async runtime, configuration, logging, and utilities.
 * [`hf_xet/`](./hf_xet): Python bindings (maturin/PyO3), produces the `hf-xet` PyPI package.
 * [`git_xet/`](./git_xet): Git LFS compatible CLI tool (`git-xet`).
-* [`wasm/`](./wasm): WebAssembly builds (`hf_xet_wasm`, `hf_xet_thin_wasm`, `hf_xet_wasm_download`).
+* [`wasm/`](./wasm): WebAssembly builds (`hf_xet_thin_wasm`, `hf_xet_wasm_download`, `hf_xet_wasm_upload`).
 * [`simulation/`](./simulation): Simulation and benchmarking infrastructure.
 
 ### Build, Test & Benchmark

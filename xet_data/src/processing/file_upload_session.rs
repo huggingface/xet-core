@@ -281,6 +281,17 @@ impl FileUploadSession {
         let (id, mut cleaner) = self.start_clean(tracking_name, Some(bytes.len() as u64), sha256)?;
 
         let semaphore = self.ctx.common.file_ingestion_semaphore.clone();
+        // Route through XetRuntime on native so the task participates in SIGINT
+        // shutdown and FD accounting. On wasm, XetRuntime has no handle (the
+        // wasm `XetRuntime::new` stub leaves `handle_ref` empty), so spawn via
+        // the `tokio_with_wasm::alias as tokio` shim instead.
+        #[cfg(not(target_family = "wasm"))]
+        let handle = self.ctx.runtime.spawn(async move {
+            let _permit = semaphore.acquire().await?;
+            cleaner.add_data(&bytes).await?;
+            cleaner.finish().await
+        });
+        #[cfg(target_family = "wasm")]
         let handle = tokio::task::spawn(async move {
             let _permit = semaphore.acquire().await?;
             cleaner.add_data(&bytes).await?;
