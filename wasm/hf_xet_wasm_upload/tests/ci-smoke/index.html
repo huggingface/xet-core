@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>hf_xet_wasm_upload — CI smoke test</title>
+</head>
+<body>
+<script type="module">
+  import init, { XetSession } from '../../pkg/hf_xet_wasm_upload.js';
+
+  await init();
+
+  // Regression smoke for the wasm upload data-prep path. `uploadBytes` runs
+  // chunking + sha256 + xorb serialization on `tokio_with_wasm::task::spawn_blocking`
+  // before any CAS network call — if `XetRuntime::spawn_blocking` is wired to a
+  // non-wasm tokio handle, it panics here ("Not initialized with handle set.").
+  // Per the `finalize_ingestion` docs the bytes path is local-only; no CAS
+  // round-trip is needed, so we use a placeholder endpoint + token.
+  //
+  // Asserts:
+  //   - `uploadBytes` resolves (not rejects)
+  //   - returned metadata exposes a non-empty `hash` and the expected `file_size`
+
+  const PAYLOAD_SIZE = 1 * 1024 * 1024; // 1 MiB — enough to force multiple chunks
+
+  window.runTest = async function runTest() {
+    try {
+      const session = new XetSession('http://127.0.0.1:1/cas', 'wasm-smoke-placeholder-token', 0);
+      const commit = await session.newUploadCommit();
+
+      const data = new Uint8Array(PAYLOAD_SIZE);
+      // crypto.getRandomValues only fills up to 64 KiB per call.
+      for (let off = 0; off < data.byteLength; off += 65536) {
+        crypto.getRandomValues(data.subarray(off, Math.min(off + 65536, data.byteLength)));
+      }
+
+      console.log(`uploadBytes(${data.byteLength})...`);
+      const metadata = await commit.uploadBytes(data, 'compute', 'wasm-smoke.bin');
+      console.log('metadata:', JSON.stringify(metadata));
+
+      return {
+        ok: true,
+        metadata,
+        hash: metadata?.xet_info?.hash,
+        fileSize: metadata?.xet_info?.file_size,
+        payloadSize: PAYLOAD_SIZE,
+      };
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e), stack: e?.stack };
+    }
+  };
+
+  console.log('test page ready');
+</script>
+</body>
+</html>

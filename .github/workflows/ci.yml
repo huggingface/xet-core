@@ -193,6 +193,17 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
           node run.mjs
+      - name: WASM upload smoke test (local data-prep regression guard)
+        # Regression guard for the wasm upload data-prep path
+        # (XetRuntime::spawn_blocking). uploadBytes is local-only, so no
+        # HF/CAS network is touched — failures are real regressions.
+        working-directory: wasm/hf_xet_wasm_upload/tests/ci-smoke
+        run: |
+          npm ci
+          # System deps were installed by the download smoke step; just
+          # ensure the browser binary is present (no-op if cached).
+          npx playwright install chromium
+          node run.mjs
   cargo-audit:
     name: Cargo Audit
     runs-on: ubuntu-latest
