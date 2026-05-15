@@ -69,13 +69,6 @@ Renamed from `WasmJoinError` for consistency with
 `FileReconstructionError::WasmTaskJoinError`. Only added in this PR; no
 external callers should exist yet.
 
-### `xet_data::processing::data_client::legacy::clean_bytes`
-
-`clean_bytes` moved out of `data_client` into the new
-`data_client::legacy` submodule (along with the rest of the path-coupled
-helpers). The `xet_pkg::legacy::clean_bytes` re-export tracks the move.
-Native call sites are unchanged.
-
 ### `xet_core_structures::metadata_shard::session_directory`
 
 Now `#[cfg(not(target_family = "wasm"))]`. It's filesystem-coupled and only
@@ -104,7 +97,6 @@ at the `mod` level.
 - `xet_runtime/src/utils/mod.rs` — wasm `TemplatedPathBuf` shim
 - `xet_runtime/Cargo.toml` — wasm-target deps via `workspace = true`
 - `xet_data/src/processing/shard_interface/{native,wasm}.rs` — module split
-- `xet_data/src/processing/data_client/legacy.rs` — extracted from `data_client.rs`
 - `xet_data/src/error.rs` — `WasmTaskJoinError` variant
 - `xet_pkg/src/xet_session/*.rs` — `_blocking` and path methods gated to non-wasm
 - `xet_pkg/src/legacy/mod.rs` — `#[cfg(not(target_family = "wasm"))]` at the parent `mod` in `lib.rs`
