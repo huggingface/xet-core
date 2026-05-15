@@ -55,6 +55,7 @@ pub use error::{XetAuthenticationError, XetObjectNotFoundError, register_excepti
 
 // Legacy helpers re-exported for backward compatibility with `hf_xet` (Python bindings)
 // and `git_xet`.  New code should use the [`xet_session`] API instead.
+#[cfg(not(target_family = "wasm"))]
 pub mod legacy;
 pub mod xet_session;
 

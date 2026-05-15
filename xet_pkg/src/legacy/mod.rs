@@ -18,6 +18,8 @@ pub use data_client::hash_files_async;
 #[cfg(not(target_family = "wasm"))]
 pub use xet_data::processing::configurations::{SessionContext, TranslatorConfig};
 #[cfg(not(target_family = "wasm"))]
-pub use xet_data::processing::data_client::{clean_bytes, clean_file, default_config};
+pub use xet_data::processing::data_client::legacy::clean_bytes;
+#[cfg(not(target_family = "wasm"))]
+pub use xet_data::processing::data_client::{clean_file, default_config};
 #[cfg(not(target_family = "wasm"))]
 pub use xet_data::processing::{FileDownloadSession, FileUploadSession, Sha256Policy, XetFileInfo};

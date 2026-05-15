@@ -15,14 +15,28 @@ mod file_paths;
 #[cfg(not(target_family = "wasm"))]
 pub use file_paths::TemplatedPathBuf;
 
-/// On wasm, path templates and expansion are not supported. Use plain PathBuf.
+/// On wasm, path templates and expansion are not supported. The stub keeps the
+/// surface needed by the config system (`new`, `template_string`) so the
+/// `system_monitor` config group compiles on both targets; `evaluate()`
+/// returns the input path unchanged.
 #[cfg(target_family = "wasm")]
-pub struct TemplatedPathBuf(std::path::PathBuf);
+#[derive(Debug, Clone)]
+pub struct TemplatedPathBuf {
+    template: std::path::PathBuf,
+}
 
 #[cfg(target_family = "wasm")]
 impl TemplatedPathBuf {
+    pub fn new(path: impl Into<std::path::PathBuf>) -> Self {
+        Self { template: path.into() }
+    }
+
     pub fn evaluate(path: impl AsRef<std::path::Path>) -> std::path::PathBuf {
         path.as_ref().to_path_buf()
+    }
+
+    pub fn template_string(&self) -> String {
+        self.template.to_string_lossy().into_owned()
     }
 }
 

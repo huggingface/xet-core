@@ -58,6 +58,11 @@ tokio = { workspace = true, features = [
     "rt",
     "time",
 ] }
+tokio_with_wasm = { workspace = true, features = ["rt", "sync", "time"] }
+web-time = { workspace = true }
+wasm-bindgen = "=0.2.121"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 shellexpand = { workspace = true, features = ["path"] }

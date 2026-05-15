@@ -1,8 +1,10 @@
 /// Single source of truth for all platform-independent config groups.
 /// Invokes the given callback macro with the list of group names.
 ///
-/// The `system_monitor` group is excluded because it is `#[cfg(not(target_family = "wasm"))]`;
-/// each consumer appends it separately with the appropriate cfg gate.
+/// The `system_monitor` group is appended by each consumer separately so the
+/// generated code (struct field, env-override apply, dispatch arms, key
+/// enumeration) can keep it next to the others without expanding it inside
+/// every `$mac!(...)` invocation in this macro's body.
 #[macro_export]
 macro_rules! all_config_groups {
     ($mac:ident) => {

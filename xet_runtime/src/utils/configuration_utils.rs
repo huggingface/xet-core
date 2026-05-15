@@ -2,9 +2,7 @@ use std::str::FromStr;
 
 use tracing::{Level, event, info, warn};
 
-use super::ByteSize;
-#[cfg(not(target_family = "wasm"))]
-use super::TemplatedPathBuf;
+use super::{ByteSize, TemplatedPathBuf};
 
 #[cfg(not(feature = "elevated_information_level"))]
 pub const INFORMATION_LOG_LEVEL: Level = Level::DEBUG;
@@ -151,7 +149,6 @@ impl ParsableConfigValue for std::time::Duration {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
 impl ParsableConfigValue for TemplatedPathBuf {
     fn parse_user_value(value: &str) -> Option<Self> {
         Some(Self::new(value))
@@ -459,7 +456,6 @@ mod tests {
         assert_eq!(bool::parse_user_value("   "), None);
     }
 
-    #[cfg(not(target_family = "wasm"))]
     #[test]
     fn test_roundtrip_templated_path_buf() {
         let path = TemplatedPathBuf::new("/some/simple/path");

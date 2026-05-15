@@ -7,7 +7,6 @@ macro_rules! define_xet_config {
         #[derive(Debug, Clone, Default)]
         pub struct XetConfig {
             $(pub $group: groups::$group::ConfigValues,)*
-            #[cfg(not(target_family = "wasm"))]
             pub system_monitor: groups::system_monitor::ConfigValues,
         }
     };
@@ -33,7 +32,6 @@ macro_rules! impl_xet_config_group_dispatch {
             /// Environment variables follow the pattern: HF_XET_{GROUP_NAME}_{FIELD_NAME}
             pub fn with_env_overrides(mut self) -> Self {
                 $(self.$group.apply_env_overrides();)*
-                #[cfg(not(target_family = "wasm"))]
                 self.system_monitor.apply_env_overrides();
                 self
             }
@@ -42,7 +40,6 @@ macro_rules! impl_xet_config_group_dispatch {
                 let (group, field) = Self::split_path(path)?;
                 match group {
                     $(stringify!($group) => self.$group.update_field(field, value),)*
-                    #[cfg(not(target_family = "wasm"))]
                     "system_monitor" => self.system_monitor.update_field(field, value),
                     _ => Err(ConfigError::UnknownGroup(group.to_owned())),
                 }
@@ -57,7 +54,6 @@ macro_rules! impl_xet_config_group_dispatch {
                 let (group, field) = Self::split_path_for_python(path)?;
                 match group {
                     $(stringify!($group) => self.$group.update_field_from_python(field, value),)*
-                    #[cfg(not(target_family = "wasm"))]
                     "system_monitor" => self.system_monitor.update_field_from_python(field, value),
                     _ => Err(pyo3::exceptions::PyValueError::new_err(
                         ConfigError::UnknownGroup(group.to_owned()).to_string(),
@@ -74,7 +70,6 @@ macro_rules! impl_xet_config_group_dispatch {
                 let (group, field) = Self::split_path_for_python(path)?;
                 match group {
                     $(stringify!($group) => self.$group.get_to_python(field, py),)*
-                    #[cfg(not(target_family = "wasm"))]
                     "system_monitor" => self.system_monitor.get_to_python(field, py),
                     _ => Err(pyo3::exceptions::PyValueError::new_err(
                         ConfigError::UnknownGroup(group.to_owned()).to_string(),
@@ -88,7 +83,6 @@ macro_rules! impl_xet_config_group_dispatch {
                 let (group, field) = Self::split_path(path)?;
                 match group {
                     $(stringify!($group) => self.$group.get(field),)*
-                    #[cfg(not(target_family = "wasm"))]
                     "system_monitor" => self.system_monitor.get(field),
                     _ => Err(ConfigError::UnknownGroup(group.to_owned())),
                 }
@@ -102,7 +96,6 @@ macro_rules! impl_xet_config_group_dispatch {
                         keys.push(format!("{}.{field}", stringify!($group)));
                     }
                 )*
-                #[cfg(not(target_family = "wasm"))]
                 for &field in groups::system_monitor::ConfigValueGroup::field_names() {
                     keys.push(format!("system_monitor.{field}"));
                 }
@@ -120,7 +113,6 @@ macro_rules! impl_xet_config_group_dispatch {
                         items.push((format!("{}.{field}", stringify!($group)), val));
                     }
                 )*
-                #[cfg(not(target_family = "wasm"))]
                 for (field, val) in self.system_monitor.items_to_python(py)? {
                     items.push((format!("system_monitor.{field}"), val));
                 }
@@ -363,15 +355,11 @@ mod tests {
             };
         }
         crate::all_config_groups!(add_group_field_counts);
-        #[cfg(not(target_family = "wasm"))]
-        {
-            expected_count += groups::system_monitor::ConfigValueGroup::field_names().len();
-            assert!(keys.contains(&"system_monitor.enabled".to_owned()));
-        }
+        expected_count += groups::system_monitor::ConfigValueGroup::field_names().len();
+        assert!(keys.contains(&"system_monitor.enabled".to_owned()));
         assert_eq!(keys.len(), expected_count);
     }
 
-    #[cfg(not(target_family = "wasm"))]
     #[test]
     fn test_with_config_and_get_system_monitor() {
         let config = XetConfig::default()
