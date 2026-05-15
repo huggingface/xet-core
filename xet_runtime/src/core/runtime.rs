@@ -231,21 +231,9 @@ impl XetRuntime {
             format!("{THREADPOOL_THREAD_ID_PREFIX}-{id}")
         };
 
-        let mut tokio_rt_builder = {
-            #[cfg(not(target_family = "wasm"))]
-            {
-                let mut builder = TokioRuntimeBuilder::new_multi_thread();
-                builder
-                    .thread_keep_alive(std::time::Duration::from_millis(100))
-                    .worker_threads(get_num_tokio_worker_threads());
-                builder
-            }
-
-            #[cfg(target_family = "wasm")]
-            TokioRuntimeBuilder::new_current_thread()
-        };
-
-        let tokio_rt = tokio_rt_builder
+        let tokio_rt = TokioRuntimeBuilder::new_multi_thread()
+            .thread_keep_alive(std::time::Duration::from_millis(100))
+            .worker_threads(get_num_tokio_worker_threads())
             .on_thread_start(set_threadlocal_reference)
             .thread_name_fn(get_thread_name)
             .thread_stack_size(THREADPOOL_STACK_SIZE)
@@ -581,6 +569,7 @@ impl XetRuntime {
 
     /// Spawn a blocking task on the runtime's blocking thread pool. Installs a weak thread-local
     /// reference to this pool for the duration of `f`.
+    #[cfg(not(target_family = "wasm"))]
     pub fn spawn_blocking<F, R>(self: &Arc<Self>, f: F) -> JoinHandle<R>
     where
         F: FnOnce() -> R + Send + 'static,
@@ -592,6 +581,19 @@ impl XetRuntime {
             THREAD_THREADPOOL_REF.set(Some((pid, pool_weak)));
             f()
         })
+    }
+
+    /// Wasm has no real blocking thread pool — `tokio_with_wasm::task::spawn_blocking`
+    /// runs `f` inline and returns a completed `JoinHandle`. We don't go through
+    /// `self.handle()` because `handle_ref` is intentionally empty on wasm (see
+    /// `Self::new` above).
+    #[cfg(target_family = "wasm")]
+    pub fn spawn_blocking<F, R>(self: &Arc<Self>, f: F) -> tokio_with_wasm::task::JoinHandle<R>
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        tokio_with_wasm::task::spawn_blocking(f)
     }
 
     /// Returns the runtime mode (Owned or External).
