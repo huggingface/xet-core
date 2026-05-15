@@ -154,14 +154,16 @@ pub struct XetRuntime {
 }
 
 fn system_monitor_for_config(config: &XetConfig) -> Option<SystemMonitor> {
-    config
-        .system_monitor
-        .enabled
-        .then(|| {
-            SystemMonitor::follow_process(config.system_monitor.sample_interval, config.system_monitor.log_path.clone())
-                .ok()
-        })
-        .flatten()
+    if !config.system_monitor.enabled {
+        return None;
+    }
+    match SystemMonitor::follow_process(config.system_monitor.sample_interval, config.system_monitor.log_path.clone()) {
+        Ok(m) => Some(m),
+        Err(e) => {
+            debug!("SystemMonitor disabled: follow_process failed: {e}");
+            None
+        },
+    }
 }
 
 /// Returns a stable process ID for fork detection on native platforms.
