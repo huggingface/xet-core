@@ -13,7 +13,7 @@ fn js_err(e: impl std::fmt::Debug) -> JsValue {
 ///   - `undefined` / `null` -> `Compute`
 ///   - the string `"compute"` -> `Compute`
 ///   - the string `"skip"`    -> `Skip`
-///   - an object `{ provided: "<64-hex>" }` -> `Provided(...)`
+///   - an object `{ provided: "<64-hex>" }` -> `Provided(...)` (validates length + hex)
 fn parse_sha256_policy(value: JsValue) -> Result<Sha256Policy, JsValue> {
     if value.is_undefined() || value.is_null() {
         return Ok(Sha256Policy::Compute);
@@ -27,6 +27,11 @@ fn parse_sha256_policy(value: JsValue) -> Result<Sha256Policy, JsValue> {
     }
     let provided = js_sys::Reflect::get(&value, &JsValue::from_str("provided")).map_err(js_err)?;
     if let Some(hex) = provided.as_string() {
+        if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(JsValue::from_str(&format!(
+                "sha256 policy `provided` must be a 64-char hex string, got: {hex:?}",
+            )));
+        }
         return Ok(Sha256Policy::from_hex(&hex));
     }
     Err(JsValue::from_str(
