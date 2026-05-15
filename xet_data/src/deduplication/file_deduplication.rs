@@ -96,7 +96,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
             .config
             .xorb
             .simulation_max_bytes
-            .map(|bs| (bs.as_u64() as usize).min(*MAX_XORB_BYTES))
+            .map(|bs| bs.as_u64().min(*MAX_XORB_BYTES as u64) as usize)
             .unwrap_or(*MAX_XORB_BYTES);
         #[cfg(not(feature = "simulation"))]
         let xorb_cut_bytes = *MAX_XORB_BYTES;

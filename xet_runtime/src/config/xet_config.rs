@@ -134,7 +134,21 @@ impl XetConfig {
         if crate::utils::is_high_performance() {
             config = config.with_high_performance();
         }
+        config.validate_usize_bounds();
         config
+    }
+
+    /// Asserts that byte-size config values which are cast to `usize` in hot upload/download
+    /// paths fit in `usize` on the current target. On 64-bit targets this is a tautology;
+    /// on wasm32 (where `usize` is 32 bits) it catches misconfig that would otherwise
+    /// silently truncate at the cast site.
+    fn validate_usize_bounds(&self) {
+        let ingestion = self.data.ingestion_block_size.as_u64();
+        assert!(
+            usize::try_from(ingestion).is_ok(),
+            "config data.ingestion_block_size ({ingestion} bytes) exceeds usize::MAX ({}) on this target",
+            usize::MAX,
+        );
     }
 
     /// Apply high performance mode settings to this configuration.
