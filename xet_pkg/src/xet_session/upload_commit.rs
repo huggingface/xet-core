@@ -342,6 +342,9 @@ impl XetUploadCommitInner {
 /// [`commit`](Self::commit) (async) or [`commit_blocking`](Self::commit_blocking)
 /// to wait for all uploads to finish and push metadata to the CAS server.
 ///
+/// On wasm targets the `_blocking` and `upload_from_path*` variants are
+/// not available — see the module-level "WASM availability" note.
+///
 /// Per-file results are available via [`XetFileUpload::finalize_ingestion`] or
 /// [`XetStreamUpload::finish`] at any time after ingestion completes —
 /// you do not need to wait for [`commit`](Self::commit).

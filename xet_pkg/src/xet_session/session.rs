@@ -109,6 +109,10 @@ pub struct XetSessionInner {
 /// override runtime settings such as cache directories or concurrency limits.
 pub struct XetSessionBuilder {
     config: XetConfig,
+    // `with_tokio_handle` and the `_blocking` factory methods are non-wasm-only;
+    // the field is still constructed unconditionally so the struct shape stays
+    // identical across targets.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     tokio_handle: Option<tokio::runtime::Handle>,
 }
 

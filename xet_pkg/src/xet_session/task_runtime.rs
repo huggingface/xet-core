@@ -187,6 +187,9 @@ impl TaskRuntime {
         }
     }
 
+    // Used only by native-only handle accessors (e.g. `_blocking` variants);
+    // intentionally retained on wasm so handles keep the same shape.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     pub(super) fn background_result<T: Clone>(
         &self,
         state: &tokio::sync::Mutex<BackgroundTaskState<T>>,
