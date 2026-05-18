@@ -201,6 +201,7 @@ pub async fn upload_ranges(
         // Find the slice of edits that land in this window. A pure insert at exactly
         // `w_end` belongs here only when `w_end == original_size` (no later window can
         // take it); anywhere else it belongs to the next window starting at that byte.
+        // Exercised by `test_resize_insert_at_segment_boundary` and `test_mid_edit_plus_append`.
         let edits_end = dirty_inputs[input_idx..]
             .iter()
             .take_while(|d| {
