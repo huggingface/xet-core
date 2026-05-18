@@ -25,6 +25,3 @@ pub type ClientConfig = groups::client::ConfigValues;
 pub type LogConfig = groups::log::ConfigValues;
 pub type XorbConfig = groups::xorb::ConfigValues;
 pub type SessionConfig = groups::session::ConfigValues;
-
-#[cfg(feature = "python")]
-pub use xet_config::py_xet_config::PyXetConfig;

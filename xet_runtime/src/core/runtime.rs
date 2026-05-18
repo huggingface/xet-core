@@ -169,6 +169,9 @@ pub struct XetRuntime {
     // Are we in the middle of a sigint shutdown?
     sigint_shutdown: AtomicBool,
 
+    // PID of the process that created this runtime; used in Drop to detect fork.
+    creation_pid: u32,
+
     //  System monitor instance if enabled, monitor starts on initiation
     #[cfg(not(target_family = "wasm"))]
     system_monitor: Option<SystemMonitor>,
@@ -201,6 +204,7 @@ impl XetRuntime {
             handle_ref: OnceLock::new(),
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
+            creation_pid: std::process::id(),
             #[cfg(not(target_family = "wasm"))]
             system_monitor: system_monitor_for_config(config),
         });
@@ -282,6 +286,7 @@ impl XetRuntime {
             handle_ref: rt_handle.into(),
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
+            creation_pid: std::process::id(),
             #[cfg(not(target_family = "wasm"))]
             system_monitor: system_monitor_for_config(config),
         });
@@ -301,6 +306,7 @@ impl XetRuntime {
             handle_ref: rt_handle.into(),
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
+            creation_pid: std::process::id(),
             #[cfg(not(target_family = "wasm"))]
             system_monitor: None,
         })
@@ -477,6 +483,13 @@ impl XetRuntime {
         T: Send + 'static,
     {
         self.check_sigint()?;
+        if std::process::id() != self.creation_pid {
+            return Err(RuntimeError::InvalidRuntime(format!(
+                "XetRuntime was created in process {} but is being used in process {}",
+                self.creation_pid,
+                std::process::id(),
+            )));
+        }
         match &self.backend {
             RuntimeBackend::External { .. } => Ok(fut.await),
             RuntimeBackend::OwnedThreadPool { .. } => self.bridge_to_owned(task_name, fut).await,
@@ -499,6 +512,13 @@ impl XetRuntime {
         F::Output: Send + 'static,
     {
         self.check_sigint()?;
+        if std::process::id() != self.creation_pid {
+            return Err(RuntimeError::InvalidRuntime(format!(
+                "XetRuntime was created in process {} but is being used in process {}",
+                self.creation_pid,
+                std::process::id(),
+            )));
+        }
         if matches!(self.backend, RuntimeBackend::External { .. }) {
             return Err(RuntimeError::InvalidRuntime(
                 "bridge_sync() cannot be called on an External-mode runtime; \
@@ -662,26 +682,37 @@ impl Drop for XetRuntime {
 
         self.handle_ref.take();
 
-        match &self.backend {
-            RuntimeBackend::External { handle_id: Some(id) } => {
-                if let Ok(mut reg) = EXTERNAL_THREADPOOL_REGISTRY.write() {
-                    reg.remove(id);
-                }
-            },
-            RuntimeBackend::External { handle_id: None } => {},
-            RuntimeBackend::OwnedThreadPool { runtime } => {
-                let in_async_context = TokioRuntimeHandle::try_current().is_ok();
-                if let Ok(mut guard) = runtime.write()
-                    && let Some(rt_arc) = guard.take()
-                    && let Ok(rt) = Arc::try_unwrap(rt_arc)
-                {
-                    if in_async_context {
-                        rt.shutdown_background();
-                    } else {
-                        rt.shutdown_timeout(std::time::Duration::from_secs(5));
-                    }
-                }
-            },
+        // Fork detection: if we are in a child process the Tokio worker threads from the
+        // parent do not exist here. shutdown_timeout() would block ~5 s waiting on futexes
+        // that never fire. Use discard_runtime() (std::mem::forget) instead — the OS
+        // reclaims all memory when the child exits.
+        if self.creation_pid != std::process::id() {
+            self.discard_runtime();
+            return;
+        }
+
+        if let RuntimeBackend::External { handle_id: Some(id) } = &self.backend {
+            if let Ok(mut reg) = EXTERNAL_THREADPOOL_REGISTRY.write() {
+                reg.remove(id);
+            }
+            return;
+        }
+
+        // When dropping from within an async context, the default TokioRuntime Drop
+        // would panic ("Cannot drop a runtime in a context where blocking is not allowed").
+        // Avoid this by taking ownership of the runtime and using shutdown_background(),
+        // which spawns a thread for the blocking shutdown work instead.
+        let in_async_context = TokioRuntimeHandle::try_current().is_ok();
+        if let RuntimeBackend::OwnedThreadPool { runtime } = &self.backend
+            && let Ok(mut guard) = runtime.write()
+            && let Some(rt_arc) = guard.take()
+            && let Ok(rt) = Arc::try_unwrap(rt_arc)
+        {
+            if in_async_context {
+                rt.shutdown_background();
+            } else {
+                rt.shutdown_timeout(std::time::Duration::from_secs(5));
+            }
         }
     }
 }

@@ -11,7 +11,7 @@ use crate::utils::{ByteSize, ConfigEnum};
 /// - Numeric types <-> Python int/float
 /// - String <-> Python str
 /// - bool <-> Python bool
-/// - Duration <-> Python datetime.timedelta
+/// - Duration <-> Python str (e.g. ``"500ms"``, ``"1s"``) or ``datetime.timedelta``
 /// - ByteSize <-> Python int (bytes)
 /// - Option<T> <-> Optional[T]
 pub trait PythonConfigValue {
@@ -47,7 +47,27 @@ macro_rules! impl_python_extract {
     };
 }
 
-impl_python_extract!(usize, u8, u16, u32, u64, isize, i8, i16, i32, i64, f32, f64, bool, String, std::time::Duration);
+impl_python_extract!(usize, u8, u16, u32, u64, isize, i8, i16, i32, i64, f32, f64, bool, String);
+
+impl PythonConfigValue for std::time::Duration {
+    fn to_python(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.into_py_any(py)
+    }
+
+    fn from_python(obj: &Bound<'_, PyAny>) -> PyResult<Self> {
+        // Accept a human-readable string like "500ms", "1s", "2m30s" (parsed by humantime),
+        // or a Python datetime.timedelta (PyO3's native Duration extraction).
+        if let Ok(s) = obj.extract::<String>() {
+            humantime::parse_duration(&s).map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "Invalid duration string {s:?}: {e}. Expected a humantime string like \"500ms\", \"1s\", or \"2m30s\"."
+                ))
+            })
+        } else {
+            obj.extract()
+        }
+    }
+}
 
 impl PythonConfigValue for ByteSize {
     fn to_python(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {

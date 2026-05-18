@@ -4,7 +4,7 @@ use std::mem::size_of;
 
 use crate::serialization_utils::*;
 
-/// Performs an interpolation search on a block of sorted, possibly multile
+/// Performs an interpolation search on a block of sorted, possibly multiple
 /// u64 hash keys with a simple payload.
 ///
 /// read_start: The byte offset in the reader that gives the start of the data.

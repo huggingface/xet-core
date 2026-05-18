@@ -4,6 +4,7 @@ use std::time::{Duration, SystemTime};
 
 use xet_client::cas_types::{ChunkRange, Key};
 use xet_client::chunk_cache::{CacheConfig, ChunkCache, DiskCache, RandomEntryIterator};
+use xet_runtime::config::XetConfig;
 use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser, Debug)]
@@ -97,7 +98,8 @@ async fn child_main(args: ChildArgs) {
         cache_directory: PathBuf::from(args.cache_root),
         cache_size: args.capacity,
     };
-    let cache = DiskCache::initialize(&config).unwrap();
+    let xet_config = XetConfig::new();
+    let cache = DiskCache::initialize(&xet_config, &config).unwrap();
 
     eprintln!("initialized id: {id} with {} entries", cache.num_items().await);
 

@@ -57,3 +57,21 @@ pub use error::{XetAuthenticationError, XetObjectNotFoundError, register_excepti
 // and `git_xet`.  New code should use the [`xet_session`] API instead.
 pub mod legacy;
 pub mod xet_session;
+
+/// Initialize the global tracing subscriber using xet_runtime defaults.
+///
+/// Reads `HF_XET_LOG_FILE` / `RUST_LOG` environment variables.  Repeated calls
+/// are no-ops — the global subscriber is installed only once.
+pub fn init_logging(version_info: String) {
+    let log_dir = xet_runtime::core::xet_cache_root().join("logs");
+
+    // Called before any XetContext is created, so we use a standalone default config for
+    // early-init logging setup.
+    let cfg = xet_runtime::logging::LoggingConfig::from_directory(
+        &xet_runtime::config::XetConfig::new(),
+        version_info,
+        log_dir,
+    );
+
+    xet_runtime::logging::init(cfg);
+}

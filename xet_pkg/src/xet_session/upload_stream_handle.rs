@@ -6,7 +6,8 @@ use std::sync::{Arc, OnceLock};
 use bytes::Bytes;
 use tracing::{debug, info};
 use xet_data::processing::{FileUploadSession, SingleFileCleaner};
-use xet_data::progress_tracking::{ItemProgressReport, UniqueID};
+use xet_data::progress_tracking::ItemProgressReport;
+use xet_runtime::utils::UniqueId;
 
 use super::task_runtime::{TaskRuntime, XetTaskState};
 use super::upload_commit::XetFileMetadata;
@@ -19,7 +20,7 @@ type CleanerState = Option<(SingleFileCleaner, Option<String>)>;
 // ── XetStreamUploadInner ─────────────────────────────────────────────────
 
 pub(super) struct XetStreamUploadInner {
-    pub(super) task_id: UniqueID,
+    pub(super) task_id: UniqueId,
     pub(super) result: Arc<OnceLock<XetFileMetadata>>,
     pub(super) cleaner: Arc<tokio::sync::Mutex<CleanerState>>,
     pub(super) upload_session: Arc<FileUploadSession>,
@@ -95,7 +96,7 @@ impl fmt::Debug for XetStreamUpload {
 
 impl XetStreamUpload {
     /// Unique identifier for this upload task, usable for progress lookups.
-    pub fn task_id(&self) -> UniqueID {
+    pub fn task_id(&self) -> UniqueId {
         self.inner.task_id
     }
 

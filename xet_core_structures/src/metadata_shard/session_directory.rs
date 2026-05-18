@@ -90,7 +90,7 @@ pub fn merge_shards(
             return Err(RuntimeError::KeyboardInterrupt.into());
         }
 
-        // Now, load the new shard data in.  To be resiliant to the possibility of shards
+        // Now, load the new shard data in.  To be resilient to the possibility of shards
         // being deleted under us (as can happen in shard session resume with multiple
         // processes running), always load it all into memory at the start and write it out
         // at the end.

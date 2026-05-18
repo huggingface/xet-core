@@ -68,6 +68,22 @@ jobs:
       - name: Build and Test hf_xet
         run: |
           cd hf_xet && cargo test --verbose --no-fail-fast
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: '3.10'
+      - name: Create venv
+        run: python3 -m venv .venv
+      - name: Build wheel
+        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1
+        with:
+          command: develop
+          sccache: 'true'
+          working-directory: hf_xet
+      - name: Python integration tests (hf_xet)
+        run: |
+          source .venv/bin/activate
+          pip install pytest
+          pytest hf_xet/tests/ -v
       - name: Check Cargo.lock has no uncommitted changes
         run: |
           # the build and test steps would update Cargo.lock if it is out of date
@@ -88,6 +104,23 @@ jobs:
       - name: Build and Test hf_xet
         run: |
           cd hf_xet && cargo test --verbose --no-fail-fast
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: '3.10'
+      - name: Create venv
+        run: python -m venv .venv
+      - name: Build wheel
+        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1
+        with:
+          command: develop
+          sccache: 'true'
+          working-directory: hf_xet
+      - name: Python integration tests (hf_xet)
+        shell: bash
+        run: |
+          source .venv/Scripts/activate
+          pip install pytest
+          pytest hf_xet/tests/ -v
   build_and_test-macos:
     runs-on: macos-latest
     steps:
@@ -108,6 +141,22 @@ jobs:
       - name: Build and Test hf_xet
         run: |
           cd hf_xet && cargo test --verbose --no-fail-fast
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: '3.10'
+      - name: Create venv
+        run: python3 -m venv .venv
+      - name: Build wheel
+        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1
+        with:
+          command: develop
+          sccache: 'true'
+          working-directory: hf_xet
+      - name: Python integration tests (hf_xet)
+        run: |
+          source .venv/bin/activate
+          pip install pytest
+          pytest hf_xet/tests/ -v
   build_and_test-wasm:
     name: Build WASM
     runs-on: ubuntu-latest

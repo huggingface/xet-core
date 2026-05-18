@@ -4,7 +4,8 @@ use bytes::Bytes;
 use tracing::{debug, info};
 use xet_data::DataError;
 use xet_data::processing::{DownloadStream, FileDownloadSession, UnorderedDownloadStream};
-use xet_data::progress_tracking::{ItemProgressReport, UniqueID};
+use xet_data::progress_tracking::ItemProgressReport;
+use xet_runtime::utils::UniqueId;
 
 use super::errors::SessionError;
 use super::task_runtime::TaskRuntime;
@@ -26,7 +27,7 @@ use super::task_runtime::TaskRuntime;
 pub struct XetDownloadStream {
     inner: DownloadStream,
     download_session: Arc<FileDownloadSession>,
-    id: UniqueID,
+    id: UniqueId,
     task_runtime: Arc<TaskRuntime>,
 }
 
@@ -34,7 +35,7 @@ impl XetDownloadStream {
     pub(super) fn new(
         inner: DownloadStream,
         download_session: Arc<FileDownloadSession>,
-        id: UniqueID,
+        id: UniqueId,
         task_runtime: Arc<TaskRuntime>,
     ) -> Self {
         Self {
@@ -88,15 +89,19 @@ impl XetDownloadStream {
         self.inner.cancel();
     }
 
-    /// Returns a snapshot of this stream's download progress.
+    /// Returns the unique task ID for this stream.
+    pub fn task_id(&self) -> UniqueId {
+        self.id
+    }
+
+    /// Returns a snapshot of this stream's download progress, or `None` if
+    /// the progress item is not yet available.
     ///
     /// The returned [`ItemProgressReport`] contains the item name,
     /// total bytes, and bytes completed so far. This method is lock-free
     /// (reads atomic counters) and safe to call from any thread.
-    pub fn progress(&self) -> ItemProgressReport {
-        self.download_session
-            .item_report(self.id)
-            .expect("progress item was registered at stream creation and is never removed")
+    pub fn progress(&self) -> Option<ItemProgressReport> {
+        self.download_session.item_report(self.id)
     }
 }
 
@@ -123,7 +128,7 @@ impl Drop for XetDownloadStream {
 pub struct XetUnorderedDownloadStream {
     inner: UnorderedDownloadStream,
     download_session: Arc<FileDownloadSession>,
-    id: UniqueID,
+    id: UniqueId,
     task_runtime: Arc<TaskRuntime>,
 }
 
@@ -131,7 +136,7 @@ impl XetUnorderedDownloadStream {
     pub(super) fn new(
         inner: UnorderedDownloadStream,
         download_session: Arc<FileDownloadSession>,
-        id: UniqueID,
+        id: UniqueId,
         task_runtime: Arc<TaskRuntime>,
     ) -> Self {
         Self {
@@ -186,15 +191,19 @@ impl XetUnorderedDownloadStream {
         self.inner.cancel();
     }
 
-    /// Returns a snapshot of this stream's download progress.
+    /// Returns the unique task ID for this stream.
+    pub fn task_id(&self) -> UniqueId {
+        self.id
+    }
+
+    /// Returns a snapshot of this stream's download progress, or `None` if
+    /// the progress item is not yet available.
     ///
     /// The returned [`ItemProgressReport`] contains the item name,
     /// total bytes, and bytes completed so far. This method is lock-free
     /// (reads atomic counters) and safe to call from any thread.
-    pub fn progress(&self) -> ItemProgressReport {
-        self.download_session
-            .item_report(self.id)
-            .expect("progress item was registered at stream creation and is never removed")
+    pub fn progress(&self) -> Option<ItemProgressReport> {
+        self.download_session.item_report(self.id)
     }
 }
 

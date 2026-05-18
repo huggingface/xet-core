@@ -10,7 +10,7 @@ body:
     id: bug-description
     attributes:
       label: Describe the bug
-      description: A clear and concise description of what the bug is and details about your machine (e.g., network capcity, file system, disk type, etc.).
+      description: A clear and concise description of what the bug is and details about your machine (e.g., network capacity, file system, disk type, etc.).
       placeholder: Bug description
     validations:
       required: true

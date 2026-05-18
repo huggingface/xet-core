@@ -64,7 +64,7 @@ jobs:
           cp target/release/git-xet dist/
           cp git_xet/entitlements.xml dist/
       - name: Codesign and Notarization
-        uses: lando/code-sign-action@a5703d3b5486ada6e8efd08912110f8756e873e8  # v3
+        uses: ./.github/actions/macos-codesign-notarize
         with:
           file: dist/git-xet
           certificate-data: ${{ secrets.CLI_MACOS_CERTIFICATE }}
@@ -72,7 +72,6 @@ jobs:
           certificate-password: ${{ secrets.CLI_MACOS_CERTIFICATE_PWD }}
           apple-notary-user: ${{ secrets.CLI_MACOS_NOTARY_USER }}
           apple-notary-password: ${{ secrets.CLI_MACOS_NOTARY_PWD }}
-          apple-product-id: co.huggingface.gitxet
           options: --options runtime --entitlements dist/entitlements.xml
       - name: Upload binary
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6

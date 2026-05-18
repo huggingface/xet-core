@@ -7,7 +7,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tracing::{error, info};
 use xet_data::deduplication::DeduplicationMetrics;
 use xet_data::processing::{FileUploadSession, Sha256Policy, XetFileInfo};
-use xet_data::progress_tracking::{GroupProgressReport, UniqueID};
+use xet_data::progress_tracking::{GroupProgressReport, ItemProgressReport};
+use xet_runtime::utils::UniqueId;
 
 use super::auth_group_builder::{AuthGroupBuilder, AuthOptions};
 use super::common::create_translator_config;
@@ -69,24 +70,49 @@ impl AuthGroupBuilder<XetUploadCommit> {
 ///
 /// Contains aggregate deduplication metrics, final progress, and per-file
 /// [`XetFileMetadata`] for every file that was successfully ingested,
-/// keyed by [`UniqueID`].
+/// keyed by [`UniqueId`].
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "python", pyo3::pyclass(get_all))]
 pub struct XetCommitReport {
     /// Aggregate deduplication metrics across all files in this commit.
     pub dedup_metrics: DeduplicationMetrics,
     /// Final progress snapshot at the time the commit completed.
     pub progress: GroupProgressReport,
     /// Per-file metadata keyed by task ID, one entry per successfully ingested file.
-    pub uploads: HashMap<UniqueID, XetFileMetadata>,
+    pub uploads: HashMap<UniqueId, XetFileMetadata>,
+}
+
+#[cfg(feature = "python")]
+#[pyo3::pymethods]
+impl XetCommitReport {
+    fn __repr__(&self) -> String {
+        let per_file: Vec<String> = self
+            .uploads
+            .iter()
+            .map(|(id, m)| {
+                let name = m.tracking_name.as_deref().unwrap_or("None");
+                let size = m.xet_info.file_size.map_or("?".to_string(), |s| s.to_string());
+                format!("({id}, \"{name}\", hash=\"{}\", size={size})", m.xet_info.hash)
+            })
+            .collect();
+        format!(
+            "XetCommitReport(files={}, total_bytes={}, deduped_bytes={}, uploads=[{}])",
+            self.uploads.len(),
+            self.dedup_metrics.total_bytes,
+            self.dedup_metrics.deduped_bytes,
+            per_file.join(", ")
+        )
+    }
 }
 
 /// Per-file metadata returned by [`XetFileUpload::finalize_ingestion`] and
 /// [`XetStreamUpload::finish`].
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "python", pyo3::pyclass(get_all))]
 pub struct XetFileMetadata {
     /// Unique identifier for the task that produced this metadata.
     #[serde(skip)]
-    pub task_id: UniqueID,
+    pub task_id: UniqueId,
     /// Xet file information: hash, size, and optional SHA-256.
     pub xet_info: XetFileInfo,
     /// Per-file deduplication and chunking metrics.
@@ -96,10 +122,23 @@ pub struct XetFileMetadata {
     pub tracking_name: Option<String>,
 }
 
+#[cfg(feature = "python")]
+#[pyo3::pymethods]
+impl XetFileMetadata {
+    fn __repr__(&self) -> String {
+        let name = self.tracking_name.as_deref().unwrap_or("None");
+        let size = self.xet_info.file_size.map_or("?".to_string(), |s| s.to_string());
+        format!(
+            "XetFileMetadata(task_id={}, name=\"{}\", hash=\"{}\", size={})",
+            self.task_id, name, self.xet_info.hash, size
+        )
+    }
+}
+
 // ── XetUploadCommitInner ────────────────────────────────────────────────────
 
 pub(super) struct XetUploadCommitInner {
-    commit_id: UniqueID,
+    commit_id: UniqueId,
     pub(super) session: XetSession,
     pub(super) task_runtime: Arc<TaskRuntime>,
     upload_session: Arc<FileUploadSession>,
@@ -143,10 +182,7 @@ impl XetUploadCommitInner {
             task_runtime,
         };
 
-        self.stream_handles
-            .lock()
-            .expect("stream_handles lock poisoned")
-            .push(handle.clone());
+        self.stream_handles.lock()?.push(handle.clone());
 
         Ok(handle)
     }
@@ -165,7 +201,7 @@ impl XetUploadCommitInner {
 
     fn register_spawned_task(
         &self,
-        task_id: UniqueID,
+        task_id: UniqueId,
         join_handle: tokio::task::JoinHandle<Result<(XetFileInfo, DeduplicationMetrics), xet_data::DataError>>,
         tracking_name: Option<String>,
         file_path: Option<PathBuf>,
@@ -208,13 +244,10 @@ impl XetUploadCommitInner {
             }),
         });
 
-        self.file_handles
-            .lock()
-            .expect("file_handles lock poisoned")
-            .push(XetFileUpload {
-                inner: inner.clone(),
-                task_runtime: task_runtime.clone(),
-            });
+        self.file_handles.lock()?.push(XetFileUpload {
+            inner: inner.clone(),
+            task_runtime: task_runtime.clone(),
+        });
 
         Ok(XetFileUpload { inner, task_runtime })
     }
@@ -328,7 +361,7 @@ impl XetUploadCommit {
         task_runtime: Arc<TaskRuntime>,
         auth_options: AuthOptions,
     ) -> Result<Self, XetError> {
-        let commit_id = UniqueID::new();
+        let commit_id = UniqueId::new();
         let config = create_translator_config(&session, auth_options).await?;
         let upload_session = FileUploadSession::new(Arc::new(config)).await?;
 
@@ -345,7 +378,7 @@ impl XetUploadCommit {
     }
 
     /// Unique identifier for this upload commit.
-    pub fn id(&self) -> UniqueID {
+    pub fn id(&self) -> UniqueId {
         self.inner.commit_id
     }
 
@@ -433,6 +466,19 @@ impl XetUploadCommit {
 
     pub fn status(&self) -> Result<XetTaskState, XetError> {
         self.task_runtime.status()
+    }
+
+    /// Return `(task_id, file_path, progress)` for every queued file upload.
+    ///
+    /// `file_path` is `Some` for path/bytes uploads and `None` for stream uploads.
+    /// `progress` is `None` if the upload has not started reporting yet.
+    /// Used for display and diagnostics (e.g. `__repr__`).
+    pub fn active_upload_info(&self) -> Vec<(UniqueId, Option<PathBuf>, Option<ItemProgressReport>)> {
+        self.inner
+            .file_handles
+            .lock()
+            .map(|handles| handles.iter().map(|h| (h.task_id(), h.file_path(), h.progress())).collect())
+            .unwrap_or_default()
     }
 
     /// Wait for all uploads to complete and push metadata to the CAS server.

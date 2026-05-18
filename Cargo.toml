@@ -12,7 +12,13 @@ members = [
     "git_xet",
     "simulation",
 ]
-exclude = ["simulation/chunk_cache_bench", "hf_xet", "wasm/hf_xet_wasm", "wasm/hf_xet_thin_wasm"]
+exclude = [
+    "simulation/chunk_cache_bench",
+    "hf_xet",
+    "wasm/hf_xet_wasm",
+    "wasm/hf_xet_thin_wasm",
+    "examples/xet_pkg_napi",
+]
 
 [workspace.package]
 version = "1.5.2"
@@ -52,7 +58,7 @@ console-subscriber = "0.5"
 countio = { version = "0.3", features = ["futures"] }
 crc32fast = "1.5"
 csv = "1"
-ctor = "0.6"
+ctor = "1"
 dirs = "6.0"
 futures = "0.3"
 humantime = "2.1"
@@ -79,7 +85,7 @@ oneshot = "0.1"
 pin-project = "1"
 pyo3 = { version = "0.26", features = ["abi3-py37", "multiple-pymethods"] }
 rand = "0.10"
-rand_chacha = "0.9"
+rand_chacha = "0.10"
 regex = "1"
 reqwest = { version = "0.13.1", features = [
     "json",

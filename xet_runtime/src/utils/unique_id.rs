@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct UniqueId(u64);
+#[cfg_attr(feature = "python", pyo3::pyclass)]
+pub struct UniqueId(pub u64);
 
 impl UniqueId {
     pub fn new() -> Self {
@@ -19,6 +20,22 @@ impl UniqueId {
 impl Default for UniqueId {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(feature = "python")]
+#[pyo3::pymethods]
+impl UniqueId {
+    fn __repr__(&self) -> String {
+        format!("UniqueId({})", self.0)
+    }
+
+    fn __hash__(&self) -> u64 {
+        self.0
+    }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self.0 == other.0
     }
 }
 

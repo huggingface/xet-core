@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use xet_data::processing::{FileDownloadSession, XetFileInfo};
-use xet_data::progress_tracking::{ItemProgressReport, UniqueID};
+use xet_data::progress_tracking::ItemProgressReport;
+use xet_runtime::utils::UniqueId;
 
 use super::task_runtime::{BackgroundTaskState, TaskRuntime, XetTaskState};
 use crate::error::XetError;
@@ -13,21 +14,35 @@ use crate::error::XetError;
 /// Per-file download result returned by
 /// [`XetFileDownloadGroup::finish`](crate::xet_session::XetFileDownloadGroup::finish).
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "python", pyo3::pyclass(get_all))]
 pub struct XetDownloadReport {
     /// Unique identifier for this download task.
-    pub task_id: UniqueID,
-    /// Local path where the file was written, if applicable.
-    pub path: Option<PathBuf>,
+    pub task_id: UniqueId,
+    /// Local path where the file was written.
+    pub path: PathBuf,
     /// Xet file hash and size of the downloaded file.
     pub file_info: XetFileInfo,
     /// Per-file progress snapshot at the time of completion.
     pub progress: Option<ItemProgressReport>,
 }
 
+#[cfg(feature = "python")]
+#[pyo3::pymethods]
+impl XetDownloadReport {
+    fn __repr__(&self) -> String {
+        format!(
+            "XetDownloadReport(task_id={}, hash={:?}, path={:?})",
+            self.task_id,
+            self.file_info.hash,
+            self.path.display()
+        )
+    }
+}
+
 // ── XetFileDownloadInner ────────────────────────────────────────────────────
 
 pub(super) struct XetFileDownloadInner {
-    pub(super) task_id: UniqueID,
+    pub(super) task_id: UniqueId,
     pub(super) dest_path: PathBuf,
     pub(super) download_session: Arc<FileDownloadSession>,
     pub(super) state: tokio::sync::Mutex<BackgroundTaskState<XetDownloadReport>>,
@@ -42,13 +57,16 @@ pub(super) struct XetFileDownloadInner {
 /// [`XetFileDownloadGroup::download_file_to_path`](crate::xet_session::XetFileDownloadGroup::download_file_to_path).
 /// Use [`finish`](Self::finish) to wait for completion or
 /// [`result`](Self::result) to poll without blocking.
+///
+/// Cloning is cheap — all clones share the same underlying state via `Arc`.
+#[derive(Clone)]
 pub struct XetFileDownload {
     pub(super) inner: Arc<XetFileDownloadInner>,
     pub(super) task_runtime: Arc<TaskRuntime>,
 }
 
 impl XetFileDownload {
-    pub fn task_id(&self) -> UniqueID {
+    pub fn task_id(&self) -> UniqueId {
         self.inner.task_id
     }
 

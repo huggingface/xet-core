@@ -46,8 +46,13 @@ uuid = { workspace = true, features = ["v7"] }
 [features]
 smoke-test = []
 fd-track = ["xet-runtime/fd-track", "xet-client/fd-track", "xet-data/fd-track"]
-python = ["xet-runtime/python", "dep:pyo3"]
+python = ["xet-runtime/python", "xet-data/python", "dep:pyo3"]
 simulation = ["xet-client/simulation"]
+native-tls = ["xet-client/native-tls"]
+native-tls-vendored = ["xet-client/native-tls-vendored"]
+elevated_information_level = ["xet-client/elevated_information_level", "xet-runtime/elevated_information_level"]
+no-default-cache = ["xet-runtime/no-default-cache"]
+tokio-console = ["xet-runtime/tokio-console"]
 
 [dev-dependencies]
 anyhow = { workspace = true }

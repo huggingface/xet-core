@@ -5,11 +5,11 @@ use std::sync::{Arc, Mutex, Weak};
 
 use tracing::info;
 use uuid::Uuid;
-use xet_data::progress_tracking::UniqueID;
 use xet_runtime::config::XetConfig;
 use xet_runtime::core::XetContext;
 #[cfg(feature = "fd-track")]
 use xet_runtime::fd_diagnostics::{report_fd_count, track_fd_scope};
+use xet_runtime::utils::UniqueId;
 
 use super::download_stream_group::{
     XetDownloadStreamGroup, XetDownloadStreamGroupBuilder, XetDownloadStreamGroupInner,
@@ -38,7 +38,7 @@ pub struct XetSessionInner {
     // Weak references so that dropping all user-held XetDownloadStreamGroup clones frees the group
     // immediately, without needing an explicit finalization call. abort() upgrades live weak refs
     // to cancel active streams.
-    pub(super) active_download_stream_groups: Mutex<HashMap<UniqueID, Weak<XetDownloadStreamGroupInner>>>,
+    pub(super) active_download_stream_groups: Mutex<HashMap<UniqueId, Weak<XetDownloadStreamGroupInner>>>,
 
     // "id" is used to identify a group of activities on our server, and so needs to be globally unique
     pub(super) id: Uuid,
@@ -368,8 +368,12 @@ impl XetSession {
         Ok(())
     }
 
-    pub(super) fn id(&self) -> &Uuid {
+    pub fn id(&self) -> &Uuid {
         &self.inner.id
+    }
+
+    pub fn config(&self) -> &XetConfig {
+        &self.inner.ctx.config
     }
 }
 
@@ -660,7 +664,7 @@ mod tests {
             .download_stream(file_info, None)
             .await
             .unwrap();
-        let initial = stream.progress();
+        let initial = stream.progress().unwrap();
         assert_eq!(initial.total_bytes, original.len() as u64);
         assert_eq!(initial.bytes_completed, 0);
 
@@ -670,7 +674,7 @@ mod tests {
         }
         assert_eq!(collected, original);
 
-        let final_progress = stream.progress();
+        let final_progress = stream.progress().unwrap();
         assert_eq!(final_progress.total_bytes, original.len() as u64);
         assert_eq!(final_progress.bytes_completed, original.len() as u64);
     }
@@ -699,7 +703,7 @@ mod tests {
         }
         assert_eq!(collected, original);
 
-        let final_progress = stream.progress();
+        let final_progress = stream.progress().unwrap();
         assert_eq!(final_progress.total_bytes, original.len() as u64);
         assert_eq!(final_progress.bytes_completed, original.len() as u64);
     }
