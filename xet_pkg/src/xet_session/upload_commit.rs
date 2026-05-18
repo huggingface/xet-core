@@ -203,6 +203,11 @@ impl XetUploadCommitInner {
         self.register_spawned_task(task_id, join_handle, tracking_name, None)
     }
 
+    // Wasm cancellation contract: on wasm, `tokio` is aliased to `tokio_with_wasm`, whose
+    // `JoinHandle::abort()` only cancels async `spawn` tasks — it cannot abort `spawn_blocking`
+    // tasks. Cancellation here works because `spawn_upload_bytes` / `spawn_upload_from_path`
+    // use async `tokio::spawn`. If you change the spawning mechanism for tasks registered
+    // through this method, verify wasm cancellation still propagates to the upload task.
     fn register_spawned_task(
         &self,
         task_id: UniqueId,
@@ -595,7 +600,8 @@ impl XetUploadCommit {
     }
 }
 
-#[cfg(all(test, not(target_family = "wasm")))]
+#[cfg(test)]
+#[cfg(not(target_family = "wasm"))]
 mod tests {
     use std::path::PathBuf;
     use std::sync::mpsc;

@@ -184,11 +184,11 @@ the patterns this codebase relies on:
   - Builds all three wasm crates (`hf_xet_thin_wasm`, `hf_xet_wasm_download`,
     `hf_xet_wasm_upload`) via each crate's `build_wasm.sh`.
   - Cargo.lock freshness checks for each wasm crate.
-  - Two headless-Chromium smokes:
-    - `wasm/hf_xet_wasm_download/tests/ci-smoke` — anonymous download of a
-      pinned public file (`continue-on-error: true` — hub blips don't fail PRs).
-    - `wasm/hf_xet_wasm_upload/tests/ci-smoke` — local-only data-prep
-      regression guard for `XetRuntime::spawn_blocking` (blocking).
+  - Two headless-Chromium smokes (consolidated in `wasm/ci-smoke/`):
+    - `run-download.mjs` — anonymous download of a pinned public file
+      (`continue-on-error: true` — hub blips don't fail PRs).
+    - `run-upload.mjs` — local-only data-prep regression guard for
+      `XetRuntime::spawn_blocking` (blocking).
 
 ---
 

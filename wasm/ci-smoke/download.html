@@ -6,7 +6,7 @@
 </head>
 <body>
 <script type="module">
-  import init, { XetSession } from '../../pkg/hf_xet_wasm_download.js';
+  import init, { XetSession } from '../hf_xet_wasm_download/pkg/hf_xet_wasm_download.js';
 
   await init();
 
@@ -54,7 +54,10 @@
         repoType: 'model',
         namespace: 'hf-internal-testing',
         repo: 'tiny-random-bert',
-        revision: 'main',
+        // Pinned to a specific commit so silent drift on `main` doesn't break
+        // the smoke without surfacing the cause. Bump alongside EXPECTED_SHA256
+        // in run-download.mjs when re-pinning.
+        revision: 'f171d7baecaf37b5da5a3616d8833b9969753535',
         filepath: 'pytorch_model.bin',
       };
 
@@ -66,8 +69,9 @@
       const { accessToken, exp, casUrl } = await fetchXetReadToken(params);
       console.log(`token ok: casUrl=${casUrl}`);
 
-      const session = new XetSession(casUrl, accessToken, exp);
-      const stream = await session.downloadStream({ hash: xetHash, file_size: size });
+      const session = new XetSession();
+      const group = await session.newDownloadStreamGroup(casUrl, accessToken, exp);
+      const stream = await group.downloadStream({ hash: xetHash, file_size: size });
 
       const chunks = [];
       let total = 0;

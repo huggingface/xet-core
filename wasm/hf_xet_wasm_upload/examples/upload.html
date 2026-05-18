@@ -36,7 +36,7 @@
   </ol>
 
   <label>Hugging Face Hub token (write scope)</label>
-  <input id="hfToken" placeholder="hf_xxxxxxxxxxxxxxxxxxx" />
+  <input id="hfToken" type="password" placeholder="hf_xxxxxxxxxxxxxxxxxxx" />
 
   <div class="row">
     <div>
@@ -131,11 +131,11 @@
         append(`  casUrl  = ${casUrl}`);
         append(`  exp     = ${exp} (in ${Math.max(0, exp - Math.floor(Date.now() / 1000))}s)`);
 
-        append(`Constructing XetSession against ${casUrl}`);
-        const session = new XetSession(casUrl, accessToken, exp);
+        append(`Constructing XetSession`);
+        const session = new XetSession();
 
-        append(`Opening new upload commit...`);
-        const commit = await session.newUploadCommit();
+        append(`Opening new upload commit against ${casUrl}...`);
+        const commit = await session.newUploadCommit(casUrl, accessToken, exp);
 
         append(`Uploading ${bytes.byteLength} bytes (sha256 policy = "compute") as "${file.name}"...`);
         const metadata = await commit.uploadBytes(bytes, "compute", file.name);

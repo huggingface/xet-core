@@ -1,28 +1,46 @@
-use std::ops::Range;
-
 use wasm_bindgen::prelude::*;
-use xet::xet_session::{XetFileInfo, XetSession as InnerSession, XetSessionBuilder};
+use xet::xet_session::{XetSession as InnerSession, XetSessionBuilder};
 
-use crate::stream::XetDownloadStream;
+use crate::group::XetDownloadStreamGroup;
 
 fn js_err(e: impl std::fmt::Debug) -> JsValue {
     JsValue::from_str(&format!("{e:?}"))
 }
 
+fn validate_session_inputs(endpoint: &str, token: &str, token_expiry: f64) -> Result<u64, JsValue> {
+    if !token_expiry.is_finite() || token_expiry < 0.0 {
+        return Err(JsValue::from_str(
+            "tokenExpiry must be a finite, non-negative number",
+        ));
+    }
+    if token.trim().is_empty() {
+        return Err(JsValue::from_str("token must be non-empty"));
+    }
+    let trimmed = endpoint.trim();
+    if trimmed.is_empty() || !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+        return Err(JsValue::from_str("endpoint must be a valid URL"));
+    }
+    Ok(token_expiry as u64)
+}
+
 /// WASM-facing session for streaming downloads from the Xet CAS server.
 ///
-/// Construct one with `new(endpoint, token, tokenExpiry)`, then call
-/// `downloadStream(fileInfo)` to begin streaming a file.
+/// Mirrors the Rust [`xet::xet_session::XetSession`]: the session itself owns
+/// no auth state. Construct with `new XetSession()`, then call
+/// [`newDownloadStreamGroup`](Self::new_download_stream_group) to mint an
+/// authenticated [`XetDownloadStreamGroup`] from which you can stream files.
+///
+/// A single session can hand out many groups, each with its own endpoint /
+/// token pair.
 ///
 /// ## No automatic token refresh
 ///
 /// This wrapper does **not** expose
 /// [`with_token_refresh_url`](xet::xet_session::AuthGroupBuilder::with_token_refresh_url),
-/// so the session has no way to obtain a fresh CAS token mid-stream. If
+/// so a group has no way to obtain a fresh CAS token mid-stream. If
 /// `tokenExpiry` is reached during a download the underlying request will
 /// fail with an auth error. Callers are responsible for fetching a new
-/// `xet-read-token` from the Hub and constructing a fresh `XetSession`
-/// before expiry.
+/// `xet-read-token` from the Hub and constructing a fresh group before expiry.
 ///
 /// Wiring `with_token_refresh_url` here would need either a JS-callback
 /// bridge (so JS can mint and return a token via `Promise`) or a
@@ -31,62 +49,44 @@ fn js_err(e: impl std::fmt::Debug) -> JsValue {
 #[wasm_bindgen(js_name = "XetSession")]
 pub struct XetSession {
     inner: InnerSession,
-    endpoint: String,
-    token: String,
-    token_expiry: u64,
 }
 
 #[wasm_bindgen(js_class = "XetSession")]
 impl XetSession {
-    /// Create a new session.
+    /// Create a new session. Mirrors `XetSessionBuilder::new().build()` and
+    /// takes no auth — auth lives on the per-group builder.
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Result<XetSession, JsValue> {
+        let session = XetSessionBuilder::new().build().map_err(js_err)?;
+        Ok(Self { inner: session })
+    }
+
+    /// Build an authenticated [`XetDownloadStreamGroup`].
     ///
     /// - `endpoint`: CAS server URL, e.g. `"https://cas-server.xethub.com"`
     /// - `token`: CAS access token string
     /// - `tokenExpiry`: token expiry as a Unix timestamp (seconds). Pass `0` for no expiry.
-    #[wasm_bindgen(constructor)]
-    pub fn new(endpoint: String, token: String, token_expiry: f64) -> Result<XetSession, JsValue> {
-        let session = XetSessionBuilder::new().build().map_err(js_err)?;
-        Ok(Self {
-            inner: session,
-            endpoint,
-            token,
-            token_expiry: token_expiry as u64,
-        })
-    }
-
-    /// Begin streaming a file described by `fileInfo`.
     ///
-    /// `fileInfo` must be a plain JS object matching the `XetFileInfo` shape:
-    /// `{ hash: string, file_size: number }`.
-    ///
-    /// `byteRangeStart` and `byteRangeEnd` are optional; when both are provided,
-    /// only that byte range is downloaded.
-    #[wasm_bindgen(js_name = "downloadStream")]
-    pub async fn download_stream(
+    /// The returned group is reusable across many `downloadStream(...)` calls.
+    #[wasm_bindgen(js_name = "newDownloadStreamGroup")]
+    pub async fn new_download_stream_group(
         &self,
-        file_info: JsValue,
-        byte_range_start: Option<f64>,
-        byte_range_end: Option<f64>,
-    ) -> Result<XetDownloadStream, JsValue> {
-        let file_info: XetFileInfo = serde_wasm_bindgen::from_value(file_info).map_err(js_err)?;
-
-        let range: Option<Range<u64>> = match (byte_range_start, byte_range_end) {
-            (Some(start), Some(end)) => Some(start as u64..end as u64),
-            _ => None,
-        };
+        endpoint: String,
+        token: String,
+        token_expiry: f64,
+    ) -> Result<XetDownloadStreamGroup, JsValue> {
+        let token_expiry = validate_session_inputs(&endpoint, &token, token_expiry)?;
 
         let group = self
             .inner
             .new_download_stream_group()
             .map_err(js_err)?
-            .with_endpoint(&self.endpoint)
-            .with_token_info(self.token.clone(), self.token_expiry)
+            .with_endpoint(&endpoint)
+            .with_token_info(token, token_expiry)
             .build()
             .await
             .map_err(js_err)?;
 
-        let stream = group.download_stream(file_info, range).await.map_err(js_err)?;
-
-        Ok(XetDownloadStream::new(stream))
+        Ok(XetDownloadStreamGroup::new(group))
     }
 }

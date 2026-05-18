@@ -23,7 +23,7 @@
   <code>http://localhost:8080/examples/download.html</code>.</p>
 
   <p class="sub">The page calls two Hugging Face Hub endpoints to derive the inputs needed by
-  <code>XetSession.downloadStream(...)</code>:</p>
+  <code>XetDownloadStreamGroup.downloadStream(...)</code>:</p>
   <ol style="margin-top: 0; color: #555;">
     <li><code>POST /api/{repo_type}s/{namespace}/{repo}/paths-info/{revision}</code> &mdash;
         returns <code>xetHash</code> and <code>size</code> for the file</li>
@@ -32,7 +32,7 @@
   </ol>
 
   <label>Hugging Face Hub token (read scope)</label>
-  <input id="hfToken" placeholder="hf_xxxxxxxxxxxxxxxxxxx" />
+  <input id="hfToken" type="password" placeholder="hf_xxxxxxxxxxxxxxxxxxx" />
 
   <div class="row">
     <div>
@@ -157,10 +157,12 @@
         downloadedFileName = inputs.filepath.split('/').pop() || 'download.bin';
 
         const fileInfo = { hash: xetHash, file_size: size };
-        append(`Constructing XetSession against ${casUrl}`);
-        const session = new XetSession(casUrl, accessToken, exp);
+        append(`Constructing XetSession`);
+        const session = new XetSession();
+        append(`Building download stream group against ${casUrl}`);
+        const group = await session.newDownloadStreamGroup(casUrl, accessToken, exp);
         append(`Calling downloadStream(${JSON.stringify(fileInfo)})`);
-        const stream = await session.downloadStream(fileInfo);
+        const stream = await group.downloadStream(fileInfo);
 
         const chunks = [];
         let totalBytes = 0;

@@ -9,50 +9,20 @@
 // Failures here mean either the wasm spawn_blocking path regressed or the
 // upload data-prep path is otherwise broken.
 
-import { chromium } from 'playwright';
-import { spawn } from 'node:child_process';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { setTimeout as sleep } from 'node:timers/promises';
+import { runBrowserSmoke } from './lib.mjs';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const CRATE_ROOT = path.resolve(__dirname, '../..');
 const PORT = parseInt(process.env.PORT || '8766', 10);
-
 const TEST_TIMEOUT_MS = 2 * 60 * 1000;
 const EXPECTED_PAYLOAD_SIZE = 1 * 1024 * 1024;
 
-const server = spawn('node', [path.join(__dirname, 'server.mjs'), CRATE_ROOT], {
-  env: { ...process.env, PORT: String(PORT) },
-  stdio: ['ignore', 'inherit', 'inherit'],
-});
-const cleanup = () => { try { server.kill('SIGTERM'); } catch {} };
-process.on('exit', cleanup);
-process.on('SIGINT', () => { cleanup(); process.exit(130); });
-process.on('SIGTERM', () => { cleanup(); process.exit(143); });
-
-await sleep(500);
-
-const browser = await chromium.launch({ headless: true });
 let exitCode = 1;
 try {
-  const ctx = await browser.newContext();
-  const page = await ctx.newPage();
-  page.on('console', (msg) => console.log(`[browser ${msg.type()}] ${msg.text()}`));
-  page.on('pageerror', (e) => console.error(`[browser error] ${e.message}\n${e.stack || ''}`));
-
-  await page.goto(`http://127.0.0.1:${PORT}/tests/ci-smoke/index.html`, { waitUntil: 'load' });
-
-  if (!(await page.evaluate(() => self.crossOriginIsolated))) {
-    throw new Error('page is not crossOriginIsolated — COOP/COEP headers missing or wrong');
-  }
-
-  const result = await Promise.race([
-    page.evaluate(async () => await window.runTest()),
-    sleep(TEST_TIMEOUT_MS).then(() => { throw new Error(`runTest timed out after ${TEST_TIMEOUT_MS}ms`); }),
-  ]);
-
-  console.log('result:', JSON.stringify(result, null, 2));
+  const result = await runBrowserSmoke({
+    pagePath: 'ci-smoke/upload.html',
+    runArg: null,
+    timeoutMs: TEST_TIMEOUT_MS,
+    port: PORT,
+  });
 
   if (!result.ok) {
     // Anything mentioning the spawn_blocking expect message means the critical
@@ -74,9 +44,6 @@ try {
 } catch (e) {
   console.error(`FAIL: ${e?.message || e}`);
   if (e?.stack) console.error(e.stack);
-} finally {
-  await browser.close().catch(() => {});
-  cleanup();
 }
 
 process.exit(exitCode);

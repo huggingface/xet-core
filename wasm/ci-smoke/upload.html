@@ -6,7 +6,7 @@
 </head>
 <body>
 <script type="module">
-  import init, { XetSession } from '../../pkg/hf_xet_wasm_upload.js';
+  import init, { XetSession } from '../hf_xet_wasm_upload/pkg/hf_xet_wasm_upload.js';
 
   await init();
 
@@ -25,8 +25,8 @@
 
   window.runTest = async function runTest() {
     try {
-      const session = new XetSession('http://127.0.0.1:1/cas', 'wasm-smoke-placeholder-token', 0);
-      const commit = await session.newUploadCommit();
+      const session = new XetSession();
+      const commit = await session.newUploadCommit('http://127.0.0.1:1/cas', 'wasm-smoke-placeholder-token', 0);
 
       const data = new Uint8Array(PAYLOAD_SIZE);
       // crypto.getRandomValues only fills up to 64 KiB per call.

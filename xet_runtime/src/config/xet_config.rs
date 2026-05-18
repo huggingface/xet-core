@@ -142,6 +142,26 @@ impl XetConfig {
     /// paths fit in `usize` on the current target. On 64-bit targets this is a tautology;
     /// on wasm32 (where `usize` is 32 bits) it catches misconfig that would otherwise
     /// silently truncate at the cast site.
+    ///
+    /// ## Scope
+    ///
+    /// Only fields whose value is *directly cast to `usize`* are validated here. Most
+    /// `ByteSize` config fields are kept as `u64` end-to-end (semaphore permits, byte
+    /// thresholds, latency-model bounds) and never see a `usize` cast — those don't need
+    /// to be validated, and rejecting an 8 GiB config for, say, `download_buffer_size`
+    /// on wasm32 would be wrong because the field is u64-only.
+    ///
+    /// **Fields checked here:**
+    /// - `data.ingestion_block_size` — cast at `file_upload_session.rs:159, 312`, `file_cleaner.rs:142`,
+    ///   `data_client.rs:72, 174`.
+    ///
+    /// **Fields not checked (intentional):**
+    /// - `xorb.simulation_max_bytes` — cast to `usize` at `file_upload_session.rs:442` and `file_deduplication.rs:99`,
+    ///   but pre-capped at `MAX_XORB_BYTES` (64 MiB), which fits in u32. The cap makes a separate check redundant.
+    /// - All `reconstruction.*`, `log.dir_max_size`, `shard.cache_size_limit`, and `client.ac_*` byte-size fields are
+    ///   `u64`-only.
+    ///
+    /// **When adding a new `usize` cast of a `ByteSize` field, add it to this method.**
     fn validate_usize_bounds(&self) {
         let ingestion = self.data.ingestion_block_size.as_u64();
         assert!(

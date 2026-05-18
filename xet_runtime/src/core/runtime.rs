@@ -127,9 +127,12 @@ fn system_monitor_for_config(config: &XetConfig) -> Option<SystemMonitor> {
 }
 
 /// Returns a stable process ID for fork detection on native platforms.
-/// WASM has no concept of pids, so we return 0 unconditionally there — the
-/// fork-check codepaths on `Drop` are themselves non-WASM, so this value is
-/// only ever observed as the `creation_pid` field (allow(dead_code) on WASM).
+/// WASM has no concept of pids, so we return 0 unconditionally there.
+/// The equality checks that use this — `Drop` fork-detection and
+/// `current_if_exists` TLS filter — still compile and run on wasm,
+/// but since both sides of the comparison are always 0 the checks
+/// are effective no-ops. The conditions they guard against (fork-after-init,
+/// cross-runtime TLS poisoning) can't occur in a browser regardless.
 #[inline]
 fn current_pid() -> u32 {
     #[cfg(not(target_family = "wasm"))]
@@ -205,11 +208,21 @@ impl XetRuntime {
         })
     }
 
+    // The methods below assume `handle_ref` is set, which is only true on native targets.
+    // The wasm `XetRuntime::new` stub leaves `handle_ref` empty (no tokio runtime exists in
+    // the browser), so calling any of these on wasm would panic via `self.handle().expect(...)`.
+    // They are gated to native to surface this as a compile-time error instead. Wasm callers
+    // perform async work through the bridge variants in `xet_pkg::xet_session::task_runtime`,
+    // which `.await` directly via `wasm_bindgen_futures::spawn_local` and never touch the
+    // (empty) tokio handle.
+    #[cfg(not(target_family = "wasm"))]
     #[inline]
     pub fn handle(&self) -> TokioRuntimeHandle {
         self.handle_ref.get().expect("Not initialized with handle set.").clone()
     }
 
+    /// Native-only: wasm runtimes have no tokio handle. See note on [`Self::handle`].
+    #[cfg(not(target_family = "wasm"))]
     #[inline]
     pub fn num_worker_threads(&self) -> usize {
         self.handle().metrics().num_workers()
@@ -300,6 +313,7 @@ impl XetRuntime {
         self.sigint_shutdown.load(Ordering::SeqCst)
     }
 
+    #[cfg(not(target_family = "wasm"))]
     fn check_sigint(&self) -> Result<(), RuntimeError> {
         if self.in_sigint_shutdown() {
             Err(RuntimeError::KeyboardInterrupt)
@@ -310,6 +324,9 @@ impl XetRuntime {
 
     /// This function should ONLY be used by threads outside of tokio; it should not be called
     /// from within a task running on the runtime worker pool.  Doing so can lead to deadlocking.
+    ///
+    /// Native-only: wasm runtimes have no tokio handle. See note on [`Self::handle`].
+    #[cfg(not(target_family = "wasm"))]
     pub fn external_run_async_task<F>(&self, future: F) -> Result<F::Output, RuntimeError>
     where
         F: Future + Send + 'static,
@@ -328,6 +345,9 @@ impl XetRuntime {
     }
 
     /// Spawn an async task to run in the background on the current pool of worker threads.
+    ///
+    /// Native-only: wasm runtimes have no tokio handle. See note on [`Self::handle`].
+    #[cfg(not(target_family = "wasm"))]
     pub fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>
     where
         F: Future + Send + 'static,
@@ -346,6 +366,9 @@ impl XetRuntime {
     ///
     /// This is the primary async entry point. Session-level async methods should call
     /// `ctx.runtime.bridge_async(...)`.
+    ///
+    /// Native-only: wasm runtimes have no tokio handle. See note on [`Self::handle`].
+    #[cfg(not(target_family = "wasm"))]
     pub async fn bridge_async<T, F>(&self, task_name: &'static str, fut: F) -> Result<T, RuntimeError>
     where
         F: Future<Output = T> + Send + 'static,
@@ -375,6 +398,9 @@ impl XetRuntime {
     ///
     /// This is the primary sync entry point. Session-level `_blocking` methods
     /// should simply call `ctx.runtime.bridge_sync(...)`.
+    ///
+    /// Native-only: wasm runtimes have no tokio handle. See note on [`Self::handle`].
+    #[cfg(not(target_family = "wasm"))]
     pub fn bridge_sync<F>(&self, future: F) -> Result<F::Output, RuntimeError>
     where
         F: Future + Send + 'static,
@@ -417,6 +443,9 @@ impl XetRuntime {
     /// Returns `Err(RuntimeError::TaskPanic)` if the spawned future panics, or
     /// `Err(RuntimeError::TaskCanceled)` if the runtime shuts down before the result
     /// can be delivered.
+    ///
+    /// Native-only: wasm runtimes have no tokio handle. See note on [`Self::handle`].
+    #[cfg(not(target_family = "wasm"))]
     async fn bridge_to_owned<T, F>(&self, task_name: &'static str, fut: F) -> Result<T, RuntimeError>
     where
         F: Future<Output = T> + Send + 'static,
@@ -715,6 +744,7 @@ impl Drop for XetRuntime {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl Display for XetRuntime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let metrics = match &self.backend {
@@ -740,6 +770,15 @@ impl Display for XetRuntime {
             metrics.num_alive_tasks(),
             metrics.global_queue_depth()
         )
+    }
+}
+
+// Wasm has no tokio runtime / metrics; render a placeholder so call sites that
+// `format!("{}", runtime)` still work uniformly.
+#[cfg(target_family = "wasm")]
+impl Display for XetRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "wasm runtime (no tokio metrics)")
     }
 }
 

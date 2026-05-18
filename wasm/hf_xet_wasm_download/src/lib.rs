@@ -1,11 +1,13 @@
 #[cfg(not(target_family = "wasm"))]
 compile_error!("hf_xet_wasm_download is only for the wasm32-unknown-unknown target");
 
+mod group;
 mod session;
 mod stream;
 
 use wasm_bindgen::prelude::*;
 
+pub use group::XetDownloadStreamGroup;
 pub use session::XetSession;
 pub use stream::XetDownloadStream;
 

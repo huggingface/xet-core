@@ -4,7 +4,7 @@ version = "1.4.0"
 edition = "2024"
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib"]
 
 [dependencies]
 xet-core-structures = { path = "../../xet_core_structures" }
