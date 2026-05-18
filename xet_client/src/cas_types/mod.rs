@@ -316,7 +316,7 @@ pub struct QueryChunkResponse {
 /// Distinct from the standard `Range` header (which scopes the response body): this header tags
 /// regions that the client intends to re-chunk, and the response covers the whole file (windows +
 /// gap subtrees). Value uses the same `bytes=A-B,C-D` syntax as `Range`.
-pub const X_RANGE_DIRTY_HEADER: &str = "x-range-dirty";
+pub const X_RANGE_DIRTY_HEADER: &str = "X-Range-Dirty";
 
 /// One chunk-aligned dirty window of a file, returned by `GET /v2/file-chunk-hashes/{file_id}`.
 ///

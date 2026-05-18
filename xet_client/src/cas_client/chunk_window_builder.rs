@@ -169,7 +169,14 @@ pub fn build_file_chunk_hashes_response(
 
     // Emit one range hash per stable segment (= no overlap with any window).
     // Segments and windows are both monotonic, so a two-pointer walk is O(S+W).
-    let gap_verification = if file_info.verification.len() == file_info.segments.len() {
+    //
+    // Contract: `verification` is either empty (legacy / test files without verification
+    // entries) or 1:1 with `segments`. A partially-populated mismatch is a real bug we
+    // want loud here, rather than as a confusing "ran out of gap_verification entries"
+    // error later in `compose_mdb`.
+    let gap_verification = if file_info.verification.is_empty() {
+        Vec::new()
+    } else if file_info.verification.len() == file_info.segments.len() {
         let mut gv = Vec::new();
         let mut acc = 0u64;
         let mut wi = 0usize;
@@ -187,7 +194,12 @@ pub fn build_file_chunk_hashes_response(
         }
         gv
     } else {
-        Vec::new()
+        return Err(ClientError::Other(format!(
+            "file_info has {} verification entries but {} segments; \
+             expected either zero or a 1:1 mapping",
+            file_info.verification.len(),
+            file_info.segments.len()
+        )));
     };
 
     Ok(FileChunkHashesResponse {

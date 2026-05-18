@@ -278,7 +278,7 @@ pub async fn upload_ranges(
     let mut hash_ranges = response.hash_ranges;
     let trailing_gap = hash_ranges.pop().flatten();
     // Leading gap is empty (None) => first window starts at byte 0.
-    let first_window_at_start = hash_ranges.first().is_some_and(Option::is_none);
+    let first_window_at_start = matches!(hash_ranges.first(), Some(None));
     let last_window_at_end = trailing_gap.is_none();
     let last_idx = uploaded.len() - 1;
 
@@ -377,8 +377,10 @@ fn compose_mdb(
             gap_idx += 1;
             seg_idx += 1;
         }
-        let original_window_end = w.end.min(original_size);
-        while seg_idx < n_segs && seg_byte_starts[seg_idx] < original_window_end {
+        // Server guarantees window ends are clamped to file_size (see xetcas
+        // `core::get_file_chunk_hashes`), so this invariant should always hold.
+        debug_assert!(w.end <= original_size, "window end {} exceeds original_size {}", w.end, original_size);
+        while seg_idx < n_segs && seg_byte_starts[seg_idx] < w.end {
             seg_idx += 1;
         }
         if w.mdb.verification.len() != w.mdb.segments.len() {
