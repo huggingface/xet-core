@@ -34,6 +34,9 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - name: Use HF registry proxies
         run: curl -sSL https://registries.huggingface.tech/setup.sh | bash
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
+        with:
+          toolchain: 1.94.1
       - name: Machete
         uses: bnjbvr/cargo-machete@b81ce1560c5fbd0210cb66d88bf210329ff04266  # main
   check-bench-compiles:
@@ -64,6 +67,9 @@ jobs:
         with:
           toolchain: 1.94.1
           components: clippy
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: '3.10'
       - uses: ./.github/actions/cache-rust-build
       - name: Lint
         run: |
@@ -80,9 +86,6 @@ jobs:
       - name: Build and Test hf_xet
         run: |
           cd hf_xet && cargo test --verbose --no-fail-fast
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
-        with:
-          python-version: '3.10'
       - name: Create venv
         run: python3 -m venv .venv
       - name: Build wheel
