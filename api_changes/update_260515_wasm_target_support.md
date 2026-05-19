@@ -17,7 +17,7 @@ wasm build of `xet_pkg` end-to-end in CI, and (b) provide hand-runnable
 browser pages for manual testing. The JS surface is not versioned, not on
 npm, and may change without notice. Real browser consumers should depend on
 `hf-xet` directly (with their own `#[wasm_bindgen]` glue) or use a downstream
-SDK such as `huggingface.js`.
+SDK such as `hf-hub`.
 
 `hf_xet_wasm` is a separate workspace under `[workspace.exclude]` and pins
 `wasm-bindgen = "=0.2.121"`, `wasm-bindgen-futures = "0.4"`, `js-sys = "0.3"`
@@ -105,8 +105,9 @@ for per-process log file paths). On wasm there is no PID and no useful
 filesystem, so the wasm shim in `xet_runtime/src/utils/mod.rs` keeps the
 API surface the config system needs (`new`, `evaluate`, `template_string`)
 but `evaluate` returns the input path unchanged — placeholders are not
-expanded. The wasm `SystemMonitor` ignores `log_path` entirely (output
-always goes via `tracing::info!`). Config values typed as
+expanded. `SystemMonitor` is native-only and is not built into the wasm
+binary; the `system_monitor` config group is still parseable on wasm so
+keys round-trip, but nothing reads it. Config values typed as
 `TemplatedPathBuf` will round-trip on wasm but the template literals
 inside them are treated as plain paths.
 
@@ -158,8 +159,7 @@ the patterns this codebase relies on:
   `xet_core_structures/utils/exp_weighted_moving_avg.rs`,
   `xet_core_structures/.../compression_scheme.rs`,
   `xet_data/.../reconstruction_terms/manager.rs`,
-  `xet_data/progress_tracking/speed_tracker.rs`,
-  `xet_runtime/logging/system_monitor/wasm.rs`.
+  `xet_data/progress_tracking/speed_tracker.rs`.
 
 - **`use tokio_with_wasm::alias as tokio;` at spawn sites.** Native code
   uses real `tokio` directly; wasm code aliases it so that `tokio::spawn`,
@@ -204,7 +204,7 @@ the patterns this codebase relies on:
 ## Affected files (high level)
 
 - `xet_runtime/src/core/runtime.rs` — wasm stub `XetRuntime::new` (no tokio runtime); cfg-gated `spawn_blocking` (wasm variant via `tokio_with_wasm::task::spawn_blocking`)
-- `xet_runtime/src/logging/system_monitor/{native,wasm}.rs` — module split (wasm samples browser `performance.memory` / `navigator.connection`)
+- `xet_runtime/src/logging/system_monitor.rs` — native-only; `SystemMonitor` and the runtime `system_monitor` field are gated to `#[cfg(not(target_family = "wasm"))]`, and the wasm `XetRuntime::new` does not instantiate one
 - `xet_runtime/src/utils/mod.rs` — wasm `TemplatedPathBuf` shim (`evaluate` is identity, no expansion)
 - `xet_runtime/src/config/xet_config.rs` — `XetConfig::validate_usize_bounds` panics if `data.ingestion_block_size` exceeds the target's `usize::MAX`
 - `xet_runtime/Cargo.toml` — wasm-target deps via `workspace = true`
@@ -221,5 +221,4 @@ the patterns this codebase relies on:
 - `xet_pkg/src/legacy/mod.rs` — `#[cfg(not(target_family = "wasm"))]` at the parent `mod` in `lib.rs` (entire compatibility module disappears on wasm; consumers must conditionally import)
 - `xet_client/src/cas_client/remote_client.rs` — `upload_xorb` unified across targets; wasm body is raw `Bytes` (no streaming body in wasm reqwest backend), single bulk progress event emitted post-success
 - `xet_core_structures/src/metadata_shard/mod.rs` — `session_directory` gated to non-wasm
-- `wasm/hf_xet_wasm_{download,upload}/` — new browser crates (separate workspaces)
-- `wasm/hf_xet_wasm/` — deleted (stale)
+- `wasm/hf_xet_wasm/` — unified browser example crate (separate workspace) covering both upload and download flows

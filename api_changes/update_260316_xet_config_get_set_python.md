@@ -85,7 +85,9 @@ This now drives:
 - `with_config` / `get` dispatch
 - key enumeration
 
-`system_monitor` remains cfg-gated and is appended separately for non-wasm targets.
+`system_monitor` is appended separately to the dispatch sites; the config
+group itself compiles on all targets, but the runtime only reads it on
+non-wasm builds.
 
 ## Downstream update guidance
 

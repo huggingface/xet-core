@@ -25,6 +25,7 @@ use crate::config::XetConfig;
 use crate::error::RuntimeError;
 #[cfg(feature = "fd-track")]
 use crate::fd_diagnostics::{report_fd_count, track_fd_scope};
+#[cfg(not(target_family = "wasm"))]
 use crate::logging::SystemMonitor;
 use crate::utils::ClosureGuard as CallbackGuard;
 
@@ -110,9 +111,11 @@ pub struct XetRuntime {
     creation_pid: u32,
 
     //  System monitor instance if enabled, monitor starts on initiation
+    #[cfg(not(target_family = "wasm"))]
     system_monitor: Option<SystemMonitor>,
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn system_monitor_for_config(config: &XetConfig) -> Option<SystemMonitor> {
     if !config.system_monitor.enabled {
         return None;
@@ -170,6 +173,7 @@ impl XetRuntime {
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
             creation_pid: current_pid(),
+            #[cfg(not(target_family = "wasm"))]
             system_monitor: system_monitor_for_config(config),
         });
 
@@ -189,6 +193,7 @@ impl XetRuntime {
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
             creation_pid: current_pid(),
+            #[cfg(not(target_family = "wasm"))]
             system_monitor: None,
         })
     }
@@ -252,6 +257,7 @@ impl XetRuntime {
 
         // External mode wraps a caller-owned runtime and has no owned runtime to tear down.
         let Some(runtime_cell) = self.runtime_cell_if_owned() else {
+            #[cfg(not(target_family = "wasm"))]
             self.stop_system_monitor();
             return;
         };
@@ -268,6 +274,7 @@ impl XetRuntime {
 
         let Some(runtime) = maybe_runtime else {
             eprintln!("WARNING: perform_sigint_shutdown called on runtime that has already been shut down.");
+            #[cfg(not(target_family = "wasm"))]
             self.stop_system_monitor();
             return;
         };
@@ -277,6 +284,7 @@ impl XetRuntime {
         drop(runtime);
 
         // Stops the system monitor loop if there is one running.
+        #[cfg(not(target_family = "wasm"))]
         self.stop_system_monitor();
     }
 
@@ -480,6 +488,7 @@ impl XetRuntime {
         }
     }
 
+    #[cfg(not(target_family = "wasm"))]
     #[inline]
     fn stop_system_monitor(&self) {
         if let Some(monitor) = &self.system_monitor {
@@ -670,7 +679,7 @@ impl XetRuntime {
     /// `wasm_bindgen_futures::spawn_local`, never driving the inner runtime.
     /// This stub keeps the `XetRuntime` shape consistent so `XetContext` can
     /// hold an `Arc<XetRuntime>` field on all targets without further gating.
-    pub fn new(config: &XetConfig) -> Result<Arc<Self>, RuntimeError> {
+    pub fn new(_config: &XetConfig) -> Result<Arc<Self>, RuntimeError> {
         Ok(Arc::new(Self {
             backend: RuntimeBackend::OwnedThreadPool {
                 runtime: Arc::new(std::sync::RwLock::new(None)),
@@ -679,7 +688,6 @@ impl XetRuntime {
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
             creation_pid: current_pid(),
-            system_monitor: system_monitor_for_config(config),
         }))
     }
 
