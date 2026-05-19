@@ -6,10 +6,17 @@
 surface is a strict subset of the native API — see "Wasm-only differences"
 below. No native call site changes.
 
-Two browser-facing crates are published from this repo:
+Two browser-facing example crates live in this repo:
 
 - `wasm/hf_xet_wasm_download` — `XetSession` + `XetDownloadStreamGroup` for downloads
 - `wasm/hf_xet_wasm_upload` — `XetSession` + `XetUploadCommit` + `XetStreamUpload` for uploads
+
+**These crates are not published browser SDKs.** They exist to (a) exercise
+the wasm build of `xet_pkg` end-to-end in CI, and (b) provide hand-runnable
+browser pages for manual testing. The JS surfaces are not versioned, not on
+npm, and may change without notice. Real browser consumers should depend on
+`hf-xet` directly (with their own `#[wasm_bindgen]` glue) or use a downstream
+SDK such as `huggingface.js`.
 
 Both are separate workspaces under `[workspace.exclude]`; each pins
 `wasm-bindgen = "=0.2.121"`, `wasm-bindgen-futures = "0.4"`, `js-sys = "0.3"`

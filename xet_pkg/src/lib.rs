@@ -42,6 +42,32 @@
 //! See the [`xet_session`] module for the full API, including async
 //! variants, streaming uploads and downloads, and progress tracking.
 //!
+//! # WebAssembly targets
+//!
+//! This crate compiles for `wasm32-unknown-unknown`, but the public surface
+//! is a strict subset of the native API. The example above uses
+//! `_blocking` variants and `upload_from_path` / `download_file_to_path`,
+//! all of which are non-wasm-only — wasm cannot block the host thread and
+//! has no filesystem. On wasm the supported entry points are the async
+//! variants of [`new_upload_commit`](xet_session::XetSession::new_upload_commit)
+//! (with [`upload_bytes`](xet_session::XetUploadCommit::upload_bytes) /
+//! [`upload_stream`](xet_session::XetUploadCommit::upload_stream)) and
+//! [`new_download_stream_group`](xet_session::XetSession::new_download_stream_group)
+//! (with [`download_stream`](xet_session::XetDownloadStreamGroup::download_stream)).
+//! The `legacy` module and `XetSession::new_file_download_group` (along
+//! with all `_blocking` variants) are non-wasm-only.
+//!
+//! For a hand-runnable browser example and a `#[wasm_bindgen]` wrapper
+//! pattern, see the example crates `wasm/hf_xet_wasm_download/` and
+//! `wasm/hf_xet_wasm_upload/` in the repository. Those crates are example
+//! / smoke-test wrappers, not published browser SDKs — real browser
+//! consumers should depend on this crate directly with their own
+//! `#[wasm_bindgen]` glue.
+//!
+//! See `api_changes/update_260515_wasm_target_support.md` for the full set
+//! of wasm-only differences and the patterns wasm-reachable code must
+//! follow.
+//!
 //! # Modules
 //!
 //! - [`xet_session`] — the primary API: [`XetSession`](xet_session::XetSession), upload commits, file download groups,
