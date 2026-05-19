@@ -678,24 +678,28 @@ impl Client for RemoteClient {
                         let url = url.clone();
                         let serialized_data = serialized_data.clone();
 
-                        #[cfg(not(target_family = "wasm"))]
                         let request = {
-                            let upload_stream = UploadProgressStream::wrap_bytes_as_stream(
-                                serialized_data,
-                                block_size,
-                                upload_reporter.clone(),
-                            );
-                            client
-                                .post(url)
-                                .with_extension(Api(api_tag))
-                                .header(CONTENT_LENGTH, HeaderValue::from(n_upload_bytes)) // must be set because of streaming
-                                .body(Body::wrap_stream(upload_stream))
-                        };
+                            #[cfg(not(target_family = "wasm"))]
+                            {
+                                let upload_stream = UploadProgressStream::wrap_bytes_as_stream(
+                                    serialized_data,
+                                    block_size,
+                                    upload_reporter.clone(),
+                                );
+                                client
+                                    .post(url)
+                                    .with_extension(Api(api_tag))
+                                    .header(CONTENT_LENGTH, HeaderValue::from(n_upload_bytes)) // must be set because of streaming
+                                    .body(Body::wrap_stream(upload_stream))
+                            }
 
-                        // reqwest's wasm backend does not support streaming request bodies;
-                        // pass the raw Bytes directly (CONTENT_LENGTH is set by reqwest from the body length).
-                        #[cfg(target_family = "wasm")]
-                        let request = client.post(url).with_extension(Api(api_tag)).body(serialized_data);
+                            // reqwest's wasm backend does not support streaming request bodies;
+                            // pass the raw Bytes directly (CONTENT_LENGTH is set by reqwest from the body length).
+                            #[cfg(target_family = "wasm")]
+                            {
+                                client.post(url).with_extension(Api(api_tag)).body(serialized_data)
+                            }
+                        };
 
                         request.send()
                     })
