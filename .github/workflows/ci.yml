@@ -13,9 +13,11 @@ concurrency:
 jobs:
   fmt:
     name: Rustfmt
-    runs-on: ubuntu-latest
+    runs-on:
+      group: infra-ci
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: ./.github/actions/setup-hf-package-proxies
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
         with:
           toolchain: nightly
@@ -25,16 +27,20 @@ jobs:
           cargo fmt --manifest-path ./Cargo.toml --all -- --check
           cargo fmt --manifest-path ./hf_xet/Cargo.toml --all -- --check
   detect-unused-dependencies:
-    runs-on: ubuntu-latest
+    runs-on:
+      group: infra-ci
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: ./.github/actions/setup-hf-package-proxies
       - name: Machete
         uses: bnjbvr/cargo-machete@b81ce1560c5fbd0210cb66d88bf210329ff04266  # main
   check-bench-compiles:
     name: Check benchmarks compile
-    runs-on: ubuntu-latest
+    runs-on:
+      group: infra-ci
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: ./.github/actions/setup-hf-package-proxies
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
         with:
           toolchain: 1.94.1
@@ -43,10 +49,12 @@ jobs:
         run: |
           cargo bench --no-run --workspace --exclude git_xet
   build_and_test-linux:
-    runs-on: ubuntu-latest
+    runs-on:
+      group: infra-ci
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: ./.github/actions/setup-hf-package-proxies
       - name: Install Rust 1.94
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
         with:
@@ -159,10 +167,12 @@ jobs:
           pytest hf_xet/tests/ -v
   build_and_test-wasm:
     name: Build WASM
-    runs-on: ubuntu-latest
+    runs-on:
+      group: infra-ci
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: ./.github/actions/setup-hf-package-proxies
       - uses: ./.github/actions/build-wasm
       - name: Check hf_xet_thin_wasm Cargo.lock has no uncommitted changes
         working-directory: wasm/hf_xet_thin_wasm
@@ -176,9 +186,11 @@ jobs:
           test -z "$(git status --porcelain Cargo.lock)" || (echo "hf_xet_wasm Cargo.lock has uncommitted changes!" && exit 1)
   cargo-audit:
     name: Cargo Audit
-    runs-on: ubuntu-latest
+    runs-on:
+      group: infra-ci
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: ./.github/actions/setup-hf-package-proxies
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
         with:
           toolchain: 1.94.1
