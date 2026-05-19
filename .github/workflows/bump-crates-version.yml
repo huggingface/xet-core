@@ -16,7 +16,7 @@ jobs:
   bump_crates_version:
     name: Bump crate versions and create PR
     runs-on:
-      group: infra-ci
+      group: aws-general-8-plus
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
