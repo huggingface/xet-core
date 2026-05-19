@@ -20,7 +20,16 @@ fn validate_session_inputs(endpoint: &str, token: &str, token_expiry: f64) -> Re
     if trimmed.is_empty() || !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
         return Err(JsValue::from_str("endpoint must be a valid URL"));
     }
-    Ok(token_expiry as u64)
+    // Map `0` to u64::MAX so the documented "0 = no expiry" semantics hold.
+    // The inner `AuthConfig::maybe_new` does not special-case `0` — it would
+    // treat the token as already expired and fail with an auth error on the
+    // first CAS request. `u64::MAX` matches the `None`-expiry default path.
+    let token_expiry = if token_expiry == 0.0 {
+        u64::MAX
+    } else {
+        token_expiry as u64
+    };
+    Ok(token_expiry)
 }
 
 /// WASM-facing session for streaming downloads from the Xet CAS server.
@@ -65,7 +74,12 @@ impl XetSession {
     ///
     /// - `endpoint`: CAS server URL, e.g. `"https://cas-server.xethub.com"`
     /// - `token`: CAS access token string
-    /// - `tokenExpiry`: token expiry as a Unix timestamp (seconds). Pass `0` for no expiry.
+    /// - `tokenExpiry`: token expiry as a Unix timestamp (seconds). Pass the
+    ///   real `exp` from the Hub `xet-read-token` response. `0` is accepted
+    ///   as a sentinel for "no expiry" (mapped to `u64::MAX` internally), but
+    ///   any other value at or before now-ish causes the underlying client to
+    ///   treat the token as expired and fail with an auth error on the first
+    ///   CAS request, since this wrapper does not wire a token refresher.
     ///
     /// The returned group is reusable across many `downloadStream(...)` calls.
     #[wasm_bindgen(js_name = "newDownloadStreamGroup")]
