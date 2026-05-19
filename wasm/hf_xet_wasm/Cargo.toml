@@ -9,8 +9,8 @@ crate-type = ["cdylib"]
 [dependencies]
 hf-xet = { path = "../../xet_pkg" }
 
-console_error_panic_hook = "0.1.7"
-console_log = { version = "1.0.0", features = ["color"] }
+console_error_panic_hook = "0.1"
+console_log = { version = "1.0", features = ["color"] }
 getrandom = { version = "0.4", features = ["wasm_js"] }
 js-sys = "0.3"
 log = "0.4"
