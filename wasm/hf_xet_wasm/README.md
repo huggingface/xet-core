@@ -11,7 +11,7 @@ and exposes both an upload and a download JS API from a single wasm module.
 > not versioned, not on npm, and may change without notice. Real browser
 > consumers should depend on `hf-xet` (with the `wasm32-unknown-unknown`
 > target) directly via their own `#[wasm_bindgen]` wrapper, or use a
-> downstream SDK such as `huggingface.js`.
+> downstream SDK such as `hf-hub`.
 
 ## JS API
 

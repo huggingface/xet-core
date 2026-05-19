@@ -8,7 +8,7 @@
 //! upload data-prep path) and so we have hand-runnable browser pages for
 //! manual testing. Real browser consumers should depend on `hf-xet`
 //! directly with their own `#[wasm_bindgen]` glue, or use a downstream
-//! SDK such as `huggingface.js`. The JS surface exposed here is not
+//! SDK such as `hf-hub`. The JS surface exposed here is not
 //! versioned and may change without notice. See `README.md` for the full
 //! positioning.
 

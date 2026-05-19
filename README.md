@@ -202,9 +202,9 @@ Unit-tests are run with `cargo test`, benchmarks are run with `cargo bench`. Som
 
 ### WebAssembly compatibility
 
-`xet_pkg` (`hf-xet`), `xet_client`, `xet_data`, `xet_core_structures`, and `xet_runtime` must compile cleanly for `wasm32-unknown-unknown` so that downstream browser consumers (e.g. `huggingface.js`) can depend on this crate. CI enforces this via `cargo +nightly check --target wasm32-unknown-unknown -p hf-xet` plus the `wasm-pack`-style builds under `wasm/`.
+`xet_pkg` (`hf-xet`), `xet_client`, `xet_data`, `xet_core_structures`, and `xet_runtime` must compile cleanly for `wasm32-unknown-unknown` so that downstream browser consumers (e.g. `hf-hub`) can depend on this crate. CI enforces this via `cargo +nightly check --target wasm32-unknown-unknown -p hf-xet` plus the `wasm-pack`-style builds under `wasm/`.
 
-The example wrapper `wasm/hf_xet_wasm/` is **not** a published browser SDK — it is a CI smoke test and hand-runnable demo. Real browser consumers should depend on `hf-xet` directly with their own `#[wasm_bindgen]` glue, or use a downstream SDK such as `huggingface.js`.
+The example wrapper `wasm/hf_xet_wasm/` is **not** a published browser SDK — it is a CI smoke test and hand-runnable demo. Real browser consumers should depend on `hf-xet` directly with their own `#[wasm_bindgen]` glue, or use a downstream SDK such as `hf-hub`.
 
 When adding or modifying code in the wasm-reachable crates, please keep the wasm build green:
 
