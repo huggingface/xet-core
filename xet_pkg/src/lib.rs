@@ -58,11 +58,10 @@
 //! with all `_blocking` variants) are non-wasm-only.
 //!
 //! For a hand-runnable browser example and a `#[wasm_bindgen]` wrapper
-//! pattern, see the example crates `wasm/hf_xet_wasm_download/` and
-//! `wasm/hf_xet_wasm_upload/` in the repository. Those crates are example
-//! / smoke-test wrappers, not published browser SDKs — real browser
-//! consumers should depend on this crate directly with their own
-//! `#[wasm_bindgen]` glue.
+//! pattern, see the example crate `wasm/hf_xet_wasm/` in the repository.
+//! That crate is an example / smoke-test wrapper, not a published browser
+//! SDK — real browser consumers should depend on this crate directly with
+//! their own `#[wasm_bindgen]` glue.
 //!
 //! See `api_changes/update_260515_wasm_target_support.md` for the full set
 //! of wasm-only differences and the patterns wasm-reachable code must

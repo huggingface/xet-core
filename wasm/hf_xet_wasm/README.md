@@ -1,28 +1,24 @@
-# hf_xet_wasm_upload — Xet uploads from the browser
+# hf_xet_wasm — Xet uploads and downloads from the browser
 
 `cdylib` crate that wraps `xet::xet_session::XetSession` with `#[wasm_bindgen]`
-and exposes an upload-only API to JavaScript.
+and exposes both an upload and a download JS API from a single wasm module.
 
 > [!IMPORTANT]
 > **This crate is an example / smoke-test wrapper, not a published browser
-> SDK.** It exists so the wasm build of the upload data-prep path is
-> exercised end-to-end in CI (the regression guard for the
-> `XetRuntime::spawn_blocking` panic on wasm) and so we have a hand-runnable
-> browser page for manual testing. The JS surface here is not versioned,
-> not on npm, and may change without notice. Real browser consumers should
-> depend on `hf-xet` (with the `wasm32-unknown-unknown` target) directly
-> via their own `#[wasm_bindgen]` wrapper, or use a downstream SDK such as
-> `huggingface.js`.
->
-> The companion crate [`hf_xet_wasm_download`](../hf_xet_wasm_download) is
-> the download-side counterpart with the same positioning.
+> SDK.** It exists so the wasm builds of `xet_pkg` (both upload data-prep
+> and download streaming) are exercised end-to-end in CI and so we have
+> hand-runnable browser pages for manual testing. The JS surface here is
+> not versioned, not on npm, and may change without notice. Real browser
+> consumers should depend on `hf-xet` (with the `wasm32-unknown-unknown`
+> target) directly via their own `#[wasm_bindgen]` wrapper, or use a
+> downstream SDK such as `huggingface.js`.
 
 ## JS API
 
 The JS surface mirrors the Rust builder pattern in `xet::xet_session`. A
-`XetSession` is auth-free; auth lives on the per-commit builder, so one
-session can hand out many independent commits, each with its own endpoint
-/ token pair.
+`XetSession` is auth-free; auth lives on the per-commit / per-group
+builder, so one session can hand out many independent commits and groups,
+each with its own endpoint / token pair.
 
 ```typescript
 type Sha256Policy =
@@ -53,6 +49,18 @@ class XetSession {
     token: string,
     tokenExpiry: number,
   ): Promise<XetUploadCommit>;
+
+  // Build an authenticated download stream group.
+  //   endpoint:    CAS server URL — typically the `casUrl` field of the
+  //                `xet-read-token` response.
+  //   token:       CAS access token (the `accessToken` field).
+  //   tokenExpiry: Unix timestamp in seconds. Same caveats as
+  //                `newUploadCommit` — no automatic refresh.
+  newDownloadStreamGroup(
+    endpoint: string,
+    token: string,
+    tokenExpiry: number,
+  ): Promise<XetDownloadStreamGroup>;
 }
 
 class XetUploadCommit {
@@ -89,10 +97,39 @@ class XetStreamUpload {
   finish(): Promise<object>;  // returns per-file metadata
   abort(): void;
 }
+
+class XetDownloadStreamGroup {
+  // fileInfo must be a plain JS object of the shape
+  //   { hash: string, file_size: number }
+  // where `hash` is the xet file ID — obtained from either the
+  // `X-Xet-Hash` response header on the resolve URL or the `xetHash`
+  // field of the `POST /api/{repo_type}s/{repo}/paths-info/{rev}` response.
+  //
+  // When both `byteRangeStart` and `byteRangeEnd` are provided, only that
+  // half-open byte range is downloaded.
+  downloadStream(
+    fileInfo: { hash: string; file_size: number },
+    byteRangeStart?: number,
+    byteRangeEnd?: number,
+  ): Promise<XetDownloadStream>;
+}
+
+class XetDownloadStream {
+  // Resolves to the next chunk, or `undefined` at end-of-stream.
+  // Borrows the stream mutably for the lifetime of the Promise — do not
+  // call `next()` or `cancel()` again until this Promise has resolved, or
+  // wasm-bindgen will throw "recursive use of an object detected".
+  next(): Promise<Uint8Array | undefined>;
+
+  // Cancels the in-progress download. Must not be called while a `next()`
+  // Promise is still pending.
+  cancel(): void;
+}
 ```
 
 The full token / file-id derivation is described in the
-[Xet Protocol Specification](https://huggingface.co/docs/xet/index).
+[Xet Protocol Specification](https://huggingface.co/docs/xet/index)
+(see `auth.md` and `file-id.md`).
 
 ## Wasm-only caveats
 
@@ -109,10 +146,11 @@ The full token / file-id derivation is described in the
 - **No `_blocking` variants, no `upload_from_path`.** Wasm cannot block
   the host thread and has no filesystem; the JS surface omits both.
 - **No automatic token refresh.** This wrapper does not expose
-  `XetUploadCommitBuilder::with_token_refresh_url`; if the supplied
-  `tokenExpiry` is reached mid-upload the underlying request will fail
-  with an auth error. Callers must fetch a fresh `xet-write-token` from
-  the Hub and build a new commit before expiry.
+  `XetUploadCommitBuilder::with_token_refresh_url` or the equivalent on
+  the download group builder; if the supplied `tokenExpiry` is reached
+  mid-transfer the underlying request will fail with an auth error.
+  Callers must fetch a fresh `xet-write-token` / `xet-read-token` from
+  the Hub and build a new commit / group before expiry.
 - **One bulk progress event per xorb.** reqwest's wasm backend does not
   support streaming request bodies, so the wasm xorb upload sends the
   raw `Bytes` and fires a single `report_progress(n_transfer_bytes)`
@@ -125,8 +163,7 @@ The full token / file-id derivation is described in the
 ./build_wasm.sh
 ```
 
-Outputs `pkg/{hf_xet_wasm_upload.js, hf_xet_wasm_upload.d.ts,
-hf_xet_wasm_upload_bg.wasm}`.
+Outputs `pkg/{hf_xet_wasm.js, hf_xet_wasm.d.ts, hf_xet_wasm_bg.wasm}`.
 
 Requires the same nightly toolchain + `wasm-bindgen-cli` 0.2.121 as the
 other `wasm/*` crates in this repo.
@@ -140,25 +177,33 @@ other `wasm/*` crates in this repo.
 # sets the necessary headers; any equivalent static server works.
 ```
 
-Open `examples/upload.html`, fill in a HF Hub write token, repo path,
-and a local file. The page calls:
+Two manual pages live under `examples/`:
 
-1. `GET /api/{repo_type}s/{namespace}/{repo}/xet-write-token/{rev}` &mdash;
-   returns `{ accessToken, exp, casUrl }`
+- `examples/upload.html` — fill in a HF Hub write token, repo path, and a
+  local file. The page calls
+  `GET /api/{repo_type}s/{namespace}/{repo}/xet-write-token/{rev}` to
+  obtain `{ accessToken, exp, casUrl }`, then constructs
+  `new XetSession()`, opens a commit via
+  `session.newUploadCommit(casUrl, accessToken, exp)`, runs
+  `commit.uploadBytes(...)`, and finalizes with `commit.commit()`.
 
-then constructs `new XetSession()`, opens a commit via
-`session.newUploadCommit(casUrl, accessToken, exp)`, runs
-`commit.uploadBytes(...)`, and finalizes with `commit.commit()`.
+  > [!WARNING]
+  > The manual upload page pushes xorbs + shard to CAS but does **not**
+  > commit them to a Hub repo. To actually land the data in a repo you
+  > would have to take the returned metadata and call the Hub commit API
+  > yourself.
 
-> [!WARNING]
-> The manual upload page pushes xorbs + shard to CAS but does **not**
-> commit them to a Hub repo. To actually land the data in a repo you
-> would have to take the returned metadata and call the Hub commit API
-> yourself.
+- `examples/download.html` — fill in a HF Hub token, repo path, and file
+  path, click Download. The page calls
+  `POST /api/{repo_type}s/{namespace}/{repo}/paths-info/{rev}` and
+  `GET /api/{repo_type}s/{namespace}/{repo}/xet-read-token/{rev}`, then
+  constructs `new XetSession()`, builds a group via
+  `session.newDownloadStreamGroup(casUrl, accessToken, exp)`, and streams
+  the file via `group.downloadStream({ hash: xetHash, file_size: size })`.
 
 ## Maintainer note
 
-The upload path goes through `xet_pkg`, `xet_client`, `xet_data`,
+Both paths go through `xet_pkg`, `xet_client`, `xet_data`,
 `xet_core_structures`, and `xet_runtime`. Changes to any of those crates
 must keep the wasm build green &mdash; see the
 ["WebAssembly compatibility" section in the root README](../../README.md)

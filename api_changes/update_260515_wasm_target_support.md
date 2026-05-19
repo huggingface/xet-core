@@ -6,27 +6,29 @@
 surface is a strict subset of the native API — see "Wasm-only differences"
 below. No native call site changes.
 
-Two browser-facing example crates live in this repo:
+One browser-facing example crate lives in this repo:
 
-- `wasm/hf_xet_wasm_download` — `XetSession` + `XetDownloadStreamGroup` for downloads
-- `wasm/hf_xet_wasm_upload` — `XetSession` + `XetUploadCommit` + `XetStreamUpload` for uploads
+- `wasm/hf_xet_wasm` — unified `XetSession` exposing both upload
+  (`XetUploadCommit` + `XetStreamUpload`) and download
+  (`XetDownloadStreamGroup` + `XetDownloadStream`) flows.
 
-**These crates are not published browser SDKs.** They exist to (a) exercise
-the wasm build of `xet_pkg` end-to-end in CI, and (b) provide hand-runnable
-browser pages for manual testing. The JS surfaces are not versioned, not on
+**This crate is not a published browser SDK.** It exists to (a) exercise the
+wasm build of `xet_pkg` end-to-end in CI, and (b) provide hand-runnable
+browser pages for manual testing. The JS surface is not versioned, not on
 npm, and may change without notice. Real browser consumers should depend on
 `hf-xet` directly (with their own `#[wasm_bindgen]` glue) or use a downstream
 SDK such as `huggingface.js`.
 
-Both are separate workspaces under `[workspace.exclude]`; each pins
+`hf_xet_wasm` is a separate workspace under `[workspace.exclude]` and pins
 `wasm-bindgen = "=0.2.121"`, `wasm-bindgen-futures = "0.4"`, `js-sys = "0.3"`
 independently. The main workspace pins the same versions under
 `[workspace.dependencies]` (consumed by `xet_runtime` via `workspace = true`).
-**Bump all three Cargo.toml files together** with the
-`WASM_BINDGEN_VERSION` in `wasm/*/build_wasm.sh` and the cargo-tools cache
-key in `.github/actions/build-wasm/action.yml`.
+**Bump both Cargo.toml files together** with the `WASM_BINDGEN_VERSION` in
+`wasm/hf_xet_wasm/build_wasm.sh` and the cargo-tools cache key in
+`.github/actions/build-wasm/action.yml`.
 
-The previous stale browser crate `wasm/hf_xet_wasm` has been removed.
+The previous separate `wasm/hf_xet_wasm_download` and `wasm/hf_xet_wasm_upload`
+crates have been combined back into `wasm/hf_xet_wasm`.
 
 ---
 
@@ -188,8 +190,8 @@ the patterns this codebase relies on:
   - `cargo +nightly check --target wasm32-unknown-unknown -p hf-xet` —
     compile gate that catches regressions in `xet_pkg` and its transitive
     deps even when nobody touches the wasm crates themselves.
-  - Builds all three wasm crates (`hf_xet_thin_wasm`, `hf_xet_wasm_download`,
-    `hf_xet_wasm_upload`) via each crate's `build_wasm.sh`.
+  - Builds both wasm crates (`hf_xet_thin_wasm`, `hf_xet_wasm`) via each
+    crate's `build_wasm.sh`.
   - Cargo.lock freshness checks for each wasm crate.
   - Two headless-Chromium smokes (consolidated in `wasm/ci-smoke/`):
     - `run-download.mjs` — anonymous download of a pinned public file

@@ -112,7 +112,7 @@ HF_XET_LOG_FILE=/tmp/xet.log # write logs to a file (defaults to stdout)
 * [`xet_runtime/`](./xet_runtime) (`xet-runtime`): Async runtime, configuration, logging, and utilities.
 * [`hf_xet/`](./hf_xet): Python bindings (maturin/PyO3), produces the `hf-xet` PyPI package.
 * [`git_xet/`](./git_xet): Git LFS compatible CLI tool (`git-xet`).
-* [`wasm/`](./wasm): WebAssembly builds. `hf_xet_thin_wasm` is the published thin-client wasm crate; `hf_xet_wasm_download` and `hf_xet_wasm_upload` are example / smoke-test wrappers around `xet_pkg` for CI and manual browser testing (not published SDKs).
+* [`wasm/`](./wasm): WebAssembly builds. `hf_xet_thin_wasm` is the published thin-client wasm crate; `hf_xet_wasm` is an example / smoke-test wrapper around `xet_pkg` exposing both upload and download JS APIs for CI and manual browser testing (not a published SDK).
 * [`simulation/`](./simulation): Simulation and benchmarking infrastructure.
 
 ### Build, Test & Benchmark
@@ -204,7 +204,7 @@ Unit-tests are run with `cargo test`, benchmarks are run with `cargo bench`. Som
 
 `xet_pkg` (`hf-xet`), `xet_client`, `xet_data`, `xet_core_structures`, and `xet_runtime` must compile cleanly for `wasm32-unknown-unknown` so that downstream browser consumers (e.g. `huggingface.js`) can depend on this crate. CI enforces this via `cargo +nightly check --target wasm32-unknown-unknown -p hf-xet` plus the `wasm-pack`-style builds under `wasm/`.
 
-The example wrappers `wasm/hf_xet_wasm_download/` and `wasm/hf_xet_wasm_upload/` are **not** published browser SDKs — they are CI smoke tests and hand-runnable demos. Real browser consumers should depend on `hf-xet` directly with their own `#[wasm_bindgen]` glue, or use a downstream SDK such as `huggingface.js`.
+The example wrapper `wasm/hf_xet_wasm/` is **not** a published browser SDK — it is a CI smoke test and hand-runnable demo. Real browser consumers should depend on `hf-xet` directly with their own `#[wasm_bindgen]` glue, or use a downstream SDK such as `huggingface.js`.
 
 When adding or modifying code in the wasm-reachable crates, please keep the wasm build green:
 
@@ -217,7 +217,7 @@ When adding or modifying code in the wasm-reachable crates, please keep the wasm
   ```
 - Gate filesystem-only code (`std::fs`, `tokio::fs`, `OpenOptions`, `spawn_blocking`, disk caches, file-path download methods) with `#[cfg(not(target_family = "wasm"))]`.
 
-See `api_changes/update_260515_wasm_target_support.md` for the full set of wasm-only differences and the patterns wasm-reachable code must follow. The example browser pages live at `wasm/hf_xet_wasm_download/examples/download.html` and `wasm/hf_xet_wasm_upload/examples/upload.html`.
+See `api_changes/update_260515_wasm_target_support.md` for the full set of wasm-only differences and the patterns wasm-reachable code must follow. The example browser pages live at `wasm/hf_xet_wasm/examples/download.html` and `wasm/hf_xet_wasm/examples/upload.html`.
 
 ## References & History
 

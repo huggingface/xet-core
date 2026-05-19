@@ -3,11 +3,8 @@ use std::ops::Range;
 use wasm_bindgen::prelude::*;
 use xet::xet_session::{XetDownloadStreamGroup as InnerGroup, XetFileInfo};
 
-use crate::stream::XetDownloadStream;
-
-fn js_err(e: impl std::fmt::Debug) -> JsValue {
-    JsValue::from_str(&format!("{e:?}"))
-}
+use crate::common::js_err;
+use crate::download_stream::XetDownloadStream;
 
 /// Authenticated stream-download group.
 ///

@@ -1,11 +1,7 @@
 use wasm_bindgen::prelude::*;
-use xet::xet_session::{
-    Sha256Policy, XetStreamUpload as InnerStream, XetUploadCommit as InnerCommit,
-};
+use xet::xet_session::{Sha256Policy, XetStreamUpload as InnerStream, XetUploadCommit as InnerCommit};
 
-fn js_err(e: impl std::fmt::Debug) -> JsValue {
-    JsValue::from_str(&format!("{e:?}"))
-}
+use crate::common::js_err;
 
 /// Parse a JS-supplied Sha256Policy value.
 ///
@@ -34,9 +30,7 @@ fn parse_sha256_policy(value: JsValue) -> Result<Sha256Policy, JsValue> {
         }
         return Ok(Sha256Policy::from_hex(&hex));
     }
-    Err(JsValue::from_str(
-        "sha256 policy must be \"compute\", \"skip\", or { provided: \"<64-hex>\" }",
-    ))
+    Err(JsValue::from_str("sha256 policy must be \"compute\", \"skip\", or { provided: \"<64-hex>\" }"))
 }
 
 #[wasm_bindgen(js_name = "XetUploadCommit")]
@@ -62,11 +56,7 @@ impl XetUploadCommit {
         tracking_name: Option<String>,
     ) -> Result<JsValue, JsValue> {
         let policy = parse_sha256_policy(sha256_policy)?;
-        let handle = self
-            .inner
-            .upload_bytes(bytes, policy, tracking_name)
-            .await
-            .map_err(js_err)?;
+        let handle = self.inner.upload_bytes(bytes, policy, tracking_name).await.map_err(js_err)?;
         let meta = handle.finalize_ingestion().await.map_err(js_err)?;
         serde_wasm_bindgen::to_value(&meta).map_err(js_err)
     }
@@ -80,11 +70,7 @@ impl XetUploadCommit {
         sha256_policy: JsValue,
     ) -> Result<XetStreamUpload, JsValue> {
         let policy = parse_sha256_policy(sha256_policy)?;
-        let stream = self
-            .inner
-            .upload_stream(tracking_name, policy)
-            .await
-            .map_err(js_err)?;
+        let stream = self.inner.upload_stream(tracking_name, policy).await.map_err(js_err)?;
         Ok(XetStreamUpload::new(stream))
     }
 

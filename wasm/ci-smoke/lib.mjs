@@ -1,9 +1,9 @@
 // Shared harness for the wasm CI smoke tests.
 //
-// Spawns the static server (rooted at the parent `wasm/` dir so both
-// `hf_xet_wasm_download/pkg/` and `hf_xet_wasm_upload/pkg/` are reachable),
-// launches headless Chromium, loads `pagePath`, waits for `window.runTest`
-// to be defined, invokes it with `runArg`, and returns the raw result.
+// Spawns the static server (rooted at the parent `wasm/` dir so the
+// `hf_xet_wasm/pkg/` build output is reachable), launches headless Chromium,
+// loads `pagePath`, waits for `window.runTest` to be defined, invokes it with
+// `runArg`, and returns the raw result.
 //
 // Each runner does its own assertions on the returned value.
 
@@ -15,8 +15,8 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Server root is the parent `wasm/` dir so both crates' built pkg/ trees
-// resolve via relative imports from the ci-smoke HTML pages.
+// Server root is the parent `wasm/` dir so the built `hf_xet_wasm/pkg/`
+// tree resolves via relative imports from the ci-smoke HTML pages.
 const SERVER_ROOT = path.resolve(__dirname, '..');
 
 async function waitForServerReady(port, { intervalMs = 100, timeoutMs = 10_000 } = {}) {
