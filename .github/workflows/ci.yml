@@ -17,8 +17,7 @@ jobs:
       group: aws-general-8-plus
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - name: Use HF registry proxies
-        run: curl -fsSL https://registries.huggingface.tech/setup.sh | bash
+      - uses: ./.github/actions/setup-hf-registry-proxies
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
         with:
           toolchain: nightly
@@ -32,8 +31,7 @@ jobs:
       group: aws-general-8-plus
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - name: Use HF registry proxies
-        run: curl -fsSL https://registries.huggingface.tech/setup.sh | bash
+      - uses: ./.github/actions/setup-hf-registry-proxies
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
         with:
           toolchain: 1.94.1
@@ -47,8 +45,7 @@ jobs:
       group: aws-general-8-plus
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - name: Use HF registry proxies
-        run: curl -fsSL https://registries.huggingface.tech/setup.sh | bash
+      - uses: ./.github/actions/setup-hf-registry-proxies
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
         with:
           toolchain: 1.94.1
@@ -62,8 +59,7 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - name: Use HF registry proxies
-        run: curl -fsSL https://registries.huggingface.tech/setup.sh | bash
+      - uses: ./.github/actions/setup-hf-registry-proxies
       - name: Install Rust 1.94
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
         with:
@@ -192,8 +188,7 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - name: Use HF registry proxies
-        run: curl -fsSL https://registries.huggingface.tech/setup.sh | bash
+      - uses: ./.github/actions/setup-hf-registry-proxies
       - name: Install Rust 1.94
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
         with:
@@ -215,8 +210,7 @@ jobs:
       group: aws-general-8-plus
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - name: Use HF registry proxies
-        run: curl -fsSL https://registries.huggingface.tech/setup.sh | bash
+      - uses: ./.github/actions/setup-hf-registry-proxies
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
         with:
           toolchain: 1.94.1

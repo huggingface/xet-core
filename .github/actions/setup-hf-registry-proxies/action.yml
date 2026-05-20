@@ -1,0 +1,32 @@
+name: 'Setup HF registry proxies'
+description: >-
+  Configure cargo/pip/etc. to fetch from HuggingFace's internal supply-chain
+  hardening proxies, which cache upstream registries and hide package versions
+  younger than 3 days.
+runs:
+  using: composite
+  steps:
+    - name: Fetch and verify HF registry proxy setup script
+      shell: bash
+      env:
+        # SHA256 of https://registries.huggingface.tech/setup.sh as last reviewed.
+        # If the upstream script legitimately changes, review the diff and bump
+        # this value. Bypassing the check defeats the purpose of routing CI
+        # through the proxies in the first place.
+        EXPECTED_SHA256: 0a629502d04bd55c30cbc208d650dc8ab9aa20d04faf71909f6587b09aa81129
+      run: |
+        set -euo pipefail
+        script=$(mktemp)
+        trap 'rm -f "$script"' EXIT
+        curl -fsSL https://registries.huggingface.tech/setup.sh -o "$script"
+        actual=$(sha256sum "$script" | awk '{print $1}')
+        if [ "$actual" != "$EXPECTED_SHA256" ]; then
+          echo "HF registry proxy setup.sh SHA mismatch" >&2
+          echo "  expected: $EXPECTED_SHA256" >&2
+          echo "  actual:   $actual" >&2
+          echo "Refusing to execute an unverified bootstrap script. If the" >&2
+          echo "upstream change is intentional, review the diff and update" >&2
+          echo "EXPECTED_SHA256 in .github/actions/setup-hf-registry-proxies/action.yml." >&2
+          exit 1
+        fi
+        bash "$script"
