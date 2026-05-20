@@ -1,10 +1,13 @@
 //! In-memory `SessionShardInterface` for wasm32-unknown-unknown.
 //!
 //! Mirrors the native API in `super::native` but keeps all shard data in
-//! memory — no disk staging, no cache shard manager, no resume support.
-//! Global-dedup queries (`query_dedup_shard_by_chunk`) are stubbed to
-//! return `Ok(false)` because we have no cache to import the result into.
+//! memory — no disk staging, no resume support. Global-dedup shards
+//! fetched from CAS are parsed in-process and held in a small bounded
+//! LRU `dedup_cache`, separate from the session shard so they are not
+//! re-uploaded.
 
+use std::collections::VecDeque;
+use std::io::Cursor;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -19,12 +22,21 @@ use xet_runtime::core::XetContext;
 use crate::error::Result;
 use crate::processing::configurations::TranslatorConfig;
 
+/// Maximum number of fetched global-dedup shards held in `dedup_cache`.
+/// At ~3-4k chunk lookup entries per shard this bounds the cache at a
+/// few MB of metadata, which is comfortable for browser sessions.
+const DEDUP_CACHE_MAX_SHARDS: usize = 32;
+
 pub struct SessionShardInterface {
-    #[allow(dead_code)]
     ctx: XetContext,
     client: Arc<dyn Client + Send + Sync>,
     dry_run: bool,
     session_shard: Mutex<MDBInMemoryShard>,
+    /// Bounded LRU of shards fetched via global dedup queries. The front
+    /// of the deque is least-recently-used; the back is most-recently-used.
+    /// Holds individual shards (not a single union) so we can evict on
+    /// overflow without losing every fetched shard at once.
+    dedup_cache: Mutex<VecDeque<MDBInMemoryShard>>,
 }
 
 impl SessionShardInterface {
@@ -39,24 +51,73 @@ impl SessionShardInterface {
             client,
             dry_run,
             session_shard: Mutex::new(MDBInMemoryShard::default()),
+            dedup_cache: Mutex::new(VecDeque::with_capacity(DEDUP_CACHE_MAX_SHARDS)),
         })
     }
 
-    /// Global dedup queries are skipped on wasm — there is no cache shard
-    /// manager to import the result into.
-    pub async fn query_dedup_shard_by_chunk(&self, _chunk_hash: &MerkleHash) -> Result<bool> {
-        Ok(false)
+    /// Fetch a global-dedup shard from CAS for the given chunk hash, parse
+    /// it in memory, and push it into the bounded LRU `dedup_cache`. CAS
+    /// errors are logged and swallowed (matching native's behavior); the
+    /// caller treats them as "no shard available."
+    pub async fn query_dedup_shard_by_chunk(&self, chunk_hash: &MerkleHash) -> Result<bool> {
+        let shard_bytes = match self
+            .client
+            .query_for_global_dedup_shard(&self.ctx.config.data.default_prefix, chunk_hash)
+            .await
+        {
+            Ok(Some(b)) => b,
+            Ok(None) => return Ok(false),
+            Err(e) => {
+                tracing::warn!(error = ?e, "global dedup query failed");
+                return Ok(false);
+            },
+        };
+
+        let fetched = MDBInMemoryShard::from_reader(&mut Cursor::new(shard_bytes.as_ref()))?;
+
+        let mut guard = self.dedup_cache.lock().await;
+        guard.push_back(fetched);
+        while guard.len() > DEDUP_CACHE_MAX_SHARDS {
+            guard.pop_front();
+        }
+        Ok(true)
     }
 
-    /// Query the in-memory session shard for chunk dedup. The third tuple
-    /// element ("already uploaded") is always `false`: wasm has no resumed
-    /// session support.
+    /// Query the in-memory session shard first, then the global-dedup cache.
+    /// The third tuple element ("already uploaded") is `false` for session
+    /// hits and `true` for dedup-cache hits, since cache entries come from
+    /// shards the server already has. Cache hits also bump the matched
+    /// shard to the most-recently-used position.
     pub async fn chunk_hash_dedup_query(
         &self,
         query_hashes: &[MerkleHash],
     ) -> Result<Option<(usize, FileDataSequenceEntry, bool)>> {
-        let guard = self.session_shard.lock().await;
-        Ok(guard.chunk_hash_dedup_query(query_hashes).map(|(n, fse)| (n, fse, false)))
+        {
+            let guard = self.session_shard.lock().await;
+            if let Some((n, fse)) = guard.chunk_hash_dedup_query(query_hashes) {
+                return Ok(Some((n, fse, false)));
+            }
+        }
+
+        let mut guard = self.dedup_cache.lock().await;
+        let mut hit_idx = None;
+        let mut hit_result = None;
+        for (i, shard) in guard.iter().enumerate() {
+            if let Some((n, fse)) = shard.chunk_hash_dedup_query(query_hashes) {
+                hit_idx = Some(i);
+                hit_result = Some((n, fse));
+                break;
+            }
+        }
+        if let Some(i) = hit_idx {
+            if let Some(entry) = guard.remove(i) {
+                guard.push_back(entry);
+            }
+            let (n, fse) = hit_result.unwrap();
+            return Ok(Some((n, fse, true)));
+        }
+
+        Ok(None)
     }
 
     pub async fn add_xorb_block(&self, xorb_block_contents: Arc<MDBXorbInfo>) -> Result<()> {
