@@ -26,6 +26,20 @@ jobs:
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
         with:
           toolchain: 1.94.1
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: '3.10'
+      - name: Install libpython for pyo3 linking
+        run: |
+          set -eux
+          py_ver=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+          sudo apt-get update
+          if ! apt-cache show "libpython${py_ver}-dev" >/dev/null 2>&1; then
+            sudo apt-get install -y software-properties-common
+            sudo add-apt-repository -y ppa:deadsnakes/ppa
+            sudo apt-get update
+          fi
+          sudo apt-get install -y "libpython${py_ver}-dev"
       - uses: ./.github/actions/cache-rust-build
 
       - name: Update crate versions
