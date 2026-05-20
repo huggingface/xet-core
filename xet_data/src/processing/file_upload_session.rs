@@ -539,15 +539,21 @@ impl FileUploadSession {
         let data_agg = take(&mut *self.current_session_data.lock().await);
         self.process_aggregated_data_as_xorb(data_agg).await?;
 
-        // Now, make sure all the remaining xorbs are uploaded.
-        let mut metrics = take(&mut *self.deduplication_metrics.lock().await);
-
-        // Finalize the xorb uploads.
+        // Finalize the xorb uploads. Must join before snapshotting
+        // `deduplication_metrics`: each xorb-upload task records its
+        // transmitted-byte count via `self.deduplication_metrics.lock()` only
+        // *after* its CAS request resolves. Taking the metric before joining
+        // leaves the session with an empty `DeduplicationMetrics` that
+        // absorbs (and silently drops) those late writes — manifests on wasm
+        // (single-threaded; tasks rarely complete before the `await` above
+        // returns) as `xorb_bytes_uploaded == 0`.
         let mut upload_tasks = take(&mut *self.xorb_upload_tasks.lock().await);
 
         while let Some(result) = upload_tasks.join_next().await {
             result??;
         }
+
+        let mut metrics = take(&mut *self.deduplication_metrics.lock().await);
 
         let all_file_info = if return_files {
             self.shard_interface.session_file_info_list().await?

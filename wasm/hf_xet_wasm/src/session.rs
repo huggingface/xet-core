@@ -50,9 +50,9 @@ impl XetSession {
     /// - `endpoint`: CAS server URL.
     /// - `token`: CAS access token string.
     /// - `tokenExpiry`: token expiry as a Unix timestamp (seconds). Pass the real `exp` from the Hub `xet-write-token`
-    ///   response. `0` is accepted as a sentinel for "no expiry" (mapped to `u64::MAX` internally), but any other value
-    ///   at or before now-ish causes the underlying client to treat the token as expired and fail with an auth error on
-    ///   the first CAS request, since this wrapper does not wire a token refresher.
+    ///   response. Must be a positive value; a value at or before now-ish causes the underlying client to treat the
+    ///   token as expired and fail with an auth error on the first CAS request, since this wrapper does not wire a
+    ///   token refresher.
     #[wasm_bindgen(js_name = "newUploadCommit")]
     pub async fn new_upload_commit(
         &self,
@@ -79,9 +79,9 @@ impl XetSession {
     /// - `endpoint`: CAS server URL, e.g. `"https://cas-server.xethub.com"`
     /// - `token`: CAS access token string
     /// - `tokenExpiry`: token expiry as a Unix timestamp (seconds). Pass the real `exp` from the Hub `xet-read-token`
-    ///   response. `0` is accepted as a sentinel for "no expiry" (mapped to `u64::MAX` internally), but any other value
-    ///   at or before now-ish causes the underlying client to treat the token as expired and fail with an auth error on
-    ///   the first CAS request, since this wrapper does not wire a token refresher.
+    ///   response. Must be a positive value; a value at or before now-ish causes the underlying client to treat the
+    ///   token as expired and fail with an auth error on the first CAS request, since this wrapper does not wire a
+    ///   token refresher.
     ///
     /// The returned group is reusable across many `downloadStream(...)` calls.
     #[wasm_bindgen(js_name = "newDownloadStreamGroup")]

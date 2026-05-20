@@ -1,28 +1,23 @@
-// CI smoke: drives the wasm upload path end-to-end in headless Chromium.
+// CI smoke: drives the wasm streaming upload path end-to-end in headless
+// Chromium against xet-team/xet-wasm-test on prod hub.
 //
-// Mints a real Hub xet-write-token for xet-team/xet-wasm-test, runs the
-// local data-prep path (chunking + sha256 + xorb serialization on
-// tokio_with_wasm::task::spawn_blocking) via uploadBytes, then pushes xorbs
-// + shard to CAS via commit(). The Hub commit API is never called — orphan
-// xorbs are reclaimed by CAS GC.
+// Same Hub + CAS surface as run-upload.mjs, but exercises uploadStream /
+// XetStreamUpload::{write, finish} instead of uploadBytes. The Hub commit
+// API is never called — orphan xorbs are reclaimed by CAS GC.
 //
 // Token source: HF_SMOKE_TEST_TOKEN (preferred) or HF_TOKEN. Either must
 // have write scope to xet-team/xet-wasm-test.
-//
-// Failures here mean either the wasm spawn_blocking path regressed, the
-// upload data-prep / CAS push path is broken, or the Hub / CAS leg flaked
-// (step is marked continue-on-error in CI for that reason).
 
 import { runBrowserSmoke } from './lib.mjs';
 
-const PORT = parseInt(process.env.PORT || '8766', 10);
+const PORT = parseInt(process.env.PORT || '8770', 10);
 const TEST_TIMEOUT_MS = 2 * 60 * 1000;
 const EXPECTED_PAYLOAD_SIZE = 1 * 1024 * 1024;
 
 const token = process.env.HF_SMOKE_TEST_TOKEN || process.env.HF_TOKEN || '';
 if (!token) {
   console.error(
-    'FAIL: HF_SMOKE_TEST_TOKEN (preferred) or HF_TOKEN required for upload smoke ' +
+    'FAIL: HF_SMOKE_TEST_TOKEN (preferred) or HF_TOKEN required for upload-stream smoke ' +
       '(needs write scope to dataset xet-team/xet-wasm-test)',
   );
   process.exit(1);
@@ -31,15 +26,13 @@ if (!token) {
 let exitCode = 1;
 try {
   const result = await runBrowserSmoke({
-    pagePath: 'ci-smoke/upload.html',
+    pagePath: 'ci-smoke/upload-stream.html',
     runArg: token,
     timeoutMs: TEST_TIMEOUT_MS,
     port: PORT,
   });
 
   if (!result.ok) {
-    // Anything mentioning the spawn_blocking expect message means the critical
-    // bug is back. Surface that explicitly so the failure cause is unambiguous.
     if (result.error && /Not initialized with handle set/i.test(result.error)) {
       throw new Error(`REGRESSION: XetRuntime::spawn_blocking panicked on wasm — ${result.error}`);
     }
@@ -60,11 +53,6 @@ try {
       `commitReport.uploads empty — expected at least one xorb push (random 1 MiB payload should not 100%-dedup): ${JSON.stringify(result.commitReport)}`,
     );
   }
-  // Top-level dedup_metrics is the session-aggregated view. xorb_bytes_uploaded
-  // and shard_bytes_uploaded must both be > 0 for a fresh random payload —
-  // anything 0 here means a metric capture race in file_upload_session::finalize_impl
-  // (take(deduplication_metrics) ordered before join of xorb_upload_tasks) or
-  // a regression in the wasm CAS push path.
   const dedup = result.commitReport.dedup_metrics;
   if (!dedup || typeof dedup !== 'object') {
     throw new Error(`commitReport.dedup_metrics missing/invalid: ${JSON.stringify(result.commitReport)}`);

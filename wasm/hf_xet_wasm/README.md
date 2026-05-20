@@ -37,13 +37,11 @@ class XetSession {
   //                Hugging Face Hub `xet-write-token` response.
   //   token:       CAS access token (the `accessToken` field of the same
   //                response).
-  //   tokenExpiry: Unix timestamp in seconds (the `exp` field). The
-  //                wrapper does not wire a token refresher, so any value
-  //                at or before "now" causes an auth error on the first
-  //                request. The sentinel `0` is mapped to "no expiry"
-  //                (u64::MAX) for placeholder / local-only flows (e.g.
-  //                the CI upload smoke); in normal use pass the real
-  //                `exp` from the Hub.
+  //   tokenExpiry: Unix timestamp in seconds (the `exp` field). Must be
+  //                positive — pass the real `exp` from the Hub response.
+  //                The wrapper does not wire a token refresher, so any
+  //                value at or before "now" causes an auth error on the
+  //                first request.
   newUploadCommit(
     endpoint: string,
     token: string,

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>hf_xet_wasm upload — CI smoke test</title>
+  <title>hf_xet_wasm uploadStream — CI smoke test</title>
 </head>
 <body>
 <script type="module">
@@ -10,20 +10,21 @@
 
   await init();
 
-  // End-to-end smoke for the wasm upload path. Fetches a real xet-write-token
-  // from the Hub, drives uploadBytes (chunking + sha256 + xorb serialization on
-  // tokio_with_wasm::task::spawn_blocking) and commit() (xorb + shard push to
-  // CAS) against xet-team/xet-wasm-test. We never call the Hub commit API —
-  // orphan xorbs are reclaimed by CAS GC.
+  // End-to-end smoke for the wasm streaming upload path. Same Hub + CAS
+  // round-trip as upload.html, but exercises XetUploadCommit::uploadStream /
+  // XetStreamUpload::{write, finish} instead of the bytes-in-one-shot path.
   //
   // Asserts:
-  //   - uploadBytes resolves and returns metadata with non-empty `hash`
-  //     and the expected `file_size`
-  //   - commit() resolves and returns a report with a non-empty `uploads`
-  //     map (proves a xorb was actually pushed, not a 100% dedup hit)
+  //   - stream.write resolves for every chunk
+  //   - stream.finish resolves and returns metadata with non-empty hash and
+  //     the expected file_size
+  //   - commit() resolves and returns dedup_metrics with positive byte
+  //     counters and a non-empty uploads map (proves a fresh xorb push)
 
   const HUB_BASE = 'https://huggingface.co';
-  const PAYLOAD_SIZE = 1 * 1024 * 1024; // 1 MiB — enough to force multiple chunks
+  const CHUNK_SIZE = 64 * 1024; // 64 KiB per write — forces multiple stream chunks
+  const TOTAL_CHUNKS = 16;       // 16 * 64 KiB = 1 MiB total
+  const PAYLOAD_SIZE = CHUNK_SIZE * TOTAL_CHUNKS;
 
   async function fetchXetWriteToken({ hfToken, repoType, namespace, repo, revision }) {
     const url = `${HUB_BASE}/api/${repoType}s/${namespace}/${repo}/xet-write-token/${revision}`;
@@ -55,14 +56,18 @@
       const session = new XetSession();
       const commit = await session.newUploadCommit(casUrl, accessToken, exp);
 
-      const data = new Uint8Array(PAYLOAD_SIZE);
-      // crypto.getRandomValues only fills up to 64 KiB per call.
-      for (let off = 0; off < data.byteLength; off += 65536) {
-        crypto.getRandomValues(data.subarray(off, Math.min(off + 65536, data.byteLength)));
+      console.log(`uploadStream(...) opening, ${TOTAL_CHUNKS} chunks of ${CHUNK_SIZE} bytes...`);
+      const stream = await commit.uploadStream('wasm-smoke-stream.bin', 'compute');
+
+      for (let i = 0; i < TOTAL_CHUNKS; i++) {
+        const chunk = new Uint8Array(CHUNK_SIZE);
+        // crypto.getRandomValues caps at 64 KiB per call — chunk fits exactly.
+        crypto.getRandomValues(chunk);
+        await stream.write(chunk);
       }
 
-      console.log(`uploadBytes(${data.byteLength})...`);
-      const metadata = await commit.uploadBytes(data, 'compute', 'wasm-smoke.bin');
+      console.log('stream.finish()...');
+      const metadata = await stream.finish();
       console.log('metadata:', JSON.stringify(metadata));
 
       console.log('commit()...');

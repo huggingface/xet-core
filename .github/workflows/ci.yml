@@ -190,12 +190,47 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         working-directory: wasm/ci-smoke
         run: node run-download.mjs
-      - name: WASM upload smoke test (local data-prep regression guard)
-        # Regression guard for the wasm upload data-prep path
-        # (XetRuntime::spawn_blocking). uploadBytes is local-only, so no
-        # HF/CAS network is touched — failures are real regressions.
+      - name: WASM upload smoke test (Hub xet-write-token + CAS push)
+        # Drives uploadBytes (regression guard for XetRuntime::spawn_blocking
+        # on wasm) plus commit() (xorb + shard push to CAS) against
+        # xet-team/xet-wasm-test on prod hub. The Hub commit API is never
+        # called — orphan xorbs are reclaimed by CAS GC.
+        # Non-blocking: a hub/CAS blip shouldn't fail unrelated PRs.
+        continue-on-error: true
+        env:
+          HF_SMOKE_TEST_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         working-directory: wasm/ci-smoke
         run: node run-upload.mjs
+      - name: WASM upload-stream smoke test (Hub xet-write-token + CAS push)
+        # Same Hub + CAS surface as the upload smoke, but exercises the
+        # streaming variant (uploadStream + XetStreamUpload::{write, finish})
+        # instead of uploadBytes. Non-blocking for the same reason.
+        continue-on-error: true
+        env:
+          HF_SMOKE_TEST_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        working-directory: wasm/ci-smoke
+        run: node run-upload-stream.mjs
+      - name: WASM upload-multi smoke test (Hub xet-write-token + CAS push)
+        # Concurrent multi-file uploadBytes in a single XetUploadCommit —
+        # validates that separate per-file xorb tasks roll up correctly into
+        # one commitReport with distinct hashes. Non-blocking.
+        continue-on-error: true
+        env:
+          HF_SMOKE_TEST_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        working-directory: wasm/ci-smoke
+        run: node run-upload-multi.mjs
+      - name: WASM upload-stream-multi smoke test (Hub xet-write-token + CAS push)
+        # Concurrent multi-file uploadStream — same surface as upload-multi
+        # but using the streaming path for each of the parallel files.
+        continue-on-error: true
+        env:
+          HF_SMOKE_TEST_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        working-directory: wasm/ci-smoke
+        run: node run-upload-stream-multi.mjs
   cargo-audit:
     name: Cargo Audit
     runs-on: ubuntu-latest
