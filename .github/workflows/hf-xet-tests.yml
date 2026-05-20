@@ -19,7 +19,7 @@ jobs:
     steps:
       # checkout out xet-core
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - uses: ./.github/actions/setup-hf-registry-proxies
+      - uses: huggingface/hf-workflows/.github/actions/setup-hf-registry-proxies@21845492ef47d4e46b07a3b2a6e14fd4748c39cc  # main
       # checkout out huggingface_hub
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
