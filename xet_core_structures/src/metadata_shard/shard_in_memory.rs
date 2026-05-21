@@ -90,14 +90,14 @@ impl MDBInMemoryShard {
     pub fn recalculate_shard_size(&mut self) {
         // Calculate the size
         let mut num_bytes = 0u64;
-        for (_, xorb_block_contents) in self.xorb_content.iter() {
+        for xorb_block_contents in self.xorb_content.values() {
             num_bytes += xorb_block_contents.num_bytes();
 
             // The xorb lookup table
             num_bytes += (size_of::<u64>() + size_of::<u32>()) as u64;
         }
 
-        for (_, file_info) in self.file_content.iter() {
+        for file_info in self.file_content.values() {
             num_bytes += file_info.num_bytes();
             num_bytes += (size_of::<u64>() + size_of::<u32>()) as u64;
         }
