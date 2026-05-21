@@ -187,8 +187,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let writer = Arc::new(Mutex::new(wtr));
 
-    eprintln!("Output File: {}", &args.output);
-    eprintln!("Input Files: {:?}", &args.files);
+    eprintln!("Output File: {}", args.output);
+    eprintln!("Input Files: {:?}", args.files);
 
     let max_limiter = Arc::new(Semaphore::new(32 * 1024));
 

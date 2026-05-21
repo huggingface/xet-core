@@ -178,7 +178,7 @@ impl XetFileDownloadGroup {
     pub fn abort(&self) -> Result<(), XetError> {
         info!(group_id = %self.id(), "Download group abort");
         self.task_runtime.cancel_subtree()?;
-        for (_tracking_id, handle) in self.inner.active_tasks.read()?.iter() {
+        for handle in self.inner.active_tasks.read()?.values() {
             handle.cancel();
         }
         Ok(())

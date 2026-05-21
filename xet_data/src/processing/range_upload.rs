@@ -168,22 +168,17 @@ pub async fn upload_ranges(
         return Err(DataError::InternalError("internal: non-empty dirty_inputs produced no server query".into()));
     }
 
-    let n_windows = server_query.len();
     let response: FileChunkHashesResponse = cas_client.get_file_chunk_hashes(&original_hash, server_query).await?;
-    // These invariants are part of the server contract; violating them silently truncates
-    // the merge sequence (`zip` would drop windows) and produces a wrong file hash, so we
-    // bail loudly instead of trusting the response.
-    if response.windows.len() != n_windows {
-        return Err(DataError::InternalError(format!(
-            "server returned {} windows, expected {n_windows} (one per dirty range)",
-            response.windows.len()
-        )));
+    // The server may coalesce adjacent/overlapping dirty ranges after extending them to
+    // stable boundaries, so only enforce shape invariants on the returned payload itself.
+    if response.windows.is_empty() {
+        return Err(DataError::InternalError("server returned no windows".into()));
     }
-    if response.hash_ranges.len() != n_windows + 1 {
+    if response.hash_ranges.len() != response.windows.len() + 1 {
         return Err(DataError::InternalError(format!(
             "server returned {} hash_ranges, expected {} (n_windows + 1)",
             response.hash_ranges.len(),
-            n_windows + 1
+            response.windows.len() + 1
         )));
     }
     let gap_verification = response.gap_verification;
@@ -191,7 +186,7 @@ pub async fn upload_ranges(
     let ctx = config.ctx.clone();
     let session = FileUploadSession::new(config.clone()).await?;
     let mut input_idx = 0usize;
-    let mut uploaded: Vec<UploadedWindow> = Vec::with_capacity(n_windows);
+    let mut uploaded: Vec<UploadedWindow> = Vec::with_capacity(response.windows.len());
 
     let mut buf = vec![0u8; STREAM_BLOCK_SIZE];
     for window in response.windows.iter() {
@@ -283,7 +278,7 @@ pub async fn upload_ranges(
     let last_window_at_end = trailing_gap.is_none();
     let last_idx = uploaded.len() - 1;
 
-    let mut merge_seq: Vec<MerkleHashSubtree> = Vec::with_capacity(2 * n_windows + 1);
+    let mut merge_seq: Vec<MerkleHashSubtree> = Vec::with_capacity(2 * uploaded.len() + 1);
     for (i, (w, gap)) in uploaded.iter().zip(hash_ranges).enumerate() {
         if let Some(g) = gap {
             merge_seq.push(g);
@@ -533,6 +528,7 @@ fn snap_to_segment_end(seg_byte_starts: &[u64], byte: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
+    use std::ops::Range;
     use std::path::Path;
     use std::sync::Arc;
 
@@ -1311,6 +1307,135 @@ mod tests {
             .collect()
     }
 
+    #[derive(Clone, Debug)]
+    struct DeterministicRng {
+        state: u64,
+    }
+
+    impl DeterministicRng {
+        fn new(seed: u64) -> Self {
+            Self { state: seed }
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            self.state
+        }
+
+        fn gen_range(&mut self, start: usize, end: usize) -> usize {
+            if end <= start {
+                return start;
+            }
+            start + (self.next_u64() as usize % (end - start))
+        }
+
+        fn gen_bytes(&mut self, len: usize) -> Vec<u8> {
+            (0..len).map(|_| (self.next_u64() >> 56) as u8).collect()
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct PlannedEdit {
+        original_range: Range<usize>,
+        replacement: Vec<u8>,
+    }
+
+    fn build_random_non_overlapping_edits(
+        rng: &mut DeterministicRng,
+        original_len: usize,
+        max_edits: usize,
+    ) -> Vec<PlannedEdit> {
+        if original_len == 0 {
+            let replacement_len = 1 + rng.gen_range(0, 8 * 1024);
+            return vec![PlannedEdit {
+                original_range: 0..0,
+                replacement: rng.gen_bytes(replacement_len),
+            }];
+        }
+
+        let target_edits = 1 + rng.gen_range(0, max_edits.max(1));
+        let mut edits: Vec<PlannedEdit> = Vec::with_capacity(target_edits);
+        let mut cursor = 0usize;
+
+        while edits.len() < target_edits && cursor <= original_len {
+            let remaining = original_len - cursor;
+            let max_gap = remaining.min(64 * 1024);
+            let start = cursor + rng.gen_range(0, max_gap + 1);
+
+            let (end, replacement_len) = if start == original_len {
+                (start, 1 + rng.gen_range(0, 32 * 1024))
+            } else {
+                let op = rng.gen_range(0, 5);
+                let max_span = (original_len - start).clamp(1, 64 * 1024);
+                let span = 1 + rng.gen_range(0, max_span);
+                let end = start + span;
+                match op {
+                    0 => (start, 1 + rng.gen_range(0, 32 * 1024)),
+                    1 => (end, span),
+                    2 => (end, span + 1 + rng.gen_range(0, 16 * 1024)),
+                    3 => (end, rng.gen_range(0, span + 1)),
+                    _ => (end, 0),
+                }
+            };
+
+            edits.push(PlannedEdit {
+                original_range: start..end,
+                replacement: rng.gen_bytes(replacement_len),
+            });
+            cursor = if end > start { end } else { start.saturating_add(1) };
+        }
+
+        if edits.is_empty() {
+            let replacement_len = 1 + rng.gen_range(0, 32 * 1024);
+            edits.push(PlannedEdit {
+                original_range: original_len..original_len,
+                replacement: rng.gen_bytes(replacement_len),
+            });
+        }
+
+        for w in edits.windows(2) {
+            assert!(w[0].original_range.end <= w[1].original_range.start);
+        }
+
+        edits
+    }
+
+    fn apply_planned_edits(original: &[u8], edits: &[PlannedEdit]) -> Vec<u8> {
+        let removed: usize = edits.iter().map(|e| e.original_range.end - e.original_range.start).sum();
+        let added: usize = edits.iter().map(|e| e.replacement.len()).sum();
+        let mut out: Vec<u8> = Vec::with_capacity(original.len() + added.saturating_sub(removed));
+        let mut cursor = 0usize;
+
+        for edit in edits {
+            assert!(edit.original_range.start >= cursor);
+            out.extend_from_slice(&original[cursor..edit.original_range.start]);
+            out.extend_from_slice(&edit.replacement);
+            cursor = edit.original_range.end;
+        }
+
+        out.extend_from_slice(&original[cursor..]);
+        out
+    }
+
+    fn edits_to_dirty_inputs(edits: &[PlannedEdit]) -> Vec<DirtyInput> {
+        edits
+            .iter()
+            .map(|e| DirtyInput {
+                original_range: e.original_range.start as u64..e.original_range.end as u64,
+                new_length: e.replacement.len() as u64,
+                reader: Box::pin(Cursor::new(e.replacement.clone())),
+            })
+            .collect()
+    }
+
+    fn summarize_edits(edits: &[PlannedEdit]) -> String {
+        edits
+            .iter()
+            .map(|e| format!("[{}..{}, new_len={}]", e.original_range.start, e.original_range.end, e.replacement.len()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
     async fn upload_file(config: &Arc<TranslatorConfig>, data: &[u8]) -> MerkleHash {
         let session = FileUploadSession::new(config.clone()).await.unwrap();
         let (_id, mut cleaner) = session
@@ -1806,5 +1931,175 @@ mod tests {
             &expected,
         )
         .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "stress test"]
+    async fn test_stress_random_resize_sequences() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = test_config(server.http_endpoint(), base_dir.path());
+        let cas_client: Arc<dyn Client> = Arc::new(server);
+
+        for seed in 0..6u64 {
+            let mut rng = DeterministicRng::new(0x9E37_79B9_7F4A_7C15 ^ seed.wrapping_mul(0xD1B5_4A32_D192_ED03));
+            let mut expected = random_data(10_000 + seed, 1_048_576 + (seed as usize * 91_117 % 262_144));
+            let mut original_hash = upload_file(&config, &expected).await;
+            let mut original_size = expected.len() as u64;
+
+            for round in 0..25usize {
+                let edits = build_random_non_overlapping_edits(&mut rng, expected.len(), 8);
+                let expected_next = apply_planned_edits(&expected, &edits);
+                let inputs = edits_to_dirty_inputs(&edits);
+                let result = upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, inputs)
+                    .await
+                    .unwrap();
+                let result_hash = MerkleHash::from_hex(result.hash()).unwrap();
+
+                assert_eq!(
+                    result.file_size(),
+                    Some(expected_next.len() as u64),
+                    "seed={seed}, round={round}: size mismatch"
+                );
+                let clean_hash = upload_file(&config, &expected_next).await;
+                assert_eq!(result.hash(), clean_hash.hex(), "seed={seed}, round={round}: hash mismatch");
+
+                let downloaded = download_file(&config, result_hash, expected_next.len() as u64).await;
+                assert_eq!(downloaded, expected_next, "seed={seed}, round={round}: content mismatch");
+
+                expected = expected_next;
+                original_hash = result_hash;
+                original_size = expected.len() as u64;
+            }
+        }
+    }
+
+    #[cfg(not(feature = "smoke-test"))]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_regression_hash_matches_clean_upload_seed1_round17() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = test_config(server.http_endpoint(), base_dir.path());
+        let cas_client: Arc<dyn Client> = Arc::new(server);
+
+        let seed = 1u64;
+        let mut rng = DeterministicRng::new(0x9E37_79B9_7F4A_7C15 ^ seed.wrapping_mul(0xD1B5_4A32_D192_ED03));
+        let mut expected = random_data(10_000 + seed, 1_048_576 + (seed as usize * 91_117 % 262_144));
+        let mut original_hash = upload_file(&config, &expected).await;
+        let mut original_size = expected.len() as u64;
+
+        for round in 0..=17usize {
+            let edits = build_random_non_overlapping_edits(&mut rng, expected.len(), 8);
+            let edits_summary = summarize_edits(&edits);
+            let expected_next = apply_planned_edits(&expected, &edits);
+            let inputs = edits_to_dirty_inputs(&edits);
+            let result = upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, inputs)
+                .await
+                .unwrap();
+            let result_hash = MerkleHash::from_hex(result.hash()).unwrap();
+
+            let clean_hash = upload_file(&config, &expected_next).await;
+            assert_eq!(
+                result.hash(),
+                clean_hash.hex(),
+                "seed={seed}, round={round}: hash mismatch; original_size={original_size}, expected_size={}, edits={edits_summary}",
+                expected_next.len()
+            );
+
+            let downloaded = download_file(&config, result_hash, expected_next.len() as u64).await;
+            assert_eq!(downloaded, expected_next, "seed={seed}, round={round}: content mismatch");
+
+            expected = expected_next;
+            original_hash = result_hash;
+            original_size = expected.len() as u64;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "stress test"]
+    async fn test_stress_many_sparse_windows_single_call() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = test_config(server.http_endpoint(), base_dir.path());
+        let cas_client: Arc<dyn Client> = Arc::new(server);
+
+        let original = random_data(13_337, 16 * 1024 * 1024);
+        let mut rng = DeterministicRng::new(0xA5A5_5A5A_0123_4567);
+        let mut edits: Vec<PlannedEdit> = Vec::new();
+        let stride = original.len() / 200;
+        let mut cursor = stride / 2;
+
+        while edits.len() < 128 && cursor < original.len() {
+            let start = cursor;
+            let max_span = (original.len() - start).clamp(1, 1536);
+            let span = 128 + rng.gen_range(0, max_span);
+            let end = (start + span).min(original.len());
+            let replacement_len = match rng.gen_range(0, 4) {
+                0 => end - start,
+                1 => (end - start) + 64 + rng.gen_range(0, 512),
+                2 => rng.gen_range(0, end - start + 1),
+                _ => 0,
+            };
+            edits.push(PlannedEdit {
+                original_range: start..end,
+                replacement: rng.gen_bytes(replacement_len),
+            });
+            cursor = cursor.saturating_add(stride.max(1));
+        }
+
+        let expected = apply_planned_edits(&original, &edits);
+        let inputs = edits_to_dirty_inputs(&edits);
+        assert_edits(&config, &cas_client, &original, inputs, &expected).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    #[ignore = "stress test"]
+    async fn test_stress_parallel_random_resize_sequences() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = test_config(server.http_endpoint(), base_dir.path());
+        let cas_client: Arc<dyn Client> = Arc::new(server);
+
+        let mut handles = Vec::new();
+        for worker in 0..8u64 {
+            let config = config.clone();
+            let cas_client = cas_client.clone();
+            handles.push(tokio::spawn(async move {
+                let mut rng = DeterministicRng::new(0xC0FF_EE00_1234_5678 ^ worker.wrapping_mul(0x94D0_49BB_1331_11EB));
+                let mut expected = random_data(20_000 + worker, 786_432 + worker as usize * 17_321);
+                let mut original_hash = upload_file(&config, &expected).await;
+                let mut original_size = expected.len() as u64;
+
+                for round in 0..18usize {
+                    let edits = build_random_non_overlapping_edits(&mut rng, expected.len(), 6);
+                    let expected_next = apply_planned_edits(&expected, &edits);
+                    let inputs = edits_to_dirty_inputs(&edits);
+                    let result =
+                        upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, inputs)
+                            .await
+                            .unwrap();
+                    let result_hash = MerkleHash::from_hex(result.hash()).unwrap();
+
+                    assert_eq!(
+                        result.file_size(),
+                        Some(expected_next.len() as u64),
+                        "worker={worker}, round={round}: size mismatch"
+                    );
+                    let clean_hash = upload_file(&config, &expected_next).await;
+                    assert_eq!(result.hash(), clean_hash.hex(), "worker={worker}, round={round}: hash mismatch");
+
+                    let downloaded = download_file(&config, result_hash, expected_next.len() as u64).await;
+                    assert_eq!(downloaded, expected_next, "worker={worker}, round={round}: content mismatch");
+
+                    expected = expected_next;
+                    original_hash = result_hash;
+                    original_size = expected.len() as u64;
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.await.unwrap();
+        }
     }
 }

@@ -18,10 +18,10 @@ use crate::metadata_shard::chunk_verification::range_hash_from_chunks;
 use crate::serialization_utils::*;
 
 pub type XorbObjectIdent = [u8; 7];
-pub(crate) const XORB_OBJECT_FORMAT_IDENT: XorbObjectIdent = [b'X', b'E', b'T', b'B', b'L', b'O', b'B'];
+pub(crate) const XORB_OBJECT_FORMAT_IDENT: XorbObjectIdent = *b"XETBLOB";
 pub(crate) const XORB_OBJECT_FORMAT_VERSION_V0: u8 = 0;
-pub(crate) const XORB_OBJECT_FORMAT_IDENT_HASHES: XorbObjectIdent = [b'X', b'B', b'L', b'B', b'H', b'S', b'H'];
-pub(crate) const XORB_OBJECT_FORMAT_IDENT_BOUNDARIES: XorbObjectIdent = [b'X', b'B', b'L', b'B', b'B', b'N', b'D'];
+pub(crate) const XORB_OBJECT_FORMAT_IDENT_HASHES: XorbObjectIdent = *b"XBLBHSH";
+pub(crate) const XORB_OBJECT_FORMAT_IDENT_BOUNDARIES: XorbObjectIdent = *b"XBLBBND";
 pub(crate) const XORB_OBJECT_FORMAT_VERSION: u8 = 1;
 pub(crate) const XORB_OBJECT_FORMAT_HASHES_VERSION: u8 = 0;
 
