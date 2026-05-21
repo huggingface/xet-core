@@ -227,23 +227,23 @@ impl SingleFileCleaner {
     }
 
     async fn finish_inner(
-        mut this: Self,
+        mut self,
         register: bool,
     ) -> Result<(XetFileInfo, ChunkHashList, MDBFileInfo, DeduplicationMetrics)> {
-        if let Some(chunk) = this.chunker.finish() {
+        if let Some(chunk) = self.chunker.finish() {
             let data = Arc::new([chunk]);
-            this.deduper_process_chunks(data).await?;
+            self.deduper_process_chunks(data).await?;
         }
 
-        let sha256 = if let Some(generator) = this.sha_generator.take() {
+        let sha256 = if let Some(generator) = self.sha_generator.take() {
             Some(generator.finalize().await?)
         } else {
-            this.provided_sha256
+            self.provided_sha256
         };
         let metadata_ext = sha256.map(FileMetadataExt::new);
 
         let (file_hash, chunk_hashes, remaining_file_data, deduplication_metrics) =
-            this.dedup_manager_fut.await?.finalize(metadata_ext);
+            self.dedup_manager_fut.await?.finalize(metadata_ext);
 
         let file_info = XetFileInfo {
             hash: file_hash.hex(),
@@ -258,12 +258,12 @@ impl SingleFileCleaner {
         }
 
         let mdb_file_info = if register {
-            this.session
+            self.session
                 .register_single_file_clean_completion(remaining_file_data, &deduplication_metrics)
                 .await?;
             MDBFileInfo::default()
         } else {
-            this.session
+            self.session
                 .register_single_file_clean_completion_detached(remaining_file_data, &deduplication_metrics)
                 .await?
         };
@@ -271,10 +271,10 @@ impl SingleFileCleaner {
         info!(
             target: "client_telemetry",
             action = "clean",
-            file_name = this.file_name.as_deref().unwrap_or_default().to_string(),
+            file_name = self.file_name.as_deref().unwrap_or_default().to_string(),
             file_size_count = deduplication_metrics.total_bytes,
             new_bytes_count = deduplication_metrics.new_bytes,
-            start_ts = this.start_time.to_rfc3339(),
+            start_ts = self.start_time.to_rfc3339(),
             end_processing_ts = Utc::now().to_rfc3339(),
         );
 
