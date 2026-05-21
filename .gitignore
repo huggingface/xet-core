@@ -14,9 +14,9 @@ debug/
 # Mac OS Trash
 .DS_Store
 
-# VS Code configs
-.vscode/*
-!.vscode/settings.json
+# Editor configs
+.vscode/
+.zed/
 venv
 **/*.env
 .worktrees/
