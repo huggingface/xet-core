@@ -5,6 +5,8 @@ use std::ops::Deref;
 use thiserror::Error;
 use tokio::sync::{RwLock, RwLockReadGuard};
 use tokio::task::{JoinError, JoinHandle};
+#[cfg(target_family = "wasm")]
+use tokio_with_wasm::alias as tokio;
 
 #[derive(Debug, Error)]
 #[non_exhaustive]

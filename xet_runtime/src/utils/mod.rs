@@ -11,34 +11,13 @@ pub use configuration_utils::is_high_performance;
 
 #[cfg(not(target_family = "wasm"))]
 mod file_paths;
+#[cfg(target_family = "wasm")]
+mod file_paths_wasm;
 
 #[cfg(not(target_family = "wasm"))]
 pub use file_paths::TemplatedPathBuf;
-
-/// On wasm, path templates and expansion are not supported. The stub keeps the
-/// surface needed by the config system (`new`, `template_string`) so the
-/// `system_monitor` config group compiles on both targets; `evaluate()`
-/// returns the input path unchanged.
 #[cfg(target_family = "wasm")]
-#[derive(Debug, Clone)]
-pub struct TemplatedPathBuf {
-    template: std::path::PathBuf,
-}
-
-#[cfg(target_family = "wasm")]
-impl TemplatedPathBuf {
-    pub fn new(path: impl Into<std::path::PathBuf>) -> Self {
-        Self { template: path.into() }
-    }
-
-    pub fn evaluate(path: impl Into<std::path::PathBuf>) -> std::path::PathBuf {
-        path.into()
-    }
-
-    pub fn template_string(&self) -> String {
-        self.template.to_string_lossy().into_owned()
-    }
-}
+pub use file_paths_wasm::TemplatedPathBuf;
 
 // Modules moved from core_structures
 pub mod async_iterator;
