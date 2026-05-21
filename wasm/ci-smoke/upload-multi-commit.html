@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>hf_xet_wasm multiple commits per session — CI smoke test</title>
+</head>
+<body>
+<script type="module">
+  import init, { XetSession } from '../hf_xet_wasm/pkg/hf_xet_wasm.js';
+
+  await init();
+
+  // Smoke for the XetSession→multiple XetUploadCommit flow. From a single
+  // XetSession the caller should be able to:
+  //   1) Mint commit A, upload + commit
+  //   2) Mint commit B, upload + commit
+  //
+  // Each XetUploadCommit constructs its own FileUploadSession (see
+  // xet_pkg/.../upload_commit.rs:378), so they must not share mutable
+  // state in a way that lets commit A's finalization break commit B's
+  // construction. The two-commit pattern catches XetSession-level
+  // resource leaks (task runtime cleanup, locked state, etc.) that would
+  // surface as the second newUploadCommit() hanging or panicking.
+  //
+  // Asserts (in the runner):
+  //   - both commits produce metadata with non-empty hash + correct size
+  //   - distinct random payloads → distinct hashes
+  //   - both commitReports have non-empty uploads + positive xorb bytes
+
+  const HUB_BASE = 'https://huggingface.co';
+  const PAYLOAD_SIZE = 256 * 1024; // 256 KiB per commit
+
+  async function fetchXetWriteToken({ hfToken, repoType, namespace, repo, revision }) {
+    const url = `${HUB_BASE}/api/${repoType}s/${namespace}/${repo}/xet-write-token/${revision}`;
+    const headers = {};
+    if (hfToken) headers['Authorization'] = `Bearer ${hfToken}`;
+    const resp = await fetch(url, { method: 'GET', headers });
+    if (!resp.ok) throw new Error(`xet-write-token ${resp.status}: ${await resp.text()}`);
+    const json = await resp.json();
+    if (!json.accessToken || !json.casUrl || !json.exp) {
+      throw new Error(`xet-write-token missing fields: ${JSON.stringify(json)}`);
+    }
+    return json;
+  }
+
+  function randomBytes(n) {
+    const buf = new Uint8Array(n);
+    for (let off = 0; off < buf.byteLength; off += 65536) {
+      crypto.getRandomValues(buf.subarray(off, Math.min(off + 65536, buf.byteLength)));
+    }
+    return buf;
+  }
+
+  async function uploadOne(commit, name, data) {
+    const meta = await commit.uploadBytes(data, 'compute', name);
+    const report = await commit.commit();
+    return { meta, report };
+  }
+
+  window.runTest = async function runTest(hfToken) {
+    try {
+      const params = {
+        hfToken,
+        repoType: 'dataset',
+        namespace: 'xet-team',
+        repo: 'xet-wasm-test',
+        revision: 'main',
+      };
+
+      console.log('xet-write-token...');
+      const { accessToken, exp, casUrl } = await fetchXetWriteToken(params);
+      console.log(`token ok: casUrl=${casUrl} exp=${exp}`);
+
+      const session = new XetSession();
+
+      console.log('commit A...');
+      const commitA = await session.newUploadCommit(casUrl, accessToken, exp);
+      const dataA = randomBytes(PAYLOAD_SIZE);
+      const a = await uploadOne(commitA, 'commit-a.bin', dataA);
+      console.log(`commit A hash=${a.meta?.xet_info?.hash}`);
+
+      console.log('commit B (reusing session)...');
+      const commitB = await session.newUploadCommit(casUrl, accessToken, exp);
+      const dataB = randomBytes(PAYLOAD_SIZE);
+      const b = await uploadOne(commitB, 'commit-b.bin', dataB);
+      console.log(`commit B hash=${b.meta?.xet_info?.hash}`);
+
+      return {
+        ok: true,
+        commitA: a,
+        commitB: b,
+        payloadSize: PAYLOAD_SIZE,
+      };
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e), stack: e?.stack };
+    }
+  };
+
+  console.log('test page ready');
+</script>
+</body>
+</html>

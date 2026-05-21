@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>hf_xet_wasm tiny/empty files — CI smoke test</title>
+</head>
+<body>
+<script type="module">
+  import init, { XetSession } from '../hf_xet_wasm/pkg/hf_xet_wasm.js';
+
+  await init();
+
+  // Smoke for boundary-condition uploads: 0-byte and 1-byte files. These
+  // hit edge cases in chunking (no chunk vs single tiny chunk) and xorb
+  // cutting (empty xorb suppression — see file_upload_session.rs at the
+  // `if xorb.num_bytes() == 0 { return Ok(true); }` arm).
+  //
+  // We upload both in one XetUploadCommit alongside a normal-sized file
+  // so the commit isn't entirely empty (an all-empty commit would push
+  // no xorbs, which is its own edge case worth keeping out of this test).
+  //
+  // Asserts (in the runner):
+  //   - empty file: metadata.file_size == 0
+  //   - one-byte file: metadata.file_size == 1
+  //   - normal file: metadata.file_size matches
+  //   - commitReport.uploads has 3 entries with matching hashes
+  //   - commit succeeds (no panic on empty content)
+
+  const HUB_BASE = 'https://huggingface.co';
+  const NORMAL_SIZE = 64 * 1024; // 64 KiB — fits in one chunk
+
+  async function fetchXetWriteToken({ hfToken, repoType, namespace, repo, revision }) {
+    const url = `${HUB_BASE}/api/${repoType}s/${namespace}/${repo}/xet-write-token/${revision}`;
+    const headers = {};
+    if (hfToken) headers['Authorization'] = `Bearer ${hfToken}`;
+    const resp = await fetch(url, { method: 'GET', headers });
+    if (!resp.ok) throw new Error(`xet-write-token ${resp.status}: ${await resp.text()}`);
+    const json = await resp.json();
+    if (!json.accessToken || !json.casUrl || !json.exp) {
+      throw new Error(`xet-write-token missing fields: ${JSON.stringify(json)}`);
+    }
+    return json;
+  }
+
+  window.runTest = async function runTest(hfToken) {
+    try {
+      const params = {
+        hfToken,
+        repoType: 'dataset',
+        namespace: 'xet-team',
+        repo: 'xet-wasm-test',
+        revision: 'main',
+      };
+
+      console.log('xet-write-token...');
+      const { accessToken, exp, casUrl } = await fetchXetWriteToken(params);
+      console.log(`token ok: casUrl=${casUrl} exp=${exp}`);
+
+      const session = new XetSession();
+      const commit = await session.newUploadCommit(casUrl, accessToken, exp);
+
+      console.log('uploadBytes(empty)...');
+      const empty = new Uint8Array(0);
+      const emptyMeta = await commit.uploadBytes(empty, 'compute', 'empty.bin');
+
+      console.log('uploadBytes(1 byte)...');
+      const oneByte = new Uint8Array([0x42]);
+      const oneByteMeta = await commit.uploadBytes(oneByte, 'compute', 'one-byte.bin');
+
+      console.log(`uploadBytes(${NORMAL_SIZE} bytes)...`);
+      const normal = new Uint8Array(NORMAL_SIZE);
+      crypto.getRandomValues(normal);
+      const normalMeta = await commit.uploadBytes(normal, 'compute', 'normal.bin');
+
+      console.log('commit()...');
+      const commitReport = await commit.commit();
+      console.log('commitReport:', JSON.stringify(commitReport));
+
+      return {
+        ok: true,
+        empty: emptyMeta,
+        oneByte: oneByteMeta,
+        normal: normalMeta,
+        commitReport,
+        normalSize: NORMAL_SIZE,
+      };
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e), stack: e?.stack };
+    }
+  };
+
+  console.log('test page ready');
+</script>
+</body>
+</html>

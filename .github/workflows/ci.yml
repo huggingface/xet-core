@@ -182,6 +182,12 @@ jobs:
         run: |
           npm ci
           npx playwright install --with-deps chromium
+      - name: WASM invalid-inputs smoke test (local, no network)
+        # Validates the wasm wrapper's input rejection surface — fully local,
+        # no Hub or CAS. Blocking: a regression here means we silently broke
+        # validation, which is straightforward to catch.
+        working-directory: wasm/ci-smoke
+        run: node run-invalid-inputs.mjs
       - name: WASM download smoke test (prod hub + CAS)
         # Non-blocking: a hub blip shouldn't fail unrelated PRs.
         # Token is optional — the pinned file is in a public dataset.
@@ -190,6 +196,15 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         working-directory: wasm/ci-smoke
         run: node run-download.mjs
+      - name: WASM download-multi smoke test (prod hub + CAS)
+        # Concurrent multi-file download in one XetDownloadStreamGroup —
+        # validates the stream fan-out doesn't cross-contaminate buffers.
+        # Non-blocking, same rationale.
+        continue-on-error: true
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        working-directory: wasm/ci-smoke
+        run: node run-download-multi.mjs
       - name: WASM upload smoke test (Hub xet-write-token + CAS push)
         # Drives uploadBytes (regression guard for XetRuntime::spawn_blocking
         # on wasm) plus commit() (xorb + shard push to CAS) against
@@ -231,6 +246,46 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         working-directory: wasm/ci-smoke
         run: node run-upload-stream-multi.mjs
+      - name: WASM upload-mixed smoke test (Hub xet-write-token + CAS push)
+        # uploadBytes + uploadStream concurrently in one commit — verifies
+        # the file-handle aggregator in commit() merges both handle types.
+        continue-on-error: true
+        env:
+          HF_SMOKE_TEST_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        working-directory: wasm/ci-smoke
+        run: node run-upload-mixed.mjs
+      - name: WASM upload-tiny smoke test (Hub xet-write-token + CAS push)
+        # 0-byte and 1-byte file uploads alongside a 64 KiB file in one
+        # commit — catches regressions to empty-xorb suppression and the
+        # no-chunks path.
+        continue-on-error: true
+        env:
+          HF_SMOKE_TEST_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        working-directory: wasm/ci-smoke
+        run: node run-upload-tiny.mjs
+      - name: WASM upload-multi-commit smoke test (Hub xet-write-token + CAS push)
+        # Two sequential XetUploadCommits from one XetSession — catches
+        # XetSession-level resource leaks (task runtime cleanup, locked
+        # state) that would surface as the second newUploadCommit() hanging.
+        continue-on-error: true
+        env:
+          HF_SMOKE_TEST_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        working-directory: wasm/ci-smoke
+        run: node run-upload-multi-commit.mjs
+      - name: WASM dedup smoke test (Hub xet-write-token + CAS push)
+        # Session-level (in-commit) dedup: uploads identical 65 MiB bytes as
+        # two files in one commit. The 65 MiB size forces an xorb cut between
+        # the two uploads (MAX_XORB_BYTES is 64 MiB), so file #2's chunks
+        # dedup against the cut xorb's entries in session_shard.
+        continue-on-error: true
+        env:
+          HF_SMOKE_TEST_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        working-directory: wasm/ci-smoke
+        run: node run-dedup.mjs
   cargo-audit:
     name: Cargo Audit
     runs-on: ubuntu-latest
