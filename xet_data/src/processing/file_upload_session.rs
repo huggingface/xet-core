@@ -275,8 +275,7 @@ impl FileUploadSession {
         let handle = runtime.spawn(async move {
             let _permit = semaphore.acquire().await?;
             cleaner.add_data(&bytes).await?;
-            let (file_info, metrics) = cleaner.finish().await?;
-            Ok((file_info, metrics))
+            cleaner.finish().await
         });
 
         Ok((id, handle))
@@ -298,8 +297,7 @@ impl FileUploadSession {
             }
             cleaner.add_data(&buffer[..n]).await?;
         }
-        let (file_info, metrics) = cleaner.finish().await?;
-        Ok((file_info, metrics))
+        cleaner.finish().await
     }
 
     /// Registers a new xorb for upload, returning true if the xorb was added to the upload queue and false
