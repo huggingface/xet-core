@@ -108,6 +108,10 @@ fn test_new_config_env_overrides() {
         assert_eq!(XetConfig::new().session.dir_name, "tmp-session");
     }
     {
+        let _guard = EnvVarGuard::set("HF_XET_CHUNK_CACHE_ACCESS_UPDATE_INTERVAL_NS", "0");
+        assert_eq!(XetConfig::new().chunk_cache.access_update_interval_ns, 0);
+    }
+    {
         let _guard = EnvVarGuard::set("HF_XET_DEDUPLICATION_GLOBAL_DEDUP_QUERY_ENABLED", "false");
         assert!(!XetConfig::new().deduplication.global_dedup_query_enabled);
     }

@@ -2,5 +2,18 @@
   "[rust]": {
     "editor.defaultFormatter": "rust-lang.rust-analyzer"
   },
-  "rust-analyzer.rustc.source": null
+  "rust-analyzer.rustc.source": null,
+  "workbench.colorCustomizations": {
+    "titleBar.activeBackground": "#1B1A55",
+    "titleBar.border": "#1B1A55",
+    "titleBar.activeForeground": "#9290C3",
+    "titleBar.inactiveBackground": "#3d3c6f",
+    "titleBar.inactiveForeground": "#a2a1cc",
+    "activityBar.background": "#1B1A55",
+    "activityBar.foreground": "#9290C3",
+    "activityBar.inactiveForeground": "#75739c",
+    "statusBar.background": "#1B1A55",
+    "statusBar.border": "#1B1A55",
+    "statusBar.foreground": "#9290C3"
+  }
 }
