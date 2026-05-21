@@ -5,7 +5,9 @@ use xet_core_structures::xorb_object::SerializedXorbObject;
 
 use super::adaptive_concurrency::ConnectionPermit;
 use super::progress_tracked_streams::ProgressCallback;
-use crate::cas_types::{BatchQueryReconstructionResponse, FileRange, HttpRange, QueryReconstructionResponseV2};
+use crate::cas_types::{
+    BatchQueryReconstructionResponse, FileChunkHashesResponse, FileRange, HttpRange, QueryReconstructionResponseV2,
+};
 use crate::error::Result;
 
 #[async_trait::async_trait]
@@ -70,4 +72,17 @@ pub trait Client: Send + Sync {
         progress_callback: Option<ProgressCallback>,
         upload_permit: ConnectionPermit,
     ) -> Result<u64>;
+
+    /// Compute chunk-aligned dirty windows + opaque gap [`MerkleHashSubtree`] summaries for the
+    /// given file, narrowed to `dirty_ranges`.
+    ///
+    /// `dirty_ranges` must be sorted and non-overlapping. Per-chunk hashes are never returned;
+    /// the response carries only `windows.len()` dirty windows and `windows.len() + 1` gap
+    /// subtrees, which the client merges with locally-recomputed window subtrees to obtain the
+    /// new file hash.
+    async fn get_file_chunk_hashes(
+        &self,
+        file_id: &MerkleHash,
+        dirty_ranges: Vec<FileRange>,
+    ) -> Result<FileChunkHashesResponse>;
 }
