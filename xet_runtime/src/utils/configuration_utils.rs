@@ -229,7 +229,7 @@ macro_rules! test_set_constants {
     )+) => {
         use $crate::configuration_utils::ctor_reexport as ctor;
 
-        #[ctor::ctor]
+        #[ctor::ctor(unsafe)]
         fn set_constants_on_load() {
             $(
                 let val = $val;
@@ -300,7 +300,7 @@ macro_rules! test_set_config {
     )+) => {
         use $crate::configuration_utils::ctor_reexport as config_ctor;
 
-        #[config_ctor::ctor]
+        #[config_ctor::ctor(unsafe)]
         fn set_config_on_load() {
             $(
                 let group_name_upper = stringify!($group_name).to_uppercase();
