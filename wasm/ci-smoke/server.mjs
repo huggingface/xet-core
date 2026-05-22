@@ -27,7 +27,8 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, 'http://localhost');
     let p = path.normalize(path.join(root, decodeURIComponent(url.pathname)));
-    if (!p.startsWith(root)) {
+    // Use a path.sep boundary so a sibling dir like `<root>-other` isn't accepted.
+    if (p !== root && !p.startsWith(root + path.sep)) {
       res.writeHead(403).end('forbidden');
       return;
     }
