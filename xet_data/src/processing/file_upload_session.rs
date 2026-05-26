@@ -13,6 +13,8 @@ use tokio::sync::Mutex;
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{Instrument, Span, info_span, instrument};
 use xet_client::cas_client::{Client, ProgressCallback};
+use xet_client::cas_types::{FileChunkHashesResponse, FileRange};
+use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
 use xet_core_structures::xorb_object::SerializedXorbObject;
 use xet_runtime::core::XetContext;
@@ -611,8 +613,23 @@ impl FileUploadSession {
     /// Register a pre-composed file reconstruction plan (MDBFileInfo) with this session.
     /// Used for append-aware writes where the caller builds the reconstruction plan
     /// from existing segments + newly uploaded segments.
-    pub(crate) async fn register_composed_file(self: &Arc<Self>, file_info: MDBFileInfo) -> Result<()> {
+    pub async fn register_composed_file(self: &Arc<Self>, file_info: MDBFileInfo) -> Result<()> {
         self.shard_interface.add_file_reconstruction_info(file_info).await
+    }
+
+    pub async fn get_file_chunk_hashes(
+        &self,
+        file_id: &MerkleHash,
+        dirty_ranges: Vec<FileRange>,
+    ) -> Result<FileChunkHashesResponse> {
+        Ok(self.client.get_file_chunk_hashes(file_id, dirty_ranges).await?)
+    }
+
+    pub async fn get_file_reconstruction_info(
+        &self,
+        file_hash: &MerkleHash,
+    ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
+        Ok(self.client.get_file_reconstruction_info(file_hash).await?)
     }
 
     fn check_not_finalized(&self) -> Result<()> {
