@@ -614,6 +614,7 @@ impl FileUploadSession {
     /// Used for append-aware writes where the caller builds the reconstruction plan
     /// from existing segments + newly uploaded segments.
     pub async fn register_composed_file(self: &Arc<Self>, file_info: MDBFileInfo) -> Result<()> {
+        self.check_not_finalized()?;
         self.shard_interface.add_file_reconstruction_info(file_info).await
     }
 
@@ -622,6 +623,11 @@ impl FileUploadSession {
         file_id: &MerkleHash,
         dirty_ranges: Vec<FileRange>,
     ) -> Result<FileChunkHashesResponse> {
+        if dirty_ranges.is_empty() {
+            return Err(DataError::InvalidOperation(
+                "get_file_chunk_hashes requires at least one dirty range".to_string(),
+            ));
+        }
         Ok(self.client.get_file_chunk_hashes(file_id, dirty_ranges).await?)
     }
 
