@@ -204,7 +204,7 @@ impl PyXetUploadCommit {
             self.wait_to_finish(py)?;
         } else {
             // Exception: cancel uploads.
-            if let Err(e) = self.abort() {
+            if let Err(e) = self.abort(py) {
                 tracing::warn!("abort() failed during __exit__ exception path: {e}");
             }
         }
@@ -324,9 +324,10 @@ impl PyXetUploadCommit {
     }
 
     /// Cancel all active uploads in this commit.
-    pub fn abort(&self) -> PyResult<()> {
+    pub fn abort(&self, py: Python<'_>) -> PyResult<()> {
         if let Some(progress) = &self.background_progress {
-            progress.stop_and_join()?;
+            // ignore any error from progress update
+            let _ = progress.stop_and_join(py);
         }
         self.inner.abort().map_err(convert_xet_error)
     }
@@ -455,7 +456,7 @@ mod tests {
         };
 
         Python::attach(|py| {
-            commit.abort().unwrap();
+            commit.abort(py).unwrap();
             assert!(commit.wait_to_finish(py).is_err());
         });
     }

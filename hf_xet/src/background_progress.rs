@@ -56,21 +56,25 @@ impl BackgroundProgress {
     }
 
     /// Request shutdown, wake the poller if it is sleeping, and block until the thread exits.
-    pub(crate) fn stop_and_join(&self) -> PyResult<()> {
+    pub(crate) fn stop_and_join(&self, py: Python<'_>) -> PyResult<()> {
         {
             let mut guard = self.wake.0.lock().map_err(|_| lock_poisoned_err())?;
             *guard = true;
         }
         self.wake.1.notify_one();
         let handle = self.join.lock().map_err(|_| lock_poisoned_err())?.take();
-        if let Some(handle) = handle {
-            match handle.join() {
-                Ok(result) => result,
-                Err(_) => Err(poller_panicked_err()),
+        // Releases the GIL while joining so the poller can acquire it inside
+        // [`Python::try_attach`] without deadlocking the caller.
+        py.detach(|| {
+            if let Some(handle) = handle {
+                match handle.join() {
+                    Ok(result) => result,
+                    Err(_) => Err(poller_panicked_err()),
+                }
+            } else {
+                Ok(())
             }
-        } else {
-            Ok(())
-        }
+        })
     }
 
     /// Stop the poller, then invoke the callback once on the calling thread (final snapshot).
@@ -78,7 +82,7 @@ impl BackgroundProgress {
     where
         F: FnOnce() -> (GroupProgressReport, HashMap<UniqueId, ItemProgressReport>),
     {
-        self.stop_and_join()?;
+        self.stop_and_join(py)?;
         let (group_report, item_reports) = snapshot();
         self.callback.call1(py, (group_report, item_reports))?;
         Ok(())
@@ -95,10 +99,13 @@ where
     F: FnMut() -> (GroupProgressReport, HashMap<UniqueId, ItemProgressReport>, bool),
 {
     loop {
-        // Sleep up to `interval`, but return promptly when stop_and_join sets shutdown and notifies.
+        // Sleep up to `interval`, but return promptly when shutdown is already set or notified.
         let shutdown = {
             let guard = wake.0.lock().map_err(|_| lock_poisoned_err())?;
-            let (guard, _) = wake.1.wait_timeout(guard, interval).map_err(|_| lock_poisoned_err())?;
+            let (guard, _) = wake
+                .1
+                .wait_timeout_while(guard, interval, |shutdown| !*shutdown)
+                .map_err(|_| lock_poisoned_err())?;
             *guard
         };
 
@@ -150,11 +157,8 @@ mod tests {
                 (GroupProgressReport::default(), HashMap::new(), false)
             });
 
-            // Let the poller enter its timed wait on the condvar.
-            std::thread::sleep(Duration::from_millis(50));
-
             let start = Instant::now();
-            progress.stop_and_join()?;
+            progress.stop_and_join(py)?;
             let elapsed = start.elapsed();
 
             assert!(

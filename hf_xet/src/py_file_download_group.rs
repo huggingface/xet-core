@@ -143,7 +143,7 @@ impl PyXetFileDownloadGroup {
             // Normal exit: wait for all downloads (signal-interruptible).
             self.wait_to_finish(py)?;
         } else {
-            if let Err(e) = self.abort() {
+            if let Err(e) = self.abort(py) {
                 tracing::warn!("abort() failed during __exit__ exception path: {e}");
             }
         }
@@ -204,9 +204,10 @@ impl PyXetFileDownloadGroup {
     }
 
     /// Cancel all active downloads in this group.
-    pub fn abort(&self) -> PyResult<()> {
+    pub fn abort(&self, py: Python<'_>) -> PyResult<()> {
         if let Some(progress) = &self.progress {
-            progress.stop_and_join()?;
+            // ignore any error from progress update
+            let _ = progress.stop_and_join(py);
         }
         self.inner.abort().map_err(convert_xet_error)
     }
@@ -275,7 +276,7 @@ mod tests {
         };
 
         Python::attach(|py| {
-            group.abort().unwrap();
+            group.abort(py).unwrap();
             assert!(group.wait_to_finish(py).is_err());
         });
     }
