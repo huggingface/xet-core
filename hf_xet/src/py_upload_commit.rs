@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
 
 use pyo3::prelude::*;
 use xet_pkg::xet_session::{
@@ -62,11 +61,22 @@ fn parse_sha256(py: Python<'_>, sha256: Option<Py<PyAny>>) -> PyResult<Sha256Pol
     }
 }
 
+use crate::background_progress::BackgroundProgress;
 use crate::headers::{build_header_map, build_headers_with_user_agent};
 use crate::py_file_upload_handle::PyXetFileUpload;
 use crate::py_stream_upload_handle::PyXetStreamUpload;
 use crate::utils::{progress_display, task_state_display, task_state_to_pystate};
 use crate::{PyXetTaskState, blocking_call_with_signal_check, convert_xet_error};
+
+#[inline]
+fn item_reports_from_upload_handles(
+    handles: &Arc<RwLock<Vec<XetFileUpload>>>,
+) -> HashMap<UniqueId, ItemProgressReport> {
+    handles
+        .read()
+        .map(|g| g.iter().filter_map(|h| h.progress().map(|p| (h.task_id(), p))).collect())
+        .unwrap_or_default()
+}
 
 // ── build_upload_commit ───────────────────────────────────────────────────────
 
@@ -106,38 +116,24 @@ pub(crate) fn build_upload_commit(
             .map_err(convert_xet_error)
     })?;
 
-    let upload_handles = if let Some(callback) = progress_callback {
+    let (upload_handles, background_progress) = if let Some(callback) = progress_callback {
         let handles: Arc<RwLock<Vec<XetFileUpload>>> = Arc::new(RwLock::new(Vec::new()));
         let inner = commit.clone();
         let handles_for_thread = handles.clone();
-        let interval = Duration::from_millis(progress_interval_ms);
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(interval);
-                let is_terminal = !matches!(inner.status(), Ok(XetTaskState::Running) | Ok(XetTaskState::Finalizing));
-                let group_report = inner.progress();
-                let item_reports: HashMap<UniqueId, ItemProgressReport> = handles_for_thread
-                    .read()
-                    .map(|g| g.iter().filter_map(|h| h.progress().map(|p| (h.task_id(), p))).collect())
-                    .unwrap_or_default();
-                let result = Python::attach(|py| callback.call1(py, (group_report, item_reports)));
-                if let Err(e) = result {
-                    Python::attach(|py| e.print(py));
-                    break;
-                }
-                if is_terminal {
-                    break;
-                }
-            }
+        let background_progress = BackgroundProgress::spawn(py, callback, progress_interval_ms, move || {
+            let is_terminal = !matches!(inner.status(), Ok(XetTaskState::Running) | Ok(XetTaskState::Finalizing));
+            let item_reports = item_reports_from_upload_handles(&handles_for_thread);
+            (inner.progress(), item_reports, is_terminal)
         });
-        Some(handles)
+        (Some(handles), Some(background_progress))
     } else {
-        None
+        (None, None)
     };
 
     Ok(PyXetUploadCommit {
         inner: commit,
         upload_handles,
+        background_progress,
     })
 }
 
@@ -158,6 +154,9 @@ pub struct PyXetUploadCommit {
     pub(crate) inner: XetUploadCommit,
     /// Per-file handles shared with the progress thread; None when no callback was registered.
     upload_handles: Option<Arc<RwLock<Vec<XetFileUpload>>>>,
+    /// Background thread that polls progress and invokes the Python callback; None when no
+    /// callback was registered. Stopped and joined from ``wait_to_finish`` and ``abort``.
+    background_progress: Option<BackgroundProgress>,
 }
 
 #[pymethods]
@@ -205,7 +204,7 @@ impl PyXetUploadCommit {
             self.wait_to_finish(py)?;
         } else {
             // Exception: cancel uploads.
-            if let Err(e) = self.inner.abort() {
+            if let Err(e) = self.abort() {
                 tracing::warn!("abort() failed during __exit__ exception path: {e}");
             }
         }
@@ -308,13 +307,27 @@ impl PyXetUploadCommit {
     ///
     /// Releases the GIL while waiting, polling for ``KeyboardInterrupt`` every
     /// 100 ms so that Ctrl-C is delivered promptly.
+    ///
+    /// When a progress callback was registered, it is invoked once more on the
+    /// calling thread with the final snapshot after all work completes.
     pub fn wait_to_finish(&self, py: Python<'_>) -> PyResult<XetCommitReport> {
         let inner = self.inner.clone();
-        blocking_call_with_signal_check(py, move || inner.commit_blocking())
+        let result = blocking_call_with_signal_check(py, move || inner.commit_blocking());
+        if let (Some(handles), Some(progress)) = (&self.upload_handles, &self.background_progress) {
+            // ignore any error from progress update
+            let _ = progress.stop_and_emit(py, || {
+                let item_reports = item_reports_from_upload_handles(handles);
+                (self.inner.progress(), item_reports)
+            });
+        }
+        result
     }
 
     /// Cancel all active uploads in this commit.
     pub fn abort(&self) -> PyResult<()> {
+        if let Some(progress) = &self.background_progress {
+            progress.stop_and_join()?;
+        }
         self.inner.abort().map_err(convert_xet_error)
     }
 
@@ -408,6 +421,7 @@ mod tests {
                 .build_blocking()
                 .unwrap(),
             upload_handles: None,
+            background_progress: None,
         };
 
         Python::attach(|py| {
@@ -437,6 +451,7 @@ mod tests {
                 .build_blocking()
                 .unwrap(),
             upload_handles: None,
+            background_progress: None,
         };
 
         Python::attach(|py| {

@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
 
 use pyo3::prelude::*;
 use xet_pkg::xet_session::{
@@ -8,10 +7,21 @@ use xet_pkg::xet_session::{
     XetFileInfo, XetSession, XetTaskState,
 };
 
+use crate::background_progress::BackgroundProgress;
 use crate::headers::{build_header_map, build_headers_with_user_agent};
 use crate::py_file_download_handle::PyXetFileDownload;
 use crate::utils::{progress_display, task_state_display, task_state_to_pystate};
 use crate::{PyXetTaskState, blocking_call_with_signal_check, convert_xet_error};
+
+#[inline]
+fn item_reports_from_download_handles(
+    handles: &Arc<RwLock<Vec<XetFileDownload>>>,
+) -> HashMap<UniqueId, ItemProgressReport> {
+    handles
+        .read()
+        .map(|g| g.iter().filter_map(|h| h.progress().map(|p| (h.task_id(), p))).collect())
+        .unwrap_or_default()
+}
 
 // ── build_file_download_group ─────────────────────────────────────────────────
 
@@ -51,38 +61,24 @@ pub(crate) fn build_file_download_group(
             .map_err(convert_xet_error)
     })?;
 
-    let download_handles = if let Some(callback) = progress_callback {
+    let (download_handles, progress) = if let Some(callback) = progress_callback {
         let handles: Arc<RwLock<Vec<XetFileDownload>>> = Arc::new(RwLock::new(Vec::new()));
         let inner = group.clone();
         let handles_for_thread = Arc::clone(&handles);
-        let interval = Duration::from_millis(progress_interval_ms);
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(interval);
-                let is_terminal = !matches!(inner.status(), Ok(XetTaskState::Running) | Ok(XetTaskState::Finalizing));
-                let group_report = inner.progress();
-                let item_reports: HashMap<UniqueId, ItemProgressReport> = handles_for_thread
-                    .read()
-                    .map(|g| g.iter().filter_map(|h| h.progress().map(|p| (h.task_id(), p))).collect())
-                    .unwrap_or_default();
-                let result = Python::attach(|py| callback.call1(py, (group_report, item_reports)));
-                if let Err(e) = result {
-                    Python::attach(|py| e.print(py));
-                    break;
-                }
-                if is_terminal {
-                    break;
-                }
-            }
+        let progress = BackgroundProgress::spawn(py, callback, progress_interval_ms, move || {
+            let is_terminal = !matches!(inner.status(), Ok(XetTaskState::Running) | Ok(XetTaskState::Finalizing));
+            let item_reports = item_reports_from_download_handles(&handles_for_thread);
+            (inner.progress(), item_reports, is_terminal)
         });
-        Some(handles)
+        (Some(handles), Some(progress))
     } else {
-        None
+        (None, None)
     };
 
     Ok(PyXetFileDownloadGroup {
         inner: group,
         download_handles,
+        progress,
     })
 }
 
@@ -103,6 +99,9 @@ pub struct PyXetFileDownloadGroup {
     pub(crate) inner: XetFileDownloadGroup,
     /// Per-file handles shared with the progress thread; None when no callback was registered.
     download_handles: Option<Arc<RwLock<Vec<XetFileDownload>>>>,
+    /// Background thread that polls progress and invokes the Python callback; None when no
+    /// callback was registered. Stopped and joined from ``wait_to_finish`` and ``abort``.
+    progress: Option<BackgroundProgress>,
 }
 
 #[pymethods]
@@ -144,7 +143,7 @@ impl PyXetFileDownloadGroup {
             // Normal exit: wait for all downloads (signal-interruptible).
             self.wait_to_finish(py)?;
         } else {
-            if let Err(e) = self.inner.abort() {
+            if let Err(e) = self.abort() {
                 tracing::warn!("abort() failed during __exit__ exception path: {e}");
             }
         }
@@ -188,13 +187,27 @@ impl PyXetFileDownloadGroup {
     ///
     /// Releases the GIL while waiting, polling for ``KeyboardInterrupt`` every
     /// 100 ms so that Ctrl-C is delivered promptly.
+    ///
+    /// When a progress callback was registered, it is invoked once more on the
+    /// calling thread with the final snapshot after all work completes.
     pub fn wait_to_finish(&self, py: Python<'_>) -> PyResult<XetDownloadGroupReport> {
         let group = self.inner.clone();
-        blocking_call_with_signal_check(py, move || group.finish_blocking())
+        let result = blocking_call_with_signal_check(py, move || group.finish_blocking());
+        if let (Some(handles), Some(progress)) = (&self.download_handles, &self.progress) {
+            // ignore any error from progress update
+            let _ = progress.stop_and_emit(py, || {
+                let item_reports = item_reports_from_download_handles(handles);
+                (self.inner.progress(), item_reports)
+            });
+        }
+        result
     }
 
     /// Cancel all active downloads in this group.
     pub fn abort(&self) -> PyResult<()> {
+        if let Some(progress) = &self.progress {
+            progress.stop_and_join()?;
+        }
         self.inner.abort().map_err(convert_xet_error)
     }
 
@@ -236,6 +249,7 @@ mod tests {
                 .build_blocking()
                 .unwrap(),
             download_handles: None,
+            progress: None,
         };
 
         Python::attach(|py| {
@@ -257,6 +271,7 @@ mod tests {
                 .build_blocking()
                 .unwrap(),
             download_handles: None,
+            progress: None,
         };
 
         Python::attach(|py| {
