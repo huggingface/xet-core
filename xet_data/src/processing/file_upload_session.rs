@@ -623,8 +623,8 @@ impl FileUploadSession {
         Ok(())
     }
 
-    pub fn client(&self) -> &Arc<dyn Client + Send + Sync> {
-        &self.client
+    pub fn client(&self) -> Arc<dyn Client + Send + Sync> {
+        Arc::clone(&self.client)
     }
 
     pub fn progress(&self) -> &Arc<GroupProgress> {
