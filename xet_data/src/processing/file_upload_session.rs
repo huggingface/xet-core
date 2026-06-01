@@ -13,8 +13,6 @@ use tokio::sync::Mutex;
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{Instrument, Span, info_span, instrument};
 use xet_client::cas_client::{Client, ProgressCallback};
-use xet_client::cas_types::{FileChunkHashesResponse, FileRange};
-use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
 use xet_core_structures::xorb_object::SerializedXorbObject;
 use xet_runtime::core::XetContext;
@@ -618,31 +616,15 @@ impl FileUploadSession {
         self.shard_interface.add_file_reconstruction_info(file_info).await
     }
 
-    pub async fn get_file_chunk_hashes(
-        &self,
-        file_id: &MerkleHash,
-        dirty_ranges: Vec<FileRange>,
-    ) -> Result<FileChunkHashesResponse> {
-        if dirty_ranges.is_empty() {
-            return Err(DataError::InvalidOperation(
-                "get_file_chunk_hashes requires at least one dirty range".to_string(),
-            ));
-        }
-        Ok(self.client.get_file_chunk_hashes(file_id, dirty_ranges).await?)
-    }
-
-    pub async fn get_file_reconstruction_info(
-        &self,
-        file_hash: &MerkleHash,
-    ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
-        Ok(self.client.get_file_reconstruction_info(file_hash).await?)
-    }
-
     fn check_not_finalized(&self) -> Result<()> {
         if self.finalized.load(Ordering::Acquire) {
             return Err(DataError::InvalidOperation("FileUploadSession already finalized".to_string()));
         }
         Ok(())
+    }
+
+    pub fn client(&self) -> &Arc<dyn Client + Send + Sync> {
+        &self.client
     }
 
     pub fn progress(&self) -> &Arc<GroupProgress> {
