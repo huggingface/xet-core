@@ -315,7 +315,7 @@ impl PyXetUploadCommit {
         let result = blocking_call_with_signal_check(py, move || inner.commit_blocking());
         if let (Some(handles), Some(progress)) = (&self.upload_handles, &self.progress) {
             // ignore any error from progress update
-            let _ = if result.is_ok() {
+            let progress_join_ret = if result.is_ok() {
                 progress.stop_and_emit(py, || {
                     let item_reports = item_reports_from_upload_handles(handles);
                     (self.inner.progress(), item_reports)
@@ -323,6 +323,9 @@ impl PyXetUploadCommit {
             } else {
                 progress.stop_and_join(py)
             };
+            if let Err(e) = progress_join_ret {
+                tracing::warn!(id = self.inner.id().0, error = ?e, "PyXetUploadCommit progress thread join failed");
+            }
         }
         result
     }

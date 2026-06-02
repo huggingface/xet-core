@@ -84,7 +84,10 @@ impl BackgroundProgress {
     {
         self.stop_and_join(py)?;
         let (group_report, item_reports) = snapshot();
-        self.callback.call1(py, (group_report, item_reports))?;
+        match self.callback.call1(py, (group_report, item_reports)) {
+            Ok(_) => {},
+            Err(e) => e.print(py),
+        }
         Ok(())
     }
 }
@@ -200,7 +203,7 @@ mod tests {
     }
 
     #[test]
-    fn abort_path_does_not_invoke_callback() {
+    fn stop_and_join_does_not_invoke_callback() {
         // Long interval means the poller won't fire before we abort.
         // stop_and_join must not fire the callback itself.
         const LONG_INTERVAL_MS: u64 = 60_000;
