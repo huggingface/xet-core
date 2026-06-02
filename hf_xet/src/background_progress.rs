@@ -116,6 +116,10 @@ where
         // Mutex is not held across snapshot or the Python callback.
         let (group_report, item_reports, is_terminal) = snapshot();
 
+        if is_terminal {
+            break;
+        }
+
         match Python::try_attach(|py| callback.call1(py, (group_report, item_reports))) {
             None => break, // interpreter shutting down
             Some(Ok(_)) => {},
@@ -123,10 +127,6 @@ where
                 let _ = Python::try_attach(|py| e.print(py));
                 break;
             },
-        }
-
-        if is_terminal {
-            break;
         }
     }
     Ok(())
@@ -139,19 +139,29 @@ mod tests {
 
     use pyo3::Python;
     use pyo3::ffi::c_str;
+    use pyo3::types::PyDict;
     use xet_pkg::xet_session::GroupProgressReport;
 
     use super::*;
 
+    fn make_counter_callback<'py>(py: Python<'py>) -> PyResult<(Py<PyAny>, Bound<'py, PyDict>)> {
+        let ns = PyDict::new(py);
+        py.run(c_str!("calls = []\ndef cb(group, items): calls.append(1)"), Some(&ns), None)?;
+        let callback: Py<PyAny> = ns.get_item("cb")?.unwrap().unbind();
+        Ok((callback, ns))
+    }
+
+    fn call_count(py: Python<'_>, ns: &Bound<'_, PyDict>) -> PyResult<usize> {
+        py.eval(c_str!("len(calls)"), Some(ns), None)?.extract()
+    }
+
     #[test]
     fn stop_and_join_returns_before_poll_interval_elapses() {
-        /// Poll interval long enough that a blocking sleep would fail the test.
         const LONG_INTERVAL_MS: u64 = 60_000;
         const STOP_DEADLINE: Duration = Duration::from_secs(2);
 
         Python::attach(|py| -> PyResult<()> {
-            py.run(c_str!("def _bg_progress_test_cb(_group, _items): pass"), None, None)?;
-            let callback: Py<PyAny> = py.eval(c_str!("_bg_progress_test_cb"), None, None)?.unbind();
+            let (callback, _ns) = make_counter_callback(py)?;
 
             let progress = BackgroundProgress::spawn(py, callback, LONG_INTERVAL_MS, || {
                 (GroupProgressReport::default(), HashMap::new(), false)
@@ -165,6 +175,47 @@ mod tests {
                 elapsed < STOP_DEADLINE,
                 "stop_and_join took {elapsed:?}; expected prompt return (poll interval is {LONG_INTERVAL_MS}ms)"
             );
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn final_callback_fires_exactly_once_via_stop_and_emit() {
+        // Snapshot immediately signals terminal so the poller breaks without calling
+        // the callback.  stop_and_emit should then fire it exactly once.
+        Python::attach(|py| -> PyResult<()> {
+            let (callback, ns) = make_counter_callback(py)?;
+
+            let progress =
+                BackgroundProgress::spawn(py, callback, 1, || (GroupProgressReport::default(), HashMap::new(), true));
+
+            progress.stop_and_emit(py, || (GroupProgressReport::default(), HashMap::new()))?;
+
+            let n = call_count(py, &ns)?;
+            assert_eq!(n, 1, "expected exactly one final callback, got {n}");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn abort_path_does_not_invoke_callback() {
+        // Long interval means the poller won't fire before we abort.
+        // stop_and_join must not fire the callback itself.
+        const LONG_INTERVAL_MS: u64 = 60_000;
+
+        Python::attach(|py| -> PyResult<()> {
+            let (callback, ns) = make_counter_callback(py)?;
+
+            let progress = BackgroundProgress::spawn(py, callback, LONG_INTERVAL_MS, || {
+                (GroupProgressReport::default(), HashMap::new(), false)
+            });
+
+            progress.stop_and_join(py)?;
+
+            let n = call_count(py, &ns)?;
+            assert_eq!(n, 0, "abort path must not invoke the callback, got {n}");
             Ok(())
         })
         .unwrap();

@@ -116,16 +116,16 @@ pub(crate) fn build_upload_commit(
             .map_err(convert_xet_error)
     })?;
 
-    let (upload_handles, background_progress) = if let Some(callback) = progress_callback {
+    let (upload_handles, progress) = if let Some(callback) = progress_callback {
         let handles: Arc<RwLock<Vec<XetFileUpload>>> = Arc::new(RwLock::new(Vec::new()));
         let inner = commit.clone();
         let handles_for_thread = handles.clone();
-        let background_progress = BackgroundProgress::spawn(py, callback, progress_interval_ms, move || {
+        let progress = BackgroundProgress::spawn(py, callback, progress_interval_ms, move || {
             let is_terminal = !matches!(inner.status(), Ok(XetTaskState::Running) | Ok(XetTaskState::Finalizing));
             let item_reports = item_reports_from_upload_handles(&handles_for_thread);
             (inner.progress(), item_reports, is_terminal)
         });
-        (Some(handles), Some(background_progress))
+        (Some(handles), Some(progress))
     } else {
         (None, None)
     };
@@ -133,7 +133,7 @@ pub(crate) fn build_upload_commit(
     Ok(PyXetUploadCommit {
         inner: commit,
         upload_handles,
-        background_progress,
+        progress,
     })
 }
 
@@ -156,7 +156,7 @@ pub struct PyXetUploadCommit {
     upload_handles: Option<Arc<RwLock<Vec<XetFileUpload>>>>,
     /// Background thread that polls progress and invokes the Python callback; None when no
     /// callback was registered. Stopped and joined from ``wait_to_finish`` and ``abort``.
-    background_progress: Option<BackgroundProgress>,
+    progress: Option<BackgroundProgress>,
 }
 
 #[pymethods]
@@ -313,19 +313,23 @@ impl PyXetUploadCommit {
     pub fn wait_to_finish(&self, py: Python<'_>) -> PyResult<XetCommitReport> {
         let inner = self.inner.clone();
         let result = blocking_call_with_signal_check(py, move || inner.commit_blocking());
-        if let (Some(handles), Some(progress)) = (&self.upload_handles, &self.background_progress) {
+        if let (Some(handles), Some(progress)) = (&self.upload_handles, &self.progress) {
             // ignore any error from progress update
-            let _ = progress.stop_and_emit(py, || {
-                let item_reports = item_reports_from_upload_handles(handles);
-                (self.inner.progress(), item_reports)
-            });
+            let _ = if result.is_ok() {
+                progress.stop_and_emit(py, || {
+                    let item_reports = item_reports_from_upload_handles(handles);
+                    (self.inner.progress(), item_reports)
+                })
+            } else {
+                progress.stop_and_join(py)
+            };
         }
         result
     }
 
     /// Cancel all active uploads in this commit.
     pub fn abort(&self, py: Python<'_>) -> PyResult<()> {
-        if let Some(progress) = &self.background_progress {
+        if let Some(progress) = &self.progress {
             // ignore any error from progress update
             let _ = progress.stop_and_join(py);
         }
@@ -422,7 +426,7 @@ mod tests {
                 .build_blocking()
                 .unwrap(),
             upload_handles: None,
-            background_progress: None,
+            progress: None,
         };
 
         Python::attach(|py| {
@@ -452,7 +456,7 @@ mod tests {
                 .build_blocking()
                 .unwrap(),
             upload_handles: None,
-            background_progress: None,
+            progress: None,
         };
 
         Python::attach(|py| {

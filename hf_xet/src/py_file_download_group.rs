@@ -195,10 +195,14 @@ impl PyXetFileDownloadGroup {
         let result = blocking_call_with_signal_check(py, move || group.finish_blocking());
         if let (Some(handles), Some(progress)) = (&self.download_handles, &self.progress) {
             // ignore any error from progress update
-            let _ = progress.stop_and_emit(py, || {
-                let item_reports = item_reports_from_download_handles(handles);
-                (self.inner.progress(), item_reports)
-            });
+            let _ = if result.is_ok() {
+                progress.stop_and_emit(py, || {
+                    let item_reports = item_reports_from_download_handles(handles);
+                    (self.inner.progress(), item_reports)
+                })
+            } else {
+                progress.stop_and_join(py)
+            };
         }
         result
     }
