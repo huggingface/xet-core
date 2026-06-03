@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, Weak};
 use tracing::info;
 use uuid::Uuid;
 use xet_runtime::config::XetConfig;
-use xet_runtime::core::XetContext;
+use xet_runtime::core::{XetContext, XetRuntime};
 #[cfg(feature = "fd-track")]
 use xet_runtime::fd_diagnostics::{report_fd_count, track_fd_scope};
 use xet_runtime::utils::UniqueId;
@@ -56,9 +56,8 @@ pub struct XetSessionInner {
 ///   session wraps the caller's handle; no second thread pool is created.  Both async and blocking methods work.
 /// - **Outside any runtime** — an owned multi-thread runtime is created internally. Blocking methods (`_blocking`
 ///   suffix) work from any thread; async methods work via an internal bridge.
-/// - **Explicit handle** — call [`with_tokio_handle`](Self::with_tokio_handle) to supply a handle directly.  If it
-///   doesn't meet requirements (multi-thread, time + IO drivers), it is silently ignored and an owned runtime is
-///   created instead.
+/// - **Explicit runtime** — call [`with_runtime`](Self::with_runtime) to supply an existing [`XetRuntime`]. The new
+///   session gets fresh configuration and common state while sharing the same runtime.
 ///
 /// ## Authentication
 ///
@@ -104,11 +103,20 @@ pub struct XetSessionInner {
 /// ## `XetConfig`
 ///
 /// For most use cases, [`new`](Self::new) with the default [`XetConfig`] is
-/// sufficient.  Use [`new_with_config`](Self::new_with_config) when you need to
-/// override runtime settings such as cache directories or concurrency limits.
+/// sufficient.  Use [`with_config`](Self::with_config) when you need to override
+/// runtime settings such as cache directories or concurrency limits.
+///
+/// ## Reusing a context
+///
+/// Use [`with_context`](Self::with_context) to build a session on top of an
+/// existing [`XetContext`] (for example, one obtained from another session via
+/// [`XetSession::context`]).  This shares the runtime, configuration, and—most
+/// importantly—the cached shard-file managers, so subsequent sessions avoid
+/// re-scanning and re-indexing the local shard cache from disk.
 pub struct XetSessionBuilder {
-    config: XetConfig,
-    tokio_handle: Option<tokio::runtime::Handle>,
+    config: Option<Arc<XetConfig>>,
+    context: Option<XetContext>,
+    runtime: Option<Arc<XetRuntime>>,
 }
 
 impl Default for XetSessionBuilder {
@@ -118,65 +126,102 @@ impl Default for XetSessionBuilder {
 }
 
 impl XetSessionBuilder {
-    /// Create a builder with default [`XetConfig`].
+    /// Create an empty builder.
     pub fn new() -> Self {
         Self {
-            config: XetConfig::new(),
-            tokio_handle: None,
+            config: None,
+            context: None,
+            runtime: None,
         }
     }
 
-    /// Create a builder pre-populated with the given [`XetConfig`].
-    pub fn new_with_config(config: XetConfig) -> Self {
+    /// Set the configuration used to construct the session.
+    ///
+    /// Accepts either a [`XetConfig`] or an `Arc<XetConfig>`.
+    ///
+    /// Takes precedence over a context's configuration: when combined with
+    /// [`with_context`](Self::with_context), the context's runtime and shared
+    /// state are reused but this configuration replaces the context's. Values
+    /// already baked into shared `common` state are not recalculated.
+    pub fn with_config(self, config: impl Into<Arc<XetConfig>>) -> Self {
         Self {
-            config,
-            tokio_handle: None,
+            config: Some(config.into()),
+            ..self
         }
     }
 
-    /// Attach to an existing tokio runtime handle.
+    /// Reuse an existing [`XetContext`] instead of constructing a new one.
     ///
-    /// If the handle meets runtime requirements (multi-thread flavor, time driver, IO driver),
-    /// the session will wrap it — no second thread pool is created. Only async
-    /// methods (`new_upload_commit`, `new_file_download_group`) may be called; `_blocking` variants
-    /// return [`SessionError::WrongRuntimeMode`] from `bridge_sync` (external runtime cannot run sync bridge).
+    /// The session shares the context's runtime, configuration, and shared state
+    /// (`common`), including the cached shard-file managers. This lets a sequence
+    /// of sessions avoid repeatedly scanning and indexing the local shard cache.
     ///
-    /// If the handle does **not** meet requirements (e.g. `current_thread` flavor or missing
-    /// drivers), it is silently ignored and [`build`](Self::build) will fall back to creating
-    /// an owned thread pool instead.
-    ///
-    /// Handles can be shared by multiple sessions. Each session gets its own
-    /// [`XetContext`] (`config` + `common`), while the underlying runtime
-    /// may be shared.
-    pub fn with_tokio_handle(self, handle: tokio::runtime::Handle) -> Self {
-        let accept = XetContext::handle_meets_requirements(&handle);
-        if !accept {
-            info!("supplied tokio handle rejected (missing drivers or wrong flavor); falling back to Owned mode");
-        }
+    /// [`with_runtime`](Self::with_runtime) is ignored when a context is supplied.
+    /// [`with_config`](Self::with_config) is honored: its configuration replaces
+    /// the context's while the runtime and shared state are still reused.
+    pub fn with_context(self, context: XetContext) -> Self {
         Self {
-            tokio_handle: accept.then_some(handle),
+            context: Some(context),
+            ..self
+        }
+    }
+
+    /// Reuse an existing xet runtime.
+    ///
+    /// Each session gets its own [`XetContext`] configuration and shared state,
+    /// while the supplied runtime is kept alive by its `Arc`.
+    pub fn with_runtime(self, runtime: Arc<XetRuntime>) -> Self {
+        Self {
+            runtime: Some(runtime),
             ..self
         }
     }
 
     /// Consume the builder and create a [`XetSession`].
     ///
-    /// Threadpool selection order:
-    /// 1. Reuse the current owned runtime from thread-local storage, when present.
-    /// 2. Otherwise, use a provided tokio handle (or auto-detected current handle) if valid.
-    /// 3. Otherwise, create a new owned thread pool.
+    /// Context selection order:
+    /// 1. If a context was supplied via [`with_context`](Self::with_context), reuse its runtime and shared state
+    ///    (including the cached shard-file managers). If [`with_config`](Self::with_config) was also supplied, that
+    ///    configuration replaces the context's; otherwise the context's configuration is kept.
+    /// 2. Otherwise, if a runtime was supplied via [`with_runtime`](Self::with_runtime), wrap it in a fresh context.
+    /// 3. Otherwise, construct a fresh [`XetContext`]. Threadpool selection then follows:
+    ///    1. Reuse the current owned runtime from thread-local storage, when present.
+    ///    2. Otherwise, use the auto-detected current tokio handle if valid.
+    ///    3. Otherwise, create a new owned thread pool.
     ///
-    /// Each build creates a fresh [`XetContext`] around the selected runtime, so sessions
-    /// can share the same execution backend while keeping independent config and common state.
+    /// A freshly constructed context keeps independent config and common state, so such sessions
+    /// can share an execution backend without sharing caches.
     pub fn build(self) -> Result<XetSession, SessionError> {
         #[cfg(feature = "fd-track")]
         let _fd_scope = track_fd_scope("XetSessionBuilder::build");
 
-        let ctx = if let Some(h) = self.tokio_handle {
-            info!("XetSession using explicitly provided tokio handle");
-            XetContext::from_external(h, self.config)
+        let Self {
+            config,
+            context,
+            runtime,
+        } = self;
+
+        let ctx = if let Some(ctx) = context {
+            if runtime.is_some() {
+                info!("XetSessionBuilder: with_runtime is ignored when an explicit XetContext is provided");
+            }
+            if let Some(config) = config {
+                // with_config takes precedence: swap the config while sharing the
+                // context's runtime and common state (including its caches).
+                info!("XetSession reusing provided XetContext with overridden config");
+                ctx.with_new_config(config)
+            } else {
+                info!("XetSession reusing provided XetContext");
+                ctx
+            }
         } else {
-            XetContext::with_config(self.config)?
+            let config = config.unwrap_or_else(|| Arc::new(XetConfig::new()));
+            if let Some(runtime) = runtime {
+                info!("XetSession using explicitly provided XetRuntime");
+                XetContext::new(config, runtime)
+            } else {
+                XetContext::with_config(config)?
+            }
         };
 
         let session = XetSession::new(ctx);
@@ -372,8 +417,28 @@ impl XetSession {
         &self.inner.id
     }
 
-    pub fn config(&self) -> &XetConfig {
-        &self.inner.ctx.config
+    /// The configuration backing this session.
+    pub fn config(&self) -> Arc<XetConfig> {
+        self.inner.ctx.config.clone()
+    }
+
+    /// The underlying [`XetContext`] backing this session.
+    ///
+    /// Pass it to [`XetSessionBuilder::with_context`] to build additional
+    /// sessions that share this session's runtime, configuration, and cached
+    /// shard-file managers.  Cloning a context is cheap (it is `Arc`-backed).
+    pub fn context(&self) -> XetContext {
+        self.inner.ctx.clone()
+    }
+
+    /// The xet runtime backing this session.
+    ///
+    /// Pass it to [`XetSessionBuilder::with_runtime`] to build additional
+    /// sessions that share this session's runtime while keeping independent
+    /// configuration and shared state. To also share cached shard-file managers,
+    /// prefer [`context`](Self::context).
+    pub fn runtime(&self) -> Arc<XetRuntime> {
+        self.inner.ctx.runtime.clone()
     }
 }
 
@@ -401,6 +466,87 @@ mod tests {
         let s1 = XetSessionBuilder::new().build().unwrap();
         let s2 = XetSessionBuilder::new().build().unwrap();
         assert_ne!(s1.inner.id, s2.inner.id);
+    }
+
+    #[test]
+    // with_context reuses the runtime + shared state (common), so the shard-file-manager
+    // cache is shared. The two sessions still get distinct IDs.
+    fn test_with_context_shares_common_state() {
+        let first = XetSessionBuilder::new().build().unwrap();
+        let second = XetSessionBuilder::new().with_context(first.context()).build().unwrap();
+
+        assert!(Arc::ptr_eq(&first.inner.ctx.common, &second.inner.ctx.common));
+        assert!(Arc::ptr_eq(&first.inner.ctx.runtime, &second.inner.ctx.runtime));
+        assert!(Arc::ptr_eq(&first.inner.ctx.config, &second.inner.ctx.config));
+        assert_ne!(first.inner.id, second.inner.id);
+    }
+
+    #[test]
+    // with_config combined with with_context overrides the config while still sharing the
+    // context's runtime and common state.
+    fn test_with_context_and_with_config_replaces_config() {
+        let first = XetSessionBuilder::new().build().unwrap();
+        let overridden = XetConfig::new()
+            .with_config("data.default_cas_endpoint", "https://cas.example.com")
+            .unwrap();
+
+        let second = XetSessionBuilder::new()
+            .with_context(first.context())
+            .with_config(overridden)
+            .build()
+            .unwrap();
+
+        // Runtime and common state are still shared with the source context.
+        assert!(Arc::ptr_eq(&first.inner.ctx.common, &second.inner.ctx.common));
+        assert!(Arc::ptr_eq(&first.inner.ctx.runtime, &second.inner.ctx.runtime));
+
+        // But the config is the overriding one, not the original.
+        assert_eq!(second.config().data.default_cas_endpoint, "https://cas.example.com");
+        assert_ne!(first.config().data.default_cas_endpoint, second.config().data.default_cas_endpoint);
+    }
+
+    #[test]
+    fn test_with_config_accepts_shared_config() {
+        let first = XetSessionBuilder::new().build().unwrap();
+        let second = XetSessionBuilder::new().with_config(first.config()).build().unwrap();
+
+        assert!(Arc::ptr_eq(&first.inner.ctx.config, &second.inner.ctx.config));
+        assert!(!Arc::ptr_eq(&first.inner.ctx.common, &second.inner.ctx.common));
+    }
+
+    #[test]
+    // A freshly built session does not share common state with another fresh session.
+    fn test_fresh_sessions_do_not_share_common_state() {
+        let s1 = XetSessionBuilder::new().build().unwrap();
+        let s2 = XetSessionBuilder::new().build().unwrap();
+        assert!(!Arc::ptr_eq(&s1.inner.ctx.common, &s2.inner.ctx.common));
+    }
+
+    #[test]
+    // The runtime from a session can be reused to build another session while
+    // keeping independent common state.
+    fn test_runtime_can_be_reused() {
+        let first = XetSessionBuilder::new().build().unwrap();
+        let second = XetSessionBuilder::new().with_runtime(first.runtime()).build().unwrap();
+
+        assert!(Arc::ptr_eq(&first.inner.ctx.runtime, &second.inner.ctx.runtime));
+        assert!(!Arc::ptr_eq(&first.inner.ctx.common, &second.inner.ctx.common));
+    }
+
+    #[test]
+    // with_context takes precedence over with_runtime.
+    fn test_with_context_ignores_runtime() {
+        let context_source = XetSessionBuilder::new().build().unwrap();
+        let runtime_source = XetSessionBuilder::new().build().unwrap();
+
+        let session = XetSessionBuilder::new()
+            .with_context(context_source.context())
+            .with_runtime(runtime_source.runtime())
+            .build()
+            .unwrap();
+
+        assert!(Arc::ptr_eq(&context_source.inner.ctx.runtime, &session.inner.ctx.runtime));
+        assert!(!Arc::ptr_eq(&runtime_source.inner.ctx.runtime, &session.inner.ctx.runtime));
     }
 
     #[test]
@@ -742,36 +888,32 @@ mod tests {
         assert_eq!(collected_b, data_b);
     }
 
-    // ── Shared tokio handle behavior ──────────────────────────────────────────
+    // ── Shared runtime behavior ───────────────────────────────────────────────
 
     #[test]
-    // Building multiple sessions with the same tokio handle is allowed.
-    fn test_build_with_same_handle_stays_external() {
+    // Building multiple sessions with the same runtime is allowed.
+    fn test_build_with_same_runtime_stays_external() {
         let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        let handle = tokio_rt.handle().clone();
+        let runtime = XetRuntime::from_external(tokio_rt.handle().clone());
 
-        let first = XetSessionBuilder::new().with_tokio_handle(handle.clone()).build().unwrap();
+        let first = XetSessionBuilder::new().with_runtime(runtime.clone()).build().unwrap();
         assert_eq!(first.inner.ctx.runtime.mode(), RuntimeMode::External, "first build must use External runtime");
 
-        let second = XetSessionBuilder::new().with_tokio_handle(handle).build();
-        assert!(second.is_ok(), "second build with the same tokio handle must still succeed");
-        assert_eq!(
-            second.unwrap().inner.ctx.runtime.mode(),
-            RuntimeMode::External,
-            "second build should remain External when sharing the same tokio handle"
-        );
+        let second = XetSessionBuilder::new().with_runtime(runtime).build().unwrap();
+        assert_eq!(second.inner.ctx.runtime.mode(), RuntimeMode::External);
+        assert!(Arc::ptr_eq(&first.inner.ctx.runtime, &second.inner.ctx.runtime));
     }
 
     #[test]
-    // Dropping one session must not affect creating another session with the same handle.
-    fn test_build_with_same_handle_succeeds_after_first_is_dropped() {
+    // Dropping one session must not affect creating another session with the same runtime.
+    fn test_build_with_same_runtime_succeeds_after_first_is_dropped() {
         let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        let handle = tokio_rt.handle().clone();
+        let runtime = XetRuntime::from_external(tokio_rt.handle().clone());
 
-        let first = XetSessionBuilder::new().with_tokio_handle(handle.clone()).build().unwrap();
+        let first = XetSessionBuilder::new().with_runtime(runtime.clone()).build().unwrap();
         drop(first);
 
-        let second = XetSessionBuilder::new().with_tokio_handle(handle).build();
-        assert!(second.is_ok(), "build must succeed after the previous session holding the same handle is dropped");
+        let second = XetSessionBuilder::new().with_runtime(runtime).build();
+        assert!(second.is_ok(), "build must succeed after the previous session holding the same runtime is dropped");
     }
 }
