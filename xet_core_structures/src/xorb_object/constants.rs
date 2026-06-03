@@ -54,21 +54,23 @@ lazy_static::lazy_static! {
 ///
 /// See `parallel chunking.lyx` for the full proof and `find_stable_start` in
 /// `merkle_hash_subtree.rs` for the analogous construction in merkle hashing.
-pub fn next_stable_chunk_boundary(starting_position: usize, chunk_boundaries: &[usize]) -> Option<usize> {
+/// True when a chunk's size satisfies the CDC stability condition: `[2 * min_chunk,
+/// max_chunk - min_chunk)`. Two consecutive chunks both meeting this condition mark a
+/// stable boundary at the end of the second chunk (see [`next_stable_chunk_boundary`]).
+pub fn is_stable_chunk_size(size: usize) -> bool {
     let minimum_chunk = *TARGET_CHUNK_SIZE / *MINIMUM_CHUNK_DIVISOR;
     let maximum_chunk = *TARGET_CHUNK_SIZE * *MAXIMUM_CHUNK_MULTIPLIER;
+    size >= 2 * minimum_chunk && size < maximum_chunk - minimum_chunk
+}
 
+pub fn next_stable_chunk_boundary(starting_position: usize, chunk_boundaries: &[usize]) -> Option<usize> {
     let start_idx = chunk_boundaries.partition_point(|&x| x < starting_position);
 
     for i in start_idx..chunk_boundaries.len().saturating_sub(2) {
         let size_a = chunk_boundaries[i + 1] - chunk_boundaries[i];
         let size_b = chunk_boundaries[i + 2] - chunk_boundaries[i + 1];
 
-        if size_a >= 2 * minimum_chunk
-            && size_a < maximum_chunk - minimum_chunk
-            && size_b >= 2 * minimum_chunk
-            && size_b < maximum_chunk - minimum_chunk
-        {
+        if is_stable_chunk_size(size_a) && is_stable_chunk_size(size_b) {
             return Some(chunk_boundaries[i + 2]);
         }
     }
