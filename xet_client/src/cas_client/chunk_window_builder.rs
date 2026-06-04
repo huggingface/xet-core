@@ -236,8 +236,19 @@ pub fn build_file_chunk_hashes_response(
 mod tests {
     use xet_core_structures::merklehash::MerkleHash;
     use xet_core_structures::metadata_shard::file_structs::{FileDataSequenceEntry, MDBFileInfo};
+    use xet_core_structures::xorb_object::constants::{
+        MAXIMUM_CHUNK_MULTIPLIER, MINIMUM_CHUNK_DIVISOR, TARGET_CHUNK_SIZE,
+    };
 
     use super::*;
+
+    fn stable_chunk_size() -> u64 {
+        let minimum_chunk = *TARGET_CHUNK_SIZE / *MINIMUM_CHUNK_DIVISOR;
+        let maximum_chunk = *TARGET_CHUNK_SIZE * *MAXIMUM_CHUNK_MULTIPLIER;
+        let size = 2 * minimum_chunk;
+        assert!(size < maximum_chunk - minimum_chunk);
+        size as u64
+    }
 
     fn build_test_file_info_and_chunks(n_chunks: usize, chunk_size: u64) -> (MDBFileInfo, Vec<(MerkleHash, u64)>) {
         let chunks: Vec<(MerkleHash, u64)> = (0..n_chunks)
@@ -258,8 +269,35 @@ mod tests {
     }
 
     #[test]
-    fn test_window_matches_dirty_range() {
-        let chunk_size = 65536u64;
+    fn test_server_extends_dirty_window_to_next_stable_boundary() {
+        let chunk_size = stable_chunk_size();
+        let (file_info, chunks) = build_test_file_info_and_chunks(6, chunk_size);
+        let dirty_ranges = vec![FileRange::new(1, chunk_size + 1)];
+
+        let response = build_file_chunk_hashes_response(&file_info, dirty_ranges, chunks).unwrap();
+
+        assert_eq!(response.windows.len(), 1);
+        assert_eq!(response.windows[0].dirty_byte_range, [0, 4 * chunk_size]);
+    }
+
+    #[test]
+    fn test_server_coalesces_ranges_after_stable_extension() {
+        let chunk_size = stable_chunk_size();
+        let (file_info, chunks) = build_test_file_info_and_chunks(8, chunk_size);
+        let dirty_ranges = vec![
+            FileRange::new(1, chunk_size + 1),
+            FileRange::new(3 * chunk_size + 7, 3 * chunk_size + 42),
+        ];
+
+        let response = build_file_chunk_hashes_response(&file_info, dirty_ranges, chunks).unwrap();
+
+        assert_eq!(response.windows.len(), 1);
+        assert_eq!(response.windows[0].dirty_byte_range, [0, 6 * chunk_size]);
+    }
+
+    #[test]
+    fn test_server_no_extension_when_range_already_at_file_end() {
+        let chunk_size = stable_chunk_size();
         let (file_info, chunks) = build_test_file_info_and_chunks(6, chunk_size);
         let file_size = chunk_size * 6;
         let dirty_ranges = vec![FileRange::new(4 * chunk_size, file_size)];
@@ -271,8 +309,8 @@ mod tests {
     }
 
     #[test]
-    fn test_separate_ranges_produce_separate_windows() {
-        let chunk_size = 65536u64;
+    fn test_server_separate_ranges_stay_separate_when_far_apart() {
+        let chunk_size = stable_chunk_size();
         let n_chunks = 20;
         let (file_info, chunks) = build_test_file_info_and_chunks(n_chunks, chunk_size);
         let dirty_ranges = vec![
@@ -282,7 +320,31 @@ mod tests {
 
         let response = build_file_chunk_hashes_response(&file_info, dirty_ranges, chunks).unwrap();
 
-        assert_eq!(response.windows.len(), 2);
-        assert_eq!(response.hash_ranges.len(), 3);
+        assert!(
+            response.windows.len() >= 2,
+            "far-apart ranges should remain separate, got {} window(s)",
+            response.windows.len()
+        );
+        assert_eq!(response.hash_ranges.len(), response.windows.len() + 1);
+    }
+
+    #[test]
+    fn test_server_extension_falls_through_to_file_end_when_no_stable_boundary() {
+        let minimum_chunk = *TARGET_CHUNK_SIZE / *MINIMUM_CHUNK_DIVISOR;
+        let maximum_chunk = *TARGET_CHUNK_SIZE * *MAXIMUM_CHUNK_MULTIPLIER;
+        let forced_size = maximum_chunk as u64;
+        let (file_info, chunks) = build_test_file_info_and_chunks(4, forced_size);
+        let file_size = forced_size * 4;
+        let dirty_ranges = vec![FileRange::new(0, forced_size)];
+
+        let response = build_file_chunk_hashes_response(&file_info, dirty_ranges, chunks).unwrap();
+
+        assert_eq!(response.windows.len(), 1);
+        let w = &response.windows[0];
+        assert_eq!(
+            w.dirty_byte_range[1], file_size,
+            "when no stable boundary exists, window should extend to file end; \
+             minimum_chunk={minimum_chunk}, maximum_chunk={maximum_chunk}"
+        );
     }
 }

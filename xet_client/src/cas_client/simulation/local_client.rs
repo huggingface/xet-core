@@ -1710,10 +1710,11 @@ impl Client for LocalClient {
         let mut chunks: Vec<(MerkleHash, u64)> = Vec::new();
         for segment in &file_info.segments {
             let xorb_obj = self.xorb_footer(&segment.xorb_hash).await?;
-            let seg_chunks = xorb_obj
-                .chunk_hash_sizes(segment.chunk_index_start, segment.chunk_index_end)
-                .map_err(|err| ClientError::Other(format!("chunk_hash_sizes error: {err}")))?;
-            chunks.extend(seg_chunks);
+            chunks.extend(
+                xorb_obj
+                    .chunk_hash_sizes(segment.chunk_index_start, segment.chunk_index_end)
+                    .map_err(|err| ClientError::Other(format!("chunk_hash_sizes error: {err}")))?,
+            );
         }
 
         build_file_chunk_hashes_response(&file_info, dirty_ranges, chunks)
