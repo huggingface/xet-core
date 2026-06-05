@@ -79,8 +79,8 @@ pub struct XorbObjectInfoV0 {
     pub chunk_hashes: Vec<MerkleHash>,
 
     #[serde(skip)]
-    /// Extensibility buffer for future use; see `XorbObjectInfoV1::_buffer`.
-    _buffer: [u8; XORB_OBJECT_FORMAT_FOOTER_BUFFER_LEN],
+    /// Unused 16-byte buffer to allow for future extensibility.
+    _buffer: [u8; 16],
 }
 
 impl Default for XorbObjectInfoV0 {
@@ -196,7 +196,7 @@ impl XorbObjectInfoV0 {
             chunk_hashes.push(MerkleHash::from(&hash));
         }
 
-        let mut _buffer = [0u8; XORB_OBJECT_FORMAT_FOOTER_BUFFER_LEN];
+        let mut _buffer = [0u8; 16];
         read_bytes(&mut _buffer)?;
 
         Ok((
@@ -260,7 +260,7 @@ impl XorbObjectInfoV0 {
             chunk_hashes.push(MerkleHash::from(&hash));
         }
 
-        let mut _buffer = [0u8; XORB_OBJECT_FORMAT_FOOTER_BUFFER_LEN];
+        let mut _buffer = [0u8; 16];
         read_bytes(reader, &mut total_bytes_read, &mut _buffer).await?;
 
         Ok((
