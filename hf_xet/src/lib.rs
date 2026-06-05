@@ -1,3 +1,4 @@
+mod background_progress;
 pub mod config;
 mod headers;
 mod legacy;
