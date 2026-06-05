@@ -194,7 +194,7 @@ impl PyXetFileDownloadGroup {
         let group = self.inner.clone();
         let result = blocking_call_with_signal_check(py, move || group.finish_blocking());
         if let (Some(handles), Some(progress)) = (&self.download_handles, &self.progress) {
-            // ignore any error from progress update
+            // Not propagate any error from progress update
             let progress_join_ret = if result.is_ok() {
                 progress.stop_and_emit(py, || {
                     let item_reports = item_reports_from_download_handles(handles);

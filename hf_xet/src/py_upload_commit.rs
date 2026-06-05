@@ -314,7 +314,7 @@ impl PyXetUploadCommit {
         let inner = self.inner.clone();
         let result = blocking_call_with_signal_check(py, move || inner.commit_blocking());
         if let (Some(handles), Some(progress)) = (&self.upload_handles, &self.progress) {
-            // ignore any error from progress update
+            // Not propagate any error from progress update
             let progress_join_ret = if result.is_ok() {
                 progress.stop_and_emit(py, || {
                     let item_reports = item_reports_from_upload_handles(handles);
