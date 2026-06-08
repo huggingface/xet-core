@@ -27,3 +27,52 @@ lazy_static::lazy_static! {
     /// The maximum chunk size, calculated from the configurable constants above
     pub static ref MAX_CHUNK_SIZE: usize = (*TARGET_CHUNK_SIZE) * (*MAXIMUM_CHUNK_MULTIPLIER);
 }
+
+/// Given a list of chunk boundaries in a file and an arbitrary reference position,
+/// returns the next stable chunk boundary at or after that position.
+///
+/// `starting_position` may be any byte offset in the file; it does not need to
+/// be an existing chunk boundary. The search starts at the first chunk boundary
+/// `>= starting_position`.
+///
+/// A stable chunk boundary is defined such that any possible changes in the data
+/// before `starting_position` would produce the same chunk boundaries at the
+/// stable boundary and later. The fixed data between `starting_position` and
+/// the returned stable boundary is always sufficient to restore the chunker to
+/// its original chunk boundaries.
+///
+/// The stability condition requires two consecutive chunks after `starting_position`,
+/// both with sizes in `[2 * min_chunk, max_chunk - min_chunk)`. The boundary
+/// at the end of the second such chunk is the stable chunk boundary.
+///
+/// The lower bound is `2 * min_chunk` rather than `min_chunk` (as used in
+/// `find_partitions` in the chunking module) because this function operates on
+/// existing chunk boundaries without data access, and cannot verify the absence
+/// of hidden hash triggers in the `[c_k, c_k + min_chunk)` skip zone. A
+/// shadow-zone trigger can advance a modified chunker by up to `min_chunk`, so
+/// the next chunk must be at least `2 * min_chunk` to remain reachable.
+///
+/// See `parallel chunking.lyx` for the full proof and `find_stable_start` in
+/// `merkle_hash_subtree.rs` for the analogous construction in merkle hashing.
+pub fn next_stable_chunk_boundary(starting_position: usize, chunk_boundaries: &[usize]) -> Option<usize> {
+    let start_idx = chunk_boundaries.partition_point(|&x| x < starting_position);
+
+    for i in start_idx..chunk_boundaries.len().saturating_sub(2) {
+        let size_a = chunk_boundaries[i + 1] - chunk_boundaries[i];
+        let size_b = chunk_boundaries[i + 2] - chunk_boundaries[i + 1];
+
+        if is_stable_chunk_size(size_a) && is_stable_chunk_size(size_b) {
+            return Some(chunk_boundaries[i + 2]);
+        }
+    }
+    None
+}
+
+/// True when a chunk's size satisfies the CDC stability condition: `[2 * min_chunk,
+/// max_chunk - min_chunk)`. Two consecutive chunks both meeting this condition mark a
+/// stable boundary at the end of the second chunk (see [`next_stable_chunk_boundary`]).
+pub fn is_stable_chunk_size(size: usize) -> bool {
+    let minimum_chunk = *TARGET_CHUNK_SIZE / *MINIMUM_CHUNK_DIVISOR;
+    let maximum_chunk = *TARGET_CHUNK_SIZE * *MAXIMUM_CHUNK_MULTIPLIER;
+    size >= 2 * minimum_chunk && size < maximum_chunk - minimum_chunk
+}

@@ -423,8 +423,6 @@ impl XetUploadCommit {
             .await
     }
 
-    /// Queue raw bytes for upload, starting the transfer immediately.
-    ///
     /// Returns a [`XetFileUpload`] whose
     /// [`finalize_ingestion`](XetFileUpload::finalize_ingestion) method yields
     /// per-file [`XetFileMetadata`] once ingestion completes.

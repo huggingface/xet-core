@@ -6,6 +6,7 @@ mod file_download_session;
 mod file_upload_session;
 #[cfg(not(target_family = "wasm"))]
 pub mod migration_tool;
+pub mod range_upload;
 mod remote_client_interface;
 mod sha256;
 mod shard_interface;
@@ -15,11 +16,13 @@ mod xet_file;
 pub use file_cleaner::{Sha256Policy, SingleFileCleaner};
 pub use file_download_session::FileDownloadSession;
 pub use file_upload_session::FileUploadSession;
+pub use range_upload::{DirtyInput, upload_ranges};
 pub use remote_client_interface::create_remote_client;
 pub use xet_client::cas_client::Client as CasClient;
 #[cfg(not(target_family = "wasm"))]
 pub use xet_client::chunk_cache::get_cache;
 pub use xet_client::chunk_cache::{CacheConfig, ChunkCache};
+pub use xet_core_structures::merklehash::ChunkHashList;
 pub use xet_file::XetFileInfo;
 
 pub use crate::deduplication::RawXorbData;

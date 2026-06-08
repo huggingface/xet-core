@@ -13,15 +13,15 @@ use super::constants::{TARGET_CHUNK_SIZE, XORB_BLOCK_SIZE};
 use super::xorb_chunk_format::{deserialize_chunk, deserialize_chunk_header, serialize_chunk, write_chunk_header};
 use super::{CompressionScheme, RawXorbData, XorbChunkHeader};
 use crate::error::{CoreError, Validate};
-use crate::merklehash::{DataHash, MerkleHash};
+use crate::merklehash::{ChunkHashList, DataHash, MerkleHash};
 use crate::metadata_shard::chunk_verification::range_hash_from_chunks;
 use crate::serialization_utils::*;
 
 pub type XorbObjectIdent = [u8; 7];
-pub(crate) const XORB_OBJECT_FORMAT_IDENT: XorbObjectIdent = [b'X', b'E', b'T', b'B', b'L', b'O', b'B'];
+pub(crate) const XORB_OBJECT_FORMAT_IDENT: XorbObjectIdent = *b"XETBLOB";
 pub(crate) const XORB_OBJECT_FORMAT_VERSION_V0: u8 = 0;
-pub(crate) const XORB_OBJECT_FORMAT_IDENT_HASHES: XorbObjectIdent = [b'X', b'B', b'L', b'B', b'H', b'S', b'H'];
-pub(crate) const XORB_OBJECT_FORMAT_IDENT_BOUNDARIES: XorbObjectIdent = [b'X', b'B', b'L', b'B', b'B', b'N', b'D'];
+pub(crate) const XORB_OBJECT_FORMAT_IDENT_HASHES: XorbObjectIdent = *b"XBLBHSH";
+pub(crate) const XORB_OBJECT_FORMAT_IDENT_BOUNDARIES: XorbObjectIdent = *b"XBLBBND";
 pub(crate) const XORB_OBJECT_FORMAT_VERSION: u8 = 1;
 pub(crate) const XORB_OBJECT_FORMAT_HASHES_VERSION: u8 = 0;
 
@@ -1238,6 +1238,21 @@ impl XorbObject {
         };
         let incl_end = self.info.unpacked_chunk_offsets[chunk_index_end as usize - 1];
         Ok(incl_end - before_start)
+    }
+
+    /// Returns (chunk_hash, uncompressed_size) pairs for chunks in [start, end).
+    pub fn chunk_hash_sizes(&self, start: u32, end: u32) -> Result<ChunkHashList, CoreError> {
+        self.validate_xorb_object_info()?;
+        if end > self.info.num_chunks || start > end {
+            return Err(CoreError::InvalidArguments);
+        }
+        (start..end)
+            .map(|i| {
+                let hash = self.info.chunk_hashes[i as usize];
+                let size = self.uncompressed_chunk_length(i)? as u64;
+                Ok((hash, size))
+            })
+            .collect()
     }
 
     /// Helper method to verify that info object is complete

@@ -2,12 +2,20 @@ use std::io;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use rand_core::OsRng;
 use russh::keys::{Certificate, *};
 use russh::server::{Msg, Server as _, Session};
 use russh::*;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
+
+// Throwaway Ed25519 key used only by the local test SSH server. It grants no real-world access.
+const TEST_SERVER_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACA+2vmtz6IGH5/MmGsLN2SSEOHvfE0bynii47Qt73gBrwAAAJCs/rd7rP63
+ewAAAAtzc2gtZWQyNTUxOQAAACA+2vmtz6IGH5/MmGsLN2SSEOHvfE0bynii47Qt73gBrw
+AAAEB+gwM6BMsyjmnW1LlZQvUqWWuf9UAEepPBj0xDLDNMOT7a+a3PogYfn8yYaws3ZJIQ
+4e98TRvKeKLjtC3veAGvAAAADGdpdC14ZXQtdGVzdAE=
+-----END OPENSSH PRIVATE KEY-----";
 
 pub use crate::auth::{GitLFSAuthentationResponseHeader, GitLFSAuthenticateResponse};
 
@@ -46,7 +54,7 @@ pub async fn start_local_ssh_server(port: Option<u16>) -> io::Result<(u16, JoinH
         inactivity_timeout: Some(std::time::Duration::from_secs(3600)),
         auth_rejection_time: std::time::Duration::from_secs(3),
         auth_rejection_time_initial: Some(std::time::Duration::from_secs(0)),
-        keys: vec![russh::keys::PrivateKey::random(&mut OsRng, russh::keys::Algorithm::Ed25519).unwrap()],
+        keys: vec![russh::keys::PrivateKey::from_openssh(TEST_SERVER_KEY).unwrap()],
         preferred: Preferred { ..Preferred::default() },
         ..Default::default()
     };
@@ -146,8 +154,7 @@ impl server::Handler for ServerImpl {
             "invalid request".into()
         };
 
-        let data = CryptoVec::from(response);
-        session.data(channel, data)?;
+        session.data(channel, response.into_bytes())?;
         session.close(channel)?;
         Ok(())
     }

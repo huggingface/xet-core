@@ -54,10 +54,10 @@ crate::config_group!({
     /// transfers to complete. If no data is received for this duration, the connection
     /// is considered stalled and will timeout.
     ///
-    /// The default value is 120 seconds.
+    /// The default value is 300 seconds.
     ///
     /// Use the environment variable `HF_XET_CLIENT_READ_TIMEOUT` to set this value.
-    ref read_timeout: Duration = Duration::from_secs(120);
+    ref read_timeout: Duration = Duration::from_secs(300);
 
     /// Send a report of a successful partial upload every 512kb.
     ///
