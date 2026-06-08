@@ -1,13 +1,13 @@
 This update adds APIs for stamping a per-upload uniqueness nonce into a xorb's serialized footer, so that two otherwise byte-identical serializations of the same xorb can be made to differ in their bytes.
 
 What changed
-- New constant `XORB_OBJECT_FORMAT_FOOTER_BUFFER_LEN` (= 16) names the footer's nonce-buffer length; used wherever that length is referenced.
+- New constants: `XORB_OBJECT_FORMAT_FOOTER_BUFFER_LEN` (= 16, the footer buffer slot) and `XORB_OBJECT_FORMAT_NONCE_LEN` (= 4, the bytes of that slot used for the nonce). The remaining 12 bytes stay zero, reserved for future use.
 - `XorbObjectInfoV1` (`xet_core_structures/src/xorb_object/xorb_object_format.rs`) gains nonce accessors over its renamed `_nonce_buffer` extensibility field (was `_buffer`; the legacy `XorbObjectInfoV0` keeps `_buffer` unchanged):
-  - `set_uniqueness_nonce(&mut self, nonce: [u8; XORB_OBJECT_FORMAT_FOOTER_BUFFER_LEN])`
-  - `uniqueness_nonce(&self) -> [u8; XORB_OBJECT_FORMAT_FOOTER_BUFFER_LEN]`
+  - `set_uniqueness_nonce(&mut self, nonce: [u8; XORB_OBJECT_FORMAT_NONCE_LEN])` (writes the leading `NONCE_LEN` bytes, leaving the reserved bytes unchanged)
+  - `uniqueness_nonce(&self) -> [u8; XORB_OBJECT_FORMAT_NONCE_LEN]`
 - `XorbObject` gains an associated function to rewrite the nonce in already-serialized bytes without re-serializing:
-  - `XorbObject::overwrite_uniqueness_nonce(serialized: &mut [u8], nonce: [u8; XORB_OBJECT_FORMAT_FOOTER_BUFFER_LEN]) -> Result<(), CoreError>`
-  - Writes `nonce` into the nonce-buffer slot, which is the `XORB_OBJECT_FORMAT_FOOTER_BUFFER_LEN` bytes immediately before the trailing 4-byte `info_length`. Works for both V0 and V1 serialized objects, since both footers end with `nonce_buffer || info_length(u32)`. Validates the trailing `info_length` first and returns `Err(CoreError::MalformedData)` for too-short or implausible inputs.
+  - `XorbObject::overwrite_uniqueness_nonce(serialized: &mut [u8], nonce: [u8; XORB_OBJECT_FORMAT_NONCE_LEN]) -> Result<(), CoreError>`
+  - Writes `nonce` into the leading `NONCE_LEN` bytes of the footer buffer (which sits immediately before the trailing 4-byte `info_length`), leaving the reserved bytes and `info_length` untouched. Works for both V0 and V1 serialized objects. Validates the trailing `info_length` first and returns `Err(CoreError::MalformedData)` for too-short or implausible inputs.
 - The `_nonce_buffer` field doc on `XorbObjectInfoV1` describes the nonce usage.
 
 Why this matters

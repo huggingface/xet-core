@@ -32,8 +32,19 @@ const _XORB_OBJECT_INFO_DEFAULT_LENGTH_V0: u32 = 60;
 const XORB_OBJECT_INFO_DEFAULT_LENGTH: u32 = 92;
 
 /// Length in bytes of the footer's trailing extensibility buffer (`_nonce_buffer` in V1, `_buffer`
-/// in the legacy V0), which may hold a per-upload uniqueness nonce. Excluded from the xorb hash.
+/// in the legacy V0). Excluded from the xorb hash.
 pub(crate) const XORB_OBJECT_FORMAT_FOOTER_BUFFER_LEN: usize = 16;
+
+/// Number of leading bytes of the footer buffer used for the per-upload uniqueness nonce. The
+/// remaining `XORB_OBJECT_FORMAT_FOOTER_BUFFER_LEN - XORB_OBJECT_FORMAT_NONCE_LEN` bytes stay zero,
+/// reserved for future use.
+///
+/// A 32-bit random nonce collides with any one specific previously-seen nonce with probability
+/// ~1/2^32. The nonce only matters in the narrow window where a dereferenced xorb is snapshotted and
+/// then identical content is re-uploaded before deletion; even at a generous 10^8 such events per
+/// year that is ~0.02 expected collisions/year, so 4 bytes is sufficient while leaving 12 of the 16
+/// buffer bytes free for future use.
+pub(crate) const XORB_OBJECT_FORMAT_NONCE_LEN: usize = 4;
 
 // Decide array preallocation size based on the declared size, to prevent an adversarial
 // giant size that leads to OOM on allocation.
@@ -390,15 +401,19 @@ impl Default for XorbObjectInfoV1 {
 }
 
 impl XorbObjectInfoV1 {
-    /// Set the per-upload uniqueness nonce stored in the extensibility buffer. Does
-    /// not affect the xorb hash; see the `_nonce_buffer` field docs.
-    pub fn set_uniqueness_nonce(&mut self, nonce: [u8; XORB_OBJECT_FORMAT_FOOTER_BUFFER_LEN]) {
-        self._nonce_buffer = nonce;
+    /// Set the per-upload uniqueness nonce. It occupies the leading `XORB_OBJECT_FORMAT_NONCE_LEN`
+    /// bytes of `_nonce_buffer`; the remaining (reserved) bytes are left unchanged. Does not affect
+    /// the xorb hash; see the `_nonce_buffer` field docs.
+    pub fn set_uniqueness_nonce(&mut self, nonce: [u8; XORB_OBJECT_FORMAT_NONCE_LEN]) {
+        self._nonce_buffer[..XORB_OBJECT_FORMAT_NONCE_LEN].copy_from_slice(&nonce);
     }
 
-    /// The per-upload uniqueness nonce stored in the extensibility buffer (zero if unset).
-    pub fn uniqueness_nonce(&self) -> [u8; XORB_OBJECT_FORMAT_FOOTER_BUFFER_LEN] {
-        self._nonce_buffer
+    /// The per-upload uniqueness nonce (the leading `XORB_OBJECT_FORMAT_NONCE_LEN` bytes of
+    /// `_nonce_buffer`; zero if unset).
+    pub fn uniqueness_nonce(&self) -> [u8; XORB_OBJECT_FORMAT_NONCE_LEN] {
+        self._nonce_buffer[..XORB_OBJECT_FORMAT_NONCE_LEN]
+            .try_into()
+            .expect("slice is exactly XORB_OBJECT_FORMAT_NONCE_LEN bytes")
     }
 
     pub fn serialized_length(&self) -> usize {
@@ -1020,14 +1035,15 @@ impl XorbObject {
     /// changes the serialized bytes, so two otherwise byte-identical xorbs can be made to serialize
     /// to distinct byte streams.
     ///
-    /// Both `XorbObjectInfoV0` and `XorbObjectInfoV1` footers end with the nonce buffer
-    /// (`XORB_OBJECT_FORMAT_FOOTER_BUFFER_LEN` bytes) followed by the 4-byte `info_length`, so the
-    /// nonce always occupies those bytes immediately before that trailing length. The `info_length`
-    /// is validated first; an implausible value or an undersized buffer yields an error rather than
-    /// corrupting non-xorb bytes.
+    /// Both `XorbObjectInfoV0` and `XorbObjectInfoV1` footers end with the
+    /// `XORB_OBJECT_FORMAT_FOOTER_BUFFER_LEN`-byte buffer followed by the 4-byte `info_length`. The
+    /// nonce occupies the leading `XORB_OBJECT_FORMAT_NONCE_LEN` bytes of that buffer; the remaining
+    /// reserved bytes (and the `info_length`) are left untouched. The `info_length` is validated
+    /// first; an implausible value or an undersized buffer yields an error rather than corrupting
+    /// non-xorb bytes.
     pub fn overwrite_uniqueness_nonce(
         serialized: &mut [u8],
-        nonce: [u8; XORB_OBJECT_FORMAT_FOOTER_BUFFER_LEN],
+        nonce: [u8; XORB_OBJECT_FORMAT_NONCE_LEN],
     ) -> Result<(), CoreError> {
         let len = serialized.len();
         let trailer = size_of::<u32>(); // trailing info_length
@@ -1048,8 +1064,10 @@ impl XorbObject {
             ));
         }
 
+        // The nonce occupies the leading bytes of the footer buffer; reserved bytes after it are
+        // left as-is so they survive a refresh.
         let nonce_start = len - trailer - XORB_OBJECT_FORMAT_FOOTER_BUFFER_LEN;
-        serialized[nonce_start..len - trailer].copy_from_slice(&nonce);
+        serialized[nonce_start..nonce_start + XORB_OBJECT_FORMAT_NONCE_LEN].copy_from_slice(&nonce);
         Ok(())
     }
 
@@ -2395,7 +2413,7 @@ mod tests {
         let zero_bytes = zero_buf.into_inner();
 
         // Footer serialized with an explicit nonce.
-        let nonce = [0xAB; XORB_OBJECT_FORMAT_FOOTER_BUFFER_LEN];
+        let nonce = [0xAB; XORB_OBJECT_FORMAT_NONCE_LEN];
         let mut info = c.info.clone();
         info.set_uniqueness_nonce(nonce);
         assert_eq!(info.uniqueness_nonce(), nonce);
@@ -2403,12 +2421,17 @@ mod tests {
         XorbObject::serialize_given_info(&mut buf, info).unwrap();
         let bytes = buf.into_inner();
 
-        // Identical except for the 16-byte nonce slot at [len-20, len-4); info_length unchanged.
+        // The footer buffer holds the nonce in its leading bytes, with reserved (zero) bytes after;
+        // the body and trailing info_length are unchanged.
         assert_eq!(zero_bytes.len(), bytes.len());
         let len = bytes.len();
-        assert_eq!(zero_bytes[..len - 20], bytes[..len - 20]);
-        assert_eq!(zero_bytes[len - 4..], bytes[len - 4..]);
-        assert_eq!(bytes[len - 20..len - 4], nonce);
+        let buf_start = len - size_of::<u32>() - XORB_OBJECT_FORMAT_FOOTER_BUFFER_LEN;
+        let nonce_end = buf_start + XORB_OBJECT_FORMAT_NONCE_LEN;
+        let trailer_start = len - size_of::<u32>();
+        assert_eq!(zero_bytes[..buf_start], bytes[..buf_start]); // body + footer prefix
+        assert_eq!(zero_bytes[trailer_start..], bytes[trailer_start..]); // info_length
+        assert_eq!(bytes[buf_start..nonce_end], nonce); // nonce
+        assert_eq!(bytes[nonce_end..trailer_start], zero_bytes[nonce_end..trailer_start]); // reserved untouched
 
         // Round-trips, and the xorb hash is unaffected by the nonce.
         let ret = XorbObject::deserialize(&mut Cursor::new(bytes)).unwrap();
@@ -2432,15 +2455,20 @@ mod tests {
         let original = buf.into_inner();
         let len = original.len();
 
-        let nonce = [0xCD; XORB_OBJECT_FORMAT_FOOTER_BUFFER_LEN];
+        let nonce = [0xCD; XORB_OBJECT_FORMAT_NONCE_LEN];
         let mut bytes = original.clone();
         XorbObject::overwrite_uniqueness_nonce(&mut bytes, nonce).unwrap();
 
-        // Only the nonce slot changed; body, footer prefix, and trailing info_length are intact.
+        // Only the nonce changed; body, footer prefix, reserved bytes, and trailing info_length
+        // are intact.
         assert_eq!(bytes.len(), len);
-        assert_eq!(bytes[..len - 20], original[..len - 20]);
-        assert_eq!(bytes[len - 4..], original[len - 4..]);
-        assert_eq!(bytes[len - 20..len - 4], nonce);
+        let buf_start = len - size_of::<u32>() - XORB_OBJECT_FORMAT_FOOTER_BUFFER_LEN;
+        let nonce_end = buf_start + XORB_OBJECT_FORMAT_NONCE_LEN;
+        let trailer_start = len - size_of::<u32>();
+        assert_eq!(bytes[..buf_start], original[..buf_start]); // body + footer prefix
+        assert_eq!(bytes[trailer_start..], original[trailer_start..]); // info_length
+        assert_eq!(bytes[buf_start..nonce_end], nonce); // nonce
+        assert_eq!(bytes[nonce_end..trailer_start], original[nonce_end..trailer_start]); // reserved preserved
 
         // Still a valid xorb with the same content hash and the new nonce.
         let ret = XorbObject::deserialize(&mut Cursor::new(bytes.clone())).unwrap();
@@ -2449,7 +2477,7 @@ mod tests {
 
         // A different nonce yields different bytes.
         let mut other = original.clone();
-        XorbObject::overwrite_uniqueness_nonce(&mut other, [0x11; XORB_OBJECT_FORMAT_FOOTER_BUFFER_LEN]).unwrap();
+        XorbObject::overwrite_uniqueness_nonce(&mut other, [0x11; XORB_OBJECT_FORMAT_NONCE_LEN]).unwrap();
         assert_ne!(other, bytes);
 
         // Malformed / too-short inputs are rejected rather than corrupting bytes.
@@ -2490,13 +2518,17 @@ mod tests {
         let original = buf.into_inner();
         let len = original.len();
 
-        let nonce = [0xCD; XORB_OBJECT_FORMAT_FOOTER_BUFFER_LEN];
+        let nonce = [0xCD; XORB_OBJECT_FORMAT_NONCE_LEN];
         let mut bytes = original.clone();
         XorbObject::overwrite_uniqueness_nonce(&mut bytes, nonce).unwrap();
 
-        assert_eq!(bytes[..len - 20], original[..len - 20]);
-        assert_eq!(bytes[len - 4..], original[len - 4..]);
-        assert_eq!(bytes[len - 20..len - 4], nonce);
+        let buf_start = len - size_of::<u32>() - XORB_OBJECT_FORMAT_FOOTER_BUFFER_LEN;
+        let nonce_end = buf_start + XORB_OBJECT_FORMAT_NONCE_LEN;
+        let trailer_start = len - size_of::<u32>();
+        assert_eq!(bytes[..buf_start], original[..buf_start]); // body + footer prefix
+        assert_eq!(bytes[trailer_start..], original[trailer_start..]); // info_length
+        assert_eq!(bytes[buf_start..nonce_end], nonce); // nonce
+        assert_eq!(bytes[nonce_end..trailer_start], original[nonce_end..trailer_start]); // reserved preserved
 
         // Still deserializes (via the V0 path) to the same hash, with the nonce in `_nonce_buffer`.
         let ret = XorbObject::deserialize(&mut Cursor::new(bytes)).unwrap();
