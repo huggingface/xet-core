@@ -183,6 +183,16 @@ jobs:
           pytest hf_xet/tests/ -v
   build_and_test-wasm:
     name: Build WASM
+    # Non-blocking: this job runs the full wasm test suite (version-pin check,
+    # wasm builds, the `cargo check -p hf-xet` compile gate, and all browser
+    # smoke tests) on every PR and main push, but a failure here must never
+    # fail the CI run or gate merges/releases. wasm is an additive target, so
+    # regressions surface as a red "Build WASM" job (visible signal) without
+    # turning the overall run red. Nothing `needs:` this job and the release
+    # workflows are independent, so it blocks no other jobs or releases either.
+    # (The per-step `continue-on-error` on the network smokes below keeps the
+    # job green for hub/CAS blips, so a red job means a real wasm regression.)
+    continue-on-error: true
     runs-on:
       group: aws-general-8-plus
     steps:
