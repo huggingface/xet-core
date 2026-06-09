@@ -156,8 +156,7 @@ impl FileUploadSession {
                     while bytes_read < file_size {
                         // Allocate a block of bytes, read into it.
                         let bytes_left = file_size - bytes_read;
-                        let n_bytes_read = usize::try_from(ingestion_block_size.min(bytes_left))
-                            .expect("ingestion_block_size exceeds usize::MAX on this target");
+                        let n_bytes_read = ingestion_block_size.min(bytes_left) as usize;
 
                         // Read in the data here; we are assuming the file doesn't change size
                         // on the disk while we are reading it.
@@ -310,9 +309,7 @@ impl FileUploadSession {
     ) -> Result<(XetFileInfo, DeduplicationMetrics)> {
         let mut reader = File::open(file_path)?;
         let filesize = reader.metadata()?.len();
-        let buffer_size = usize::try_from(u64::min(filesize, *_session.ctx.config.data.ingestion_block_size))
-            .expect("ingestion_block_size exceeds usize::MAX on this target");
-        let mut buffer = vec![0u8; buffer_size];
+        let mut buffer = vec![0u8; u64::min(filesize, *_session.ctx.config.data.ingestion_block_size) as usize];
 
         loop {
             let n = reader.read(&mut buffer)?;

@@ -106,10 +106,10 @@ filesystem, so the wasm shim in `xet_runtime/src/utils/mod.rs` keeps the
 API surface the config system needs (`new`, `evaluate`, `template_string`)
 but `evaluate` returns the input path unchanged — placeholders are not
 expanded. `SystemMonitor` is native-only and is not built into the wasm
-binary; the `system_monitor` config group is still parseable on wasm so
-keys round-trip, but nothing reads it. Config values typed as
-`TemplatedPathBuf` will round-trip on wasm but the template literals
-inside them are treated as plain paths.
+binary; the `system_monitor` config group keeps its pre-existing
+`#[cfg(not(target_family = "wasm"))]` gating and is absent from the
+config on wasm. Config values typed as `TemplatedPathBuf` will round-trip
+on wasm but the template literals inside them are treated as plain paths.
 
 ### `RemoteClient::upload_xorb` cross-target behavior
 
