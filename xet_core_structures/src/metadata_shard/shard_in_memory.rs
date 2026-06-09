@@ -326,4 +326,44 @@ mod tests {
         assert_eq!(n, 3);
         assert_eq!(fse.xorb_hash, simple_hash(101));
     }
+
+    // Mirrors the wasm global-dedup path: production CAS returns HMAC-keyed
+    // shards, so lookups against a shard ingested via from_reader only match
+    // when the query hashes are keyed with the footer's HMAC key.
+    #[test]
+    fn from_reader_keyed_shard_dedup_requires_hmac() {
+        let xorb_nodes: &[(u64, &[(u64, u32)])] = &[(101, &[(1, 100), (2, 200), (3, 300)])];
+        let file_nodes: &[(u64, &[(u64, (u32, u32))])] = &[(201, &[(101, (0, 600))])];
+
+        let original = gen_specific_shard(xorb_nodes, file_nodes, None, None).unwrap();
+        let bytes = original.to_bytes().unwrap();
+
+        let key = simple_hash(42);
+        let mut keyed_bytes = Vec::new();
+        MDBShardInfo::export_as_keyed_shard_streaming(
+            &mut Cursor::new(&bytes),
+            &mut keyed_bytes,
+            key,
+            std::time::Duration::from_secs(3600),
+            true,
+            true,
+            true,
+        )
+        .unwrap();
+
+        let mut reader = Cursor::new(&keyed_bytes);
+        let info = MDBShardInfo::load_from_reader(&mut reader).unwrap();
+        assert_eq!(info.chunk_hmac_key(), Some(key));
+
+        reader.set_position(0);
+        let reloaded = MDBInMemoryShard::from_reader(&mut reader).unwrap();
+
+        let raw_query = [simple_hash(1), simple_hash(2), simple_hash(3)];
+        assert!(reloaded.chunk_hash_dedup_query(&raw_query).is_none());
+
+        let keyed_query: Vec<_> = raw_query.iter().map(|h| h.hmac(key)).collect();
+        let (n, fse) = reloaded.chunk_hash_dedup_query(&keyed_query).expect("keyed chunk lookup");
+        assert_eq!(n, 3);
+        assert_eq!(fse.xorb_hash, simple_hash(101));
+    }
 }

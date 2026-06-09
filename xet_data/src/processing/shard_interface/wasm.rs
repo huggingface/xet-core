@@ -12,8 +12,10 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use tokio::sync::Mutex;
+use web_time::{SystemTime, UNIX_EPOCH};
 use xet_client::cas_client::Client;
 use xet_core_structures::merklehash::MerkleHash;
+use xet_core_structures::metadata_shard::MDBShardInfo;
 use xet_core_structures::metadata_shard::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::metadata_shard::xorb_structs::MDBXorbInfo;
@@ -27,6 +29,13 @@ use crate::processing::configurations::TranslatorConfig;
 /// few MB of metadata, which is comfortable for browser sessions.
 const DEDUP_CACHE_MAX_SHARDS: usize = 32;
 
+/// A global-dedup shard fetched from CAS: the parsed lookup tables plus the
+/// shard's header/footer metadata (per-shard HMAC key, key expiry).
+struct CachedDedupShard {
+    info: MDBShardInfo,
+    shard: MDBInMemoryShard,
+}
+
 pub struct SessionShardInterface {
     ctx: XetContext,
     client: Arc<dyn Client + Send + Sync>,
@@ -34,8 +43,9 @@ pub struct SessionShardInterface {
     session_shard: Mutex<MDBInMemoryShard>,
     /// Bounded FIFO of shards fetched via global dedup queries; the oldest
     /// shard is evicted on overflow. Holds individual shards (not a single
-    /// union) so eviction doesn't lose every fetched shard at once.
-    dedup_cache: Mutex<VecDeque<MDBInMemoryShard>>,
+    /// union) so eviction doesn't lose every fetched shard at once, and so
+    /// each shard's HMAC key applies only to its own lookups.
+    dedup_cache: Mutex<VecDeque<CachedDedupShard>>,
 }
 
 impl SessionShardInterface {
@@ -72,10 +82,13 @@ impl SessionShardInterface {
             },
         };
 
-        let fetched = MDBInMemoryShard::from_reader(&mut Cursor::new(shard_bytes.as_ref()))?;
+        let mut reader = Cursor::new(shard_bytes.as_ref());
+        let info = MDBShardInfo::load_from_reader(&mut reader)?;
+        reader.set_position(0);
+        let shard = MDBInMemoryShard::from_reader(&mut reader)?;
 
         let mut guard = self.dedup_cache.lock().await;
-        guard.push_back(fetched);
+        guard.push_back(CachedDedupShard { info, shard });
         while guard.len() > DEDUP_CACHE_MAX_SHARDS {
             guard.pop_front();
         }
@@ -97,11 +110,28 @@ impl SessionShardInterface {
             }
         }
 
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
         let guard = self.dedup_cache.lock().await;
-        Ok(guard
-            .iter()
-            .find_map(|shard| shard.chunk_hash_dedup_query(query_hashes))
-            .map(|(n, fse)| (n, fse, true)))
+        for entry in guard.iter() {
+            let expiry = entry.info.metadata.shard_key_expiry;
+            if expiry != 0 && now > expiry {
+                continue;
+            }
+            // Production CAS keys the chunk hashes in returned shards with a
+            // per-shard HMAC key from the footer; the query hashes must be
+            // keyed the same way for lookups to match.
+            let hit = match entry.info.chunk_hmac_key() {
+                Some(key) => {
+                    let keyed: Vec<MerkleHash> = query_hashes.iter().map(|h| h.hmac(key)).collect();
+                    entry.shard.chunk_hash_dedup_query(&keyed)
+                },
+                None => entry.shard.chunk_hash_dedup_query(query_hashes),
+            };
+            if let Some((n, fse)) = hit {
+                return Ok(Some((n, fse, true)));
+            }
+        }
+        Ok(None)
     }
 
     pub async fn add_xorb_block(&self, xorb_block_contents: Arc<MDBXorbInfo>) -> Result<()> {
