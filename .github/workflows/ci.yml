@@ -306,6 +306,16 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         working-directory: wasm/ci-smoke
         run: node run.mjs dedup
+      - name: WASM global-dedup smoke test (Hub xet-write-token + CAS push)
+        # Cross-session global dedup against the pre-seeded deterministic
+        # file — e2e guard for the HMAC-keyed global-dedup-shard lookup on
+        # wasm. Non-blocking.
+        continue-on-error: true
+        env:
+          HF_SMOKE_TEST_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        working-directory: wasm/ci-smoke
+        run: node run.mjs global-dedup
   cargo-audit:
     name: Cargo Audit
     runs-on:

@@ -399,6 +399,72 @@ const SCENARIOS = {
       return `total=${dedup.total_bytes}, deduped=${dedup.deduped_bytes}, xorb_uploaded=${dedup.xorb_bytes_uploaded}`;
     },
   },
+
+  // Cross-session global dedup: download the pre-seeded deterministic file
+  // from the write repo, re-upload its bytes, and require a full dedup hit
+  // against the HMAC-keyed shard CAS returns for the chunk-0 query — the
+  // e2e guard for the keyed lookup in shard_interface/wasm.rs. See
+  // scenarios/global-dedup.mjs.
+  'global-dedup': {
+    needsWriteToken: true,
+    timeoutMs: 4 * MINUTE_MS,
+    assert(result) {
+      const SEED_SIZE = 16 * 1024 * 1024; // SEED_SIZE in seed.mjs
+      if (result.bootstrapped) {
+        return 'bootstrapped seed file — dedup asserted from the next run onward';
+      }
+      if (result.byteCount !== SEED_SIZE) {
+        throw new Error(`downloaded ${result.byteCount} bytes, expected ${SEED_SIZE}`);
+      }
+      if (!result.uploadHash || result.uploadHash !== result.seedXetHash) {
+        throw new Error(
+          `re-upload hash ${result.uploadHash} != seed xetHash ${result.seedXetHash} — ` +
+            `identical bytes must produce the identical xet file hash`,
+        );
+      }
+      const dedup = result.commitReport?.dedup_metrics;
+      if (!dedup || typeof dedup !== 'object') {
+        throw new Error(`commitReport.dedup_metrics missing/invalid: ${JSON.stringify(result.commitReport)}`);
+      }
+      if (dedup.total_bytes !== SEED_SIZE) {
+        throw new Error(`dedup_metrics.total_bytes=${dedup.total_bytes}, expected ${SEED_SIZE}: ${JSON.stringify(dedup)}`);
+      }
+      // The chunk-0 global-dedup query fetches a shard covering the whole
+      // seed file, so every chunk must dedup.
+      if (dedup.new_bytes !== 0 || dedup.deduped_bytes !== SEED_SIZE) {
+        throw new Error(
+          `new_bytes=${dedup.new_bytes} deduped_bytes=${dedup.deduped_bytes}, expected 0 / ${SEED_SIZE}: ` +
+            JSON.stringify(dedup),
+        );
+      }
+      // Only blocks resolved on the second pass of an 8 MiB ingestion batch
+      // are attributed to global dedup; later batches hit the cached shard
+      // on the first pass and count only in deduped_bytes. So this is > 0,
+      // not ≈ SEED_SIZE. 0 here (with xorb bytes > 0) is the HMAC-key
+      // regression signature.
+      if (!(dedup.deduped_bytes_by_global_dedup > 0)) {
+        throw new Error(
+          `deduped_bytes_by_global_dedup=${dedup.deduped_bytes_by_global_dedup}, expected > 0 ` +
+            `(global-dedup shard lookup never matched — HMAC key regression?): ${JSON.stringify(dedup)}`,
+        );
+      }
+      // The headline assertion: a full global-dedup hit means no xorb is
+      // pushed at all. Xorb pushes are counted separately from the shard
+      // push, and the chunk-0 query is joined before the dedup pass, so
+      // strictly zero is safe.
+      if (dedup.xorb_bytes_uploaded !== 0) {
+        throw new Error(
+          `xorb_bytes_uploaded=${dedup.xorb_bytes_uploaded}, expected 0 (full global-dedup hit): ` +
+            JSON.stringify(dedup),
+        );
+      }
+      // The file must still commit: its reconstruction info ships in a shard.
+      if (!(dedup.shard_bytes_uploaded > 0)) {
+        throw new Error(`shard_bytes_uploaded=${dedup.shard_bytes_uploaded}, expected > 0 (file still commits)`);
+      }
+      return `global_dedup_bytes=${dedup.deduped_bytes_by_global_dedup}, xorb_uploaded=0, shard=${dedup.shard_bytes_uploaded}`;
+    },
+  },
 };
 
 // ---------------------------------------------------------------------------

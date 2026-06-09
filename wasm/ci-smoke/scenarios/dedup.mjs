@@ -12,12 +12,10 @@
 // point the dedup decision for the second file's chunks has already
 // been made.
 //
-// Note on global dedup: a deterministic test of the global-dedup query
-// path (cross-commit, CAS-indexed shards) would need a chunk whose hash
-// satisfies `hash % 1024 == 0`. Random payloads only have ~0.1% chance
-// per chunk; not worth the flake. The session-shard branch of
-// chunk_hash_dedup_query is on the same surface and covers the
-// regression class.
+// Global dedup (cross-commit, CAS-indexed shards) is covered separately by
+// the global-dedup scenario: CAS indexes the first chunk of every uploaded
+// file, so re-uploading the pre-seeded deterministic file hits the chunk-0
+// query deterministically.
 
 import { openUploadCommit, randomBytes } from '../common.mjs';
 
