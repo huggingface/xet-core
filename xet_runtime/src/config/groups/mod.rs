@@ -4,5 +4,3 @@ macro_rules! declare_group_modules {
     };
 }
 crate::all_config_groups!(declare_group_modules);
-
-pub mod system_monitor;

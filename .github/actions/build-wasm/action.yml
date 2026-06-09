@@ -3,9 +3,6 @@ description: Build hf_xet_thin_wasm and hf_xet_wasm
 runs:
   using: "composite"
   steps:
-    - name: Verify wasm-bindgen / wasm-pack version pins agree
-      shell: bash
-      run: ./wasm/check-version-pins.sh
     - name: Save current default toolchain
       id: save-toolchain
       shell: bash

@@ -1,14 +1,9 @@
-/// Single source of truth for all platform-independent config groups.
+/// Single source of truth for all config groups.
 /// Invokes the given callback macro with the list of group names.
-///
-/// The `system_monitor` group is appended by each consumer separately so the
-/// generated code (struct field, env-override apply, dispatch arms, key
-/// enumeration) can keep it next to the others without expanding it inside
-/// every `$mac!(...)` invocation in this macro's body.
 #[macro_export]
 macro_rules! all_config_groups {
     ($mac:ident) => {
-        $mac!(data, shard, deduplication, chunk_cache, client, log, reconstruction, xorb, session);
+        $mac!(data, shard, deduplication, chunk_cache, client, log, reconstruction, xorb, session, system_monitor);
     };
 }
 

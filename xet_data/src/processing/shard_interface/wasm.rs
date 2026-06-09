@@ -3,7 +3,7 @@
 //! Mirrors the native API in `super::native` but keeps all shard data in
 //! memory — no disk staging, no resume support. Global-dedup shards
 //! fetched from CAS are parsed in-process and held in a small bounded
-//! LRU `dedup_cache`, separate from the session shard so they are not
+//! FIFO `dedup_cache`, separate from the session shard so they are not
 //! re-uploaded.
 
 use std::collections::VecDeque;
@@ -32,10 +32,9 @@ pub struct SessionShardInterface {
     client: Arc<dyn Client + Send + Sync>,
     dry_run: bool,
     session_shard: Mutex<MDBInMemoryShard>,
-    /// Bounded LRU of shards fetched via global dedup queries. The front
-    /// of the deque is least-recently-used; the back is most-recently-used.
-    /// Holds individual shards (not a single union) so we can evict on
-    /// overflow without losing every fetched shard at once.
+    /// Bounded FIFO of shards fetched via global dedup queries; the oldest
+    /// shard is evicted on overflow. Holds individual shards (not a single
+    /// union) so eviction doesn't lose every fetched shard at once.
     dedup_cache: Mutex<VecDeque<MDBInMemoryShard>>,
 }
 
@@ -56,7 +55,7 @@ impl SessionShardInterface {
     }
 
     /// Fetch a global-dedup shard from CAS for the given chunk hash, parse
-    /// it in memory, and push it into the bounded LRU `dedup_cache`. CAS
+    /// it in memory, and push it into the bounded FIFO `dedup_cache`. CAS
     /// errors are logged and swallowed (matching native's behavior); the
     /// caller treats them as "no shard available."
     pub async fn query_dedup_shard_by_chunk(&self, chunk_hash: &MerkleHash) -> Result<bool> {
@@ -86,8 +85,7 @@ impl SessionShardInterface {
     /// Query the in-memory session shard first, then the global-dedup cache.
     /// The third tuple element ("already uploaded") is `false` for session
     /// hits and `true` for dedup-cache hits, since cache entries come from
-    /// shards the server already has. Cache hits also bump the matched
-    /// shard to the most-recently-used position.
+    /// shards the server already has.
     pub async fn chunk_hash_dedup_query(
         &self,
         query_hashes: &[MerkleHash],
@@ -99,25 +97,11 @@ impl SessionShardInterface {
             }
         }
 
-        let mut guard = self.dedup_cache.lock().await;
-        let mut hit_idx = None;
-        let mut hit_result = None;
-        for (i, shard) in guard.iter().enumerate() {
-            if let Some((n, fse)) = shard.chunk_hash_dedup_query(query_hashes) {
-                hit_idx = Some(i);
-                hit_result = Some((n, fse));
-                break;
-            }
-        }
-        if let Some(i) = hit_idx {
-            if let Some(entry) = guard.remove(i) {
-                guard.push_back(entry);
-            }
-            let (n, fse) = hit_result.unwrap();
-            return Ok(Some((n, fse, true)));
-        }
-
-        Ok(None)
+        let guard = self.dedup_cache.lock().await;
+        Ok(guard
+            .iter()
+            .find_map(|shard| shard.chunk_hash_dedup_query(query_hashes))
+            .map(|(n, fse)| (n, fse, true)))
     }
 
     pub async fn add_xorb_block(&self, xorb_block_contents: Arc<MDBXorbInfo>) -> Result<()> {

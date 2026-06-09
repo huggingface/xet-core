@@ -224,9 +224,61 @@ impl TaskRuntime {
     }
 }
 
-// Native task bridging: routes futures through XetRuntime's multithreaded
-// executor and requires Send + 'static bounds. Sync bridging only exists
-// here — wasm has no blocking model.
+// `Send` on native, unconstrained on wasm: lets the shared bridge methods
+// below state one set of bounds while wasm futures stay `!Send`.
+#[cfg(not(target_family = "wasm"))]
+pub(super) trait MaybeSend: Send {}
+#[cfg(not(target_family = "wasm"))]
+impl<T: Send> MaybeSend for T {}
+#[cfg(target_family = "wasm")]
+pub(super) trait MaybeSend {}
+#[cfg(target_family = "wasm")]
+impl<T> MaybeSend for T {}
+
+// Async task bridging, shared across targets. The state-machine logic lives
+// here once; only `run_inner_async` (XetRuntime offload on native, inline
+// select on wasm) differs per target.
+impl TaskRuntime {
+    pub(super) async fn bridge_async<T, F>(&self, task_name: &'static str, fut: F) -> Result<T, XetError>
+    where
+        F: Future<Output = Result<T, XetError>> + MaybeSend + 'static,
+        T: MaybeSend + 'static,
+    {
+        self.check_state(task_name)?;
+        let result = self.run_inner_async(task_name, fut).await;
+        if let Err(ref e) = result {
+            self.update_state_on_error(e)?;
+        }
+        result
+    }
+
+    pub(super) async fn bridge_async_finalizing<T, F>(
+        &self,
+        task_name: &'static str,
+        allow_repeat: bool,
+        fut: F,
+    ) -> Result<T, XetError>
+    where
+        F: Future<Output = Result<T, XetError>> + MaybeSend + 'static,
+        T: MaybeSend + 'static,
+    {
+        self.transition_to_finalizing(task_name, allow_repeat)?;
+
+        let result = self.run_inner_async(task_name, fut).await;
+        match &result {
+            Ok(_) => self.set_state(XetTaskState::Completed)?,
+            Err(XetError::UserCancelled(_)) => {
+                self.set_state(XetTaskState::UserCancelled)?;
+            },
+            Err(e) => self.set_state(XetTaskState::Error(e.to_string()))?,
+        }
+        result
+    }
+}
+
+// Native task bridging internals: routes futures through XetRuntime's
+// multithreaded executor and requires Send + 'static bounds. Sync bridging
+// only exists here — wasm has no blocking model.
 #[cfg(not(target_family = "wasm"))]
 impl TaskRuntime {
     fn run_inner_async<T, F>(
@@ -255,19 +307,6 @@ impl TaskRuntime {
         }
     }
 
-    pub(super) async fn bridge_async<T, F>(&self, task_name: &'static str, fut: F) -> Result<T, XetError>
-    where
-        F: Future<Output = Result<T, XetError>> + Send + 'static,
-        T: Send + 'static,
-    {
-        self.check_state(task_name)?;
-        let result = self.run_inner_async(task_name, fut).await;
-        if let Err(ref e) = result {
-            self.update_state_on_error(e)?;
-        }
-        result
-    }
-
     pub(super) fn bridge_sync<T, F>(&self, task_name: &'static str, fut: F) -> Result<T, XetError>
     where
         F: Future<Output = Result<T, XetError>> + Send + 'static,
@@ -288,29 +327,6 @@ impl TaskRuntime {
             .map_err(XetError::from)?;
         if let Err(ref e) = result {
             self.update_state_on_error(e)?;
-        }
-        result
-    }
-
-    pub(super) async fn bridge_async_finalizing<T, F>(
-        &self,
-        task_name: &'static str,
-        allow_repeat: bool,
-        fut: F,
-    ) -> Result<T, XetError>
-    where
-        F: Future<Output = Result<T, XetError>> + Send + 'static,
-        T: Send + 'static,
-    {
-        self.transition_to_finalizing(task_name, allow_repeat)?;
-
-        let result = self.run_inner_async(task_name, fut).await;
-        match &result {
-            Ok(_) => self.set_state(XetTaskState::Completed)?,
-            Err(XetError::UserCancelled(_)) => {
-                self.set_state(XetTaskState::UserCancelled)?;
-            },
-            Err(e) => self.set_state(XetTaskState::Error(e.to_string()))?,
         }
         result
     }
@@ -350,9 +366,9 @@ impl TaskRuntime {
     }
 }
 
-// Wasm task bridging: runs futures inline on the single-threaded executor
-// (no XetRuntime offload), dropping the Send bound. There is no sync
-// counterpart on wasm.
+// Wasm task bridging internals: runs futures inline on the single-threaded
+// executor (no XetRuntime offload), dropping the Send bound. There is no
+// sync counterpart on wasm.
 #[cfg(target_family = "wasm")]
 impl TaskRuntime {
     fn run_inner_async<T, F>(
@@ -373,41 +389,5 @@ impl TaskRuntime {
                 result = fut => result,
             }
         }
-    }
-
-    pub(super) async fn bridge_async<T, F>(&self, task_name: &'static str, fut: F) -> Result<T, XetError>
-    where
-        F: Future<Output = Result<T, XetError>> + 'static,
-        T: 'static,
-    {
-        self.check_state(task_name)?;
-        let result = self.run_inner_async(task_name, fut).await;
-        if let Err(ref e) = result {
-            self.update_state_on_error(e)?;
-        }
-        result
-    }
-
-    pub(super) async fn bridge_async_finalizing<T, F>(
-        &self,
-        task_name: &'static str,
-        allow_repeat: bool,
-        fut: F,
-    ) -> Result<T, XetError>
-    where
-        F: Future<Output = Result<T, XetError>> + 'static,
-        T: 'static,
-    {
-        self.transition_to_finalizing(task_name, allow_repeat)?;
-
-        let result = self.run_inner_async(task_name, fut).await;
-        match &result {
-            Ok(_) => self.set_state(XetTaskState::Completed)?,
-            Err(XetError::UserCancelled(_)) => {
-                self.set_state(XetTaskState::UserCancelled)?;
-            },
-            Err(e) => self.set_state(XetTaskState::Error(e.to_string()))?,
-        }
-        result
     }
 }

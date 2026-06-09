@@ -140,7 +140,8 @@ impl SingleFileCleaner {
     }
 
     pub async fn add_data_from_bytes(&mut self, data: Bytes) -> Result<()> {
-        let block_size = *self.ctx.config.data.ingestion_block_size as usize;
+        let block_size = usize::try_from(*self.ctx.config.data.ingestion_block_size)
+            .expect("ingestion_block_size exceeds usize::MAX on this target");
         if data.len() > block_size {
             let mut pos = 0;
             while pos < data.len() {

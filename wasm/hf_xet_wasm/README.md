@@ -140,7 +140,7 @@ The full token / file-id derivation is described in the
 - **Local-only `uploadBytes` data-prep.** Chunking + sha256 + xorb
   serialization happens locally before any CAS round-trip. The CI upload
   smoke exercises this path with a placeholder endpoint + token — see
-  `wasm/ci-smoke/run-upload.mjs`.
+  the `upload` scenario in `wasm/ci-smoke/` (`node run.mjs upload`).
 - **No `_blocking` variants, no `upload_from_path`.** Wasm cannot block
   the host thread and has no filesystem; the JS surface omits both.
 - **No automatic token refresh.** This wrapper does not expose

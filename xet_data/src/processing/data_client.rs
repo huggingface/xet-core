@@ -70,7 +70,9 @@ pub async fn clean_file(
     let span = Span::current();
     span.record("file.name", filename.as_ref().to_str());
     span.record("file.len", filesize);
-    let mut buffer = vec![0u8; u64::min(filesize, *processor.ctx.config.data.ingestion_block_size) as usize];
+    let buffer_size = usize::try_from(u64::min(filesize, *processor.ctx.config.data.ingestion_block_size))
+        .expect("ingestion_block_size exceeds usize::MAX on this target");
+    let mut buffer = vec![0u8; buffer_size];
 
     let (_id, mut handle) =
         processor.start_clean(Some(filename.as_ref().to_string_lossy().into()), Some(filesize), sha256_policy)?;
@@ -173,7 +175,8 @@ fn hash_single_file(ctx: XetContext, filename: String, buffer_size: usize) -> Re
 pub async fn hash_files_async(ctx: &XetContext, file_paths: Vec<String>) -> Result<Vec<XetFileInfo>> {
     let runtime = ctx.runtime.clone();
     let semaphore = ctx.common.file_ingestion_semaphore.clone();
-    let buffer_size = *ctx.config.data.ingestion_block_size as usize;
+    let buffer_size = usize::try_from(*ctx.config.data.ingestion_block_size)
+        .expect("ingestion_block_size exceeds usize::MAX on this target");
 
     let hash_futures = file_paths.into_iter().map(|file_path| {
         let runtime = runtime.clone();

@@ -3,9 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node run-download.mjs && node run-upload.mjs",
-    "test:download": "node run-download.mjs",
-    "test:upload": "node run-upload.mjs"
+    "test": "node run.mjs download && node run.mjs upload",
+    "test:download": "node run.mjs download",
+    "test:upload": "node run.mjs upload"
   },
   "dependencies": {
     "playwright": "1.49.1"

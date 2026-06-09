@@ -91,28 +91,37 @@ impl TranslatorConfig {
     }
 
     /// Creates a new TranslatorConfig from a SessionContext, computing all derived paths.
-    #[cfg(not(target_family = "wasm"))]
+    ///
+    /// On WASM, no filesystem directories are created. Shard cache and session
+    /// directories are set to empty paths since the WASM build does not exercise
+    /// disk-backed shard staging or shard-cache paths.
     pub fn new(ctx: &XetContext, session: SessionContext) -> Result<Self> {
-        let config = ctx.config.as_ref();
+        #[cfg(target_family = "wasm")]
+        let (shard_cache_directory, shard_session_directory) = (PathBuf::new(), PathBuf::new());
 
-        let (shard_cache_directory, shard_session_directory) = if let Some(local_path) = session.local_path(ctx) {
-            let base_path = local_path.join("xet");
-            std::fs::create_dir_all(&base_path)?;
+        #[cfg(not(target_family = "wasm"))]
+        let (shard_cache_directory, shard_session_directory) = {
+            let config = ctx.config.as_ref();
 
-            (base_path.join(&config.shard.cache_subdir), base_path.join(&config.session.dir_name))
-        } else if session.is_memory() {
-            let cache_path = xet_cache_root().join("memory");
-            std::fs::create_dir_all(&cache_path)?;
+            if let Some(local_path) = session.local_path(ctx) {
+                let base_path = local_path.join("xet");
+                std::fs::create_dir_all(&base_path)?;
 
-            (cache_path.join(&config.shard.cache_subdir), cache_path.join(&config.session.dir_name))
-        } else {
-            let cache_path = compute_cache_path(&session.endpoint);
-            std::fs::create_dir_all(&cache_path)?;
+                (base_path.join(&config.shard.cache_subdir), base_path.join(&config.session.dir_name))
+            } else if session.is_memory() {
+                let cache_path = xet_cache_root().join("memory");
+                std::fs::create_dir_all(&cache_path)?;
 
-            let staging_directory = cache_path.join(&config.data.staging_subdir);
-            std::fs::create_dir_all(&staging_directory)?;
+                (cache_path.join(&config.shard.cache_subdir), cache_path.join(&config.session.dir_name))
+            } else {
+                let cache_path = compute_cache_path(&session.endpoint);
+                std::fs::create_dir_all(&cache_path)?;
 
-            (cache_path.join(&config.shard.cache_subdir), staging_directory.join(&config.session.dir_name))
+                let staging_directory = cache_path.join(&config.data.staging_subdir);
+                std::fs::create_dir_all(&staging_directory)?;
+
+                (cache_path.join(&config.shard.cache_subdir), staging_directory.join(&config.session.dir_name))
+            }
         };
 
         info!(
@@ -128,28 +137,6 @@ impl TranslatorConfig {
             session,
             shard_cache_directory,
             shard_session_directory,
-            force_disable_progress_aggregation: false,
-        })
-    }
-
-    /// Creates a new TranslatorConfig from a SessionContext.
-    ///
-    /// On WASM, no filesystem directories are created. Shard cache and session
-    /// directories are set to empty paths since the WASM build does not exercise
-    /// upload or shard-cache paths.
-    #[cfg(target_family = "wasm")]
-    pub fn new(ctx: &XetContext, session: SessionContext) -> Result<Self> {
-        info!(
-            endpoint = %session.endpoint,
-            session_id = ?session.session_id,
-            "TranslatorConfig initialized (wasm)"
-        );
-
-        Ok(Self {
-            ctx: ctx.clone(),
-            session,
-            shard_cache_directory: PathBuf::new(),
-            shard_session_directory: PathBuf::new(),
             force_disable_progress_aggregation: false,
         })
     }

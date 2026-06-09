@@ -7,7 +7,6 @@ macro_rules! define_xet_config {
         #[derive(Debug, Clone, Default)]
         pub struct XetConfig {
             $(pub $group: groups::$group::ConfigValues,)*
-            pub system_monitor: groups::system_monitor::ConfigValues,
         }
     };
 }
@@ -32,7 +31,6 @@ macro_rules! impl_xet_config_group_dispatch {
             /// Environment variables follow the pattern: HF_XET_{GROUP_NAME}_{FIELD_NAME}
             pub fn with_env_overrides(mut self) -> Self {
                 $(self.$group.apply_env_overrides();)*
-                self.system_monitor.apply_env_overrides();
                 self
             }
 
@@ -40,7 +38,6 @@ macro_rules! impl_xet_config_group_dispatch {
                 let (group, field) = Self::split_path(path)?;
                 match group {
                     $(stringify!($group) => self.$group.update_field(field, value),)*
-                    "system_monitor" => self.system_monitor.update_field(field, value),
                     _ => Err(ConfigError::UnknownGroup(group.to_owned())),
                 }
             }
@@ -54,7 +51,6 @@ macro_rules! impl_xet_config_group_dispatch {
                 let (group, field) = Self::split_path_for_python(path)?;
                 match group {
                     $(stringify!($group) => self.$group.update_field_from_python(field, value),)*
-                    "system_monitor" => self.system_monitor.update_field_from_python(field, value),
                     _ => Err(pyo3::exceptions::PyValueError::new_err(
                         ConfigError::UnknownGroup(group.to_owned()).to_string(),
                     )),
@@ -70,7 +66,6 @@ macro_rules! impl_xet_config_group_dispatch {
                 let (group, field) = Self::split_path_for_python(path)?;
                 match group {
                     $(stringify!($group) => self.$group.get_to_python(field, py),)*
-                    "system_monitor" => self.system_monitor.get_to_python(field, py),
                     _ => Err(pyo3::exceptions::PyValueError::new_err(
                         ConfigError::UnknownGroup(group.to_owned()).to_string(),
                     )),
@@ -83,7 +78,6 @@ macro_rules! impl_xet_config_group_dispatch {
                 let (group, field) = Self::split_path(path)?;
                 match group {
                     $(stringify!($group) => self.$group.get(field),)*
-                    "system_monitor" => self.system_monitor.get(field),
                     _ => Err(ConfigError::UnknownGroup(group.to_owned())),
                 }
             }
@@ -96,9 +90,6 @@ macro_rules! impl_xet_config_group_dispatch {
                         keys.push(format!("{}.{field}", stringify!($group)));
                     }
                 )*
-                for &field in groups::system_monitor::ConfigValueGroup::field_names() {
-                    keys.push(format!("system_monitor.{field}"));
-                }
                 keys
             }
 
@@ -113,9 +104,6 @@ macro_rules! impl_xet_config_group_dispatch {
                         items.push((format!("{}.{field}", stringify!($group)), val));
                     }
                 )*
-                for (field, val) in self.system_monitor.items_to_python(py)? {
-                    items.push((format!("system_monitor.{field}"), val));
-                }
                 Ok(items)
             }
         }
@@ -134,41 +122,7 @@ impl XetConfig {
         if crate::utils::is_high_performance() {
             config = config.with_high_performance();
         }
-        config.validate_usize_bounds();
         config
-    }
-
-    /// Asserts that byte-size config values which are cast to `usize` in hot upload/download
-    /// paths fit in `usize` on the current target. On 64-bit targets this is a tautology;
-    /// on wasm32 (where `usize` is 32 bits) it catches misconfig that would otherwise
-    /// silently truncate at the cast site.
-    ///
-    /// ## Scope
-    ///
-    /// Only fields whose value is *directly cast to `usize`* are validated here. Most
-    /// `ByteSize` config fields are kept as `u64` end-to-end (semaphore permits, byte
-    /// thresholds, latency-model bounds) and never see a `usize` cast — those don't need
-    /// to be validated, and rejecting an 8 GiB config for, say, `download_buffer_size`
-    /// on wasm32 would be wrong because the field is u64-only.
-    ///
-    /// **Fields checked here:**
-    /// - `data.ingestion_block_size` — cast at `file_upload_session.rs:159, 312`, `file_cleaner.rs:142`,
-    ///   `data_client.rs:72, 174`.
-    ///
-    /// **Fields not checked (intentional):**
-    /// - `xorb.simulation_max_bytes` — cast to `usize` at `file_upload_session.rs:442` and `file_deduplication.rs:99`,
-    ///   but pre-capped at `MAX_XORB_BYTES` (64 MiB), which fits in u32. The cap makes a separate check redundant.
-    /// - All `reconstruction.*`, `log.dir_max_size`, `shard.cache_size_limit`, and `client.ac_*` byte-size fields are
-    ///   `u64`-only.
-    ///
-    /// **When adding a new `usize` cast of a `ByteSize` field, add it to this method.**
-    fn validate_usize_bounds(&self) {
-        let ingestion = self.data.ingestion_block_size.as_u64();
-        assert!(
-            usize::try_from(ingestion).is_ok(),
-            "config data.ingestion_block_size ({ingestion} bytes) exceeds usize::MAX ({}) on this target",
-            usize::MAX,
-        );
     }
 
     /// Apply high performance mode settings to this configuration.
@@ -389,7 +343,6 @@ mod tests {
             };
         }
         crate::all_config_groups!(add_group_field_counts);
-        expected_count += groups::system_monitor::ConfigValueGroup::field_names().len();
         assert!(keys.contains(&"system_monitor.enabled".to_owned()));
         assert_eq!(keys.len(), expected_count);
     }
