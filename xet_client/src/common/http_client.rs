@@ -288,7 +288,7 @@ impl Middleware for LoggingMiddleware {
                 info!(request_id, status_code, "Received CAS response");
             })
             .inspect_err(|err| {
-                warn!(?err, "Request error");
+                info!(?err, "Request error");
             })
     }
 }
