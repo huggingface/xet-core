@@ -424,7 +424,9 @@ pub fn find_stable_end(nodes: &[Node]) -> Option<usize> {
 /// - `at_start`: `true` if this range begins at position 0 of the full chunk sequence (left boundary is known).
 /// - `at_end`: `true` if this range ends at the last chunk of the full sequence (right boundary is known).
 /// - `debug_chunks`: (debug builds only) the original level-0 chunks, retained to verify that `final_hash()` matches
-///   `aggregated_node_hash`.
+///   `aggregated_node_hash`. Populated by [`from_chunks`] and empty after [`deserialize`] (the chunk list is not
+///   recoverable from the hump). A merge keeps `debug_chunks` only when both operands tracked theirs; otherwise it is
+///   cleared so the partial list never drives a false-positive invariant check.
 #[derive(Clone, Debug)]
 pub struct MerkleHashSubtree {
     nodes: Vec<Node>,
@@ -644,6 +646,13 @@ impl MerkleHashSubtree {
             return Err(CoreError::InvalidArguments);
         }
 
+        // A subtree with nodes but no `debug_chunks` was deserialized rather than built
+        // via `from_chunks` (its chunk list is unrecoverable from the hump). Capture this
+        // for `self` now, before its node array is rebuilt below; see the `debug_chunks`
+        // merge block at the end of this function.
+        #[cfg(debug_assertions)]
+        let self_untracked = !self.nodes.is_empty() && self.debug_chunks.is_empty();
+
         let combined_at_start = self.at_start;
         let combined_at_end = other.at_end;
 
@@ -771,11 +780,20 @@ impl MerkleHashSubtree {
 
         #[cfg(debug_assertions)]
         {
-            self.debug_chunks.extend_from_slice(&other.debug_chunks);
+            // `debug_chunks` only reconstructs the full chunk list end-to-end when BOTH
+            // operands tracked theirs. If either side was deserialized (nodes present but
+            // no `debug_chunks`), the concatenation would be incomplete and
+            // `verify_invariants` would compare `final_hash()` (over the full merged tree)
+            // against `aggregated_node_hash` of a partial list — a guaranteed false
+            // positive. In that case, drop `debug_chunks` so the invariant disables itself.
+            let other_untracked = !other.nodes.is_empty() && other.debug_chunks.is_empty();
+            if self_untracked || other_untracked {
+                self.debug_chunks.clear();
+            } else {
+                self.debug_chunks.extend_from_slice(&other.debug_chunks);
+            }
+            self.verify_invariants();
         }
-
-        #[cfg(debug_assertions)]
-        self.verify_invariants();
 
         Ok(())
     }
@@ -1267,6 +1285,30 @@ mod tests {
             let r2 = MerkleHashSubtree::from_chunks(false, &chunks[split..], true);
             merged.merge_into(&r2).unwrap();
             assert_eq!(merged.final_hash().unwrap(), expected, "Failed split={split}");
+        }
+    }
+
+    /// Merging a `from_chunks`-built subtree with a deserialized one (whose `debug_chunks`
+    /// were stripped crossing the wire) must not trip the debug-only `verify_invariants`
+    /// check. Regression for a false positive where the invariant compared the full merged
+    /// `final_hash()` against `aggregated_node_hash` of only the tracked half.
+    #[test]
+    fn test_merge_with_deserialized_operand_no_false_positive() {
+        let mut rng = SmallRng::seed_from_u64(0xDE6B6F);
+        let chunks = random_chunks(&mut rng, 16);
+        let expected = xorb_hash(&chunks);
+
+        for split in 1..16 {
+            let left = MerkleHashSubtree::from_chunks(true, &chunks[..split], false);
+            let right = MerkleHashSubtree::from_chunks(false, &chunks[split..], true);
+
+            // Round-trip `right` through serde exactly as a CAS stable subtree does: the
+            // nodes survive, but `debug_chunks` is reset to empty on deserialize.
+            let right_wire: MerkleHashSubtree = serde_json::from_str(&serde_json::to_string(&right).unwrap()).unwrap();
+
+            let mut merged = left;
+            merged.merge_into(&right_wire).unwrap();
+            assert_eq!(merged.final_hash().unwrap(), expected, "split={split}");
         }
     }
 

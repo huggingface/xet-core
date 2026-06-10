@@ -282,9 +282,15 @@ impl Chunker {
 /// partition_scan_bytes is the number of bytes to scan at each
 /// proposed partition boundary in search of a valid chunk.
 ///
-/// Due to a known issue in how we do chunking, note that these
-/// partitions are not 100% guaranteed to align. See the
-/// parallel_chunking.pdf for details.
+/// Partition alignment is guaranteed by the hash warmup fix: the
+/// chunker feeds `min_chunk - 64 - 1` bytes before scanning for
+/// boundaries, ensuring the gear hash window is fully warmed (purely
+/// data-dependent) at all accepted trigger positions. This function
+/// additionally verifies the absence of hidden triggers by re-chunking
+/// with `min_chunk = 0`. See `parallel chunking.lyx` for the proof.
+///
+/// For finding stable chunk boundaries from existing chunk boundaries (without
+/// data access), see [`next_stable_chunk_boundary`].
 pub fn find_partitions<R: Read + Seek>(
     reader: &mut R,
     file_size: usize,
@@ -352,6 +358,11 @@ pub fn find_partitions<R: Read + Seek>(
     }
     Ok(partitions)
 }
+
+// Re-exported from xet_core_structures where the canonical implementation lives,
+// so that downstream users of xet_data::deduplication::next_stable_chunk_boundary
+// continue to work without a source change.
+pub use xet_core_structures::xorb_object::constants::next_stable_chunk_boundary;
 
 #[cfg(test)]
 mod tests {

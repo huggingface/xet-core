@@ -17,6 +17,7 @@ exclude = [
     "hf_xet",
     "wasm/hf_xet_wasm",
     "wasm/hf_xet_thin_wasm",
+    "examples/xet_pkg_napi",
 ]
 
 [workspace.package]
@@ -133,9 +134,9 @@ winapi = { version = "0.3", features = [
 # dev-deps
 approx = "0.5"
 httpmock = "0.8"
-rand_core = "0.6"
+rand_core = "0.10"
 rand_distr = "0.6"
-russh = "0.55"
+russh = "0.61"
 serial_test = "3"
 tracing-test = { version = "0.2", features = ["no-env-filter"] }
 wiremock = "0.6"

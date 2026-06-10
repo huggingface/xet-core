@@ -256,12 +256,7 @@ impl ShardFileManager {
             s.verify_shard_integrity_debug_only();
 
             // Make sure the shard is in the shard directory
-            debug_assert!(
-                s.path.starts_with(&self.shard_directory),
-                "{:?} not in {:?}",
-                &s.path,
-                &self.shard_directory
-            );
+            debug_assert!(s.path.starts_with(&self.shard_directory), "{:?} not in {:?}", s.path, self.shard_directory);
 
             if self
                 .shard_bookkeeper

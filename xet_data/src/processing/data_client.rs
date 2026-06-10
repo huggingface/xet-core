@@ -47,7 +47,8 @@ pub async fn clean_bytes(
 ) -> Result<(XetFileInfo, DeduplicationMetrics)> {
     let (_id, mut handle) = processor.start_clean(None, Some(bytes.len() as u64), sha256_policy)?;
     handle.add_data(&bytes).await?;
-    handle.finish().await
+    let (info, metrics) = handle.finish().await?;
+    Ok((info, metrics))
 }
 
 #[instrument(skip_all, name = "clean_file", fields(file.name = tracing::field::Empty, file.len = tracing::field::Empty))]
@@ -76,7 +77,8 @@ pub async fn clean_file(
         handle.add_data(&buffer[0..bytes]).await?;
     }
 
-    handle.finish().await
+    let (info, metrics) = handle.finish().await?;
+    Ok((info, metrics))
 }
 
 /// Computes the xet hash for a single file without uploading.

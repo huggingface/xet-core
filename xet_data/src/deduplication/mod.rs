@@ -5,7 +5,7 @@ mod defrag_prevention;
 mod file_deduplication;
 mod interface;
 
-pub use chunking::{Chunker, find_partitions};
+pub use chunking::{Chunker, find_partitions, next_stable_chunk_boundary};
 pub use data_aggregator::DataAggregator;
 pub use dedup_metrics::DeduplicationMetrics;
 pub use file_deduplication::FileDeduper;

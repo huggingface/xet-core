@@ -1,0 +1,38 @@
+# Standalone — not part of the xet-core workspace. The workspace excludes this
+# directory, but napi-rs's build flow can resolve cargo against the *original*
+# (non-worktree) repo path during development, which would otherwise drag this
+# crate back into the workspace it's deliberately outside of.
+[workspace]
+
+[package]
+name = "xet_pkg_napi"
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+description = "Smoke-test napi binding for hf-xet (xet_pkg). Verifies that the Rust client builds and links inside a Node.js native addon."
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# hf-xet is published as `hf-xet` but the lib name is `xet`. Pull it via path.
+hf-xet = { path = "../../xet_pkg" }
+
+# napi-rs 2.x — the standard for Rust → Node.js native addons.
+
+napi = { version = "2", default-features = false, features = ["napi8"] }
+napi-derive = "2"
+
+[build-dependencies]
+napi-build = "2"
+
+# cargo-machete can't match `hf-xet` (package name) to `xet::` (lib name in source).
+[package.metadata.cargo-machete]
+ignored = ["hf-xet"]
+
+[profile.release]
+lto = true
+opt-level = 3
+debug = 1
+strip = "symbols"
