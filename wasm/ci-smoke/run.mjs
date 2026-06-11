@@ -8,8 +8,8 @@
 // SCENARIOS table below. Exits 0 on PASS, 1 on FAIL — CI relies on the
 // exit status.
 //
-// Scenarios run sequentially in CI, so a single default port is enough;
-// override with PORT if needed.
+// Scenarios run sequentially in CI, so the default port base is enough;
+// override with PORT if needed. A retried attempt uses PORT+1.
 //
 // Token sourcing:
 //   - needsWriteToken scenarios require HF_SMOKE_TEST_TOKEN (preferred) or
@@ -122,6 +122,19 @@ function assertMultiUpload(result, expectedFileCount, expectedFileSize) {
   assertDedupBytesUploaded(result.commitReport);
 }
 
+// Pinned content expectations for the two Xet-stored files on the READ_REPO
+// commit. Bump alongside READ_REPO in common.mjs when re-pinning.
+const PINNED_BIN = {
+  path: 'pytorch_model.bin',
+  size: 540217,
+  sha256: '9922e8996d0c7e24c7f4e7a5d9c5b7303549f4ee94de0f1138b103014b51be13',
+};
+const PINNED_H5 = {
+  path: 'tf_model.h5',
+  size: 26654536,
+  sha256: 'e0d82efce33dd527e8b1d585c024eef3f34ff493084492010308224140519fe3',
+};
+
 // ---------------------------------------------------------------------------
 // Scenario table
 // ---------------------------------------------------------------------------
@@ -156,37 +169,103 @@ const SCENARIOS = {
   download: {
     readToken: true,
     assert(result) {
-      const EXPECTED_SIZE = 540217;
-      const EXPECTED_SHA256 = '9922e8996d0c7e24c7f4e7a5d9c5b7303549f4ee94de0f1138b103014b51be13';
-      if (result.byteCount !== EXPECTED_SIZE) {
-        throw new Error(`byte count ${result.byteCount} != expected ${EXPECTED_SIZE}`);
+      if (result.byteCount !== PINNED_BIN.size) {
+        throw new Error(`byte count ${result.byteCount} != expected ${PINNED_BIN.size}`);
       }
-      if (result.sha256 !== EXPECTED_SHA256) {
-        throw new Error(`sha256 ${result.sha256} != expected ${EXPECTED_SHA256}`);
+      if (result.sha256 !== PINNED_BIN.sha256) {
+        throw new Error(`sha256 ${result.sha256} != expected ${PINNED_BIN.sha256}`);
       }
     },
   },
 
   // Concurrent multi-file download in one XetDownloadStreamGroup. Asserts
-  // each downloaded byteCount matches the corresponding paths-info size —
-  // a stream-fan-out bug that crossed buffers would produce mismatched
-  // lengths.
+  // each download's byteCount and content SHA-256 against the pinned values —
+  // a stream-fan-out bug that crossed buffers fails the content hash even
+  // when the byte counts happen to line up.
   'download-multi': {
     readToken: true,
     assert(result) {
-      const EXPECTED_FILE_COUNT = 2;
-      if (!Array.isArray(result.downloads) || result.downloads.length !== EXPECTED_FILE_COUNT) {
-        throw new Error(`expected ${EXPECTED_FILE_COUNT} downloads, got ${JSON.stringify(result.downloads)}`);
+      const PINNED = [PINNED_BIN, PINNED_H5];
+      if (!Array.isArray(result.downloads) || result.downloads.length !== PINNED.length) {
+        throw new Error(`expected ${PINNED.length} downloads, got ${JSON.stringify(result.downloads)}`);
       }
-      for (const d of result.downloads) {
-        if (d.byteCount !== d.expectedSize) {
-          throw new Error(`download ${d.path}: byteCount ${d.byteCount} != expected ${d.expectedSize}`);
+      for (const pin of PINNED) {
+        const d = result.downloads.find((x) => x.path === pin.path);
+        if (!d) {
+          throw new Error(`no download result for ${pin.path}: ${JSON.stringify(result.downloads)}`);
         }
-        if (!(d.byteCount > 0)) {
-          throw new Error(`download ${d.path}: byteCount=${d.byteCount} — expected > 0`);
+        if (d.byteCount !== pin.size) {
+          throw new Error(`download ${d.path}: byteCount ${d.byteCount} != expected ${pin.size}`);
+        }
+        if (d.sha256 !== pin.sha256) {
+          throw new Error(`download ${d.path}: sha256 ${d.sha256} != expected ${pin.sha256}`);
         }
       }
-      return `${result.downloads.length} concurrent downloads`;
+      return `${result.downloads.length} concurrent downloads, content verified`;
+    },
+  },
+
+  // Byte-range downloads (prefix / mid-file / suffix ending at file_size)
+  // against the pinned file, each compared via SHA-256 to the corresponding
+  // slice of a full reference download from the same group. The only
+  // coverage of the range-reconstruction download mode on wasm.
+  'download-range': {
+    readToken: true,
+    assert(result) {
+      if (result.fullByteCount !== PINNED_BIN.size || result.fullSha256 !== PINNED_BIN.sha256) {
+        throw new Error(
+          `reference download mismatch: ${result.fullByteCount} bytes sha256=${result.fullSha256}, ` +
+            `expected ${PINNED_BIN.size} / ${PINNED_BIN.sha256}`,
+        );
+      }
+      if (!Array.isArray(result.ranges) || result.ranges.length !== 3) {
+        throw new Error(`expected 3 range results, got ${JSON.stringify(result.ranges)}`);
+      }
+      for (const r of result.ranges) {
+        if (r.byteCount !== r.end - r.start) {
+          throw new Error(`range ${r.label} [${r.start}, ${r.end}): got ${r.byteCount} bytes, expected ${r.end - r.start}`);
+        }
+        if (r.sha256 !== r.expectedSha256) {
+          throw new Error(`range ${r.label} [${r.start}, ${r.end}): sha256 ${r.sha256} != reference slice ${r.expectedSha256}`);
+        }
+      }
+      return `${result.ranges.length} ranges match reference slices`;
+    },
+  },
+
+  // cancel() mid-download must leave next() resolving undefined promptly
+  // (cancel's contract is "subsequent next() returns None") and must not
+  // poison the group: a follow-up full download on the same group must still
+  // produce the pinned content.
+  'download-cancel': {
+    readToken: true,
+    assert(result) {
+      if (!(result.firstChunkBytes > 0)) {
+        throw new Error(`firstChunkBytes=${result.firstChunkBytes} — expected > 0 before cancel`);
+      }
+      if (result.postCancelUndefined !== true) {
+        throw new Error(`postCancelUndefined=${result.postCancelUndefined} — next() after cancel must resolve undefined`);
+      }
+      if (result.smallByteCount !== PINNED_BIN.size || result.smallSha256 !== PINNED_BIN.sha256) {
+        throw new Error(
+          `post-cancel download mismatch: ${result.smallByteCount} bytes sha256=${result.smallSha256}, ` +
+            `expected ${PINNED_BIN.size} / ${PINNED_BIN.sha256}`,
+        );
+      }
+      return `cancelled after ${result.firstChunkBytes} bytes; group still serves correct content`;
+    },
+  },
+
+  // Download error paths (nonexistent hash, malformed fileInfo) must reject
+  // at downloadStream() or the first next() — never hang or resolve.
+  'download-error': {
+    readToken: true,
+    assert(result) {
+      const expected = 3;
+      if (result.casesChecked !== expected) {
+        throw new Error(`casesChecked=${result.casesChecked}, expected ${expected}`);
+      }
+      return `${result.casesChecked} cases`;
     },
   },
 
@@ -356,6 +435,64 @@ const SCENARIOS = {
     },
   },
 
+  // Sha256Policy coverage on uploadBytes: 'compute' produces the real content
+  // SHA-256, { provided } is echoed verbatim, 'skip' leaves the field unset —
+  // and the xet content hash is identical for all three. Invalid policy
+  // values must reject in parse_sha256_policy (its only test coverage — the
+  // wrapper crate is wasm-only, so it has no native unit tests).
+  'sha256-policy': {
+    needsWriteToken: true,
+    spawnBlockingGuard: true,
+    assert(result) {
+      if (result.invalidCasesChecked !== 3) {
+        throw new Error(`invalidCasesChecked=${result.invalidCasesChecked}, expected 3`);
+      }
+      if (result.computeSha !== result.localSha) {
+        throw new Error(`'compute' sha256=${result.computeSha} != locally computed ${result.localSha}`);
+      }
+      if (result.providedSha !== result.localSha) {
+        throw new Error(`{ provided } sha256=${result.providedSha} != provided value ${result.localSha}`);
+      }
+      if (result.skipSha != null) {
+        throw new Error(`'skip' sha256=${result.skipSha} — expected unset`);
+      }
+      const [h0, h1, h2] = result.hashes ?? [];
+      if (!h0 || h0 !== h1 || h0 !== h2) {
+        throw new Error(`xet hashes differ across policies (must not affect content hash): ${JSON.stringify(result.hashes)}`);
+      }
+      const uploads = result.commitReport?.uploads;
+      if (!uploads || Object.keys(uploads).length !== 3) {
+        throw new Error(`commitReport.uploads has ${Object.keys(uploads ?? {}).length} entries, expected 3: ${JSON.stringify(uploads)}`);
+      }
+      assertDedupBytesUploaded(result.commitReport);
+      return `compute/provided/skip verified, 3 invalid policies rejected`;
+    },
+  },
+
+  // Upload state-machine misuse on wasm: post-abort and post-commit calls,
+  // and writes to finished/aborted streams, must all reject — the wasm mirror
+  // of the native upload_commit lifecycle tests, which never run on wasm32.
+  'upload-lifecycle': {
+    needsWriteToken: true,
+    spawnBlockingGuard: true,
+    timeoutMs: 3 * MINUTE_MS,
+    assert(result) {
+      const expected = 6;
+      if (result.casesChecked !== expected) {
+        throw new Error(`casesChecked=${result.casesChecked}, expected ${expected}`);
+      }
+      if (!result.bytesHash || !result.streamHash || result.bytesHash === result.streamHash) {
+        throw new Error(`commit B hashes invalid: bytes=${result.bytesHash} stream=${result.streamHash}`);
+      }
+      const uploads = result.commitReport?.uploads;
+      if (!uploads || Object.keys(uploads).length !== 2) {
+        throw new Error(`commit B uploads has ${Object.keys(uploads ?? {}).length} entries, expected 2: ${JSON.stringify(uploads)}`);
+      }
+      assertDedupBytesUploaded(result.commitReport);
+      return `${result.casesChecked} misuse cases rejected, commit B committed cleanly`;
+    },
+  },
+
   // Session-level (in-commit) deduplication: identical 65 MiB bytes uploaded
   // as two files in one commit. See scenarios/dedup.mjs for why the payload
   // must exceed MAX_XORB_BYTES (64 MiB).
@@ -493,35 +630,44 @@ if (scenario.needsWriteToken) {
   token = process.env.HF_TOKEN || '';
 }
 
+// Network scenarios get one retry so a transient hub/CAS blip doesn't redden
+// the CI job; a real regression fails both attempts. Each attempt uses its own
+// port: runBrowserSmoke's server kill is fire-and-forget, so rebinding the
+// same port could race the previous server's shutdown.
+const maxAttempts = scenario.needsWriteToken || scenario.readToken ? 2 : 1;
+
 let exitCode = 1;
-try {
-  const result = await runBrowserSmoke({
-    pagePath: `ci-smoke/harness.html?scenario=${name}`,
-    runArg: token,
-    timeoutMs: scenario.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    port: PORT,
-  });
+for (let attempt = 1; attempt <= maxAttempts && exitCode !== 0; attempt++) {
+  if (attempt > 1) console.error(`retrying ${name} (attempt ${attempt}/${maxAttempts})...`);
+  try {
+    const result = await runBrowserSmoke({
+      pagePath: `ci-smoke/harness.html?scenario=${name}`,
+      runArg: token,
+      timeoutMs: scenario.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      port: PORT + attempt - 1,
+    });
 
-  if (!result.ok) {
-    if (Array.isArray(result.failures) && result.failures.length > 0) {
-      for (const f of result.failures) {
-        console.error(`  ${f.label}: ${f.reason}`);
+    if (!result.ok) {
+      if (Array.isArray(result.failures) && result.failures.length > 0) {
+        for (const f of result.failures) {
+          console.error(`  ${f.label}: ${f.reason}`);
+        }
       }
+      // Anything mentioning the spawn_blocking expect message means the critical
+      // bug is back. Surface that explicitly so the failure cause is unambiguous.
+      if (scenario.spawnBlockingGuard && result.error && /Not initialized with handle set/i.test(result.error)) {
+        throw new Error(`REGRESSION: XetRuntime::spawn_blocking panicked on wasm — ${result.error}`);
+      }
+      throw new Error(result.error);
     }
-    // Anything mentioning the spawn_blocking expect message means the critical
-    // bug is back. Surface that explicitly so the failure cause is unambiguous.
-    if (scenario.spawnBlockingGuard && result.error && /Not initialized with handle set/i.test(result.error)) {
-      throw new Error(`REGRESSION: XetRuntime::spawn_blocking panicked on wasm — ${result.error}`);
-    }
-    throw new Error(result.error);
-  }
 
-  const suffix = scenario.assert(result);
-  console.log(suffix ? `PASS (${suffix})` : 'PASS');
-  exitCode = 0;
-} catch (e) {
-  console.error(`FAIL: ${e?.message || e}`);
-  if (e?.stack) console.error(e.stack);
+    const suffix = scenario.assert(result);
+    console.log(suffix ? `PASS (${suffix})` : 'PASS');
+    exitCode = 0;
+  } catch (e) {
+    console.error(`FAIL (attempt ${attempt}/${maxAttempts}): ${e?.message || e}`);
+    if (e?.stack) console.error(e.stack);
+  }
 }
 
 process.exit(exitCode);

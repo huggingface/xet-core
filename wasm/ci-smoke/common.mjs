@@ -111,12 +111,8 @@ export async function sha256Hex(bytes) {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-// Download a whole xet file into a single Uint8Array via a download stream
-// group on the given session.
-export async function downloadAllBytes(session, { accessToken, exp, casUrl }, { hash, file_size }) {
-  const group = await session.newDownloadStreamGroup(casUrl, accessToken, exp);
-  const stream = await group.downloadStream({ hash, file_size });
-
+// Drain a download stream to completion into a single Uint8Array.
+export async function drainStreamToBytes(stream) {
   const chunks = [];
   let total = 0;
   while (true) {
@@ -133,6 +129,14 @@ export async function downloadAllBytes(session, { accessToken, exp, casUrl }, { 
     off += chunk.byteLength;
   }
   return buf;
+}
+
+// Download a whole xet file into a single Uint8Array via a download stream
+// group on the given session.
+export async function downloadAllBytes(session, { accessToken, exp, casUrl }, { hash, file_size }) {
+  const group = await session.newDownloadStreamGroup(casUrl, accessToken, exp);
+  const stream = await group.downloadStream({ hash, file_size });
+  return drainStreamToBytes(stream);
 }
 
 // Commit an already-CAS-uploaded xet file to the Hub via the NDJSON commit

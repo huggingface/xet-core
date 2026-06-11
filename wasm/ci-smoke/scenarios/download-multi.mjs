@@ -3,22 +3,14 @@
 //
 // Only these two files are Xet-stored on this commit (the json/txt sidecars
 // are too small to be promoted to Xet). The size delta — 540 KiB vs 26 MiB —
-// is intentional: a fan-out bug that crossed stream buffers would produce
-// mismatched byteCounts that no single-file test could miss.
+// is intentional: a fan-out bug that crossed stream buffers would corrupt
+// content that no single-file test could miss. Each download reports its
+// content SHA-256; run.mjs asserts both against pinned values, so swapped or
+// interleaved buffers fail even when the byte counts happen to line up.
 
-import { XetSession, READ_REPO, fetchPathsInfo, pathInfoEntry, fetchXetReadToken } from '../common.mjs';
+import { XetSession, READ_REPO, fetchPathsInfo, pathInfoEntry, fetchXetReadToken, sha256Hex, drainStreamToBytes } from '../common.mjs';
 
 const FILEPATHS = ['pytorch_model.bin', 'tf_model.h5'];
-
-async function drainStream(stream) {
-  let total = 0;
-  while (true) {
-    const chunk = await stream.next();
-    if (chunk === undefined) break;
-    total += chunk.byteLength;
-  }
-  return total;
-}
 
 export async function run(hfToken) {
   const params = { hfToken, ...READ_REPO };
@@ -39,11 +31,11 @@ export async function run(hfToken) {
   const downloads = await Promise.all(
     fileInfos.map(async (fi) => {
       const stream = await group.downloadStream({ hash: fi.xetHash, file_size: fi.size });
-      const byteCount = await drainStream(stream);
-      return { path: fi.path, byteCount, expectedSize: fi.size };
+      const bytes = await drainStreamToBytes(stream);
+      return { path: fi.path, byteCount: bytes.byteLength, expectedSize: fi.size, sha256: await sha256Hex(bytes) };
     }),
   );
-  console.log('downloads done:', downloads.map((d) => `${d.path}=${d.byteCount}`).join(', '));
+  console.log('downloads done:', downloads.map((d) => `${d.path}=${d.byteCount} sha256=${d.sha256}`).join(', '));
 
   return { ok: true, downloads };
 }
