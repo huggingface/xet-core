@@ -74,4 +74,16 @@ mod tests {
         let ctx = XetContext::default().unwrap();
         assert!(!Arc::ptr_eq(&upload_controller(&ctx, EP_A), &download_controller(&ctx, EP_A)));
     }
+
+    #[test]
+    // The cache lives inside XetCommon, so cached controllers must not hold anything that
+    // points back at XetCommon — that Arc cycle would keep the runtime state alive forever.
+    fn test_cached_controllers_do_not_keep_runtime_common_alive() {
+        let ctx = XetContext::default().unwrap();
+        let weak_common = Arc::downgrade(&ctx.common);
+        let _upload = upload_controller(&ctx, EP_A);
+        let _download = download_controller(&ctx, EP_A);
+        drop(ctx);
+        assert!(weak_common.upgrade().is_none());
+    }
 }
