@@ -226,3 +226,4 @@ Content:
 - Stream download groups surface aggregate progress only in v1 (kind=stream, no per-item file/term instrumentation).
 - Monitors are weak-referenced per controller and disappear when their client (commit/group) drops; concurrency history is therefore live-scope only.
 - The console feature is structurally excluded on wasm (compile_error guard).
+- `?files=all` is accepted on the detail endpoints but is currently equivalent to the default: the bounded recent-completions ring IS the complete retained list, so there is nothing more to return. The parameter is reserved for API stability.

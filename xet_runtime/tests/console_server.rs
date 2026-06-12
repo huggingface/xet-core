@@ -48,4 +48,25 @@ fn server_serves_index_process_and_sessions() {
         let missing = reqwest::get(format!("{base}/api/v1/sessions/nope")).await.unwrap();
         assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
     });
+
+    // Multi-session listing + ?session= snapshot filter.
+    let _second = registry().register_session("itest-session-2".into(), vec![]);
+    rt.block_on(async {
+        let base = format!("http://{addr}");
+        let sessions: serde_json::Value =
+            reqwest::get(format!("{base}/api/v1/sessions")).await.unwrap().json().await.unwrap();
+        let listed = sessions["sessions"].as_array().unwrap();
+        assert!(listed.iter().any(|s| s["id"] == "itest-session"));
+        assert!(listed.iter().any(|s| s["id"] == "itest-session-2"));
+
+        let filtered: serde_json::Value = reqwest::get(format!("{base}/api/v1/snapshot?session=itest-session-2"))
+            .await.unwrap().json().await.unwrap();
+        let snap_sessions = filtered["sessions"].as_array().unwrap();
+        assert_eq!(snap_sessions.len(), 1);
+        assert_eq!(snap_sessions[0]["detail"]["id"], "itest-session-2");
+
+        let unfiltered: serde_json::Value =
+            reqwest::get(format!("{base}/api/v1/snapshot")).await.unwrap().json().await.unwrap();
+        assert!(unfiltered["sessions"].as_array().unwrap().len() >= 2);
+    });
 }
