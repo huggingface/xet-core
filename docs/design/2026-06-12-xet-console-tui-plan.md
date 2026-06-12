@@ -1919,7 +1919,7 @@ git commit -m "feat(xet-console): upload commit detail page (layout A)"
 
 Layout A mirror: files table left; term-blocks pane right-top; prefetch pane right-bottom.
 
-- [ ] **Step 1: Write the failing render test**
+- [x] **Step 1: Write the failing render test**
 
 ```rust
 #[cfg(test)]
@@ -1956,9 +1956,9 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run to verify failure** — `cargo test -p xet-console download` fails on placeholder.
+- [x] **Step 2: Run to verify failure** — `cargo test -p xet-console download` fails on placeholder.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```rust
 use ratatui::Frame;
@@ -2104,7 +2104,7 @@ fn draw_prefetch(f: &mut Frame, area: Rect, app: &App, g: &DownloadGroupDetail) 
 }
 ```
 
-- [ ] **Step 4: Run tests + commit**
+- [x] **Step 4: Run tests + commit**
 
 Run: `cargo test -p xet-console download` (1 passed) + full crate; clippy clean.
 

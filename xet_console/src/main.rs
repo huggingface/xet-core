@@ -1,19 +1,19 @@
 mod app;
 mod client;
-mod poll;
-mod ui;
 #[cfg(test)]
 mod fixtures;
+mod poll;
 #[cfg(test)]
 mod smoke;
+mod ui;
 
-use std::io;
+use std::io::{self, IsTerminal};
 use std::time::Duration;
 
 use clap::Parser;
 use crossterm::event::{self, Event, KeyEventKind};
 use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
@@ -66,12 +66,8 @@ fn main() -> anyhow::Result<()> {
 
     let shared = std::sync::Arc::new(poll::Shared::default());
     let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let poller = poll::spawn_poller(
-        client::ConsoleClient::new(base.clone()),
-        shared.clone(),
-        args.interval,
-        shutdown.clone(),
-    );
+    let poller =
+        poll::spawn_poller(client::ConsoleClient::new(base.clone()), shared.clone(), args.interval, shutdown.clone());
 
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -79,6 +75,10 @@ fn main() -> anyhow::Result<()> {
         let _ = execute!(io::stdout(), LeaveAlternateScreen);
         default_hook(info);
     }));
+
+    if !io::stdout().is_terminal() {
+        anyhow::bail!("xet-console needs an interactive terminal (stdout is not a tty)");
+    }
 
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen)?;
@@ -93,10 +93,7 @@ fn main() -> anyhow::Result<()> {
     result
 }
 
-fn run(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    shared: &poll::Shared,
-) -> anyhow::Result<()> {
+fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, shared: &poll::Shared) -> anyhow::Result<()> {
     let mut app = app::App::default();
     loop {
         {
@@ -129,10 +126,7 @@ mod tests {
         assert_eq!(resolve_base(None, None), "http://127.0.0.1:6660");
         assert_eq!(resolve_base(None, Some(7000)), "http://127.0.0.1:7000");
         assert_eq!(resolve_base(Some("8123"), None), "http://127.0.0.1:8123");
-        assert_eq!(
-            resolve_base(Some("http://10.0.0.5:6660/"), Some(1)),
-            "http://10.0.0.5:6660"
-        );
+        assert_eq!(resolve_base(Some("http://10.0.0.5:6660/"), Some(1)), "http://10.0.0.5:6660");
         assert_eq!(resolve_base(Some("myhost:6660"), None), "http://myhost:6660");
     }
 }

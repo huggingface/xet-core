@@ -62,11 +62,9 @@ fn draw_header(f: &mut Frame, area: Rect, c: &UploadCommitDetail) {
     let d = &c.dedup;
     let dedup_pct = percent(d.deduped_bytes, d.total_bytes);
     let lines = vec![
-        Line::from(format!(
-            " ▲ commit #{} [{}]  {done} / {total} ({pct}%)  {rate}",
-            c.id,
-            commit_state_label(c.state),
-        )),
+        Line::from(
+            format!(" ▲ commit #{} [{}]  {done} / {total} ({pct}%)  {rate}", c.id, commit_state_label(c.state),),
+        ),
         Line::from(format!(
             " dedup {dedup_pct}%: {} deduped ({} global) · {} new · xorb↑ {} · shard↑ {}",
             humanize_bytes(d.deduped_bytes),
@@ -117,7 +115,9 @@ fn draw_files(f: &mut Frame, area: Rect, app: &App, c: &UploadCommitDetail) {
             Constraint::Length(5),
         ],
     )
-    .header(Row::new(vec!["name", "state", "prog", "hash", "shard"]).style(Style::default().add_modifier(Modifier::BOLD)))
+    .header(
+        Row::new(vec!["name", "state", "prog", "hash", "shard"]).style(Style::default().add_modifier(Modifier::BOLD)),
+    )
     .block(pane_block(format!(" files ({}/{} active) ", c.file_counts.in_flight, n), focused))
     .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     f.render_stateful_widget(table, area, &mut tstate);
@@ -164,10 +164,7 @@ fn draw_shards(f: &mut Frame, area: Rect, app: &App, c: &UploadCommitDetail) {
         })
         .collect();
     let focused = app.pane == Pane::SideBottom;
-    f.render_widget(
-        Paragraph::new(lines).block(pane_block(format!(" shards ({}) ", c.shards.len()), focused)),
-        area,
-    );
+    f.render_widget(Paragraph::new(lines).block(pane_block(format!(" shards ({}) ", c.shards.len()), focused)), area);
 }
 
 fn draw_recent(f: &mut Frame, area: Rect, c: &UploadCommitDetail) {
@@ -206,7 +203,10 @@ mod tests {
 
     #[test]
     fn upload_page_shows_layout_a_panes() {
-        let app = App { page: Page::Upload, ..Default::default() };
+        let app = App {
+            page: Page::Upload,
+            ..Default::default()
+        };
         let text = render(&app);
         // header strip
         assert!(text.contains("commit #7"), "{text}");
@@ -232,7 +232,11 @@ mod tests {
 
     #[test]
     fn upload_page_handles_missing_commit_gracefully() {
-        let app = App { page: Page::Upload, commit_idx: 99, ..Default::default() };
+        let app = App {
+            page: Page::Upload,
+            commit_idx: 99,
+            ..Default::default()
+        };
         let text = render(&app);
         assert!(text.contains("no such commit"), "{text}");
     }

@@ -24,10 +24,18 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, snap: &SnapshotResponse) {
     // One fixed-height card per monitor, scrolled by monitor_row.
     const CARD: u16 = 7;
     let visible = (area.height / CARD).max(1) as usize;
-    let first = app.monitor_row.min(monitors.len().saturating_sub(1)).saturating_sub(visible.saturating_sub(1));
+    let first = app
+        .monitor_row
+        .min(monitors.len().saturating_sub(1))
+        .saturating_sub(visible.saturating_sub(1));
     let mut y = area.y;
     for m in monitors.iter().skip(first).take(visible) {
-        let card = Rect { x: area.x, y, width: area.width, height: CARD.min(area.y + area.height - y) };
+        let card = Rect {
+            x: area.x,
+            y,
+            width: area.width,
+            height: CARD.min(area.y + area.height - y),
+        };
         draw_monitor(f, card, m);
         y += CARD;
         if y >= area.y + area.height {
@@ -65,9 +73,15 @@ fn draw_monitor(f: &mut Frame, area: Rect, m: &MonitorSnapshot) {
         rows[0],
     );
 
-    let ratio = if m.total_permits == 0 { 0.0 } else { m.active_permits as f64 / m.total_permits as f64 };
+    let ratio = if m.total_permits == 0 {
+        0.0
+    } else {
+        m.active_permits as f64 / m.total_permits as f64
+    };
     f.render_widget(
-        Gauge::default().ratio(ratio.clamp(0.0, 1.0)).gauge_style(Style::default().fg(Color::Cyan)),
+        Gauge::default()
+            .ratio(ratio.clamp(0.0, 1.0))
+            .gauge_style(Style::default().fg(Color::Cyan)),
         rows[1],
     );
 
@@ -127,7 +141,10 @@ mod tests {
             last_success_ms: Some(0),
             ..Default::default()
         };
-        let app = App { page: Page::Concurrency, ..Default::default() };
+        let app = App {
+            page: Page::Concurrency,
+            ..Default::default()
+        };
         let mut terminal = Terminal::new(TestBackend::new(120, 32)).unwrap();
         terminal.draw(|f| ui::draw(f, &app, &state)).unwrap();
         let text = buffer_text(terminal.backend());

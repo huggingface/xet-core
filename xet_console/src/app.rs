@@ -37,11 +37,17 @@ pub fn overview_entries(snapshot: &SnapshotResponse) -> Vec<OverviewEntry> {
         out.push(OverviewEntry::Session { session_idx: si });
         let n_commits = s.upload_commit_details.len() + s.detail.ended_upload_commits.len();
         for ci in 0..n_commits {
-            out.push(OverviewEntry::Commit { session_idx: si, commit_idx: ci });
+            out.push(OverviewEntry::Commit {
+                session_idx: si,
+                commit_idx: ci,
+            });
         }
         let n_groups = s.download_group_details.len() + s.detail.ended_download_groups.len();
         for gi in 0..n_groups {
-            out.push(OverviewEntry::Group { session_idx: si, group_idx: gi });
+            out.push(OverviewEntry::Group {
+                session_idx: si,
+                group_idx: gi,
+            });
         }
     }
     out
@@ -101,7 +107,10 @@ impl App {
                 {
                     match *entry {
                         OverviewEntry::Session { session_idx } => self.session_idx = session_idx,
-                        OverviewEntry::Commit { session_idx, commit_idx } => {
+                        OverviewEntry::Commit {
+                            session_idx,
+                            commit_idx,
+                        } => {
                             self.session_idx = session_idx;
                             self.commit_idx = commit_idx;
                             self.enter_detail(Page::Upload);
@@ -151,8 +160,14 @@ mod tests {
     fn entries() -> Vec<OverviewEntry> {
         vec![
             OverviewEntry::Session { session_idx: 0 },
-            OverviewEntry::Commit { session_idx: 0, commit_idx: 0 },
-            OverviewEntry::Group { session_idx: 0, group_idx: 0 },
+            OverviewEntry::Commit {
+                session_idx: 0,
+                commit_idx: 0,
+            },
+            OverviewEntry::Group {
+                session_idx: 0,
+                group_idx: 0,
+            },
         ]
     }
 

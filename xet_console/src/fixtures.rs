@@ -88,7 +88,12 @@ pub fn sample_snapshot() -> SnapshotResponse {
                 finished_at: Some(900),
             },
         )],
-        file_counts: FileCounts { in_flight: 2, completed: 1, failed: 0, aborted: 0 },
+        file_counts: FileCounts {
+            in_flight: 2,
+            completed: 1,
+            failed: 0,
+            aborted: 0,
+        },
         xorbs: XorbsSnapshot {
             in_flight: vec![XorbSnapshot {
                 hash: "f3ab12cd5566".into(),
@@ -100,7 +105,11 @@ pub fn sample_snapshot() -> SnapshotResponse {
                 created_at: 2,
                 finished_at: None,
             }],
-            counts: XorbCounts { formed: 48, uploaded: 46, failed: 1 },
+            counts: XorbCounts {
+                formed: 48,
+                uploaded: 46,
+                failed: 1,
+            },
             recent: vec![(
                 950,
                 XorbSnapshot {
@@ -116,7 +125,12 @@ pub fn sample_snapshot() -> SnapshotResponse {
             )],
         },
         shards: vec![
-            ShardSnapshot { hash: None, state: ShardState::Staging, n_xorbs: 48, size: 0 },
+            ShardSnapshot {
+                hash: None,
+                state: ShardState::Staging,
+                n_xorbs: 48,
+                size: 0,
+            },
             ShardSnapshot {
                 hash: Some("aa55cc".into()),
                 state: ShardState::Uploaded,
@@ -135,7 +149,12 @@ pub fn sample_snapshot() -> SnapshotResponse {
         dedup: dedup.clone(),
         files: vec![],
         completed_files: vec![],
-        file_counts: FileCounts { in_flight: 0, completed: 8, failed: 0, aborted: 0 },
+        file_counts: FileCounts {
+            in_flight: 0,
+            completed: 8,
+            failed: 0,
+            aborted: 0,
+        },
         xorbs: XorbsSnapshot::default(),
         shards: vec![],
     };
@@ -174,7 +193,12 @@ pub fn sample_snapshot() -> SnapshotResponse {
             finished_at: None,
         }],
         completed_files: vec![],
-        file_counts: FileCounts { in_flight: 1, completed: 0, failed: 0, aborted: 0 },
+        file_counts: FileCounts {
+            in_flight: 1,
+            completed: 0,
+            failed: 0,
+            aborted: 0,
+        },
     };
     let monitor = MonitorSnapshot {
         tag: "upload".into(),
@@ -186,7 +210,10 @@ pub fn sample_snapshot() -> SnapshotResponse {
         bytes_sent: 3 << 30,
         success: Some(SuccessModelSnapshot {
             success_ratio: 0.94,
-            thresholds: Thresholds { increase: 0.8, decrease: 0.5 },
+            thresholds: Thresholds {
+                increase: 0.8,
+                decrease: 0.5,
+            },
             recommended_adjustment: AdjustmentRecommendation::Increase,
         }),
         latency: Some(LatencyModelSnapshot {

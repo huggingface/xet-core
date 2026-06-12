@@ -87,6 +87,7 @@ jobs:
       - name: Lint (console feature)
         run: |
           cargo clippy -r --verbose -p xet-runtime -p xet-client -p xet-data -p hf-xet --features console -- -D warnings
+          cargo clippy -r --verbose -p xet-console -- -D warnings
       - name: Set up Git LFS
         run: |
           curl -s https://packagecloud.io/install/repositories/github/git-lfs/script.deb.sh | sudo bash
@@ -98,6 +99,7 @@ jobs:
       - name: Build and Test (console feature)
         run: |
           cargo test --verbose --no-fail-fast -p xet-runtime -p xet-client -p xet-data -p hf-xet --features "console simulation"
+          cargo test --verbose --no-fail-fast -p xet-console
       - name: Build and Test hf_xet
         run: |
           cd hf_xet && cargo test --verbose --no-fail-fast

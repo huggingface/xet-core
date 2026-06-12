@@ -38,12 +38,8 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, snap: &SnapshotResponse) {
         DownloadGroupKind::Stream => "stream",
     };
     f.render_widget(
-        Paragraph::new(format!(
-            " ▼ group #{} [{}] kind {kind}  {pct}%  {rate}",
-            g.id,
-            group_state_label(g.state)
-        ))
-        .style(Style::default().add_modifier(Modifier::BOLD)),
+        Paragraph::new(format!(" ▼ group #{} [{}] kind {kind}  {pct}%  {rate}", g.id, group_state_label(g.state)))
+            .style(Style::default().add_modifier(Modifier::BOLD)),
         rows[0],
     );
 
@@ -66,8 +62,7 @@ fn draw_files(f: &mut Frame, area: Rect, app: &App, g: &DownloadGroupDetail) {
     for file in &g.files {
         rows.push(Row::new(vec![
             Cell::from(file.name.clone()),
-            Cell::from(download_state_label(file.state))
-                .style(state_style(download_state_label(file.state))),
+            Cell::from(download_state_label(file.state)).style(state_style(download_state_label(file.state))),
             Cell::from(format!("{:>3}%", percent(file.bytes_completed, file.total_bytes.max(1)))),
             Cell::from(file.file_hash.as_deref().map(short_hash).unwrap_or_else(|| "–".into())),
         ]));
@@ -75,8 +70,7 @@ fn draw_files(f: &mut Frame, area: Rect, app: &App, g: &DownloadGroupDetail) {
     for (_, file) in &g.completed_files {
         rows.push(Row::new(vec![
             Cell::from(file.name.clone()),
-            Cell::from(download_state_label(file.state))
-                .style(state_style(download_state_label(file.state))),
+            Cell::from(download_state_label(file.state)).style(state_style(download_state_label(file.state))),
             Cell::from("100%"),
             Cell::from(file.file_hash.as_deref().map(short_hash).unwrap_or_else(|| "–".into())),
         ]));
@@ -95,14 +89,8 @@ fn draw_files(f: &mut Frame, area: Rect, app: &App, g: &DownloadGroupDetail) {
             Constraint::Length(9),
         ],
     )
-    .header(
-        Row::new(vec!["name", "state", "prog", "hash"])
-            .style(Style::default().add_modifier(Modifier::BOLD)),
-    )
-    .block(pane_block(
-        format!(" files ({}/{} active) ", g.file_counts.in_flight, n),
-        app.pane == Pane::Main,
-    ))
+    .header(Row::new(vec!["name", "state", "prog", "hash"]).style(Style::default().add_modifier(Modifier::BOLD)))
+    .block(pane_block(format!(" files ({}/{} active) ", g.file_counts.in_flight, n), app.pane == Pane::Main))
     .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     f.render_stateful_widget(table, area, &mut tstate);
 }
@@ -155,10 +143,7 @@ fn draw_terms(f: &mut Frame, area: Rect, app: &App, g: &DownloadGroupDetail) {
     } else {
         lines.push(Line::from("no in-flight file selected"));
     }
-    f.render_widget(
-        Paragraph::new(lines).block(pane_block(" term blocks ".into(), app.pane == Pane::SideTop)),
-        area,
-    );
+    f.render_widget(Paragraph::new(lines).block(pane_block(" term blocks ".into(), app.pane == Pane::SideTop)), area);
 }
 
 fn draw_prefetch(f: &mut Frame, area: Rect, app: &App, g: &DownloadGroupDetail) {
@@ -175,11 +160,7 @@ fn draw_prefetch(f: &mut Frame, area: Rect, app: &App, g: &DownloadGroupDetail) 
     } else {
         vec![Line::from("no prefetch state")]
     };
-    f.render_widget(
-        Paragraph::new(lines)
-            .block(pane_block(" prefetch ".into(), app.pane == Pane::SideBottom)),
-        area,
-    );
+    f.render_widget(Paragraph::new(lines).block(pane_block(" prefetch ".into(), app.pane == Pane::SideBottom)), area);
 }
 
 #[cfg(test)]
@@ -200,7 +181,10 @@ mod tests {
             last_success_ms: Some(0),
             ..Default::default()
         };
-        let app = App { page: Page::Download, ..Default::default() };
+        let app = App {
+            page: Page::Download,
+            ..Default::default()
+        };
         let mut terminal = Terminal::new(TestBackend::new(120, 32)).unwrap();
         terminal.draw(|f| ui::draw(f, &app, &state)).unwrap();
         let text = buffer_text(terminal.backend());
@@ -226,7 +210,11 @@ mod tests {
             last_success_ms: Some(0),
             ..Default::default()
         };
-        let app = App { page: Page::Download, main_row: 5, ..Default::default() };
+        let app = App {
+            page: Page::Download,
+            main_row: 5,
+            ..Default::default()
+        };
         let mut terminal = Terminal::new(TestBackend::new(120, 32)).unwrap();
         terminal.draw(|f| ui::draw(f, &app, &state)).unwrap();
         let text = buffer_text(terminal.backend());

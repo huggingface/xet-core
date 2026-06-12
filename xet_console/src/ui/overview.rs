@@ -7,13 +7,7 @@ use xet_runtime::console::model::{SessionSummary, SnapshotResponse};
 use crate::app::{App, OverviewEntry, overview_entries};
 use crate::ui::widgets::*;
 
-pub fn draw(
-    f: &mut Frame,
-    area: Rect,
-    app: &App,
-    snap: &SnapshotResponse,
-    ended_sessions: &[SessionSummary],
-) {
+pub fn draw(f: &mut Frame, area: Rect, app: &App, snap: &SnapshotResponse, ended_sessions: &[SessionSummary]) {
     let (list_area, footer_area) = if ended_sessions.is_empty() {
         (area, None)
     } else {
@@ -70,10 +64,17 @@ fn entry_line(e: &OverviewEntry, snap: &SnapshotResponse) -> String {
                 "session {} [{}]  monitors: {}",
                 &s.detail.id[..8.min(s.detail.id.len())],
                 session_state_label(s.detail.state),
-                if monitors.is_empty() { "none".to_string() } else { monitors }
+                if monitors.is_empty() {
+                    "none".to_string()
+                } else {
+                    monitors
+                }
             )
         },
-        OverviewEntry::Commit { session_idx, commit_idx } => {
+        OverviewEntry::Commit {
+            session_idx,
+            commit_idx,
+        } => {
             let s = &snap.sessions[session_idx];
             let live = &s.upload_commit_details;
             let (c, ended) = if commit_idx < live.len() {
@@ -81,7 +82,11 @@ fn entry_line(e: &OverviewEntry, snap: &SnapshotResponse) -> String {
             } else {
                 (&s.detail.ended_upload_commits[commit_idx - live.len()], true)
             };
-            let pct = c.progress.as_ref().map(|p| percent(p.bytes_completed, p.total_bytes)).unwrap_or(0);
+            let pct = c
+                .progress
+                .as_ref()
+                .map(|p| percent(p.bytes_completed, p.total_bytes))
+                .unwrap_or(0);
             let rate = humanize_rate(c.progress.as_ref().and_then(|p| p.rate_bps));
             format!(
                 "  ▲ commit #{} [{}] {}% {} files {}/{}{}",
@@ -102,7 +107,11 @@ fn entry_line(e: &OverviewEntry, snap: &SnapshotResponse) -> String {
             } else {
                 (&s.detail.ended_download_groups[group_idx - live.len()], true)
             };
-            let pct = g.progress.as_ref().map(|p| percent(p.bytes_completed, p.total_bytes)).unwrap_or(0);
+            let pct = g
+                .progress
+                .as_ref()
+                .map(|p| percent(p.bytes_completed, p.total_bytes))
+                .unwrap_or(0);
             format!(
                 "  ▼ group #{} [{}] {}% {} files in flight{}",
                 g.id,

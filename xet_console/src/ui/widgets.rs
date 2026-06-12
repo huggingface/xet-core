@@ -1,8 +1,8 @@
 use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders};
 use xet_runtime::console::model::{
-    DownloadGroupState, FileDownloadState, FileUploadState, SessionState, ShardState, TermState,
-    UploadCommitState, XorbState,
+    DownloadGroupState, FileDownloadState, FileUploadState, SessionState, ShardState, TermState, UploadCommitState,
+    XorbState,
 };
 
 pub fn humanize_bytes(n: u64) -> String {
@@ -35,18 +35,13 @@ pub fn short_hash(h: &str) -> String {
 }
 
 pub fn percent(done: u64, total: u64) -> u16 {
-    done.saturating_mul(100)
-        .checked_div(total)
-        .unwrap_or(0)
-        .min(100) as u16
+    done.saturating_mul(100).checked_div(total).unwrap_or(0).min(100) as u16
 }
 
 /// One style language for all lifecycle states across pages.
 pub fn state_style(label: &str) -> Style {
     match label {
-        "complete" | "completed" | "uploaded" | "finished" | "consumed" => {
-            Style::default().fg(Color::Green)
-        }
+        "complete" | "completed" | "uploaded" | "finished" | "consumed" => Style::default().fg(Color::Green),
         "failed" | "aborted" => Style::default().fg(Color::Red),
         "queued" | "enqueued" | "staging" | "formed" => Style::default().fg(Color::DarkGray),
         _ => Style::default().fg(Color::Cyan), // any in-flight state

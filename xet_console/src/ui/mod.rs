@@ -90,10 +90,7 @@ fn draw_help(f: &mut Frame) {
   q         quit
 
   any key closes this help";
-    f.render_widget(
-        Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(" help ")),
-        area,
-    );
+    f.render_widget(Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(" help ")), area);
 }
 
 fn centered_rect(width: u16, height: u16, parent: Rect) -> Rect {

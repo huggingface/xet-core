@@ -22,6 +22,13 @@ user which port their process used (`XET_CONSOLE_PORT`), then substitute it.
 
 Note: `/` (the index) is a static self-description (service, version, pid, argv, endpoints) — every other endpoint carries `as_of`.
 
+## Human TUI
+
+A terminal client renders the same API: `cargo run -p xet-console` (defaults to
+127.0.0.1:6660; pass a port, host:port, or URL — `cargo run -p xet-console -- 7001`;
+`--interval 250ms` adjusts the poll rate). Pages: [1] overview, [2] upload commit,
+[3] download group, [4] concurrency; `?` shows keys.
+
 ## First call: the full snapshot
 
 ```bash

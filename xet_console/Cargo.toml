@@ -7,7 +7,7 @@ publish = false
 description = "Terminal UI for the xet-console live observability API"
 
 [dependencies]
-xet-runtime = { version = "1.5.2", path = "../xet_runtime", features = ["console"] }
+xet-runtime = { path = "../xet_runtime", features = ["console"] }
 anyhow = { workspace = true }
 clap = { workspace = true }
 humantime = { workspace = true }
