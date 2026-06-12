@@ -127,7 +127,10 @@ impl SessionConsole {
     }
 
     pub fn monitor_snapshots(&self) -> Vec<MonitorSnapshot> {
-        let Ok(monitors) = self.monitors.lock() else { return Vec::new(); };
+        let monitors: Vec<Arc<MonitorConsole>> = {
+            let Ok(monitors) = self.monitors.lock() else { return Vec::new(); };
+            monitors.clone()
+        };
         monitors.iter().map(|m| m.snapshot()).collect()
     }
 
@@ -1183,6 +1186,13 @@ impl TermBlockConsole {
 
     /// Mark block as fetched; stores the resolved terms and stamps fetched_at.
     pub fn resolved(&self, term_list: Vec<TermInfo>) {
+        // consumed blocks are frozen
+        {
+            let Ok(state) = self.state.lock() else { return; };
+            if matches!(*state, TermState::Consumed) {
+                return;
+            }
+        }
         if let Ok(mut terms) = self.terms.lock() {
             *terms = term_list;
         }
