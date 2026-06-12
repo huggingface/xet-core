@@ -8,6 +8,7 @@ use super::ring::TimestampedRing;
 
 pub const RECENT_RING_CAPACITY: usize = 256;
 pub const ENDED_COMMITS_CAPACITY: usize = 64;
+pub const ENDED_GROUPS_CAPACITY: usize = 64;
 
 pub type ProgressProvider = Box<dyn Fn() -> ProgressSnapshot + Send + Sync>;
 /// id -> (total_bytes, bytes_completed); installed by xet_data, reads GroupProgress.
@@ -30,7 +31,7 @@ impl SessionConsole {
             config,
             upload_commits: Mutex::new(Vec::new()),
             ended_upload_commits: Mutex::new(TimestampedRing::new(ENDED_COMMITS_CAPACITY)),
-            ended_download_groups: Mutex::new(TimestampedRing::new(ENDED_COMMITS_CAPACITY)),
+            ended_download_groups: Mutex::new(TimestampedRing::new(ENDED_GROUPS_CAPACITY)),
         })
     }
 
@@ -153,6 +154,10 @@ impl UploadCommitConsole {
 
     pub fn set_state(&self, s: UploadCommitState) {
         let Ok(mut state) = self.state.lock() else { return; };
+        // terminal states are sticky: late idempotent hooks must not regress them
+        if matches!(*state, UploadCommitState::Completed | UploadCommitState::Aborted) {
+            return;
+        }
         *state = s;
     }
 
@@ -210,29 +215,42 @@ impl UploadCommitConsole {
         is_external: bool,
     ) {
         let file_id = self.resolve_file_id(ct_or_file_id);
-        // Append dep to file and potentially advance state
+        // canonical per-file inner lock order: xorb_deps before state (never invert)
+        // Merge dep into file (or push new) and potentially advance state
         {
             let Ok(files) = self.files.lock() else { return; };
             if let Some(file) = files.get(&file_id) {
                 let Ok(mut deps) = file.xorb_deps.lock() else { return; };
-                deps.push(XorbDepSnapshot {
-                    xorb_hash: xorb_hash.clone(),
-                    n_bytes,
-                    uploaded: is_external,
-                });
-                // After appending a dep to a file in Processed state, advance to AwaitingXorbs
-                if let Ok(mut state) = file.state.lock() && *state == FileUploadState::Processed {
-                    *state = FileUploadState::AwaitingXorbs;
+                if let Some(existing) = deps.iter_mut().find(|d| d.xorb_hash == xorb_hash) {
+                    // Duplicate registration: merge rather than double-count
+                    existing.n_bytes += n_bytes;
+                    existing.uploaded |= is_external;
+                } else {
+                    deps.push(XorbDepSnapshot {
+                        xorb_hash: xorb_hash.clone(),
+                        n_bytes,
+                        uploaded: is_external,
+                    });
+                    // After appending a dep to a file in Processed state, advance to AwaitingXorbs
+                    if let Ok(mut state) = file.state.lock() && *state == FileUploadState::Processed {
+                        *state = FileUploadState::AwaitingXorbs;
+                    }
                 }
             }
         }
-        // Record this file id in xorb_files
-        {
+        // Record this file id in xorb_files only on first registration for this (xorb, file) pair
+        let first_for_file = {
             let Ok(mut xf) = self.xorb_files.lock() else { return; };
-            xf.entry(xorb_hash.clone()).or_default().push(file_id);
-        }
-        // Bump xorb's n_files if XorbConsole exists
-        {
+            let file_ids = xf.entry(xorb_hash.clone()).or_default();
+            if !file_ids.contains(&file_id) {
+                file_ids.push(file_id);
+                true
+            } else {
+                false
+            }
+        };
+        // Bump xorb's n_files only on first registration for this (xorb, file) pair
+        if first_for_file {
             let Ok(xorbs) = self.xorbs.lock() else { return; };
             if let Some(xorb) = xorbs.get(&xorb_hash) {
                 xorb.n_files.fetch_add(1, Ordering::Relaxed);
@@ -241,6 +259,11 @@ impl UploadCommitConsole {
     }
 
     pub fn xorb_formed(&self, hash: String, raw_bytes: u64, serialized_bytes: u64) {
+        // Initialize n_files from deps that may have registered before xorb_formed was called
+        let existing_file_count = {
+            let Ok(xf) = self.xorb_files.lock() else { return; };
+            xf.get(&hash).map(|v| v.len()).unwrap_or(0) as u64
+        };
         let xorb = Arc::new(XorbConsole {
             hash: hash.clone(),
             created_at: now_ms(),
@@ -248,7 +271,7 @@ impl UploadCommitConsole {
             raw_bytes,
             serialized_bytes,
             bytes_transferred: AtomicU64::new(0),
-            n_files: AtomicU64::new(0),
+            n_files: AtomicU64::new(existing_file_count),
             finished_at: Mutex::new(None),
         });
         let Ok(mut xorbs) = self.xorbs.lock() else { return; };
@@ -303,36 +326,36 @@ impl UploadCommitConsole {
             }
         }
 
-        // Mark matching deps uploaded on every file listed in xorb_files[hash]
+        // Remove hash from reverse map now that the xorb is done (both success and failure)
+        // I1: prevent unbounded growth of xorb_files
         let file_ids = {
-            let Ok(xf) = self.xorb_files.lock() else { return; };
-            xf.get(hash).cloned().unwrap_or_default()
+            let Ok(mut xf) = self.xorb_files.lock() else { return; };
+            xf.remove(hash).unwrap_or_default()
         };
+
+        // I2: only mark deps and advance file state on success
+        if !success {
+            return;
+        }
 
         let Ok(files) = self.files.lock() else { return; };
         for file_id in &file_ids {
             if let Some(file) = files.get(file_id) {
-                // Mark deps uploaded
-                {
+                // canonical per-file inner lock order: xorb_deps before state (never invert)
+                let all_uploaded = {
                     let Ok(mut deps) = file.xorb_deps.lock() else { continue; };
                     for dep in deps.iter_mut() {
                         if dep.xorb_hash == hash {
                             dep.uploaded = true;
                         }
                     }
-                }
+                    deps.iter().all(|d| d.uploaded)
+                };
                 // Advance file from AwaitingXorbs to AwaitingShard if all deps uploaded
                 {
                     let Ok(mut state) = file.state.lock() else { continue; };
-                    if *state == FileUploadState::AwaitingXorbs {
-                        let all_uploaded = file
-                            .xorb_deps
-                            .lock()
-                            .map(|deps| deps.iter().all(|d| d.uploaded))
-                            .unwrap_or(false);
-                        if all_uploaded {
-                            *state = FileUploadState::AwaitingShard;
-                        }
+                    if *state == FileUploadState::AwaitingXorbs && all_uploaded {
+                        *state = FileUploadState::AwaitingShard;
                     }
                 }
             }
@@ -403,6 +426,10 @@ impl UploadCommitConsole {
         let Some(file) = file else { return; };
         let snap = file.snapshot();
         self.completed_files.push(snap.clone());
+        // I1: prune ct_file_map entries that pointed at this file id
+        if let Ok(mut map) = self.ct_file_map.lock() {
+            map.retain(|_, v| *v != id);
+        }
         let Ok(mut counts) = self.file_counts.lock() else { return; };
         counts.in_flight = counts.in_flight.saturating_sub(1);
         match snap.state {
@@ -411,6 +438,13 @@ impl UploadCommitConsole {
             FileUploadState::Aborted => counts.aborted += 1,
             _ => {}
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn debug_reverse_map_sizes(&self) -> (usize, usize) {
+        let ct_len = self.ct_file_map.lock().map(|m| m.len()).unwrap_or(0);
+        let xf_len = self.xorb_files.lock().map(|m| m.len()).unwrap_or(0);
+        (ct_len, xf_len)
     }
 
     pub fn finalize(&self, state: UploadCommitState) {
@@ -538,6 +572,10 @@ pub struct FileUploadConsole {
 impl FileUploadConsole {
     pub fn set_state(&self, s: FileUploadState) {
         let Ok(mut state) = self.state.lock() else { return; };
+        // terminal states are sticky: late idempotent hooks must not regress them
+        if matches!(*state, FileUploadState::Complete | FileUploadState::Failed | FileUploadState::Aborted) {
+            return;
+        }
         *state = s;
         match s {
             FileUploadState::Complete
@@ -717,5 +755,55 @@ mod tests {
         let ended = s.ended_upload_commits();
         assert_eq!(ended.len(), 1);
         assert_eq!(ended[0].state, UploadCommitState::Completed);
+    }
+
+    #[test]
+    fn failed_xorb_does_not_mark_deps_uploaded() {
+        let commit = UploadCommitConsole::new(Some(&scope()), None);
+        let f = commit.new_file(1, "a", None);
+        commit.register_file_xorb_dep(1, "x1".into(), 100, false);
+        f.set_state(FileUploadState::AwaitingXorbs);
+        commit.xorb_formed("x1".into(), 100, 100);
+        commit.xorb_uploaded("x1", false);
+        let snap = f.snapshot();
+        assert!(snap.xorb_deps.iter().all(|d| !d.uploaded));
+        assert_eq!(snap.state, FileUploadState::AwaitingXorbs);
+        let detail = commit.snapshot(false);
+        assert_eq!(detail.xorbs.counts.failed, 1);
+    }
+
+    #[test]
+    fn duplicate_dep_registration_merges() {
+        let commit = UploadCommitConsole::new(Some(&scope()), None);
+        let f = commit.new_file(1, "a", None);
+        commit.register_file_xorb_dep(1, "x1".into(), 100, false);
+        commit.register_file_xorb_dep(1, "x1".into(), 50, false);
+        commit.xorb_formed("x1".into(), 100, 100);
+        let snap = f.snapshot();
+        assert_eq!(snap.xorb_deps.len(), 1);
+        assert_eq!(snap.xorb_deps[0].n_bytes, 150);
+        let detail = commit.snapshot(false);
+        assert_eq!(detail.xorbs.in_flight[0].n_files, 1);
+    }
+
+    #[test]
+    fn terminal_file_state_is_sticky() {
+        let commit = UploadCommitConsole::new(Some(&scope()), None);
+        let f = commit.new_file(1, "a", None);
+        f.set_state(FileUploadState::Complete);
+        f.set_state(FileUploadState::Chunking);
+        assert_eq!(f.snapshot().state, FileUploadState::Complete);
+    }
+
+    #[test]
+    fn reverse_maps_shrink_as_work_retires() {
+        let commit = UploadCommitConsole::new(Some(&scope()), None);
+        let f = commit.new_file(1, "a", None);
+        commit.map_ct_file(77, 1);
+        commit.register_file_xorb_dep(77, "x1".into(), 100, false);
+        f.set_state(FileUploadState::AwaitingXorbs);
+        commit.xorb_uploaded("x1", true);
+        commit.retire_file(1);
+        assert_eq!(commit.debug_reverse_map_sizes(), (0, 0));
     }
 }
