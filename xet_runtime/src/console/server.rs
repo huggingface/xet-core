@@ -58,15 +58,15 @@ pub fn ensure_started() {
             let _ = BOUND_ADDR.set(None);
             return;
         }
-        let _ = BOUND_ADDR.set(Some(addr));
-        info!("xet-console listening on http://{addr}");
-        std::thread::Builder::new()
+        let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+        match std::thread::Builder::new()
             .name("xet-console-server".into())
             .spawn(move || {
                 let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
                     Ok(rt) => rt,
                     Err(e) => {
                         warn!("xet-console: runtime build failed: {e}");
+                        let _ = tx.send(Err(format!("runtime build failed: {e}")));
                         return;
                     },
                 };
@@ -75,16 +75,37 @@ pub fn ensure_started() {
                         Ok(l) => l,
                         Err(e) => {
                             warn!("xet-console: listener conversion failed: {e}");
+                            let _ = tx.send(Err(format!("listener conversion failed: {e}")));
                             return;
                         },
                     };
+                    let _ = tx.send(Ok(()));
                     if let Err(e) = axum::serve(listener, router()).await {
                         warn!("xet-console: server exited: {e}");
                     }
                 });
-            })
-            .map_err(|e| warn!("xet-console: thread spawn failed: {e}"))
-            .ok();
+            }) {
+            Ok(_) => {
+                match rx.recv_timeout(std::time::Duration::from_secs(2)) {
+                    Ok(Ok(())) => {
+                        let _ = BOUND_ADDR.set(Some(addr));
+                        info!("xet-console listening on http://{addr}");
+                    },
+                    Ok(Err(e)) => {
+                        warn!("xet-console: startup failed: {e}; console disabled");
+                        let _ = BOUND_ADDR.set(None);
+                    },
+                    Err(e) => {
+                        warn!("xet-console: startup handshake failed: {e}; console disabled");
+                        let _ = BOUND_ADDR.set(None);
+                    },
+                }
+            },
+            Err(e) => {
+                warn!("xet-console: thread spawn failed: {e}; console disabled");
+                let _ = BOUND_ADDR.set(None);
+            },
+        }
     });
 }
 
