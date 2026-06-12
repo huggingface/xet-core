@@ -2024,6 +2024,7 @@ dependencies = [
  "http",
  "more-asserts",
  "pyo3",
+ "reqwest",
  "serde",
  "serde_json",
  "serial_test",

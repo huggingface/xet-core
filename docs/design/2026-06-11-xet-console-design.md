@@ -217,3 +217,12 @@ Content:
 - OpenAPI document under `openapi/` (the self-describing `/` + skill suffice for v1).
 - Per-request CAS HTTP tracing (request log ring per monitor).
 - Noise reduction / curated views once the firehose proves itself.
+
+## Implementation notes (v1 deltas)
+
+- `GET /` (index) is a static self-description (service, version, pid, argv, start_time_ms, endpoints) and is exempt from the `as_of` convention; every `/api/v1/*` response carries `as_of`. The uploads/downloads list endpoints return `{as_of, commits: [...]}` / `{as_of, groups: [...]}` envelopes.
+- Latency model values are converted to the wire's `_ms`/`_bps` units at the tee (the controller's internals are seconds); all rate/latency floats are `Option<f64>` serialized as null when non-finite.
+- `SuccessModelSnapshot.recommended_adjustment` is a string enum (increase/hold/decrease); thresholds and permit bounds are named objects.
+- Stream download groups surface aggregate progress only in v1 (kind=stream, no per-item file/term instrumentation).
+- Monitors are weak-referenced per controller and disappear when their client (commit/group) drops; concurrency history is therefore live-scope only.
+- The console feature is structurally excluded on wasm (compile_error guard).
