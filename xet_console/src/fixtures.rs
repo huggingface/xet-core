@@ -7,7 +7,6 @@
 
 use xet_runtime::console::model::*;
 
-#[allow(dead_code)]
 pub fn sample_snapshot() -> SnapshotResponse {
     let progress = ProgressSnapshot {
         total_bytes: 8 << 30,

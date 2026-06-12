@@ -21,6 +21,7 @@ impl ConsoleClient {
         Self { base, http }
     }
 
+    #[allow(dead_code)]
     pub fn base(&self) -> &str {
         &self.base
     }
@@ -30,12 +31,10 @@ impl ConsoleClient {
         self.get_json(&format!("{}/", self.base))
     }
 
-    #[allow(dead_code)]
     pub fn snapshot(&self) -> Result<SnapshotResponse> {
         self.get_json(&format!("{}/api/v1/snapshot", self.base))
     }
 
-    #[allow(dead_code)]
     pub fn sessions(&self) -> Result<SessionsResponse> {
         self.get_json(&format!("{}/api/v1/sessions", self.base))
     }

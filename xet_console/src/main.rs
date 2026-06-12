@@ -9,8 +9,7 @@ use std::io;
 use std::time::Duration;
 
 use clap::Parser;
-use client::ConsoleClient;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::Terminal;
@@ -53,7 +52,15 @@ fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let base = resolve_base(args.target.as_deref(), args.port);
 
-    // Restore the terminal even if we panic mid-draw.
+    let shared = std::sync::Arc::new(poll::Shared::default());
+    let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let poller = poll::spawn_poller(
+        client::ConsoleClient::new(base.clone()),
+        shared.clone(),
+        args.interval,
+        shutdown.clone(),
+    );
+
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
@@ -65,32 +72,37 @@ fn main() -> anyhow::Result<()> {
     execute!(io::stdout(), EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
-    let client = ConsoleClient::new(base.clone());
-    let result = run(&mut terminal, &client, args.interval);
+    let result = run(&mut terminal, &shared);
 
     disable_raw_mode()?;
     execute!(io::stdout(), LeaveAlternateScreen)?;
+    shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = poller.join();
     result
 }
 
 fn run(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    client: &ConsoleClient,
-    _interval: Duration,
+    shared: &poll::Shared,
 ) -> anyhow::Result<()> {
+    let mut app = app::App::default();
     loop {
-        terminal.draw(|f| {
-            use ratatui::widgets::Paragraph;
-            f.render_widget(
-                Paragraph::new(format!("xet-console — connecting to {}  (q to quit)", client.base())),
-                f.area(),
-            );
-        })?;
+        {
+            let state = shared.lock();
+            terminal.draw(|f| ui::draw(f, &app, &state))?;
+        }
         if event::poll(Duration::from_millis(100))?
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
-            && key.code == KeyCode::Char('q')
         {
+            let entries = {
+                let state = shared.lock();
+                state.snapshot.as_ref().map(app::overview_entries).unwrap_or_default()
+            };
+            app.handle_key(key.code, &entries);
+            shared.lock().paused = app.paused;
+        }
+        if app.should_quit {
             return Ok(());
         }
     }

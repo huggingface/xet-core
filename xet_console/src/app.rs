@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crossterm::event::KeyCode;
 use xet_runtime::console::model::SnapshotResponse;
 
