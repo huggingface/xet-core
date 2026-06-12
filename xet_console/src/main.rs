@@ -11,7 +11,7 @@ use std::io::{self, IsTerminal};
 use std::time::Duration;
 
 use clap::Parser;
-use crossterm::event::{self, Event, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode};
 use ratatui::Terminal;
@@ -104,11 +104,20 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, shared: &poll::Sha
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
         {
-            let entries = {
-                let state = shared.lock();
-                state.snapshot.as_ref().map(app::overview_entries).unwrap_or_default()
-            };
-            app.handle_key(key.code, &entries);
+            let state = shared.lock();
+            let entries = state
+                .snapshot
+                .as_ref()
+                .map(|s| app::overview_entries(s, &app.expanded))
+                .unwrap_or_default();
+            if key.code == KeyCode::Char(' ') {
+                if let Some(snap) = &state.snapshot {
+                    app.toggle_expanded(&entries, snap);
+                }
+            } else {
+                app.handle_key(key.code, &entries);
+            }
+            drop(state);
             shared.lock().paused = app.paused;
         }
         if app.should_quit {

@@ -13,6 +13,8 @@ use xet_runtime::console::registry::registry;
 use xet_runtime::console::server;
 use xet_runtime::console::state::UploadCommitConsole;
 
+use std::collections::HashSet;
+
 use crate::app::{App, overview_entries};
 use crate::client::ConsoleClient;
 use crate::poll::{Shared, spawn_poller};
@@ -54,7 +56,7 @@ fn end_to_end_render_from_live_server() {
     {
         let state = shared.lock();
         let snap = state.snapshot.as_ref().expect("poller populated");
-        let entries = overview_entries(snap);
+        let entries = overview_entries(snap, &HashSet::new());
         // Row 0 is our session; row 1 is the commit (this process may carry
         // sessions from sibling #[serial] tests — find OUR commit row).
         let row = entries

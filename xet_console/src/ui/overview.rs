@@ -18,7 +18,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, snap: &SnapshotResponse, ended
         (split[0], Some(split[1]))
     };
 
-    let entries = overview_entries(snap);
+    let entries = overview_entries(snap, &app.expanded);
     let items: Vec<ListItem> = entries.iter().map(|e| ListItem::new(entry_line(e, snap))).collect();
 
     let mut state = ListState::default();
@@ -129,6 +129,80 @@ fn entry_line(e: &OverviewEntry, snap: &SnapshotResponse) -> String {
                 if ended { "  (ended)" } else { "" }
             )
         },
+        OverviewEntry::UploadFile { session_idx, commit_idx, table_row } => {
+            let s = &snap.sessions[session_idx];
+            let commit = if commit_idx < s.upload_commit_details.len() {
+                &s.upload_commit_details[commit_idx]
+            } else {
+                &s.detail.ended_upload_commits[commit_idx - s.upload_commit_details.len()]
+            };
+            let n_live = commit.files.len();
+            if table_row < n_live {
+                let file = &commit.files[table_row];
+                let pct = file.size.map(|s| percent(file.bytes_chunked, s)).unwrap_or(0);
+                format!(
+                    "      · {}  [{}]  {}%",
+                    file.name,
+                    upload_state_label(file.state),
+                    pct,
+                )
+            } else {
+                let ring_pos = table_row - n_live;
+                let (_, file) = &commit.completed_files[ring_pos];
+                format!(
+                    "      · {}  [{}]  100%",
+                    file.name,
+                    upload_state_label(file.state),
+                )
+            }
+        },
+        OverviewEntry::DownloadFile { session_idx, group_idx, table_row } => {
+            let s = &snap.sessions[session_idx];
+            let group = if group_idx < s.download_group_details.len() {
+                &s.download_group_details[group_idx]
+            } else {
+                &s.detail.ended_download_groups[group_idx - s.download_group_details.len()]
+            };
+            let n_live = group.files.len();
+            if table_row < n_live {
+                let file = &group.files[table_row];
+                let pct = percent(file.bytes_completed, file.total_bytes.max(1));
+                format!(
+                    "      · {}  [{}]  {}%",
+                    file.name,
+                    download_state_label(file.state),
+                    pct,
+                )
+            } else {
+                let ring_pos = table_row - n_live;
+                let (_, file) = &group.completed_files[ring_pos];
+                format!(
+                    "      · {}  [{}]  100%",
+                    file.name,
+                    download_state_label(file.state),
+                )
+            }
+        },
+        OverviewEntry::More { session_idx, kind_commit, idx } => {
+            // Compute how many additional completed entries are hidden.
+            let s = &snap.sessions[session_idx];
+            let k = if kind_commit {
+                let commit = if idx < s.upload_commit_details.len() {
+                    &s.upload_commit_details[idx]
+                } else {
+                    &s.detail.ended_upload_commits[idx - s.upload_commit_details.len()]
+                };
+                commit.completed_files.len().saturating_sub(5)
+            } else {
+                let group = if idx < s.download_group_details.len() {
+                    &s.download_group_details[idx]
+                } else {
+                    &s.detail.ended_download_groups[idx - s.download_group_details.len()]
+                };
+                group.completed_files.len().saturating_sub(5)
+            };
+            format!("      … +{k} more (⏎ for detail)")
+        },
     }
 }
 
@@ -172,6 +246,52 @@ mod tests {
         assert!(text.contains("+1 idle"), "idle count suffix shown:\n{text}");
         assert!(text.contains("ended sessions: 41bcdead"), "ended-session footer:\n{text}");
         assert!(text.contains("[1]overview"), "key bar present:\n{text}");
+    }
+
+    /// Expanding commit id 7 (the fixture's live commit) shows its in-flight
+    /// and completed-ring file names indented under the commit row.
+    /// The collapsed default must NOT show those file names on the overview.
+    #[test]
+    fn expanded_commit_shows_file_names_collapsed_does_not() {
+        use std::collections::HashSet;
+        let snap = sample_snapshot();
+
+        // --- collapsed ---
+        let state_collapsed = PollState {
+            snapshot: Some(snap.clone()),
+            ..Default::default()
+        };
+        let app_collapsed = App::default();
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|f| ui::draw(f, &app_collapsed, &state_collapsed)).unwrap();
+        let text_collapsed = buffer_text(terminal.backend());
+        assert!(
+            !text_collapsed.contains("model-00001.safetensors"),
+            "collapsed should NOT show in-flight file name:\n{text_collapsed}"
+        );
+        assert!(
+            !text_collapsed.contains("config.json"),
+            "collapsed should NOT show completed-ring file name:\n{text_collapsed}"
+        );
+
+        // --- expanded (id 7 in expanded set) ---
+        let state_expanded = PollState {
+            snapshot: Some(snap),
+            ..Default::default()
+        };
+        let mut app_expanded = App::default();
+        app_expanded.expanded.insert(7);
+        let mut terminal2 = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal2.draw(|f| ui::draw(f, &app_expanded, &state_expanded)).unwrap();
+        let text_expanded = buffer_text(terminal2.backend());
+        assert!(
+            text_expanded.contains("model-00001.safetensors"),
+            "expanded should show in-flight file:\n{text_expanded}"
+        );
+        assert!(
+            text_expanded.contains("config.json"),
+            "expanded should show completed-ring file:\n{text_expanded}"
+        );
     }
 
     #[test]

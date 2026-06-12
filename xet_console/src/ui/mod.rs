@@ -70,7 +70,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, state: &PollState) {
 fn draw_key_bar(f: &mut Frame, area: Rect) {
     f.render_widget(
         Paragraph::new(
-            " [1]overview [2]upload [3]download [4]concurrency  ↑↓/jk ⏎ drill  tab pane  esc back  p pause  ? help  q quit",
+            " [1]overview [2]upload [3]download [4]concurrency  ↑↓/jk ⏎ drill  space expand  tab pane  esc back  p pause  ? help  q quit",
         )
         .style(Style::default().fg(Color::DarkGray)),
         area,
@@ -78,12 +78,13 @@ fn draw_key_bar(f: &mut Frame, area: Rect) {
 }
 
 fn draw_help(f: &mut Frame) {
-    let area = centered_rect(60, 15, f.area());
+    let area = centered_rect(60, 16, f.area());
     f.render_widget(Clear, area);
     let text = "\
   1/2/3/4   jump to page
   ↑↓ or jk  move selection
   ⏎         drill into selected item
+  space     expand/collapse files under a commit/group (overview)
   tab       cycle pane focus (detail pages)
   esc       back to overview
   p         pause/resume polling
