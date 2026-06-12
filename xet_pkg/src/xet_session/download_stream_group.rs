@@ -128,6 +128,11 @@ impl XetDownloadStreamGroup {
         let config = create_translator_config(&session, auth_options).await?;
         let download_session = FileDownloadSession::new(Arc::new(config), None).await?;
 
+        #[cfg(feature = "console")]
+        if let Some(c) = download_session.console() {
+            c.set_kind(xet_runtime::console::model::DownloadGroupKind::Stream);
+        }
+
         let inner = Arc::new(XetDownloadStreamGroupInner {
             session,
             group_id,

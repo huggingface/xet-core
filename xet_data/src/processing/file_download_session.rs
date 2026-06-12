@@ -32,6 +32,9 @@ pub struct FileDownloadSession {
     progress: Arc<GroupProgress>,
     active_stream_abort_callbacks: Mutex<HashMap<UniqueId, Box<dyn Fn() + Send + Sync>>>,
     finalized: AtomicBool,
+
+    #[cfg(feature = "console")]
+    pub(crate) console: Option<std::sync::Arc<xet_runtime::console::state::DownloadGroupConsole>>,
 }
 
 impl FileDownloadSession {
@@ -50,6 +53,35 @@ impl FileDownloadSession {
             ctx.config.data.progress_update_speed_min_observations,
         );
 
+        #[cfg(feature = "console")]
+        let console = ctx.common.console_scope().map(|scope| {
+            let c = xet_runtime::console::state::DownloadGroupConsole::new(
+                Some(scope),
+                xet_runtime::console::model::DownloadGroupKind::Files,
+                Some(config.session.endpoint.clone()),
+            );
+            let p = progress.clone();
+            c.set_progress_provider(Box::new(move || {
+                let r = p.report();
+                xet_runtime::console::model::ProgressSnapshot {
+                    total_bytes: r.total_bytes,
+                    bytes_completed: r.total_bytes_completed,
+                    rate_bps: r.total_bytes_completion_rate,
+                    transfer_bytes: r.total_transfer_bytes,
+                    transfer_bytes_completed: r.total_transfer_bytes_completed,
+                    transfer_rate_bps: r.total_transfer_bytes_completion_rate,
+                }
+            }));
+            let p2 = progress.clone();
+            c.set_items_provider(Box::new(move || {
+                p2.item_reports()
+                    .into_iter()
+                    .map(|(id, r)| (id.0, (r.total_bytes, r.bytes_completed)))
+                    .collect()
+            }));
+            c
+        });
+
         Ok(Arc::new(Self {
             ctx,
             client,
@@ -57,6 +89,8 @@ impl FileDownloadSession {
             progress,
             active_stream_abort_callbacks: Mutex::new(HashMap::new()),
             finalized: AtomicBool::new(false),
+            #[cfg(feature = "console")]
+            console,
         }))
     }
 
@@ -78,7 +112,28 @@ impl FileDownloadSession {
             progress,
             active_stream_abort_callbacks: Mutex::new(HashMap::new()),
             finalized: AtomicBool::new(false),
+            #[cfg(feature = "console")]
+            console: None,
         })
+    }
+
+    #[cfg(feature = "console")]
+    pub fn console(&self) -> Option<&std::sync::Arc<xet_runtime::console::state::DownloadGroupConsole>> {
+        self.console.as_ref()
+    }
+
+    #[cfg(feature = "console")]
+    pub fn console_finish(&self) {
+        if let Some(c) = &self.console {
+            c.finalize(xet_runtime::console::model::DownloadGroupState::Finished);
+        }
+    }
+
+    #[cfg(feature = "console")]
+    pub fn console_abort(&self) {
+        if let Some(c) = &self.console {
+            c.finalize(xet_runtime::console::model::DownloadGroupState::Aborted);
+        }
     }
 
     pub fn report(&self) -> crate::progress_tracking::GroupProgressReport {
@@ -122,9 +177,28 @@ impl FileDownloadSession {
         let session = self.clone();
         let runtime = self.ctx.runtime.clone();
         let semaphore = self.ctx.common.file_download_semaphore.clone();
+        #[cfg(feature = "console")]
+        let file_console = self.console.as_ref().map(|c| {
+            c.new_file(id.0, &write_path.to_string_lossy(), Some(file_info.hash.clone()), None)
+        });
         let handle = runtime.spawn(async move {
             let _permit = semaphore.acquire().await?;
-            session.download_file_with_id(&file_info, &write_path, id).await
+            #[cfg(feature = "console")]
+            if let Some(fc) = &file_console {
+                fc.set_state(xet_runtime::console::model::FileDownloadState::Reconstructing);
+            }
+            let result = session.download_file_with_id(&file_info, &write_path, id).await;
+            #[cfg(feature = "console")]
+            {
+                use xet_runtime::console::model::FileDownloadState as S;
+                if let Some(fc) = &file_console {
+                    fc.set_state(if result.is_ok() { S::Complete } else { S::Failed });
+                }
+                if let Some(c) = &session.console {
+                    c.retire_file(id.0);
+                }
+            }
+            result
         });
         Ok((id, handle))
     }
@@ -134,7 +208,26 @@ impl FileDownloadSession {
     pub async fn download_file(&self, file_info: &XetFileInfo, write_path: &Path) -> Result<(UniqueId, u64)> {
         self.check_not_finalized()?;
         let id = UniqueId::new();
-        let n_bytes = self.download_file_with_id(file_info, write_path, id).await?;
+        #[cfg(feature = "console")]
+        let file_console = self.console.as_ref().map(|c| {
+            c.new_file(id.0, &write_path.to_string_lossy(), Some(file_info.hash.clone()), None)
+        });
+        #[cfg(feature = "console")]
+        if let Some(fc) = &file_console {
+            fc.set_state(xet_runtime::console::model::FileDownloadState::Reconstructing);
+        }
+        let result = self.download_file_with_id(file_info, write_path, id).await;
+        #[cfg(feature = "console")]
+        {
+            use xet_runtime::console::model::FileDownloadState as S;
+            if let Some(fc) = &file_console {
+                fc.set_state(if result.is_ok() { S::Complete } else { S::Failed });
+            }
+            if let Some(c) = &self.console {
+                c.retire_file(id.0);
+            }
+        }
+        let n_bytes = result?;
         Ok((id, n_bytes))
     }
 
