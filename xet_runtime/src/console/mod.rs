@@ -3,6 +3,8 @@
 //! See docs/design/2026-06-11-xet-console-design.md. Everything in this module
 //! follows one rule: a console failure must never affect the host transfer.
 
+pub mod ring;
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Epoch milliseconds, server-stamped on every snapshot.
