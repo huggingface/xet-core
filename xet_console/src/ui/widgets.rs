@@ -135,6 +135,53 @@ pub fn session_state_label(s: SessionState) -> &'static str {
     }
 }
 
+/// Middle-truncates `s` to at most `max` display characters.
+///
+/// If `s` fits within `max`, it is returned unchanged. Otherwise the result is
+/// `first…last` where `first` is `max - 9` chars and `last` is 8 chars,
+/// joined by a single `…` (1 char), totalling `max` chars.
+///
+/// `max` must be at least 10; values below that fall back to returning `s`
+/// unchanged to avoid panics.
+pub fn truncate_middle(s: &str, max: usize) -> String {
+    if max < 10 || s.chars().count() <= max {
+        return s.to_string();
+    }
+    let keep_start = max - 9; // max - 8 (tail) - 1 (ellipsis)
+    let chars: Vec<char> = s.chars().collect();
+    let n = chars.len();
+    let head: String = chars[..keep_start].iter().collect();
+    let tail: String = chars[n - 8..].iter().collect();
+    format!("{head}…{tail}")
+}
+
+/// Humanizes a duration given in milliseconds to a compact human-readable string.
+///
+/// - `< 1000 ms` → `"850ms"`
+/// - `< 60 s` → `"3.2s"`
+/// - `< 60 min` → `"2m 05s"`
+/// - `≥ 60 min` → `"1h 03m"`
+pub fn humanize_duration_ms(ms: u64) -> String {
+    if ms < 1_000 {
+        return format!("{ms}ms");
+    }
+    let secs = ms / 1_000;
+    let frac_secs = ms % 1_000;
+    if secs < 60 {
+        // One decimal place: e.g. "3.2s"
+        let tenths = frac_secs / 100;
+        return format!("{secs}.{tenths}s");
+    }
+    let mins = secs / 60;
+    let rem_secs = secs % 60;
+    if mins < 60 {
+        return format!("{mins}m {:02}s", rem_secs);
+    }
+    let hours = mins / 60;
+    let rem_mins = mins % 60;
+    format!("{hours}h {:02}m", rem_mins)
+}
+
 /// Bordered pane; the focused pane gets a highlighted title so tab-cycling is visible.
 pub fn pane_block(title: String, focused: bool) -> Block<'static> {
     let block = Block::default().borders(Borders::ALL).title(title);
@@ -189,5 +236,55 @@ mod tests {
     fn percent_is_safe_on_zero_total() {
         assert_eq!(percent(0, 0), 0);
         assert_eq!(percent(50, 200), 25);
+    }
+
+    #[test]
+    fn truncate_middle_fits_unchanged() {
+        assert_eq!(truncate_middle("hello", 20), "hello");
+        assert_eq!(truncate_middle("exactly20charshere!!", 20), "exactly20charshere!!");
+    }
+
+    #[test]
+    fn truncate_middle_truncates_with_ellipsis() {
+        // 70-char hex name → should be truncated
+        let long = "a".repeat(30) + "b".repeat(8).as_str();
+        let result = truncate_middle(&long, 20);
+        assert_eq!(result.chars().count(), 20);
+        assert!(result.contains('…'), "must contain ellipsis");
+        assert!(result.ends_with(&"b".repeat(8)));
+    }
+
+    #[test]
+    fn truncate_middle_very_short_max_returns_unchanged() {
+        // max < 10 → never truncate (guard against panic)
+        let s = "abcdefghijklmnop";
+        assert_eq!(truncate_middle(s, 5), s);
+    }
+
+    #[test]
+    fn humanize_duration_ms_milliseconds() {
+        assert_eq!(humanize_duration_ms(0), "0ms");
+        assert_eq!(humanize_duration_ms(850), "850ms");
+        assert_eq!(humanize_duration_ms(999), "999ms");
+    }
+
+    #[test]
+    fn humanize_duration_ms_seconds() {
+        assert_eq!(humanize_duration_ms(1_000), "1.0s");
+        assert_eq!(humanize_duration_ms(3_200), "3.2s");
+        assert_eq!(humanize_duration_ms(59_900), "59.9s");
+    }
+
+    #[test]
+    fn humanize_duration_ms_minutes() {
+        assert_eq!(humanize_duration_ms(60_000), "1m 00s");
+        assert_eq!(humanize_duration_ms(125_000), "2m 05s");
+        assert_eq!(humanize_duration_ms(192_000), "3m 12s");
+    }
+
+    #[test]
+    fn humanize_duration_ms_hours() {
+        assert_eq!(humanize_duration_ms(3_780_000), "1h 03m");
+        assert_eq!(humanize_duration_ms(7_200_000), "2h 00m");
     }
 }
