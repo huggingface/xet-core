@@ -1,0 +1,20 @@
+[package]
+name = "xet-console"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Terminal UI for the xet-console live observability API"
+
+[dependencies]
+xet-runtime = { version = "1.5.2", path = "../xet_runtime", features = ["console"] }
+anyhow = { workspace = true }
+clap = { workspace = true }
+humantime = { workspace = true }
+reqwest = { workspace = true, features = ["blocking"] }
+serde_json = { workspace = true }
+ratatui = "0.30.1"
+crossterm = "0.29.0"
+
+[dev-dependencies]
+serial_test = { workspace = true }
