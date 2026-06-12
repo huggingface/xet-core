@@ -25,12 +25,17 @@ categories = [
 name = "xet"
 path = "src/lib.rs"
 
+[[bin]]
+name = "xtool"
+path = "src/bin/xtool/main.rs"
+
 [dependencies]
 xet-runtime = { version = "1.5.2", path = "../xet_runtime" }
 xet-core-structures = { version = "1.5.2", path = "../xet_core_structures" }
 xet-client = { version = "1.5.2", path = "../xet_client" }
 xet-data = { version = "1.5.2", path = "../xet_data" }
 
+anyhow = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 http = { workspace = true }
@@ -41,6 +46,9 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["net", "time"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+walkdir = { workspace = true }
 uuid = { workspace = true, features = ["v7"] }
 
 [features]
@@ -55,12 +63,8 @@ no-default-cache = ["xet-runtime/no-default-cache"]
 tokio-console = ["xet-runtime/tokio-console"]
 
 [dev-dependencies]
-anyhow = { workspace = true }
 async-std = { workspace = true }
-clap = { workspace = true, features = ["derive"] }
 futures = { workspace = true }
-more-asserts = { workspace = true }
-serde_json = { workspace = true }
 serial_test = { workspace = true }
 smol = { workspace = true }
 tempfile = { workspace = true }

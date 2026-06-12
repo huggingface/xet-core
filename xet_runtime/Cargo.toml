@@ -39,7 +39,6 @@ futures = { workspace = true }
 pin-project = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 console-subscriber = { workspace = true, optional = true }
@@ -62,6 +61,7 @@ tokio = { workspace = true, features = [
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 shellexpand = { workspace = true, features = ["path"] }
+tracing-appender = { workspace = true }
 tokio = { workspace = true, features = [
     "time",
     "rt",
