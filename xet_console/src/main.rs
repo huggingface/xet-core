@@ -4,6 +4,8 @@ mod poll;
 mod ui;
 #[cfg(test)]
 mod fixtures;
+#[cfg(test)]
+mod smoke;
 
 use std::io;
 use std::time::Duration;
