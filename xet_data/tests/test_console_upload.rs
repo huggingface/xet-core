@@ -5,7 +5,7 @@ use console_common::{install_scope, upload_random_file};
 use serial_test::serial;
 use xet_data::processing::test_utils::TestEnvironment;
 use xet_data::processing::FileUploadSession;
-use xet_runtime::console::model::FileUploadState;
+use xet_runtime::console::model::{FileUploadState, ShardState};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
@@ -78,8 +78,8 @@ async fn file_states_progress_through_pipeline() {
     let upload_session = FileUploadSession::new(env.config.clone()).await.unwrap();
     let commit = scope.live_upload_commits().pop().unwrap();
 
-    // >= 1 MiB so chunking is observable
-    let _xfi = upload_random_file(&upload_session, &env.base_dir, 4 << 20).await;
+    // multi-block: ingestion_block_size is 8 MiB
+    let _xfi = upload_random_file(&upload_session, &env.base_dir, 24 << 20).await;
 
     // After ingestion (pre-finalize): the file must be past Chunking with hash known.
     let detail = commit.snapshot(true);
@@ -106,10 +106,30 @@ async fn file_states_progress_through_pipeline() {
         .collect();
     assert_eq!(all_ended.len(), 1);
     let fe = &all_ended[0];
-    // Task 12 advances to Complete via all_shards_uploaded; accept Processed/Awaiting* here.
-    assert!(
-        matches!(fe.state, FileUploadState::Processed | FileUploadState::AwaitingXorbs | FileUploadState::AwaitingShard | FileUploadState::Complete),
-        "unexpected post-finalize state: {:?}", fe.state
-    );
-    // assert!(fe.shard_uploaded); // enabled in Task 12
+    // Task 12 advances to Complete via all_shards_uploaded.
+    assert_eq!(fe.state, FileUploadState::Complete, "unexpected post-finalize state: {:?}", fe.state);
+    assert!(fe.shard_uploaded);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
+async fn xorbs_and_shards_tracked_through_upload() {
+    unsafe { std::env::set_var("XET_CONSOLE_PORT", "0") };
+    let env = TestEnvironment::new().await;
+    let scope = install_scope(&env.config);
+    let upload_session = FileUploadSession::new(env.config.clone()).await.unwrap();
+
+    // Random bytes are novel to the fresh local CAS, so xorbs must be formed.
+    let _xfi = upload_random_file(&upload_session, &env.base_dir, 24 << 20).await;
+    upload_session.finalize().await.unwrap();
+
+    let ended = scope.ended_upload_commits().pop().unwrap();
+    assert!(ended.xorbs.counts.formed >= 1, "novel data must form at least one xorb");
+    assert_eq!(ended.xorbs.counts.formed, ended.xorbs.counts.uploaded + ended.xorbs.counts.failed);
+    assert!(ended.xorbs.in_flight.is_empty());
+    assert!(!ended.xorbs.recent.is_empty());
+    assert!(ended.shards.iter().all(|s| s.state == ShardState::Uploaded));
+    let (_, f) = ended.completed_files.last().unwrap();
+    assert!(f.shard_uploaded);
+    assert!(!f.xorb_deps.is_empty());
 }

@@ -385,6 +385,7 @@ impl UploadCommitConsole {
             raw_bytes,
             serialized_bytes,
             bytes_transferred: AtomicU64::new(0),
+            serialized_bytes_once: AtomicU64::new(0),
             n_files: AtomicU64::new(existing_file_count),
             finished_at: Mutex::new(None),
         });
@@ -408,6 +409,15 @@ impl UploadCommitConsole {
         let Ok(xorbs) = self.xorbs.lock() else { return; };
         if let Some(xorb) = xorbs.get(hash) {
             xorb.bytes_transferred.fetch_max(completed_bytes, Ordering::Relaxed);
+        }
+    }
+
+    /// Like xorb_transfer but also records serialized_bytes (total) on the first call via fetch_max.
+    pub fn xorb_transfer_with_total(&self, hash: &str, completed_bytes: u64, total_bytes: u64) {
+        let Ok(xorbs) = self.xorbs.lock() else { return; };
+        if let Some(xorb) = xorbs.get(hash) {
+            xorb.bytes_transferred.fetch_max(completed_bytes, Ordering::Relaxed);
+            xorb.serialized_bytes_once.fetch_max(total_bytes, Ordering::Relaxed);
         }
     }
 
@@ -501,12 +511,16 @@ impl UploadCommitConsole {
     }
 
     pub fn all_shards_uploaded(&self) {
-        // Flip every shard to Uploaded
+        // Flip every shard to Uploaded and clear the staging sentinel
         {
             let Ok(mut shards) = self.shards.lock() else { return; };
             for shard in shards.iter_mut() {
                 shard.state = ShardState::Uploaded;
             }
+        }
+        {
+            let Ok(mut staging) = self.staging.lock() else { return; };
+            *staging = (0, 0);
         }
         // Set shard_uploaded and state Complete on all in-flight files, then retire them
         let file_ids: Vec<u64> = {
@@ -762,6 +776,8 @@ pub struct XorbConsole {
     pub raw_bytes: u64,
     pub serialized_bytes: u64,
     bytes_transferred: AtomicU64,
+    // Updated by xorb_transfer_with_total on first progress callback; 0 until then.
+    serialized_bytes_once: AtomicU64,
     n_files: AtomicU64,
     finished_at: Mutex<Option<u64>>,
 }
@@ -770,11 +786,12 @@ impl XorbConsole {
     pub fn snapshot(&self) -> XorbSnapshot {
         let state = self.state.lock().map(|s| *s).unwrap_or(XorbState::Failed);
         let finished_at = self.finished_at.lock().map(|f| *f).unwrap_or(None);
+        let serialized_bytes = self.serialized_bytes.max(self.serialized_bytes_once.load(Ordering::Relaxed));
         XorbSnapshot {
             hash: self.hash.clone(),
             state,
             raw_bytes: self.raw_bytes,
-            serialized_bytes: self.serialized_bytes,
+            serialized_bytes,
             bytes_transferred: self.bytes_transferred.load(Ordering::Relaxed),
             n_files: self.n_files.load(Ordering::Relaxed) as usize,
             created_at: self.created_at,

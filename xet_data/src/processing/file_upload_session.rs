@@ -109,6 +109,7 @@ impl FileUploadSession {
                     transfer_rate_bps: r.total_transfer_bytes_completion_rate,
                 }
             }));
+            shard_interface.set_console(c.clone());
             c
         });
 
@@ -359,6 +360,16 @@ impl FileUploadSession {
 
         let xorb_hash = xorb.hash();
 
+        #[cfg(feature = "console")]
+        if let Some(c) = &self.console {
+            let xorb_hex = xorb_hash.hex();
+            c.xorb_formed(xorb_hex.clone(), xorb.num_bytes() as u64, 0); // serialized size arrives via callback total
+            c.xorb_state(&xorb_hex, xet_runtime::console::model::XorbState::Queued);
+            for dep in file_dependencies {
+                c.register_file_xorb_dep(dep.file_id, xorb_hex.clone(), dep.n_bytes, dep.is_external);
+            }
+        }
+
         // Register that this xorb is part of this session and set up completion tracking.
         //
         // In some circumstances, we can cut to instances of the same xorb, namely when there are two files
@@ -409,21 +420,41 @@ impl FileUploadSession {
         let completion_tracker = self.completion_tracker.clone();
         let xorb_hash = xorb_obj.hash;
         let raw_num_bytes = xorb_obj.raw_num_bytes;
-        let progress_callback: ProgressCallback = Arc::new(move |delta, _completed, total| {
+        #[cfg(feature = "console")]
+        let console_xorb = self.console.clone();
+        #[cfg(feature = "console")]
+        let xorb_hex: String = xorb_hash.hex();
+        let progress_callback: ProgressCallback = Arc::new(move |delta, completed, total| {
             let raw_delta = (delta * raw_num_bytes).checked_div(total).unwrap_or(0);
             if raw_delta > 0 {
                 completion_tracker
                     .clone()
                     .register_xorb_upload_progress_background(xorb_hash, raw_delta);
             }
+            #[cfg(feature = "console")]
+            if let Some(c) = &console_xorb {
+                c.xorb_transfer_with_total(&xorb_hex, completed, total);
+            }
         });
 
         self.xorb_upload_tasks.lock().await.spawn(
             async move {
-                let n_bytes_transmitted = session
+                #[cfg(feature = "console")]
+                let xorb_hex_task: String = xorb_hash.hex();
+                #[cfg(feature = "console")]
+                if let Some(c) = &session.console {
+                    c.xorb_state(&xorb_hex_task, xet_runtime::console::model::XorbState::Uploading);
+                }
+
+                let upload_result = session
                     .client
                     .upload_xorb(&cas_prefix, xorb_obj, Some(progress_callback), upload_permit)
-                    .await?;
+                    .await;
+                #[cfg(feature = "console")]
+                if let Some(c) = &session.console {
+                    c.xorb_uploaded(&xorb_hex_task, upload_result.is_ok());
+                }
+                let n_bytes_transmitted = upload_result?;
 
                 // Register that the xorb has been uploaded.
                 session.completion_tracker.register_xorb_upload_completion(xorb_hash);
