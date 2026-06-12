@@ -21,7 +21,7 @@ pub struct SessionConsole {
     upload_commits: Mutex<Vec<Weak<UploadCommitConsole>>>,
     ended_upload_commits: Mutex<TimestampedRing<UploadCommitDetail>>,
     ended_download_groups: Mutex<TimestampedRing<DownloadGroupDetail>>,
-    monitors: Mutex<Vec<Arc<MonitorConsole>>>,
+    monitors: Mutex<Vec<Weak<MonitorConsole>>>,
     download_groups: Mutex<Vec<Weak<DownloadGroupConsole>>>,
 }
 
@@ -121,23 +121,39 @@ impl SessionConsole {
     ) -> Arc<MonitorConsole> {
         let m = MonitorConsole::new(tag, semaphore, bounds, adjustment_enabled);
         if let Ok(mut monitors) = self.monitors.lock() {
-            monitors.push(Arc::clone(&m));
+            monitors.push(Arc::downgrade(&m));
         }
         m
     }
 
     pub fn monitor_snapshots(&self) -> Vec<MonitorSnapshot> {
-        let monitors: Vec<Arc<MonitorConsole>> = {
-            let Ok(monitors) = self.monitors.lock() else { return Vec::new(); };
-            monitors.clone()
+        let live: Vec<Arc<MonitorConsole>> = {
+            let Ok(mut monitors) = self.monitors.lock() else { return Vec::new(); };
+            let mut result = Vec::new();
+            monitors.retain(|w| {
+                if let Some(arc) = w.upgrade() {
+                    result.push(arc);
+                    true
+                } else {
+                    false
+                }
+            });
+            result
         };
-        monitors.iter().map(|m| m.snapshot()).collect()
+        live.iter().map(|m| m.snapshot()).collect()
     }
 
     pub fn summary(&self, state: SessionState) -> SessionSummary {
         let n_upload_commits = self.live_upload_commits().len();
         let n_download_groups = self.live_download_groups().len();
-        let n_monitors = self.monitors.lock().map(|m| m.len()).unwrap_or(0);
+        let n_monitors = self
+            .monitors
+            .lock()
+            .map(|mut m| {
+                m.retain(|w| w.upgrade().is_some());
+                m.len()
+            })
+            .unwrap_or(0);
         SessionSummary {
             id: self.id.clone(),
             state,

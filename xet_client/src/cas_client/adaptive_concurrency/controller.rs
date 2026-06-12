@@ -856,6 +856,37 @@ impl AdaptiveConcurrencyController {
             monitor: None,
         })
     }
+
+    #[cfg(feature = "console")]
+    pub fn new_testing_with_monitor(
+        concurrency: usize,
+        concurrency_bounds: (usize, usize),
+        scope: &std::sync::Arc<xet_runtime::console::state::SessionConsole>,
+    ) -> Arc<Self> {
+        let ctx = XetContext::default().expect("test runtime");
+        let semaphore = AdjustableSemaphore::new(
+            concurrency as u64,
+            (concurrency_bounds.0 as u64, concurrency_bounds.1 as u64),
+        );
+        let monitor = scope.new_monitor(
+            "testing".to_string(),
+            semaphore.clone(),
+            concurrency_bounds,
+            true,
+        );
+        Arc::new(Self {
+            ctx: ctx.clone(),
+            state: Mutex::new(ConcurrencyControllerState::new_testing(ctx)),
+            concurrency_semaphore: semaphore,
+            min_concurrency_increase_delay: Duration::from_millis(test_constants::INCR_SPACING_MS),
+            min_concurrency_decrease_delay: Duration::from_millis(test_constants::DECR_SPACING_MS),
+            adjustment_disabled: false,
+            logging_tag: "testing",
+            min_bytes_required_for_adjustment: 0,
+            min_completed_transmissions_required_for_adjustment: 0,
+            monitor: Some(monitor),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1227,8 +1258,10 @@ mod tests {
 
 #[cfg(all(test, feature = "console"))]
 mod console_tests {
+    use tokio::time::{self, Duration, advance};
     use xet_runtime::console::state::SessionConsole;
 
+    use super::test_constants::*;
     use super::*;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1242,5 +1275,36 @@ mod console_tests {
         assert_eq!(monitors.len(), 1);
         assert_eq!(monitors[0].tag, "upload");
         assert!(monitors[0].total_permits > 0);
+    }
+
+    /// Drive the controller through failure-triggered limit decreases and verify the monitor
+    /// records a limit adjustment, a success model snapshot, and nonzero bytes sent.
+    #[tokio::test]
+    async fn monitor_hooks_record_limit_and_success_model() {
+        time::pause();
+
+        let scope = SessionConsole::new("hook-test".into(), vec![]);
+        let controller =
+            AdaptiveConcurrencyController::new_testing_with_monitor(10, (5, 10), &scope);
+
+        // Mirror test_permit_decrease_on_explicit_failure: report failures to trigger decrements.
+        for _ in 0..5 {
+            let permit = controller.acquire_connection_permit().await.unwrap();
+            advance(Duration::from_millis(DECR_SPACING_MS + 1)).await;
+            permit.report_completion(LARGE_N_BYTES, false).await;
+        }
+
+        let snapshots = scope.monitor_snapshots();
+        assert_eq!(snapshots.len(), 1);
+        let snap = &snapshots[0];
+
+        // A limit adjustment must have been recorded.
+        assert!(!snap.limit_history.is_empty(), "limit_history should be non-empty after decrements");
+
+        // The success model tee must have run.
+        assert!(snap.success.is_some(), "success model snapshot should be present after completions");
+
+        // Bytes must have been counted.
+        assert!(snap.bytes_sent > 0, "bytes_sent should be > 0 after completions");
     }
 }
