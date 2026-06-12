@@ -5,6 +5,7 @@
 
 pub mod model;
 pub mod ring;
+pub mod state;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
