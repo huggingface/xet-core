@@ -40,6 +40,9 @@ impl SessionConsole {
     }
 
     /// Returns live (non-dropped) upload commits; prunes dead weaks in place.
+    ///
+    /// Note: finalized-but-not-yet-dropped cells may appear in both this list and the ended ring;
+    /// `/uploads/{cid}` resolution prefers live deliberately so in-progress detail remains visible.
     pub fn live_upload_commits(&self) -> Vec<Arc<UploadCommitConsole>> {
         let Ok(mut commits) = self.upload_commits.lock() else {
             return Vec::new();

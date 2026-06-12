@@ -33,3 +33,36 @@ async fn upload_commit_lifecycle_visible_in_console() {
     assert!(ended[0].dedup.total_bytes > 0);
     assert!(ended[0].progress.is_some());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
+async fn aborted_commit_is_visible_in_console() {
+    unsafe { std::env::set_var("XET_CONSOLE_PORT", "0") };
+    let env = TestEnvironment::new().await;
+    let scope = install_scope(&env.config);
+
+    let upload_session = FileUploadSession::new(env.config.clone()).await.unwrap();
+    upload_session.console_mark_aborted();
+
+    {
+        let commits = scope.live_upload_commits();
+        assert_eq!(commits.len(), 1);
+        assert_eq!(
+            commits[0].summary().state,
+            xet_runtime::console::model::UploadCommitState::Aborted
+        );
+        // commits drops here, releasing the strong refs to UploadCommitConsole.
+    }
+
+    drop(upload_session);
+    // Ended entry lands when the cell drops; poll briefly (background tasks may hold the Arc).
+    for _ in 0..20 {
+        if !scope.ended_upload_commits().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let ended = scope.ended_upload_commits();
+    assert_eq!(ended.len(), 1);
+    assert_eq!(ended[0].state, xet_runtime::console::model::UploadCommitState::Aborted);
+}

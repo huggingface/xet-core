@@ -488,13 +488,17 @@ impl FileUploadSession {
         }
 
         // Now, aggregate the new dedup metrics.
-        self.deduplication_metrics.lock().await.merge_in(dedup_metrics);
-
+        let merged = {
+            let mut g = self.deduplication_metrics.lock().await;
+            g.merge_in(dedup_metrics);
+            *g // Copy; dead under not(console), compiler strips it
+        };
         #[cfg(feature = "console")]
         if let Some(c) = &self.console {
-            let m = *self.deduplication_metrics.lock().await;
-            c.set_dedup(dedup_snapshot_from(&m));
+            c.set_dedup(dedup_snapshot_from(&merged));
         }
+        #[cfg(not(feature = "console"))]
+        let _ = merged;
 
         Ok(())
     }
@@ -511,13 +515,17 @@ impl FileUploadSession {
         // files in current_session_data whose MDBFileInfo must still be registered.
         let file_infos = self.process_aggregated_data_as_xorb_detached(file_data).await?;
 
-        self.deduplication_metrics.lock().await.merge_in(dedup_metrics);
-
+        let merged = {
+            let mut g = self.deduplication_metrics.lock().await;
+            g.merge_in(dedup_metrics);
+            *g // Copy; dead under not(console), compiler strips it
+        };
         #[cfg(feature = "console")]
         if let Some(c) = &self.console {
-            let m = *self.deduplication_metrics.lock().await;
-            c.set_dedup(dedup_snapshot_from(&m));
+            c.set_dedup(dedup_snapshot_from(&merged));
         }
+        #[cfg(not(feature = "console"))]
+        let _ = merged;
 
         debug_assert_eq!(file_infos.len(), 1);
         file_infos
