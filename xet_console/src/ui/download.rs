@@ -107,10 +107,33 @@ fn draw_files(f: &mut Frame, area: Rect, app: &App, g: &DownloadGroupDetail) {
     f.render_stateful_widget(table, area, &mut tstate);
 }
 
+/// Resolve which in-flight file (if any) should be shown in the side panes.
+///
+/// The files table shows `g.files` (in-flight) followed by `g.completed_files`.
+/// `app.main_row` can point anywhere in that combined range. We clamp to the
+/// last real row, then return `Some(file)` only when the clamped index falls
+/// inside `g.files`; a completed row returns `None` paired with
+/// `completed = true` so callers can emit the right message.
+fn side_pane_file<'a>(
+    app: &App,
+    g: &'a DownloadGroupDetail,
+) -> (Option<&'a xet_runtime::console::model::FileDownloadSnapshot>, bool) {
+    let total = g.files.len() + g.completed_files.len();
+    if total == 0 {
+        return (None, false);
+    }
+    let clamped = app.main_row.min(total - 1);
+    if clamped < g.files.len() {
+        (g.files.get(clamped), false)
+    } else {
+        (None, true)
+    }
+}
+
 /// Term blocks of the file selected in the files pane (in-flight files only;
 /// completed files have no live blocks).
 fn draw_terms(f: &mut Frame, area: Rect, app: &App, g: &DownloadGroupDetail) {
-    let file = g.files.get(app.main_row.min(g.files.len().saturating_sub(1)));
+    let (file, completed) = side_pane_file(app, g);
     let mut lines: Vec<Line> = Vec::new();
     if let Some(file) = file {
         for b in &file.term_blocks {
@@ -127,6 +150,8 @@ fn draw_terms(f: &mut Frame, area: Rect, app: &App, g: &DownloadGroupDetail) {
             ));
         }
         lines.push(Line::from(format!("consumed {}", file.consumed_blocks)));
+    } else if completed {
+        lines.push(Line::from("file complete — no live blocks"));
     } else {
         lines.push(Line::from("no in-flight file selected"));
     }
@@ -137,15 +162,18 @@ fn draw_terms(f: &mut Frame, area: Rect, app: &App, g: &DownloadGroupDetail) {
 }
 
 fn draw_prefetch(f: &mut Frame, area: Rect, app: &App, g: &DownloadGroupDetail) {
-    let file = g.files.get(app.main_row.min(g.files.len().saturating_sub(1)));
-    let lines: Vec<Line> = match file.and_then(|fl| fl.prefetch.as_ref()) {
-        Some(p) => vec![
+    let (file, completed) = side_pane_file(app, g);
+    let lines: Vec<Line> = if let Some(p) = file.and_then(|fl| fl.prefetch.as_ref()) {
+        vec![
             Line::from(format!("queue {}", p.queue_depth)),
             Line::from(format!("prefetched @ {}", humanize_bytes(p.prefetched_byte_position))),
             Line::from(format!("active     @ {}", humanize_bytes(p.active_byte_position))),
             Line::from(format!("rate {}", humanize_rate(p.completion_rate_bps))),
-        ],
-        None => vec![Line::from("no prefetch state")],
+        ]
+    } else if completed {
+        vec![Line::from("file complete — no prefetch state")]
+    } else {
+        vec![Line::from("no prefetch state")]
     };
     f.render_widget(
         Paragraph::new(lines)
@@ -184,5 +212,31 @@ mod tests {
         assert!(text.contains("consumed 5"), "{text}");
         assert!(text.contains("queue 2"), "{text}");
         assert!(text.contains("prefetch"), "{text}");
+    }
+
+    /// The fixture group has 1 in-flight file (index 0) and 0 completed files
+    /// (total table length = 1). With main_row = 5, the full-table clamp lands
+    /// on index 0 (the only real row), which is in-flight — so the side panes
+    /// must show that file's live data rather than going blank or silently
+    /// tracking an unrelated row.
+    #[test]
+    fn out_of_range_row_clamps_to_last_real_row() {
+        let state = PollState {
+            snapshot: Some(sample_snapshot()),
+            last_success_ms: Some(0),
+            ..Default::default()
+        };
+        let app = App { page: Page::Download, main_row: 5, ..Default::default() };
+        let mut terminal = Terminal::new(TestBackend::new(120, 32)).unwrap();
+        terminal.draw(|f| ui::draw(f, &app, &state)).unwrap();
+        let text = buffer_text(terminal.backend());
+        // The clamped row (0) is in-flight, so live block data must appear.
+        assert!(text.contains("consumed 5"), "side panes must show clamped in-flight file: {text}");
+        assert!(text.contains("queue 2"), "prefetch must show clamped in-flight file: {text}");
+        // Must not show the completed-row placeholder (no completed files exist).
+        assert!(
+            !text.contains("file complete — no live blocks"),
+            "must not show completed-row message when clamped row is in-flight: {text}"
+        );
     }
 }
