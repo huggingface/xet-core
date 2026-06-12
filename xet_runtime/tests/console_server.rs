@@ -35,6 +35,16 @@ fn server_serves_index_process_and_sessions() {
         let detail = reqwest::get(format!("{base}/api/v1/sessions/itest-session")).await.unwrap();
         assert!(detail.status().is_success());
 
+        let uploads: serde_json::Value =
+            reqwest::get(format!("{base}/api/v1/sessions/itest-session/uploads")).await.unwrap().json().await.unwrap();
+        assert!(uploads["as_of"].as_u64().unwrap() > 0, "uploads response missing as_of");
+        assert!(uploads["commits"].as_array().is_some(), "uploads response missing commits array");
+
+        let downloads: serde_json::Value =
+            reqwest::get(format!("{base}/api/v1/sessions/itest-session/downloads")).await.unwrap().json().await.unwrap();
+        assert!(downloads["as_of"].as_u64().unwrap() > 0, "downloads response missing as_of");
+        assert!(downloads["groups"].as_array().is_some(), "downloads response missing groups array");
+
         let missing = reqwest::get(format!("{base}/api/v1/sessions/nope")).await.unwrap();
         assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
     });

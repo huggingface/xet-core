@@ -205,9 +205,12 @@ async fn session_detail(
 
 async fn uploads(
     Path(sid): Path<String>,
-) -> Result<Json<Vec<UploadCommitSummary>>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<UploadCommitsResponse>, (StatusCode, Json<ErrorResponse>)> {
     with_session(&sid, |s| {
-        Some(s.live_upload_commits().iter().map(|c| c.summary()).collect())
+        Some(UploadCommitsResponse {
+            as_of: now_ms(),
+            commits: s.live_upload_commits().iter().map(|c| c.summary()).collect(),
+        })
     })
 }
 
@@ -231,9 +234,12 @@ async fn upload_detail(
 
 async fn downloads(
     Path(sid): Path<String>,
-) -> Result<Json<Vec<DownloadGroupSummary>>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<DownloadGroupsResponse>, (StatusCode, Json<ErrorResponse>)> {
     with_session(&sid, |s| {
-        Some(s.live_download_groups().iter().map(|g| g.summary()).collect())
+        Some(DownloadGroupsResponse {
+            as_of: now_ms(),
+            groups: s.live_download_groups().iter().map(|g| g.summary()).collect(),
+        })
     })
 }
 

@@ -359,6 +359,20 @@ pub struct DownloadGroupDetail {
     pub file_counts: FileCounts,
 }
 
+// ---- list responses (envelope carrying as_of) ----
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UploadCommitsResponse {
+    pub as_of: u64,
+    pub commits: Vec<UploadCommitSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DownloadGroupsResponse {
+    pub as_of: u64,
+    pub groups: Vec<DownloadGroupSummary>,
+}
+
 // ---- snapshot (agent one-shot) ----
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

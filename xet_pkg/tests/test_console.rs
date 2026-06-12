@@ -90,10 +90,11 @@ async fn full_transfer_visible_over_http() {
             .to_string()
     };
 
-    // /uploads returns live (in-flight) upload commit summaries as a JSON array.
-    // The commit has already finished, so the list may be empty — just assert the endpoint works.
+    // /uploads returns an envelope with as_of and commits array.
+    // The commit has already finished, so the list may be empty — just assert the envelope is valid.
     let uploads = get(format!("{base}/sessions/{sid}/uploads")).await;
-    assert!(uploads.as_array().is_some(), "uploads endpoint should return an array, got: {uploads}");
+    assert!(uploads["as_of"].as_u64().unwrap() > 0, "uploads response missing as_of, got: {uploads}");
+    assert!(uploads["commits"].as_array().is_some(), "uploads response missing commits array, got: {uploads}");
 
     // Commit finished -> it lives in the session detail's ended_upload_commits.
     let detail = get(format!("{base}/sessions/{sid}")).await;
