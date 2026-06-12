@@ -84,6 +84,9 @@ jobs:
         run: |
           cargo clippy -r --verbose -- -D warnings # elevates warnings to errors
           cargo clippy -r --verbose --manifest-path hf_xet/Cargo.toml -- -D warnings # elevates warnings to errors
+      - name: Lint (console feature)
+        run: |
+          cargo clippy -r --verbose -p xet-runtime -p xet-client -p xet-data -p hf-xet --features console -- -D warnings
       - name: Set up Git LFS
         run: |
           curl -s https://packagecloud.io/install/repositories/github/git-lfs/script.deb.sh | sudo bash
@@ -92,6 +95,9 @@ jobs:
       - name: Build and Test
         run: |
           cargo test --verbose --no-fail-fast --features "strict simulation git-xet-for-integration-test"
+      - name: Build and Test (console feature)
+        run: |
+          cargo test --verbose --no-fail-fast -p xet-runtime -p xet-client -p xet-data -p hf-xet --features "console simulation"
       - name: Build and Test hf_xet
         run: |
           cd hf_xet && cargo test --verbose --no-fail-fast
