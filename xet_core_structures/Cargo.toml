@@ -31,9 +31,9 @@ async-trait = { workspace = true }
 base64 = { workspace = true }
 blake3 = { workspace = true }
 bytes = { workspace = true }
-clap = { workspace = true }
+clap = { workspace = true, optional = true }
 countio = { workspace = true }
-csv = { workspace = true }
+csv = { workspace = true, optional = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
 heapify = { workspace = true }
@@ -91,10 +91,12 @@ tempfile = { workspace = true }
 [[bin]]
 name = "shard_benchmark"
 path = "src/metadata_shard/shard_benchmark.rs"
+required-features = ["cli"]
 
 [[bin]]
 path = "src/xorb_object/byte_grouping/compression_stats/collect_compression_stats.rs"
 name = "collect_compression_stats"
+required-features = ["cli"]
 
 [[bin]]
 path = "src/xorb_object/byte_grouping/bg4_prediction_benchmark.rs"
@@ -103,4 +105,7 @@ name = "bg4_prediction_benchmark"
 [features]
 strict = []
 smoke-test = []
+# Command-line tooling (shard_benchmark / collect_compression_stats binaries).
+# Off by default so library consumers do not pull `clap` and `csv`.
+cli = ["dep:clap", "dep:csv"]
 simulation = ["xet-runtime/simulation"]
