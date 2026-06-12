@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders};
 use xet_runtime::console::model::{
