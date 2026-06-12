@@ -149,9 +149,17 @@ impl ReconstructionTermManager {
         #[cfg(feature = "console")]
         let popped_block_id = self.block_id_queue.pop_front();
 
-        let maybe_next_block = next_block_jh
+        let fetch_result = next_block_jh
             .await
-            .map_err(|e| FileReconstructionError::InternalError(format!("Join error: {e}")))??;
+            .map_err(|e| FileReconstructionError::InternalError(format!("Join error: {e}")));
+
+        // consumed = dequeued (including failed/empty fetches); the file-level state carries failure truth
+        #[cfg(feature = "console")]
+        if let (Some(fc), Some(block_id)) = (&self.console, popped_block_id) && fetch_result.is_err() {
+            fc.consume_term_block(block_id);
+        }
+
+        let maybe_next_block = fetch_result??;
 
         if let Some((file_terms, new_bytes, new_transfer_bytes)) = maybe_next_block {
             // Extract the download domain from the first file term's URL.
@@ -192,6 +200,7 @@ impl ReconstructionTermManager {
                 progress_updater.update_transfer_size(self.total_transfer_bytes_reported);
             }
 
+            // consumed = dequeued (including failed/empty fetches); the file-level state carries failure truth
             #[cfg(feature = "console")]
             if let (Some(fc), Some(block_id)) = (&self.console, popped_block_id) {
                 fc.consume_term_block(block_id);
@@ -212,6 +221,12 @@ impl ReconstructionTermManager {
                 prefetched_byte_position = self.prefetched_byte_position,
                 "Completed prefetch queue; end of file reached."
             );
+
+            // consumed = dequeued (including failed/empty fetches); the file-level state carries failure truth
+            #[cfg(feature = "console")]
+            if let (Some(fc), Some(block_id)) = (&self.console, popped_block_id) {
+                fc.consume_term_block(block_id);
+            }
 
             Ok(None)
         }
@@ -317,6 +332,7 @@ impl ReconstructionTermManager {
         let block_console = self.console.as_ref().map(|fc| {
             self.next_block_id += 1;
             let bc = fc.new_term_block(self.next_block_id, (prefetch_block_range.start, prefetch_block_range.end));
+            // must stay paired with the prefetch_queue push below — never insert an early return between them
             self.block_id_queue.push_back(self.next_block_id);
             bc
         });

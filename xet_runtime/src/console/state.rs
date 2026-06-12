@@ -1170,6 +1170,8 @@ impl DownloadFileConsole {
     }
 
     /// Remove the block from the map and bump consumed_blocks counter.
+    /// Consumed counts dequeued blocks including failed/empty fetches — the block is
+    /// retired from the live map regardless of whether the fetch succeeded.
     pub fn consume_term_block(&self, block_id: u64) {
         let removed = self.term_blocks.lock().ok().and_then(|mut m| m.remove(&block_id));
         if let Some(b) = removed {
