@@ -246,7 +246,8 @@ impl XetSession {
                 ("max_concurrent_file_ingestion".to_string(), ctx.config.data.max_concurrent_file_ingestion.to_string()),
                 ("max_concurrent_file_downloads".to_string(), ctx.config.data.max_concurrent_file_downloads.to_string()),
             ];
-            let _ = ctx.common.console_session.set(registry().register_session(id.to_string(), config));
+            let already_set = ctx.common.console_session.set(registry().register_session(id.to_string(), config)).is_err();
+            debug_assert!(!already_set, "XetCommon console scope set twice: ctx reused across sessions");
         }
         Self {
             inner: Arc::new(XetSessionInner {

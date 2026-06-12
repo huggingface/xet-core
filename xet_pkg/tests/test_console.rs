@@ -21,7 +21,8 @@ fn session_appears_in_console_and_ends_on_drop() {
 
     drop(session);
 
-    // Poll for up to ~2 s — the background teardown may hold ctx clones briefly.
+    // Poll for up to ~2 s — absorbs the HTTP/snapshot round-trip latency after drop.
+    // (In a real transfer, held ctx clones would legitimately delay the drop beyond any fixed poll.)
     let mut found_ended = false;
     for _ in 0..20 {
         let sessions: serde_json::Value = rt.block_on(async {

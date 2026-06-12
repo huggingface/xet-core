@@ -22,6 +22,11 @@ static SERVER_START_MS: OnceLock<u64> = OnceLock::new();
 /// current-thread runtime, deliberately independent of any session's runtime.
 /// Strict port policy: bind XET_CONSOLE_PORT (default 6660, 0 = ephemeral);
 /// on failure, warn once and run without a console. Loopback only.
+///
+/// May block the CALLING thread up to ~2s on first invocation (startup
+/// handshake; normally microseconds). Call it from session construction only.
+/// Rule for instrumentation hooks: code inside async fns must be pure
+/// non-blocking cell updates — never call ensure_started there.
 pub fn ensure_started() {
     STARTED.get_or_init(|| {
         SERVER_START_MS.get_or_init(now_ms);
