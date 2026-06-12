@@ -20,10 +20,13 @@ impl<T: Clone> TimestampedRing<T> {
     }
 
     pub fn push(&self, value: T) {
+        if self.capacity == 0 {
+            return; // a zero-capacity ring keeps nothing
+        }
         let Ok(mut items) = self.items.lock() else {
             return; // poisoned: drop the sample, never propagate
         };
-        if items.len() == self.capacity {
+        if items.len() >= self.capacity {
             items.pop_front();
         }
         items.push_back((now_ms(), value));
@@ -72,5 +75,36 @@ mod tests {
     fn empty_ring_snapshots_empty() {
         let ring: TimestampedRing<u32> = TimestampedRing::new(4);
         assert!(ring.snapshot().is_empty());
+    }
+
+    #[test]
+    fn zero_capacity_ring_keeps_nothing() {
+        let ring = TimestampedRing::new(0);
+        ring.push(1u32);
+        ring.push(2u32);
+        assert!(ring.snapshot().is_empty());
+        assert_eq!(ring.len(), 0);
+    }
+
+    #[test]
+    fn capacity_one_keeps_only_newest() {
+        let ring = TimestampedRing::new(1);
+        ring.push(1u32);
+        ring.push(2u32);
+        let items: Vec<u32> = ring.snapshot().into_iter().map(|(_, v)| v).collect();
+        assert_eq!(items, vec![2]);
+    }
+
+    #[test]
+    fn eviction_starts_exactly_at_capacity_boundary() {
+        let ring = TimestampedRing::new(3);
+        ring.push(1u32);
+        ring.push(2u32);
+        ring.push(3u32);
+        assert_eq!(ring.len(), 3);
+        ring.push(4u32);
+        assert_eq!(ring.len(), 3);
+        let items: Vec<u32> = ring.snapshot().into_iter().map(|(_, v)| v).collect();
+        assert_eq!(items, vec![2, 3, 4]);
     }
 }
