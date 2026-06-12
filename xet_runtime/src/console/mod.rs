@@ -3,6 +3,9 @@
 //! See docs/design/2026-06-11-xet-console-design.md. Everything in this module
 //! follows one rule: a console failure must never affect the host transfer.
 
+#[cfg(target_family = "wasm")]
+compile_error!("the `console` feature is not supported on wasm targets (axum)");
+
 pub mod model;
 pub mod registry;
 pub mod ring;

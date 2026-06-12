@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, Mutex, RwLock, Weak};
+use std::sync::{Arc, LazyLock, RwLock, Weak};
 
 use super::model::{SessionState, SessionSummary};
 use super::ring::TimestampedRing;
@@ -9,14 +9,14 @@ pub const ENDED_SESSIONS_CAPACITY: usize = 16;
 
 pub struct ConsoleRegistry {
     sessions: RwLock<HashMap<String, Weak<SessionConsole>>>,
-    ended_sessions: Mutex<TimestampedRing<SessionSummary>>,
+    ended_sessions: TimestampedRing<SessionSummary>,
 }
 
 impl Default for ConsoleRegistry {
     fn default() -> Self {
         Self {
             sessions: RwLock::new(HashMap::new()),
-            ended_sessions: Mutex::new(TimestampedRing::new(ENDED_SESSIONS_CAPACITY)),
+            ended_sessions: TimestampedRing::new(ENDED_SESSIONS_CAPACITY),
         }
     }
 }
@@ -43,12 +43,15 @@ impl SessionHandle {
 }
 
 impl Drop for SessionHandle {
+    // Teardown order: prune the live entry first, then record the ended summary.
+    // A session may transiently appear in neither collection during teardown;
+    // readers must tolerate that. (Double-listing would be worse.)
     fn drop(&mut self) {
         let Some(reg) = &self.registry else { return };
-        reg.record_ended_session(self.scope.summary(SessionState::Ended));
         if let Ok(mut s) = reg.sessions.write() {
             s.remove(&self.scope.id);
         }
+        reg.record_ended_session(self.scope.summary(SessionState::Ended));
     }
 }
 
@@ -63,6 +66,7 @@ impl ConsoleRegistry {
         let scope = SessionConsole::new(id.clone(), config);
         if let Ok(mut sessions) = self.sessions.write() {
             sessions.retain(|_, w| w.upgrade().is_some());
+            // keyed by session uuid; a collision would silently shadow the older session (uuids make this practically impossible)
             sessions.insert(id, Arc::downgrade(&scope));
         }
         SessionHandle { scope, registry: Some(self.clone()) }
@@ -109,17 +113,21 @@ impl ConsoleRegistry {
             });
             result
         };
-        let ended = self
-            .ended_sessions
-            .lock()
-            .map(|ring| ring.snapshot().into_iter().map(|(_, s)| s).collect())
-            .unwrap_or_default();
+        let ended = self.ended_sessions.snapshot().into_iter().map(|(_, s)| s).collect();
         (active, ended)
     }
 
     pub fn record_ended_session(&self, summary: SessionSummary) {
-        let Ok(ring) = self.ended_sessions.lock() else { return };
-        ring.push(summary);
+        self.ended_sessions.push(summary);
+    }
+}
+
+impl ConsoleRegistry {
+    #[cfg(test)]
+    pub fn insert_weak_for_test(&self, id: String, w: Weak<SessionConsole>) {
+        if let Ok(mut sessions) = self.sessions.write() {
+            sessions.insert(id, w);
+        }
     }
 }
 
@@ -151,5 +159,26 @@ mod tests {
             drop(handle);
         }
         assert_eq!(reg.session_summaries().1.len(), ENDED_SESSIONS_CAPACITY);
+    }
+
+    #[test]
+    fn dead_weaks_are_pruned_lazily() {
+        let reg = Arc::new(ConsoleRegistry::default());
+        let scope = SessionConsole::new("s-dead".to_string(), vec![]);
+        reg.insert_weak_for_test("s-dead".to_string(), Arc::downgrade(&scope));
+        drop(scope); // weak now dangles; no SessionHandle ever existed
+        let (active, ended) = reg.session_summaries();
+        assert!(active.is_empty(), "dangling weak must be pruned, not listed");
+        assert!(ended.is_empty(), "no handle drop -> no ended record");
+        assert!(reg.session("s-dead").is_none());
+    }
+
+    #[test]
+    fn detached_handle_has_no_registry_side_effects() {
+        let reg = Arc::new(ConsoleRegistry::default());
+        let scope = SessionConsole::new("s-detached".to_string(), vec![]);
+        drop(SessionHandle::detached(scope));
+        let (active, ended) = reg.session_summaries();
+        assert!(active.is_empty() && ended.is_empty());
     }
 }
