@@ -6,13 +6,11 @@ use xet_runtime::console::model::{IndexResponse, SessionsResponse, SnapshotRespo
 /// Blocking HTTP client for the xet-console API. The TUI polls /api/v1/snapshot
 /// (everything the four pages render about LIVE sessions) plus /api/v1/sessions
 /// (the only endpoint carrying the ended-sessions ring).
-#[allow(dead_code)]
 pub struct ConsoleClient {
     base: String,
     http: reqwest::blocking::Client,
 }
 
-#[allow(dead_code)]
 impl ConsoleClient {
     pub fn new(base: String) -> Self {
         let http = reqwest::blocking::Client::builder()
@@ -27,14 +25,17 @@ impl ConsoleClient {
         &self.base
     }
 
+    #[allow(dead_code)]
     pub fn index(&self) -> Result<IndexResponse> {
         self.get_json(&format!("{}/", self.base))
     }
 
+    #[allow(dead_code)]
     pub fn snapshot(&self) -> Result<SnapshotResponse> {
         self.get_json(&format!("{}/api/v1/snapshot", self.base))
     }
 
+    #[allow(dead_code)]
     pub fn sessions(&self) -> Result<SessionsResponse> {
         self.get_json(&format!("{}/api/v1/sessions", self.base))
     }
