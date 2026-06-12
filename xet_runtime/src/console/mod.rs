@@ -4,6 +4,7 @@
 //! follows one rule: a console failure must never affect the host transfer.
 
 pub mod model;
+pub mod registry;
 pub mod ring;
 pub mod state;
 
