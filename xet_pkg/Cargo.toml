@@ -63,6 +63,7 @@ tokio = { workspace = true, features = ["sync", "rt", "time", "macros"] }
 [dev-dependencies]
 anyhow = { workspace = true }
 async-std = { workspace = true }
+reqwest = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 futures = { workspace = true }
 more-asserts = { workspace = true }

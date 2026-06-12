@@ -237,13 +237,24 @@ impl XetSession {
     /// Low-level constructor used by [`XetSessionBuilder::build`].
     fn new(ctx: XetContext) -> Self {
         let task_runtime = TaskRuntime::new_root(ctx.runtime.clone());
+        let id = Uuid::now_v7();
+        #[cfg(feature = "console")]
+        {
+            use xet_runtime::console::{registry::registry, server};
+            server::ensure_started();
+            let config = vec![
+                ("max_concurrent_file_ingestion".to_string(), ctx.config.data.max_concurrent_file_ingestion.to_string()),
+                ("max_concurrent_file_downloads".to_string(), ctx.config.data.max_concurrent_file_downloads.to_string()),
+            ];
+            let _ = ctx.common.console_session.set(registry().register_session(id.to_string(), config));
+        }
         Self {
             inner: Arc::new(XetSessionInner {
                 ctx,
                 task_runtime,
                 #[cfg(not(target_family = "wasm"))]
                 active_download_stream_groups: Mutex::new(HashMap::new()),
-                id: Uuid::now_v7(),
+                id,
             }),
         }
     }
