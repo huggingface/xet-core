@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use ratatui::style::{Color, Style};
+use ratatui::widgets::{Block, Borders};
 use xet_runtime::console::model::{
     DownloadGroupState, FileDownloadState, FileUploadState, SessionState, ShardState, TermState,
     UploadCommitState, XorbState,
@@ -127,6 +128,16 @@ pub fn session_state_label(s: SessionState) -> &'static str {
     match s {
         SessionState::Active => "active",
         SessionState::Ended => "ended",
+    }
+}
+
+/// Bordered pane; the focused pane gets a highlighted title so tab-cycling is visible.
+pub fn pane_block(title: String, focused: bool) -> Block<'static> {
+    let block = Block::default().borders(Borders::ALL).title(title);
+    if focused {
+        block.border_style(Style::default().fg(Color::Cyan))
+    } else {
+        block
     }
 }
 
