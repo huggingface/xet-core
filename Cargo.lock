@@ -6186,6 +6186,7 @@ version = "1.5.2"
 dependencies = [
  "anyhow",
  "async-trait",
+ "axum",
  "bytes",
  "chrono",
  "colored",

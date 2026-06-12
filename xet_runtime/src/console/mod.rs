@@ -9,6 +9,7 @@ compile_error!("the `console` feature is not supported on wasm targets (axum)");
 pub mod model;
 pub mod registry;
 pub mod ring;
+pub mod server;
 pub mod state;
 
 use std::time::{SystemTime, UNIX_EPOCH};
