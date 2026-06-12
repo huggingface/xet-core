@@ -13,6 +13,21 @@ members = [
     "simulation",
     "xet_console",
 ]
+# Bare root commands (`cargo build`, `cargo test`, ...) operate on these members.
+# xet_console is intentionally excluded: it enables xet-runtime's `console` feature,
+# which the resolver would otherwise unify into every member's xet-runtime build —
+# silently compiling console code (and starting the console server in XetSession
+# tests) under feature-off invocations. Explicit `-p xet-console` / `--workspace`
+# still build it; CI's console steps target it directly.
+default-members = [
+    "xet_runtime",
+    "xet_core_structures",
+    "xet_client",
+    "xet_data",
+    "xet_pkg",
+    "git_xet",
+    "simulation",
+]
 exclude = [
     "simulation/chunk_cache_bench",
     "hf_xet",
