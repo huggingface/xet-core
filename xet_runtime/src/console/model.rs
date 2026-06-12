@@ -1,5 +1,14 @@
 use serde::{Deserialize, Serialize};
 
+/// Serializes Some(non-finite) as null — serde_json errors on NaN/Infinity,
+/// which would fail an entire response right when an operator needs it.
+fn none_if_not_finite<S: serde::Serializer>(v: &Option<f64>, s: S) -> Result<S::Ok, S::Error> {
+    match v {
+        Some(x) if x.is_finite() => s.serialize_some(x),
+        _ => s.serialize_none(),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexResponse {
     pub service: String,   // "xet-console"
@@ -59,18 +68,42 @@ pub struct SessionDetail {
 
 // ---- concurrency monitors ----
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AdjustmentRecommendation {
+    Increase,
+    #[default]
+    Hold,
+    Decrease,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+pub struct Thresholds {
+    pub increase: f64,
+    pub decrease: f64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+pub struct PermitBounds {
+    pub min: usize,
+    pub max: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SuccessModelSnapshot {
     pub success_ratio: f64,
-    pub thresholds: (f64, f64),
-    pub recommended_adjustment: i8,
+    pub thresholds: Thresholds,
+    pub recommended_adjustment: AdjustmentRecommendation,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LatencyModelSnapshot {
-    pub predicted_max_rtt_ms: f64,
-    pub rtt_standard_error_ms: f64,
-    pub predicted_bandwidth_bps: f64,
+    #[serde(serialize_with = "none_if_not_finite")]
+    pub predicted_max_rtt_ms: Option<f64>,
+    #[serde(serialize_with = "none_if_not_finite")]
+    pub rtt_standard_error_ms: Option<f64>,
+    #[serde(serialize_with = "none_if_not_finite")]
+    pub predicted_bandwidth_bps: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,7 +112,7 @@ pub struct MonitorSnapshot {
     pub total_permits: usize,
     pub active_permits: usize,
     pub available_permits: usize,
-    pub bounds: (usize, usize),
+    pub bounds: PermitBounds,
     pub adjustment_enabled: bool,
     pub bytes_sent: u64,
     pub success: Option<SuccessModelSnapshot>,
@@ -102,9 +135,11 @@ pub struct ConcurrencyResponse {
 pub struct ProgressSnapshot {
     pub total_bytes: u64,
     pub bytes_completed: u64,
+    #[serde(serialize_with = "none_if_not_finite")]
     pub rate_bps: Option<f64>,
     pub transfer_bytes: u64,
     pub transfer_bytes_completed: u64,
+    #[serde(serialize_with = "none_if_not_finite")]
     pub transfer_rate_bps: Option<f64>,
 }
 
@@ -290,6 +325,7 @@ pub struct PrefetchSnapshot {
     pub queue_depth: usize,
     pub prefetched_byte_position: u64,
     pub active_byte_position: u64,
+    #[serde(serialize_with = "none_if_not_finite")]
     pub completion_rate_bps: Option<f64>,
 }
 
@@ -354,6 +390,36 @@ mod tests {
         assert_eq!(serde_json::to_string(&TermState::Fetching).unwrap(), "\"fetching\"");
         assert_eq!(serde_json::to_string(&XorbState::Uploading).unwrap(), "\"uploading\"");
         assert_eq!(serde_json::to_string(&SessionState::Ended).unwrap(), "\"ended\"");
+        assert_eq!(serde_json::to_string(&AdjustmentRecommendation::Increase).unwrap(), "\"increase\"");
+    }
+
+    #[test]
+    fn monitor_snapshot_golden_json() {
+        let m = MonitorSnapshot {
+            tag: "upload".into(),
+            total_permits: 16,
+            active_permits: 14,
+            available_permits: 2,
+            bounds: PermitBounds { min: 1, max: 64 },
+            adjustment_enabled: true,
+            bytes_sent: 123,
+            success: Some(SuccessModelSnapshot {
+                success_ratio: 0.9,
+                thresholds: Thresholds { increase: 0.8, decrease: 0.5 },
+                recommended_adjustment: AdjustmentRecommendation::Increase,
+            }),
+            latency: Some(LatencyModelSnapshot {
+                predicted_max_rtt_ms: Some(412.5),
+                rtt_standard_error_ms: Some(f64::NAN), // sanitizer must emit null
+                predicted_bandwidth_bps: None,
+            }),
+            limit_history: vec![(1000, 15), (2000, 16)],
+        };
+        let json = serde_json::to_string(&m).unwrap(); // must not error despite NaN
+        assert_eq!(
+            json,
+            "{\"tag\":\"upload\",\"total_permits\":16,\"active_permits\":14,\"available_permits\":2,\"bounds\":{\"min\":1,\"max\":64},\"adjustment_enabled\":true,\"bytes_sent\":123,\"success\":{\"success_ratio\":0.9,\"thresholds\":{\"increase\":0.8,\"decrease\":0.5},\"recommended_adjustment\":\"increase\"},\"latency\":{\"predicted_max_rtt_ms\":412.5,\"rtt_standard_error_ms\":null,\"predicted_bandwidth_bps\":null},\"limit_history\":[[1000,15],[2000,16]]}"
+        );
     }
 
     #[test]
