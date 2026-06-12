@@ -26,6 +26,7 @@ pub fn ensure_started() {
     STARTED.get_or_init(|| {
         SERVER_START_MS.get_or_init(now_ms);
         let port = match std::env::var("XET_CONSOLE_PORT") {
+            Ok(v) if v.trim().is_empty() => DEFAULT_CONSOLE_PORT,
             Ok(v) => match v.parse::<u16>() {
                 Ok(p) => p,
                 Err(_) => {
@@ -130,6 +131,10 @@ fn router() -> Router {
 
 // ---- helpers ----
 
+fn not_found(error: String) -> (StatusCode, Json<ErrorResponse>) {
+    (StatusCode::NOT_FOUND, Json(ErrorResponse { error }))
+}
+
 fn make_process_info() -> ProcessInfo {
     ProcessInfo {
         as_of: now_ms(),
@@ -149,12 +154,7 @@ fn with_session<T: serde::Serialize>(
         .session(sid)
         .and_then(f)
         .map(Json)
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse { error: format!("not found under session {sid}") }),
-            )
-        })
+        .ok_or_else(|| not_found(format!("not found under session {sid}")))
 }
 
 // ---- handlers ----
@@ -208,14 +208,10 @@ async fn uploads(
 
 async fn upload_detail(
     Path((sid, cid)): Path<(String, u64)>,
-    Query(_params): Query<HashMap<String, String>>,
+    // ?files=all accepted for API stability; currently equivalent to the default (rings are the bound)
+    Query(_files_param): Query<HashMap<String, String>>,
 ) -> Result<Json<UploadCommitDetail>, (StatusCode, Json<ErrorResponse>)> {
-    let session = registry().session(&sid).ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse { error: format!("not found under session {sid}") }),
-        )
-    })?;
+    let session = registry().session(&sid).ok_or_else(|| not_found(format!("not found under session {sid}")))?;
     // Search live commits first; prefer live over ended if both present momentarily.
     if let Some(commit) = session.live_upload_commits().into_iter().find(|c| c.id == cid) {
         return Ok(Json(commit.snapshot(true)));
@@ -225,7 +221,7 @@ async fn upload_detail(
     if let Some(detail) = ended.into_iter().find(|d| d.id == cid) {
         return Ok(Json(detail));
     }
-    Err((StatusCode::NOT_FOUND, Json(ErrorResponse { error: format!("no upload commit {cid} in session {sid}") })))
+    Err(not_found(format!("no upload commit {cid} in session {sid}")))
 }
 
 async fn downloads(
@@ -238,14 +234,10 @@ async fn downloads(
 
 async fn download_detail(
     Path((sid, gid)): Path<(String, u64)>,
-    Query(_params): Query<HashMap<String, String>>,
+    // ?files=all accepted for API stability; currently equivalent to the default (rings are the bound)
+    Query(_files_param): Query<HashMap<String, String>>,
 ) -> Result<Json<DownloadGroupDetail>, (StatusCode, Json<ErrorResponse>)> {
-    let session = registry().session(&sid).ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse { error: format!("not found under session {sid}") }),
-        )
-    })?;
+    let session = registry().session(&sid).ok_or_else(|| not_found(format!("not found under session {sid}")))?;
     // Search live groups first.
     if let Some(group) = session.live_download_groups().into_iter().find(|g| g.id == gid) {
         return Ok(Json(group.snapshot(true)));
@@ -255,7 +247,7 @@ async fn download_detail(
     if let Some(detail) = ended.into_iter().find(|d| d.id == gid) {
         return Ok(Json(detail));
     }
-    Err((StatusCode::NOT_FOUND, Json(ErrorResponse { error: format!("no download group {gid} in session {sid}") })))
+    Err(not_found(format!("no download group {gid} in session {sid}")))
 }
 
 async fn concurrency(
