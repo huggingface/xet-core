@@ -44,6 +44,7 @@ uuid = { workspace = true, features = ["v7"] }
 
 [features]
 smoke-test = []
+console = ["xet-runtime/console", "xet-client/console", "xet-data/console"]
 fd-track = ["xet-runtime/fd-track", "xet-client/fd-track", "xet-data/fd-track"]
 python = ["xet-runtime/python", "xet-data/python", "dep:pyo3"]
 simulation = ["xet-client/simulation"]

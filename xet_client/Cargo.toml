@@ -73,6 +73,7 @@ rustls-tls = ["reqwest/rustls"]
 native-tls = ["reqwest/native-tls"]
 native-tls-vendored = ["reqwest/native-tls-vendored"]
 analysis = []
+console = ["xet-runtime/console"]
 simulation = [
     "dep:axum",
     "dep:humantime",
