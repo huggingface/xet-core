@@ -57,6 +57,9 @@ pub struct FileUploadSession {
 
     /// Set to true after finalize() has been called.
     finalized: AtomicBool,
+
+    #[cfg(feature = "console")]
+    pub(crate) console: Option<std::sync::Arc<xet_runtime::console::state::UploadCommitConsole>>,
 }
 
 // Constructors
@@ -88,6 +91,27 @@ impl FileUploadSession {
 
         let shard_interface = SessionShardInterface::new(&ctx, config.clone(), client.clone(), dry_run).await?;
 
+        #[cfg(feature = "console")]
+        let console = ctx.common.console_scope().map(|scope| {
+            let c = xet_runtime::console::state::UploadCommitConsole::new(
+                Some(scope),
+                Some(config.session.endpoint.clone()),
+            );
+            let p = progress.clone();
+            c.set_progress_provider(Box::new(move || {
+                let r = p.report();
+                xet_runtime::console::model::ProgressSnapshot {
+                    total_bytes: r.total_bytes,
+                    bytes_completed: r.total_bytes_completed,
+                    rate_bps: r.total_bytes_completion_rate,
+                    transfer_bytes: r.total_transfer_bytes,
+                    transfer_bytes_completed: r.total_transfer_bytes_completed,
+                    transfer_rate_bps: r.total_transfer_bytes_completion_rate,
+                }
+            }));
+            c
+        });
+
         Ok(Arc::new(Self {
             ctx,
             shard_interface,
@@ -98,6 +122,8 @@ impl FileUploadSession {
             deduplication_metrics: Mutex::new(DeduplicationMetrics::default()),
             xorb_upload_tasks: Mutex::new(JoinSet::new()),
             finalized: AtomicBool::new(false),
+            #[cfg(feature = "console")]
+            console,
         }))
     }
 
@@ -464,6 +490,12 @@ impl FileUploadSession {
         // Now, aggregate the new dedup metrics.
         self.deduplication_metrics.lock().await.merge_in(dedup_metrics);
 
+        #[cfg(feature = "console")]
+        if let Some(c) = &self.console {
+            let m = *self.deduplication_metrics.lock().await;
+            c.set_dedup(dedup_snapshot_from(&m));
+        }
+
         Ok(())
     }
 
@@ -480,6 +512,12 @@ impl FileUploadSession {
         let file_infos = self.process_aggregated_data_as_xorb_detached(file_data).await?;
 
         self.deduplication_metrics.lock().await.merge_in(dedup_metrics);
+
+        #[cfg(feature = "console")]
+        if let Some(c) = &self.console {
+            let m = *self.deduplication_metrics.lock().await;
+            c.set_dedup(dedup_snapshot_from(&m));
+        }
 
         debug_assert_eq!(file_infos.len(), 1);
         file_infos
@@ -552,6 +590,11 @@ impl FileUploadSession {
             return Err(DataError::InvalidOperation("FileUploadSession already finalized".to_string()));
         }
 
+        #[cfg(feature = "console")]
+        if let Some(c) = &self.console {
+            c.set_state(xet_runtime::console::model::UploadCommitState::Committing);
+        }
+
         // Register the remaining xorbs for upload.
         let data_agg = take(&mut *self.current_session_data.lock().await);
         self.process_aggregated_data_as_xorb(data_agg).await?;
@@ -581,6 +624,12 @@ impl FileUploadSession {
         {
             self.completion_tracker.assert_complete();
             self.progress.assert_complete();
+        }
+
+        #[cfg(feature = "console")]
+        if let Some(c) = &self.console {
+            c.set_dedup(dedup_snapshot_from(&metrics));
+            c.finalize(xet_runtime::console::model::UploadCommitState::Completed);
         }
 
         let report = self.report();
@@ -655,6 +704,28 @@ impl FileUploadSession {
     pub async fn finalize_with_file_info(self: Arc<Self>) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>)> {
         let (metrics, file_info, _report) = self.finalize_impl(true).await?;
         Ok((metrics, file_info))
+    }
+
+    /// Signals an immediate abort to the console (prompt signal; Drop covers never-finalized too).
+    #[cfg(feature = "console")]
+    pub fn console_mark_aborted(&self) {
+        if let Some(c) = &self.console {
+            c.set_state(xet_runtime::console::model::UploadCommitState::Aborted);
+        }
+    }
+}
+
+/// Maps a `DeduplicationMetrics` to the console model type.
+#[cfg(feature = "console")]
+fn dedup_snapshot_from(m: &DeduplicationMetrics) -> xet_runtime::console::model::DedupSnapshot {
+    xet_runtime::console::model::DedupSnapshot {
+        total_bytes: m.total_bytes,
+        deduped_bytes: m.deduped_bytes,
+        new_bytes: m.new_bytes,
+        deduped_bytes_by_global_dedup: m.deduped_bytes_by_global_dedup,
+        defrag_prevented_dedup_bytes: m.defrag_prevented_dedup_bytes,
+        xorb_bytes_uploaded: m.xorb_bytes_uploaded,
+        shard_bytes_uploaded: m.shard_bytes_uploaded,
     }
 }
 
