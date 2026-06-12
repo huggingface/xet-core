@@ -161,30 +161,6 @@ pub fn init_threadpool() -> Result<XetContext, RuntimeError> {
 
     let ctx = XetContext::default()?;
 
-    // The legacy functions (huggingface_hub's path) never construct an
-    // XetSession, so the xet-console server and session scope must be set up
-    // here, exactly as XetSession::new does for the session API.
-    #[cfg(feature = "console")]
-    {
-        use xet_runtime::console::registry::registry;
-        use xet_runtime::console::server;
-        use xet_runtime::utils::UniqueId;
-        server::ensure_started();
-        let config = vec![
-            (
-                "max_concurrent_file_ingestion".to_string(),
-                ctx.config.data.max_concurrent_file_ingestion.to_string(),
-            ),
-            (
-                "max_concurrent_file_downloads".to_string(),
-                ctx.config.data.max_concurrent_file_downloads.to_string(),
-            ),
-        ];
-        let id = format!("legacy-{pid}-{}", UniqueId::new().0);
-        let already_set = ctx.common.console_session.set(registry().register_session(id, config)).is_err();
-        debug_assert!(!already_set, "fresh XetContext already had a console scope");
-    }
-
     // Check the signal handler.  This must be reinstalled on new or after a spawn
     check_sigint_handler()?;
 
