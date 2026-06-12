@@ -261,6 +261,7 @@ impl XetFileDownloadGroup {
             .bridge_async_finalizing("download_finish", false, async move { inner.handle_finish().await })
             .await?;
         #[cfg(feature = "console")]
+        // Deliberately after the ?: a failed finish finalizes as Aborted via Drop, not Finished.
         download_session.console_finish();
         let progress = download_session.report();
         Ok(XetDownloadGroupReport { progress, downloads })
@@ -314,6 +315,7 @@ impl XetFileDownloadGroup {
             .task_runtime
             .bridge_sync_finalizing("download_finish_blocking", false, async move { inner.handle_finish().await })?;
         #[cfg(feature = "console")]
+        // Deliberately after the ?: a failed finish finalizes as Aborted via Drop, not Finished.
         download_session.console_finish();
         let progress = download_session.report();
         Ok(XetDownloadGroupReport { progress, downloads })

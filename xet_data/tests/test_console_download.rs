@@ -56,3 +56,28 @@ async fn download_group_and_files_visible_in_console() {
     let ended = scope.ended_download_groups();
     assert_eq!(ended.len(), 1);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
+async fn background_download_path_retires_files_with_counts() {
+    unsafe { std::env::set_var("XET_CONSOLE_PORT", "0") };
+    let env = TestEnvironment::new().await;
+    let scope = install_scope(&env.config);
+
+    let upload_session = FileUploadSession::new(env.config.clone()).await.unwrap();
+    let xfi = upload_random_file(&upload_session, &env.base_dir, 4 << 20).await;
+    upload_session.finalize().await.unwrap();
+
+    let download_session = FileDownloadSession::new(env.config.clone(), None).await.unwrap();
+    let out = env.base_dir.join("out_bg.bin");
+    let (_id, handle) = download_session.download_file_background(xfi.clone(), out).await.unwrap();
+    handle.await.unwrap().unwrap();
+
+    let group = scope.live_download_groups().pop().unwrap();
+    let detail = group.snapshot(true);
+    assert_eq!(detail.file_counts.in_flight, 0, "retired after completion");
+    assert_eq!(detail.file_counts.completed, 1);
+    assert!(detail.files.is_empty());
+    assert_eq!(detail.completed_files.len(), 1);
+    assert_eq!(detail.completed_files[0].1.state, FileDownloadState::Complete);
+}

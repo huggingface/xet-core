@@ -182,7 +182,22 @@ impl FileDownloadSession {
             c.new_file(id.0, &write_path.to_string_lossy(), Some(file_info.hash.clone()), None)
         });
         let handle = runtime.spawn(async move {
-            let _permit = semaphore.acquire().await?;
+            // console: a file admitted to the queue must always be retired, even when admission fails
+            let _permit = match semaphore.acquire().await {
+                Ok(p) => p,
+                Err(e) => {
+                    #[cfg(feature = "console")]
+                    {
+                        if let Some(fc) = &file_console {
+                            fc.set_state(xet_runtime::console::model::FileDownloadState::Aborted);
+                        }
+                        if let Some(c) = &session.console {
+                            c.retire_file(id.0);
+                        }
+                    }
+                    return Err(e.into());
+                }
+            };
             #[cfg(feature = "console")]
             if let Some(fc) = &file_console {
                 fc.set_state(xet_runtime::console::model::FileDownloadState::Reconstructing);
