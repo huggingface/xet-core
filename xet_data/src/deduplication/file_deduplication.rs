@@ -77,6 +77,11 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
         }
     }
 
+    /// Running metrics merged so far (console instrumentation).
+    pub fn current_metrics(&self) -> DeduplicationMetrics {
+        self.deduplication_metrics
+    }
+
     pub async fn process_chunks(
         &mut self,
         chunks: &[Chunk],

@@ -257,7 +257,22 @@ impl FileUploadSession {
     ) -> SingleFileCleaner {
         let updater = self.progress.new_item(id, tracking_name.clone().unwrap_or_default());
         let file_id = self.completion_tracker.register_new_file(updater, size);
-        SingleFileCleaner::new(tracking_name, file_id, sha256, self.clone())
+
+        #[cfg(feature = "console")]
+        let file_console = self.console.as_ref().map(|c| {
+            let fc = c.new_file(id.0, tracking_name.as_deref().unwrap_or("<unnamed>"), size);
+            c.map_ct_file(file_id, id.0);
+            fc
+        });
+
+        SingleFileCleaner::new_with_console(
+            tracking_name,
+            file_id,
+            sha256,
+            self.clone(),
+            #[cfg(feature = "console")]
+            file_console,
+        )
     }
 
     /// Spawns a task that reads `file_path` and uploads it.
@@ -586,6 +601,13 @@ impl FileUploadSession {
     /// Register a xorb dependencies that is given as part of the dedup process.
     pub(crate) fn register_xorb_dependencies(self: &Arc<Self>, xorb_dependencies: &[FileXorbDependency]) {
         self.completion_tracker.register_dependencies(xorb_dependencies);
+
+        #[cfg(feature = "console")]
+        if let Some(c) = &self.console {
+            for dep in xorb_dependencies {
+                c.register_file_xorb_dep(dep.file_id, dep.xorb_hash.hex(), dep.n_bytes, dep.is_external);
+            }
+        }
     }
 
     /// Finalize everything.
@@ -725,7 +747,7 @@ impl FileUploadSession {
 
 /// Maps a `DeduplicationMetrics` to the console model type.
 #[cfg(feature = "console")]
-fn dedup_snapshot_from(m: &DeduplicationMetrics) -> xet_runtime::console::model::DedupSnapshot {
+pub(crate) fn dedup_snapshot_from(m: &DeduplicationMetrics) -> xet_runtime::console::model::DedupSnapshot {
     xet_runtime::console::model::DedupSnapshot {
         total_bytes: m.total_bytes,
         deduped_bytes: m.deduped_bytes,

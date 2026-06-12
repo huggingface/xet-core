@@ -346,6 +346,10 @@ impl ItemProgressUpdater {
         &self.item
     }
 
+    pub fn item_id(&self) -> UniqueId {
+        self.item.id
+    }
+
     pub fn report(&self) -> ItemProgressReport {
         self.item.report()
     }

@@ -80,6 +80,9 @@ pub struct SingleFileCleaner {
 
     // Start time
     start_time: DateTime<Utc>,
+
+    #[cfg(feature = "console")]
+    console: Option<std::sync::Arc<xet_runtime::console::state::FileUploadConsole>>,
 }
 
 impl SingleFileCleaner {
@@ -88,6 +91,23 @@ impl SingleFileCleaner {
         file_id: CompletionTrackerFileId,
         sha256: Sha256Policy,
         session: Arc<FileUploadSession>,
+    ) -> Self {
+        Self::new_with_console(
+            file_name,
+            file_id,
+            sha256,
+            session,
+            #[cfg(feature = "console")]
+            None,
+        )
+    }
+
+    pub(crate) fn new_with_console(
+        file_name: Option<Arc<str>>,
+        file_id: CompletionTrackerFileId,
+        sha256: Sha256Policy,
+        session: Arc<FileUploadSession>,
+        #[cfg(feature = "console")] console: Option<std::sync::Arc<xet_runtime::console::state::FileUploadConsole>>,
     ) -> Self {
         let ctx = session.ctx.clone();
         let deduper = FileDeduper::new(UploadSessionDataManager::new(session.clone()), file_id, ctx.clone());
@@ -108,6 +128,8 @@ impl SingleFileCleaner {
             sha_generator,
             provided_sha256,
             start_time: Utc::now(),
+            #[cfg(feature = "console")]
+            console,
         }
     }
 
@@ -118,7 +140,18 @@ impl SingleFileCleaner {
         // Handle the move out by replacing it with a dummy future discarded below.
         let mut deduper = std::mem::replace(&mut self.dedup_manager_fut, Box::pin(future::pending())).await?;
 
+        // Refresh dedup snapshot now that the previous block's metrics are available.
+        #[cfg(feature = "console")]
+        if let Some(fc) = &self.console {
+            fc.set_dedup(crate::processing::file_upload_session::dedup_snapshot_from(&deduper.current_metrics()));
+        }
+
         let num_chunks = chunks.len();
+
+        #[cfg(feature = "console")]
+        if let Some(fc) = &self.console {
+            fc.add_chunked_bytes(0, num_chunks as u64);
+        }
 
         let dedup_background = tokio::spawn(
             async move {
@@ -160,6 +193,12 @@ impl SingleFileCleaner {
         self.session
             .completion_tracker
             .increment_file_size(self.file_id, data.len() as u64);
+
+        #[cfg(feature = "console")]
+        if let Some(fc) = &self.console {
+            fc.set_state(xet_runtime::console::model::FileUploadState::Chunking);
+            fc.add_chunked_bytes(data.len() as u64, 0);
+        }
 
         // Put the chunking on a compute thread so it doesn't tie up the async schedulers
         let chunk_data_jh = {
@@ -230,6 +269,9 @@ impl SingleFileCleaner {
         mut self,
         register: bool,
     ) -> Result<(XetFileInfo, ChunkHashList, MDBFileInfo, DeduplicationMetrics)> {
+        #[cfg(feature = "console")]
+        let console = self.console.clone();
+
         if let Some(chunk) = self.chunker.finish() {
             let data = Arc::new([chunk]);
             self.deduper_process_chunks(data).await?;
@@ -250,6 +292,14 @@ impl SingleFileCleaner {
             file_size: Some(deduplication_metrics.total_bytes),
             sha256: sha256.map(|s| s.hex()),
         };
+
+        #[cfg(feature = "console")]
+        if let Some(fc) = &console {
+            fc.set_hash(file_info.hash.clone(), file_info.sha256.clone());
+            fc.set_size(deduplication_metrics.total_bytes);
+            fc.set_dedup(crate::processing::file_upload_session::dedup_snapshot_from(&deduplication_metrics));
+            fc.set_state(xet_runtime::console::model::FileUploadState::Processed);
+        }
 
         #[cfg(debug_assertions)]
         {
