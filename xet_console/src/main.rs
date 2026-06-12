@@ -9,6 +9,7 @@ use std::io;
 use std::time::Duration;
 
 use clap::Parser;
+use client::ConsoleClient;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
@@ -64,7 +65,8 @@ fn main() -> anyhow::Result<()> {
     execute!(io::stdout(), EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
-    let result = run(&mut terminal, &base, args.interval);
+    let client = ConsoleClient::new(base.clone());
+    let result = run(&mut terminal, &client, args.interval);
 
     disable_raw_mode()?;
     execute!(io::stdout(), LeaveAlternateScreen)?;
@@ -73,14 +75,14 @@ fn main() -> anyhow::Result<()> {
 
 fn run(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    base: &str,
+    client: &ConsoleClient,
     _interval: Duration,
 ) -> anyhow::Result<()> {
     loop {
         terminal.draw(|f| {
             use ratatui::widgets::Paragraph;
             f.render_widget(
-                Paragraph::new(format!("xet-console — connecting to {base}  (q to quit)")),
+                Paragraph::new(format!("xet-console — connecting to {}  (q to quit)", client.base())),
                 f.area(),
             );
         })?;

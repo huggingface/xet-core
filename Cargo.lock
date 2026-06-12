@@ -6918,6 +6918,7 @@ dependencies = [
  "humantime",
  "ratatui",
  "reqwest",
+ "serde",
  "serde_json",
  "serial_test",
  "xet-runtime",
