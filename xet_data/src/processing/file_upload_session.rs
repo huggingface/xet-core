@@ -424,7 +424,7 @@ impl FileUploadSession {
         let console_xorb = self.console.clone();
         #[cfg(feature = "console")]
         let xorb_hex: String = xorb_hash.hex();
-        let progress_callback: ProgressCallback = Arc::new(move |delta, completed, total| {
+        let progress_callback: ProgressCallback = Arc::new(move |delta, _completed, total| {
             let raw_delta = (delta * raw_num_bytes).checked_div(total).unwrap_or(0);
             if raw_delta > 0 {
                 completion_tracker
@@ -433,7 +433,7 @@ impl FileUploadSession {
             }
             #[cfg(feature = "console")]
             if let Some(c) = &console_xorb {
-                c.xorb_transfer_with_total(&xorb_hex, completed, total);
+                c.xorb_transfer_with_total(&xorb_hex, _completed, total);
             }
         });
 
@@ -452,6 +452,11 @@ impl FileUploadSession {
                     .await;
                 #[cfg(feature = "console")]
                 if let Some(c) = &session.console {
+                    if let Ok(n) = &upload_result {
+                        // Backfill bytes for small xorbs whose progress callback never fired
+                        // (single-chunk uploads stream the body without incremental progress).
+                        c.xorb_transfer_with_total(&xorb_hex_task, *n, *n);
+                    }
                     c.xorb_uploaded(&xorb_hex_task, upload_result.is_ok());
                 }
                 let n_bytes_transmitted = upload_result?;

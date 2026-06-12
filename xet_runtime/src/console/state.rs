@@ -493,6 +493,13 @@ impl UploadCommitConsole {
 
     pub fn shard_discovered(&self, hash: String, size: u64) {
         let Ok(mut shards) = self.shards.lock() else { return; };
+        // Dedup: if a shard with the same hash already exists, update size if the new one is non-zero.
+        if let Some(existing) = shards.iter_mut().find(|s| s.hash.as_deref() == Some(&hash)) {
+            if size > 0 {
+                existing.size = size;
+            }
+            return;
+        }
         shards.push(ShardSnapshot {
             hash: Some(hash),
             state: ShardState::Uploading,
@@ -501,11 +508,14 @@ impl UploadCommitConsole {
         });
     }
 
-    pub fn shard_uploaded(&self, hash: &str) {
+    pub fn shard_uploaded(&self, hash: &str, size: u64) {
         let Ok(mut shards) = self.shards.lock() else { return; };
         for shard in shards.iter_mut() {
             if shard.hash.as_deref() == Some(hash) {
                 shard.state = ShardState::Uploaded;
+                if size > 0 {
+                    shard.size = size;
+                }
             }
         }
     }
@@ -522,7 +532,7 @@ impl UploadCommitConsole {
             let Ok(mut staging) = self.staging.lock() else { return; };
             *staging = (0, 0);
         }
-        // Set shard_uploaded and state Complete on all in-flight files, then retire them
+        // only successful pipelines complete; terminal failures keep their state and counts
         let file_ids: Vec<u64> = {
             let Ok(files) = self.files.lock() else { return; };
             files.keys().cloned().collect()
@@ -531,14 +541,21 @@ impl UploadCommitConsole {
             {
                 let Ok(files) = self.files.lock() else { continue; };
                 if let Some(file) = files.get(&id) {
-                    if let Ok(mut su) = file.shard_uploaded.lock() {
-                        *su = true;
-                    }
-                    if let Ok(mut s) = file.state.lock() {
-                        *s = FileUploadState::Complete;
-                    }
-                    if let Ok(mut fa) = file.finished_at.lock() {
-                        *fa = Some(now_ms());
+                    let is_terminal_failure = file
+                        .state
+                        .lock()
+                        .map(|s| matches!(*s, FileUploadState::Failed | FileUploadState::Aborted))
+                        .unwrap_or(false);
+                    if !is_terminal_failure {
+                        if let Ok(mut su) = file.shard_uploaded.lock() {
+                            *su = true;
+                        }
+                        if let Ok(mut s) = file.state.lock() {
+                            *s = FileUploadState::Complete;
+                        }
+                        if let Ok(mut fa) = file.finished_at.lock() {
+                            *fa = Some(now_ms());
+                        }
                     }
                 }
             }
@@ -1449,5 +1466,21 @@ mod tests {
         assert_eq!(snap.bytes_sent, 1234);
         assert!(snap.success.is_some());
         assert!(snap.total_permits >= 1);
+    }
+
+    #[test]
+    fn all_shards_uploaded_does_not_overwrite_failed_files() {
+        let commit = UploadCommitConsole::new(Some(&scope()), None);
+        let ok = commit.new_file(1, "ok", None);
+        let bad = commit.new_file(2, "bad", None);
+        ok.set_state(FileUploadState::AwaitingShard);
+        bad.set_state(FileUploadState::Failed);
+        commit.all_shards_uploaded();
+        let detail = commit.snapshot(true);
+        assert_eq!(detail.file_counts.completed, 1);
+        assert_eq!(detail.file_counts.failed, 1);
+        let states: Vec<_> = detail.completed_files.iter().map(|(_, f)| f.state).collect();
+        assert!(states.contains(&FileUploadState::Complete));
+        assert!(states.contains(&FileUploadState::Failed));
     }
 }

@@ -309,13 +309,15 @@ impl SessionShardInterface {
                     }
 
                     // Upload the shard.
+                    #[cfg(feature = "console")]
+                    let shard_size = data.len() as u64;
                     shard_client.upload_shard(data, upload_permit).await?;
 
                     info!("Shard {:?} upload + sync completed successfully.", &si.shard_hash);
 
                     #[cfg(feature = "console")]
                     if let Some(c) = &console_for_task {
-                        c.shard_uploaded(&shard_hex);
+                        c.shard_uploaded(&shard_hex, shard_size);
                     }
 
                     // Now that the upload succeeded, move that shard to the cache directory, adding in an expiration
