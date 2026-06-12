@@ -65,7 +65,9 @@ impl XetCommon {
 
     /// Test-only: install a scope without a registry handle.
     pub fn console_session_for_test(&self, scope: std::sync::Arc<crate::console::state::SessionConsole>) {
-        let _ = self.console_session.set(crate::console::registry::SessionHandle::detached(scope));
+        let _ = self
+            .console_session
+            .set(crate::console::registry::SessionHandle::detached(scope));
     }
 }
 

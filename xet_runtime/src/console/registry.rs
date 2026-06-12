@@ -21,8 +21,7 @@ impl Default for ConsoleRegistry {
     }
 }
 
-static CONSOLE_REGISTRY: LazyLock<Arc<ConsoleRegistry>> =
-    LazyLock::new(|| Arc::new(ConsoleRegistry::default()));
+static CONSOLE_REGISTRY: LazyLock<Arc<ConsoleRegistry>> = LazyLock::new(|| Arc::new(ConsoleRegistry::default()));
 
 pub fn registry() -> Arc<ConsoleRegistry> {
     CONSOLE_REGISTRY.clone()
@@ -58,18 +57,18 @@ impl Drop for SessionHandle {
 impl ConsoleRegistry {
     /// Register a new session. Stores a `Weak`, prunes dead entries, returns
     /// a `SessionHandle` that reports the session as ended when dropped.
-    pub fn register_session(
-        self: &Arc<Self>,
-        id: String,
-        config: Vec<(String, String)>,
-    ) -> SessionHandle {
+    pub fn register_session(self: &Arc<Self>, id: String, config: Vec<(String, String)>) -> SessionHandle {
         let scope = SessionConsole::new(id.clone(), config);
         if let Ok(mut sessions) = self.sessions.write() {
             sessions.retain(|_, w| w.upgrade().is_some());
-            // keyed by session uuid; a collision would silently shadow the older session (uuids make this practically impossible)
+            // keyed by session uuid; a collision would silently shadow the older session (uuids make this practically
+            // impossible)
             sessions.insert(id, Arc::downgrade(&scope));
         }
-        SessionHandle { scope, registry: Some(self.clone()) }
+        SessionHandle {
+            scope,
+            registry: Some(self.clone()),
+        }
     }
 
     /// Look up a live session by id.

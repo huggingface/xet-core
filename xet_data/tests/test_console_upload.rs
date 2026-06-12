@@ -3,8 +3,8 @@
 mod console_common;
 use console_common::{install_scope, upload_random_file};
 use serial_test::serial;
-use xet_data::processing::test_utils::TestEnvironment;
 use xet_data::processing::FileUploadSession;
+use xet_data::processing::test_utils::TestEnvironment;
 use xet_runtime::console::model::{FileUploadState, ShardState};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -48,10 +48,7 @@ async fn aborted_commit_is_visible_in_console() {
     {
         let commits = scope.live_upload_commits();
         assert_eq!(commits.len(), 1);
-        assert_eq!(
-            commits[0].summary().state,
-            xet_runtime::console::model::UploadCommitState::Aborted
-        );
+        assert_eq!(commits[0].summary().state, xet_runtime::console::model::UploadCommitState::Aborted);
         // commits drops here, releasing the strong refs to UploadCommitConsole.
     }
 
@@ -83,7 +80,10 @@ async fn file_states_progress_through_pipeline() {
 
     // After ingestion (pre-finalize): the file must be past Chunking with hash known.
     let detail = commit.snapshot(true);
-    let all_files: Vec<_> = detail.files.iter().cloned()
+    let all_files: Vec<_> = detail
+        .files
+        .iter()
+        .cloned()
         .chain(detail.completed_files.iter().map(|(_, f)| f.clone()))
         .collect();
     assert_eq!(all_files.len(), 1);
@@ -93,15 +93,25 @@ async fn file_states_progress_through_pipeline() {
     assert!(f.n_chunks > 0);
     assert!(f.dedup.is_some());
     assert!(
-        matches!(f.state, FileUploadState::Processed | FileUploadState::AwaitingXorbs | FileUploadState::AwaitingShard | FileUploadState::Complete),
-        "unexpected state: {:?}", f.state
+        matches!(
+            f.state,
+            FileUploadState::Processed
+                | FileUploadState::AwaitingXorbs
+                | FileUploadState::AwaitingShard
+                | FileUploadState::Complete
+        ),
+        "unexpected state: {:?}",
+        f.state
     );
 
     upload_session.finalize().await.unwrap();
     let ended = scope.ended_upload_commits().pop().unwrap();
     // After finalize the commit is recorded; files may be in `files` (in-flight) or
     // `completed_files` (retired after all_shards_uploaded, Task 12).
-    let all_ended: Vec<_> = ended.files.iter().cloned()
+    let all_ended: Vec<_> = ended
+        .files
+        .iter()
+        .cloned()
         .chain(ended.completed_files.iter().map(|(_, f)| f.clone()))
         .collect();
     assert_eq!(all_ended.len(), 1);

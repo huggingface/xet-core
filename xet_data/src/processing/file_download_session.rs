@@ -178,9 +178,10 @@ impl FileDownloadSession {
         let runtime = self.ctx.runtime.clone();
         let semaphore = self.ctx.common.file_download_semaphore.clone();
         #[cfg(feature = "console")]
-        let file_console = self.console.as_ref().map(|c| {
-            c.new_file(id.0, &write_path.to_string_lossy(), Some(file_info.hash.clone()), None)
-        });
+        let file_console = self
+            .console
+            .as_ref()
+            .map(|c| c.new_file(id.0, &write_path.to_string_lossy(), Some(file_info.hash.clone()), None));
         let handle = runtime.spawn(async move {
             // console: a file admitted to the queue must always be retired, even when admission fails
             let _permit = match semaphore.acquire().await {
@@ -196,7 +197,7 @@ impl FileDownloadSession {
                         }
                     }
                     return Err(e.into());
-                }
+                },
             };
             #[cfg(feature = "console")]
             if let Some(fc) = &file_console {
@@ -224,9 +225,10 @@ impl FileDownloadSession {
         self.check_not_finalized()?;
         let id = UniqueId::new();
         #[cfg(feature = "console")]
-        let file_console = self.console.as_ref().map(|c| {
-            c.new_file(id.0, &write_path.to_string_lossy(), Some(file_info.hash.clone()), None)
-        });
+        let file_console = self
+            .console
+            .as_ref()
+            .map(|c| c.new_file(id.0, &write_path.to_string_lossy(), Some(file_info.hash.clone()), None));
         #[cfg(feature = "console")]
         if let Some(fc) = &file_console {
             fc.set_state(xet_runtime::console::model::FileDownloadState::Reconstructing);
@@ -439,8 +441,7 @@ impl FileDownloadSession {
         file_info: &XetFileInfo,
         range: Option<FileRange>,
         progress_updater: Option<Arc<ItemProgressUpdater>>,
-        #[cfg(feature = "console")]
-        console: Option<std::sync::Arc<xet_runtime::console::state::DownloadFileConsole>>,
+        #[cfg(feature = "console")] console: Option<std::sync::Arc<xet_runtime::console::state::DownloadFileConsole>>,
     ) -> Result<FileReconstructor> {
         let file_id = file_info.merkle_hash()?;
 

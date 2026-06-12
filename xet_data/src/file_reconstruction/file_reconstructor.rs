@@ -65,10 +65,7 @@ impl FileReconstructor {
     }
 
     #[cfg(feature = "console")]
-    pub fn with_console(
-        self,
-        console: std::sync::Arc<xet_runtime::console::state::DownloadFileConsole>,
-    ) -> Self {
+    pub fn with_console(self, console: std::sync::Arc<xet_runtime::console::state::DownloadFileConsole>) -> Self {
         Self {
             console: Some(console),
             ..self

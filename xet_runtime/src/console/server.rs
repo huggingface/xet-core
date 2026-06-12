@@ -42,15 +42,14 @@ pub fn ensure_started() {
             },
             Err(_) => DEFAULT_CONSOLE_PORT,
         };
-        let std_listener =
-            match std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)) {
-                Ok(l) => l,
-                Err(e) => {
-                    warn!("xet-console: failed to bind 127.0.0.1:{port}: {e}; console disabled");
-                    let _ = BOUND_ADDR.set(None);
-                    return;
-                },
-            };
+        let std_listener = match std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)) {
+            Ok(l) => l,
+            Err(e) => {
+                warn!("xet-console: failed to bind 127.0.0.1:{port}: {e}; console disabled");
+                let _ = BOUND_ADDR.set(None);
+                return;
+            },
+        };
         let addr = match std_listener.local_addr() {
             Ok(a) => a,
             Err(e) => {
@@ -65,47 +64,43 @@ pub fn ensure_started() {
             return;
         }
         let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
-        match std::thread::Builder::new()
-            .name("xet-console-server".into())
-            .spawn(move || {
-                let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-                    Ok(rt) => rt,
+        match std::thread::Builder::new().name("xet-console-server".into()).spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                Ok(rt) => rt,
+                Err(e) => {
+                    warn!("xet-console: runtime build failed: {e}");
+                    let _ = tx.send(Err(format!("runtime build failed: {e}")));
+                    return;
+                },
+            };
+            rt.block_on(async move {
+                let listener = match tokio::net::TcpListener::from_std(std_listener) {
+                    Ok(l) => l,
                     Err(e) => {
-                        warn!("xet-console: runtime build failed: {e}");
-                        let _ = tx.send(Err(format!("runtime build failed: {e}")));
+                        warn!("xet-console: listener conversion failed: {e}");
+                        let _ = tx.send(Err(format!("listener conversion failed: {e}")));
                         return;
                     },
                 };
-                rt.block_on(async move {
-                    let listener = match tokio::net::TcpListener::from_std(std_listener) {
-                        Ok(l) => l,
-                        Err(e) => {
-                            warn!("xet-console: listener conversion failed: {e}");
-                            let _ = tx.send(Err(format!("listener conversion failed: {e}")));
-                            return;
-                        },
-                    };
-                    let _ = tx.send(Ok(()));
-                    if let Err(e) = axum::serve(listener, router()).await {
-                        warn!("xet-console: server exited: {e}");
-                    }
-                });
-            }) {
-            Ok(_) => {
-                match rx.recv_timeout(std::time::Duration::from_secs(2)) {
-                    Ok(Ok(())) => {
-                        let _ = BOUND_ADDR.set(Some(addr));
-                        info!("xet-console listening on http://{addr}");
-                    },
-                    Ok(Err(e)) => {
-                        warn!("xet-console: startup failed: {e}; console disabled");
-                        let _ = BOUND_ADDR.set(None);
-                    },
-                    Err(e) => {
-                        warn!("xet-console: startup handshake failed: {e}; console disabled");
-                        let _ = BOUND_ADDR.set(None);
-                    },
+                let _ = tx.send(Ok(()));
+                if let Err(e) = axum::serve(listener, router()).await {
+                    warn!("xet-console: server exited: {e}");
                 }
+            });
+        }) {
+            Ok(_) => match rx.recv_timeout(std::time::Duration::from_secs(2)) {
+                Ok(Ok(())) => {
+                    let _ = BOUND_ADDR.set(Some(addr));
+                    info!("xet-console listening on http://{addr}");
+                },
+                Ok(Err(e)) => {
+                    warn!("xet-console: startup failed: {e}; console disabled");
+                    let _ = BOUND_ADDR.set(None);
+                },
+                Err(e) => {
+                    warn!("xet-console: startup handshake failed: {e}; console disabled");
+                    let _ = BOUND_ADDR.set(None);
+                },
             },
             Err(e) => {
                 warn!("xet-console: thread spawn failed: {e}; console disabled");
@@ -194,18 +189,18 @@ async fn process_info() -> Json<ProcessInfo> {
 
 async fn sessions() -> Json<SessionsResponse> {
     let (active, ended) = registry().session_summaries();
-    Json(SessionsResponse { as_of: now_ms(), sessions: active, ended_sessions: ended })
+    Json(SessionsResponse {
+        as_of: now_ms(),
+        sessions: active,
+        ended_sessions: ended,
+    })
 }
 
-async fn session_detail(
-    Path(sid): Path<String>,
-) -> Result<Json<SessionDetail>, (StatusCode, Json<ErrorResponse>)> {
+async fn session_detail(Path(sid): Path<String>) -> Result<Json<SessionDetail>, (StatusCode, Json<ErrorResponse>)> {
     with_session(&sid, |s| Some(s.detail(SessionState::Active)))
 }
 
-async fn uploads(
-    Path(sid): Path<String>,
-) -> Result<Json<UploadCommitsResponse>, (StatusCode, Json<ErrorResponse>)> {
+async fn uploads(Path(sid): Path<String>) -> Result<Json<UploadCommitsResponse>, (StatusCode, Json<ErrorResponse>)> {
     with_session(&sid, |s| {
         Some(UploadCommitsResponse {
             as_of: now_ms(),
@@ -219,7 +214,9 @@ async fn upload_detail(
     // ?files=all accepted for API stability; currently equivalent to the default (rings are the bound)
     Query(_files_param): Query<HashMap<String, String>>,
 ) -> Result<Json<UploadCommitDetail>, (StatusCode, Json<ErrorResponse>)> {
-    let session = registry().session(&sid).ok_or_else(|| not_found(format!("not found under session {sid}")))?;
+    let session = registry()
+        .session(&sid)
+        .ok_or_else(|| not_found(format!("not found under session {sid}")))?;
     // Search live commits first; prefer live over ended if both present momentarily.
     if let Some(commit) = session.live_upload_commits().into_iter().find(|c| c.id == cid) {
         return Ok(Json(commit.snapshot(true)));
@@ -232,9 +229,7 @@ async fn upload_detail(
     Err(not_found(format!("no upload commit {cid} in session {sid}")))
 }
 
-async fn downloads(
-    Path(sid): Path<String>,
-) -> Result<Json<DownloadGroupsResponse>, (StatusCode, Json<ErrorResponse>)> {
+async fn downloads(Path(sid): Path<String>) -> Result<Json<DownloadGroupsResponse>, (StatusCode, Json<ErrorResponse>)> {
     with_session(&sid, |s| {
         Some(DownloadGroupsResponse {
             as_of: now_ms(),
@@ -248,7 +243,9 @@ async fn download_detail(
     // ?files=all accepted for API stability; currently equivalent to the default (rings are the bound)
     Query(_files_param): Query<HashMap<String, String>>,
 ) -> Result<Json<DownloadGroupDetail>, (StatusCode, Json<ErrorResponse>)> {
-    let session = registry().session(&sid).ok_or_else(|| not_found(format!("not found under session {sid}")))?;
+    let session = registry()
+        .session(&sid)
+        .ok_or_else(|| not_found(format!("not found under session {sid}")))?;
     // Search live groups first.
     if let Some(group) = session.live_download_groups().into_iter().find(|g| g.id == gid) {
         return Ok(Json(group.snapshot(true)));
@@ -261,9 +258,7 @@ async fn download_detail(
     Err(not_found(format!("no download group {gid} in session {sid}")))
 }
 
-async fn concurrency(
-    Path(sid): Path<String>,
-) -> Result<Json<ConcurrencyResponse>, (StatusCode, Json<ErrorResponse>)> {
+async fn concurrency(Path(sid): Path<String>) -> Result<Json<ConcurrencyResponse>, (StatusCode, Json<ErrorResponse>)> {
     with_session(&sid, |s| {
         Some(ConcurrencyResponse {
             as_of: now_ms(),
@@ -273,9 +268,7 @@ async fn concurrency(
     })
 }
 
-async fn snapshot(
-    Query(params): Query<HashMap<String, String>>,
-) -> Json<SnapshotResponse> {
+async fn snapshot(Query(params): Query<HashMap<String, String>>) -> Json<SnapshotResponse> {
     let filter = params.get("session").map(|s| s.as_str());
     let all_sessions = registry().live_sessions();
     let sessions = all_sessions
@@ -283,5 +276,9 @@ async fn snapshot(
         .filter(|s| filter.is_none_or(|id| s.id == id))
         .map(|s| s.full(SessionState::Active))
         .collect();
-    Json(SnapshotResponse { as_of: now_ms(), process: make_process_info(), sessions })
+    Json(SnapshotResponse {
+        as_of: now_ms(),
+        process: make_process_info(),
+        sessions,
+    })
 }

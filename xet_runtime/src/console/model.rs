@@ -11,8 +11,8 @@ fn none_if_not_finite<S: serde::Serializer>(v: &Option<f64>, s: S) -> Result<S::
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexResponse {
-    pub service: String,   // "xet-console"
-    pub version: String,   // env!("CARGO_PKG_VERSION")
+    pub service: String, // "xet-console"
+    pub version: String, // env!("CARGO_PKG_VERSION")
     pub pid: u32,
     pub argv: Vec<String>,
     pub start_time_ms: u64,
@@ -31,7 +31,10 @@ pub struct ProcessInfo {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum SessionState { Active, Ended }
+pub enum SessionState {
+    Active,
+    Ended,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionSummary {
@@ -159,7 +162,12 @@ pub struct DedupSnapshot {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum UploadCommitState { Active, Committing, Completed, Aborted }
+pub enum UploadCommitState {
+    Active,
+    Committing,
+    Completed,
+    Aborted,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UploadCommitSummary {
@@ -175,7 +183,14 @@ pub struct UploadCommitSummary {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FileUploadState {
-    Queued, Chunking, Processed, AwaitingXorbs, AwaitingShard, Complete, Failed, Aborted,
+    Queued,
+    Chunking,
+    Processed,
+    AwaitingXorbs,
+    AwaitingShard,
+    Complete,
+    Failed,
+    Aborted,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -212,7 +227,13 @@ pub struct FileCounts {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum XorbState { Formed, Queued, Uploading, Uploaded, Failed }
+pub enum XorbState {
+    Formed,
+    Queued,
+    Uploading,
+    Uploaded,
+    Failed,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct XorbSnapshot {
@@ -243,7 +264,11 @@ pub struct XorbsSnapshot {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum ShardState { Staging, Uploading, Uploaded }
+pub enum ShardState {
+    Staging,
+    Uploading,
+    Uploaded,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShardSnapshot {
@@ -275,11 +300,18 @@ pub struct UploadCommitDetail {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum DownloadGroupKind { Files, Stream }
+pub enum DownloadGroupKind {
+    Files,
+    Stream,
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum DownloadGroupState { Active, Finished, Aborted }
+pub enum DownloadGroupState {
+    Active,
+    Finished,
+    Aborted,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadGroupSummary {
@@ -295,11 +327,22 @@ pub struct DownloadGroupSummary {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum FileDownloadState { Queued, Reconstructing, Complete, Failed, Aborted }
+pub enum FileDownloadState {
+    Queued,
+    Reconstructing,
+    Complete,
+    Failed,
+    Aborted,
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum TermState { Enqueued, Fetching, Fetched, Consumed }
+pub enum TermState {
+    Enqueued,
+    Fetching,
+    Fetched,
+    Consumed,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TermInfo {
@@ -419,7 +462,10 @@ mod tests {
             bytes_sent: 123,
             success: Some(SuccessModelSnapshot {
                 success_ratio: 0.9,
-                thresholds: Thresholds { increase: 0.8, decrease: 0.5 },
+                thresholds: Thresholds {
+                    increase: 0.8,
+                    decrease: 0.5,
+                },
                 recommended_adjustment: AdjustmentRecommendation::Increase,
             }),
             latency: Some(LatencyModelSnapshot {

@@ -306,10 +306,8 @@ impl AdaptiveConcurrencyController {
         );
 
         let config = &ctx.config;
-        let concurrency_semaphore = AdjustableSemaphore::new(
-            current_concurrency as u64,
-            (min_concurrency as u64, max_concurrency as u64),
-        );
+        let concurrency_semaphore =
+            AdjustableSemaphore::new(current_concurrency as u64, (min_concurrency as u64, max_concurrency as u64));
 
         #[cfg(feature = "console")]
         let monitor = ctx.common.console_scope().map(|scope| {
@@ -341,19 +339,12 @@ impl AdaptiveConcurrencyController {
     pub fn new_fixed(ctx: XetContext, logging_tag: &'static str, concurrency: usize) -> Arc<Self> {
         info!("Fixing maximum concurrency for {logging_tag} at {concurrency}; adaptive concurrency disabled.");
 
-        let concurrency_semaphore = AdjustableSemaphore::new(
-            concurrency as u64,
-            (concurrency as u64, concurrency as u64),
-        );
+        let concurrency_semaphore =
+            AdjustableSemaphore::new(concurrency as u64, (concurrency as u64, concurrency as u64));
 
         #[cfg(feature = "console")]
         let monitor = ctx.common.console_scope().map(|scope| {
-            scope.new_monitor(
-                logging_tag.to_string(),
-                concurrency_semaphore.clone(),
-                (concurrency, concurrency),
-                false,
-            )
+            scope.new_monitor(logging_tag.to_string(), concurrency_semaphore.clone(), (concurrency, concurrency), false)
         });
 
         Arc::new(Self {
@@ -864,16 +855,9 @@ impl AdaptiveConcurrencyController {
         scope: &std::sync::Arc<xet_runtime::console::state::SessionConsole>,
     ) -> Arc<Self> {
         let ctx = XetContext::default().expect("test runtime");
-        let semaphore = AdjustableSemaphore::new(
-            concurrency as u64,
-            (concurrency_bounds.0 as u64, concurrency_bounds.1 as u64),
-        );
-        let monitor = scope.new_monitor(
-            "testing".to_string(),
-            semaphore.clone(),
-            concurrency_bounds,
-            true,
-        );
+        let semaphore =
+            AdjustableSemaphore::new(concurrency as u64, (concurrency_bounds.0 as u64, concurrency_bounds.1 as u64));
+        let monitor = scope.new_monitor("testing".to_string(), semaphore.clone(), concurrency_bounds, true);
         Arc::new(Self {
             ctx: ctx.clone(),
             state: Mutex::new(ConcurrencyControllerState::new_testing(ctx)),
@@ -1284,8 +1268,7 @@ mod console_tests {
         time::pause();
 
         let scope = SessionConsole::new("hook-test".into(), vec![]);
-        let controller =
-            AdaptiveConcurrencyController::new_testing_with_monitor(10, (5, 10), &scope);
+        let controller = AdaptiveConcurrencyController::new_testing_with_monitor(10, (5, 10), &scope);
 
         // Mirror test_permit_decrease_on_explicit_failure: report failures to trigger decrements.
         for _ in 0..5 {

@@ -96,13 +96,17 @@ impl SessionConsole {
     }
 
     fn register_download_group(&self, group: &Arc<DownloadGroupConsole>) {
-        let Ok(mut groups) = self.download_groups.lock() else { return; };
+        let Ok(mut groups) = self.download_groups.lock() else {
+            return;
+        };
         groups.push(Arc::downgrade(group));
     }
 
     /// Returns live (non-dropped) download groups; prunes dead weaks in place.
     pub fn live_download_groups(&self) -> Vec<Arc<DownloadGroupConsole>> {
-        let Ok(mut groups) = self.download_groups.lock() else { return Vec::new(); };
+        let Ok(mut groups) = self.download_groups.lock() else {
+            return Vec::new();
+        };
         let mut result = Vec::new();
         groups.retain(|w| {
             if let Some(arc) = w.upgrade() {
@@ -131,7 +135,9 @@ impl SessionConsole {
 
     pub fn monitor_snapshots(&self) -> Vec<MonitorSnapshot> {
         let live: Vec<Arc<MonitorConsole>> = {
-            let Ok(mut monitors) = self.monitors.lock() else { return Vec::new(); };
+            let Ok(mut monitors) = self.monitors.lock() else {
+                return Vec::new();
+            };
             let mut result = Vec::new();
             monitors.retain(|w| {
                 if let Some(arc) = w.upgrade() {
@@ -169,17 +175,9 @@ impl SessionConsole {
 
     pub fn detail(&self, state: SessionState) -> SessionDetail {
         let monitors = self.monitor_snapshots();
-        let upload_commits = self
-            .live_upload_commits()
-            .iter()
-            .map(|c| c.summary())
-            .collect();
+        let upload_commits = self.live_upload_commits().iter().map(|c| c.summary()).collect();
         let ended_upload_commits = self.ended_upload_commits();
-        let download_groups = self
-            .live_download_groups()
-            .iter()
-            .map(|g| g.summary())
-            .collect();
+        let download_groups = self.live_download_groups().iter().map(|g| g.summary()).collect();
         let ended_download_groups = self.ended_download_groups();
         SessionDetail {
             as_of: now_ms(),
@@ -197,16 +195,8 @@ impl SessionConsole {
 
     pub fn full(&self, state: SessionState) -> SessionFull {
         let detail = self.detail(state);
-        let upload_commit_details = self
-            .live_upload_commits()
-            .iter()
-            .map(|c| c.snapshot(true))
-            .collect();
-        let download_group_details = self
-            .live_download_groups()
-            .iter()
-            .map(|g| g.snapshot(true))
-            .collect();
+        let upload_commit_details = self.live_upload_commits().iter().map(|c| c.snapshot(true)).collect();
+        let download_group_details = self.live_download_groups().iter().map(|g| g.snapshot(true)).collect();
         SessionFull {
             detail,
             upload_commit_details,
@@ -267,7 +257,9 @@ impl UploadCommitConsole {
     }
 
     pub fn set_state(&self, s: UploadCommitState) {
-        let Ok(mut state) = self.state.lock() else { return; };
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
         // terminal states are sticky: late idempotent hooks must not regress them
         if matches!(*state, UploadCommitState::Completed | UploadCommitState::Aborted) {
             return;
@@ -276,12 +268,16 @@ impl UploadCommitConsole {
     }
 
     pub fn set_progress_provider(&self, p: ProgressProvider) {
-        let Ok(mut pp) = self.progress_provider.lock() else { return; };
+        let Ok(mut pp) = self.progress_provider.lock() else {
+            return;
+        };
         *pp = Some(p);
     }
 
     pub fn set_dedup(&self, d: DedupSnapshot) {
-        let Ok(mut dedup) = self.dedup.lock() else { return; };
+        let Ok(mut dedup) = self.dedup.lock() else {
+            return;
+        };
         *dedup = d;
     }
 
@@ -301,7 +297,9 @@ impl UploadCommitConsole {
             shard_uploaded: Mutex::new(false),
             finished_at: Mutex::new(None),
         });
-        let Ok(mut files) = self.files.lock() else { return file; };
+        let Ok(mut files) = self.files.lock() else {
+            return file;
+        };
         files.insert(id, file.clone());
         if let Ok(mut counts) = self.file_counts.lock() {
             counts.in_flight += 1;
@@ -310,31 +308,33 @@ impl UploadCommitConsole {
     }
 
     pub fn map_ct_file(&self, ct_id: u64, file_id: u64) {
-        let Ok(mut map) = self.ct_file_map.lock() else { return; };
+        let Ok(mut map) = self.ct_file_map.lock() else {
+            return;
+        };
         map.insert(ct_id, file_id);
     }
 
     /// Resolve ct_or_file_id through ct_file_map, falling back to treating it
     /// as a console file id directly.
     fn resolve_file_id(&self, ct_or_file_id: u64) -> u64 {
-        let Ok(map) = self.ct_file_map.lock() else { return ct_or_file_id; };
+        let Ok(map) = self.ct_file_map.lock() else {
+            return ct_or_file_id;
+        };
         *map.get(&ct_or_file_id).unwrap_or(&ct_or_file_id)
     }
 
-    pub fn register_file_xorb_dep(
-        &self,
-        ct_or_file_id: u64,
-        xorb_hash: String,
-        n_bytes: u64,
-        is_external: bool,
-    ) {
+    pub fn register_file_xorb_dep(&self, ct_or_file_id: u64, xorb_hash: String, n_bytes: u64, is_external: bool) {
         let file_id = self.resolve_file_id(ct_or_file_id);
         // canonical per-file inner lock order: xorb_deps before state (never invert)
         // Merge dep into file (or push new) and potentially advance state
         {
-            let Ok(files) = self.files.lock() else { return; };
+            let Ok(files) = self.files.lock() else {
+                return;
+            };
             if let Some(file) = files.get(&file_id) {
-                let Ok(mut deps) = file.xorb_deps.lock() else { return; };
+                let Ok(mut deps) = file.xorb_deps.lock() else {
+                    return;
+                };
                 if let Some(existing) = deps.iter_mut().find(|d| d.xorb_hash == xorb_hash) {
                     // Duplicate registration: merge rather than double-count
                     existing.n_bytes += n_bytes;
@@ -346,7 +346,9 @@ impl UploadCommitConsole {
                         uploaded: is_external,
                     });
                     // After appending a dep to a file in Processed state, advance to AwaitingXorbs
-                    if let Ok(mut state) = file.state.lock() && *state == FileUploadState::Processed {
+                    if let Ok(mut state) = file.state.lock()
+                        && *state == FileUploadState::Processed
+                    {
                         *state = FileUploadState::AwaitingXorbs;
                     }
                 }
@@ -354,7 +356,9 @@ impl UploadCommitConsole {
         }
         // Record this file id in xorb_files only on first registration for this (xorb, file) pair
         let first_for_file = {
-            let Ok(mut xf) = self.xorb_files.lock() else { return; };
+            let Ok(mut xf) = self.xorb_files.lock() else {
+                return;
+            };
             let file_ids = xf.entry(xorb_hash.clone()).or_default();
             if !file_ids.contains(&file_id) {
                 file_ids.push(file_id);
@@ -365,7 +369,9 @@ impl UploadCommitConsole {
         };
         // Bump xorb's n_files only on first registration for this (xorb, file) pair
         if first_for_file {
-            let Ok(xorbs) = self.xorbs.lock() else { return; };
+            let Ok(xorbs) = self.xorbs.lock() else {
+                return;
+            };
             if let Some(xorb) = xorbs.get(&xorb_hash) {
                 xorb.n_files.fetch_add(1, Ordering::Relaxed);
             }
@@ -375,7 +381,9 @@ impl UploadCommitConsole {
     pub fn xorb_formed(&self, hash: String, raw_bytes: u64, serialized_bytes: u64) {
         // Initialize n_files from deps that may have registered before xorb_formed was called
         let existing_file_count = {
-            let Ok(xf) = self.xorb_files.lock() else { return; };
+            let Ok(xf) = self.xorb_files.lock() else {
+                return;
+            };
             xf.get(&hash).map(|v| v.len()).unwrap_or(0) as u64
         };
         let xorb = Arc::new(XorbConsole {
@@ -389,7 +397,9 @@ impl UploadCommitConsole {
             n_files: AtomicU64::new(existing_file_count),
             finished_at: Mutex::new(None),
         });
-        let Ok(mut xorbs) = self.xorbs.lock() else { return; };
+        let Ok(mut xorbs) = self.xorbs.lock() else {
+            return;
+        };
         xorbs.insert(hash, xorb);
         if let Ok(mut counts) = self.xorb_counts.lock() {
             counts.formed += 1;
@@ -397,16 +407,22 @@ impl UploadCommitConsole {
     }
 
     pub fn xorb_state(&self, hash: &str, state: XorbState) {
-        let Ok(xorbs) = self.xorbs.lock() else { return; };
+        let Ok(xorbs) = self.xorbs.lock() else {
+            return;
+        };
         if let Some(xorb) = xorbs.get(hash) {
-            let Ok(mut s) = xorb.state.lock() else { return; };
+            let Ok(mut s) = xorb.state.lock() else {
+                return;
+            };
             *s = state;
         }
     }
 
     /// Stores bytes_transferred as monotonic max.
     pub fn xorb_transfer(&self, hash: &str, completed_bytes: u64) {
-        let Ok(xorbs) = self.xorbs.lock() else { return; };
+        let Ok(xorbs) = self.xorbs.lock() else {
+            return;
+        };
         if let Some(xorb) = xorbs.get(hash) {
             xorb.bytes_transferred.fetch_max(completed_bytes, Ordering::Relaxed);
         }
@@ -414,7 +430,9 @@ impl UploadCommitConsole {
 
     /// Like xorb_transfer but also records serialized_bytes (total) on the first call via fetch_max.
     pub fn xorb_transfer_with_total(&self, hash: &str, completed_bytes: u64, total_bytes: u64) {
-        let Ok(xorbs) = self.xorbs.lock() else { return; };
+        let Ok(xorbs) = self.xorbs.lock() else {
+            return;
+        };
         if let Some(xorb) = xorbs.get(hash) {
             xorb.bytes_transferred.fetch_max(completed_bytes, Ordering::Relaxed);
             xorb.serialized_bytes_once.fetch_max(total_bytes, Ordering::Relaxed);
@@ -424,24 +442,36 @@ impl UploadCommitConsole {
     pub fn xorb_uploaded(&self, hash: &str, success: bool) {
         // Remove xorb from live map (may be None if xorb_formed was never called)
         let xorb_arc = {
-            let Ok(mut xorbs) = self.xorbs.lock() else { return; };
+            let Ok(mut xorbs) = self.xorbs.lock() else {
+                return;
+            };
             xorbs.remove(hash)
         };
 
         if let Some(xorb) = xorb_arc {
             // Set finished_at and final state on the xorb
             {
-                let Ok(mut finished_at) = xorb.finished_at.lock() else { return; };
+                let Ok(mut finished_at) = xorb.finished_at.lock() else {
+                    return;
+                };
                 *finished_at = Some(now_ms());
             }
             {
-                let Ok(mut s) = xorb.state.lock() else { return; };
-                *s = if success { XorbState::Uploaded } else { XorbState::Failed };
+                let Ok(mut s) = xorb.state.lock() else {
+                    return;
+                };
+                *s = if success {
+                    XorbState::Uploaded
+                } else {
+                    XorbState::Failed
+                };
             }
             // Push to recent ring and update counts
             self.recent_xorbs.push(xorb.snapshot());
             {
-                let Ok(mut counts) = self.xorb_counts.lock() else { return; };
+                let Ok(mut counts) = self.xorb_counts.lock() else {
+                    return;
+                };
                 if success {
                     counts.uploaded += 1;
                 } else {
@@ -453,7 +483,9 @@ impl UploadCommitConsole {
         // Remove hash from reverse map now that the xorb is done (both success and failure)
         // I1: prevent unbounded growth of xorb_files
         let file_ids = {
-            let Ok(mut xf) = self.xorb_files.lock() else { return; };
+            let Ok(mut xf) = self.xorb_files.lock() else {
+                return;
+            };
             xf.remove(hash).unwrap_or_default()
         };
 
@@ -462,12 +494,16 @@ impl UploadCommitConsole {
             return;
         }
 
-        let Ok(files) = self.files.lock() else { return; };
+        let Ok(files) = self.files.lock() else {
+            return;
+        };
         for file_id in &file_ids {
             if let Some(file) = files.get(file_id) {
                 // canonical per-file inner lock order: xorb_deps before state (never invert)
                 let all_uploaded = {
-                    let Ok(mut deps) = file.xorb_deps.lock() else { continue; };
+                    let Ok(mut deps) = file.xorb_deps.lock() else {
+                        continue;
+                    };
                     for dep in deps.iter_mut() {
                         if dep.xorb_hash == hash {
                             dep.uploaded = true;
@@ -477,7 +513,9 @@ impl UploadCommitConsole {
                 };
                 // Advance file from AwaitingXorbs to AwaitingShard if all deps uploaded
                 {
-                    let Ok(mut state) = file.state.lock() else { continue; };
+                    let Ok(mut state) = file.state.lock() else {
+                        continue;
+                    };
                     if *state == FileUploadState::AwaitingXorbs && all_uploaded {
                         *state = FileUploadState::AwaitingShard;
                     }
@@ -487,12 +525,16 @@ impl UploadCommitConsole {
     }
 
     pub fn shard_staging(&self, n_xorbs: usize, size: u64) {
-        let Ok(mut staging) = self.staging.lock() else { return; };
+        let Ok(mut staging) = self.staging.lock() else {
+            return;
+        };
         *staging = (n_xorbs, size);
     }
 
     pub fn shard_discovered(&self, hash: String, size: u64) {
-        let Ok(mut shards) = self.shards.lock() else { return; };
+        let Ok(mut shards) = self.shards.lock() else {
+            return;
+        };
         // Dedup: if a shard with the same hash already exists, update size if the new one is non-zero.
         if let Some(existing) = shards.iter_mut().find(|s| s.hash.as_deref() == Some(&hash)) {
             if size > 0 {
@@ -509,7 +551,9 @@ impl UploadCommitConsole {
     }
 
     pub fn shard_uploaded(&self, hash: &str, size: u64) {
-        let Ok(mut shards) = self.shards.lock() else { return; };
+        let Ok(mut shards) = self.shards.lock() else {
+            return;
+        };
         for shard in shards.iter_mut() {
             if shard.hash.as_deref() == Some(hash) {
                 shard.state = ShardState::Uploaded;
@@ -523,23 +567,31 @@ impl UploadCommitConsole {
     pub fn all_shards_uploaded(&self) {
         // Flip every shard to Uploaded and clear the staging sentinel
         {
-            let Ok(mut shards) = self.shards.lock() else { return; };
+            let Ok(mut shards) = self.shards.lock() else {
+                return;
+            };
             for shard in shards.iter_mut() {
                 shard.state = ShardState::Uploaded;
             }
         }
         {
-            let Ok(mut staging) = self.staging.lock() else { return; };
+            let Ok(mut staging) = self.staging.lock() else {
+                return;
+            };
             *staging = (0, 0);
         }
         // only successful pipelines complete; terminal failures keep their state and counts
         let file_ids: Vec<u64> = {
-            let Ok(files) = self.files.lock() else { return; };
+            let Ok(files) = self.files.lock() else {
+                return;
+            };
             files.keys().cloned().collect()
         };
         for id in file_ids {
             {
-                let Ok(files) = self.files.lock() else { continue; };
+                let Ok(files) = self.files.lock() else {
+                    continue;
+                };
                 if let Some(file) = files.get(&id) {
                     let is_terminal_failure = file
                         .state
@@ -565,23 +617,29 @@ impl UploadCommitConsole {
 
     pub fn retire_file(&self, id: u64) {
         let file = {
-            let Ok(mut files) = self.files.lock() else { return; };
+            let Ok(mut files) = self.files.lock() else {
+                return;
+            };
             files.remove(&id)
         };
-        let Some(file) = file else { return; };
+        let Some(file) = file else {
+            return;
+        };
         let snap = file.snapshot();
         self.completed_files.push(snap.clone());
         // I1: prune ct_file_map entries that pointed at this file id
         if let Ok(mut map) = self.ct_file_map.lock() {
             map.retain(|_, v| *v != id);
         }
-        let Ok(mut counts) = self.file_counts.lock() else { return; };
+        let Ok(mut counts) = self.file_counts.lock() else {
+            return;
+        };
         counts.in_flight = counts.in_flight.saturating_sub(1);
         match snap.state {
             FileUploadState::Complete => counts.completed += 1,
             FileUploadState::Failed => counts.failed += 1,
             FileUploadState::Aborted => counts.aborted += 1,
-            _ => {}
+            _ => {},
         }
     }
 
@@ -595,7 +653,9 @@ impl UploadCommitConsole {
     pub fn finalize(&self, state: UploadCommitState) {
         // Check and set finalized atomically
         {
-            let Ok(mut finalized) = self.finalized.lock() else { return; };
+            let Ok(mut finalized) = self.finalized.lock() else {
+                return;
+            };
             if *finalized {
                 return;
             }
@@ -611,11 +671,7 @@ impl UploadCommitConsole {
     pub fn snapshot(&self, include_completed: bool) -> UploadCommitDetail {
         let state = self.state.lock().map(|s| *s).unwrap_or(UploadCommitState::Aborted);
         let dedup = self.dedup.lock().map(|d| d.clone()).unwrap_or_default();
-        let progress = self
-            .progress_provider
-            .lock()
-            .ok()
-            .and_then(|pp| pp.as_ref().map(|f| f()));
+        let progress = self.progress_provider.lock().ok().and_then(|pp| pp.as_ref().map(|f| f()));
         let files: Vec<FileUploadSnapshot> = self
             .files
             .lock()
@@ -635,8 +691,7 @@ impl UploadCommitConsole {
         let xorb_counts = self.xorb_counts.lock().map(|c| c.clone()).unwrap_or_default();
         let recent_xorbs = self.recent_xorbs.snapshot();
         let shards = self.shards.lock().map(|s| s.clone()).unwrap_or_default();
-        let (n_xorbs_staged, staged_size) =
-            self.staging.lock().map(|s| *s).unwrap_or((0, 0));
+        let (n_xorbs_staged, staged_size) = self.staging.lock().map(|s| *s).unwrap_or((0, 0));
         let mut all_shards = shards;
         if n_xorbs_staged > 0 || staged_size > 0 {
             all_shards.insert(
@@ -672,11 +727,7 @@ impl UploadCommitConsole {
     pub fn summary(&self) -> UploadCommitSummary {
         let state = self.state.lock().map(|s| *s).unwrap_or(UploadCommitState::Aborted);
         let counts = self.file_counts.lock().map(|c| c.clone()).unwrap_or_default();
-        let progress = self
-            .progress_provider
-            .lock()
-            .ok()
-            .and_then(|pp| pp.as_ref().map(|f| f()));
+        let progress = self.progress_provider.lock().ok().and_then(|pp| pp.as_ref().map(|f| f()));
         UploadCommitSummary {
             id: self.id,
             state,
@@ -716,22 +767,24 @@ pub struct FileUploadConsole {
 
 impl FileUploadConsole {
     pub fn set_state(&self, s: FileUploadState) {
-        let Ok(mut state) = self.state.lock() else { return; };
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
         // terminal states are sticky: late idempotent hooks must not regress them
         if matches!(*state, FileUploadState::Complete | FileUploadState::Failed | FileUploadState::Aborted) {
             return;
         }
         *state = s;
         match s {
-            FileUploadState::Complete
-            | FileUploadState::Failed
-            | FileUploadState::Aborted => {
-                let Ok(mut fa) = self.finished_at.lock() else { return; };
+            FileUploadState::Complete | FileUploadState::Failed | FileUploadState::Aborted => {
+                let Ok(mut fa) = self.finished_at.lock() else {
+                    return;
+                };
                 if fa.is_none() {
                     *fa = Some(now_ms());
                 }
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 
@@ -750,12 +803,16 @@ impl FileUploadConsole {
     }
 
     pub fn set_dedup(&self, d: DedupSnapshot) {
-        let Ok(mut dedup) = self.dedup.lock() else { return; };
+        let Ok(mut dedup) = self.dedup.lock() else {
+            return;
+        };
         *dedup = Some(d);
     }
 
     pub fn set_size(&self, size: u64) {
-        let Ok(mut s) = self.size.lock() else { return; };
+        let Ok(mut s) = self.size.lock() else {
+            return;
+        };
         *s = Some(size);
     }
 
@@ -854,12 +911,16 @@ impl MonitorConsole {
     }
 
     pub fn set_success_model(&self, s: SuccessModelSnapshot) {
-        let Ok(mut success) = self.success.lock() else { return; };
+        let Ok(mut success) = self.success.lock() else {
+            return;
+        };
         *success = Some(s);
     }
 
     pub fn set_latency_model(&self, l: LatencyModelSnapshot) {
-        let Ok(mut latency) = self.latency.lock() else { return; };
+        let Ok(mut latency) = self.latency.lock() else {
+            return;
+        };
         *latency = Some(l);
     }
 
@@ -879,7 +940,10 @@ impl MonitorConsole {
             total_permits,
             active_permits,
             available_permits,
-            bounds: PermitBounds { min: self.bounds.0, max: self.bounds.1 },
+            bounds: PermitBounds {
+                min: self.bounds.0,
+                max: self.bounds.1,
+            },
             adjustment_enabled: self.adjustment_enabled,
             bytes_sent: self.bytes_sent.load(Ordering::Relaxed),
             success,
@@ -907,11 +971,7 @@ pub struct DownloadGroupConsole {
 }
 
 impl DownloadGroupConsole {
-    pub fn new(
-        scope: Option<&Arc<SessionConsole>>,
-        kind: DownloadGroupKind,
-        endpoint: Option<String>,
-    ) -> Arc<Self> {
+    pub fn new(scope: Option<&Arc<SessionConsole>>, kind: DownloadGroupKind, endpoint: Option<String>) -> Arc<Self> {
         let arc = Arc::new(Self {
             id: crate::utils::UniqueId::new().0,
             created_at: now_ms(),
@@ -933,12 +993,16 @@ impl DownloadGroupConsole {
     }
 
     pub fn set_kind(&self, kind: DownloadGroupKind) {
-        let Ok(mut k) = self.kind.lock() else { return; };
+        let Ok(mut k) = self.kind.lock() else {
+            return;
+        };
         *k = kind;
     }
 
     pub fn set_state(&self, s: DownloadGroupState) {
-        let Ok(mut state) = self.state.lock() else { return; };
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
         // terminal states are sticky
         if matches!(*state, DownloadGroupState::Finished | DownloadGroupState::Aborted) {
             return;
@@ -947,12 +1011,16 @@ impl DownloadGroupConsole {
     }
 
     pub fn set_progress_provider(&self, p: ProgressProvider) {
-        let Ok(mut pp) = self.progress_provider.lock() else { return; };
+        let Ok(mut pp) = self.progress_provider.lock() else {
+            return;
+        };
         *pp = Some(p);
     }
 
     pub fn set_items_provider(&self, p: ItemBytesProvider) {
-        let Ok(mut ip) = self.items_provider.lock() else { return; };
+        let Ok(mut ip) = self.items_provider.lock() else {
+            return;
+        };
         *ip = Some(p);
     }
 
@@ -1011,7 +1079,7 @@ impl DownloadGroupConsole {
                     FileDownloadState::Complete => counts.completed += 1,
                     FileDownloadState::Failed => counts.failed += 1,
                     FileDownloadState::Aborted => counts.aborted += 1,
-                    _ => {}
+                    _ => {},
                 }
             }
         }
@@ -1019,7 +1087,9 @@ impl DownloadGroupConsole {
 
     pub fn finalize(&self, state: DownloadGroupState) {
         {
-            let Ok(mut finalized) = self.finalized.lock() else { return; };
+            let Ok(mut finalized) = self.finalized.lock() else {
+                return;
+            };
             if *finalized {
                 return;
             }
@@ -1035,11 +1105,7 @@ impl DownloadGroupConsole {
     pub fn snapshot(&self, include_completed: bool) -> DownloadGroupDetail {
         let state = self.state.lock().map(|s| *s).unwrap_or(DownloadGroupState::Aborted);
         let kind = self.kind.lock().map(|k| *k).unwrap_or(DownloadGroupKind::Files);
-        let progress = self
-            .progress_provider
-            .lock()
-            .ok()
-            .and_then(|pp| pp.as_ref().map(|f| f()));
+        let progress = self.progress_provider.lock().ok().and_then(|pp| pp.as_ref().map(|f| f()));
         let items = self
             .items_provider
             .lock()
@@ -1075,11 +1141,7 @@ impl DownloadGroupConsole {
         let state = self.state.lock().map(|s| *s).unwrap_or(DownloadGroupState::Aborted);
         let kind = self.kind.lock().map(|k| *k).unwrap_or(DownloadGroupKind::Files);
         let counts = self.file_counts.lock().map(|c| c.clone()).unwrap_or_default();
-        let progress = self
-            .progress_provider
-            .lock()
-            .ok()
-            .and_then(|pp| pp.as_ref().map(|f| f()));
+        let progress = self.progress_provider.lock().ok().and_then(|pp| pp.as_ref().map(|f| f()));
         DownloadGroupSummary {
             id: self.id,
             kind,
@@ -1120,32 +1182,28 @@ pub struct DownloadFileConsole {
 
 impl DownloadFileConsole {
     pub fn set_state(&self, s: FileDownloadState) {
-        let Ok(mut state) = self.state.lock() else { return; };
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
         // terminal states are sticky
         if matches!(*state, FileDownloadState::Complete | FileDownloadState::Failed | FileDownloadState::Aborted) {
             return;
         }
         *state = s;
         match s {
-            FileDownloadState::Complete
-            | FileDownloadState::Failed
-            | FileDownloadState::Aborted => {
-                let Ok(mut fa) = self.finished_at.lock() else { return; };
+            FileDownloadState::Complete | FileDownloadState::Failed | FileDownloadState::Aborted => {
+                let Ok(mut fa) = self.finished_at.lock() else {
+                    return;
+                };
                 if fa.is_none() {
                     *fa = Some(now_ms());
                 }
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 
-    pub fn set_prefetch(
-        &self,
-        queue_depth: usize,
-        prefetched: u64,
-        active: u64,
-        rate: Option<f64>,
-    ) {
+    pub fn set_prefetch(&self, queue_depth: usize, prefetched: u64, active: u64, rate: Option<f64>) {
         self.queue_depth.store(queue_depth, Ordering::Relaxed);
         self.prefetched_pos.store(prefetched, Ordering::Relaxed);
         self.active_pos.store(active, Ordering::Relaxed);
@@ -1235,7 +1293,9 @@ pub struct TermBlockConsole {
 
 impl TermBlockConsole {
     pub fn set_state(&self, s: TermState) {
-        let Ok(mut state) = self.state.lock() else { return; };
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
         // Consumed is terminal
         if matches!(*state, TermState::Consumed) {
             return;
@@ -1247,7 +1307,9 @@ impl TermBlockConsole {
     pub fn resolved(&self, term_list: Vec<TermInfo>) {
         // consumed blocks are frozen
         {
-            let Ok(state) = self.state.lock() else { return; };
+            let Ok(state) = self.state.lock() else {
+                return;
+            };
             if matches!(*state, TermState::Consumed) {
                 return;
             }
@@ -1255,7 +1317,9 @@ impl TermBlockConsole {
         if let Ok(mut terms) = self.terms.lock() {
             *terms = term_list;
         }
-        if let Ok(mut fa) = self.fetched_at.lock() && fa.is_none() {
+        if let Ok(mut fa) = self.fetched_at.lock()
+            && fa.is_none()
+        {
             *fa = Some(now_ms());
         }
         self.set_state(TermState::Fetched);
@@ -1421,7 +1485,11 @@ mod tests {
         let b = f.new_term_block(0, (0, 1 << 20));
         assert_eq!(b.snapshot().state, TermState::Enqueued);
         b.set_state(TermState::Fetching);
-        b.resolved(vec![TermInfo { xorb_hash: "aa".into(), chunk_range: (0, 4), byte_range: (0, 65536) }]);
+        b.resolved(vec![TermInfo {
+            xorb_hash: "aa".into(),
+            chunk_range: (0, 4),
+            byte_range: (0, 65536),
+        }]);
         assert_eq!(b.snapshot().state, TermState::Fetched);
         f.consume_term_block(0);
         let snap = f.snapshot(&HashMap::new());
@@ -1462,7 +1530,10 @@ mod tests {
         m.record_limit(6);
         m.set_success_model(SuccessModelSnapshot {
             success_ratio: 0.9,
-            thresholds: Thresholds { increase: 0.8, decrease: 0.5 },
+            thresholds: Thresholds {
+                increase: 0.8,
+                decrease: 0.5,
+            },
             recommended_adjustment: AdjustmentRecommendation::Increase,
         });
         m.set_bytes_sent(1234);

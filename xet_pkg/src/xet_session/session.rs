@@ -240,13 +240,24 @@ impl XetSession {
         let id = Uuid::now_v7();
         #[cfg(feature = "console")]
         {
-            use xet_runtime::console::{registry::registry, server};
+            use xet_runtime::console::registry::registry;
+            use xet_runtime::console::server;
             server::ensure_started();
             let config = vec![
-                ("max_concurrent_file_ingestion".to_string(), ctx.config.data.max_concurrent_file_ingestion.to_string()),
-                ("max_concurrent_file_downloads".to_string(), ctx.config.data.max_concurrent_file_downloads.to_string()),
+                (
+                    "max_concurrent_file_ingestion".to_string(),
+                    ctx.config.data.max_concurrent_file_ingestion.to_string(),
+                ),
+                (
+                    "max_concurrent_file_downloads".to_string(),
+                    ctx.config.data.max_concurrent_file_downloads.to_string(),
+                ),
             ];
-            let already_set = ctx.common.console_session.set(registry().register_session(id.to_string(), config)).is_err();
+            let already_set = ctx
+                .common
+                .console_session
+                .set(registry().register_session(id.to_string(), config))
+                .is_err();
             debug_assert!(!already_set, "XetCommon console scope set twice: ctx reused across sessions");
         }
         Self {
@@ -353,8 +364,7 @@ impl XetSession {
 
         #[cfg(not(target_family = "wasm"))]
         {
-            let active_download_stream_groups =
-                std::mem::take(&mut *self.inner.active_download_stream_groups.lock()?);
+            let active_download_stream_groups = std::mem::take(&mut *self.inner.active_download_stream_groups.lock()?);
             for (_id, weak_group) in active_download_stream_groups {
                 if let Some(inner) = weak_group.upgrade() {
                     inner.abort();

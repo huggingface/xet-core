@@ -13,8 +13,14 @@ fn session_appears_in_console_and_ends_on_drop() {
     let base = format!("http://{addr}");
 
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-    let sessions: serde_json::Value =
-        rt.block_on(async { reqwest::get(format!("{base}/api/v1/sessions")).await.unwrap().json().await.unwrap() });
+    let sessions: serde_json::Value = rt.block_on(async {
+        reqwest::get(format!("{base}/api/v1/sessions"))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap()
+    });
     assert!(
         sessions["sessions"].as_array().unwrap().iter().any(|s| s["state"] == "active"),
         "expected at least one active session, got: {sessions}"
@@ -27,7 +33,12 @@ fn session_appears_in_console_and_ends_on_drop() {
     let mut found_ended = false;
     for _ in 0..20 {
         let sessions: serde_json::Value = rt.block_on(async {
-            reqwest::get(format!("{base}/api/v1/sessions")).await.unwrap().json().await.unwrap()
+            reqwest::get(format!("{base}/api/v1/sessions"))
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap()
         });
         if sessions["ended_sessions"]
             .as_array()
@@ -68,8 +79,14 @@ async fn full_transfer_visible_over_http() {
             .await
             .unwrap();
         let mut metas = Vec::new();
-        for (name, data) in [("big.bin", vec![0xABu8; 4 << 20]), ("small.bin", b"small content".to_vec())] {
-            let h = commit.upload_bytes(data, Sha256Policy::Compute, Some(name.into())).await.unwrap();
+        for (name, data) in [
+            ("big.bin", vec![0xABu8; 4 << 20]),
+            ("small.bin", b"small content".to_vec()),
+        ] {
+            let h = commit
+                .upload_bytes(data, Sha256Policy::Compute, Some(name.into()))
+                .await
+                .unwrap();
             metas.push(h.finalize_ingestion().await.unwrap());
         }
         commit.commit().await.unwrap();

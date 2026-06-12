@@ -54,8 +54,7 @@ impl ReconstructionTermManager {
         file_hash: MerkleHash,
         file_byte_range: FileRange,
         progress_updater: Option<Arc<ItemProgressUpdater>>,
-        #[cfg(feature = "console")]
-        console: Option<std::sync::Arc<xet_runtime::console::state::DownloadFileConsole>>,
+        #[cfg(feature = "console")] console: Option<std::sync::Arc<xet_runtime::console::state::DownloadFileConsole>>,
     ) -> Result<Self> {
         let completion_rate_estimator =
             ExpWeightedMovingAvg::new_count_decay(config.completion_rate_estimator_half_life);
@@ -155,7 +154,9 @@ impl ReconstructionTermManager {
 
         // consumed = dequeued (including failed/empty fetches); the file-level state carries failure truth
         #[cfg(feature = "console")]
-        if let (Some(fc), Some(block_id)) = (&self.console, popped_block_id) && fetch_result.is_err() {
+        if let (Some(fc), Some(block_id)) = (&self.console, popped_block_id)
+            && fetch_result.is_err()
+        {
             fc.consume_term_block(block_id);
         }
 
