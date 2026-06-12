@@ -313,6 +313,8 @@ impl XetFileDownloadGroup {
         let downloads = self
             .task_runtime
             .bridge_sync_finalizing("download_finish_blocking", false, async move { inner.handle_finish().await })?;
+        #[cfg(feature = "console")]
+        download_session.console_finish();
         let progress = download_session.report();
         Ok(XetDownloadGroupReport { progress, downloads })
     }
