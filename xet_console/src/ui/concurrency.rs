@@ -2,7 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{Gauge, Paragraph, Sparkline};
+use ratatui::widgets::{Block, Borders, Gauge, Paragraph, Sparkline};
 use xet_runtime::console::model::{AdjustmentRecommendation, MonitorSnapshot, SnapshotResponse};
 
 use crate::app::App;
@@ -21,46 +21,89 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, snap: &SnapshotResponse) {
         );
         return;
     }
-    // One fixed-height card per monitor, scrolled by monitor_row.
-    const CARD: u16 = 7;
-    let visible = (area.height / CARD).max(1) as usize;
-    let first = app
-        .monitor_row
-        .min(monitors.len().saturating_sub(1))
-        .saturating_sub(visible.saturating_sub(1));
-    let mut y = area.y;
-    for m in monitors.iter().skip(first).take(visible) {
-        let card = Rect {
-            x: area.x,
-            y,
-            width: area.width,
-            height: CARD.min(area.y + area.height - y),
-        };
-        draw_monitor(f, card, m);
-        y += CARD;
-        if y >= area.y + area.height {
-            break;
+
+    let shown: Vec<&MonitorSnapshot> = monitors
+        .iter()
+        .filter(|m| app.show_idle_monitors || !monitor_is_idle(m))
+        .collect();
+    let hidden = monitors.len() - shown.len();
+
+    // Reserve the last line for the footer when there is something to say.
+    let has_footer = hidden > 0 || (app.show_idle_monitors && monitors.iter().any(monitor_is_idle));
+    let (cards_area, footer_area) = if has_footer && area.height > 1 {
+        let split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(area);
+        (split[0], Some(split[1]))
+    } else {
+        (area, None)
+    };
+
+    if shown.is_empty() {
+        // All monitors are idle and hidden.
+        f.render_widget(Paragraph::new("all monitors idle"), cards_area);
+    } else {
+        // One fixed-height card per monitor, scrolled by monitor_row.
+        // 2 border rows + 6 content rows (title/permits/success/latency/history-label/sparkline).
+        const CARD: u16 = 9;
+        let visible = (cards_area.height / CARD).max(1) as usize;
+        let first = app
+            .monitor_row
+            .min(shown.len().saturating_sub(1))
+            .saturating_sub(visible.saturating_sub(1));
+        let mut y = cards_area.y;
+        for m in shown.iter().skip(first).take(visible) {
+            let card = Rect {
+                x: cards_area.x,
+                y,
+                width: cards_area.width,
+                height: CARD.min(cards_area.y + cards_area.height - y),
+            };
+            draw_monitor(f, card, m);
+            y += CARD;
+            if y >= cards_area.y + cards_area.height {
+                break;
+            }
         }
+    }
+
+    if let Some(footer) = footer_area {
+        let (msg, color) = if app.show_idle_monitors && monitors.iter().any(monitor_is_idle) {
+            (" showing idle monitors — press a to hide".to_string(), Color::DarkGray)
+        } else {
+            (
+                format!(" {hidden} idle monitor(s) hidden — press a to show"),
+                Color::DarkGray,
+            )
+        };
+        f.render_widget(Paragraph::new(msg).style(Style::default().fg(color)), footer);
     }
 }
 
 fn draw_monitor(f: &mut Frame, area: Rect, m: &MonitorSnapshot) {
+    // Outer bordered block titled with the tag.
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {} ", m.tag));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // title
+            Constraint::Length(1), // permits/bounds/adj/sent
             Constraint::Length(1), // permits gauge
             Constraint::Length(1), // success model
             Constraint::Length(1), // latency model
             Constraint::Length(1), // history label
             Constraint::Length(2), // sparkline
         ])
-        .split(area);
+        .split(inner);
 
     f.render_widget(
         Paragraph::new(format!(
-            " {} — permits {}/{} ({} free) — bounds {}..{} — adj {} — sent {}",
-            m.tag,
+            " permits {}/{} ({} free) — bounds {}..{} — adj {} — sent {}",
             m.active_permits,
             m.total_permits,
             m.available_permits,
@@ -155,5 +198,29 @@ mod tests {
         assert!(text.contains("increase"), "recommendation shown: {text}");
         assert!(text.contains("rtt 412.5ms"), "{text}");
         assert!(text.contains("limit history"), "{text}");
+        // Idle "download" monitor must be hidden by default.
+        assert!(text.contains("idle monitor"), "idle footer present: {text}");
+        assert!(!text.contains(" download "), "idle card must be absent: {text}");
+    }
+
+    #[test]
+    fn concurrency_page_shows_idle_when_toggled() {
+        let state = PollState {
+            snapshot: Some(sample_snapshot()),
+            last_success_ms: Some(0),
+            ..Default::default()
+        };
+        let app = App {
+            page: Page::Concurrency,
+            show_idle_monitors: true,
+            ..Default::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|f| ui::draw(f, &app, &state)).unwrap();
+        let text = buffer_text(terminal.backend());
+        // Idle card must now be visible.
+        assert!(text.contains(" download "), "idle card title shown: {text}");
+        // Footer prompts to hide.
+        assert!(text.contains("press a to hide"), "hide footer present: {text}");
     }
 }

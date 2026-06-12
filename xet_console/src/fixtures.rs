@@ -223,13 +223,25 @@ pub fn sample_snapshot() -> SnapshotResponse {
         }),
         limit_history: vec![(100, 8), (200, 10), (300, 12), (400, 14), (500, 16)],
     };
+    let idle_monitor = MonitorSnapshot {
+        tag: "download".into(),
+        total_permits: 2,
+        active_permits: 0,
+        available_permits: 2,
+        bounds: PermitBounds { min: 1, max: 64 },
+        adjustment_enabled: true,
+        bytes_sent: 0,
+        success: None,
+        latency: None,
+        limit_history: vec![],
+    };
     let detail = SessionDetail {
         as_of: 1000,
         id: "9f3c0000-1111-2222-3333-444455556666".into(),
         state: SessionState::Active,
         created_at: 0,
         config: vec![("max_concurrent_file_ingestion".into(), "8".into())],
-        monitors: vec![monitor],
+        monitors: vec![monitor, idle_monitor],
         upload_commits: vec![],
         ended_upload_commits: vec![ended_commit.clone()],
         download_groups: vec![],

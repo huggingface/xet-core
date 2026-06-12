@@ -78,7 +78,7 @@ fn draw_key_bar(f: &mut Frame, area: Rect) {
 }
 
 fn draw_help(f: &mut Frame) {
-    let area = centered_rect(60, 14, f.area());
+    let area = centered_rect(60, 15, f.area());
     f.render_widget(Clear, area);
     let text = "\
   1/2/3/4   jump to page
@@ -87,6 +87,7 @@ fn draw_help(f: &mut Frame) {
   tab       cycle pane focus (detail pages)
   esc       back to overview
   p         pause/resume polling
+  a         show/hide idle monitors (concurrency page)
   q         quit
 
   any key closes this help";

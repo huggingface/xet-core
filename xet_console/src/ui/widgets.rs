@@ -1,9 +1,20 @@
 use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders};
 use xet_runtime::console::model::{
-    DownloadGroupState, FileDownloadState, FileUploadState, SessionState, ShardState, TermState, UploadCommitState,
-    XorbState,
+    DownloadGroupState, FileDownloadState, FileUploadState, MonitorSnapshot, SessionState, ShardState, TermState,
+    UploadCommitState, XorbState,
 };
+
+/// A monitor that has never carried traffic: no permits out, no bytes, no
+/// model samples, no limit adjustments. (Upload monitors during a pure
+/// download, and vice versa.)
+pub fn monitor_is_idle(m: &MonitorSnapshot) -> bool {
+    m.active_permits == 0
+        && m.bytes_sent == 0
+        && m.success.is_none()
+        && m.latency.is_none()
+        && m.limit_history.is_empty()
+}
 
 pub fn humanize_bytes(n: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];

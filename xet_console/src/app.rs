@@ -66,6 +66,7 @@ pub struct App {
     pub overview_row: usize,
     pub main_row: usize, // files table row on detail pages
     pub monitor_row: usize,
+    pub show_idle_monitors: bool,
 }
 
 impl App {
@@ -98,6 +99,9 @@ impl App {
                         Pane::SideBottom => Pane::Main,
                     };
                 }
+            },
+            KeyCode::Char('a') if self.page == Page::Concurrency => {
+                self.show_idle_monitors = !self.show_idle_monitors;
             },
             KeyCode::Char('j') | KeyCode::Down => self.move_selection(1, entries.len()),
             KeyCode::Char('k') | KeyCode::Up => self.move_selection(-1, entries.len()),
@@ -222,6 +226,26 @@ mod tests {
         assert_eq!(app.pane, Pane::Main);
         app.handle_key(KeyCode::Char('1'), &entries());
         assert_eq!(app.page, Page::Overview);
+    }
+
+    #[test]
+    fn toggle_idle_monitors_only_on_concurrency_page() {
+        let mut app = App::default();
+        // On Overview page 'a' is a no-op.
+        assert_eq!(app.page, Page::Overview);
+        app.handle_key(KeyCode::Char('a'), &entries());
+        assert!(!app.show_idle_monitors);
+        // Switch to Concurrency; 'a' toggles on.
+        app.page = Page::Concurrency;
+        app.handle_key(KeyCode::Char('a'), &entries());
+        assert!(app.show_idle_monitors);
+        // Second press toggles back off.
+        app.handle_key(KeyCode::Char('a'), &entries());
+        assert!(!app.show_idle_monitors);
+        // On Upload page 'a' is still a no-op.
+        app.page = Page::Upload;
+        app.handle_key(KeyCode::Char('a'), &entries());
+        assert!(!app.show_idle_monitors);
     }
 
     #[test]

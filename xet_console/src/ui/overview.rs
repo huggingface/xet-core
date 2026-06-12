@@ -5,7 +5,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use xet_runtime::console::model::{SessionSummary, SnapshotResponse};
 
 use crate::app::{App, OverviewEntry, overview_entries};
-use crate::ui::widgets::*;
+use crate::ui::widgets::{self, *};
 
 pub fn draw(f: &mut Frame, area: Rect, app: &App, snap: &SnapshotResponse, ended_sessions: &[SessionSummary]) {
     let (list_area, footer_area) = if ended_sessions.is_empty() {
@@ -53,22 +53,30 @@ fn entry_line(e: &OverviewEntry, snap: &SnapshotResponse) -> String {
     match *e {
         OverviewEntry::Session { session_idx } => {
             let s = &snap.sessions[session_idx];
-            let monitors = s
-                .detail
-                .monitors
-                .iter()
-                .map(|m| format!("{} {}/{}", m.tag, m.active_permits, m.total_permits))
-                .collect::<Vec<_>>()
-                .join(" · ");
+            let all = &s.detail.monitors;
+            let idle_count = all.iter().filter(|m| widgets::monitor_is_idle(m)).count();
+            let active: Vec<_> = all.iter().filter(|m| !widgets::monitor_is_idle(m)).collect();
+            let monitors_str = if all.is_empty() {
+                "none".to_string()
+            } else if active.is_empty() {
+                // Every monitor is idle.
+                format!("{} idle", all.len())
+            } else {
+                let mut parts = active
+                    .iter()
+                    .map(|m| format!("{} {}/{}", m.tag, m.active_permits, m.total_permits))
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                if idle_count > 0 {
+                    parts.push_str(&format!(" +{idle_count} idle"));
+                }
+                parts
+            };
             format!(
                 "session {} [{}]  monitors: {}",
                 &s.detail.id[..8.min(s.detail.id.len())],
                 session_state_label(s.detail.state),
-                if monitors.is_empty() {
-                    "none".to_string()
-                } else {
-                    monitors
-                }
+                monitors_str,
             )
         },
         OverviewEntry::Commit {
@@ -160,7 +168,8 @@ mod tests {
         assert!(text.contains("commit #7"), "live commit listed:\n{text}");
         assert!(text.contains("commit #5"), "ended commit listed:\n{text}");
         assert!(text.contains("group #3"), "download group listed:\n{text}");
-        assert!(text.contains("upload 14/16"), "monitor one-liner shown:\n{text}");
+        assert!(text.contains("upload 14/16"), "active monitor shown:\n{text}");
+        assert!(text.contains("+1 idle"), "idle count suffix shown:\n{text}");
         assert!(text.contains("ended sessions: 41bcdead"), "ended-session footer:\n{text}");
         assert!(text.contains("[1]overview"), "key bar present:\n{text}");
     }
