@@ -249,7 +249,15 @@ impl FileDownloadSession {
     async fn download_file_with_id(&self, file_info: &XetFileInfo, write_path: &Path, id: UniqueId) -> Result<u64> {
         let name = Arc::from(write_path.to_string_lossy().as_ref());
         let progress_updater = self.progress.new_item(id, name);
-        let reconstructor = self.setup_reconstructor(file_info, None, Some(progress_updater))?;
+        #[cfg(feature = "console")]
+        let file_console = self.console.as_ref().and_then(|c| c.file(id.0));
+        let reconstructor = self.setup_reconstructor(
+            file_info,
+            None,
+            Some(progress_updater),
+            #[cfg(feature = "console")]
+            file_console,
+        )?;
         let n_bytes = reconstructor.reconstruct_to_file(write_path, None, true).await?;
         // Caller is responsible for cleaning up the file on error (consistent
         // with other error paths); see download_group.rs error handling.
@@ -289,7 +297,13 @@ impl FileDownloadSession {
         let id = UniqueId::new();
         let name = Arc::from("");
         let progress_updater = self.progress.new_item(id, name);
-        let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater))?;
+        let reconstructor = self.setup_reconstructor(
+            file_info,
+            range,
+            Some(progress_updater),
+            #[cfg(feature = "console")]
+            None,
+        )?;
         let n_bytes = reconstructor.reconstruct_to_writer(writer).await?;
 
         let expected_size = match range {
@@ -331,7 +345,13 @@ impl FileDownloadSession {
         let id = UniqueId::new();
         let progress_updater = self.progress.new_item(id, "stream");
         let range = source_range.map(|r| FileRange::new(r.start, r.end));
-        let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater))?;
+        let reconstructor = self.setup_reconstructor(
+            file_info,
+            range,
+            Some(progress_updater),
+            #[cfg(feature = "console")]
+            None,
+        )?;
         let stream = reconstructor.reconstruct_to_stream();
         self.register_stream_abort_callback(id, stream.abort_callback());
         Ok((id, stream))
@@ -359,7 +379,13 @@ impl FileDownloadSession {
         let id = UniqueId::new();
         let progress_updater = self.progress.new_item(id, "unordered_stream");
         let range = source_range.map(|r| FileRange::new(r.start, r.end));
-        let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater))?;
+        let reconstructor = self.setup_reconstructor(
+            file_info,
+            range,
+            Some(progress_updater),
+            #[cfg(feature = "console")]
+            None,
+        )?;
         let stream = reconstructor.reconstruct_to_unordered_stream();
         self.register_stream_abort_callback(id, stream.abort_callback());
         Ok((id, stream))
@@ -380,7 +406,13 @@ impl FileDownloadSession {
         let file_range = range_bounds_to_file_range(&range)?;
         let id = UniqueId::new();
         let progress_updater = self.progress.new_item(id, "stream");
-        let reconstructor = self.setup_reconstructor(file_info, file_range, Some(progress_updater))?;
+        let reconstructor = self.setup_reconstructor(
+            file_info,
+            file_range,
+            Some(progress_updater),
+            #[cfg(feature = "console")]
+            None,
+        )?;
         let stream = reconstructor.reconstruct_to_stream();
         self.register_stream_abort_callback(id, stream.abort_callback());
         Ok((id, stream))
@@ -407,6 +439,8 @@ impl FileDownloadSession {
         file_info: &XetFileInfo,
         range: Option<FileRange>,
         progress_updater: Option<Arc<ItemProgressUpdater>>,
+        #[cfg(feature = "console")]
+        console: Option<std::sync::Arc<xet_runtime::console::state::DownloadFileConsole>>,
     ) -> Result<FileReconstructor> {
         let file_id = file_info.merkle_hash()?;
 
@@ -448,6 +482,11 @@ impl FileDownloadSession {
 
         if let Some(ref cache) = self.chunk_cache {
             reconstructor = reconstructor.with_chunk_cache(cache.clone());
+        }
+
+        #[cfg(feature = "console")]
+        if let Some(fc) = console {
+            reconstructor = reconstructor.with_console(fc);
         }
 
         Ok(reconstructor)

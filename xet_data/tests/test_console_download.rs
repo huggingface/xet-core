@@ -59,6 +59,30 @@ async fn download_group_and_files_visible_in_console() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
+async fn term_blocks_and_prefetch_state_recorded() {
+    unsafe { std::env::set_var("XET_CONSOLE_PORT", "0") };
+    let env = TestEnvironment::new().await;
+    let scope = install_scope(&env.config);
+
+    let upload_session = FileUploadSession::new(env.config.clone()).await.unwrap();
+    let xfi = upload_random_file(&upload_session, &env.base_dir, 16 << 20).await;
+    upload_session.finalize().await.unwrap();
+
+    let download_session = FileDownloadSession::new(env.config.clone(), None).await.unwrap();
+    let group = scope.live_download_groups().pop().unwrap();
+    let out = env.base_dir.join("out_term.bin");
+    download_session.download_file(&xfi, &out).await.unwrap();
+
+    let detail = group.snapshot(true);
+    let (_, f) = detail.completed_files.last().expect("file completed");
+    assert!(f.consumed_blocks >= 1, "at least one fetch block must have been consumed");
+    let pf = f.prefetch.as_ref().expect("prefetch state recorded");
+    assert!(pf.prefetched_byte_position > 0);
+    assert!(pf.active_byte_position > 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
 async fn background_download_path_retires_files_with_counts() {
     unsafe { std::env::set_var("XET_CONSOLE_PORT", "0") };
     let env = TestEnvironment::new().await;

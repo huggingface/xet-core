@@ -987,6 +987,10 @@ impl DownloadGroupConsole {
         f
     }
 
+    pub fn file(&self, id: u64) -> Option<Arc<DownloadFileConsole>> {
+        self.files.lock().ok()?.get(&id).cloned()
+    }
+
     pub fn retire_file(&self, id: u64) {
         let removed = self.files.lock().ok().and_then(|mut files| files.remove(&id));
         if let Some(fc) = removed {

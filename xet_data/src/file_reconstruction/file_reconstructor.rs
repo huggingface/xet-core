@@ -42,6 +42,9 @@ pub struct FileReconstructor {
     /// When cancelled, reconstruction stops at its next check point. Long waits
     /// (such as semaphore acquisition) use `tokio::select!` so they abort promptly.
     cancellation_token: CancellationToken,
+
+    #[cfg(feature = "console")]
+    console: Option<std::sync::Arc<xet_runtime::console::state::DownloadFileConsole>>,
 }
 
 impl FileReconstructor {
@@ -56,6 +59,19 @@ impl FileReconstructor {
             chunk_cache: None,
             custom_buffer_semaphore: None,
             cancellation_token: CancellationToken::new(),
+            #[cfg(feature = "console")]
+            console: None,
+        }
+    }
+
+    #[cfg(feature = "console")]
+    pub fn with_console(
+        self,
+        console: std::sync::Arc<xet_runtime::console::state::DownloadFileConsole>,
+    ) -> Self {
+        Self {
+            console: Some(console),
+            ..self
         }
     }
 
@@ -237,6 +253,8 @@ impl FileReconstructor {
             config,
             chunk_cache,
             custom_buffer_semaphore,
+            #[cfg(feature = "console")]
+            console,
             ..
         } = self;
 
@@ -252,6 +270,8 @@ impl FileReconstructor {
             file_hash,
             requested_range,
             run_state.progress_updater().cloned(),
+            #[cfg(feature = "console")]
+            console,
         )
         .await?;
 
