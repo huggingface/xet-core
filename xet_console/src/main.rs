@@ -48,6 +48,16 @@ fn resolve_base(target: Option<&str>, port: Option<u16>) -> String {
     DEFAULT_BASE.to_string()
 }
 
+/// Restores the terminal on drop; best-effort (errors ignored — we're exiting).
+struct TerminalRestore;
+
+impl Drop for TerminalRestore {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let base = resolve_base(args.target.as_deref(), args.port);
@@ -70,12 +80,12 @@ fn main() -> anyhow::Result<()> {
 
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen)?;
+    let _restore = TerminalRestore;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
     let result = run(&mut terminal, &shared);
 
-    disable_raw_mode()?;
-    execute!(io::stdout(), LeaveAlternateScreen)?;
+    drop(_restore);
     shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = poller.join();
     result
