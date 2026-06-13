@@ -263,15 +263,30 @@ fn draw_prefetch(f: &mut Frame, area: Rect, app: &App, g: &DownloadGroupDetail) 
             let file_total = fl.total_bytes.max(1);
             let active_pct = percent(p.active_byte_position, file_total);
             let prefetched_pct = percent(p.prefetched_byte_position, file_total);
-            let readahead = p.prefetched_byte_position.saturating_sub(p.active_byte_position);
-            let rate = humanize_rate(p.completion_rate_bps);
-            let eta = eta_string(file_total, fl.bytes_completed, p.completion_rate_bps);
+            let buffered = p.prefetched_byte_position.saturating_sub(p.active_byte_position);
             let elapsed = humanize_duration_ms(now.saturating_sub(fl.created_at));
+            let status = readahead_status(
+                p.prefetched_byte_position,
+                p.active_byte_position,
+                p.queue_depth,
+                file_total,
+            );
+            let status_style = match status {
+                READAHEAD_STARVED => Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                READAHEAD_AHEAD => Style::default().fg(Color::Green),
+                _ => Style::default().fg(Color::Cyan),
+            };
             vec![
+                // writer = where bytes are being assembled to disk; scheduled =
+                // how far the prefetcher has reached; buffered = the gap between
+                // them. These honest byte positions are the evidence behind the
+                // status verdict below. (The internal block-completion-rate
+                // estimator is intentionally not shown — it reads in absurd
+                // units when prefetch keeps up; it stays in the JSON API.)
                 Line::from(format!("writer    @ {} ({active_pct}%)", humanize_bytes(p.active_byte_position))),
                 Line::from(format!("scheduled @ {} ({prefetched_pct}%)", humanize_bytes(p.prefetched_byte_position))),
-                Line::from(format!("readahead {} · {} block(s) in flight", humanize_bytes(readahead), p.queue_depth)),
-                Line::from(format!("block rate {rate} · file ETA {eta}")),
+                Line::from(format!("buffered  {} ahead · {} block(s) in flight", humanize_bytes(buffered), p.queue_depth)),
+                Line::styled(format!("status: {status}"), status_style),
                 Line::from(format!("elapsed {elapsed}")),
             ]
         } else {
@@ -287,6 +302,32 @@ fn draw_prefetch(f: &mut Frame, area: Rect, app: &App, g: &DownloadGroupDetail) 
             .block(pane_block(" readahead (selected file) ".into(), app.pane == Pane::SideBottom)),
         area,
     );
+}
+
+const READAHEAD_AHEAD: &str = "keeping ahead";
+const READAHEAD_STARVED: &str = "writer waiting on fetches";
+
+/// One-line readahead health verdict from the honest prefetch signals: the
+/// buffered-ahead byte gap and the in-flight block count. Threshold-free —
+/// only the zero/non-zero distinctions matter, so there is no arbitrary cutoff
+/// to misread. `READAHEAD_STARVED` is the case worth catching: the writer has
+/// caught up to the scheduler with nothing queued and bytes still to fetch.
+fn readahead_status(prefetched: u64, active: u64, queue_depth: usize, file_total: u64) -> &'static str {
+    let buffered = prefetched.saturating_sub(active);
+    if queue_depth > 0 && buffered > 0 {
+        READAHEAD_AHEAD
+    } else if queue_depth > 0 {
+        // fetches in flight but the writer has reached the scheduled edge
+        "filling readahead"
+    } else if prefetched >= file_total {
+        // everything has been scheduled; the writer is finishing the tail
+        "all blocks fetched · finishing"
+    } else if buffered > 0 {
+        // data buffered ahead but nothing newly scheduled (typical near the end)
+        "buffer ready · no new fetches scheduled"
+    } else {
+        READAHEAD_STARVED
+    }
 }
 
 // ---- shared helpers ----
@@ -311,11 +352,26 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
+    use super::{READAHEAD_AHEAD, READAHEAD_STARVED, readahead_status};
     use crate::app::{App, Page};
     use crate::fixtures::sample_snapshot;
     use crate::poll::PollState;
     use crate::ui;
     use crate::ui::widgets::buffer_text;
+
+    #[test]
+    fn readahead_status_covers_every_branch() {
+        // queued + buffered ahead → healthy
+        assert_eq!(readahead_status(800, 600, 2, 1000), READAHEAD_AHEAD);
+        // queued but writer at the scheduled edge
+        assert_eq!(readahead_status(600, 600, 2, 1000), "filling readahead");
+        // nothing queued, everything scheduled → finishing the tail
+        assert_eq!(readahead_status(1000, 600, 0, 1000), "all blocks fetched · finishing");
+        // nothing queued but data buffered ahead (near the end)
+        assert_eq!(readahead_status(800, 600, 0, 1000), "buffer ready · no new fetches scheduled");
+        // nothing queued, writer caught up, bytes still to fetch → the alarm
+        assert_eq!(readahead_status(600, 600, 0, 1000), READAHEAD_STARVED);
+    }
 
     #[test]
     fn download_page_shows_files_terms_and_prefetch() {
@@ -337,11 +393,16 @@ mod tests {
         assert!(text.contains("term blocks — fetch queue"), "{text}");
         assert!(text.contains("resolving…"), "{text}"); // block 4 is Fetching
         assert!(text.contains("consumed 5 blocks"), "{text}");
-        // readahead pane
-        assert!(text.contains("readahead"), "{text}");
+        // readahead pane: fixture has queue_depth 2 + 200 MiB buffered ahead
+        assert!(text.contains("readahead"), "{text}"); // pane title
         assert!(text.contains("2 block(s) in flight"), "{text}");
         assert!(text.contains("writer"), "{text}");
         assert!(text.contains("scheduled"), "{text}");
+        assert!(text.contains("buffered"), "{text}");
+        assert!(text.contains("status: keeping ahead"), "{text}");
+        // the broken block-rate line is gone
+        assert!(!text.contains("block rate"), "{text}");
+        assert!(!text.contains("file ETA"), "{text}");
         // header stats
         assert!(text.contains("ETA"), "{text}");
         // caption
