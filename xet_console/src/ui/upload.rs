@@ -39,9 +39,15 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, snap: &SnapshotResponse) {
         .split(rows[1]);
     draw_files(f, cols[0], app, c);
 
+    // Shards are usually 1–3 entries (the live staging accumulator plus any
+    // flushed/uploaded shards), so size that pane to its content rather than a
+    // fixed fraction — the dead space goes to the busy xorbs pane instead.
+    // +2 for the border; clamp so an empty pane still shows its title and a
+    // many-shard commit can't crowd out xorbs.
+    let shard_height = (c.shards.len() as u16 + 2).clamp(3, 9);
     let side = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .constraints([Constraint::Min(3), Constraint::Length(shard_height)])
         .split(cols[1]);
     draw_xorbs(f, side[0], app, c);
     draw_shards(f, side[1], app, c);
