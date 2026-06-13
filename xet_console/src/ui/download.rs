@@ -260,35 +260,53 @@ fn draw_prefetch(f: &mut Frame, area: Rect, app: &App, g: &DownloadGroupDetail) 
     let now = now_ms();
     let lines: Vec<Line> = if let Some(fl) = file {
         if let Some(p) = &fl.prefetch {
-            let file_total = fl.total_bytes.max(1);
-            let active_pct = percent(p.active_byte_position, file_total);
-            let prefetched_pct = percent(p.prefetched_byte_position, file_total);
-            let buffered = p.prefetched_byte_position.saturating_sub(p.active_byte_position);
             let elapsed = humanize_duration_ms(now.saturating_sub(fl.created_at));
-            let status = readahead_status(
-                p.prefetched_byte_position,
-                p.active_byte_position,
-                p.queue_depth,
-                file_total,
-            );
-            let status_style = match status {
-                READAHEAD_STARVED => Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-                READAHEAD_AHEAD => Style::default().fg(Color::Green),
-                _ => Style::default().fg(Color::Cyan),
-            };
-            vec![
-                // writer = where bytes are being assembled to disk; scheduled =
-                // how far the prefetcher has reached; buffered = the gap between
-                // them. These honest byte positions are the evidence behind the
-                // status verdict below. (The internal block-completion-rate
-                // estimator is intentionally not shown — it reads in absurd
-                // units when prefetch keeps up; it stays in the JSON API.)
-                Line::from(format!("writer    @ {} ({active_pct}%)", humanize_bytes(p.active_byte_position))),
-                Line::from(format!("scheduled @ {} ({prefetched_pct}%)", humanize_bytes(p.prefetched_byte_position))),
-                Line::from(format!("buffered  {} ahead · {} block(s) in flight", humanize_bytes(buffered), p.queue_depth)),
-                Line::styled(format!("status: {status}"), status_style),
-                Line::from(format!("elapsed {elapsed}")),
-            ]
+            // Whole-file downloads request an open-ended range, so the scheduler
+            // speculatively advances its cursor past the real end (which it only
+            // learns once a short block returns). The writer never overshoots.
+            // Clamp the displayed positions to the known file size so "scheduled"
+            // and "buffered" can't exceed the file. `known_total` is 0 until the
+            // size is known; only clamp once we actually know it.
+            let known_total = fl.total_bytes;
+            let clamp = |pos: u64| if known_total > 0 { pos.min(known_total) } else { pos };
+            let writer = clamp(p.active_byte_position);
+            let scheduled = clamp(p.prefetched_byte_position);
+            let file_total = known_total.max(1);
+            let writer_pct = percent(writer, file_total);
+
+            // Once the writer reaches the end the reconstruction is fully fetched;
+            // any leftover prefetch cursor / in-flight count is stale, so collapse
+            // to a clean "complete" rather than freezing the last live readahead.
+            let done = known_total > 0 && p.active_byte_position >= known_total;
+            if done {
+                vec![
+                    Line::from(format!("writer @ {} ({writer_pct}%)", humanize_bytes(writer))),
+                    Line::styled("status: complete", Style::default().fg(Color::Green)),
+                    Line::from(format!("elapsed {elapsed}")),
+                ]
+            } else {
+                let scheduled_pct = percent(scheduled, file_total);
+                let buffered = scheduled.saturating_sub(writer);
+                let status = readahead_status(scheduled, writer, p.queue_depth, file_total);
+                let status_style = match status {
+                    READAHEAD_STARVED => Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    READAHEAD_AHEAD => Style::default().fg(Color::Green),
+                    _ => Style::default().fg(Color::Cyan),
+                };
+                vec![
+                    // writer = where bytes are being assembled to disk; scheduled =
+                    // how far the prefetcher has reached (clamped to file size);
+                    // buffered = the gap between them. These honest byte positions
+                    // are the evidence behind the status verdict below. (The internal
+                    // block-completion-rate estimator is intentionally not shown — it
+                    // reads in absurd units when prefetch keeps up; stays in the JSON.)
+                    Line::from(format!("writer    @ {} ({writer_pct}%)", humanize_bytes(writer))),
+                    Line::from(format!("scheduled @ {} ({scheduled_pct}%)", humanize_bytes(scheduled))),
+                    Line::from(format!("buffered  {} ahead · {} block(s) in flight", humanize_bytes(buffered), p.queue_depth)),
+                    Line::styled(format!("status: {status}"), status_style),
+                    Line::from(format!("elapsed {elapsed}")),
+                ]
+            }
         } else {
             vec![Line::from("no prefetch state")]
         }
@@ -358,6 +376,64 @@ mod tests {
     use crate::poll::PollState;
     use crate::ui;
     use crate::ui::widgets::buffer_text;
+
+    #[test]
+    fn overshot_scheduled_position_is_clamped_to_file_size() {
+        let mut snap = sample_snapshot();
+        let fl = &mut snap.sessions[0].download_group_details[0].files[0];
+        let total = fl.total_bytes; // 1 GiB in the fixture
+        if let Some(p) = &mut fl.prefetch {
+            p.active_byte_position = total / 2; // mid-file → not done
+            p.prefetched_byte_position = 23 << 30; // cursor overshot the real end
+            p.queue_depth = 2;
+        }
+        let state = PollState {
+            snapshot: Some(snap),
+            last_success_ms: Some(0),
+            ..Default::default()
+        };
+        let app = App {
+            page: Page::Download,
+            ..Default::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+        terminal.draw(|f| ui::draw(f, &app, &state)).unwrap();
+        let text = buffer_text(terminal.backend());
+        // scheduled is clamped to the 1.0 GiB file size, never the 23 GiB overshoot
+        assert!(text.contains("scheduled @ 1.0 GiB"), "{text}");
+        assert!(!text.contains("23.0 GiB"), "overshoot must be clamped: {text}");
+        // buffered = 1.0 GiB - 512 MiB
+        assert!(text.contains("512.0 MiB ahead"), "{text}");
+    }
+
+    #[test]
+    fn completed_file_shows_complete_not_stale_prefetch() {
+        let mut snap = sample_snapshot();
+        let fl = &mut snap.sessions[0].download_group_details[0].files[0];
+        let total = fl.total_bytes;
+        fl.bytes_completed = total;
+        if let Some(p) = &mut fl.prefetch {
+            p.active_byte_position = total; // writer reached the end
+            p.prefetched_byte_position = 23 << 30; // stale, overshot cursor
+            p.queue_depth = 2; // stale in-flight count
+        }
+        let state = PollState {
+            snapshot: Some(snap),
+            last_success_ms: Some(0),
+            ..Default::default()
+        };
+        let app = App {
+            page: Page::Download,
+            ..Default::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+        terminal.draw(|f| ui::draw(f, &app, &state)).unwrap();
+        let text = buffer_text(terminal.backend());
+        assert!(text.contains("status: complete"), "{text}");
+        // stale prefetch cursor + in-flight count are suppressed on a done file
+        assert!(!text.contains("scheduled @"), "stale scheduled line suppressed: {text}");
+        assert!(!text.contains("block(s) in flight"), "stale in-flight suppressed: {text}");
+    }
 
     #[test]
     fn readahead_status_covers_every_branch() {
