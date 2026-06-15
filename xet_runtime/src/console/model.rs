@@ -358,7 +358,8 @@ pub struct TermBlockSnapshot {
     pub block_id: u64,
     pub byte_range: (u64, u64),
     pub state: TermState,
-    pub terms: Vec<TermInfo>, // populated on Fetched
+    pub n_terms: usize,       // term count; set even when `terms` is dropped
+    pub terms: Vec<TermInfo>, // populated on Fetched; empty for retained-consumed blocks
     pub created_at: u64,
     pub fetched_at: Option<u64>,
 }
@@ -384,6 +385,12 @@ pub struct FileDownloadSnapshot {
     pub prefetch: Option<PrefetchSnapshot>,
     pub term_blocks: Vec<TermBlockSnapshot>,
     pub consumed_blocks: u64,
+    /// Bounded recent ring of consumed blocks (lightweight: `terms` dropped).
+    pub recent_consumed_blocks: Vec<TermBlockSnapshot>,
+    /// Cumulative over every consumed block, including those evicted past the
+    /// recent-ring bound — so the totals never undercount.
+    pub consumed_terms: u64,
+    pub consumed_bytes: u64,
     pub created_at: u64,
     pub finished_at: Option<u64>,
 }

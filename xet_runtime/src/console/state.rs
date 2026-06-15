@@ -1044,6 +1044,9 @@ impl DownloadGroupConsole {
             completion_rate: Mutex::new(None),
             term_blocks: Mutex::new(HashMap::new()),
             consumed_blocks: AtomicU64::new(0),
+            recent_consumed: TimestampedRing::new(RECENT_RING_CAPACITY),
+            consumed_terms: AtomicU64::new(0),
+            consumed_bytes: AtomicU64::new(0),
             finished_at: Mutex::new(None),
         });
         if let Ok(mut files) = self.files.lock() {
@@ -1177,6 +1180,11 @@ pub struct DownloadFileConsole {
     completion_rate: Mutex<Option<f64>>,
     term_blocks: Mutex<HashMap<u64, Arc<TermBlockConsole>>>,
     consumed_blocks: AtomicU64,
+    // Retained history of consumed blocks: a bounded detail ring plus cumulative
+    // aggregates that keep counting the blocks evicted past the ring bound.
+    recent_consumed: TimestampedRing<TermBlockSnapshot>,
+    consumed_terms: AtomicU64,
+    consumed_bytes: AtomicU64,
     finished_at: Mutex<Option<u64>>,
 }
 
@@ -1234,7 +1242,18 @@ impl DownloadFileConsole {
         let removed = self.term_blocks.lock().ok().and_then(|mut m| m.remove(&block_id));
         if let Some(b) = removed {
             b.set_state(TermState::Consumed);
+            // Snapshot the block lightweight (drop the heavy `terms` list) into
+            // the bounded recent ring, and fold its term count / byte span into
+            // the cumulative aggregates — so blocks evicted past the bound stay
+            // accounted for.
+            let mut snap = b.snapshot();
+            let n_terms = snap.n_terms as u64;
+            let n_bytes = snap.byte_range.1.saturating_sub(snap.byte_range.0);
+            snap.terms = Vec::new();
+            self.recent_consumed.push(snap);
             self.consumed_blocks.fetch_add(1, Ordering::Relaxed);
+            self.consumed_terms.fetch_add(n_terms, Ordering::Relaxed);
+            self.consumed_bytes.fetch_add(n_bytes, Ordering::Relaxed);
         }
     }
 
@@ -1276,6 +1295,9 @@ impl DownloadFileConsole {
             prefetch,
             term_blocks,
             consumed_blocks: self.consumed_blocks.load(Ordering::Relaxed),
+            recent_consumed_blocks: self.recent_consumed.snapshot().into_iter().map(|(_, b)| b).collect(),
+            consumed_terms: self.consumed_terms.load(Ordering::Relaxed),
+            consumed_bytes: self.consumed_bytes.load(Ordering::Relaxed),
             created_at: self.created_at,
             finished_at,
         }
@@ -1333,6 +1355,7 @@ impl TermBlockConsole {
             block_id: self.block_id,
             byte_range: self.byte_range,
             state,
+            n_terms: terms.len(),
             terms,
             created_at: self.created_at,
             fetched_at,
@@ -1495,6 +1518,39 @@ mod tests {
         let snap = f.snapshot(&HashMap::new());
         assert_eq!(snap.consumed_blocks, 1);
         assert!(snap.term_blocks.is_empty());
+        // Consumed block is retained (lightweight) in the recent ring with its
+        // term count, and contributes to the cumulative aggregates.
+        assert_eq!(snap.recent_consumed_blocks.len(), 1);
+        let rc = &snap.recent_consumed_blocks[0];
+        assert_eq!(rc.state, TermState::Consumed);
+        assert_eq!(rc.n_terms, 1);
+        assert!(rc.terms.is_empty(), "retained block drops the heavy terms list");
+        assert_eq!(snap.consumed_terms, 1);
+        assert_eq!(snap.consumed_bytes, 1 << 20);
+    }
+
+    /// The retained-consumed ring is bounded, but the cumulative counters
+    /// (blocks / terms / bytes) account for every consumed block — including
+    /// the ones evicted past the bound.
+    #[test]
+    fn consumed_term_blocks_bounded_with_cumulative_aggregates() {
+        let group = DownloadGroupConsole::new(Some(&scope()), DownloadGroupKind::Files, None);
+        let f = group.new_file(1, "big.bin", None, None);
+        let n = (RECENT_RING_CAPACITY + 50) as u64;
+        for i in 0..n {
+            let b = f.new_term_block(i, (i * 10, i * 10 + 10)); // 10 bytes each
+            b.resolved(vec![TermInfo {
+                xorb_hash: "a".into(),
+                chunk_range: (0, 1),
+                byte_range: (0, 10),
+            }]); // one term each
+            f.consume_term_block(i);
+        }
+        let snap = f.snapshot(&HashMap::new());
+        assert_eq!(snap.recent_consumed_blocks.len(), RECENT_RING_CAPACITY, "detail ring is bounded");
+        assert_eq!(snap.consumed_blocks, n, "every consumed block counted");
+        assert_eq!(snap.consumed_terms, n, "every term counted (1 per block)");
+        assert_eq!(snap.consumed_bytes, n * 10, "every byte counted, incl. evicted");
     }
 
     #[test]

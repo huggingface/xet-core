@@ -181,7 +181,10 @@ fn side_pane_file<'a>(
     if clamped < g.files.len() {
         (g.files.get(clamped), false)
     } else {
-        (None, true)
+        // A completed row: resolve the retained file snapshot so its consumed
+        // block history stays visible after the file finishes.
+        let idx = clamped - g.files.len();
+        (g.completed_files.get(idx).map(|(_, fl)| fl), true)
     }
 }
 
@@ -224,7 +227,28 @@ fn draw_terms(f: &mut Frame, area: Rect, app: &App, g: &DownloadGroupDetail) {
                 state_style(term_state_label(b.state)),
             ));
         }
-        lines.push(Line::from(format!("consumed {} blocks total", file.consumed_blocks)));
+        // Retained history of consumed blocks (bounded ring; lightweight —
+        // term count + fetch duration, no per-term detail).
+        for b in &file.recent_consumed_blocks {
+            let size = humanize_bytes(b.byte_range.1.saturating_sub(b.byte_range.0));
+            let dur = humanize_duration_ms(b.fetched_at.unwrap_or(b.created_at).saturating_sub(b.created_at));
+            lines.push(Line::styled(
+                format!("#{} consumed {size} · {} terms in {dur}", b.block_id, b.n_terms),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        // Cumulative totals (count every consumed block, including those evicted
+        // past the ring bound); note when the detail list is only a subset.
+        let mut footer = format!(
+            "consumed {} blocks · {} terms · {}",
+            file.consumed_blocks,
+            file.consumed_terms,
+            humanize_bytes(file.consumed_bytes),
+        );
+        if (file.recent_consumed_blocks.len() as u64) < file.consumed_blocks {
+            footer.push_str(&format!(" (showing last {})", file.recent_consumed_blocks.len()));
+        }
+        lines.push(Line::from(footer));
     } else if completed {
         lines.push(Line::from("file complete — no live blocks"));
     } else {
@@ -472,6 +496,58 @@ mod tests {
         assert!(text.contains("ETA"), "{text}");
         // caption
         assert!(text.contains("files are reconstructed from CAS term blocks"), "{text}");
+    }
+
+    /// Retained consumed blocks render with their term count, and the footer
+    /// reports cumulative totals plus a truncation note when the detail ring is
+    /// a subset of all consumed blocks.
+    #[test]
+    fn download_page_shows_consumed_block_history() {
+        let state = PollState {
+            snapshot: Some(sample_snapshot()),
+            last_success_ms: Some(0),
+            ..Default::default()
+        };
+        let app = App {
+            page: Page::Download,
+            ..Default::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+        terminal.draw(|f| ui::draw(f, &app, &state)).unwrap();
+        let text = buffer_text(terminal.backend());
+        assert!(text.contains("#2 consumed"), "retained consumed block shown: {text}");
+        assert!(text.contains("3 terms"), "consumed block term count shown: {text}");
+        assert!(text.contains("consumed 5 blocks · 12 terms · 600.0 MiB"), "cumulative totals: {text}");
+        assert!(text.contains("(showing last 2)"), "truncation note: {text}");
+    }
+
+    /// A finished file keeps its consumed-block history: selecting the completed
+    /// row still resolves the file (rather than the bare "no live blocks").
+    #[test]
+    fn completed_download_file_keeps_block_history() {
+        use xet_runtime::console::model::FileDownloadState;
+        let mut snap = sample_snapshot();
+        let g = &mut snap.sessions[0].download_group_details[0];
+        let mut fl = g.files.remove(0);
+        fl.state = FileDownloadState::Complete;
+        fl.bytes_completed = fl.total_bytes;
+        g.completed_files.push((900, fl));
+        g.file_counts.in_flight = 0;
+        g.file_counts.completed = 1;
+        let state = PollState {
+            snapshot: Some(snap),
+            last_success_ms: Some(0),
+            ..Default::default()
+        };
+        let app = App {
+            page: Page::Download,
+            ..Default::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+        terminal.draw(|f| ui::draw(f, &app, &state)).unwrap();
+        let text = buffer_text(terminal.backend());
+        assert!(text.contains("#2 consumed"), "completed file keeps block history: {text}");
+        assert!(text.contains("consumed 5 blocks · 12 terms"), "totals after completion: {text}");
     }
 
     /// The fixture group has 1 in-flight file (index 0) and 0 completed files
