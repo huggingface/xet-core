@@ -12,13 +12,11 @@ pub enum RuntimeMode {
 }
 
 #[cfg(not(target_family = "wasm"))]
-#[path = "runtime_native.rs"]
-mod runtime_native;
+mod native;
 #[cfg(not(target_family = "wasm"))]
-pub use runtime_native::XetRuntime;
+pub use native::XetRuntime;
 
 #[cfg(target_family = "wasm")]
-#[path = "runtime_wasm.rs"]
-mod runtime_wasm;
+mod wasm;
 #[cfg(target_family = "wasm")]
-pub use runtime_wasm::XetRuntime;
+pub use wasm::XetRuntime;
