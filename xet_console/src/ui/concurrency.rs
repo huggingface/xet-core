@@ -2,7 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Gauge, Paragraph, Sparkline};
+use ratatui::widgets::{Block, Borders, Paragraph, Sparkline};
 use xet_runtime::console::model::{AdjustmentRecommendation, MonitorSnapshot, SnapshotResponse};
 
 use crate::app::App;
@@ -45,8 +45,9 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, snap: &SnapshotResponse) {
         f.render_widget(Paragraph::new("all monitors idle"), cards_area);
     } else {
         // One fixed-height card per monitor, scrolled by monitor_row.
-        // 2 border rows + 6 content rows (title/permits/success/latency/history-label/sparkline).
-        const CARD: u16 = 9;
+        // 2 border rows + 6 content rows (permits / success / latency /
+        // history-label / sparkline[2]).
+        const CARD: u16 = 8;
         let visible = (cards_area.height / CARD).max(1) as usize;
         let first = app
             .monitor_row
@@ -88,10 +89,9 @@ fn draw_monitor(f: &mut Frame, area: Rect, m: &MonitorSnapshot) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // permits/bounds/adj/sent
-            Constraint::Length(1), // permits gauge
             Constraint::Length(1), // success model
             Constraint::Length(1), // latency model
-            Constraint::Length(1), // history label
+            Constraint::Length(1), // history label (allowed-permit scale)
             Constraint::Length(2), // sparkline
         ])
         .split(inner);
@@ -111,18 +111,6 @@ fn draw_monitor(f: &mut Frame, area: Rect, m: &MonitorSnapshot) {
         rows[0],
     );
 
-    let ratio = if m.total_permits == 0 {
-        0.0
-    } else {
-        m.active_permits as f64 / m.total_permits as f64
-    };
-    f.render_widget(
-        Gauge::default()
-            .ratio(ratio.clamp(0.0, 1.0))
-            .gauge_style(Style::default().fg(Color::Cyan)),
-        rows[1],
-    );
-
     let success = match &m.success {
         Some(s) => format!(
             " success {:.2} (↑>{:.2} ↓<{:.2}) rec {}",
@@ -137,7 +125,7 @@ fn draw_monitor(f: &mut Frame, area: Rect, m: &MonitorSnapshot) {
         ),
         None => " success: no samples yet".to_string(),
     };
-    f.render_widget(Paragraph::new(success), rows[2]);
+    f.render_widget(Paragraph::new(success), rows[1]);
 
     let latency = match &m.latency {
         Some(l) => format!(
@@ -148,17 +136,25 @@ fn draw_monitor(f: &mut Frame, area: Rect, m: &MonitorSnapshot) {
         ),
         None => " latency: no samples yet".to_string(),
     };
-    f.render_widget(Paragraph::new(latency), rows[3]);
+    f.render_widget(Paragraph::new(latency), rows[2]);
 
+    // The sparkline shows the allowed-permit limit over the adjustment history.
+    // It auto-scales with no axis, so name the series and print the scale
+    // (current / observed range / hard cap) alongside it.
+    let now = m.total_permits;
+    let cap = m.bounds.max;
+    let n = m.limit_history.len();
+    let lo = m.limit_history.iter().map(|(_, v)| *v).min().unwrap_or(now);
+    let hi = m.limit_history.iter().map(|(_, v)| *v).max().unwrap_or(now);
     f.render_widget(
         Paragraph::new(Line::styled(
-            format!(" limit history ({} adjustments)", m.limit_history.len()),
+            format!(" allowed permits · now {now} · min {lo} / max {hi} · cap {cap} ({n} adj)"),
             Style::default().fg(Color::DarkGray),
         )),
-        rows[4],
+        rows[3],
     );
     let data: Vec<u64> = m.limit_history.iter().map(|(_, v)| *v as u64).collect();
-    f.render_widget(Sparkline::default().data(&data).style(Style::default().fg(Color::Green)), rows[5]);
+    f.render_widget(Sparkline::default().data(&data).style(Style::default().fg(Color::Green)), rows[4]);
 }
 
 #[cfg(test)]
@@ -192,7 +188,14 @@ mod tests {
         assert!(text.contains("success 0.94"), "{text}");
         assert!(text.contains("increase"), "recommendation shown: {text}");
         assert!(text.contains("rtt 412.5ms"), "{text}");
-        assert!(text.contains("limit history"), "{text}");
+        // Sparkline is labeled "allowed permits" with a readable scale, and the
+        // utilization gauge (and its percentage label) is gone.
+        assert!(text.contains("allowed permits"), "sparkline labeled: {text}");
+        assert!(text.contains("now 16"), "current allowed shown: {text}");
+        assert!(text.contains("min 8 / max 16"), "limit range shown: {text}");
+        assert!(text.contains("cap 64"), "hard cap shown: {text}");
+        assert!(!text.contains("limit history"), "old label gone: {text}");
+        assert!(!text.contains("88%") && !text.contains("87%"), "utilization gauge removed: {text}");
         // Idle "download" monitor must be hidden by default.
         assert!(text.contains("idle monitor"), "idle footer present: {text}");
         assert!(!text.contains(" download "), "idle card must be absent: {text}");
