@@ -57,11 +57,7 @@ fn draw_header(f: &mut Frame, area: Rect, g: &DownloadGroupDetail) {
     let endpoint = g.endpoint.as_deref().unwrap_or("?");
 
     // Line 1: identity
-    let line1 = format!(
-        " ▼ group #{} [{}] kind {kind} · endpoint {endpoint}",
-        g.id,
-        group_state_label(g.state)
-    );
+    let line1 = format!(" ↓ group #{} [{}] kind {kind} · endpoint {endpoint}", g.id, group_state_label(g.state));
 
     // Line 2: progress stats
     let line2 = match &g.progress {
@@ -102,10 +98,9 @@ fn draw_header(f: &mut Frame, area: Rect, g: &DownloadGroupDetail) {
 
     let text = format!("{line1}\n{line2}\n{line3}");
     f.render_widget(
-        Paragraph::new(text)
-            .style(Style::default().add_modifier(Modifier::BOLD))
-            // Override caption line to DarkGray — we do it per-line below
-            ,
+        Paragraph::new(text).style(Style::default().add_modifier(Modifier::BOLD)), /* Override caption line to
+                                                                                    * DarkGray — we do it per-line
+                                                                                    * below */
         area,
     );
 
@@ -115,10 +110,7 @@ fn draw_header(f: &mut Frame, area: Rect, g: &DownloadGroupDetail) {
         height: 1,
         ..area
     };
-    f.render_widget(
-        Paragraph::new(line3).style(Style::default().fg(Color::DarkGray)),
-        caption_area,
-    );
+    f.render_widget(Paragraph::new(line3).style(Style::default().fg(Color::DarkGray)), caption_area);
 }
 
 // ---- files table ----
@@ -126,11 +118,7 @@ fn draw_header(f: &mut Frame, area: Rect, g: &DownloadGroupDetail) {
 fn draw_files(f: &mut Frame, area: Rect, app: &App, g: &DownloadGroupDetail) {
     let mut rows: Vec<Row> = Vec::new();
     for file in &g.files {
-        let done_total = format!(
-            "{}/{}",
-            humanize_bytes(file.bytes_completed),
-            humanize_bytes(file.total_bytes)
-        );
+        let done_total = format!("{}/{}", humanize_bytes(file.bytes_completed), humanize_bytes(file.total_bytes));
         rows.push(Row::new(vec![
             Cell::from(truncate_middle(&file.name, 34)),
             Cell::from(download_state_label(file.state)).style(state_style(download_state_label(file.state))),
@@ -216,11 +204,7 @@ fn draw_terms(f: &mut Frame, area: Rect, app: &App, g: &DownloadGroupDetail) {
                     format!("resolving… {age}")
                 },
                 TermState::Fetched => {
-                    let dur = humanize_duration_ms(
-                        b.fetched_at
-                            .unwrap_or(now)
-                            .saturating_sub(b.created_at),
-                    );
+                    let dur = humanize_duration_ms(b.fetched_at.unwrap_or(now).saturating_sub(b.created_at));
                     format!("{} terms in {dur}", b.terms.len())
                 },
                 TermState::Consumed => {
@@ -302,7 +286,11 @@ fn draw_prefetch(f: &mut Frame, area: Rect, app: &App, g: &DownloadGroupDetail) 
                     // reads in absurd units when prefetch keeps up; stays in the JSON.)
                     Line::from(format!("writer    @ {} ({writer_pct}%)", humanize_bytes(writer))),
                     Line::from(format!("scheduled @ {} ({scheduled_pct}%)", humanize_bytes(scheduled))),
-                    Line::from(format!("buffered  {} ahead · {} block(s) in flight", humanize_bytes(buffered), p.queue_depth)),
+                    Line::from(format!(
+                        "buffered  {} ahead · {} block(s) in flight",
+                        humanize_bytes(buffered),
+                        p.queue_depth
+                    )),
                     Line::styled(format!("status: {status}"), status_style),
                     Line::from(format!("elapsed {elapsed}")),
                 ]
@@ -316,8 +304,7 @@ fn draw_prefetch(f: &mut Frame, area: Rect, app: &App, g: &DownloadGroupDetail) 
         vec![Line::from("no prefetch state")]
     };
     f.render_widget(
-        Paragraph::new(lines)
-            .block(pane_block(" readahead (selected file) ".into(), app.pane == Pane::SideBottom)),
+        Paragraph::new(lines).block(pane_block(" readahead (selected file) ".into(), app.pane == Pane::SideBottom)),
         area,
     );
 }

@@ -110,12 +110,25 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, shared: &poll::Sha
                 .as_ref()
                 .map(|s| app::overview_entries(s, &app.expanded))
                 .unwrap_or_default();
-            if key.code == KeyCode::Char(' ') {
-                if let Some(snap) = &state.snapshot {
-                    app.toggle_expanded(&entries, snap);
-                }
-            } else {
-                app.handle_key(key.code, &entries);
+            // Expand/collapse keys resolve entity ids, so they need the
+            // snapshot and are handled here rather than in handle_key.
+            match key.code {
+                KeyCode::Char(' ') => {
+                    if let Some(snap) = &state.snapshot {
+                        app.toggle_expanded(&entries, snap);
+                    }
+                },
+                KeyCode::Right if app.page == app::Page::Overview => {
+                    if let Some(snap) = &state.snapshot {
+                        app.expand_current(&entries, snap);
+                    }
+                },
+                KeyCode::Left if app.page == app::Page::Overview => {
+                    if let Some(snap) = &state.snapshot {
+                        app.collapse_current(&entries, snap);
+                    }
+                },
+                _ => app.handle_key(key.code, &entries),
             }
             drop(state);
             shared.lock().paused = app.paused;

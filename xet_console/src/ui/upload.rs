@@ -69,7 +69,7 @@ fn draw_header(f: &mut Frame, area: Rect, c: &UploadCommitDetail) {
     let dedup_pct = percent(d.deduped_bytes, d.total_bytes);
     let lines = vec![
         Line::from(
-            format!(" ▲ commit #{} [{}]  {done} / {total} ({pct}%)  {rate}", c.id, commit_state_label(c.state),),
+            format!(" ↑ commit #{} [{}]  {done} / {total} ({pct}%)  {rate}", c.id, commit_state_label(c.state),),
         ),
         Line::from(format!(
             " dedup {dedup_pct}%: {} deduped ({} global) · {} new · xorb↑ {} · shard↑ {}",

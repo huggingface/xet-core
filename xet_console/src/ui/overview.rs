@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -19,7 +21,10 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, snap: &SnapshotResponse, ended
     };
 
     let entries = overview_entries(snap, &app.expanded);
-    let items: Vec<ListItem> = entries.iter().map(|e| ListItem::new(entry_line(e, snap))).collect();
+    let items: Vec<ListItem> = entries
+        .iter()
+        .map(|e| ListItem::new(entry_line(e, snap, &app.expanded)))
+        .collect();
 
     let mut state = ListState::default();
     if !entries.is_empty() {
@@ -32,7 +37,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, snap: &SnapshotResponse, ended
             snap.as_of
         )))
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-        .highlight_symbol("▸ ");
+        .highlight_symbol("❯ ");
     f.render_stateful_widget(list, list_area, &mut state);
 
     if let Some(footer) = footer_area {
@@ -49,7 +54,20 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, snap: &SnapshotResponse, ended
     }
 }
 
-fn entry_line(e: &OverviewEntry, snap: &SnapshotResponse) -> String {
+/// Expand affordance for a commit/group row: a right triangle when collapsed,
+/// a down triangle when expanded, and a blank slot (same width) when there are
+/// no files to expand — so the caret never promises children that aren't there.
+fn expand_caret(has_children: bool, expanded: bool) -> &'static str {
+    if !has_children {
+        "  "
+    } else if expanded {
+        "▾ "
+    } else {
+        "▸ "
+    }
+}
+
+fn entry_line(e: &OverviewEntry, snap: &SnapshotResponse, expanded: &HashSet<u64>) -> String {
     match *e {
         OverviewEntry::Session { session_idx } => {
             let s = &snap.sessions[session_idx];
@@ -96,8 +114,10 @@ fn entry_line(e: &OverviewEntry, snap: &SnapshotResponse) -> String {
                 .map(|p| percent(p.bytes_completed, p.total_bytes))
                 .unwrap_or(0);
             let rate = humanize_rate(c.progress.as_ref().and_then(|p| p.rate_bps));
+            let has_files = !c.files.is_empty() || !c.completed_files.is_empty();
+            let caret = expand_caret(has_files, expanded.contains(&c.id));
             format!(
-                "  ▲ commit #{} [{}] {}% {} files {}/{}{}",
+                "{caret}↑ commit #{} [{}] {}% {} files {}/{}{}",
                 c.id,
                 commit_state_label(c.state),
                 pct,
@@ -120,8 +140,10 @@ fn entry_line(e: &OverviewEntry, snap: &SnapshotResponse) -> String {
                 .as_ref()
                 .map(|p| percent(p.bytes_completed, p.total_bytes))
                 .unwrap_or(0);
+            let has_files = !g.files.is_empty() || !g.completed_files.is_empty();
+            let caret = expand_caret(has_files, expanded.contains(&g.id));
             format!(
-                "  ▼ group #{} [{}] {}% {} files in flight{}",
+                "{caret}↓ group #{} [{}] {}% {} files in flight{}",
                 g.id,
                 group_state_label(g.state),
                 pct,
@@ -129,7 +151,11 @@ fn entry_line(e: &OverviewEntry, snap: &SnapshotResponse) -> String {
                 if ended { "  (ended)" } else { "" }
             )
         },
-        OverviewEntry::UploadFile { session_idx, commit_idx, table_row } => {
+        OverviewEntry::UploadFile {
+            session_idx,
+            commit_idx,
+            table_row,
+        } => {
             let s = &snap.sessions[session_idx];
             let commit = if commit_idx < s.upload_commit_details.len() {
                 &s.upload_commit_details[commit_idx]
@@ -140,23 +166,18 @@ fn entry_line(e: &OverviewEntry, snap: &SnapshotResponse) -> String {
             if table_row < n_live {
                 let file = &commit.files[table_row];
                 let pct = file.size.map(|s| percent(file.bytes_chunked, s)).unwrap_or(0);
-                format!(
-                    "      · {}  [{}]  {}%",
-                    file.name,
-                    upload_state_label(file.state),
-                    pct,
-                )
+                format!("      · {}  [{}]  {}%", file.name, upload_state_label(file.state), pct,)
             } else {
                 let ring_pos = table_row - n_live;
                 let (_, file) = &commit.completed_files[ring_pos];
-                format!(
-                    "      · {}  [{}]  100%",
-                    file.name,
-                    upload_state_label(file.state),
-                )
+                format!("      · {}  [{}]  100%", file.name, upload_state_label(file.state),)
             }
         },
-        OverviewEntry::DownloadFile { session_idx, group_idx, table_row } => {
+        OverviewEntry::DownloadFile {
+            session_idx,
+            group_idx,
+            table_row,
+        } => {
             let s = &snap.sessions[session_idx];
             let group = if group_idx < s.download_group_details.len() {
                 &s.download_group_details[group_idx]
@@ -167,23 +188,18 @@ fn entry_line(e: &OverviewEntry, snap: &SnapshotResponse) -> String {
             if table_row < n_live {
                 let file = &group.files[table_row];
                 let pct = percent(file.bytes_completed, file.total_bytes.max(1));
-                format!(
-                    "      · {}  [{}]  {}%",
-                    file.name,
-                    download_state_label(file.state),
-                    pct,
-                )
+                format!("      · {}  [{}]  {}%", file.name, download_state_label(file.state), pct,)
             } else {
                 let ring_pos = table_row - n_live;
                 let (_, file) = &group.completed_files[ring_pos];
-                format!(
-                    "      · {}  [{}]  100%",
-                    file.name,
-                    download_state_label(file.state),
-                )
+                format!("      · {}  [{}]  100%", file.name, download_state_label(file.state),)
             }
         },
-        OverviewEntry::More { session_idx, kind_commit, idx } => {
+        OverviewEntry::More {
+            session_idx,
+            kind_commit,
+            idx,
+        } => {
             // Compute how many additional completed entries are hidden.
             let s = &snap.sessions[session_idx];
             let k = if kind_commit {
@@ -288,10 +304,47 @@ mod tests {
             text_expanded.contains("model-00001.safetensors"),
             "expanded should show in-flight file:\n{text_expanded}"
         );
-        assert!(
-            text_expanded.contains("config.json"),
-            "expanded should show completed-ring file:\n{text_expanded}"
-        );
+        assert!(text_expanded.contains("config.json"), "expanded should show completed-ring file:\n{text_expanded}");
+    }
+
+    /// Transfer direction uses up/down arrows; the expand state uses
+    /// right/down triangles; the selection cursor is a chevron, not a triangle.
+    /// Rows with no files to expand (the ended commit #5) get no caret.
+    #[test]
+    fn direction_uses_arrows_and_expand_uses_triangles() {
+        let snap = sample_snapshot();
+
+        // --- collapsed ---
+        let state = PollState {
+            snapshot: Some(snap.clone()),
+            ..Default::default()
+        };
+        let app = App::default();
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|f| ui::draw(f, &app, &state)).unwrap();
+        let text = buffer_text(terminal.backend());
+        assert!(text.contains("▸ ↑ commit #7"), "collapsed upload commit: caret + up arrow:\n{text}");
+        assert!(text.contains("▸ ↓ group #3"), "collapsed download group: caret + down arrow:\n{text}");
+        assert!(!text.contains('▲'), "no upload triangle remains:\n{text}");
+        assert!(!text.contains('▼'), "no download triangle remains:\n{text}");
+        // Ended commit #5 has no files, so it must show no expand caret.
+        assert!(text.contains("↑ commit #5"), "ended commit still shows up arrow:\n{text}");
+        assert!(!text.contains("▸ ↑ commit #5"), "ended commit (no files) has no caret:\n{text}");
+        assert!(!text.contains("▾ ↑ commit #5"), "ended commit (no files) has no caret:\n{text}");
+        // Selection cursor is the chevron, on the default-selected session row.
+        assert!(text.contains("❯ session"), "chevron cursor on selected row:\n{text}");
+
+        // --- expanded commit 7 ---
+        let mut app_expanded = App::default();
+        app_expanded.expanded.insert(7);
+        let state_expanded = PollState {
+            snapshot: Some(snap),
+            ..Default::default()
+        };
+        let mut terminal2 = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal2.draw(|f| ui::draw(f, &app_expanded, &state_expanded)).unwrap();
+        let text2 = buffer_text(terminal2.backend());
+        assert!(text2.contains("▾ ↑ commit #7"), "expanded commit: down triangle + up arrow:\n{text2}");
     }
 
     #[test]

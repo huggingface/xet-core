@@ -72,10 +72,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, snap: &SnapshotResponse) {
         let (msg, color) = if app.show_idle_monitors && monitors.iter().any(monitor_is_idle) {
             (" showing idle monitors — press a to hide".to_string(), Color::DarkGray)
         } else {
-            (
-                format!(" {hidden} idle monitor(s) hidden — press a to show"),
-                Color::DarkGray,
-            )
+            (format!(" {hidden} idle monitor(s) hidden — press a to show"), Color::DarkGray)
         };
         f.render_widget(Paragraph::new(msg).style(Style::default().fg(color)), footer);
     }
@@ -83,9 +80,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, snap: &SnapshotResponse) {
 
 fn draw_monitor(f: &mut Frame, area: Rect, m: &MonitorSnapshot) {
     // Outer bordered block titled with the tag.
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!(" {} ", m.tag));
+    let block = Block::default().borders(Borders::ALL).title(format!(" {} ", m.tag));
     let inner = block.inner(area);
     f.render_widget(block, area);
 

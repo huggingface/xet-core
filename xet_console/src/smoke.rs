@@ -1,5 +1,6 @@
 #![cfg(test)]
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -12,8 +13,6 @@ use xet_runtime::console::model::FileUploadState;
 use xet_runtime::console::registry::registry;
 use xet_runtime::console::server;
 use xet_runtime::console::state::UploadCommitConsole;
-
-use std::collections::HashSet;
 
 use crate::app::{App, overview_entries};
 use crate::client::ConsoleClient;

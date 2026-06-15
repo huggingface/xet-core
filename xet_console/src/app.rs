@@ -25,19 +25,39 @@ pub enum Pane {
 /// One selectable row on the overview page, in render order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverviewEntry {
-    Session { session_idx: usize },
-    Commit { session_idx: usize, commit_idx: usize },
-    Group { session_idx: usize, group_idx: usize },
+    Session {
+        session_idx: usize,
+    },
+    Commit {
+        session_idx: usize,
+        commit_idx: usize,
+    },
+    Group {
+        session_idx: usize,
+        group_idx: usize,
+    },
     /// In-flight or completed-ring file under an expanded commit.
     /// `table_row` is the row index in the upload detail page's combined files
     /// table (in-flight first, then completed ring) so Enter can preset
     /// `main_row` consistently with upload.rs rendering.
-    UploadFile { session_idx: usize, commit_idx: usize, table_row: usize },
+    UploadFile {
+        session_idx: usize,
+        commit_idx: usize,
+        table_row: usize,
+    },
     /// File under an expanded download group; `table_row` same convention.
-    DownloadFile { session_idx: usize, group_idx: usize, table_row: usize },
+    DownloadFile {
+        session_idx: usize,
+        group_idx: usize,
+        table_row: usize,
+    },
     /// "… +K more" sentinel when completed_files.len() > 5; Enter drills to
     /// the parent detail page.
-    More { session_idx: usize, kind_commit: bool, idx: usize },
+    More {
+        session_idx: usize,
+        kind_commit: bool,
+        idx: usize,
+    },
 }
 
 const MAX_INLINE_COMPLETED: usize = 5;
@@ -54,7 +74,10 @@ pub fn overview_entries(snapshot: &SnapshotResponse, expanded: &HashSet<u64>) ->
 
         let n_commits = s.upload_commit_details.len() + s.detail.ended_upload_commits.len();
         for ci in 0..n_commits {
-            out.push(OverviewEntry::Commit { session_idx: si, commit_idx: ci });
+            out.push(OverviewEntry::Commit {
+                session_idx: si,
+                commit_idx: ci,
+            });
 
             // Resolve which commit detail this is (live-then-ended order).
             let commit = if ci < s.upload_commit_details.len() {
@@ -95,7 +118,10 @@ pub fn overview_entries(snapshot: &SnapshotResponse, expanded: &HashSet<u64>) ->
 
         let n_groups = s.download_group_details.len() + s.detail.ended_download_groups.len();
         for gi in 0..n_groups {
-            out.push(OverviewEntry::Group { session_idx: si, group_idx: gi });
+            out.push(OverviewEntry::Group {
+                session_idx: si,
+                group_idx: gi,
+            });
 
             let group = if gi < s.download_group_details.len() {
                 &s.download_group_details[gi]
@@ -205,7 +231,10 @@ impl App {
                 {
                     match *entry {
                         OverviewEntry::Session { session_idx } => self.session_idx = session_idx,
-                        OverviewEntry::Commit { session_idx, commit_idx } => {
+                        OverviewEntry::Commit {
+                            session_idx,
+                            commit_idx,
+                        } => {
                             self.session_idx = session_idx;
                             self.commit_idx = commit_idx;
                             self.enter_detail(Page::Upload);
@@ -215,19 +244,31 @@ impl App {
                             self.group_idx = group_idx;
                             self.enter_detail(Page::Download);
                         },
-                        OverviewEntry::UploadFile { session_idx, commit_idx, table_row } => {
+                        OverviewEntry::UploadFile {
+                            session_idx,
+                            commit_idx,
+                            table_row,
+                        } => {
                             self.session_idx = session_idx;
                             self.commit_idx = commit_idx;
                             self.enter_detail(Page::Upload);
                             self.main_row = table_row;
                         },
-                        OverviewEntry::DownloadFile { session_idx, group_idx, table_row } => {
+                        OverviewEntry::DownloadFile {
+                            session_idx,
+                            group_idx,
+                            table_row,
+                        } => {
                             self.session_idx = session_idx;
                             self.group_idx = group_idx;
                             self.enter_detail(Page::Download);
                             self.main_row = table_row;
                         },
-                        OverviewEntry::More { session_idx, kind_commit, idx } => {
+                        OverviewEntry::More {
+                            session_idx,
+                            kind_commit,
+                            idx,
+                        } => {
                             self.session_idx = session_idx;
                             if kind_commit {
                                 self.commit_idx = idx;
@@ -244,14 +285,16 @@ impl App {
         }
     }
 
-    /// Toggle expand/collapse for the commit or group at the current overview
-    /// row. Takes the snapshot to resolve entity ids. Called from the run loop
-    /// (and tests) after acquiring the snapshot lock, instead of inside
-    /// handle_key which doesn't have access to the snapshot.
-    pub fn toggle_expanded(&mut self, entries: &[OverviewEntry], snapshot: &SnapshotResponse) {
-        let Some(entry) = entries.get(self.overview_row) else { return };
-        let id: Option<u64> = match *entry {
-            OverviewEntry::Commit { session_idx, commit_idx } => {
+    /// Resolve the entity id of the expandable (commit or group) row currently
+    /// selected on the overview, or `None` if the selected row isn't expandable.
+    /// Takes the snapshot because `expanded` is keyed by entity id, which the
+    /// `OverviewEntry` carries only as an index.
+    fn current_expandable_id(&self, entries: &[OverviewEntry], snapshot: &SnapshotResponse) -> Option<u64> {
+        match *entries.get(self.overview_row)? {
+            OverviewEntry::Commit {
+                session_idx,
+                commit_idx,
+            } => {
                 let s = &snapshot.sessions[session_idx];
                 let commit = if commit_idx < s.upload_commit_details.len() {
                     &s.upload_commit_details[commit_idx]
@@ -270,13 +313,32 @@ impl App {
                 Some(group.id)
             },
             _ => None,
-        };
-        if let Some(id) = id {
-            if self.expanded.contains(&id) {
-                self.expanded.remove(&id);
-            } else {
-                self.expanded.insert(id);
-            }
+        }
+    }
+
+    /// Toggle expand/collapse for the commit or group at the current overview
+    /// row (bound to `space`). Takes the snapshot to resolve entity ids. Called
+    /// from the run loop (and tests) after acquiring the snapshot lock, instead
+    /// of inside handle_key which doesn't have access to the snapshot.
+    pub fn toggle_expanded(&mut self, entries: &[OverviewEntry], snapshot: &SnapshotResponse) {
+        if let Some(id) = self.current_expandable_id(entries, snapshot)
+            && !self.expanded.remove(&id)
+        {
+            self.expanded.insert(id);
+        }
+    }
+
+    /// Expand the selected commit/group (bound to `→`). Idempotent.
+    pub fn expand_current(&mut self, entries: &[OverviewEntry], snapshot: &SnapshotResponse) {
+        if let Some(id) = self.current_expandable_id(entries, snapshot) {
+            self.expanded.insert(id);
+        }
+    }
+
+    /// Collapse the selected commit/group (bound to `←`). Idempotent.
+    pub fn collapse_current(&mut self, entries: &[OverviewEntry], snapshot: &SnapshotResponse) {
+        if let Some(id) = self.current_expandable_id(entries, snapshot) {
+            self.expanded.remove(&id);
         }
     }
 
@@ -487,12 +549,20 @@ mod tests {
         // Row 2 should be an UploadFile (first in-flight file, table_row 0).
         assert_eq!(
             expanded_entries[2],
-            OverviewEntry::UploadFile { session_idx: 0, commit_idx: 0, table_row: 0 }
+            OverviewEntry::UploadFile {
+                session_idx: 0,
+                commit_idx: 0,
+                table_row: 0
+            }
         );
         // Row 4 should be the completed-ring file (table_row = files.len() + ring_pos = 2 + 0).
         assert_eq!(
             expanded_entries[4],
-            OverviewEntry::UploadFile { session_idx: 0, commit_idx: 0, table_row: 2 }
+            OverviewEntry::UploadFile {
+                session_idx: 0,
+                commit_idx: 0,
+                table_row: 2
+            }
         );
 
         // Toggle again: should collapse.
@@ -500,6 +570,44 @@ mod tests {
         assert!(!app.expanded.contains(&7), "should be collapsed again");
         let re_collapsed = overview_entries(&snap, &app.expanded);
         assert_eq!(re_collapsed.len(), 4);
+    }
+
+    /// Right expands the selected commit/group, Left collapses it, and both are
+    /// idempotent (Right on an open row and Left on a closed row are no-ops).
+    #[test]
+    fn right_expands_left_collapses_and_are_idempotent() {
+        let snap = sample_snapshot();
+        let mut app = App::default();
+        let entries = overview_entries(&snap, &app.expanded);
+        // Row 1 is the live commit (id 7).
+        app.overview_row = 1;
+
+        app.expand_current(&entries, &snap);
+        assert!(app.expanded.contains(&7), "Right expands commit 7");
+        // Idempotent: expanding again leaves it expanded.
+        app.expand_current(&entries, &snap);
+        assert!(app.expanded.contains(&7), "Right on open row is a no-op");
+
+        let entries = overview_entries(&snap, &app.expanded);
+        app.collapse_current(&entries, &snap);
+        assert!(!app.expanded.contains(&7), "Left collapses commit 7");
+        // Idempotent: collapsing again leaves it collapsed.
+        app.collapse_current(&entries, &snap);
+        assert!(!app.expanded.contains(&7), "Left on closed row is a no-op");
+    }
+
+    /// Right/Left on a non-expandable row (a file row) does nothing.
+    #[test]
+    fn arrows_on_file_rows_are_noops() {
+        let snap = sample_snapshot();
+        let mut app = App::default();
+        app.expanded.insert(7);
+        let entries = overview_entries(&snap, &app.expanded);
+        // Row 2 is the first UploadFile under the expanded commit.
+        app.overview_row = 2;
+        assert!(matches!(entries[2], OverviewEntry::UploadFile { .. }));
+        app.collapse_current(&entries, &snap);
+        assert!(app.expanded.contains(&7), "Left on a file row must not collapse the parent");
     }
 
     /// Enter on an UploadFile entry drills to Page::Upload with main_row set
@@ -517,7 +625,14 @@ mod tests {
         // Pick table_row 1 (row 3).
         app.overview_row = 3;
         let entry = &expanded_entries[3];
-        assert_eq!(*entry, OverviewEntry::UploadFile { session_idx: 0, commit_idx: 0, table_row: 1 });
+        assert_eq!(
+            *entry,
+            OverviewEntry::UploadFile {
+                session_idx: 0,
+                commit_idx: 0,
+                table_row: 1
+            }
+        );
         app.handle_key(KeyCode::Enter, &expanded_entries);
         assert_eq!(app.page, Page::Upload);
         assert_eq!(app.session_idx, 0);
