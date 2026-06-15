@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
+#[cfg(not(target_family = "wasm"))]
 use tokio::runtime::Handle as TokioRuntimeHandle;
+#[cfg(not(target_family = "wasm"))]
 use tracing::info;
 
 use super::XetCommon;
@@ -47,6 +49,7 @@ impl XetContext {
     /// Follows the same runtime selection as [`default`](Self::default):
     /// reuse an owned runtime if available, wrap an existing tokio handle, or create a new one.
     pub fn with_config(config: XetConfig) -> Result<Self, RuntimeError> {
+        #[cfg(not(target_family = "wasm"))]
         let runtime = if let Some(runtime) = XetRuntime::current_if_exists() {
             runtime
         } else if let Ok(handle) = TokioRuntimeHandle::try_current()
@@ -59,15 +62,21 @@ impl XetContext {
         } else {
             XetRuntime::new(&config)?
         };
+
+        #[cfg(target_family = "wasm")]
+        let runtime = XetRuntime::new(&config)?;
+
         Ok(Self::new(config, runtime))
     }
 
     /// Wraps a caller-provided tokio handle with the given configuration.
+    #[cfg(not(target_family = "wasm"))]
     pub fn from_external(rt_handle: TokioRuntimeHandle, config: XetConfig) -> Self {
         Self::new(config, XetRuntime::from_external(rt_handle))
     }
 
     /// Checks whether a tokio handle meets the requirements for use with xet.
+    #[cfg(not(target_family = "wasm"))]
     pub fn handle_meets_requirements(handle: &TokioRuntimeHandle) -> bool {
         XetRuntime::handle_meets_requirements(handle)
     }
