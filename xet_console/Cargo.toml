@@ -13,7 +13,6 @@ clap = { workspace = true }
 humantime = { workspace = true }
 reqwest = { workspace = true, features = ["blocking"] }
 serde = { workspace = true }
-serde_json = { workspace = true }
 ratatui = "0.30.1"
 crossterm = "0.29.0"
 
