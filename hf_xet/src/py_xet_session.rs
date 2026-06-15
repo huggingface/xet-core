@@ -50,7 +50,7 @@ impl PyXetSession {
         #[allow(clippy::unwrap_or_default)]
         // XetConfig::new starts from default() and applies HF_XET_* environment variable overrides
         let xet_config = config.map(|c| c.into_inner()).unwrap_or_else(XetConfig::new);
-        let session = XetSessionBuilder::new_with_config(xet_config).build().map_err(PyErr::from)?;
+        let session = XetSessionBuilder::new().with_config(xet_config).build().map_err(PyErr::from)?;
         Ok(Self { inner: session })
     }
 

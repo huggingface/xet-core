@@ -22,8 +22,10 @@ pub struct XetContext {
 
 impl XetContext {
     /// Creates a context from a pre-built thread pool and configuration.
-    pub fn new(config: XetConfig, runtime: Arc<XetRuntime>) -> Self {
-        let config = Arc::new(config);
+    ///
+    /// Accepts either a [`XetConfig`] or an `Arc<XetConfig>`.
+    pub fn new(config: impl Into<Arc<XetConfig>>, runtime: Arc<XetRuntime>) -> Self {
+        let config = config.into();
         let common = Arc::new(XetCommon::new(&config));
         Self {
             runtime,
@@ -44,9 +46,12 @@ impl XetContext {
 
     /// Creates a context with the given configuration and an auto-detected thread pool.
     ///
+    /// Accepts either a [`XetConfig`] or an `Arc<XetConfig>`.
+    ///
     /// Follows the same runtime selection as [`default`](Self::default):
     /// reuse an owned runtime if available, wrap an existing tokio handle, or create a new one.
-    pub fn with_config(config: XetConfig) -> Result<Self, RuntimeError> {
+    pub fn with_config(config: impl Into<Arc<XetConfig>>) -> Result<Self, RuntimeError> {
+        let config = config.into();
         let runtime = if let Some(runtime) = XetRuntime::current_if_exists() {
             runtime
         } else if let Ok(handle) = TokioRuntimeHandle::try_current()
@@ -63,8 +68,25 @@ impl XetContext {
     }
 
     /// Wraps a caller-provided tokio handle with the given configuration.
-    pub fn from_external(rt_handle: TokioRuntimeHandle, config: XetConfig) -> Self {
+    ///
+    /// Accepts either a [`XetConfig`] or an `Arc<XetConfig>`.
+    pub fn from_external(rt_handle: TokioRuntimeHandle, config: impl Into<Arc<XetConfig>>) -> Self {
         Self::new(config, XetRuntime::from_external(rt_handle))
+    }
+
+    /// Returns a clone of this context with the configuration replaced.
+    ///
+    /// The runtime and shared `common` state (including its caches, such as the
+    /// shard-file managers) are shared with the original context; only the
+    /// configuration is swapped.  Note that `common` was sized from the original
+    /// configuration, so config fields that only affect `common` at construction
+    /// time (e.g. concurrency-limit semaphores) are not re-applied.
+    pub fn with_new_config(&self, config: impl Into<Arc<XetConfig>>) -> Self {
+        Self {
+            runtime: self.runtime.clone(),
+            config: config.into(),
+            common: self.common.clone(),
+        }
     }
 
     /// Checks whether a tokio handle meets the requirements for use with xet.
@@ -90,5 +112,29 @@ impl std::fmt::Debug for XetContext {
             .field("config", &"...")
             .field("common", &"...")
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_with_new_config_replaces_config_only() {
+        let original_config = Arc::new(XetConfig::new());
+        let runtime = XetRuntime::new(&original_config).unwrap();
+        let context = XetContext::new(original_config.clone(), runtime);
+        let new_config = Arc::new(
+            XetConfig::new()
+                .with_config("data.default_cas_endpoint", "https://cas.example.com")
+                .unwrap(),
+        );
+
+        let updated = context.with_new_config(new_config.clone());
+
+        assert!(Arc::ptr_eq(&context.runtime, &updated.runtime));
+        assert!(Arc::ptr_eq(&context.common, &updated.common));
+        assert!(Arc::ptr_eq(&new_config, &updated.config));
+        assert!(!Arc::ptr_eq(&original_config, &updated.config));
     }
 }

@@ -43,7 +43,7 @@ impl AuthGroupBuilder<XetUploadCommit> {
     /// # Errors
     ///
     /// Returns [`XetError::WrongRuntimeMode`] if the session wraps an external
-    /// tokio runtime (created via [`XetSessionBuilder::with_tokio_handle`] or
+    /// tokio runtime (supplied via [`XetSessionBuilder::with_runtime`] or
     /// auto-detected inside `#[tokio::main]`).
     ///
     /// # Panics

@@ -998,7 +998,7 @@ fn deficient_tokio_no_drivers_large_file() {
 // build() inside a deficient tokio runtime auto-falls-back to Owned mode;
 // blocking API still works from a sync context afterward.
 #[test]
-fn deficient_tokio_handle_auto_fallback_blocking_roundtrip() {
+fn deficient_tokio_runtime_auto_fallback_blocking_roundtrip() {
     for (label, builder) in [
         ("deficient", build_rt_no_drivers as RuntimeBuilder),
         ("no_io", build_rt_no_io as RuntimeBuilder),
@@ -1009,7 +1009,7 @@ fn deficient_tokio_handle_auto_fallback_blocking_roundtrip() {
         let endpoint = format!("local://{}", temp.path().join("cas").display());
         let session = rt.block_on(async { XetSessionBuilder::new().build().unwrap() });
 
-        let payload = format!("{label} handle blocking roundtrip");
+        let payload = format!("{label} runtime blocking roundtrip");
         assert_roundtrip_sync(&session, &endpoint, &temp, payload.as_bytes(), &format!("{label}_blocking"));
     }
 }
