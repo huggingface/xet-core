@@ -12,17 +12,15 @@ use futures::FutureExt;
 use tokio::runtime::{Builder as TokioRuntimeBuilder, Handle as TokioRuntimeHandle, Runtime as TokioRuntime};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
-use tracing::debug;
-use tracing::info;
+use tracing::{debug, info};
 
+pub use super::RuntimeMode;
 use crate::config::XetConfig;
 use crate::error::RuntimeError;
 #[cfg(feature = "fd-track")]
 use crate::fd_diagnostics::{report_fd_count, track_fd_scope};
 use crate::logging::SystemMonitor;
 use crate::utils::ClosureGuard as CallbackGuard;
-
-pub use super::RuntimeMode;
 
 const THREADPOOL_THREAD_ID_PREFIX: &str = "hf-xet"; // thread names will be hf-xet-0, hf-xet-1, etc.
 const THREADPOOL_STACK_SIZE: usize = 8_000_000; // 8MB stack size

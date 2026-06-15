@@ -1,10 +1,9 @@
 use std::fmt;
 use std::sync::Arc;
 
+use super::RuntimeMode;
 use crate::config::XetConfig;
 use crate::error::RuntimeError;
-
-use super::RuntimeMode;
 
 /// Minimal wasm runtime stub. No tokio runtime is instantiated on wasm. The bridge
 /// methods in `task_runtime.rs` use cfg-gated variants that `.await` futures directly
