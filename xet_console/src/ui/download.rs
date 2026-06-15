@@ -245,23 +245,25 @@ fn draw_prefetch(f: &mut Frame, area: Rect, app: &App, g: &DownloadGroupDetail) 
     let lines: Vec<Line> = if let Some(fl) = file {
         if let Some(p) = &fl.prefetch {
             let elapsed = humanize_duration_ms(now.saturating_sub(fl.created_at));
-            // Whole-file downloads request an open-ended range, so the scheduler
-            // speculatively advances its cursor past the real end (which it only
-            // learns once a short block returns). The writer never overshoots.
-            // Clamp the displayed positions to the known file size so "scheduled"
-            // and "buffered" can't exceed the file. `known_total` is 0 until the
-            // size is known; only clamp once we actually know it.
+            // The writer line is the real on-disk progress (`bytes_completed`) — the
+            // same quantity the files table reports — so this pane can never disagree
+            // with it. The scheduler cursor (`prefetched_byte_position`) is a term-plan
+            // cursor that, for whole-file (open-ended) requests, speculatively advances
+            // past the real end until a short block returns; clamp it to the known file
+            // size so "scheduled" and "buffered" can't exceed the file. `known_total` is
+            // 0 until the size is known; only clamp once we actually know it.
             let known_total = fl.total_bytes;
             let clamp = |pos: u64| if known_total > 0 { pos.min(known_total) } else { pos };
-            let writer = clamp(p.active_byte_position);
+            let writer = clamp(fl.bytes_completed);
             let scheduled = clamp(p.prefetched_byte_position);
             let file_total = known_total.max(1);
             let writer_pct = percent(writer, file_total);
 
-            // Once the writer reaches the end the reconstruction is fully fetched;
-            // any leftover prefetch cursor / in-flight count is stale, so collapse
-            // to a clean "complete" rather than freezing the last live readahead.
-            let done = known_total > 0 && p.active_byte_position >= known_total;
+            // "Complete" tracks bytes written, not the term-plan cursors: the prefetcher
+            // finishes enumerating term blocks (active/scheduled reach the file end) long
+            // before the data is written, so keying off those would flip to "complete"
+            // mid-download while the files table still reads e.g. 53%. Gate on bytes.
+            let done = known_total > 0 && fl.bytes_completed >= known_total;
             if done {
                 vec![
                     Line::from(format!("writer @ {} ({writer_pct}%)", humanize_bytes(writer))),
@@ -369,8 +371,8 @@ mod tests {
         let mut snap = sample_snapshot();
         let fl = &mut snap.sessions[0].download_group_details[0].files[0];
         let total = fl.total_bytes; // 1 GiB in the fixture
+        fl.bytes_completed = total / 2; // writer mid-file → not done
         if let Some(p) = &mut fl.prefetch {
-            p.active_byte_position = total / 2; // mid-file → not done
             p.prefetched_byte_position = 23 << 30; // cursor overshot the real end
             p.queue_depth = 2;
         }
@@ -398,9 +400,9 @@ mod tests {
         let mut snap = sample_snapshot();
         let fl = &mut snap.sessions[0].download_group_details[0].files[0];
         let total = fl.total_bytes;
-        fl.bytes_completed = total;
+        fl.bytes_completed = total; // writer reached the end → done
         if let Some(p) = &mut fl.prefetch {
-            p.active_byte_position = total; // writer reached the end
+            p.active_byte_position = total; // stale term-plan cursor
             p.prefetched_byte_position = 23 << 30; // stale, overshot cursor
             p.queue_depth = 2; // stale in-flight count
         }
