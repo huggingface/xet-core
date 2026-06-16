@@ -11,6 +11,7 @@ use tracing::info;
 #[cfg(target_family = "wasm")]
 use web_time::Instant;
 use xet_core_structures::ExpWeightedMovingAvg;
+use xet_runtime::config::XetConfig;
 use xet_runtime::core::XetContext;
 use xet_runtime::utils::adjustable_semaphore::{AdjustableSemaphore, AdjustableSemaphorePermit};
 
@@ -42,7 +43,7 @@ pub struct CCLatencyModelState {
 
 /// The internal state of the concurrency controller.
 struct ConcurrencyControllerState {
-    ctx: XetContext,
+    config: Arc<XetConfig>,
     /// A running model of the current bandwidth.  Uses an exponentially weighted average to predict the
     rtt_predictor: RTTPredictor,
 
@@ -74,13 +75,12 @@ struct ConcurrencyControllerState {
 }
 
 impl ConcurrencyControllerState {
-    fn new(ctx: XetContext) -> Self {
-        let config = &ctx.config;
+    fn new(config: Arc<XetConfig>) -> Self {
         let rtt_half_life_count = config.client.ac_latency_rtt_half_life;
         let success_half_life_count = config.client.ac_success_tracking_half_life;
 
         Self {
-            ctx,
+            config,
             rtt_predictor: RTTPredictor::new(rtt_half_life_count),
             success_ratio_tracking: ExpWeightedMovingAvg::new_count_decay(success_half_life_count),
             last_adjustment_time: Instant::now(),
@@ -94,7 +94,7 @@ impl ConcurrencyControllerState {
     }
 
     fn success_ratio_thresholds(&self) -> (f64, f64) {
-        let config = &self.ctx.config;
+        let config = &self.config;
         let increase_threshold = config.client.ac_healthy_success_ratio_threshold;
         let decrease_threshold = config.client.ac_unhealthy_success_ratio_threshold;
         (increase_threshold, decrease_threshold)
@@ -132,7 +132,7 @@ impl ConcurrencyControllerState {
 
     #[inline]
     fn latency_model_state(&self, current_concurrency: f64) -> CCLatencyModelState {
-        let config = &self.ctx.config;
+        let config = &self.config;
         let (predicted_max_rtt, prediction_max_rtt_standard_error) = self
             .rtt_predictor
             .predict(*config.client.ac_max_reference_transmission_size, current_concurrency);
@@ -161,7 +161,7 @@ impl ConcurrencyControllerState {
 
         let quantile_95 = (mu + REFERENCE_SIZE_QUANTILE_Z * sigma).exp();
 
-        let config = &self.ctx.config;
+        let config = &self.config;
         let min_size = *config.client.ac_min_reference_transmission_size;
         let max_size = *config.client.ac_max_reference_transmission_size;
 
@@ -259,7 +259,10 @@ impl ConcurrencyControllerState {
 ///
 /// The controller uses these reports to update its models and adjust concurrency accordingly.
 pub struct AdaptiveConcurrencyController {
-    ctx: XetContext,
+    // Holds only the config, never a full `XetContext`: controllers are cached inside
+    // `XetCommon` (see cache.rs), so holding a `XetContext` (which owns an `Arc<XetCommon>`)
+    // would create a reference cycle that keeps the runtime state alive forever.
+    config: Arc<XetConfig>,
     // The current state, including tracking information and when previous adjustments were made.
     // Also holds related constants
     state: Mutex<ConcurrencyControllerState>,
@@ -305,7 +308,7 @@ impl AdaptiveConcurrencyController {
             "Initializing Adaptive Concurrency Controller for {logging_tag} with starting concurrency = {current_concurrency}; min = {min_concurrency}, max = {max_concurrency}, min_bytes_for_adjustment = {min_bytes_required_for_adjustment}, min_completed_transmissions_for_adjustment = {min_completed_transmissions_required_for_adjustment}"
         );
 
-        let config = &ctx.config;
+        let config = ctx.config.clone();
         let concurrency_semaphore =
             AdjustableSemaphore::new(current_concurrency as u64, (min_concurrency as u64, max_concurrency as u64));
 
@@ -320,8 +323,7 @@ impl AdaptiveConcurrencyController {
         });
 
         Arc::new(Self {
-            ctx: ctx.clone(),
-            state: Mutex::new(ConcurrencyControllerState::new(ctx.clone())),
+            state: Mutex::new(ConcurrencyControllerState::new(config.clone())),
             concurrency_semaphore,
 
             min_concurrency_increase_delay: Duration::from_millis(config.client.ac_min_adjustment_window_ms),
@@ -332,6 +334,7 @@ impl AdaptiveConcurrencyController {
             min_completed_transmissions_required_for_adjustment,
             #[cfg(feature = "console")]
             monitor,
+            config,
         })
     }
 
@@ -348,8 +351,8 @@ impl AdaptiveConcurrencyController {
         });
 
         Arc::new(Self {
-            ctx: ctx.clone(),
-            state: Mutex::new(ConcurrencyControllerState::new(ctx)),
+            config: ctx.config.clone(),
+            state: Mutex::new(ConcurrencyControllerState::new(ctx.config)),
             concurrency_semaphore,
             adjustment_disabled: true,
             min_concurrency_increase_delay: Default::default(),
@@ -475,7 +478,7 @@ impl AdaptiveConcurrencyController {
         let t_actual = elapsed_time.as_secs_f64().max(1e-4);
 
         // Track if the transfer completed within a healthy time.
-        let config = &self.ctx.config;
+        let config = &self.config;
         let completed_in_time = elapsed_time < config.client.ac_max_healthy_rtt;
 
         let mut state_lg = self.state.lock().await;
@@ -808,11 +811,11 @@ mod test_constants {
 
 #[cfg(test)]
 impl ConcurrencyControllerState {
-    fn new_testing(ctx: XetContext) -> Self {
+    fn new_testing(config: Arc<XetConfig>) -> Self {
         use self::test_constants::TR_HALF_LIFE_COUNT;
 
         Self {
-            ctx,
+            config,
             rtt_predictor: RTTPredictor::new(TR_HALF_LIFE_COUNT),
             success_ratio_tracking: ExpWeightedMovingAvg::new_count_decay(TR_HALF_LIFE_COUNT),
             last_adjustment_time: Instant::now(),
@@ -829,10 +832,10 @@ impl ConcurrencyControllerState {
 #[cfg(test)]
 impl AdaptiveConcurrencyController {
     pub fn new_testing(concurrency: usize, concurrency_bounds: (usize, usize)) -> Arc<Self> {
-        let ctx = XetContext::default().expect("test runtime");
+        let config = Arc::new(XetConfig::new());
         Arc::new(Self {
-            ctx: ctx.clone(),
-            state: Mutex::new(ConcurrencyControllerState::new_testing(ctx)),
+            config: config.clone(),
+            state: Mutex::new(ConcurrencyControllerState::new_testing(config)),
             concurrency_semaphore: AdjustableSemaphore::new(
                 concurrency as u64,
                 (concurrency_bounds.0 as u64, concurrency_bounds.1 as u64),
@@ -854,13 +857,13 @@ impl AdaptiveConcurrencyController {
         concurrency_bounds: (usize, usize),
         scope: &std::sync::Arc<xet_runtime::console::state::SessionConsole>,
     ) -> Arc<Self> {
-        let ctx = XetContext::default().expect("test runtime");
+        let config = Arc::new(XetConfig::new());
         let semaphore =
             AdjustableSemaphore::new(concurrency as u64, (concurrency_bounds.0 as u64, concurrency_bounds.1 as u64));
         let monitor = scope.new_monitor("testing".to_string(), semaphore.clone(), concurrency_bounds, true);
         Arc::new(Self {
-            ctx: ctx.clone(),
-            state: Mutex::new(ConcurrencyControllerState::new_testing(ctx)),
+            config: config.clone(),
+            state: Mutex::new(ConcurrencyControllerState::new_testing(config)),
             concurrency_semaphore: semaphore,
             min_concurrency_increase_delay: Duration::from_millis(test_constants::INCR_SPACING_MS),
             min_concurrency_decrease_delay: Duration::from_millis(test_constants::DECR_SPACING_MS),
@@ -1078,15 +1081,15 @@ mod tests {
 
     #[test]
     fn test_reference_size_returns_none_with_insufficient_data() {
-        let ctx = XetContext::default().expect("test runtime");
-        let state = ConcurrencyControllerState::new_testing(ctx);
+        let config = Arc::new(XetConfig::new());
+        let state = ConcurrencyControllerState::new_testing(config);
         assert!(state.estimated_reference_transmission_size().is_none());
     }
 
     #[test]
     fn test_reference_size_with_uniform_sizes() {
-        let ctx = XetContext::default().expect("test runtime");
-        let mut state = ConcurrencyControllerState::new_testing(ctx);
+        let config = Arc::new(XetConfig::new());
+        let mut state = ConcurrencyControllerState::new_testing(config);
 
         let size: u64 = 10 * 1024 * 1024; // 10 MB
         for _ in 0..10 {
@@ -1104,8 +1107,8 @@ mod tests {
 
     #[test]
     fn test_reference_size_bounded_by_minimum() {
-        let ctx = XetContext::default().expect("test runtime");
-        let mut state = ConcurrencyControllerState::new_testing(ctx);
+        let config = Arc::new(XetConfig::new());
+        let mut state = ConcurrencyControllerState::new_testing(config);
 
         let size: u64 = 1024; // 1 KB
         for _ in 0..10 {
@@ -1119,8 +1122,8 @@ mod tests {
 
     #[test]
     fn test_reference_size_bounded_by_config_maximum() {
-        let ctx = XetContext::default().expect("test runtime");
-        let mut state = ConcurrencyControllerState::new_testing(ctx);
+        let config = Arc::new(XetConfig::new());
+        let mut state = ConcurrencyControllerState::new_testing(config);
 
         let size: u64 = 200 * 1024 * 1024; // 200 MB (above the 64MB config default)
         for _ in 0..10 {
@@ -1134,8 +1137,8 @@ mod tests {
 
     #[test]
     fn test_reference_size_skips_zero_byte_transfers() {
-        let ctx = XetContext::default().expect("test runtime");
-        let mut state = ConcurrencyControllerState::new_testing(ctx);
+        let config = Arc::new(XetConfig::new());
+        let mut state = ConcurrencyControllerState::new_testing(config);
 
         for _ in 0..10 {
             state.update_size_tracking(0);
@@ -1147,17 +1150,14 @@ mod tests {
 
     #[test]
     fn test_reference_size_with_mixed_sizes() {
-        let config = XetConfig::new();
-
-        let ctx_small = XetContext::default().expect("test runtime");
-        let mut small_only_state = ConcurrencyControllerState::new_testing(ctx_small);
+        let mut small_only_state = ConcurrencyControllerState::new_testing(Arc::new(XetConfig::new()));
         for _ in 0..10 {
             small_only_state.update_size_tracking(512 * 1024); // 512 KB
         }
         let small_only_ref_size = small_only_state.estimated_reference_transmission_size().unwrap();
 
-        let ctx = XetContext::default().expect("test runtime");
-        let mut state = ConcurrencyControllerState::new_testing(ctx);
+        let config = Arc::new(XetConfig::new());
+        let mut state = ConcurrencyControllerState::new_testing(config.clone());
 
         // Mix of small and large transfers
         for _ in 0..5 {
