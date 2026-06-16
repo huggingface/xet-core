@@ -679,7 +679,7 @@ impl ConnectionPermit {
                 0.0
             };
 
-            tokio::task::spawn(async move {
+            tokio::spawn(async move {
                 // The weight that gets passed to the controller is PARTIAL_REPORT_WEIGHT_RATIO * portion_completed for
                 // partial reports, allowing at least the remaining weight to be given to the final
                 // completed report.

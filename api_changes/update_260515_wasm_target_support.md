@@ -84,9 +84,10 @@ clean handle. `clean_file`, `hash_files_async`, and the private
 `hash_single_file` are `#[cfg(not(target_family = "wasm"))]`: they open
 files from disk, and `hash_files_async` additionally routes through
 `XetRuntime::spawn_blocking` (which on wasm runs `f` inline anyway —
-unsuitable for the parallel-hash use case). Wasm consumers that need
-hashing must drive it from JS (e.g. `crypto.subtle.digest`) or feed
-bytes into `clean_bytes`.
+unsuitable for the parallel-hash use case). Wasm consumers that need the
+Xet file hash can read it from the `XetFileInfo` returned by `clean_bytes`
+(the standalone hash helpers are gated out only because they read from
+disk; the hash itself is produced by the same chunking pipeline).
 
 ### `TemplatedPathBuf` on wasm
 
