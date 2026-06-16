@@ -368,12 +368,14 @@ pub fn find_stable_start(nodes: &[Node]) -> Option<usize> {
 /// Returns `c1 + 1` as the stable end point; everything from `c1 + 1`
 /// onward is the unstable suffix that cannot yet be merged.
 ///
-/// The reasoning mirrors `find_stable_start`: because `next_merge_cut`
-/// scans forward with bounded lookahead, `c1` is always within the scan
-/// window of any group that reaches `c0`, and `c2` guarantees `c1`
-/// terminates its group.  Appending nodes after the slice can only affect
-/// groups that include the last node -- groups ending before `c1 + 1` are
-/// unaffected.
+/// The reason that the logic there is a bit more complicated is that
+/// we don't actually know whether or not that last cut point was due
+/// to the end of the sequence, i.e. the end of the file.  In the
+/// chunking case, we know this contextually, but here if we append to
+/// a file, we load the last chunk hashes as a MerkleSubTree where the
+/// end is not fixed, but it turns out the last chunk cut point is
+/// actually only there cause it was the end in that case and we don't
+/// know that here.
 pub fn find_stable_end(nodes: &[Node]) -> Option<usize> {
     if nodes.len() < MIN_GROUP_SIZE + 1 {
         return None;
