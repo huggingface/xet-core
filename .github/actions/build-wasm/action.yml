@@ -14,13 +14,6 @@ runs:
         targets: wasm32-unknown-unknown
         components: rust-src
     - uses: ./.github/actions/cache-rust-build
-    # Capture the active nightly's rustc version so the wasm-bindgen / wasm-pack
-    # cache key changes whenever the toolchain rolls. Without this, a nightly
-    # bump can pull a stale binary built against the previous std/sysroot.
-    - name: Resolve rustc version for cache key
-      id: rustc-version
-      shell: bash
-      run: echo "version=$(rustc +nightly --version | awk '{print $2"-"$3}' | tr -d '()')" >> "$GITHUB_OUTPUT"
     # Cache the cargo-installed tool binaries themselves so we skip the
     # ~1-2 min `cargo install` rebuilds on cache hit. Keyed on the exact
     # versions below; bump the key when bumping versions.
@@ -33,7 +26,7 @@ runs:
           ~/.cargo/bin/wasm-pack
           ~/.cargo/.crates.toml
           ~/.cargo/.crates2.json
-        key: ${{ runner.os }}-${{ runner.arch }}-cargo-tools-wbg-0.2.121-wp-0.14.0-rustc-${{ steps.rustc-version.outputs.version }}
+        key: ${{ runner.os }}-${{ runner.arch }}-cargo-tools-wbg-0.2.121-wp-0.14.0
     - name: Install wasm-bindgen-cli and wasm-pack
       shell: bash
       run: |
