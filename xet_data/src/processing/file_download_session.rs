@@ -1,6 +1,5 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
-#[cfg(not(target_family = "wasm"))]
 use std::io::Write;
 use std::ops::{Bound, Range, RangeBounds};
 #[cfg(not(target_family = "wasm"))]
@@ -307,7 +306,13 @@ impl FileDownloadSession {
         }
         Ok(n_bytes)
     }
+}
 
+// Writer-sink download — available on all targets. Unlike the filesystem
+// methods above, this writes to a caller-provided `Write` sink and needs no
+// `std::path`. On native the sink is driven by a background writer thread; on
+// wasm the streaming reconstruction path feeds it inline.
+impl FileDownloadSession {
     /// Downloads a byte range of a file and writes it to the provided writer.
     ///
     /// The provided `source_range` is interpreted against the original file; output

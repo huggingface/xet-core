@@ -58,4 +58,31 @@ impl XetDownloadStreamGroup {
 
         Ok(XetDownloadStream::new(stream))
     }
+
+    /// Download a file described by `fileInfo` fully into memory and return its
+    /// bytes as a `Uint8Array`.
+    ///
+    /// `fileInfo` must be a plain JS object matching the `XetFileInfo` shape:
+    /// `{ hash: string, file_size: number }`.
+    ///
+    /// `byteRangeStart` and `byteRangeEnd` are optional; when both are provided,
+    /// only that byte range is downloaded. This exercises
+    /// `FileDownloadSession::download_to_writer` under the hood; for large files
+    /// prefer [`downloadStream`](Self::download_stream).
+    #[wasm_bindgen(js_name = "downloadToBytes")]
+    pub async fn download_to_bytes(
+        &self,
+        file_info: JsValue,
+        byte_range_start: Option<f64>,
+        byte_range_end: Option<f64>,
+    ) -> Result<Vec<u8>, JsValue> {
+        let file_info: XetFileInfo = serde_wasm_bindgen::from_value(file_info).map_err(js_err)?;
+
+        let range: Option<Range<u64>> = match (byte_range_start, byte_range_end) {
+            (Some(start), Some(end)) => Some(start as u64..end as u64),
+            _ => None,
+        };
+
+        self.inner.download_to_bytes(file_info, range).await.map_err(js_err)
+    }
 }

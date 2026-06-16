@@ -224,6 +224,12 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         working-directory: wasm/ci-smoke
         run: node run.mjs download
+      - name: WASM download-to-bytes smoke test (prod hub + CAS)
+        # Writer-sink download (download_to_writer / reconstruct_to_writer) with content SHA-256 assertion.
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        working-directory: wasm/ci-smoke
+        run: node run.mjs download-to-bytes
       - name: WASM download-multi smoke test (prod hub + CAS)
         # Concurrent multi-file download fan-out.
         env:

@@ -178,6 +178,22 @@ const SCENARIOS = {
     },
   },
 
+  // Same pinned file as `download`, but via downloadToBytes — the writer-sink
+  // path (download_to_writer / reconstruct_to_writer) rather than the streaming
+  // path. Asserts byte count + content SHA-256. The only wasm coverage of the
+  // writer-sink download interface.
+  'download-to-bytes': {
+    readToken: true,
+    assert(result) {
+      if (result.byteCount !== PINNED_BIN.size) {
+        throw new Error(`byte count ${result.byteCount} != expected ${PINNED_BIN.size}`);
+      }
+      if (result.sha256 !== PINNED_BIN.sha256) {
+        throw new Error(`sha256 ${result.sha256} != expected ${PINNED_BIN.sha256}`);
+      }
+    },
+  },
+
   // Concurrent multi-file download in one XetDownloadStreamGroup. Asserts
   // each download's byteCount and content SHA-256 against the pinned values —
   // a stream-fan-out bug that crossed buffers fails the content hash even
