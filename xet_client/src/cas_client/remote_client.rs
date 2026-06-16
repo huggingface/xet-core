@@ -14,7 +14,9 @@ use xet_core_structures::metadata_shard::file_structs::{FileDataSequenceEntry, F
 use xet_core_structures::xorb_object::SerializedXorbObject;
 use xet_runtime::core::XetContext;
 
-use super::adaptive_concurrency::{AdaptiveConcurrencyController, ConnectionPermit};
+use super::adaptive_concurrency::{
+    AdaptiveConcurrencyController, ConnectionPermit, download_controller, upload_controller,
+};
 use super::auth::AuthConfig;
 use super::interface::URLProvider;
 use super::progress_tracked_streams::{
@@ -96,8 +98,8 @@ impl RemoteClient {
                 )
                 .unwrap(),
             ),
-            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload(ctx.clone(), "upload"),
-            download_concurrency_controller: AdaptiveConcurrencyController::new_download(ctx.clone(), "download"),
+            upload_concurrency_controller: upload_controller(&ctx, endpoint),
+            download_concurrency_controller: download_controller(&ctx, endpoint),
             detected_reconstruction_api_version: AtomicU32::new(0),
         })
     }
@@ -803,6 +805,30 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn test_clients_share_controllers_per_ctx_and_endpoint() {
+        let ctx = XetContext::default().unwrap();
+        let c1 = RemoteClient::new(ctx.clone(), "https://cas-a.example.com", &None, "", false, None);
+        let c2 = RemoteClient::new(ctx.clone(), "https://cas-a.example.com", &None, "", false, None);
+
+        // Same ctx + same endpoint: shared upload and download controllers.
+        assert!(Arc::ptr_eq(&c1.upload_concurrency_controller, &c2.upload_concurrency_controller));
+        assert!(Arc::ptr_eq(&c1.download_concurrency_controller, &c2.download_concurrency_controller));
+
+        // Same ctx, different endpoint: independent controllers.
+        let c3 = RemoteClient::new(ctx.clone(), "https://cas-b.example.com", &None, "", false, None);
+        assert!(!Arc::ptr_eq(&c1.upload_concurrency_controller, &c3.upload_concurrency_controller));
+
+        // Creating a second endpoint must not evict the first: re-fetching cas-a still shares with c1.
+        let c5 = RemoteClient::new(ctx.clone(), "https://cas-a.example.com", &None, "", false, None);
+        assert!(Arc::ptr_eq(&c1.upload_concurrency_controller, &c5.upload_concurrency_controller));
+
+        // Different ctx (different session), same endpoint: independent controllers.
+        let ctx2 = XetContext::default().unwrap();
+        let c4 = RemoteClient::new(ctx2, "https://cas-a.example.com", &None, "", false, None);
+        assert!(!Arc::ptr_eq(&c1.upload_concurrency_controller, &c4.upload_concurrency_controller));
+    }
 
     #[ignore = "requires a running CAS server"]
     #[traced_test]
