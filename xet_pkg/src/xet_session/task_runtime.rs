@@ -222,23 +222,10 @@ impl TaskRuntime {
         });
         Ok(live)
     }
-}
 
-// `Send` on native, unconstrained on wasm: lets the shared bridge methods
-// below state one set of bounds while wasm futures stay `!Send`.
-#[cfg(not(target_family = "wasm"))]
-pub(super) trait MaybeSend: Send {}
-#[cfg(not(target_family = "wasm"))]
-impl<T: Send> MaybeSend for T {}
-#[cfg(target_family = "wasm")]
-pub(super) trait MaybeSend {}
-#[cfg(target_family = "wasm")]
-impl<T> MaybeSend for T {}
-
-// Async task bridging, shared across targets. The state-machine logic lives
-// here once; only `run_inner_async` (XetRuntime offload on native, inline
-// select on wasm) differs per target.
-impl TaskRuntime {
+    // Async task bridging, shared across targets. The state-machine logic lives
+    // here once; only `run_inner_async` (XetRuntime offload on native, inline
+    // select on wasm) differs per target.
     pub(super) async fn bridge_async<T, F>(&self, task_name: &'static str, fut: F) -> Result<T, XetError>
     where
         F: Future<Output = Result<T, XetError>> + MaybeSend + 'static,
@@ -275,6 +262,17 @@ impl TaskRuntime {
         result
     }
 }
+
+// `Send` on native, unconstrained on wasm: lets the shared bridge methods
+// above state one set of bounds while wasm futures stay `!Send`.
+#[cfg(not(target_family = "wasm"))]
+pub(super) trait MaybeSend: Send {}
+#[cfg(not(target_family = "wasm"))]
+impl<T: Send> MaybeSend for T {}
+#[cfg(target_family = "wasm")]
+pub(super) trait MaybeSend {}
+#[cfg(target_family = "wasm")]
+impl<T> MaybeSend for T {}
 
 // Native task bridging internals: routes futures through XetRuntime's
 // multithreaded executor and requires Send + 'static bounds. Sync bridging

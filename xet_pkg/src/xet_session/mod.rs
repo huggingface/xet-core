@@ -1,20 +1,5 @@
 //! Session-based file upload and download API for XetHub / HuggingFace Hub.
 //!
-//! ## WASM availability
-//!
-//! On `wasm32-unknown-unknown` targets the surface is a strict subset:
-//!
-//! - **Async only** — no `_blocking` variants. Wasm cannot block the host thread, and the bridged `_blocking` methods
-//!   are gated to non-wasm.
-//! - **No filesystem entrypoints** — `upload_from_path`, `XetFileDownloadGroup`, and `XetFileDownload` are
-//!   non-wasm-only. Wasm callers use `upload_bytes` / `upload_stream` and `XetDownloadStreamGroup` instead.
-//! - **No external tokio handle** — `XetSessionBuilder::with_tokio_handle` is non-wasm-only.
-//!
-//! The `[`...`]` doc links below resolve on every target, but the rendered
-//! `_blocking` and path-based names point at items that don't exist when
-//! building docs for wasm. See the per-method `#[cfg(...)]` attributes for
-//! the authoritative target gate.
-//!
 //! This crate exposes a three-level hierarchy that maps naturally onto batch
 //! file operations:
 //!
@@ -263,6 +248,19 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! ## WASM availability
+//!
+//! On `wasm32-unknown-unknown` the surface is a strict subset:
+//!
+//! - **Async only** — `_blocking` variants are non-wasm (wasm cannot block the host thread).
+//! - **No filesystem entrypoints** — `upload_from_path`, `XetFileDownloadGroup`, and `XetFileDownload`
+//!   are non-wasm; use `upload_bytes` / `upload_stream` and `XetDownloadStreamGroup` instead.
+//! - **No external tokio handle** — `XetSessionBuilder::with_tokio_handle` is non-wasm.
+//!
+//! Doc links resolve on every target, but `_blocking` and path-based names
+//! point at items that don't exist on wasm; the per-method `#[cfg(...)]`
+//! attributes are the authoritative target gate.
 
 mod auth_group_builder;
 mod common;

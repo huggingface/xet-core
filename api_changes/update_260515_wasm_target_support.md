@@ -27,9 +27,6 @@ independently. The main workspace pins the same versions under
 `wasm/hf_xet_wasm/build_wasm.sh` and the cargo-tools cache key in
 `.github/actions/build-wasm/action.yml`.
 
-The previous separate `wasm/hf_xet_wasm_download` and `wasm/hf_xet_wasm_upload`
-crates have been combined back into `wasm/hf_xet_wasm`.
-
 ---
 
 ## Wasm-only differences
@@ -70,12 +67,6 @@ completed `JoinHandle`. Downstream callers that store the returned
 `JoinHandle` by type (`xet_data::processing::sha256::Sha256Generator`) must
 import `tokio_with_wasm::alias as tokio` on wasm so the `JoinHandle` /
 `JoinError` types resolve correctly per target.
-
-### `DataError::WasmTaskJoinError`
-
-Renamed from `WasmJoinError` for consistency with
-`FileReconstructionError::WasmTaskJoinError`. Only added in this PR; no
-external callers should exist yet.
 
 ### `xet_core_structures::metadata_shard::session_directory`
 

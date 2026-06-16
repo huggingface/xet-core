@@ -172,12 +172,8 @@ impl XetSessionBuilder {
     /// Each build creates a fresh [`XetContext`] around the selected runtime, so sessions
     /// can share the same execution backend while keeping independent config and common state.
     ///
-    /// On wasm no tokio runtime is instantiated at all: `tokio_handle` is statically
-    /// `None` and `XetContext::with_config` creates a stub `XetRuntime`. The wasm
-    /// bridge variants in `task_runtime.rs` `.await` futures directly via
-    /// `wasm_bindgen_futures::spawn_local` and never call back into
-    /// `XetRuntime::handle()`, so the `XetContext` is purely a bookkeeping object
-    /// (config + common state + cancellation tokens).
+    /// On wasm no tokio runtime is instantiated; all tasks are spawned onto the
+    /// JavaScript event loop.
     pub fn build(self) -> Result<XetSession, SessionError> {
         #[cfg(feature = "fd-track")]
         let _fd_scope = track_fd_scope("XetSessionBuilder::build");
