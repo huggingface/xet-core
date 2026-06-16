@@ -182,12 +182,16 @@ impl XetSessionBuilder {
         #[cfg(feature = "fd-track")]
         let _fd_scope = track_fd_scope("XetSessionBuilder::build");
 
+        #[cfg(not(target_family = "wasm"))]
         let ctx = if let Some(h) = self.tokio_handle {
             info!("XetSession using explicitly provided tokio handle");
             XetContext::from_external(h, self.config)
         } else {
             XetContext::with_config(self.config)?
         };
+
+        #[cfg(target_family = "wasm")]
+        let ctx = XetContext::with_config(self.config)?;
 
         let session = XetSession::new(ctx);
         info!("Session created, session_id={}", session.inner.id);
@@ -477,6 +481,7 @@ mod tests {
     // ── XetContext::handle_meets_requirements ────────────────────────────────
 
     #[test]
+    #[cfg(not(target_family = "wasm"))]
     // A multi-thread runtime with enable_all() meets all requirements.
     fn test_handle_multi_thread_all_features_returns_true() {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
@@ -492,6 +497,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_family = "wasm"))]
     // A multi-thread runtime with no drivers enabled returns false.
     fn test_handle_without_any_driver_returns_false() {
         let rt = tokio::runtime::Builder::new_multi_thread().build().unwrap();
@@ -499,6 +505,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_family = "wasm"))]
     // A multi-thread runtime with only enable_time() is missing the IO driver.
     fn test_handle_without_io_driver_returns_false() {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_time().build().unwrap();
@@ -506,6 +513,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_family = "wasm"))]
     // A multi-thread runtime with only enable_io() is missing the time driver.
     fn test_handle_without_time_driver_returns_false() {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_io().build().unwrap();
