@@ -532,7 +532,7 @@ impl DeletionControlableClient for SimulationControlClient {
     }
 
     /// Removes all global-dedup table entries for a shard via `/simulation/shards/{hash}/dedup_entries`.
-    async fn remove_shard_dedup_entries(&self, shard_hash: &MerkleHash) -> Result<()> {
+    async fn remove_shard_dedup_entries(&self, shard_hash: &MerkleHash) -> Result<Vec<MerkleHash>> {
         let hex = HexMerkleHash::from(*shard_hash);
         let url = self.sim_url(&format!("/shards/{hex}/dedup_entries"));
         let resp = self
@@ -541,8 +541,9 @@ impl DeletionControlableClient for SimulationControlClient {
             .send()
             .await
             .map_err(|e| ClientError::Other(e.to_string()))?;
-        Self::check_status(resp).await?;
-        Ok(())
+        let resp = Self::check_status(resp).await?;
+        let removed: Vec<HexMerkleHash> = resp.json().await.map_err(|e| ClientError::Other(e.to_string()))?;
+        Ok(removed.into_iter().map(MerkleHash::from).collect())
     }
 
     async fn delete_xorb(&self, hash: &MerkleHash) {
