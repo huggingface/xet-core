@@ -1,0 +1,17 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directories:
+      - "/"
+      - "/.github/actions/build-wasm"
+      - "/.github/actions/cache-rust-build"
+      - "/.github/actions/macos-codesign-notarize"
+      - "/.github/actions/set-build-profile"
+      - "/.github/actions/windows-codesign"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
