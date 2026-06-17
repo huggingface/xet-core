@@ -1,8 +1,8 @@
 #[cfg(not(target_family = "wasm"))]
 use std::fs::OpenOptions;
+use std::io::Write;
 #[cfg(not(target_family = "wasm"))]
 use std::io::{Seek, SeekFrom};
-use std::io::Write;
 #[cfg(not(target_family = "wasm"))]
 use std::path::Path;
 use std::sync::Arc;
