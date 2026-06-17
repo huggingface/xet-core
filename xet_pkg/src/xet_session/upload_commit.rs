@@ -512,6 +512,7 @@ impl XetUploadCommit {
     ///
     /// - `file_path`: path to the file. Resolved to an absolute path so the upload is unaffected by later
     ///   working-directory changes.
+    /// - `sha256`: SHA-256 handling policy for this file.
     pub async fn upload_from_path(&self, file_path: PathBuf, sha256: Sha256Policy) -> Result<XetFileUpload, XetError> {
         info!(commit_id = %self.id(), path = ?file_path, "Upload from path");
         let inner = Arc::clone(&self.inner);
