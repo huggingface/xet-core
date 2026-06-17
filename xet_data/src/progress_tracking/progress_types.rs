@@ -364,7 +364,7 @@ impl std::fmt::Debug for ItemProgressUpdater {
 // === Snapshot report structs ===
 
 #[derive(Clone, Debug, Default)]
-#[cfg_attr(feature = "python", pyo3::pyclass(get_all))]
+#[cfg_attr(feature = "python", pyo3::pyclass(get_all, from_py_object))]
 pub struct GroupProgressReport {
     pub total_bytes: u64,
     pub total_bytes_completed: u64,
@@ -375,7 +375,7 @@ pub struct GroupProgressReport {
 }
 
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "python", pyo3::pyclass(get_all))]
+#[cfg_attr(feature = "python", pyo3::pyclass(get_all, from_py_object))]
 pub struct ItemProgressReport {
     pub item_name: String,
     pub total_bytes: u64,

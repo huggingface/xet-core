@@ -55,7 +55,7 @@ pub(crate) fn build_download_stream_group(
 /// concurrently from the same group.
 ///
 /// Cloning is cheap — all clones share the same underlying state.
-#[pyclass(name = "XetDownloadStreamGroup")]
+#[pyclass(name = "XetDownloadStreamGroup", from_py_object)]
 #[derive(Clone)]
 pub struct PyXetDownloadStreamGroup {
     pub(crate) inner: XetDownloadStreamGroup,

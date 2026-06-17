@@ -4,7 +4,7 @@ use xet_runtime::error_printer::ErrorPrinter;
 
 /// A struct that wraps a the Xet file information.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "python", pyo3::pyclass(get_all))]
+#[cfg_attr(feature = "python", pyo3::pyclass(get_all, from_py_object))]
 pub struct XetFileInfo {
     /// The Merkle hash of the file
     pub hash: String,
