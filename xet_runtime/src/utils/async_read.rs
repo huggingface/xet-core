@@ -31,8 +31,8 @@ impl<'r, 'w, R: AsyncRead + Unpin, W: Write> CopyReader<'r, 'w, R, W> {
 }
 
 /// An extension trait for `AsyncRead` that provides additional methods beyond the normal `AsyncReadExt`.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 pub trait AsyncReadCustomExt: AsyncReadExt + Unpin {
     /// Reads all data from the stream until EOF and discards it.
     async fn drain<'a>(&'a mut self) -> std::io::Result<()> {
@@ -48,8 +48,8 @@ pub trait AsyncReadCustomExt: AsyncReadExt + Unpin {
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl<T: AsyncReadExt + Unpin> AsyncReadCustomExt for T {}
 
 #[cfg(test)]

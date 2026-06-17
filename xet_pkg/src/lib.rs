@@ -42,6 +42,21 @@
 //! See the [`xet_session`] module for the full API, including async
 //! variants, streaming uploads and downloads, and progress tracking.
 //!
+//! # WebAssembly targets
+//!
+//! This crate compiles for `wasm32-unknown-unknown`, but the public surface
+//! is a strict subset of the native API. The example above uses
+//! `_blocking` variants and `upload_from_path` / `download_file_to_path`,
+//! all of which are non-wasm-only — wasm cannot block the host thread and
+//! has no filesystem. On wasm the supported entry points are the async
+//! variants of [`new_upload_commit`](xet_session::XetSession::new_upload_commit)
+//! (with [`upload_bytes`](xet_session::XetUploadCommit::upload_bytes) /
+//! [`upload_stream`](xet_session::XetUploadCommit::upload_stream)) and
+//! [`new_download_stream_group`](xet_session::XetSession::new_download_stream_group)
+//! (with [`download_stream`](xet_session::XetDownloadStreamGroup::download_stream)).
+//! The `legacy` module and `XetSession::new_file_download_group` (along
+//! with all `_blocking` variants) are non-wasm-only.
+//!
 //! # Modules
 //!
 //! - [`xet_session`] — the primary API: [`XetSession`](xet_session::XetSession), upload commits, file download groups,
@@ -55,6 +70,7 @@ pub use error::{XetAuthenticationError, XetObjectNotFoundError, register_excepti
 
 // Legacy helpers re-exported for backward compatibility with `hf_xet` (Python bindings)
 // and `git_xet`.  New code should use the [`xet_session`] API instead.
+#[cfg(not(target_family = "wasm"))]
 pub mod legacy;
 pub mod xet_session;
 
@@ -62,6 +78,7 @@ pub mod xet_session;
 ///
 /// Reads `HF_XET_LOG_FILE` / `RUST_LOG` environment variables.  Repeated calls
 /// are no-ops — the global subscriber is installed only once.
+#[cfg(not(target_family = "wasm"))]
 pub fn init_logging(version_info: String) {
     let log_dir = xet_runtime::core::xet_cache_root().join("logs");
 

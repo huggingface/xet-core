@@ -12,7 +12,6 @@ use xet_runtime::RuntimeError;
 use xet_runtime::core::par_utils::ParutilsError;
 use xet_runtime::utils::errors::SingleflightError;
 
-#[cfg(not(target_family = "wasm"))]
 use crate::file_reconstruction::FileReconstructionError;
 
 #[derive(Error, Debug)]
@@ -53,6 +52,10 @@ pub enum DataError {
     #[error("Subtask scheduling error: {0}")]
     JoinError(#[from] tokio::task::JoinError),
 
+    #[cfg(target_family = "wasm")]
+    #[error("Subtask scheduling error (wasm): {0}")]
+    WasmTaskJoinError(#[from] tokio_with_wasm::task::JoinError),
+
     #[error("Non-small file not cleaned: {0}")]
     FileNotCleanedError(#[from] FromUtf8Error),
 
@@ -82,7 +85,6 @@ pub enum DataError {
     #[error("Permit acquisition error: {0}")]
     PermitAcquisitionError(#[from] AcquireError),
 
-    #[cfg(not(target_family = "wasm"))]
     #[error("File reconstruction error: {0}")]
     FileReconstructionError(#[from] FileReconstructionError),
 

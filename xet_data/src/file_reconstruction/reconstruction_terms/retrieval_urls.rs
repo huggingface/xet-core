@@ -144,7 +144,8 @@ pub struct XorbURLProvider {
     pub last_acquisition_id: Mutex<UniqueId>,
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl URLProvider for XorbURLProvider {
     async fn retrieve_url(&self) -> std::result::Result<(String, Vec<HttpRange>), xet_client::ClientError> {
         let (unique_id, url, http_ranges) = self.url_info.get_retrieval_url(self.xorb_block_index).await;

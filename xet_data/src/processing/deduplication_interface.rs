@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use tokio::task::JoinSet;
+#[cfg(target_family = "wasm")]
+use tokio_with_wasm::alias as tokio;
 use tracing::Instrument;
 use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::metadata_shard::file_structs::FileDataSequenceEntry;
@@ -29,7 +31,8 @@ impl UploadSessionDataManager {
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl DeduplicationDataInterface for UploadSessionDataManager {
     type ErrorType = DataError;
 
