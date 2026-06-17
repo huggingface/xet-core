@@ -4,9 +4,8 @@
 // Only these two files are Xet-stored on this commit (the json/txt sidecars
 // are too small to be promoted to Xet). The size delta — 540 KiB vs 26 MiB —
 // is intentional: a fan-out bug that crossed stream buffers would corrupt
-// content that no single-file test could miss. Each download reports its
-// content SHA-256; run.mjs asserts both against pinned values, so swapped or
-// interleaved buffers fail even when the byte counts happen to line up.
+// content no single-file test could catch. Each download reports its content
+// SHA-256, asserted against pinned values in run.mjs.
 
 import { XetSession, READ_REPO, fetchPathsInfo, pathInfoEntry, fetchXetReadToken, sha256Hex, drainStreamToBytes } from '../common.mjs';
 

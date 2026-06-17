@@ -1,10 +1,9 @@
-// cancel() on an in-flight download stream. Reads one chunk of the large
-// pinned file, cancels, and requires the next next() to resolve `undefined`
-// promptly — the documented contract is "subsequent next() returns None",
-// and a hang here would mean the wasm cancel path stopped tearing down the
-// reconstruction task. Then downloads the small pinned file in full from the
-// same group to prove a cancelled stream poisons neither the group nor the
-// session.
+// cancel() on an in-flight download stream. Reads one chunk of the large pinned
+// file, cancels, and requires the next next() to resolve `undefined` promptly
+// (the contract is "subsequent next() returns None"); a hang would mean the
+// wasm cancel path stopped tearing down the reconstruction task. Then downloads
+// the small pinned file in full from the same group to prove a cancelled stream
+// poisons neither the group nor the session.
 
 import { XetSession, READ_REPO, fetchPathsInfo, pathInfoEntry, fetchXetReadToken, sha256Hex, drainStreamToBytes } from '../common.mjs';
 

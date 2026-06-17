@@ -1,23 +1,22 @@
-// Cross-session global dedup against production CAS: download the
-// pre-seeded deterministic file from WRITE_REPO, re-upload its bytes in a
-// fresh commit, and expect every chunk to dedup against the HMAC-keyed
-// global-dedup shard CAS returns for the chunk-0 query — zero new xorbs.
-//
-// This is the end-to-end regression guard for the keyed-shard lookup in
-// xet_data/src/processing/shard_interface/wasm.rs: prod CAS keys the chunk
-// hashes in returned shards, so if the wasm dedup cache stops applying the
-// per-shard HMAC key at query time, the lookup silently never matches and
-// the re-upload pushes a full payload's worth of xorbs (run.mjs asserts
+// Cross-session global dedup against production CAS: download the pre-seeded
+// deterministic file from WRITE_REPO, re-upload its bytes in a fresh commit,
+// and expect every chunk to dedup against the HMAC-keyed global-dedup shard CAS
+// returns for the chunk-0 query — zero new xorbs (run.mjs asserts
 // xorb_bytes_uploaded === 0).
 //
-// Deterministic because CAS indexes the first chunk of every uploaded file
-// in the global-dedup index, and the client always queries chunk 0
+// This is the e2e regression guard for the keyed-shard lookup in
+// xet_data/src/processing/shard_interface/wasm.rs: prod CAS keys the chunk
+// hashes in returned shards, so if the wasm dedup cache stops applying the
+// per-shard HMAC key at query time the lookup silently never matches and the
+// re-upload pushes a full payload's worth of xorbs.
+//
+// Deterministic because CAS indexes every file's first chunk in the
+// global-dedup index and the client always queries chunk 0
 // (file_deduplication.rs); the fetched shard then covers the whole file.
 //
-// First run against an unseeded repo bootstraps: uploads the seed payload
-// and commits it to the Hub so paths-info sees it (and GC keeps its xorbs).
-// If the browser-side Hub commit ever breaks (e.g. CORS), seed manually per
-// the instructions in ../seed.mjs.
+// First run against an unseeded repo bootstraps: it uploads the seed payload
+// and commits it to the Hub (so paths-info sees it and GC keeps its xorbs). If
+// the browser-side Hub commit breaks (e.g. CORS), seed manually per ../seed.mjs.
 
 import {
   XetSession,

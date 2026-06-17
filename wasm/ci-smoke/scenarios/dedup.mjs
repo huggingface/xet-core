@@ -1,21 +1,15 @@
 // Smoke for session-level (in-commit) deduplication.
 //
-// Upload the SAME 65 MiB buffer twice in a single XetUploadCommit. The
-// payload must exceed MAX_XORB_BYTES (64 MiB in xet_core_structures) so
-// the first file's processing forces an xorb cut; the cut xorb's chunks
-// land in session_shard via add_xorb_block, and the second file's
-// chunk-by-chunk dedup query then hits those entries.
+// Upload the SAME 65 MiB buffer twice in a single XetUploadCommit. The payload
+// must exceed MAX_XORB_BYTES (64 MiB in xet_core_structures) so the first
+// file's processing forces an xorb cut; the cut xorb's chunks land in
+// session_shard via add_xorb_block, and the second file's chunk-by-chunk dedup
+// query then hits those entries. (A 1 MiB payload would NOT dedup: with no cut
+// triggered, session_shard stays empty until commit-time finalization, after
+// the second file's chunks have already been decided.)
 //
-// 1 MiB payloads do NOT exercise dedup here: with both files' data
-// resident in `current_session_data` and no xorb cut triggered, the
-// session_shard stays empty until commit-time finalization — by which
-// point the dedup decision for the second file's chunks has already
-// been made.
-//
-// Global dedup (cross-commit, CAS-indexed shards) is covered separately by
-// the global-dedup scenario: CAS indexes the first chunk of every uploaded
-// file, so re-uploading the pre-seeded deterministic file hits the chunk-0
-// query deterministically.
+// Global dedup (cross-commit, CAS-indexed shards) is covered by the
+// global-dedup scenario.
 
 import { openUploadCommit, randomBytes } from '../common.mjs';
 

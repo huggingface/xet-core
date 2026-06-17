@@ -24,9 +24,8 @@ async function waitForServerReady(port, { intervalMs = 100, timeoutMs = 10_000 }
   let lastErr;
   while (Date.now() < deadline) {
     try {
-      // Any HTTP response means the listener is up and serving. We don't care
-      // what status — `/` resolves to a non-existent `wasm/index.html` and the
-      // server returns 404, which is enough to know it's ready.
+      // Any HTTP response means the listener is up; status doesn't matter
+      // (`/` resolves to a non-existent `wasm/index.html`, so 404 is expected).
       await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(500) });
       return;
     } catch (e) {
@@ -62,9 +61,8 @@ export async function runBrowserSmoke({ pagePath, runArg, timeoutMs, port }) {
       throw new Error('page is not crossOriginIsolated — COOP/COEP headers missing or wrong');
     }
 
-    // The module script uses top-level `await init()`; the `load` event can
-    // fire before that resolves. Wait until runTest is registered before
-    // invoking it.
+    // The module script uses top-level `await init()`, which can resolve after
+    // the `load` event, so wait until runTest is registered before invoking it.
     await page.waitForFunction(() => typeof window.runTest === 'function', null, { timeout: 30_000 });
 
     const result = await Promise.race([

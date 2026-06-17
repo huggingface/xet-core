@@ -2,11 +2,10 @@
 // (`scenarios/*.mjs`, loaded via `harness.html`).
 //
 // Upload scenarios target the dataset xet-team/xet-wasm-test on prod hub:
-// they mint a real xet-write-token and push xorbs + shard to CAS via
-// commit(). Except for the global-dedup scenario's one-time seed bootstrap
-// (which commits the seed file via the Hub commit API so it stays visible
-// to paths-info and GC-pinned), the Hub commit API is never called — orphan
-// xorbs are reclaimed by CAS GC.
+// they mint a real xet-write-token and push xorbs + shard to CAS via commit().
+// The Hub commit API is only called by the global-dedup seed bootstrap (to keep
+// the seed visible to paths-info and GC-pinned); otherwise orphan xorbs are
+// reclaimed by CAS GC.
 
 import init, { XetSession } from '../hf_xet_wasm/pkg/hf_xet_wasm.js';
 
@@ -139,10 +138,9 @@ export async function downloadAllBytes(session, { accessToken, exp, casUrl }, { 
   return drainStreamToBytes(stream);
 }
 
-// Commit an already-CAS-uploaded xet file to the Hub via the NDJSON commit
-// API, making it visible to paths-info and pinning its xorbs against GC.
-// `sha256` is the file's content hash as returned in
-// XetFileMetadata.xet_info.sha256 by uploadBytes/finish.
+// Commit an already-CAS-uploaded xet file to the Hub via the NDJSON commit API,
+// making it visible to paths-info and pinning its xorbs against GC. `sha256` is
+// XetFileMetadata.xet_info.sha256 as returned by uploadBytes/finish.
 export async function commitFileToHub({ hfToken, repoType, namespace, repo, revision, path, sha256, size, summary }) {
   const url = `${HUB_BASE}/api/${repoType}s/${namespace}/${repo}/commit/${revision}`;
   const body = [

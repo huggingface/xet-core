@@ -1,8 +1,5 @@
 use std::time::Duration;
 
-// See note in `xet_core_structures/src/utils/exp_weighted_moving_avg.rs`:
-// `tokio::time::Instant` on native (so tests can `tokio::time::advance`),
-// `web_time::Instant` on wasm (`std::time::Instant::now` panics there).
 #[cfg(not(target_family = "wasm"))]
 use tokio::time::Instant;
 #[cfg(target_family = "wasm")]

@@ -1,16 +1,13 @@
 //! Example / smoke-test `#[wasm_bindgen]` wrapper around
-//! `xet::xet_session::XetSession` that exposes both upload and download
-//! flows to JavaScript from a single wasm module.
+//! `xet::xet_session::XetSession`, exposing upload and download flows to JS.
 //!
-//! This crate is **not** a published browser SDK. It exists so the wasm
-//! build of `xet_pkg` is exercised end-to-end in CI (including the
-//! regression guard for the `XetRuntime::spawn_blocking` panic on the
-//! upload data-prep path) and so we have hand-runnable browser pages for
-//! manual testing. Real browser consumers should depend on `hf-xet`
-//! directly with their own `#[wasm_bindgen]` glue, or use a downstream
-//! SDK such as `hf-hub`. The JS surface exposed here is not
-//! versioned and may change without notice. See `README.md` for the full
-//! positioning.
+//! Not a published browser SDK: it exists to exercise the wasm build of
+//! `xet_pkg` end-to-end in CI (including the regression guard for the
+//! `XetRuntime::spawn_blocking` panic on the upload data-prep path) and to
+//! provide hand-runnable browser pages for manual testing. Real consumers
+//! should depend on `hf-xet` directly with their own `#[wasm_bindgen]` glue.
+//! The JS surface here is unversioned and may change without notice; see
+//! `README.md`.
 
 #[cfg(not(target_family = "wasm"))]
 compile_error!("hf_xet_wasm is only for the wasm32-unknown-unknown target");

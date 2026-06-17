@@ -1,14 +1,11 @@
-// Smoke for the XetSession→multiple XetUploadCommit flow. From a single
-// XetSession the caller should be able to:
-//   1) Mint commit A, upload + commit
-//   2) Mint commit B, upload + commit
+// Smoke for the XetSession→multiple XetUploadCommit flow: from one XetSession,
+// mint commit A (upload + commit) then commit B (upload + commit).
 //
 // Each XetUploadCommit constructs its own FileUploadSession (see
-// xet_pkg/.../upload_commit.rs), so they must not share mutable
-// state in a way that lets commit A's finalization break commit B's
-// construction. The two-commit pattern catches XetSession-level
-// resource leaks (task runtime cleanup, locked state, etc.) that would
-// surface as the second newUploadCommit() hanging or panicking.
+// xet_pkg/.../upload_commit.rs), so they must not share mutable state in a way
+// that lets commit A's finalization break commit B's construction. This catches
+// XetSession-level resource leaks (task runtime cleanup, locked state, etc.)
+// that would surface as the second newUploadCommit() hanging or panicking.
 
 import { openUploadCommit, randomBytes } from '../common.mjs';
 

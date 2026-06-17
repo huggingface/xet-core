@@ -28,12 +28,10 @@ impl XetRuntime {
         tokio_with_wasm::task::spawn_blocking(f)
     }
 
-    /// Always returns `None`; wasm has no owned worker threads to register.
     pub fn current_if_exists() -> Option<Arc<Self>> {
         None
     }
 
-    /// Wasm has no SIGINT; always returns `false`.
     pub fn in_sigint_shutdown(&self) -> bool {
         false
     }
@@ -42,7 +40,6 @@ impl XetRuntime {
         0
     }
 
-    /// No-op on wasm; SIGINT is not a concept in the browser.
     pub fn perform_sigint_shutdown(&self) {}
 
     pub fn discard_runtime(&self) {}

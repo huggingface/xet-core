@@ -7,28 +7,21 @@ use crate::upload_commit::XetUploadCommit;
 
 /// WASM-facing session for both Xet uploads and downloads.
 ///
-/// Mirrors the Rust [`xet::xet_session::XetSession`]: the session itself owns
-/// no auth state. Construct with `new XetSession()`, then call
-/// [`newUploadCommit`](Self::new_upload_commit) to mint a fresh
-/// [`XetUploadCommit`] for uploads, or
-/// [`newDownloadStreamGroup`](Self::new_download_stream_group) to mint an
-/// authenticated [`XetDownloadStreamGroup`] for downloads. A single session can
-/// produce many independent commits and groups, each with its own endpoint /
-/// token pair.
+/// Mirrors the Rust [`xet::xet_session::XetSession`]: the session owns no auth
+/// state. Construct with `new XetSession()`, then call
+/// [`newUploadCommit`](Self::new_upload_commit) for a fresh [`XetUploadCommit`]
+/// or [`newDownloadStreamGroup`](Self::new_download_stream_group) for an
+/// authenticated [`XetDownloadStreamGroup`]. One session can produce many
+/// independent commits and groups, each with its own endpoint / token pair.
 ///
 /// ## No automatic token refresh
 ///
-/// This wrapper does **not** expose `with_token_refresh_url` on either the
-/// upload or download builder, so a commit or group has no way to obtain a
-/// fresh CAS token mid-transfer. If `tokenExpiry` is reached during an upload
-/// or download the underlying request will fail with an auth error. Callers
-/// are responsible for fetching a new `xet-write-token` / `xet-read-token`
-/// from the Hub and constructing a fresh commit or group before expiry.
-///
-/// Wiring `with_token_refresh_url` here would need either a JS-callback
-/// bridge (so JS can mint and return a token via `Promise`) or a URL-based
-/// refresher backed by a route the wasm reqwest client can hit directly; both
-/// are out of scope for this example wrapper.
+/// Neither builder exposes `with_token_refresh_url`, so a commit or group
+/// cannot refresh its CAS token mid-transfer: if `tokenExpiry` is reached the
+/// underlying request fails with an auth error. Callers must fetch a fresh
+/// `xet-write-token` / `xet-read-token` and build a new commit or group before
+/// expiry. Wiring refresh would need a JS-callback or URL-based refresher, both
+/// out of scope for this example wrapper.
 #[wasm_bindgen(js_name = "XetSession")]
 pub struct XetSession {
     inner: InnerSession,
@@ -44,15 +37,14 @@ impl XetSession {
         Ok(Self { inner: session })
     }
 
-    /// Begin a new upload commit. Resolves to an `XetUploadCommit` to which
-    /// you can `uploadBytes(...)` / `uploadStream(...)` and finally `commit()`.
+    /// Begin a new upload commit. Resolves to an `XetUploadCommit` for
+    /// `uploadBytes(...)` / `uploadStream(...)` and finally `commit()`.
     ///
     /// - `endpoint`: CAS server URL.
     /// - `token`: CAS access token string.
-    /// - `tokenExpiry`: token expiry as a Unix timestamp (seconds). Pass the real `exp` from the Hub `xet-write-token`
-    ///   response. Must be a positive value; a value at or before now-ish causes the underlying client to treat the
-    ///   token as expired and fail with an auth error on the first CAS request, since this wrapper does not wire a
-    ///   token refresher.
+    /// - `tokenExpiry`: token expiry as a Unix timestamp (seconds), the real `exp` from the Hub `xet-write-token`
+    ///   response. Must be positive; an already-expired value fails with an auth error on the first CAS request, since
+    ///   this wrapper wires no token refresher.
     #[wasm_bindgen(js_name = "newUploadCommit")]
     pub async fn new_upload_commit(
         &self,
@@ -74,16 +66,14 @@ impl XetSession {
         Ok(XetUploadCommit::new(commit))
     }
 
-    /// Build an authenticated [`XetDownloadStreamGroup`].
+    /// Build an authenticated [`XetDownloadStreamGroup`], reusable across many
+    /// `downloadStream(...)` calls.
     ///
     /// - `endpoint`: CAS server URL, e.g. `"https://cas-server.xethub.com"`
     /// - `token`: CAS access token string
-    /// - `tokenExpiry`: token expiry as a Unix timestamp (seconds). Pass the real `exp` from the Hub `xet-read-token`
-    ///   response. Must be a positive value; a value at or before now-ish causes the underlying client to treat the
-    ///   token as expired and fail with an auth error on the first CAS request, since this wrapper does not wire a
-    ///   token refresher.
-    ///
-    /// The returned group is reusable across many `downloadStream(...)` calls.
+    /// - `tokenExpiry`: token expiry as a Unix timestamp (seconds), the real `exp` from the Hub `xet-read-token`
+    ///   response. Must be positive; an already-expired value fails with an auth error on the first CAS request, since
+    ///   this wrapper wires no token refresher.
     #[wasm_bindgen(js_name = "newDownloadStreamGroup")]
     pub async fn new_download_stream_group(
         &self,

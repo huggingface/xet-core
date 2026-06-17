@@ -109,7 +109,6 @@ pub struct XetSessionInner {
 /// override runtime settings such as cache directories or concurrency limits.
 pub struct XetSessionBuilder {
     config: XetConfig,
-    // `with_tokio_handle` is native-only, so on wasm this is statically `None`.
     tokio_handle: Option<tokio::runtime::Handle>,
 }
 

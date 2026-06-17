@@ -1,10 +1,9 @@
 // Error-path coverage for the wasm download surface: a well-formed but
 // nonexistent hash must reject (CAS has no reconstruction for it), and
 // malformed fileInfo objects must reject at the serde boundary. Rejection may
-// surface at downloadStream() or at the first next() — both are accepted —
-// but a case that hangs or resolves with data is a failure. This pins down
-// "errors reject promptly" on wasm, where the error crosses the
-// tokio_with_wasm bridge and js_err instead of the native error path.
+// surface at downloadStream() or at the first next() — both accepted — but a
+// case that hangs or resolves with data is a failure. Pins down "errors reject
+// promptly" on wasm, where the error crosses the tokio_with_wasm bridge.
 
 import { XetSession, READ_REPO, fetchXetReadToken } from '../common.mjs';
 

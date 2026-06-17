@@ -9,17 +9,11 @@ use crate::download_stream::XetDownloadStream;
 /// Authenticated stream-download group.
 ///
 /// Mirrors [`xet::xet_session::XetDownloadStreamGroup`]: holds the CAS endpoint
-/// and token that were supplied when the group was constructed, and exposes
-/// [`downloadStream`](Self::download_stream) to begin streaming individual
-/// files. A single group can be reused across many files; all streams created
-/// from the same group share the underlying CAS connection pool and auth token.
-///
-/// Construct via [`XetSession::new_download_stream_group`] — there is no JS
-/// constructor.
-///
-/// Cloning is cheap (the inner group is reference-counted), but we don't expose
-/// `clone` to JS today; if you need multiple references, hold onto the same
-/// handle.
+/// and token supplied at construction and exposes
+/// [`downloadStream`](Self::download_stream) to stream individual files. One
+/// group is reusable across many files; all its streams share the underlying
+/// CAS connection pool and auth token. Construct via
+/// [`XetSession::new_download_stream_group`] — there is no JS constructor.
 #[wasm_bindgen(js_name = "XetDownloadStreamGroup")]
 pub struct XetDownloadStreamGroup {
     inner: InnerGroup,
@@ -33,13 +27,11 @@ impl XetDownloadStreamGroup {
 
 #[wasm_bindgen(js_class = "XetDownloadStreamGroup")]
 impl XetDownloadStreamGroup {
-    /// Begin streaming a file described by `fileInfo`.
+    /// Begin streaming a file described by `fileInfo`, a plain JS object of the
+    /// `XetFileInfo` shape `{ hash: string, file_size: number }`.
     ///
-    /// `fileInfo` must be a plain JS object matching the `XetFileInfo` shape:
-    /// `{ hash: string, file_size: number }`.
-    ///
-    /// `byteRangeStart` and `byteRangeEnd` are optional; when both are provided,
-    /// only that byte range is downloaded.
+    /// `byteRangeStart` / `byteRangeEnd` are optional; when both are given, only
+    /// that byte range is downloaded.
     #[wasm_bindgen(js_name = "downloadStream")]
     pub async fn download_stream(
         &self,
@@ -59,16 +51,14 @@ impl XetDownloadStreamGroup {
         Ok(XetDownloadStream::new(stream))
     }
 
-    /// Download a file described by `fileInfo` fully into memory and return its
-    /// bytes as a `Uint8Array`.
+    /// Download a file described by `fileInfo` (the `XetFileInfo` shape
+    /// `{ hash: string, file_size: number }`) fully into memory, returned as a
+    /// `Uint8Array`.
     ///
-    /// `fileInfo` must be a plain JS object matching the `XetFileInfo` shape:
-    /// `{ hash: string, file_size: number }`.
-    ///
-    /// `byteRangeStart` and `byteRangeEnd` are optional; when both are provided,
-    /// only that byte range is downloaded. This exercises
-    /// `FileDownloadSession::download_to_writer` under the hood; for large files
-    /// prefer [`downloadStream`](Self::download_stream).
+    /// `byteRangeStart` / `byteRangeEnd` are optional; when both are given, only
+    /// that byte range is downloaded. Uses
+    /// `FileDownloadSession::download_to_writer`; for large files prefer
+    /// [`downloadStream`](Self::download_stream).
     #[wasm_bindgen(js_name = "downloadToBytes")]
     pub async fn download_to_bytes(
         &self,

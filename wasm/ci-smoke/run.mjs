@@ -28,11 +28,10 @@ const DEFAULT_TIMEOUT_MS = 2 * MINUTE_MS;
 // Shared assertion helpers
 // ---------------------------------------------------------------------------
 
-// Top-level dedup_metrics is the session-aggregated view. xorb_bytes_uploaded
-// and shard_bytes_uploaded must both be > 0 for a fresh random payload —
-// anything 0 here means a metric capture race in file_upload_session::finalize_impl
-// (take(deduplication_metrics) ordered before join of xorb_upload_tasks) or
-// a regression in the wasm CAS push path.
+// Top-level dedup_metrics is the session-aggregated view. For a fresh random
+// payload xorb_bytes_uploaded and shard_bytes_uploaded must both be > 0; a 0
+// means a metric-capture race in file_upload_session::finalize_impl or a
+// regression in the wasm CAS push path.
 function assertDedupBytesUploaded(commitReport) {
   const dedup = commitReport.dedup_metrics;
   if (!dedup || typeof dedup !== 'object') {
@@ -162,10 +161,9 @@ const SCENARIOS = {
     },
   },
 
-  // Download a known pinned file and assert byte count + content SHA-256.
-  // Failures here are signal that the wasm download path is broken against
-  // prod hub + CAS. Bump these alongside READ_REPO in common.mjs when
-  // re-pinning.
+  // Download a known pinned file and assert byte count + content SHA-256 — a
+  // failure means the wasm download path is broken against prod hub + CAS.
+  // Bump alongside READ_REPO in common.mjs when re-pinning.
   download: {
     readToken: true,
     assert(result) {
