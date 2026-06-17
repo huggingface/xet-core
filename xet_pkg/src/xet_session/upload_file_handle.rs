@@ -4,6 +4,8 @@ use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+#[cfg(target_family = "wasm")]
+use tokio_with_wasm::alias as tokio;
 use tracing::info;
 use xet_data::processing::FileUploadSession;
 use xet_data::progress_tracking::ItemProgressReport;
@@ -83,6 +85,7 @@ impl XetFileUpload {
     }
 
     /// Blocking version of [`finalize_ingestion`](Self::finalize_ingestion).
+    #[cfg(not(target_family = "wasm"))]
     pub fn finalize_ingestion_blocking(&self) -> Result<XetFileMetadata, XetError> {
         info!(task_id = %self.task_id(), "File upload finalize_ingestion");
         if let Some(meta) = self.try_finish() {

@@ -1,0 +1,13 @@
+{
+  "name": "hf-xet-wasm-ci-smoke",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node run.mjs download && node run.mjs upload",
+    "test:download": "node run.mjs download",
+    "test:upload": "node run.mjs upload"
+  },
+  "dependencies": {
+    "playwright": "1.60.0"
+  }
+}

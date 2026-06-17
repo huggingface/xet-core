@@ -10,8 +10,9 @@
 //! [`XetDownloadStreamGroup::download_stream`] /
 //! [`XetDownloadStreamGroup::download_unordered_stream`].
 
+use std::io::Write;
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use tracing::info;
 use xet_data::processing::{FileDownloadSession, XetFileInfo};
@@ -25,6 +26,22 @@ use super::{XetDownloadStream, XetUnorderedDownloadStream};
 use crate::error::XetError;
 
 pub type XetDownloadStreamGroupBuilder = AuthGroupBuilder<XetDownloadStreamGroup>;
+
+/// Write sink that appends into a shared buffer, letting [`XetDownloadStreamGroup::download_to_bytes`]
+/// recover the bytes after `download_to_writer` consumes the writer.
+#[derive(Clone)]
+struct SharedBufWriter(Arc<Mutex<Vec<u8>>>);
+
+impl Write for SharedBufWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().expect("download buffer mutex poisoned").extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
 
 impl AuthGroupBuilder<XetDownloadStreamGroup> {
     /// Create the [`XetDownloadStreamGroup`] from an async context.
@@ -57,6 +74,7 @@ impl AuthGroupBuilder<XetDownloadStreamGroup> {
     /// # Panics
     ///
     /// Panics if called from within a tokio async runtime on an Owned-mode session.
+    #[cfg(not(target_family = "wasm"))]
     pub fn build_blocking(self) -> Result<XetDownloadStreamGroup, XetError> {
         let AuthGroupBuilder {
             session, auth_options, ..
@@ -178,6 +196,40 @@ impl XetDownloadStreamGroup {
             .await
     }
 
+    /// Downloads a file (optionally a byte range) fully into memory and returns
+    /// the bytes.
+    ///
+    /// Convenience wrapper over
+    /// [`FileDownloadSession::download_to_writer`](xet_data::processing::FileDownloadSession::download_to_writer)
+    /// that collects output into an in-memory buffer. Intended for callers (e.g.
+    /// wasm/JS) that cannot supply a `std::io::Write` sink directly; for large
+    /// files prefer [`download_stream`](Self::download_stream).
+    ///
+    /// If `range` is `Some`, only that byte range of the file is downloaded.
+    pub async fn download_to_bytes(
+        &self,
+        file_info: XetFileInfo,
+        range: Option<Range<u64>>,
+    ) -> Result<Vec<u8>, XetError> {
+        let download_session = self.inner.download_session.clone();
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let writer = SharedBufWriter(buffer.clone());
+
+        self.task_runtime
+            .bridge_async("download_to_bytes", async move {
+                if let Some(r) = range {
+                    download_session.download_to_writer(&file_info, r, writer).await?;
+                } else {
+                    download_session.download_to_writer(&file_info, .., writer).await?;
+                }
+                Ok(())
+            })
+            .await?;
+
+        let bytes = std::mem::take(&mut *buffer.lock().expect("download buffer mutex poisoned"));
+        Ok(bytes)
+    }
+
     /// Blocking version of [`download_stream`](Self::download_stream).
     ///
     /// The reconstruction task is spawned on the session's runtime but
@@ -194,6 +246,7 @@ impl XetDownloadStreamGroup {
     /// # Panics
     ///
     /// Panics if called from within a tokio async runtime on an Owned-mode session.
+    #[cfg(not(target_family = "wasm"))]
     pub fn download_stream_blocking(
         &self,
         file_info: XetFileInfo,
@@ -253,6 +306,7 @@ impl XetDownloadStreamGroup {
     /// # Panics
     ///
     /// Panics if called from within a tokio async runtime on an Owned-mode session.
+    #[cfg(not(target_family = "wasm"))]
     pub fn download_unordered_stream_blocking(
         &self,
         file_info: XetFileInfo,

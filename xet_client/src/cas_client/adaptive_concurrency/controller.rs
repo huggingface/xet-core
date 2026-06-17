@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 #[cfg(not(target_family = "wasm"))]
 use tokio::time::Instant;
+#[cfg(target_family = "wasm")]
+use tokio_with_wasm::alias as tokio;
 use tracing::info;
 #[cfg(target_family = "wasm")]
 use web_time::Instant;

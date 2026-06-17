@@ -1,124 +1,98 @@
-use std::sync::Arc;
-
-use futures::AsyncReadExt;
-use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
-use web_sys::Blob;
-use xet_client::cas_client::auth::AuthConfig;
-use xet_core_structures::xorb_object::CompressionScheme;
+use xet::xet_session::{XetSession as InnerSession, XetSessionBuilder};
 
-use crate::auth::{TokenInfo, TokenRefresher, WrappedTokenRefresher};
-use crate::blob_reader::BlobReader;
-use crate::configurations::{DataConfig, ShardConfig, TranslatorConfig};
-use crate::wasm_file_upload_session::FileUploadSession;
+use crate::common::{js_err, validate_session_inputs};
+use crate::download_group::XetDownloadStreamGroup;
+use crate::upload_commit::XetUploadCommit;
 
-const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
-
-fn convert_error(e: impl std::error::Error) -> JsValue {
-    JsValue::from(format!("{e:?}"))
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct JsPointerFile {
-    pub file_size: f64,
-    pub file_hash: String,
-    pub sha256: String,
-}
-
-/// XetSession is the exported public interface to upload files in WebAssembly
+/// WASM-facing session for both Xet uploads and downloads.
 ///
-/// To instantiate a XetSession a caller needs to pass in the endpoint to CAS as well as the auth
-/// information to authenticate against cas. see auth.rs or README.md to explain what constructs to pass in.
+/// Mirrors the Rust [`xet::xet_session::XetSession`]: the session owns no auth
+/// state. Construct with `new XetSession()`, then call
+/// [`newUploadCommit`](Self::new_upload_commit) for a fresh [`XetUploadCommit`]
+/// or [`newDownloadStreamGroup`](Self::new_download_stream_group) for an
+/// authenticated [`XetDownloadStreamGroup`]. One session can produce many
+/// independent commits and groups, each with its own endpoint / token pair.
 ///
-/// After instantiating a XetSession, to upload a file, use the `upload_file_from_{raw/blob}` functions
-/// to start an upload. After the `upload*` functions return, the return value is a JS object representing
-/// a pointer file (see JsPointerFile). However, the file is only fully uploaded after finalize() is called
-/// and returns an ok result.
+/// ## No automatic token refresh
 ///
-/// the file_id option in upload* functions is for file tracking only.
+/// Neither builder exposes `with_token_refresh_url`, so a commit or group
+/// cannot refresh its CAS token mid-transfer: if `tokenExpiry` is reached the
+/// underlying request fails with an auth error. Callers must fetch a fresh
+/// `xet-write-token` / `xet-read-token` and build a new commit or group before
+/// expiry. Wiring refresh would need a JS-callback or URL-based refresher, both
+/// out of scope for this example wrapper.
 #[wasm_bindgen(js_name = "XetSession")]
 pub struct XetSession {
-    upload: Arc<FileUploadSession>,
+    inner: InnerSession,
 }
 
 #[wasm_bindgen(js_class = "XetSession")]
 impl XetSession {
+    /// Create a new session. Mirrors `XetSessionBuilder::new().build()` and
+    /// takes no auth — auth lives on the per-commit / per-group builder.
     #[wasm_bindgen(constructor)]
-    pub fn new(endpoint: String, token_info: TokenInfo, token_refresher: TokenRefresher) -> Self {
-        let (token, token_expiration): xet_client::cas_client::auth::TokenInfo = token_info.into();
-        let auth = AuthConfig {
-            token,
-            token_expiration,
-            token_refresher: Arc::new(WrappedTokenRefresher::from(token_refresher)),
-        };
-
-        let config = TranslatorConfig {
-            data_config: DataConfig {
-                endpoint,
-                compression: CompressionScheme::LZ4,
-                auth: Some(auth),
-                prefix: "default".to_owned(),
-                user_agent: USER_AGENT.to_string(),
-            },
-            shard_config: ShardConfig {
-                prefix: "default-merkledb".to_owned(),
-            },
-            session_id: uuid::Uuid::new_v4().to_string(),
-        };
-        let ctx = xet_runtime::core::XetContext::from_external(
-            tokio::runtime::Handle::current(),
-            xet_runtime::config::XetConfig::new(),
-        );
-        let upload = FileUploadSession::new(ctx, Arc::new(config));
-
-        Self {
-            upload: Arc::new(upload),
-        }
+    pub fn new() -> Result<XetSession, JsValue> {
+        let session = XetSessionBuilder::new().build().map_err(js_err)?;
+        Ok(Self { inner: session })
     }
 
-    // allows uploading a file from raw data if the data/file is not in a blob
-    // internally converts the data to a blob.
-    #[wasm_bindgen(js_name = "uploadFileFromRawData")]
-    pub async fn upload_file_from_raw(&mut self, file_id: u64, file: Vec<u8>) -> Result<JsValue, JsValue> {
-        let blob = Blob::new_with_u8_array_sequence(&js_sys::Uint8Array::from(file.as_slice()))?;
-        self.upload_file_from_blob(file_id, blob).await
+    /// Begin a new upload commit. Resolves to an `XetUploadCommit` for
+    /// `uploadBytes(...)` / `uploadStream(...)` and finally `commit()`.
+    ///
+    /// - `endpoint`: CAS server URL.
+    /// - `token`: CAS access token string.
+    /// - `tokenExpiry`: token expiry as a Unix timestamp (seconds), the real `exp` from the Hub `xet-write-token`
+    ///   response. Must be positive; an already-expired value fails with an auth error on the first CAS request, since
+    ///   this wrapper wires no token refresher.
+    #[wasm_bindgen(js_name = "newUploadCommit")]
+    pub async fn new_upload_commit(
+        &self,
+        endpoint: String,
+        token: String,
+        token_expiry: f64,
+    ) -> Result<XetUploadCommit, JsValue> {
+        let token_expiry = validate_session_inputs(&endpoint, &token, token_expiry)?;
+
+        let commit = self
+            .inner
+            .new_upload_commit()
+            .map_err(js_err)?
+            .with_endpoint(&endpoint)
+            .with_token_info(token, token_expiry)
+            .build()
+            .await
+            .map_err(js_err)?;
+        Ok(XetUploadCommit::new(commit))
     }
 
-    // uploads a file from a blob. reading from it, and updating the cleaner in 1MB increments
-    #[wasm_bindgen(js_name = "uploadFileFromBlob")]
-    pub async fn upload_file_from_blob(&mut self, file_id: u64, blob: Blob) -> Result<JsValue, JsValue> {
-        // read from blob async
-        let mut cleaner = self.upload.start_clean(file_id, None);
+    /// Build an authenticated [`XetDownloadStreamGroup`], reusable across many
+    /// `downloadStream(...)` calls.
+    ///
+    /// - `endpoint`: CAS server URL, e.g. `"https://cas-server.xethub.com"`
+    /// - `token`: CAS access token string
+    /// - `tokenExpiry`: token expiry as a Unix timestamp (seconds), the real `exp` from the Hub `xet-read-token`
+    ///   response. Must be positive; an already-expired value fails with an auth error on the first CAS request, since
+    ///   this wrapper wires no token refresher.
+    #[wasm_bindgen(js_name = "newDownloadStreamGroup")]
+    pub async fn new_download_stream_group(
+        &self,
+        endpoint: String,
+        token: String,
+        token_expiry: f64,
+    ) -> Result<XetDownloadStreamGroup, JsValue> {
+        let token_expiry = validate_session_inputs(&endpoint, &token, token_expiry)?;
 
-        let mut reader = BlobReader::new(blob)?;
+        let group = self
+            .inner
+            .new_download_stream_group()
+            .map_err(js_err)?
+            .with_endpoint(&endpoint)
+            .with_token_info(token, token_expiry)
+            .build()
+            .await
+            .map_err(js_err)?;
 
-        let mut buf = vec![0u8; 1024 * 1024]; // 1MB buffer
-
-        let mut file_size = 0;
-        loop {
-            let num_read = reader.read(&mut buf).await.map_err(convert_error)?;
-            if num_read == 0 {
-                break;
-            }
-            file_size += num_read as u64;
-            cleaner.add_data(&buf[0..num_read]).await.map_err(convert_error)?;
-        }
-
-        let (file_hash, sha256, _metrics) = cleaner.finish().await.map_err(convert_error)?;
-
-        let file_size = file_size as f64;
-        let pf = JsPointerFile {
-            file_size,
-            file_hash: file_hash.hex(),
-            sha256: sha256.hex(),
-        };
-        serde_wasm_bindgen::to_value(&pf).map_err(|e| JsValue::from_str(&format!("{e:?}")))
-    }
-
-    #[wasm_bindgen]
-    pub async fn finalize(self) -> Result<(), JsValue> {
-        // flush the session
-        self.upload.finalize().await.map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
-        Ok(())
+        Ok(XetDownloadStreamGroup::new(group))
     }
 }

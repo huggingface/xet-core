@@ -5,6 +5,8 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use more_asserts::{debug_assert_ge, debug_assert_le};
+#[cfg(target_family = "wasm")]
+use tokio_with_wasm::alias as tokio;
 use xet_core_structures::MerkleHashMap;
 use xet_core_structures::merklehash::MerkleHash;
 use xet_runtime::utils::UniqueId;

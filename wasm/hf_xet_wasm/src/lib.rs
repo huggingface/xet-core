@@ -1,31 +1,31 @@
+//! Example / smoke-test `#[wasm_bindgen]` wrapper around
+//! `xet::xet_session::XetSession`, exposing upload and download flows to JS.
+//!
+//! Not a published browser SDK: it exists to exercise the wasm build of
+//! `xet_pkg` end-to-end in CI (including the regression guard for the
+//! `XetRuntime::spawn_blocking` panic on the upload data-prep path) and to
+//! provide hand-runnable browser pages for manual testing. Real consumers
+//! should depend on `hf-xet` directly with their own `#[wasm_bindgen]` glue.
+//! The JS surface here is unversioned and may change without notice; see
+//! `README.md`.
+
 #[cfg(not(target_family = "wasm"))]
-compile_error!("This crate is only meant to be used on the WebAssembly target");
+compile_error!("hf_xet_wasm is only for the wasm32-unknown-unknown target");
 
-mod auth;
-pub mod blob_reader;
-pub mod configurations;
-mod errors;
-mod merkle_hash_subtree;
+mod common;
+mod download_group;
+mod download_stream;
 mod session;
-mod sha256;
-mod wasm_deduplication_interface;
-mod wasm_file_cleaner;
-pub mod wasm_file_upload_session;
-pub mod wasm_timer;
-mod xorb_uploader;
+mod upload_commit;
 
+pub use download_group::XetDownloadStreamGroup;
+pub use download_stream::XetDownloadStream;
 pub use session::XetSession;
+pub use upload_commit::{XetStreamUpload, XetUploadCommit};
+use wasm_bindgen::prelude::*;
 
-// sample test
-#[cfg(test)]
-mod tests {
-    use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
-
-    wasm_bindgen_test_configure!(run_in_browser);
-
-    #[test]
-    #[wasm_bindgen_test]
-    fn simple_test() {
-        assert_eq!(1, 1);
-    }
+#[wasm_bindgen(start)]
+pub fn init() {
+    console_error_panic_hook::set_once();
+    let _ = console_log::init_with_level(log::Level::Info);
 }

@@ -1,5 +1,9 @@
+#[cfg(not(target_family = "wasm"))]
 use std::fs::OpenOptions;
-use std::io::{Seek, SeekFrom, Write};
+use std::io::Write;
+#[cfg(not(target_family = "wasm"))]
+use std::io::{Seek, SeekFrom};
+#[cfg(not(target_family = "wasm"))]
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -117,6 +121,7 @@ impl FileReconstructor {
     /// When `write_offset` is `Some(offset)`, writing begins at that byte
     /// position regardless of the byte range. When `None`, writing begins at
     /// the byte range start (or 0 for a full-file reconstruction).
+    #[cfg(not(target_family = "wasm"))]
     pub async fn reconstruct_to_file(self, path: &Path, write_offset: Option<u64>, truncate_file: bool) -> Result<u64> {
         info!(
             file_hash = %self.file_hash,
@@ -149,6 +154,7 @@ impl FileReconstructor {
     ///
     /// The writer receives data starting from its current position (position 0
     /// for a fresh writer), regardless of the byte range being reconstructed.
+    #[cfg(not(target_family = "wasm"))]
     pub async fn reconstruct_to_writer<W: Write + Send + 'static>(self, writer: W) -> Result<u64> {
         info!(
             file_hash = %self.file_hash,
@@ -159,6 +165,34 @@ impl FileReconstructor {
         let run_state = RunState::new(self.cancellation_token.clone(), self.file_hash, self.progress_updater.clone());
         let data_writer = SequentialWriter::new(&self.ctx, writer, self.config.use_vectored_write, run_state.clone());
         self.run(data_writer, run_state, false).await
+    }
+
+    /// Reconstructs the file and writes it to the given writer.
+    ///
+    /// The writer receives data starting from its current position (position 0
+    /// for a fresh writer), regardless of the byte range being reconstructed.
+    ///
+    /// On wasm there is no background writer thread (wasm cannot block the host
+    /// thread), so this drives the streaming reconstruction path and copies each
+    /// chunk into the writer inline as it arrives.
+    #[cfg(target_family = "wasm")]
+    pub async fn reconstruct_to_writer<W: Write + Send + 'static>(self, mut writer: W) -> Result<u64> {
+        info!(
+            file_hash = %self.file_hash,
+            byte_range = ?self.byte_range,
+            "Reconstructing file to writer"
+        );
+
+        let mut stream = self.reconstruct_to_stream();
+        let mut total: u64 = 0;
+        while let Some(chunk) = stream.next().await? {
+            writer
+                .write_all(&chunk)
+                .map_err(|e| FileReconstructionError::IoError(Arc::new(e)))?;
+            total += chunk.len() as u64;
+        }
+        writer.flush().map_err(|e| FileReconstructionError::IoError(Arc::new(e)))?;
+        Ok(total)
     }
 
     /// Reconstructs the file as a stream, returning a [`DownloadStream`] that

@@ -2,6 +2,7 @@ pub mod chunk_verification;
 pub mod constants;
 pub mod file_structs;
 pub mod interpolation_search;
+#[cfg(not(target_family = "wasm"))]
 pub mod session_directory;
 pub mod set_operations;
 pub mod shard_file_handle;

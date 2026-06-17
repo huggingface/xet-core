@@ -15,6 +15,7 @@ use super::download_stream_group::{
     XetDownloadStreamGroup, XetDownloadStreamGroupBuilder, XetDownloadStreamGroupInner,
 };
 use super::errors::SessionError;
+#[cfg(not(target_family = "wasm"))]
 use super::file_download_group::XetFileDownloadGroupBuilder;
 use super::task_runtime::{TaskRuntime, XetTaskState};
 use super::upload_commit::XetUploadCommitBuilder;
@@ -148,6 +149,7 @@ impl XetSessionBuilder {
     /// Handles can be shared by multiple sessions. Each session gets its own
     /// [`XetContext`] (`config` + `common`), while the underlying runtime
     /// may be shared.
+    #[cfg(not(target_family = "wasm"))]
     pub fn with_tokio_handle(self, handle: tokio::runtime::Handle) -> Self {
         let accept = XetContext::handle_meets_requirements(&handle);
         if !accept {
@@ -168,16 +170,23 @@ impl XetSessionBuilder {
     ///
     /// Each build creates a fresh [`XetContext`] around the selected runtime, so sessions
     /// can share the same execution backend while keeping independent config and common state.
+    ///
+    /// On wasm no tokio runtime is instantiated; all tasks are spawned onto the
+    /// JavaScript event loop.
     pub fn build(self) -> Result<XetSession, SessionError> {
         #[cfg(feature = "fd-track")]
         let _fd_scope = track_fd_scope("XetSessionBuilder::build");
 
+        #[cfg(not(target_family = "wasm"))]
         let ctx = if let Some(h) = self.tokio_handle {
             info!("XetSession using explicitly provided tokio handle");
             XetContext::from_external(h, self.config)
         } else {
             XetContext::with_config(self.config)?
         };
+
+        #[cfg(target_family = "wasm")]
+        let ctx = XetContext::with_config(self.config)?;
 
         let session = XetSession::new(ctx);
         info!("Session created, session_id={}", session.inner.id);
@@ -269,6 +278,7 @@ impl XetSession {
     /// [`build_blocking`](XetFileDownloadGroupBuilder::build_blocking) (sync).
     ///
     /// Returns `Err(SessionError::UserCancelled)` if the session has been aborted.
+    #[cfg(not(target_family = "wasm"))]
     pub fn new_file_download_group(&self) -> Result<XetFileDownloadGroupBuilder, SessionError> {
         self.inner.task_runtime.check_state("new_file_download_group")?;
         #[cfg(feature = "fd-track")]
@@ -333,6 +343,7 @@ impl XetSession {
     ///
     /// Performs runtime SIGINT shutdown and clears session registrations.
     /// This does not call per-commit/group local abort hooks.
+    #[cfg(not(target_family = "wasm"))]
     pub fn sigint_abort(&self) -> Result<(), SessionError> {
         #[cfg(feature = "fd-track")]
         let _fd_scope = track_fd_scope(format!("XetSession::sigint_abort({})", self.inner.id));
@@ -465,6 +476,7 @@ mod tests {
     // ── XetContext::handle_meets_requirements ────────────────────────────────
 
     #[test]
+    #[cfg(not(target_family = "wasm"))]
     // A multi-thread runtime with enable_all() meets all requirements.
     fn test_handle_multi_thread_all_features_returns_true() {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
@@ -480,6 +492,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_family = "wasm"))]
     // A multi-thread runtime with no drivers enabled returns false.
     fn test_handle_without_any_driver_returns_false() {
         let rt = tokio::runtime::Builder::new_multi_thread().build().unwrap();
@@ -487,6 +500,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_family = "wasm"))]
     // A multi-thread runtime with only enable_time() is missing the IO driver.
     fn test_handle_without_io_driver_returns_false() {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_time().build().unwrap();
@@ -494,6 +508,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_family = "wasm"))]
     // A multi-thread runtime with only enable_io() is missing the time driver.
     fn test_handle_without_time_driver_returns_false() {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_io().build().unwrap();
