@@ -11,11 +11,11 @@
 // Scenarios run sequentially in CI, so the default port base is enough;
 // override with PORT if needed. A retried attempt uses PORT+1.
 //
-// Token sourcing:
-//   - needsWriteToken scenarios require HF_SMOKE_TEST_TOKEN (preferred) or
-//     HF_TOKEN with write scope to dataset xet-team/xet-wasm-test.
-//   - readToken scenarios forward HF_TOKEN when set (the pinned files live
-//     in a public repo, so anonymous works — the token just avoids stricter
+// Token sourcing: all scenarios use HF_SMOKE_TEST_TOKEN.
+//   - needsWriteToken scenarios require it (write scope to dataset
+//     xet-team/xet-wasm-test); a missing token is an immediate FAIL.
+//   - readToken scenarios forward it when set (the pinned files live in a
+//     public repo, so anonymous works — the token just avoids stricter
 //     anonymous rate limits).
 
 import { runBrowserSmoke } from './lib.mjs';
@@ -140,9 +140,9 @@ const PINNED_H5 = {
 // ---------------------------------------------------------------------------
 //
 // Per scenario:
-//   needsWriteToken — requires HF_SMOKE_TEST_TOKEN / HF_TOKEN (write scope);
-//                     missing token is an immediate FAIL.
-//   readToken       — forwards HF_TOKEN when set; anonymous otherwise.
+//   needsWriteToken — requires HF_SMOKE_TEST_TOKEN (write scope); missing
+//                     token is an immediate FAIL.
+//   readToken       — forwards HF_SMOKE_TEST_TOKEN when set; anonymous otherwise.
 //   spawnBlockingGuard — map "Not initialized with handle set" errors to an
 //                     explicit XetRuntime::spawn_blocking regression message.
 //   timeoutMs       — overrides the 2-minute default for the in-page run.
@@ -634,16 +634,16 @@ if (!scenario) {
 
 let token = null;
 if (scenario.needsWriteToken) {
-  token = process.env.HF_SMOKE_TEST_TOKEN || process.env.HF_TOKEN || '';
+  token = process.env.HF_SMOKE_TEST_TOKEN || '';
   if (!token) {
     console.error(
-      `FAIL: HF_SMOKE_TEST_TOKEN (preferred) or HF_TOKEN required for ${name} smoke ` +
+      `FAIL: HF_SMOKE_TEST_TOKEN required for ${name} smoke ` +
         '(needs write scope to dataset xet-team/xet-wasm-test)',
     );
     process.exit(1);
   }
 } else if (scenario.readToken) {
-  token = process.env.HF_TOKEN || '';
+  token = process.env.HF_SMOKE_TEST_TOKEN || '';
 }
 
 // Network scenarios get one retry so a transient hub/CAS blip doesn't redden
