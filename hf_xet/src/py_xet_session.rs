@@ -15,7 +15,7 @@ use crate::{PyXetTaskState, convert_xet_error};
 /// Manages a Xet runtime context and connection pool.
 ///
 /// Session objects are cheap to clone — all clones share the same underlying state.
-#[pyclass(name = "XetSession")]
+#[pyclass(name = "XetSession", from_py_object)]
 #[derive(Clone)]
 pub struct PyXetSession {
     pub(crate) inner: XetSession,

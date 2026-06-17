@@ -2,7 +2,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use xet_runtime::config::XetConfig;
 
-#[pyclass(name = "XetConfig")]
+#[pyclass(name = "XetConfig", from_py_object)]
 #[derive(Clone)]
 pub struct PyXetConfig {
     inner: XetConfig,
@@ -43,7 +43,7 @@ impl PyXetConfig {
     fn py_with_config(&self, name_or_dict: &Bound<'_, PyAny>, value: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
         let mut new_inner = self.inner.clone();
 
-        if let Ok(dict) = name_or_dict.downcast::<PyDict>() {
+        if let Ok(dict) = name_or_dict.cast::<PyDict>() {
             if value.is_some() {
                 return Err(pyo3::exceptions::PyTypeError::new_err(
                     "with_config(dict) does not accept a second argument",
