@@ -106,6 +106,6 @@ name = "bg4_prediction_benchmark"
 strict = []
 smoke-test = []
 # Internal tooling (shard_benchmark / collect_compression_stats binaries).
-# Off by default so library consumers do not pull `clap`, `csv`, and `tempfile`.
+# Off by default.
 internal-tools = ["dep:clap", "dep:csv", "dep:tempfile"]
 simulation = ["xet-runtime/simulation"]

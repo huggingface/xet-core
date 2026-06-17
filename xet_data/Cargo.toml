@@ -101,8 +101,7 @@ harness = false
 strict = []
 smoke-test = []
 expensive_tests = []
-# Internal tooling (the `x` and `xtool` binaries). Off by default so library
-# consumers do not pull `clap` and its dependency tree.
+# Internal tooling (the `x` and `xtool` binaries). Off by default.
 internal-tools = ["dep:clap", "dep:walkdir"]
 fd-track = ["xet-runtime/fd-track", "xet-client/fd-track"]
 python = ["dep:pyo3"]
