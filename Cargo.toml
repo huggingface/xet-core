@@ -67,7 +67,7 @@ gearhash = "0.1"
 getrandom = { version = "0.4", features = ["wasm_js"] }
 git-url-parse = "0.4"
 git-version = "0.3"
-git2 = "0.20"
+git2 = "0.21"
 half = "2.7"
 heapify = "0.2"
 redb = "3.1"
