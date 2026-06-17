@@ -209,6 +209,13 @@ jobs:
           node-version: '24'
       - name: Install WASM CI smoke test deps
         working-directory: wasm/ci-smoke
+        # Backstop: a hung browser download (see cancelled run 27656352982) should
+        # fail this step fast, not sit until the job-level timeout.
+        timeout-minutes: 15
+        env:
+          # Abort a stalled artifact download after 2 min so Playwright retries,
+          # instead of blocking indefinitely on a single connection.
+          PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT: "120000"
         run: |
           npm ci
           npx playwright install --with-deps chromium
