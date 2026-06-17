@@ -624,66 +624,93 @@ const SCENARIOS = {
 // Main
 // ---------------------------------------------------------------------------
 
-const name = process.argv[2];
-const scenario = SCENARIOS[name];
-if (!scenario) {
-  console.error(`FAIL: unknown scenario ${JSON.stringify(name)}`);
-  console.error(`usage: node run.mjs <${Object.keys(SCENARIOS).join('|')}>`);
+// Runs a single scenario (with one retry for network scenarios). Returns true on PASS.
+async function runScenario(name) {
+  const scenario = SCENARIOS[name];
+
+  let token = '';
+  if (scenario.needsWriteToken) {
+    token = process.env.HF_SMOKE_TEST_TOKEN || '';
+    if (!token) {
+      console.error(
+        `FAIL: HF_SMOKE_TEST_TOKEN required for ${name} smoke ` +
+          '(needs write scope to dataset xet-team/xet-wasm-test)',
+      );
+      return false;
+    }
+  } else if (scenario.readToken) {
+    token = process.env.HF_SMOKE_TEST_TOKEN || '';
+  }
+
+  // Network scenarios get one retry so a transient hub/CAS blip doesn't redden
+  // the CI job; a real regression fails both attempts. Each attempt uses its own
+  // port: runBrowserSmoke's server kill is fire-and-forget, so rebinding the
+  // same port could race the previous server's shutdown.
+  const maxAttempts = scenario.needsWriteToken || scenario.readToken ? 2 : 1;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (attempt > 1) console.error(`retrying ${name} (attempt ${attempt}/${maxAttempts})...`);
+    try {
+      const result = await runBrowserSmoke({
+        pagePath: `ci-smoke/harness.html?scenario=${name}`,
+        runArg: token,
+        timeoutMs: scenario.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        port: PORT + attempt - 1,
+      });
+
+      if (!result.ok) {
+        if (Array.isArray(result.failures) && result.failures.length > 0) {
+          for (const f of result.failures) {
+            console.error(`  ${f.label}: ${f.reason}`);
+          }
+        }
+        // Anything mentioning the spawn_blocking expect message means the critical
+        // bug is back. Surface that explicitly so the failure cause is unambiguous.
+        if (scenario.spawnBlockingGuard && result.error && /Not initialized with handle set/i.test(result.error)) {
+          throw new Error(`REGRESSION: XetRuntime::spawn_blocking panicked on wasm — ${result.error}`);
+        }
+        throw new Error(result.error);
+      }
+
+      const suffix = scenario.assert(result);
+      console.log(suffix ? `PASS (${suffix})` : 'PASS');
+      return true;
+    } catch (e) {
+      console.error(`FAIL (attempt ${attempt}/${maxAttempts}): ${e?.message || e}`);
+      if (e?.stack) console.error(e.stack);
+    }
+  }
+  return false;
+}
+
+// `all` runs every scenario in sequence; a bare name runs just that one (handy
+// for local debugging). All scenarios run even if one fails, so a single CI run
+// surfaces every failure at once.
+const arg = process.argv[2];
+let names;
+if (arg === 'all') {
+  names = Object.keys(SCENARIOS);
+} else if (arg && SCENARIOS[arg]) {
+  names = [arg];
+} else {
+  console.error(`FAIL: unknown scenario ${JSON.stringify(arg)}`);
+  console.error(`usage: node run.mjs <all|${Object.keys(SCENARIOS).join('|')}>`);
   process.exit(1);
 }
 
-let token = null;
-if (scenario.needsWriteToken) {
-  token = process.env.HF_SMOKE_TEST_TOKEN || '';
-  if (!token) {
-    console.error(
-      `FAIL: HF_SMOKE_TEST_TOKEN required for ${name} smoke ` +
-        '(needs write scope to dataset xet-team/xet-wasm-test)',
-    );
-    process.exit(1);
-  }
-} else if (scenario.readToken) {
-  token = process.env.HF_SMOKE_TEST_TOKEN || '';
-}
-
-// Network scenarios get one retry so a transient hub/CAS blip doesn't redden
-// the CI job; a real regression fails both attempts. Each attempt uses its own
-// port: runBrowserSmoke's server kill is fire-and-forget, so rebinding the
-// same port could race the previous server's shutdown.
-const maxAttempts = scenario.needsWriteToken || scenario.readToken ? 2 : 1;
-
-let exitCode = 1;
-for (let attempt = 1; attempt <= maxAttempts && exitCode !== 0; attempt++) {
-  if (attempt > 1) console.error(`retrying ${name} (attempt ${attempt}/${maxAttempts})...`);
-  try {
-    const result = await runBrowserSmoke({
-      pagePath: `ci-smoke/harness.html?scenario=${name}`,
-      runArg: token,
-      timeoutMs: scenario.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-      port: PORT + attempt - 1,
-    });
-
-    if (!result.ok) {
-      if (Array.isArray(result.failures) && result.failures.length > 0) {
-        for (const f of result.failures) {
-          console.error(`  ${f.label}: ${f.reason}`);
-        }
-      }
-      // Anything mentioning the spawn_blocking expect message means the critical
-      // bug is back. Surface that explicitly so the failure cause is unambiguous.
-      if (scenario.spawnBlockingGuard && result.error && /Not initialized with handle set/i.test(result.error)) {
-        throw new Error(`REGRESSION: XetRuntime::spawn_blocking panicked on wasm — ${result.error}`);
-      }
-      throw new Error(result.error);
-    }
-
-    const suffix = scenario.assert(result);
-    console.log(suffix ? `PASS (${suffix})` : 'PASS');
-    exitCode = 0;
-  } catch (e) {
-    console.error(`FAIL (attempt ${attempt}/${maxAttempts}): ${e?.message || e}`);
-    if (e?.stack) console.error(e.stack);
+const failed = [];
+for (const name of names) {
+  if (names.length > 1) console.log(`\n=== ${name} ===`);
+  if (!(await runScenario(name))) {
+    failed.push(name);
+    // Annotate so failures surface in the GitHub UI even within a single CI step.
+    console.log(`::error title=WASM smoke failed::${name}`);
   }
 }
 
-process.exit(exitCode);
+if (names.length > 1) {
+  console.log(`\n=== ${names.length - failed.length}/${names.length} scenarios passed ===`);
+  for (const name of names) console.log(`  ${failed.includes(name) ? '✗' : '✓'} ${name}`);
+}
+
+process.exit(failed.length === 0 ? 0 : 1);

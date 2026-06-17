@@ -197,138 +197,28 @@ jobs:
       - name: Check hf_xet_thin_wasm Cargo.lock has no uncommitted changes
         working-directory: wasm/hf_xet_thin_wasm
         run: |
-          # the build steps would update Cargo.lock if it is out of date
           test -z "$(git status --porcelain Cargo.lock)" || (echo "hf_xet_thin_wasm Cargo.lock has uncommitted changes!" && exit 1)
       - name: Check hf_xet_wasm Cargo.lock has no uncommitted changes
         working-directory: wasm/hf_xet_wasm
         run: |
-          # the build steps would update Cargo.lock if it is out of date
           test -z "$(git status --porcelain Cargo.lock)" || (echo "hf_xet_wasm Cargo.lock has uncommitted changes!" && exit 1)
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5.0.0
         with:
           node-version: '24'
       - name: Install WASM CI smoke test deps
         working-directory: wasm/ci-smoke
-        # Backstop: a hung browser download (see cancelled run 27656352982) should
-        # fail this step fast, not sit until the job-level timeout.
         timeout-minutes: 15
         env:
-          # Abort a stalled artifact download after 2 min so Playwright retries,
-          # instead of blocking indefinitely on a single connection.
+          # Fail a stalled download fast so Playwright retries instead of hanging.
           PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT: "120000"
         run: |
           npm ci
           npx playwright install --with-deps chromium
-      # Per-scenario rationale lives in the SCENARIOS table in
-      # wasm/ci-smoke/run.mjs and the wasm/ci-smoke/scenarios/*.mjs modules.
-      - name: WASM invalid-inputs smoke test (local, no network)
-        # Fully local input-validation surface check.
+      - name: WASM smoke tests (prod hub + CAS)
         working-directory: wasm/ci-smoke
-        run: node run.mjs invalid-inputs
-      - name: WASM download smoke test (prod hub + CAS)
-        # Pinned-file download with content SHA-256 assertion; token optional.
         env:
           HF_SMOKE_TEST_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
-        working-directory: wasm/ci-smoke
-        run: node run.mjs download
-      - name: WASM download-to-bytes smoke test (prod hub + CAS)
-        # Writer-sink download (download_to_writer / reconstruct_to_writer) with content SHA-256 assertion.
-        env:
-          HF_SMOKE_TEST_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
-        working-directory: wasm/ci-smoke
-        run: node run.mjs download-to-bytes
-      - name: WASM download-multi smoke test (prod hub + CAS)
-        # Concurrent multi-file download fan-out.
-        env:
-          HF_SMOKE_TEST_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
-        working-directory: wasm/ci-smoke
-        run: node run.mjs download-multi
-      - name: WASM download-range smoke test (prod hub + CAS)
-        # Prefix / mid / suffix byte-range downloads vs reference slices.
-        env:
-          HF_SMOKE_TEST_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
-        working-directory: wasm/ci-smoke
-        run: node run.mjs download-range
-      - name: WASM download-cancel smoke test (prod hub + CAS)
-        # cancel() mid-stream; the group must stay usable afterwards.
-        env:
-          HF_SMOKE_TEST_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
-        working-directory: wasm/ci-smoke
-        run: node run.mjs download-cancel
-      - name: WASM download-error smoke test (prod hub + CAS)
-        # Nonexistent hash + malformed fileInfo must reject, not hang.
-        env:
-          HF_SMOKE_TEST_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
-        working-directory: wasm/ci-smoke
-        run: node run.mjs download-error
-      - name: WASM upload smoke test (Hub xet-write-token + CAS push)
-        # uploadBytes + commit() against prod hub/CAS.
-        env:
-          HF_SMOKE_TEST_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
-        working-directory: wasm/ci-smoke
-        run: node run.mjs upload
-      - name: WASM upload-stream smoke test (Hub xet-write-token + CAS push)
-        # Streaming variant of the upload smoke.
-        env:
-          HF_SMOKE_TEST_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
-        working-directory: wasm/ci-smoke
-        run: node run.mjs upload-stream
-      - name: WASM upload-multi smoke test (Hub xet-write-token + CAS push)
-        # Concurrent multi-file uploadBytes in one commit.
-        env:
-          HF_SMOKE_TEST_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
-        working-directory: wasm/ci-smoke
-        run: node run.mjs upload-multi
-      - name: WASM upload-stream-multi smoke test (Hub xet-write-token + CAS push)
-        # Concurrent multi-file uploadStream in one commit.
-        env:
-          HF_SMOKE_TEST_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
-        working-directory: wasm/ci-smoke
-        run: node run.mjs upload-stream-multi
-      - name: WASM upload-mixed smoke test (Hub xet-write-token + CAS push)
-        # uploadBytes + uploadStream mixed in one commit.
-        env:
-          HF_SMOKE_TEST_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
-        working-directory: wasm/ci-smoke
-        run: node run.mjs upload-mixed
-      - name: WASM upload-tiny smoke test (Hub xet-write-token + CAS push)
-        # 0-byte / 1-byte / 64 KiB boundary uploads in one commit.
-        env:
-          HF_SMOKE_TEST_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
-        working-directory: wasm/ci-smoke
-        run: node run.mjs upload-tiny
-      - name: WASM upload-multi-commit smoke test (Hub xet-write-token + CAS push)
-        # Two sequential XetUploadCommits from one XetSession.
-        env:
-          HF_SMOKE_TEST_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
-        working-directory: wasm/ci-smoke
-        run: node run.mjs upload-multi-commit
-      - name: WASM sha256-policy smoke test (Hub xet-write-token + CAS push)
-        # compute / provided / skip sha256 policies + invalid-policy rejects.
-        env:
-          HF_SMOKE_TEST_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
-        working-directory: wasm/ci-smoke
-        run: node run.mjs sha256-policy
-      - name: WASM upload-lifecycle smoke test (Hub xet-write-token + CAS push)
-        # abort/commit state-machine misuse must reject, not hang.
-        env:
-          HF_SMOKE_TEST_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
-        working-directory: wasm/ci-smoke
-        run: node run.mjs upload-lifecycle
-      - name: WASM dedup smoke test (Hub xet-write-token + CAS push)
-        # Session-level dedup with identical 65 MiB payloads.
-        env:
-          HF_SMOKE_TEST_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
-        working-directory: wasm/ci-smoke
-        run: node run.mjs dedup
-      - name: WASM global-dedup smoke test (Hub xet-write-token + CAS push)
-        # Cross-session global dedup against the pre-seeded deterministic
-        # file — e2e guard for the HMAC-keyed global-dedup-shard lookup on
-        # wasm.
-        env:
-          HF_SMOKE_TEST_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
-        working-directory: wasm/ci-smoke
-        run: node run.mjs global-dedup
+        run: node run.mjs all
   cargo-audit:
     name: Cargo Audit
     runs-on:
