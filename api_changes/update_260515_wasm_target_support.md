@@ -89,19 +89,17 @@ Xet file hash can read it from the `XetFileInfo` returned by `clean_bytes`
 (the standalone hash helpers are gated out only because they read from
 disk; the hash itself is produced by the same chunking pipeline).
 
-### `TemplatedPathBuf` on wasm
+### `TemplatedPathBuf` is native-only
 
-The native `TemplatedPathBuf` expands `{PID}` and `{TIMESTAMP}`
-placeholders at `evaluate()` time (used by `SystemMonitor::follow_process`
-for per-process log file paths). On wasm there is no PID and no useful
-filesystem, so the wasm shim in `xet_runtime/src/utils/mod.rs` keeps the
-API surface the config system needs (`new`, `evaluate`, `template_string`)
-but `evaluate` returns the input path unchanged — placeholders are not
-expanded. `SystemMonitor` is native-only and is not built into the wasm
-binary; the `system_monitor` config group keeps its pre-existing
-`#[cfg(not(target_family = "wasm"))]` gating and is absent from the
-config on wasm. Config values typed as `TemplatedPathBuf` will round-trip
-on wasm but the template literals inside them are treated as plain paths.
+`TemplatedPathBuf` expands `{PID}` / `{TIMESTAMP}` / `~` placeholders at
+`evaluate()` time (e.g. for `SystemMonitor` per-process log paths), so it is
+`#[cfg(not(target_family = "wasm"))]` — wasm has no PID, timestamps, or
+filesystem for the templating to act on, and there is no wasm shim. None of
+its uses are reachable on wasm: the `system_monitor` config group,
+`cache_dir`/`xet_cache_root`, and `LoggingConfig::from_directory` are all
+native-only, and the `ParsableConfigValue` impl for `TemplatedPathBuf` is
+gated to match. No `XetConfig` field of type `TemplatedPathBuf` exists on
+wasm.
 
 ### `RemoteClient::upload_xorb` cross-target behavior
 
@@ -198,7 +196,7 @@ the patterns this codebase relies on:
 
 - `xet_runtime/src/core/runtime.rs` — wasm stub `XetRuntime::new` (no tokio runtime); cfg-gated `spawn_blocking` (wasm variant via `tokio_with_wasm::task::spawn_blocking`)
 - `xet_runtime/src/logging/system_monitor.rs` — native-only; `SystemMonitor` and the runtime `system_monitor` field are gated to `#[cfg(not(target_family = "wasm"))]`, and the wasm `XetRuntime::new` does not instantiate one
-- `xet_runtime/src/utils/mod.rs` — wasm `TemplatedPathBuf` shim (`evaluate` is identity, no expansion)
+- `xet_runtime/src/utils/mod.rs` — `TemplatedPathBuf` is native-only (no wasm shim); its config / logging / cache-dir uses are all `#[cfg(not(target_family = "wasm"))]`
 - `xet_runtime/src/config/xet_config.rs` — `XetConfig::validate_usize_bounds` panics if `data.ingestion_block_size` exceeds the target's `usize::MAX`
 - `xet_runtime/Cargo.toml` — wasm-target deps via `workspace = true`
 - `xet_data/src/processing/shard_interface/{native,wasm}.rs` — module split (wasm uses in-memory `MDBInMemoryShard`)

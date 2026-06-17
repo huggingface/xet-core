@@ -11,13 +11,9 @@ pub use configuration_utils::is_high_performance;
 
 #[cfg(not(target_family = "wasm"))]
 mod file_paths;
-#[cfg(target_family = "wasm")]
-mod file_paths_wasm;
 
 #[cfg(not(target_family = "wasm"))]
 pub use file_paths::TemplatedPathBuf;
-#[cfg(target_family = "wasm")]
-pub use file_paths_wasm::TemplatedPathBuf;
 
 // Modules moved from core_structures
 pub mod async_iterator;
