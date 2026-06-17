@@ -16,7 +16,6 @@ on:
         description: 'Semantic version for PyPI release (tag will share the same name)'
         required: true
         default: 'v0.1.0'
-  pull_request:
 
 permissions:
   contents: read
