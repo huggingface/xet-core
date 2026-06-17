@@ -75,7 +75,7 @@ impl AuthGroupBuilder<XetUploadCommit> {
 /// [`XetFileMetadata`] for every file that was successfully ingested,
 /// keyed by [`UniqueId`].
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "python", pyo3::pyclass(get_all))]
+#[cfg_attr(feature = "python", pyo3::pyclass(get_all, from_py_object))]
 pub struct XetCommitReport {
     /// Aggregate deduplication metrics across all files in this commit.
     pub dedup_metrics: DeduplicationMetrics,
@@ -111,7 +111,7 @@ impl XetCommitReport {
 /// Per-file metadata returned by [`XetFileUpload::finalize_ingestion`] and
 /// [`XetStreamUpload::finish`].
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "python", pyo3::pyclass(get_all))]
+#[cfg_attr(feature = "python", pyo3::pyclass(get_all, from_py_object))]
 pub struct XetFileMetadata {
     /// Unique identifier for the task that produced this metadata.
     #[serde(skip)]

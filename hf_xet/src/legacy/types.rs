@@ -6,7 +6,7 @@ use xet_pkg::legacy::XetFileInfo;
 // ── PyXetDownloadInfo ─────────────────────────────────────────────────────────
 
 // TODO: we won't need to subclass this in the next major version update.
-#[pyclass(subclass)]
+#[pyclass(subclass, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyXetDownloadInfo {
     #[pyo3(get, set)]
@@ -42,7 +42,7 @@ impl PyXetDownloadInfo {
 // ── PyXetUploadInfo ───────────────────────────────────────────────────────────
 
 /// Result returned by the legacy ``upload_bytes`` / ``upload_files`` / ``hash_files`` functions.
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyXetUploadInfo {
     #[pyo3(get)]
@@ -95,15 +95,15 @@ impl From<XetFileInfo> for PyXetUploadInfo {
 ///
 /// Kept for backward compatibility with old versions of ``huggingface_hub``.
 // TODO: remove during the next major version update.
-#[pyclass(extends=PyXetDownloadInfo)]
+#[pyclass(extends=PyXetDownloadInfo, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyPointerFile {}
 
 #[pymethods]
 impl PyPointerFile {
     #[new]
-    pub fn new(path: String, hash: String, filesize: u64) -> (Self, PyXetDownloadInfo) {
-        (PyPointerFile {}, PyXetDownloadInfo::new(path, hash, Some(filesize)))
+    pub fn new(path: String, hash: String, filesize: u64) -> PyClassInitializer<Self> {
+        PyClassInitializer::from(PyXetDownloadInfo::new(path, hash, Some(filesize))).add_subclass(PyPointerFile {})
     }
 
     fn __str__(&self) -> String {
