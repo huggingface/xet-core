@@ -63,12 +63,12 @@ sha2 = { workspace = true }
 [[bin]]
 name = "x"
 path = "src/processing/bin/example.rs"
-required-features = ["cli"]
+required-features = ["internal-tools"]
 
 [[bin]]
 name = "xtool"
 path = "src/processing/bin/xtool.rs"
-required-features = ["cli"]
+required-features = ["internal-tools"]
 
 [[example]]
 name = "chunk"
@@ -101,9 +101,9 @@ harness = false
 strict = []
 smoke-test = []
 expensive_tests = []
-# Command-line tooling (the `x` and `xtool` binaries). Off by default so library
+# Internal tooling (the `x` and `xtool` binaries). Off by default so library
 # consumers do not pull `clap` and its dependency tree.
-cli = ["dep:clap"]
+internal-tools = ["dep:clap"]
 fd-track = ["xet-runtime/fd-track", "xet-client/fd-track"]
 python = ["dep:pyo3"]
 simulation = ["xet-client/simulation", "xet-core-structures/simulation"]

@@ -91,12 +91,12 @@ tempfile = { workspace = true }
 [[bin]]
 name = "shard_benchmark"
 path = "src/metadata_shard/shard_benchmark.rs"
-required-features = ["cli"]
+required-features = ["internal-tools"]
 
 [[bin]]
 path = "src/xorb_object/byte_grouping/compression_stats/collect_compression_stats.rs"
 name = "collect_compression_stats"
-required-features = ["cli"]
+required-features = ["internal-tools"]
 
 [[bin]]
 path = "src/xorb_object/byte_grouping/bg4_prediction_benchmark.rs"
@@ -105,7 +105,7 @@ name = "bg4_prediction_benchmark"
 [features]
 strict = []
 smoke-test = []
-# Command-line tooling (shard_benchmark / collect_compression_stats binaries).
+# Internal tooling (shard_benchmark / collect_compression_stats binaries).
 # Off by default so library consumers do not pull `clap` and `csv`.
-cli = ["dep:clap", "dep:csv"]
+internal-tools = ["dep:clap", "dep:csv"]
 simulation = ["xet-runtime/simulation"]
