@@ -75,6 +75,7 @@ native-tls = ["reqwest/native-tls"]
 native-tls-vendored = ["reqwest/native-tls-vendored"]
 # The cache_analysis binary needs clap for argument parsing.
 analysis = ["dep:clap"]
+console = ["xet-runtime/console"]
 simulation = [
     "dep:axum",
     "dep:humantime",

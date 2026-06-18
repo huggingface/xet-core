@@ -187,6 +187,14 @@ cargo install tokio-console
 tokio-console
 ```
 
+#### Debugging live transfers: xet-console
+
+Build with `--features console` and every `XetSession` in the process serves a
+read-only inspection API on `http://127.0.0.1:6660` (uploads, downloads, dedup,
+adaptive concurrency). See `docs/design/2026-06-11-xet-console-design.md` and
+the agent/CLI guide at `docs/skills/xet-console/SKILL.md`. A terminal UI ships
+in-repo: `cargo run -p xet-console` (see docs/skills/xet-console/SKILL.md).
+
 #### Building universal whl for MacOS:
 
 From hf_xet directory:

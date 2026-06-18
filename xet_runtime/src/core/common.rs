@@ -29,6 +29,12 @@ pub struct XetCommon {
     /// caches here (keyed by a unique string) instead of using process-global statics,
     /// so everything is cleaned up when the runtime drops.
     runtime_cache: Mutex<HashMap<String, Box<dyn Any + Send + Sync>>>,
+
+    /// xet-console scope for the session owning this XetCommon. Set once by
+    /// XetSession::new when the console feature is active; read by components
+    /// (upload/download sessions, concurrency controllers) via ctx.common.
+    #[cfg(feature = "console")]
+    pub console_session: std::sync::OnceLock<crate::console::registry::SessionHandle>,
 }
 
 impl XetCommon {
@@ -44,9 +50,28 @@ impl XetCommon {
             },
             active_downloads: Arc::new(AtomicU64::new(0)),
             runtime_cache: Mutex::new(HashMap::new()),
+            #[cfg(feature = "console")]
+            console_session: std::sync::OnceLock::new(),
         }
     }
+}
 
+#[cfg(feature = "console")]
+impl XetCommon {
+    /// The console scope, if this XetCommon belongs to a console-registered session.
+    pub fn console_scope(&self) -> Option<&std::sync::Arc<crate::console::state::SessionConsole>> {
+        self.console_session.get().map(|h| &h.scope)
+    }
+
+    /// Test-only: install a scope without a registry handle.
+    pub fn console_session_for_test(&self, scope: std::sync::Arc<crate::console::state::SessionConsole>) {
+        let _ = self
+            .console_session
+            .set(crate::console::registry::SessionHandle::detached(scope));
+    }
+}
+
+impl XetCommon {
     /// Retrieves a cached value by key, or creates and stores it using `create`.
     ///
     /// Values are stored as type-erased `Box<dyn Any>` and recovered via `downcast_ref`.

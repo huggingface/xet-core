@@ -103,6 +103,7 @@ harness = false
 strict = []
 smoke-test = []
 expensive_tests = []
+console = ["xet-runtime/console", "xet-client/console"]
 # Internal tooling (the `x` and `xtool` binaries). Off by default.
 internal-tools = ["dep:clap", "dep:walkdir"]
 fd-track = ["xet-runtime/fd-track", "xet-client/fd-track"]

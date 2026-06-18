@@ -43,6 +43,12 @@ pub struct ReconstructionTermManager {
     progress_updater: Option<Arc<ItemProgressUpdater>>,
     total_bytes_reported: u64,
     total_transfer_bytes_reported: u64,
+    #[cfg(feature = "console")]
+    console: Option<std::sync::Arc<xet_runtime::console::state::DownloadFileConsole>>,
+    #[cfg(feature = "console")]
+    next_block_id: u64,
+    #[cfg(feature = "console")]
+    block_id_queue: VecDeque<u64>,
 }
 
 impl ReconstructionTermManager {
@@ -53,6 +59,7 @@ impl ReconstructionTermManager {
         file_hash: MerkleHash,
         file_byte_range: FileRange,
         progress_updater: Option<Arc<ItemProgressUpdater>>,
+        #[cfg(feature = "console")] console: Option<std::sync::Arc<xet_runtime::console::state::DownloadFileConsole>>,
     ) -> Result<Self> {
         let completion_rate_estimator =
             ExpWeightedMovingAvg::new_count_decay(config.completion_rate_estimator_half_life);
@@ -74,6 +81,12 @@ impl ReconstructionTermManager {
             progress_updater,
             total_bytes_reported: 0,
             total_transfer_bytes_reported: 0,
+            #[cfg(feature = "console")]
+            console,
+            #[cfg(feature = "console")]
+            next_block_id: 0,
+            #[cfg(feature = "console")]
+            block_id_queue: VecDeque::new(),
         };
 
         // Start things by prefetching two smaller blocks to get things started.  This way,
@@ -119,6 +132,17 @@ impl ReconstructionTermManager {
         // Check the prefetch buffer to possibly prefetch the next block.
         self.check_prefetch_buffer().await?;
 
+        #[cfg(feature = "console")]
+        if let Some(fc) = &self.console {
+            let rate = self.completion_rate_estimator.value();
+            fc.set_prefetch(
+                self.prefetch_queue.len(),
+                self.prefetched_byte_position,
+                self.current_active_byte_position,
+                if rate > 0.0 { Some(rate) } else { None },
+            );
+        }
+
         let Some(next_block_jh) = self.prefetch_queue.pop_front() else {
             // If there are no more prefetched terms then we're done.
             // Note: we check against known_final_byte_position since requested_byte_range.end
@@ -126,10 +150,22 @@ impl ReconstructionTermManager {
             debug_assert_ge!(self.prefetched_byte_position, self.known_final_byte_position.load(Ordering::Relaxed));
             return Ok(None);
         };
+        #[cfg(feature = "console")]
+        let popped_block_id = self.block_id_queue.pop_front();
 
-        let maybe_next_block = next_block_jh
+        let fetch_result = next_block_jh
             .await
-            .map_err(|e| FileReconstructionError::InternalError(format!("Join error: {e}")))??;
+            .map_err(|e| FileReconstructionError::InternalError(format!("Join error: {e}")));
+
+        // consumed = dequeued (including failed/empty fetches); the file-level state carries failure truth
+        #[cfg(feature = "console")]
+        if let (Some(fc), Some(block_id)) = (&self.console, popped_block_id)
+            && fetch_result.is_err()
+        {
+            fc.consume_term_block(block_id);
+        }
+
+        let maybe_next_block = fetch_result??;
 
         if let Some((file_terms, new_bytes, new_transfer_bytes)) = maybe_next_block {
             // Extract the download domain from the first file term's URL.
@@ -170,6 +206,12 @@ impl ReconstructionTermManager {
                 progress_updater.update_transfer_size(self.total_transfer_bytes_reported);
             }
 
+            // consumed = dequeued (including failed/empty fetches); the file-level state carries failure truth
+            #[cfg(feature = "console")]
+            if let (Some(fc), Some(block_id)) = (&self.console, popped_block_id) {
+                fc.consume_term_block(block_id);
+            }
+
             Ok(Some(file_terms))
         } else {
             // We've completed the iteration, so record the final byte position.
@@ -185,6 +227,12 @@ impl ReconstructionTermManager {
                 prefetched_byte_position = self.prefetched_byte_position,
                 "Completed prefetch queue; end of file reached."
             );
+
+            // consumed = dequeued (including failed/empty fetches); the file-level state carries failure truth
+            #[cfg(feature = "console")]
+            if let (Some(fc), Some(block_id)) = (&self.console, popped_block_id) {
+                fc.consume_term_block(block_id);
+            }
 
             Ok(None)
         }
@@ -286,6 +334,15 @@ impl ReconstructionTermManager {
         // Update the prefetched position now.
         self.prefetched_byte_position = prefetch_block_range.end;
 
+        #[cfg(feature = "console")]
+        let block_console = self.console.as_ref().map(|fc| {
+            self.next_block_id += 1;
+            let bc = fc.new_term_block(self.next_block_id, (prefetch_block_range.start, prefetch_block_range.end));
+            // must stay paired with the prefetch_queue push below — never insert an early return between them
+            self.block_id_queue.push_back(self.next_block_id);
+            bc
+        });
+
         // Add the prefetch task to the queue.
         let known_final_byte_position = self.known_final_byte_position.clone();
         let client = self.client.clone();
@@ -293,7 +350,26 @@ impl ReconstructionTermManager {
         let runtime = self.ctx.clone();
 
         let jh = tokio::task::spawn(async move {
+            #[cfg(feature = "console")]
+            if let Some(bc) = &block_console {
+                bc.set_state(xet_runtime::console::model::TermState::Fetching);
+            }
+
             let result = retrieve_file_term_block(&runtime, client, file_hash, prefetch_block_range).await;
+
+            #[cfg(feature = "console")]
+            if let (Some(bc), Ok(Some((_, _, file_terms)))) = (&block_console, &result) {
+                bc.resolved(
+                    file_terms
+                        .iter()
+                        .map(|t| xet_runtime::console::model::TermInfo {
+                            xorb_hash: t.xorb_block.xorb_hash.hex(),
+                            chunk_range: (t.xorb_chunk_range.start, t.xorb_chunk_range.end),
+                            byte_range: (t.byte_range.start, t.byte_range.end),
+                        })
+                        .collect(),
+                );
+            }
 
             // See if we're done with the file.
             if let Ok(Some((ref returned_range, transfer_bytes, ref file_terms))) = result {
