@@ -24,7 +24,7 @@ use xet_core_structures::metadata_shard::{
 use xet_runtime::core::XetContext;
 use xet_runtime::error_printer::ErrorPrinter;
 
-use super::configurations::TranslatorConfig;
+use super::super::configurations::TranslatorConfig;
 use crate::error::Result;
 
 pub struct SessionShardInterface {

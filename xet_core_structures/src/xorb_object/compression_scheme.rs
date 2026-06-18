@@ -2,9 +2,12 @@ use std::borrow::Cow;
 use std::fmt::Display;
 use std::io::{Cursor, Read, Write, copy};
 use std::str::FromStr;
+#[cfg(not(target_family = "wasm"))]
 use std::time::Instant;
 
 use lz4_flex::frame::{FrameDecoder, FrameEncoder};
+#[cfg(target_family = "wasm")]
+use web_time::Instant;
 
 use super::byte_grouping::BG4Predictor;
 use super::byte_grouping::bg4::{bg4_regroup, bg4_split};

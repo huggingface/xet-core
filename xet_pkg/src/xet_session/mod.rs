@@ -248,6 +248,19 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! ## WASM availability
+//!
+//! On `wasm32-unknown-unknown` the surface is a strict subset:
+//!
+//! - **Async only** — `_blocking` variants are non-wasm (wasm cannot block the host thread).
+//! - **No filesystem entrypoints** — `upload_from_path`, `XetFileDownloadGroup`, and `XetFileDownload` are non-wasm;
+//!   use `upload_bytes` / `upload_stream` and `XetDownloadStreamGroup` instead.
+//! - **No external tokio handle** — `XetSessionBuilder::with_tokio_handle` is non-wasm.
+//!
+//! Doc links resolve on every target, but `_blocking` and path-based names
+//! point at items that don't exist on wasm; the per-method `#[cfg(...)]`
+//! attributes are the authoritative target gate.
 
 mod auth_group_builder;
 #[cfg(not(target_family = "wasm"))]

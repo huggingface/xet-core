@@ -4,6 +4,8 @@ use std::fmt;
 use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
+#[cfg(target_family = "wasm")]
+use tokio_with_wasm::alias as tokio;
 use tracing::{debug, info};
 use xet_data::processing::{FileUploadSession, SingleFileCleaner};
 use xet_data::progress_tracking::ItemProgressReport;
@@ -119,6 +121,7 @@ impl XetStreamUpload {
     /// # Panics
     ///
     /// Panics if called from within a tokio async runtime.
+    #[cfg(not(target_family = "wasm"))]
     pub fn write_blocking(&self, data: impl Into<Bytes>) -> Result<(), XetError> {
         let data = data.into();
         debug!(task_id = %self.task_id(), bytes = data.len(), "Stream write");
@@ -150,6 +153,7 @@ impl XetStreamUpload {
     /// # Panics
     ///
     /// Panics if called from within a tokio async runtime.
+    #[cfg(not(target_family = "wasm"))]
     pub fn finish_blocking(&self) -> Result<XetFileMetadata, XetError> {
         info!(task_id = %self.task_id(), "Stream finish");
         let inner = Arc::clone(&self.inner);

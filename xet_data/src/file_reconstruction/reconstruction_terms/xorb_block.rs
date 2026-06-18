@@ -4,7 +4,9 @@ use std::sync::Arc;
 use bytes::Bytes;
 use tokio::sync::{Mutex, OnceCell};
 use xet_client::cas_client::{Client, ProgressCallback};
-use xet_client::cas_types::{ChunkRange, Key};
+use xet_client::cas_types::ChunkRange;
+#[cfg(not(target_family = "wasm"))]
+use xet_client::cas_types::Key;
 use xet_client::chunk_cache::ChunkCache;
 use xet_core_structures::merklehash::MerkleHash;
 use xet_runtime::core::XetContext;
@@ -98,7 +100,7 @@ impl XorbBlock {
         client: Arc<dyn Client>,
         url_info: Arc<TermBlockRetrievalURLs>,
         progress_updater: Option<Arc<ItemProgressUpdater>>,
-        chunk_cache: Option<Arc<dyn ChunkCache>>,
+        #[cfg_attr(target_family = "wasm", allow(unused_variables))] chunk_cache: Option<Arc<dyn ChunkCache>>,
     ) -> Result<Arc<XorbBlockData>> {
         let xorb_block_index = self.xorb_block_index;
         let uncompressed_size_if_known = self.uncompressed_size_if_known;
@@ -110,6 +112,8 @@ impl XorbBlock {
                 // NOTE: cache key uses only the first ChunkRange. This works when each
                 // XorbBlock has a single range, but will need rework if multi-range
                 // blocks (multiple disjoint chunk ranges per block) are cached.
+                // Wasm has no disk-backed ChunkCache; skip the cache read entirely.
+                #[cfg(not(target_family = "wasm"))]
                 if let Some(ref cache) = chunk_cache {
                     let cache_key = Key {
                         prefix: ctx.config.data.default_prefix.clone(),
@@ -155,6 +159,7 @@ impl XorbBlock {
                     .await?;
 
                 // Store in chunk cache (best-effort, non-blocking).
+                #[cfg(not(target_family = "wasm"))]
                 if let Some(cache) = chunk_cache {
                     let cache_key = Key {
                         prefix: ctx.config.data.default_prefix.clone(),

@@ -46,6 +46,7 @@ impl GitRepo {
             if head_ref.is_branch() {
                 head_ref
                     .name()
+                    .ok()
                     .and_then(|refs_heads_branch| refs_heads_branch.strip_prefix("refs/heads/"))
                     .map(|branch| branch.to_owned())
             } else {
@@ -81,7 +82,7 @@ impl GitRepo {
         // use only remote if there is only 1
         let remotes = repo.remotes()?;
         if remotes.len() == 1
-            && let Some(remote) = remotes.get(0)
+            && let Ok(Some(remote)) = remotes.get(0)
         {
             return Ok(remote.to_string());
         }
@@ -98,7 +99,9 @@ impl GitRepo {
         let url: GitUrl = repo
             .find_remote(remote)?
             .url()
+            .ok()
             .map(|s| s.to_string())
+            .filter(|s| !s.is_empty())
             .ok_or_else(|| GitXetError::config_error(format!("no url for remote \"{remote}\"")))?
             .parse()?;
 

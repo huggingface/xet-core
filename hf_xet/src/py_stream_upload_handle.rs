@@ -23,7 +23,7 @@ use crate::{PyXetTaskState, convert_xet_error};
 ///         stream.write(chunk)
 /// # finish() was called automatically
 /// ```
-#[pyclass(name = "XetStreamUpload")]
+#[pyclass(name = "XetStreamUpload", from_py_object)]
 #[derive(Clone)]
 pub struct PyXetStreamUpload {
     pub(crate) inner: XetStreamUpload,

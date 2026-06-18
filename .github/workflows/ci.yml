@@ -95,7 +95,7 @@ jobs:
           git lfs install
       - name: Build and Test
         run: |
-          cargo test --verbose --no-fail-fast --features "strict simulation git-xet-for-integration-test"
+          cargo test --verbose --no-fail-fast --features "strict simulation internal-tools git-xet-for-integration-test"
       - name: Build and Test (console feature)
         run: |
           cargo test --verbose --no-fail-fast -p xet-runtime -p xet-client -p xet-data -p hf-xet --features "console simulation"
@@ -132,7 +132,7 @@ jobs:
       - uses: ./.github/actions/cache-rust-build
       - name: Build and Test
         run: |
-          cargo test --verbose --no-fail-fast --features "strict simulation git-xet-for-integration-test"
+          cargo test --verbose --no-fail-fast --features "strict simulation internal-tools git-xet-for-integration-test"
       - name: Build and Test hf_xet
         run: |
           cd hf_xet && cargo test --verbose --no-fail-fast
@@ -169,7 +169,7 @@ jobs:
       - uses: ./.github/actions/cache-rust-build
       - name: Build and Test
         run: |
-          cargo test --verbose --no-fail-fast --features "strict simulation git-xet-for-integration-test"
+          cargo test --verbose --no-fail-fast --features "strict simulation internal-tools git-xet-for-integration-test"
       - name: Build and Test hf_xet
         run: |
           cd hf_xet && cargo test --verbose --no-fail-fast
@@ -205,13 +205,28 @@ jobs:
       - name: Check hf_xet_thin_wasm Cargo.lock has no uncommitted changes
         working-directory: wasm/hf_xet_thin_wasm
         run: |
-          # the build steps would update Cargo.lock if it is out of date
           test -z "$(git status --porcelain Cargo.lock)" || (echo "hf_xet_thin_wasm Cargo.lock has uncommitted changes!" && exit 1)
       - name: Check hf_xet_wasm Cargo.lock has no uncommitted changes
         working-directory: wasm/hf_xet_wasm
         run: |
-          # the build steps would update Cargo.lock if it is out of date
           test -z "$(git status --porcelain Cargo.lock)" || (echo "hf_xet_wasm Cargo.lock has uncommitted changes!" && exit 1)
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5.0.0
+        with:
+          node-version: '24'
+      - name: Install WASM CI smoke test deps
+        working-directory: wasm/ci-smoke
+        timeout-minutes: 15
+        env:
+          # Fail a stalled download fast so Playwright retries instead of hanging.
+          PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT: "120000"
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: WASM smoke tests (prod hub + CAS)
+        working-directory: wasm/ci-smoke
+        env:
+          HF_SMOKE_TEST_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
+        run: node run.mjs all
   cargo-audit:
     name: Cargo Audit
     runs-on:

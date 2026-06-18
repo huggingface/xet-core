@@ -22,7 +22,7 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
-clap = { workspace = true }
+clap = { workspace = true, optional = true }
 crc32fast = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
@@ -39,7 +39,7 @@ tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio-retry = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+tracing-subscriber = { workspace = true, optional = true }
 url = { workspace = true }
 urlencoding = { workspace = true }
 
@@ -51,6 +51,7 @@ tokio = { workspace = true, features = [
     "rt",
     "time",
 ] }
+tokio_with_wasm = { workspace = true, features = ["rt", "sync"] }
 web-time = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
@@ -72,7 +73,8 @@ fd-track = ["xet-runtime/fd-track"]
 rustls-tls = ["reqwest/rustls"]
 native-tls = ["reqwest/native-tls"]
 native-tls-vendored = ["reqwest/native-tls-vendored"]
-analysis = []
+# The cache_analysis binary needs clap for argument parsing.
+analysis = ["dep:clap"]
 console = ["xet-runtime/console"]
 simulation = [
     "dep:axum",
@@ -80,6 +82,8 @@ simulation = [
     "dep:futures-util",
     "dep:human-bandwidth",
     "dep:tower-http",
+    "dep:clap",
+    "dep:tracing-subscriber",
     "xet-core-structures/simulation",
 ]
 

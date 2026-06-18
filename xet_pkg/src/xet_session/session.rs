@@ -176,11 +176,14 @@ impl XetSessionBuilder {
     ///
     /// Each build creates a fresh [`XetContext`] around the selected runtime, so sessions
     /// can share the same execution backend while keeping independent config and common state.
-    #[cfg(not(target_family = "wasm"))]
+    ///
+    /// On wasm no tokio runtime is instantiated; all tasks are spawned onto the
+    /// JavaScript event loop.
     pub fn build(self) -> Result<XetSession, SessionError> {
         #[cfg(feature = "fd-track")]
         let _fd_scope = track_fd_scope("XetSessionBuilder::build");
 
+        #[cfg(not(target_family = "wasm"))]
         let ctx = if let Some(h) = self.tokio_handle {
             info!("XetSession using explicitly provided tokio handle");
             XetContext::from_external(h, self.config)
@@ -188,18 +191,13 @@ impl XetSessionBuilder {
             XetContext::with_config(self.config)?
         };
 
+        #[cfg(target_family = "wasm")]
+        let ctx = XetContext::with_config(self.config)?;
+
         let session = XetSession::new(ctx);
         info!("Session created, session_id={}", session.inner.id);
         #[cfg(feature = "fd-track")]
         report_fd_count("XetSessionBuilder::build complete");
-        Ok(session)
-    }
-
-    #[cfg(target_family = "wasm")]
-    pub fn build(self) -> Result<XetSession, SessionError> {
-        let ctx = XetContext::from_external(tokio::runtime::Handle::current(), self.config);
-        let session = XetSession::new(ctx);
-        info!("Session created, session_id={}", session.inner.id);
         Ok(session)
     }
 }
@@ -514,6 +512,7 @@ mod tests {
     // ── XetContext::handle_meets_requirements ────────────────────────────────
 
     #[test]
+    #[cfg(not(target_family = "wasm"))]
     // A multi-thread runtime with enable_all() meets all requirements.
     fn test_handle_multi_thread_all_features_returns_true() {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
@@ -529,6 +528,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_family = "wasm"))]
     // A multi-thread runtime with no drivers enabled returns false.
     fn test_handle_without_any_driver_returns_false() {
         let rt = tokio::runtime::Builder::new_multi_thread().build().unwrap();
@@ -536,6 +536,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_family = "wasm"))]
     // A multi-thread runtime with only enable_time() is missing the IO driver.
     fn test_handle_without_io_driver_returns_false() {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_time().build().unwrap();
@@ -543,6 +544,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_family = "wasm"))]
     // A multi-thread runtime with only enable_io() is missing the time driver.
     fn test_handle_without_time_driver_returns_false() {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_io().build().unwrap();

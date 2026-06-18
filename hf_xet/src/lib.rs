@@ -44,7 +44,7 @@ pub(crate) mod profiling;
 /// annotated with `#[pyclass]` as-is.  Rather than restructuring the internal
 /// enum, we expose this four-variant unit-only wrapper.  The `Error` case is
 /// surfaced as a raised Python exception by `task_state_to_pystate` instead.
-#[pyclass(eq, name = "XetTaskState")]
+#[pyclass(eq, name = "XetTaskState", from_py_object)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum PyXetTaskState {
     Running,

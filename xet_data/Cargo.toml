@@ -24,7 +24,7 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
-clap = { workspace = true }
+clap = { workspace = true, optional = true }
 gearhash = { workspace = true }
 http = { workspace = true }
 itertools = { workspace = true }
@@ -39,8 +39,8 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true, features = ["v7"] }
-walkdir = { workspace = true }
-pyo3 = { version = "0.26", features = ["abi3-py37"], optional = true }
+walkdir = { workspace = true, optional = true }
+pyo3 = { workspace = true, optional = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 tokio = { workspace = true, features = [
@@ -50,6 +50,8 @@ tokio = { workspace = true, features = [
     "rt",
     "time",
 ] }
+tokio_with_wasm = { workspace = true, features = ["rt", "sync", "macros"] }
+web-time = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "rt", "time"] }
@@ -63,10 +65,12 @@ sha2 = { workspace = true }
 [[bin]]
 name = "x"
 path = "src/processing/bin/example.rs"
+required-features = ["internal-tools"]
 
 [[bin]]
 name = "xtool"
 path = "src/processing/bin/xtool.rs"
+required-features = ["internal-tools"]
 
 [[example]]
 name = "chunk"
@@ -81,6 +85,7 @@ name = "xorb-check"
 path = "examples/xorb-check/main.rs"
 
 [dev-dependencies]
+clap = { workspace = true }
 criterion = { version = "0.4", features = ["async_tokio"] }
 ctor = { workspace = true }
 dirs = { workspace = true }
@@ -99,6 +104,8 @@ strict = []
 smoke-test = []
 expensive_tests = []
 console = ["xet-runtime/console", "xet-client/console"]
+# Internal tooling (the `x` and `xtool` binaries). Off by default.
+internal-tools = ["dep:clap", "dep:walkdir"]
 fd-track = ["xet-runtime/fd-track", "xet-client/fd-track"]
 python = ["dep:pyo3"]
 simulation = ["xet-client/simulation", "xet-core-structures/simulation"]

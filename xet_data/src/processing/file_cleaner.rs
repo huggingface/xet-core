@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
+#[cfg(target_family = "wasm")]
+use tokio_with_wasm::alias as tokio;
 use tracing::{Instrument, debug_span, info, instrument};
 use xet_core_structures::merklehash::ChunkHashList;
 use xet_core_structures::metadata_shard::Sha256;
@@ -171,7 +173,8 @@ impl SingleFileCleaner {
     }
 
     pub async fn add_data_from_bytes(&mut self, data: Bytes) -> Result<()> {
-        let block_size = *self.ctx.config.data.ingestion_block_size as usize;
+        let block_size = usize::try_from(*self.ctx.config.data.ingestion_block_size)
+            .expect("ingestion_block_size exceeds usize::MAX on this target");
         if data.len() > block_size {
             let mut pos = 0;
             while pos < data.len() {

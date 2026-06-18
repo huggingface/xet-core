@@ -34,7 +34,6 @@ jobs:
             manylinux: manylinux_2_28
         python-version:
           - 3.14
-          - 3.13t
           - 3.14t
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -130,7 +129,6 @@ jobs:
             target: aarch64
         python-version:
           - 3.14
-          - 3.13t
           - 3.14t
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -220,7 +218,6 @@ jobs:
             rust_target: aarch64-pc-windows-msvc
         python-version:
           - 3.14
-          - 3.13t
           - 3.14t
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -279,7 +276,6 @@ jobs:
             rust_target: aarch64-apple-darwin
         python-version:
           - 3.14
-          - 3.13t
           - 3.14t
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2

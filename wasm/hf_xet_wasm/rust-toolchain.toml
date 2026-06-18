@@ -1,5 +1,4 @@
-# Before upgrading check that everything is available on all tier1 targets here:
-# https://rust-lang.github.io/rustup-components-history
+# Pinned to the same nightly + wasm32 target as the other wasm/* crates.
 [toolchain]
 channel = "nightly"
 components = ["rust-src", "rustfmt"]

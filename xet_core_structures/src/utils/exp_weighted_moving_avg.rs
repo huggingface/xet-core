@@ -1,4 +1,11 @@
-use tokio::time::{Duration, Instant};
+use std::time::Duration;
+
+// Native: `tokio::time::Instant` so tests can use `tokio::time::{advance, pause}`.
+// Wasm: `web_time::Instant` since `std::time::Instant` panics on `wasm32-unknown-unknown`.
+#[cfg(not(target_family = "wasm"))]
+use tokio::time::Instant;
+#[cfg(target_family = "wasm")]
+use web_time::Instant;
 
 /// Mode for exponentially-weighted moving average decay.
 #[derive(Debug)]

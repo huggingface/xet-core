@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>hf_xet_wasm — CI smoke harness</title>
+</head>
+<body>
+<script type="module">
+  // Generic harness page for all ci-smoke scenarios. Reads ?scenario=<name>,
+  // initializes the wasm module, dynamically imports ./scenarios/<name>.mjs,
+  // and exposes its exported run(arg) as window.runTest. The Node runner
+  // (run.mjs via lib.mjs) waits for window.runTest to be defined, invokes it
+  // with the token arg, and expects a plain result object — `{ ok: true, ... }`
+  // on success or `{ ok: false, error, ... }` on failure (never a rejection).
+  try {
+    const name = new URLSearchParams(location.search).get('scenario');
+    if (!name || !/^[a-z0-9-]+$/.test(name)) {
+      throw new Error(`missing or invalid ?scenario= query param: ${JSON.stringify(name)}`);
+    }
+    const { initWasm } = await import('./common.mjs');
+    await initWasm();
+    const mod = await import(`./scenarios/${name}.mjs`);
+    if (typeof mod.run !== 'function') {
+      throw new Error(`scenario module scenarios/${name}.mjs does not export run()`);
+    }
+    window.runTest = async (arg) => {
+      try {
+        return await mod.run(arg);
+      } catch (e) {
+        return { ok: false, error: String(e?.message || e), stack: e?.stack };
+      }
+    };
+    console.log(`test page ready (scenario=${name})`);
+  } catch (e) {
+    const error = String(e?.message || e);
+    const stack = e?.stack;
+    window.runTest = async () => ({ ok: false, error, stack });
+    console.error(`harness setup failed: ${error}`);
+  }
+</script>
+</body>
+</html>
