@@ -48,6 +48,8 @@ impl ItemProgress {
             item_name: self.name.to_string(),
             total_bytes,
             bytes_completed,
+            transfer_bytes,
+            transfer_bytes_completed,
         }
     }
 }
@@ -380,6 +382,8 @@ pub struct ItemProgressReport {
     pub item_name: String,
     pub total_bytes: u64,
     pub bytes_completed: u64,
+    pub transfer_bytes: u64,
+    pub transfer_bytes_completed: u64,
 }
 
 #[cfg(test)]
