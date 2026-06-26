@@ -179,6 +179,7 @@ impl LocalServer {
                     .route("/reconstructions/{file_id}", get(handlers::get_reconstruction))
                     .route("/chunks/{prefix}/{hash}", get(handlers::get_dedup_info_by_chunk))
                     .route("/xorbs/{prefix}/{hash}", head(handlers::head_xorb).post(handlers::post_xorb))
+                    .route("/shards", post(handlers::post_shard))
                     .route("/files/{file_id}", head(handlers::head_file))
                     .route("/get_xorb/{prefix}/{hash}/", get(handlers::get_file_term_data))
                     .route("/fetch_term", get(handlers::fetch_term)),
@@ -193,7 +194,6 @@ impl LocalServer {
             )
             // Routes used by RemoteClient without /v1/ prefix
             .route("/reconstructions", get(handlers::batch_get_reconstruction))
-            .route("/shards", post(handlers::post_shard))
             .layer(CorsLayer::very_permissive())
             .with_state(handlers::ServerState {
                 client: self.client.clone(),
