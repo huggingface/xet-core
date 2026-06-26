@@ -581,7 +581,7 @@ impl Client for RemoteClient {
         event!(INFORMATION_LOG_LEVEL, call_id, size = n_upload_bytes, "Starting upload_shard API call",);
 
         let api_tag = "cas::upload_shard";
-        let url = Url::parse(&format!("{}/shards", self.endpoint))?;
+        let url = Url::parse(&format!("{}/v1/shards", self.endpoint))?;
 
         // Use the no-read-timeout client for shard uploads. reqwest's per-request timeout()
         // does NOT override the client-level read_timeout(), so we use a separate client
