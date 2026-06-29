@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use bytes::Bytes;
 use tokio::sync::Notify;
@@ -39,6 +40,10 @@ pub struct DownloadStream {
     /// Signal to unblock the spawned reconstruction task. `Some` means
     /// `start()` has not yet been called; the spawned task is waiting.
     start_signal: Option<Arc<Notify>>,
+    /// Optional inactivity timeout: when set, a [`next`](Self::next) that waits
+    /// longer than this for the next chunk fails with
+    /// [`FileReconstructionError::ReadTimeout`] and cancels the reconstruction.
+    read_timeout: Option<Duration>,
 }
 
 impl DownloadStream {
@@ -49,7 +54,11 @@ impl DownloadStream {
     /// # Panics
     ///
     /// Panics if called outside a tokio runtime context.
-    pub(crate) fn new(reconstructor: FileReconstructor, run_state: Arc<RunState>) -> Self {
+    pub(crate) fn new(
+        reconstructor: FileReconstructor,
+        run_state: Arc<RunState>,
+        read_timeout: Option<Duration>,
+    ) -> Self {
         let (data_writer, receiver) = SequentialWriter::new_streaming(run_state.clone());
         let start_signal = Arc::new(Notify::new());
 
@@ -66,6 +75,7 @@ impl DownloadStream {
             finished: false,
             run_state,
             start_signal: Some(start_signal),
+            read_timeout,
         }
     }
 
@@ -149,12 +159,33 @@ impl DownloadStream {
     /// Returns the next chunk of downloaded data asynchronously.
     ///
     /// Returns `Ok(None)` when the download is complete or cancelled.
+    ///
+    /// If a `read_timeout` was configured on the [`FileReconstructor`], a call
+    /// that waits longer than that for the next chunk fails with
+    /// [`FileReconstructionError::ReadTimeout`] and cancels the reconstruction
+    /// (aborting the in-flight fetch).
     pub async fn next(&mut self) -> Result<Option<Bytes>> {
         if self.finished {
             return Ok(None);
         }
         self.ensure_started();
 
+        match self.read_timeout {
+            Some(timeout) => match tokio::time::timeout(timeout, self.next_inner()).await {
+                Ok(result) => result,
+                Err(_elapsed) => {
+                    // Stalled with no data: abort the reconstruction so the
+                    // in-flight fetch is cancelled, then surface the timeout.
+                    self.cancel_reconstruction();
+                    self.finished = true;
+                    Err(FileReconstructionError::ReadTimeout(timeout))
+                },
+            },
+            None => self.next_inner().await,
+        }
+    }
+
+    async fn next_inner(&mut self) -> Result<Option<Bytes>> {
         let item = if let Ok(item) = self.receiver.try_recv() {
             Some(item)
         } else {

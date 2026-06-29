@@ -27,6 +27,9 @@ pub enum FileReconstructionError {
     #[error("Internal Error: {0}")]
     InternalError(String),
 
+    #[error("Read timed out after {0:?} with no data from CAS/CDN")]
+    ReadTimeout(std::time::Duration),
+
     #[error("Task Join Error: {0}")]
     TaskJoinError(Arc<tokio::task::JoinError>),
 

@@ -7,6 +7,7 @@ use std::io::{Seek, SeekFrom};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
@@ -46,6 +47,13 @@ pub struct FileReconstructor {
     /// When cancelled, reconstruction stops at its next check point. Long waits
     /// (such as semaphore acquisition) use `tokio::select!` so they abort promptly.
     cancellation_token: CancellationToken,
+
+    /// Optional inactivity timeout for the streaming path. When set, each
+    /// [`DownloadStream::next`] that waits longer than this for the next chunk
+    /// fails with [`FileReconstructionError::ReadTimeout`] and cancels the
+    /// reconstruction. Guards against a stalled CAS/CDN connection wedging a
+    /// consumer indefinitely. `None` (default) preserves the unbounded behavior.
+    read_timeout: Option<Duration>,
 }
 
 impl FileReconstructor {
@@ -60,6 +68,7 @@ impl FileReconstructor {
             chunk_cache: None,
             custom_buffer_semaphore: None,
             cancellation_token: CancellationToken::new(),
+            read_timeout: None,
         }
     }
 
@@ -80,6 +89,18 @@ impl FileReconstructor {
     pub fn with_chunk_cache(self, cache: Arc<dyn ChunkCache>) -> Self {
         Self {
             chunk_cache: Some(cache),
+            ..self
+        }
+    }
+
+    /// Sets an inactivity timeout for the streaming path ([`reconstruct_to_stream`](Self::reconstruct_to_stream)).
+    /// When set, each [`DownloadStream::next`] that waits longer than `timeout`
+    /// for the next chunk fails with [`FileReconstructionError::ReadTimeout`] and
+    /// cancels the reconstruction (aborting the in-flight fetch). Has no effect on
+    /// the non-streaming paths.
+    pub fn with_read_timeout(self, timeout: Duration) -> Self {
+        Self {
+            read_timeout: Some(timeout),
             ..self
         }
     }
@@ -209,8 +230,9 @@ impl FileReconstructor {
     /// uses [`tokio::spawn`]).
     pub fn reconstruct_to_stream(self) -> DownloadStream {
         let run_state = RunState::new(self.cancellation_token.clone(), self.file_hash, self.progress_updater.clone());
+        let read_timeout = self.read_timeout;
 
-        DownloadStream::new(self, run_state)
+        DownloadStream::new(self, run_state, read_timeout)
     }
 
     /// Reconstructs the file as an unordered stream, returning an
@@ -673,6 +695,60 @@ mod tests {
                     .expect("reconstruct_to_file_at_offset_zero should succeed");
             assert_eq!(file_offset_result, expected, "file_at_offset failed (vectored={use_vectored})");
         }
+    }
+
+    // ==================== Read Timeout Tests ====================
+
+    /// A stalled reconstruction must surface `ReadTimeout` from `next()` instead
+    /// of hanging forever. A 0-permit custom buffer semaphore (which is never
+    /// seeded, since the dynamic scaling only runs for the global limiter) blocks
+    /// the reconstruction at the buffer acquisition before any data is produced,
+    /// standing in for a stalled CAS/CDN connection.
+    #[tokio::test]
+    async fn read_timeout_fires_when_reconstruction_stalls() {
+        let (client, file_contents) = setup_test_file(&[(1, (0, 3))]).await;
+
+        let stalled_semaphore = AdjustableSemaphore::new(0, (0, 10_000));
+
+        let mut stream = FileReconstructor::new(
+            &XetContext::default().unwrap(),
+            &(client.clone() as Arc<dyn Client>),
+            file_contents.file_hash,
+        )
+        .with_config(&test_config())
+        .with_buffer_semaphore(stalled_semaphore)
+        .with_read_timeout(Duration::from_millis(100))
+        .reconstruct_to_stream();
+
+        let result = stream.next().await;
+        assert!(
+            matches!(result, Err(FileReconstructionError::ReadTimeout(_))),
+            "expected ReadTimeout on a stalled reconstruction, got {result:?}"
+        );
+
+        // After a timeout the stream is finished and cancelled.
+        assert!(matches!(stream.next().await, Ok(None)));
+    }
+
+    /// With no `read_timeout` set, a healthy reconstruction streams normally
+    /// (guards against the timeout path regressing the default behavior).
+    #[tokio::test]
+    async fn no_read_timeout_streams_normally() {
+        let (client, file_contents) = setup_test_file(&[(1, (0, 3))]).await;
+
+        let mut stream = FileReconstructor::new(
+            &XetContext::default().unwrap(),
+            &(client.clone() as Arc<dyn Client>),
+            file_contents.file_hash,
+        )
+        .with_config(&test_config())
+        .reconstruct_to_stream();
+
+        let mut out = Vec::new();
+        while let Some(chunk) = stream.next().await.unwrap() {
+            out.extend_from_slice(&chunk);
+        }
+        assert_eq!(out, file_contents.data);
     }
 
     // ==================== Full File Reconstruction Tests ====================
