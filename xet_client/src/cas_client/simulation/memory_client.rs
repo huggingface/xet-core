@@ -488,6 +488,7 @@ impl DirectAccessClient for MemoryClient {
         // Treat the shard as gone only when the *current* shard hash matches
         // the tagged one — delete_file_entry mutates the shard hash, so a
         // stale `gc_tagged_shard` must not block files of the new shard.
+        #[cfg(not(target_family = "wasm"))]
         if let Some((shard_hash, _)) = Self::current_shard_hash_and_bytes(&shard)?
             && self.shard_is_tagged(&shard_hash).await
         {
@@ -503,6 +504,7 @@ impl DirectAccessClient for MemoryClient {
         // Refuse reads while the *current* shard hash matches the tagged
         // shard hash — a stale tag must not block files of a new shard
         // after delete_file_entry rewrites the shard.
+        #[cfg(not(target_family = "wasm"))]
         {
             let shard = self.shard.read().await;
             if let Some((shard_hash, _)) = Self::current_shard_hash_and_bytes(&shard)?
