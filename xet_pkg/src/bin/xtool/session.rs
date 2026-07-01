@@ -8,8 +8,7 @@ use xet_client::cas_client::auth::{AuthConfig, DirectRefreshRouteTokenRefresher,
 use xet_client::cas_client::remote_client::RemoteClient;
 use xet_client::cas_client::simulation::LocalClient;
 use xet_client::common::http_client::build_http_client;
-use xet_data::processing::configurations::TranslatorConfig;
-use xet_runtime::core::{XetContext, xet_cache_root};
+use xet_runtime::core::XetContext;
 
 const LOCAL_SCHEME: &str = "local://";
 
@@ -19,18 +18,6 @@ pub fn build_xet_session(ctx: &XetContext) -> Result<XetSession> {
         .build()
         .map_err(|e| anyhow::anyhow!(e))?;
     Ok(session)
-}
-
-pub fn build_translator_config(ctx: &XetContext, endpoint: &str) -> Result<Arc<TranslatorConfig>> {
-    let config = if endpoint.starts_with(LOCAL_SCHEME) {
-        let path = endpoint.strip_prefix(LOCAL_SCHEME).unwrap();
-        TranslatorConfig::local_config(ctx, path)?
-    } else {
-        let cache_dir = xet_cache_root().join("xet-cli-stats");
-        std::fs::create_dir_all(&cache_dir)?;
-        TranslatorConfig::local_config(ctx, &cache_dir)?
-    };
-    Ok(Arc::new(config))
 }
 
 pub async fn build_cas_client(
@@ -76,21 +63,6 @@ mod tests {
         let ctx = XetContext::default().unwrap();
         let session = build_xet_session(&ctx);
         assert!(session.is_ok(), "expected Ok, got {:?}", session.err());
-    }
-
-    #[test]
-    fn test_build_translator_config_local() {
-        let ctx = XetContext::default().unwrap();
-        let dir = tempdir().unwrap();
-        let endpoint = format!("local://{}", dir.path().display());
-        assert!(build_translator_config(&ctx, &endpoint).is_ok());
-    }
-
-    #[test]
-    fn test_build_translator_config_remote_fallback() {
-        let ctx = XetContext::default().unwrap();
-        let result = build_translator_config(&ctx, "https://example.com");
-        assert!(result.is_ok());
     }
 
     #[tokio::test]

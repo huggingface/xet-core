@@ -30,7 +30,8 @@ pub async fn run(ctx: &XetContext, ep: &EndpointConfig, args: &HubQueryArgs) -> 
         let hub_client = hub_info.build_hub_client(ctx)?;
         let file_hash = MerkleHash::from_hex(&args.hash)?;
         let ret = query_reconstruction_hub(ctx, file_hash, args.bytes_range, hub_client).await?;
-        eprintln!("{ret:?}");
+        let json = serde_json::to_string_pretty(&ret)?;
+        println!("{json}");
     } else {
         // Direct mode: delegate to the dump-reconstruction (v2) code path.
         let recon_args = DumpReconstructionArgs {

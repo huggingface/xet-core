@@ -69,18 +69,6 @@ fn xtool_ok_with_redb_lock_retry(cas_dir: &Path, args: &[&str]) -> String {
     unreachable!("retry loop returns on success or assertion failure");
 }
 
-fn xtool_ok_stderr(cas_dir: &Path, args: &[&str]) -> (String, String) {
-    let out = xtool_cmd(cas_dir, args);
-    assert!(
-        out.status.success(),
-        "xtool {:?} failed:\nstdout: {}\nstderr: {}",
-        args,
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr),
-    );
-    (String::from_utf8(out.stdout).unwrap(), String::from_utf8(out.stderr).unwrap())
-}
-
 #[allow(dead_code)]
 fn xtool_err(cas_dir: &Path, args: &[&str]) -> String {
     let out = xtool_cmd(cas_dir, args);
@@ -96,11 +84,11 @@ fn xtool_err(cas_dir: &Path, args: &[&str]) -> String {
     format!("{stdout}{stderr}")
 }
 
-/// Upload a file via CLI and parse the stderr output line to extract hash and size.
-/// Output format on stderr: `<name>  hash=<hex>  size=<n>  sha256=<hex|->`
+/// Upload a file via CLI and parse the stdout output line to extract hash and size.
+/// Output format on stdout: `<name>  hash=<hex>  size=<n>  sha256=<hex|->`
 fn upload_file(cas_dir: &Path, file_path: &Path) -> (String, u64) {
-    let (_stdout, stderr) = xtool_ok_stderr(cas_dir, &["file", "upload", file_path.to_str().unwrap()]);
-    parse_upload_line(&stderr)
+    let stdout = xtool_ok(cas_dir, &["file", "upload", file_path.to_str().unwrap()]);
+    parse_upload_line(&stdout)
 }
 
 fn parse_upload_line(line: &str) -> (String, u64) {
@@ -149,8 +137,9 @@ fn test_cli_file_help() {
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(stdout.contains("upload"));
     assert!(stdout.contains("download"));
-    assert!(stdout.contains("scan"));
-    assert!(stdout.contains("dump-reconstruction"));
+    // scan and dump-reconstruction were folded into the top-level dedup/query commands.
+    assert!(!stdout.contains("scan"));
+    assert!(!stdout.contains("dump-reconstruction"));
 }
 
 #[test]
@@ -293,8 +282,8 @@ fn test_cli_upload_from_stdin() {
         String::from_utf8_lossy(&out.stderr),
     );
 
-    let stderr = String::from_utf8(out.stderr).unwrap();
-    let (hash, size) = parse_upload_line(&stderr);
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let (hash, size) = parse_upload_line(&stdout);
     assert_eq!(size, content.len() as u64);
 
     let stdout_bytes = xtool_ok(cas_dir.path(), &["file", "download", &hash]);
@@ -313,9 +302,9 @@ fn test_cli_upload_multiple_files() {
     let file_args: Vec<&str> = files.iter().map(|p| p.to_str().unwrap()).collect();
     let mut args = vec!["file", "upload"];
     args.extend(&file_args);
-    let (_stdout, stderr) = xtool_ok_stderr(cas_dir.path(), &args);
+    let stdout = xtool_ok(cas_dir.path(), &args);
 
-    let lines: Vec<&str> = stderr.lines().filter(|l| l.contains("hash=")).collect();
+    let lines: Vec<&str> = stdout.lines().filter(|l| l.contains("hash=")).collect();
     assert_eq!(lines.len(), 3);
 }
 
@@ -357,24 +346,26 @@ fn test_cli_download_bad_hash() {
 }
 
 #[test]
-fn test_cli_scan_basic() {
+fn test_cli_dedup_dry_run_basic() {
     let cas_dir = tempdir().unwrap();
     let src_dir = tempdir().unwrap();
-    let src = write_test_file(&src_dir, "scan_test.bin", &vec![7u8; 4096]);
+    let src = write_test_file(&src_dir, "dedup_test.bin", &vec![7u8; 4096]);
 
-    let stdout = xtool_ok(cas_dir.path(), &["file", "scan", src.to_str().unwrap()]);
-    assert!(stdout.contains("total_bytes=4096"));
+    // Dry-run dedup writes the JSON file reconstruction info to stdout.
+    let stdout = xtool_ok(cas_dir.path(), &["dedup", src.to_str().unwrap()]);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert!(parsed.is_array());
 }
 
 #[test]
-fn test_cli_dump_reconstruction_after_upload() {
+fn test_cli_query_after_upload() {
     let cas_dir = tempdir().unwrap();
     let src_dir = tempdir().unwrap();
     let src = write_test_file(&src_dir, "recon.bin", &vec![3u8; 2048]);
 
     let (hash, _size) = upload_file(cas_dir.path(), &src);
 
-    let stdout = xtool_ok(cas_dir.path(), &["file", "dump-reconstruction", &hash]);
+    let stdout = xtool_ok(cas_dir.path(), &["query", &hash]);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     if !parsed.is_null() {
         assert!(parsed["terms"].is_array());
@@ -382,13 +373,13 @@ fn test_cli_dump_reconstruction_after_upload() {
 }
 
 #[test]
-fn test_cli_dump_reconstruction_with_source_range() {
+fn test_cli_query_with_bytes_range() {
     let cas_dir = tempdir().unwrap();
     let src_dir = tempdir().unwrap();
     let src = write_test_file(&src_dir, "recon_range.bin", &vec![9u8; 4096]);
 
     let (hash, _size) = upload_file(cas_dir.path(), &src);
-    let stdout = xtool_ok(cas_dir.path(), &["file", "dump-reconstruction", &hash, "--source-range", "0..512"]);
+    let stdout = xtool_ok(cas_dir.path(), &["query", &hash, "0-512"]);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert!(!parsed.is_null());
     let terms = parsed["terms"].as_array().unwrap();
@@ -398,16 +389,36 @@ fn test_cli_dump_reconstruction_with_source_range() {
 }
 
 #[test]
-fn test_cli_dump_reconstruction_nonexistent_hash() {
+fn test_cli_query_nonexistent_hash() {
     let cas_dir = tempdir().unwrap();
     let fake_hash = "0".repeat(64);
-    let stdout = xtool_ok(cas_dir.path(), &["file", "dump-reconstruction", &fake_hash]);
+    let stdout = xtool_ok(cas_dir.path(), &["query", &fake_hash]);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     if !parsed.is_null()
         && let Some(t) = parsed["terms"].as_array()
     {
         assert!(t.is_empty());
     }
+}
+
+#[test]
+fn test_cli_upload_remote_endpoint_rejected() {
+    let src_dir = tempdir().unwrap();
+    let src = write_test_file(&src_dir, "remote.bin", b"should not upload");
+
+    let out = Command::new(xtool_bin())
+        .args([
+            "--endpoint",
+            "https://cas.example.com",
+            "file",
+            "upload",
+            src.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to execute xtool");
+    assert!(!out.status.success(), "upload to a remote endpoint should be rejected");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(stderr.contains("remote CAS endpoint"), "unexpected stderr: {stderr}");
 }
 
 #[test]
@@ -451,8 +462,8 @@ fn test_cli_hf_endpoint_env_fallback() {
 
     let out = xtool_cmd_with_env(&["file", "upload", src.to_str().unwrap()], &[("HF_ENDPOINT", &endpoint)]);
     assert!(out.status.success());
-    let stderr = String::from_utf8(out.stderr).unwrap();
-    let (hash, size) = parse_upload_line(&stderr);
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let (hash, size) = parse_upload_line(&stdout);
     assert_eq!(size, content.len() as u64);
 
     let downloaded = xtool_ok(cas_dir.path(), &["file", "download", &hash]);
@@ -474,8 +485,8 @@ fn test_cli_endpoint_flag_overrides_hf_endpoint() {
         &[("HF_ENDPOINT", &env_endpoint)],
     );
     assert!(out.status.success());
-    let stderr = String::from_utf8(out.stderr).unwrap();
-    let (hash, _size) = parse_upload_line(&stderr);
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let (hash, _size) = parse_upload_line(&stdout);
 
     let downloaded = xtool_ok(flag_cas_dir.path(), &["file", "download", &hash]);
     assert_eq!(downloaded.as_bytes(), content);
@@ -501,9 +512,9 @@ fn test_cli_parallel_upload_download_stress() {
     let file_args: Vec<&str> = files.iter().map(|(p, _)| p.to_str().unwrap()).collect();
     let mut args = vec!["file", "upload", "--no-sha256"];
     args.extend(&file_args);
-    let (_stdout, stderr) = xtool_ok_stderr(cas_dir.path(), &args);
+    let stdout = xtool_ok(cas_dir.path(), &args);
 
-    let upload_lines: Vec<&str> = stderr.lines().filter(|l| l.contains("hash=")).collect();
+    let upload_lines: Vec<&str> = stdout.lines().filter(|l| l.contains("hash=")).collect();
     assert_eq!(upload_lines.len(), n);
     let hashes: Vec<String> = upload_lines.iter().map(|line| parse_upload_line(line).0).collect();
 

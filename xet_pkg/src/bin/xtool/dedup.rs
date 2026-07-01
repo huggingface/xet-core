@@ -50,7 +50,9 @@ pub struct DedupArgs {
 
 pub async fn run(cli: &Cli, ctx: &XetContext, ep: &EndpointConfig, args: &DedupArgs) -> Result<()> {
     let file_paths = walk_files(args.files.clone(), args.recursive);
-    eprintln!("Dedupping {} files...", file_paths.len());
+    if !cli.quiet {
+        eprintln!("Dedupping {} files...", file_paths.len());
+    }
 
     let dry_run = !args.migrate;
 
@@ -73,10 +75,12 @@ pub async fn run(cli: &Cli, ctx: &XetContext, ep: &EndpointConfig, args: &DedupA
         writer.flush()?;
     }
 
+    // Human-readable summary goes to stderr: in dry-run mode stdout carries the
+    // JSON reconstruction info (when --output is not given).
     if !cli.quiet {
         eprintln!("\n\nClean results:");
         for (xf, new_bytes) in &clean_ret {
-            println!(
+            eprintln!(
                 "{}: {} bytes -> {} bytes",
                 xf.hash(),
                 xf.file_size().map_or("?".to_string(), |s| s.to_string()),

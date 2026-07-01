@@ -39,8 +39,9 @@ pub async fn run(cli: &Cli, ctx: &XetContext, ep: &EndpointConfig, args: &Upload
         let json = serde_json::to_string_pretty(&results)?;
         std::fs::write(output_path, json)?;
     } else if !cli.quiet {
+        // Per-file results go to stdout (pipeable); status/errors go to stderr.
         for meta in &results {
-            eprintln!(
+            println!(
                 "{}  hash={}  size={}  sha256={}",
                 meta.tracking_name.as_deref().unwrap_or("<stdin>"),
                 meta.xet_info.hash,
@@ -52,6 +53,13 @@ pub async fn run(cli: &Cli, ctx: &XetContext, ep: &EndpointConfig, args: &Upload
     Ok(())
 }
 
+/// Upload the given files as a single commit.
+///
+/// All-or-nothing semantics: per-file ingestion runs first, and file metadata
+/// is only pushed to the CAS server by `commit.commit()` once every file has
+/// succeeded. If any file fails, the commit is aborted: no files are
+/// registered, and any data already transferred is left unreferenced on the
+/// server (subject to garbage collection).
 pub async fn run_upload(
     session: &XetSession,
     endpoint: &str,

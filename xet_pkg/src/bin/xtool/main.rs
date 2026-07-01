@@ -4,7 +4,6 @@ mod endpoint;
 mod hub_query;
 mod query;
 mod session;
-mod stats;
 mod upload;
 
 use anyhow::Result;
@@ -12,8 +11,6 @@ use clap::{Parser, Subcommand};
 use dedup::DedupArgs;
 use download::DownloadArgs;
 use hub_query::HubQueryArgs;
-use query::DumpReconstructionArgs;
-use stats::ScanArgs;
 use upload::UploadArgs;
 use xet_client::hub_client::Operation;
 use xet_runtime::core::{XetContext, XetRuntime};
@@ -70,7 +67,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum TopLevel {
-    /// File-level operations: upload, download, scan, dump-reconstruction.
+    /// File-level operations: upload and download.
     File {
         #[command(subcommand)]
         command: FileCommands,
@@ -83,14 +80,19 @@ pub enum TopLevel {
 
 #[derive(Subcommand)]
 pub enum FileCommands {
-    /// Upload one or more files (or stdin) to the CAS endpoint.
+    /// Upload one or more files (or stdin) to a local CAS endpoint.
+    ///
+    /// Uploads are all-or-nothing: file metadata is only committed after every
+    /// file has been ingested successfully. If any file fails, the commit is
+    /// aborted, no files are registered, and any already-transferred data is
+    /// left unreferenced (subject to garbage collection).
+    ///
+    /// Uploads to remote endpoints are disallowed: files uploaded outside of
+    /// the hub APIs are not registered with a repo and would be garbage
+    /// collected. Use a local endpoint (e.g. `--endpoint /path/to/dir`).
     Upload(UploadArgs),
     /// Download a file by its xet hash.
     Download(DownloadArgs),
-    /// Dry-run dedup and compression analysis (no upload).
-    Scan(ScanArgs),
-    /// Show reconstruction metadata for a file hash (JSON).
-    DumpReconstruction(DumpReconstructionArgs),
 }
 
 impl Cli {
@@ -150,14 +152,18 @@ pub fn normalize_endpoint(raw: &str) -> String {
     }
 }
 
+/// Uploads are only allowed against local endpoints; anything with a
+/// non-`local://` scheme (http, https, ...) is a remote CAS and is rejected.
+fn upload_endpoint_allowed(endpoint: &str) -> bool {
+    !endpoint.contains("://") || endpoint.starts_with("local://")
+}
+
 /// Determine the CAS operation type for the command so we request the right JWT scope.
 fn operation_for_command(cmd: &TopLevel) -> Operation {
     match cmd {
         TopLevel::File { command } => match command {
             FileCommands::Upload(_) => Operation::Upload,
             FileCommands::Download(_) => Operation::Download,
-            FileCommands::Scan(_) => Operation::Upload,
-            FileCommands::DumpReconstruction(_) => Operation::Download,
         },
         TopLevel::Dedup(_) => Operation::Upload,
         TopLevel::Query(_) => Operation::Download,
@@ -199,15 +205,23 @@ fn main() -> Result<()> {
         async move {
             let operation = operation_for_command(&cli.command);
 
-            if cli.is_hub_mode()
-                && matches!(
-                    &cli.command,
-                    TopLevel::File {
-                        command: FileCommands::Upload(_)
-                    }
-                )
-            {
-                anyhow::bail!("Uploading files allowed only through huggingface hub APIs.");
+            if matches!(
+                &cli.command,
+                TopLevel::File {
+                    command: FileCommands::Upload(_)
+                }
+            ) {
+                if cli.is_hub_mode() {
+                    anyhow::bail!("Uploading files to a repo is allowed only through the huggingface hub APIs.");
+                }
+                let endpoint = cli.resolved_endpoint();
+                if !upload_endpoint_allowed(&endpoint) {
+                    anyhow::bail!(
+                        "Uploading to a remote CAS endpoint ({endpoint}) is not allowed: files uploaded outside of \
+                         the hub APIs are not registered with a repo and will be garbage collected. \
+                         Use a local endpoint (e.g. --endpoint /path/to/dir)."
+                    );
+                }
             }
 
             let endpoint_config = EndpointConfig::resolve(&cli, &ctx, operation).await?;
@@ -216,8 +230,6 @@ fn main() -> Result<()> {
                 TopLevel::File { command } => match command {
                     FileCommands::Upload(args) => upload::run(&cli, &ctx, &endpoint_config, args).await,
                     FileCommands::Download(args) => download::run(&cli, &ctx, &endpoint_config, args).await,
-                    FileCommands::Scan(args) => stats::run(&cli, &ctx, &endpoint_config, args).await,
-                    FileCommands::DumpReconstruction(args) => query::run(&ctx, &endpoint_config, args).await,
                 },
                 TopLevel::Dedup(args) => dedup::run(&cli, &ctx, &endpoint_config, args).await,
                 TopLevel::Query(args) => hub_query::run(&ctx, &endpoint_config, args).await,
@@ -230,7 +242,7 @@ fn main() -> Result<()> {
 mod tests {
     use clap::CommandFactory;
 
-    use super::{Cli, normalize_endpoint, parse_byte_range, resolve_endpoint, resolve_token};
+    use super::{Cli, normalize_endpoint, parse_byte_range, resolve_endpoint, resolve_token, upload_endpoint_allowed};
 
     #[test]
     fn test_normalize_endpoint() {
@@ -274,6 +286,16 @@ mod tests {
         assert_eq!(resolve_token(Some("flag-token"), Some("env-token")), Some("flag-token".to_owned()));
         assert_eq!(resolve_token(None, Some("env-token")), Some("env-token".to_owned()));
         assert_eq!(resolve_token(Some(""), Some("env-token")), None);
+    }
+
+    #[test]
+    fn test_upload_endpoint_allowed_only_for_local() {
+        assert!(upload_endpoint_allowed("local:///tmp/cas"));
+        assert!(upload_endpoint_allowed(&normalize_endpoint("/tmp/cas")));
+        assert!(upload_endpoint_allowed("relative/path"));
+        assert!(!upload_endpoint_allowed("https://huggingface.co"));
+        assert!(!upload_endpoint_allowed("https://cas.example.com"));
+        assert!(!upload_endpoint_allowed("http://localhost:8080"));
     }
 
     #[test]

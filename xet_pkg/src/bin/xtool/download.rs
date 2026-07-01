@@ -35,6 +35,8 @@ pub struct DownloadArgs {
 
     /// Byte range in the output file to write into, e.g. "64..".
     /// Only valid with -o. Seeks to the start offset before writing.
+    /// If --source-range is omitted, the fetch is bounded to the size of the
+    /// write window (source bytes 0..LEN) rather than streaming the full file.
     #[arg(long, requires = "output")]
     pub write_range: Option<String>,
 
@@ -67,6 +69,14 @@ pub async fn run_download(
     };
 
     let source_range: Option<Range<u64>> = args.source_range.as_deref().map(parse_range).transpose()?;
+    let write_range: Option<Range<u64>> = args.write_range.as_deref().map(parse_range).transpose()?;
+
+    // If only --write-range is given, bound the fetch to the write window size
+    // instead of streaming the entire file and discarding the tail.
+    let source_range = match (source_range, &write_range) {
+        (None, Some(wr)) if wr.end != u64::MAX => Some(0..(wr.end - wr.start)),
+        (sr, _) => sr,
+    };
 
     let mut group_builder = session
         .new_download_stream_group()
@@ -91,8 +101,6 @@ pub async fn run_download(
             if let Some(parent) = output_path.parent().filter(|p| !p.as_os_str().is_empty()) {
                 std::fs::create_dir_all(parent)?;
             }
-
-            let write_range: Option<Range<u64>> = args.write_range.as_deref().map(parse_range).transpose()?;
 
             let mut file: File = if write_range.is_some() {
                 OpenOptions::new()
@@ -220,6 +228,60 @@ pub(crate) mod tests {
         };
         run_download(&session, &endpoint, &args, false, None, None).await.unwrap();
         assert_eq!(std::fs::read(&dest).unwrap(), content);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_download_write_range_without_source_range() {
+        let cas_dir = tempdir().unwrap();
+        let content: Vec<u8> = (0..255u8).cycle().take(8192).collect();
+        let (endpoint, hash, _) = upload_test_file(&cas_dir, "data.bin", &content).await;
+
+        let dest_dir = tempdir().unwrap();
+        let dest = dest_dir.path().join("out.bin");
+        std::fs::write(&dest, vec![0xFFu8; 2048]).unwrap();
+
+        let ctx = XetContext::default().unwrap();
+        let session = build_xet_session(&ctx).unwrap();
+        let args = DownloadArgs {
+            hash,
+            output: Some(dest.clone()),
+            source_range: None,
+            write_range: Some("512..1536".to_owned()),
+            size: None,
+        };
+        run_download(&session, &endpoint, &args, false, None, None).await.unwrap();
+
+        // With only --write-range, source bytes 0..1024 land at output offset 512.
+        let out = std::fs::read(&dest).unwrap();
+        assert_eq!(out.len(), 2048);
+        assert_eq!(&out[..512], &vec![0xFFu8; 512][..]);
+        assert_eq!(&out[512..1536], &content[..1024]);
+        assert_eq!(&out[1536..], &vec![0xFFu8; 512][..]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_download_source_and_write_range() {
+        let cas_dir = tempdir().unwrap();
+        let content: Vec<u8> = (0..255u8).cycle().take(8192).collect();
+        let (endpoint, hash, _) = upload_test_file(&cas_dir, "data.bin", &content).await;
+
+        let dest_dir = tempdir().unwrap();
+        let dest = dest_dir.path().join("out.bin");
+        std::fs::write(&dest, vec![0u8; 1024]).unwrap();
+
+        let ctx = XetContext::default().unwrap();
+        let session = build_xet_session(&ctx).unwrap();
+        let args = DownloadArgs {
+            hash,
+            output: Some(dest.clone()),
+            source_range: Some("1024..2048".to_owned()),
+            write_range: Some("0..1024".to_owned()),
+            size: None,
+        };
+        run_download(&session, &endpoint, &args, false, None, None).await.unwrap();
+
+        let out = std::fs::read(&dest).unwrap();
+        assert_eq!(&out[..], &content[1024..2048]);
     }
 
     #[tokio::test(flavor = "multi_thread")]
