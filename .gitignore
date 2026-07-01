@@ -22,3 +22,7 @@ venv
 **/*.env
 .worktrees/
 **/node_modules/
+
+# Swift toolchain installer artifacts (swiftly)
+/swiftly.pkg
+/.swift-version
