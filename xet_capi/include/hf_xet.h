@@ -10,6 +10,25 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+/**
+ * Status returned by every fallible `xet_*` function.
+ */
+typedef enum {
+    XetStatus_XetOk = 0,
+    XetStatus_XetErr = 1,
+    XetStatus_XetErrInvalidArg = 2,
+    XetStatus_XetErrAuth = 3,
+    XetStatus_XetErrNotFound = 4,
+    XetStatus_XetErrCancelled = 5,
+    XetStatus_XetErrPanic = 6,
+} XetStatus;
+
+/**
+ * Opaque error object. Read via [`xet_error_message`] / [`xet_error_code`];
+ * free with [`xet_error_free`].
+ */
+typedef struct XetError XetError;
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -18,6 +37,33 @@ extern "C" {
  * Returns the xet_capi version as a static NUL-terminated C string.
  */
 const char *xet_version(void);
+
+/**
+ * # Safety
+ * `err` must be null or a valid pointer to a live `XetError` produced by this crate.
+ */
+XetStatus xet_error_code(const XetError *err);
+
+/**
+ * # Safety
+ * `err` must be null or a valid pointer to a live `XetError` produced by this crate.
+ */
+const char *xet_error_message(const XetError *err);
+
+/**
+ * # Safety
+ * `err` must be null or a pointer previously returned by this crate that has not
+ * already been freed.
+ */
+void xet_error_free(XetError *err);
+
+/**
+ * Test-only constructor used by ffi_tests.
+ *
+ * # Safety
+ * `out` must be a valid, non-null pointer to a writable `*mut XetError`.
+ */
+int xet_test_make_auth_error(XetError **out);
 
 #ifdef __cplusplus
 }  // extern "C"
