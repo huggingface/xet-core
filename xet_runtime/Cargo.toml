@@ -74,7 +74,6 @@ tokio = { workspace = true, features = [
     "rt-multi-thread",
 ] }
 tokio-util = { workspace = true, features = ["io"] }
-tracing-appender = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = { workspace = true }
