@@ -42,6 +42,11 @@ typedef struct XetBytes XetBytes;
 typedef struct XetError XetError;
 
 /**
+ * File descriptor for downloads. Free with [`xet_file_info_free`].
+ */
+typedef struct XetFileInfo XetFileInfo;
+
+/**
  * A spawned, poll-able operation. Poll with [`xet_op_poll`], then consume with
  * the matching `xet_op_take_*`. Free an un-taken op with [`xet_op_free`].
  */
@@ -108,6 +113,31 @@ void xet_error_free(XetError *err);
  * `out` must be a valid, non-null pointer to a writable `*mut XetError`.
  */
 int xet_test_make_auth_error(XetError **out);
+
+/**
+ * Create a file descriptor from a xet content hash (hex) and size.
+ *
+ * # Safety
+ * `hash` must be a valid NUL-terminated C string; `out` a valid pointer.
+ */
+XetStatus xet_file_info_new(const char *hash,
+                            uint64_t file_size,
+                            XetFileInfo **out,
+                            XetError **err);
+
+/**
+ * Like [`xet_file_info_new`] but with a known SHA-256 (hex).
+ *
+ * # Safety
+ * `hash` and `sha256` must be valid NUL-terminated C strings; `out` valid.
+ */
+XetStatus xet_file_info_new_with_sha256(const char *hash,
+                                        uint64_t file_size,
+                                        const char *sha256,
+                                        XetFileInfo **out,
+                                        XetError **err);
+
+void xet_file_info_free(XetFileInfo *fi);
 
 /**
  * # Safety

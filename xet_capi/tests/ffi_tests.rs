@@ -74,3 +74,16 @@ fn session_new_and_free() {
         xet_session_free(session);
     }
 }
+
+#[test]
+fn file_info_new_and_free() {
+    use std::ffi::CString;
+    unsafe {
+        let hash = CString::new("abc123").unwrap();
+        let mut fi: *mut XetFileInfo = std::ptr::null_mut();
+        let mut err: *mut XetError = std::ptr::null_mut();
+        assert_eq!(xet_file_info_new(hash.as_ptr(), 42, &mut fi, &mut err), XetStatus::XetOk);
+        assert!(!fi.is_null());
+        xet_file_info_free(fi);
+    }
+}

@@ -6,12 +6,16 @@
 
 mod bytes;
 mod error;
+mod file_info;
 mod handle;
 mod op;
 mod session;
 
 pub use bytes::{XetBytes, xet_bytes_data, xet_bytes_free, xet_bytes_len, xet_test_make_bytes};
 pub use error::{XetError, XetStatus, xet_error_code, xet_error_free, xet_error_message, xet_test_make_auth_error};
+pub use file_info::{
+    XetFileInfo, XetSha256Policy, xet_file_info_free, xet_file_info_new, xet_file_info_new_with_sha256,
+};
 pub use op::{
     XetOp, XetPollState, xet_op_free, xet_op_poll, xet_op_take_bytes, xet_op_take_chunk, xet_op_take_error,
     xet_op_take_void, xet_test_make_error_op, xet_test_make_void_op,
