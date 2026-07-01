@@ -478,4 +478,41 @@ private:
     Handle<XetDownloadStreamGroup, xet_download_stream_group_free> g_;
 };
 
+// A Xet session. Produces per-commit / per-group auth via the new_* builders.
+class Session {
+public:
+    Session() {
+        XetSession* raw = nullptr;
+        XetError* err = nullptr;
+        check(xet_session_new(&raw, &err), "xet_session_new", err);
+        s_.reset(raw);
+    }
+    UploadCommit new_upload_commit(const AuthConfig& cfg) {
+        XetAuthConfig c = cfg.c_config();
+        XetUploadCommit* raw = nullptr;
+        XetError* err = nullptr;
+        check(xet_session_new_upload_commit(s_.get(), &c, &raw, &err), "xet_session_new_upload_commit", err);
+        return UploadCommit(raw);
+    }
+    DownloadGroup new_file_download_group(const AuthConfig& cfg) {
+        XetAuthConfig c = cfg.c_config();
+        XetFileDownloadGroup* raw = nullptr;
+        XetError* err = nullptr;
+        check(xet_session_new_file_download_group(s_.get(), &c, &raw, &err),
+              "xet_session_new_file_download_group", err);
+        return DownloadGroup(raw);
+    }
+    DownloadStreamGroup new_download_stream_group(const AuthConfig& cfg) {
+        XetAuthConfig c = cfg.c_config();
+        XetDownloadStreamGroup* raw = nullptr;
+        XetError* err = nullptr;
+        check(xet_session_new_download_stream_group(s_.get(), &c, &raw, &err),
+              "xet_session_new_download_stream_group", err);
+        return DownloadStreamGroup(raw);
+    }
+
+private:
+    Handle<XetSession, xet_session_free> s_;
+};
+
 }  // namespace xet
