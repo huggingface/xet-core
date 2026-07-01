@@ -130,6 +130,38 @@ pub unsafe extern "C" fn xet_upload_commit_upload_bytes(
     })
 }
 
+/// Begin a streaming upload. `name` (nullable) is a tracking name.
+///
+/// # Safety
+/// `commit` valid; `name`/`provided_sha256` null or valid; `out`/`err` valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xet_upload_commit_upload_stream(
+    commit: *const XetUploadCommit,
+    name: *const c_char,
+    policy: XetSha256Policy,
+    provided_sha256: *const c_char,
+    out: *mut *mut crate::upload_stream::XetStreamUpload,
+    err: *mut *mut XetError,
+) -> XetStatus {
+    ffi_guard(err, || {
+        let Some(commit) = (unsafe { commit.as_ref() }) else {
+            return set_err(err, XetError::new(XetStatus::XetErrInvalidArg, "null commit"));
+        };
+        let tracking = unsafe { opt_str(name) }.ok().flatten().map(|s| s.to_string());
+        let sha = match unsafe { sha256_policy(policy, provided_sha256) } {
+            Ok(s) => s,
+            Err(e) => return set_err(err, e),
+        };
+        match commit.inner.upload_stream_blocking(tracking, sha) {
+            Ok(su) => {
+                unsafe { *out = into_handle(crate::upload_stream::XetStreamUpload::new(su)) };
+                XetStatus::XetOk
+            },
+            Err(e) => set_xet_err(err, &e),
+        }
+    })
+}
+
 /// # Safety
 /// `upload` valid; `out`/`err` valid pointers.
 #[unsafe(no_mangle)]

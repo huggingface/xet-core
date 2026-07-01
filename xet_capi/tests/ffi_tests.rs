@@ -103,3 +103,13 @@ fn upload_symbols_link() {
         xet_capi::xet_file_metadata_free as *const (),
     ];
 }
+
+#[test]
+fn stream_upload_symbols_link() {
+    let _f: [*const (); 4] = [
+        xet_capi::xet_upload_commit_upload_stream as *const (),
+        xet_capi::xet_stream_upload_write_start as *const (),
+        xet_capi::xet_stream_upload_finish_start as *const (),
+        xet_capi::xet_stream_upload_free as *const (),
+    ];
+}

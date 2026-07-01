@@ -82,6 +82,12 @@ typedef struct XetOp XetOp;
 typedef struct XetSession XetSession;
 
 /**
+ * A streaming upload handle. Feed data with [`xet_stream_upload_write_start`],
+ * then [`xet_stream_upload_finish_start`]. Free with [`xet_stream_upload_free`].
+ */
+typedef struct XetStreamUpload XetStreamUpload;
+
+/**
  * An upload commit (Arc-backed; cheap to clone). Free with [`xet_upload_commit_free`].
  */
 typedef struct XetUploadCommit XetUploadCommit;
@@ -275,6 +281,19 @@ XetStatus xet_upload_commit_upload_bytes(const XetUploadCommit *commit,
                                          XetError **err);
 
 /**
+ * Begin a streaming upload. `name` (nullable) is a tracking name.
+ *
+ * # Safety
+ * `commit` valid; `name`/`provided_sha256` null or valid; `out`/`err` valid.
+ */
+XetStatus xet_upload_commit_upload_stream(const XetUploadCommit *commit,
+                                          const char *name,
+                                          XetSha256Policy policy,
+                                          const char *provided_sha256,
+                                          XetStreamUpload **out,
+                                          XetError **err);
+
+/**
  * # Safety
  * `upload` valid; `out`/`err` valid pointers.
  */
@@ -337,6 +356,30 @@ void xet_file_metadata_free(XetFileMetadataHandle *m);
 void xet_upload_commit_free(XetUploadCommit *commit);
 
 void xet_file_upload_free(XetFileUpload *upload);
+
+/**
+ * Start an async write of `len` bytes from `data`. Poll the returned op; it
+ * yields void on success.
+ *
+ * # Safety
+ * `su` valid; `data`/`len` a valid buffer (data may be null iff len==0);
+ * `out`/`err` valid pointers.
+ */
+XetStatus xet_stream_upload_write_start(const XetStreamUpload *su,
+                                        const uint8_t *data,
+                                        uintptr_t len,
+                                        XetOp **out,
+                                        XetError **err);
+
+/**
+ * Start finalizing the stream. Poll the returned op; it yields file metadata.
+ *
+ * # Safety
+ * `su` valid; `out`/`err` valid pointers.
+ */
+XetStatus xet_stream_upload_finish_start(const XetStreamUpload *su, XetOp **out, XetError **err);
+
+void xet_stream_upload_free(XetStreamUpload *su);
 
 #ifdef __cplusplus
 }  // extern "C"

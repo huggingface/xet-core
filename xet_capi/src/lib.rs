@@ -12,6 +12,7 @@ mod op;
 mod reports;
 mod session;
 mod upload;
+mod upload_stream;
 
 pub use bytes::{XetBytes, xet_bytes_data, xet_bytes_free, xet_bytes_len, xet_test_make_bytes};
 pub use error::{XetError, XetStatus, xet_error_code, xet_error_free, xet_error_message, xet_test_make_auth_error};
@@ -29,6 +30,10 @@ pub use upload::{
     xet_file_metadata_hash, xet_file_metadata_sha256, xet_file_metadata_tracking_name, xet_file_upload_finalize_start,
     xet_file_upload_free, xet_upload_commit_abort, xet_upload_commit_commit_start, xet_upload_commit_free,
     xet_upload_commit_progress, xet_upload_commit_upload_bytes, xet_upload_commit_upload_from_path,
+    xet_upload_commit_upload_stream,
+};
+pub use upload_stream::{
+    XetStreamUpload, xet_stream_upload_finish_start, xet_stream_upload_free, xet_stream_upload_write_start,
 };
 
 /// Returns the xet_capi version as a static NUL-terminated C string.
