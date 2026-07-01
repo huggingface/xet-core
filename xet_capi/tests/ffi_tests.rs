@@ -15,3 +15,15 @@ fn error_message_and_code_roundtrip() {
         xet_error_free(err);
     }
 }
+
+#[test]
+fn bytes_roundtrip() {
+    unsafe {
+        let b = xet_test_make_bytes(); // XetBytes* holding [1,2,3]
+        assert!(!b.is_null());
+        assert_eq!(xet_bytes_len(b), 3);
+        let data = std::slice::from_raw_parts(xet_bytes_data(b), 3);
+        assert_eq!(data, &[1u8, 2, 3]);
+        xet_bytes_free(b);
+    }
+}

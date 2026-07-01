@@ -24,6 +24,12 @@ typedef enum {
 } XetStatus;
 
 /**
+ * An owned byte buffer produced by streaming downloads. Read via
+ * [`xet_bytes_data`] / [`xet_bytes_len`]; free with [`xet_bytes_free`].
+ */
+typedef struct XetBytes XetBytes;
+
+/**
  * Opaque error object. Read via [`xet_error_message`] / [`xet_error_code`];
  * free with [`xet_error_free`].
  */
@@ -37,6 +43,25 @@ extern "C" {
  * Returns the xet_capi version as a static NUL-terminated C string.
  */
 const char *xet_version(void);
+
+/**
+ * # Safety
+ * `b` must be null or a valid pointer to a live `XetBytes` produced by this crate.
+ */
+const unsigned char *xet_bytes_data(const XetBytes *b);
+
+/**
+ * # Safety
+ * `b` must be null or a valid pointer to a live `XetBytes` produced by this crate.
+ */
+uintptr_t xet_bytes_len(const XetBytes *b);
+
+void xet_bytes_free(XetBytes *b);
+
+/**
+ * Test-only constructor used by ffi_tests.
+ */
+XetBytes *xet_test_make_bytes(void);
 
 /**
  * # Safety
