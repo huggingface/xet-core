@@ -36,7 +36,10 @@ pub use op::{
     xet_op_take_void, xet_test_make_error_op, xet_test_make_void_op,
 };
 pub use reports::{XetDedupMetrics, XetProgress};
-pub use session::{XetAuthConfig, XetHeader, XetSession, xet_init_logging, xet_session_free, xet_session_new};
+pub use session::{
+    XetAuthConfig, XetHeader, XetSession, xet_init_logging, xet_session_free, xet_session_new,
+    xet_session_new_download_stream_group, xet_session_new_file_download_group, xet_session_new_upload_commit,
+};
 pub use upload::{
     XetFileMetadataHandle, XetFileUpload, XetUploadCommit, xet_file_metadata_file_size, xet_file_metadata_free,
     xet_file_metadata_hash, xet_file_metadata_sha256, xet_file_metadata_tracking_name, xet_file_upload_finalize_start,

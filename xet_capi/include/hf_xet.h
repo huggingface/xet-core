@@ -125,6 +125,27 @@ typedef struct {
     uint64_t total_transfer_bytes_completed;
 } XetProgress;
 
+/**
+ * One HTTP header for token-refresh requests.
+ */
+typedef struct {
+    const char *key;
+    const char *value;
+} XetHeader;
+
+/**
+ * Per-commit / per-group auth configuration. All pointers are borrowed for
+ * the duration of the call. Any nullable field may be NULL.
+ */
+typedef struct {
+    const char *endpoint;
+    const char *token;
+    int64_t token_expiry;
+    const char *token_refresh_url;
+    const XetHeader *refresh_headers;
+    uintptr_t refresh_header_count;
+} XetAuthConfig;
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -376,6 +397,39 @@ void xet_init_logging(const char *version);
 XetStatus xet_session_new(XetSession **out, XetError **err);
 
 void xet_session_free(XetSession *session);
+
+/**
+ * Build an upload commit with per-commit auth from `cfg`.
+ *
+ * # Safety
+ * `session`/`cfg` valid handles/pointers; `out`/`err` valid pointers.
+ */
+XetStatus xet_session_new_upload_commit(const XetSession *session,
+                                        const XetAuthConfig *cfg,
+                                        XetUploadCommit **out,
+                                        XetError **err);
+
+/**
+ * Build a file-download group with per-group auth from `cfg`.
+ *
+ * # Safety
+ * `session`/`cfg` valid; `out`/`err` valid pointers.
+ */
+XetStatus xet_session_new_file_download_group(const XetSession *session,
+                                              const XetAuthConfig *cfg,
+                                              XetFileDownloadGroup **out,
+                                              XetError **err);
+
+/**
+ * Build a download-stream group with per-group auth from `cfg`.
+ *
+ * # Safety
+ * `session`/`cfg` valid; `out`/`err` valid pointers.
+ */
+XetStatus xet_session_new_download_stream_group(const XetSession *session,
+                                                const XetAuthConfig *cfg,
+                                                XetDownloadStreamGroup **out,
+                                                XetError **err);
 
 /**
  * # Safety

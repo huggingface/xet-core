@@ -2,8 +2,11 @@ use std::ffi::{CStr, c_char};
 
 use xet::xet_session::{HeaderMap, HeaderValue, XetSession as InnerSession, XetSessionBuilder, header};
 
+use crate::download_file::XetFileDownloadGroup;
+use crate::download_stream::XetDownloadStreamGroup;
 use crate::error::{XetError, XetStatus, ffi_guard, set_err, set_xet_err};
 use crate::handle::{free_handle, into_handle};
+use crate::upload::XetUploadCommit;
 
 /// A Xet session. Owns no auth; produces per-commit / per-group auth via the
 /// `xet_session_new_*` builders (added in a later task). Free with
@@ -104,4 +107,145 @@ pub unsafe extern "C" fn xet_session_new(out: *mut *mut XetSession, err: *mut *m
 #[unsafe(no_mangle)]
 pub extern "C" fn xet_session_free(session: *mut XetSession) {
     free_handle(session);
+}
+
+/// Build an upload commit with per-commit auth from `cfg`.
+///
+/// # Safety
+/// `session`/`cfg` valid handles/pointers; `out`/`err` valid pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xet_session_new_upload_commit(
+    session: *const XetSession,
+    cfg: *const XetAuthConfig,
+    out: *mut *mut XetUploadCommit,
+    err: *mut *mut XetError,
+) -> XetStatus {
+    ffi_guard(err, || {
+        let (Some(session), Some(cfg)) = (unsafe { session.as_ref() }, unsafe { cfg.as_ref() }) else {
+            return set_err(err, XetError::new(XetStatus::XetErrInvalidArg, "null session or cfg"));
+        };
+        let mut builder = match session.inner.new_upload_commit() {
+            Ok(b) => b,
+            Err(e) => return set_xet_err(err, &e),
+        };
+        if let Some(ep) = unsafe { opt_str(cfg.endpoint) }.ok().flatten() {
+            builder = builder.with_endpoint(ep);
+        }
+        if let Some(tok) = unsafe { opt_str(cfg.token) }.ok().flatten() {
+            builder = builder.with_token_info(tok, u64::try_from(cfg.token_expiry).unwrap_or(0));
+        }
+        match build_refresh_headers(cfg) {
+            Ok(Some(headers)) => {
+                let url = unsafe { opt_str(cfg.token_refresh_url) }
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default()
+                    .to_string();
+                builder = builder.with_token_refresh_url(url, headers);
+            },
+            Ok(None) => {},
+            Err(e) => return set_err(err, e),
+        }
+        match builder.build_blocking() {
+            Ok(commit) => {
+                unsafe { *out = into_handle(XetUploadCommit::new(commit)) };
+                XetStatus::XetOk
+            },
+            Err(e) => set_xet_err(err, &e),
+        }
+    })
+}
+
+/// Build a file-download group with per-group auth from `cfg`.
+///
+/// # Safety
+/// `session`/`cfg` valid; `out`/`err` valid pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xet_session_new_file_download_group(
+    session: *const XetSession,
+    cfg: *const XetAuthConfig,
+    out: *mut *mut XetFileDownloadGroup,
+    err: *mut *mut XetError,
+) -> XetStatus {
+    ffi_guard(err, || {
+        let (Some(session), Some(cfg)) = (unsafe { session.as_ref() }, unsafe { cfg.as_ref() }) else {
+            return set_err(err, XetError::new(XetStatus::XetErrInvalidArg, "null session or cfg"));
+        };
+        let mut builder = match session.inner.new_file_download_group() {
+            Ok(b) => b,
+            Err(e) => return set_xet_err(err, &e),
+        };
+        if let Some(ep) = unsafe { opt_str(cfg.endpoint) }.ok().flatten() {
+            builder = builder.with_endpoint(ep);
+        }
+        if let Some(tok) = unsafe { opt_str(cfg.token) }.ok().flatten() {
+            builder = builder.with_token_info(tok, u64::try_from(cfg.token_expiry).unwrap_or(0));
+        }
+        match build_refresh_headers(cfg) {
+            Ok(Some(headers)) => {
+                let url = unsafe { opt_str(cfg.token_refresh_url) }
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default()
+                    .to_string();
+                builder = builder.with_token_refresh_url(url, headers);
+            },
+            Ok(None) => {},
+            Err(e) => return set_err(err, e),
+        }
+        match builder.build_blocking() {
+            Ok(group) => {
+                unsafe { *out = into_handle(XetFileDownloadGroup::new(group)) };
+                XetStatus::XetOk
+            },
+            Err(e) => set_xet_err(err, &e),
+        }
+    })
+}
+
+/// Build a download-stream group with per-group auth from `cfg`.
+///
+/// # Safety
+/// `session`/`cfg` valid; `out`/`err` valid pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xet_session_new_download_stream_group(
+    session: *const XetSession,
+    cfg: *const XetAuthConfig,
+    out: *mut *mut XetDownloadStreamGroup,
+    err: *mut *mut XetError,
+) -> XetStatus {
+    ffi_guard(err, || {
+        let (Some(session), Some(cfg)) = (unsafe { session.as_ref() }, unsafe { cfg.as_ref() }) else {
+            return set_err(err, XetError::new(XetStatus::XetErrInvalidArg, "null session or cfg"));
+        };
+        let mut builder = match session.inner.new_download_stream_group() {
+            Ok(b) => b,
+            Err(e) => return set_xet_err(err, &e),
+        };
+        if let Some(ep) = unsafe { opt_str(cfg.endpoint) }.ok().flatten() {
+            builder = builder.with_endpoint(ep);
+        }
+        if let Some(tok) = unsafe { opt_str(cfg.token) }.ok().flatten() {
+            builder = builder.with_token_info(tok, u64::try_from(cfg.token_expiry).unwrap_or(0));
+        }
+        match build_refresh_headers(cfg) {
+            Ok(Some(headers)) => {
+                let url = unsafe { opt_str(cfg.token_refresh_url) }
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default()
+                    .to_string();
+                builder = builder.with_token_refresh_url(url, headers);
+            },
+            Ok(None) => {},
+            Err(e) => return set_err(err, e),
+        }
+        match builder.build_blocking() {
+            Ok(group) => {
+                unsafe { *out = into_handle(XetDownloadStreamGroup::new(group)) };
+                XetStatus::XetOk
+            },
+            Err(e) => set_xet_err(err, &e),
+        }
+    })
 }

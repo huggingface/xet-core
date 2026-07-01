@@ -136,3 +136,12 @@ fn download_stream_symbols_link() {
         xet_capi::xet_download_stream_free as *const (),
     ];
 }
+
+#[test]
+fn session_builder_symbols_link() {
+    let _f: [*const (); 3] = [
+        xet_capi::xet_session_new_upload_commit as *const (),
+        xet_capi::xet_session_new_file_download_group as *const (),
+        xet_capi::xet_session_new_download_stream_group as *const (),
+    ];
+}
