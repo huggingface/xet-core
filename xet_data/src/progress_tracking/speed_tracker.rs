@@ -1,6 +1,9 @@
 use std::time::Duration;
 
+#[cfg(not(target_family = "wasm"))]
 use tokio::time::Instant;
+#[cfg(target_family = "wasm")]
+use web_time::Instant;
 use xet_core_structures::ExpWeightedMovingAvg;
 
 pub(crate) const DEFAULT_SPEED_HALF_LIFE: Duration = Duration::from_secs(10);

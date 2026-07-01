@@ -67,7 +67,7 @@ impl BG4Predictor {
 
     /// This is a reference version that uses the SWAR bit twiddling trick; see Hacker's delight for reference.
     /// A lot of very cheap operations on 16 bytes at a time is likely faster than running popcnt on each byte.
-    /// On other archetectures, used as the fallback method.
+    /// On other architectures, used as the fallback method.
     #[inline(always)]
     fn popcnt_u128_swar(v: u128) -> u128 {
         const M1: u128 = 0x5555_5555_5555_5555_5555_5555_5555_5555u128;
@@ -148,7 +148,7 @@ impl BG4Predictor {
                 // We can add the counts directly here; as long as 9 * BLOCK_SIZE < 256 so each byte doesn't overflow
                 // into the next byte over.
                 for i in 0..raw_input.len() {
-                    // Ensure we're handling endianess correctly.  Should optimize out endian switching calls on
+                    // Ensure we're handling endianness correctly.  Should optimize out endian switching calls on
                     // little-endian machines.
                     *popcnt_v.get_unchecked_mut(i) =
                         calc_u128_popcnt(u128::from_le_bytes(raw_input.get_unchecked(i).to_ne_bytes()));

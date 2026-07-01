@@ -34,7 +34,6 @@ jobs:
             manylinux: manylinux_2_28
         python-version:
           - 3.14
-          - 3.13t
           - 3.14t
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -130,7 +129,6 @@ jobs:
             target: aarch64
         python-version:
           - 3.14
-          - 3.13t
           - 3.14t
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -220,7 +218,6 @@ jobs:
             rust_target: aarch64-pc-windows-msvc
         python-version:
           - 3.14
-          - 3.13t
           - 3.14t
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -279,7 +276,6 @@ jobs:
             rust_target: aarch64-apple-darwin
         python-version:
           - 3.14
-          - 3.13t
           - 3.14t
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -379,24 +375,32 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     needs: [github-release]
     permissions:
-      # Use to sign the release artifacts
+      # Used by both attest-build-provenance and the PyPI Trusted Publisher (OIDC).
       id-token: write
-      # Used to upload release artifacts
+      # Used to upload release artifacts and to generate artifact attestations.
       contents: write
-      # Used to generate artifact attestation
       attestations: write
     environment: release
     steps:
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7
-      - name: Generate artifact attestation
+      - name: Collect wheels and sdist into dist/
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # Each `wheels-*` artifact directory holds one or more wheels/sdists.
+          # Debug-symbol artifacts (`dbg-*`) must NOT be uploaded to PyPI.
+          cp wheels-*/* dist/
+          ls -l dist
+      - name: Generate GitHub build provenance attestation
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a  # v3
         with:
-          subject-path: 'wheels-*/*'
-      - name: Publish to PyPI
-        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1
+          subject-path: 'dist/*'
+      - name: Publish to PyPI (Trusted Publishing + PEP 740 attestations)
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
         with:
-          command: upload
-          args: --non-interactive --skip-existing wheels-*/*
+          attestations: true
+          skip-existing: true
+          print-hash: true
 
   github-release:
     name: Create GitHub release

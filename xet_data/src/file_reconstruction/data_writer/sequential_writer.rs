@@ -7,6 +7,8 @@ use bytes::Bytes;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
 use tokio::task::{JoinHandle, JoinSet};
+#[cfg(target_family = "wasm")]
+use tokio_with_wasm::alias as tokio;
 use xet_client::cas_types::FileRange;
 use xet_runtime::core::XetContext;
 use xet_runtime::utils::adjustable_semaphore::AdjustableSemaphorePermit;
@@ -39,10 +41,12 @@ pub(crate) enum SequentialRetrievalItem {
 }
 
 /// Pending write data with its associated permit.
+#[cfg(not(target_family = "wasm"))]
 type PendingWrite = (Bytes, Option<AdjustableSemaphorePermit>);
 
 /// Background writer thread that processes queue items and dispatches data
 /// to an output sink (a `Write` impl or a stream function).
+#[cfg(not(target_family = "wasm"))]
 struct SyncWriterThread {
     ctx: XetContext,
     rx: UnboundedReceiver<SequentialRetrievalItem>,
@@ -53,6 +57,7 @@ struct SyncWriterThread {
     finished: bool,
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl SyncWriterThread {
     fn new(
         ctx: XetContext,
@@ -241,7 +246,8 @@ impl Drop for SequentialWriter {
     }
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl DataWriter for SequentialWriter {
     /// Sets the source for the next block of data; this is a future that
     /// can be executing in the background.  This must be the next one sequentially,
@@ -394,6 +400,7 @@ impl SequentialWriter {
     /// When `use_vectorized` is true, the background thread batches pending
     /// writes and uses `write_vectored` for fewer syscalls. The writer is
     /// moved to a background thread for blocking I/O operations.
+    #[cfg(not(target_family = "wasm"))]
     #[allow(clippy::new_ret_no_self)]
     pub(crate) fn new<W: Write + Send + 'static>(
         ctx: &XetContext,

@@ -3,8 +3,8 @@ use xet_client::ClientError;
 use xet_core_structures::CoreError;
 use xet_data::DataError;
 use xet_data::file_reconstruction::FileReconstructionError;
-use xet_data::progress_tracking::UniqueID;
 use xet_runtime::RuntimeError;
+use xet_runtime::utils::UniqueId;
 
 /// Unified error type for the Xet public API.
 ///
@@ -37,7 +37,7 @@ pub enum XetError {
 
     /// A task ID that doesn't correspond to any queued file.
     #[error("Invalid task ID: {0}")]
-    InvalidTaskID(UniqueID),
+    InvalidTaskID(UniqueId),
 
     // -- User-facing error categories ------------------------------------
     /// Token refresh or credential failures.
@@ -219,6 +219,17 @@ impl From<std::io::Error> for XetError {
 
 impl From<tokio::task::JoinError> for XetError {
     fn from(e: tokio::task::JoinError) -> Self {
+        if e.is_cancelled() {
+            XetError::Cancelled(format!("Task cancelled: {e}"))
+        } else {
+            XetError::Internal(format!("Task join error: {e}"))
+        }
+    }
+}
+
+#[cfg(target_family = "wasm")]
+impl From<tokio_with_wasm::task::JoinError> for XetError {
+    fn from(e: tokio_with_wasm::task::JoinError) -> Self {
         if e.is_cancelled() {
             XetError::Cancelled(format!("Task cancelled: {e}"))
         } else {

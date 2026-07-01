@@ -4,10 +4,13 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
+#[cfg(target_family = "wasm")]
+use tokio_with_wasm::alias as tokio;
 use tracing::{error, info};
 use xet_data::deduplication::DeduplicationMetrics;
 use xet_data::processing::{FileUploadSession, Sha256Policy, XetFileInfo};
-use xet_data::progress_tracking::{GroupProgressReport, UniqueID};
+use xet_data::progress_tracking::{GroupProgressReport, ItemProgressReport};
+use xet_runtime::utils::UniqueId;
 
 use super::auth_group_builder::{AuthGroupBuilder, AuthOptions};
 use super::common::create_translator_config;
@@ -48,6 +51,7 @@ impl AuthGroupBuilder<XetUploadCommit> {
     /// # Panics
     ///
     /// Panics if called from within a tokio async runtime on an Owned-mode session.
+    #[cfg(not(target_family = "wasm"))]
     pub fn build_blocking(self) -> Result<XetUploadCommit, XetError> {
         let AuthGroupBuilder {
             session, auth_options, ..
@@ -69,24 +73,49 @@ impl AuthGroupBuilder<XetUploadCommit> {
 ///
 /// Contains aggregate deduplication metrics, final progress, and per-file
 /// [`XetFileMetadata`] for every file that was successfully ingested,
-/// keyed by [`UniqueID`].
+/// keyed by [`UniqueId`].
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "python", pyo3::pyclass(get_all, from_py_object))]
 pub struct XetCommitReport {
     /// Aggregate deduplication metrics across all files in this commit.
     pub dedup_metrics: DeduplicationMetrics,
     /// Final progress snapshot at the time the commit completed.
     pub progress: GroupProgressReport,
     /// Per-file metadata keyed by task ID, one entry per successfully ingested file.
-    pub uploads: HashMap<UniqueID, XetFileMetadata>,
+    pub uploads: HashMap<UniqueId, XetFileMetadata>,
+}
+
+#[cfg(feature = "python")]
+#[pyo3::pymethods]
+impl XetCommitReport {
+    fn __repr__(&self) -> String {
+        let per_file: Vec<String> = self
+            .uploads
+            .iter()
+            .map(|(id, m)| {
+                let name = m.tracking_name.as_deref().unwrap_or("None");
+                let size = m.xet_info.file_size.map_or("?".to_string(), |s| s.to_string());
+                format!("({id}, \"{name}\", hash=\"{}\", size={size})", m.xet_info.hash)
+            })
+            .collect();
+        format!(
+            "XetCommitReport(files={}, total_bytes={}, deduped_bytes={}, uploads=[{}])",
+            self.uploads.len(),
+            self.dedup_metrics.total_bytes,
+            self.dedup_metrics.deduped_bytes,
+            per_file.join(", ")
+        )
+    }
 }
 
 /// Per-file metadata returned by [`XetFileUpload::finalize_ingestion`] and
 /// [`XetStreamUpload::finish`].
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "python", pyo3::pyclass(get_all, from_py_object))]
 pub struct XetFileMetadata {
     /// Unique identifier for the task that produced this metadata.
     #[serde(skip)]
-    pub task_id: UniqueID,
+    pub task_id: UniqueId,
     /// Xet file information: hash, size, and optional SHA-256.
     pub xet_info: XetFileInfo,
     /// Per-file deduplication and chunking metrics.
@@ -96,10 +125,23 @@ pub struct XetFileMetadata {
     pub tracking_name: Option<String>,
 }
 
+#[cfg(feature = "python")]
+#[pyo3::pymethods]
+impl XetFileMetadata {
+    fn __repr__(&self) -> String {
+        let name = self.tracking_name.as_deref().unwrap_or("None");
+        let size = self.xet_info.file_size.map_or("?".to_string(), |s| s.to_string());
+        format!(
+            "XetFileMetadata(task_id={}, name=\"{}\", hash=\"{}\", size={})",
+            self.task_id, name, self.xet_info.hash, size
+        )
+    }
+}
+
 // ── XetUploadCommitInner ────────────────────────────────────────────────────
 
 pub(super) struct XetUploadCommitInner {
-    commit_id: UniqueID,
+    commit_id: UniqueId,
     pub(super) session: XetSession,
     pub(super) task_runtime: Arc<TaskRuntime>,
     upload_session: Arc<FileUploadSession>,
@@ -108,6 +150,7 @@ pub(super) struct XetUploadCommitInner {
 }
 
 impl XetUploadCommitInner {
+    #[cfg(not(target_family = "wasm"))]
     async fn upload_from_path(
         self: &Arc<Self>,
         file_path: PathBuf,
@@ -143,10 +186,7 @@ impl XetUploadCommitInner {
             task_runtime,
         };
 
-        self.stream_handles
-            .lock()
-            .expect("stream_handles lock poisoned")
-            .push(handle.clone());
+        self.stream_handles.lock()?.push(handle.clone());
 
         Ok(handle)
     }
@@ -163,9 +203,14 @@ impl XetUploadCommitInner {
         self.register_spawned_task(task_id, join_handle, tracking_name, None)
     }
 
+    // Wasm cancellation contract: on wasm, `tokio` is aliased to `tokio_with_wasm`, whose
+    // `JoinHandle::abort()` only cancels async `spawn` tasks — it cannot abort `spawn_blocking`
+    // tasks. Cancellation here works because `spawn_upload_bytes` / `spawn_upload_from_path`
+    // use async `tokio::spawn`. If you change the spawning mechanism for tasks registered
+    // through this method, verify wasm cancellation still propagates to the upload task.
     fn register_spawned_task(
         &self,
-        task_id: UniqueID,
+        task_id: UniqueId,
         join_handle: tokio::task::JoinHandle<Result<(XetFileInfo, DeduplicationMetrics), xet_data::DataError>>,
         tracking_name: Option<String>,
         file_path: Option<PathBuf>,
@@ -208,13 +253,10 @@ impl XetUploadCommitInner {
             }),
         });
 
-        self.file_handles
-            .lock()
-            .expect("file_handles lock poisoned")
-            .push(XetFileUpload {
-                inner: inner.clone(),
-                task_runtime: task_runtime.clone(),
-            });
+        self.file_handles.lock()?.push(XetFileUpload {
+            inner: inner.clone(),
+            task_runtime: task_runtime.clone(),
+        });
 
         Ok(XetFileUpload { inner, task_runtime })
     }
@@ -305,6 +347,9 @@ impl XetUploadCommitInner {
 /// [`commit`](Self::commit) (async) or [`commit_blocking`](Self::commit_blocking)
 /// to wait for all uploads to finish and push metadata to the CAS server.
 ///
+/// On wasm targets the `_blocking` and `upload_from_path*` variants are
+/// not available — see the module-level "WASM availability" note.
+///
 /// Per-file results are available via [`XetFileUpload::finalize_ingestion`] or
 /// [`XetStreamUpload::finish`] at any time after ingestion completes —
 /// you do not need to wait for [`commit`](Self::commit).
@@ -328,7 +373,7 @@ impl XetUploadCommit {
         task_runtime: Arc<TaskRuntime>,
         auth_options: AuthOptions,
     ) -> Result<Self, XetError> {
-        let commit_id = UniqueID::new();
+        let commit_id = UniqueId::new();
         let config = create_translator_config(&session, auth_options).await?;
         let upload_session = FileUploadSession::new(Arc::new(config)).await?;
 
@@ -345,7 +390,7 @@ impl XetUploadCommit {
     }
 
     /// Unique identifier for this upload commit.
-    pub fn id(&self) -> UniqueID {
+    pub fn id(&self) -> UniqueId {
         self.inner.commit_id
     }
 
@@ -354,25 +399,6 @@ impl XetUploadCommit {
     }
 
     // ===== Async public API =====
-
-    /// Queue a file for upload from a path on disk.
-    ///
-    /// The file is read in a background task. Returns a [`XetFileUpload`]
-    /// whose [`finalize_ingestion`](XetFileUpload::finalize_ingestion) method yields per-file
-    /// [`XetFileMetadata`] once ingestion completes.
-    ///
-    /// # Parameters
-    ///
-    /// - `file_path`: path to the file. Resolved to an absolute path so the upload is unaffected by later
-    ///   working-directory changes.
-    /// - `sha256`: SHA-256 handling policy for this file.
-    pub async fn upload_from_path(&self, file_path: PathBuf, sha256: Sha256Policy) -> Result<XetFileUpload, XetError> {
-        info!(commit_id = %self.id(), path = ?file_path, "Upload from path");
-        let inner = Arc::clone(&self.inner);
-        self.task_runtime
-            .bridge_async("upload_from_path", async move { inner.upload_from_path(file_path, sha256).await })
-            .await
-    }
 
     /// Begin an incremental streaming upload.
     ///
@@ -397,8 +423,6 @@ impl XetUploadCommit {
             .await
     }
 
-    /// Queue raw bytes for upload, starting the transfer immediately.
-    ///
     /// Returns a [`XetFileUpload`] whose
     /// [`finalize_ingestion`](XetFileUpload::finalize_ingestion) method yields
     /// per-file [`XetFileMetadata`] once ingestion completes.
@@ -435,6 +459,19 @@ impl XetUploadCommit {
         self.task_runtime.status()
     }
 
+    /// Return `(task_id, file_path, progress)` for every queued file upload.
+    ///
+    /// `file_path` is `Some` for path/bytes uploads and `None` for stream uploads.
+    /// `progress` is `None` if the upload has not started reporting yet.
+    /// Used for display and diagnostics (e.g. `__repr__`).
+    pub fn active_upload_info(&self) -> Vec<(UniqueId, Option<PathBuf>, Option<ItemProgressReport>)> {
+        self.inner
+            .file_handles
+            .lock()
+            .map(|handles| handles.iter().map(|h| (h.task_id(), h.file_path(), h.progress())).collect())
+            .unwrap_or_default()
+    }
+
     /// Wait for all uploads to complete and push metadata to the CAS server.
     ///
     /// Returns a [`XetCommitReport`] with aggregate dedup metrics, progress,
@@ -454,7 +491,35 @@ impl XetUploadCommit {
         matches!(self.inner.task_runtime.status(), Ok(XetTaskState::Completed))
     }
 
-    // ===== Blocking (sync) variants =====
+    /// Cancel all active uploads in this commit.
+    pub fn abort(&self) -> Result<(), XetError> {
+        info!(commit_id = %self.id(), "Commit abort");
+        self.inner.abort()
+    }
+}
+
+// Native upload paths — require std::path::PathBuf and the multi-threaded
+// sync bridge; have no wasm equivalents.
+#[cfg(not(target_family = "wasm"))]
+impl XetUploadCommit {
+    /// Queue a file for upload from a path on disk.
+    ///
+    /// The file is read in a background task. Returns a [`XetFileUpload`]
+    /// whose [`finalize_ingestion`](XetFileUpload::finalize_ingestion) method yields per-file
+    /// [`XetFileMetadata`] once ingestion completes.
+    ///
+    /// # Parameters
+    ///
+    /// - `file_path`: path to the file. Resolved to an absolute path so the upload is unaffected by later
+    ///   working-directory changes.
+    /// - `sha256`: SHA-256 handling policy for this file.
+    pub async fn upload_from_path(&self, file_path: PathBuf, sha256: Sha256Policy) -> Result<XetFileUpload, XetError> {
+        info!(commit_id = %self.id(), path = ?file_path, "Upload from path");
+        let inner = Arc::clone(&self.inner);
+        self.task_runtime
+            .bridge_async("upload_from_path", async move { inner.upload_from_path(file_path, sha256).await })
+            .await
+    }
 
     /// Blocking version of [`upload_from_path`](Self::upload_from_path).
     ///
@@ -531,15 +596,10 @@ impl XetUploadCommit {
         self.task_runtime
             .bridge_sync_finalizing("commit_blocking", false, async move { inner.commit().await })
     }
-
-    /// Cancel all active uploads in this commit.
-    pub fn abort(&self) -> Result<(), XetError> {
-        info!(commit_id = %self.id(), "Commit abort");
-        self.inner.abort()
-    }
 }
 
 #[cfg(test)]
+#[cfg(not(target_family = "wasm"))]
 mod tests {
     use std::path::PathBuf;
     use std::sync::mpsc;

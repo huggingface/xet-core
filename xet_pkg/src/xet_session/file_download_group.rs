@@ -6,7 +6,8 @@ use std::sync::{Arc, RwLock};
 
 use tracing::info;
 use xet_data::processing::{FileDownloadSession, XetFileInfo};
-use xet_data::progress_tracking::{GroupProgressReport, UniqueID};
+use xet_data::progress_tracking::{GroupProgressReport, ItemProgressReport};
+use xet_runtime::utils::UniqueId;
 
 use super::auth_group_builder::{AuthGroupBuilder, AuthOptions};
 use super::common::create_translator_config;
@@ -64,14 +65,48 @@ impl AuthGroupBuilder<XetFileDownloadGroup> {
 
 /// Report returned by [`XetFileDownloadGroup::finish`].
 ///
-/// Contains final progress and per-file results keyed by [`UniqueID`].
+/// Contains final progress and per-file results keyed by [`UniqueId`].
 /// Only created when all downloads succeed; any failure propagates as an error.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "python", pyo3::pyclass(get_all, from_py_object))]
 pub struct XetDownloadGroupReport {
     /// Final progress snapshot at the time the group finished.
     pub progress: GroupProgressReport,
     /// Per-file download reports keyed by task ID.
-    pub downloads: HashMap<UniqueID, XetDownloadReport>,
+    pub downloads: HashMap<UniqueId, XetDownloadReport>,
+}
+
+#[cfg(feature = "python")]
+#[pyo3::pymethods]
+impl XetDownloadGroupReport {
+    // Example output:
+    //   XetDownloadGroupReport(files=2, bytes_completed=5120/8192,
+    //       downloads=[(3, "/tmp/model.bin", bytes_completed=4096/4096), (4, "/tmp/data.bin", bytes_completed=?/?)])
+    //   XetDownloadGroupReport(files=0, bytes_completed=0/0, downloads=[])
+    //
+    // Each download entry is (task_id, dest_path, bytes_completed/total_bytes).
+    // Progress shows "?/?" when no snapshot was captured.
+    fn __repr__(&self) -> String {
+        let per_file: Vec<String> = self
+            .downloads
+            .iter()
+            .map(|(id, r)| {
+                let path = r.path.display();
+                let prog = match &r.progress {
+                    Some(p) => format!("{}/{}", p.bytes_completed, p.total_bytes),
+                    None => "?/?".to_string(),
+                };
+                format!("({id}, \"{path}\", bytes_completed={prog})")
+            })
+            .collect();
+        format!(
+            "XetDownloadGroupReport(files={}, bytes_completed={}/{}, downloads=[{}])",
+            self.downloads.len(),
+            self.progress.total_bytes_completed,
+            self.progress.total_bytes,
+            per_file.join(", ")
+        )
+    }
 }
 
 /// API for grouping related file downloads into a single unit of work.
@@ -113,7 +148,7 @@ impl XetFileDownloadGroup {
         task_runtime: Arc<TaskRuntime>,
         auth_options: AuthOptions,
     ) -> Result<Self, XetError> {
-        let group_id = UniqueID::new();
+        let group_id = UniqueId::new();
         let config = create_translator_config(&session, auth_options).await?;
         let download_session = FileDownloadSession::new(Arc::new(config), None).await?;
 
@@ -131,7 +166,7 @@ impl XetFileDownloadGroup {
     }
 
     /// Unique identifier for this download group.
-    pub fn id(&self) -> UniqueID {
+    pub fn id(&self) -> UniqueId {
         self.inner.group_id
     }
 
@@ -143,7 +178,7 @@ impl XetFileDownloadGroup {
     pub fn abort(&self) -> Result<(), XetError> {
         info!(group_id = %self.id(), "Download group abort");
         self.task_runtime.cancel_subtree()?;
-        for (_tracking_id, handle) in self.inner.active_tasks.read()?.iter() {
+        for handle in self.inner.active_tasks.read()?.values() {
             handle.cancel();
         }
         Ok(())
@@ -193,6 +228,18 @@ impl XetFileDownloadGroup {
 
     pub fn status(&self) -> Result<XetTaskState, XetError> {
         self.task_runtime.status()
+    }
+
+    /// Return `(task_id, dest_path, progress)` for every queued file download.
+    ///
+    /// `progress` is `None` if the download has not started reporting yet.
+    /// Used for display and diagnostics (e.g. `__repr__`).
+    pub fn active_download_info(&self) -> Vec<(UniqueId, PathBuf, Option<ItemProgressReport>)> {
+        self.inner
+            .active_tasks
+            .read()
+            .map(|tasks| tasks.values().map(|h| (h.task_id(), h.file_path(), h.progress())).collect())
+            .unwrap_or_default()
     }
 
     /// Wait for all downloads to complete and return a report.
@@ -268,8 +315,8 @@ impl XetFileDownloadGroup {
 }
 
 pub(super) struct XetFileDownloadGroupInner {
-    group_id: UniqueID,
-    active_tasks: RwLock<HashMap<UniqueID, XetFileDownload>>,
+    group_id: UniqueId,
+    active_tasks: RwLock<HashMap<UniqueId, XetFileDownload>>,
     pub(super) download_session: Arc<FileDownloadSession>,
 }
 
@@ -306,7 +353,7 @@ impl XetFileDownloadGroupInner {
                     match join_result {
                         Ok(Ok(n_bytes)) => Ok(XetDownloadReport {
                             task_id,
-                            path: Some(dp),
+                            path: dp,
                             file_info: XetFileInfo {
                                 hash: fi.hash,
                                 file_size: Some(n_bytes),
@@ -341,7 +388,7 @@ impl XetFileDownloadGroupInner {
         Ok(XetFileDownload { inner, task_runtime })
     }
 
-    pub(super) async fn handle_finish(self: &Arc<Self>) -> Result<HashMap<UniqueID, XetDownloadReport>, XetError> {
+    pub(super) async fn handle_finish(self: &Arc<Self>) -> Result<HashMap<UniqueId, XetDownloadReport>, XetError> {
         let active_tasks = std::mem::take(&mut *self.active_tasks.write()?);
 
         let mut results = HashMap::new();

@@ -17,6 +17,7 @@ use tokio::time::{Duration, Instant};
 use tracing::{error, info, warn};
 use xet_core_structures::merklehash::{MerkleHash, compute_data_hash};
 use xet_core_structures::metadata_shard::file_structs::{FileDataSequenceHeader, MDBFileInfo, MDBFileInfoView};
+use xet_core_structures::metadata_shard::shard_file_reconstructor::FileReconstructor;
 use xet_core_structures::metadata_shard::shard_format::MDB_FILE_INFO_ENTRY_SIZE;
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::metadata_shard::streaming_shard::MDBMinimalShard;
@@ -35,10 +36,12 @@ use super::direct_access_client::DirectAccessClient;
 use super::xorb_utils::{self, REFERENCE_INSTANT, duration_to_expiration_secs_ceil};
 use crate::cas_client::Client;
 use crate::cas_client::adaptive_concurrency::AdaptiveConcurrencyController;
+use crate::cas_client::chunk_window_builder::build_file_chunk_hashes_response;
 use crate::cas_client::progress_tracked_streams::ProgressCallback;
 use crate::cas_types::{
-    BatchQueryReconstructionResponse, FileRange, HexMerkleHash, HttpRange, QueryReconstructionResponse,
-    QueryReconstructionResponseV2, XorbMultiRangeFetch, XorbRangeDescriptor, XorbReconstructionFetchInfo,
+    BatchQueryReconstructionResponse, FileChunkHashesResponse, FileRange, HexMerkleHash, HttpRange,
+    QueryReconstructionResponse, QueryReconstructionResponseV2, XorbMultiRangeFetch, XorbRangeDescriptor,
+    XorbReconstructionFetchInfo,
 };
 use crate::error::{ClientError, Result};
 
@@ -1691,6 +1694,30 @@ impl Client for LocalClient {
 
         // Should not reach here, but return error if we do.
         Err(ClientError::PresignedUrlExpirationError)
+    }
+
+    async fn get_file_chunk_hashes(
+        &self,
+        file_id: &MerkleHash,
+        dirty_ranges: Vec<FileRange>,
+    ) -> Result<FileChunkHashesResponse> {
+        self.apply_api_delay().await;
+
+        let Some((file_info, _)) = self.shard_manager.get_file_reconstruction_info(file_id).await? else {
+            return Err(ClientError::FileNotFound(*file_id));
+        };
+
+        let mut chunks: Vec<(MerkleHash, u64)> = Vec::new();
+        for segment in &file_info.segments {
+            let xorb_obj = self.xorb_footer(&segment.xorb_hash).await?;
+            chunks.extend(
+                xorb_obj
+                    .chunk_hash_sizes(segment.chunk_index_start, segment.chunk_index_end)
+                    .map_err(|err| ClientError::Other(format!("chunk_hash_sizes error: {err}")))?,
+            );
+        }
+
+        build_file_chunk_hashes_response(&file_info, dirty_ranges, chunks)
     }
 }
 

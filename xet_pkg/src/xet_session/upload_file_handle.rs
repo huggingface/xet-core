@@ -4,9 +4,12 @@ use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+#[cfg(target_family = "wasm")]
+use tokio_with_wasm::alias as tokio;
 use tracing::info;
 use xet_data::processing::FileUploadSession;
-use xet_data::progress_tracking::{ItemProgressReport, UniqueID};
+use xet_data::progress_tracking::ItemProgressReport;
+use xet_runtime::utils::UniqueId;
 
 use super::task_runtime::{BackgroundTaskState, TaskRuntime, XetTaskState};
 use super::upload_commit::XetFileMetadata;
@@ -15,7 +18,7 @@ use crate::error::XetError;
 // ── XetFileUploadInner ──────────────────────────────────────────────────────
 
 pub(super) struct XetFileUploadInner {
-    pub(super) task_id: UniqueID,
+    pub(super) task_id: UniqueId,
     pub(super) file_path: Option<PathBuf>,
     pub(super) upload_session: Arc<FileUploadSession>,
     pub(super) state: tokio::sync::Mutex<BackgroundTaskState<XetFileMetadata>>,
@@ -31,6 +34,9 @@ pub(super) struct XetFileUploadInner {
 ///
 /// Important: ingestion completion means the file has been chunked/deduplicated.
 /// The file is not uploaded to CAS until [`XetUploadCommit::commit`] is called.
+///
+/// Cloning is cheap — all clones share the same underlying state via `Arc`.
+#[derive(Clone)]
 pub struct XetFileUpload {
     pub(super) inner: Arc<XetFileUploadInner>,
     pub(super) task_runtime: Arc<TaskRuntime>,
@@ -46,7 +52,7 @@ impl fmt::Debug for XetFileUpload {
 
 impl XetFileUpload {
     /// Unique identifier for this upload task, usable for progress lookups.
-    pub fn task_id(&self) -> UniqueID {
+    pub fn task_id(&self) -> UniqueId {
         self.inner.task_id
     }
 
@@ -79,6 +85,7 @@ impl XetFileUpload {
     }
 
     /// Blocking version of [`finalize_ingestion`](Self::finalize_ingestion).
+    #[cfg(not(target_family = "wasm"))]
     pub fn finalize_ingestion_blocking(&self) -> Result<XetFileMetadata, XetError> {
         info!(task_id = %self.task_id(), "File upload finalize_ingestion");
         if let Some(meta) = self.try_finish() {

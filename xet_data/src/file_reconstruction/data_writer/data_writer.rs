@@ -8,9 +8,13 @@ use xet_runtime::utils::adjustable_semaphore::AdjustableSemaphorePermit;
 use super::super::Result;
 
 /// A future that produces the data bytes to be written.
+#[cfg(not(target_family = "wasm"))]
 pub type DataFuture = Pin<Box<dyn Future<Output = Result<Bytes>> + Send + 'static>>;
+#[cfg(target_family = "wasm")]
+pub type DataFuture = Pin<Box<dyn Future<Output = Result<Bytes>> + 'static>>;
 
-#[async_trait::async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 pub trait DataWriter: Send + 'static {
     /// Sets the data source for the next sequential term.
     ///

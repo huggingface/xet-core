@@ -106,7 +106,7 @@ impl ChunkCache for SolidCache {
 #[cfg(test)]
 mod tests {
     use xet_client::chunk_cache::{ChunkCache, RandomEntryIterator};
-    use rand::thread_rng;
+    use rand::rng;
 
     use super::SolidCache;
 
@@ -114,7 +114,7 @@ mod tests {
     #[ignore = "need a running postgres"]
     async fn test_postgres() {
         let cache = SolidCache::new();
-        let mut it = RandomEntryIterator::new(thread_rng());
+        let mut it = RandomEntryIterator::new(rng());
         let mut kr = Vec::new();
         for _ in 0..5 {
             let (key, range, chunk_byte_indices, data) = it.next().unwrap();
@@ -139,7 +139,7 @@ mod tests {
     #[ignore = "need a running postgres"]
     async fn test_postgres_get_miss() {
         let cache = SolidCache::new();
-        let mut it = RandomEntryIterator::new(thread_rng());
+        let mut it = RandomEntryIterator::new(rng());
 
         let (key, range) = it.next_key_range();
         let result = cache.get(&key, &range).await;

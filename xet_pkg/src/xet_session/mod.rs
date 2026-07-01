@@ -248,13 +248,28 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! ## WASM availability
+//!
+//! On `wasm32-unknown-unknown` the surface is a strict subset:
+//!
+//! - **Async only** — `_blocking` variants are non-wasm (wasm cannot block the host thread).
+//! - **No filesystem entrypoints** — `upload_from_path`, `XetFileDownloadGroup`, and `XetFileDownload` are non-wasm;
+//!   use `upload_bytes` / `upload_stream` and `XetDownloadStreamGroup` instead.
+//! - **No external tokio handle** — `XetSessionBuilder::with_tokio_handle` is non-wasm.
+//!
+//! Doc links resolve on every target, but `_blocking` and path-based names
+//! point at items that don't exist on wasm; the per-method `#[cfg(...)]`
+//! attributes are the authoritative target gate.
 
 mod auth_group_builder;
 mod common;
 mod download_stream_group;
 mod download_stream_handle;
 mod errors;
+#[cfg(not(target_family = "wasm"))]
 mod file_download_group;
+#[cfg(not(target_family = "wasm"))]
 mod file_download_handle;
 mod session;
 mod task_runtime;
@@ -265,7 +280,9 @@ mod upload_stream_handle;
 pub use download_stream_group::{XetDownloadStreamGroup, XetDownloadStreamGroupBuilder};
 pub use download_stream_handle::{XetDownloadStream, XetUnorderedDownloadStream};
 pub use errors::SessionError;
+#[cfg(not(target_family = "wasm"))]
 pub use file_download_group::{XetDownloadGroupReport, XetFileDownloadGroup, XetFileDownloadGroupBuilder};
+#[cfg(not(target_family = "wasm"))]
 pub use file_download_handle::{XetDownloadReport, XetFileDownload};
 pub use http::{HeaderMap, HeaderValue, header};
 pub use session::{XetSession, XetSessionBuilder};
@@ -275,5 +292,6 @@ pub use upload_file_handle::XetFileUpload;
 pub use upload_stream_handle::XetStreamUpload;
 pub use xet_data::deduplication::DeduplicationMetrics;
 pub use xet_data::processing::{Sha256Policy, XetFileInfo};
-pub use xet_data::progress_tracking::{GroupProgressReport, ItemProgressReport, UniqueID};
+pub use xet_data::progress_tracking::{GroupProgressReport, ItemProgressReport};
 pub use xet_runtime::config::XetConfig;
+pub use xet_runtime::utils::UniqueId;

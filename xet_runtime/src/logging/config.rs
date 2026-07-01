@@ -1,7 +1,10 @@
-use std::path::{Path, PathBuf};
+#[cfg(not(target_family = "wasm"))]
+use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::config::XetConfig;
+#[cfg(not(target_family = "wasm"))]
 use crate::utils::TemplatedPathBuf;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -42,6 +45,7 @@ pub struct LoggingConfig {
 
 impl LoggingConfig {
     /// Set up logging to a directory using the given config.
+    #[cfg(not(target_family = "wasm"))]
     pub fn from_directory(config: &XetConfig, version: String, log_directory: impl AsRef<Path>) -> LoggingConfig {
         let logging_mode = {
             if let Some(log_dest) = &config.log.dest {

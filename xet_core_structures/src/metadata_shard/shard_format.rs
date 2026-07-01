@@ -1586,7 +1586,7 @@ pub mod test_routines {
             // Make sure two queries return same results.
             assert_eq!(result_m, result_f);
 
-            // Make sure retriving the expected file.
+            // Make sure retrieving the expected file.
             if let Some(rm) = result_m {
                 assert_eq!(rm.metadata.file_hash, *k);
                 assert_eq!(result_f.unwrap().metadata.file_hash, *k);

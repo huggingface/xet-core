@@ -4,9 +4,12 @@ use std::fmt;
 use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
+#[cfg(target_family = "wasm")]
+use tokio_with_wasm::alias as tokio;
 use tracing::{debug, info};
 use xet_data::processing::{FileUploadSession, SingleFileCleaner};
-use xet_data::progress_tracking::{ItemProgressReport, UniqueID};
+use xet_data::progress_tracking::ItemProgressReport;
+use xet_runtime::utils::UniqueId;
 
 use super::task_runtime::{TaskRuntime, XetTaskState};
 use super::upload_commit::XetFileMetadata;
@@ -19,7 +22,7 @@ type CleanerState = Option<(SingleFileCleaner, Option<String>)>;
 // ── XetStreamUploadInner ─────────────────────────────────────────────────
 
 pub(super) struct XetStreamUploadInner {
-    pub(super) task_id: UniqueID,
+    pub(super) task_id: UniqueId,
     pub(super) result: Arc<OnceLock<XetFileMetadata>>,
     pub(super) cleaner: Arc<tokio::sync::Mutex<CleanerState>>,
     pub(super) upload_session: Arc<FileUploadSession>,
@@ -95,7 +98,7 @@ impl fmt::Debug for XetStreamUpload {
 
 impl XetStreamUpload {
     /// Unique identifier for this upload task, usable for progress lookups.
-    pub fn task_id(&self) -> UniqueID {
+    pub fn task_id(&self) -> UniqueId {
         self.inner.task_id
     }
 
@@ -118,6 +121,7 @@ impl XetStreamUpload {
     /// # Panics
     ///
     /// Panics if called from within a tokio async runtime.
+    #[cfg(not(target_family = "wasm"))]
     pub fn write_blocking(&self, data: impl Into<Bytes>) -> Result<(), XetError> {
         let data = data.into();
         debug!(task_id = %self.task_id(), bytes = data.len(), "Stream write");
@@ -149,6 +153,7 @@ impl XetStreamUpload {
     /// # Panics
     ///
     /// Panics if called from within a tokio async runtime.
+    #[cfg(not(target_family = "wasm"))]
     pub fn finish_blocking(&self) -> Result<XetFileMetadata, XetError> {
         info!(task_id = %self.task_id(), "Stream finish");
         let inner = Arc::clone(&self.inner);

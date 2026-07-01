@@ -30,9 +30,11 @@ use super::deletion_controls::ObjectTag;
 use super::direct_access_client::DirectAccessClient;
 use super::random_xorb::RandomXorb;
 use super::xorb_utils::{self, REFERENCE_INSTANT, duration_to_expiration_secs_ceil};
+use crate::cas_client::chunk_window_builder::build_file_chunk_hashes_response;
 use crate::cas_types::{
-    BatchQueryReconstructionResponse, FileRange, HexMerkleHash, HttpRange, QueryReconstructionResponse,
-    QueryReconstructionResponseV2, XorbMultiRangeFetch, XorbRangeDescriptor, XorbReconstructionFetchInfo,
+    BatchQueryReconstructionResponse, FileChunkHashesResponse, FileRange, HexMerkleHash, HttpRange,
+    QueryReconstructionResponse, QueryReconstructionResponseV2, XorbMultiRangeFetch, XorbRangeDescriptor,
+    XorbReconstructionFetchInfo,
 };
 use crate::error::{ClientError, Result};
 
@@ -949,6 +951,40 @@ impl Client for MemoryClient {
             cb(total_transfer, total_transfer, total_transfer);
         }
         Ok((Bytes::from(all_decompressed), all_chunk_indices))
+    }
+
+    async fn get_file_chunk_hashes(
+        &self,
+        file_id: &MerkleHash,
+        dirty_ranges: Vec<FileRange>,
+    ) -> Result<FileChunkHashesResponse> {
+        self.apply_api_delay().await;
+
+        let file_info = {
+            let shard = self.shard.read().await;
+            shard
+                .get_file_reconstruction_info(file_id)
+                .ok_or(ClientError::FileNotFound(*file_id))?
+        };
+
+        let xorbs = self.xorbs.read().await;
+        let mut chunks: Vec<(MerkleHash, u64)> = Vec::new();
+        for segment in &file_info.segments {
+            let storage = xorbs
+                .get(&segment.xorb_hash)
+                .ok_or(ClientError::XORBNotFound(segment.xorb_hash))?;
+            let xorb_obj = match storage {
+                XorbStorage::Materialized { entry, .. } => std::borrow::Cow::Borrowed(&entry.xorb_object),
+                XorbStorage::Random { xorb, .. } => std::borrow::Cow::Owned(xorb.get_xorb_object()),
+            };
+            chunks.extend(
+                xorb_obj
+                    .chunk_hash_sizes(segment.chunk_index_start, segment.chunk_index_end)
+                    .map_err(|err| ClientError::Other(format!("chunk_hash_sizes error: {err}")))?,
+            );
+        }
+
+        build_file_chunk_hashes_response(&file_info, dirty_ranges, chunks)
     }
 }
 

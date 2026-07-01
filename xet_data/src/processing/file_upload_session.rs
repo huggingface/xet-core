@@ -1,21 +1,30 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
+#[cfg(not(target_family = "wasm"))]
 use std::fs::File;
+#[cfg(not(target_family = "wasm"))]
 use std::io::Read;
 use std::mem::{swap, take};
+#[cfg(not(target_family = "wasm"))]
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(not(target_family = "wasm"))]
 use bytes::Bytes;
 use more_asserts::*;
 use tokio::sync::Mutex;
 use tokio::task::{JoinHandle, JoinSet};
-use tracing::{Instrument, Span, info_span, instrument};
+#[cfg(target_family = "wasm")]
+use tokio_with_wasm::alias as tokio;
+#[cfg(not(target_family = "wasm"))]
+use tracing::Span;
+use tracing::{Instrument, info_span, instrument};
 use xet_client::cas_client::{Client, ProgressCallback};
 use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
 use xet_core_structures::xorb_object::SerializedXorbObject;
 use xet_runtime::core::XetContext;
+use xet_runtime::utils::UniqueId;
 
 use super::XetFileInfo;
 use super::configurations::TranslatorConfig;
@@ -26,7 +35,7 @@ use crate::deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use crate::deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
 use crate::error::{DataError, Result};
 use crate::progress_tracking::upload_tracking::{CompletionTracker, FileXorbDependency};
-use crate::progress_tracking::{GroupProgress, GroupProgressReport, ItemProgressReport, UniqueID};
+use crate::progress_tracking::{GroupProgress, GroupProgressReport, ItemProgressReport};
 
 /// Manages the translation of files between the
 /// MerkleDB / pointer file format and the materialized version.
@@ -75,7 +84,7 @@ impl FileUploadSession {
             .session_id
             .as_ref()
             .map(Cow::Borrowed)
-            .unwrap_or_else(|| Cow::Owned(UniqueID::new().to_string()));
+            .unwrap_or_else(|| Cow::Owned(UniqueId::new().to_string()));
 
         let progress = GroupProgress::with_speed_config(
             ctx.config.data.progress_update_speed_sampling_window,
@@ -100,6 +109,7 @@ impl FileUploadSession {
         }))
     }
 
+    #[cfg(not(target_family = "wasm"))]
     pub async fn upload_files(
         self: &Arc<Self>,
         files_and_sha256: impl IntoIterator<Item = (impl AsRef<Path>, Sha256Policy)> + Send,
@@ -113,7 +123,7 @@ impl FileUploadSession {
 
             let file_size = std::fs::metadata(&file_path)?.len();
 
-            let updater = self.progress.new_item(UniqueID::new(), file_name.clone());
+            let updater = self.progress.new_item(UniqueId::new(), file_name.clone());
             let file_id = self.completion_tracker.register_new_file(updater, Some(file_size));
 
             let ingestion_concurrency_limiter = self.ctx.common.file_ingestion_semaphore.clone();
@@ -214,16 +224,16 @@ impl FileUploadSession {
         tracking_name: Option<Arc<str>>,
         size: Option<u64>,
         sha256: Sha256Policy,
-    ) -> Result<(UniqueID, SingleFileCleaner)> {
+    ) -> Result<(UniqueId, SingleFileCleaner)> {
         self.check_not_finalized()?;
-        let id = UniqueID::new();
+        let id = UniqueId::new();
         let cleaner = self.start_clean_with_id(id, tracking_name, size, sha256);
         Ok((id, cleaner))
     }
 
     fn start_clean_with_id(
         self: &Arc<Self>,
-        id: UniqueID,
+        id: UniqueId,
         tracking_name: Option<Arc<str>>,
         size: Option<u64>,
         sha256: Sha256Policy,
@@ -236,11 +246,12 @@ impl FileUploadSession {
     /// Spawns a task that reads `file_path` and uploads it.
     ///
     /// Returns the tracking ID and a join handle for the spawned task.
+    #[cfg(not(target_family = "wasm"))]
     pub async fn spawn_upload_from_path(
         self: &Arc<Self>,
         file_path: PathBuf,
         sha256: Sha256Policy,
-    ) -> Result<(UniqueID, JoinHandle<Result<(XetFileInfo, DeduplicationMetrics)>>)> {
+    ) -> Result<(UniqueId, JoinHandle<Result<(XetFileInfo, DeduplicationMetrics)>>)> {
         self.check_not_finalized()?;
         let file_size = std::fs::metadata(&file_path)?.len();
         let tracking_name: Arc<str> = Arc::from(file_path.to_string_lossy().as_ref());
@@ -265,13 +276,23 @@ impl FileUploadSession {
         bytes: Vec<u8>,
         sha256: Sha256Policy,
         tracking_name: Option<Arc<str>>,
-    ) -> Result<(UniqueID, JoinHandle<Result<(XetFileInfo, DeduplicationMetrics)>>)> {
+    ) -> Result<(UniqueId, JoinHandle<Result<(XetFileInfo, DeduplicationMetrics)>>)> {
         self.check_not_finalized()?;
         let (id, mut cleaner) = self.start_clean(tracking_name, Some(bytes.len() as u64), sha256)?;
 
-        let runtime = self.ctx.runtime.clone();
         let semaphore = self.ctx.common.file_ingestion_semaphore.clone();
-        let handle = runtime.spawn(async move {
+        // Route through XetRuntime on native so the task participates in SIGINT
+        // shutdown and FD accounting. On wasm, XetRuntime has no handle (the
+        // wasm `XetRuntime::new` stub leaves `handle_ref` empty), so spawn via
+        // the `tokio_with_wasm::alias as tokio` shim instead.
+        #[cfg(not(target_family = "wasm"))]
+        let handle = self.ctx.runtime.spawn(async move {
+            let _permit = semaphore.acquire().await?;
+            cleaner.add_data(&bytes).await?;
+            cleaner.finish().await
+        });
+        #[cfg(target_family = "wasm")]
+        let handle = tokio::task::spawn(async move {
             let _permit = semaphore.acquire().await?;
             cleaner.add_data(&bytes).await?;
             cleaner.finish().await
@@ -280,6 +301,7 @@ impl FileUploadSession {
         Ok((id, handle))
     }
 
+    #[cfg(not(target_family = "wasm"))]
     async fn feed_file_to_cleaner(
         _session: &Arc<Self>,
         mut cleaner: SingleFileCleaner,
@@ -417,7 +439,7 @@ impl FileUploadSession {
                 .config
                 .xorb
                 .simulation_max_bytes
-                .map(|bs| (bs.as_u64() as usize).min(*MAX_XORB_BYTES))
+                .map(|bs| bs.as_u64().min(*MAX_XORB_BYTES as u64) as usize)
                 .unwrap_or(*MAX_XORB_BYTES);
             #[cfg(not(feature = "simulation"))]
             let xorb_cut_bytes = *MAX_XORB_BYTES;
@@ -466,36 +488,74 @@ impl FileUploadSession {
         Ok(())
     }
 
+    /// Like `register_single_file_clean_completion`, but does NOT register the MDBFileInfo
+    /// in the session shard. Returns the finalized MDBFileInfo instead.
+    /// Used by composition flows where only the final composed file should appear in the shard.
+    pub(crate) async fn register_single_file_clean_completion_detached(
+        self: &Arc<Self>,
+        file_data: DataAggregator,
+        dedup_metrics: &DeduplicationMetrics,
+    ) -> Result<MDBFileInfo> {
+        // Always cut a dedicated xorb for detached files. This avoids mixing with other
+        // files in current_session_data whose MDBFileInfo must still be registered.
+        let file_infos = self.process_aggregated_data_as_xorb_detached(file_data).await?;
+
+        self.deduplication_metrics.lock().await.merge_in(dedup_metrics);
+
+        debug_assert_eq!(file_infos.len(), 1);
+        file_infos
+            .into_iter()
+            .next()
+            .ok_or_else(|| DataError::InternalError("detached completion produced no file info".into()))
+    }
+
     /// Process the aggregated data, uploading the data as a xorb and registering the files
     async fn process_aggregated_data_as_xorb(self: &Arc<Self>, data_agg: DataAggregator) -> Result<()> {
+        self.process_aggregated_data_as_xorb_impl(data_agg, true).await.map(|_| ())
+    }
+
+    /// Upload the xorb data but do NOT register file reconstruction info in the shard.
+    /// Returns the finalized MDBFileInfo for each file in the aggregator.
+    async fn process_aggregated_data_as_xorb_detached(
+        self: &Arc<Self>,
+        data_agg: DataAggregator,
+    ) -> Result<Vec<MDBFileInfo>> {
+        self.process_aggregated_data_as_xorb_impl(data_agg, false).await
+    }
+
+    async fn process_aggregated_data_as_xorb_impl(
+        self: &Arc<Self>,
+        data_agg: DataAggregator,
+        register_files: bool,
+    ) -> Result<Vec<MDBFileInfo>> {
         let (xorb, new_files) = data_agg.finalize();
         let xorb_hash = xorb.hash();
 
         debug_assert_le!(xorb.num_bytes(), *MAX_XORB_BYTES);
         debug_assert_le!(xorb.data.len(), *MAX_XORB_CHUNKS);
 
-        // Now, we need to scan all the file dependencies for dependencies on this xorb, as
-        // these would not have been registered yet as we just got the xorb hash.
         let mut new_dependencies = Vec::with_capacity(new_files.len());
+        let mut file_infos = Vec::with_capacity(new_files.len());
 
-        {
-            for (file_id, fi, bytes_in_xorb) in new_files {
-                new_dependencies.push(FileXorbDependency {
-                    file_id,
-                    xorb_hash,
-                    n_bytes: bytes_in_xorb,
-                    is_external: false,
-                });
+        for (file_id, fi, bytes_in_xorb) in new_files {
+            new_dependencies.push(FileXorbDependency {
+                file_id,
+                xorb_hash,
+                n_bytes: bytes_in_xorb,
+                is_external: false,
+            });
 
-                // Record the reconstruction.
+            if register_files {
                 self.shard_interface.add_file_reconstruction_info(fi).await?;
+            } else {
+                file_infos.push(fi);
             }
         }
 
         // Register the xorb and start the upload process.
         self.register_new_xorb(xorb, &new_dependencies).await?;
 
-        Ok(())
+        Ok(file_infos)
     }
 
     /// Register a xorb dependencies that is given as part of the dedup process.
@@ -517,15 +577,21 @@ impl FileUploadSession {
         let data_agg = take(&mut *self.current_session_data.lock().await);
         self.process_aggregated_data_as_xorb(data_agg).await?;
 
-        // Now, make sure all the remaining xorbs are uploaded.
-        let mut metrics = take(&mut *self.deduplication_metrics.lock().await);
-
-        // Finalize the xorb uploads.
+        // Finalize the xorb uploads. Must join before snapshotting
+        // `deduplication_metrics`: each xorb-upload task records its
+        // transmitted-byte count via `self.deduplication_metrics.lock()` only
+        // *after* its CAS request resolves. Taking the metric before joining
+        // leaves the session with an empty `DeduplicationMetrics` that
+        // absorbs (and silently drops) those late writes — manifests on wasm
+        // (single-threaded; tasks rarely complete before the `await` above
+        // returns) as `xorb_bytes_uploaded == 0`.
         let mut upload_tasks = take(&mut *self.xorb_upload_tasks.lock().await);
 
         while let Some(result) = upload_tasks.join_next().await {
             result??;
         }
+
+        let mut metrics = take(&mut *self.deduplication_metrics.lock().await);
 
         let all_file_info = if return_files {
             self.shard_interface.session_file_info_list().await?
@@ -569,11 +635,23 @@ impl FileUploadSession {
         Ok(())
     }
 
+    /// Register a pre-composed file reconstruction plan (MDBFileInfo) with this session.
+    /// Used for append-aware writes where the caller builds the reconstruction plan
+    /// from existing segments + newly uploaded segments.
+    pub async fn register_composed_file(self: &Arc<Self>, file_info: MDBFileInfo) -> Result<()> {
+        self.check_not_finalized()?;
+        self.shard_interface.add_file_reconstruction_info(file_info).await
+    }
+
     fn check_not_finalized(&self) -> Result<()> {
         if self.finalized.load(Ordering::Acquire) {
             return Err(DataError::InvalidOperation("FileUploadSession already finalized".to_string()));
         }
         Ok(())
+    }
+
+    pub fn client(&self) -> Arc<dyn Client + Send + Sync> {
+        Arc::clone(&self.client)
     }
 
     pub fn progress(&self) -> &Arc<GroupProgress> {
@@ -584,11 +662,11 @@ impl FileUploadSession {
         self.progress.report()
     }
 
-    pub fn item_report(&self, id: UniqueID) -> Option<ItemProgressReport> {
+    pub fn item_report(&self, id: UniqueId) -> Option<ItemProgressReport> {
         self.progress.item_report(id)
     }
 
-    pub fn item_reports(&self) -> HashMap<UniqueID, ItemProgressReport> {
+    pub fn item_reports(&self) -> HashMap<UniqueId, ItemProgressReport> {
         self.progress.item_reports()
     }
 
@@ -607,7 +685,7 @@ impl FileUploadSession {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use std::fs::{File, OpenOptions};
     use std::io::{Read, Write};
@@ -729,7 +807,7 @@ mod tests {
                     .start_clean(Some("test".into()), Some(data.len() as u64), Sha256Policy::Skip)
                     .unwrap();
                 cleaner.add_data(data).await.unwrap();
-                cleaner.finish().await.unwrap();
+                let _ = cleaner.finish().await.unwrap();
 
                 // Verify that the shard has no metadata_ext (no SHA-256).
                 let (_metrics, file_infos) = upload_session.finalize_with_file_info().await.unwrap();

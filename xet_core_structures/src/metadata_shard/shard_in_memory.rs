@@ -1,7 +1,7 @@
 // The shard structure for the in memory querying
 
 use std::collections::BTreeMap;
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, Read, Write};
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -12,7 +12,8 @@ use tracing::debug;
 use super::file_structs::*;
 #[cfg(debug_assertions)]
 use super::shard_file_handle::{MDBShardFile, new_shard_file_cache};
-use super::shard_format::MDBShardInfo;
+use super::shard_format::{MDBShardFileHeader, MDBShardInfo};
+use super::streaming_shard::{process_shard_file_info_section, process_shard_xorb_info_section};
 use super::utils::{shard_file_name, temp_shard_file_name};
 use super::xorb_structs::*;
 use crate::MerkleHashMap;
@@ -90,14 +91,14 @@ impl MDBInMemoryShard {
     pub fn recalculate_shard_size(&mut self) {
         // Calculate the size
         let mut num_bytes = 0u64;
-        for (_, xorb_block_contents) in self.xorb_content.iter() {
+        for xorb_block_contents in self.xorb_content.values() {
             num_bytes += xorb_block_contents.num_bytes();
 
             // The xorb lookup table
             num_bytes += (size_of::<u64>() + size_of::<u32>()) as u64;
         }
 
-        for (_, file_info) in self.file_content.iter() {
+        for file_info in self.file_content.values() {
             num_bytes += file_info.num_bytes();
             num_bytes += (size_of::<u64>() + size_of::<u32>()) as u64;
         }
@@ -273,5 +274,96 @@ impl MDBInMemoryShard {
         let mut buf = Vec::new();
         MDBShardInfo::serialize_from(&mut buf, self, None)?;
         Ok(buf)
+    }
+
+    /// Deserializes a shard from a reader, populating xorb / file / chunk lookup
+    /// tables in memory. The reader is consumed up to the end of the xorb section
+    /// (the footer is not read or validated). Used by the wasm target to ingest
+    /// global-dedup shards fetched from CAS without going through disk.
+    pub fn from_reader<R: Read>(reader: &mut R) -> Result<Self> {
+        let _ = MDBShardFileHeader::deserialize(reader)?;
+
+        let mut shard = Self::default();
+
+        process_shard_file_info_section(reader, |view| shard.add_file_reconstruction_info(MDBFileInfo::from(&view)))?;
+
+        process_shard_xorb_info_section(reader, |view| shard.add_xorb_block(MDBXorbInfo::from(&view)))?;
+
+        Ok(shard)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use super::*;
+    use crate::metadata_shard::shard_format::test_routines::{gen_specific_shard, simple_hash};
+
+    #[test]
+    fn from_reader_roundtrips_dedup_lookups() {
+        let xorb_nodes: &[(u64, &[(u64, u32)])] = &[(101, &[(1, 100), (2, 200), (3, 300)]), (102, &[(4, 50), (5, 75)])];
+        let file_nodes: &[(u64, &[(u64, (u32, u32))])] = &[(201, &[(101, (0, 600))]), (202, &[(102, (0, 125))])];
+
+        let original = gen_specific_shard(xorb_nodes, file_nodes, None, None).unwrap();
+        let bytes = original.to_bytes().unwrap();
+        let reloaded = MDBInMemoryShard::from_reader(&mut Cursor::new(&bytes)).unwrap();
+
+        assert_eq!(reloaded.num_xorb_entries(), original.num_xorb_entries());
+        assert_eq!(reloaded.num_file_entries(), original.num_file_entries());
+        assert_eq!(reloaded.chunk_hash_lookup.len(), original.chunk_hash_lookup.len());
+
+        for xorb_hash in original.xorb_content.keys() {
+            assert!(reloaded.xorb_content.contains_key(xorb_hash), "missing xorb {xorb_hash}");
+        }
+        for file_hash in original.file_content.keys() {
+            assert!(reloaded.file_content.contains_key(file_hash), "missing file {file_hash}");
+        }
+
+        // Dedup queries must succeed against the reloaded shard.
+        let query = [simple_hash(1), simple_hash(2), simple_hash(3)];
+        let (n, fse) = reloaded.chunk_hash_dedup_query(&query).expect("chunk lookup");
+        assert_eq!(n, 3);
+        assert_eq!(fse.xorb_hash, simple_hash(101));
+    }
+
+    // Mirrors the wasm global-dedup path: production CAS returns HMAC-keyed
+    // shards, so lookups against a shard ingested via from_reader only match
+    // when the query hashes are keyed with the footer's HMAC key.
+    #[test]
+    fn from_reader_keyed_shard_dedup_requires_hmac() {
+        let xorb_nodes: &[(u64, &[(u64, u32)])] = &[(101, &[(1, 100), (2, 200), (3, 300)])];
+        let file_nodes: &[(u64, &[(u64, (u32, u32))])] = &[(201, &[(101, (0, 600))])];
+
+        let original = gen_specific_shard(xorb_nodes, file_nodes, None, None).unwrap();
+        let bytes = original.to_bytes().unwrap();
+
+        let key = simple_hash(42);
+        let mut keyed_bytes = Vec::new();
+        MDBShardInfo::export_as_keyed_shard_streaming(
+            &mut Cursor::new(&bytes),
+            &mut keyed_bytes,
+            key,
+            std::time::Duration::from_secs(3600),
+            true,
+            true,
+            true,
+        )
+        .unwrap();
+
+        let mut reader = Cursor::new(&keyed_bytes);
+        let info = MDBShardInfo::load_from_reader(&mut reader).unwrap();
+        assert_eq!(info.chunk_hmac_key(), Some(key));
+
+        reader.set_position(0);
+        let reloaded = MDBInMemoryShard::from_reader(&mut reader).unwrap();
+
+        let raw_query = [simple_hash(1), simple_hash(2), simple_hash(3)];
+        assert!(reloaded.chunk_hash_dedup_query(&raw_query).is_none());
+
+        let keyed_query: Vec<_> = raw_query.iter().map(|h| h.hmac(key)).collect();
+        let (n, fse) = reloaded.chunk_hash_dedup_query(&keyed_query).expect("keyed chunk lookup");
+        assert_eq!(n, 3);
+        assert_eq!(fse.xorb_hash, simple_hash(101));
     }
 }

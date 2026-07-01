@@ -2,7 +2,7 @@ use std::result::Result;
 
 use more_asserts::{debug_assert_le, debug_assert_lt};
 use xet_core_structures::MerkleHashMap;
-use xet_core_structures::merklehash::{MerkleHash, file_hash};
+use xet_core_structures::merklehash::{ChunkHashList, MerkleHash, file_hash};
 use xet_core_structures::metadata_shard::file_structs::{
     FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, FileVerificationEntry, MDBFileInfo,
 };
@@ -36,7 +36,7 @@ pub struct FileDeduper<DataInterfaceType: DeduplicationDataInterface> {
     new_data_hash_lookup: MerkleHashMap<usize>,
 
     /// The current chunk hashes for this file.
-    chunk_hashes: Vec<(MerkleHash, u64)>,
+    chunk_hashes: ChunkHashList,
 
     /// The current file data entries.
     file_info: Vec<FileDataSequenceEntry>,
@@ -96,7 +96,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
             .config
             .xorb
             .simulation_max_bytes
-            .map(|bs| (bs.as_u64() as usize).min(*MAX_XORB_BYTES))
+            .map(|bs| bs.as_u64().min(*MAX_XORB_BYTES as u64) as usize)
             .unwrap_or(*MAX_XORB_BYTES);
         #[cfg(not(feature = "simulation"))]
         let xorb_cut_bytes = *MAX_XORB_BYTES;
@@ -137,7 +137,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
                     self.data_mng.chunk_hash_dedup_query(&chunk_hashes[local_chunk_index..]).await?
                 {
                     if !first_pass {
-                        // This means new shards were discovered; so these are global dedup elegible.  We'll record
+                        // This means new shards were discovered; so these are global dedup eligible.  We'll record
                         // the rest later on
                         dedup_metrics.deduped_chunks_by_global_dedup += n_deduped as u64;
                         dedup_metrics.deduped_bytes_by_global_dedup += fse.unpacked_segment_bytes as u64;
@@ -399,8 +399,11 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
     /// and remaining data.  Also returns the aggregated deduplication metrics and the list of xorb hashes that were
     /// registered as part of this run.
     ///
-    /// Returns (file hash, data aggregation, deduplication metrics)
-    pub fn finalize(self, metadata_ext: Option<FileMetadataExt>) -> (MerkleHash, DataAggregator, DeduplicationMetrics) {
+    /// Returns (file hash, chunk_hashes, data aggregation, deduplication metrics)
+    pub fn finalize(
+        self,
+        metadata_ext: Option<FileMetadataExt>,
+    ) -> (MerkleHash, ChunkHashList, DataAggregator, DeduplicationMetrics) {
         let file_hash = file_hash(&self.chunk_hashes);
 
         let metadata = FileDataSequenceHeader::new(file_hash, self.file_info.len(), true, metadata_ext.is_some());
@@ -434,6 +437,6 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
 
         let remaining_data = DataAggregator::new(self.new_data, fi, self.internally_referencing_entries, self.file_id);
 
-        (file_hash, remaining_data, self.deduplication_metrics)
+        (file_hash, self.chunk_hashes, remaining_data, self.deduplication_metrics)
     }
 }

@@ -1,0 +1,350 @@
+//! Server-side state machine for `GET /v2/file-chunk-hashes/{file_id}` (mirrored from
+//! xetcas PR #987) plus a small driver helper used by simulation clients to produce a
+//! [`FileChunkHashesResponse`] without routing through HTTP.
+
+use xet_core_structures::merklehash::{MerkleHash, MerkleHashSubtree};
+use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
+use xet_core_structures::xorb_object::constants::is_stable_chunk_size;
+
+use crate::cas_types::{ChunkWindow, FileChunkHashesResponse, FileRange};
+use crate::error::{ClientError, Result};
+
+pub struct ChunkWindowBuilder<'a> {
+    dirty_ranges: &'a [FileRange],
+    dirty_idx: usize,
+    in_dirty_zone: bool,
+    gap_is_first: bool,
+    /// End-byte cursor: the start of the next chunk fed to the builder.
+    cursor: u64,
+    gap_chunks: Vec<(MerkleHash, u64)>,
+    windows: Vec<FileRange>,
+    hash_ranges: Vec<Option<MerkleHashSubtree>>,
+    /// Size of the most recent clean chunk consumed while the current window is in its
+    /// post-dirty extension phase. With the current chunk's size, this gives the sliding
+    /// pair used to detect a stable CDC boundary: when both sizes fall in the stable range,
+    /// the chunker has re-synced and the window can be closed at the end of the current
+    /// chunk. Reset on any chunk that overlaps a dirty range.
+    tail_prev_size: Option<u64>,
+}
+
+impl<'a> ChunkWindowBuilder<'a> {
+    pub fn new(dirty_ranges: &'a [FileRange]) -> Self {
+        debug_assert!(
+            dirty_ranges.windows(2).all(|w| w[0].end <= w[1].start),
+            "dirty_ranges must be sorted and non-overlapping"
+        );
+        Self {
+            dirty_ranges,
+            dirty_idx: 0,
+            in_dirty_zone: false,
+            gap_is_first: true,
+            cursor: 0,
+            gap_chunks: Vec::new(),
+            windows: Vec::with_capacity(dirty_ranges.len()),
+            hash_ranges: Vec::new(),
+            tail_prev_size: None,
+        }
+    }
+
+    pub fn process_chunk(&mut self, hash: MerkleHash, size: u64, byte_end: u64) {
+        let byte_start = self.cursor;
+        let overlaps_dirty = self.overlaps_dirty_at(self.dirty_idx, byte_start, byte_end);
+
+        if !self.in_dirty_zone {
+            if overlaps_dirty {
+                self.open_window(byte_end);
+                self.in_dirty_zone = true;
+                self.tail_prev_size = None;
+            } else {
+                self.gap_chunks.push((hash, size));
+            }
+        } else if overlaps_dirty || self.overlaps_dirty_at(self.dirty_idx + 1, byte_start, byte_end) {
+            if !overlaps_dirty {
+                self.dirty_idx += 1;
+            }
+            self.extend_open_window(byte_end);
+            self.merge_ahead(byte_end);
+            self.tail_prev_size = None;
+        } else {
+            // Post-dirty extension toward a stable CDC boundary: keep extending the open
+            // window until two consecutive clean chunks both sit in the stable size range.
+            self.extend_open_window(byte_end);
+            let stable = self
+                .tail_prev_size
+                .is_some_and(|prev| is_stable_chunk_size(prev as usize) && is_stable_chunk_size(size as usize));
+            self.tail_prev_size = Some(size);
+            if stable {
+                self.dirty_idx += 1;
+                self.gap_is_first = false;
+                self.in_dirty_zone = false;
+                self.tail_prev_size = None;
+            }
+        }
+        self.cursor = byte_end;
+    }
+
+    fn extend_open_window(&mut self, byte_end: u64) {
+        self.windows
+            .last_mut()
+            .expect("in_dirty_zone implies a window has been opened")
+            .end = byte_end;
+    }
+
+    /// Returns true when the entry ending at `byte_end` (and starting at the cursor)
+    /// is fully contained within the current dirty range.
+    pub fn entry_fully_dirty(&self, byte_end: u64) -> bool {
+        self.dirty_idx < self.dirty_ranges.len()
+            && self.dirty_ranges[self.dirty_idx].start <= self.cursor
+            && byte_end <= self.dirty_ranges[self.dirty_idx].end
+    }
+
+    /// Process a fully-dirty shard entry without iterating its individual chunks.
+    pub fn skip_dirty_entry(&mut self, byte_end: u64) {
+        if !self.in_dirty_zone {
+            self.open_window(byte_end);
+            self.in_dirty_zone = true;
+        } else {
+            self.extend_open_window(byte_end);
+            self.merge_ahead(byte_end);
+        }
+        self.tail_prev_size = None;
+        self.cursor = byte_end;
+    }
+
+    /// Consume the builder and return the dirty windows + N+1 gap hash ranges.
+    pub fn finish(mut self) -> (Vec<FileRange>, Vec<Option<MerkleHashSubtree>>) {
+        let trailing = MerkleHashSubtree::from_chunks(self.gap_is_first, &self.gap_chunks, true);
+        self.hash_ranges.push(Self::to_option(trailing));
+        (self.windows, self.hash_ranges)
+    }
+
+    fn open_window(&mut self, byte_end: u64) {
+        let gap = MerkleHashSubtree::from_chunks(self.gap_is_first, &self.gap_chunks, false);
+        self.hash_ranges.push(Self::to_option(gap));
+        self.gap_chunks.clear();
+        self.windows.push(FileRange::new(self.cursor, byte_end));
+        self.merge_ahead(byte_end);
+    }
+
+    fn overlaps_dirty_at(&self, idx: usize, byte_start: u64, byte_end: u64) -> bool {
+        idx < self.dirty_ranges.len()
+            && byte_end > self.dirty_ranges[idx].start
+            && byte_start < self.dirty_ranges[idx].end
+    }
+
+    fn merge_ahead(&mut self, byte_end: u64) {
+        while self.dirty_idx + 1 < self.dirty_ranges.len() && byte_end > self.dirty_ranges[self.dirty_idx + 1].start {
+            self.dirty_idx += 1;
+        }
+    }
+
+    fn to_option(hr: MerkleHashSubtree) -> Option<MerkleHashSubtree> {
+        if hr.is_empty() { None } else { Some(hr) }
+    }
+}
+
+/// Drive [`ChunkWindowBuilder`] over a flat list of `(chunk_hash, size)` pairs and
+/// assemble the [`FileChunkHashesResponse`]. Simulation clients pre-collect the chunks for
+/// the file (typically by walking segments + xorb metadata) and call this to answer
+/// `Client::get_file_chunk_hashes` locally.
+///
+/// Also emits `gap_verification`: for each **stable** original segment (one that lies
+/// entirely outside the dirty windows), the corresponding `FileVerificationEntry` from
+/// `file_info.verification` is copied into `gap_verification` in segment order. The
+/// composed shard built by `upload_ranges` uses these to reconstruct its own verification
+/// section without needing per-chunk hashes for the stable segments. When `file_info`
+/// has no verification entries (legacy / test files), `gap_verification` is empty.
+pub fn build_file_chunk_hashes_response(
+    file_info: &MDBFileInfo,
+    dirty_ranges: Vec<FileRange>,
+    chunks: impl IntoIterator<Item = (MerkleHash, u64)>,
+) -> Result<FileChunkHashesResponse> {
+    let file_size = file_info.file_size();
+    let dirty_ranges: Vec<FileRange> = dirty_ranges
+        .into_iter()
+        .map(|r| FileRange::new(r.start, r.end.min(file_size)))
+        .filter(|r| r.start < r.end && r.start < file_size)
+        .collect();
+    if dirty_ranges.is_empty() {
+        return Err(ClientError::Other("no valid dirty ranges".into()));
+    }
+
+    let chunks: Vec<(MerkleHash, u64)> = chunks.into_iter().collect();
+    let total_chunks = chunks.len() as u64;
+    let mut builder = ChunkWindowBuilder::new(&dirty_ranges);
+    let mut cumulative_bytes: u64 = 0;
+    for (hash, size) in chunks {
+        cumulative_bytes += size;
+        builder.process_chunk(hash, size, cumulative_bytes);
+    }
+
+    let (windows, hash_ranges) = builder.finish();
+    if windows.is_empty() {
+        return Err(ClientError::Other("dirty ranges do not overlap any chunks".into()));
+    }
+
+    // Emit one range hash per stable segment (= no overlap with any window).
+    // Segments and windows are both monotonic, so a two-pointer walk is O(S+W).
+    //
+    // Contract: `verification` is either empty (legacy / test files without verification
+    // entries) or 1:1 with `segments`. A partially-populated mismatch is a real bug we
+    // want loud here, rather than as a confusing "ran out of gap_verification entries"
+    // error later in `compose_mdb`.
+    let gap_verification = if file_info.verification.is_empty() {
+        Vec::new()
+    } else if file_info.verification.len() == file_info.segments.len() {
+        let mut gv = Vec::new();
+        let mut acc = 0u64;
+        let mut wi = 0usize;
+        for (idx, seg) in file_info.segments.iter().enumerate() {
+            let seg_start = acc;
+            let seg_end = acc + seg.unpacked_segment_bytes as u64;
+            acc = seg_end;
+            while wi < windows.len() && windows[wi].end <= seg_start {
+                wi += 1;
+            }
+            let overlaps = wi < windows.len() && windows[wi].start < seg_end;
+            if !overlaps {
+                gv.push(crate::cas_types::HexMerkleHash::from(file_info.verification[idx].range_hash));
+            }
+        }
+        gv
+    } else {
+        return Err(ClientError::Other(format!(
+            "file_info has {} verification entries but {} segments; \
+             expected either zero or a 1:1 mapping",
+            file_info.verification.len(),
+            file_info.segments.len()
+        )));
+    };
+
+    Ok(FileChunkHashesResponse {
+        total_chunks,
+        file_size,
+        windows: windows
+            .into_iter()
+            .map(|r| ChunkWindow {
+                dirty_byte_range: [r.start, r.end],
+            })
+            .collect(),
+        hash_ranges,
+        gap_verification,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use xet_core_structures::merklehash::MerkleHash;
+    use xet_core_structures::metadata_shard::file_structs::{FileDataSequenceEntry, MDBFileInfo};
+    use xet_core_structures::xorb_object::constants::{
+        MAXIMUM_CHUNK_MULTIPLIER, MINIMUM_CHUNK_DIVISOR, TARGET_CHUNK_SIZE,
+    };
+
+    use super::*;
+
+    fn stable_chunk_size() -> u64 {
+        let minimum_chunk = *TARGET_CHUNK_SIZE / *MINIMUM_CHUNK_DIVISOR;
+        let maximum_chunk = *TARGET_CHUNK_SIZE * *MAXIMUM_CHUNK_MULTIPLIER;
+        let size = 2 * minimum_chunk;
+        assert!(size < maximum_chunk - minimum_chunk);
+        size as u64
+    }
+
+    fn build_test_file_info_and_chunks(n_chunks: usize, chunk_size: u64) -> (MDBFileInfo, Vec<(MerkleHash, u64)>) {
+        let chunks: Vec<(MerkleHash, u64)> = (0..n_chunks)
+            .map(|i| (MerkleHash::random_from_seed(i as u64 + 1), chunk_size))
+            .collect();
+        let file_size = chunk_size * n_chunks as u64;
+        let file_info = MDBFileInfo {
+            segments: vec![FileDataSequenceEntry {
+                xorb_hash: MerkleHash::random_from_seed(999),
+                xorb_flags: 0,
+                unpacked_segment_bytes: file_size as u32,
+                chunk_index_start: 0,
+                chunk_index_end: n_chunks as u32,
+            }],
+            ..Default::default()
+        };
+        (file_info, chunks)
+    }
+
+    #[test]
+    fn test_server_extends_dirty_window_to_next_stable_boundary() {
+        let chunk_size = stable_chunk_size();
+        let (file_info, chunks) = build_test_file_info_and_chunks(6, chunk_size);
+        let dirty_ranges = vec![FileRange::new(1, chunk_size + 1)];
+
+        let response = build_file_chunk_hashes_response(&file_info, dirty_ranges, chunks).unwrap();
+
+        assert_eq!(response.windows.len(), 1);
+        assert_eq!(response.windows[0].dirty_byte_range, [0, 4 * chunk_size]);
+    }
+
+    #[test]
+    fn test_server_coalesces_ranges_after_stable_extension() {
+        let chunk_size = stable_chunk_size();
+        let (file_info, chunks) = build_test_file_info_and_chunks(8, chunk_size);
+        let dirty_ranges = vec![
+            FileRange::new(1, chunk_size + 1),
+            FileRange::new(3 * chunk_size + 7, 3 * chunk_size + 42),
+        ];
+
+        let response = build_file_chunk_hashes_response(&file_info, dirty_ranges, chunks).unwrap();
+
+        assert_eq!(response.windows.len(), 1);
+        assert_eq!(response.windows[0].dirty_byte_range, [0, 6 * chunk_size]);
+    }
+
+    #[test]
+    fn test_server_no_extension_when_range_already_at_file_end() {
+        let chunk_size = stable_chunk_size();
+        let (file_info, chunks) = build_test_file_info_and_chunks(6, chunk_size);
+        let file_size = chunk_size * 6;
+        let dirty_ranges = vec![FileRange::new(4 * chunk_size, file_size)];
+
+        let response = build_file_chunk_hashes_response(&file_info, dirty_ranges, chunks).unwrap();
+
+        assert_eq!(response.windows.len(), 1);
+        assert_eq!(response.windows[0].dirty_byte_range, [4 * chunk_size, file_size]);
+    }
+
+    #[test]
+    fn test_server_separate_ranges_stay_separate_when_far_apart() {
+        let chunk_size = stable_chunk_size();
+        let n_chunks = 20;
+        let (file_info, chunks) = build_test_file_info_and_chunks(n_chunks, chunk_size);
+        let dirty_ranges = vec![
+            FileRange::new(0, chunk_size),
+            FileRange::new(14 * chunk_size, 15 * chunk_size),
+        ];
+
+        let response = build_file_chunk_hashes_response(&file_info, dirty_ranges, chunks).unwrap();
+
+        assert!(
+            response.windows.len() >= 2,
+            "far-apart ranges should remain separate, got {} window(s)",
+            response.windows.len()
+        );
+        assert_eq!(response.hash_ranges.len(), response.windows.len() + 1);
+    }
+
+    #[test]
+    fn test_server_extension_falls_through_to_file_end_when_no_stable_boundary() {
+        let minimum_chunk = *TARGET_CHUNK_SIZE / *MINIMUM_CHUNK_DIVISOR;
+        let maximum_chunk = *TARGET_CHUNK_SIZE * *MAXIMUM_CHUNK_MULTIPLIER;
+        let forced_size = maximum_chunk as u64;
+        let (file_info, chunks) = build_test_file_info_and_chunks(4, forced_size);
+        let file_size = forced_size * 4;
+        let dirty_ranges = vec![FileRange::new(0, forced_size)];
+
+        let response = build_file_chunk_hashes_response(&file_info, dirty_ranges, chunks).unwrap();
+
+        assert_eq!(response.windows.len(), 1);
+        let w = &response.windows[0];
+        assert_eq!(
+            w.dirty_byte_range[1], file_size,
+            "when no stable boundary exists, window should extend to file end; \
+             minimum_chunk={minimum_chunk}, maximum_chunk={maximum_chunk}"
+        );
+    }
+}

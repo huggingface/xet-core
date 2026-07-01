@@ -256,12 +256,7 @@ impl ShardFileManager {
             s.verify_shard_integrity_debug_only();
 
             // Make sure the shard is in the shard directory
-            debug_assert!(
-                s.path.starts_with(&self.shard_directory),
-                "{:?} not in {:?}",
-                &s.path,
-                &self.shard_directory
-            );
+            debug_assert!(s.path.starts_with(&self.shard_directory), "{:?} not in {:?}", s.path, self.shard_directory);
 
             if self
                 .shard_bookkeeper
@@ -788,7 +783,7 @@ mod tests {
                 // Make sure two queries return same results.
                 assert_eq!(result_m.is_some(), result_f.is_some());
 
-                // Make sure retriving the expected file.
+                // Make sure retrieving the expected file.
                 if let (Some(result_m), Some(result_f)) = (result_m, result_f) {
                     assert_eq!(result_m.metadata.file_hash, *k);
                     assert_eq!(result_f.0.metadata.file_hash, *k);

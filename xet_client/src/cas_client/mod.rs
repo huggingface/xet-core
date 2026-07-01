@@ -14,6 +14,7 @@ pub use crate::common::http_client::{Api, ResponseErrorLogger, build_auth_http_c
 
 pub mod adaptive_concurrency;
 pub mod auth;
+pub mod chunk_window_builder;
 pub mod exports;
 mod interface;
 pub mod multipart;

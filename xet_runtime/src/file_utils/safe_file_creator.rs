@@ -138,7 +138,7 @@ impl SafeFileCreator {
             Some(wr) => Ok(wr),
             None => Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
-                format!("Writing to {:?} already completed.", &self.dest_path),
+                format!("Writing to {:?} already completed.", self.dest_path),
             )),
         }
     }
@@ -163,7 +163,7 @@ impl Seek for SafeFileCreator {
 impl Drop for SafeFileCreator {
     fn drop(&mut self) {
         if let Err(e) = self.close() {
-            eprintln!("Error: Failed to close writer for {:?}: {}", &self.dest_path, e);
+            eprintln!("Error: Failed to close writer for {:?}: {}", self.dest_path, e);
         }
     }
 }
