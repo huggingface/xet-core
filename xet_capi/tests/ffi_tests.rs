@@ -160,3 +160,21 @@ fn reports_symbols_link() {
         xet_capi::xet_op_take_download_report as *const (),
     ];
 }
+
+#[test]
+fn header_is_up_to_date() {
+    let crate_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let committed = std::fs::read_to_string(crate_dir.join("include/hf_xet.h")).unwrap();
+    let generated = {
+        let mut buf = Vec::new();
+        cbindgen::generate(&crate_dir)
+            .expect("cbindgen generate")
+            .write(&mut buf);
+        String::from_utf8(buf).unwrap()
+    };
+    assert_eq!(
+        committed.trim(),
+        generated.trim(),
+        "include/hf_xet.h is stale — run `cargo build -p xet_capi` and commit the result"
+    );
+}
