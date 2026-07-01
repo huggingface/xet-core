@@ -226,7 +226,7 @@ public:
         XetError* err = nullptr;
         check(xet_op_take_void(op_.get(), &err), "xet_op_take_void", err);
     }
-    // nullopt at stream EOF.
+    // Caller must poll/wait() the op to Ready first. nullopt at stream EOF.
     std::optional<Bytes> take_bytes() {
         XetBytes* raw = nullptr;
         XetError* err = nullptr;
@@ -234,7 +234,8 @@ public:
         if (!raw) return std::nullopt;
         return Bytes(raw);
     }
-    // nullopt at stream EOF; otherwise {offset, chunk}.
+    // Caller must poll/wait() the op to Ready first. nullopt at stream EOF;
+    // otherwise {offset, chunk}.
     std::optional<std::pair<std::uint64_t, Bytes>> take_chunk() {
         std::uint64_t offset = 0;
         XetBytes* raw = nullptr;
@@ -251,6 +252,8 @@ private:
 // Builder for XetAuthConfig. Owns its strings and header array; c_config()
 // returns a XetAuthConfig borrowing this object's storage — it must not
 // outlive the AuthConfig (the Session::new_* builders consume it immediately).
+// c_config() rebuilds header_view_, so it is not reentrant/thread-safe on a
+// shared instance: hold at most one live result at a time per AuthConfig.
 class AuthConfig {
 public:
     AuthConfig& endpoint(std::string v) {
