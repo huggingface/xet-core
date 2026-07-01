@@ -32,10 +32,15 @@ pub use file_info::{
     XetFileInfo, XetSha256Policy, xet_file_info_free, xet_file_info_new, xet_file_info_new_with_sha256,
 };
 pub use op::{
-    XetOp, XetPollState, xet_op_free, xet_op_poll, xet_op_take_bytes, xet_op_take_chunk, xet_op_take_error,
-    xet_op_take_void, xet_test_make_error_op, xet_test_make_void_op,
+    XetOp, XetPollState, xet_op_free, xet_op_poll, xet_op_take_bytes, xet_op_take_chunk, xet_op_take_commit_report,
+    xet_op_take_download_report, xet_op_take_error, xet_op_take_file_metadata, xet_op_take_void,
+    xet_test_make_error_op, xet_test_make_void_op,
 };
-pub use reports::{XetDedupMetrics, XetProgress};
+pub use reports::{
+    XetCommitReportHandle, XetDedupMetrics, XetDownloadGroupReportHandle, XetProgress, xet_commit_report_dedup,
+    xet_commit_report_file_at, xet_commit_report_file_count, xet_commit_report_free, xet_commit_report_progress,
+    xet_download_group_report_at, xet_download_group_report_count, xet_download_group_report_free,
+};
 pub use session::{
     XetAuthConfig, XetHeader, XetSession, xet_init_logging, xet_session_free, xet_session_new,
     xet_session_new_download_stream_group, xet_session_new_file_download_group, xet_session_new_upload_commit,

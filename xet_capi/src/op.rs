@@ -7,9 +7,8 @@ use bytes::Bytes;
 use crate::bytes::XetBytes;
 use crate::error::{XetError, XetStatus, set_err, set_xet_err};
 use crate::handle::{free_handle, into_handle};
-// TODO(Task 11): re-enable once reports.rs / upload.rs exist
-// use crate::reports::{XetCommitReportHandle, XetDownloadGroupReportHandle};
-// use crate::upload::XetFileMetadataHandle;
+use crate::reports::{XetCommitReportHandle, XetDownloadGroupReportHandle};
+use crate::upload::XetFileMetadataHandle;
 
 /// Result payload of a completed operation. Internal; extracted via the typed
 /// `xet_op_take_*` functions which validate the variant.
@@ -147,11 +146,19 @@ macro_rules! take_variant {
     };
 }
 
-// TODO(Task 11): re-enable once reports.rs / upload.rs exist
-// take_variant!(xet_op_take_file_metadata, OpOutput::FileMetadata, XetFileMetadataHandle,
-// XetFileMetadataHandle::owned); take_variant!(xet_op_take_commit_report, OpOutput::CommitReport,
-// XetCommitReportHandle, XetCommitReportHandle::new); take_variant!(xet_op_take_download_report,
-// OpOutput::DownloadReport, XetDownloadGroupReportHandle, XetDownloadGroupReportHandle::new);
+take_variant!(
+    xet_op_take_file_metadata,
+    OpOutput::FileMetadata,
+    XetFileMetadataHandle,
+    XetFileMetadataHandle::owned
+);
+take_variant!(xet_op_take_commit_report, OpOutput::CommitReport, XetCommitReportHandle, XetCommitReportHandle::new);
+take_variant!(
+    xet_op_take_download_report,
+    OpOutput::DownloadReport,
+    XetDownloadGroupReportHandle,
+    XetDownloadGroupReportHandle::new
+);
 
 /// Void ops (e.g. stream write) — no payload.
 ///

@@ -145,3 +145,18 @@ fn session_builder_symbols_link() {
         xet_capi::xet_session_new_download_stream_group as *const (),
     ];
 }
+
+#[test]
+fn reports_symbols_link() {
+    let _f: [*const (); 9] = [
+        xet_capi::xet_commit_report_file_count as *const (),
+        xet_capi::xet_commit_report_file_at as *const (),
+        xet_capi::xet_commit_report_dedup as *const (),
+        xet_capi::xet_commit_report_progress as *const (),
+        xet_capi::xet_commit_report_free as *const (),
+        xet_capi::xet_download_group_report_count as *const (),
+        xet_capi::xet_download_group_report_at as *const (),
+        xet_capi::xet_op_take_commit_report as *const (),
+        xet_capi::xet_op_take_download_report as *const (),
+    ];
+}

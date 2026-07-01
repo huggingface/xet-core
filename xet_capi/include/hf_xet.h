@@ -45,6 +45,16 @@ typedef enum {
 typedef struct XetBytes XetBytes;
 
 /**
+ * Owned commit report. Free with [`xet_commit_report_free`].
+ */
+typedef struct XetCommitReportHandle XetCommitReportHandle;
+
+/**
+ * Owned download-group report. Free with [`xet_download_group_report_free`].
+ */
+typedef struct XetDownloadGroupReportHandle XetDownloadGroupReportHandle;
+
+/**
  * An active download stream (ordered or unordered). `next` requires `&mut`, so
  * the inner stream is guarded by a mutex to keep the handle usable across the
  * op worker thread. Free with [`xet_download_stream_free`].
@@ -124,6 +134,22 @@ typedef struct {
     uint64_t total_transfer_bytes;
     uint64_t total_transfer_bytes_completed;
 } XetProgress;
+
+/**
+ * Flat dedup metrics snapshot.
+ */
+typedef struct {
+    uint64_t total_bytes;
+    uint64_t deduped_bytes;
+    uint64_t new_bytes;
+    uint64_t deduped_bytes_by_global_dedup;
+    uint64_t total_chunks;
+    uint64_t deduped_chunks;
+    uint64_t new_chunks;
+    uint64_t xorb_bytes_uploaded;
+    uint64_t shard_bytes_uploaded;
+    uint64_t total_bytes_uploaded;
+} XetDedupMetrics;
 
 /**
  * One HTTP header for token-refresh requests.
@@ -379,6 +405,56 @@ XetStatus xet_op_take_chunk(XetOp *op, uint64_t *offset, XetBytes **out, XetErro
 XetOp *xet_test_make_void_op(void);
 
 XetOp *xet_test_make_error_op(void);
+
+/**
+ * # Safety
+ * `r` must be null or a valid commit-report handle.
+ */
+uintptr_t xet_commit_report_file_count(const XetCommitReportHandle *r);
+
+/**
+ * Borrow the i-th file metadata. The returned pointer is valid until the
+ * report is freed; do NOT pass it to `xet_file_metadata_free`.
+ *
+ * # Safety
+ * `r` valid; `out` a valid pointer.
+ */
+XetStatus xet_commit_report_file_at(const XetCommitReportHandle *r,
+                                    uintptr_t index,
+                                    const XetFileMetadataHandle **out);
+
+/**
+ * # Safety
+ * `r` valid; `out` a valid pointer to a `XetDedupMetrics`.
+ */
+XetStatus xet_commit_report_dedup(const XetCommitReportHandle *r, XetDedupMetrics *out);
+
+/**
+ * # Safety
+ * `r` valid; `out` a valid pointer to a `XetProgress`.
+ */
+XetStatus xet_commit_report_progress(const XetCommitReportHandle *r, XetProgress *out);
+
+void xet_commit_report_free(XetCommitReportHandle *r);
+
+/**
+ * # Safety
+ * `r` must be null or a valid download-group-report handle.
+ */
+uintptr_t xet_download_group_report_count(const XetDownloadGroupReportHandle *r);
+
+/**
+ * Fill `*task_id` and `*bytes_completed` for the i-th download.
+ *
+ * # Safety
+ * `r` valid; `task_id`/`bytes_completed` may be null (skipped) or valid.
+ */
+XetStatus xet_download_group_report_at(const XetDownloadGroupReportHandle *r,
+                                       uintptr_t index,
+                                       uint64_t *task_id,
+                                       uint64_t *bytes_completed);
+
+void xet_download_group_report_free(XetDownloadGroupReportHandle *r);
 
 /**
  * Install xet's tracing subscriber. `version` may be NULL.
