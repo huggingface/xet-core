@@ -248,4 +248,55 @@ private:
     Handle<XetOp, xet_op_free> op_;
 };
 
+// Builder for XetAuthConfig. Owns its strings and header array; c_config()
+// returns a XetAuthConfig borrowing this object's storage — it must not
+// outlive the AuthConfig (the Session::new_* builders consume it immediately).
+class AuthConfig {
+public:
+    AuthConfig& endpoint(std::string v) {
+        endpoint_ = std::move(v);
+        return *this;
+    }
+    AuthConfig& token(std::string v) {
+        token_ = std::move(v);
+        return *this;
+    }
+    AuthConfig& token_expiry(std::int64_t v) {
+        expiry_ = v;
+        return *this;
+    }
+    AuthConfig& token_refresh_url(std::string v) {
+        refresh_url_ = std::move(v);
+        return *this;
+    }
+    AuthConfig& add_refresh_header(std::string key, std::string value) {
+        headers_.emplace_back(std::move(key), std::move(value));
+        return *this;
+    }
+
+    XetAuthConfig c_config() const {
+        header_view_.clear();
+        header_view_.reserve(headers_.size());
+        for (const auto& kv : headers_) {
+            header_view_.push_back(XetHeader{kv.first.c_str(), kv.second.c_str()});
+        }
+        XetAuthConfig cfg{};
+        cfg.endpoint = endpoint_ ? endpoint_->c_str() : nullptr;
+        cfg.token = token_ ? token_->c_str() : nullptr;
+        cfg.token_expiry = expiry_;
+        cfg.token_refresh_url = refresh_url_ ? refresh_url_->c_str() : nullptr;
+        cfg.refresh_headers = header_view_.empty() ? nullptr : header_view_.data();
+        cfg.refresh_header_count = header_view_.size();
+        return cfg;
+    }
+
+private:
+    std::optional<std::string> endpoint_;
+    std::optional<std::string> token_;
+    std::optional<std::string> refresh_url_;
+    std::int64_t expiry_ = 0;
+    std::vector<std::pair<std::string, std::string>> headers_;
+    mutable std::vector<XetHeader> header_view_;
+};
+
 }  // namespace xet
