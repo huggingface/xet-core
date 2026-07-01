@@ -167,9 +167,7 @@ fn header_is_up_to_date() {
     let committed = std::fs::read_to_string(crate_dir.join("include/hf_xet.h")).unwrap();
     let generated = {
         let mut buf = Vec::new();
-        cbindgen::generate(&crate_dir)
-            .expect("cbindgen generate")
-            .write(&mut buf);
+        cbindgen::generate(&crate_dir).expect("cbindgen generate").write(&mut buf);
         String::from_utf8(buf).unwrap()
     };
     assert_eq!(

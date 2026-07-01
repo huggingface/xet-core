@@ -11,8 +11,3 @@ pub(crate) fn free_handle<T>(ptr: *mut T) {
         drop(unsafe { Box::from_raw(ptr) });
     }
 }
-
-/// Borrow a handle as `&T`, or `None` if null.
-pub(crate) unsafe fn as_ref<'a, T>(ptr: *const T) -> Option<&'a T> {
-    unsafe { ptr.as_ref() }
-}
