@@ -1,0 +1,30 @@
+[package]
+name = "xet_capi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "C ABI bindings for the Hugging Face Xet client (hf-xet)."
+
+[lib]
+name = "xet_capi"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+xet = { package = "hf-xet", version = "1.5.2", path = "../xet_pkg" }
+xet-runtime = { version = "1.5.2", path = "../xet_runtime" }
+bytes = { workspace = true }
+
+[build-dependencies]
+cbindgen = "0.29"
+
+[dev-dependencies]
+cc = "1"
+tempfile = { workspace = true }
+
+[features]
+simulation = ["xet/simulation"]
+
+[package.metadata.cargo-machete]
+ignored = ["xet"]
