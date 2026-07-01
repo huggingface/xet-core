@@ -296,6 +296,14 @@ XetStatus xet_download_stream_progress(const XetDownloadStream *stream, XetProgr
  */
 void xet_download_stream_cancel(const XetDownloadStream *stream);
 
+/**
+ * Returns the stream's task id, or 0 if `stream` is null.
+ *
+ * # Safety
+ * `stream` must be null or a valid handle.
+ */
+uint64_t xet_download_stream_task_id(const XetDownloadStream *stream);
+
 void xet_download_stream_group_free(XetDownloadStreamGroup *group);
 
 void xet_download_stream_free(XetDownloadStream *stream);
@@ -374,6 +382,32 @@ void xet_op_free(XetOp *op);
  * writable `*mut XetError`.
  */
 XetStatus xet_op_take_error(XetOp *op, XetError **err);
+
+/**
+ * Consume a completed op yielding file metadata.
+ *
+ * # Safety
+ * `op` valid; `out`/`err` valid pointers.
+ */
+XetStatus xet_op_take_file_metadata(XetOp *op, XetFileMetadataHandle **out, XetError **err);
+
+/**
+ * Consume a completed op yielding a commit report.
+ *
+ * # Safety
+ * `op` valid; `out`/`err` valid pointers.
+ */
+XetStatus xet_op_take_commit_report(XetOp *op, XetCommitReportHandle **out, XetError **err);
+
+/**
+ * Consume a completed op yielding a download-group report.
+ *
+ * # Safety
+ * `op` valid; `out`/`err` valid pointers.
+ */
+XetStatus xet_op_take_download_report(XetOp *op,
+                                      XetDownloadGroupReportHandle **out,
+                                      XetError **err);
 
 /**
  * Void ops (e.g. stream write) — no payload.

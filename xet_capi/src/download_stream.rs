@@ -171,6 +171,26 @@ pub unsafe extern "C" fn xet_download_stream_cancel(stream: *const XetDownloadSt
     }
 }
 
+/// Returns the stream's task id, or 0 if `stream` is null.
+///
+/// # Safety
+/// `stream` must be null or a valid handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xet_download_stream_task_id(stream: *const XetDownloadStream) -> u64 {
+    match unsafe { stream.as_ref() } {
+        Some(s) => {
+            if let Some(o) = &s.ordered {
+                o.lock().unwrap().task_id().0
+            } else if let Some(u) = &s.unordered {
+                u.lock().unwrap().task_id().0
+            } else {
+                0
+            }
+        },
+        None => 0,
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn xet_download_stream_group_free(group: *mut XetDownloadStreamGroup) {
     free_handle(group);

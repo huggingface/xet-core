@@ -26,6 +26,7 @@ pub use download_stream::{
     XetDownloadStream, XetDownloadStreamGroup, xet_download_stream_cancel, xet_download_stream_free,
     xet_download_stream_group_download_stream, xet_download_stream_group_download_unordered_stream,
     xet_download_stream_group_free, xet_download_stream_next_start, xet_download_stream_progress,
+    xet_download_stream_task_id,
 };
 pub use error::{XetError, XetStatus, xet_error_code, xet_error_free, xet_error_message, xet_test_make_auth_error};
 pub use file_info::{

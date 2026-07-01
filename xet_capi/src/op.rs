@@ -5,7 +5,7 @@ use std::thread::JoinHandle;
 use bytes::Bytes;
 
 use crate::bytes::XetBytes;
-use crate::error::{XetError, XetStatus, set_err, set_xet_err};
+use crate::error::{XetError, XetStatus, ffi_guard, set_err, set_xet_err};
 use crate::handle::{free_handle, into_handle};
 use crate::reports::{XetCommitReportHandle, XetDownloadGroupReportHandle};
 use crate::upload::XetFileMetadataHandle;
@@ -77,16 +77,19 @@ fn take_output(op: *mut XetOp) -> Option<Result<OpOutput, xet::XetError>> {
 /// `op` must be null or a valid pointer to a live `XetOp` produced by this crate.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xet_op_poll(op: *const XetOp) -> XetPollState {
-    let Some(op) = (unsafe { op.as_ref() }) else {
-        return XetPollState::XetPollError;
-    };
-    if !op.state.done.load(Ordering::Acquire) {
-        return XetPollState::XetPollPending;
-    }
-    match &*op.state.slot.lock().unwrap() {
-        Some(Ok(_)) => XetPollState::XetPollReady,
-        _ => XetPollState::XetPollError,
-    }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Some(op) = (unsafe { op.as_ref() }) else {
+            return XetPollState::XetPollError;
+        };
+        if !op.state.done.load(Ordering::Acquire) {
+            return XetPollState::XetPollPending;
+        }
+        match &*op.state.slot.lock().unwrap() {
+            Some(Ok(_)) => XetPollState::XetPollReady,
+            _ => XetPollState::XetPollError,
+        }
+    }))
+    .unwrap_or(XetPollState::XetPollError)
 }
 
 /// # Safety
@@ -110,55 +113,93 @@ pub unsafe extern "C" fn xet_op_free(op: *mut XetOp) {
 /// writable `*mut XetError`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xet_op_take_error(op: *mut XetOp, err: *mut *mut XetError) -> XetStatus {
-    match take_output(op) {
+    ffi_guard(err, || match take_output(op) {
         Some(Err(e)) => {
             free_handle(op);
             set_err(err, XetError::from_xet(&e));
             XetStatus::XetOk
         },
         _ => XetStatus::XetErrInvalidArg,
-    }
+    })
 }
 
-/// Macro: define a typed take-fn that expects a specific `OpOutput` variant.
-macro_rules! take_variant {
-    ($name:ident, $variant:path, $out_ty:ty, $wrap:expr) => {
-        /// # Safety
-        /// `op` must be a valid pointer to a live `XetOp`; `out` and `err` must be
-        /// null or valid writable out-pointers.
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $name(op: *mut XetOp, out: *mut *mut $out_ty, err: *mut *mut XetError) -> XetStatus {
-            match take_output(op) {
-                Some(Ok($variant(v))) => {
-                    if !out.is_null() {
-                        unsafe { *out = into_handle($wrap(v)) };
-                    }
-                    free_handle(op);
-                    XetStatus::XetOk
-                },
-                Some(Err(e)) => {
-                    free_handle(op);
-                    set_xet_err(err, &e)
-                },
-                _ => XetStatus::XetErrInvalidArg,
+/// Consume a completed op yielding file metadata.
+///
+/// # Safety
+/// `op` valid; `out`/`err` valid pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xet_op_take_file_metadata(
+    op: *mut XetOp,
+    out: *mut *mut XetFileMetadataHandle,
+    err: *mut *mut XetError,
+) -> XetStatus {
+    ffi_guard(err, || match take_output(op) {
+        Some(Ok(OpOutput::FileMetadata(v))) => {
+            if !out.is_null() {
+                unsafe { *out = into_handle(XetFileMetadataHandle::owned(v)) };
             }
-        }
-    };
+            free_handle(op);
+            XetStatus::XetOk
+        },
+        Some(Err(e)) => {
+            free_handle(op);
+            set_xet_err(err, &e)
+        },
+        _ => XetStatus::XetErrInvalidArg,
+    })
 }
 
-take_variant!(
-    xet_op_take_file_metadata,
-    OpOutput::FileMetadata,
-    XetFileMetadataHandle,
-    XetFileMetadataHandle::owned
-);
-take_variant!(xet_op_take_commit_report, OpOutput::CommitReport, XetCommitReportHandle, XetCommitReportHandle::new);
-take_variant!(
-    xet_op_take_download_report,
-    OpOutput::DownloadReport,
-    XetDownloadGroupReportHandle,
-    XetDownloadGroupReportHandle::new
-);
+/// Consume a completed op yielding a commit report.
+///
+/// # Safety
+/// `op` valid; `out`/`err` valid pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xet_op_take_commit_report(
+    op: *mut XetOp,
+    out: *mut *mut XetCommitReportHandle,
+    err: *mut *mut XetError,
+) -> XetStatus {
+    ffi_guard(err, || match take_output(op) {
+        Some(Ok(OpOutput::CommitReport(v))) => {
+            if !out.is_null() {
+                unsafe { *out = into_handle(XetCommitReportHandle::new(v)) };
+            }
+            free_handle(op);
+            XetStatus::XetOk
+        },
+        Some(Err(e)) => {
+            free_handle(op);
+            set_xet_err(err, &e)
+        },
+        _ => XetStatus::XetErrInvalidArg,
+    })
+}
+
+/// Consume a completed op yielding a download-group report.
+///
+/// # Safety
+/// `op` valid; `out`/`err` valid pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xet_op_take_download_report(
+    op: *mut XetOp,
+    out: *mut *mut XetDownloadGroupReportHandle,
+    err: *mut *mut XetError,
+) -> XetStatus {
+    ffi_guard(err, || match take_output(op) {
+        Some(Ok(OpOutput::DownloadReport(v))) => {
+            if !out.is_null() {
+                unsafe { *out = into_handle(XetDownloadGroupReportHandle::new(v)) };
+            }
+            free_handle(op);
+            XetStatus::XetOk
+        },
+        Some(Err(e)) => {
+            free_handle(op);
+            set_xet_err(err, &e)
+        },
+        _ => XetStatus::XetErrInvalidArg,
+    })
+}
 
 /// Void ops (e.g. stream write) — no payload.
 ///
@@ -167,7 +208,7 @@ take_variant!(
 /// writable `*mut XetError`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xet_op_take_void(op: *mut XetOp, err: *mut *mut XetError) -> XetStatus {
-    match take_output(op) {
+    ffi_guard(err, || match take_output(op) {
         Some(Ok(OpOutput::Void)) => {
             free_handle(op);
             XetStatus::XetOk
@@ -177,7 +218,7 @@ pub unsafe extern "C" fn xet_op_take_void(op: *mut XetOp, err: *mut *mut XetErro
             set_xet_err(err, &e)
         },
         _ => XetStatus::XetErrInvalidArg,
-    }
+    })
 }
 
 /// Ordered stream chunk. On success `*out` is a `XetBytes*`, or NULL at EOF.
@@ -191,7 +232,7 @@ pub unsafe extern "C" fn xet_op_take_bytes(
     out: *mut *mut XetBytes,
     err: *mut *mut XetError,
 ) -> XetStatus {
-    match take_output(op) {
+    ffi_guard(err, || match take_output(op) {
         Some(Ok(OpOutput::Bytes(opt))) => {
             if !out.is_null() {
                 unsafe { *out = opt.map_or(std::ptr::null_mut(), |b| into_handle(XetBytes::new(b))) };
@@ -204,7 +245,7 @@ pub unsafe extern "C" fn xet_op_take_bytes(
             set_xet_err(err, &e)
         },
         _ => XetStatus::XetErrInvalidArg,
-    }
+    })
 }
 
 /// Unordered stream chunk. On success fills `*offset` and `*out` (NULL at EOF).
@@ -219,7 +260,7 @@ pub unsafe extern "C" fn xet_op_take_chunk(
     out: *mut *mut XetBytes,
     err: *mut *mut XetError,
 ) -> XetStatus {
-    match take_output(op) {
+    ffi_guard(err, || match take_output(op) {
         Some(Ok(OpOutput::Chunk(opt))) => {
             match opt {
                 Some((off, b)) => {
@@ -244,7 +285,7 @@ pub unsafe extern "C" fn xet_op_take_chunk(
             set_xet_err(err, &e)
         },
         _ => XetStatus::XetErrInvalidArg,
-    }
+    })
 }
 
 // --- test-only ops ---

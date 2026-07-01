@@ -178,6 +178,23 @@ fn header_is_up_to_date() {
 }
 
 #[test]
+fn header_declares_all_op_take_fns() {
+    let header = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/include/hf_xet.h")).unwrap();
+    for sym in [
+        "xet_op_take_file_metadata",
+        "xet_op_take_commit_report",
+        "xet_op_take_download_report",
+        "xet_op_take_bytes",
+        "xet_op_take_chunk",
+        "xet_op_take_void",
+        "xet_op_take_error",
+        "xet_download_stream_task_id",
+    ] {
+        assert!(header.contains(sym), "committed header is missing declaration for {sym}");
+    }
+}
+
+#[test]
 fn c_smoke_compiles() {
     // Compile smoke.c against the committed header via the cc crate. A full
     // link+run against the staticlib is left to CI/CGo; compiling the TU
