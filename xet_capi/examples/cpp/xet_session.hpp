@@ -74,4 +74,37 @@ inline void init_logging(const char* version) {
     xet_init_logging(version);
 }
 
+// Owned byte buffer from streaming downloads.
+class Bytes {
+public:
+    explicit Bytes(XetBytes* raw) : h_(raw) {}
+    const uint8_t* data() const { return xet_bytes_data(h_.get()); }
+    std::size_t size() const { return xet_bytes_len(h_.get()); }
+
+private:
+    Handle<XetBytes, xet_bytes_free> h_;
+};
+
+// Download file descriptor: content hash (hex) + size, optionally a sha256.
+class FileInfo {
+public:
+    FileInfo(const char* hash, std::uint64_t size) {
+        XetFileInfo* raw = nullptr;
+        XetError* err = nullptr;
+        check(xet_file_info_new(hash, size, &raw, &err), "xet_file_info_new", err);
+        fi_.reset(raw);
+    }
+    FileInfo(const char* hash, std::uint64_t size, const char* sha256) {
+        XetFileInfo* raw = nullptr;
+        XetError* err = nullptr;
+        check(xet_file_info_new_with_sha256(hash, size, sha256, &raw, &err),
+              "xet_file_info_new_with_sha256", err);
+        fi_.reset(raw);
+    }
+    const XetFileInfo* get() const { return fi_.get(); }
+
+private:
+    Handle<XetFileInfo, xet_file_info_free> fi_;
+};
+
 }  // namespace xet
