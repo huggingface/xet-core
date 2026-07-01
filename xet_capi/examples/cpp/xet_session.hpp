@@ -107,4 +107,34 @@ private:
     Handle<XetFileInfo, xet_file_info_free> fi_;
 };
 
+// Borrowed metadata view (e.g. from CommitReport::file_at). Non-owning: the
+// underlying handle is owned by the report and must NOT be freed here.
+class FileMetadataView {
+public:
+    explicit FileMetadataView(const XetFileMetadataHandle* h) : h_(h) {}
+    std::string hash() const { return xet_file_metadata_hash(h_); }
+    std::uint64_t file_size() const { return xet_file_metadata_file_size(h_); }
+    std::optional<std::string> sha256() const { return detail::opt_str(xet_file_metadata_sha256(h_)); }
+    std::optional<std::string> tracking_name() const {
+        return detail::opt_str(xet_file_metadata_tracking_name(h_));
+    }
+
+private:
+    const XetFileMetadataHandle* h_;
+};
+
+// Owned metadata (from Op::take_file_metadata). Frees the handle in dtor.
+class FileMetadata {
+public:
+    explicit FileMetadata(XetFileMetadataHandle* raw) : h_(raw) {}
+    FileMetadataView view() const { return FileMetadataView(h_.get()); }
+    std::string hash() const { return view().hash(); }
+    std::uint64_t file_size() const { return view().file_size(); }
+    std::optional<std::string> sha256() const { return view().sha256(); }
+    std::optional<std::string> tracking_name() const { return view().tracking_name(); }
+
+private:
+    Handle<XetFileMetadataHandle, xet_file_metadata_free> h_;
+};
+
 }  // namespace xet
