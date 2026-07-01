@@ -6,6 +6,7 @@
 
 mod bytes;
 mod download_file;
+mod download_stream;
 mod error;
 mod file_info;
 mod handle;
@@ -20,6 +21,11 @@ pub use download_file::{
     XetFileDownload, XetFileDownloadGroup, xet_file_download_free, xet_file_download_group_abort,
     xet_file_download_group_download_to_path, xet_file_download_group_finish_start, xet_file_download_group_free,
     xet_file_download_group_progress, xet_file_download_task_id,
+};
+pub use download_stream::{
+    XetDownloadStream, XetDownloadStreamGroup, xet_download_stream_cancel, xet_download_stream_free,
+    xet_download_stream_group_download_stream, xet_download_stream_group_download_unordered_stream,
+    xet_download_stream_group_free, xet_download_stream_next_start, xet_download_stream_progress,
 };
 pub use error::{XetError, XetStatus, xet_error_code, xet_error_free, xet_error_message, xet_test_make_auth_error};
 pub use file_info::{

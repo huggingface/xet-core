@@ -45,6 +45,18 @@ typedef enum {
 typedef struct XetBytes XetBytes;
 
 /**
+ * An active download stream (ordered or unordered). `next` requires `&mut`, so
+ * the inner stream is guarded by a mutex to keep the handle usable across the
+ * op worker thread. Free with [`xet_download_stream_free`].
+ */
+typedef struct XetDownloadStream XetDownloadStream;
+
+/**
+ * A stream-download group. Free with [`xet_download_stream_group_free`].
+ */
+typedef struct XetDownloadStreamGroup XetDownloadStreamGroup;
+
+/**
  * Opaque error object. Read via [`xet_error_message`] / [`xet_error_code`];
  * free with [`xet_error_free`].
  */
@@ -188,6 +200,58 @@ uint64_t xet_file_download_task_id(const XetFileDownload *download);
 void xet_file_download_group_free(XetFileDownloadGroup *group);
 
 void xet_file_download_free(XetFileDownload *download);
+
+/**
+ * # Safety
+ * `group`/`file_info` valid; `out`/`err` valid pointers.
+ */
+XetStatus xet_download_stream_group_download_stream(const XetDownloadStreamGroup *group,
+                                                    const XetFileInfo *file_info,
+                                                    bool has_range,
+                                                    uint64_t range_start,
+                                                    uint64_t range_end,
+                                                    XetDownloadStream **out,
+                                                    XetError **err);
+
+/**
+ * # Safety
+ * `group`/`file_info` valid; `out`/`err` valid pointers.
+ */
+XetStatus xet_download_stream_group_download_unordered_stream(const XetDownloadStreamGroup *group,
+                                                              const XetFileInfo *file_info,
+                                                              bool has_range,
+                                                              uint64_t range_start,
+                                                              uint64_t range_end,
+                                                              XetDownloadStream **out,
+                                                              XetError **err);
+
+/**
+ * Start fetching the next chunk. Poll the returned op:
+ * - ordered streams: consume with `xet_op_take_bytes` (NULL = EOF).
+ * - unordered streams: consume with `xet_op_take_chunk` (NULL = EOF).
+ *
+ * # Safety
+ * `stream`/`out`/`err` valid pointers.
+ */
+XetStatus xet_download_stream_next_start(const XetDownloadStream *stream,
+                                         XetOp **out,
+                                         XetError **err);
+
+/**
+ * # Safety
+ * `stream` valid; `out` a valid pointer to a `XetProgress`.
+ */
+XetStatus xet_download_stream_progress(const XetDownloadStream *stream, XetProgress *out);
+
+/**
+ * # Safety
+ * `stream` must be null or a valid handle.
+ */
+void xet_download_stream_cancel(const XetDownloadStream *stream);
+
+void xet_download_stream_group_free(XetDownloadStreamGroup *group);
+
+void xet_download_stream_free(XetDownloadStream *stream);
 
 /**
  * # Safety
