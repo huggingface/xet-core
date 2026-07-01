@@ -23,6 +23,12 @@ typedef enum {
     XetStatus_XetErrPanic = 6,
 } XetStatus;
 
+typedef enum {
+    XetPollState_XetPollPending = 0,
+    XetPollState_XetPollReady = 1,
+    XetPollState_XetPollError = 2,
+} XetPollState;
+
 /**
  * An owned byte buffer produced by streaming downloads. Read via
  * [`xet_bytes_data`] / [`xet_bytes_len`]; free with [`xet_bytes_free`].
@@ -34,6 +40,12 @@ typedef struct XetBytes XetBytes;
  * free with [`xet_error_free`].
  */
 typedef struct XetError XetError;
+
+/**
+ * A spawned, poll-able operation. Poll with [`xet_op_poll`], then consume with
+ * the matching `xet_op_take_*`. Free an un-taken op with [`xet_op_free`].
+ */
+typedef struct XetOp XetOp;
 
 #ifdef __cplusplus
 extern "C" {
@@ -89,6 +101,60 @@ void xet_error_free(XetError *err);
  * `out` must be a valid, non-null pointer to a writable `*mut XetError`.
  */
 int xet_test_make_auth_error(XetError **out);
+
+/**
+ * # Safety
+ * `op` must be null or a valid pointer to a live `XetOp` produced by this crate.
+ */
+XetPollState xet_op_poll(const XetOp *op);
+
+/**
+ * # Safety
+ * `op` must be null or a pointer previously returned by this crate that has not
+ * already been freed or consumed by a `xet_op_take_*` call.
+ */
+void xet_op_free(XetOp *op);
+
+/**
+ * Extract a `XetError` from a failed op. Returns `XET_OK` and fills `*err`;
+ * returns `XET_ERR_INVALID_ARG` if the op did not fail.
+ *
+ * # Safety
+ * `op` must be a valid pointer to a live `XetOp`; `err` must be null or a valid
+ * writable `*mut XetError`.
+ */
+XetStatus xet_op_take_error(XetOp *op, XetError **err);
+
+/**
+ * Void ops (e.g. stream write) — no payload.
+ *
+ * # Safety
+ * `op` must be a valid pointer to a live `XetOp`; `err` must be null or a valid
+ * writable `*mut XetError`.
+ */
+XetStatus xet_op_take_void(XetOp *op, XetError **err);
+
+/**
+ * Ordered stream chunk. On success `*out` is a `XetBytes*`, or NULL at EOF.
+ *
+ * # Safety
+ * `op` must be a valid pointer to a live `XetOp`; `out` and `err` must be null
+ * or valid writable out-pointers.
+ */
+XetStatus xet_op_take_bytes(XetOp *op, XetBytes **out, XetError **err);
+
+/**
+ * Unordered stream chunk. On success fills `*offset` and `*out` (NULL at EOF).
+ *
+ * # Safety
+ * `op` must be a valid pointer to a live `XetOp`; `offset`, `out`, and `err`
+ * must be null or valid writable out-pointers.
+ */
+XetStatus xet_op_take_chunk(XetOp *op, uint64_t *offset, XetBytes **out, XetError **err);
+
+XetOp *xet_test_make_void_op(void);
+
+XetOp *xet_test_make_error_op(void);
 
 #ifdef __cplusplus
 }  // extern "C"

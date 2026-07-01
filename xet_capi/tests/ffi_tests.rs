@@ -27,3 +27,38 @@ fn bytes_roundtrip() {
         xet_bytes_free(b);
     }
 }
+
+#[test]
+fn op_poll_completes_and_takes_void() {
+    unsafe {
+        let op = xet_test_make_void_op(); // completes after ~50ms
+        let mut state = xet_op_poll(op);
+        let mut spins = 0;
+        while state == XetPollState::XetPollPending {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            state = xet_op_poll(op);
+            spins += 1;
+            assert!(spins < 1000, "op never completed");
+        }
+        assert_eq!(state, XetPollState::XetPollReady);
+        let mut err: *mut XetError = std::ptr::null_mut();
+        assert_eq!(xet_op_take_void(op, &mut err), XetStatus::XetOk);
+        assert!(err.is_null());
+    }
+}
+
+#[test]
+fn op_error_is_taken() {
+    unsafe {
+        let op = xet_test_make_error_op();
+        while xet_op_poll(op) == XetPollState::XetPollPending {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(xet_op_poll(op), XetPollState::XetPollError);
+        let mut err: *mut XetError = std::ptr::null_mut();
+        assert_eq!(xet_op_take_error(op, &mut err), XetStatus::XetOk);
+        assert!(!err.is_null());
+        assert_eq!(xet_error_code(err), XetStatus::XetErr);
+        xet_error_free(err);
+    }
+}
