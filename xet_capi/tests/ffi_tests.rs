@@ -87,3 +87,19 @@ fn file_info_new_and_free() {
         xet_file_info_free(fi);
     }
 }
+
+#[test]
+fn upload_symbols_link() {
+    // Compile/link check: take fn pointers so the linker resolves them.
+    let _f: [*const (); 9] = [
+        xet_capi::xet_upload_commit_upload_from_path as *const (),
+        xet_capi::xet_upload_commit_upload_bytes as *const (),
+        xet_capi::xet_upload_commit_commit_start as *const (),
+        xet_capi::xet_file_upload_finalize_start as *const (),
+        xet_capi::xet_upload_commit_progress as *const (),
+        xet_capi::xet_upload_commit_abort as *const (),
+        xet_capi::xet_file_metadata_hash as *const (),
+        xet_capi::xet_file_metadata_file_size as *const (),
+        xet_capi::xet_file_metadata_free as *const (),
+    ];
+}

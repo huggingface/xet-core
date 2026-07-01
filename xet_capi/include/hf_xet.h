@@ -30,6 +30,15 @@ typedef enum {
 } XetPollState;
 
 /**
+ * SHA-256 handling for uploads.
+ */
+typedef enum {
+    XetSha256Policy_XetSha256Compute = 0,
+    XetSha256Policy_XetSha256Skip = 1,
+    XetSha256Policy_XetSha256Provided = 2,
+} XetSha256Policy;
+
+/**
  * An owned byte buffer produced by streaming downloads. Read via
  * [`xet_bytes_data`] / [`xet_bytes_len`]; free with [`xet_bytes_free`].
  */
@@ -47,6 +56,19 @@ typedef struct XetError XetError;
 typedef struct XetFileInfo XetFileInfo;
 
 /**
+ * Per-file metadata result. C strings are prebuilt at construction so accessor
+ * pointers stay valid until the handle is freed. Free OWNED handles (from
+ * `xet_op_take_file_metadata`) with [`xet_file_metadata_free`]; borrowed views
+ * returned by report accessors must NOT be freed.
+ */
+typedef struct XetFileMetadataHandle XetFileMetadataHandle;
+
+/**
+ * A queued file upload. Free with [`xet_file_upload_free`].
+ */
+typedef struct XetFileUpload XetFileUpload;
+
+/**
  * A spawned, poll-able operation. Poll with [`xet_op_poll`], then consume with
  * the matching `xet_op_take_*`. Free an un-taken op with [`xet_op_free`].
  */
@@ -58,6 +80,21 @@ typedef struct XetOp XetOp;
  * [`xet_session_free`].
  */
 typedef struct XetSession XetSession;
+
+/**
+ * An upload commit (Arc-backed; cheap to clone). Free with [`xet_upload_commit_free`].
+ */
+typedef struct XetUploadCommit XetUploadCommit;
+
+/**
+ * Flat progress snapshot (all scalar; stable layout).
+ */
+typedef struct {
+    uint64_t total_bytes;
+    uint64_t total_bytes_completed;
+    uint64_t total_transfer_bytes;
+    uint64_t total_transfer_bytes_completed;
+} XetProgress;
 
 #ifdef __cplusplus
 extern "C" {
@@ -210,6 +247,96 @@ void xet_init_logging(const char *version);
 XetStatus xet_session_new(XetSession **out, XetError **err);
 
 void xet_session_free(XetSession *session);
+
+/**
+ * # Safety
+ * `commit` must be a valid handle; `path` a valid C string; `provided_sha256`
+ * null or valid; `out`/`err` valid pointers.
+ */
+XetStatus xet_upload_commit_upload_from_path(const XetUploadCommit *commit,
+                                             const char *path,
+                                             XetSha256Policy policy,
+                                             const char *provided_sha256,
+                                             XetFileUpload **out,
+                                             XetError **err);
+
+/**
+ * # Safety
+ * `commit` valid; `data`/`len` a valid buffer (data may be null iff len==0);
+ * `name`/`provided_sha256` null or valid; `out`/`err` valid.
+ */
+XetStatus xet_upload_commit_upload_bytes(const XetUploadCommit *commit,
+                                         const uint8_t *data,
+                                         uintptr_t len,
+                                         const char *name,
+                                         XetSha256Policy policy,
+                                         const char *provided_sha256,
+                                         XetFileUpload **out,
+                                         XetError **err);
+
+/**
+ * # Safety
+ * `upload` valid; `out`/`err` valid pointers.
+ */
+XetStatus xet_file_upload_finalize_start(const XetFileUpload *upload, XetOp **out, XetError **err);
+
+/**
+ * # Safety
+ * `commit` valid; `out`/`err` valid pointers.
+ */
+XetStatus xet_upload_commit_commit_start(const XetUploadCommit *commit,
+                                         XetOp **out,
+                                         XetError **err);
+
+/**
+ * # Safety
+ * `commit` valid; `out` a valid pointer to a `XetProgress`.
+ */
+XetStatus xet_upload_commit_progress(const XetUploadCommit *commit, XetProgress *out);
+
+/**
+ * # Safety
+ * `commit` valid; `err` valid.
+ */
+XetStatus xet_upload_commit_abort(const XetUploadCommit *commit, XetError **err);
+
+/**
+ * # Safety
+ * `m` must be null or a valid metadata handle.
+ */
+const char *xet_file_metadata_hash(const XetFileMetadataHandle *m);
+
+/**
+ * # Safety
+ * `m` must be null or a valid metadata handle.
+ */
+uint64_t xet_file_metadata_file_size(const XetFileMetadataHandle *m);
+
+/**
+ * Returns NULL if no sha256 is present.
+ *
+ * # Safety
+ * `m` must be null or a valid metadata handle.
+ */
+const char *xet_file_metadata_sha256(const XetFileMetadataHandle *m);
+
+/**
+ * Returns NULL if no tracking name is present.
+ *
+ * # Safety
+ * `m` must be null or a valid metadata handle.
+ */
+const char *xet_file_metadata_tracking_name(const XetFileMetadataHandle *m);
+
+/**
+ * Free an OWNED metadata handle (from `xet_op_take_file_metadata`). Do NOT call
+ * on a borrowed handle returned by a report accessor.
+ */
+void xet_file_metadata_free(XetFileMetadataHandle *m);
+
+void xet_upload_commit_free(XetUploadCommit *commit);
+
+void xet_file_upload_free(XetFileUpload *upload);
 
 #ifdef __cplusplus
 }  // extern "C"
