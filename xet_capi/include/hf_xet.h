@@ -47,6 +47,13 @@ typedef struct XetError XetError;
  */
 typedef struct XetOp XetOp;
 
+/**
+ * A Xet session. Owns no auth; produces per-commit / per-group auth via the
+ * `xet_session_new_*` builders (added in a later task). Free with
+ * [`xet_session_free`].
+ */
+typedef struct XetSession XetSession;
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -155,6 +162,24 @@ XetStatus xet_op_take_chunk(XetOp *op, uint64_t *offset, XetBytes **out, XetErro
 XetOp *xet_test_make_void_op(void);
 
 XetOp *xet_test_make_error_op(void);
+
+/**
+ * Install xet's tracing subscriber. `version` may be NULL.
+ *
+ * # Safety
+ * `version` must be null or a valid NUL-terminated C string.
+ */
+void xet_init_logging(const char *version);
+
+/**
+ * Create a new session. Writes the handle to `*out`.
+ *
+ * # Safety
+ * `out` must be a valid pointer to write the handle to; `err` may be null.
+ */
+XetStatus xet_session_new(XetSession **out, XetError **err);
+
+void xet_session_free(XetSession *session);
 
 #ifdef __cplusplus
 }  // extern "C"

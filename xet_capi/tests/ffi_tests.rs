@@ -62,3 +62,15 @@ fn op_error_is_taken() {
         xet_error_free(err);
     }
 }
+
+#[test]
+fn session_new_and_free() {
+    unsafe {
+        let mut session: *mut XetSession = std::ptr::null_mut();
+        let mut err: *mut XetError = std::ptr::null_mut();
+        assert_eq!(xet_session_new(&mut session, &mut err), XetStatus::XetOk);
+        assert!(!session.is_null());
+        assert!(err.is_null());
+        xet_session_free(session);
+    }
+}
