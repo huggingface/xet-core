@@ -384,4 +384,98 @@ private:
     Handle<XetUploadCommit, xet_upload_commit_free> c_;
 };
 
+// A queued file download.
+class FileDownload {
+public:
+    explicit FileDownload(XetFileDownload* raw) : d_(raw) {}
+    std::uint64_t task_id() const { return xet_file_download_task_id(d_.get()); }
+
+private:
+    Handle<XetFileDownload, xet_file_download_free> d_;
+};
+
+// A file-download group.
+class DownloadGroup {
+public:
+    explicit DownloadGroup(XetFileDownloadGroup* raw) : g_(raw) {}
+    FileDownload download_to_path(const FileInfo& file_info, const char* dest_path) {
+        XetFileDownload* raw = nullptr;
+        XetError* err = nullptr;
+        check(xet_file_download_group_download_to_path(g_.get(), file_info.get(), dest_path, &raw, &err),
+              "xet_file_download_group_download_to_path", err);
+        return FileDownload(raw);
+    }
+    Op finish_start() {
+        XetOp* raw = nullptr;
+        XetError* err = nullptr;
+        check(xet_file_download_group_finish_start(g_.get(), &raw, &err),
+              "xet_file_download_group_finish_start", err);
+        return Op(raw);
+    }
+    XetProgress progress() const {
+        XetProgress p{};
+        check(xet_file_download_group_progress(g_.get(), &p), "xet_file_download_group_progress");
+        return p;
+    }
+    void abort() {
+        XetError* err = nullptr;
+        check(xet_file_download_group_abort(g_.get(), &err), "xet_file_download_group_abort", err);
+    }
+
+private:
+    Handle<XetFileDownloadGroup, xet_file_download_group_free> g_;
+};
+
+// An active download stream (ordered or unordered).
+class DownloadStream {
+public:
+    explicit DownloadStream(XetDownloadStream* raw) : s_(raw) {}
+    Op next_start() {
+        XetOp* raw = nullptr;
+        XetError* err = nullptr;
+        check(xet_download_stream_next_start(s_.get(), &raw, &err), "xet_download_stream_next_start", err);
+        return Op(raw);
+    }
+    XetProgress progress() const {
+        XetProgress p{};
+        check(xet_download_stream_progress(s_.get(), &p), "xet_download_stream_progress");
+        return p;
+    }
+    void cancel() { xet_download_stream_cancel(s_.get()); }
+    std::uint64_t task_id() const { return xet_download_stream_task_id(s_.get()); }
+
+private:
+    Handle<XetDownloadStream, xet_download_stream_free> s_;
+};
+
+// A stream-download group. `range` maps to has_range/range_start/range_end.
+class DownloadStreamGroup {
+public:
+    explicit DownloadStreamGroup(XetDownloadStreamGroup* raw) : g_(raw) {}
+    DownloadStream download_stream(const FileInfo& file_info,
+                                   std::optional<std::pair<std::uint64_t, std::uint64_t>> range = std::nullopt) {
+        XetDownloadStream* raw = nullptr;
+        XetError* err = nullptr;
+        check(xet_download_stream_group_download_stream(g_.get(), file_info.get(), range.has_value(),
+                                                        range ? range->first : 0, range ? range->second : 0,
+                                                        &raw, &err),
+              "xet_download_stream_group_download_stream", err);
+        return DownloadStream(raw);
+    }
+    DownloadStream download_unordered_stream(
+        const FileInfo& file_info,
+        std::optional<std::pair<std::uint64_t, std::uint64_t>> range = std::nullopt) {
+        XetDownloadStream* raw = nullptr;
+        XetError* err = nullptr;
+        check(xet_download_stream_group_download_unordered_stream(
+                  g_.get(), file_info.get(), range.has_value(), range ? range->first : 0,
+                  range ? range->second : 0, &raw, &err),
+              "xet_download_stream_group_download_unordered_stream", err);
+        return DownloadStream(raw);
+    }
+
+private:
+    Handle<XetDownloadStreamGroup, xet_download_stream_group_free> g_;
+};
+
 }  // namespace xet
