@@ -178,3 +178,136 @@ fn header_is_up_to_date() {
         "include/hf_xet.h is stale — run `cargo build -p xet_capi` and commit the result"
     );
 }
+
+#[test]
+fn c_smoke_compiles() {
+    // Compile smoke.c against the committed header via the cc crate. A full
+    // link+run against the staticlib is left to CI/CGo; compiling the TU
+    // against the header already catches ABI/header regressions.
+    let crate_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let out_dir = tempfile::tempdir().unwrap();
+    // `cc` normally reads TARGET/HOST/OPT_LEVEL from the build-script environment.
+    // Tests do not run under a build script, so provide them explicitly.
+    let target = env!("CAPI_TARGET");
+    let objs = cc::Build::new()
+        .file(crate_dir.join("tests/smoke.c"))
+        .include(crate_dir.join("include"))
+        .cargo_metadata(false)
+        .warnings(true)
+        .target(target)
+        .host(target)
+        .opt_level(0)
+        .out_dir(out_dir.path())
+        .compile_intermediates();
+    assert!(!objs.is_empty(), "smoke.c did not compile to an object");
+}
+
+#[cfg(feature = "simulation")]
+#[test]
+fn e2e_upload_then_download_via_ffi() {
+    use std::ffi::CString;
+
+    unsafe fn drive(op: *const XetOp) -> XetPollState {
+        let mut s = unsafe { xet_op_poll(op) };
+        let mut spins = 0;
+        while s == XetPollState::XetPollPending {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            s = unsafe { xet_op_poll(op) };
+            spins += 1;
+            assert!(spins < 20_000, "op timed out");
+        }
+        s
+    }
+
+    unsafe {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = CString::new(format!("local://{}", dir.path().join("cas").display())).unwrap();
+
+        let mut err: *mut XetError = std::ptr::null_mut();
+        let mut session: *mut XetSession = std::ptr::null_mut();
+        assert_eq!(xet_session_new(&mut session, &mut err), XetStatus::XetOk);
+
+        let cfg = XetAuthConfig {
+            endpoint: endpoint.as_ptr(),
+            token: std::ptr::null(),
+            token_expiry: 0,
+            token_refresh_url: std::ptr::null(),
+            refresh_headers: std::ptr::null(),
+            refresh_header_count: 0,
+        };
+
+        // Upload
+        let mut commit: *mut XetUploadCommit = std::ptr::null_mut();
+        assert_eq!(xet_session_new_upload_commit(session, &cfg, &mut commit, &mut err), XetStatus::XetOk);
+
+        let payload = b"hello xet c api";
+        let name = CString::new("greeting.txt").unwrap();
+        let mut upload: *mut XetFileUpload = std::ptr::null_mut();
+        assert_eq!(
+            xet_upload_commit_upload_bytes(
+                commit,
+                payload.as_ptr(),
+                payload.len(),
+                name.as_ptr(),
+                XetSha256Policy::XetSha256Compute,
+                std::ptr::null(),
+                &mut upload,
+                &mut err,
+            ),
+            XetStatus::XetOk
+        );
+
+        let mut op: *mut XetOp = std::ptr::null_mut();
+        assert_eq!(xet_file_upload_finalize_start(upload, &mut op, &mut err), XetStatus::XetOk);
+        assert_eq!(drive(op), XetPollState::XetPollReady);
+        let mut meta: *mut XetFileMetadataHandle = std::ptr::null_mut();
+        assert_eq!(xet_op_take_file_metadata(op, &mut meta, &mut err), XetStatus::XetOk);
+
+        let mut cop: *mut XetOp = std::ptr::null_mut();
+        assert_eq!(xet_upload_commit_commit_start(commit, &mut cop, &mut err), XetStatus::XetOk);
+        assert_eq!(drive(cop), XetPollState::XetPollReady);
+        let mut report: *mut XetCommitReportHandle = std::ptr::null_mut();
+        assert_eq!(xet_op_take_commit_report(cop, &mut report, &mut err), XetStatus::XetOk);
+        assert!(xet_commit_report_file_count(report) >= 1);
+
+        // Build a file_info from the uploaded metadata
+        let hash_ptr = xet_file_metadata_hash(meta);
+        assert!(!hash_ptr.is_null());
+        let size = xet_file_metadata_file_size(meta);
+        let mut fi: *mut XetFileInfo = std::ptr::null_mut();
+        assert_eq!(xet_file_info_new(hash_ptr, size, &mut fi, &mut err), XetStatus::XetOk);
+
+        // Download to a path
+        let mut group: *mut XetFileDownloadGroup = std::ptr::null_mut();
+        assert_eq!(xet_session_new_file_download_group(session, &cfg, &mut group, &mut err), XetStatus::XetOk);
+
+        let dest_path = dir.path().join("out.txt");
+        let dest = CString::new(dest_path.to_str().unwrap()).unwrap();
+        let mut dl: *mut XetFileDownload = std::ptr::null_mut();
+        assert_eq!(
+            xet_file_download_group_download_to_path(group, fi, dest.as_ptr(), &mut dl, &mut err),
+            XetStatus::XetOk
+        );
+
+        let mut fop: *mut XetOp = std::ptr::null_mut();
+        assert_eq!(xet_file_download_group_finish_start(group, &mut fop, &mut err), XetStatus::XetOk);
+        assert_eq!(drive(fop), XetPollState::XetPollReady);
+        let mut dreport: *mut XetDownloadGroupReportHandle = std::ptr::null_mut();
+        assert_eq!(xet_op_take_download_report(fop, &mut dreport, &mut err), XetStatus::XetOk);
+
+        // Verify round-trip
+        let got = std::fs::read(&dest_path).unwrap();
+        assert_eq!(got, payload);
+
+        // Cleanup
+        xet_file_metadata_free(meta);
+        xet_commit_report_free(report);
+        xet_download_group_report_free(dreport);
+        xet_file_info_free(fi);
+        xet_file_upload_free(upload);
+        xet_file_download_free(dl);
+        xet_upload_commit_free(commit);
+        xet_file_download_group_free(group);
+        xet_session_free(session);
+    }
+}

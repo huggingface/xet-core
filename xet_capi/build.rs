@@ -10,6 +10,12 @@ fn main() {
     if let Ok(bindings) = cbindgen::generate(&crate_dir) {
         bindings.write_to_file(&out);
     }
+    // Expose the target triple to tests: `cc` needs TARGET/HOST but those are
+    // only set in the build-script environment, not at test runtime.
+    if let Ok(target) = std::env::var("TARGET") {
+        println!("cargo:rustc-env=CAPI_TARGET={target}");
+    }
+
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=cbindgen.toml");
 }
