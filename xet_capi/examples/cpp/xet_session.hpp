@@ -183,4 +183,69 @@ private:
     Handle<XetDownloadGroupReportHandle, xet_download_group_report_free> r_;
 };
 
+// A spawned, poll-able operation. Always freed exactly once in its dtor,
+// whether or not a take_* succeeded (matches the C ownership contract).
+class Op {
+public:
+    explicit Op(XetOp* raw) : op_(raw) {}
+
+    XetPollState poll() { return xet_op_poll(op_.get()); }
+
+    // Poll until Ready or Error; throw xet::Exception on Error.
+    void wait(std::chrono::milliseconds interval = std::chrono::milliseconds(20)) {
+        XetPollState state;
+        while ((state = xet_op_poll(op_.get())) == XetPollState_XetPollPending) {
+            std::this_thread::sleep_for(interval);
+        }
+        if (state == XetPollState_XetPollError) {
+            XetError* err = nullptr;
+            xet_op_take_error(op_.get(), &err);
+            check(XetStatus_XetErr, "operation failed", err);
+        }
+    }
+
+    FileMetadata take_file_metadata() {
+        XetFileMetadataHandle* raw = nullptr;
+        XetError* err = nullptr;
+        check(xet_op_take_file_metadata(op_.get(), &raw, &err), "xet_op_take_file_metadata", err);
+        return FileMetadata(raw);
+    }
+    CommitReport take_commit_report() {
+        XetCommitReportHandle* raw = nullptr;
+        XetError* err = nullptr;
+        check(xet_op_take_commit_report(op_.get(), &raw, &err), "xet_op_take_commit_report", err);
+        return CommitReport(raw);
+    }
+    DownloadGroupReport take_download_report() {
+        XetDownloadGroupReportHandle* raw = nullptr;
+        XetError* err = nullptr;
+        check(xet_op_take_download_report(op_.get(), &raw, &err), "xet_op_take_download_report", err);
+        return DownloadGroupReport(raw);
+    }
+    void take_void() {
+        XetError* err = nullptr;
+        check(xet_op_take_void(op_.get(), &err), "xet_op_take_void", err);
+    }
+    // nullopt at stream EOF.
+    std::optional<Bytes> take_bytes() {
+        XetBytes* raw = nullptr;
+        XetError* err = nullptr;
+        check(xet_op_take_bytes(op_.get(), &raw, &err), "xet_op_take_bytes", err);
+        if (!raw) return std::nullopt;
+        return Bytes(raw);
+    }
+    // nullopt at stream EOF; otherwise {offset, chunk}.
+    std::optional<std::pair<std::uint64_t, Bytes>> take_chunk() {
+        std::uint64_t offset = 0;
+        XetBytes* raw = nullptr;
+        XetError* err = nullptr;
+        check(xet_op_take_chunk(op_.get(), &offset, &raw, &err), "xet_op_take_chunk", err);
+        if (!raw) return std::nullopt;
+        return std::make_pair(offset, Bytes(raw));
+    }
+
+private:
+    Handle<XetOp, xet_op_free> op_;
+};
+
 }  // namespace xet
