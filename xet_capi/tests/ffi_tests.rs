@@ -44,6 +44,7 @@ fn op_poll_completes_and_takes_void() {
         let mut err: *mut XetError = std::ptr::null_mut();
         assert_eq!(xet_op_take_void(op, &mut err), XetStatus::XetOk);
         assert!(err.is_null());
+        xet_op_free(op);
     }
 }
 
@@ -60,6 +61,7 @@ fn op_error_is_taken() {
         assert!(!err.is_null());
         assert_eq!(xet_error_code(err), XetStatus::XetErr);
         xet_error_free(err);
+        xet_op_free(op);
     }
 }
 
@@ -315,6 +317,9 @@ fn e2e_upload_then_download_via_ffi() {
         assert_eq!(got, payload);
 
         // Cleanup
+        xet_op_free(op);
+        xet_op_free(cop);
+        xet_op_free(fop);
         xet_file_metadata_free(meta);
         xet_commit_report_free(report);
         xet_download_group_report_free(dreport);

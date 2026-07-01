@@ -28,8 +28,10 @@ struct OpState {
     slot: Mutex<Option<Result<OpOutput, xet::XetError>>>,
 }
 
-/// A spawned, poll-able operation. Poll with [`xet_op_poll`], then consume with
-/// the matching `xet_op_take_*`. Free an un-taken op with [`xet_op_free`].
+/// A spawned, poll-able operation. Poll with [`xet_op_poll`], then read its
+/// result with the matching `xet_op_take_*`. Ownership model: `xet_op_take_*`
+/// never frees the op — the caller must always free every op exactly once with
+/// [`xet_op_free`], whether or not a take succeeded.
 pub struct XetOp {
     state: Arc<OpState>,
     join: Option<JoinHandle<()>>,
@@ -92,9 +94,13 @@ pub unsafe extern "C" fn xet_op_poll(op: *const XetOp) -> XetPollState {
     .unwrap_or(XetPollState::XetPollError)
 }
 
+/// Free an op. Must be called exactly once per op — after reading its result
+/// with a `xet_op_take_*` call, or directly to abandon an un-taken op. Joins the
+/// worker thread if it has not already been joined by a take.
+///
 /// # Safety
 /// `op` must be null or a pointer previously returned by this crate that has not
-/// already been freed or consumed by a `xet_op_take_*` call.
+/// already been freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xet_op_free(op: *mut XetOp) {
     if let Some(o) = unsafe { op.as_mut() }
@@ -115,7 +121,6 @@ pub unsafe extern "C" fn xet_op_free(op: *mut XetOp) {
 pub unsafe extern "C" fn xet_op_take_error(op: *mut XetOp, err: *mut *mut XetError) -> XetStatus {
     ffi_guard(err, || match take_output(op) {
         Some(Err(e)) => {
-            free_handle(op);
             set_err(err, XetError::from_xet(&e));
             XetStatus::XetOk
         },
@@ -123,7 +128,7 @@ pub unsafe extern "C" fn xet_op_take_error(op: *mut XetOp, err: *mut *mut XetErr
     })
 }
 
-/// Consume a completed op yielding file metadata.
+/// Read a completed op's file metadata into `*out`. Does not free the op.
 ///
 /// # Safety
 /// `op` valid; `out`/`err` valid pointers.
@@ -138,18 +143,14 @@ pub unsafe extern "C" fn xet_op_take_file_metadata(
             if !out.is_null() {
                 unsafe { *out = into_handle(XetFileMetadataHandle::owned(v)) };
             }
-            free_handle(op);
             XetStatus::XetOk
         },
-        Some(Err(e)) => {
-            free_handle(op);
-            set_xet_err(err, &e)
-        },
+        Some(Err(e)) => set_xet_err(err, &e),
         _ => XetStatus::XetErrInvalidArg,
     })
 }
 
-/// Consume a completed op yielding a commit report.
+/// Read a completed op's commit report into `*out`. Does not free the op.
 ///
 /// # Safety
 /// `op` valid; `out`/`err` valid pointers.
@@ -164,18 +165,14 @@ pub unsafe extern "C" fn xet_op_take_commit_report(
             if !out.is_null() {
                 unsafe { *out = into_handle(XetCommitReportHandle::new(v)) };
             }
-            free_handle(op);
             XetStatus::XetOk
         },
-        Some(Err(e)) => {
-            free_handle(op);
-            set_xet_err(err, &e)
-        },
+        Some(Err(e)) => set_xet_err(err, &e),
         _ => XetStatus::XetErrInvalidArg,
     })
 }
 
-/// Consume a completed op yielding a download-group report.
+/// Read a completed op's download-group report into `*out`. Does not free the op.
 ///
 /// # Safety
 /// `op` valid; `out`/`err` valid pointers.
@@ -190,13 +187,9 @@ pub unsafe extern "C" fn xet_op_take_download_report(
             if !out.is_null() {
                 unsafe { *out = into_handle(XetDownloadGroupReportHandle::new(v)) };
             }
-            free_handle(op);
             XetStatus::XetOk
         },
-        Some(Err(e)) => {
-            free_handle(op);
-            set_xet_err(err, &e)
-        },
+        Some(Err(e)) => set_xet_err(err, &e),
         _ => XetStatus::XetErrInvalidArg,
     })
 }
@@ -209,14 +202,8 @@ pub unsafe extern "C" fn xet_op_take_download_report(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xet_op_take_void(op: *mut XetOp, err: *mut *mut XetError) -> XetStatus {
     ffi_guard(err, || match take_output(op) {
-        Some(Ok(OpOutput::Void)) => {
-            free_handle(op);
-            XetStatus::XetOk
-        },
-        Some(Err(e)) => {
-            free_handle(op);
-            set_xet_err(err, &e)
-        },
+        Some(Ok(OpOutput::Void)) => XetStatus::XetOk,
+        Some(Err(e)) => set_xet_err(err, &e),
         _ => XetStatus::XetErrInvalidArg,
     })
 }
@@ -237,13 +224,9 @@ pub unsafe extern "C" fn xet_op_take_bytes(
             if !out.is_null() {
                 unsafe { *out = opt.map_or(std::ptr::null_mut(), |b| into_handle(XetBytes::new(b))) };
             }
-            free_handle(op);
             XetStatus::XetOk
         },
-        Some(Err(e)) => {
-            free_handle(op);
-            set_xet_err(err, &e)
-        },
+        Some(Err(e)) => set_xet_err(err, &e),
         _ => XetStatus::XetErrInvalidArg,
     })
 }
@@ -277,13 +260,9 @@ pub unsafe extern "C" fn xet_op_take_chunk(
                     }
                 },
             }
-            free_handle(op);
             XetStatus::XetOk
         },
-        Some(Err(e)) => {
-            free_handle(op);
-            set_xet_err(err, &e)
-        },
+        Some(Err(e)) => set_xet_err(err, &e),
         _ => XetStatus::XetErrInvalidArg,
     })
 }
