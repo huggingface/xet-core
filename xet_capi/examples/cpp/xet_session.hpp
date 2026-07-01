@@ -137,4 +137,50 @@ private:
     Handle<XetFileMetadataHandle, xet_file_metadata_free> h_;
 };
 
+// Owned commit report.
+class CommitReport {
+public:
+    explicit CommitReport(XetCommitReportHandle* raw) : r_(raw) {}
+    std::size_t file_count() const { return xet_commit_report_file_count(r_.get()); }
+    // Borrowed view; valid until this report is freed.
+    FileMetadataView file_at(std::size_t index) const {
+        const XetFileMetadataHandle* out = nullptr;
+        check(xet_commit_report_file_at(r_.get(), index, &out), "xet_commit_report_file_at");
+        return FileMetadataView(out);
+    }
+    XetDedupMetrics dedup() const {
+        XetDedupMetrics m{};
+        check(xet_commit_report_dedup(r_.get(), &m), "xet_commit_report_dedup");
+        return m;
+    }
+    XetProgress progress() const {
+        XetProgress p{};
+        check(xet_commit_report_progress(r_.get(), &p), "xet_commit_report_progress");
+        return p;
+    }
+
+private:
+    Handle<XetCommitReportHandle, xet_commit_report_free> r_;
+};
+
+// Owned download-group report.
+class DownloadGroupReport {
+public:
+    struct Entry {
+        std::uint64_t task_id;
+        std::uint64_t bytes_completed;
+    };
+    explicit DownloadGroupReport(XetDownloadGroupReportHandle* raw) : r_(raw) {}
+    std::size_t count() const { return xet_download_group_report_count(r_.get()); }
+    Entry at(std::size_t index) const {
+        Entry e{};
+        check(xet_download_group_report_at(r_.get(), index, &e.task_id, &e.bytes_completed),
+              "xet_download_group_report_at");
+        return e;
+    }
+
+private:
+    Handle<XetDownloadGroupReportHandle, xet_download_group_report_free> r_;
+};
+
 }  // namespace xet
