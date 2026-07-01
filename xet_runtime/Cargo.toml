@@ -63,6 +63,7 @@ web-time = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 shellexpand = { workspace = true, features = ["path"] }
+tracing-appender = { workspace = true }
 tokio = { workspace = true, features = [
     "time",
     "rt",
@@ -73,7 +74,6 @@ tokio = { workspace = true, features = [
     "rt-multi-thread",
 ] }
 tokio-util = { workspace = true, features = ["io"] }
-tracing-appender = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = { workspace = true }
