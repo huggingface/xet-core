@@ -51,6 +51,17 @@ typedef struct XetBytes XetBytes;
 typedef struct XetError XetError;
 
 /**
+ * A queued file download. Free with [`xet_file_download_free`].
+ */
+typedef struct XetFileDownload XetFileDownload;
+
+/**
+ * A file-download group (Arc-backed; cheap to clone). Free with
+ * [`xet_file_download_group_free`].
+ */
+typedef struct XetFileDownloadGroup XetFileDownloadGroup;
+
+/**
  * File descriptor for downloads. Free with [`xet_file_info_free`].
  */
 typedef struct XetFileInfo XetFileInfo;
@@ -129,6 +140,54 @@ void xet_bytes_free(XetBytes *b);
  * Test-only constructor used by ffi_tests.
  */
 XetBytes *xet_test_make_bytes(void);
+
+/**
+ * Queue a file for download to `dest_path`. Returns a handle immediately;
+ * call `xet_file_download_group_finish_start` to await all downloads.
+ *
+ * # Safety
+ * `group`/`file_info` valid handles; `dest_path` a valid C string; `out`/`err` valid.
+ */
+XetStatus xet_file_download_group_download_to_path(const XetFileDownloadGroup *group,
+                                                   const XetFileInfo *file_info,
+                                                   const char *dest_path,
+                                                   XetFileDownload **out,
+                                                   XetError **err);
+
+/**
+ * Start awaiting all queued downloads. Poll the returned op; it yields a
+ * download-group report.
+ *
+ * # Safety
+ * `group`/`out`/`err` valid pointers.
+ */
+XetStatus xet_file_download_group_finish_start(const XetFileDownloadGroup *group,
+                                               XetOp **out,
+                                               XetError **err);
+
+/**
+ * # Safety
+ * `group` valid; `out` a valid pointer to a `XetProgress`.
+ */
+XetStatus xet_file_download_group_progress(const XetFileDownloadGroup *group, XetProgress *out);
+
+/**
+ * # Safety
+ * `group` valid; `err` valid.
+ */
+XetStatus xet_file_download_group_abort(const XetFileDownloadGroup *group, XetError **err);
+
+/**
+ * Returns the download's task id, or 0 if `download` is null.
+ *
+ * # Safety
+ * `download` must be null or a valid handle.
+ */
+uint64_t xet_file_download_task_id(const XetFileDownload *download);
+
+void xet_file_download_group_free(XetFileDownloadGroup *group);
+
+void xet_file_download_free(XetFileDownload *download);
 
 /**
  * # Safety

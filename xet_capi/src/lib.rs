@@ -5,6 +5,7 @@
 //! cross the ABI in either direction.
 
 mod bytes;
+mod download_file;
 mod error;
 mod file_info;
 mod handle;
@@ -15,6 +16,11 @@ mod upload;
 mod upload_stream;
 
 pub use bytes::{XetBytes, xet_bytes_data, xet_bytes_free, xet_bytes_len, xet_test_make_bytes};
+pub use download_file::{
+    XetFileDownload, XetFileDownloadGroup, xet_file_download_free, xet_file_download_group_abort,
+    xet_file_download_group_download_to_path, xet_file_download_group_finish_start, xet_file_download_group_free,
+    xet_file_download_group_progress, xet_file_download_task_id,
+};
 pub use error::{XetError, XetStatus, xet_error_code, xet_error_free, xet_error_message, xet_test_make_auth_error};
 pub use file_info::{
     XetFileInfo, XetSha256Policy, xet_file_info_free, xet_file_info_new, xet_file_info_new_with_sha256,

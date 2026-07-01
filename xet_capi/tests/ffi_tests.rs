@@ -113,3 +113,15 @@ fn stream_upload_symbols_link() {
         xet_capi::xet_stream_upload_free as *const (),
     ];
 }
+
+#[test]
+fn download_file_symbols_link() {
+    let _f: [*const (); 6] = [
+        xet_capi::xet_file_download_group_download_to_path as *const (),
+        xet_capi::xet_file_download_group_finish_start as *const (),
+        xet_capi::xet_file_download_group_progress as *const (),
+        xet_capi::xet_file_download_group_abort as *const (),
+        xet_capi::xet_file_download_task_id as *const (),
+        xet_capi::xet_file_download_group_free as *const (),
+    ];
+}
