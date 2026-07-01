@@ -299,4 +299,89 @@ private:
     mutable std::vector<XetHeader> header_view_;
 };
 
+// A queued file upload.
+class FileUpload {
+public:
+    explicit FileUpload(XetFileUpload* raw) : u_(raw) {}
+    Op finalize_start() {
+        XetOp* raw = nullptr;
+        XetError* err = nullptr;
+        check(xet_file_upload_finalize_start(u_.get(), &raw, &err), "xet_file_upload_finalize_start", err);
+        return Op(raw);
+    }
+
+private:
+    Handle<XetFileUpload, xet_file_upload_free> u_;
+};
+
+// A streaming upload.
+class StreamUpload {
+public:
+    explicit StreamUpload(XetStreamUpload* raw) : su_(raw) {}
+    Op write_start(const std::uint8_t* data, std::size_t len) {
+        XetOp* raw = nullptr;
+        XetError* err = nullptr;
+        check(xet_stream_upload_write_start(su_.get(), data, len, &raw, &err),
+              "xet_stream_upload_write_start", err);
+        return Op(raw);
+    }
+    Op finish_start() {
+        XetOp* raw = nullptr;
+        XetError* err = nullptr;
+        check(xet_stream_upload_finish_start(su_.get(), &raw, &err), "xet_stream_upload_finish_start", err);
+        return Op(raw);
+    }
+
+private:
+    Handle<XetStreamUpload, xet_stream_upload_free> su_;
+};
+
+// An upload commit (Arc-backed in C; cheap to build from a session).
+class UploadCommit {
+public:
+    explicit UploadCommit(XetUploadCommit* raw) : c_(raw) {}
+    FileUpload upload_from_path(const char* path, XetSha256Policy policy,
+                                const char* provided_sha256 = nullptr) {
+        XetFileUpload* raw = nullptr;
+        XetError* err = nullptr;
+        check(xet_upload_commit_upload_from_path(c_.get(), path, policy, provided_sha256, &raw, &err),
+              "xet_upload_commit_upload_from_path", err);
+        return FileUpload(raw);
+    }
+    FileUpload upload_bytes(const std::uint8_t* data, std::size_t len, const char* name,
+                            XetSha256Policy policy, const char* provided_sha256 = nullptr) {
+        XetFileUpload* raw = nullptr;
+        XetError* err = nullptr;
+        check(xet_upload_commit_upload_bytes(c_.get(), data, len, name, policy, provided_sha256, &raw, &err),
+              "xet_upload_commit_upload_bytes", err);
+        return FileUpload(raw);
+    }
+    StreamUpload upload_stream(const char* name, XetSha256Policy policy,
+                               const char* provided_sha256 = nullptr) {
+        XetStreamUpload* raw = nullptr;
+        XetError* err = nullptr;
+        check(xet_upload_commit_upload_stream(c_.get(), name, policy, provided_sha256, &raw, &err),
+              "xet_upload_commit_upload_stream", err);
+        return StreamUpload(raw);
+    }
+    Op commit_start() {
+        XetOp* raw = nullptr;
+        XetError* err = nullptr;
+        check(xet_upload_commit_commit_start(c_.get(), &raw, &err), "xet_upload_commit_commit_start", err);
+        return Op(raw);
+    }
+    XetProgress progress() const {
+        XetProgress p{};
+        check(xet_upload_commit_progress(c_.get(), &p), "xet_upload_commit_progress");
+        return p;
+    }
+    void abort() {
+        XetError* err = nullptr;
+        check(xet_upload_commit_abort(c_.get(), &err), "xet_upload_commit_abort", err);
+    }
+
+private:
+    Handle<XetUploadCommit, xet_upload_commit_free> c_;
+};
+
 }  // namespace xet
