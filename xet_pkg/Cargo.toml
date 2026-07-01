@@ -28,6 +28,12 @@ path = "src/lib.rs"
 [[bin]]
 name = "xtool"
 path = "src/bin/xtool/main.rs"
+required-features = ["internal-tools"]
+
+# The xtool CLI tests spawn the xtool binary, so they need the same feature.
+[[test]]
+name = "test_xtool_cli"
+required-features = ["internal-tools"]
 
 [dependencies]
 xet-runtime = { version = "1.5.2", path = "../xet_runtime" }
@@ -45,13 +51,16 @@ serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
-clap = { workspace = true, features = ["derive"] }
+clap = { workspace = true, features = ["derive"], optional = true }
 serde_json = { workspace = true }
-walkdir = { workspace = true }
+walkdir = { workspace = true, optional = true }
 uuid = { workspace = true, features = ["v7"] }
 
 [features]
 smoke-test = []
+# Internal tooling (the `xtool` binary). Off by default so the library
+# still compiles for wasm32-unknown-unknown.
+internal-tools = ["dep:clap", "dep:walkdir"]
 fd-track = ["xet-runtime/fd-track", "xet-client/fd-track", "xet-data/fd-track"]
 python = ["xet-runtime/python", "xet-data/python", "dep:pyo3"]
 simulation = ["xet-client/simulation"]

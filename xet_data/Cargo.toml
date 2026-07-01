@@ -39,7 +39,6 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true, features = ["v7"] }
-walkdir = { workspace = true, optional = true }
 pyo3 = { workspace = true, optional = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
@@ -99,7 +98,7 @@ strict = []
 smoke-test = []
 expensive_tests = []
 # Internal tooling (the `x` and `xtool` binaries). Off by default.
-internal-tools = ["dep:clap", "dep:walkdir"]
+internal-tools = ["dep:clap"]
 fd-track = ["xet-runtime/fd-track", "xet-client/fd-track"]
 python = ["dep:pyo3"]
 simulation = ["xet-client/simulation", "xet-core-structures/simulation"]
