@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use bytes::Bytes;
 use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
@@ -7,7 +9,17 @@ use super::adaptive_concurrency::ConnectionPermit;
 use super::progress_tracked_streams::ProgressCallback;
 use crate::cas_types::{
     BatchQueryReconstructionResponse, FileChunkHashesResponse, FileRange, HttpRange, QueryReconstructionResponseV2,
+    ShardUploadEvent,
 };
+
+/// Progress callback for shard upload finalization (v2 NDJSON stream).
+pub enum ShardUploadProgressType<'a> {
+    // Number of incremental bytes transfered
+    Transfer(u64),
+    // Progress event from server
+    Response(&'a ShardUploadEvent),
+}
+pub type ShardUploadProgressCallback = Arc<dyn Fn(ShardUploadProgressType) + Send + Sync>;
 use crate::error::Result;
 
 #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
@@ -62,8 +74,13 @@ pub trait Client: Send + Sync {
     /// Acquire an upload permit.
     async fn acquire_upload_permit(&self) -> Result<ConnectionPermit>;
 
-    /// Upload a new shard.
-    async fn upload_shard(&self, shard_data: bytes::Bytes, upload_permit: ConnectionPermit) -> Result<bool>;
+    /// Upload a new shard. The optional callback receives v2 NDJSON progress events.
+    async fn upload_shard(
+        &self,
+        shard_data: bytes::Bytes,
+        upload_permit: ConnectionPermit,
+        progress_callback: Option<ShardUploadProgressCallback>,
+    ) -> Result<bool>;
 
     /// Upload a new xorb. Optional progress callback receives (delta, completed, total) in transfer bytes.
     async fn upload_xorb(

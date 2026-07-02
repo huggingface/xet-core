@@ -1,13 +1,13 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use more_asserts::debug_assert_le;
+use xet_client::cas_types::{CommitStage, ShardUploadEvent};
 use xet_runtime::utils::UniqueId;
 
 use super::speed_tracker::{DEFAULT_MIN_OBSERVATIONS_FOR_RATE, DEFAULT_SPEED_HALF_LIFE, SpeedTracker};
-use super::upload_tracking::CompletionTracker;
 
 /// Per-item atomic progress counters. Created by `GroupProgress::new_item()`.
 pub struct ItemProgress {
@@ -76,20 +76,20 @@ pub struct GroupProgress {
 
 impl GroupProgress {
     /// Create a group progress tracker using default speed estimation parameters.
-    pub fn new() -> Arc<Self> {
+    pub fn new() -> Self {
         Self::with_speed_config(DEFAULT_SPEED_HALF_LIFE, DEFAULT_MIN_OBSERVATIONS_FOR_RATE)
     }
 
     /// Create a group progress tracker with explicit speed estimation parameters.
-    pub fn with_speed_config(half_life: Duration, min_observations: u32) -> Arc<Self> {
-        Arc::new(Self {
+    pub fn with_speed_config(half_life: Duration, min_observations: u32) -> Self {
+        Self {
             total_bytes: AtomicU64::new(0),
             total_bytes_completed: AtomicU64::new(0),
             total_transfer_bytes: AtomicU64::new(0),
             total_transfer_bytes_completed: AtomicU64::new(0),
             items: Mutex::new(HashMap::new()),
             speed_tracker: Mutex::new(SpeedTracker::new(half_life).with_min_observations(min_observations)),
-        })
+        }
     }
 
     /// Create a new tracked item and register it in the items map.
@@ -101,11 +101,6 @@ impl GroupProgress {
             item,
             group: self.clone(),
         })
-    }
-
-    /// Create a new CompletionTracker backed by this group's progress.
-    pub fn new_completion_tracker(self: &Arc<Self>) -> CompletionTracker {
-        CompletionTracker::new(self.clone())
     }
 
     /// Snapshot of aggregate progress. Reads completions first (Acquire), then totals
@@ -137,6 +132,7 @@ impl GroupProgress {
             total_transfer_bytes,
             total_transfer_bytes_completed,
             total_transfer_bytes_completion_rate: transfer_rate,
+            shard: None,
         }
     }
 
@@ -211,6 +207,204 @@ impl std::fmt::Debug for GroupProgress {
     }
 }
 
+/// Aggregate progress for concurrent shard uploads: raw transfer bytes plus the
+/// server-reported validation/commit progress streamed back on the v2 NDJSON shard
+/// upload response. Per-shard state is keyed by the `UniqueId` returned from
+/// `register_shard_transfer`.
+#[derive(Default)]
+pub struct ShardUploadProgress {
+    pub total_shard_bytes: AtomicU64,
+    pub total_shard_bytes_upload_completed: AtomicU64,
+    pub total_shards: AtomicU32,
+    pub total_shard_validation_entries: AtomicU64,
+    pub total_shard_validation_entries_completed: AtomicU64,
+    pub total_shards_uploaded_to_store: AtomicU32,
+    pub total_shards_synced: AtomicU32,
+    pub total_shards_completed: AtomicU32,
+    /// Latest NDJSON event observed per shard, used by `update` to detect and discard
+    /// stale/out-of-order/duplicate frames.
+    pub shards_validation: Mutex<HashMap<UniqueId, ShardUploadEvent>>,
+}
+
+impl ShardUploadProgress {
+    /// Snapshot of aggregate shard upload/validation progress.
+    pub fn report(&self) -> ShardUploadProgressReport {
+        ShardUploadProgressReport {
+            total_shard_bytes: self.total_shard_bytes.load(Ordering::Relaxed),
+            total_shard_bytes_upload_completed: self.total_shard_bytes_upload_completed.load(Ordering::Relaxed),
+            total_shards: self.total_shards.load(Ordering::Relaxed),
+            total_shard_validation_entries: self.total_shard_validation_entries.load(Ordering::Relaxed),
+            total_shard_validation_entries_completed: self
+                .total_shard_validation_entries_completed
+                .load(Ordering::Relaxed),
+            total_shards_uploaded_to_store: self.total_shards_uploaded_to_store.load(Ordering::Relaxed),
+            total_shards_synced: self.total_shards_synced.load(Ordering::Relaxed),
+            total_shards_completed: self.total_shards_completed.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Register a new shard upload of `shard_size` bytes and return its tracking id.
+    /// Seeds the id's NDJSON state as `Validating { verified: 0, total: 0 }` so the first
+    /// event `update` receives for it always has a previous state to compare against.
+    pub fn register_shard_transfer(&self, shard_size: u64) -> UniqueId {
+        let id = UniqueId::new();
+        self.shards_validation
+            .lock()
+            .unwrap()
+            .insert(id, ShardUploadEvent::Validating { verified: 0, total: 0 });
+        self.total_shard_bytes.fetch_add(shard_size, Ordering::Relaxed);
+        id
+    }
+
+    /// Record incremental bytes transferred for a shard upload (raw HTTP body progress,
+    /// not the server-side validation/commit progress tracked by `update`).
+    pub fn increment_shard_transfer_progress(&self, nbytes: u64) {
+        self.total_shard_bytes_upload_completed.fetch_add(nbytes, Ordering::Relaxed);
+    }
+
+    /// Apply a v2 NDJSON progress event for the shard tracked by `id`.
+    ///
+    /// Events for a given shard normally progress `Validating` -> `Committing(Uploading)`
+    /// -> `Committing(Syncing)` -> `Result`, but frames can be skipped, duplicated, or
+    /// arrive out of order over the wire. To stay correct under that:
+    /// - `Validating` counters only ever move forward: increments are computed against the last recorded `(verified,
+    ///   total)` via `saturating_sub`, so a stale/duplicate frame with lower values contributes nothing.
+    /// - `Committing`/`Result` frames replace the stored state only when the previous state `precede`s (is strictly
+    ///   ordered before) the new one, so a late-arriving frame for an already-passed stage can't regress the recorded
+    ///   state. `Error` frames, and pairs of the same variant, are incomparable (`ShardUploadEvent::partial_cmp`
+    ///   returns `None`) and are simply skipped here rather than treated as forward progress.
+    pub fn update(&self, id: UniqueId, event: &ShardUploadEvent) {
+        // compare with the previous event in case of unordered or skipped event
+        let mut guard = self.shards_validation.lock().unwrap();
+        let maybe_old = guard.get_mut(&id);
+        match event {
+            ShardUploadEvent::Validating { verified, total } => {
+                if let Some(ShardUploadEvent::Validating {
+                    verified: old_verified,
+                    total: old_total,
+                }) = maybe_old
+                {
+                    let verified_increment = verified.saturating_sub(*old_verified); // in case of unordered event
+                    let total_increment = total.saturating_sub(*old_total);
+                    if verified_increment > 0 {
+                        *old_verified += verified_increment;
+                        self.total_shard_validation_entries_completed
+                            .fetch_add(verified_increment, Ordering::Relaxed);
+                    }
+                    if total_increment > 0 {
+                        *old_total += total_increment;
+                        self.total_shard_validation_entries
+                            .fetch_add(total_increment, Ordering::Relaxed);
+                    }
+                }
+            },
+            ShardUploadEvent::Committing {
+                stage: CommitStage::Uploading,
+            } => {
+                if maybe_old.is_none_or(|old| old.precede(event)) {
+                    guard.insert(id, event.clone());
+                }
+            },
+            ShardUploadEvent::Committing {
+                stage: CommitStage::Syncing,
+            } => {
+                if maybe_old.is_none_or(|old| old.precede(event)) {
+                    guard.insert(id, event.clone());
+                }
+                self.total_shards_uploaded_to_store.fetch_add(1, Ordering::Relaxed);
+            },
+            ShardUploadEvent::Result { .. } => {
+                if maybe_old.is_none_or(|old| old.precede(event)) {
+                    guard.insert(id, event.clone());
+                }
+                self.total_shards_synced.fetch_add(1, Ordering::Relaxed);
+                self.total_shards_completed.fetch_add(1, Ordering::Relaxed);
+            },
+            _ => {},
+        }
+    }
+}
+
+impl std::fmt::Debug for ShardUploadProgress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("{:?}", self.report()))
+    }
+}
+
+pub struct UploadGroupProgress {
+    // File read and Xorb upload progress
+    pub file_data: Arc<GroupProgress>,
+    // Shard upload and validation progress
+    pub shards: Arc<ShardUploadProgress>,
+}
+
+impl Default for UploadGroupProgress {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl UploadGroupProgress {
+    /// Create a group progress tracker using default speed estimation parameters.
+    pub fn new() -> Self {
+        Self::with_speed_config(DEFAULT_SPEED_HALF_LIFE, DEFAULT_MIN_OBSERVATIONS_FOR_RATE)
+    }
+
+    /// Create a group progress tracker with explicit speed estimation parameters.
+    pub fn with_speed_config(half_life: Duration, min_observations: u32) -> Self {
+        Self {
+            file_data: Arc::new(GroupProgress::with_speed_config(half_life, min_observations)),
+            shards: Default::default(),
+        }
+    }
+
+    /// Create a new tracked item and register it in the items map.
+    /// Returns an `ItemProgressUpdater` handle for the caller to report progress.
+    pub fn new_item(self: &Arc<Self>, id: UniqueId, name: impl Into<Arc<str>>) -> Arc<ItemProgressUpdater> {
+        self.file_data.new_item(id, name)
+    }
+
+    /// Snapshot of aggregate data and shard upload progress.
+    pub fn report(&self) -> GroupProgressReport {
+        let mut report = self.file_data.report();
+        report.shard = Some(self.shards.report());
+        report
+    }
+
+    /// Snapshot of all per-item progress.
+    pub fn item_reports(&self) -> HashMap<UniqueId, ItemProgressReport> {
+        self.file_data.item_reports()
+    }
+
+    /// Snapshot of one item's progress.
+    pub fn item_report(&self, id: UniqueId) -> Option<ItemProgressReport> {
+        self.file_data.item_report(id)
+    }
+
+    /// Debug verification that all items are complete.
+    pub fn assert_complete(&self) {
+        #[cfg(debug_assertions)]
+        {
+            self.file_data.assert_complete();
+        }
+    }
+
+    /// Register a new shard upload size.
+    pub fn register_shard_transfer(&self, shard_size: u64) -> UniqueId {
+        self.shards.register_shard_transfer(shard_size)
+    }
+
+    /// Update shard transfer bytes for transfer "_id"
+    pub fn increment_shard_transfer_progress(&self, _id: UniqueId, nbytes: u64) {
+        self.shards.increment_shard_transfer_progress(nbytes)
+    }
+
+    /// Update shard upload progress
+    pub fn register_shard_upload_progress(&self, id: UniqueId, event: &ShardUploadEvent) {
+        self.shards.update(id, event)
+    }
+}
+
 /// Handle for reporting progress on a single item. All progress updates
 /// (both download and upload paths) go through this type.
 ///
@@ -226,7 +420,7 @@ impl ItemProgressUpdater {
     /// Creates its own throwaway GroupProgress.
     #[cfg(any(debug_assertions, test))]
     pub fn new_standalone(name: &str) -> Arc<Self> {
-        let group = GroupProgress::new();
+        let group = Arc::new(GroupProgress::new());
         let item = Arc::new(ItemProgress::new(UniqueId::new(), Arc::from(name)));
         Arc::new(Self { item, group })
     }
@@ -349,10 +543,6 @@ impl ItemProgressUpdater {
     pub fn report(&self) -> ItemProgressReport {
         self.item.report()
     }
-
-    pub fn group(&self) -> &Arc<GroupProgress> {
-        &self.group
-    }
 }
 
 impl std::fmt::Debug for ItemProgressUpdater {
@@ -372,6 +562,20 @@ pub struct GroupProgressReport {
     pub total_transfer_bytes: u64,
     pub total_transfer_bytes_completed: u64,
     pub total_transfer_bytes_completion_rate: Option<f64>,
+    pub shard: Option<ShardUploadProgressReport>,
+}
+
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "python", pyo3::pyclass(get_all, from_py_object))]
+pub struct ShardUploadProgressReport {
+    pub total_shard_bytes: u64,
+    pub total_shard_bytes_upload_completed: u64,
+    pub total_shards: u32,
+    pub total_shard_validation_entries: u64,
+    pub total_shard_validation_entries_completed: u64,
+    pub total_shards_uploaded_to_store: u32,
+    pub total_shards_synced: u32,
+    pub total_shards_completed: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -385,12 +589,13 @@ pub struct ItemProgressReport {
 #[cfg(test)]
 mod tests {
     use tokio::time::{Duration, advance, pause};
+    use xet_client::cas_types::UploadShardResponseType;
 
     use super::*;
 
     #[test]
     fn test_group_progress_new_item() {
-        let group = GroupProgress::new();
+        let group = Arc::new(GroupProgress::new());
         let updater = group.new_item(UniqueId::new(), "test.bin");
         updater.update_item_size(100, true);
 
@@ -399,7 +604,7 @@ mod tests {
 
     #[test]
     fn test_item_progress_updater_bytes() {
-        let group = GroupProgress::new();
+        let group = Arc::new(GroupProgress::new());
         let updater = group.new_item(UniqueId::new(), "test.bin");
         updater.update_item_size(100, true);
         updater.report_bytes_completed(50);
@@ -410,7 +615,7 @@ mod tests {
 
     #[test]
     fn test_item_progress_updater_transfer() {
-        let group = GroupProgress::new();
+        let group = Arc::new(GroupProgress::new());
         let updater = group.new_item(UniqueId::new(), "test.bin");
         updater.update_item_size(100, true);
         updater.update_transfer_size(80);
@@ -422,7 +627,7 @@ mod tests {
 
     #[test]
     fn test_update_item_size_finalized() {
-        let group = GroupProgress::new();
+        let group = Arc::new(GroupProgress::new());
         let updater = group.new_item(UniqueId::new(), "test.bin");
         updater.update_item_size(100, true);
         updater.update_item_size(200, false);
@@ -433,7 +638,7 @@ mod tests {
 
     #[test]
     fn test_update_item_size_monotonic_increase() {
-        let group = GroupProgress::new();
+        let group = Arc::new(GroupProgress::new());
         let updater = group.new_item(UniqueId::new(), "test.bin");
         updater.update_item_size(100, false);
         updater.update_item_size(300, false);
@@ -444,7 +649,7 @@ mod tests {
 
     #[test]
     fn test_update_item_size_same_value_noop() {
-        let group = GroupProgress::new();
+        let group = Arc::new(GroupProgress::new());
         let updater = group.new_item(UniqueId::new(), "test.bin");
         updater.update_item_size(100, false);
         updater.update_item_size(100, false);
@@ -454,7 +659,7 @@ mod tests {
 
     #[test]
     fn test_report_snapshot() {
-        let group = GroupProgress::new();
+        let group = Arc::new(GroupProgress::new());
         let updater = group.new_item(UniqueId::new(), "file.bin");
         updater.update_item_size(1000, true);
         updater.update_transfer_size(800);
@@ -470,7 +675,7 @@ mod tests {
 
     #[test]
     fn test_item_reports() {
-        let group = GroupProgress::new();
+        let group = Arc::new(GroupProgress::new());
         let id1 = UniqueId::new();
         let id2 = UniqueId::new();
 
@@ -490,7 +695,7 @@ mod tests {
 
     #[test]
     fn test_multiple_items_group_totals() {
-        let group = GroupProgress::new();
+        let group = Arc::new(GroupProgress::new());
         let u1 = group.new_item(UniqueId::new(), "a.bin");
         let u2 = group.new_item(UniqueId::new(), "b.bin");
 
@@ -505,7 +710,7 @@ mod tests {
 
     #[test]
     fn test_assert_complete() {
-        let group = GroupProgress::new();
+        let group = Arc::new(GroupProgress::new());
         let updater = group.new_item(UniqueId::new(), "test.bin");
         updater.update_item_size(100, true);
         updater.update_transfer_size(80);
@@ -518,7 +723,7 @@ mod tests {
 
     #[test]
     fn test_zero_increment_noop() {
-        let group = GroupProgress::new();
+        let group = Arc::new(GroupProgress::new());
         let updater = group.new_item(UniqueId::new(), "test.bin");
         updater.update_item_size(100, true);
         updater.report_bytes_completed(0);
@@ -529,7 +734,7 @@ mod tests {
 
     #[test]
     fn test_report_bytes_written_alias() {
-        let group = GroupProgress::new();
+        let group = Arc::new(GroupProgress::new());
         let updater = group.new_item(UniqueId::new(), "test.bin");
         updater.update_item_size(100, true);
         updater.report_bytes_written(50);
@@ -539,7 +744,7 @@ mod tests {
 
     #[test]
     fn test_report_transfer_progress_alias() {
-        let group = GroupProgress::new();
+        let group = Arc::new(GroupProgress::new());
         let updater = group.new_item(UniqueId::new(), "test.bin");
         updater.update_item_size(100, true);
         updater.update_transfer_size(90);
@@ -553,7 +758,7 @@ mod tests {
     async fn test_report_rates_none_until_min_observations_then_some() {
         pause();
 
-        let group = GroupProgress::with_speed_config(Duration::from_secs(10), 3);
+        let group = Arc::new(GroupProgress::with_speed_config(Duration::from_secs(10), 3));
         let updater = group.new_item(UniqueId::new(), "test.bin");
         updater.update_item_size(10_000, true);
         updater.update_transfer_size(10_000);
@@ -578,5 +783,171 @@ mod tests {
         let report = group.report();
         assert!(report.total_bytes_completion_rate.is_some());
         assert!(report.total_transfer_bytes_completion_rate.is_some());
+    }
+
+    #[test]
+    fn test_shard_update_validating_ignores_stale_out_of_order_frame() {
+        let progress = ShardUploadProgress::default();
+        let id = progress.register_shard_transfer(1000);
+
+        progress.update(id, &ShardUploadEvent::Validating { verified: 2, total: 5 });
+        let report = progress.report();
+        assert_eq!(report.total_shard_validation_entries_completed, 2);
+        assert_eq!(report.total_shard_validation_entries, 5);
+
+        // A duplicate/reordered frame with lower values than what's already recorded must
+        // not move the counters backward or double count.
+        progress.update(id, &ShardUploadEvent::Validating { verified: 1, total: 3 });
+        let report = progress.report();
+        assert_eq!(report.total_shard_validation_entries_completed, 2);
+        assert_eq!(report.total_shard_validation_entries, 5);
+
+        // Forward progress after a stale frame still accumulates correctly.
+        progress.update(id, &ShardUploadEvent::Validating { verified: 4, total: 5 });
+        let report = progress.report();
+        assert_eq!(report.total_shard_validation_entries_completed, 4);
+        assert_eq!(report.total_shard_validation_entries, 5);
+    }
+
+    #[test]
+    fn test_shard_update_committing_ignores_late_out_of_order_stage() {
+        let progress = ShardUploadProgress::default();
+        let id = progress.register_shard_transfer(1000);
+
+        progress.update(
+            id,
+            &ShardUploadEvent::Committing {
+                stage: CommitStage::Syncing,
+            },
+        );
+        assert_eq!(progress.report().total_shards_uploaded_to_store, 1);
+        assert_eq!(
+            *progress.shards_validation.lock().unwrap().get(&id).unwrap(),
+            ShardUploadEvent::Committing {
+                stage: CommitStage::Syncing
+            }
+        );
+
+        // "Uploading" arrives after "Syncing" was already observed (reordered in transit).
+        // It must not regress the recorded stage.
+        progress.update(
+            id,
+            &ShardUploadEvent::Committing {
+                stage: CommitStage::Uploading,
+            },
+        );
+        assert_eq!(
+            *progress.shards_validation.lock().unwrap().get(&id).unwrap(),
+            ShardUploadEvent::Committing {
+                stage: CommitStage::Syncing
+            }
+        );
+    }
+
+    #[test]
+    fn test_shard_update_result_after_skipped_committing_stage() {
+        let progress = ShardUploadProgress::default();
+        let id = progress.register_shard_transfer(1000);
+
+        progress.update(id, &ShardUploadEvent::Validating { verified: 5, total: 5 });
+
+        // Jump straight to the terminal frame without ever observing a `Committing` frame.
+        progress.update(
+            id,
+            &ShardUploadEvent::Result {
+                result: UploadShardResponseType::SyncPerformed,
+            },
+        );
+
+        let report = progress.report();
+        assert_eq!(report.total_shards_synced, 1);
+        assert_eq!(report.total_shards_completed, 1);
+        assert_eq!(
+            *progress.shards_validation.lock().unwrap().get(&id).unwrap(),
+            ShardUploadEvent::Result {
+                result: UploadShardResponseType::SyncPerformed
+            }
+        );
+    }
+
+    #[test]
+    fn test_shard_update_result_is_terminal_and_ignores_late_committing_frame() {
+        let progress = ShardUploadProgress::default();
+        let id = progress.register_shard_transfer(1000);
+
+        progress.update(
+            id,
+            &ShardUploadEvent::Result {
+                result: UploadShardResponseType::Exists,
+            },
+        );
+        // A stray "Committing" frame arrives after the terminal frame (e.g. reordered).
+        progress.update(
+            id,
+            &ShardUploadEvent::Committing {
+                stage: CommitStage::Uploading,
+            },
+        );
+
+        assert_eq!(
+            *progress.shards_validation.lock().unwrap().get(&id).unwrap(),
+            ShardUploadEvent::Result {
+                result: UploadShardResponseType::Exists
+            }
+        );
+    }
+
+    #[test]
+    fn test_shard_update_error_frame_is_ignored() {
+        let progress = ShardUploadProgress::default();
+        let id = progress.register_shard_transfer(1000);
+
+        progress.update(
+            id,
+            &ShardUploadEvent::Committing {
+                stage: CommitStage::Syncing,
+            },
+        );
+        progress.update(
+            id,
+            &ShardUploadEvent::Error {
+                message: "boom".to_string(),
+            },
+        );
+
+        let report = progress.report();
+        assert_eq!(report.total_shards_synced, 0);
+        assert_eq!(report.total_shards_completed, 0);
+        assert_eq!(
+            *progress.shards_validation.lock().unwrap().get(&id).unwrap(),
+            ShardUploadEvent::Committing {
+                stage: CommitStage::Syncing
+            }
+        );
+    }
+
+    #[test]
+    fn test_shard_update_aggregates_validation_progress_across_multiple_shards() {
+        let progress = ShardUploadProgress::default();
+        let id_a = progress.register_shard_transfer(1000);
+        let id_b = progress.register_shard_transfer(2000);
+
+        progress.update(id_a, &ShardUploadEvent::Validating { verified: 2, total: 5 });
+        progress.update(id_b, &ShardUploadEvent::Validating { verified: 1, total: 4 });
+
+        let report = progress.report();
+        assert_eq!(report.total_shard_validation_entries_completed, 3); // 2 + 1
+        assert_eq!(report.total_shard_validation_entries, 9); // 5 + 4
+
+        // Forward progress on one shard must not touch the other's recorded state, and the
+        // aggregate counters must move only by the updated shard's own increment.
+        progress.update(id_a, &ShardUploadEvent::Validating { verified: 5, total: 5 });
+        let report = progress.report();
+        assert_eq!(report.total_shard_validation_entries_completed, 6); // 3 + (5 - 2)
+        assert_eq!(report.total_shard_validation_entries, 9); // unchanged: id_a's total was already 5
+
+        let guard = progress.shards_validation.lock().unwrap();
+        assert_eq!(*guard.get(&id_a).unwrap(), ShardUploadEvent::Validating { verified: 5, total: 5 });
+        assert_eq!(*guard.get(&id_b).unwrap(), ShardUploadEvent::Validating { verified: 1, total: 4 });
     }
 }

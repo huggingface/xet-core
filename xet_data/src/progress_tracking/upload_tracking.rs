@@ -7,11 +7,12 @@ use std::sync::{Arc, Mutex};
 use more_asserts::{debug_assert_ge, debug_assert_le};
 #[cfg(target_family = "wasm")]
 use tokio_with_wasm::alias as tokio;
+use xet_client::cas_types::ShardUploadEvent;
 use xet_core_structures::MerkleHashMap;
 use xet_core_structures::merklehash::MerkleHash;
 use xet_runtime::utils::UniqueId;
 
-use super::progress_types::{GroupProgress, ItemProgressUpdater};
+use super::progress_types::{ItemProgressUpdater, UploadGroupProgress};
 
 pub struct FileXorbDependency {
     pub file_id: u64,
@@ -75,7 +76,7 @@ struct CompletionTrackerImpl {
 
 pub struct CompletionTracker {
     inner: Mutex<CompletionTrackerImpl>,
-    group: Arc<GroupProgress>,
+    group_progress: Arc<UploadGroupProgress>,
 }
 
 impl CompletionTrackerImpl {
@@ -161,14 +162,14 @@ impl CompletionTrackerImpl {
         debug_assert_le!(self.total_bytes_completed, self.total_bytes);
     }
 
-    fn register_new_xorb(&mut self, group: &Arc<GroupProgress>, xorb_hash: MerkleHash, xorb_size: u64) -> bool {
+    fn register_new_xorb(&mut self, group: &Arc<UploadGroupProgress>, xorb_hash: MerkleHash, xorb_size: u64) -> bool {
         match self.xorbs.entry(xorb_hash) {
             HashMapEntry::Occupied(mut occupied_entry) => {
                 let entry = occupied_entry.get_mut();
                 if entry.xorb_size == 0 {
                     entry.xorb_size = xorb_size;
                     self.total_upload_bytes += xorb_size;
-                    group.total_transfer_bytes.fetch_add(xorb_size, Ordering::Release);
+                    group.file_data.total_transfer_bytes.fetch_add(xorb_size, Ordering::Release);
                     true
                 } else {
                     debug_assert_eq!(entry.xorb_size, xorb_size);
@@ -184,13 +185,13 @@ impl CompletionTrackerImpl {
                 });
 
                 self.total_upload_bytes += xorb_size;
-                group.total_transfer_bytes.fetch_add(xorb_size, Ordering::Release);
+                group.file_data.total_transfer_bytes.fetch_add(xorb_size, Ordering::Release);
                 true
             },
         }
     }
 
-    fn register_xorb_upload_completion(&mut self, group: &Arc<GroupProgress>, xorb_hash: MerkleHash) {
+    fn register_xorb_upload_completion(&mut self, group: &Arc<UploadGroupProgress>, xorb_hash: MerkleHash) {
         let (file_indices, byte_completion_increment) = {
             let entry = self.xorbs.entry(xorb_hash).or_default();
 
@@ -226,6 +227,7 @@ impl CompletionTrackerImpl {
         debug_assert_le!(self.total_upload_bytes_completed + byte_completion_increment, self.total_upload_bytes);
         self.total_upload_bytes_completed += byte_completion_increment;
         group
+            .file_data
             .total_transfer_bytes_completed
             .fetch_add(byte_completion_increment, Ordering::Release);
 
@@ -235,7 +237,7 @@ impl CompletionTrackerImpl {
 
     fn register_xorb_upload_progress(
         &mut self,
-        group: &Arc<GroupProgress>,
+        group: &Arc<UploadGroupProgress>,
         xorb_hash: MerkleHash,
         new_byte_progress: u64,
         check_ordering: bool,
@@ -291,6 +293,7 @@ impl CompletionTrackerImpl {
         debug_assert_le!(self.total_upload_bytes_completed, self.total_upload_bytes);
 
         group
+            .file_data
             .total_transfer_bytes_completed
             .fetch_add(new_byte_progress, Ordering::Release);
 
@@ -349,20 +352,22 @@ impl CompletionTrackerImpl {
 }
 
 impl CompletionTracker {
-    pub fn new(group: Arc<GroupProgress>) -> Self {
+    pub fn new(group: UploadGroupProgress) -> Self {
         Self {
             inner: Mutex::new(CompletionTrackerImpl::default()),
-            group,
+            group_progress: Arc::new(group),
         }
     }
 
     pub fn register_new_file(
         &self,
-        updater: Arc<ItemProgressUpdater>,
-        n_bytes: Option<u64>,
+        id: UniqueId,
+        file_name: impl Into<Arc<str>>,
+        file_byte_size: Option<u64>,
     ) -> CompletionTrackerFileId {
+        let updater = self.group_progress.new_item(id, file_name);
         let mut update_lock = self.inner.lock().unwrap();
-        update_lock.register_new_file(updater, n_bytes)
+        update_lock.register_new_file(updater, file_byte_size)
     }
 
     pub fn increment_file_size(&self, file_id: CompletionTrackerFileId, size_increment: u64) {
@@ -372,7 +377,7 @@ impl CompletionTracker {
 
     pub fn register_new_xorb(&self, xorb_hash: MerkleHash, xorb_size: u64) -> bool {
         let mut update_lock = self.inner.lock().unwrap();
-        update_lock.register_new_xorb(&self.group, xorb_hash, xorb_size)
+        update_lock.register_new_xorb(&self.group_progress, xorb_hash, xorb_size)
     }
 
     pub fn register_dependencies(&self, dependencies: &[FileXorbDependency]) {
@@ -382,7 +387,7 @@ impl CompletionTracker {
 
     pub fn register_xorb_upload_completion(&self, xorb_hash: MerkleHash) {
         let mut update_lock = self.inner.lock().unwrap();
-        update_lock.register_xorb_upload_completion(&self.group, xorb_hash);
+        update_lock.register_xorb_upload_completion(&self.group_progress, xorb_hash);
     }
 
     pub fn register_xorb_upload_progress(&self, xorb_hash: MerkleHash, new_byte_progress: u64) {
@@ -397,7 +402,7 @@ impl CompletionTracker {
 
     fn register_xorb_upload_progress_impl(&self, xorb_hash: MerkleHash, new_byte_progress: u64, check_ordering: bool) {
         let mut update_lock = self.inner.lock().unwrap();
-        update_lock.register_xorb_upload_progress(&self.group, xorb_hash, new_byte_progress, check_ordering);
+        update_lock.register_xorb_upload_progress(&self.group_progress, xorb_hash, new_byte_progress, check_ordering);
     }
 
     pub fn status(&self) -> (u64, u64) {
@@ -410,6 +415,23 @@ impl CompletionTracker {
 
     pub fn assert_complete(&self) {
         self.inner.lock().unwrap().assert_complete();
+        self.group_progress.assert_complete();
+    }
+
+    pub fn register_shard_transfer(&self, shard_size: u64) -> UniqueId {
+        self.group_progress.register_shard_transfer(shard_size)
+    }
+
+    pub fn increment_shard_transfer_progress(&self, id: UniqueId, nbytes: u64) {
+        self.group_progress.increment_shard_transfer_progress(id, nbytes);
+    }
+
+    pub fn register_shard_upload_progress(&self, id: UniqueId, event: &ShardUploadEvent) {
+        self.group_progress.register_shard_upload_progress(id, event);
+    }
+
+    pub fn progress(&self) -> &Arc<UploadGroupProgress> {
+        &self.group_progress
     }
 }
 
@@ -421,14 +443,12 @@ mod tests {
 
     #[test]
     fn test_status_and_is_complete() {
-        let group = GroupProgress::new();
-        let tracker = CompletionTracker::new(group.clone());
+        let group = UploadGroupProgress::new();
+        let tracker = CompletionTracker::new(group);
 
-        let updater_a = group.new_item(UniqueId::new(), "fileA");
-        let file_a = tracker.register_new_file(updater_a, Some(100));
+        let file_a = tracker.register_new_file(UniqueId::new(), "fileA", Some(100));
 
-        let updater_b = group.new_item(UniqueId::new(), "fileB");
-        let file_b = tracker.register_new_file(updater_b, Some(50));
+        let file_b = tracker.register_new_file(UniqueId::new(), "fileB", Some(50));
 
         let (done, total) = tracker.status();
         assert_eq!(done, 0);
@@ -469,19 +489,17 @@ mod tests {
         assert!(tracker.is_complete());
 
         tracker.assert_complete();
-        group.assert_complete();
+        tracker.progress().assert_complete();
     }
 
     #[test]
     fn test_multiple_files_one_shared_xorb() {
-        let group = GroupProgress::new();
-        let tracker = CompletionTracker::new(group.clone());
+        let group = UploadGroupProgress::new();
+        let tracker = CompletionTracker::new(group);
 
-        let updater_a = group.new_item(UniqueId::new(), "fileA");
-        let file_a = tracker.register_new_file(updater_a, Some(200));
+        let file_a = tracker.register_new_file(UniqueId::new(), "fileA", Some(200));
 
-        let updater_b = group.new_item(UniqueId::new(), "fileB");
-        let file_b = tracker.register_new_file(updater_b, Some(300));
+        let file_b = tracker.register_new_file(UniqueId::new(), "fileB", Some(300));
 
         let (done, total) = tracker.status();
         assert_eq!(done, 0);
@@ -551,16 +569,15 @@ mod tests {
         assert!(tracker.is_complete());
 
         tracker.assert_complete();
-        group.assert_complete();
+        tracker.progress().assert_complete();
     }
 
     #[test]
     fn test_single_file_multiple_xorbs() {
-        let group = GroupProgress::new();
-        let tracker = CompletionTracker::new(group.clone());
+        let group = UploadGroupProgress::new();
+        let tracker = CompletionTracker::new(group);
 
-        let updater = group.new_item(UniqueId::new(), "bigFile");
-        let f = tracker.register_new_file(updater, Some(300));
+        let f = tracker.register_new_file(UniqueId::new(), "bigFile", Some(300));
 
         let x1 = MerkleHash::random_from_seed(1);
         let x2 = MerkleHash::random_from_seed(2);
@@ -608,16 +625,15 @@ mod tests {
         assert!(tracker.is_complete());
 
         tracker.assert_complete();
-        group.assert_complete();
+        tracker.progress().assert_complete();
     }
 
     #[test]
     fn test_xorb_completed_before_dependencies() {
-        let group = GroupProgress::new();
-        let tracker = CompletionTracker::new(group.clone());
+        let group = UploadGroupProgress::new();
+        let tracker = CompletionTracker::new(group);
 
-        let updater = group.new_item(UniqueId::new(), "lateFile");
-        let file_id = tracker.register_new_file(updater, Some(50));
+        let file_id = tracker.register_new_file(UniqueId::new(), "lateFile", Some(50));
 
         let x = MerkleHash::random_from_seed(999);
         tracker.register_new_xorb(x, 1000);
@@ -637,16 +653,15 @@ mod tests {
         assert!(tracker.is_complete());
 
         tracker.assert_complete();
-        group.assert_complete();
+        tracker.progress().assert_complete();
     }
 
     #[test]
     fn test_contradictory_logic_with_completed_xorb() {
-        let group = GroupProgress::new();
-        let tracker = CompletionTracker::new(group.clone());
+        let group = UploadGroupProgress::new();
+        let tracker = CompletionTracker::new(group);
 
-        let updater = group.new_item(UniqueId::new(), "someFile");
-        let file_id = tracker.register_new_file(updater, Some(100));
+        let file_id = tracker.register_new_file(UniqueId::new(), "someFile", Some(100));
         let x = MerkleHash::random_from_seed(123);
 
         tracker.register_new_xorb(x, 1000);
@@ -666,16 +681,15 @@ mod tests {
         assert!(tracker.is_complete());
 
         tracker.assert_complete();
-        group.assert_complete();
+        tracker.progress().assert_complete();
     }
 
     #[test]
     fn test_increment_file_size_basic() {
-        let group = GroupProgress::new();
-        let tracker = CompletionTracker::new(group.clone());
+        let group = UploadGroupProgress::new();
+        let tracker = CompletionTracker::new(group);
 
-        let updater = group.new_item(UniqueId::new(), "growingFile");
-        let file_id = tracker.register_new_file(updater, None);
+        let file_id = tracker.register_new_file(UniqueId::new(), "growingFile", None);
 
         let (done, total) = tracker.status();
         assert_eq!(done, 0);
@@ -710,16 +724,15 @@ mod tests {
         assert!(tracker.is_complete());
 
         tracker.assert_complete();
-        group.assert_complete();
+        tracker.progress().assert_complete();
     }
 
     #[test]
     fn test_increment_file_size_with_xorb_uploads() {
-        let group = GroupProgress::new();
-        let tracker = CompletionTracker::new(group.clone());
+        let group = UploadGroupProgress::new();
+        let tracker = CompletionTracker::new(group);
 
-        let updater = group.new_item(UniqueId::new(), "streamFile");
-        let file_id = tracker.register_new_file(updater, None);
+        let file_id = tracker.register_new_file(UniqueId::new(), "streamFile", None);
 
         let x1 = MerkleHash::random_from_seed(10);
         let x2 = MerkleHash::random_from_seed(20);
@@ -763,19 +776,17 @@ mod tests {
         assert!(tracker.is_complete());
 
         tracker.assert_complete();
-        group.assert_complete();
+        tracker.progress().assert_complete();
     }
 
     #[test]
     fn test_increment_file_size_mixed_known_unknown() {
-        let group = GroupProgress::new();
-        let tracker = CompletionTracker::new(group.clone());
+        let group = UploadGroupProgress::new();
+        let tracker = CompletionTracker::new(group);
 
-        let updater_a = group.new_item(UniqueId::new(), "fileA");
-        let file_a = tracker.register_new_file(updater_a, Some(100));
+        let file_a = tracker.register_new_file(UniqueId::new(), "fileA", Some(100));
 
-        let updater_b = group.new_item(UniqueId::new(), "fileB");
-        let file_b = tracker.register_new_file(updater_b, None);
+        let file_b = tracker.register_new_file(UniqueId::new(), "fileB", None);
 
         let (done, total) = tracker.status();
         assert_eq!(done, 0);
@@ -815,16 +826,15 @@ mod tests {
         assert!(tracker.is_complete());
 
         tracker.assert_complete();
-        group.assert_complete();
+        tracker.progress().assert_complete();
     }
 
     #[test]
     fn test_increment_file_size_ignored_when_already_final() {
-        let group = GroupProgress::new();
-        let tracker = CompletionTracker::new(group.clone());
+        let group = UploadGroupProgress::new();
+        let tracker = CompletionTracker::new(group);
 
-        let updater = group.new_item(UniqueId::new(), "fixedFile");
-        let file_id = tracker.register_new_file(updater, Some(100));
+        let file_id = tracker.register_new_file(UniqueId::new(), "fixedFile", Some(100));
 
         tracker.increment_file_size(file_id, 999);
         let (_, total) = tracker.status();
@@ -840,16 +850,15 @@ mod tests {
 
         assert!(tracker.is_complete());
         tracker.assert_complete();
-        group.assert_complete();
+        tracker.progress().assert_complete();
     }
 
     #[test]
     fn test_increment_file_size_with_partial_xorb_progress() {
-        let group = GroupProgress::new();
-        let tracker = CompletionTracker::new(group.clone());
+        let group = UploadGroupProgress::new();
+        let tracker = CompletionTracker::new(group);
 
-        let updater = group.new_item(UniqueId::new(), "partialFile");
-        let file_id = tracker.register_new_file(updater, None);
+        let file_id = tracker.register_new_file(UniqueId::new(), "partialFile", None);
 
         let x = MerkleHash::random_from_seed(42);
         tracker.register_new_xorb(x, 1000);
@@ -887,6 +896,6 @@ mod tests {
         assert!(tracker.is_complete());
 
         tracker.assert_complete();
-        group.assert_complete();
+        tracker.progress().assert_complete();
     }
 }

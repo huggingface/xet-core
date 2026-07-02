@@ -18,12 +18,14 @@ use super::adaptive_concurrency::{
     AdaptiveConcurrencyController, ConnectionPermit, download_controller, upload_controller,
 };
 use super::auth::AuthConfig;
-use super::interface::URLProvider;
+use super::interface::{ShardUploadProgressCallback, URLProvider};
 use super::progress_tracked_streams::{
     DownloadProgressStream, ProgressCallback, StreamProgressReporter, UploadProgressStream,
 };
 use super::retry_wrapper::{RetryWrapper, RetryableReqwestError};
+use super::shard_upload_v2::read_shard_upload_ndjson;
 use super::{Client, INFORMATION_LOG_LEVEL};
+use crate::cas_client::ShardUploadProgressType;
 use crate::cas_types::{
     BatchQueryReconstructionResponse, FileChunkHashesResponse, FileRange, HttpRange, Key, QueryReconstructionResponse,
     QueryReconstructionResponseV2, UploadShardResponse, UploadShardResponseType, UploadXorbResponse,
@@ -55,6 +57,8 @@ pub struct RemoteClient {
     download_concurrency_controller: Arc<AdaptiveConcurrencyController>,
     /// Caches the discovered reconstruction API version (0 = not yet probed, 1 = V1, 2 = V2).
     detected_reconstruction_api_version: AtomicU32,
+    /// Caches the discovered shard upload API version (0 = not yet probed, 1 = V1, 2 = V2).
+    detected_shard_api_version: AtomicU32,
 }
 
 impl RemoteClient {
@@ -101,6 +105,7 @@ impl RemoteClient {
             upload_concurrency_controller: upload_controller(&ctx, endpoint),
             download_concurrency_controller: download_controller(&ctx, endpoint),
             detected_reconstruction_api_version: AtomicU32::new(0),
+            detected_shard_api_version: AtomicU32::new(0),
         })
     }
 
@@ -306,6 +311,168 @@ impl RemoteClient {
             },
             1 => Ok(self.get_reconstruction_v1(file_id, bytes_range).await?.map(Into::into)),
             other => Err(ClientError::InternalError(anyhow!("unsupported reconstruction API version: {other}"))),
+        }
+    }
+
+    pub(crate) async fn upload_shard_v1(
+        &self,
+        shard_data: Bytes,
+        upload_permit: ConnectionPermit,
+        _progress_callback: Option<ShardUploadProgressCallback>,
+    ) -> Result<bool> {
+        let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
+        let n_upload_bytes = shard_data.len();
+        event!(INFORMATION_LOG_LEVEL, call_id, size = n_upload_bytes, "Starting upload_shard API call",);
+
+        let api_tag = "cas::upload_shard";
+        let url = Url::parse(&format!("{}/v1/shards", self.endpoint))?;
+
+        #[cfg(not(target_family = "wasm"))]
+        let client = self.shard_upload_http_client.clone();
+
+        #[cfg(target_family = "wasm")]
+        let client = self.authenticated_http_client.clone();
+
+        let response: UploadShardResponse = RetryWrapper::new(self.ctx.clone(), api_tag)
+            .with_connection_permit(upload_permit, Some(shard_data.len() as u64))
+            .run_and_extract_json(move || {
+                client
+                    .post(url.clone())
+                    .with_extension(Api(api_tag))
+                    .body(shard_data.clone())
+                    .send()
+            })
+            .await?;
+
+        match response.result {
+            UploadShardResponseType::Exists => {
+                event!(
+                    INFORMATION_LOG_LEVEL,
+                    call_id,
+                    size = n_upload_bytes,
+                    result = "exists",
+                    "Completed upload_shard API call",
+                );
+                Ok(false)
+            },
+            UploadShardResponseType::SyncPerformed => {
+                event!(
+                    INFORMATION_LOG_LEVEL,
+                    call_id,
+                    size = n_upload_bytes,
+                    result = "sync performed",
+                    "Completed upload_shard API call",
+                );
+                Ok(true)
+            },
+        }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) async fn upload_shard_v2(
+        &self,
+        shard_data: Bytes,
+        upload_permit: ConnectionPermit,
+        progress_callback: Option<ShardUploadProgressCallback>,
+    ) -> Result<bool> {
+        let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
+        let n_upload_bytes = shard_data.len();
+        let api_tag = "cas::upload_shard_v2";
+        let url = Url::parse(&format!("{}/v2/shards", self.endpoint))?;
+
+        event!(
+            INFORMATION_LOG_LEVEL,
+            call_id,
+            size = n_upload_bytes,
+            api_version = "v2",
+            "Starting upload_shard API call",
+        );
+
+        // One target of "/v2/shards" API compared to "v1/shards" is to eliminate
+        // the http client without read timeout.
+        let client = self.authenticated_http_client.clone();
+
+        let block_size = self.ctx.config.client.upload_reporting_block_size;
+
+        let mut upload_reporter = StreamProgressReporter::new(n_upload_bytes as u64)
+            .with_adaptive_concurrency_reporter(upload_permit.get_partial_completion_reporting_function());
+        if let Some(cb) = &progress_callback {
+            let cb = cb.clone();
+            upload_reporter = upload_reporter
+                .with_progress_callback(Arc::new(move |delta, _, _| cb(ShardUploadProgressType::Transfer(delta))));
+        }
+
+        let response = RetryWrapper::new(self.ctx.clone(), api_tag)
+            .with_connection_permit(upload_permit, Some(shard_data.len() as u64))
+            .run(move || {
+                let upload_stream =
+                    UploadProgressStream::wrap_bytes_as_stream(shard_data.clone(), block_size, upload_reporter.clone());
+
+                client
+                    .post(url.clone())
+                    .with_extension(Api(api_tag))
+                    .body(Body::wrap_stream(upload_stream))
+                    .send()
+            })
+            .await?;
+
+        let was_new = read_shard_upload_ndjson(response, progress_callback).await?;
+
+        event!(
+            INFORMATION_LOG_LEVEL,
+            call_id,
+            size = n_upload_bytes,
+            api_version = "v2",
+            result = if was_new { "sync performed" } else { "exists" },
+            "Completed upload_shard API call",
+        );
+
+        Ok(was_new)
+    }
+
+    pub(crate) async fn upload_shard_with_version_override(
+        &self,
+        shard_data: Bytes,
+        upload_permit: ConnectionPermit,
+        forced_version: Option<u32>,
+        progress_callback: Option<ShardUploadProgressCallback>,
+    ) -> Result<bool> {
+        // Prefer V2; fall back to V1 on 404/501; persist detected version to
+        // avoid repeated fallback attempts.
+        let version = match forced_version {
+            Some(v) => v,
+            None => {
+                let detected = self.detected_shard_api_version.load(Ordering::Relaxed);
+                if detected != 0 { detected } else { 2 }
+            },
+        };
+
+        match version {
+            2 => match self
+                .upload_shard_v2(shard_data.clone(), upload_permit, progress_callback.clone())
+                .await
+            {
+                Ok(result) => {
+                    if forced_version.is_none() {
+                        self.detected_shard_api_version.store(2, Ordering::Relaxed);
+                    }
+                    Ok(result)
+                },
+                Err(e)
+                    if forced_version.is_none()
+                        && matches!(e.status(), Some(StatusCode::NOT_FOUND) | Some(StatusCode::NOT_IMPLEMENTED)) =>
+                {
+                    info!(status = ?e.status(), "V2 shard upload not available, falling back to V1");
+                    let fallback_permit = self.upload_concurrency_controller.acquire_connection_permit().await?;
+                    let result = self.upload_shard_v1(shard_data, fallback_permit, progress_callback).await?;
+                    // Store after success to make sure we don't mess up on e.g. network failure.
+                    self.detected_shard_api_version.store(1, Ordering::Relaxed);
+                    Ok(result)
+                },
+                Err(e) => Err(e),
+            },
+            1 => self.upload_shard_v1(shard_data, upload_permit, progress_callback).await,
+            other => Err(ClientError::InternalError(anyhow!("unsupported shard upload API version: {other}"))),
         }
     }
 }
@@ -571,61 +738,19 @@ impl Client for RemoteClient {
     }
 
     #[instrument(skip_all, name = "RemoteClient::upload_shard", fields(shard.len = shard_data.len()))]
-    async fn upload_shard(&self, shard_data: Bytes, upload_permit: ConnectionPermit) -> Result<bool> {
+    async fn upload_shard(
+        &self,
+        shard_data: Bytes,
+        upload_permit: ConnectionPermit,
+        progress_callback: Option<ShardUploadProgressCallback>,
+    ) -> Result<bool> {
         if self.dry_run {
             return Ok(true);
         }
 
-        let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
-        let n_upload_bytes = shard_data.len();
-        event!(INFORMATION_LOG_LEVEL, call_id, size = n_upload_bytes, "Starting upload_shard API call",);
-
-        let api_tag = "cas::upload_shard";
-        let url = Url::parse(&format!("{}/shards", self.endpoint))?;
-
-        // Use the no-read-timeout client for shard uploads. reqwest's per-request timeout()
-        // does NOT override the client-level read_timeout(), so we use a separate client
-        // with no read_timeout. Server-side shard processing scales linearly with file entry
-        // count and can exceed the global read_timeout (300s) for large shards.
-        #[cfg(not(target_family = "wasm"))]
-        let client = self.shard_upload_http_client.clone();
-
-        #[cfg(target_family = "wasm")]
-        let client = self.authenticated_http_client.clone();
-
-        let response: UploadShardResponse = RetryWrapper::new(self.ctx.clone(), api_tag)
-            .with_connection_permit(upload_permit, Some(shard_data.len() as u64))
-            .run_and_extract_json(move || {
-                client
-                    .post(url.clone())
-                    .with_extension(Api(api_tag))
-                    .body(shard_data.clone())
-                    .send()
-            })
-            .await?;
-
-        match response.result {
-            UploadShardResponseType::Exists => {
-                event!(
-                    INFORMATION_LOG_LEVEL,
-                    call_id,
-                    size = n_upload_bytes,
-                    result = "exists",
-                    "Completed upload_shard API call",
-                );
-                Ok(false)
-            },
-            UploadShardResponseType::SyncPerformed => {
-                event!(
-                    INFORMATION_LOG_LEVEL,
-                    call_id,
-                    size = n_upload_bytes,
-                    result = "sync performed",
-                    "Completed upload_shard API call",
-                );
-                Ok(true)
-            },
-        }
+        let forced_version = self.ctx.config.client.shard_api_version;
+        self.upload_shard_with_version_override(shard_data, upload_permit, forced_version, progress_callback)
+            .await
     }
 
     #[instrument(skip_all, name = "RemoteClient::upload_xorb", fields(key = Key{prefix : prefix.to_string(), hash : serialized_xorb_object.hash}.to_string(),
@@ -634,7 +759,7 @@ impl Client for RemoteClient {
     async fn upload_xorb(
         &self,
         prefix: &str,
-        serialized_xorb_object: SerializedXorbObject,
+        mut serialized_xorb_object: SerializedXorbObject,
         progress_callback: Option<ProgressCallback>,
         upload_permit: ConnectionPermit,
     ) -> Result<u64> {
@@ -659,7 +784,7 @@ impl Client for RemoteClient {
 
         let n_transfer_bytes = serialized_xorb_object.serialized_data.len() as u64;
 
-        let serialized_data = serialized_xorb_object.serialized_data.clone();
+        let serialized_data = Bytes::from(std::mem::take(&mut serialized_xorb_object.serialized_data));
 
         #[cfg(not(target_family = "wasm"))]
         let block_size = self.ctx.config.client.upload_reporting_block_size;

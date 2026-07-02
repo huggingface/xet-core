@@ -1,5 +1,5 @@
 use core::fmt;
-use std::cmp::min;
+use std::cmp::{Ordering, min};
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::str::FromStr;
@@ -294,7 +294,7 @@ pub struct BatchQueryReconstructionResponse {
     pub fetch_info: HashMap<HexMerkleHash, Vec<XorbReconstructionFetchInfo>>,
 }
 
-#[derive(Debug, Serialize_repr, Deserialize_repr, Clone, Copy)]
+#[derive(Debug, Serialize_repr, Deserialize_repr, Clone, Copy, PartialEq)]
 #[repr(u8)]
 pub enum UploadShardResponseType {
     Exists = 0,
@@ -304,6 +304,67 @@ pub enum UploadShardResponseType {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct UploadShardResponse {
     pub result: UploadShardResponseType,
+}
+
+/// Sub-stage of the durable-write (commit) phase, so a stalled `committing` stream
+/// identifies whether S3 or DynamoDB is the holdup.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum CommitStage {
+    /// Uploading the shard object to S3.
+    Uploading = 0,
+    /// Registering the shard in DynamoDB (file ids, global dedup, shard list).
+    Syncing = 1,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ShardUploadEvent {
+    /// Verifying the uploaded shard against xorb metadata (the long phase). `verified`
+    /// counts completed verification tasks and `total` the number spawned so far; while the
+    /// shard is still being received `total` grows, so treat the ratio as live, not final.
+    Validating { verified: u64, total: u64 },
+    /// Durably writing the shard; `stage` says which sub-step is running.
+    Committing { stage: CommitStage },
+    /// Terminal success frame.
+    Result { result: UploadShardResponseType },
+    /// Terminal failure frame. The HTTP status is already `200 OK` by the time the
+    /// stream starts, so clients MUST treat this frame as the error signal.
+    Error { message: String },
+}
+
+/// Orders by pipeline progression, not field value: lets `precede` detect whether a newly
+/// received frame is stale/out-of-order relative to the last one recorded for a shard.
+/// Deliberately partial: `Error` and same-variant pairs are incomparable.
+/// `<`/`>` work too since they're derived from this impl, but `precede` names the intent.
+impl PartialOrd for ShardUploadEvent {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        match self {
+            Self::Validating { .. } => match other {
+                Self::Validating { .. } => None,
+                Self::Error { .. } => None,
+                _ => Some(Ordering::Less),
+            },
+            Self::Committing { stage } => match other {
+                Self::Validating { .. } => Some(Ordering::Greater),
+                Self::Committing { stage: other_stage } => Some(stage.cmp(other_stage)),
+                Self::Result { .. } => Some(Ordering::Less),
+                Self::Error { .. } => None,
+            },
+            Self::Result { .. } => match other {
+                Self::Result { .. } => Some(Ordering::Equal),
+                Self::Error { .. } => None,
+                _ => Some(Ordering::Greater),
+            },
+            Self::Error { .. } => None,
+        }
+    }
+}
+
+impl ShardUploadEvent {
+    pub fn precede(&self, other: &Self) -> bool {
+        matches!(self.partial_cmp(other), Some(Ordering::Less))
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -383,5 +444,143 @@ mod tests {
         assert_eq!(HttpRange::from(FileRange::new(0, 10)), HttpRange::new(0, 9));
 
         assert_eq!(FileRange::from(HttpRange::new(0, 10)), FileRange::new(0, 11));
+    }
+
+    #[test]
+    fn test_shard_upload_event_validating_json_roundtrip() {
+        let event = ShardUploadEvent::Validating { verified: 3, total: 7 };
+        let json = serde_json::to_string(&event).unwrap();
+        assert_eq!(json, r#"{"type":"validating","verified":3,"total":7}"#);
+        assert_eq!(serde_json::from_str::<ShardUploadEvent>(&json).unwrap(), event);
+    }
+
+    #[test]
+    fn test_shard_upload_event_committing_json_roundtrip() {
+        for (stage, tag) in [(CommitStage::Uploading, "uploading"), (CommitStage::Syncing, "syncing")] {
+            let event = ShardUploadEvent::Committing { stage };
+            let json = serde_json::to_string(&event).unwrap();
+            assert_eq!(json, format!(r#"{{"type":"committing","stage":"{tag}"}}"#));
+            assert_eq!(serde_json::from_str::<ShardUploadEvent>(&json).unwrap(), event);
+        }
+    }
+
+    #[test]
+    fn test_shard_upload_event_result_json_roundtrip() {
+        // `UploadShardResponseType` uses `serde_repr`, so it's encoded as a bare integer,
+        // not a snake_case string like `CommitStage`.
+        for (result, repr) in [
+            (UploadShardResponseType::Exists, 0),
+            (UploadShardResponseType::SyncPerformed, 1),
+        ] {
+            let event = ShardUploadEvent::Result { result };
+            let json = serde_json::to_string(&event).unwrap();
+            assert_eq!(json, format!(r#"{{"type":"result","result":{repr}}}"#));
+            assert_eq!(serde_json::from_str::<ShardUploadEvent>(&json).unwrap(), event);
+        }
+    }
+
+    #[test]
+    fn test_shard_upload_event_error_json_roundtrip() {
+        let event = ShardUploadEvent::Error {
+            message: "boom".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert_eq!(json, r#"{"type":"error","message":"boom"}"#);
+        assert_eq!(serde_json::from_str::<ShardUploadEvent>(&json).unwrap(), event);
+    }
+
+    #[test]
+    fn test_shard_upload_event_partial_cmp_progression_matrix() {
+        // Rows/columns follow the same order: validating, committing(uploading),
+        // committing(syncing), result, error.
+        let cases = [
+            ShardUploadEvent::Validating { verified: 1, total: 2 },
+            ShardUploadEvent::Committing {
+                stage: CommitStage::Uploading,
+            },
+            ShardUploadEvent::Committing {
+                stage: CommitStage::Syncing,
+            },
+            ShardUploadEvent::Result {
+                result: UploadShardResponseType::Exists,
+            },
+            ShardUploadEvent::Error {
+                message: "boom".to_string(),
+            },
+        ];
+        let labels = [
+            "validating",
+            "committing_uploading",
+            "committing_syncing",
+            "result",
+            "error",
+        ];
+
+        #[rustfmt::skip]
+        let expected: [[Option<Ordering>; 5]; 5] = [
+            /* validating           */ [None,             Some(Ordering::Less),    Some(Ordering::Less),    Some(Ordering::Less),    None],
+            /* committing_uploading */ [Some(Ordering::Greater), Some(Ordering::Equal),   Some(Ordering::Less),    Some(Ordering::Less),    None],
+            /* committing_syncing   */ [Some(Ordering::Greater), Some(Ordering::Greater), Some(Ordering::Equal),   Some(Ordering::Less),    None],
+            /* result               */ [Some(Ordering::Greater), Some(Ordering::Greater), Some(Ordering::Greater), Some(Ordering::Equal),   None],
+            /* error                */ [None,             None,             None,             None,             None],
+        ];
+
+        for (i, a) in cases.iter().enumerate() {
+            for (j, b) in cases.iter().enumerate() {
+                assert_eq!(
+                    a.partial_cmp(b),
+                    expected[i][j],
+                    "{}.partial_cmp({}) should be {:?}",
+                    labels[i],
+                    labels[j],
+                    expected[i][j]
+                );
+                // `precede` (used by `ShardUploadProgress::update` to decide whether a new
+                // event represents forward progress) must agree with a strict "Less" here.
+                assert_eq!(
+                    a.precede(b),
+                    matches!(expected[i][j], Some(Ordering::Less)),
+                    "{}.precede({}) disagrees with its partial_cmp result",
+                    labels[i],
+                    labels[j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_shard_upload_event_partial_cmp_ignores_payload_within_same_variant() {
+        // Two `Result` events compare as `Equal` by variant alone, even though their
+        // inner `result` payload differs and they are not `==` to each other.
+        let exists = ShardUploadEvent::Result {
+            result: UploadShardResponseType::Exists,
+        };
+        let synced = ShardUploadEvent::Result {
+            result: UploadShardResponseType::SyncPerformed,
+        };
+        assert_ne!(exists, synced);
+        assert_eq!(exists.partial_cmp(&synced), Some(Ordering::Equal));
+        assert!(!exists.precede(&synced));
+        assert!(!synced.precede(&exists));
+
+        // Two `Validating` events with different counts are incomparable (`None`), not
+        // ordered by their counts: `ShardUploadProgress::update` relies on `saturating_sub`
+        // over the raw fields for monotonic progress tracking, not on `PartialOrd` here.
+        let low = ShardUploadEvent::Validating { verified: 1, total: 2 };
+        let high = ShardUploadEvent::Validating { verified: 9, total: 9 };
+        assert_eq!(low.partial_cmp(&high), None);
+        assert!(!low.precede(&high));
+        assert!(!high.precede(&low));
+
+        // `Error` never precedes anything, and nothing precedes it -- including another `Error`.
+        let err_a = ShardUploadEvent::Error {
+            message: "a".to_string(),
+        };
+        let err_b = ShardUploadEvent::Error {
+            message: "b".to_string(),
+        };
+        assert_eq!(err_a.partial_cmp(&err_b), None);
+        assert!(!err_a.precede(&err_b));
+        assert!(!err_b.precede(&err_a));
     }
 }

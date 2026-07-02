@@ -478,8 +478,11 @@ impl Client for LocalTestServer {
         &self,
         shard_data: bytes::Bytes,
         upload_permit: crate::cas_client::adaptive_concurrency::ConnectionPermit,
+        progress_callback: Option<crate::cas_client::interface::ShardUploadProgressCallback>,
     ) -> Result<bool> {
-        self.remote_client.upload_shard(shard_data, upload_permit).await
+        self.remote_client
+            .upload_shard(shard_data, upload_permit, progress_callback)
+            .await
     }
 
     async fn upload_xorb(

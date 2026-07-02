@@ -1448,6 +1448,7 @@ impl Client for LocalClient {
         &self,
         shard_data: Bytes,
         _permit: super::super::adaptive_concurrency::ConnectionPermit,
+        _progress_callback: Option<super::super::interface::ShardUploadProgressCallback>,
     ) -> Result<bool> {
         self.apply_api_delay().await;
 

@@ -21,11 +21,11 @@ pub mod multipart;
 pub mod progress_tracked_streams;
 pub mod remote_client;
 pub mod retry_wrapper;
+mod shard_upload_v2;
 pub mod simulation;
 
-pub use progress_tracked_streams::{
-    DownloadProgressStream, ProgressCallback, StreamProgressReporter, UploadProgressStream,
-};
+pub use interface::{ShardUploadProgressCallback, ShardUploadProgressType};
+pub use progress_tracked_streams::{DownloadProgressStream, ProgressCallback, UploadProgressStream};
 
 #[cfg(not(feature = "elevated_information_level"))]
 pub const INFORMATION_LOG_LEVEL: Level = Level::DEBUG;
