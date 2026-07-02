@@ -181,7 +181,8 @@ impl LocalServer {
                     .route("/xorbs/{prefix}/{hash}", head(handlers::head_xorb).post(handlers::post_xorb))
                     .route("/files/{file_id}", head(handlers::head_file))
                     .route("/get_xorb/{prefix}/{hash}/", get(handlers::get_file_term_data))
-                    .route("/fetch_term", get(handlers::fetch_term)),
+                    .route("/fetch_term", get(handlers::fetch_term))
+                    .route("/shards", post(handlers::post_shard)),
             )
             .nest("/v2", Router::new().route("/reconstructions/{file_id}", get(handlers::get_reconstruction_v2)))
             .nest(
@@ -191,9 +192,6 @@ impl LocalServer {
                     .route("/set_config", post(handlers::set_config))
                     .route("/dummy_upload", post(handlers::dummy_upload)),
             )
-            // Routes used by RemoteClient without /v1/ prefix
-            .route("/reconstructions", get(handlers::batch_get_reconstruction))
-            .route("/shards", post(handlers::post_shard))
             .layer(CorsLayer::very_permissive())
             .with_state(handlers::ServerState {
                 client: self.client.clone(),

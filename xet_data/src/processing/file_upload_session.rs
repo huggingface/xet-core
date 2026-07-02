@@ -91,6 +91,10 @@ impl FileUploadSession {
 
         let client = create_remote_client(&config, &session_id, dry_run).await?;
 
+        #[cfg(target_family = "wasm")]
+        let shard_interface = SessionShardInterface::new(&ctx, config.clone(), client.clone(), dry_run).await?;
+
+        #[cfg(not(target_family = "wasm"))]
         let shard_interface =
             SessionShardInterface::new(&ctx, config.clone(), client.clone(), completion_tracker.clone(), dry_run)
                 .await?;

@@ -425,6 +425,7 @@ impl RemoteClient {
         Ok(was_new)
     }
 
+    #[cfg(not(target_family = "wasm"))]
     pub(crate) async fn upload_shard_with_version_override(
         &self,
         shard_data: Bytes,
@@ -486,7 +487,7 @@ impl Client for RemoteClient {
     }
 
     async fn batch_get_reconstruction(&self, file_ids: &[MerkleHash]) -> Result<BatchQueryReconstructionResponse> {
-        let mut url_str = format!("{}/reconstructions?", self.endpoint);
+        let mut url_str = format!("{}/v1/reconstructions?", self.endpoint);
         let mut is_first = true;
         let mut file_id_list = Vec::new();
         for hash in file_ids {
