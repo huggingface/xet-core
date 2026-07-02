@@ -314,12 +314,7 @@ impl RemoteClient {
         }
     }
 
-    pub(crate) async fn upload_shard_v1(
-        &self,
-        shard_data: Bytes,
-        upload_permit: ConnectionPermit,
-        _progress_callback: Option<ShardUploadProgressCallback>,
-    ) -> Result<bool> {
+    pub(crate) async fn upload_shard_v1(&self, shard_data: Bytes, upload_permit: ConnectionPermit) -> Result<bool> {
         let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
         let n_upload_bytes = shard_data.len();
         event!(INFORMATION_LOG_LEVEL, call_id, size = n_upload_bytes, "Starting upload_shard API call",);
@@ -464,14 +459,14 @@ impl RemoteClient {
                 {
                     info!(status = ?e.status(), "V2 shard upload not available, falling back to V1");
                     let fallback_permit = self.upload_concurrency_controller.acquire_connection_permit().await?;
-                    let result = self.upload_shard_v1(shard_data, fallback_permit, progress_callback).await?;
+                    let result = self.upload_shard_v1(shard_data, fallback_permit).await?;
                     // Store after success to make sure we don't mess up on e.g. network failure.
                     self.detected_shard_api_version.store(1, Ordering::Relaxed);
                     Ok(result)
                 },
                 Err(e) => Err(e),
             },
-            1 => self.upload_shard_v1(shard_data, upload_permit, progress_callback).await,
+            1 => self.upload_shard_v1(shard_data, upload_permit).await,
             other => Err(ClientError::InternalError(anyhow!("unsupported shard upload API version: {other}"))),
         }
     }
@@ -748,9 +743,17 @@ impl Client for RemoteClient {
             return Ok(true);
         }
 
-        let forced_version = self.ctx.config.client.shard_api_version;
-        self.upload_shard_with_version_override(shard_data, upload_permit, forced_version, progress_callback)
-            .await
+        #[cfg(target_family = "wasm")]
+        {
+            self.upload_shard_v1(shard_data, upload_permit).await
+        }
+
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let forced_version = self.ctx.config.client.shard_api_version;
+            self.upload_shard_with_version_override(shard_data, upload_permit, forced_version, progress_callback)
+                .await
+        }
     }
 
     #[instrument(skip_all, name = "RemoteClient::upload_xorb", fields(key = Key{prefix : prefix.to_string(), hash : serialized_xorb_object.hash}.to_string(),

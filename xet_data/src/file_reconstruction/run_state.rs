@@ -126,7 +126,7 @@ impl RunState {
     /// Reports bytes written to the progress updater.
     pub(crate) fn report_bytes_written(&self, len: u64) {
         if let Some(ref updater) = self.progress_updater {
-            updater.report_bytes_written(len);
+            updater.report_bytes_completed(len);
         }
     }
 

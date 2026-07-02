@@ -496,18 +496,6 @@ impl ItemProgressUpdater {
         );
     }
 
-    // === Aliases for reconstruction pipeline compatibility ===
-
-    /// Alias for `report_bytes_completed` -- used by the reconstruction data writer.
-    pub fn report_bytes_written(&self, increment: u64) {
-        self.report_bytes_completed(increment);
-    }
-
-    /// Alias for `report_transfer_bytes_completed` -- used by xorb block download.
-    pub fn report_transfer_progress(&self, delta: u64) {
-        self.report_transfer_bytes_completed(delta);
-    }
-
     /// Read the current bytes_completed for this item.
     pub fn total_bytes_completed(&self) -> u64 {
         self.item.bytes_completed.load(Ordering::Acquire)
@@ -732,28 +720,6 @@ mod tests {
         assert_eq!(group.total_bytes_completed.load(Ordering::Relaxed), 0);
     }
 
-    #[test]
-    fn test_report_bytes_written_alias() {
-        let group = Arc::new(GroupProgress::new());
-        let updater = group.new_item(UniqueId::new(), "test.bin");
-        updater.update_item_size(100, true);
-        updater.report_bytes_written(50);
-
-        assert_eq!(updater.total_bytes_completed(), 50);
-    }
-
-    #[test]
-    fn test_report_transfer_progress_alias() {
-        let group = Arc::new(GroupProgress::new());
-        let updater = group.new_item(UniqueId::new(), "test.bin");
-        updater.update_item_size(100, true);
-        updater.update_transfer_size(90);
-        updater.report_transfer_progress(40);
-
-        assert_eq!(updater.item().transfer_bytes_completed.load(Ordering::Relaxed), 40);
-        assert_eq!(group.total_transfer_bytes_completed.load(Ordering::Relaxed), 40);
-    }
-
     #[tokio::test]
     async fn test_report_rates_none_until_min_observations_then_some() {
         pause();
@@ -765,21 +731,21 @@ mod tests {
 
         advance(Duration::from_millis(200)).await;
         updater.report_bytes_completed(1_000);
-        updater.report_transfer_progress(800);
+        updater.report_transfer_bytes_completed(800);
         let report = group.report();
         assert!(report.total_bytes_completion_rate.is_none());
         assert!(report.total_transfer_bytes_completion_rate.is_none());
 
         advance(Duration::from_millis(200)).await;
         updater.report_bytes_completed(1_000);
-        updater.report_transfer_progress(800);
+        updater.report_transfer_bytes_completed(800);
         let report = group.report();
         assert!(report.total_bytes_completion_rate.is_none());
         assert!(report.total_transfer_bytes_completion_rate.is_none());
 
         advance(Duration::from_millis(200)).await;
         updater.report_bytes_completed(1_000);
-        updater.report_transfer_progress(800);
+        updater.report_transfer_bytes_completed(800);
         let report = group.report();
         assert!(report.total_bytes_completion_rate.is_some());
         assert!(report.total_transfer_bytes_completion_rate.is_some());
