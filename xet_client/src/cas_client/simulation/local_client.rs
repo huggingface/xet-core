@@ -4,7 +4,7 @@ use std::io::{BufReader, Cursor, Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use anyhow::anyhow;
@@ -259,6 +259,13 @@ pub struct LocalClient {
     max_ranges_per_fetch: AtomicUsize,
     /// HTTP status code to return when V2 is disabled (0 = enabled).
     v2_disabled_status: AtomicU16,
+    /// When true, deletes rename the on-disk object to `<canonical>.gctag`
+    /// instead of removing it, mirroring production's S3 lifecycle-tag
+    /// deletion. Reads of the canonical path then fail as
+    /// if the object were gone, while a subsequent upload of the same hash
+    /// clears the `.gctag` file (matching S3 PutObject overwriting a tagged
+    /// object). Off by default; opt in via [`Self::set_lifecycle_tag_deletion`].
+    lifecycle_tag_deletion: AtomicBool,
     _tmp_dir: Option<TempDir>,
 }
 
@@ -334,6 +341,7 @@ impl LocalClient {
             random_ms_delay_window: (AtomicU64::new(0), AtomicU64::new(0)),
             max_ranges_per_fetch: AtomicUsize::new(usize::MAX),
             v2_disabled_status: AtomicU16::new(0),
+            lifecycle_tag_deletion: AtomicBool::new(false),
             _tmp_dir: tmp_dir,
         })
     }
@@ -345,6 +353,33 @@ impl LocalClient {
     /// Internal function to get the path for a given hash entry
     fn get_path_for_entry(&self, hash: &MerkleHash) -> PathBuf {
         self.xorb_dir.join(format!("default.{hash:?}"))
+    }
+
+    /// Toggle lifecycle-tag deletion mode (see [`Self::lifecycle_tag_deletion`]).
+    pub fn set_lifecycle_tag_deletion(&self, on: bool) {
+        self.lifecycle_tag_deletion.store(on, Ordering::Relaxed);
+    }
+
+    fn lifecycle_tag_deletion_enabled(&self) -> bool {
+        self.lifecycle_tag_deletion.load(Ordering::Relaxed)
+    }
+
+    /// Path used to park a tagged-for-deletion xorb: `<canonical>.gctag`.
+    /// Bytes are retained on disk until an upload of the same hash clears
+    /// the tag (matching S3 PutObject overwriting a tagged object).
+    fn gctag_xorb_path(&self, hash: &MerkleHash) -> PathBuf {
+        let canonical = self.get_path_for_entry(hash);
+        let mut name = canonical.into_os_string();
+        name.push(".gctag");
+        PathBuf::from(name)
+    }
+
+    /// Path used to park a tagged-for-deletion shard: `<hex>.mdb.gctag`.
+    fn gctag_shard_path(&self, hash: &MerkleHash) -> PathBuf {
+        let canonical = self.shard_dir.join(shard_file_name(hash));
+        let mut name = canonical.into_os_string();
+        name.push(".gctag");
+        PathBuf::from(name)
     }
 
     #[cfg(test)]
@@ -364,6 +399,9 @@ impl LocalClient {
         for entry in std::fs::read_dir(&self.shard_dir).map_err(ClientError::internal)? {
             let entry = entry.map_err(ClientError::internal)?;
             let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with(".gctag")) {
+                continue;
+            }
             if let Some(hash) = parse_shard_filename(&path)
                 && path.is_file()
             {
@@ -597,6 +635,9 @@ impl DirectAccessClient for LocalClient {
             .filter_map(|x| x.ok())
             .filter_map(|x| x.file_name().into_string().ok())
             .for_each(|x| {
+                if x.ends_with(".gctag") {
+                    return;
+                }
                 if let Some(pos) = x.rfind('.') {
                     let hash = &x[(pos + 1)..];
                     if let Ok(hash) = MerkleHash::from_hex(hash) {
@@ -857,7 +898,12 @@ impl super::DeletionControlableClient for LocalClient {
     async fn delete_shard_entry(&self, hash: &MerkleHash) -> Result<()> {
         let path = self.shard_path_for_hash(hash)?;
         self.remove_file_entries_for_shard(hash)?;
-        std::fs::remove_file(&path)?;
+        if self.lifecycle_tag_deletion_enabled() {
+            let gctag = self.gctag_shard_path(hash);
+            std::fs::rename(&path, &gctag)?;
+        } else {
+            std::fs::remove_file(&path)?;
+        }
         Ok(())
     }
 
@@ -939,7 +985,14 @@ impl super::DeletionControlableClient for LocalClient {
         #[cfg(windows)]
         Self::clear_readonly(&file_path);
 
-        let _ = std::fs::remove_file(file_path);
+        if self.lifecycle_tag_deletion_enabled() {
+            let gctag = self.gctag_xorb_path(hash);
+            #[cfg(windows)]
+            Self::clear_readonly(&gctag);
+            let _ = std::fs::rename(&file_path, &gctag);
+        } else {
+            let _ = std::fs::remove_file(file_path);
+        }
     }
 
     async fn list_xorbs_and_tags(&self) -> Result<Vec<(MerkleHash, ObjectTag)>> {
@@ -988,7 +1041,14 @@ impl super::DeletionControlableClient for LocalClient {
         #[cfg(windows)]
         Self::clear_readonly(&tmp_path);
 
-        std::fs::remove_file(&tmp_path)?;
+        if self.lifecycle_tag_deletion_enabled() {
+            let gctag = self.gctag_xorb_path(hash);
+            #[cfg(windows)]
+            Self::clear_readonly(&gctag);
+            std::fs::rename(&tmp_path, &gctag)?;
+        } else {
+            std::fs::remove_file(&tmp_path)?;
+        }
         Ok(true)
     }
 
@@ -1026,7 +1086,12 @@ impl super::DeletionControlableClient for LocalClient {
             Self::restore_from_tmp(&tmp_path, &path);
             return Err(e);
         }
-        std::fs::remove_file(&tmp_path)?;
+        if self.lifecycle_tag_deletion_enabled() {
+            let gctag = self.gctag_shard_path(hash);
+            std::fs::rename(&tmp_path, &gctag)?;
+        } else {
+            std::fs::remove_file(&tmp_path)?;
+        }
         Ok(true)
     }
 
@@ -1510,6 +1575,11 @@ impl Client for LocalClient {
         }
         write_txn.commit().map_err(map_redb_db_error)?;
 
+        // A re-upload of the same shard hash supersedes any prior
+        // lifecycle-tagged copy: clear the `.gctag` file so the shard is
+        // readable again. Mirrors S3 PutObject overwriting a tagged object.
+        let _ = std::fs::remove_file(self.gctag_shard_path(&shard_hash));
+
         Ok(true)
     }
 
@@ -1578,6 +1648,11 @@ impl Client for LocalClient {
             permissions.set_readonly(true);
             let _ = std::fs::set_permissions(&file_path, permissions);
         }
+
+        // A re-upload of the same xorb hash supersedes any prior
+        // lifecycle-tagged copy: clear the `.gctag` file so the xorb is
+        // readable again. Mirrors S3 PutObject overwriting a tagged object.
+        let _ = std::fs::remove_file(self.gctag_xorb_path(&hash));
 
         info!("{file_path:?} successfully written with {bytes_written} bytes.");
 
@@ -2217,5 +2292,129 @@ mod tests {
         let (_, tag2) = tags2.iter().find(|(h, _)| *h == xorb_hash2).unwrap();
 
         assert_ne!(tag1, tag2, "Tags should differ after re-creation with timestamp delay");
+    }
+
+    // ── Lifecycle-tag deletion mode tests ───────────────────────────────
+
+    #[tokio::test]
+    async fn test_lifecycle_tag_xorb_delete_renames_to_gctag() {
+        let client = LocalClient::temporary(test_context()).await.unwrap();
+        client.set_lifecycle_tag_deletion(true);
+
+        let file = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
+        let xorb_hash = file.terms[0].xorb_hash;
+        assert!(client.xorb_exists(&xorb_hash).await.unwrap());
+
+        client.delete_xorb(&xorb_hash).await;
+
+        // Canonical path is gone — reads fail.
+        assert!(!client.xorb_exists(&xorb_hash).await.unwrap());
+        assert!(client.get_full_xorb(&xorb_hash).await.is_err());
+        // .gctag file retains the bytes.
+        let gctag = client.gctag_xorb_path(&xorb_hash);
+        assert!(gctag.exists(), "gctag file should exist after tag-delete");
+        // list_xorbs excludes the tagged xorb.
+        let listed = client.list_xorbs().await.unwrap();
+        assert!(!listed.contains(&xorb_hash));
+    }
+
+    #[tokio::test]
+    async fn test_lifecycle_tag_xorb_upload_clears_tag() {
+        let client = LocalClient::temporary(test_context()).await.unwrap();
+        client.set_lifecycle_tag_deletion(true);
+
+        let file = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
+        let xorb_hash = file.terms[0].xorb_hash;
+
+        client.delete_xorb(&xorb_hash).await;
+        let gctag = client.gctag_xorb_path(&xorb_hash);
+        assert!(gctag.exists());
+
+        // Re-upload the same xorb (same content seed) — tag is cleared.
+        let file2 = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
+        let xorb_hash2 = file2.terms[0].xorb_hash;
+        assert_eq!(xorb_hash, xorb_hash2, "same seed should produce same xorb hash");
+
+        assert!(!gctag.exists(), "gctag file should be removed after re-upload");
+        assert!(client.xorb_exists(&xorb_hash).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_lifecycle_tag_shard_delete_renames_to_gctag() {
+        let client = LocalClient::temporary(test_context()).await.unwrap();
+        client.set_lifecycle_tag_deletion(true);
+
+        let file = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
+        let shard_hash = client.list_shard_entries().await.unwrap().pop().unwrap();
+
+        // Remove the file entry first (as the harness does on user delete).
+        client.delete_file_entry(&file.file_hash).await.unwrap();
+        // Now GC deletes the shard.
+        client.delete_shard_entry(&shard_hash).await.unwrap();
+
+        // Canonical shard path is gone.
+        assert!(client.get_shard_bytes(&shard_hash).await.is_err());
+        // .gctag file retains the bytes.
+        let gctag = client.gctag_shard_path(&shard_hash);
+        assert!(gctag.exists(), "gctag shard file should exist after tag-delete");
+        // list_shard_entries excludes the tagged shard.
+        let listed = client.list_shard_entries().await.unwrap();
+        assert!(!listed.contains(&shard_hash));
+    }
+
+    #[tokio::test]
+    async fn test_lifecycle_tag_mode_off_hard_deletes() {
+        let client = LocalClient::temporary(test_context()).await.unwrap();
+        // Mode is off by default.
+        assert!(!client.lifecycle_tag_deletion_enabled());
+
+        let file = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
+        let xorb_hash = file.terms[0].xorb_hash;
+
+        client.delete_xorb(&xorb_hash).await;
+
+        let gctag = client.gctag_xorb_path(&xorb_hash);
+        assert!(!gctag.exists(), "gctag file should NOT exist when mode is off");
+        let canonical = client.get_path_for_entry(&xorb_hash);
+        assert!(!canonical.exists(), "canonical file should be hard-deleted");
+    }
+
+    #[tokio::test]
+    async fn test_lifecycle_tag_verify_integrity_flags_tagged_xorb() {
+        let client = LocalClient::temporary(test_context()).await.unwrap();
+        client.set_lifecycle_tag_deletion(true);
+
+        // Upload a file, then tag its xorb WITHOUT removing the file entry
+        // (simulates a GC bug: tagging an xorb still referenced by an active file).
+        let file = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
+        let xorb_hash = file.terms[0].xorb_hash;
+
+        client.delete_xorb(&xorb_hash).await;
+
+        // verify_integrity should fail: the file entry references a tagged xorb
+        // whose canonical path no longer exists.
+        assert!(client.verify_integrity().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_lifecycle_tag_verify_all_reachable_ignores_tagged() {
+        let client = LocalClient::temporary(test_context()).await.unwrap();
+        client.set_lifecycle_tag_deletion(true);
+
+        let file = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
+        let xorb_hash = file.terms[0].xorb_hash;
+        let shard_hash = client.list_shard_entries().await.unwrap().pop().unwrap();
+
+        // Properly delete: remove file entry, then tag shard + xorb.
+        client.delete_file_entry(&file.file_hash).await.unwrap();
+        client.delete_shard_entry(&shard_hash).await.unwrap();
+        client.delete_xorb(&xorb_hash).await;
+
+        // verify_all_reachable should pass: tagged objects are treated as
+        // already collected, not as orphaned on-disk data.
+        client
+            .verify_all_reachable()
+            .await
+            .expect("tagged objects should be ignored by reachability");
     }
 }
