@@ -69,7 +69,14 @@ impl DownloadStream {
         }
     }
 
-    pub(crate) fn abort_callback(&self) -> Box<dyn Fn() + Send + Sync> {
+    /// Returns a thread-safe handle that requests cancellation of this stream.
+    ///
+    /// Unlike [`cancel`](Self::cancel), the returned closure does not need
+    /// exclusive access to the stream: it only signals the shared run state
+    /// (and the start signal, so a not-yet-started task can observe the
+    /// cancellation). A thread blocked in [`blocking_next`](Self::blocking_next)
+    /// / [`next`](Self::next) wakes and returns `Ok(None)`.
+    pub fn abort_callback(&self) -> Box<dyn Fn() + Send + Sync> {
         let run_state = self.run_state.clone();
         let start_signal = self.start_signal.clone();
         Box::new(move || {
@@ -123,12 +130,26 @@ impl DownloadStream {
         }
         self.ensure_started();
 
-        match self.receiver.blocking_recv() {
+        // Mirror `next()`: prefer buffered items, but on external cancellation
+        // stop instead of parking on a receiver whose senders only drop once
+        // the reconstruction loop reaches its next checkpoint.
+        let item = match self.receiver.try_recv() {
+            Ok(item) => Some(item),
+            Err(_) if self.run_state.is_cancelled() => None,
+            Err(_) => self.receiver.blocking_recv(),
+        };
+
+        match item {
             Some(SequentialRetrievalItem::Data { receiver, permit }) => {
                 let data = match receiver.blocking_recv() {
                     Ok(data) => data,
                     Err(_) => {
                         self.run_state.check_error()?;
+                        if self.run_state.is_cancelled() {
+                            // Cancellation aborted the in-flight fetch; end cleanly.
+                            self.finished = true;
+                            return Ok(None);
+                        }
                         return Err(FileReconstructionError::InternalWriterError(
                             "Data sender was dropped before sending data.".to_string(),
                         ));
@@ -171,6 +192,11 @@ impl DownloadStream {
                     Ok(data) => data,
                     Err(_) => {
                         self.run_state.check_error()?;
+                        if self.run_state.is_cancelled() {
+                            // Cancellation aborted the in-flight fetch; end cleanly.
+                            self.finished = true;
+                            return Ok(None);
+                        }
                         return Err(FileReconstructionError::InternalWriterError(
                             "Data sender was dropped before sending data.".to_string(),
                         ));

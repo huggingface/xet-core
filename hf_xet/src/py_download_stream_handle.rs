@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use xet_pkg::xet_session::{ItemProgressReport, XetDownloadStream, XetUnorderedDownloadStream};
@@ -26,7 +28,7 @@ use crate::utils::progress_display;
 /// ```
 #[pyclass(name = "XetDownloadStream")]
 pub struct PyXetDownloadStream {
-    pub(crate) inner: XetDownloadStream,
+    pub(crate) inner: Arc<XetDownloadStream>,
 }
 
 #[pymethods]
@@ -45,19 +47,22 @@ impl PyXetDownloadStream {
 
     /// Return the next ``bytes`` chunk, or raise ``StopIteration`` when done.
     ///
-    /// Note: the GIL is held while waiting for the next chunk.
-    /// ``XetDownloadStream`` is not ``Clone``, so ``py.detach()`` cannot be
-    /// used here.  In practice chunks arrive quickly from the background task,
-    /// so this is not expected to cause significant contention.
-    fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyBytes>>> {
-        match self.inner.blocking_next().map_err(convert_xet_error)? {
+    /// Releases the GIL while waiting for the next chunk, so other Python
+    /// threads — including one calling :meth:`cancel` on this stream — keep
+    /// running while the download is in flight.
+    fn __next__(&self, py: Python<'_>) -> PyResult<Option<Py<PyBytes>>> {
+        let inner = self.inner.clone();
+        match py.detach(move || inner.blocking_next()).map_err(convert_xet_error)? {
             Some(bytes) => Ok(Some(PyBytes::new(py, &bytes).unbind())),
             None => Ok(None),
         }
     }
 
     /// Cancel this stream.  Subsequent iteration will stop immediately.
-    pub fn cancel(&mut self) {
+    ///
+    /// Safe to call from another thread while an iteration is blocked in
+    /// ``__next__``; that call wakes and ends the stream.
+    pub fn cancel(&self) {
         self.inner.cancel();
     }
 
@@ -86,7 +91,7 @@ impl PyXetDownloadStream {
 /// ```
 #[pyclass(name = "XetUnorderedDownloadStream")]
 pub struct PyXetUnorderedDownloadStream {
-    pub(crate) inner: XetUnorderedDownloadStream,
+    pub(crate) inner: Arc<XetUnorderedDownloadStream>,
 }
 
 #[pymethods]
@@ -106,20 +111,22 @@ impl PyXetUnorderedDownloadStream {
     /// Return the next ``(offset, bytes)`` chunk, or raise ``StopIteration``
     /// when done.
     ///
-    /// Note: the GIL is held while waiting for the next chunk.
-    /// ``XetUnorderedDownloadStream`` is not ``Clone``, so ``py.detach()``
-    /// cannot be used here.  In practice chunks arrive quickly from the
-    /// background task, so this is not expected to cause significant
-    /// contention.
-    fn __next__<'py>(&mut self, py: Python<'py>) -> PyResult<Option<(u64, Bound<'py, PyBytes>)>> {
-        match self.inner.blocking_next().map_err(convert_xet_error)? {
+    /// Releases the GIL while waiting for the next chunk, so other Python
+    /// threads — including one calling :meth:`cancel` on this stream — keep
+    /// running while the download is in flight.
+    fn __next__<'py>(&self, py: Python<'py>) -> PyResult<Option<(u64, Bound<'py, PyBytes>)>> {
+        let inner = self.inner.clone();
+        match py.detach(move || inner.blocking_next()).map_err(convert_xet_error)? {
             Some((offset, bytes)) => Ok(Some((offset, PyBytes::new(py, &bytes)))),
             None => Ok(None),
         }
     }
 
     /// Cancel this stream.  Subsequent iteration will stop immediately.
-    pub fn cancel(&mut self) {
+    ///
+    /// Safe to call from another thread while an iteration is blocked in
+    /// ``__next__``; that call wakes and ends the stream.
+    pub fn cancel(&self) {
         self.inner.cancel();
     }
 

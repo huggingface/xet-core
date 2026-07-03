@@ -54,7 +54,7 @@ no-default-cache = ["xet-runtime/no-default-cache"]
 tokio-console = ["xet-runtime/tokio-console"]
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-tokio = { workspace = true, features = ["net", "time"] }
+tokio = { workspace = true, features = ["net", "sync", "time"] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 tokio = { workspace = true, features = ["sync", "rt", "time", "macros"] }

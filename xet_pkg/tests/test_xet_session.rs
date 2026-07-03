@@ -1397,6 +1397,56 @@ fn blocking_stream_multiple_sequential() {
 }
 
 #[test]
+fn blocking_stream_cancel_before_consuming() {
+    let temp = tempdir().unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
+    let data = b"blocking stream cancel test data";
+    let file_info = upload_bytes_sync(&session, &endpoint, data, "cancel_stream.bin");
+
+    let group = sync_stream_group(&session, &endpoint);
+    let stream = group.download_stream_blocking(file_info, None).unwrap();
+    stream.cancel();
+    assert!(stream.blocking_next().unwrap().is_none());
+}
+
+#[test]
+fn blocking_stream_cancel_from_other_thread() {
+    let temp = tempdir().unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
+    let data: Vec<u8> = (0..262144u64).map(|i| (i % 251) as u8).collect();
+    let file_info = upload_bytes_sync(&session, &endpoint, &data, "cancel_thread_stream.bin");
+
+    let group = sync_stream_group(&session, &endpoint);
+    let stream = std::sync::Arc::new(group.download_stream_blocking(file_info, None).unwrap());
+
+    // A consumer thread iterates while this thread cancels: cancel() must not
+    // wait on the stream's internal lock, and the consumer must terminate
+    // cleanly (a prefix of the data followed by end-of-stream, never an error).
+    let consumer = std::sync::Arc::clone(&stream);
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        let mut total = 0usize;
+        loop {
+            match consumer.blocking_next() {
+                Ok(Some(chunk)) => total += chunk.len(),
+                Ok(None) => break,
+                Err(e) => panic!("cancelled stream surfaced an error: {e:?}"),
+            }
+        }
+        done_tx.send(total).unwrap();
+    });
+
+    stream.cancel();
+    let total = done_rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("consumer thread did not terminate after cancel()");
+    assert!(total <= data.len());
+    handle.join().unwrap();
+}
+
+#[test]
 fn blocking_stream_aborted_session() {
     let session = XetSessionBuilder::new().build().unwrap();
     session.abort().unwrap();
@@ -1640,6 +1690,20 @@ fn blocking_unordered_stream_progress_tracking() {
     let final_progress = stream.progress().unwrap();
     assert_eq!(final_progress.total_bytes, data.len() as u64);
     assert_eq!(final_progress.bytes_completed, data.len() as u64);
+}
+
+#[test]
+fn blocking_unordered_stream_cancel_before_consuming() {
+    let temp = tempdir().unwrap();
+    let session = XetSessionBuilder::new().build().unwrap();
+    let endpoint = format!("local://{}", temp.path().join("cas").display());
+    let data = b"blocking unordered stream cancel test data";
+    let file_info = upload_bytes_sync(&session, &endpoint, data, "cancel_unordered.bin");
+
+    let group = sync_stream_group(&session, &endpoint);
+    let stream = group.download_unordered_stream_blocking(file_info, None).unwrap();
+    stream.cancel();
+    assert!(stream.blocking_next().unwrap().is_none());
 }
 
 #[test]

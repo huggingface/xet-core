@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::Arc;
 
 use pyo3::prelude::*;
 use xet_pkg::xet_session::{XetDownloadStreamGroup, XetFileInfo, XetSession};
@@ -102,7 +103,9 @@ impl PyXetDownloadStreamGroup {
         };
         let inner = self.inner.clone();
         let stream = py.detach(|| inner.download_stream_blocking(file_info, byte_range).map_err(convert_xet_error))?;
-        Ok(PyXetDownloadStream { inner: stream })
+        Ok(PyXetDownloadStream {
+            inner: Arc::new(stream),
+        })
     }
 
     /// Open an unordered byte stream for a file.
@@ -133,6 +136,8 @@ impl PyXetDownloadStreamGroup {
                 .download_unordered_stream_blocking(file_info, byte_range)
                 .map_err(convert_xet_error)
         })?;
-        Ok(PyXetUnorderedDownloadStream { inner: stream })
+        Ok(PyXetUnorderedDownloadStream {
+            inner: Arc::new(stream),
+        })
     }
 }

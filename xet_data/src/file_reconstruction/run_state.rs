@@ -110,6 +110,13 @@ impl RunState {
         self.cancellation_token.cancel();
     }
 
+    /// Returns `true` once the cancellation token has been triggered, either
+    /// by [`cancel`](Self::cancel) or [`set_error`](Self::set_error). Check
+    /// [`check_error`](Self::check_error) first to distinguish the two.
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.cancellation_token.is_cancelled()
+    }
+
     /// Future that resolves when cancelled; for use in `select!`.
     pub(crate) async fn cancelled(&self) {
         self.cancellation_token.cancelled().await;
