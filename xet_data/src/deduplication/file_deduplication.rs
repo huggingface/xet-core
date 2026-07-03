@@ -310,6 +310,10 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
     /// Add a new file data sequence entry to the current process, possibly merging with the
     /// previous entry.
     fn add_file_data_sequence_entry(&mut self, fse: FileDataSequenceEntry, n_deduped: usize) {
+        // Feed the matchable-density estimate (rejected offers are recorded by
+        // the tracker itself at the decision point).
+        self.defrag_tracker.record_matched_range(n_deduped);
+
         // Do we modify the previous entry as this is the next logical chunk, or do we
         // start a new entry?
         if self.file_data_sequence_continues_current(&fse) {
