@@ -841,7 +841,7 @@ impl Client for RemoteClient {
                 // event after success so the user callback and adaptive-concurrency
                 // reporter both observe the full byte count.
                 #[cfg(target_family = "wasm")]
-                upload_reporter.report_progress(n_transfer_bytes as usize);
+                upload_reporter.report_progress(n_upload_bytes as usize);
 
                 response.was_inserted
             } else {
