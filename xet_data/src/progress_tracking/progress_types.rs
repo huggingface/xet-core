@@ -301,6 +301,19 @@ impl ShardUploadProgress {
             ShardUploadEvent::Committing {
                 stage: CommitStage::Uploading,
             } => {
+                // complete the validation progress for this "id"
+                if let Some(ShardUploadEvent::Validating {
+                    verified: old_verified,
+                    total: old_total,
+                }) = maybe_old
+                {
+                    let verified_increment = old_total.saturating_sub(*old_verified);
+                    if verified_increment > 0 {
+                        self.total_shard_validation_entries_completed
+                            .fetch_add(verified_increment, Ordering::Relaxed);
+                    }
+                }
+
                 if maybe_old.is_none_or(|old| old.precede(event)) {
                     guard.insert(id, event.clone());
                 }
@@ -808,6 +821,65 @@ mod tests {
                 stage: CommitStage::Syncing
             }
         );
+    }
+
+    #[test]
+    fn test_shard_update_committing_uploading_force_completes_pending_validation() {
+        let progress = ShardUploadProgress::default();
+        let id = progress.register_shard_transfer(1000);
+
+        // Server reports partial validation progress...
+        progress.update(id, &ShardUploadEvent::Validating { verified: 3, total: 10 });
+        let report = progress.report();
+        assert_eq!(report.total_shard_validation_entries_completed, 3);
+        assert_eq!(report.total_shard_validation_entries, 10);
+
+        // ...then moves straight to committing without ever sending a final
+        // `Validating { verified: 10, total: 10 }` frame. The remaining (total - verified)
+        // must still be credited so the aggregate "completed" counter doesn't get stuck below
+        // the total forever.
+        progress.update(
+            id,
+            &ShardUploadEvent::Committing {
+                stage: CommitStage::Uploading,
+            },
+        );
+        let report = progress.report();
+        assert_eq!(report.total_shard_validation_entries_completed, 10);
+        assert_eq!(report.total_shard_validation_entries, 10);
+
+        assert_eq!(
+            *progress.shards_validation.lock().unwrap().get(&id).unwrap(),
+            ShardUploadEvent::Committing {
+                stage: CommitStage::Uploading
+            }
+        );
+    }
+
+    #[test]
+    fn test_shard_update_committing_uploading_noop_when_validation_already_complete() {
+        let progress = ShardUploadProgress::default();
+        let id = progress.register_shard_transfer(1000);
+
+        // Validation already fully reported before committing starts.
+        progress.update(
+            id,
+            &ShardUploadEvent::Validating {
+                verified: 10,
+                total: 10,
+            },
+        );
+        progress.update(
+            id,
+            &ShardUploadEvent::Committing {
+                stage: CommitStage::Uploading,
+            },
+        );
+
+        // Must not double-count the already-completed entries.
+        let report = progress.report();
+        assert_eq!(report.total_shard_validation_entries_completed, 10);
+        assert_eq!(report.total_shard_validation_entries, 10);
     }
 
     #[test]
