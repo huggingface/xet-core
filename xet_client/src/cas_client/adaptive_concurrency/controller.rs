@@ -340,6 +340,21 @@ impl AdaptiveConcurrencyController {
         })
     }
 
+    /// Context-shared upload controller: every client created on the same
+    /// [`XetContext`] gets the **same** controller, so total in-flight upload
+    /// concurrency — and with it the memory pinned by serialized xorbs
+    /// awaiting transmission — is bounded per context rather than per
+    /// client/session. Embedders that run many concurrent upload sessions in
+    /// one process (e.g. a registry transcoder proxying `docker push`) share
+    /// one context and get one adaptive pool sized to the actual link, the
+    /// same overall behavior as a single-session CLI upload.
+    pub fn shared_upload(ctx: &XetContext, logging_tag: &'static str) -> Arc<Self> {
+        ctx.common
+            .cache_get_or_create("cas_client::shared_upload_concurrency_controller", || {
+                Self::new_upload(ctx.clone(), logging_tag)
+            })
+    }
+
     /// Create a new concurrency controller for uploads using configuration values.
     /// This will use adaptive concurrency if enabled, otherwise fixed concurrency.
     pub fn new_upload(ctx: XetContext, logging_tag: &'static str) -> Arc<Self> {
@@ -1152,5 +1167,21 @@ mod tests {
             small_concurrency >= large_concurrency,
             "Small-transfer concurrency ({small_concurrency}) should be >= large-transfer concurrency ({large_concurrency})"
         );
+    }
+
+    /// `shared_upload` returns the same controller for every client created
+    /// on one context (that is what bounds in-flight upload memory
+    /// process-wide), and distinct controllers across contexts.
+    #[test]
+    fn test_shared_upload_controller_is_per_context() {
+        let ctx_a = XetContext::with_config(XetConfig::new()).unwrap();
+        let ctx_b = XetContext::with_config(XetConfig::new()).unwrap();
+
+        let first = AdaptiveConcurrencyController::shared_upload(&ctx_a, "upload");
+        let second = AdaptiveConcurrencyController::shared_upload(&ctx_a, "upload");
+        let other = AdaptiveConcurrencyController::shared_upload(&ctx_b, "upload");
+
+        assert!(Arc::ptr_eq(&first, &second), "same context must share one controller");
+        assert!(!Arc::ptr_eq(&first, &other), "distinct contexts must not share a controller");
     }
 }

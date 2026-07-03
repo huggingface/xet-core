@@ -95,7 +95,7 @@ impl RemoteClient {
                 )
                 .unwrap(),
             ),
-            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload(ctx.clone(), "upload"),
+            upload_concurrency_controller: AdaptiveConcurrencyController::shared_upload(&ctx, "upload"),
             download_concurrency_controller: AdaptiveConcurrencyController::new_download(ctx.clone(), "download"),
             detected_reconstruction_api_version: AtomicU32::new(0),
         })
