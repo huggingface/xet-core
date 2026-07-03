@@ -2178,4 +2178,175 @@ mod tests {
             "every chunk is either deduped or new"
         );
     }
+
+    // Exploration (not for CI): the case defrag prevention was built for — a mostly-new
+    // file with small scattered matches against existing content. The matchable-density
+    // bypass must stay OFF here (density ~50% < threshold) and the throttle must still
+    // re-store the tiny bites into contiguous fresh runs.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "exploration harness, run manually"]
+    async fn explore_sparse_match_protection() {
+        use xet_client::cas_client::DirectAccessClient;
+
+        let server = LocalTestServerBuilder::new().start().await;
+        let server_endpoint = server.http_endpoint().to_string();
+        server.set_global_dedup_shard_expiration(Some(std::time::Duration::from_secs(3600)));
+        let base_dir = TempDir::new().unwrap();
+        let config = test_config(&server_endpoint, base_dir.path());
+        let cas_client: Arc<dyn Client> = Arc::new(server);
+
+        const SIZE: usize = 128 * 1024 * 1024;
+        let mut rng = DeterministicRng::new(42);
+        let old_content = rng.gen_bytes(SIZE);
+        upload_file(&config, &old_content).await;
+
+        // New file: alternating ~1MB fresh / ~512KB copied from the old content. CDC
+        // boundaries resync a chunk into each copied block, so the matches on offer are
+        // interior runs of ~5-7 chunks: short, scattered, ~30% density — the exact case
+        // the defrag throttle exists for, below the bypass threshold.
+        let mut new_file = Vec::with_capacity(SIZE);
+        let mut old_pos = 0usize;
+        while new_file.len() < SIZE {
+            new_file.extend(rng.gen_bytes(1024 * 1024));
+            let take = (512 * 1024).min(old_content.len() - old_pos);
+            new_file.extend_from_slice(&old_content[old_pos..old_pos + take]);
+            old_pos = (old_pos + take) % (old_content.len() - 512 * 1024);
+        }
+        new_file.truncate(SIZE);
+
+        // Same cache dir as the first upload: scattered short matches are invisible to
+        // the sampled global dedup queries, so exercise the throttle via local shards —
+        // the same-client-updates-a-file case defrag prevention was designed around.
+        let session = FileUploadSession::new(config.clone()).await.unwrap();
+        let (_id, mut cleaner) = session
+            .start_clean(Some("mixed".into()), Some(new_file.len() as u64), Sha256Policy::Skip)
+            .unwrap();
+        cleaner.add_data(&new_file).await.unwrap();
+        let (xfi, metrics) = cleaner.finish().await.unwrap();
+        session.finalize().await.unwrap();
+
+        let hash = MerkleHash::from_hex(xfi.hash()).unwrap();
+        let (mdb, _) = cas_client.get_file_reconstruction_info(&hash).await.unwrap().unwrap();
+        let distinct: std::collections::HashSet<_> = mdb.segments.iter().map(|s| s.xorb_hash).collect();
+        println!(
+            "sparse-match file: {} terms, {} xorbs, deduped {:.1}%, new {:.1}%, defrag_prevented {:.1}%",
+            mdb.segments.len(),
+            distinct.len(),
+            metrics.deduped_bytes as f64 / metrics.total_bytes as f64 * 100.0,
+            metrics.new_bytes as f64 / metrics.total_bytes as f64 * 100.0,
+            metrics.defrag_prevented_dedup_bytes as f64 / metrics.total_bytes as f64 * 100.0,
+        );
+    }
+
+    // Exploration (not for CI): does repeated re-upload of the same content converge to
+    // the production signature (gap-2 A/B terms, CPR ~8, ~50% re-stored)? Each
+    // generation re-uploads the assembled file from a fresh cache dir, deduping against
+    // whatever the previous generations left in CAS — mimicking an import retry loop.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "exploration harness, run manually"]
+    async fn explore_generational_fragmentation() {
+        use xet_client::cas_client::DirectAccessClient;
+
+        const SIZE: usize = 256 * 1024 * 1024;
+        const GENERATIONS: usize = 5;
+        // Mean piece size of the very first (fragmented) upload, in bytes. Actual piece
+        // sizes are drawn from [mean/4, 7*mean/4] — the variance is what arms defrag
+        // prevention: it only rejects ranges shorter than its rolling average.
+        for piece in [512 * 1024usize, 1024 * 1024] {
+            let server = LocalTestServerBuilder::new().start().await;
+            let server_endpoint = server.http_endpoint().to_string();
+            server.set_global_dedup_shard_expiration(Some(std::time::Duration::from_secs(3600)));
+            let base_dir = TempDir::new().unwrap();
+            let config = test_config(&server_endpoint, base_dir.path());
+            let cas_client: Arc<dyn Client> = Arc::new(server);
+
+            // NOT random_data(): that helper's byte sequence has a 16 MB period (bits
+            // 16..24 of i*K mod 2^24), so large buffers dedup against themselves and
+            // poison layout measurements. LCG-per-byte has full 2^64 period.
+            let data = DeterministicRng::new(20260703).gen_bytes(SIZE);
+
+            // Gen 0: two-stream interleaved upload — pieces in FILE ORDER, alternating
+            // between two sessions, as two concurrent upload workers would pack them.
+            // Session 1's xorbs hold file chunks [0,P),[2P,3P),...; session 2's hold
+            // [P,2P),[3P,4P),... — the A/B seed.
+            let mut lcg: u64 = 0x9e3779b97f4a7c15;
+            let mut next_random = || {
+                lcg = lcg.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                (lcg >> 33) as usize
+            };
+            let mut pieces: Vec<(usize, usize)> = Vec::new();
+            let mut pos = 0usize;
+            while pos < SIZE {
+                let len = (piece / 4 + next_random() % (piece * 3 / 2)).min(SIZE - pos);
+                pieces.push((pos, pos + len));
+                pos += len;
+            }
+            let session_a = FileUploadSession::new(config.clone()).await.unwrap();
+            let session_b = FileUploadSession::new(config.clone()).await.unwrap();
+            for (i, &(start, end)) in pieces.iter().enumerate() {
+                let session = if i % 2 == 0 { &session_a } else { &session_b };
+                let slice = &data[start..end];
+                let (_id, mut cleaner) =
+                    session.start_clean(None, Some(slice.len() as u64), Sha256Policy::Skip).unwrap();
+                cleaner.add_data(slice).await.unwrap();
+                cleaner.finish().await.unwrap();
+            }
+            session_a.finalize().await.unwrap();
+            session_b.finalize().await.unwrap();
+
+            println!("\n########## piece={}KB ##########", piece / 1024);
+
+            for generation in 1..=GENERATIONS {
+                // Distinct trailing byte per generation: distinct file hash, content
+                // otherwise identical, so each generation dedups against the previous
+                // ones' layouts.
+                let mut gen_data = data.clone();
+                gen_data.extend(std::iter::repeat(generation as u8).take(generation));
+
+                let gen_dir = TempDir::new().unwrap();
+                let gen_config = test_config(&server_endpoint, gen_dir.path());
+                let gen_session = FileUploadSession::new(gen_config).await.unwrap();
+                let (_id, mut cleaner) = gen_session
+                    .start_clean(Some("copy".into()), Some(gen_data.len() as u64), Sha256Policy::Skip)
+                    .unwrap();
+                cleaner.add_data(&gen_data).await.unwrap();
+                let (xfi, metrics) = cleaner.finish().await.unwrap();
+                gen_session.finalize().await.unwrap();
+                let hash = MerkleHash::from_hex(xfi.hash()).unwrap();
+
+                let (mdb, _) = cas_client.get_file_reconstruction_info(&hash).await.unwrap().unwrap();
+                let n_segments = mdb.segments.len();
+                let distinct: std::collections::HashSet<_> = mdb.segments.iter().map(|s| s.xorb_hash).collect();
+                let total_chunks: u64 = mdb
+                    .segments
+                    .iter()
+                    .map(|s| (s.chunk_index_end - s.chunk_index_start) as u64)
+                    .sum();
+                let cpr = total_chunks as f64 / n_segments as f64;
+
+                let mut last_seen: std::collections::HashMap<_, usize> = std::collections::HashMap::new();
+                let mut gap_counts: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+                for (i, s) in mdb.segments.iter().enumerate() {
+                    if let Some(prev) = last_seen.insert(s.xorb_hash, i) {
+                        *gap_counts.entry(i - prev).or_default() += 1;
+                    }
+                }
+                let total_gaps: usize = gap_counts.values().sum();
+                let gap2_share = *gap_counts.get(&2).unwrap_or(&0) as f64 / total_gaps.max(1) as f64;
+                let gap1_share = *gap_counts.get(&1).unwrap_or(&0) as f64 / total_gaps.max(1) as f64;
+
+                println!(
+                    "gen {generation}: {n_segments} terms, {} xorbs (ideal {}), CPR {cpr:.2}, \
+                     gap1 {:.1}%, gap2 {:.1}%, new {:.1}%, defrag_prevented {:.1}%",
+                    distinct.len(),
+                    SIZE.div_ceil(64 * 1024 * 1024),
+                    gap1_share * 100.0,
+                    gap2_share * 100.0,
+                    metrics.new_bytes as f64 / metrics.total_bytes as f64 * 100.0,
+                    metrics.defrag_prevented_dedup_bytes as f64 / metrics.total_bytes as f64 * 100.0,
+                );
+            }
+            println!("prod target: CPR ~7.8-8.1, gap2 ~93-96%, xorbs ~1.9-2.6x ideal");
+        }
+    }
 }

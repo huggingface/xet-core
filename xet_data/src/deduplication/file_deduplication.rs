@@ -17,6 +17,10 @@ use super::interface::DeduplicationDataInterface;
 use super::{Chunk, RawXorbData};
 use crate::progress_tracking::upload_tracking::FileXorbDependency;
 
+/// The matchable-density bypass only engages once this many chunks have been
+/// processed, so a file's first few MB can't flip it on off a tiny sample.
+const MATCHABLE_DENSITY_WARMUP_CHUNKS: u64 = 512;
+
 pub struct FileDeduper<DataInterfaceType: DeduplicationDataInterface> {
     #[cfg_attr(not(feature = "simulation"), allow(dead_code))]
     ctx: XetContext,
@@ -47,6 +51,16 @@ pub struct FileDeduper<DataInterfaceType: DeduplicationDataInterface> {
     /// Tracking the defragmentation of the file specification.
     defrag_tracker: DefragPrevention,
 
+    /// Chunks processed so far, and how many of them had a dedup match on offer
+    /// (whether accepted or rejected by defrag prevention). Their ratio is the
+    /// matchable density used to bypass defrag prevention on re-uploaded content.
+    processed_chunks: u64,
+    offered_match_chunks: u64,
+
+    /// Matchable-density threshold above which defrag prevention is bypassed
+    /// (`deduplication.defrag_prevention_matchable_density_bypass`).
+    matchable_density_bypass: f32,
+
     /// The minimum number of chunks to wait for between generating global
     /// dedup queries.  Can be changed by testing code.
     min_spacing_between_global_dedup_queries: usize,
@@ -71,6 +85,9 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
             file_info: Vec::new(),
             internally_referencing_entries: Vec::new(),
             defrag_tracker: DefragPrevention::new(&ctx),
+            processed_chunks: 0,
+            offered_match_chunks: 0,
+            matchable_density_bypass: ctx.config.deduplication.defrag_prevention_matchable_density_bypass,
             min_spacing_between_global_dedup_queries: 0,
             next_chunk_index_eligible_for_global_dedup_query: 0,
             deduplication_metrics: DeduplicationMetrics::default(),
@@ -199,7 +216,20 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
             if let Some((n_deduped, fse, is_external)) = dedupe_query {
                 // check the fragmentation state and if it is pretty fragmented,
                 // we skip dedupe.  However, continuing the previous is always fine.
+                //
+                // Skipping dedup only reduces fragmentation when the surrounding
+                // content is mostly new: the re-stored chunks then merge with
+                // neighboring fresh runs into long contiguous ranges. When almost
+                // everything so far was matchable (a re-upload of existing content),
+                // re-storing buys no contiguity — the file keeps referencing the
+                // fragmented ranges in between — and only duplicates storage, so the
+                // throttle is disabled above MATCHABLE_DENSITY_BYPASS.
+                let matchable_density_high = self.processed_chunks > MATCHABLE_DENSITY_WARMUP_CHUNKS
+                    && (self.offered_match_chunks as f64 / self.processed_chunks as f64)
+                        > self.matchable_density_bypass as f64;
+
                 if self.file_data_sequence_continues_current(&fse)
+                    || matchable_density_high
                     || self.defrag_tracker.allow_dedup_on_next_range(n_deduped)
                 {
                     // Only count the range as deduped once it passes the defrag gate;
@@ -210,6 +240,8 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
                     dedup_metrics.deduped_bytes += fse.unpacked_segment_bytes as u64;
                     dedup_metrics.total_chunks += n_deduped as u64;
                     dedup_metrics.total_bytes += fse.unpacked_segment_bytes as u64;
+                    self.processed_chunks += n_deduped as u64;
+                    self.offered_match_chunks += n_deduped as u64;
 
                     // Report this as a dependency
                     // The case where it's dededuped against the present xorb is handled
@@ -231,6 +263,9 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
                 } else {
                     dedup_metrics.defrag_prevented_dedup_chunks += n_deduped as u64;
                     dedup_metrics.defrag_prevented_dedup_bytes += fse.unpacked_segment_bytes as u64;
+                    // Only the chunk falling through to the new-data path below is
+                    // settled; the rest of the range gets re-offered next iteration.
+                    self.offered_match_chunks += 1;
                 }
             }
 
@@ -241,6 +276,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
             dedup_metrics.total_bytes += n_bytes as u64;
             dedup_metrics.new_bytes += n_bytes as u64;
             dedup_metrics.new_chunks += 1;
+            self.processed_chunks += 1;
 
             // Do we need to cut a new xorb first?
             if self.new_data_size + n_bytes > xorb_cut_bytes || self.new_data.len() + 1 > xorb_cut_chunks {
