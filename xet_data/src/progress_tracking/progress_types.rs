@@ -223,7 +223,7 @@ pub struct ShardUploadProgress {
     pub total_shards_completed: AtomicU32,
     /// Latest NDJSON event observed per shard, used by `update` to detect and discard
     /// stale/out-of-order/duplicate frames.
-    pub shards_validation: Mutex<HashMap<UniqueId, ShardUploadEvent>>,
+    pub shard_upload_state: Mutex<HashMap<UniqueId, ShardUploadEvent>>,
 }
 
 impl ShardUploadProgress {
@@ -248,11 +248,12 @@ impl ShardUploadProgress {
     /// event `update` receives for it always has a previous state to compare against.
     pub fn register_shard_transfer(&self, shard_size: u64) -> UniqueId {
         let id = UniqueId::new();
-        self.shards_validation
+        self.shard_upload_state
             .lock()
             .unwrap()
             .insert(id, ShardUploadEvent::Validating { verified: 0, total: 0 });
         self.total_shard_bytes.fetch_add(shard_size, Ordering::Relaxed);
+        self.total_shards.fetch_add(1, Ordering::Relaxed);
         id
     }
 
@@ -265,75 +266,100 @@ impl ShardUploadProgress {
     /// Apply a v2 NDJSON progress event for the shard tracked by `id`.
     ///
     /// Events for a given shard normally progress `Validating` -> `Committing(Uploading)`
-    /// -> `Committing(Syncing)` -> `Result`, but frames can be skipped, duplicated, or
-    /// arrive out of order over the wire. To stay correct under that:
-    /// - `Validating` counters only ever move forward: increments are computed against the last recorded `(verified,
-    ///   total)` via `saturating_sub`, so a stale/duplicate frame with lower values contributes nothing.
-    /// - `Committing`/`Result` frames replace the stored state only when the previous state `precede`s (is strictly
-    ///   ordered before) the new one, so a late-arriving frame for an already-passed stage can't regress the recorded
-    ///   state. `Error` frames, and pairs of the same variant, are incomparable (`ShardUploadEvent::partial_cmp`
-    ///   returns `None`) and are simply skipped here rather than treated as forward progress.
+    /// -> `Committing(Syncing)` -> `Result`, but frames can be skipped, duplicated, or arrive
+    /// out of order over the wire. `Validating` is handled separately (its counters accumulate
+    /// in place); `Committing`/`Result` are stage milestones, each replacing the stored state
+    /// only when it represents genuine forward progress (see `precede`), with any earlier
+    /// milestone that got skipped credited first so the aggregate counters can't get stuck.
     pub fn update(&self, id: UniqueId, event: &ShardUploadEvent) {
         // compare with the previous event in case of unordered or skipped event
-        let mut guard = self.shards_validation.lock().unwrap();
+        let mut guard = self.shard_upload_state.lock().unwrap();
         let maybe_old = guard.get_mut(&id);
+
         match event {
             ShardUploadEvent::Validating { verified, total } => {
-                if let Some(ShardUploadEvent::Validating {
-                    verified: old_verified,
-                    total: old_total,
-                }) = maybe_old
-                {
-                    let verified_increment = verified.saturating_sub(*old_verified); // in case of unordered event
-                    let total_increment = total.saturating_sub(*old_total);
-                    if verified_increment > 0 {
-                        *old_verified += verified_increment;
-                        self.total_shard_validation_entries_completed
-                            .fetch_add(verified_increment, Ordering::Relaxed);
-                    }
-                    if total_increment > 0 {
-                        *old_total += total_increment;
-                        self.total_shard_validation_entries
-                            .fetch_add(total_increment, Ordering::Relaxed);
+                self.credit_validating_progress(maybe_old, *verified, *total);
+            },
+            ShardUploadEvent::Error { .. } => {},
+            // `Committing(*)` and `Result`: stage milestones. `Error` and `Validating` are
+            // handled above, so this only ever sees forward-moving stages.
+            _ => {
+                self.credit_skipped_validation(&maybe_old);
+                self.credit_skipped_store_stage(&maybe_old, event);
+                if maybe_old.is_none_or(|old| old.precede(event)) {
+                    guard.insert(id, event.clone());
+                    if matches!(event, ShardUploadEvent::Result { .. }) {
+                        self.total_shards_synced.fetch_add(1, Ordering::Relaxed);
+                        self.total_shards_completed.fetch_add(1, Ordering::Relaxed);
                     }
                 }
             },
-            ShardUploadEvent::Committing {
-                stage: CommitStage::Uploading,
-            } => {
-                // complete the validation progress for this "id"
-                if let Some(ShardUploadEvent::Validating {
-                    verified: old_verified,
-                    total: old_total,
-                }) = maybe_old
-                {
-                    let verified_increment = old_total.saturating_sub(*old_verified);
-                    if verified_increment > 0 {
-                        self.total_shard_validation_entries_completed
-                            .fetch_add(verified_increment, Ordering::Relaxed);
-                    }
-                }
+        }
+    }
 
-                if maybe_old.is_none_or(|old| old.precede(event)) {
-                    guard.insert(id, event.clone());
-                }
-            },
+    /// `Validating` counters only ever move forward: increments are computed against the last
+    /// recorded `(verified, total)` via `saturating_sub`, so a stale/duplicate frame with lower
+    /// values contributes nothing.
+    fn credit_validating_progress(&self, maybe_old: Option<&mut ShardUploadEvent>, verified: u64, total: u64) {
+        let Some(ShardUploadEvent::Validating {
+            verified: old_verified,
+            total: old_total,
+        }) = maybe_old
+        else {
+            return;
+        };
+
+        let verified_increment = verified.saturating_sub(*old_verified); // in case of unordered event
+        let total_increment = total.saturating_sub(*old_total);
+        if verified_increment > 0 {
+            *old_verified += verified_increment;
+            self.total_shard_validation_entries_completed
+                .fetch_add(verified_increment, Ordering::Relaxed);
+        }
+        if total_increment > 0 {
+            *old_total += total_increment;
+            self.total_shard_validation_entries
+                .fetch_add(total_increment, Ordering::Relaxed);
+        }
+    }
+
+    /// The server may skip straight to `Committing`/`Result` without ever sending a final
+    /// `Validating { verified: total, total }` frame. If the last recorded state is still
+    /// `Validating` with `verified < total`, credit the remainder now so
+    /// `total_shard_validation_entries_completed` doesn't get stuck below the total.
+    fn credit_skipped_validation(&self, maybe_old: &Option<&mut ShardUploadEvent>) {
+        if let Some(ShardUploadEvent::Validating {
+            verified: old_verified,
+            total: old_total,
+        }) = maybe_old
+        {
+            let verified_increment = old_total.saturating_sub(*old_verified);
+            if verified_increment > 0 {
+                self.total_shard_validation_entries_completed
+                    .fetch_add(verified_increment, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Likewise, the explicit `Committing(Syncing)` frame may be skipped in favor of jumping
+    /// straight to `Result`. Whichever event first represents the shard reaching the
+    /// durable-write "store" stage counts it exactly once: `already_counted` is true only once
+    /// the stored state has itself reached `Committing(Syncing)` or `Result`.
+    fn credit_skipped_store_stage(&self, maybe_old: &Option<&mut ShardUploadEvent>, event: &ShardUploadEvent) {
+        let reached_store_stage = matches!(
+            event,
             ShardUploadEvent::Committing {
-                stage: CommitStage::Syncing,
-            } => {
-                if maybe_old.is_none_or(|old| old.precede(event)) {
-                    guard.insert(id, event.clone());
-                }
-                self.total_shards_uploaded_to_store.fetch_add(1, Ordering::Relaxed);
-            },
-            ShardUploadEvent::Result { .. } => {
-                if maybe_old.is_none_or(|old| old.precede(event)) {
-                    guard.insert(id, event.clone());
-                }
-                self.total_shards_synced.fetch_add(1, Ordering::Relaxed);
-                self.total_shards_completed.fetch_add(1, Ordering::Relaxed);
-            },
-            _ => {},
+                stage: CommitStage::Syncing
+            } | ShardUploadEvent::Result { .. }
+        );
+        let already_counted = matches!(
+            maybe_old,
+            Some(ShardUploadEvent::Committing {
+                stage: CommitStage::Syncing
+            }) | Some(ShardUploadEvent::Result { .. })
+        );
+        if reached_store_stage && !already_counted {
+            self.total_shards_uploaded_to_store.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
@@ -789,7 +815,7 @@ mod tests {
     }
 
     #[test]
-    fn test_shard_update_committing_ignores_late_out_of_order_stage() {
+    fn test_shard_update_committing_syncing_ignores_stale_and_duplicate_frames() {
         let progress = ShardUploadProgress::default();
         let id = progress.register_shard_transfer(1000);
 
@@ -801,14 +827,24 @@ mod tests {
         );
         assert_eq!(progress.report().total_shards_uploaded_to_store, 1);
         assert_eq!(
-            *progress.shards_validation.lock().unwrap().get(&id).unwrap(),
+            *progress.shard_upload_state.lock().unwrap().get(&id).unwrap(),
             ShardUploadEvent::Committing {
                 stage: CommitStage::Syncing
             }
         );
 
+        // A duplicate/replayed frame for the same shard (e.g. retried NDJSON delivery) must
+        // not be counted as a second shard reaching the store.
+        progress.update(
+            id,
+            &ShardUploadEvent::Committing {
+                stage: CommitStage::Syncing,
+            },
+        );
+        assert_eq!(progress.report().total_shards_uploaded_to_store, 1);
+
         // "Uploading" arrives after "Syncing" was already observed (reordered in transit).
-        // It must not regress the recorded stage.
+        // It must not regress the recorded stage either.
         progress.update(
             id,
             &ShardUploadEvent::Committing {
@@ -816,7 +852,7 @@ mod tests {
             },
         );
         assert_eq!(
-            *progress.shards_validation.lock().unwrap().get(&id).unwrap(),
+            *progress.shard_upload_state.lock().unwrap().get(&id).unwrap(),
             ShardUploadEvent::Committing {
                 stage: CommitStage::Syncing
             }
@@ -824,62 +860,66 @@ mod tests {
     }
 
     #[test]
-    fn test_shard_update_committing_uploading_force_completes_pending_validation() {
+    fn test_shard_update_credits_skipped_validation_regardless_of_which_stage_arrives_first() {
         let progress = ShardUploadProgress::default();
-        let id = progress.register_shard_transfer(1000);
 
-        // Server reports partial validation progress...
-        progress.update(id, &ShardUploadEvent::Validating { verified: 3, total: 10 });
-        let report = progress.report();
-        assert_eq!(report.total_shard_validation_entries_completed, 3);
-        assert_eq!(report.total_shard_validation_entries, 10);
-
-        // ...then moves straight to committing without ever sending a final
-        // `Validating { verified: 10, total: 10 }` frame. The remaining (total - verified)
-        // must still be credited so the aggregate "completed" counter doesn't get stuck below
-        // the total forever.
+        // Shard A: partial validation progress, then moves straight to `Committing(Uploading)`
+        // without ever sending a final `Validating { verified: total, total }` frame. The
+        // remaining (total - verified) must still be credited so the aggregate "completed"
+        // counter doesn't get stuck below the total forever.
+        let id_a = progress.register_shard_transfer(1000);
+        progress.update(id_a, &ShardUploadEvent::Validating { verified: 3, total: 10 });
         progress.update(
-            id,
+            id_a,
             &ShardUploadEvent::Committing {
                 stage: CommitStage::Uploading,
             },
         );
-        let report = progress.report();
-        assert_eq!(report.total_shard_validation_entries_completed, 10);
-        assert_eq!(report.total_shard_validation_entries, 10);
-
         assert_eq!(
-            *progress.shards_validation.lock().unwrap().get(&id).unwrap(),
+            *progress.shard_upload_state.lock().unwrap().get(&id_a).unwrap(),
             ShardUploadEvent::Committing {
                 stage: CommitStage::Uploading
             }
         );
-    }
 
-    #[test]
-    fn test_shard_update_committing_uploading_noop_when_validation_already_complete() {
-        let progress = ShardUploadProgress::default();
-        let id = progress.register_shard_transfer(1000);
-
-        // Validation already fully reported before committing starts.
+        // Shard B: validation was already fully reported before committing starts. Must not
+        // double-count the already-completed entries.
+        let id_b = progress.register_shard_transfer(1000);
         progress.update(
-            id,
+            id_b,
             &ShardUploadEvent::Validating {
                 verified: 10,
                 total: 10,
             },
         );
         progress.update(
-            id,
+            id_b,
             &ShardUploadEvent::Committing {
                 stage: CommitStage::Uploading,
             },
         );
 
-        // Must not double-count the already-completed entries.
+        // Shard C: partial validation progress, then skips `Committing(Uploading)` entirely,
+        // jumping straight to `Committing(Syncing)`. The credit isn't tied to one specific
+        // stage -- it fires the first time we see anything past `Validating`.
+        let id_c = progress.register_shard_transfer(1000);
+        progress.update(id_c, &ShardUploadEvent::Validating { verified: 4, total: 10 });
+        progress.update(
+            id_c,
+            &ShardUploadEvent::Committing {
+                stage: CommitStage::Syncing,
+            },
+        );
+        assert_eq!(
+            *progress.shard_upload_state.lock().unwrap().get(&id_c).unwrap(),
+            ShardUploadEvent::Committing {
+                stage: CommitStage::Syncing
+            }
+        );
+
         let report = progress.report();
-        assert_eq!(report.total_shard_validation_entries_completed, 10);
-        assert_eq!(report.total_shard_validation_entries, 10);
+        assert_eq!(report.total_shard_validation_entries_completed, 30); // 10 (a) + 10 (b, no extra credit) + 10 (c)
+        assert_eq!(report.total_shard_validation_entries, 30);
     }
 
     #[test]
@@ -887,9 +927,10 @@ mod tests {
         let progress = ShardUploadProgress::default();
         let id = progress.register_shard_transfer(1000);
 
-        progress.update(id, &ShardUploadEvent::Validating { verified: 5, total: 5 });
+        // Validation is still incomplete (3/10) when the shard jumps straight to the terminal
+        // frame without ever observing a `Committing` frame.
+        progress.update(id, &ShardUploadEvent::Validating { verified: 3, total: 10 });
 
-        // Jump straight to the terminal frame without ever observing a `Committing` frame.
         progress.update(
             id,
             &ShardUploadEvent::Result {
@@ -898,10 +939,17 @@ mod tests {
         );
 
         let report = progress.report();
+        // The remaining (total - verified) is credited so the counter doesn't get stuck, even
+        // though `Committing` -- where this credit was previously applied -- never arrived.
+        assert_eq!(report.total_shard_validation_entries_completed, 10);
+        assert_eq!(report.total_shard_validation_entries, 10);
+        // Likewise, reaching `Result` directly implies the durable-write "store" stage
+        // completed too, even though no `Committing(Syncing)` frame was ever observed.
+        assert_eq!(report.total_shards_uploaded_to_store, 1);
         assert_eq!(report.total_shards_synced, 1);
         assert_eq!(report.total_shards_completed, 1);
         assert_eq!(
-            *progress.shards_validation.lock().unwrap().get(&id).unwrap(),
+            *progress.shard_upload_state.lock().unwrap().get(&id).unwrap(),
             ShardUploadEvent::Result {
                 result: UploadShardResponseType::SyncPerformed
             }
@@ -909,28 +957,78 @@ mod tests {
     }
 
     #[test]
-    fn test_shard_update_result_is_terminal_and_ignores_late_committing_frame() {
+    fn test_shard_update_result_after_explicit_syncing_does_not_double_count_store() {
+        let progress = ShardUploadProgress::default();
+        let id = progress.register_shard_transfer(1000);
+
+        // The explicit `Committing(Syncing)` frame is observed this time...
+        progress.update(
+            id,
+            &ShardUploadEvent::Committing {
+                stage: CommitStage::Syncing,
+            },
+        );
+        assert_eq!(progress.report().total_shards_uploaded_to_store, 1);
+
+        // ...so `Result` arriving afterward must not credit the store counter a second time.
+        progress.update(
+            id,
+            &ShardUploadEvent::Result {
+                result: UploadShardResponseType::SyncPerformed,
+            },
+        );
+        let report = progress.report();
+        assert_eq!(report.total_shards_uploaded_to_store, 1);
+        assert_eq!(report.total_shards_synced, 1);
+        assert_eq!(report.total_shards_completed, 1);
+    }
+
+    #[test]
+    fn test_shard_update_result_is_terminal_and_rejects_late_or_duplicate_frames() {
         let progress = ShardUploadProgress::default();
         let id = progress.register_shard_transfer(1000);
 
         progress.update(
             id,
             &ShardUploadEvent::Result {
-                result: UploadShardResponseType::Exists,
+                result: UploadShardResponseType::SyncPerformed,
             },
         );
-        // A stray "Committing" frame arrives after the terminal frame (e.g. reordered).
+        let report = progress.report();
+        assert_eq!(report.total_shards_synced, 1);
+        assert_eq!(report.total_shards_completed, 1);
+
+        // A stray "Committing" frame arrives after the terminal frame (e.g. reordered). It
+        // must not overwrite the recorded result.
         progress.update(
             id,
             &ShardUploadEvent::Committing {
                 stage: CommitStage::Uploading,
             },
         );
-
         assert_eq!(
-            *progress.shards_validation.lock().unwrap().get(&id).unwrap(),
+            *progress.shard_upload_state.lock().unwrap().get(&id).unwrap(),
             ShardUploadEvent::Result {
-                result: UploadShardResponseType::Exists
+                result: UploadShardResponseType::SyncPerformed
+            }
+        );
+
+        // A duplicate/replayed terminal frame -- even with a different payload (partial_cmp
+        // compares `Result` frames by variant alone) -- must not overwrite the recorded result
+        // or double-count the completion counters.
+        progress.update(
+            id,
+            &ShardUploadEvent::Result {
+                result: UploadShardResponseType::Exists,
+            },
+        );
+        let report = progress.report();
+        assert_eq!(report.total_shards_synced, 1);
+        assert_eq!(report.total_shards_completed, 1);
+        assert_eq!(
+            *progress.shard_upload_state.lock().unwrap().get(&id).unwrap(),
+            ShardUploadEvent::Result {
+                result: UploadShardResponseType::SyncPerformed
             }
         );
     }
@@ -957,11 +1055,23 @@ mod tests {
         assert_eq!(report.total_shards_synced, 0);
         assert_eq!(report.total_shards_completed, 0);
         assert_eq!(
-            *progress.shards_validation.lock().unwrap().get(&id).unwrap(),
+            *progress.shard_upload_state.lock().unwrap().get(&id).unwrap(),
             ShardUploadEvent::Committing {
                 stage: CommitStage::Syncing
             }
         );
+    }
+
+    #[test]
+    fn test_register_shard_transfer_increments_total_shards() {
+        let progress = ShardUploadProgress::default();
+        assert_eq!(progress.report().total_shards, 0);
+
+        progress.register_shard_transfer(100);
+        assert_eq!(progress.report().total_shards, 1);
+
+        progress.register_shard_transfer(200);
+        assert_eq!(progress.report().total_shards, 2);
     }
 
     #[test]
@@ -984,7 +1094,7 @@ mod tests {
         assert_eq!(report.total_shard_validation_entries_completed, 6); // 3 + (5 - 2)
         assert_eq!(report.total_shard_validation_entries, 9); // unchanged: id_a's total was already 5
 
-        let guard = progress.shards_validation.lock().unwrap();
+        let guard = progress.shard_upload_state.lock().unwrap();
         assert_eq!(*guard.get(&id_a).unwrap(), ShardUploadEvent::Validating { verified: 5, total: 5 });
         assert_eq!(*guard.get(&id_b).unwrap(), ShardUploadEvent::Validating { verified: 1, total: 4 });
     }
