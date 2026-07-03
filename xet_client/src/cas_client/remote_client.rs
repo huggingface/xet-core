@@ -406,6 +406,7 @@ impl RemoteClient {
                 client
                     .post(url.clone())
                     .with_extension(Api(api_tag))
+                    .header(CONTENT_LENGTH, HeaderValue::from(n_upload_bytes)) // must be set because of streaming
                     .body(Body::wrap_stream(upload_stream))
                     .send()
             })
@@ -786,14 +787,12 @@ impl Client for RemoteClient {
             "Starting upload_xorb API call",
         );
 
-        let n_transfer_bytes = serialized_xorb_object.serialized_data.len() as u64;
-
         let serialized_data = Bytes::from(std::mem::take(&mut serialized_xorb_object.serialized_data));
 
         #[cfg(not(target_family = "wasm"))]
         let block_size = self.ctx.config.client.upload_reporting_block_size;
 
-        let mut upload_reporter = StreamProgressReporter::new(n_transfer_bytes)
+        let mut upload_reporter = StreamProgressReporter::new(n_upload_bytes)
             .with_adaptive_concurrency_reporter(upload_permit.get_partial_completion_reporting_function());
         if let Some(cb) = progress_callback {
             upload_reporter = upload_reporter.with_progress_callback(cb);
@@ -806,7 +805,7 @@ impl Client for RemoteClient {
                 let api_tag = "cas::upload_xorb";
 
                 let response: UploadXorbResponse = RetryWrapper::new(self.ctx.clone(), api_tag)
-                    .with_connection_permit(upload_permit, Some(n_transfer_bytes))
+                    .with_connection_permit(upload_permit, Some(n_upload_bytes))
                     .run_and_extract_json(move || {
                         let url = url.clone();
                         let serialized_data = serialized_data.clone();
