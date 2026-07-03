@@ -2102,4 +2102,80 @@ mod tests {
             handle.await.unwrap();
         }
     }
+
+    // Regression test: when defrag prevention rejects a dedup range, the range's chunks
+    // fall through to the new-data path, which does its own total/new accounting. The
+    // metrics used to also count the rejected range as deduped+total up front, so every
+    // defrag-prevented byte was double-counted in total_bytes and misreported as deduped
+    // (and tripped the file_size == total_bytes debug_assert in SingleFileCleaner).
+    //
+    // Setup that reliably trips the defrag gate: upload content as small shuffled pieces
+    // (so its CAS layout is fragmented), then cleanly re-upload the assembled file from a
+    // client with no local shard cache. Dedup then only matches in piece-sized runs, and
+    // the CPR tracker starts rejecting ranges.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_dedup_metrics_when_defrag_prevention_triggers() {
+        use xet_client::cas_client::DirectAccessClient;
+
+        let server = LocalTestServerBuilder::new().start().await;
+        let server_endpoint = server.http_endpoint().to_string();
+        // Serve global-dedup shards in the production format (file data stripped, expiry
+        // set) instead of raw session shards, which the client-side parser rejects.
+        server.set_global_dedup_shard_expiration(Some(std::time::Duration::from_secs(3600)));
+        let base_dir = TempDir::new().unwrap();
+        let config = test_config(&server_endpoint, base_dir.path());
+
+        const SIZE: usize = 64 * 1024 * 1024;
+        const PIECE: usize = 256 * 1024;
+        let data = random_data(20260703, SIZE);
+
+        // Pass 1: upload the content as shuffled pieces so xorbs pack them in arrival
+        // order, not file order.
+        let n_pieces = SIZE / PIECE;
+        let mut order: Vec<usize> = (0..n_pieces).collect();
+        let mut lcg: u64 = 0x9e3779b97f4a7c15;
+        for i in (1..n_pieces).rev() {
+            lcg = lcg.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            order.swap(i, (lcg >> 33) as usize % (i + 1));
+        }
+        let session1 = FileUploadSession::new(config.clone()).await.unwrap();
+        for &piece_idx in &order {
+            let slice = &data[piece_idx * PIECE..(piece_idx + 1) * PIECE];
+            let (_id, mut cleaner) = session1
+                .start_clean(None, Some(slice.len() as u64), Sha256Policy::Skip)
+                .unwrap();
+            cleaner.add_data(slice).await.unwrap();
+            cleaner.finish().await.unwrap();
+        }
+        session1.finalize().await.unwrap();
+
+        // Pass 2: clean sequential upload of the assembled file from a fresh cache dir,
+        // so dedup discovery goes through the sampled global dedup queries.
+        let base_dir2 = TempDir::new().unwrap();
+        let config2 = test_config(&server_endpoint, base_dir2.path());
+        let session2 = FileUploadSession::new(config2).await.unwrap();
+        let (_id, mut cleaner) = session2
+            .start_clean(Some("copy".into()), Some(data.len() as u64), Sha256Policy::Skip)
+            .unwrap();
+        cleaner.add_data(&data).await.unwrap();
+        let (xfi, metrics) = cleaner.finish().await.unwrap();
+        session2.finalize().await.unwrap();
+
+        assert!(
+            metrics.defrag_prevented_dedup_bytes > 0,
+            "setup failed to trigger defrag prevention; the metrics accounting is not exercised"
+        );
+        assert_eq!(metrics.total_bytes, SIZE as u64, "total_bytes must equal the bytes actually cleaned");
+        assert_eq!(xfi.file_size(), Some(SIZE as u64));
+        assert_eq!(
+            metrics.deduped_bytes + metrics.new_bytes,
+            metrics.total_bytes,
+            "every byte is either deduped or new"
+        );
+        assert_eq!(
+            metrics.deduped_chunks + metrics.new_chunks,
+            metrics.total_chunks,
+            "every chunk is either deduped or new"
+        );
+    }
 }
