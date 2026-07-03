@@ -533,7 +533,7 @@ mod tests {
     use std::sync::Arc;
 
     use tempfile::TempDir;
-    use xet_client::cas_client::{Client, LocalTestServerBuilder};
+    use xet_client::cas_client::{Client, DirectAccessClient, LocalTestServerBuilder};
     use xet_core_structures::merklehash::MerkleHash;
 
     use super::*;
@@ -1447,6 +1447,17 @@ mod tests {
         MerkleHash::from_hex(xfi.hash()).unwrap()
     }
 
+    /// Like `upload_file`, but cleans inside an existing session (so several files
+    /// share xorb packing) and returns the file info plus dedup metrics.
+    async fn clean_file_in_session(
+        session: &Arc<FileUploadSession>,
+        data: &[u8],
+    ) -> (XetFileInfo, crate::deduplication::DeduplicationMetrics) {
+        let (_id, mut cleaner) = session.start_clean(None, Some(data.len() as u64), Sha256Policy::Skip).unwrap();
+        cleaner.add_data(data).await.unwrap();
+        cleaner.finish().await.unwrap()
+    }
+
     async fn download_file(config: &Arc<TranslatorConfig>, hash: MerkleHash, size: u64) -> Vec<u8> {
         let session = FileDownloadSession::new(config.clone(), None).await.unwrap();
         let xfi = crate::processing::XetFileInfo::new(hash.hex(), size);
@@ -2115,8 +2126,6 @@ mod tests {
     // the CPR tracker starts rejecting ranges.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_dedup_metrics_when_defrag_prevention_triggers() {
-        use xet_client::cas_client::DirectAccessClient;
-
         let server = LocalTestServerBuilder::new().start().await;
         let server_endpoint = server.http_endpoint().to_string();
         // Serve global-dedup shards in the production format (file data stripped, expiry
@@ -2131,21 +2140,15 @@ mod tests {
 
         // Pass 1: upload the content as shuffled pieces so xorbs pack them in arrival
         // order, not file order.
+        let mut rng = DeterministicRng::new(0x9e3779b97f4a7c15);
         let n_pieces = SIZE / PIECE;
         let mut order: Vec<usize> = (0..n_pieces).collect();
-        let mut lcg: u64 = 0x9e3779b97f4a7c15;
         for i in (1..n_pieces).rev() {
-            lcg = lcg.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            order.swap(i, (lcg >> 33) as usize % (i + 1));
+            order.swap(i, rng.gen_range(0, i + 1));
         }
         let session1 = FileUploadSession::new(config.clone()).await.unwrap();
         for &piece_idx in &order {
-            let slice = &data[piece_idx * PIECE..(piece_idx + 1) * PIECE];
-            let (_id, mut cleaner) = session1
-                .start_clean(None, Some(slice.len() as u64), Sha256Policy::Skip)
-                .unwrap();
-            cleaner.add_data(slice).await.unwrap();
-            cleaner.finish().await.unwrap();
+            clean_file_in_session(&session1, &data[piece_idx * PIECE..(piece_idx + 1) * PIECE]).await;
         }
         session1.finalize().await.unwrap();
 
@@ -2154,11 +2157,7 @@ mod tests {
         let base_dir2 = TempDir::new().unwrap();
         let config2 = test_config(&server_endpoint, base_dir2.path());
         let session2 = FileUploadSession::new(config2).await.unwrap();
-        let (_id, mut cleaner) = session2
-            .start_clean(Some("copy".into()), Some(data.len() as u64), Sha256Policy::Skip)
-            .unwrap();
-        cleaner.add_data(&data).await.unwrap();
-        let (xfi, metrics) = cleaner.finish().await.unwrap();
+        let (xfi, metrics) = clean_file_in_session(&session2, &data).await;
         session2.finalize().await.unwrap();
 
         assert!(
@@ -2186,8 +2185,6 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[ignore = "exploration harness, run manually"]
     async fn explore_sparse_match_protection() {
-        use xet_client::cas_client::DirectAccessClient;
-
         let server = LocalTestServerBuilder::new().start().await;
         let server_endpoint = server.http_endpoint().to_string();
         server.set_global_dedup_shard_expiration(Some(std::time::Duration::from_secs(3600)));
@@ -2218,11 +2215,7 @@ mod tests {
         // the sampled global dedup queries, so exercise the throttle via local shards —
         // the same-client-updates-a-file case defrag prevention was designed around.
         let session = FileUploadSession::new(config.clone()).await.unwrap();
-        let (_id, mut cleaner) = session
-            .start_clean(Some("mixed".into()), Some(new_file.len() as u64), Sha256Policy::Skip)
-            .unwrap();
-        cleaner.add_data(&new_file).await.unwrap();
-        let (xfi, metrics) = cleaner.finish().await.unwrap();
+        let (xfi, metrics) = clean_file_in_session(&session, &new_file).await;
         session.finalize().await.unwrap();
 
         let hash = MerkleHash::from_hex(xfi.hash()).unwrap();
@@ -2245,8 +2238,6 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[ignore = "exploration harness, run manually"]
     async fn explore_generational_fragmentation() {
-        use xet_client::cas_client::DirectAccessClient;
-
         const SIZE: usize = 256 * 1024 * 1024;
         const GENERATIONS: usize = 5;
         // Mean piece size of the very first (fragmented) upload, in bytes. Actual piece
@@ -2269,15 +2260,11 @@ mod tests {
             // between two sessions, as two concurrent upload workers would pack them.
             // Session 1's xorbs hold file chunks [0,P),[2P,3P),...; session 2's hold
             // [P,2P),[3P,4P),... — the A/B seed.
-            let mut lcg: u64 = 0x9e3779b97f4a7c15;
-            let mut next_random = || {
-                lcg = lcg.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-                (lcg >> 33) as usize
-            };
+            let mut rng = DeterministicRng::new(0x9e3779b97f4a7c15);
             let mut pieces: Vec<(usize, usize)> = Vec::new();
             let mut pos = 0usize;
             while pos < SIZE {
-                let len = (piece / 4 + next_random() % (piece * 3 / 2)).min(SIZE - pos);
+                let len = rng.gen_range(piece / 4, piece / 4 + piece * 3 / 2).min(SIZE - pos);
                 pieces.push((pos, pos + len));
                 pos += len;
             }
@@ -2285,11 +2272,7 @@ mod tests {
             let session_b = FileUploadSession::new(config.clone()).await.unwrap();
             for (i, &(start, end)) in pieces.iter().enumerate() {
                 let session = if i % 2 == 0 { &session_a } else { &session_b };
-                let slice = &data[start..end];
-                let (_id, mut cleaner) =
-                    session.start_clean(None, Some(slice.len() as u64), Sha256Policy::Skip).unwrap();
-                cleaner.add_data(slice).await.unwrap();
-                cleaner.finish().await.unwrap();
+                clean_file_in_session(session, &data[start..end]).await;
             }
             session_a.finalize().await.unwrap();
             session_b.finalize().await.unwrap();
@@ -2297,19 +2280,18 @@ mod tests {
             println!("\n########## piece={}KB ##########", piece / 1024);
 
             for generation in 1..=GENERATIONS {
-                // Distinct trailing byte per generation: distinct file hash, content
+                // Distinct trailing bytes per generation: distinct file hash, content
                 // otherwise identical, so each generation dedups against the previous
-                // ones' layouts.
-                let mut gen_data = data.clone();
-                gen_data.extend(std::iter::repeat(generation as u8).take(generation));
+                // ones' layouts. Fed as two add_data calls to avoid cloning 256MB.
+                let trailer = vec![generation as u8; generation];
+                let total_len = (SIZE + trailer.len()) as u64;
 
                 let gen_dir = TempDir::new().unwrap();
                 let gen_config = test_config(&server_endpoint, gen_dir.path());
                 let gen_session = FileUploadSession::new(gen_config).await.unwrap();
-                let (_id, mut cleaner) = gen_session
-                    .start_clean(Some("copy".into()), Some(gen_data.len() as u64), Sha256Policy::Skip)
-                    .unwrap();
-                cleaner.add_data(&gen_data).await.unwrap();
+                let (_id, mut cleaner) = gen_session.start_clean(None, Some(total_len), Sha256Policy::Skip).unwrap();
+                cleaner.add_data(&data).await.unwrap();
+                cleaner.add_data(&trailer).await.unwrap();
                 let (xfi, metrics) = cleaner.finish().await.unwrap();
                 gen_session.finalize().await.unwrap();
                 let hash = MerkleHash::from_hex(xfi.hash()).unwrap();
