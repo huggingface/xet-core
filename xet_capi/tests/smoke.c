@@ -24,3 +24,10 @@ int run_smoke(void) {
     xet_session_free(session);
     return 0;
 }
+
+/* Entry point so CI can link this TU against the real xet_capi library and run
+   it, exercising actual ABI linkage (the Rust `c_smoke_compiles` test only
+   compiles the translation unit against the header). */
+int main(void) {
+    return run_smoke();
+}

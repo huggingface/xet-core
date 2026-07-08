@@ -181,6 +181,35 @@ jobs:
           source .venv/bin/activate
           pip install pytest
           pytest hf_xet/tests/ -v
+  build_and_test-capi:
+    name: C API (xet_capi)
+    runs-on:
+      group: aws-general-8-plus
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: huggingface/hf-workflows/.github/actions/setup-hf-registry-proxies@21845492ef47d4e46b07a3b2a6e14fd4748c39cc  # main
+      - name: Install Rust 1.94
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
+        with:
+          toolchain: 1.94.1
+      - uses: ./.github/actions/cache-rust-build
+      - name: FFI tests (header up-to-date, ABI round-trip)
+        # Covers the Rust-side FFI suite: header freshness (cbindgen), smoke.c
+        # compilation against the committed header, and an end-to-end upload ->
+        # commit -> download round-trip over a local CAS (simulation feature, no
+        # network).
+        run: |
+          cargo test -p xet_capi --features simulation --verbose --no-fail-fast
+      - name: Link and run C smoke test against the built library
+        # The Rust c_smoke_compiles test only compiles the translation unit; here
+        # we link smoke.c against the actual cdylib and run it, exercising real
+        # ABI linkage end to end.
+        run: |
+          set -eux
+          cargo build -p xet_capi --release
+          cc xet_capi/tests/smoke.c -Ixet_capi/include -Ltarget/release -lxet_capi -o "$RUNNER_TEMP/xet_capi_smoke"
+          LD_LIBRARY_PATH=target/release "$RUNNER_TEMP/xet_capi_smoke"
   build_and_test-wasm:
     name: Build WASM
     runs-on:
