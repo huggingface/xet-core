@@ -1,6 +1,6 @@
-// C++ RAII wrapper over the hf_xet C API. Header-only; example-local (not a
-// shipped public API). Every class is move-only and frees its handle exactly
-// once in its destructor; fallible C calls throw xet::Exception on failure.
+// C++ RAII wrapper over the hf_xet C API. Header-only; requires C++17.
+// Every class is move-only and frees its handle exactly once in its
+// destructor; fallible C calls throw xet::Exception on failure.
 #pragma once
 
 #include <chrono>
