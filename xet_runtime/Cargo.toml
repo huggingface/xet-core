@@ -71,8 +71,10 @@ tokio = { workspace = true, features = [
     "test-util",
     "io-util",
     "rt-multi-thread",
+    "net",
 ] }
 tokio-util = { workspace = true, features = ["io"] }
+axum = { workspace = true, optional = true }
 tracing-appender = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -84,6 +86,7 @@ smoke-test = []
 elevated_information_level = []
 no-default-cache = []
 fd-track = []
+console = ["dep:axum"]
 python = ["dep:pyo3"]
 tokio-console = ["dep:console-subscriber"]
 simulation = []

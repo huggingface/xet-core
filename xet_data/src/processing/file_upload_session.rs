@@ -65,6 +65,9 @@ pub struct FileUploadSession {
 
     /// Set to true after finalize() has been called.
     finalized: AtomicBool,
+
+    #[cfg(feature = "console")]
+    pub(crate) console: Option<std::sync::Arc<xet_runtime::console::state::UploadCommitConsole>>,
 }
 
 // Constructors
@@ -96,6 +99,28 @@ impl FileUploadSession {
 
         let shard_interface = SessionShardInterface::new(&ctx, config.clone(), client.clone(), dry_run).await?;
 
+        #[cfg(feature = "console")]
+        let console = ctx.common.console_scope().map(|scope| {
+            let c = xet_runtime::console::state::UploadCommitConsole::new(
+                Some(scope),
+                Some(config.session.endpoint.clone()),
+            );
+            let p = progress.clone();
+            c.set_progress_provider(Box::new(move || {
+                let r = p.report();
+                xet_runtime::console::model::ProgressSnapshot {
+                    total_bytes: r.total_bytes,
+                    bytes_completed: r.total_bytes_completed,
+                    rate_bps: r.total_bytes_completion_rate,
+                    transfer_bytes: r.total_transfer_bytes,
+                    transfer_bytes_completed: r.total_transfer_bytes_completed,
+                    transfer_rate_bps: r.total_transfer_bytes_completion_rate,
+                }
+            }));
+            shard_interface.set_console(c.clone());
+            c
+        });
+
         Ok(Arc::new(Self {
             ctx,
             shard_interface,
@@ -106,6 +131,8 @@ impl FileUploadSession {
             deduplication_metrics: Mutex::new(DeduplicationMetrics::default()),
             xorb_upload_tasks: Mutex::new(JoinSet::new()),
             finalized: AtomicBool::new(false),
+            #[cfg(feature = "console")]
+            console,
         }))
     }
 
@@ -240,7 +267,22 @@ impl FileUploadSession {
     ) -> SingleFileCleaner {
         let updater = self.progress.new_item(id, tracking_name.clone().unwrap_or_default());
         let file_id = self.completion_tracker.register_new_file(updater, size);
-        SingleFileCleaner::new(tracking_name, file_id, sha256, self.clone())
+
+        #[cfg(feature = "console")]
+        let file_console = self.console.as_ref().map(|c| {
+            let fc = c.new_file(id.0, tracking_name.as_deref().unwrap_or("<unnamed>"), size);
+            c.map_ct_file(file_id, id.0);
+            fc
+        });
+
+        SingleFileCleaner::new_with_console(
+            tracking_name,
+            file_id,
+            sha256,
+            self.clone(),
+            #[cfg(feature = "console")]
+            file_console,
+        )
     }
 
     /// Spawns a task that reads `file_path` and uploads it.
@@ -339,6 +381,16 @@ impl FileUploadSession {
 
         let xorb_hash = xorb.hash();
 
+        #[cfg(feature = "console")]
+        if let Some(c) = &self.console {
+            let xorb_hex = xorb_hash.hex();
+            c.xorb_formed(xorb_hex.clone(), xorb.num_bytes() as u64, 0); // serialized size arrives via callback total
+            c.xorb_state(&xorb_hex, xet_runtime::console::model::XorbState::Queued);
+            for dep in file_dependencies {
+                c.register_file_xorb_dep(dep.file_id, xorb_hex.clone(), dep.n_bytes, dep.is_external);
+            }
+        }
+
         // Register that this xorb is part of this session and set up completion tracking.
         //
         // In some circumstances, we can cut to instances of the same xorb, namely when there are two files
@@ -389,6 +441,10 @@ impl FileUploadSession {
         let completion_tracker = self.completion_tracker.clone();
         let xorb_hash = xorb_obj.hash;
         let raw_num_bytes = xorb_obj.raw_num_bytes;
+        #[cfg(feature = "console")]
+        let console_xorb = self.console.clone();
+        #[cfg(feature = "console")]
+        let xorb_hex: String = xorb_hash.hex();
         let progress_callback: ProgressCallback = Arc::new(move |delta, _completed, total| {
             let raw_delta = (delta * raw_num_bytes).checked_div(total).unwrap_or(0);
             if raw_delta > 0 {
@@ -396,14 +452,35 @@ impl FileUploadSession {
                     .clone()
                     .register_xorb_upload_progress_background(xorb_hash, raw_delta);
             }
+            #[cfg(feature = "console")]
+            if let Some(c) = &console_xorb {
+                c.xorb_transfer_with_total(&xorb_hex, _completed, total);
+            }
         });
 
         self.xorb_upload_tasks.lock().await.spawn(
             async move {
-                let n_bytes_transmitted = session
+                #[cfg(feature = "console")]
+                let xorb_hex_task: String = xorb_hash.hex();
+                #[cfg(feature = "console")]
+                if let Some(c) = &session.console {
+                    c.xorb_state(&xorb_hex_task, xet_runtime::console::model::XorbState::Uploading);
+                }
+
+                let upload_result = session
                     .client
                     .upload_xorb(&cas_prefix, xorb_obj, Some(progress_callback), upload_permit)
-                    .await?;
+                    .await;
+                #[cfg(feature = "console")]
+                if let Some(c) = &session.console {
+                    if let Ok(n) = &upload_result {
+                        // Backfill bytes for small xorbs whose progress callback never fired
+                        // (single-chunk uploads stream the body without incremental progress).
+                        c.xorb_transfer_with_total(&xorb_hex_task, *n, *n);
+                    }
+                    c.xorb_uploaded(&xorb_hex_task, upload_result.is_ok());
+                }
+                let n_bytes_transmitted = upload_result?;
 
                 // Register that the xorb has been uploaded.
                 session.completion_tracker.register_xorb_upload_completion(xorb_hash);
@@ -483,7 +560,17 @@ impl FileUploadSession {
         }
 
         // Now, aggregate the new dedup metrics.
-        self.deduplication_metrics.lock().await.merge_in(dedup_metrics);
+        let merged = {
+            let mut g = self.deduplication_metrics.lock().await;
+            g.merge_in(dedup_metrics);
+            *g // Copy; dead under not(console), compiler strips it
+        };
+        #[cfg(feature = "console")]
+        if let Some(c) = &self.console {
+            c.set_dedup(dedup_snapshot_from(&merged));
+        }
+        #[cfg(not(feature = "console"))]
+        let _ = merged;
 
         Ok(())
     }
@@ -500,7 +587,17 @@ impl FileUploadSession {
         // files in current_session_data whose MDBFileInfo must still be registered.
         let file_infos = self.process_aggregated_data_as_xorb_detached(file_data).await?;
 
-        self.deduplication_metrics.lock().await.merge_in(dedup_metrics);
+        let merged = {
+            let mut g = self.deduplication_metrics.lock().await;
+            g.merge_in(dedup_metrics);
+            *g // Copy; dead under not(console), compiler strips it
+        };
+        #[cfg(feature = "console")]
+        if let Some(c) = &self.console {
+            c.set_dedup(dedup_snapshot_from(&merged));
+        }
+        #[cfg(not(feature = "console"))]
+        let _ = merged;
 
         debug_assert_eq!(file_infos.len(), 1);
         file_infos
@@ -561,6 +658,13 @@ impl FileUploadSession {
     /// Register a xorb dependencies that is given as part of the dedup process.
     pub(crate) fn register_xorb_dependencies(self: &Arc<Self>, xorb_dependencies: &[FileXorbDependency]) {
         self.completion_tracker.register_dependencies(xorb_dependencies);
+
+        #[cfg(feature = "console")]
+        if let Some(c) = &self.console {
+            for dep in xorb_dependencies {
+                c.register_file_xorb_dep(dep.file_id, dep.xorb_hash.hex(), dep.n_bytes, dep.is_external);
+            }
+        }
     }
 
     /// Finalize everything.
@@ -571,6 +675,11 @@ impl FileUploadSession {
     ) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>, GroupProgressReport)> {
         if self.finalized.swap(true, Ordering::AcqRel) {
             return Err(DataError::InvalidOperation("FileUploadSession already finalized".to_string()));
+        }
+
+        #[cfg(feature = "console")]
+        if let Some(c) = &self.console {
+            c.set_state(xet_runtime::console::model::UploadCommitState::Committing);
         }
 
         // Register the remaining xorbs for upload.
@@ -608,6 +717,12 @@ impl FileUploadSession {
         {
             self.completion_tracker.assert_complete();
             self.progress.assert_complete();
+        }
+
+        #[cfg(feature = "console")]
+        if let Some(c) = &self.console {
+            c.set_dedup(dedup_snapshot_from(&metrics));
+            c.finalize(xet_runtime::console::model::UploadCommitState::Completed);
         }
 
         let report = self.report();
@@ -682,6 +797,28 @@ impl FileUploadSession {
     pub async fn finalize_with_file_info(self: Arc<Self>) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>)> {
         let (metrics, file_info, _report) = self.finalize_impl(true).await?;
         Ok((metrics, file_info))
+    }
+
+    /// Signals an immediate abort to the console (prompt signal; Drop covers never-finalized too).
+    #[cfg(feature = "console")]
+    pub fn console_mark_aborted(&self) {
+        if let Some(c) = &self.console {
+            c.set_state(xet_runtime::console::model::UploadCommitState::Aborted);
+        }
+    }
+}
+
+/// Maps a `DeduplicationMetrics` to the console model type.
+#[cfg(feature = "console")]
+pub(crate) fn dedup_snapshot_from(m: &DeduplicationMetrics) -> xet_runtime::console::model::DedupSnapshot {
+    xet_runtime::console::model::DedupSnapshot {
+        total_bytes: m.total_bytes,
+        deduped_bytes: m.deduped_bytes,
+        new_bytes: m.new_bytes,
+        deduped_bytes_by_global_dedup: m.deduped_bytes_by_global_dedup,
+        defrag_prevented_dedup_bytes: m.defrag_prevented_dedup_bytes,
+        xorb_bytes_uploaded: m.xorb_bytes_uploaded,
+        shard_bytes_uploaded: m.shard_bytes_uploaded,
     }
 }
 
