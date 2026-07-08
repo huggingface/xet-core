@@ -156,19 +156,21 @@ pub fn normalize_endpoint(raw: &str) -> String {
 /// paths, or http(s) servers on a loopback address (e.g. a test CAS on
 /// `http://127.0.0.1:PORT`). Anything else is a remote CAS and is rejected.
 fn upload_endpoint_allowed(endpoint: &str) -> bool {
-    let Some((scheme, rest)) = endpoint.split_once("://") else {
-        return true;
-    };
-    if scheme == "local" {
+    if !endpoint.contains("://") {
         return true;
     }
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let host = if let Some(bracketed) = authority.strip_prefix('[') {
-        bracketed.split(']').next().unwrap_or("")
-    } else {
-        authority.rsplit_once(':').map_or(authority, |(h, _)| h)
+    let Ok(url) = url::Url::parse(endpoint) else {
+        return false;
     };
-    host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+    match url.scheme() {
+        "local" => true,
+        _ => match url.host() {
+            Some(url::Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            None => false,
+        },
+    }
 }
 
 /// Determine the CAS operation type for the command so we request the right JWT scope.

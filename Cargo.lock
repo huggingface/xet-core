@@ -2033,6 +2033,7 @@ dependencies = [
  "tokio_with_wasm",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
  "walkdir",
  "wiremock",

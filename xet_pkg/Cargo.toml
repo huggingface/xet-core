@@ -53,6 +53,7 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 clap = { workspace = true, features = ["derive"], optional = true }
 serde_json = { workspace = true }
+url = { workspace = true, optional = true }
 walkdir = { workspace = true, optional = true }
 uuid = { workspace = true, features = ["v7"] }
 
@@ -60,7 +61,7 @@ uuid = { workspace = true, features = ["v7"] }
 smoke-test = []
 # Internal tooling (the `xtool` binary). Off by default so the library
 # still compiles for wasm32-unknown-unknown.
-internal-tools = ["dep:clap", "dep:walkdir"]
+internal-tools = ["dep:clap", "dep:url", "dep:walkdir"]
 fd-track = ["xet-runtime/fd-track", "xet-client/fd-track", "xet-data/fd-track"]
 python = ["xet-runtime/python", "xet-data/python", "dep:pyo3"]
 simulation = ["xet-client/simulation"]
