@@ -152,10 +152,23 @@ pub fn normalize_endpoint(raw: &str) -> String {
     }
 }
 
-/// Uploads are only allowed against local endpoints; anything with a
-/// non-`local://` scheme (http, https, ...) is a remote CAS and is rejected.
+/// Uploads are only allowed against local endpoints: `local://` directory
+/// paths, or http(s) servers on a loopback address (e.g. a test CAS on
+/// `http://127.0.0.1:PORT`). Anything else is a remote CAS and is rejected.
 fn upload_endpoint_allowed(endpoint: &str) -> bool {
-    !endpoint.contains("://") || endpoint.starts_with("local://")
+    let Some((scheme, rest)) = endpoint.split_once("://") else {
+        return true;
+    };
+    if scheme == "local" {
+        return true;
+    }
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = if let Some(bracketed) = authority.strip_prefix('[') {
+        bracketed.split(']').next().unwrap_or("")
+    } else {
+        authority.rsplit_once(':').map_or(authority, |(h, _)| h)
+    };
+    host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 /// Determine the CAS operation type for the command so we request the right JWT scope.
@@ -219,7 +232,7 @@ fn main() -> Result<()> {
                     anyhow::bail!(
                         "Uploading to a remote CAS endpoint ({endpoint}) is not allowed: files uploaded outside of \
                          the hub APIs are not registered with a repo and will be garbage collected. \
-                         Use a local endpoint (e.g. --endpoint /path/to/dir)."
+                         Use a local endpoint (e.g. --endpoint /path/to/dir or a loopback http server)."
                     );
                 }
             }
@@ -293,9 +306,16 @@ mod tests {
         assert!(upload_endpoint_allowed("local:///tmp/cas"));
         assert!(upload_endpoint_allowed(&normalize_endpoint("/tmp/cas")));
         assert!(upload_endpoint_allowed("relative/path"));
+        assert!(upload_endpoint_allowed("http://localhost:8080"));
+        assert!(upload_endpoint_allowed("http://127.0.0.1:57627"));
+        assert!(upload_endpoint_allowed("http://127.0.0.1:57627/prefix"));
+        assert!(upload_endpoint_allowed("http://[::1]:8080"));
+        assert!(upload_endpoint_allowed("https://127.0.0.1"));
         assert!(!upload_endpoint_allowed("https://huggingface.co"));
         assert!(!upload_endpoint_allowed("https://cas.example.com"));
-        assert!(!upload_endpoint_allowed("http://localhost:8080"));
+        assert!(!upload_endpoint_allowed("http://cas.example.com:8080"));
+        assert!(!upload_endpoint_allowed("http://192.168.1.10:8080"));
+        assert!(!upload_endpoint_allowed("https://localhost.evil.com"));
     }
 
     #[test]
