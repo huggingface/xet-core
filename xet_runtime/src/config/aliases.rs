@@ -1,7 +1,8 @@
 /// Environment variable name aliases.
 /// Format: ("<Current Env Name>", "<Alternate name to check>")
-/// These aliases support backward compatibility with old environment variable names
-/// from before the config refactor (when constants were in data/src/constants.rs and cas_client/src/constants.rs).
+/// These aliases cover (a) older environment variable names kept for backward compatibility
+/// from before the config refactor (when constants were in data/src/constants.rs and
+/// cas_client/src/constants.rs), and (b) alternate/short spellings accepted for current options.
 pub const ENVIRONMENT_NAME_ALIASES: &[(&str, &str)] = &[
     // Older environment variable names that we should check for backward compatibility.
     ("HF_XET_CLIENT_UPLOAD_REPORTING_BLOCK_SIZE", "HF_XET_UPLOAD_REPORTING_BLOCK_SIZE"),
@@ -36,4 +37,6 @@ pub const ENVIRONMENT_NAME_ALIASES: &[(&str, &str)] = &[
     ("HF_XET_CLIENT_AC_INITIAL_DOWNLOAD_CONCURRENCY", "HF_XET_FIXED_DOWNLOAD_CONCURRENCY"),
     ("HF_XET_CLIENT_AC_MIN_DOWNLOAD_CONCURRENCY", "HF_XET_FIXED_DOWNLOAD_CONCURRENCY"),
     ("HF_XET_CLIENT_AC_MAX_DOWNLOAD_CONCURRENCY", "HF_XET_FIXED_DOWNLOAD_CONCURRENCY"),
+    // write_sequentially accepts the shorter RECONSTRUCT spelling in addition to the canonical name.
+    ("HF_XET_RECONSTRUCTION_WRITE_SEQUENTIALLY", "HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY"),
 ];

@@ -80,4 +80,25 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_RECONSTRUCTION_USE_VECTORED_WRITE` to set this value.
     ref use_vectored_write: bool = true;
 
+    /// When true, file reconstruction writes terms sequentially through a single file
+    /// handle instead of writing terms in parallel at their offsets. On wasm targets
+    /// writing is always sequential regardless of this value.
+    ///
+    /// The default value is false (parallel writing).
+    ///
+    /// Use the environment variable `HF_XET_RECONSTRUCTION_WRITE_SEQUENTIALLY` (or its
+    /// alias `HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY`) to set this value.
+    ref write_sequentially: bool = false;
+
 });
+
+#[cfg(test)]
+mod tests {
+    use super::ConfigValueGroup;
+
+    #[test]
+    fn write_sequentially_defaults_to_false() {
+        // Parallel writing is the default; the flag that forces sequential is off.
+        assert!(!ConfigValueGroup::default().write_sequentially);
+    }
+}
