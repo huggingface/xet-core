@@ -19,6 +19,8 @@ use xet_runtime::core::XetContext;
 use xet_runtime::utils::ClosureGuard;
 use xet_runtime::utils::adjustable_semaphore::AdjustableSemaphore;
 
+#[cfg(not(target_family = "wasm"))]
+use super::data_writer::ParallelWriter;
 use super::data_writer::{DataWriter, DownloadStream, SequentialWriter, UnorderedDownloadStream};
 use super::error::{FileReconstructionError, Result};
 use super::reconstruction_terms::ReconstructionTermManager;
@@ -145,7 +147,15 @@ impl FileReconstructor {
 
         let run_state = RunState::new(self.cancellation_token.clone(), self.file_hash, self.progress_updater.clone());
 
-        let data_writer = SequentialWriter::new(&self.ctx, file, self.config.use_vectored_write, run_state.clone());
+        // Parallel writing is the default; write_sequentially forces the single-handle path.
+        // The file was already seeked to `seek_position` above; that is harmless for the
+        // parallel path because positioned writes (write_all_at / seek_write) ignore the fd
+        // cursor and use `base_offset` (= seek_position) instead.
+        let data_writer: Box<dyn DataWriter> = if self.config.write_sequentially {
+            SequentialWriter::new(&self.ctx, file, self.config.use_vectored_write, run_state.clone())
+        } else {
+            ParallelWriter::new(&self.ctx, std::sync::Arc::new(file), seek_position, run_state.clone())
+        };
 
         self.run(data_writer, run_state, false).await
     }
@@ -539,6 +549,36 @@ mod tests {
         let file_data = std::fs::read(&file_path)?;
         let start = byte_range.map(|r| r.start as usize).unwrap_or(0);
         Ok(file_data[start..].to_vec())
+    }
+
+    /// Reconstructs to a file with `write_sequentially` set both ways and asserts both
+    /// produce identical, correct content. Exercises the parallel and sequential writers.
+    async fn assert_parallel_matches_sequential(
+        client: &Arc<LocalClient>,
+        file_contents: &RandomFileContents,
+        base_config: &ReconstructionConfig,
+    ) {
+        let mut parallel_cfg = base_config.clone();
+        parallel_cfg.write_sequentially = false;
+        let parallel = reconstruct_to_file(client, file_contents.file_hash, None, &parallel_cfg)
+            .await
+            .unwrap();
+
+        let mut sequential_cfg = base_config.clone();
+        sequential_cfg.write_sequentially = true;
+        let sequential = reconstruct_to_file(client, file_contents.file_hash, None, &sequential_cfg)
+            .await
+            .unwrap();
+
+        assert_eq!(parallel, *file_contents.data, "parallel writer output must match file contents");
+        assert_eq!(parallel, sequential, "parallel and sequential writers must produce identical output");
+    }
+
+    #[tokio::test]
+    async fn parallel_and_sequential_writers_agree() {
+        // Multiple xorbs and terms so the parallel path exercises out-of-order completion.
+        let (client, file_contents) = setup_test_file(&[(1, (0, 3)), (2, (0, 2)), (3, (0, 4))]).await;
+        assert_parallel_matches_sequential(&client, &file_contents, &test_config()).await;
     }
 
     /// Reconstructs to a file at a specific offset and returns the data.

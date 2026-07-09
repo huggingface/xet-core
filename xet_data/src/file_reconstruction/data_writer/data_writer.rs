@@ -22,7 +22,9 @@ pub trait DataWriter: Send + 'static {
     /// previous range (or 0 for the first call). The data future will be spawned
     /// as a task and its result will be written when ready.
     ///
-    /// SequentialWriter will ensure that the actual writes happen in order.
+    /// Terms must be supplied in contiguous, sequential order. Implementations MAY
+    /// write to the output in a different order (e.g. `ParallelWriter` writes each term
+    /// at its offset as its data resolves), so callers must not rely on write ordering.
     ///
     /// An optional semaphore permit can be passed for rate limiting. The permit
     /// will be released by the background writer after the data has been written.
