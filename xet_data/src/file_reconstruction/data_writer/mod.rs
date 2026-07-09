@@ -1,6 +1,8 @@
 #[allow(clippy::module_inception)]
 mod data_writer;
 pub mod download_stream;
+#[cfg(not(target_family = "wasm"))]
+mod parallel_writer;
 mod sequential_writer;
 pub mod unordered_download_stream;
 mod unordered_writer;
