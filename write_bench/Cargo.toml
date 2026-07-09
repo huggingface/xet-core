@@ -1,0 +1,15 @@
+[package]
+name = "write-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "write_bench"
+path = "src/main.rs"
+
+[dependencies]
+xet-data = { path = "../xet_data", features = ["write-timing"] }
+xet-runtime = { path = "../xet_runtime" }
+anyhow = { workspace = true }

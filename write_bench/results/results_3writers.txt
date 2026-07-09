@@ -1,0 +1,97 @@
+###############################################################
+# xet-core file-writer download benchmark
+# host: aarch64 16 vCPU | 2026-07-09T23:17:46Z
+# warmup(dropped)=1 measured=5 per (file,writer)
+###############################################################
+
+==============================================================
+CASE: standard  (standard file)
+  repo=facebook/sam3.1  file=sam3.1_multiplex.pt  rev=main
+  hash=850acf278dd67da448a025b7a74899ca26914e56051cd88e7b168c362dd63f00
+  size=3502755717 bytes (3.26 GiB)
+
+  ----- writer=parallel (SEQUENTIALLY=0 MULTI_FD=0) -----
+    warmup 1: total   6.053s   551.84 MiB/s | write   1.846s (30.5% of total, 64 calls)  (dropped)
+    run 1:    total   6.037s   553.35 MiB/s | write   1.665s (27.6% of total, 64 calls)
+    run 2:    total   6.017s   555.18 MiB/s | write   1.895s (31.5% of total, 64 calls)
+    run 3:    total   5.275s   633.31 MiB/s | write   1.892s (35.9% of total, 64 calls)
+    run 4:    total   8.338s   400.65 MiB/s | write   1.641s (19.7% of total, 64 calls)
+    run 5:    total   5.859s   570.19 MiB/s | write   1.693s (28.9% of total, 64 calls)
+    --> total secs: mean=6.3049 median=6.0170 stdev=1.0533 min=5.2747 max=8.3376 | mean=529.82 MiB/s
+    --> write secs: mean=1.7572 median=1.6928 stdev=0.1125 min=1.6409 max=1.8952 | 27.9% of total time in write syscalls
+
+  ----- writer=multi_fd (SEQUENTIALLY=0 MULTI_FD=1) -----
+    warmup 1: total   5.653s   590.88 MiB/s | write   1.983s (35.1% of total, 64 calls)  (dropped)
+    run 1:    total   5.366s   622.52 MiB/s | write   1.733s (32.3% of total, 64 calls)
+    run 2:    total   6.195s   539.22 MiB/s | write   1.813s (29.3% of total, 64 calls)
+    run 3:    total   4.806s   695.07 MiB/s | write   1.804s (37.5% of total, 64 calls)
+    run 4:    total   5.720s   583.98 MiB/s | write   1.749s (30.6% of total, 64 calls)
+    run 5:    total   5.806s   575.37 MiB/s | write   1.876s (32.3% of total, 64 calls)
+    --> total secs: mean=5.5786 median=5.7202 stdev=0.4677 min=4.8060 max=6.1951 | mean=598.80 MiB/s
+    --> write secs: mean=1.7951 median=1.8039 stdev=0.0505 min=1.7334 max=1.8756 | 32.2% of total time in write syscalls
+
+  ----- writer=sequential (SEQUENTIALLY=1 MULTI_FD=0) -----
+    warmup 1: total   7.812s   427.58 MiB/s | write   1.293s (16.6% of total, 9 calls)  (dropped)
+    run 1:    total   4.786s   698.02 MiB/s | write   1.417s (29.6% of total, 11 calls)
+    run 2:    total   4.542s   735.42 MiB/s | write   1.288s (28.4% of total, 11 calls)
+    run 3:    total   4.451s   750.46 MiB/s | write   1.448s (32.5% of total, 12 calls)
+    run 4:    total   4.847s   689.17 MiB/s | write   1.330s (27.4% of total, 8 calls)
+    run 5:    total   4.782s   698.59 MiB/s | write   1.311s (27.4% of total, 11 calls)
+    --> total secs: mean=4.6816 median=4.7818 stdev=0.1554 min=4.4512 max=4.8472 | mean=713.54 MiB/s
+    --> write secs: mean=1.3589 median=1.3298 stdev=0.0623 min=1.2884 max=1.4477 | 29.0% of total time in write syscalls
+
+==============================================================
+CASE: fragmented  (fragmented file)
+  repo=unsloth/gemma-4-31B-it-GGUF  file=mmproj-F32.gguf  rev=main
+  hash=6ebed1a5d82bd68a6da038d32a4786b3a47837de5979a59e98b13b14dc387860
+  size=2302996960 bytes (2.14 GiB)
+
+  ----- writer=parallel (SEQUENTIALLY=0 MULTI_FD=0) -----
+    warmup 1: total   2.159s  1017.51 MiB/s | write   1.509s (69.9% of total, 148 calls)  (dropped)
+    run 1:    total   2.706s   811.76 MiB/s | write   2.000s (73.9% of total, 148 calls)
+    run 2:    total   1.875s  1171.02 MiB/s | write   2.054s (109.5% of total, 148 calls)
+    run 3:    total   1.930s  1137.68 MiB/s | write   2.027s (105.0% of total, 148 calls)
+    run 4:    total   2.367s   927.97 MiB/s | write   1.961s (82.9% of total, 148 calls)
+    run 5:    total   1.676s  1310.23 MiB/s | write   2.357s (140.6% of total, 148 calls)
+    --> total secs: mean=2.1109 median=1.9305 stdev=0.3731 min=1.6763 max=2.7056 | mean=1040.46 MiB/s
+    --> write secs: mean=2.0798 median=2.0271 stdev=0.1421 min=1.9611 max=2.3573 | 98.5% of total time in write syscalls
+
+  ----- writer=multi_fd (SEQUENTIALLY=0 MULTI_FD=1) -----
+    warmup 1: total   1.867s  1176.07 MiB/s | write   2.406s (128.8% of total, 148 calls)  (dropped)
+    run 1:    total   1.963s  1118.75 MiB/s | write   1.811s (92.2% of total, 148 calls)
+    run 2:    total   2.246s   977.88 MiB/s | write   2.151s (95.8% of total, 148 calls)
+    run 3:    total   1.769s  1241.89 MiB/s | write   2.100s (118.8% of total, 148 calls)
+    run 4:    total   1.785s  1230.30 MiB/s | write   1.992s (111.6% of total, 148 calls)
+    run 5:    total   1.973s  1112.92 MiB/s | write   1.878s (95.2% of total, 148 calls)
+    --> total secs: mean=1.9473 median=1.9632 stdev=0.1723 min=1.7685 max=2.2460 | mean=1127.87 MiB/s
+    --> write secs: mean=1.9867 median=1.9923 stdev=0.1287 min=1.8108 max=2.1515 | 102.0% of total time in write syscalls
+
+  ----- writer=sequential (SEQUENTIALLY=1 MULTI_FD=0) -----
+    warmup 1: total   1.831s  1199.23 MiB/s | write   0.970s (53.0% of total, 15 calls)  (dropped)
+    run 1:    total   2.174s  1010.37 MiB/s | write   0.847s (39.0% of total, 12 calls)
+    run 2:    total   2.068s  1061.90 MiB/s | write   0.853s (41.2% of total, 10 calls)
+    run 3:    total   2.137s  1027.56 MiB/s | write   0.839s (39.2% of total, 17 calls)
+    run 4:    total   1.807s  1215.53 MiB/s | write   0.849s (47.0% of total, 14 calls)
+    run 5:    total   1.959s  1121.33 MiB/s | write   0.854s (43.6% of total, 11 calls)
+    --> total secs: mean=2.0290 median=2.0683 stdev=0.1331 min=1.8069 max=2.1738 | mean=1082.46 MiB/s
+    --> write secs: mean=0.8484 median=0.8490 stdev=0.0052 min=0.8390 max=0.8538 | 41.8% of total time in write syscalls
+
+==============================================================
+SUMMARY (seconds; lower is better). 'vs parallel' = mean / parallel_mean
+  parallel = shared-handle pwrite (baseline) | multi_fd = fresh handle per term | sequential = single-handle in-order
+==============================================================
+case        writer           mean    median     stdev       min       max    write_s  write_%
+standard    parallel       6.3049    6.0170    1.0533    5.2747    8.3376     1.7572     27.9
+standard    multi_fd       5.5786    5.7202    0.4677    4.8060    6.1951     1.7951     32.2
+standard    sequential     4.6816    4.7818    0.1554    4.4512    4.8472     1.3589     29.0
+  standard   parallel   6.305s (  529.8 MiB/s)  [baseline]
+             multi_fd   5.579s (  598.8 MiB/s)  0.885x vs parallel
+             sequential 4.682s (  713.5 MiB/s)  0.743x vs parallel
+fragmented  parallel       2.1109    1.9305    0.3731    1.6763    2.7056     2.0798     98.5
+fragmented  multi_fd       1.9473    1.9632    0.1723    1.7685    2.2460     1.9867    102.0
+fragmented  sequential     2.0290    2.0683    0.1331    1.8069    2.1738     0.8484     41.8
+  fragmented parallel   2.111s ( 1040.5 MiB/s)  [baseline]
+             multi_fd   1.947s ( 1127.9 MiB/s)  0.922x vs parallel
+             sequential 2.029s ( 1082.5 MiB/s)  0.961x vs parallel
+
+done.

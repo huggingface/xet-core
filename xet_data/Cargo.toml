@@ -96,6 +96,10 @@ harness = false
 [features]
 strict = []
 smoke-test = []
+# Benchmark-only: accumulate time spent inside file write syscalls into process
+# globals readable via `file_reconstruction::write_timing`. Off by default; all
+# record sites are cfg-gated so production builds carry zero overhead.
+write-timing = []
 expensive_tests = []
 # Internal tooling (the `x` and `xtool` binaries). Off by default.
 internal-tools = ["dep:clap"]

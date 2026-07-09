@@ -90,6 +90,22 @@ crate::config_group!({
     /// alias `HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY`) to set this value.
     ref write_sequentially: bool = false;
 
+    /// When true (and `write_sequentially` is false), the parallel file writer opens a
+    /// fresh file handle for every term, seeks to the term's offset, writes, flushes, and
+    /// closes the handle -- instead of sharing one handle and using positioned writes
+    /// (`pwrite`). This reproduces the pre-#603 multi-handle approach and exists mainly to
+    /// benchmark it against the positioned-write path. On wasm targets writing is always
+    /// sequential regardless of this value.
+    ///
+    /// `write_sequentially` takes precedence: if it is true, writing is sequential and this
+    /// flag is ignored.
+    ///
+    /// The default value is false (shared-handle positioned writes).
+    ///
+    /// Use the environment variable `HF_XET_RECONSTRUCTION_WRITE_MULTI_FD` (or its alias
+    /// `HF_XET_RECONSTRUCT_WRITE_MULTI_FD`) to set this value.
+    ref write_multi_fd: bool = false;
+
 });
 
 #[cfg(test)]

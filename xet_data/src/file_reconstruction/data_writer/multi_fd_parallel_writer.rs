@@ -1,5 +1,6 @@
-use std::fs::File;
+use std::fs::OpenOptions;
 use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -12,38 +13,36 @@ use super::super::data_writer::{DataFuture, DataWriter};
 use super::super::run_state::RunState;
 use super::super::{FileReconstructionError, Result};
 
-/// Write `buf` at absolute byte `offset` in `file` without using or disturbing the
-/// file's cursor. Safe to call concurrently on clones of the same `Arc<File>`.
-#[cfg(unix)]
-fn positioned_write(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
-    use std::os::unix::fs::FileExt;
-    file.write_all_at(buf, offset)
-}
+/// Write `buf` at `offset` by opening a *fresh* handle to `path`, seeking, writing,
+/// flushing, and closing it. This is the pre-#603 multi-handle approach: unlike the
+/// positioned-write path (`ParallelWriter`), it does not share a file descriptor and
+/// pays an open/seek/flush/close per term. Concurrent calls are safe because each has
+/// its own descriptor and thus its own cursor.
+fn open_seek_write_close(path: &Path, buf: &[u8], offset: u64) -> io::Result<()> {
+    use std::io::{Seek, SeekFrom, Write};
 
-/// Windows equivalent: `seek_write` may write fewer bytes than requested, so loop.
-#[cfg(windows)]
-fn positioned_write(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
-    use std::os::windows::fs::FileExt;
-    let mut written = 0usize;
-    while written < buf.len() {
-        let n = file.seek_write(&buf[written..], offset + written as u64)?;
-        if n == 0 {
-            return Err(io::Error::new(io::ErrorKind::WriteZero, "seek_write wrote 0 bytes"));
-        }
-        written += n;
-    }
+    // No `create`/`truncate`: the destination file already exists (created and, for a
+    // full download, truncated by `reconstruct_to_file` before the writer is built).
+    let mut file = OpenOptions::new().write(true).open(path)?;
+    file.seek(SeekFrom::Start(offset))?;
+    file.write_all(buf)?;
+    file.flush()?;
+    // `file` is dropped here, closing the descriptor.
     Ok(())
 }
 
-/// Writes reconstruction terms to a file in parallel using positioned writes.
+/// Writes reconstruction terms to a file in parallel using one fresh file handle per
+/// term (open, seek, write, flush, close).
 ///
-/// Each term is written to its final offset as soon as its data future resolves,
-/// concurrently and without ordering, on a shared `Arc<File>`. Positioned writes
-/// (`write_all_at` / `seek_write`) ignore the fd cursor, so no locking or seeking is
-/// required. Used only for the filesystem path (`reconstruct_to_file`) on non-wasm.
-pub struct ParallelWriter {
+/// Structurally identical to [`ParallelWriter`](super::ParallelWriter) except for the
+/// per-term open/seek/close instead of a shared `Arc<File>` + positioned write. Used
+/// only for the filesystem path (`reconstruct_to_file`) on non-wasm, and only when
+/// `reconstruction.write_multi_fd` is set -- it exists to benchmark the multi-handle
+/// approach against positioned writes.
+pub struct MultiFdParallelWriter {
     ctx: XetContext,
-    file: Arc<File>,
+    /// Destination path; a fresh handle is opened to it for every term.
+    path: Arc<PathBuf>,
     /// Absolute file offset that relative (0-based) term ranges are added to.
     base_offset: u64,
     run_state: Arc<RunState>,
@@ -55,17 +54,17 @@ pub struct ParallelWriter {
     finished: bool,
 }
 
-impl ParallelWriter {
+impl MultiFdParallelWriter {
     #[allow(clippy::new_ret_no_self)]
     pub(crate) fn new(
         ctx: &XetContext,
-        file: Arc<File>,
+        path: PathBuf,
         base_offset: u64,
         run_state: Arc<RunState>,
     ) -> Box<dyn DataWriter> {
         Box::new(Self {
             ctx: ctx.clone(),
-            file,
+            path: Arc::new(path),
             base_offset,
             run_state,
             bytes_written: Arc::new(AtomicU64::new(0)),
@@ -76,7 +75,7 @@ impl ParallelWriter {
     }
 }
 
-impl Drop for ParallelWriter {
+impl Drop for MultiFdParallelWriter {
     fn drop(&mut self) {
         if !self.finished {
             self.run_state.cancel();
@@ -85,7 +84,7 @@ impl Drop for ParallelWriter {
 }
 
 #[async_trait::async_trait]
-impl DataWriter for ParallelWriter {
+impl DataWriter for MultiFdParallelWriter {
     async fn set_next_term_data_source(
         &mut self,
         byte_range: FileRange,
@@ -116,13 +115,13 @@ impl DataWriter for ParallelWriter {
         let offset = self.base_offset + byte_range.start;
 
         let ctx = self.ctx.clone();
-        let file = self.file.clone();
+        let path = self.path.clone();
         let run_state = self.run_state.clone();
         let bytes_written = self.bytes_written.clone();
 
         let task = async move {
             // `permit` is held for the whole task and dropped when it ends, releasing
-            // download-buffer capacity only after the bytes are durably written.
+            // download-buffer capacity only after the bytes are written.
             let _permit = permit;
             let result = async {
                 run_state.check_error()?;
@@ -140,7 +139,7 @@ impl DataWriter for ParallelWriter {
                     .spawn_blocking(move || {
                         #[cfg(feature = "write-timing")]
                         let write_start = std::time::Instant::now();
-                        let result = positioned_write(&file, &data, offset);
+                        let result = open_seek_write_close(&path, &data, offset);
                         #[cfg(feature = "write-timing")]
                         if result.is_ok() {
                             crate::file_reconstruction::write_timing::record(
@@ -185,13 +184,8 @@ impl DataWriter for ParallelWriter {
 
         self.run_state.check_error()?;
 
-        // Parity with SequentialWriter: flush (a no-op for File; positioned writes already
-        // reached the fd). Intentionally no fsync -- matches the sequential path's durability.
-        {
-            use std::io::Write;
-            let mut file_ref: &File = &self.file;
-            file_ref.flush()?;
-        }
+        // Each term already flushed and closed its own handle, so there is no shared
+        // handle to flush here (unlike ParallelWriter/SequentialWriter).
 
         let actual_bytes = self.bytes_written.load(Ordering::Relaxed);
         if actual_bytes != expected_bytes {
@@ -207,32 +201,23 @@ impl DataWriter for ParallelWriter {
 
 #[cfg(test)]
 mod tests {
-    use std::fs::OpenOptions;
-    use std::path::PathBuf;
     use std::time::Duration;
 
     use bytes::Bytes;
 
-    // `use super::*` brings in everything the module already imports: File, io, Arc,
-    // AtomicU64/Ordering, JoinSet, FileRange, XetContext, AdjustableSemaphorePermit,
-    // DataFuture, DataWriter, RunState, FileReconstructionError, Result, ParallelWriter.
     use super::*;
 
     fn test_context() -> XetContext {
         XetContext::default().unwrap()
     }
 
-    fn temp_file() -> (tempfile::TempDir, Arc<File>, PathBuf) {
+    /// Creates the destination file empty (mirrors reconstruct_to_file's truncating open)
+    /// and returns the temp dir plus the path.
+    fn temp_path() -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("out.bin");
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&path)
-            .unwrap();
-        (dir, Arc::new(file), path)
+        OpenOptions::new().write(true).create(true).truncate(true).open(&path).unwrap();
+        (dir, path)
     }
 
     fn immediate_future(data: Bytes) -> DataFuture {
@@ -251,28 +236,17 @@ mod tests {
     }
 
     #[test]
-    fn positioned_write_out_of_order_fills_correctly() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("out.bin");
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&path)
-            .unwrap();
-
-        positioned_write(&file, b"world", 6).unwrap();
-        positioned_write(&file, b"hello ", 0).unwrap();
-
-        drop(file);
+    fn open_seek_write_close_out_of_order_fills_correctly() {
+        let (_dir, path) = temp_path();
+        open_seek_write_close(&path, b"world", 6).unwrap();
+        open_seek_write_close(&path, b"hello ", 0).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"hello world");
     }
 
     #[tokio::test]
     async fn writes_terms_in_order() {
-        let (_dir, file, path) = temp_file();
-        let mut w = ParallelWriter::new(&test_context(), file, 0, RunState::new_for_test());
+        let (_dir, path) = temp_path();
+        let mut w = MultiFdParallelWriter::new(&test_context(), path.clone(), 0, RunState::new_for_test());
 
         w.set_next_term_data_source(FileRange::new(0, 6), None, immediate_future(Bytes::from("hello ")))
             .await
@@ -288,10 +262,9 @@ mod tests {
 
     #[tokio::test]
     async fn writes_correctly_when_data_resolves_out_of_order() {
-        let (_dir, file, path) = temp_file();
-        let mut w = ParallelWriter::new(&test_context(), file, 0, RunState::new_for_test());
+        let (_dir, path) = temp_path();
+        let mut w = MultiFdParallelWriter::new(&test_context(), path.clone(), 0, RunState::new_for_test());
 
-        // First term resolves last; second term resolves immediately.
         w.set_next_term_data_source(FileRange::new(0, 4), None, delayed_future(Bytes::from("AAAA"), 50))
             .await
             .unwrap();
@@ -306,9 +279,8 @@ mod tests {
 
     #[tokio::test]
     async fn writes_at_base_offset() {
-        let (_dir, file, path) = temp_file();
-        // base_offset = 3: bytes land at absolute offset 3 onward.
-        let mut w = ParallelWriter::new(&test_context(), file, 3, RunState::new_for_test());
+        let (_dir, path) = temp_path();
+        let mut w = MultiFdParallelWriter::new(&test_context(), path.clone(), 3, RunState::new_for_test());
 
         w.set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("hello")))
             .await
@@ -323,10 +295,9 @@ mod tests {
 
     #[tokio::test]
     async fn size_mismatch_fails() {
-        let (_dir, file, _path) = temp_file();
-        let mut w = ParallelWriter::new(&test_context(), file, 0, RunState::new_for_test());
+        let (_dir, path) = temp_path();
+        let mut w = MultiFdParallelWriter::new(&test_context(), path, 0, RunState::new_for_test());
 
-        // Range says 10 bytes but the future yields 2.
         w.set_next_term_data_source(FileRange::new(0, 10), None, immediate_future(Bytes::from("Hi")))
             .await
             .unwrap();
@@ -336,13 +307,12 @@ mod tests {
 
     #[tokio::test]
     async fn non_sequential_input_range_fails() {
-        let (_dir, file, _path) = temp_file();
-        let mut w = ParallelWriter::new(&test_context(), file, 0, RunState::new_for_test());
+        let (_dir, path) = temp_path();
+        let mut w = MultiFdParallelWriter::new(&test_context(), path, 0, RunState::new_for_test());
 
         w.set_next_term_data_source(FileRange::new(0, 4), None, immediate_future(Bytes::from("AAAA")))
             .await
             .unwrap();
-        // Gap: next range must start at 4.
         let result = w
             .set_next_term_data_source(FileRange::new(8, 12), None, immediate_future(Bytes::from("BBBB")))
             .await;
@@ -351,8 +321,8 @@ mod tests {
 
     #[tokio::test]
     async fn term_error_propagates_from_finish() {
-        let (_dir, file, _path) = temp_file();
-        let mut w = ParallelWriter::new(&test_context(), file, 0, RunState::new_for_test());
+        let (_dir, path) = temp_path();
+        let mut w = MultiFdParallelWriter::new(&test_context(), path, 0, RunState::new_for_test());
 
         w.set_next_term_data_source(FileRange::new(0, 4), None, err_future())
             .await

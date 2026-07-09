@@ -6024,6 +6024,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "write-bench"
+version = "1.5.3"
+dependencies = [
+ "anyhow",
+ "xet-data",
+ "xet-runtime",
+]
+
+[[package]]
 name = "writeable"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

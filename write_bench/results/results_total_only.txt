@@ -1,0 +1,66 @@
+###############################################################
+# xet-core file-writer download benchmark
+# host: aarch64 16 vCPU | 2026-07-09T22:51:28Z
+# warmup(dropped)=1 measured=5 per (file,writer)
+###############################################################
+
+==============================================================
+CASE: standard  (standard file)
+  repo=facebook/sam3.1  file=sam3.1_multiplex.pt  rev=main
+  hash=850acf278dd67da448a025b7a74899ca26914e56051cd88e7b168c362dd63f00
+  size=3502755717 bytes (3.26 GiB)
+
+  ----- writer=parallel (HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY=0) -----
+    warmup 1:    7.194 s    464.37 MiB/s   (dropped)
+    run 1:       6.961 s    479.88 MiB/s
+    run 2:       6.257 s    533.93 MiB/s
+    run 3:       6.996 s    477.49 MiB/s
+    run 4:       5.765 s    579.48 MiB/s
+    run 5:       5.818 s    574.16 MiB/s
+    --> secs: mean=6.3592 median=6.2565 stdev=0.5338 min=5.7646 max=6.9960  | mean=525.30 MiB/s
+
+  ----- writer=sequential (HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY=1) -----
+    warmup 1:    5.961 s    560.38 MiB/s   (dropped)
+    run 1:       6.039 s    553.12 MiB/s
+    run 2:       6.441 s    518.63 MiB/s
+    run 3:       6.698 s    498.76 MiB/s
+    run 4:       6.325 s    528.09 MiB/s
+    run 5:       6.374 s    524.04 MiB/s
+    --> secs: mean=6.3756 median=6.3745 stdev=0.2115 min=6.0393 max=6.6976  | mean=523.95 MiB/s
+
+==============================================================
+CASE: fragmented  (fragmented file)
+  repo=unsloth/gemma-4-31B-it-GGUF  file=mmproj-F32.gguf  rev=main
+  hash=6ebed1a5d82bd68a6da038d32a4786b3a47837de5979a59e98b13b14dc387860
+  size=2302996960 bytes (2.14 GiB)
+
+  ----- writer=parallel (HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY=0) -----
+    warmup 1:    3.921 s    560.19 MiB/s   (dropped)
+    run 1:       3.474 s    632.29 MiB/s
+    run 2:       3.202 s    685.87 MiB/s
+    run 3:       2.717 s    808.48 MiB/s
+    run 4:       3.315 s    662.48 MiB/s
+    run 5:       3.419 s    642.40 MiB/s
+    --> secs: mean=3.2253 median=3.3153 stdev=0.2708 min=2.7166 max=3.4736  | mean=680.96 MiB/s
+
+  ----- writer=sequential (HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY=1) -----
+    warmup 1:    3.526 s    622.83 MiB/s   (dropped)
+    run 1:       2.991 s    734.37 MiB/s
+    run 2:       3.071 s    715.12 MiB/s
+    run 3:       3.132 s    701.26 MiB/s
+    run 4:       3.442 s    638.11 MiB/s
+    run 5:       3.203 s    685.63 MiB/s
+    --> secs: mean=3.1678 median=3.1320 stdev=0.1539 min=2.9907 max=3.4419  | mean=693.32 MiB/s
+
+==============================================================
+SUMMARY (seconds; lower is better). speedup = seq_mean / par_mean
+==============================================================
+case        writer           mean    median     stdev       min       max
+standard    parallel       6.3592    6.2565    0.5338    5.7646    6.9960
+standard    sequential     6.3756    6.3745    0.2115    6.0393    6.6976
+  standard  -> parallel mean 6.359s (525.3 MiB/s), sequential mean 6.376s (523.9 MiB/s), speedup 1.003x
+fragmented  parallel       3.2253    3.3153    0.2708    2.7166    3.4736
+fragmented  sequential     3.1678    3.1320    0.1539    2.9907    3.4419
+  fragmented -> parallel mean 3.225s (681.0 MiB/s), sequential mean 3.168s (693.3 MiB/s), speedup 0.982x
+
+done.

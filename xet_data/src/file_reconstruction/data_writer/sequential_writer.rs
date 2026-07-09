@@ -139,7 +139,11 @@ impl SyncWriterThread {
     fn run(mut self, mut writer: impl Write) -> Result<()> {
         while let Some((data, permit)) = self.next_write(true)? {
             let len = data.len() as u64;
+            #[cfg(feature = "write-timing")]
+            let write_start = std::time::Instant::now();
             writer.write_all(&data)?;
+            #[cfg(feature = "write-timing")]
+            super::super::write_timing::record(write_start.elapsed().as_nanos() as u64, len);
             self.bytes_written.fetch_add(len, Ordering::Relaxed);
             if let Some(ref updater) = self.progress_updater {
                 updater.report_bytes_written(len);
@@ -188,6 +192,8 @@ impl SyncWriterThread {
                 .collect();
 
             // Call write_vectored.
+            #[cfg(feature = "write-timing")]
+            let write_start = std::time::Instant::now();
             let written = match writer.write_vectored(&io_slices) {
                 Ok(0) if !io_slices.is_empty() => {
                     return Err(FileReconstructionError::IoError(Arc::new(std::io::Error::new(
@@ -199,6 +205,8 @@ impl SyncWriterThread {
                 Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(e) => return Err(FileReconstructionError::IoError(Arc::new(e))),
             };
+            #[cfg(feature = "write-timing")]
+            super::super::write_timing::record(write_start.elapsed().as_nanos() as u64, written as u64);
 
             self.bytes_written.fetch_add(written as u64, Ordering::Relaxed);
             if let Some(ref updater) = self.progress_updater {

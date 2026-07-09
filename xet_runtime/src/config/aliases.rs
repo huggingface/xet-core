@@ -39,4 +39,6 @@ pub const ENVIRONMENT_NAME_ALIASES: &[(&str, &str)] = &[
     ("HF_XET_CLIENT_AC_MAX_DOWNLOAD_CONCURRENCY", "HF_XET_FIXED_DOWNLOAD_CONCURRENCY"),
     // write_sequentially accepts the shorter RECONSTRUCT spelling in addition to the canonical name.
     ("HF_XET_RECONSTRUCTION_WRITE_SEQUENTIALLY", "HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY"),
+    // write_multi_fd likewise accepts the shorter RECONSTRUCT spelling.
+    ("HF_XET_RECONSTRUCTION_WRITE_MULTI_FD", "HF_XET_RECONSTRUCT_WRITE_MULTI_FD"),
 ];

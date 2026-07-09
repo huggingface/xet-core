@@ -11,6 +11,7 @@ members = [
     # Top-level crates (not published as packages)
     "git_xet",
     "simulation",
+    "write_bench",
 ]
 exclude = [
     "simulation/chunk_cache_bench",

@@ -19,9 +19,9 @@ use xet_runtime::core::XetContext;
 use xet_runtime::utils::ClosureGuard;
 use xet_runtime::utils::adjustable_semaphore::AdjustableSemaphore;
 
-#[cfg(not(target_family = "wasm"))]
-use super::data_writer::ParallelWriter;
 use super::data_writer::{DataWriter, DownloadStream, SequentialWriter, UnorderedDownloadStream};
+#[cfg(not(target_family = "wasm"))]
+use super::data_writer::{MultiFdParallelWriter, ParallelWriter};
 use super::error::{FileReconstructionError, Result};
 use super::reconstruction_terms::ReconstructionTermManager;
 use super::run_state::{RunError, RunState};
@@ -147,12 +147,19 @@ impl FileReconstructor {
 
         let run_state = RunState::new(self.cancellation_token.clone(), self.file_hash, self.progress_updater.clone());
 
-        // Parallel writing is the default; write_sequentially forces the single-handle path.
+        // Writer selection (highest precedence first):
+        //   write_sequentially -> single-handle in-order writes (SequentialWriter)
+        //   write_multi_fd      -> parallel, one fresh handle per term (MultiFdParallelWriter)
+        //   default             -> parallel, shared handle + positioned writes (ParallelWriter)
         // The file was already seeked to `seek_position` above; that is harmless for the
-        // parallel path because positioned writes (write_all_at / seek_write) ignore the fd
-        // cursor and use `base_offset` (= seek_position) instead.
+        // parallel paths, which use `base_offset` (= seek_position) and either positioned
+        // writes (ignore the fd cursor) or their own freshly-seeked handles.
         let data_writer: Box<dyn DataWriter> = if self.config.write_sequentially {
             SequentialWriter::new(&self.ctx, file, self.config.use_vectored_write, run_state.clone())
+        } else if self.config.write_multi_fd {
+            // MultiFdParallelWriter opens its own handles by path; drop this one.
+            drop(file);
+            MultiFdParallelWriter::new(&self.ctx, path.to_path_buf(), seek_position, run_state.clone())
         } else {
             ParallelWriter::new(&self.ctx, std::sync::Arc::new(file), seek_position, run_state.clone())
         };
