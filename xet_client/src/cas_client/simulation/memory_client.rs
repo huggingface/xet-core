@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufReader, Cursor};
 use std::ops::Range;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -75,6 +75,19 @@ pub struct MemoryClient {
     max_ranges_per_fetch: AtomicUsize,
     /// HTTP status code to return when V2 is disabled (0 = enabled).
     v2_disabled_status: AtomicU16,
+    /// When true, deletes move the object's identity into the tagged sets
+    /// below instead of dropping its data, mirroring production's S3
+    /// lifecycle-tag deletion. Reads of a tagged object
+    /// then fail as if it were gone, while a subsequent upload of the same
+    /// hash clears the tag (matching S3 PutObject overwriting a tagged
+    /// object). Off by default; opt in via [`Self::set_lifecycle_tag_deletion`].
+    lifecycle_tag_deletion: AtomicBool,
+    /// XORB hashes currently tagged for lifecycle deletion. Data is retained
+    /// in `xorbs` so a re-upload can clear the tag.
+    gc_tagged_xorbs: RwLock<HashSet<MerkleHash>>,
+    /// Shard hash currently tagged for lifecycle deletion. Shard data is
+    /// retained in `shard` so a re-upload can clear the tag.
+    gc_tagged_shard: RwLock<Option<MerkleHash>>,
 }
 
 impl MemoryClient {
@@ -91,7 +104,27 @@ impl MemoryClient {
             random_ms_delay_window: (AtomicU64::new(0), AtomicU64::new(0)),
             max_ranges_per_fetch: AtomicUsize::new(usize::MAX),
             v2_disabled_status: AtomicU16::new(0),
+            lifecycle_tag_deletion: AtomicBool::new(false),
+            gc_tagged_xorbs: RwLock::new(HashSet::new()),
+            gc_tagged_shard: RwLock::new(None),
         })
+    }
+
+    /// Toggle lifecycle-tag deletion mode (see [`Self::lifecycle_tag_deletion`]).
+    pub fn set_lifecycle_tag_deletion(&self, on: bool) {
+        self.lifecycle_tag_deletion.store(on, Ordering::Relaxed);
+    }
+
+    fn lifecycle_tag_deletion_enabled(&self) -> bool {
+        self.lifecycle_tag_deletion.load(Ordering::Relaxed)
+    }
+
+    async fn xorb_is_tagged(&self, hash: &MerkleHash) -> bool {
+        self.gc_tagged_xorbs.read().await.contains(hash)
+    }
+
+    async fn shard_is_tagged(&self, hash: &MerkleHash) -> bool {
+        self.gc_tagged_shard.read().await.is_some_and(|h| &h == hash)
     }
 
     /// Inserts a RandomXorb into the client's storage and registers it in the shard
@@ -340,10 +373,21 @@ impl DirectAccessClient for MemoryClient {
     }
 
     async fn list_xorbs(&self) -> Result<Vec<MerkleHash>> {
-        Ok(self.xorbs.read().await.keys().copied().collect())
+        let tagged = self.gc_tagged_xorbs.read().await;
+        Ok(self
+            .xorbs
+            .read()
+            .await
+            .keys()
+            .copied()
+            .filter(|h| !tagged.contains(h))
+            .collect())
     }
 
     async fn get_full_xorb(&self, hash: &MerkleHash) -> Result<Bytes> {
+        if self.xorb_is_tagged(hash).await {
+            return Err(ClientError::XORBNotFound(*hash));
+        }
         let xorbs = self.xorbs.read().await;
         let storage = xorbs.get(hash).ok_or_else(|| {
             error!("Unable to find xorb in memory CAS {:?}", hash);
@@ -364,6 +408,9 @@ impl DirectAccessClient for MemoryClient {
     }
 
     async fn get_xorb_ranges(&self, hash: &MerkleHash, chunk_ranges: Vec<(u32, u32)>) -> Result<Vec<Bytes>> {
+        if self.xorb_is_tagged(hash).await {
+            return Err(ClientError::XORBNotFound(*hash));
+        }
         if chunk_ranges.is_empty() {
             return Ok(vec![Bytes::new()]);
         }
@@ -406,15 +453,24 @@ impl DirectAccessClient for MemoryClient {
     }
 
     async fn xorb_length(&self, hash: &MerkleHash) -> Result<u32> {
+        if self.xorb_is_tagged(hash).await {
+            return Err(ClientError::XORBNotFound(*hash));
+        }
         let data = self.get_full_xorb(hash).await?;
         Ok(data.len() as u32)
     }
 
     async fn xorb_exists(&self, hash: &MerkleHash) -> Result<bool> {
+        if self.xorb_is_tagged(hash).await {
+            return Ok(false);
+        }
         Ok(self.xorbs.read().await.contains_key(hash))
     }
 
     async fn xorb_footer(&self, hash: &MerkleHash) -> Result<XorbObject> {
+        if self.xorb_is_tagged(hash).await {
+            return Err(ClientError::XORBNotFound(*hash));
+        }
         let xorbs = self.xorbs.read().await;
         let storage = xorbs.get(hash).ok_or_else(|| {
             error!("Unable to find xorb in memory CAS {:?}", hash);
@@ -429,6 +485,15 @@ impl DirectAccessClient for MemoryClient {
 
     async fn get_file_size(&self, hash: &MerkleHash) -> Result<u64> {
         let shard = self.shard.read().await;
+        // Treat the shard as gone only when the *current* shard hash matches
+        // the tagged one — delete_file_entry mutates the shard hash, so a
+        // stale `gc_tagged_shard` must not block files of the new shard.
+        #[cfg(not(target_family = "wasm"))]
+        if let Some((shard_hash, _)) = Self::current_shard_hash_and_bytes(&shard)?
+            && self.shard_is_tagged(&shard_hash).await
+        {
+            return Err(ClientError::FileNotFound(*hash));
+        }
         let file_info = shard
             .get_file_reconstruction_info(hash)
             .ok_or(ClientError::FileNotFound(*hash))?;
@@ -436,6 +501,18 @@ impl DirectAccessClient for MemoryClient {
     }
 
     async fn get_file_data(&self, hash: &MerkleHash, byte_range: Option<FileRange>) -> Result<Bytes> {
+        // Refuse reads while the *current* shard hash matches the tagged
+        // shard hash — a stale tag must not block files of a new shard
+        // after delete_file_entry rewrites the shard.
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let shard = self.shard.read().await;
+            if let Some((shard_hash, _)) = Self::current_shard_hash_and_bytes(&shard)?
+                && self.shard_is_tagged(&shard_hash).await
+            {
+                return Err(ClientError::FileNotFound(*hash));
+            }
+        }
         let file_info = {
             let shard = self.shard.read().await;
             shard
@@ -471,6 +548,9 @@ impl DirectAccessClient for MemoryClient {
     }
 
     async fn get_xorb_raw_bytes(&self, hash: &MerkleHash, byte_range: Option<FileRange>) -> Result<Bytes> {
+        if self.xorb_is_tagged(hash).await {
+            return Err(ClientError::XORBNotFound(*hash));
+        }
         let xorbs = self.xorbs.read().await;
         let storage = xorbs.get(hash).ok_or(ClientError::XORBNotFound(*hash))?;
 
@@ -506,6 +586,9 @@ impl DirectAccessClient for MemoryClient {
     }
 
     async fn xorb_raw_length(&self, hash: &MerkleHash) -> Result<u64> {
+        if self.xorb_is_tagged(hash).await {
+            return Err(ClientError::XORBNotFound(*hash));
+        }
         let xorbs = self.xorbs.read().await;
         let storage = xorbs.get(hash).ok_or(ClientError::XORBNotFound(*hash))?;
 
@@ -536,6 +619,13 @@ impl DirectAccessClient for MemoryClient {
         let fetch_byte_range = FileRange::from(fetch_term.url_range);
         if url_byte_range.start != fetch_byte_range.start || url_byte_range.end != fetch_byte_range.end {
             return Err(ClientError::InvalidArguments);
+        }
+
+        // A lifecycle-tagged xorb is "gone" from the namespace; mirror the
+        // get_full_xorb behavior so reconstruction paths cannot resurrect
+        // tagged data.
+        if self.xorb_is_tagged(&xorb_hash).await {
+            return Err(ClientError::XORBNotFound(xorb_hash));
         }
 
         let xorbs = self.xorbs.read().await;
@@ -593,8 +683,15 @@ impl MemoryClient {
             }
         };
 
+        // Snapshot the tagged set so the sync closure can refuse tagged xorbs
+        // without an async lock acquire — a lifecycle-tagged xorb must appear
+        // "gone" to reconstruction, matching get_full_xorb.
+        let tagged = self.gc_tagged_xorbs.read().await.clone();
         let xorbs = self.xorbs.read().await;
         xorb_utils::compute_reconstruction_ranges(&file_info, bytes_range, &mut |hash| {
+            if tagged.contains(hash) {
+                return Err(ClientError::XORBNotFound(*hash));
+            }
             let storage = xorbs.get(hash).ok_or_else(|| {
                 error!("Unable to find xorb in memory CAS {:?}", hash);
                 ClientError::XORBNotFound(*hash)
@@ -782,6 +879,11 @@ impl Client for MemoryClient {
             }
         }
 
+        // A re-upload supersedes any prior lifecycle-tagged shard: clear the
+        // tag so the shard is readable again. Mirrors S3 PutObject
+        // overwriting a tagged object.
+        *self.gc_tagged_shard.write().await = None;
+
         Ok(true)
     }
 
@@ -841,6 +943,11 @@ impl Client for MemoryClient {
                 },
             );
         }
+
+        // A re-upload of the same xorb hash supersedes any prior
+        // lifecycle-tagged copy: clear the tag so the xorb is readable again.
+        // Mirrors S3 PutObject overwriting a tagged object.
+        self.gc_tagged_xorbs.write().await.remove(&hash);
 
         if let Some(ref cb) = progress_callback {
             let n = bytes_written as u64;
@@ -905,6 +1012,12 @@ impl Client for MemoryClient {
             return Err(ClientError::PresignedUrlExpirationError);
         }
 
+        // A lifecycle-tagged xorb is "gone" from the namespace; refuse to
+        // serve its bytes via the term-data path, matching get_full_xorb.
+        if self.xorb_is_tagged(&xorb_hash).await {
+            return Err(ClientError::XORBNotFound(xorb_hash));
+        }
+
         let xorbs = self.xorbs.read().await;
         let storage = xorbs.get(&xorb_hash).ok_or(ClientError::XORBNotFound(xorb_hash))?;
 
@@ -967,9 +1080,15 @@ impl Client for MemoryClient {
                 .ok_or(ClientError::FileNotFound(*file_id))?
         };
 
+        // Snapshot tagged xorbs so a lifecycle-tagged xorb appears "gone" and
+        // is surfaced as XORBNotFound, matching get_xorb_ranges.
+        let tagged = self.gc_tagged_xorbs.read().await.clone();
         let xorbs = self.xorbs.read().await;
         let mut chunks: Vec<(MerkleHash, u64)> = Vec::new();
         for segment in &file_info.segments {
+            if tagged.contains(&segment.xorb_hash) {
+                return Err(ClientError::XORBNotFound(segment.xorb_hash));
+            }
             let storage = xorbs
                 .get(&segment.xorb_hash)
                 .ok_or(ClientError::XORBNotFound(segment.xorb_hash))?;
@@ -993,12 +1112,19 @@ impl Client for MemoryClient {
 impl super::DeletionControlableClient for MemoryClient {
     async fn list_shard_entries(&self) -> Result<Vec<MerkleHash>> {
         let shard = self.shard.read().await;
-        Ok(Self::current_shard_hash_and_bytes(&shard)?
-            .map(|(h, _)| vec![h])
-            .unwrap_or_default())
+        let Some((h, _)) = Self::current_shard_hash_and_bytes(&shard)? else {
+            return Ok(Vec::new());
+        };
+        if self.shard_is_tagged(&h).await {
+            return Ok(Vec::new());
+        }
+        Ok(vec![h])
     }
 
     async fn get_shard_bytes(&self, hash: &MerkleHash) -> Result<Bytes> {
+        if self.shard_is_tagged(hash).await {
+            return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
+        }
         let shard = self.shard.read().await;
         let Some((current_hash, bytes)) = Self::current_shard_hash_and_bytes(&shard)? else {
             return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
@@ -1017,7 +1143,11 @@ impl super::DeletionControlableClient for MemoryClient {
         if &current_hash != hash {
             return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
         }
-        *shard = MDBInMemoryShard::default();
+        if self.lifecycle_tag_deletion_enabled() {
+            *self.gc_tagged_shard.write().await = Some(current_hash);
+        } else {
+            *shard = MDBInMemoryShard::default();
+        }
         Ok(())
     }
 
@@ -1026,6 +1156,9 @@ impl super::DeletionControlableClient for MemoryClient {
         let Some((shard_hash, _)) = Self::current_shard_hash_and_bytes(&shard)? else {
             return Ok(Vec::new());
         };
+        if self.shard_is_tagged(&shard_hash).await {
+            return Ok(Vec::new());
+        }
         Ok(shard
             .file_content
             .keys()
@@ -1057,26 +1190,39 @@ impl super::DeletionControlableClient for MemoryClient {
     }
 
     async fn delete_xorb(&self, hash: &MerkleHash) {
-        self.xorbs.write().await.remove(hash);
+        if self.lifecycle_tag_deletion_enabled() {
+            self.gc_tagged_xorbs.write().await.insert(*hash);
+        } else {
+            self.xorbs.write().await.remove(hash);
+        }
     }
 
     async fn list_xorbs_and_tags(&self) -> Result<Vec<(MerkleHash, ObjectTag)>> {
+        let tagged = self.gc_tagged_xorbs.read().await;
         let xorbs = self.xorbs.read().await;
         Ok(xorbs
             .iter()
+            .filter(|(hash, _)| !tagged.contains(hash))
             .map(|(hash, storage)| (*hash, Self::xorb_tag(hash, storage)))
             .collect())
     }
 
     async fn delete_xorb_if_tag_matches(&self, hash: &MerkleHash, tag: &ObjectTag) -> Result<bool> {
-        let mut xorbs = self.xorbs.write().await;
-        let Some(storage) = xorbs.get(hash) else {
-            return Err(ClientError::XORBNotFound(*hash));
+        let current_tag = {
+            let xorbs = self.xorbs.read().await;
+            let Some(storage) = xorbs.get(hash) else {
+                return Err(ClientError::XORBNotFound(*hash));
+            };
+            Self::xorb_tag(hash, storage)
         };
-        if &Self::xorb_tag(hash, storage) != tag {
+        if &current_tag != tag {
             return Ok(false);
         }
-        xorbs.remove(hash);
+        if self.lifecycle_tag_deletion_enabled() {
+            self.gc_tagged_xorbs.write().await.insert(*hash);
+        } else {
+            self.xorbs.write().await.remove(hash);
+        }
         Ok(true)
     }
 
@@ -1085,33 +1231,55 @@ impl super::DeletionControlableClient for MemoryClient {
         let Some((shard_hash, shard_bytes)) = Self::current_shard_hash_and_bytes(&shard)? else {
             return Ok(Vec::new());
         };
+        if self.shard_is_tagged(&shard_hash).await {
+            return Ok(Vec::new());
+        }
         let tag = Self::object_tag_from_key_and_payload(b"shard", &shard_hash, shard_bytes.as_ref());
         Ok(vec![(shard_hash, tag)])
     }
 
     async fn delete_shard_if_tag_matches(&self, hash: &MerkleHash, tag: &ObjectTag) -> Result<bool> {
-        let mut shard = self.shard.write().await;
-        let Some((current_hash, shard_bytes)) = Self::current_shard_hash_and_bytes(&shard)? else {
-            return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
+        let (current_hash, current_tag) = {
+            let shard = self.shard.read().await;
+            let Some((current_hash, shard_bytes)) = Self::current_shard_hash_and_bytes(&shard)? else {
+                return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
+            };
+            if &current_hash != hash {
+                return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
+            }
+            let current_tag = Self::object_tag_from_key_and_payload(b"shard", &current_hash, shard_bytes.as_ref());
+            (current_hash, current_tag)
         };
-        if &current_hash != hash {
-            return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
-        }
-        let current_tag = Self::object_tag_from_key_and_payload(b"shard", &current_hash, shard_bytes.as_ref());
         if &current_tag != tag {
             return Ok(false);
         }
-        *shard = MDBInMemoryShard::default();
+        if self.lifecycle_tag_deletion_enabled() {
+            *self.gc_tagged_shard.write().await = Some(current_hash);
+        } else {
+            *self.shard.write().await = MDBInMemoryShard::default();
+        }
         Ok(true)
     }
 
     async fn verify_integrity(&self) -> Result<()> {
+        let tagged = self.gc_tagged_xorbs.read().await;
         let xorbs = self.xorbs.read().await;
         let shard = self.shard.read().await;
-        for file_info in shard.file_content.values() {
-            for segment in &file_info.segments {
-                if !xorbs.contains_key(&segment.xorb_hash) {
-                    return Err(ClientError::XORBNotFound(segment.xorb_hash));
+        // Files living in a lifecycle-tagged shard are "gone" from the
+        // namespace (list APIs hide them too), so do not walk their
+        // segments — `delete_shard_entry` retains `file_content` for
+        // re-upload semantics, but those entries must not be treated as
+        // active for integrity verification.
+        let shard_tagged = match Self::current_shard_hash_and_bytes(&shard)? {
+            Some((shard_hash, _)) => self.gc_tagged_shard.read().await.is_some_and(|h| h == shard_hash),
+            None => false,
+        };
+        if !shard_tagged {
+            for file_info in shard.file_content.values() {
+                for segment in &file_info.segments {
+                    if !xorbs.contains_key(&segment.xorb_hash) || tagged.contains(&segment.xorb_hash) {
+                        return Err(ClientError::XORBNotFound(segment.xorb_hash));
+                    }
                 }
             }
         }
@@ -1368,5 +1536,109 @@ mod tests {
         assert_eq!(client.list_xorbs().await.unwrap().len(), 2);
         assert!(!client.get_full_xorb(&random_hash).await.unwrap().is_empty());
         assert!(!client.get_full_xorb(&materialized_hash).await.unwrap().is_empty());
+    }
+
+    // ── Lifecycle-tag deletion mode tests ───────────────────────────────
+
+    #[tokio::test]
+    async fn test_lifecycle_tag_xorb_delete_hides_xorb() {
+        let client = new_deletion_client();
+        client.set_lifecycle_tag_deletion(true);
+
+        let file = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
+        let xorb_hash = file.terms[0].xorb_hash;
+        assert!(client.xorb_exists(&xorb_hash).await.unwrap());
+
+        client.delete_xorb(&xorb_hash).await;
+
+        // Reads fail — tagged xorb is "gone" from the namespace.
+        assert!(!client.xorb_exists(&xorb_hash).await.unwrap());
+        assert!(client.get_full_xorb(&xorb_hash).await.is_err());
+        // list_xorbs excludes the tagged xorb.
+        assert!(!client.list_xorbs().await.unwrap().contains(&xorb_hash));
+    }
+
+    #[tokio::test]
+    async fn test_lifecycle_tag_xorb_upload_clears_tag() {
+        let client = new_deletion_client();
+        client.set_lifecycle_tag_deletion(true);
+
+        let file = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
+        let xorb_hash = file.terms[0].xorb_hash;
+
+        client.delete_xorb(&xorb_hash).await;
+        assert!(!client.xorb_exists(&xorb_hash).await.unwrap());
+
+        // Re-upload the same xorb (same content seed) — tag is cleared.
+        let file2 = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
+        let xorb_hash2 = file2.terms[0].xorb_hash;
+        assert_eq!(xorb_hash, xorb_hash2, "same seed should produce same xorb hash");
+
+        assert!(client.xorb_exists(&xorb_hash).await.unwrap(), "re-upload should clear the tag");
+    }
+
+    #[tokio::test]
+    async fn test_lifecycle_tag_shard_delete_hides_shard() {
+        let client = new_deletion_client();
+        client.set_lifecycle_tag_deletion(true);
+
+        let file = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
+
+        client.delete_file_entry(&file.file_hash).await.unwrap();
+        // After removing the file entry, the shard's content (and thus hash)
+        // changes. Re-query the shard hash before GC deletes it.
+        let shard_hash = client.list_shard_entries().await.unwrap().pop().unwrap();
+        client.delete_shard_entry(&shard_hash).await.unwrap();
+
+        // Reads fail — tagged shard is "gone" from the namespace.
+        assert!(client.get_shard_bytes(&shard_hash).await.is_err());
+        assert!(client.list_shard_entries().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_lifecycle_tag_mode_off_hard_deletes() {
+        let client = new_deletion_client();
+        assert!(!client.lifecycle_tag_deletion_enabled());
+
+        let file = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
+        let xorb_hash = file.terms[0].xorb_hash;
+
+        client.delete_xorb(&xorb_hash).await;
+
+        // Hard-deleted: data is gone.
+        assert!(client.xorbs.read().await.get(&xorb_hash).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_lifecycle_tag_verify_integrity_flags_tagged_xorb() {
+        let client = new_deletion_client();
+        client.set_lifecycle_tag_deletion(true);
+
+        let file = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
+        let xorb_hash = file.terms[0].xorb_hash;
+
+        // Tag the xorb WITHOUT removing the file entry (simulates a GC bug).
+        client.delete_xorb(&xorb_hash).await;
+
+        assert!(client.verify_integrity().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_lifecycle_tag_verify_all_reachable_ignores_tagged() {
+        let client = new_deletion_client();
+        client.set_lifecycle_tag_deletion(true);
+
+        let file = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
+        let xorb_hash = file.terms[0].xorb_hash;
+
+        client.delete_file_entry(&file.file_hash).await.unwrap();
+        let shard_hash = client.list_shard_entries().await.unwrap().pop().unwrap();
+        client.delete_shard_entry(&shard_hash).await.unwrap();
+        client.delete_xorb(&xorb_hash).await;
+
+        client
+            .verify_all_reachable()
+            .await
+            .expect("tagged objects should be ignored by reachability");
     }
 }
