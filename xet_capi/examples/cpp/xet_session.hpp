@@ -70,10 +70,6 @@ inline std::string version() {
     return xet_version();
 }
 
-inline void init_logging(const char* version) {
-    xet_init_logging(version);
-}
-
 // Owned byte buffer from streaming downloads.
 class Bytes {
 public:

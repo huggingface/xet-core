@@ -611,14 +611,6 @@ XetStatus xet_download_group_report_at(const XetDownloadGroupReportHandle *r,
 void xet_download_group_report_free(XetDownloadGroupReportHandle *r);
 
 /**
- * Install xet's tracing subscriber. `version` may be NULL.
- *
- * # Safety
- * `version` must be null or a valid NUL-terminated C string.
- */
-void xet_init_logging(const char *version);
-
-/**
  * Create a new session. Writes the handle to `*out`.
  *
  * # Safety

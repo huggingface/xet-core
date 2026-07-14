@@ -86,16 +86,6 @@ pub(crate) fn build_refresh_headers(cfg: &XetAuthConfig) -> Result<Option<Header
     Ok(Some(map))
 }
 
-/// Install xet's tracing subscriber. `version` may be NULL.
-///
-/// # Safety
-/// `version` must be null or a valid NUL-terminated C string.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn xet_init_logging(version: *const c_char) {
-    let v = unsafe { opt_str(version) }.ok().flatten().unwrap_or("xet_capi").to_string();
-    xet::init_logging(v);
-}
-
 /// Create a new session. Writes the handle to `*out`.
 ///
 /// # Safety

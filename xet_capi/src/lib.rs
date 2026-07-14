@@ -43,7 +43,7 @@ pub use reports::{
     xet_download_group_report_at, xet_download_group_report_count, xet_download_group_report_free,
 };
 pub use session::{
-    XetAuthConfig, XetHeader, XetSession, xet_init_logging, xet_session_free, xet_session_new,
+    XetAuthConfig, XetHeader, XetSession, xet_session_free, xet_session_new,
     xet_session_new_download_stream_group, xet_session_new_file_download_group, xet_session_new_upload_commit,
 };
 pub use upload::{
