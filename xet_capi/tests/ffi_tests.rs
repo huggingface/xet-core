@@ -120,7 +120,7 @@ fn stream_upload_symbols_link() {
 fn download_file_symbols_link() {
     let _f: [*const (); 6] = [
         xet_capi::xet_file_download_group_download_to_path as *const (),
-        xet_capi::xet_file_download_group_finish_start as *const (),
+        xet_capi::xet_file_download_group_finish as *const (),
         xet_capi::xet_file_download_group_progress as *const (),
         xet_capi::xet_file_download_group_abort as *const (),
         xet_capi::xet_file_download_task_id as *const (),
@@ -224,18 +224,6 @@ fn c_smoke_compiles() {
 fn e2e_upload_then_download_via_ffi() {
     use std::ffi::CString;
 
-    unsafe fn drive(op: *const XetOp) -> XetPollState {
-        let mut s = unsafe { xet_op_poll(op) };
-        let mut spins = 0;
-        while s == XetPollState::XetPollPending {
-            std::thread::sleep(std::time::Duration::from_millis(5));
-            s = unsafe { xet_op_poll(op) };
-            spins += 1;
-            assert!(spins < 20_000, "op timed out");
-        }
-        s
-    }
-
     unsafe {
         let dir = tempfile::tempdir().unwrap();
         let endpoint = CString::new(format!("local://{}", dir.path().join("cas").display())).unwrap();
@@ -300,18 +288,14 @@ fn e2e_upload_then_download_via_ffi() {
             XetStatus::XetOk
         );
 
-        let mut fop: *mut XetOp = std::ptr::null_mut();
-        assert_eq!(xet_file_download_group_finish_start(group, &mut fop, &mut err), XetStatus::XetOk);
-        assert_eq!(drive(fop), XetPollState::XetPollReady);
         let mut dreport: *mut XetDownloadGroupReportHandle = std::ptr::null_mut();
-        assert_eq!(xet_op_take_download_report(fop, &mut dreport, &mut err), XetStatus::XetOk);
+        assert_eq!(xet_file_download_group_finish(group, &mut dreport, &mut err), XetStatus::XetOk);
 
         // Verify round-trip
         let got = std::fs::read(&dest_path).unwrap();
         assert_eq!(got, payload);
 
         // Cleanup
-        xet_op_free(fop);
         xet_file_metadata_free(meta);
         xet_commit_report_free(report);
         xet_download_group_report_free(dreport);

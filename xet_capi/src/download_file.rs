@@ -5,8 +5,7 @@ use xet::xet_session::{XetFileDownload as InnerFileDownload, XetFileDownloadGrou
 use crate::error::{XetError, XetStatus, ffi_guard, set_err, set_xet_err};
 use crate::file_info::XetFileInfo;
 use crate::handle::{free_handle, into_handle};
-use crate::op::{OpOutput, XetOp, spawn_op};
-use crate::reports::XetProgress;
+use crate::reports::{XetDownloadGroupReportHandle, XetProgress};
 use crate::session::req_str;
 
 /// A file-download group (Arc-backed; cheap to clone). Free with
@@ -26,7 +25,7 @@ pub struct XetFileDownload {
 }
 
 /// Queue a file for download to `dest_path`. Returns a handle immediately;
-/// call `xet_file_download_group_finish_start` to await all downloads.
+/// call `xet_file_download_group_finish` to await all downloads.
 ///
 /// # Safety
 /// `group`/`file_info` valid handles; `dest_path` a valid C string; `out`/`err` valid.
@@ -55,24 +54,37 @@ pub unsafe extern "C" fn xet_file_download_group_download_to_path(
     })
 }
 
-/// Start awaiting all queued downloads. Poll the returned op; it yields a
-/// download-group report.
+/// Await all queued downloads, blocking until complete. On success fills
+/// `*out` with an owned `XetDownloadGroupReportHandle` (free with
+/// `xet_download_group_report_free`).
+///
+/// Blocks the calling thread for the full duration. Progress can be observed
+/// concurrently from another thread via [`xet_file_download_group_progress`];
+/// [`xet_file_download_group_abort`] may be called from another thread to
+/// cancel.
 ///
 /// # Safety
 /// `group`/`out`/`err` valid pointers.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn xet_file_download_group_finish_start(
+pub unsafe extern "C" fn xet_file_download_group_finish(
     group: *const XetFileDownloadGroup,
-    out: *mut *mut XetOp,
+    out: *mut *mut XetDownloadGroupReportHandle,
     err: *mut *mut XetError,
 ) -> XetStatus {
     ffi_guard(err, || {
         let Some(group) = (unsafe { group.as_ref() }) else {
             return set_err(err, XetError::new(XetStatus::XetErrInvalidArg, "null group"));
         };
-        let handle = group.inner.clone();
-        unsafe { *out = spawn_op(move || handle.finish_blocking().map(OpOutput::DownloadReport)) };
-        XetStatus::XetOk
+        let h = group.inner.clone();
+        match h.finish_blocking() {
+            Ok(report) => {
+                if !out.is_null() {
+                    unsafe { *out = into_handle(XetDownloadGroupReportHandle::new(report)) };
+                }
+                XetStatus::XetOk
+            },
+            Err(e) => set_xet_err(err, &e),
+        }
     })
 }
 

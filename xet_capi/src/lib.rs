@@ -19,7 +19,7 @@ mod upload_stream;
 pub use bytes::{XetBytes, xet_bytes_data, xet_bytes_free, xet_bytes_len, xet_test_make_bytes};
 pub use download_file::{
     XetFileDownload, XetFileDownloadGroup, xet_file_download_free, xet_file_download_group_abort,
-    xet_file_download_group_download_to_path, xet_file_download_group_finish_start, xet_file_download_group_free,
+    xet_file_download_group_download_to_path, xet_file_download_group_finish, xet_file_download_group_free,
     xet_file_download_group_progress, xet_file_download_task_id,
 };
 pub use download_stream::{

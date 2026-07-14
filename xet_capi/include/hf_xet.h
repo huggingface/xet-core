@@ -283,7 +283,7 @@ XetBytes *xet_test_make_bytes(void);
 
 /**
  * Queue a file for download to `dest_path`. Returns a handle immediately;
- * call `xet_file_download_group_finish_start` to await all downloads.
+ * call `xet_file_download_group_finish` to await all downloads.
  *
  * # Safety
  * `group`/`file_info` valid handles; `dest_path` a valid C string; `out`/`err` valid.
@@ -295,15 +295,21 @@ XetStatus xet_file_download_group_download_to_path(const XetFileDownloadGroup *g
                                                    XetError **err);
 
 /**
- * Start awaiting all queued downloads. Poll the returned op; it yields a
- * download-group report.
+ * Await all queued downloads, blocking until complete. On success fills
+ * `*out` with an owned `XetDownloadGroupReportHandle` (free with
+ * `xet_download_group_report_free`).
+ *
+ * Blocks the calling thread for the full duration. Progress can be observed
+ * concurrently from another thread via [`xet_file_download_group_progress`];
+ * [`xet_file_download_group_abort`] may be called from another thread to
+ * cancel.
  *
  * # Safety
  * `group`/`out`/`err` valid pointers.
  */
-XetStatus xet_file_download_group_finish_start(const XetFileDownloadGroup *group,
-                                               XetOp **out,
-                                               XetError **err);
+XetStatus xet_file_download_group_finish(const XetFileDownloadGroup *group,
+                                         XetDownloadGroupReportHandle **out,
+                                         XetError **err);
 
 /**
  * # Safety
