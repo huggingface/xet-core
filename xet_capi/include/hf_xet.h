@@ -165,8 +165,8 @@ typedef struct XetOp XetOp;
 typedef struct XetSession XetSession;
 
 /**
- * A streaming upload handle. Feed data with [`xet_stream_upload_write_start`],
- * then [`xet_stream_upload_finish_start`]. Free with [`xet_stream_upload_free`].
+ * A streaming upload handle. Feed data with [`xet_stream_upload_write`], then
+ * [`xet_stream_upload_finish`]. Free with [`xet_stream_upload_free`].
  */
 typedef struct XetStreamUpload XetStreamUpload;
 
@@ -785,26 +785,28 @@ void xet_upload_commit_free(XetUploadCommit *commit);
 void xet_file_upload_free(XetFileUpload *upload);
 
 /**
- * Start an async write of `len` bytes from `data`. Poll the returned op; it
- * yields void on success.
+ * Write `len` bytes from `data` into the stream, blocking until the write is
+ * ingested.
  *
  * # Safety
  * `su` valid; `data`/`len` a valid buffer (data may be null iff len==0);
- * `out`/`err` valid pointers.
+ * `err` a valid pointer.
  */
-XetStatus xet_stream_upload_write_start(const XetStreamUpload *su,
-                                        const uint8_t *data,
-                                        uintptr_t len,
-                                        XetOp **out,
-                                        XetError **err);
+XetStatus xet_stream_upload_write(const XetStreamUpload *su,
+                                  const uint8_t *data,
+                                  uintptr_t len,
+                                  XetError **err);
 
 /**
- * Start finalizing the stream. Poll the returned op; it yields file metadata.
+ * Finalize the stream, blocking until complete. On success fills `*out` with
+ * an owned `XetFileMetadataHandle` (free with `xet_file_metadata_free`).
  *
  * # Safety
  * `su` valid; `out`/`err` valid pointers.
  */
-XetStatus xet_stream_upload_finish_start(const XetStreamUpload *su, XetOp **out, XetError **err);
+XetStatus xet_stream_upload_finish(const XetStreamUpload *su,
+                                   XetFileMetadataHandle **out,
+                                   XetError **err);
 
 /**
  * Free a `XetStreamUpload`. Safe to call with null.

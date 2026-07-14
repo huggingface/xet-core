@@ -53,9 +53,7 @@ pub use upload::{
     xet_upload_commit_progress, xet_upload_commit_upload_bytes, xet_upload_commit_upload_from_path,
     xet_upload_commit_upload_stream,
 };
-pub use upload_stream::{
-    XetStreamUpload, xet_stream_upload_finish_start, xet_stream_upload_free, xet_stream_upload_write_start,
-};
+pub use upload_stream::{XetStreamUpload, xet_stream_upload_finish, xet_stream_upload_free, xet_stream_upload_write};
 
 /// Returns the xet_capi version as a static NUL-terminated C string.
 #[unsafe(no_mangle)]

@@ -1,11 +1,11 @@
 use xet::xet_session::XetStreamUpload as InnerStreamUpload;
 
-use crate::error::{XetError, XetStatus, ffi_guard, set_err};
-use crate::handle::free_handle;
-use crate::op::{OpOutput, XetOp, spawn_op};
+use crate::error::{XetError, XetStatus, ffi_guard, set_err, set_xet_err};
+use crate::handle::{free_handle, into_handle};
+use crate::upload::XetFileMetadataHandle;
 
-/// A streaming upload handle. Feed data with [`xet_stream_upload_write_start`],
-/// then [`xet_stream_upload_finish_start`]. Free with [`xet_stream_upload_free`].
+/// A streaming upload handle. Feed data with [`xet_stream_upload_write`], then
+/// [`xet_stream_upload_finish`]. Free with [`xet_stream_upload_free`].
 pub struct XetStreamUpload {
     inner: InnerStreamUpload,
 }
@@ -15,18 +15,17 @@ impl XetStreamUpload {
     }
 }
 
-/// Start an async write of `len` bytes from `data`. Poll the returned op; it
-/// yields void on success.
+/// Write `len` bytes from `data` into the stream, blocking until the write is
+/// ingested.
 ///
 /// # Safety
 /// `su` valid; `data`/`len` a valid buffer (data may be null iff len==0);
-/// `out`/`err` valid pointers.
+/// `err` a valid pointer.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn xet_stream_upload_write_start(
+pub unsafe extern "C" fn xet_stream_upload_write(
     su: *const XetStreamUpload,
     data: *const u8,
     len: usize,
-    out: *mut *mut XetOp,
     err: *mut *mut XetError,
 ) -> XetStatus {
     ffi_guard(err, || {
@@ -41,29 +40,37 @@ pub unsafe extern "C" fn xet_stream_upload_write_start(
         } else {
             unsafe { std::slice::from_raw_parts(data, len) }.to_vec()
         };
-        let handle = su.inner.clone();
-        unsafe { *out = spawn_op(move || handle.write_blocking(chunk).map(|_| OpOutput::Void)) };
-        XetStatus::XetOk
+        match su.inner.write_blocking(chunk) {
+            Ok(_) => XetStatus::XetOk,
+            Err(e) => set_xet_err(err, &e),
+        }
     })
 }
 
-/// Start finalizing the stream. Poll the returned op; it yields file metadata.
+/// Finalize the stream, blocking until complete. On success fills `*out` with
+/// an owned `XetFileMetadataHandle` (free with `xet_file_metadata_free`).
 ///
 /// # Safety
 /// `su` valid; `out`/`err` valid pointers.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn xet_stream_upload_finish_start(
+pub unsafe extern "C" fn xet_stream_upload_finish(
     su: *const XetStreamUpload,
-    out: *mut *mut XetOp,
+    out: *mut *mut XetFileMetadataHandle,
     err: *mut *mut XetError,
 ) -> XetStatus {
     ffi_guard(err, || {
         let Some(su) = (unsafe { su.as_ref() }) else {
             return set_err(err, XetError::new(XetStatus::XetErrInvalidArg, "null stream upload"));
         };
-        let handle = su.inner.clone();
-        unsafe { *out = spawn_op(move || handle.finish_blocking().map(OpOutput::FileMetadata)) };
-        XetStatus::XetOk
+        match su.inner.finish_blocking() {
+            Ok(meta) => {
+                if !out.is_null() {
+                    unsafe { *out = into_handle(XetFileMetadataHandle::owned(meta)) };
+                }
+                XetStatus::XetOk
+            },
+            Err(e) => set_xet_err(err, &e),
+        }
     })
 }
 
