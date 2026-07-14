@@ -37,11 +37,16 @@ pub struct XetOp {
     join: Option<JoinHandle<()>>,
 }
 
+/// Result of polling a [`XetOp`] with [`xet_op_poll`].
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum XetPollState {
+    /// The op is still running; poll again later.
     XetPollPending = 0,
+    /// The op finished successfully; its result can be read with the
+    /// matching `xet_op_take_*` function.
     XetPollReady = 1,
+    /// The op finished with an error; read it with [`xet_op_take_error`].
     XetPollError = 2,
 }
 
@@ -269,6 +274,8 @@ pub unsafe extern "C" fn xet_op_take_chunk(
 
 // --- test-only ops ---
 
+/// Test-only constructor used by ffi_tests: an op that becomes ready with a
+/// void result after a short delay.
 #[unsafe(no_mangle)]
 pub extern "C" fn xet_test_make_void_op() -> *mut XetOp {
     spawn_op(|| {
@@ -277,6 +284,8 @@ pub extern "C" fn xet_test_make_void_op() -> *mut XetOp {
     })
 }
 
+/// Test-only constructor used by ffi_tests: an op that becomes ready with an
+/// error result after a short delay.
 #[unsafe(no_mangle)]
 pub extern "C" fn xet_test_make_error_op() -> *mut XetOp {
     spawn_op(|| {

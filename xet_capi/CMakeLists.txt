@@ -5,8 +5,9 @@
 #   add_subdirectory(/path/to/xet-core/xet_capi xet_capi)
 #   target_link_libraries(my_target PRIVATE xet_capi)
 #
-# The target carries the include directory for `hf_xet.h` (C API) and
-# `xet_session.hpp` (header-only C++ wrapper, requires C++17).
+# The target carries the include directory for `hf_xet.h` (C API). A
+# header-only C++ wrapper (`xet_session.hpp`, requires C++17) lives alongside
+# the C++ example in examples/cpp/.
 #
 # Requires a Rust toolchain; the library is built with `cargo build -p xet_capi`.
 # Linking is static by default (set XET_CAPI_SHARED=ON for the shared library).

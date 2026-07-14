@@ -191,11 +191,13 @@ pub unsafe extern "C" fn xet_download_stream_task_id(stream: *const XetDownloadS
     }
 }
 
+/// Free a `XetDownloadStreamGroup`. Safe to call with null.
 #[unsafe(no_mangle)]
 pub extern "C" fn xet_download_stream_group_free(group: *mut XetDownloadStreamGroup) {
     free_handle(group);
 }
 
+/// Free a `XetDownloadStream`. Safe to call with null.
 #[unsafe(no_mangle)]
 pub extern "C" fn xet_download_stream_free(stream: *mut XetDownloadStream) {
     free_handle(stream);

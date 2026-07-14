@@ -14,18 +14,55 @@
  * Status returned by every fallible `xet_*` function.
  */
 typedef enum {
+    /**
+     * The call succeeded; any `out` pointers were filled in.
+     */
     XetStatus_XetOk = 0,
+    /**
+     * The call failed for a reason not covered by a more specific variant.
+     * Check the accompanying `XetError` (if any) for details.
+     */
     XetStatus_XetErr = 1,
+    /**
+     * A required argument was null, malformed, or otherwise invalid (e.g. a
+     * bad hash string, a handle that failed a null check).
+     */
     XetStatus_XetErrInvalidArg = 2,
+    /**
+     * The call failed due to missing, expired, or rejected credentials.
+     */
     XetStatus_XetErrAuth = 3,
+    /**
+     * The requested resource (file, hash, etc.) does not exist.
+     */
     XetStatus_XetErrNotFound = 4,
+    /**
+     * The operation was cancelled before completing.
+     */
     XetStatus_XetErrCancelled = 5,
+    /**
+     * A Rust panic was caught at the FFI boundary and converted into this
+     * status; no partial state should be assumed to be valid.
+     */
     XetStatus_XetErrPanic = 6,
 } XetStatus;
 
+/**
+ * Result of polling a [`XetOp`] with [`xet_op_poll`].
+ */
 typedef enum {
+    /**
+     * The op is still running; poll again later.
+     */
     XetPollState_XetPollPending = 0,
+    /**
+     * The op finished successfully; its result can be read with the
+     * matching `xet_op_take_*` function.
+     */
     XetPollState_XetPollReady = 1,
+    /**
+     * The op finished with an error; read it with [`xet_op_take_error`].
+     */
     XetPollState_XetPollError = 2,
 } XetPollState;
 
@@ -33,8 +70,19 @@ typedef enum {
  * SHA-256 handling for uploads.
  */
 typedef enum {
+    /**
+     * Compute the SHA-256 from the upload data as it is read.
+     */
     XetSha256Policy_XetSha256Compute = 0,
+    /**
+     * Skip SHA-256 entirely; the resulting metadata will have no SHA-256.
+     */
     XetSha256Policy_XetSha256Skip = 1,
+    /**
+     * Use a caller-supplied SHA-256 (hex) instead of computing one. The hex
+     * string is passed via the `provided_sha256` parameter of the calling
+     * function and is not validated against the actual upload contents.
+     */
     XetSha256Policy_XetSha256Provided = 2,
 } XetSha256Policy;
 
@@ -154,10 +202,18 @@ typedef struct {
 } XetDedupMetrics;
 
 /**
- * One HTTP header for token-refresh requests.
+ * One HTTP header for token-refresh requests. Both pointers are borrowed
+ * NUL-terminated C strings, valid only for the duration of the call that
+ * takes an array of `XetHeader`s (e.g. via `XetAuthConfig::refresh_headers`).
  */
 typedef struct {
+    /**
+     * Header name, e.g. `"Authorization"`.
+     */
     const char *key;
+    /**
+     * Header value.
+     */
     const char *value;
 } XetHeader;
 
@@ -166,11 +222,31 @@ typedef struct {
  * the duration of the call. Any nullable field may be NULL.
  */
 typedef struct {
+    /**
+     * Hub endpoint URL, e.g. `"https://huggingface.co"`. Must not be NULL.
+     */
     const char *endpoint;
+    /**
+     * Bearer token used for CAS/Hub requests. Must not be NULL.
+     */
     const char *token;
+    /**
+     * Unix timestamp (seconds) at which `token` expires, or `0`/negative if
+     * it never needs refreshing.
+     */
     int64_t token_expiry;
+    /**
+     * URL to POST to for a token refresh. NULL disables refreshing.
+     */
     const char *token_refresh_url;
+    /**
+     * Borrowed array of `refresh_header_count` headers sent with each
+     * refresh request. May be NULL iff `refresh_header_count == 0`.
+     */
     const XetHeader *refresh_headers;
+    /**
+     * Number of entries in `refresh_headers`.
+     */
     uintptr_t refresh_header_count;
 } XetAuthConfig;
 
@@ -195,6 +271,9 @@ const unsigned char *xet_bytes_data(const XetBytes *b);
  */
 uintptr_t xet_bytes_len(const XetBytes *b);
 
+/**
+ * Free a `XetBytes` buffer. Safe to call with null.
+ */
 void xet_bytes_free(XetBytes *b);
 
 /**
@@ -246,8 +325,14 @@ XetStatus xet_file_download_group_abort(const XetFileDownloadGroup *group, XetEr
  */
 uint64_t xet_file_download_task_id(const XetFileDownload *download);
 
+/**
+ * Free a `XetFileDownloadGroup`. Safe to call with null.
+ */
 void xet_file_download_group_free(XetFileDownloadGroup *group);
 
+/**
+ * Free a `XetFileDownload`. Safe to call with null.
+ */
 void xet_file_download_free(XetFileDownload *download);
 
 /**
@@ -306,8 +391,14 @@ void xet_download_stream_cancel(const XetDownloadStream *stream);
  */
 uint64_t xet_download_stream_task_id(const XetDownloadStream *stream);
 
+/**
+ * Free a `XetDownloadStreamGroup`. Safe to call with null.
+ */
 void xet_download_stream_group_free(XetDownloadStreamGroup *group);
 
+/**
+ * Free a `XetDownloadStream`. Safe to call with null.
+ */
 void xet_download_stream_free(XetDownloadStream *stream);
 
 /**
@@ -360,6 +451,9 @@ XetStatus xet_file_info_new_with_sha256(const char *hash,
                                         XetFileInfo **out,
                                         XetError **err);
 
+/**
+ * Free a `XetFileInfo`. Safe to call with null.
+ */
 void xet_file_info_free(XetFileInfo *fi);
 
 /**
@@ -442,8 +536,16 @@ XetStatus xet_op_take_bytes(XetOp *op, XetBytes **out, XetError **err);
  */
 XetStatus xet_op_take_chunk(XetOp *op, uint64_t *offset, XetBytes **out, XetError **err);
 
+/**
+ * Test-only constructor used by ffi_tests: an op that becomes ready with a
+ * void result after a short delay.
+ */
 XetOp *xet_test_make_void_op(void);
 
+/**
+ * Test-only constructor used by ffi_tests: an op that becomes ready with an
+ * error result after a short delay.
+ */
 XetOp *xet_test_make_error_op(void);
 
 /**
@@ -475,6 +577,9 @@ XetStatus xet_commit_report_dedup(const XetCommitReportHandle *r, XetDedupMetric
  */
 XetStatus xet_commit_report_progress(const XetCommitReportHandle *r, XetProgress *out);
 
+/**
+ * Free a `XetCommitReportHandle`. Safe to call with null.
+ */
 void xet_commit_report_free(XetCommitReportHandle *r);
 
 /**
@@ -494,6 +599,9 @@ XetStatus xet_download_group_report_at(const XetDownloadGroupReportHandle *r,
                                        uint64_t *task_id,
                                        uint64_t *bytes_completed);
 
+/**
+ * Free a `XetDownloadGroupReportHandle`. Safe to call with null.
+ */
 void xet_download_group_report_free(XetDownloadGroupReportHandle *r);
 
 /**
@@ -512,6 +620,9 @@ void xet_init_logging(const char *version);
  */
 XetStatus xet_session_new(XetSession **out, XetError **err);
 
+/**
+ * Free a `XetSession`. Safe to call with null.
+ */
 void xet_session_free(XetSession *session);
 
 /**
@@ -646,8 +757,14 @@ const char *xet_file_metadata_tracking_name(const XetFileMetadataHandle *m);
  */
 void xet_file_metadata_free(XetFileMetadataHandle *m);
 
+/**
+ * Free a `XetUploadCommit`. Safe to call with null.
+ */
 void xet_upload_commit_free(XetUploadCommit *commit);
 
+/**
+ * Free a `XetFileUpload`. Safe to call with null.
+ */
 void xet_file_upload_free(XetFileUpload *upload);
 
 /**
@@ -672,6 +789,9 @@ XetStatus xet_stream_upload_write_start(const XetStreamUpload *su,
  */
 XetStatus xet_stream_upload_finish_start(const XetStreamUpload *su, XetOp **out, XetError **err);
 
+/**
+ * Free a `XetStreamUpload`. Safe to call with null.
+ */
 void xet_stream_upload_free(XetStreamUpload *su);
 
 #ifdef __cplusplus

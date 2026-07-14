@@ -158,6 +158,7 @@ pub unsafe extern "C" fn xet_commit_report_progress(
     XetStatus::XetOk
 }
 
+/// Free a `XetCommitReportHandle`. Safe to call with null.
 #[unsafe(no_mangle)]
 pub extern "C" fn xet_commit_report_free(r: *mut XetCommitReportHandle) {
     free_handle(r);
@@ -205,6 +206,7 @@ pub unsafe extern "C" fn xet_download_group_report_at(
     XetStatus::XetOk
 }
 
+/// Free a `XetDownloadGroupReportHandle`. Safe to call with null.
 #[unsafe(no_mangle)]
 pub extern "C" fn xet_download_group_report_free(r: *mut XetDownloadGroupReportHandle) {
     free_handle(r);

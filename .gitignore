@@ -26,3 +26,6 @@ venv
 # Swift toolchain installer artifacts (swiftly)
 /swiftly.pkg
 /.swift-version
+
+# Doxygen-generated API docs for xet_capi
+xet_capi/docs/

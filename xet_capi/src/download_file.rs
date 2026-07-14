@@ -120,11 +120,13 @@ pub unsafe extern "C" fn xet_file_download_task_id(download: *const XetFileDownl
     }
 }
 
+/// Free a `XetFileDownloadGroup`. Safe to call with null.
 #[unsafe(no_mangle)]
 pub extern "C" fn xet_file_download_group_free(group: *mut XetFileDownloadGroup) {
     free_handle(group);
 }
 
+/// Free a `XetFileDownload`. Safe to call with null.
 #[unsafe(no_mangle)]
 pub extern "C" fn xet_file_download_free(download: *mut XetFileDownload) {
     free_handle(download);

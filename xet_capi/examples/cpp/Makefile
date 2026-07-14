@@ -14,7 +14,7 @@ LDFLAGS  += -L$(LIBDIR) -lxet_capi -Wl,-rpath,$(LIBDIR)
 
 BIN := upload_download
 
-$(BIN): upload_download.cpp $(INCLUDE)/xet_session.hpp $(INCLUDE)/hf_xet.h
+$(BIN): upload_download.cpp xet_session.hpp $(INCLUDE)/hf_xet.h
 	$(CXX) $(CXXFLAGS) upload_download.cpp -o $@ $(LDFLAGS)
 
 .PHONY: run clean

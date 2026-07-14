@@ -36,6 +36,7 @@ pub unsafe extern "C" fn xet_bytes_len(b: *const XetBytes) -> usize {
     }
 }
 
+/// Free a `XetBytes` buffer. Safe to call with null.
 #[unsafe(no_mangle)]
 pub extern "C" fn xet_bytes_free(b: *mut XetBytes) {
     free_handle(b);

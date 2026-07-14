@@ -15,8 +15,13 @@ pub struct XetFileInfo {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub enum XetSha256Policy {
+    /// Compute the SHA-256 from the upload data as it is read.
     XetSha256Compute = 0,
+    /// Skip SHA-256 entirely; the resulting metadata will have no SHA-256.
     XetSha256Skip = 1,
+    /// Use a caller-supplied SHA-256 (hex) instead of computing one. The hex
+    /// string is passed via the `provided_sha256` parameter of the calling
+    /// function and is not validated against the actual upload contents.
     XetSha256Provided = 2,
 }
 
@@ -86,6 +91,7 @@ pub unsafe extern "C" fn xet_file_info_new_with_sha256(
     })
 }
 
+/// Free a `XetFileInfo`. Safe to call with null.
 #[unsafe(no_mangle)]
 pub extern "C" fn xet_file_info_free(fi: *mut XetFileInfo) {
     free_handle(fi);

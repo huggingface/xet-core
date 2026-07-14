@@ -67,6 +67,7 @@ pub unsafe extern "C" fn xet_stream_upload_finish_start(
     })
 }
 
+/// Free a `XetStreamUpload`. Safe to call with null.
 #[unsafe(no_mangle)]
 pub extern "C" fn xet_stream_upload_free(su: *mut XetStreamUpload) {
     free_handle(su);

@@ -278,11 +278,13 @@ pub extern "C" fn xet_file_metadata_free(m: *mut XetFileMetadataHandle) {
     free_handle(m);
 }
 
+/// Free a `XetUploadCommit`. Safe to call with null.
 #[unsafe(no_mangle)]
 pub extern "C" fn xet_upload_commit_free(commit: *mut XetUploadCommit) {
     free_handle(commit);
 }
 
+/// Free a `XetFileUpload`. Safe to call with null.
 #[unsafe(no_mangle)]
 pub extern "C" fn xet_file_upload_free(upload: *mut XetFileUpload) {
     free_handle(upload);

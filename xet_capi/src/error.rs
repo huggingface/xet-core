@@ -6,12 +6,22 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum XetStatus {
+    /// The call succeeded; any `out` pointers were filled in.
     XetOk = 0,
+    /// The call failed for a reason not covered by a more specific variant.
+    /// Check the accompanying `XetError` (if any) for details.
     XetErr = 1,
+    /// A required argument was null, malformed, or otherwise invalid (e.g. a
+    /// bad hash string, a handle that failed a null check).
     XetErrInvalidArg = 2,
+    /// The call failed due to missing, expired, or rejected credentials.
     XetErrAuth = 3,
+    /// The requested resource (file, hash, etc.) does not exist.
     XetErrNotFound = 4,
+    /// The operation was cancelled before completing.
     XetErrCancelled = 5,
+    /// A Rust panic was caught at the FFI boundary and converted into this
+    /// status; no partial state should be assumed to be valid.
     XetErrPanic = 6,
 }
 

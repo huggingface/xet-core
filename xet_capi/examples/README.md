@@ -1,5 +1,9 @@
 # hf_xet C API examples
 
+> **Experimental:** the `hf_xet` C API is under active development. Its
+> surface (function signatures, ownership rules, struct layouts) may change
+> without notice until it stabilizes.
+
 Each subdirectory is a self-contained program that performs the same
 upload → commit → download round-trip against a Hugging Face Xet repo, using
 only the `hf_xet` C API (`xet_capi/include/hf_xet.h`):

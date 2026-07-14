@@ -15,10 +15,14 @@ pub struct XetSession {
     pub(crate) inner: InnerSession,
 }
 
-/// One HTTP header for token-refresh requests.
+/// One HTTP header for token-refresh requests. Both pointers are borrowed
+/// NUL-terminated C strings, valid only for the duration of the call that
+/// takes an array of `XetHeader`s (e.g. via `XetAuthConfig::refresh_headers`).
 #[repr(C)]
 pub struct XetHeader {
+    /// Header name, e.g. `"Authorization"`.
     pub key: *const c_char,
+    /// Header value.
     pub value: *const c_char,
 }
 
@@ -26,11 +30,19 @@ pub struct XetHeader {
 /// the duration of the call. Any nullable field may be NULL.
 #[repr(C)]
 pub struct XetAuthConfig {
+    /// Hub endpoint URL, e.g. `"https://huggingface.co"`. Must not be NULL.
     pub endpoint: *const c_char,
+    /// Bearer token used for CAS/Hub requests. Must not be NULL.
     pub token: *const c_char,
+    /// Unix timestamp (seconds) at which `token` expires, or `0`/negative if
+    /// it never needs refreshing.
     pub token_expiry: i64,
+    /// URL to POST to for a token refresh. NULL disables refreshing.
     pub token_refresh_url: *const c_char,
+    /// Borrowed array of `refresh_header_count` headers sent with each
+    /// refresh request. May be NULL iff `refresh_header_count == 0`.
     pub refresh_headers: *const XetHeader,
+    /// Number of entries in `refresh_headers`.
     pub refresh_header_count: usize,
 }
 
@@ -104,6 +116,7 @@ pub unsafe extern "C" fn xet_session_new(out: *mut *mut XetSession, err: *mut *m
     })
 }
 
+/// Free a `XetSession`. Safe to call with null.
 #[unsafe(no_mangle)]
 pub extern "C" fn xet_session_free(session: *mut XetSession) {
     free_handle(session);
