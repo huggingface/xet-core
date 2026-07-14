@@ -5,6 +5,15 @@ use tokio_with_wasm::alias as tokio;
 use xet_core_structures::metadata_shard::Sha256;
 use xet_runtime::core::XetContext;
 
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(&mut hex, "{byte:02x}").expect("writing to String should never fail");
+    }
+    hex
+}
+
 /// Helper struct to generate a sha256 hash.
 #[derive(Debug)]
 pub(crate) struct Sha256Generator {
@@ -45,8 +54,8 @@ impl Sha256Generator {
             None => return Ok(Sha256::default()),
         };
 
-        let sha256 = hasher.finalize();
-        let hex_str = format!("{sha256:x}");
+        let sha256_bytes: [u8; 32] = hasher.finalize().into();
+        let hex_str = bytes_to_hex(&sha256_bytes);
         Ok(Sha256::from_hex(&hex_str).expect("Converting sha256 to merklehash."))
     }
 }
@@ -103,7 +112,8 @@ mod sha_tests {
 
         let out_hash = sha_generator.finalize().await.unwrap();
 
-        let ref_hash = format!("{:x}", sha2Sha256::digest(rand_data));
+        let ref_hash_bytes: [u8; 32] = sha2Sha256::digest(rand_data).into();
+        let ref_hash = bytes_to_hex(&ref_hash_bytes);
 
         assert_eq!(out_hash.hex(), ref_hash);
     }
