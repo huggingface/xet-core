@@ -48,8 +48,8 @@ pub use session::{
 };
 pub use upload::{
     XetFileMetadataHandle, XetFileUpload, XetUploadCommit, xet_file_metadata_file_size, xet_file_metadata_free,
-    xet_file_metadata_hash, xet_file_metadata_sha256, xet_file_metadata_tracking_name, xet_file_upload_finalize_start,
-    xet_file_upload_free, xet_upload_commit_abort, xet_upload_commit_commit_start, xet_upload_commit_free,
+    xet_file_metadata_hash, xet_file_metadata_sha256, xet_file_metadata_tracking_name, xet_file_upload_finalize,
+    xet_file_upload_free, xet_upload_commit_abort, xet_upload_commit_commit, xet_upload_commit_free,
     xet_upload_commit_progress, xet_upload_commit_upload_bytes, xet_upload_commit_upload_from_path,
     xet_upload_commit_upload_stream,
 };

@@ -138,8 +138,8 @@ typedef struct XetFileInfo XetFileInfo;
 
 /**
  * Per-file metadata result. C strings are prebuilt at construction so accessor
- * pointers stay valid until the handle is freed. Free OWNED handles (from
- * `xet_op_take_file_metadata`) with [`xet_file_metadata_free`]; borrowed views
+ * pointers stay valid until the handle is freed. Free OWNED handles (e.g. from
+ * `xet_file_upload_finalize`) with [`xet_file_metadata_free`]; borrowed views
  * returned by report accessors must NOT be freed.
  */
 typedef struct XetFileMetadataHandle XetFileMetadataHandle;
@@ -698,18 +698,35 @@ XetStatus xet_upload_commit_upload_stream(const XetUploadCommit *commit,
                                           XetError **err);
 
 /**
+ * Finalize this file's ingestion, blocking until complete. On success fills
+ * `*out` with an owned `XetFileMetadataHandle` (free with
+ * [`xet_file_metadata_free`]).
+ *
+ * Blocks the calling thread for the full duration. Progress can be observed
+ * concurrently from another thread via [`xet_upload_commit_progress`].
+ *
  * # Safety
  * `upload` valid; `out`/`err` valid pointers.
  */
-XetStatus xet_file_upload_finalize_start(const XetFileUpload *upload, XetOp **out, XetError **err);
+XetStatus xet_file_upload_finalize(const XetFileUpload *upload,
+                                   XetFileMetadataHandle **out,
+                                   XetError **err);
 
 /**
+ * Commit all finalized uploads, blocking until complete. On success fills
+ * `*out` with an owned `XetCommitReportHandle` (free with
+ * [`xet_commit_report_free`]).
+ *
+ * Blocks the calling thread for the full duration. Progress can be observed
+ * concurrently from another thread via [`xet_upload_commit_progress`];
+ * [`xet_upload_commit_abort`] may be called from another thread to cancel.
+ *
  * # Safety
  * `commit` valid; `out`/`err` valid pointers.
  */
-XetStatus xet_upload_commit_commit_start(const XetUploadCommit *commit,
-                                         XetOp **out,
-                                         XetError **err);
+XetStatus xet_upload_commit_commit(const XetUploadCommit *commit,
+                                   XetCommitReportHandle **out,
+                                   XetError **err);
 
 /**
  * # Safety
@@ -752,8 +769,8 @@ const char *xet_file_metadata_sha256(const XetFileMetadataHandle *m);
 const char *xet_file_metadata_tracking_name(const XetFileMetadataHandle *m);
 
 /**
- * Free an OWNED metadata handle (from `xet_op_take_file_metadata`). Do NOT call
- * on a borrowed handle returned by a report accessor.
+ * Free an OWNED metadata handle (e.g. from `xet_file_upload_finalize`). Do NOT
+ * call on a borrowed handle returned by a report accessor.
  */
 void xet_file_metadata_free(XetFileMetadataHandle *m);
 

@@ -5,8 +5,7 @@ use xet::xet_session::{XetFileMetadata, XetFileUpload as InnerFileUpload, XetUpl
 use crate::error::{XetError, XetStatus, ffi_guard, set_err, set_xet_err};
 use crate::file_info::{XetSha256Policy, sha256_policy};
 use crate::handle::{free_handle, into_handle};
-use crate::op::{OpOutput, XetOp, spawn_op};
-use crate::reports::XetProgress;
+use crate::reports::{XetCommitReportHandle, XetProgress};
 use crate::session::opt_str;
 
 /// An upload commit (Arc-backed; cheap to clone). Free with [`xet_upload_commit_free`].
@@ -25,8 +24,8 @@ pub struct XetFileUpload {
 }
 
 /// Per-file metadata result. C strings are prebuilt at construction so accessor
-/// pointers stay valid until the handle is freed. Free OWNED handles (from
-/// `xet_op_take_file_metadata`) with [`xet_file_metadata_free`]; borrowed views
+/// pointers stay valid until the handle is freed. Free OWNED handles (e.g. from
+/// `xet_file_upload_finalize`) with [`xet_file_metadata_free`]; borrowed views
 /// returned by report accessors must NOT be freed.
 pub struct XetFileMetadataHandle {
     inner: XetFileMetadata,
@@ -162,39 +161,66 @@ pub unsafe extern "C" fn xet_upload_commit_upload_stream(
     })
 }
 
+/// Finalize this file's ingestion, blocking until complete. On success fills
+/// `*out` with an owned `XetFileMetadataHandle` (free with
+/// [`xet_file_metadata_free`]).
+///
+/// Blocks the calling thread for the full duration. Progress can be observed
+/// concurrently from another thread via [`xet_upload_commit_progress`].
+///
 /// # Safety
 /// `upload` valid; `out`/`err` valid pointers.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn xet_file_upload_finalize_start(
+pub unsafe extern "C" fn xet_file_upload_finalize(
     upload: *const XetFileUpload,
-    out: *mut *mut XetOp,
+    out: *mut *mut XetFileMetadataHandle,
     err: *mut *mut XetError,
 ) -> XetStatus {
     ffi_guard(err, || {
         let Some(upload) = (unsafe { upload.as_ref() }) else {
             return set_err(err, XetError::new(XetStatus::XetErrInvalidArg, "null upload"));
         };
-        let handle = upload.inner.clone();
-        unsafe { *out = spawn_op(move || handle.finalize_ingestion_blocking().map(OpOutput::FileMetadata)) };
-        XetStatus::XetOk
+        match upload.inner.finalize_ingestion_blocking() {
+            Ok(meta) => {
+                if !out.is_null() {
+                    unsafe { *out = into_handle(XetFileMetadataHandle::owned(meta)) };
+                }
+                XetStatus::XetOk
+            },
+            Err(e) => set_xet_err(err, &e),
+        }
     })
 }
 
+/// Commit all finalized uploads, blocking until complete. On success fills
+/// `*out` with an owned `XetCommitReportHandle` (free with
+/// [`xet_commit_report_free`]).
+///
+/// Blocks the calling thread for the full duration. Progress can be observed
+/// concurrently from another thread via [`xet_upload_commit_progress`];
+/// [`xet_upload_commit_abort`] may be called from another thread to cancel.
+///
 /// # Safety
 /// `commit` valid; `out`/`err` valid pointers.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn xet_upload_commit_commit_start(
+pub unsafe extern "C" fn xet_upload_commit_commit(
     commit: *const XetUploadCommit,
-    out: *mut *mut XetOp,
+    out: *mut *mut XetCommitReportHandle,
     err: *mut *mut XetError,
 ) -> XetStatus {
     ffi_guard(err, || {
         let Some(commit) = (unsafe { commit.as_ref() }) else {
             return set_err(err, XetError::new(XetStatus::XetErrInvalidArg, "null commit"));
         };
-        let handle = commit.inner.clone();
-        unsafe { *out = spawn_op(move || handle.commit_blocking().map(OpOutput::CommitReport)) };
-        XetStatus::XetOk
+        match commit.inner.commit_blocking() {
+            Ok(report) => {
+                if !out.is_null() {
+                    unsafe { *out = into_handle(XetCommitReportHandle::new(report)) };
+                }
+                XetStatus::XetOk
+            },
+            Err(e) => set_xet_err(err, &e),
+        }
     })
 }
 
@@ -271,8 +297,8 @@ pub unsafe extern "C" fn xet_file_metadata_tracking_name(m: *const XetFileMetada
     }
 }
 
-/// Free an OWNED metadata handle (from `xet_op_take_file_metadata`). Do NOT call
-/// on a borrowed handle returned by a report accessor.
+/// Free an OWNED metadata handle (e.g. from `xet_file_upload_finalize`). Do NOT
+/// call on a borrowed handle returned by a report accessor.
 #[unsafe(no_mangle)]
 pub extern "C" fn xet_file_metadata_free(m: *mut XetFileMetadataHandle) {
     free_handle(m);

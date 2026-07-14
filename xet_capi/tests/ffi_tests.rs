@@ -96,8 +96,8 @@ fn upload_symbols_link() {
     let _f: [*const (); 9] = [
         xet_capi::xet_upload_commit_upload_from_path as *const (),
         xet_capi::xet_upload_commit_upload_bytes as *const (),
-        xet_capi::xet_upload_commit_commit_start as *const (),
-        xet_capi::xet_file_upload_finalize_start as *const (),
+        xet_capi::xet_upload_commit_commit as *const (),
+        xet_capi::xet_file_upload_finalize as *const (),
         xet_capi::xet_upload_commit_progress as *const (),
         xet_capi::xet_upload_commit_abort as *const (),
         xet_capi::xet_file_metadata_hash as *const (),
@@ -274,17 +274,11 @@ fn e2e_upload_then_download_via_ffi() {
             XetStatus::XetOk
         );
 
-        let mut op: *mut XetOp = std::ptr::null_mut();
-        assert_eq!(xet_file_upload_finalize_start(upload, &mut op, &mut err), XetStatus::XetOk);
-        assert_eq!(drive(op), XetPollState::XetPollReady);
         let mut meta: *mut XetFileMetadataHandle = std::ptr::null_mut();
-        assert_eq!(xet_op_take_file_metadata(op, &mut meta, &mut err), XetStatus::XetOk);
+        assert_eq!(xet_file_upload_finalize(upload, &mut meta, &mut err), XetStatus::XetOk);
 
-        let mut cop: *mut XetOp = std::ptr::null_mut();
-        assert_eq!(xet_upload_commit_commit_start(commit, &mut cop, &mut err), XetStatus::XetOk);
-        assert_eq!(drive(cop), XetPollState::XetPollReady);
         let mut report: *mut XetCommitReportHandle = std::ptr::null_mut();
-        assert_eq!(xet_op_take_commit_report(cop, &mut report, &mut err), XetStatus::XetOk);
+        assert_eq!(xet_upload_commit_commit(commit, &mut report, &mut err), XetStatus::XetOk);
         assert!(xet_commit_report_file_count(report) >= 1);
 
         // Build a file_info from the uploaded metadata
@@ -317,8 +311,6 @@ fn e2e_upload_then_download_via_ffi() {
         assert_eq!(got, payload);
 
         // Cleanup
-        xet_op_free(op);
-        xet_op_free(cop);
         xet_op_free(fop);
         xet_file_metadata_free(meta);
         xet_commit_report_free(report);
