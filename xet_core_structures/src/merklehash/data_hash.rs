@@ -219,6 +219,17 @@ impl DataHash {
         Ok(hash)
     }
 
+    /// Constructs a DataHash from bytes ordered as the canonical hexadecimal representation.
+    pub fn from_be_bytes(value: [u8; 32]) -> Self {
+        let mut ret: DataHash = Default::default();
+        for (idx, chunk) in value.chunks_exact(8).enumerate() {
+            let mut bytes = [0u8; 8];
+            bytes.copy_from_slice(chunk);
+            ret.0[idx] = u64::from_be_bytes(bytes).to_le();
+        }
+        ret
+    }
+
     pub fn random_from_seed(seed: u64) -> Self {
         let mut s = Self::default();
         let mut rng = SmallRng::seed_from_u64(seed);
@@ -560,5 +571,19 @@ mod tests {
 
         let deserialized_hash = DataHash::from_hex(&serialized_hex).unwrap();
         assert_eq!(deserialized_hash, data_hash);
+    }
+
+    #[test]
+    fn test_hash_from_be_bytes() {
+        let hash_bytes: [u8; 32] = [
+            214, 131, 75, 4, 132, 58, 175, 22, 242, 153, 3, 226, 66, 138, 153, 190, 99, 80, 153, 249, 234, 80, 86, 204,
+            78, 149, 231, 236, 138, 65, 80, 159,
+        ];
+        let expected_hex_string = "d6834b04843aaf16f29903e2428a99be635099f9ea5056cc4e95e7ec8a41509f";
+
+        let data_hash = DataHash::from_be_bytes(hash_bytes);
+
+        assert_eq!(expected_hex_string, data_hash.hex().as_str());
+        assert_eq!(DataHash::from_hex(expected_hex_string).unwrap(), data_hash);
     }
 }
