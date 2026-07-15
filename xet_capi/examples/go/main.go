@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"os"
 	"runtime"
-	"time"
 	"unsafe"
 )
 
@@ -39,23 +38,6 @@ func xetError(ctx string, err *C.XetError) error {
 	code := int(C.xet_error_code(err))
 	C.xet_error_free(err)
 	return fmt.Errorf("%s: [%d] %s", ctx, code, msg)
-}
-
-// drive polls op to completion, returning the op's error on failure. The op is
-// not freed here; the caller still owns it.
-func drive(op *C.XetOp) error {
-	for {
-		switch C.xet_op_poll(op) {
-		case C.XetPollState_XetPollPending:
-			time.Sleep(20 * time.Millisecond)
-		case C.XetPollState_XetPollError:
-			var err *C.XetError
-			C.xet_op_take_error(op, &err)
-			return xetError("operation failed", err)
-		default: // XetPollReady
-			return nil
-		}
-	}
 }
 
 func run(repo, token string) error {
@@ -118,17 +100,9 @@ func run(repo, token string) error {
 	}
 	defer C.xet_file_upload_free(upload)
 
-	var op *C.XetOp
-	if C.xet_file_upload_finalize_start(upload, &op, &xerr) != C.XetStatus_XetOk {
-		return xetError("xet_file_upload_finalize_start", xerr)
-	}
-	defer C.xet_op_free(op)
-	if err := drive(op); err != nil {
-		return err
-	}
 	var meta *C.XetFileMetadataHandle
-	if C.xet_op_take_file_metadata(op, &meta, &xerr) != C.XetStatus_XetOk {
-		return xetError("xet_op_take_file_metadata", xerr)
+	if C.xet_file_upload_finalize(upload, &meta, &xerr) != C.XetStatus_XetOk {
+		return xetError("xet_file_upload_finalize", xerr)
 	}
 	defer C.xet_file_metadata_free(meta)
 
@@ -136,17 +110,9 @@ func run(repo, token string) error {
 	size := uint64(C.xet_file_metadata_file_size(meta))
 	fmt.Printf("uploaded %d bytes\n  hash: %s\n  size: %d\n", len(payload), hash, size)
 
-	var commitOp *C.XetOp
-	if C.xet_upload_commit_commit_start(commit, &commitOp, &xerr) != C.XetStatus_XetOk {
-		return xetError("xet_upload_commit_commit_start", xerr)
-	}
-	defer C.xet_op_free(commitOp)
-	if err := drive(commitOp); err != nil {
-		return err
-	}
 	var report *C.XetCommitReportHandle
-	if C.xet_op_take_commit_report(commitOp, &report, &xerr) != C.XetStatus_XetOk {
-		return xetError("xet_op_take_commit_report", xerr)
+	if C.xet_upload_commit_commit(commit, &report, &xerr) != C.XetStatus_XetOk {
+		return xetError("xet_upload_commit_commit", xerr)
 	}
 	defer C.xet_commit_report_free(report)
 	var metrics C.XetDedupMetrics
@@ -179,17 +145,9 @@ func run(repo, token string) error {
 	}
 	defer C.xet_file_download_free(download)
 
-	var dlOp *C.XetOp
-	if C.xet_file_download_group_finish_start(group, &dlOp, &xerr) != C.XetStatus_XetOk {
-		return xetError("xet_file_download_group_finish_start", xerr)
-	}
-	defer C.xet_op_free(dlOp)
-	if err := drive(dlOp); err != nil {
-		return err
-	}
 	var dlReport *C.XetDownloadGroupReportHandle
-	if C.xet_op_take_download_report(dlOp, &dlReport, &xerr) != C.XetStatus_XetOk {
-		return xetError("xet_op_take_download_report", xerr)
+	if C.xet_file_download_group_finish(group, &dlReport, &xerr) != C.XetStatus_XetOk {
+		return xetError("xet_file_download_group_finish", xerr)
 	}
 	defer C.xet_download_group_report_free(dlReport)
 
