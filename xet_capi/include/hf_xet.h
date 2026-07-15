@@ -48,25 +48,6 @@ typedef enum {
 } XetStatus;
 
 /**
- * Result of polling a [`XetOp`] with [`xet_op_poll`].
- */
-typedef enum {
-    /**
-     * The op is still running; poll again later.
-     */
-    XetPollState_XetPollPending = 0,
-    /**
-     * The op finished successfully; its result can be read with the
-     * matching `xet_op_take_*` function.
-     */
-    XetPollState_XetPollReady = 1,
-    /**
-     * The op finished with an error; read it with [`xet_op_take_error`].
-     */
-    XetPollState_XetPollError = 2,
-} XetPollState;
-
-/**
  * SHA-256 handling for uploads.
  */
 typedef enum {
@@ -149,14 +130,6 @@ typedef struct XetFileMetadataHandle XetFileMetadataHandle;
  * A queued file upload. Free with [`xet_file_upload_free`].
  */
 typedef struct XetFileUpload XetFileUpload;
-
-/**
- * A spawned, poll-able operation. Poll with [`xet_op_poll`], then read its
- * result with the matching `xet_op_take_*`. Ownership model: `xet_op_take_*`
- * never frees the op — the caller must always free every op exactly once with
- * [`xet_op_free`], whether or not a take succeeded.
- */
-typedef struct XetOp XetOp;
 
 /**
  * A Xet session. Owns no auth; produces per-commit / per-group auth via the
@@ -471,98 +444,6 @@ XetStatus xet_file_info_new_with_sha256(const char *hash,
  * Free a `XetFileInfo`. Safe to call with null.
  */
 void xet_file_info_free(XetFileInfo *fi);
-
-/**
- * # Safety
- * `op` must be null or a valid pointer to a live `XetOp` produced by this crate.
- */
-XetPollState xet_op_poll(const XetOp *op);
-
-/**
- * Free an op. Must be called exactly once per op — after reading its result
- * with a `xet_op_take_*` call, or directly to abandon an un-taken op. Joins the
- * worker thread if it has not already been joined by a take.
- *
- * # Safety
- * `op` must be null or a pointer previously returned by this crate that has not
- * already been freed.
- */
-void xet_op_free(XetOp *op);
-
-/**
- * Extract a `XetError` from a failed op. Returns `XET_OK` and fills `*err`;
- * returns `XET_ERR_INVALID_ARG` if the op did not fail.
- *
- * # Safety
- * `op` must be a valid pointer to a live `XetOp`; `err` must be null or a valid
- * writable `*mut XetError`.
- */
-XetStatus xet_op_take_error(XetOp *op, XetError **err);
-
-/**
- * Read a completed op's file metadata into `*out`. Does not free the op.
- *
- * # Safety
- * `op` valid; `out`/`err` valid pointers.
- */
-XetStatus xet_op_take_file_metadata(XetOp *op, XetFileMetadataHandle **out, XetError **err);
-
-/**
- * Read a completed op's commit report into `*out`. Does not free the op.
- *
- * # Safety
- * `op` valid; `out`/`err` valid pointers.
- */
-XetStatus xet_op_take_commit_report(XetOp *op, XetCommitReportHandle **out, XetError **err);
-
-/**
- * Read a completed op's download-group report into `*out`. Does not free the op.
- *
- * # Safety
- * `op` valid; `out`/`err` valid pointers.
- */
-XetStatus xet_op_take_download_report(XetOp *op,
-                                      XetDownloadGroupReportHandle **out,
-                                      XetError **err);
-
-/**
- * Void ops (e.g. stream write) — no payload.
- *
- * # Safety
- * `op` must be a valid pointer to a live `XetOp`; `err` must be null or a valid
- * writable `*mut XetError`.
- */
-XetStatus xet_op_take_void(XetOp *op, XetError **err);
-
-/**
- * Ordered stream chunk. On success `*out` is a `XetBytes*`, or NULL at EOF.
- *
- * # Safety
- * `op` must be a valid pointer to a live `XetOp`; `out` and `err` must be null
- * or valid writable out-pointers.
- */
-XetStatus xet_op_take_bytes(XetOp *op, XetBytes **out, XetError **err);
-
-/**
- * Unordered stream chunk. On success fills `*offset` and `*out` (NULL at EOF).
- *
- * # Safety
- * `op` must be a valid pointer to a live `XetOp`; `offset`, `out`, and `err`
- * must be null or valid writable out-pointers.
- */
-XetStatus xet_op_take_chunk(XetOp *op, uint64_t *offset, XetBytes **out, XetError **err);
-
-/**
- * Test-only constructor used by ffi_tests: an op that becomes ready with a
- * void result after a short delay.
- */
-XetOp *xet_test_make_void_op(void);
-
-/**
- * Test-only constructor used by ffi_tests: an op that becomes ready with an
- * error result after a short delay.
- */
-XetOp *xet_test_make_error_op(void);
 
 /**
  * # Safety
