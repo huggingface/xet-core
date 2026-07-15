@@ -251,8 +251,31 @@ fn e2e_upload_then_download_via_ffi() {
             XetStatus::XetOk
         );
 
+        // Poll progress from another thread while the main thread blocks in
+        // xet_file_download_group_finish. Raw handle pointers are not Send, so
+        // pass the address as usize.
+        let group_addr = group as usize;
+        let poller = std::thread::spawn(move || {
+            let group = group_addr as *const XetFileDownloadGroup;
+            let mut polls = 0u32;
+            let mut p = XetProgress {
+                total_bytes: 0,
+                total_bytes_completed: 0,
+                total_transfer_bytes: 0,
+                total_transfer_bytes_completed: 0,
+            };
+            for _ in 0..200 {
+                if unsafe { xet_file_download_group_progress(group, &mut p) } == XetStatus::XetOk {
+                    polls += 1;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            polls
+        });
+
         let mut dreport: *mut XetDownloadGroupReportHandle = std::ptr::null_mut();
         assert_eq!(xet_file_download_group_finish(group, &mut dreport, &mut err), XetStatus::XetOk);
+        assert!(poller.join().unwrap() > 0, "progress polling from a second thread never succeeded");
 
         // Verify round-trip
         let got = std::fs::read(&dest_path).unwrap();
