@@ -11,17 +11,40 @@
  *   5. Build a download group from a xet-read-token refresh URL.
  *   6. Download by hash to a file and verify the bytes match.
  *
+ * Transfer calls block; a second thread polls download progress.
+ *
  * Auth: reads $HF_TOKEN from the environment.
  *
  * Build/run: see the Makefile in this directory (`make run`).
  */
 
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
 #include "hf_xet.h"
+
+/* Set to 1 by the main thread when the blocking call returns. */
+static int progress_done = 0;
+
+/* Progress-poller thread: the blocking transfer functions occupy the calling
+ * thread, so live progress is read from a second thread. */
+static void *print_progress(void *arg) {
+    const XetFileDownloadGroup *group = arg;
+    while (!__atomic_load_n(&progress_done, __ATOMIC_ACQUIRE)) {
+        XetProgress p;
+        if (xet_file_download_group_progress(group, &p) == XetStatus_XetOk && p.total_bytes > 0) {
+            fprintf(stderr, "  progress: %llu / %llu bytes\r",
+                    (unsigned long long)p.total_bytes_completed, (unsigned long long)p.total_bytes);
+        }
+        struct timespec ts = {0, 50 * 1000 * 1000}; /* 50ms */
+        nanosleep(&ts, NULL);
+    }
+    fprintf(stderr, "\n");
+    return NULL;
+}
 
 /* Repo to round-trip through. Override with argv[1] (e.g. "user/name"). */
 #define DEFAULT_REPO "assafvayner/xet-c-api-test"
@@ -38,25 +61,6 @@ static int fail(const char *ctx, XetError *err) {
         fprintf(stderr, "%s: (no error detail)\n", ctx);
     }
     return -1;
-}
-
-/*
- * Poll `op` to completion. On success returns 0. On failure prints the op's
- * error and returns -1. The op is NOT consumed here; the caller still owns it
- * and must take its result (or free it).
- */
-static int drive(XetOp *op) {
-    XetPollState state;
-    while ((state = xet_op_poll(op)) == XetPollState_XetPollPending) {
-        struct timespec ts = {0, 20 * 1000 * 1000}; /* 20ms */
-        nanosleep(&ts, NULL);
-    }
-    if (state == XetPollState_XetPollError) {
-        XetError *err = NULL;
-        xet_op_take_error(op, &err);
-        return fail("operation failed", err);
-    }
-    return 0;
 }
 
 int main(int argc, char **argv) {
@@ -86,14 +90,11 @@ int main(int argc, char **argv) {
     XetSession *session = NULL;
     XetUploadCommit *commit = NULL;
     XetFileUpload *upload = NULL;
-    XetOp *op = NULL;
     XetFileMetadataHandle *meta = NULL;
-    XetOp *commit_op = NULL;
     XetCommitReportHandle *report = NULL;
     XetFileDownloadGroup *group = NULL;
     XetFileInfo *file_info = NULL;
     XetFileDownload *download = NULL;
-    XetOp *dl_op = NULL;
     XetDownloadGroupReportHandle *dl_report = NULL;
     unsigned char *payload = NULL;
 
@@ -130,13 +131,8 @@ int main(int argc, char **argv) {
         goto cleanup;
     }
 
-    if (xet_file_upload_finalize_start(upload, &op, &err) != XetStatus_XetOk) {
-        fail("xet_file_upload_finalize_start", err);
-        goto cleanup;
-    }
-    if (drive(op) != 0) goto cleanup;
-    if (xet_op_take_file_metadata(op, &meta, &err) != XetStatus_XetOk) {
-        fail("xet_op_take_file_metadata", err);
+    if (xet_file_upload_finalize(upload, &meta, &err) != XetStatus_XetOk) {
+        fail("xet_file_upload_finalize", err);
         goto cleanup;
     }
 
@@ -144,13 +140,8 @@ int main(int argc, char **argv) {
     uint64_t size = xet_file_metadata_file_size(meta);
     printf("uploaded %zu bytes\n  hash: %s\n  size: %llu\n", payload_len, hash, (unsigned long long)size);
 
-    if (xet_upload_commit_commit_start(commit, &commit_op, &err) != XetStatus_XetOk) {
-        fail("xet_upload_commit_commit_start", err);
-        goto cleanup;
-    }
-    if (drive(commit_op) != 0) goto cleanup;
-    if (xet_op_take_commit_report(commit_op, &report, &err) != XetStatus_XetOk) {
-        fail("xet_op_take_commit_report", err);
+    if (xet_upload_commit_commit(commit, &report, &err) != XetStatus_XetOk) {
+        fail("xet_upload_commit_commit", err);
         goto cleanup;
     }
     XetDedupMetrics metrics;
@@ -177,15 +168,20 @@ int main(int argc, char **argv) {
         fail("xet_file_download_group_download_to_path", err);
         goto cleanup;
     }
-    if (xet_file_download_group_finish_start(group, &dl_op, &err) != XetStatus_XetOk) {
-        fail("xet_file_download_group_finish_start", err);
+    /* Poll transfer progress from a second thread while the main thread
+     * blocks in xet_file_download_group_finish. */
+    pthread_t progress_thread;
+    int have_progress_thread =
+        pthread_create(&progress_thread, NULL, print_progress, group) == 0;
+
+    if (xet_file_download_group_finish(group, &dl_report, &err) != XetStatus_XetOk) {
+        __atomic_store_n(&progress_done, 1, __ATOMIC_RELEASE);
+        if (have_progress_thread) pthread_join(progress_thread, NULL);
+        fail("xet_file_download_group_finish", err);
         goto cleanup;
     }
-    if (drive(dl_op) != 0) goto cleanup;
-    if (xet_op_take_download_report(dl_op, &dl_report, &err) != XetStatus_XetOk) {
-        fail("xet_op_take_download_report", err);
-        goto cleanup;
-    }
+    __atomic_store_n(&progress_done, 1, __ATOMIC_RELEASE);
+    if (have_progress_thread) pthread_join(progress_thread, NULL);
 
     /* ---- Verify ---- */
     FILE *f = fopen(dest, "rb");
@@ -207,14 +203,11 @@ int main(int argc, char **argv) {
 cleanup:
     free(payload);
     if (dl_report) xet_download_group_report_free(dl_report);
-    if (dl_op) xet_op_free(dl_op);
     if (download) xet_file_download_free(download);
     if (file_info) xet_file_info_free(file_info);
     if (group) xet_file_download_group_free(group);
     if (report) xet_commit_report_free(report);
-    if (commit_op) xet_op_free(commit_op);
     if (meta) xet_file_metadata_free(meta);
-    if (op) xet_op_free(op);
     if (upload) xet_file_upload_free(upload);
     if (commit) xet_upload_commit_free(commit);
     if (session) xet_session_free(session);

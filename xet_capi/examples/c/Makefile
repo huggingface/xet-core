@@ -13,8 +13,8 @@ INCLUDE := ../../include
 LIBDIR  := $(ROOT)/target/release
 
 CC      ?= cc
-CFLAGS  += -std=c11 -Wall -Wextra -I$(INCLUDE)
-LDFLAGS += -L$(LIBDIR) -lxet_capi -Wl,-rpath,$(LIBDIR)
+CFLAGS  += -std=c11 -Wall -Wextra -I$(INCLUDE) -pthread
+LDFLAGS += -L$(LIBDIR) -lxet_capi -Wl,-rpath,$(LIBDIR) -pthread
 
 BIN := upload_download
 
