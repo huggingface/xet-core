@@ -47,9 +47,10 @@ only the `hf_xet` C API (`xet_capi/include/hf_xet.h`):
 - Uploading random bytes, finalizing, and reading back the content hash + size.
 - Committing (registers the shard so the hash is reconstructable).
 - Downloading by hash to a file and verifying the bytes round-trip.
-- The handle-based polling model (`xet_op_poll` → `xet_op_take_*`) and the
-  ownership rule that **every handle is freed exactly once** — in particular an
-  op is always freed with `xet_op_free`, even after a `xet_op_take_*`.
+- The blocking call model: transfer functions (`xet_file_upload_finalize`,
+  `xet_upload_commit_commit`, `xet_file_download_group_finish`, ...) block the
+  calling thread until the operation completes. Live progress is read from a
+  second thread via the `xet_*_progress` functions (see the C example).
 
 The Go and Swift versions also show the small amount of glue each ecosystem
 needs: cgo pointer-pinning for the auth-config struct, and a Clang module map to

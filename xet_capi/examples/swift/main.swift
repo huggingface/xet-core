@@ -26,22 +26,6 @@ func check(_ status: XetStatus, _ ctx: String, _ err: OpaquePointer?) throws {
     if status != XetStatus_XetOk { throw fail(ctx, err) }
 }
 
-// Poll `op` to completion; throw on failure. Does not free the op.
-func drive(_ op: OpaquePointer?) throws {
-    while true {
-        switch xet_op_poll(op) {
-        case XetPollState_XetPollPending:
-            usleep(20_000)  // 20ms
-        case XetPollState_XetPollError:
-            var err: OpaquePointer?
-            _ = xet_op_take_error(op, &err)
-            throw fail("operation failed", err)
-        default:
-            return
-        }
-    }
-}
-
 func run(repo: String, token: String) throws {
     print("hf_xet Swift example (version \(String(cString: xet_version())))")
     print("repo: \(repo) (\(repoType))\n")
@@ -90,26 +74,16 @@ func run(repo: String, token: String) throws {
     }
     defer { xet_file_upload_free(upload) }
 
-    var op: OpaquePointer?
-    try check(xet_file_upload_finalize_start(upload, &op, &err), "xet_file_upload_finalize_start", err)
-    defer { xet_op_free(op) }
-    try drive(op)
-
     var meta: OpaquePointer?
-    try check(xet_op_take_file_metadata(op, &meta, &err), "xet_op_take_file_metadata", err)
+    try check(xet_file_upload_finalize(upload, &meta, &err), "xet_file_upload_finalize", err)
     defer { xet_file_metadata_free(meta) }
 
     let hash = String(cString: xet_file_metadata_hash(meta))
     let size = xet_file_metadata_file_size(meta)
     print("uploaded \(payload.count) bytes\n  hash: \(hash)\n  size: \(size)")
 
-    var commitOp: OpaquePointer?
-    try check(xet_upload_commit_commit_start(commit, &commitOp, &err), "xet_upload_commit_commit_start", err)
-    defer { xet_op_free(commitOp) }
-    try drive(commitOp)
-
     var report: OpaquePointer?
-    try check(xet_op_take_commit_report(commitOp, &report, &err), "xet_op_take_commit_report", err)
+    try check(xet_upload_commit_commit(commit, &report, &err), "xet_upload_commit_commit", err)
     defer { xet_commit_report_free(report) }
     var metrics = XetDedupMetrics()
     if xet_commit_report_dedup(report, &metrics) == XetStatus_XetOk {
@@ -134,13 +108,8 @@ func run(repo: String, token: String) throws {
               "xet_file_download_group_download_to_path", err)
     defer { xet_file_download_free(download) }
 
-    var dlOp: OpaquePointer?
-    try check(xet_file_download_group_finish_start(group, &dlOp, &err), "xet_file_download_group_finish_start", err)
-    defer { xet_op_free(dlOp) }
-    try drive(dlOp)
-
     var dlReport: OpaquePointer?
-    try check(xet_op_take_download_report(dlOp, &dlReport, &err), "xet_op_take_download_report", err)
+    try check(xet_file_download_group_finish(group, &dlReport, &err), "xet_file_download_group_finish", err)
     defer { xet_download_group_report_free(dlReport) }
 
     // ---- Verify ----
