@@ -103,9 +103,10 @@ typedef struct XetCommitReportHandle XetCommitReportHandle;
 typedef struct XetDownloadGroupReportHandle XetDownloadGroupReportHandle;
 
 /**
- * An active download stream (ordered or unordered). `next` requires `&mut`, so
- * the inner stream is guarded by a mutex to keep the handle usable across the
- * op worker thread. Free with [`xet_download_stream_free`].
+ * An active download stream (ordered or unordered). `next` requires `&mut`,
+ * so the inner stream is guarded by a mutex; calls on the handle from other
+ * threads (progress/cancel) wait for the in-flight `next` to return. Free
+ * with [`xet_download_stream_free`].
  */
 typedef struct XetDownloadStream XetDownloadStream;
 
@@ -366,16 +367,25 @@ XetStatus xet_download_stream_group_download_unordered_stream(const XetDownloadS
                                                               XetError **err);
 
 /**
- * Start fetching the next chunk. Poll the returned op:
- * - ordered streams: consume with `xet_op_take_bytes` (NULL = EOF).
- * - unordered streams: consume with `xet_op_take_chunk` (NULL = EOF).
+ * Fetch the next chunk, blocking until it is available. On success `*out` is
+ * a `XetBytes*` (free with `xet_bytes_free`), or NULL at end of stream.
+ *
+ * - Ordered streams: chunks arrive in file order; `*offset` is not written (`offset` may be NULL).
+ * - Unordered streams: `*offset` receives the chunk's byte offset in the file.
+ *
+ * Blocks the calling thread until the chunk arrives. The stream handle is
+ * internally serialized: [`xet_download_stream_progress`] and
+ * [`xet_download_stream_cancel`] called from other threads will wait until
+ * the in-flight `xet_download_stream_next` returns.
  *
  * # Safety
- * `stream`/`out`/`err` valid pointers.
+ * `stream` valid; `offset` null or a valid writable pointer; `out`/`err`
+ * valid pointers.
  */
-XetStatus xet_download_stream_next_start(const XetDownloadStream *stream,
-                                         XetOp **out,
-                                         XetError **err);
+XetStatus xet_download_stream_next(const XetDownloadStream *stream,
+                                   uint64_t *offset,
+                                   XetBytes **out,
+                                   XetError **err);
 
 /**
  * # Safety

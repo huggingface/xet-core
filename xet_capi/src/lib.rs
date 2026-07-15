@@ -25,7 +25,7 @@ pub use download_file::{
 pub use download_stream::{
     XetDownloadStream, XetDownloadStreamGroup, xet_download_stream_cancel, xet_download_stream_free,
     xet_download_stream_group_download_stream, xet_download_stream_group_download_unordered_stream,
-    xet_download_stream_group_free, xet_download_stream_next_start, xet_download_stream_progress,
+    xet_download_stream_group_free, xet_download_stream_next, xet_download_stream_progress,
     xet_download_stream_task_id,
 };
 pub use error::{XetError, XetStatus, xet_error_code, xet_error_free, xet_error_message, xet_test_make_auth_error};
@@ -43,8 +43,8 @@ pub use reports::{
     xet_download_group_report_at, xet_download_group_report_count, xet_download_group_report_free,
 };
 pub use session::{
-    XetAuthConfig, XetHeader, XetSession, xet_session_free, xet_session_new,
-    xet_session_new_download_stream_group, xet_session_new_file_download_group, xet_session_new_upload_commit,
+    XetAuthConfig, XetHeader, XetSession, xet_session_free, xet_session_new, xet_session_new_download_stream_group,
+    xet_session_new_file_download_group, xet_session_new_upload_commit,
 };
 pub use upload::{
     XetFileMetadataHandle, XetFileUpload, XetUploadCommit, xet_file_metadata_file_size, xet_file_metadata_free,

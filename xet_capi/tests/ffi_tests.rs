@@ -133,7 +133,7 @@ fn download_stream_symbols_link() {
     let _f: [*const (); 5] = [
         xet_capi::xet_download_stream_group_download_stream as *const (),
         xet_capi::xet_download_stream_group_download_unordered_stream as *const (),
-        xet_capi::xet_download_stream_next_start as *const (),
+        xet_capi::xet_download_stream_next as *const (),
         xet_capi::xet_download_stream_cancel as *const (),
         xet_capi::xet_download_stream_free as *const (),
     ];

@@ -5,10 +5,10 @@ use xet::xet_session::{
     XetUnorderedDownloadStream as InnerUnordered,
 };
 
+use crate::bytes::XetBytes;
 use crate::error::{XetError, XetStatus, ffi_guard, set_err, set_xet_err};
 use crate::file_info::XetFileInfo;
 use crate::handle::{free_handle, into_handle};
-use crate::op::{OpOutput, XetOp, spawn_op};
 use crate::reports::XetProgress;
 
 /// A stream-download group. Free with [`xet_download_stream_group_free`].
@@ -21,9 +21,10 @@ impl XetDownloadStreamGroup {
     }
 }
 
-/// An active download stream (ordered or unordered). `next` requires `&mut`, so
-/// the inner stream is guarded by a mutex to keep the handle usable across the
-/// op worker thread. Free with [`xet_download_stream_free`].
+/// An active download stream (ordered or unordered). `next` requires `&mut`,
+/// so the inner stream is guarded by a mutex; calls on the handle from other
+/// threads (progress/cancel) wait for the in-flight `next` to return. Free
+/// with [`xet_download_stream_free`].
 pub struct XetDownloadStream {
     ordered: Option<Arc<Mutex<InnerStream>>>,
     unordered: Option<Arc<Mutex<InnerUnordered>>>,
@@ -93,16 +94,25 @@ pub unsafe extern "C" fn xet_download_stream_group_download_unordered_stream(
     })
 }
 
-/// Start fetching the next chunk. Poll the returned op:
-/// - ordered streams: consume with `xet_op_take_bytes` (NULL = EOF).
-/// - unordered streams: consume with `xet_op_take_chunk` (NULL = EOF).
+/// Fetch the next chunk, blocking until it is available. On success `*out` is
+/// a `XetBytes*` (free with `xet_bytes_free`), or NULL at end of stream.
+///
+/// - Ordered streams: chunks arrive in file order; `*offset` is not written (`offset` may be NULL).
+/// - Unordered streams: `*offset` receives the chunk's byte offset in the file.
+///
+/// Blocks the calling thread until the chunk arrives. The stream handle is
+/// internally serialized: [`xet_download_stream_progress`] and
+/// [`xet_download_stream_cancel`] called from other threads will wait until
+/// the in-flight `xet_download_stream_next` returns.
 ///
 /// # Safety
-/// `stream`/`out`/`err` valid pointers.
+/// `stream` valid; `offset` null or a valid writable pointer; `out`/`err`
+/// valid pointers.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn xet_download_stream_next_start(
+pub unsafe extern "C" fn xet_download_stream_next(
     stream: *const XetDownloadStream,
-    out: *mut *mut XetOp,
+    offset: *mut u64,
+    out: *mut *mut XetBytes,
     err: *mut *mut XetError,
 ) -> XetStatus {
     ffi_guard(err, || {
@@ -110,25 +120,37 @@ pub unsafe extern "C" fn xet_download_stream_next_start(
             return set_err(err, XetError::new(XetStatus::XetErrInvalidArg, "null stream"));
         };
         if let Some(ordered) = &stream.ordered {
-            let s = Arc::clone(ordered);
-            unsafe {
-                *out = spawn_op(move || {
-                    let mut guard = s.lock().unwrap();
-                    guard.blocking_next().map(OpOutput::Bytes)
-                })
-            };
+            match ordered.lock().unwrap().blocking_next() {
+                Ok(opt) => {
+                    if !out.is_null() {
+                        unsafe { *out = opt.map_or(std::ptr::null_mut(), |b| into_handle(XetBytes::new(b))) };
+                    }
+                    XetStatus::XetOk
+                },
+                Err(e) => set_xet_err(err, &e),
+            }
         } else if let Some(unordered) = &stream.unordered {
-            let s = Arc::clone(unordered);
-            unsafe {
-                *out = spawn_op(move || {
-                    let mut guard = s.lock().unwrap();
-                    guard.blocking_next().map(OpOutput::Chunk)
-                })
-            };
+            match unordered.lock().unwrap().blocking_next() {
+                Ok(Some((off, b))) => {
+                    if !offset.is_null() {
+                        unsafe { *offset = off };
+                    }
+                    if !out.is_null() {
+                        unsafe { *out = into_handle(XetBytes::new(b)) };
+                    }
+                    XetStatus::XetOk
+                },
+                Ok(None) => {
+                    if !out.is_null() {
+                        unsafe { *out = std::ptr::null_mut() };
+                    }
+                    XetStatus::XetOk
+                },
+                Err(e) => set_xet_err(err, &e),
+            }
         } else {
-            return set_err(err, XetError::new(XetStatus::XetErr, "empty stream handle"));
+            set_err(err, XetError::new(XetStatus::XetErr, "empty stream handle"))
         }
-        XetStatus::XetOk
     })
 }
 
