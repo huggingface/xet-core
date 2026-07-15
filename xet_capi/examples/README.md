@@ -14,6 +14,7 @@ only the `hf_xet` C API (`xet_capi/include/hf_xet.h`):
 | C++      | [`cpp/`](cpp/)   | `make run`     |
 | Go (cgo) | [`go/`](go/)     | `go run .`     |
 | Swift    | [`swift/`](swift/) | `./build.sh run` |
+| Zig      | [`zig/`](zig/)   | `zig build run` |
 
 ## Prerequisites
 
@@ -54,4 +55,5 @@ only the `hf_xet` C API (`xet_capi/include/hf_xet.h`):
 
 The Go and Swift versions also show the small amount of glue each ecosystem
 needs: cgo pointer-pinning for the auth-config struct, and a Clang module map to
-import the C header into Swift.
+import the C header into Swift. The Zig version uses `@cImport` to translate the
+header directly, with the include and library paths wired up in `build.zig`.
