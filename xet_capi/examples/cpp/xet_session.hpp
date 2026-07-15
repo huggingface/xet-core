@@ -3,14 +3,12 @@
 // destructor; fallible C calls throw xet::Exception on failure.
 #pragma once
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -119,7 +117,8 @@ private:
     const XetFileMetadataHandle* h_;
 };
 
-// Owned metadata (from Op::take_file_metadata). Frees the handle in dtor.
+// Owned metadata (from FileUpload::finalize / StreamUpload::finish). Frees
+// the handle in dtor.
 class FileMetadata {
 public:
     explicit FileMetadata(XetFileMetadataHandle* raw) : h_(raw) {}
@@ -179,72 +178,6 @@ private:
     Handle<XetDownloadGroupReportHandle, xet_download_group_report_free> r_;
 };
 
-// A spawned, poll-able operation. Always freed exactly once in its dtor,
-// whether or not a take_* succeeded (matches the C ownership contract).
-class Op {
-public:
-    explicit Op(XetOp* raw) : op_(raw) {}
-
-    XetPollState poll() { return xet_op_poll(op_.get()); }
-
-    // Poll until Ready or Error; throw xet::Exception on Error.
-    void wait(std::chrono::milliseconds interval = std::chrono::milliseconds(20)) {
-        XetPollState state;
-        while ((state = xet_op_poll(op_.get())) == XetPollState_XetPollPending) {
-            std::this_thread::sleep_for(interval);
-        }
-        if (state == XetPollState_XetPollError) {
-            XetError* err = nullptr;
-            xet_op_take_error(op_.get(), &err);
-            check(XetStatus_XetErr, "operation failed", err);
-        }
-    }
-
-    FileMetadata take_file_metadata() {
-        XetFileMetadataHandle* raw = nullptr;
-        XetError* err = nullptr;
-        check(xet_op_take_file_metadata(op_.get(), &raw, &err), "xet_op_take_file_metadata", err);
-        return FileMetadata(raw);
-    }
-    CommitReport take_commit_report() {
-        XetCommitReportHandle* raw = nullptr;
-        XetError* err = nullptr;
-        check(xet_op_take_commit_report(op_.get(), &raw, &err), "xet_op_take_commit_report", err);
-        return CommitReport(raw);
-    }
-    DownloadGroupReport take_download_report() {
-        XetDownloadGroupReportHandle* raw = nullptr;
-        XetError* err = nullptr;
-        check(xet_op_take_download_report(op_.get(), &raw, &err), "xet_op_take_download_report", err);
-        return DownloadGroupReport(raw);
-    }
-    void take_void() {
-        XetError* err = nullptr;
-        check(xet_op_take_void(op_.get(), &err), "xet_op_take_void", err);
-    }
-    // Caller must poll/wait() the op to Ready first. nullopt at stream EOF.
-    std::optional<Bytes> take_bytes() {
-        XetBytes* raw = nullptr;
-        XetError* err = nullptr;
-        check(xet_op_take_bytes(op_.get(), &raw, &err), "xet_op_take_bytes", err);
-        if (!raw) return std::nullopt;
-        return Bytes(raw);
-    }
-    // Caller must poll/wait() the op to Ready first. nullopt at stream EOF;
-    // otherwise {offset, chunk}.
-    std::optional<std::pair<std::uint64_t, Bytes>> take_chunk() {
-        std::uint64_t offset = 0;
-        XetBytes* raw = nullptr;
-        XetError* err = nullptr;
-        check(xet_op_take_chunk(op_.get(), &offset, &raw, &err), "xet_op_take_chunk", err);
-        if (!raw) return std::nullopt;
-        return std::make_pair(offset, Bytes(raw));
-    }
-
-private:
-    Handle<XetOp, xet_op_free> op_;
-};
-
 // Builder for XetAuthConfig. Owns its strings and header array; c_config()
 // returns a XetAuthConfig borrowing this object's storage — it must not
 // outlive the AuthConfig (the Session::new_* builders consume it immediately).
@@ -302,11 +235,12 @@ private:
 class FileUpload {
 public:
     explicit FileUpload(XetFileUpload* raw) : u_(raw) {}
-    Op finalize_start() {
-        XetOp* raw = nullptr;
+    // Blocks until finalize completes.
+    FileMetadata finalize() {
+        XetFileMetadataHandle* raw = nullptr;
         XetError* err = nullptr;
-        check(xet_file_upload_finalize_start(u_.get(), &raw, &err), "xet_file_upload_finalize_start", err);
-        return Op(raw);
+        check(xet_file_upload_finalize(u_.get(), &raw, &err), "xet_file_upload_finalize", err);
+        return FileMetadata(raw);
     }
 
 private:
@@ -317,18 +251,17 @@ private:
 class StreamUpload {
 public:
     explicit StreamUpload(XetStreamUpload* raw) : su_(raw) {}
-    Op write_start(const std::uint8_t* data, std::size_t len) {
-        XetOp* raw = nullptr;
+    // Blocks until the write is ingested.
+    void write(const std::uint8_t* data, std::size_t len) {
         XetError* err = nullptr;
-        check(xet_stream_upload_write_start(su_.get(), data, len, &raw, &err),
-              "xet_stream_upload_write_start", err);
-        return Op(raw);
+        check(xet_stream_upload_write(su_.get(), data, len, &err), "xet_stream_upload_write", err);
     }
-    Op finish_start() {
-        XetOp* raw = nullptr;
+    // Blocks until the stream is finalized.
+    FileMetadata finish() {
+        XetFileMetadataHandle* raw = nullptr;
         XetError* err = nullptr;
-        check(xet_stream_upload_finish_start(su_.get(), &raw, &err), "xet_stream_upload_finish_start", err);
-        return Op(raw);
+        check(xet_stream_upload_finish(su_.get(), &raw, &err), "xet_stream_upload_finish", err);
+        return FileMetadata(raw);
     }
 
 private:
@@ -363,11 +296,13 @@ public:
               "xet_upload_commit_upload_stream", err);
         return StreamUpload(raw);
     }
-    Op commit_start() {
-        XetOp* raw = nullptr;
+    // Blocks until the commit completes. Poll progress()/abort() from another
+    // thread for live updates or cancellation.
+    CommitReport commit() {
+        XetCommitReportHandle* raw = nullptr;
         XetError* err = nullptr;
-        check(xet_upload_commit_commit_start(c_.get(), &raw, &err), "xet_upload_commit_commit_start", err);
-        return Op(raw);
+        check(xet_upload_commit_commit(c_.get(), &raw, &err), "xet_upload_commit_commit", err);
+        return CommitReport(raw);
     }
     XetProgress progress() const {
         XetProgress p{};
@@ -404,12 +339,13 @@ public:
               "xet_file_download_group_download_to_path", err);
         return FileDownload(raw);
     }
-    Op finish_start() {
-        XetOp* raw = nullptr;
+    // Blocks until all queued downloads complete. Poll progress()/abort()
+    // from another thread for live updates or cancellation.
+    DownloadGroupReport finish() {
+        XetDownloadGroupReportHandle* raw = nullptr;
         XetError* err = nullptr;
-        check(xet_file_download_group_finish_start(g_.get(), &raw, &err),
-              "xet_file_download_group_finish_start", err);
-        return Op(raw);
+        check(xet_file_download_group_finish(g_.get(), &raw, &err), "xet_file_download_group_finish", err);
+        return DownloadGroupReport(raw);
     }
     XetProgress progress() const {
         XetProgress p{};
@@ -429,12 +365,28 @@ private:
 class DownloadStream {
 public:
     explicit DownloadStream(XetDownloadStream* raw) : s_(raw) {}
-    Op next_start() {
-        XetOp* raw = nullptr;
+    // Ordered streams: blocks until the next in-order chunk arrives.
+    // nullopt at end of stream.
+    std::optional<Bytes> next() {
+        XetBytes* raw = nullptr;
         XetError* err = nullptr;
-        check(xet_download_stream_next_start(s_.get(), &raw, &err), "xet_download_stream_next_start", err);
-        return Op(raw);
+        check(xet_download_stream_next(s_.get(), nullptr, &raw, &err), "xet_download_stream_next", err);
+        if (!raw) return std::nullopt;
+        return Bytes(raw);
     }
+    // Unordered streams: blocks until the next chunk arrives; returns
+    // {file offset, chunk}. nullopt at end of stream.
+    std::optional<std::pair<std::uint64_t, Bytes>> next_chunk() {
+        std::uint64_t offset = 0;
+        XetBytes* raw = nullptr;
+        XetError* err = nullptr;
+        check(xet_download_stream_next(s_.get(), &offset, &raw, &err), "xet_download_stream_next", err);
+        if (!raw) return std::nullopt;
+        return std::make_pair(offset, Bytes(raw));
+    }
+    // The C API serializes calls on this stream handle internally: a
+    // progress()/cancel() call from another thread waits until an
+    // in-flight next()/next_chunk() call returns.
     XetProgress progress() const {
         XetProgress p{};
         check(xet_download_stream_progress(s_.get(), &p), "xet_download_stream_progress");

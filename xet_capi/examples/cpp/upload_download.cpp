@@ -46,17 +46,13 @@ int run(const std::string& repo, const std::string& hf_token) {
 
     auto upload = commit.upload_bytes(payload.data(), payload.size(), "random.bin",
                                       XetSha256Policy_XetSha256Compute);
-    auto finalize_op = upload.finalize_start();
-    finalize_op.wait();
-    auto meta = finalize_op.take_file_metadata();
+    auto meta = upload.finalize();
 
     const std::string hash = meta.hash();
     const std::uint64_t size = meta.file_size();
     std::cout << "uploaded " << payload.size() << " bytes\n  hash: " << hash << "\n  size: " << size << "\n";
 
-    auto commit_op = commit.commit_start();
-    commit_op.wait();
-    auto report = commit_op.take_commit_report();
+    auto report = commit.commit();
     const XetDedupMetrics metrics = report.dedup();
     std::cout << "  committed: " << metrics.new_bytes << " new bytes, " << metrics.deduped_bytes
               << " deduped bytes\n\n";
@@ -70,9 +66,7 @@ int run(const std::string& repo, const std::string& hf_token) {
     const std::string dest = "downloaded.bin";
     group.download_to_path(file_info, dest.c_str());
 
-    auto dl_op = group.finish_start();
-    dl_op.wait();
-    auto dl_report = dl_op.take_download_report();
+    auto dl_report = group.finish();
     (void)dl_report;
 
     // ---- Verify ----
