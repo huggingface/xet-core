@@ -7,6 +7,7 @@ members = [
     "xet_client",
     "xet_data",
     "xet_pkg",
+    "xet_capi",
 
     # Top-level crates (not published as packages)
     "git_xet",
