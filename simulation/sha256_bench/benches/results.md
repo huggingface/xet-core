@@ -18,8 +18,13 @@ for a ≥3s budget per case, and reports the best (min-time) throughput.
 
 ## Results
 
-Hardware: x86_64 with the SHA-NI extension, single-threaded. Build: `--release`
-(`opt-level=3`, `lto=true`, mirroring the workspace release profile).
+Environment:
+
+- CPU: AMD EPYC 9R14 (x86_64, has the SHA-NI extension), 16 vCPU
+- OS: Ubuntu 24.04.4 LTS, kernel Linux 6.17.0-1019-aws (AWS EC2)
+- Toolchain: rustc 1.95.0
+- Build: `--release` (`opt-level=3`, `lto=true`, mirroring the workspace release
+  profile), single-threaded
 
 | Size | 0.10.9 (`asm`) best/op | 0.11.0 best/op | 0.10 GiB/s | 0.11 GiB/s |    Δ |
 | ---- | ---------------------: | -------------: | ---------: | ---------: | ---: |
