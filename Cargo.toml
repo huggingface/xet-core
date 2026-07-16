@@ -14,6 +14,7 @@ members = [
 ]
 exclude = [
     "simulation/chunk_cache_bench",
+    "simulation/sha256_bench",
     "hf_xet",
     "wasm/hf_xet_wasm",
     "wasm/hf_xet_thin_wasm",
