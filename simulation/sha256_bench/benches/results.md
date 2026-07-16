@@ -18,6 +18,8 @@ for a ≥3s budget per case, and reports the best (min-time) throughput.
 
 ## Results
 
+### x86_64 (SHA-NI)
+
 Environment:
 
 - CPU: AMD EPYC 9R14 (x86_64, has the SHA-NI extension), 16 vCPU
@@ -36,17 +38,39 @@ Environment:
 
 (Δ = 0.11 best throughput relative to 0.10-`asm`; positive means 0.11 faster.)
 
+### aarch64 (Apple Silicon)
+
+Environment:
+
+- CPU: Apple M2 Max (aarch64, has the FEAT_SHA256 crypto extension), 12 cores
+- OS: macOS 26.5.2
+- Toolchain: rustc 1.95.0
+- Build: `--release` (`opt-level=3`, `lto=true`, mirroring the workspace release
+  profile), single-threaded
+
+| Size | 0.10.9 (`asm`) best/op | 0.11.0 best/op | 0.10 GiB/s | 0.11 GiB/s |     Δ |
+| ---- | ---------------------: | -------------: | ---------: | ---------: | ----: |
+| 1KB  |                 333 ns |         333 ns |      2.864 |      2.864 |  0.0% |
+| 50KB |               21.12 µs |       21.12 µs |      2.257 |      2.257 |  0.0% |
+| 1MB  |              434.83 µs |      434.79 µs |      2.246 |      2.246 |  0.0% |
+| 50MB |               22.01 ms |       21.79 ms |      2.219 |      2.241 | +1.0% |
+| 1GB  |              471.54 ms |      454.12 ms |      2.121 |      2.202 | +3.8% |
+
 ## Takeaway
 
-No meaningful difference. Steady-state throughput is identical (~1.68 GiB/s) for
-all sizes ≥50KB; the sub-µs 1KB case is dominated by fixed per-call overhead, not
-the compression loop.
+No regression on either architecture. On x86_64 steady-state throughput is
+identical (~1.68 GiB/s) for all sizes ≥50KB; on the M2 Max, 0.11 matches
+0.10-`asm` at small sizes and is slightly faster at 50MB (+1.0%) and 1GB
+(+3.8%). The sub-µs 1KB case is dominated by fixed per-call overhead, not the
+compression loop.
 
-**Why:** on x86_64 with SHA-NI, `sha2`'s pure-Rust backend already dispatches to
-the hardware SHA extensions at runtime (via `cpufeatures`) in both versions. The
-`asm` feature (hand-written `sha2-asm`) competes against an already
-hardware-accelerated path, so removing it in 0.11 costs nothing here.
+**Why:** on both x86_64 with SHA-NI and aarch64 with the crypto extensions,
+`sha2`'s pure-Rust backend already dispatches to the hardware SHA instructions
+at runtime (via `cpufeatures`) in both versions. The `asm` feature
+(hand-written `sha2-asm`) competes against an already hardware-accelerated
+path, so removing it in 0.11 costs nothing here.
 
-**Caveat:** this is specific to SHA-NI-capable x86_64. On CPUs without SHA
-extensions results could differ, though 0.11's pure-Rust backend also covers the
-aarch64 crypto path, so the `asm` feature's remaining value is narrow.
+**Caveat:** both machines measured have hardware SHA extensions. On CPUs
+without them results could differ, but such hardware is rare among xet-core
+targets and the software fallback exists in both versions, so the `asm`
+feature's remaining value is narrow.
