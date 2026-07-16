@@ -4,10 +4,11 @@
 //! for computing reconstruction ranges from file segment info, merging adjacent
 //! ranges, and encoding/decoding V2 fetch URLs.
 
+use std::sync::LazyLock;
+
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use more_asserts::{assert_ge, assert_gt, debug_assert_lt};
-use std::sync::LazyLock;
 use tokio::time::{Duration, Instant};
 use xet_core_structures::MerkleHashMap;
 use xet_core_structures::merklehash::MerkleHash;
