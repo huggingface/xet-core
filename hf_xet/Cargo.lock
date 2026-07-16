@@ -975,7 +975,7 @@ dependencies = [
 
 [[package]]
 name = "hf_xet"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "async-trait",
  "hf-xet",
