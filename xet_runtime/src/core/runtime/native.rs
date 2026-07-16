@@ -418,7 +418,10 @@ impl XetRuntime {
             )));
         }
         match &self.backend {
-            RuntimeBackend::External { .. } => Ok(fut.await),
+            // Box to heap-erase the future's deep nested type instead of inlining it into
+            // this state machine, which otherwise propagates into callers and can overflow
+            // rustc's type-layout query-depth limit. OwnedThreadPool already erases via `spawn`.
+            RuntimeBackend::External { .. } => Ok(Box::pin(fut).await),
             RuntimeBackend::OwnedThreadPool { .. } => self.bridge_to_owned(task_name, fut).await,
         }
     }
