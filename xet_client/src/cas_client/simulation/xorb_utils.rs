@@ -7,6 +7,7 @@
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use more_asserts::{assert_ge, assert_gt, debug_assert_lt};
+use std::sync::LazyLock;
 use tokio::time::{Duration, Instant};
 use xet_core_structures::MerkleHashMap;
 use xet_core_structures::merklehash::MerkleHash;
@@ -16,15 +17,12 @@ use xet_core_structures::xorb_object::XorbObject;
 use crate::cas_types::{ChunkRange, FileRange, HttpRange, XorbRangeDescriptor, XorbReconstructionTerm};
 use crate::error::{ClientError, Result};
 
-lazy_static::lazy_static! {
-    /// Reference instant for URL timestamps. Initialized far in the past to allow
-    /// testing timestamps that are earlier in the current process lifetime.
-    pub(crate) static ref REFERENCE_INSTANT: Instant = {
-        let now = Instant::now();
-        now.checked_sub(Duration::from_secs(365 * 24 * 60 * 60))
-            .unwrap_or(now)
-    };
-}
+/// Reference instant for URL timestamps. Initialized far in the past to allow
+/// testing timestamps that are earlier in the current process lifetime.
+pub(crate) static REFERENCE_INSTANT: LazyLock<Instant> = LazyLock::new(|| {
+    let now = Instant::now();
+    now.checked_sub(Duration::from_secs(365 * 24 * 60 * 60)).unwrap_or(now)
+});
 
 /// Whole seconds for an optional duration, rounding up. [`None`] maps to `0`.
 pub(crate) fn duration_to_expiration_secs_ceil(expiration: Option<Duration>) -> u64 {
