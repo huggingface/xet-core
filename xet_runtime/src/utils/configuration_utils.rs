@@ -1,4 +1,5 @@
 use std::str::FromStr;
+use std::sync::LazyLock;
 
 use tracing::{Level, event, info, warn};
 
@@ -169,16 +170,17 @@ macro_rules! test_configurable_constants {
         ref $name:ident : $type:ty = $value:expr;
     )+) => {
         $(
-            #[allow(unused_imports)]
-            use $crate::configuration_utils::*;
-
             $(#[$meta])*
-            pub static $name: std::sync::LazyLock<$type> = std::sync::LazyLock::new(|| {
+            pub static $name: ::std::sync::LazyLock<$type> = ::std::sync::LazyLock::new(|| {
                 #[cfg(debug_assertions)]
                 {
                     let default_value = $value;
-                    let maybe_env_value = std::env::var(concat!("HF_XET_",stringify!($name))).ok();
-                    <$type>::parse_config_value(stringify!($name), maybe_env_value, default_value)
+                    let maybe_env_value = ::std::env::var(concat!("HF_XET_", stringify!($name))).ok();
+                    <$type as $crate::configuration_utils::ParsableConfigValue>::parse_config_value(
+                        stringify!($name),
+                        maybe_env_value,
+                        default_value,
+                    )
                 }
                 #[cfg(not(debug_assertions))]
                 {
@@ -336,7 +338,7 @@ fn get_high_performance_flag() -> bool {
 /// To set the high performance mode to true, set either of the following environment variables to 1 or true:
 ///  - HF_XET_HIGH_PERFORMANCE
 ///  - HF_XET_HP
-pub static HIGH_PERFORMANCE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(get_high_performance_flag);
+pub static HIGH_PERFORMANCE: LazyLock<bool> = LazyLock::new(get_high_performance_flag);
 
 #[inline]
 pub fn is_high_performance() -> bool {
