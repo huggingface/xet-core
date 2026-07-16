@@ -28,7 +28,7 @@ pub struct XetFileDownload {
 /// call `xet_file_download_group_finish` to await all downloads.
 ///
 /// # Safety
-/// `group`/`file_info` valid handles; `dest_path` a valid C string; `out`/`err` valid.
+/// `group`/`file_info` valid handles; `dest_path` a valid C string; `out` non-null; `err` null or valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xet_file_download_group_download_to_path(
     group: *const XetFileDownloadGroup,
@@ -64,7 +64,7 @@ pub unsafe extern "C" fn xet_file_download_group_download_to_path(
 /// cancel.
 ///
 /// # Safety
-/// `group`/`out`/`err` valid pointers.
+/// `group`/`out` non-null; `err` null or valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xet_file_download_group_finish(
     group: *const XetFileDownloadGroup,
@@ -88,6 +88,9 @@ pub unsafe extern "C" fn xet_file_download_group_finish(
     })
 }
 
+/// Snapshot the group's aggregate download progress into `*out`. Callable
+/// from any thread, including while `xet_file_download_group_finish` blocks.
+///
 /// # Safety
 /// `group` valid; `out` a valid pointer to a `XetProgress`.
 #[unsafe(no_mangle)]
@@ -102,8 +105,12 @@ pub unsafe extern "C" fn xet_file_download_group_progress(
     XetStatus::XetOk
 }
 
+/// Cancel the group's remaining downloads; a blocked
+/// `xet_file_download_group_finish` returns with a cancelled error. Callable
+/// from any thread.
+///
 /// # Safety
-/// `group` valid; `err` valid.
+/// `group` valid; `err` null or valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xet_file_download_group_abort(
     group: *const XetFileDownloadGroup,

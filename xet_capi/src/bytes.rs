@@ -16,6 +16,10 @@ impl XetBytes {
     }
 }
 
+/// Returns a pointer to the buffer contents, valid until the `XetBytes` is
+/// freed. NULL if `b` is null. The data is NOT NUL-terminated; use
+/// [`xet_bytes_len`].
+///
 /// # Safety
 /// `b` must be null or a valid pointer to a live `XetBytes` produced by this crate.
 #[unsafe(no_mangle)]
@@ -26,6 +30,8 @@ pub unsafe extern "C" fn xet_bytes_data(b: *const XetBytes) -> *const c_uchar {
     }
 }
 
+/// Returns the buffer length in bytes, or 0 if `b` is null.
+///
 /// # Safety
 /// `b` must be null or a valid pointer to a live `XetBytes` produced by this crate.
 #[unsafe(no_mangle)]

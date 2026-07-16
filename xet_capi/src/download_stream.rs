@@ -30,8 +30,13 @@ pub struct XetDownloadStream {
     unordered: Option<Arc<Mutex<InnerUnordered>>>,
 }
 
+/// Open an ordered download stream for `file_info`; chunks are returned in
+/// file order via `xet_download_stream_next`. If `has_range`, only bytes
+/// `[range_start, range_end)` are streamed. Free with
+/// `xet_download_stream_free`.
+///
 /// # Safety
-/// `group`/`file_info` valid; `out`/`err` valid pointers.
+/// `group`/`file_info` valid; `out` non-null; `err` null or valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xet_download_stream_group_download_stream(
     group: *const XetDownloadStreamGroup,
@@ -62,8 +67,12 @@ pub unsafe extern "C" fn xet_download_stream_group_download_stream(
     })
 }
 
+/// Like [`xet_download_stream_group_download_stream`] but chunks may be
+/// delivered out of order (each `next` also reports the chunk's offset),
+/// allowing higher throughput.
+///
 /// # Safety
-/// `group`/`file_info` valid; `out`/`err` valid pointers.
+/// `group`/`file_info` valid; `out` non-null; `err` null or valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xet_download_stream_group_download_unordered_stream(
     group: *const XetDownloadStreamGroup,
@@ -106,8 +115,8 @@ pub unsafe extern "C" fn xet_download_stream_group_download_unordered_stream(
 /// the in-flight `xet_download_stream_next` returns.
 ///
 /// # Safety
-/// `stream` valid; `offset` null or a valid writable pointer; `out`/`err`
-/// valid pointers.
+/// `stream` valid; `offset` null or a valid writable pointer; `out` non-null;
+/// `err` null or valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xet_download_stream_next(
     stream: *const XetDownloadStream,
@@ -154,6 +163,10 @@ pub unsafe extern "C" fn xet_download_stream_next(
     })
 }
 
+/// Snapshot the stream's progress into `*out`. Returns `XetErr` if no
+/// progress is available yet. Waits for any in-flight
+/// `xet_download_stream_next` on the same stream to return first.
+///
 /// # Safety
 /// `stream` valid; `out` a valid pointer to a `XetProgress`.
 #[unsafe(no_mangle)]
@@ -180,6 +193,10 @@ pub unsafe extern "C" fn xet_download_stream_progress(
     }
 }
 
+/// Cancel the stream; subsequent `xet_download_stream_next` calls return a
+/// cancelled error. Waits for any in-flight `next` on the same stream to
+/// return first.
+///
 /// # Safety
 /// `stream` must be null or a valid handle.
 #[unsafe(no_mangle)]

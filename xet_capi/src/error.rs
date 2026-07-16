@@ -73,6 +73,9 @@ pub(crate) fn ffi_guard<F: FnOnce() -> XetStatus>(err: *mut *mut XetError, f: F)
     }
 }
 
+/// Returns the `XetStatus` the error was created with, or `XetErrInvalidArg`
+/// if `err` is null.
+///
 /// # Safety
 /// `err` must be null or a valid pointer to a live `XetError` produced by this crate.
 #[unsafe(no_mangle)]
@@ -83,6 +86,9 @@ pub unsafe extern "C" fn xet_error_code(err: *const XetError) -> XetStatus {
     unsafe { (*err).code }
 }
 
+/// Returns the error message as a NUL-terminated string, valid until the
+/// error is freed. NULL if `err` is null.
+///
 /// # Safety
 /// `err` must be null or a valid pointer to a live `XetError` produced by this crate.
 #[unsafe(no_mangle)]

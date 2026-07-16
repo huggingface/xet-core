@@ -55,9 +55,13 @@ impl XetFileMetadataHandle {
     }
 }
 
+/// Queue the file at `path` for upload; ingestion starts in the background.
+/// On success `*out` is a `XetFileUpload` (free with `xet_file_upload_free`);
+/// call `xet_file_upload_finalize` to complete it.
+///
 /// # Safety
 /// `commit` must be a valid handle; `path` a valid C string; `provided_sha256`
-/// null or valid; `out`/`err` valid pointers.
+/// null or valid; `out` non-null; `err` null or valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xet_upload_commit_upload_from_path(
     commit: *const XetUploadCommit,
@@ -88,9 +92,12 @@ pub unsafe extern "C" fn xet_upload_commit_upload_from_path(
     })
 }
 
+/// Like [`xet_upload_commit_upload_from_path`] but for an in-memory buffer;
+/// `data` is copied before returning. `name` (nullable) is a tracking name.
+///
 /// # Safety
 /// `commit` valid; `data`/`len` a valid buffer (data may be null iff len==0);
-/// `name`/`provided_sha256` null or valid; `out`/`err` valid.
+/// `name`/`provided_sha256` null or valid; `out` non-null; `err` null or valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xet_upload_commit_upload_bytes(
     commit: *const XetUploadCommit,
@@ -132,7 +139,7 @@ pub unsafe extern "C" fn xet_upload_commit_upload_bytes(
 /// Begin a streaming upload. `name` (nullable) is a tracking name.
 ///
 /// # Safety
-/// `commit` valid; `name`/`provided_sha256` null or valid; `out`/`err` valid.
+/// `commit` valid; `name`/`provided_sha256` null or valid; `out` non-null; `err` null or valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xet_upload_commit_upload_stream(
     commit: *const XetUploadCommit,
@@ -169,7 +176,7 @@ pub unsafe extern "C" fn xet_upload_commit_upload_stream(
 /// concurrently from another thread via [`xet_upload_commit_progress`].
 ///
 /// # Safety
-/// `upload` valid; `out`/`err` valid pointers.
+/// `upload` valid; `out` non-null; `err` null or valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xet_file_upload_finalize(
     upload: *const XetFileUpload,
@@ -201,7 +208,7 @@ pub unsafe extern "C" fn xet_file_upload_finalize(
 /// [`xet_upload_commit_abort`] may be called from another thread to cancel.
 ///
 /// # Safety
-/// `commit` valid; `out`/`err` valid pointers.
+/// `commit` valid; `out` non-null; `err` null or valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xet_upload_commit_commit(
     commit: *const XetUploadCommit,
@@ -224,6 +231,9 @@ pub unsafe extern "C" fn xet_upload_commit_commit(
     })
 }
 
+/// Snapshot the commit's aggregate upload progress into `*out`. Callable from
+/// any thread, including while a finalize or commit call blocks.
+///
 /// # Safety
 /// `commit` valid; `out` a valid pointer to a `XetProgress`.
 #[unsafe(no_mangle)]
@@ -238,8 +248,11 @@ pub unsafe extern "C" fn xet_upload_commit_progress(
     XetStatus::XetOk
 }
 
+/// Abort the commit; blocked finalize/commit calls on it return with a
+/// cancelled error. Callable from any thread.
+///
 /// # Safety
-/// `commit` valid; `err` valid.
+/// `commit` valid; `err` null or valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xet_upload_commit_abort(commit: *const XetUploadCommit, err: *mut *mut XetError) -> XetStatus {
     ffi_guard(err, || {
@@ -253,6 +266,9 @@ pub unsafe extern "C" fn xet_upload_commit_abort(commit: *const XetUploadCommit,
     })
 }
 
+/// Returns the file's xet content hash as NUL-terminated hex, valid until the
+/// handle (or the report that owns it) is freed. NULL if `m` is null.
+///
 /// # Safety
 /// `m` must be null or a valid metadata handle.
 #[unsafe(no_mangle)]
@@ -263,6 +279,8 @@ pub unsafe extern "C" fn xet_file_metadata_hash(m: *const XetFileMetadataHandle)
     }
 }
 
+/// Returns the file size in bytes, or 0 if `m` is null or the size is unknown.
+///
 /// # Safety
 /// `m` must be null or a valid metadata handle.
 #[unsafe(no_mangle)]

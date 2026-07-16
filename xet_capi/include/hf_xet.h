@@ -10,6 +10,22 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+
+/*
+ * Conventions:
+ *  - All handle types are opaque; free each with its `xet_*_free` function.
+ *    Every free function accepts NULL.
+ *  - Fallible functions return `XetStatus` and deliver results through `out`
+ *    parameters, written only on `XetOk`.
+ *  - The trailing `XetError **err` parameter may be NULL; when non-NULL and
+ *    the call fails, `*err` receives an error to inspect with
+ *    `xet_error_code` / `xet_error_message` and free with `xet_error_free`.
+ *  - Transfer functions block the calling thread until the operation
+ *    completes. Progress polling and abort/cancel may be called concurrently
+ *    from other threads. No callbacks cross the ABI in either direction.
+ *  - All strings are NUL-terminated UTF-8.
+ */
+
 /**
  * Status returned by every fallible `xet_*` function.
  */
@@ -132,8 +148,9 @@ typedef struct XetFileMetadataHandle XetFileMetadataHandle;
 typedef struct XetFileUpload XetFileUpload;
 
 /**
- * A Xet session. Owns no auth; produces per-commit / per-group auth via the
- * `xet_session_new_*` builders (added in a later task). Free with
+ * A Xet session: the root handle from which upload commits and download
+ * groups are created via the `xet_session_new_*` functions. Holds no auth
+ * itself; each commit/group gets its own from a `XetAuthConfig`. Free with
  * [`xet_session_free`].
  */
 typedef struct XetSession XetSession;
@@ -151,6 +168,10 @@ typedef struct XetUploadCommit XetUploadCommit;
 
 /**
  * Flat progress snapshot (all scalar; stable layout).
+ *
+ * `total_*` counts logical file bytes; `total_transfer_*` counts bytes
+ * scheduled for network transfer, which is smaller when deduplication
+ * avoids re-transferring data.
  */
 typedef struct {
     uint64_t total_bytes;
@@ -160,17 +181,27 @@ typedef struct {
 } XetProgress;
 
 /**
- * Flat dedup metrics snapshot.
+ * Deduplication metrics for a commit: how the ingested bytes/chunks split
+ * into deduplicated vs. new data, and what was actually uploaded.
  */
 typedef struct {
     uint64_t total_bytes;
     uint64_t deduped_bytes;
     uint64_t new_bytes;
+    /**
+     * Portion of `deduped_bytes` matched against data outside this commit.
+     */
     uint64_t deduped_bytes_by_global_dedup;
     uint64_t total_chunks;
     uint64_t deduped_chunks;
     uint64_t new_chunks;
+    /**
+     * Bytes of new content (xorbs) uploaded.
+     */
     uint64_t xorb_bytes_uploaded;
+    /**
+     * Bytes of shard metadata uploaded.
+     */
     uint64_t shard_bytes_uploaded;
     uint64_t total_bytes_uploaded;
 } XetDedupMetrics;
@@ -185,9 +216,6 @@ typedef struct {
      * Header name, e.g. `"Authorization"`.
      */
     const char *key;
-    /**
-     * Header value.
-     */
     const char *value;
 } XetHeader;
 
@@ -210,7 +238,8 @@ typedef struct {
      */
     int64_t token_expiry;
     /**
-     * URL to POST to for a token refresh. NULL disables refreshing.
+     * URL to POST to for a token refresh. Refreshing is enabled only when
+     * this is non-NULL and `refresh_headers` has at least one entry.
      */
     const char *token_refresh_url;
     /**
@@ -218,9 +247,6 @@ typedef struct {
      * refresh request. May be NULL iff `refresh_header_count == 0`.
      */
     const XetHeader *refresh_headers;
-    /**
-     * Number of entries in `refresh_headers`.
-     */
     uintptr_t refresh_header_count;
 } XetAuthConfig;
 
@@ -234,12 +260,18 @@ extern "C" {
 const char *xet_version(void);
 
 /**
+ * Returns a pointer to the buffer contents, valid until the `XetBytes` is
+ * freed. NULL if `b` is null. The data is NOT NUL-terminated; use
+ * [`xet_bytes_len`].
+ *
  * # Safety
  * `b` must be null or a valid pointer to a live `XetBytes` produced by this crate.
  */
 const unsigned char *xet_bytes_data(const XetBytes *b);
 
 /**
+ * Returns the buffer length in bytes, or 0 if `b` is null.
+ *
  * # Safety
  * `b` must be null or a valid pointer to a live `XetBytes` produced by this crate.
  */
@@ -260,7 +292,7 @@ XetBytes *xet_test_make_bytes(void);
  * call `xet_file_download_group_finish` to await all downloads.
  *
  * # Safety
- * `group`/`file_info` valid handles; `dest_path` a valid C string; `out`/`err` valid.
+ * `group`/`file_info` valid handles; `dest_path` a valid C string; `out` non-null; `err` null or valid.
  */
 XetStatus xet_file_download_group_download_to_path(const XetFileDownloadGroup *group,
                                                    const XetFileInfo *file_info,
@@ -279,21 +311,28 @@ XetStatus xet_file_download_group_download_to_path(const XetFileDownloadGroup *g
  * cancel.
  *
  * # Safety
- * `group`/`out`/`err` valid pointers.
+ * `group`/`out` non-null; `err` null or valid.
  */
 XetStatus xet_file_download_group_finish(const XetFileDownloadGroup *group,
                                          XetDownloadGroupReportHandle **out,
                                          XetError **err);
 
 /**
+ * Snapshot the group's aggregate download progress into `*out`. Callable
+ * from any thread, including while `xet_file_download_group_finish` blocks.
+ *
  * # Safety
  * `group` valid; `out` a valid pointer to a `XetProgress`.
  */
 XetStatus xet_file_download_group_progress(const XetFileDownloadGroup *group, XetProgress *out);
 
 /**
+ * Cancel the group's remaining downloads; a blocked
+ * `xet_file_download_group_finish` returns with a cancelled error. Callable
+ * from any thread.
+ *
  * # Safety
- * `group` valid; `err` valid.
+ * `group` valid; `err` null or valid.
  */
 XetStatus xet_file_download_group_abort(const XetFileDownloadGroup *group, XetError **err);
 
@@ -316,8 +355,13 @@ void xet_file_download_group_free(XetFileDownloadGroup *group);
 void xet_file_download_free(XetFileDownload *download);
 
 /**
+ * Open an ordered download stream for `file_info`; chunks are returned in
+ * file order via `xet_download_stream_next`. If `has_range`, only bytes
+ * `[range_start, range_end)` are streamed. Free with
+ * `xet_download_stream_free`.
+ *
  * # Safety
- * `group`/`file_info` valid; `out`/`err` valid pointers.
+ * `group`/`file_info` valid; `out` non-null; `err` null or valid.
  */
 XetStatus xet_download_stream_group_download_stream(const XetDownloadStreamGroup *group,
                                                     const XetFileInfo *file_info,
@@ -328,8 +372,12 @@ XetStatus xet_download_stream_group_download_stream(const XetDownloadStreamGroup
                                                     XetError **err);
 
 /**
+ * Like [`xet_download_stream_group_download_stream`] but chunks may be
+ * delivered out of order (each `next` also reports the chunk's offset),
+ * allowing higher throughput.
+ *
  * # Safety
- * `group`/`file_info` valid; `out`/`err` valid pointers.
+ * `group`/`file_info` valid; `out` non-null; `err` null or valid.
  */
 XetStatus xet_download_stream_group_download_unordered_stream(const XetDownloadStreamGroup *group,
                                                               const XetFileInfo *file_info,
@@ -352,8 +400,8 @@ XetStatus xet_download_stream_group_download_unordered_stream(const XetDownloadS
  * the in-flight `xet_download_stream_next` returns.
  *
  * # Safety
- * `stream` valid; `offset` null or a valid writable pointer; `out`/`err`
- * valid pointers.
+ * `stream` valid; `offset` null or a valid writable pointer; `out` non-null;
+ * `err` null or valid.
  */
 XetStatus xet_download_stream_next(const XetDownloadStream *stream,
                                    uint64_t *offset,
@@ -361,12 +409,20 @@ XetStatus xet_download_stream_next(const XetDownloadStream *stream,
                                    XetError **err);
 
 /**
+ * Snapshot the stream's progress into `*out`. Returns `XetErr` if no
+ * progress is available yet. Waits for any in-flight
+ * `xet_download_stream_next` on the same stream to return first.
+ *
  * # Safety
  * `stream` valid; `out` a valid pointer to a `XetProgress`.
  */
 XetStatus xet_download_stream_progress(const XetDownloadStream *stream, XetProgress *out);
 
 /**
+ * Cancel the stream; subsequent `xet_download_stream_next` calls return a
+ * cancelled error. Waits for any in-flight `next` on the same stream to
+ * return first.
+ *
  * # Safety
  * `stream` must be null or a valid handle.
  */
@@ -391,12 +447,18 @@ void xet_download_stream_group_free(XetDownloadStreamGroup *group);
 void xet_download_stream_free(XetDownloadStream *stream);
 
 /**
+ * Returns the `XetStatus` the error was created with, or `XetErrInvalidArg`
+ * if `err` is null.
+ *
  * # Safety
  * `err` must be null or a valid pointer to a live `XetError` produced by this crate.
  */
 XetStatus xet_error_code(const XetError *err);
 
 /**
+ * Returns the error message as a NUL-terminated string, valid until the
+ * error is freed. NULL if `err` is null.
+ *
  * # Safety
  * `err` must be null or a valid pointer to a live `XetError` produced by this crate.
  */
@@ -446,6 +508,8 @@ XetStatus xet_file_info_new_with_sha256(const char *hash,
 void xet_file_info_free(XetFileInfo *fi);
 
 /**
+ * Returns the number of files in the report, or 0 if `r` is null.
+ *
  * # Safety
  * `r` must be null or a valid commit-report handle.
  */
@@ -463,12 +527,16 @@ XetStatus xet_commit_report_file_at(const XetCommitReportHandle *r,
                                     const XetFileMetadataHandle **out);
 
 /**
+ * Copy the commit's dedup metrics into `*out`.
+ *
  * # Safety
  * `r` valid; `out` a valid pointer to a `XetDedupMetrics`.
  */
 XetStatus xet_commit_report_dedup(const XetCommitReportHandle *r, XetDedupMetrics *out);
 
 /**
+ * Copy the commit's final progress totals into `*out`.
+ *
  * # Safety
  * `r` valid; `out` a valid pointer to a `XetProgress`.
  */
@@ -480,6 +548,8 @@ XetStatus xet_commit_report_progress(const XetCommitReportHandle *r, XetProgress
 void xet_commit_report_free(XetCommitReportHandle *r);
 
 /**
+ * Returns the number of downloads in the report, or 0 if `r` is null.
+ *
  * # Safety
  * `r` must be null or a valid download-group-report handle.
  */
@@ -518,7 +588,7 @@ void xet_session_free(XetSession *session);
  * Build an upload commit with per-commit auth from `cfg`.
  *
  * # Safety
- * `session`/`cfg` valid handles/pointers; `out`/`err` valid pointers.
+ * `session`/`cfg` valid handles/pointers; `out` non-null; `err` null or valid.
  */
 XetStatus xet_session_new_upload_commit(const XetSession *session,
                                         const XetAuthConfig *cfg,
@@ -529,7 +599,7 @@ XetStatus xet_session_new_upload_commit(const XetSession *session,
  * Build a file-download group with per-group auth from `cfg`.
  *
  * # Safety
- * `session`/`cfg` valid; `out`/`err` valid pointers.
+ * `session`/`cfg` valid; `out` non-null; `err` null or valid.
  */
 XetStatus xet_session_new_file_download_group(const XetSession *session,
                                               const XetAuthConfig *cfg,
@@ -540,7 +610,7 @@ XetStatus xet_session_new_file_download_group(const XetSession *session,
  * Build a download-stream group with per-group auth from `cfg`.
  *
  * # Safety
- * `session`/`cfg` valid; `out`/`err` valid pointers.
+ * `session`/`cfg` valid; `out` non-null; `err` null or valid.
  */
 XetStatus xet_session_new_download_stream_group(const XetSession *session,
                                                 const XetAuthConfig *cfg,
@@ -548,9 +618,13 @@ XetStatus xet_session_new_download_stream_group(const XetSession *session,
                                                 XetError **err);
 
 /**
+ * Queue the file at `path` for upload; ingestion starts in the background.
+ * On success `*out` is a `XetFileUpload` (free with `xet_file_upload_free`);
+ * call `xet_file_upload_finalize` to complete it.
+ *
  * # Safety
  * `commit` must be a valid handle; `path` a valid C string; `provided_sha256`
- * null or valid; `out`/`err` valid pointers.
+ * null or valid; `out` non-null; `err` null or valid.
  */
 XetStatus xet_upload_commit_upload_from_path(const XetUploadCommit *commit,
                                              const char *path,
@@ -560,9 +634,12 @@ XetStatus xet_upload_commit_upload_from_path(const XetUploadCommit *commit,
                                              XetError **err);
 
 /**
+ * Like [`xet_upload_commit_upload_from_path`] but for an in-memory buffer;
+ * `data` is copied before returning. `name` (nullable) is a tracking name.
+ *
  * # Safety
  * `commit` valid; `data`/`len` a valid buffer (data may be null iff len==0);
- * `name`/`provided_sha256` null or valid; `out`/`err` valid.
+ * `name`/`provided_sha256` null or valid; `out` non-null; `err` null or valid.
  */
 XetStatus xet_upload_commit_upload_bytes(const XetUploadCommit *commit,
                                          const uint8_t *data,
@@ -577,7 +654,7 @@ XetStatus xet_upload_commit_upload_bytes(const XetUploadCommit *commit,
  * Begin a streaming upload. `name` (nullable) is a tracking name.
  *
  * # Safety
- * `commit` valid; `name`/`provided_sha256` null or valid; `out`/`err` valid.
+ * `commit` valid; `name`/`provided_sha256` null or valid; `out` non-null; `err` null or valid.
  */
 XetStatus xet_upload_commit_upload_stream(const XetUploadCommit *commit,
                                           const char *name,
@@ -595,7 +672,7 @@ XetStatus xet_upload_commit_upload_stream(const XetUploadCommit *commit,
  * concurrently from another thread via [`xet_upload_commit_progress`].
  *
  * # Safety
- * `upload` valid; `out`/`err` valid pointers.
+ * `upload` valid; `out` non-null; `err` null or valid.
  */
 XetStatus xet_file_upload_finalize(const XetFileUpload *upload,
                                    XetFileMetadataHandle **out,
@@ -611,31 +688,42 @@ XetStatus xet_file_upload_finalize(const XetFileUpload *upload,
  * [`xet_upload_commit_abort`] may be called from another thread to cancel.
  *
  * # Safety
- * `commit` valid; `out`/`err` valid pointers.
+ * `commit` valid; `out` non-null; `err` null or valid.
  */
 XetStatus xet_upload_commit_commit(const XetUploadCommit *commit,
                                    XetCommitReportHandle **out,
                                    XetError **err);
 
 /**
+ * Snapshot the commit's aggregate upload progress into `*out`. Callable from
+ * any thread, including while a finalize or commit call blocks.
+ *
  * # Safety
  * `commit` valid; `out` a valid pointer to a `XetProgress`.
  */
 XetStatus xet_upload_commit_progress(const XetUploadCommit *commit, XetProgress *out);
 
 /**
+ * Abort the commit; blocked finalize/commit calls on it return with a
+ * cancelled error. Callable from any thread.
+ *
  * # Safety
- * `commit` valid; `err` valid.
+ * `commit` valid; `err` null or valid.
  */
 XetStatus xet_upload_commit_abort(const XetUploadCommit *commit, XetError **err);
 
 /**
+ * Returns the file's xet content hash as NUL-terminated hex, valid until the
+ * handle (or the report that owns it) is freed. NULL if `m` is null.
+ *
  * # Safety
  * `m` must be null or a valid metadata handle.
  */
 const char *xet_file_metadata_hash(const XetFileMetadataHandle *m);
 
 /**
+ * Returns the file size in bytes, or 0 if `m` is null or the size is unknown.
+ *
  * # Safety
  * `m` must be null or a valid metadata handle.
  */
@@ -679,7 +767,7 @@ void xet_file_upload_free(XetFileUpload *upload);
  *
  * # Safety
  * `su` valid; `data`/`len` a valid buffer (data may be null iff len==0);
- * `err` a valid pointer.
+ * `err` null or valid.
  */
 XetStatus xet_stream_upload_write(const XetStreamUpload *su,
                                   const uint8_t *data,
@@ -690,8 +778,11 @@ XetStatus xet_stream_upload_write(const XetStreamUpload *su,
  * Finalize the stream, blocking until complete. On success fills `*out` with
  * an owned `XetFileMetadataHandle` (free with `xet_file_metadata_free`).
  *
+ * Progress can be observed via `xet_upload_commit_progress` on the owning
+ * commit.
+ *
  * # Safety
- * `su` valid; `out`/`err` valid pointers.
+ * `su` valid; `out` non-null; `err` null or valid.
  */
 XetStatus xet_stream_upload_finish(const XetStreamUpload *su,
                                    XetFileMetadataHandle **out,

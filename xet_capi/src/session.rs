@@ -8,8 +8,9 @@ use crate::error::{XetError, XetStatus, ffi_guard, set_err, set_xet_err};
 use crate::handle::{free_handle, into_handle};
 use crate::upload::XetUploadCommit;
 
-/// A Xet session. Owns no auth; produces per-commit / per-group auth via the
-/// `xet_session_new_*` builders (added in a later task). Free with
+/// A Xet session: the root handle from which upload commits and download
+/// groups are created via the `xet_session_new_*` functions. Holds no auth
+/// itself; each commit/group gets its own from a `XetAuthConfig`. Free with
 /// [`xet_session_free`].
 pub struct XetSession {
     pub(crate) inner: InnerSession,
@@ -22,7 +23,6 @@ pub struct XetSession {
 pub struct XetHeader {
     /// Header name, e.g. `"Authorization"`.
     pub key: *const c_char,
-    /// Header value.
     pub value: *const c_char,
 }
 
@@ -37,12 +37,12 @@ pub struct XetAuthConfig {
     /// Unix timestamp (seconds) at which `token` expires, or `0`/negative if
     /// it never needs refreshing.
     pub token_expiry: i64,
-    /// URL to POST to for a token refresh. NULL disables refreshing.
+    /// URL to POST to for a token refresh. Refreshing is enabled only when
+    /// this is non-NULL and `refresh_headers` has at least one entry.
     pub token_refresh_url: *const c_char,
     /// Borrowed array of `refresh_header_count` headers sent with each
     /// refresh request. May be NULL iff `refresh_header_count == 0`.
     pub refresh_headers: *const XetHeader,
-    /// Number of entries in `refresh_headers`.
     pub refresh_header_count: usize,
 }
 
@@ -115,7 +115,7 @@ pub extern "C" fn xet_session_free(session: *mut XetSession) {
 /// Build an upload commit with per-commit auth from `cfg`.
 ///
 /// # Safety
-/// `session`/`cfg` valid handles/pointers; `out`/`err` valid pointers.
+/// `session`/`cfg` valid handles/pointers; `out` non-null; `err` null or valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xet_session_new_upload_commit(
     session: *const XetSession,
@@ -162,7 +162,7 @@ pub unsafe extern "C" fn xet_session_new_upload_commit(
 /// Build a file-download group with per-group auth from `cfg`.
 ///
 /// # Safety
-/// `session`/`cfg` valid; `out`/`err` valid pointers.
+/// `session`/`cfg` valid; `out` non-null; `err` null or valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xet_session_new_file_download_group(
     session: *const XetSession,
@@ -209,7 +209,7 @@ pub unsafe extern "C" fn xet_session_new_file_download_group(
 /// Build a download-stream group with per-group auth from `cfg`.
 ///
 /// # Safety
-/// `session`/`cfg` valid; `out`/`err` valid pointers.
+/// `session`/`cfg` valid; `out` non-null; `err` null or valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xet_session_new_download_stream_group(
     session: *const XetSession,

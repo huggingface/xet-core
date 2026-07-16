@@ -20,7 +20,7 @@ impl XetStreamUpload {
 ///
 /// # Safety
 /// `su` valid; `data`/`len` a valid buffer (data may be null iff len==0);
-/// `err` a valid pointer.
+/// `err` null or valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xet_stream_upload_write(
     su: *const XetStreamUpload,
@@ -50,8 +50,11 @@ pub unsafe extern "C" fn xet_stream_upload_write(
 /// Finalize the stream, blocking until complete. On success fills `*out` with
 /// an owned `XetFileMetadataHandle` (free with `xet_file_metadata_free`).
 ///
+/// Progress can be observed via `xet_upload_commit_progress` on the owning
+/// commit.
+///
 /// # Safety
-/// `su` valid; `out`/`err` valid pointers.
+/// `su` valid; `out` non-null; `err` null or valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xet_stream_upload_finish(
     su: *const XetStreamUpload,

@@ -7,6 +7,10 @@ use crate::handle::free_handle;
 use crate::upload::XetFileMetadataHandle;
 
 /// Flat progress snapshot (all scalar; stable layout).
+///
+/// `total_*` counts logical file bytes; `total_transfer_*` counts bytes
+/// scheduled for network transfer, which is smaller when deduplication
+/// avoids re-transferring data.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct XetProgress {
@@ -34,18 +38,22 @@ impl XetProgress {
     }
 }
 
-/// Flat dedup metrics snapshot.
+/// Deduplication metrics for a commit: how the ingested bytes/chunks split
+/// into deduplicated vs. new data, and what was actually uploaded.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct XetDedupMetrics {
     pub total_bytes: u64,
     pub deduped_bytes: u64,
     pub new_bytes: u64,
+    /// Portion of `deduped_bytes` matched against data outside this commit.
     pub deduped_bytes_by_global_dedup: u64,
     pub total_chunks: u64,
     pub deduped_chunks: u64,
     pub new_chunks: u64,
+    /// Bytes of new content (xorbs) uploaded.
     pub xorb_bytes_uploaded: u64,
+    /// Bytes of shard metadata uploaded.
     pub shard_bytes_uploaded: u64,
     pub total_bytes_uploaded: u64,
 }
@@ -97,6 +105,8 @@ impl XetDownloadGroupReportHandle {
     }
 }
 
+/// Returns the number of files in the report, or 0 if `r` is null.
+///
 /// # Safety
 /// `r` must be null or a valid commit-report handle.
 #[unsafe(no_mangle)]
@@ -130,6 +140,8 @@ pub unsafe extern "C" fn xet_commit_report_file_at(
     }
 }
 
+/// Copy the commit's dedup metrics into `*out`.
+///
 /// # Safety
 /// `r` valid; `out` a valid pointer to a `XetDedupMetrics`.
 #[unsafe(no_mangle)]
@@ -144,6 +156,8 @@ pub unsafe extern "C" fn xet_commit_report_dedup(
     XetStatus::XetOk
 }
 
+/// Copy the commit's final progress totals into `*out`.
+///
 /// # Safety
 /// `r` valid; `out` a valid pointer to a `XetProgress`.
 #[unsafe(no_mangle)]
@@ -164,6 +178,8 @@ pub extern "C" fn xet_commit_report_free(r: *mut XetCommitReportHandle) {
     free_handle(r);
 }
 
+/// Returns the number of downloads in the report, or 0 if `r` is null.
+///
 /// # Safety
 /// `r` must be null or a valid download-group-report handle.
 #[unsafe(no_mangle)]

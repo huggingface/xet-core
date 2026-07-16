@@ -4,6 +4,8 @@
 //! Transfer functions block the calling thread until the operation completes.
 //! Progress can be polled concurrently from another thread via the
 //! `xet_*_progress` functions. No callbacks cross the ABI in either direction.
+//! The trailing `XetError**` argument of fallible functions may be NULL to
+//! ignore error details.
 
 mod bytes;
 mod download_file;
