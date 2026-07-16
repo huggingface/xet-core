@@ -379,9 +379,8 @@ impl TaskRuntime {
         T: 'static,
     {
         let token = self.cancellation_token.clone();
-        // Box to heap-erase the future's deep nested type; wasm has no runtime offload, so
-        // inlining it here would propagate into callers and can overflow rustc's type-layout
-        // query-depth limit.
+        // Box to heap-erase the future's deep type; wasm inlines it here (no offload), which
+        // otherwise overflows rustc's type-layout query-depth limit in callers.
         let fut = Box::pin(fut);
         async move {
             tokio::select! {
