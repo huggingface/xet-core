@@ -35,11 +35,7 @@ use crate::error::{ClientError, Result};
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
 
-use lazy_static::lazy_static;
-
-lazy_static! {
-    static ref FN_CALL_ID: AtomicU64 = AtomicU64::new(1);
-}
+static FN_CALL_ID: AtomicU64 = AtomicU64::new(1);
 
 pub struct RemoteClient {
     pub(crate) ctx: XetContext,

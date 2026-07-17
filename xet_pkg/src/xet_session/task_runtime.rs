@@ -379,6 +379,9 @@ impl TaskRuntime {
         T: 'static,
     {
         let token = self.cancellation_token.clone();
+        // Box to heap-erase the future's deep type; wasm inlines it here (no offload), which
+        // otherwise overflows rustc's type-layout query-depth limit in callers.
+        let fut = Box::pin(fut);
         async move {
             tokio::select! {
                 _ = token.cancelled() => Err(XetError::UserCancelled(
