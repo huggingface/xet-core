@@ -14,7 +14,7 @@ base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 r2d2 = "0.8.10"
 r2d2_postgres = "0.18.1"
-sccache = "0.8"
+sccache = "0.16"
 tempfile = "3"
 tokio = { version = "1.44", features = ["full"] }
 
@@ -28,5 +28,5 @@ bench = true
 name = "cache_resilience_test"
 
 [dev-dependencies]
-criterion = { version = "0.4", features = ["async_tokio"] }
+criterion = { version = "0.7", features = ["async_tokio"] }
 rand = "0.10"

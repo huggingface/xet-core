@@ -79,7 +79,7 @@ path = "examples/xorb-check/main.rs"
 
 [dev-dependencies]
 clap = { workspace = true }
-criterion = { version = "0.4", features = ["async_tokio"] }
+criterion = { version = "0.7", features = ["async_tokio"] }
 ctor = { workspace = true }
 dirs = { workspace = true }
 rand = { workspace = true }
