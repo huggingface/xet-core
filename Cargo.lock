@@ -4426,31 +4426,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 
 [[package]]
-name = "simulation"
-version = "1.4.0"
-dependencies = [
- "anyhow",
- "bytes",
- "chrono",
- "clap 4.6.0",
- "http",
- "humantime",
- "rand 0.10.1",
- "reqwest",
- "reqwest-middleware",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "xet-client",
- "xet-runtime",
-]
-
-[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
