@@ -10,10 +10,9 @@ members = [
 
     # Top-level crates (not published as packages)
     "git_xet",
-    "simulation",
 ]
 exclude = [
-    "simulation/chunk_cache_bench",
+    "simulation",
     "hf_xet",
     "wasm/hf_xet_wasm",
     "wasm/hf_xet_thin_wasm",
@@ -98,7 +97,7 @@ safe-transmute = "0.11"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_repr = "0.1"
-sha2 = "0.10"
+sha2 = "0.11"
 shell-words = "1.1"
 statrs = { version = "0.18", default-features = false }
 shellexpand = "3.1"

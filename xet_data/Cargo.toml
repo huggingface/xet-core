@@ -55,7 +55,7 @@ web-time = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "rt", "time"] }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
-sha2 = { workspace = true, features = ["asm"] }
+sha2 = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 sha2 = { workspace = true }
@@ -87,6 +87,7 @@ regex = { workspace = true }
 serial_test = { workspace = true }
 tempfile = { workspace = true }
 tracing-test = { workspace = true }
+xet-client = { path = "../xet_client", features = ["simulation"] }
 
 [[bench]]
 name = "reconstruction_bench"
