@@ -28,7 +28,6 @@ clap = { workspace = true, optional = true }
 gearhash = { workspace = true }
 http = { workspace = true }
 itertools = { workspace = true }
-lazy_static = { workspace = true }
 more-asserts = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
