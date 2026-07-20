@@ -74,6 +74,9 @@ jobs:
 
       - uses: ./.github/actions/build-wasm
 
+      - name: Create venv
+        run: python3 -m venv .venv
+        
       - name: Build hf-xet wheel
         uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1
         with:
