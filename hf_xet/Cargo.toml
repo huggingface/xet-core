@@ -14,7 +14,7 @@ xet-pkg = { package = "hf-xet", path = "../xet_pkg", features = ["python"] }
 xet-runtime = { path = "../xet_runtime" }
 xet-client = { path = "../xet_client" }
 
-pprof = { version = "0.14", features = [
+pprof = { version = "0.15", features = [
     "flamegraph",
     "prost",
     "protobuf-codec",

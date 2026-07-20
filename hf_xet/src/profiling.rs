@@ -25,8 +25,8 @@
 use std::fs;
 use std::path::PathBuf;
 use std::sync::LazyLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use chrono::Local;
 use pprof::protos::Message;
 use pprof::{ProfilerGuard, ProfilerGuardBuilder};
 
@@ -65,7 +65,11 @@ impl ProfilingSession<'_> {
             },
         };
 
-        let date_str = Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+        let date_str = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or_default()
+            .to_string();
         let output_dir = PathBuf::from("profiles").join(date_str);
 
         let Ok(_) = fs::create_dir_all(&output_dir)
