@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, Weak};
 
 use tokio::task::JoinHandle;
@@ -223,45 +224,64 @@ impl TaskRuntime {
         Ok(live)
     }
 
-    // Async task bridging, shared across targets. The state-machine logic lives
-    // here once; only `run_inner_async` (XetRuntime offload on native, inline
-    // select on wasm) differs per target.
-    pub(super) async fn bridge_async<T, F>(&self, task_name: &'static str, fut: F) -> Result<T, XetError>
+    // Plain (non-async) fn: boxing `fut` before the async block is constructed keeps its
+    // captured type small, no matter how large `F` is. Boxing inside an `async fn` body
+    // instead doesn't work - the parameter's full type is still part of that fn's own
+    // generator state regardless of what the body does with it. `check_state`/
+    // `update_state_on_error` stay inside the block so they still only run on first poll.
+    pub(super) fn bridge_async<T, F>(
+        &self,
+        task_name: &'static str,
+        fut: F,
+    ) -> impl Future<Output = Result<T, XetError>> + MaybeSend + '_
     where
         F: Future<Output = Result<T, XetError>> + MaybeSend + 'static,
         T: MaybeSend + 'static,
     {
-        self.check_state(task_name)?;
-        let result = self.run_inner_async(task_name, fut).await;
-        if let Err(ref e) = result {
-            self.update_state_on_error(e)?;
+        let fut: BoxedBridgeFuture<T> = Box::pin(fut);
+        async move {
+            self.check_state(task_name)?;
+            let result = self.run_inner_async(task_name, fut).await;
+            if let Err(ref e) = result {
+                self.update_state_on_error(e)?;
+            }
+            result
         }
-        result
     }
 
-    pub(super) async fn bridge_async_finalizing<T, F>(
+    pub(super) fn bridge_async_finalizing<T, F>(
         &self,
         task_name: &'static str,
         allow_repeat: bool,
         fut: F,
-    ) -> Result<T, XetError>
+    ) -> impl Future<Output = Result<T, XetError>> + MaybeSend + '_
     where
         F: Future<Output = Result<T, XetError>> + MaybeSend + 'static,
         T: MaybeSend + 'static,
     {
-        self.transition_to_finalizing(task_name, allow_repeat)?;
+        let fut: BoxedBridgeFuture<T> = Box::pin(fut);
+        async move {
+            self.transition_to_finalizing(task_name, allow_repeat)?;
 
-        let result = self.run_inner_async(task_name, fut).await;
-        match &result {
-            Ok(_) => self.set_state(XetTaskState::Completed)?,
-            Err(XetError::UserCancelled(_)) => {
-                self.set_state(XetTaskState::UserCancelled)?;
-            },
-            Err(e) => self.set_state(XetTaskState::Error(e.to_string()))?,
+            let result = self.run_inner_async(task_name, fut).await;
+            match &result {
+                Ok(_) => self.set_state(XetTaskState::Completed)?,
+                Err(XetError::UserCancelled(_)) => {
+                    self.set_state(XetTaskState::UserCancelled)?;
+                },
+                Err(e) => self.set_state(XetTaskState::Error(e.to_string()))?,
+            }
+            result
         }
-        result
     }
 }
+
+// `MaybeSend` can't be used as an extra marker on a `dyn` trait object (it isn't an auto
+// trait), so this spells out the same native/wasm split as a concrete type instead.
+#[cfg(not(target_family = "wasm"))]
+type BoxedBridgeFuture<T> = Pin<Box<dyn Future<Output = Result<T, XetError>> + Send>>;
+#[cfg(target_family = "wasm")]
+type BoxedBridgeFuture<T> = Pin<Box<dyn Future<Output = Result<T, XetError>>>>;
 
 // `Send` on native, unconstrained on wasm: lets the shared bridge methods
 // above state one set of bounds while wasm futures stay `!Send`.
@@ -379,9 +399,6 @@ impl TaskRuntime {
         T: 'static,
     {
         let token = self.cancellation_token.clone();
-        // Box to heap-erase the future's deep type; wasm inlines it here (no offload), which
-        // otherwise overflows rustc's type-layout query-depth limit in callers.
-        let fut = Box::pin(fut);
         async move {
             tokio::select! {
                 _ = token.cancelled() => Err(XetError::UserCancelled(
