@@ -74,7 +74,9 @@ fn handle_shard_upload_event(
     }
 
     match event {
-        ShardUploadEvent::Validating { .. } | ShardUploadEvent::Committing { .. } => Ok(false),
+        ShardUploadEvent::Validating { .. } | ShardUploadEvent::Committing { .. } | ShardUploadEvent::Unknown => {
+            Ok(false)
+        },
         ShardUploadEvent::Result => Ok(true),
         ShardUploadEvent::Error { message, retryable } => {
             let err = ClientError::Other(message);
@@ -130,6 +132,26 @@ mod tests {
     fn test_handle_result_is_terminal() {
         let result = handle_shard_upload_event(ShardUploadEvent::Result, None).unwrap();
         assert!(result);
+    }
+
+    #[test]
+    fn test_handle_unknown_event_is_not_terminal() {
+        let result = handle_shard_upload_event(ShardUploadEvent::Unknown, None).unwrap();
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_handle_unknown_event_forwards_to_callback() {
+        let seen = Arc::new(Mutex::new(None));
+        let seen_cb = seen.clone();
+        let callback: ShardUploadProgressCallback = Arc::new(move |progress| {
+            if let ShardUploadProgressType::Response(event) = progress {
+                *seen_cb.lock().unwrap() = Some(event.clone());
+            }
+        });
+
+        assert!(!handle_shard_upload_event(ShardUploadEvent::Unknown, Some(&callback)).unwrap());
+        assert_eq!(*seen.lock().unwrap(), Some(ShardUploadEvent::Unknown));
     }
 
     #[test]
@@ -216,6 +238,33 @@ mod tests {
     async fn test_read_ndjson_skips_blank_lines() {
         let resp = response_from_chunks(vec!["\n{\"type\":\"result\"}\n"]);
         read_shard_upload_ndjson(resp, None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_read_ndjson_skips_unknown_frame_types() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_cb = seen.clone();
+        let callback: ShardUploadProgressCallback = Arc::new(move |progress| {
+            if let ShardUploadProgressType::Response(event) = progress {
+                seen_cb.lock().unwrap().push(event.clone());
+            }
+        });
+
+        let resp = response_from_chunks(vec![
+            "{\"type\":\"validating\",\"verified\":0,\"total\":1}\n",
+            "{\"type\":\"heartbeat\"}\n",
+            "{\"type\":\"result\"}\n",
+        ]);
+        read_shard_upload_ndjson(resp, Some(callback)).await.unwrap();
+
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                ShardUploadEvent::Validating { verified: 0, total: 1 },
+                ShardUploadEvent::Unknown,
+                ShardUploadEvent::Result,
+            ]
+        );
     }
 
     #[tokio::test]

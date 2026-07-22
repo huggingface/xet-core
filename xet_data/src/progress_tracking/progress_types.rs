@@ -280,9 +280,9 @@ impl ShardUploadProgress {
             ShardUploadEvent::Validating { verified, total } => {
                 self.credit_validating_progress(maybe_old, *verified, *total);
             },
-            ShardUploadEvent::Error { .. } => {},
-            // `Committing(*)` and `Result`: stage milestones. `Error` and `Validating` are
-            // handled above, so this only ever sees forward-moving stages.
+            ShardUploadEvent::Error { .. } | ShardUploadEvent::Unknown => {},
+            // `Committing(*)` and `Result`: stage milestones. `Error`/`Unknown`/`Validating`
+            // are handled above, so this only ever sees forward-moving stages.
             _ => {
                 self.credit_skipped_validation(&maybe_old);
                 self.credit_skipped_store_stage(&maybe_old, event);
@@ -1024,6 +1024,38 @@ mod tests {
                 stage: CommitStage::Syncing
             }
         );
+    }
+
+    #[test]
+    fn test_shard_update_unknown_frame_is_ignored() {
+        let progress = ShardUploadProgress::default();
+        let id = progress.register_shard_transfer(1000);
+
+        progress.update(
+            id,
+            &ShardUploadEvent::Committing {
+                stage: CommitStage::Uploading,
+            },
+        );
+        // Forward-compat unknown types must not advance counters or replace stored state.
+        progress.update(id, &ShardUploadEvent::Unknown);
+
+        let report = progress.report();
+        assert_eq!(report.total_shards_uploaded_to_store, 0);
+        assert_eq!(report.total_shards_synced, 0);
+        assert_eq!(report.total_shards_completed, 0);
+        assert_eq!(
+            *progress.shard_upload_state.lock().unwrap().get(&id).unwrap(),
+            ShardUploadEvent::Committing {
+                stage: CommitStage::Uploading
+            }
+        );
+
+        // A later known milestone still applies normally.
+        progress.update(id, &ShardUploadEvent::Result);
+        let report = progress.report();
+        assert_eq!(report.total_shards_completed, 1);
+        assert_eq!(*progress.shard_upload_state.lock().unwrap().get(&id).unwrap(), ShardUploadEvent::Result);
     }
 
     #[test]
