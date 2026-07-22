@@ -21,6 +21,7 @@ pub mod multipart;
 pub mod progress_tracked_streams;
 pub mod remote_client;
 pub mod retry_wrapper;
+#[cfg(not(target_family = "wasm"))]
 mod shard_upload_v2;
 pub mod simulation;
 

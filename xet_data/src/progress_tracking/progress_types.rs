@@ -288,7 +288,7 @@ impl ShardUploadProgress {
                 self.credit_skipped_store_stage(&maybe_old, event);
                 if maybe_old.is_none_or(|old| old.precede(event)) {
                     guard.insert(id, event.clone());
-                    if matches!(event, ShardUploadEvent::Result { .. }) {
+                    if matches!(event, ShardUploadEvent::Result) {
                         self.total_shards_synced.fetch_add(1, Ordering::Relaxed);
                         self.total_shards_completed.fetch_add(1, Ordering::Relaxed);
                     }
@@ -350,13 +350,13 @@ impl ShardUploadProgress {
             event,
             ShardUploadEvent::Committing {
                 stage: CommitStage::Syncing
-            } | ShardUploadEvent::Result { .. }
+            } | ShardUploadEvent::Result
         );
         let already_counted = matches!(
             maybe_old,
             Some(ShardUploadEvent::Committing {
                 stage: CommitStage::Syncing
-            }) | Some(ShardUploadEvent::Result { .. })
+            }) | Some(ShardUploadEvent::Result)
         );
         if reached_store_stage && !already_counted {
             self.total_shards_uploaded_to_store.fetch_add(1, Ordering::Relaxed);
@@ -616,7 +616,6 @@ pub struct ItemProgressReport {
 #[cfg(test)]
 mod tests {
     use tokio::time::{Duration, advance, pause};
-    use xet_client::cas_types::UploadShardResponseType;
 
     use super::*;
 
@@ -931,12 +930,7 @@ mod tests {
         // frame without ever observing a `Committing` frame.
         progress.update(id, &ShardUploadEvent::Validating { verified: 3, total: 10 });
 
-        progress.update(
-            id,
-            &ShardUploadEvent::Result {
-                result: UploadShardResponseType::SyncPerformed,
-            },
-        );
+        progress.update(id, &ShardUploadEvent::Result);
 
         let report = progress.report();
         // The remaining (total - verified) is credited so the counter doesn't get stuck, even
@@ -948,12 +942,7 @@ mod tests {
         assert_eq!(report.total_shards_uploaded_to_store, 1);
         assert_eq!(report.total_shards_synced, 1);
         assert_eq!(report.total_shards_completed, 1);
-        assert_eq!(
-            *progress.shard_upload_state.lock().unwrap().get(&id).unwrap(),
-            ShardUploadEvent::Result {
-                result: UploadShardResponseType::SyncPerformed
-            }
-        );
+        assert_eq!(*progress.shard_upload_state.lock().unwrap().get(&id).unwrap(), ShardUploadEvent::Result);
     }
 
     #[test]
@@ -971,12 +960,7 @@ mod tests {
         assert_eq!(progress.report().total_shards_uploaded_to_store, 1);
 
         // ...so `Result` arriving afterward must not credit the store counter a second time.
-        progress.update(
-            id,
-            &ShardUploadEvent::Result {
-                result: UploadShardResponseType::SyncPerformed,
-            },
-        );
+        progress.update(id, &ShardUploadEvent::Result);
         let report = progress.report();
         assert_eq!(report.total_shards_uploaded_to_store, 1);
         assert_eq!(report.total_shards_synced, 1);
@@ -988,12 +972,7 @@ mod tests {
         let progress = ShardUploadProgress::default();
         let id = progress.register_shard_transfer(1000);
 
-        progress.update(
-            id,
-            &ShardUploadEvent::Result {
-                result: UploadShardResponseType::SyncPerformed,
-            },
-        );
+        progress.update(id, &ShardUploadEvent::Result);
         let report = progress.report();
         assert_eq!(report.total_shards_synced, 1);
         assert_eq!(report.total_shards_completed, 1);
@@ -1006,31 +985,15 @@ mod tests {
                 stage: CommitStage::Uploading,
             },
         );
-        assert_eq!(
-            *progress.shard_upload_state.lock().unwrap().get(&id).unwrap(),
-            ShardUploadEvent::Result {
-                result: UploadShardResponseType::SyncPerformed
-            }
-        );
+        assert_eq!(*progress.shard_upload_state.lock().unwrap().get(&id).unwrap(), ShardUploadEvent::Result);
 
-        // A duplicate/replayed terminal frame -- even with a different payload (partial_cmp
-        // compares `Result` frames by variant alone) -- must not overwrite the recorded result
-        // or double-count the completion counters.
-        progress.update(
-            id,
-            &ShardUploadEvent::Result {
-                result: UploadShardResponseType::Exists,
-            },
-        );
+        // A duplicate/replayed terminal frame must not overwrite the recorded result or
+        // double-count the completion counters.
+        progress.update(id, &ShardUploadEvent::Result);
         let report = progress.report();
         assert_eq!(report.total_shards_synced, 1);
         assert_eq!(report.total_shards_completed, 1);
-        assert_eq!(
-            *progress.shard_upload_state.lock().unwrap().get(&id).unwrap(),
-            ShardUploadEvent::Result {
-                result: UploadShardResponseType::SyncPerformed
-            }
-        );
+        assert_eq!(*progress.shard_upload_state.lock().unwrap().get(&id).unwrap(), ShardUploadEvent::Result);
     }
 
     #[test]
@@ -1048,6 +1011,7 @@ mod tests {
             id,
             &ShardUploadEvent::Error {
                 message: "boom".to_string(),
+                retryable: false,
             },
         );
 

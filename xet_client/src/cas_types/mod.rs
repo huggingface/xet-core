@@ -327,10 +327,14 @@ pub enum ShardUploadEvent {
     /// Durably writing the shard; `stage` says which sub-step is running.
     Committing { stage: CommitStage },
     /// Terminal success frame.
-    Result { result: UploadShardResponseType },
+    Result,
     /// Terminal failure frame. The HTTP status is already `200 OK` by the time the
     /// stream starts, so clients MUST treat this frame as the error signal.
-    Error { message: String },
+    Error {
+        message: String,
+        /// When true, the client should retry the upload (transient server/network fault).
+        retryable: bool,
+    },
 }
 
 /// Orders by pipeline progression, not field value: lets `precede` detect whether a newly
@@ -348,11 +352,11 @@ impl PartialOrd for ShardUploadEvent {
             Self::Committing { stage } => match other {
                 Self::Validating { .. } => Some(Ordering::Greater),
                 Self::Committing { stage: other_stage } => Some(stage.cmp(other_stage)),
-                Self::Result { .. } => Some(Ordering::Less),
+                Self::Result => Some(Ordering::Less),
                 Self::Error { .. } => None,
             },
-            Self::Result { .. } => match other {
-                Self::Result { .. } => Some(Ordering::Equal),
+            Self::Result => match other {
+                Self::Result => Some(Ordering::Equal),
                 Self::Error { .. } => None,
                 _ => Some(Ordering::Greater),
             },
@@ -466,27 +470,29 @@ mod tests {
 
     #[test]
     fn test_shard_upload_event_result_json_roundtrip() {
-        // `UploadShardResponseType` uses `serde_repr`, so it's encoded as a bare integer,
-        // not a snake_case string like `CommitStage`.
-        for (result, repr) in [
-            (UploadShardResponseType::Exists, 0),
-            (UploadShardResponseType::SyncPerformed, 1),
-        ] {
-            let event = ShardUploadEvent::Result { result };
-            let json = serde_json::to_string(&event).unwrap();
-            assert_eq!(json, format!(r#"{{"type":"result","result":{repr}}}"#));
-            assert_eq!(serde_json::from_str::<ShardUploadEvent>(&json).unwrap(), event);
-        }
+        let event = ShardUploadEvent::Result;
+        let json = serde_json::to_string(&event).unwrap();
+        assert_eq!(json, r#"{"type":"result"}"#);
+        assert_eq!(serde_json::from_str::<ShardUploadEvent>(&json).unwrap(), event);
     }
 
     #[test]
     fn test_shard_upload_event_error_json_roundtrip() {
         let event = ShardUploadEvent::Error {
             message: "boom".to_string(),
+            retryable: false,
         };
         let json = serde_json::to_string(&event).unwrap();
-        assert_eq!(json, r#"{"type":"error","message":"boom"}"#);
+        assert_eq!(json, r#"{"type":"error","message":"boom","retryable":false}"#);
         assert_eq!(serde_json::from_str::<ShardUploadEvent>(&json).unwrap(), event);
+
+        let retryable = ShardUploadEvent::Error {
+            message: "transient".to_string(),
+            retryable: true,
+        };
+        let json = serde_json::to_string(&retryable).unwrap();
+        assert_eq!(json, r#"{"type":"error","message":"transient","retryable":true}"#);
+        assert_eq!(serde_json::from_str::<ShardUploadEvent>(&json).unwrap(), retryable);
     }
 
     #[test]
@@ -501,11 +507,10 @@ mod tests {
             ShardUploadEvent::Committing {
                 stage: CommitStage::Syncing,
             },
-            ShardUploadEvent::Result {
-                result: UploadShardResponseType::Exists,
-            },
+            ShardUploadEvent::Result,
             ShardUploadEvent::Error {
                 message: "boom".to_string(),
+                retryable: false,
             },
         ];
         let labels = [
@@ -550,18 +555,12 @@ mod tests {
 
     #[test]
     fn test_shard_upload_event_partial_cmp_ignores_payload_within_same_variant() {
-        // Two `Result` events compare as `Equal` by variant alone, even though their
-        // inner `result` payload differs and they are not `==` to each other.
-        let exists = ShardUploadEvent::Result {
-            result: UploadShardResponseType::Exists,
-        };
-        let synced = ShardUploadEvent::Result {
-            result: UploadShardResponseType::SyncPerformed,
-        };
-        assert_ne!(exists, synced);
-        assert_eq!(exists.partial_cmp(&synced), Some(Ordering::Equal));
-        assert!(!exists.precede(&synced));
-        assert!(!synced.precede(&exists));
+        // Two `Result` events compare as `Equal` (unit variants are identical).
+        let a = ShardUploadEvent::Result;
+        let b = ShardUploadEvent::Result;
+        assert_eq!(a, b);
+        assert_eq!(a.partial_cmp(&b), Some(Ordering::Equal));
+        assert!(!a.precede(&b));
 
         // Two `Validating` events with different counts are incomparable (`None`), not
         // ordered by their counts: `ShardUploadProgress::update` relies on `saturating_sub`
@@ -575,9 +574,11 @@ mod tests {
         // `Error` never precedes anything, and nothing precedes it -- including another `Error`.
         let err_a = ShardUploadEvent::Error {
             message: "a".to_string(),
+            retryable: false,
         };
         let err_b = ShardUploadEvent::Error {
             message: "b".to_string(),
+            retryable: true,
         };
         assert_eq!(err_a.partial_cmp(&err_b), None);
         assert!(!err_a.precede(&err_b));

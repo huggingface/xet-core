@@ -23,6 +23,7 @@ use super::progress_tracked_streams::{
     DownloadProgressStream, ProgressCallback, StreamProgressReporter, UploadProgressStream,
 };
 use super::retry_wrapper::{RetryWrapper, RetryableReqwestError};
+#[cfg(not(target_family = "wasm"))]
 use super::shard_upload_v2::read_shard_upload_ndjson;
 use super::{Client, INFORMATION_LOG_LEVEL};
 use crate::cas_client::ShardUploadProgressType;
@@ -397,33 +398,39 @@ impl RemoteClient {
                 .with_progress_callback(Arc::new(move |delta, _, _| cb(ShardUploadProgressType::Transfer(delta))));
         }
 
-        let response = RetryWrapper::new(self.ctx.clone(), api_tag)
+        // NDJSON parsing runs inside `run_and_process` so `error` frames with
+        // `retryable: true` (and transient stream I/O) retry the whole upload via RetryWrapper.
+        RetryWrapper::new(self.ctx.clone(), api_tag)
             .with_connection_permit(upload_permit, Some(shard_data.len() as u64))
-            .run(move || {
-                let upload_stream =
-                    UploadProgressStream::wrap_bytes_as_stream(shard_data.clone(), block_size, upload_reporter.clone());
-
-                client
-                    .post(url.clone())
-                    .with_extension(Api(api_tag))
-                    .header(CONTENT_LENGTH, HeaderValue::from(n_upload_bytes)) // must be set because of streaming
-                    .body(Body::wrap_stream(upload_stream))
-                    .send()
-            })
+            .run_and_process(
+                move || {
+                    let upload_stream = UploadProgressStream::wrap_bytes_as_stream(
+                        shard_data.clone(),
+                        block_size,
+                        upload_reporter.clone(),
+                    );
+                    client
+                        .post(url.clone())
+                        .with_extension(Api(api_tag))
+                        .header(CONTENT_LENGTH, HeaderValue::from(n_upload_bytes)) // must be set because of streaming
+                        .body(Body::wrap_stream(upload_stream))
+                        .send()
+                },
+                move |response| read_shard_upload_ndjson(response, progress_callback.clone()),
+            )
             .await?;
-
-        let was_new = read_shard_upload_ndjson(response, progress_callback).await?;
 
         event!(
             INFORMATION_LOG_LEVEL,
             call_id,
             size = n_upload_bytes,
             api_version = "v2",
-            result = if was_new { "sync performed" } else { "exists" },
+            result = "sync performed",
             "Completed upload_shard API call",
         );
 
-        Ok(was_new)
+        // V2 has no Exists/SyncPerformed distinction; report SyncPerformed for Client::upload_shard.
+        Ok(true)
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -549,7 +556,7 @@ impl Client for RemoteClient {
         let result = RetryWrapper::new(self.ctx.clone(), api_tag)
             .with_retry_on_403()
             .with_connection_permit(download_permit, None)
-            .run_and_extract_custom(
+            .run_and_process(
                 move || {
                     let http_client = http_client.clone();
                     let url_info = url_info.clone();

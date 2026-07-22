@@ -2,18 +2,23 @@ use futures::TryStreamExt;
 use reqwest::Response;
 
 use super::interface::{ShardUploadProgressCallback, ShardUploadProgressType};
-use crate::cas_types::{ShardUploadEvent, UploadShardResponseType};
-use crate::error::{ClientError, Result};
+use super::retry_wrapper::RetryableReqwestError;
+use crate::cas_types::ShardUploadEvent;
+use crate::error::ClientError;
 
-/// Parse the `/v2/shards` NDJSON response stream and return whether the shard was newly inserted.
+/// Parse the `/v2/shards` NDJSON response stream until a terminal `result` or `error` frame.
+///
+/// Returns [`RetryableReqwestError`] so callers can fold this into [`RetryWrapper::run_and_process`]:
+/// terminal `error` frames with `retryable: true` (and transient stream I/O failures) retry the
+/// whole upload; other failures are fatal. V2 success has no Exists/SyncPerformed payload.
 pub(crate) async fn read_shard_upload_ndjson(
     response: Response,
     progress_callback: Option<ShardUploadProgressCallback>,
-) -> Result<bool> {
+) -> std::result::Result<(), RetryableReqwestError> {
     let mut buffer = Vec::new();
     let mut stream = response.bytes_stream();
 
-    while let Some(chunk) = stream.try_next().await? {
+    while let Some(chunk) = stream.try_next().await.map_err(map_stream_io_error)? {
         buffer.extend_from_slice(&chunk);
         while let Some(newline_idx) = buffer.iter().position(|&b| b == b'\n') {
             let line = buffer.drain(..=newline_idx).collect::<Vec<u8>>();
@@ -22,44 +27,63 @@ pub(crate) async fn read_shard_upload_ndjson(
                 continue;
             }
             let event: ShardUploadEvent = serde_json::from_slice(line).map_err(|err| {
-                ClientError::Other(format!(
+                RetryableReqwestError::FatalError(ClientError::InvalidResponse(format!(
                     "failed to parse shard upload progress frame: {err}; line={}",
                     String::from_utf8_lossy(line)
-                ))
+                )))
             })?;
-            if let Some(was_new) = handle_shard_upload_event(event, progress_callback.as_ref())? {
-                return Ok(was_new);
+            if handle_shard_upload_event(event, progress_callback.as_ref())? {
+                return Ok(());
             }
         }
     }
 
     if !buffer.is_empty() {
         let event: ShardUploadEvent = serde_json::from_slice(&buffer).map_err(|err| {
-            ClientError::Other(format!(
+            RetryableReqwestError::FatalError(ClientError::InvalidResponse(format!(
                 "failed to parse trailing shard upload progress frame: {err}; line={}",
                 String::from_utf8_lossy(&buffer)
-            ))
+            )))
         })?;
-        if let Some(was_new) = handle_shard_upload_event(event, progress_callback.as_ref())? {
-            return Ok(was_new);
+        if handle_shard_upload_event(event, progress_callback.as_ref())? {
+            return Ok(());
         }
     }
 
-    Err(ClientError::Other("shard upload stream ended without a terminal done or error frame".into()))
+    Err(RetryableReqwestError::FatalError(ClientError::InvalidResponse(
+        "shard upload stream ended without a terminal done or error frame".into(),
+    )))
 }
 
+fn map_stream_io_error(err: reqwest::Error) -> RetryableReqwestError {
+    // Match `RetryWrapper::run_and_extract_json` body/decode classification.
+    if err.is_connect() || err.is_decode() || err.is_body() || err.is_timeout() {
+        RetryableReqwestError::RetryableError(err.into())
+    } else {
+        RetryableReqwestError::FatalError(err.into())
+    }
+}
+
+/// Returns `true` when a terminal success (`result`) frame was received.
 fn handle_shard_upload_event(
     event: ShardUploadEvent,
     progress_callback: Option<&ShardUploadProgressCallback>,
-) -> Result<Option<bool>> {
+) -> std::result::Result<bool, RetryableReqwestError> {
     if let Some(callback) = progress_callback {
         callback(ShardUploadProgressType::Response(&event));
     }
 
     match event {
-        ShardUploadEvent::Validating { .. } | ShardUploadEvent::Committing { .. } => Ok(None),
-        ShardUploadEvent::Result { result } => Ok(Some(matches!(result, UploadShardResponseType::SyncPerformed))),
-        ShardUploadEvent::Error { message } => Err(ClientError::Other(message)),
+        ShardUploadEvent::Validating { .. } | ShardUploadEvent::Committing { .. } => Ok(false),
+        ShardUploadEvent::Result => Ok(true),
+        ShardUploadEvent::Error { message, retryable } => {
+            let err = ClientError::Other(message);
+            if retryable {
+                Err(RetryableReqwestError::RetryableError(err))
+            } else {
+                Err(RetryableReqwestError::FatalError(err))
+            }
+        },
     }
 }
 
@@ -68,7 +92,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
-    use crate::cas_types::{CommitStage, UploadShardResponseType};
+    use crate::cas_types::CommitStage;
 
     /// Builds a `reqwest::Response` that streams `chunks` as separate network reads, so tests
     /// can exercise `read_shard_upload_ndjson`'s buffering (e.g. a JSON frame split mid-line
@@ -87,7 +111,7 @@ mod tests {
     #[test]
     fn test_handle_validating_event_is_not_terminal() {
         let result = handle_shard_upload_event(ShardUploadEvent::Validating { verified: 1, total: 2 }, None).unwrap();
-        assert_eq!(result, None);
+        assert!(!result);
     }
 
     #[test]
@@ -99,43 +123,39 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(result, None);
+        assert!(!result);
     }
 
     #[test]
-    fn test_handle_result_sync_performed_returns_true() {
-        let result = handle_shard_upload_event(
-            ShardUploadEvent::Result {
-                result: UploadShardResponseType::SyncPerformed,
-            },
-            None,
-        )
-        .unwrap();
-        assert_eq!(result, Some(true));
+    fn test_handle_result_is_terminal() {
+        let result = handle_shard_upload_event(ShardUploadEvent::Result, None).unwrap();
+        assert!(result);
     }
 
     #[test]
-    fn test_handle_result_exists_returns_false() {
-        let result = handle_shard_upload_event(
-            ShardUploadEvent::Result {
-                result: UploadShardResponseType::Exists,
-            },
-            None,
-        )
-        .unwrap();
-        assert_eq!(result, Some(false));
-    }
-
-    #[test]
-    fn test_handle_error_event_propagates_message() {
+    fn test_handle_error_event_is_fatal() {
         let err = handle_shard_upload_event(
             ShardUploadEvent::Error {
                 message: "boom".to_string(),
+                retryable: false,
             },
             None,
         )
         .unwrap_err();
-        assert!(matches!(err, ClientError::Other(msg) if msg == "boom"));
+        assert!(matches!(err, RetryableReqwestError::FatalError(ClientError::Other(msg)) if msg == "boom"));
+    }
+
+    #[test]
+    fn test_handle_retryable_error_event() {
+        let err = handle_shard_upload_event(
+            ShardUploadEvent::Error {
+                message: "transient".to_string(),
+                retryable: true,
+            },
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, RetryableReqwestError::RetryableError(ClientError::Other(msg)) if msg == "transient"));
     }
 
     #[test]
@@ -156,52 +176,56 @@ mod tests {
     // === read_shard_upload_ndjson ===
 
     #[tokio::test]
-    async fn test_read_ndjson_result_sync_performed_returns_true() {
+    async fn test_read_ndjson_result_succeeds() {
         let resp = response_from_chunks(vec![
             "{\"type\":\"validating\",\"verified\":0,\"total\":1}\n",
-            "{\"type\":\"result\",\"result\":1}\n",
+            "{\"type\":\"result\"}\n",
         ]);
-        assert!(read_shard_upload_ndjson(resp, None).await.unwrap());
+        read_shard_upload_ndjson(resp, None).await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_read_ndjson_result_exists_returns_false() {
-        let resp = response_from_chunks(vec!["{\"type\":\"result\",\"result\":0}\n"]);
-        assert!(!read_shard_upload_ndjson(resp, None).await.unwrap());
-    }
-
-    #[tokio::test]
-    async fn test_read_ndjson_error_frame_propagates_as_err() {
-        let resp = response_from_chunks(vec!["{\"type\":\"error\",\"message\":\"boom\"}\n"]);
+    async fn test_read_ndjson_error_frame_is_fatal() {
+        let resp = response_from_chunks(vec!["{\"type\":\"error\",\"message\":\"boom\",\"retryable\":false}\n"]);
         let err = read_shard_upload_ndjson(resp, None).await.unwrap_err();
-        assert!(matches!(err, ClientError::Other(msg) if msg == "boom"));
+        assert!(matches!(err, RetryableReqwestError::FatalError(ClientError::Other(msg)) if msg == "boom"));
+    }
+
+    #[tokio::test]
+    async fn test_read_ndjson_retryable_error_frame() {
+        let resp = response_from_chunks(vec!["{\"type\":\"error\",\"message\":\"reset\",\"retryable\":true}\n"]);
+        let err = read_shard_upload_ndjson(resp, None).await.unwrap_err();
+        assert!(matches!(err, RetryableReqwestError::RetryableError(ClientError::Other(msg)) if msg == "reset"));
     }
 
     #[tokio::test]
     async fn test_read_ndjson_frame_split_mid_line_across_chunks() {
         // The frame is split in the middle of the JSON object across two network reads.
-        let resp = response_from_chunks(vec!["{\"type\":\"result\",\"resul", "t\":1}\n"]);
-        assert!(read_shard_upload_ndjson(resp, None).await.unwrap());
+        let resp = response_from_chunks(vec!["{\"type\":\"resul", "t\"}\n"]);
+        read_shard_upload_ndjson(resp, None).await.unwrap();
     }
 
     #[tokio::test]
     async fn test_read_ndjson_trailing_frame_without_newline() {
         // No trailing "\n" after the final frame -- exercises the post-loop buffer flush.
-        let resp = response_from_chunks(vec!["{\"type\":\"result\",\"result\":1}"]);
-        assert!(read_shard_upload_ndjson(resp, None).await.unwrap());
+        let resp = response_from_chunks(vec!["{\"type\":\"result\"}"]);
+        read_shard_upload_ndjson(resp, None).await.unwrap();
     }
 
     #[tokio::test]
     async fn test_read_ndjson_skips_blank_lines() {
-        let resp = response_from_chunks(vec!["\n{\"type\":\"result\",\"result\":1}\n"]);
-        assert!(read_shard_upload_ndjson(resp, None).await.unwrap());
+        let resp = response_from_chunks(vec!["\n{\"type\":\"result\"}\n"]);
+        read_shard_upload_ndjson(resp, None).await.unwrap();
     }
 
     #[tokio::test]
     async fn test_read_ndjson_missing_terminal_frame_errors() {
         let resp = response_from_chunks(vec!["{\"type\":\"validating\",\"verified\":0,\"total\":1}\n"]);
         let err = read_shard_upload_ndjson(resp, None).await.unwrap_err();
-        assert!(matches!(err, ClientError::Other(msg) if msg.contains("without a terminal")));
+        assert!(matches!(
+            err,
+            RetryableReqwestError::FatalError(ClientError::InvalidResponse(msg)) if msg.contains("without a terminal")
+        ));
     }
 
     #[tokio::test]
@@ -217,10 +241,10 @@ mod tests {
         let resp = response_from_chunks(vec![
             "{\"type\":\"validating\",\"verified\":0,\"total\":1}\n",
             "{\"type\":\"committing\",\"stage\":\"uploading\"}\n",
-            "{\"type\":\"result\",\"result\":1}\n",
+            "{\"type\":\"result\"}\n",
         ]);
 
-        assert!(read_shard_upload_ndjson(resp, Some(callback)).await.unwrap());
+        read_shard_upload_ndjson(resp, Some(callback)).await.unwrap();
 
         let seen = seen.lock().unwrap();
         assert_eq!(
@@ -230,9 +254,7 @@ mod tests {
                 ShardUploadEvent::Committing {
                     stage: CommitStage::Uploading
                 },
-                ShardUploadEvent::Result {
-                    result: UploadShardResponseType::SyncPerformed
-                },
+                ShardUploadEvent::Result,
             ]
         );
     }

@@ -22,6 +22,9 @@ pub enum ClientError {
     #[error("Invalid range")]
     InvalidRange,
 
+    #[error("Invalid response: {0}")]
+    InvalidResponse(String),
+
     #[error("Invalid arguments")]
     InvalidArguments,
 
