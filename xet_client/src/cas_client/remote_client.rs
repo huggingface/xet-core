@@ -387,8 +387,10 @@ impl RemoteClient {
             "Starting upload_shard API call",
         );
 
-        // One target of "/v2/shards" API compared to "v1/shards" is to eliminate
-        // the http client without read timeout.
+        // Uses `authenticated_http_client` (read timeout enabled). Unlike v1, which needs the
+        // no-read-timeout client because server-side validation can be silent for a long time,
+        // `/v2/shards` streams NDJSON and the CAS server re-emits the last frame as a heartbeat
+        // every ~20s during quiet validation — so the normal client read timeout is sufficient.
         let client = self.authenticated_http_client.clone();
 
         let block_size = self.ctx.config.client.upload_reporting_block_size;
