@@ -29,7 +29,7 @@ use super::{Client, INFORMATION_LOG_LEVEL};
 use crate::cas_client::ShardUploadProgressType;
 use crate::cas_types::{
     BatchQueryReconstructionResponse, FileChunkHashesResponse, FileRange, HttpRange, Key, QueryReconstructionResponse,
-    QueryReconstructionResponseV2, UploadShardResponse, UploadShardResponseType, UploadXorbResponse,
+    QueryReconstructionResponseV2, ShardUploadEvent, UploadShardResponse, UploadShardResponseType, UploadXorbResponse,
     X_RANGE_DIRTY_HEADER,
 };
 use crate::common::http_client::{self, Api};
@@ -315,7 +315,12 @@ impl RemoteClient {
         }
     }
 
-    pub(crate) async fn upload_shard_v1(&self, shard_data: Bytes, upload_permit: ConnectionPermit) -> Result<bool> {
+    pub(crate) async fn upload_shard_v1(
+        &self,
+        shard_data: Bytes,
+        upload_permit: ConnectionPermit,
+        progress_callback: Option<ShardUploadProgressCallback>,
+    ) -> Result<bool> {
         let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
         let n_upload_bytes = shard_data.len();
         event!(INFORMATION_LOG_LEVEL, call_id, size = n_upload_bytes, "Starting upload_shard API call",);
@@ -340,7 +345,7 @@ impl RemoteClient {
             })
             .await?;
 
-        match response.result {
+        let was_new = match response.result {
             UploadShardResponseType::Exists => {
                 event!(
                     INFORMATION_LOG_LEVEL,
@@ -349,7 +354,7 @@ impl RemoteClient {
                     result = "exists",
                     "Completed upload_shard API call",
                 );
-                Ok(false)
+                false
             },
             UploadShardResponseType::SyncPerformed => {
                 event!(
@@ -359,9 +364,18 @@ impl RemoteClient {
                     result = "sync performed",
                     "Completed upload_shard API call",
                 );
-                Ok(true)
+                true
             },
+        };
+
+        // V1 has no NDJSON progress stream; synthesize transfer + terminal Result so counters
+        // (and hub UI) do not remain incomplete after a successful upload / V2→V1 fallback.
+        if let Some(cb) = &progress_callback {
+            cb(ShardUploadProgressType::Transfer(n_upload_bytes as u64));
+            cb(ShardUploadProgressType::Response(&ShardUploadEvent::Result));
         }
+
+        Ok(was_new)
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -468,14 +482,14 @@ impl RemoteClient {
                 {
                     info!(status = ?e.status(), "V2 shard upload not available, falling back to V1");
                     let fallback_permit = self.upload_concurrency_controller.acquire_connection_permit().await?;
-                    let result = self.upload_shard_v1(shard_data, fallback_permit).await?;
+                    let result = self.upload_shard_v1(shard_data, fallback_permit, progress_callback).await?;
                     // Store after success to make sure we don't mess up on e.g. network failure.
                     self.detected_shard_api_version.store(1, Ordering::Relaxed);
                     Ok(result)
                 },
                 Err(e) => Err(e),
             },
-            1 => self.upload_shard_v1(shard_data, upload_permit).await,
+            1 => self.upload_shard_v1(shard_data, upload_permit, progress_callback).await,
             other => Err(ClientError::InternalError(anyhow!("unsupported shard upload API version: {other}"))),
         }
     }
@@ -754,7 +768,7 @@ impl Client for RemoteClient {
 
         #[cfg(target_family = "wasm")]
         {
-            self.upload_shard_v1(shard_data, upload_permit).await
+            self.upload_shard_v1(shard_data, upload_permit, progress_callback).await
         }
 
         #[cfg(not(target_family = "wasm"))]
