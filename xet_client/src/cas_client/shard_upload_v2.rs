@@ -6,6 +6,10 @@ use super::retry_wrapper::RetryableReqwestError;
 use crate::cas_types::ShardUploadEvent;
 use crate::error::ClientError;
 
+/// Max bytes for one NDJSON frame (excluding the trailing newline). Caps unbounded growth if a
+/// server/proxy streams data without ever emitting `\n`.
+const MAX_NDJSON_LINE_BYTES: usize = 1_048_576; // 1 MiB
+
 /// Parse the `/v2/shards` NDJSON response stream until a terminal `result` or `error` frame.
 ///
 /// Returns [`RetryableReqwestError`] so callers can fold this into [`RetryWrapper::run_and_process`]:
@@ -23,6 +27,9 @@ pub(crate) async fn read_shard_upload_ndjson(
         while let Some(newline_idx) = buffer.iter().position(|&b| b == b'\n') {
             let line = buffer.drain(..=newline_idx).collect::<Vec<u8>>();
             let line = line.strip_suffix(b"\n").unwrap_or(&line);
+            if line.len() > MAX_NDJSON_LINE_BYTES {
+                return Err(oversized_ndjson_frame_error(line.len()));
+            }
             if line.is_empty() {
                 continue;
             }
@@ -36,9 +43,16 @@ pub(crate) async fn read_shard_upload_ndjson(
                 return Ok(());
             }
         }
+        // Incomplete frame (no newline yet) must not grow without bound.
+        if buffer.len() > MAX_NDJSON_LINE_BYTES {
+            return Err(oversized_ndjson_frame_error(buffer.len()));
+        }
     }
 
     if !buffer.is_empty() {
+        if buffer.len() > MAX_NDJSON_LINE_BYTES {
+            return Err(oversized_ndjson_frame_error(buffer.len()));
+        }
         let event: ShardUploadEvent = serde_json::from_slice(&buffer).map_err(|err| {
             RetryableReqwestError::FatalError(ClientError::InvalidResponse(format!(
                 "failed to parse trailing shard upload progress frame: {err}; line={}",
@@ -52,6 +66,12 @@ pub(crate) async fn read_shard_upload_ndjson(
 
     Err(RetryableReqwestError::FatalError(ClientError::InvalidResponse(
         "shard upload stream ended without a terminal done or error frame".into(),
+    )))
+}
+
+fn oversized_ndjson_frame_error(len: usize) -> RetryableReqwestError {
+    RetryableReqwestError::FatalError(ClientError::InvalidResponse(format!(
+        "shard upload progress frame exceeds {MAX_NDJSON_LINE_BYTES} byte limit (got {len} bytes)"
     )))
 }
 
@@ -232,6 +252,20 @@ mod tests {
         // No trailing "\n" after the final frame -- exercises the post-loop buffer flush.
         let resp = response_from_chunks(vec!["{\"type\":\"result\"}"]);
         read_shard_upload_ndjson(resp, None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_read_ndjson_rejects_oversized_frame() {
+        // No newline: buffer grows past the cap and must fail rather than allocate unboundedly.
+        let oversized = bytes::Bytes::from(vec![b'x'; MAX_NDJSON_LINE_BYTES + 1]);
+        let body = reqwest::Body::wrap_stream(futures::stream::iter(vec![Ok::<_, std::io::Error>(oversized)]));
+        let resp: reqwest::Response = http::Response::builder().status(200).body(body).unwrap().into();
+        let err = read_shard_upload_ndjson(resp, None).await.unwrap_err();
+        assert!(matches!(
+            err,
+            RetryableReqwestError::FatalError(ClientError::InvalidResponse(msg))
+                if msg.contains("exceeds") && msg.contains("byte limit")
+        ));
     }
 
     #[tokio::test]

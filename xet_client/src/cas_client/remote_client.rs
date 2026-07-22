@@ -385,17 +385,26 @@ impl RemoteClient {
 
         let block_size = self.ctx.config.client.upload_reporting_block_size;
 
+        // Track reported body bytes so a final failure (e.g. 404 before V1 fallback) can erase
+        // them. Retries within this call share `upload_reporter`; StreamProgressReporter's
+        // high-water mark already prevents Transfer double-counting across attempts.
+        let transferred = Arc::new(AtomicU64::new(0));
         let mut upload_reporter = StreamProgressReporter::new(n_upload_bytes as u64)
             .with_adaptive_concurrency_reporter(upload_permit.get_partial_completion_reporting_function());
         if let Some(cb) = &progress_callback {
             let cb = cb.clone();
-            upload_reporter = upload_reporter
-                .with_progress_callback(Arc::new(move |delta, _, _| cb(ShardUploadProgressType::Transfer(delta))));
+            let transferred = transferred.clone();
+            upload_reporter = upload_reporter.with_progress_callback(Arc::new(move |delta, _, _| {
+                transferred.fetch_add(delta, Ordering::Relaxed);
+                cb(ShardUploadProgressType::Transfer(delta));
+            }));
         }
+
+        let progress_callback_for_closure = progress_callback.clone();
 
         // NDJSON parsing runs inside `run_and_process` so `error` frames with
         // `retryable: true` (and transient stream I/O) retry the whole upload via RetryWrapper.
-        RetryWrapper::new(self.ctx.clone(), api_tag)
+        let result = RetryWrapper::new(self.ctx.clone(), api_tag)
             .with_connection_permit(upload_permit, Some(shard_data.len() as u64))
             .run_and_process(
                 move || {
@@ -411,9 +420,21 @@ impl RemoteClient {
                         .body(Body::wrap_stream(upload_stream))
                         .send()
                 },
-                move |response| read_shard_upload_ndjson(response, progress_callback.clone()),
+                move |response| read_shard_upload_ndjson(response, progress_callback_for_closure.clone()),
             )
-            .await?;
+            .await;
+
+        // V1 fallback synthesizes Transfer(full); undo any V2 body progress first.
+        if result.is_err() {
+            let already_transferred = transferred.load(Ordering::Relaxed);
+            if already_transferred > 0
+                && let Some(cb) = &progress_callback
+            {
+                cb(ShardUploadProgressType::DecrementTransfer(already_transferred));
+            }
+        }
+
+        result?;
 
         event!(
             INFORMATION_LOG_LEVEL,

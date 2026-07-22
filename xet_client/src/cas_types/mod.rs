@@ -598,8 +598,7 @@ mod tests {
         assert_eq!(event, ShardUploadEvent::Unknown);
 
         // Extra fields on an unknown type are fine; the catch-all only keys off `type`.
-        let event: ShardUploadEvent =
-            serde_json::from_str(r#"{"type":"future_stage","detail":{"n":1}}"#).unwrap();
+        let event: ShardUploadEvent = serde_json::from_str(r#"{"type":"future_stage","detail":{"n":1}}"#).unwrap();
         assert_eq!(event, ShardUploadEvent::Unknown);
     }
 

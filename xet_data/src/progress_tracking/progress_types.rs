@@ -263,6 +263,12 @@ impl ShardUploadProgress {
         self.total_shard_bytes_upload_completed.fetch_add(nbytes, Ordering::Relaxed);
     }
 
+    /// Undo previously reported transfer bytes (e.g. abandoned V2 attempt before V1 retry).
+    /// Callers must not decrement more than they previously Transfer-incremented.
+    pub fn decrement_shard_transfer_progress(&self, nbytes: u64) {
+        self.total_shard_bytes_upload_completed.fetch_sub(nbytes, Ordering::Relaxed);
+    }
+
     /// Apply a v2 NDJSON progress event for the shard tracked by `id`.
     ///
     /// Events for a given shard normally progress `Validating` -> `Committing(Uploading)`
@@ -436,6 +442,11 @@ impl UploadGroupProgress {
     /// Update shard transfer bytes for transfer "_id"
     pub fn increment_shard_transfer_progress(&self, _id: UniqueId, nbytes: u64) {
         self.shards.increment_shard_transfer_progress(nbytes)
+    }
+
+    /// Undo previously reported shard transfer bytes for transfer "_id".
+    pub fn decrement_shard_transfer_progress(&self, _id: UniqueId, nbytes: u64) {
+        self.shards.decrement_shard_transfer_progress(nbytes)
     }
 
     /// Update shard upload progress
@@ -1058,6 +1069,7 @@ mod tests {
         // A later known milestone still applies normally.
         progress.update(id, &ShardUploadEvent::Result);
         let report = progress.report();
+        assert_eq!(report.total_shards_synced, 1);
         assert_eq!(report.total_shards_completed, 1);
         assert_eq!(*progress.shard_upload_state.lock().unwrap().get(&id).unwrap(), ShardUploadEvent::Result);
     }

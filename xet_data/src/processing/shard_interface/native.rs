@@ -294,6 +294,9 @@ impl SessionShardInterface {
                             ShardUploadProgressType::Transfer(nbytes) => {
                                 completion_tracker.increment_shard_transfer_progress(shard_progress_id, nbytes)
                             },
+                            ShardUploadProgressType::DecrementTransfer(nbytes) => {
+                                completion_tracker.decrement_shard_transfer_progress(shard_progress_id, nbytes)
+                            },
                             ShardUploadProgressType::Response(event) => {
                                 completion_tracker.register_shard_upload_progress(shard_progress_id, event)
                             },

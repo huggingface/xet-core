@@ -426,6 +426,10 @@ impl CompletionTracker {
         self.group_progress.increment_shard_transfer_progress(id, nbytes);
     }
 
+    pub fn decrement_shard_transfer_progress(&self, id: UniqueId, nbytes: u64) {
+        self.group_progress.decrement_shard_transfer_progress(id, nbytes);
+    }
+
     pub fn register_shard_upload_progress(&self, id: UniqueId, event: &ShardUploadEvent) {
         self.group_progress.register_shard_upload_progress(id, event);
     }

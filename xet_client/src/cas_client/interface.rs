@@ -18,6 +18,9 @@ use crate::error::Result;
 pub enum ShardUploadProgressType<'a> {
     /// Incremental request-body bytes transferred to the server.
     Transfer(u64),
+    /// Subtract previously reported transfer bytes (e.g. after a failed V2 attempt
+    /// before restarting the upload on V1).
+    DecrementTransfer(u64),
     /// NDJSON progress event from the v2 response stream.
     Response(&'a ShardUploadEvent),
 }
