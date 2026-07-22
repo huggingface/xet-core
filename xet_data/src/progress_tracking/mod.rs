@@ -3,5 +3,6 @@ mod speed_tracker;
 pub mod upload_tracking;
 
 pub use progress_types::{
-    GroupProgress, GroupProgressReport, ItemProgress, ItemProgressReport, ItemProgressUpdater, UploadGroupProgress,
+    GroupProgress, GroupProgressReport, ItemProgress, ItemProgressReport, ItemProgressUpdater,
+    ShardUploadProgressReport, UploadGroupProgress,
 };

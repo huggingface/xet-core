@@ -333,6 +333,8 @@ pub enum ShardUploadEvent {
     Error {
         message: String,
         /// When true, the client should retry the upload (transient server/network fault).
+        /// Defaults to `false` when omitted so older/partial error frames still deserialize.
+        #[serde(default)]
         retryable: bool,
     },
     /// Catch-all for unknown future `type` values so older clients keep reading the stream.
@@ -496,6 +498,16 @@ mod tests {
         let json = serde_json::to_string(&retryable).unwrap();
         assert_eq!(json, r#"{"type":"error","message":"transient","retryable":true}"#);
         assert_eq!(serde_json::from_str::<ShardUploadEvent>(&json).unwrap(), retryable);
+
+        // Older/partial frames may omit `retryable`; treat as non-retryable terminal error.
+        let omitted = serde_json::from_str::<ShardUploadEvent>(r#"{"type":"error","message":"boom"}"#).unwrap();
+        assert_eq!(
+            omitted,
+            ShardUploadEvent::Error {
+                message: "boom".to_string(),
+                retryable: false,
+            }
+        );
     }
 
     #[test]
