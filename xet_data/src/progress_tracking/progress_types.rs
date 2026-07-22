@@ -589,6 +589,10 @@ pub struct GroupProgressReport {
     pub total_transfer_bytes: u64,
     pub total_transfer_bytes_completed: u64,
     pub total_transfer_bytes_completion_rate: Option<f64>,
+    /// Shard finalization progress when an upload commit is tracking shards.
+    ///
+    /// `None` for downloads, dry-run, or older callers that predate the shard
+    /// progress section — not an error.
     pub shard: Option<ShardUploadProgressReport>,
 }
 

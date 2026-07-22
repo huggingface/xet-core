@@ -11,16 +11,17 @@ use crate::cas_types::{
     BatchQueryReconstructionResponse, FileChunkHashesResponse, FileRange, HttpRange, QueryReconstructionResponseV2,
     ShardUploadEvent,
 };
+use crate::error::Result;
 
-/// Progress callback for shard upload finalization (v2 NDJSON stream).
+/// Progress update delivered to the shard-upload callback.
+#[derive(Debug)]
 pub enum ShardUploadProgressType<'a> {
-    // Number of incremental bytes transfered
+    /// Incremental request-body bytes transferred to the server.
     Transfer(u64),
-    // Progress event from server
+    /// NDJSON progress event from the v2 response stream.
     Response(&'a ShardUploadEvent),
 }
 pub type ShardUploadProgressCallback = Arc<dyn Fn(ShardUploadProgressType) + Send + Sync>;
-use crate::error::Result;
 
 #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]

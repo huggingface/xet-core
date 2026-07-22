@@ -287,8 +287,7 @@ impl SessionShardInterface {
                     }
 
                     // Shard upload progress
-                    let shard_progress_id =
-                        completion_tracker.register_shard_transfer(data.len().try_into().unwrap_or(0));
+                    let shard_progress_id = completion_tracker.register_shard_transfer(data.len() as u64);
 
                     let progress_callback: Option<ShardUploadProgressCallback> =
                         Some(Arc::new(move |progress_type: ShardUploadProgressType| match progress_type {
