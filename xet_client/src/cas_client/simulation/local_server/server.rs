@@ -1431,9 +1431,13 @@ mod tests {
                 .is_some()
         );
 
-        DeletionControlableClient::remove_shard_dedup_entries(&sc, &shard_hash)
+        let removed = DeletionControlableClient::remove_shard_dedup_entries(&sc, &shard_hash)
             .await
             .unwrap();
+        assert!(
+            removed.contains(&first_chunk),
+            "removed chunk list should round-trip the shard's deregistered chunk over HTTP"
+        );
         assert!(
             Client::query_for_global_dedup_shard(&sc, "default", &first_chunk)
                 .await

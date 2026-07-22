@@ -1175,18 +1175,22 @@ impl super::DeletionControlableClient for MemoryClient {
         Ok(())
     }
 
-    async fn remove_shard_dedup_entries(&self, shard_hash: &MerkleHash) -> Result<()> {
+    async fn remove_shard_dedup_entries(&self, shard_hash: &MerkleHash) -> Result<Vec<MerkleHash>> {
         let shard = self.shard.read().await;
         let Some((current_hash, _)) = Self::current_shard_hash_and_bytes(&shard)? else {
-            return Ok(());
+            return Ok(Vec::new());
         };
         if &current_hash != shard_hash {
-            return Ok(());
+            return Ok(Vec::new());
         }
         drop(shard);
 
-        self.global_dedup.write().await.clear();
-        Ok(())
+        // The in-memory client holds a single shard, so every global-dedup entry
+        // belongs to it; return all keys as the removed set before clearing.
+        let mut dedup = self.global_dedup.write().await;
+        let removed_chunks = dedup.keys().copied().collect();
+        dedup.clear();
+        Ok(removed_chunks)
     }
 
     async fn delete_xorb(&self, hash: &MerkleHash) {
