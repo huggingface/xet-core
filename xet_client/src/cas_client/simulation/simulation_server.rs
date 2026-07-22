@@ -83,6 +83,7 @@ pub struct LocalTestServerBuilder {
     client: Option<Arc<dyn DirectAccessClient>>,
     server_latency_profile: Option<ServerLatencyProfile>,
     network_profile: Option<NetworkProfile>,
+    lifecycle_tag_deletion: bool,
 }
 
 #[allow(dead_code)]
@@ -98,6 +99,7 @@ impl LocalTestServerBuilder {
             client: None,
             server_latency_profile: None,
             network_profile: None,
+            lifecycle_tag_deletion: false,
         }
     }
 
@@ -170,6 +172,19 @@ impl LocalTestServerBuilder {
         self
     }
 
+    /// Enables lifecycle-tag deletion mode on the backing client.
+    ///
+    /// When enabled, `delete_xorb`/`delete_shard` tag objects (retain bytes)
+    /// instead of hard-deleting, mirroring production's S3 lifecycle-tag
+    /// deletion. Reads of tagged objects fail as if the
+    /// object were gone; a subsequent upload of the same hash clears the tag.
+    /// Only applies to `LocalClient` and `MemoryClient` backends (not
+    /// pre-supplied clients via [`Self::with_client`]).
+    pub fn with_lifecycle_tag_deletion(mut self, on: bool) -> Self {
+        self.lifecycle_tag_deletion = on;
+        self
+    }
+
     /// Builds and starts the test server.
     pub async fn start(self) -> LocalTestServer {
         let ctx = XetContext::default().expect("XetContext::new");
@@ -192,12 +207,14 @@ impl LocalTestServerBuilder {
                 (client, None)
             } else if self.in_memory {
                 let mc = MemoryClient::new(ctx.clone());
+                mc.set_lifecycle_tag_deletion(self.lifecycle_tag_deletion);
                 let dc: Arc<dyn DeletionControlableClient> = mc.clone();
                 (mc, Some(dc))
             } else if self.ephemeral_disk {
                 let lc = LocalClient::temporary(ctx.clone())
                     .await
                     .expect("Failed to create LocalClient with temporary directory");
+                lc.set_lifecycle_tag_deletion(self.lifecycle_tag_deletion);
                 let dc: Arc<dyn DeletionControlableClient> = lc.clone();
                 (lc, Some(dc))
             } else {
@@ -207,6 +224,7 @@ impl LocalTestServerBuilder {
                 let lc = LocalClient::new(ctx.clone(), &disk_path)
                     .await
                     .expect("Failed to create LocalClient");
+                lc.set_lifecycle_tag_deletion(self.lifecycle_tag_deletion);
                 let dc: Arc<dyn DeletionControlableClient> = lc.clone();
                 (lc, Some(dc))
             };

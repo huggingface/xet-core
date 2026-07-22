@@ -16,9 +16,9 @@ path = "src/lib.rs"
 doctest = false
 
 [dependencies]
-xet-runtime = { version = "1.5.2", path = "../xet_runtime" }
-xet-core-structures = { version = "1.5.2", path = "../xet_core_structures" }
-xet-client = { version = "1.5.2", path = "../xet_client" }
+xet-runtime = { version = "1.5.4", path = "../xet_runtime" }
+xet-core-structures = { version = "1.5.4", path = "../xet_core_structures" }
+xet-client = { version = "1.5.4", path = "../xet_client" }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -28,7 +28,6 @@ clap = { workspace = true, optional = true }
 gearhash = { workspace = true }
 http = { workspace = true }
 itertools = { workspace = true }
-lazy_static = { workspace = true }
 more-asserts = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
@@ -39,7 +38,6 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true, features = ["v7"] }
-walkdir = { workspace = true, optional = true }
 pyo3 = { workspace = true, optional = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
@@ -57,7 +55,7 @@ web-time = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "rt", "time"] }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
-sha2 = { workspace = true, features = ["asm"] }
+sha2 = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 sha2 = { workspace = true }
@@ -65,11 +63,6 @@ sha2 = { workspace = true }
 [[bin]]
 name = "x"
 path = "src/processing/bin/example.rs"
-required-features = ["internal-tools"]
-
-[[bin]]
-name = "xtool"
-path = "src/processing/bin/xtool.rs"
 required-features = ["internal-tools"]
 
 [[example]]
@@ -86,7 +79,7 @@ path = "examples/xorb-check/main.rs"
 
 [dev-dependencies]
 clap = { workspace = true }
-criterion = { version = "0.4", features = ["async_tokio"] }
+criterion = { version = "0.7", features = ["async_tokio"] }
 ctor = { workspace = true }
 dirs = { workspace = true }
 rand = { workspace = true }
@@ -94,6 +87,7 @@ regex = { workspace = true }
 serial_test = { workspace = true }
 tempfile = { workspace = true }
 tracing-test = { workspace = true }
+xet-client = { path = "../xet_client", features = ["simulation"] }
 
 [[bench]]
 name = "reconstruction_bench"
@@ -104,7 +98,7 @@ strict = []
 smoke-test = []
 expensive_tests = []
 # Internal tooling (the `x` and `xtool` binaries). Off by default.
-internal-tools = ["dep:clap", "dep:walkdir"]
+internal-tools = ["dep:clap"]
 fd-track = ["xet-runtime/fd-track", "xet-client/fd-track"]
 python = ["dep:pyo3"]
 simulation = ["xet-client/simulation", "xet-core-structures/simulation"]

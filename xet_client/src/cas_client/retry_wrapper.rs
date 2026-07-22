@@ -28,6 +28,7 @@ struct ConnectionPermitInfo {
 pub struct RetryWrapper {
     max_attempts: usize,
     base_delay: Duration,
+    max_duration: Duration,
     no_retry_on_429: bool,
     retry_on_403: bool,
     expected_416: bool,
@@ -41,9 +42,11 @@ impl RetryWrapper {
     pub fn new(ctx: XetContext, api_tag: &'static str) -> Self {
         let max_attempts = ctx.config.client.retry_max_attempts;
         let base_delay = ctx.config.client.retry_base_delay;
+        let max_duration = ctx.config.client.retry_max_duration;
         Self {
             max_attempts,
             base_delay,
+            max_duration,
             no_retry_on_429: false,
             retry_on_403: false,
             expected_416: false,
@@ -61,6 +64,11 @@ impl RetryWrapper {
 
     pub fn with_base_delay(mut self, delay: Duration) -> Self {
         self.base_delay = delay;
+        self
+    }
+
+    pub fn with_max_duration(mut self, duration: Duration) -> Self {
+        self.max_duration = duration;
         self
     }
 
@@ -100,7 +108,26 @@ impl RetryWrapper {
         }));
         self
     }
+}
 
+impl std::fmt::Debug for RetryWrapper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RetryWrapper")
+            .field("max_attempts", &self.max_attempts)
+            .field("base_delay", &self.base_delay)
+            .field("max_duration", &self.max_duration)
+            .field("no_retry_on_429", &self.no_retry_on_429)
+            .field("retry_on_403", &self.retry_on_403)
+            .field("expected_416", &self.expected_416)
+            .field("expected_404", &self.expected_404)
+            .field("log_errors_as_info", &self.log_errors_as_info)
+            .field("api_tag", &self.api_tag)
+            .field("has_connection_permit", &self.connection_permit.is_some())
+            .finish()
+    }
+}
+
+impl RetryWrapper {
     fn process_error_response(&self, try_idx: usize, err: reqwest_middleware::Error) -> RetryableReqwestError {
         let api = &self.api_tag;
 
@@ -242,16 +269,9 @@ impl RetryWrapper {
         ProcFn: Fn(Response) -> ProcFut + Send + 'static,
         ProcFut: Future<Output = std::result::Result<T, RetryableReqwestError>> + 'static,
     {
-        let strategy = ExponentialBackoff::from_millis(self.base_delay.as_millis().min(u64::MAX as u128) as u64)
-            .map(jitter)
-            .take(self.max_attempts);
+        let strategy = exponential_retry_delays(self.base_delay, self.max_attempts, self.max_duration).map(jitter);
 
-        info!(
-            max_attempts = self.max_attempts,
-            base_delay=?self.base_delay,
-            no_retry_on_429=self.no_retry_on_429,
-            "Retry strategy",
-        );
+        info!(retry=?self, "Retry strategy");
 
         // Move self (which is consumable) into an arc that can be passed into this.
         // This allows the code to be a bit better.
@@ -456,6 +476,26 @@ impl RetryWrapper {
     }
 }
 
+/// Build pre-jitter retry delays from `base_delay`, raising by `base_delay / 1s` each step.
+///
+/// `ExponentialBackoff::from_millis(base_delay_ms)` would use `base_delay_ms` as both the
+/// first delay and the per-step multiplier (e.g. 3000 -> 3s, 9000s, ...). Instead, the
+/// per-step multiplier is derived from `base_delay` in whole seconds and `factor` scales
+/// the first delay back to `base_delay`.
+fn exponential_retry_delays(
+    base_delay: Duration,
+    max_attempts: usize,
+    max_duration: Duration,
+) -> impl Iterator<Item = Duration> {
+    let base_delay_ms = base_delay.as_millis().min(u64::MAX as u128) as u64;
+    let multiplier = base_delay.as_secs().max(1);
+    let factor = (base_delay_ms / multiplier).max(1);
+    ExponentialBackoff::from_millis(multiplier)
+        .factor(factor)
+        .max_delay(max_duration)
+        .take(max_attempts)
+}
+
 /// Classifies a response status as retryable.
 ///
 /// Equivalent to `reqwest_retry::default_on_request_success`:
@@ -562,6 +602,58 @@ mod tests {
     use xet_runtime::core::XetContext;
 
     use super::*;
+
+    #[test]
+    fn test_exponential_retry_strategy() {
+        let base_delay = Duration::from_millis(3000);
+        let max_attempts = 5;
+
+        // Old construction: from_millis(base_delay) uses base_delay_ms as both the first
+        // delay and the per-step multiplier -> 3s, 9000s, 7500h, ...
+        let old_delays: Vec<Duration> =
+            ExponentialBackoff::from_millis(base_delay.as_millis().min(u64::MAX as u128) as u64)
+                .take(max_attempts)
+                .collect();
+        assert_eq!(
+            old_delays,
+            [
+                Duration::from_secs(3),
+                Duration::from_secs(9000),
+                Duration::from_hours(7500),
+                Duration::from_hours(22_500_000),
+                Duration::from_hours(67_500_000_000),
+            ]
+        );
+
+        // New construction: multiplier derived from base_delay -> 3s, 9s, 27s, 81s, 243s
+        let new_delays: Vec<Duration> = exponential_retry_delays(base_delay, max_attempts, Duration::MAX).collect();
+        assert_eq!(
+            new_delays,
+            [
+                Duration::from_secs(3),
+                Duration::from_secs(9),
+                Duration::from_secs(27),
+                Duration::from_secs(81),
+                Duration::from_secs(243),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_exponential_retry_strategy_caps_at_max_duration() {
+        let delays: Vec<Duration> =
+            exponential_retry_delays(Duration::from_millis(3000), 5, Duration::from_secs(60)).collect();
+        assert_eq!(
+            delays,
+            [
+                Duration::from_millis(3000),
+                Duration::from_millis(9000),
+                Duration::from_millis(27000),
+                Duration::from_secs(60),
+                Duration::from_secs(60),
+            ]
+        );
+    }
 
     fn test_context() -> XetContext {
         let config = XetConfig::new();

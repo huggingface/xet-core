@@ -19,8 +19,11 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_CLIENT_RETRY_BASE_DELAY` to set this value.
     ref retry_base_delay : Duration = Duration::from_millis(3000);
 
-    /// After this much time has passed since the first attempt,
-    /// no more retries are attempted.
+    /// Cap each individual retry sleep at this duration.
+    ///
+    /// Applied as the per-attempt maximum backoff delay. Retries continue until
+    /// `retry_max_attempts` is exhausted; the total time spent sleeping across
+    /// retries may exceed this value.
     ///
     /// The default value is 6min.
     ///

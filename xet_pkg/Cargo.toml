@@ -25,12 +25,23 @@ categories = [
 name = "xet"
 path = "src/lib.rs"
 
-[dependencies]
-xet-runtime = { version = "1.5.2", path = "../xet_runtime" }
-xet-core-structures = { version = "1.5.2", path = "../xet_core_structures" }
-xet-client = { version = "1.5.2", path = "../xet_client" }
-xet-data = { version = "1.5.2", path = "../xet_data" }
+[[bin]]
+name = "xtool"
+path = "src/bin/xtool/main.rs"
+required-features = ["internal-tools"]
 
+# The xtool CLI tests spawn the xtool binary, so they need the same feature.
+[[test]]
+name = "test_xtool_cli"
+required-features = ["internal-tools"]
+
+[dependencies]
+xet-runtime = { version = "1.5.4", path = "../xet_runtime" }
+xet-core-structures = { version = "1.5.4", path = "../xet_core_structures" }
+xet-client = { version = "1.5.4", path = "../xet_client" }
+xet-data = { version = "1.5.4", path = "../xet_data" }
+
+anyhow = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 http = { workspace = true }
@@ -40,10 +51,17 @@ serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
+clap = { workspace = true, features = ["derive"], optional = true }
+serde_json = { workspace = true }
+url = { workspace = true, optional = true }
+walkdir = { workspace = true, optional = true }
 uuid = { workspace = true, features = ["v7"] }
 
 [features]
 smoke-test = []
+# Internal tooling (the `xtool` binary). Off by default so the library
+# still compiles for wasm32-unknown-unknown.
+internal-tools = ["dep:clap", "dep:url", "dep:walkdir"]
 fd-track = ["xet-runtime/fd-track", "xet-client/fd-track", "xet-data/fd-track"]
 python = ["xet-runtime/python", "xet-data/python", "dep:pyo3"]
 simulation = ["xet-client/simulation"]
@@ -61,12 +79,8 @@ tokio = { workspace = true, features = ["sync", "rt", "time", "macros"] }
 tokio_with_wasm = { workspace = true, features = ["rt", "sync"] }
 
 [dev-dependencies]
-anyhow = { workspace = true }
 async-std = { workspace = true }
-clap = { workspace = true, features = ["derive"] }
 futures = { workspace = true }
-more-asserts = { workspace = true }
-serde_json = { workspace = true }
 serial_test = { workspace = true }
 smol = { workspace = true }
 tempfile = { workspace = true }

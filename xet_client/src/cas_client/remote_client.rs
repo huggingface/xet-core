@@ -38,11 +38,7 @@ use crate::error::{ClientError, Result};
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
 
-use lazy_static::lazy_static;
-
-lazy_static! {
-    static ref FN_CALL_ID: AtomicU64 = AtomicU64::new(1);
-}
+static FN_CALL_ID: AtomicU64 = AtomicU64::new(1);
 
 pub struct RemoteClient {
     pub(crate) ctx: XetContext,
@@ -349,13 +345,7 @@ impl RemoteClient {
             UploadShardResponseType::Exists => "exists",
             UploadShardResponseType::SyncPerformed => "sync performed",
         };
-        event!(
-            INFORMATION_LOG_LEVEL,
-            call_id,
-            size = n_upload_bytes,
-            result,
-            "Completed upload_shard API call",
-        );
+        event!(INFORMATION_LOG_LEVEL, call_id, size = n_upload_bytes, result, "Completed upload_shard API call",);
 
         // V1 has no NDJSON progress stream; synthesize transfer + terminal Result so counters
         // (and hub UI) do not remain incomplete after a successful upload / V2→V1 fallback.
