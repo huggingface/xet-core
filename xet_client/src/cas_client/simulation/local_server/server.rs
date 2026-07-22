@@ -166,8 +166,8 @@ impl LocalServer {
     /// Builds the Axum router with all CAS API routes.
     ///
     /// Routes follow the pattern used by RemoteClient:
-    /// - `/v1/` prefixed routes for chunks, xorbs, reconstructions, and files
-    /// - Root-level `/reconstructions` for batch queries and `/shards` for uploads
+    /// - `/v1/` prefixed routes for chunks, xorbs, reconstructions, files, and shard uploads
+    /// - `/v2/` prefixed routes for V2 reconstructions and NDJSON shard uploads
     /// - `/simulation/` prefixed routes for testing/simulation configuration and direct access
     fn create_router(&self) -> Router {
         Router::new()
@@ -184,7 +184,12 @@ impl LocalServer {
                     .route("/get_xorb/{prefix}/{hash}/", get(handlers::get_file_term_data))
                     .route("/fetch_term", get(handlers::fetch_term)),
             )
-            .nest("/v2", Router::new().route("/reconstructions/{file_id}", get(handlers::get_reconstruction_v2)))
+            .nest(
+                "/v2",
+                Router::new()
+                    .route("/reconstructions/{file_id}", get(handlers::get_reconstruction_v2))
+                    .route("/shards", post(handlers::post_shard_v2)),
+            )
             .nest(
                 "/simulation",
                 super::simulation_handlers::simulation_routes()

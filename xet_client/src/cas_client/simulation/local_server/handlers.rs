@@ -31,8 +31,9 @@ use xet_core_structures::merklehash::MerkleHash;
 use super::super::super::{DeletionControlableClient, DirectAccessClient};
 use super::latency_simulation::{LatencySimulation, ServerLatencyProfile};
 use crate::cas_types::{
-    FileRange, HexKey, HexMerkleHash, QueryReconstructionResponseV2, UploadShardResponse, UploadShardResponseType,
-    UploadXorbResponse, XorbRangeDescriptor, XorbReconstructionFetchInfo,
+    CommitStage, FileRange, HexKey, HexMerkleHash, QueryReconstructionResponseV2, ShardUploadEvent,
+    UploadShardResponse, UploadShardResponseType, UploadXorbResponse, XorbRangeDescriptor,
+    XorbReconstructionFetchInfo,
 };
 use crate::error::ClientError;
 
@@ -587,6 +588,71 @@ pub async fn post_shard(State(state): State<ServerState>, body: Body) -> Respons
     }
 }
 
+/// POST /v2/shards
+///
+/// Upload a shard with an NDJSON progress stream (same event types production CAS emits).
+/// Respects [`DirectAccessClient::v2_disabled_status_code`] so clients can exercise V2→V1 fallback.
+///
+/// On success the response is `200` with `application/x-ndjson` frames ending in `result`.
+/// Backend upload failures map to HTTP errors (the stream never starts).
+pub async fn post_shard_v2(State(state): State<ServerState>, body: Body) -> Response {
+    let connection_guard = state.latency_simulation.register_connection().await;
+    if let Some(simulated_error) = connection_guard.simulate_error() {
+        return simulated_error;
+    }
+
+    // Allow testing V1 fallback by simulating V2 endpoint unavailability.
+    let disabled_status = state.client.v2_disabled_status_code();
+    if disabled_status != 0 {
+        let code = StatusCode::from_u16(disabled_status).unwrap_or(StatusCode::NOT_FOUND);
+        return (code, "V2 shard upload endpoint disabled").into_response();
+    }
+
+    let data = match collect_body(body).await {
+        Ok(d) => d,
+        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+    };
+
+    let permit = match state.client.acquire_upload_permit().await {
+        Ok(p) => p,
+        Err(e) => return error_to_response(e),
+    };
+
+    match state.client.upload_shard(data, permit, None).await {
+        Ok(()) => ndjson_shard_upload_success_response(),
+        Err(e) => error_to_response(e),
+    }
+}
+
+/// Builds a minimal production-shaped NDJSON success stream for `/v2/shards`.
+fn ndjson_shard_upload_success_response() -> Response {
+    let events = [
+        ShardUploadEvent::Validating { verified: 0, total: 1 },
+        ShardUploadEvent::Validating { verified: 1, total: 1 },
+        ShardUploadEvent::Committing {
+            stage: CommitStage::Uploading,
+        },
+        ShardUploadEvent::Committing {
+            stage: CommitStage::Syncing,
+        },
+        ShardUploadEvent::Result,
+    ];
+
+    let mut body = Vec::new();
+    for event in &events {
+        // Simulation frames are always valid `ShardUploadEvent` values.
+        serde_json::to_writer(&mut body, event).expect("ShardUploadEvent serializes");
+        body.push(b'\n');
+    }
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        http::header::CONTENT_TYPE,
+        HeaderValue::from_static("application/x-ndjson"),
+    );
+    (StatusCode::OK, headers, body).into_response()
+}
+
 /// HEAD /v1/files/{file_id}
 ///
 /// Get the size of a file.
@@ -786,7 +852,7 @@ pub async fn set_config(State(state): State<ServerState>, uri: Uri, body: Body) 
         "disable_v2_reconstruction" => match value.parse::<u16>() {
             Ok(code) => {
                 state.client.disable_v2_reconstruction(code);
-                (StatusCode::OK, "V2 reconstruction config set").into_response()
+                (StatusCode::OK, "V2 endpoints (reconstruction + shard upload) config set").into_response()
             },
             Err(e) => (StatusCode::BAD_REQUEST, format!("Invalid status code: {e}")).into_response(),
         },
