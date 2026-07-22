@@ -80,7 +80,7 @@ pub trait Client: Send + Sync {
         shard_data: bytes::Bytes,
         upload_permit: ConnectionPermit,
         progress_callback: Option<ShardUploadProgressCallback>,
-    ) -> Result<bool>;
+    ) -> Result<()>;
 
     /// Upload a new xorb. Optional progress callback receives (delta, completed, total) in transfer bytes.
     async fn upload_xorb(

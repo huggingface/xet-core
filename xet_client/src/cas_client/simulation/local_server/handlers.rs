@@ -579,14 +579,10 @@ pub async fn post_shard(State(state): State<ServerState>, body: Body) -> Respons
     };
 
     match state.client.upload_shard(data, permit, None).await {
-        Ok(was_new) => {
-            let result = if was_new {
-                UploadShardResponseType::SyncPerformed
-            } else {
-                UploadShardResponseType::Exists
-            };
-            Json(UploadShardResponse { result }).into_response()
-        },
+        Ok(()) => Json(UploadShardResponse {
+            result: UploadShardResponseType::SyncPerformed,
+        })
+        .into_response(),
         Err(e) => error_to_response(e),
     }
 }

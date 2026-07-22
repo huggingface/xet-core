@@ -320,7 +320,7 @@ impl RemoteClient {
         shard_data: Bytes,
         upload_permit: ConnectionPermit,
         progress_callback: Option<ShardUploadProgressCallback>,
-    ) -> Result<bool> {
+    ) -> Result<()> {
         let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
         let n_upload_bytes = shard_data.len();
         event!(INFORMATION_LOG_LEVEL, call_id, size = n_upload_bytes, "Starting upload_shard API call",);
@@ -345,28 +345,17 @@ impl RemoteClient {
             })
             .await?;
 
-        let was_new = match response.result {
-            UploadShardResponseType::Exists => {
-                event!(
-                    INFORMATION_LOG_LEVEL,
-                    call_id,
-                    size = n_upload_bytes,
-                    result = "exists",
-                    "Completed upload_shard API call",
-                );
-                false
-            },
-            UploadShardResponseType::SyncPerformed => {
-                event!(
-                    INFORMATION_LOG_LEVEL,
-                    call_id,
-                    size = n_upload_bytes,
-                    result = "sync performed",
-                    "Completed upload_shard API call",
-                );
-                true
-            },
+        let result = match response.result {
+            UploadShardResponseType::Exists => "exists",
+            UploadShardResponseType::SyncPerformed => "sync performed",
         };
+        event!(
+            INFORMATION_LOG_LEVEL,
+            call_id,
+            size = n_upload_bytes,
+            result,
+            "Completed upload_shard API call",
+        );
 
         // V1 has no NDJSON progress stream; synthesize transfer + terminal Result so counters
         // (and hub UI) do not remain incomplete after a successful upload / V2→V1 fallback.
@@ -375,7 +364,7 @@ impl RemoteClient {
             cb(ShardUploadProgressType::Response(&ShardUploadEvent::Result));
         }
 
-        Ok(was_new)
+        Ok(())
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -384,7 +373,7 @@ impl RemoteClient {
         shard_data: Bytes,
         upload_permit: ConnectionPermit,
         progress_callback: Option<ShardUploadProgressCallback>,
-    ) -> Result<bool> {
+    ) -> Result<()> {
         let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
         let n_upload_bytes = shard_data.len();
         let api_tag = "cas::upload_shard_v2";
@@ -443,8 +432,7 @@ impl RemoteClient {
             "Completed upload_shard API call",
         );
 
-        // V2 has no Exists/SyncPerformed distinction; report SyncPerformed for Client::upload_shard.
-        Ok(true)
+        Ok(())
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -454,7 +442,7 @@ impl RemoteClient {
         upload_permit: ConnectionPermit,
         forced_version: Option<u32>,
         progress_callback: Option<ShardUploadProgressCallback>,
-    ) -> Result<bool> {
+    ) -> Result<()> {
         // Prefer V2; fall back to V1 on 404/501; persist detected version to
         // avoid repeated fallback attempts.
         let version = match forced_version {
@@ -470,11 +458,11 @@ impl RemoteClient {
                 .upload_shard_v2(shard_data.clone(), upload_permit, progress_callback.clone())
                 .await
             {
-                Ok(result) => {
+                Ok(()) => {
                     if forced_version.is_none() {
                         self.detected_shard_api_version.store(2, Ordering::Relaxed);
                     }
-                    Ok(result)
+                    Ok(())
                 },
                 Err(e)
                     if forced_version.is_none()
@@ -482,10 +470,10 @@ impl RemoteClient {
                 {
                     info!(status = ?e.status(), "V2 shard upload not available, falling back to V1");
                     let fallback_permit = self.upload_concurrency_controller.acquire_connection_permit().await?;
-                    let result = self.upload_shard_v1(shard_data, fallback_permit, progress_callback).await?;
+                    self.upload_shard_v1(shard_data, fallback_permit, progress_callback).await?;
                     // Store after success to make sure we don't mess up on e.g. network failure.
                     self.detected_shard_api_version.store(1, Ordering::Relaxed);
-                    Ok(result)
+                    Ok(())
                 },
                 Err(e) => Err(e),
             },
@@ -761,9 +749,9 @@ impl Client for RemoteClient {
         shard_data: Bytes,
         upload_permit: ConnectionPermit,
         progress_callback: Option<ShardUploadProgressCallback>,
-    ) -> Result<bool> {
+    ) -> Result<()> {
         if self.dry_run {
-            return Ok(true);
+            return Ok(());
         }
 
         #[cfg(target_family = "wasm")]

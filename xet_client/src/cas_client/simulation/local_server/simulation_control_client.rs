@@ -230,7 +230,7 @@ impl Client for SimulationControlClient {
         shard_data: Bytes,
         upload_permit: crate::cas_client::adaptive_concurrency::ConnectionPermit,
         progress_callback: Option<crate::cas_client::interface::ShardUploadProgressCallback>,
-    ) -> Result<bool> {
+    ) -> Result<()> {
         self.remote_client
             .upload_shard(shard_data, upload_permit, progress_callback)
             .await

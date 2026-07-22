@@ -1449,7 +1449,7 @@ impl Client for LocalClient {
         shard_data: Bytes,
         _permit: super::super::adaptive_concurrency::ConnectionPermit,
         _progress_callback: Option<super::super::interface::ShardUploadProgressCallback>,
-    ) -> Result<bool> {
+    ) -> Result<()> {
         self.apply_api_delay().await;
 
         // Parse the shard using the streaming parser (handles shards without footer)
@@ -1511,7 +1511,7 @@ impl Client for LocalClient {
         }
         write_txn.commit().map_err(map_redb_db_error)?;
 
-        Ok(true)
+        Ok(())
     }
 
     async fn upload_xorb(

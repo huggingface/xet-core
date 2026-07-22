@@ -750,7 +750,7 @@ impl Client for MemoryClient {
         shard_data: Bytes,
         _permit: super::super::adaptive_concurrency::ConnectionPermit,
         _progress_callback: Option<super::super::interface::ShardUploadProgressCallback>,
-    ) -> Result<bool> {
+    ) -> Result<()> {
         self.apply_api_delay().await;
         // Parse the shard using the streaming parser (handles shards without footer)
         let mut reader = Cursor::new(&shard_data);
@@ -783,7 +783,7 @@ impl Client for MemoryClient {
             }
         }
 
-        Ok(true)
+        Ok(())
     }
 
     async fn upload_xorb(
