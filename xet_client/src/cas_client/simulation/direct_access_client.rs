@@ -58,12 +58,12 @@ pub trait DirectAccessClient: Client + Send + Sync {
     /// Pass `None` to disable (default: returns full shards with no expiration).
     fn set_global_dedup_shard_expiration(&self, expiration: Option<Duration>);
 
-    /// Disables V2 reconstruction responses with the given HTTP status code.
-    /// When disabled, the V2 endpoint returns this status, forcing clients to
-    /// fall back to V1. Pass 0 to re-enable.
+    /// Disables V2 endpoints (reconstruction and shard upload) with the given HTTP status code.
+    /// When disabled, `/v2/*` handlers return this status, forcing clients to fall back to V1.
+    /// Pass 0 to re-enable.
     fn disable_v2_reconstruction(&self, status_code: u16);
 
-    /// Returns the HTTP status code the V2 endpoint should return when disabled,
+    /// Returns the HTTP status code V2 endpoints should return when disabled,
     /// or 0 if V2 is enabled.
     fn v2_disabled_status_code(&self) -> u16 {
         0

@@ -1202,6 +1202,175 @@ mod tests {
         check_chunk_hashes_correctness(server).await;
         check_simulation_set_config(server).await;
         check_simulation_dummy_upload(server).await;
+        check_v2_shard_upload(server).await;
+        check_v2_shard_upload_disabled_fallback(server).await;
+    }
+
+    /// Builds raw shard bytes suitable for `/v1/shards` and `/v2/shards` upload tests.
+    fn random_shard_bytes() -> bytes::Bytes {
+        use xet_core_structures::metadata_shard::shard_format::test_routines::gen_random_shard_with_xorb_references;
+
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let shard_dir = tmp_dir.path().join("shard");
+        std::fs::create_dir_all(&shard_dir).unwrap();
+        let shard_in = gen_random_shard_with_xorb_references(0, &[16; 8], &[2; 20], true, true).unwrap();
+        let shard_path = shard_in.write_to_directory(&shard_dir, None).unwrap();
+        bytes::Bytes::from(std::fs::read(&shard_path).unwrap())
+    }
+
+    /// Verifies `/v2/shards` NDJSON streaming via raw HTTP and via `RemoteClient` progress callbacks.
+    async fn check_v2_shard_upload(server: &LocalTestServer) {
+        use std::sync::{Arc, Mutex};
+
+        use crate::cas_client::interface::{ShardUploadProgressCallback, ShardUploadProgressType};
+        use crate::cas_types::{CommitStage, ShardUploadEvent};
+
+        let shard_data = random_shard_bytes();
+
+        // Raw HTTP: response is NDJSON ending in a terminal `result` frame.
+        let http_client = reqwest::Client::new();
+        let response = http_client
+            .post(format!("{}/v2/shards", server.http_endpoint()))
+            .body(shard_data.clone())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            content_type.contains("ndjson") || content_type.contains("json"),
+            "unexpected content-type: {content_type}"
+        );
+
+        let body = response.text().await.unwrap();
+        let events: Vec<ShardUploadEvent> = body
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_str(line).expect("valid ShardUploadEvent NDJSON line"))
+            .collect();
+        assert!(
+            events.iter().any(|e| matches!(e, ShardUploadEvent::Validating { .. })),
+            "expected validating frame(s), got {events:?}"
+        );
+        assert!(
+            events.iter().any(|e| matches!(e, ShardUploadEvent::Committing { .. })),
+            "expected committing frame(s), got {events:?}"
+        );
+        assert_eq!(events.last(), Some(&ShardUploadEvent::Result));
+
+        // RemoteClient path: progress callback receives Response frames from the NDJSON stream.
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_cb = seen.clone();
+        let callback: ShardUploadProgressCallback = Arc::new(move |progress| {
+            if let ShardUploadProgressType::Response(event) = progress {
+                seen_cb.lock().unwrap().push(event.clone());
+            }
+        });
+
+        let shard_data = random_shard_bytes();
+        let permit = server.remote_client().acquire_upload_permit().await.unwrap();
+        server
+            .remote_simulation_client()
+            .upload_shard_v2(shard_data, permit, Some(callback))
+            .await
+            .unwrap();
+
+        let seen = seen.lock().unwrap().clone();
+        assert!(
+            seen.iter().any(|e| matches!(e, ShardUploadEvent::Validating { .. })),
+            "callback should see validating events, got {seen:?}"
+        );
+        assert!(
+            seen.iter().any(|e| {
+                matches!(
+                    e,
+                    ShardUploadEvent::Committing {
+                        stage: CommitStage::Uploading
+                    } | ShardUploadEvent::Committing {
+                        stage: CommitStage::Syncing
+                    }
+                )
+            }),
+            "callback should see committing events, got {seen:?}"
+        );
+        assert_eq!(seen.last(), Some(&ShardUploadEvent::Result));
+    }
+
+    /// Verifies `/v2/shards` disable + RemoteClient V2→V1 fallback (same status codes as reconstruction).
+    async fn check_v2_shard_upload_disabled_fallback(server: &LocalTestServer) {
+        let shard_data = random_shard_bytes();
+
+        // Fresh success on V2 before disabling.
+        {
+            let permit = server.remote_client().acquire_upload_permit().await.unwrap();
+            server
+                .remote_simulation_client()
+                .upload_shard_v2(shard_data.clone(), permit, None)
+                .await
+                .unwrap();
+        }
+
+        // 501 first so we don't cache a V1 preference from 404 fallback mid-test.
+        server.client().disable_v2_reconstruction(501);
+
+        let v2_err = {
+            let permit = server.remote_client().acquire_upload_permit().await.unwrap();
+            server
+                .remote_simulation_client()
+                .upload_shard_v2(shard_data.clone(), permit, None)
+                .await
+        };
+        assert!(v2_err.is_err(), "forced V2 should fail when disabled with 501");
+        assert_eq!(v2_err.unwrap_err().status(), Some(reqwest::StatusCode::NOT_IMPLEMENTED));
+
+        // Auto version override should fall back to V1 and succeed.
+        {
+            let permit = server.remote_client().acquire_upload_permit().await.unwrap();
+            server
+                .remote_simulation_client()
+                .upload_shard_with_version_override(shard_data.clone(), permit, None, None)
+                .await
+                .unwrap();
+        }
+
+        // Re-enable, confirm V2 works, then exercise 404 fallback.
+        server.client().disable_v2_reconstruction(0);
+        {
+            let permit = server.remote_client().acquire_upload_permit().await.unwrap();
+            // Force V2 so we don't stay on a cached V1 preference from the previous fallback.
+            server
+                .remote_simulation_client()
+                .upload_shard_with_version_override(random_shard_bytes(), permit, Some(2), None)
+                .await
+                .unwrap();
+        }
+
+        server.client().disable_v2_reconstruction(404);
+        let v2_err = {
+            let permit = server.remote_client().acquire_upload_permit().await.unwrap();
+            server
+                .remote_simulation_client()
+                .upload_shard_v2(random_shard_bytes(), permit, None)
+                .await
+        };
+        assert!(v2_err.is_err(), "forced V2 should fail when disabled with 404");
+        assert_eq!(v2_err.unwrap_err().status(), Some(reqwest::StatusCode::NOT_FOUND));
+
+        {
+            let permit = server.remote_client().acquire_upload_permit().await.unwrap();
+            server
+                .remote_simulation_client()
+                .upload_shard_with_version_override(random_shard_bytes(), permit, None, None)
+                .await
+                .unwrap();
+        }
+
+        // Leave V2 enabled for subsequent checks on the same server instance.
+        server.client().disable_v2_reconstruction(0);
     }
 
     /// Main test that runs all server checks with both in-memory and disk-backed storage.
