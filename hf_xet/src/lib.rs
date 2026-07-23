@@ -90,6 +90,7 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<xet_pkg::xet_session::XetDownloadGroupReport>()?;
     m.add_class::<xet_pkg::xet_session::GroupProgressReport>()?;
     m.add_class::<xet_pkg::xet_session::ItemProgressReport>()?;
+    m.add_class::<xet_pkg::xet_session::ShardUploadProgressReport>()?;
 
     // ── Legacy types and functions (kept for backward compatibility) ─────────
     m.add_class::<legacy::PyXetDownloadInfo>()?;

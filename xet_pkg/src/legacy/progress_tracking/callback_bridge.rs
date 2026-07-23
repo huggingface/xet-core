@@ -340,6 +340,7 @@ mod tests {
             total_transfer_bytes,
             total_transfer_bytes_completed,
             total_transfer_bytes_completion_rate: None,
+            shard: None,
         }
     }
 

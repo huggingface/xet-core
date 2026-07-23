@@ -10,7 +10,7 @@ use tempfile::TempDir;
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 use tracing::{Instrument, debug, info, info_span};
-use xet_client::cas_client::Client;
+use xet_client::cas_client::{Client, ShardUploadProgressCallback, ShardUploadProgressType};
 use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::metadata_shard::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use xet_core_structures::metadata_shard::session_directory::{
@@ -26,6 +26,7 @@ use xet_runtime::error_printer::ErrorPrinter;
 
 use super::super::configurations::TranslatorConfig;
 use crate::error::Result;
+use crate::progress_tracking::upload_tracking::CompletionTracker;
 
 pub struct SessionShardInterface {
     ctx: XetContext,
@@ -33,6 +34,7 @@ pub struct SessionShardInterface {
     cache_shard_manager: Arc<ShardFileManager>,
 
     client: Arc<dyn Client + Send + Sync>,
+    completion_tracker: Arc<CompletionTracker>,
 
     dry_run: bool,
 
@@ -58,6 +60,7 @@ impl SessionShardInterface {
         ctx: &XetContext,
         config: Arc<TranslatorConfig>,
         client: Arc<dyn Client + Send + Sync>,
+        completion_tracker: Arc<CompletionTracker>,
         dry_run: bool,
     ) -> Result<Self> {
         // Create a temporary session directory where we hold all the shards before upload.
@@ -136,6 +139,7 @@ impl SessionShardInterface {
             dry_run,
             _shard_session_dir: shard_session_tempdir,
             client,
+            completion_tracker,
         })
     }
 
@@ -259,6 +263,7 @@ impl SessionShardInterface {
             let cache_shard_manager = self.cache_shard_manager.clone();
             let shard_bytes_uploaded = shard_bytes_uploaded.clone();
             let dry_run = self.dry_run;
+            let completion_tracker = self.completion_tracker.clone();
 
             // Acquire a permit for uploading before we spawn the task; the acquired permit is dropped after the task
             // completes. The chosen Semaphore is fair, meaning xorbs added first will be scheduled to upload first.
@@ -281,8 +286,24 @@ impl SessionShardInterface {
                         return Ok(());
                     }
 
+                    // Shard upload progress
+                    let shard_progress_id = completion_tracker.register_shard_transfer(data.len() as u64);
+
+                    let progress_callback: Option<ShardUploadProgressCallback> =
+                        Some(Arc::new(move |progress_type: ShardUploadProgressType| match progress_type {
+                            ShardUploadProgressType::Transfer(nbytes) => {
+                                completion_tracker.increment_shard_transfer_progress(shard_progress_id, nbytes)
+                            },
+                            ShardUploadProgressType::DecrementTransfer(nbytes) => {
+                                completion_tracker.decrement_shard_transfer_progress(shard_progress_id, nbytes)
+                            },
+                            ShardUploadProgressType::Response(event) => {
+                                completion_tracker.register_shard_upload_progress(shard_progress_id, event)
+                            },
+                        }));
+
                     // Upload the shard.
-                    shard_client.upload_shard(data, upload_permit).await?;
+                    shard_client.upload_shard(data, upload_permit, progress_callback).await?;
 
                     info!("Shard {:?} upload + sync completed successfully.", &si.shard_hash);
 

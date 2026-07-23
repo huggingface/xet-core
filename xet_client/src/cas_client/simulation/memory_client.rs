@@ -23,6 +23,7 @@ use xet_runtime::core::XetContext;
 
 use super::super::Client;
 use super::super::adaptive_concurrency::AdaptiveConcurrencyController;
+use super::super::interface::{ShardUploadProgressCallback, ShardUploadProgressType};
 use super::super::progress_tracked_streams::ProgressCallback;
 use super::client_testing_utils::{FileTermReference, RandomFileContents};
 #[cfg(not(target_family = "wasm"))]
@@ -33,8 +34,8 @@ use super::xorb_utils::{self, REFERENCE_INSTANT, duration_to_expiration_secs_cei
 use crate::cas_client::chunk_window_builder::build_file_chunk_hashes_response;
 use crate::cas_types::{
     BatchQueryReconstructionResponse, FileChunkHashesResponse, FileRange, HexMerkleHash, HttpRange,
-    QueryReconstructionResponse, QueryReconstructionResponseV2, XorbMultiRangeFetch, XorbRangeDescriptor,
-    XorbReconstructionFetchInfo,
+    QueryReconstructionResponse, QueryReconstructionResponseV2, ShardUploadEvent, XorbMultiRangeFetch,
+    XorbRangeDescriptor, XorbReconstructionFetchInfo,
 };
 use crate::error::{ClientError, Result};
 
@@ -846,7 +847,8 @@ impl Client for MemoryClient {
         &self,
         shard_data: Bytes,
         _permit: super::super::adaptive_concurrency::ConnectionPermit,
-    ) -> Result<bool> {
+        progress_callback: Option<ShardUploadProgressCallback>,
+    ) -> Result<()> {
         self.apply_api_delay().await;
         // Parse the shard using the streaming parser (handles shards without footer)
         let mut reader = Cursor::new(&shard_data);
@@ -884,7 +886,14 @@ impl Client for MemoryClient {
         // overwriting a tagged object.
         *self.gc_tagged_shard.write().await = None;
 
-        Ok(true)
+        // No NDJSON stream in the memory sim; synthesize transfer + terminal Result so
+        // SessionShardInterface progress counters complete like production V1.
+        if let Some(cb) = &progress_callback {
+            cb(ShardUploadProgressType::Transfer(shard_data.len() as u64));
+            cb(ShardUploadProgressType::Response(&ShardUploadEvent::Result));
+        }
+
+        Ok(())
     }
 
     async fn upload_xorb(

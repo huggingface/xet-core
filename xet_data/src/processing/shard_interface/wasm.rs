@@ -175,7 +175,7 @@ impl SessionShardInterface {
         }
 
         let permit = self.client.acquire_upload_permit().await?;
-        self.client.upload_shard(Bytes::from(shard_data), permit).await?;
+        self.client.upload_shard(Bytes::from(shard_data), permit, None).await?;
         Ok(n_bytes)
     }
 }
