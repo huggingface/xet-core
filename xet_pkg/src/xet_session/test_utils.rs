@@ -23,9 +23,15 @@ pub(crate) mod stack_regression {
     }
 
     const MARKER_ENV: &str = "XET_STACK_REGRESSION_CHILD";
-    // 128 KiB is tight enough to actually catch the regression (verified: fails at this
-    // size without the fix, passes with it).
+    // 128 KiB is tight enough to actually catch the regression on macOS/Linux (verified:
+    // fails at this size without the fix, passes with it). Windows needs more baseline
+    // stack for the same tokio runtime + thread setup regardless of this bug: confirmed on
+    // windows-latest CI, where all three regression tests below abort with
+    // STATUS_STACK_OVERFLOW at 128 KiB even on the fixed code.
+    #[cfg(not(windows))]
     const STACK_SIZE: usize = 128 * 1024;
+    #[cfg(windows)]
+    const STACK_SIZE: usize = 512 * 1024;
 
     /// Call from a `#[test]` fn. `test_name` must be that test's own fully-qualified path
     /// (module path, minus the leading crate name, plus `::` plus the fn name) — used to
