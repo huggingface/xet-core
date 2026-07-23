@@ -384,7 +384,10 @@ mod tests {
     #[cfg(not(target_family = "wasm"))]
     fn build_survives_small_stack_download_stream_group() {
         crate::xet_session::test_utils::stack_regression::run(
-            "build_survives_small_stack_download_stream_group",
+            &crate::xet_session::test_utils::stack_regression::test_path(
+                module_path!(),
+                "build_survives_small_stack_download_stream_group",
+            ),
             || {
                 let temp = tempdir().unwrap();
                 let endpoint = format!("local://{}", temp.path().join("cas").display());

@@ -14,16 +14,25 @@ pub(crate) mod stack_regression {
     //! with an explicitly small stack: if it regresses, only the child aborts and the
     //! caller's `#[test]` fails cleanly, instead of taking down the entire test binary.
 
+    /// `module_path!()` is prefixed with the crate name, but libtest's own test paths
+    /// (and thus its `--exact` filter) are not. Call as
+    /// `test_path(module_path!(), "my_test_fn")` from within the `#[test]` fn itself.
+    pub(crate) fn test_path(module_path: &str, fn_name: &str) -> String {
+        let module_path = module_path.split_once("::").map_or(module_path, |(_, rest)| rest);
+        format!("{module_path}::{fn_name}")
+    }
+
     const MARKER_ENV: &str = "XET_STACK_REGRESSION_CHILD";
     // 128 KiB is tight enough to actually catch the regression (verified: fails at this
     // size without the fix, passes with it).
     const STACK_SIZE: usize = 128 * 1024;
 
-    /// Call from a `#[test]` fn. `test_name` must be that test's own (unique) name —
-    /// used to re-invoke just this test in a child process. `build_in_small_stack`
-    /// performs the actual risky call and only ever runs inside the child, on a thread
-    /// with an explicit small stack.
-    pub(crate) fn run(test_name: &'static str, build_in_small_stack: impl FnOnce() + Send + 'static) {
+    /// Call from a `#[test]` fn. `test_name` must be that test's own fully-qualified path
+    /// (module path, minus the leading crate name, plus `::` plus the fn name) — used to
+    /// re-invoke just this test in a child process via an exact filter match.
+    /// `build_in_small_stack` performs the actual risky call and only ever runs inside the
+    /// child, on a thread with an explicit small stack.
+    pub(crate) fn run(test_name: &str, build_in_small_stack: impl FnOnce() + Send + 'static) {
         if std::env::var_os(MARKER_ENV).is_some() {
             let t = std::thread::Builder::new()
                 .stack_size(STACK_SIZE)
@@ -36,6 +45,7 @@ pub(crate) mod stack_regression {
         let exe = std::env::current_exe().unwrap();
         let output = std::process::Command::new(exe)
             .arg(test_name)
+            .arg("--exact")
             .arg("--test-threads=1")
             .env(MARKER_ENV, "1")
             .output()
@@ -48,12 +58,11 @@ pub(crate) mod stack_regression {
         );
         // libtest exits 0 even when a filter matches no tests, so a typo'd or renamed
         // `test_name` would otherwise make this helper silently pass without the risky
-        // call ever running. Require exactly the one expected test to have run.
+        // call ever running. Require the expected test to have actually run.
         assert!(
             stdout.contains("1 passed"),
             "expected the child process to run exactly one test matching {test_name:?}, but it \
-             didn't (the test name filter may not have matched anything, or matched more than \
-             one test).\n{stdout}"
+             didn't (the test name filter may not have matched anything).\n{stdout}"
         );
     }
 }

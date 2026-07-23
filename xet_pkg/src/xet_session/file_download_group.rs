@@ -443,24 +443,30 @@ mod tests {
     // separate monomorphization from the one in `download_stream_group.rs`.
     #[test]
     fn build_survives_small_stack_file_download_group() {
-        crate::xet_session::test_utils::stack_regression::run("build_survives_small_stack_file_download_group", || {
-            let temp = tempdir().unwrap();
-            let endpoint = format!("local://{}", temp.path().join("cas").display());
-            tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .unwrap()
-                .block_on(async move {
-                    let session = XetSessionBuilder::new().build().unwrap();
-                    session
-                        .new_file_download_group()
-                        .unwrap()
-                        .with_endpoint(&endpoint)
-                        .build()
-                        .await
-                        .unwrap();
-                });
-        });
+        crate::xet_session::test_utils::stack_regression::run(
+            &crate::xet_session::test_utils::stack_regression::test_path(
+                module_path!(),
+                "build_survives_small_stack_file_download_group",
+            ),
+            || {
+                let temp = tempdir().unwrap();
+                let endpoint = format!("local://{}", temp.path().join("cas").display());
+                tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async move {
+                        let session = XetSessionBuilder::new().build().unwrap();
+                        session
+                            .new_file_download_group()
+                            .unwrap()
+                            .with_endpoint(&endpoint)
+                            .build()
+                            .await
+                            .unwrap();
+                    });
+            },
+        );
     }
 
     // ── Mutex guard / concurrency test ───────────────────────────────────────
