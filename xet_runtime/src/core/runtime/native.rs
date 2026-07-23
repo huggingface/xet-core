@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
-use std::pin::{Pin, pin};
+use std::pin::pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, OnceLock, Weak};
 use std::task::{Context, Waker};
@@ -404,33 +404,22 @@ impl XetRuntime {
     ///
     /// This is the primary async entry point. Session-level async methods should call
     /// `ctx.runtime.bridge_async(...)`.
-    // Plain (non-async) fn boxing `fut` before constructing the returned `async move` block:
-    // an `async fn` generic over `F` bakes F's full type into its own generator state
-    // regardless of what the body does with it (see `bridge_to_owned` below, which needed
-    // the same fix).
-    pub fn bridge_async<T, F>(
-        &self,
-        task_name: &'static str,
-        fut: F,
-    ) -> impl Future<Output = Result<T, RuntimeError>> + Send + '_
+    pub async fn bridge_async<T, F>(&self, task_name: &'static str, fut: F) -> Result<T, RuntimeError>
     where
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        let fut: Pin<Box<dyn Future<Output = T> + Send>> = Box::pin(fut);
-        async move {
-            self.check_sigint()?;
-            if std::process::id() != self.creation_pid {
-                return Err(RuntimeError::InvalidRuntime(format!(
-                    "XetRuntime was created in process {} but is being used in process {}",
-                    self.creation_pid,
-                    std::process::id(),
-                )));
-            }
-            match &self.backend {
-                RuntimeBackend::External { .. } => Ok(fut.await),
-                RuntimeBackend::OwnedThreadPool { .. } => self.bridge_to_owned(task_name, fut).await,
-            }
+        self.check_sigint()?;
+        if std::process::id() != self.creation_pid {
+            return Err(RuntimeError::InvalidRuntime(format!(
+                "XetRuntime was created in process {} but is being used in process {}",
+                self.creation_pid,
+                std::process::id(),
+            )));
+        }
+        match &self.backend {
+            RuntimeBackend::External { .. } => Ok(fut.await),
+            RuntimeBackend::OwnedThreadPool { .. } => self.bridge_to_owned(task_name, fut).await,
         }
     }
 
@@ -486,16 +475,9 @@ impl XetRuntime {
     /// Returns `Err(RuntimeError::TaskPanic)` if the spawned future panics, or
     /// `Err(RuntimeError::TaskCanceled)` if the runtime shuts down before the result
     /// can be delivered.
-    // Takes an already-boxed future rather than being generic over `F`: an `async fn`
-    // parameter is captured into this generator's state regardless of what the body does
-    // with it, so staying generic here would reintroduce the same bloat `bridge_async`
-    // above avoids by boxing before its own async block.
-    async fn bridge_to_owned<T>(
-        &self,
-        task_name: &'static str,
-        fut: Pin<Box<dyn Future<Output = T> + Send>>,
-    ) -> Result<T, RuntimeError>
+    async fn bridge_to_owned<T, F>(&self, task_name: &'static str, fut: F) -> Result<T, RuntimeError>
     where
+        F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
