@@ -15,14 +15,9 @@ pub(crate) mod stack_regression {
     //! caller's `#[test]` fails cleanly, instead of taking down the entire test binary.
 
     const MARKER_ENV: &str = "XET_STACK_REGRESSION_CHILD";
-    // 128 KiB is tight enough to actually catch the regression on macOS/Linux (verified:
-    // fails at this size without the fix, passes with it). Windows needs more baseline
-    // stack for the same tokio runtime + thread setup regardless of this bug, so it gets
-    // a separate, larger bound.
-    #[cfg(not(windows))]
+    // 128 KiB is tight enough to actually catch the regression (verified: fails at this
+    // size without the fix, passes with it).
     const STACK_SIZE: usize = 128 * 1024;
-    #[cfg(windows)]
-    const STACK_SIZE: usize = 512 * 1024;
 
     /// Call from a `#[test]` fn. `test_name` must be that test's own (unique) name —
     /// used to re-invoke just this test in a child process. `build_in_small_stack`
