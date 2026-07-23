@@ -81,6 +81,7 @@ pub struct LocalTestServerBuilder {
     ephemeral_socket: bool,
     ephemeral_disk: bool,
     client: Option<Arc<dyn DirectAccessClient>>,
+    deletion_client: Option<Arc<dyn DeletionControlableClient>>,
     server_latency_profile: Option<ServerLatencyProfile>,
     network_profile: Option<NetworkProfile>,
     lifecycle_tag_deletion: bool,
@@ -97,6 +98,7 @@ impl LocalTestServerBuilder {
             ephemeral_socket: false,
             ephemeral_disk: false,
             client: None,
+            deletion_client: None,
             server_latency_profile: None,
             network_profile: None,
             lifecycle_tag_deletion: false,
@@ -151,8 +153,20 @@ impl LocalTestServerBuilder {
     ///
     /// Useful when you need to pre-populate the client with data before starting the server.
     /// This overrides any disk location or in-memory settings.
+    ///
+    /// Deletion-control HTTP routes stay disabled unless you also call
+    /// [`Self::with_deletion_client`].
     pub fn with_client(mut self, client: Arc<dyn DirectAccessClient>) -> Self {
         self.client = Some(client);
+        self
+    }
+
+    /// Wires a deletion-capable backend for `/simulation/` deletion-control routes.
+    ///
+    /// Typically the same object passed to [`Self::with_client`] (e.g. a `LocalClient`
+    /// cast to both trait objects). Ignored when the builder creates the backend itself.
+    pub fn with_deletion_client(mut self, client: Arc<dyn DeletionControlableClient>) -> Self {
+        self.deletion_client = Some(client);
         self
     }
 
@@ -201,10 +215,11 @@ impl LocalTestServerBuilder {
         let _socket_path = if self.ephemeral_socket { None } else { self.socket_path };
 
         // Build client + optional deletion_client. LocalClient and MemoryClient both support
-        // DirectAccessClient + DeletionControlableClient; pre-supplied clients only support DirectAccessClient.
+        // DirectAccessClient + DeletionControlableClient; pre-supplied clients need an explicit
+        // deletion_client for `/simulation/` deletion routes.
         let (client, deletion_client): (Arc<dyn DirectAccessClient>, Option<Arc<dyn DeletionControlableClient>>) =
             if let Some(client) = self.client {
-                (client, None)
+                (client, self.deletion_client)
             } else if self.in_memory {
                 let mc = MemoryClient::new(ctx.clone());
                 mc.set_lifecycle_tag_deletion(self.lifecycle_tag_deletion);
@@ -1188,6 +1203,245 @@ mod tests {
         assert_eq!(response.status(), reqwest::StatusCode::OK);
     }
 
+    /// Tests V2 reconstruction endpoint returns valid responses through the server.
+    async fn check_v2_reconstruction(server: &LocalTestServer) {
+        let file = server.client().upload_random_file(&[(1, (0, 5))], CHUNK_SIZE).await.unwrap();
+
+        let v2 = server
+            .remote_simulation_client()
+            .get_reconstruction_v2(&file.file_hash, None)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(!v2.terms.is_empty());
+        assert!(!v2.xorbs.is_empty());
+        assert_eq!(v2.offset_into_first_range, 0);
+
+        for fetch_entries in v2.xorbs.values() {
+            for fetch in fetch_entries {
+                assert!(fetch.url.starts_with("http://"), "V2 URL should be HTTP, got: {}", fetch.url);
+                assert!(
+                    fetch.url.contains("/v1/fetch_term?term="),
+                    "V2 URL should point to fetch_term endpoint, got: {}",
+                    fetch.url
+                );
+            }
+        }
+
+        let v1 = server
+            .remote_simulation_client()
+            .get_reconstruction_v1(&file.file_hash, None)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(v1.terms.len(), v2.terms.len());
+        assert_eq!(v1.offset_into_first_range, v2.offset_into_first_range);
+        for (t1, t2) in v1.terms.iter().zip(v2.terms.iter()) {
+            assert_eq!(t1.hash, t2.hash);
+            assert_eq!(t1.range, t2.range);
+        }
+    }
+
+    /// Tests V2 fetch URLs are fetchable via the /v1/fetch_term endpoint.
+    async fn check_v2_url_transformation(server: &LocalTestServer) {
+        let http_client = reqwest::Client::new();
+
+        let file = server
+            .client()
+            .upload_random_file(&[(1, (0, 3)), (2, (0, 2))], CHUNK_SIZE)
+            .await
+            .unwrap();
+
+        let v2 = server
+            .remote_simulation_client()
+            .get_reconstruction_v2(&file.file_hash, None)
+            .await
+            .unwrap()
+            .unwrap();
+
+        for fetch_entries in v2.xorbs.values() {
+            for fetch in fetch_entries {
+                let response = http_client.get(&fetch.url).send().await.unwrap();
+                assert!(
+                    response.status().is_success(),
+                    "V2 fetch URL should be fetchable: {} (status: {})",
+                    fetch.url,
+                    response.status()
+                );
+                let data = response.bytes().await.unwrap();
+                assert!(!data.is_empty(), "Fetched data should not be empty");
+            }
+        }
+    }
+
+    /// Tests V2 with range requests through the server.
+    async fn check_v2_range_reconstruction(server: &LocalTestServer) {
+        use crate::cas_types::QueryReconstructionResponseV2;
+
+        let term_spec = &[(1, (0, 3)), (2, (0, 2)), (1, (3, 5))];
+        let file = server.client().upload_random_file(term_spec, CHUNK_SIZE).await.unwrap();
+        let file_size = file.data.len() as u64;
+
+        let range = FileRange::new(file_size / 4, file_size * 3 / 4);
+        let v2 = server
+            .remote_simulation_client()
+            .get_reconstruction_v2(&file.file_hash, Some(range))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(!v2.terms.is_empty());
+        for fetch_entries in v2.xorbs.values() {
+            for fetch in fetch_entries {
+                assert!(fetch.url.starts_with("http://"));
+            }
+        }
+
+        let v2_url = format!("{}/v2/reconstructions/{}", server.http_endpoint(), file.file_hash.hex());
+        let http_client = reqwest::Client::new();
+
+        let open_rhs: QueryReconstructionResponseV2 = http_client
+            .get(&v2_url)
+            .header(reqwest::header::RANGE, "bytes=100-")
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(!open_rhs.terms.is_empty());
+
+        let suffix: QueryReconstructionResponseV2 = http_client
+            .get(&v2_url)
+            .header(reqwest::header::RANGE, "bytes=-128")
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(!suffix.terms.is_empty());
+    }
+
+    /// Tests V2 max_ranges_per_fetch through the in-process DirectAccessClient path.
+    async fn check_v2_max_ranges(server: &LocalTestServer) {
+        let term_spec = &[(1, (0, 2)), (2, (0, 1)), (1, (2, 4)), (2, (1, 2)), (1, (4, 6))];
+        let file = server.client().upload_random_file(term_spec, 512).await.unwrap();
+
+        server.client().set_max_ranges_per_fetch(1);
+
+        let v2 = server
+            .client()
+            .get_reconstruction_v2(&file.file_hash, None)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let xorb1_hash: crate::cas_types::HexMerkleHash = file.terms[0].xorb_hash.into();
+        if let Some(desc) = v2.xorbs.get(&xorb1_hash) {
+            for fetch in desc {
+                assert!(fetch.ranges.len() <= 1, "Each fetch should have at most 1 range, got {}", fetch.ranges.len());
+            }
+        }
+
+        server.client().set_max_ranges_per_fetch(usize::MAX);
+    }
+
+    /// Verifies disabling V2 causes the V2 endpoint to return that code, with V1 fallback.
+    async fn check_v2_disabled_fallback(server: &LocalTestServer) {
+        let file = server
+            .remote_client()
+            .upload_random_file(&[(1, (0, 3)), (2, (0, 2))], CHUNK_SIZE)
+            .await
+            .unwrap();
+
+        let v2_result = server
+            .remote_simulation_client()
+            .get_reconstruction_v2(&file.file_hash, None)
+            .await;
+        assert!(v2_result.is_ok());
+
+        // 501 first so we don't cache a V1 preference from 404 fallback mid-test.
+        server.client().disable_v2_reconstruction(501);
+
+        let v2_result = server
+            .remote_simulation_client()
+            .get_reconstruction_v2(&file.file_hash, None)
+            .await;
+        assert!(v2_result.is_err(), "V2 should return error when disabled with 501");
+
+        let forced_v2 = server
+            .remote_simulation_client()
+            .get_reconstruction_with_version_override(&file.file_hash, None, Some(2))
+            .await;
+        assert!(forced_v2.is_err());
+        assert_eq!(forced_v2.unwrap_err().status(), Some(reqwest::StatusCode::NOT_IMPLEMENTED));
+
+        let forced_v1 = server
+            .remote_simulation_client()
+            .get_reconstruction_with_version_override(&file.file_hash, None, Some(1))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(forced_v1.terms.len(), 2);
+
+        let result = server
+            .remote_client()
+            .get_reconstruction(&file.file_hash, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.terms.len(), 2);
+
+        server.client().disable_v2_reconstruction(0);
+
+        let v2_result = server
+            .remote_simulation_client()
+            .get_reconstruction_v2(&file.file_hash, None)
+            .await;
+        assert!(v2_result.is_ok(), "V2 should work again after re-enabling");
+
+        server.client().disable_v2_reconstruction(404);
+
+        let v2_result = server
+            .remote_simulation_client()
+            .get_reconstruction_v2(&file.file_hash, None)
+            .await;
+        assert!(v2_result.is_err(), "V2 should return error when disabled with 404");
+
+        let forced_v2 = server
+            .remote_simulation_client()
+            .get_reconstruction_with_version_override(&file.file_hash, None, Some(2))
+            .await;
+        assert!(forced_v2.is_err());
+        assert_eq!(forced_v2.unwrap_err().status(), Some(reqwest::StatusCode::NOT_FOUND));
+
+        let forced_v1 = server
+            .remote_simulation_client()
+            .get_reconstruction_with_version_override(&file.file_hash, None, Some(1))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(forced_v1.terms.len(), 2);
+
+        let result = server
+            .remote_client()
+            .get_reconstruction(&file.file_hash, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.terms.len(), 2);
+
+        // Leave V2 enabled for subsequent checks on the same server instance.
+        server.client().disable_v2_reconstruction(0);
+    }
+
     /// Runs all server checks for a given test server instance.
     async fn run_all_server_checks(server: &LocalTestServer) {
         check_basic_correctness(server).await;
@@ -1197,6 +1451,11 @@ mod tests {
         check_downloaded_terms_match_expected_data(server).await;
         check_complete_file_reconstruction(server).await;
         check_chunk_hashes_correctness(server).await;
+        check_v2_reconstruction(server).await;
+        check_v2_url_transformation(server).await;
+        check_v2_range_reconstruction(server).await;
+        check_v2_max_ranges(server).await;
+        check_v2_disabled_fallback(server).await;
         check_simulation_set_config(server).await;
         check_simulation_dummy_upload(server).await;
     }
