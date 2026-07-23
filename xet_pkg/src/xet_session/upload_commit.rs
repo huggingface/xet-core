@@ -611,6 +611,37 @@ mod tests {
     use super::super::session::XetSessionBuilder;
     use super::*;
 
+    // Regression test - see `test_utils::stack_regression` for why this runs in a child
+    // process. Covers the `AuthGroupBuilder<XetUploadCommit>` instantiation, a separate
+    // monomorphization from the one in `download_stream_group.rs`.
+    #[test]
+    fn build_survives_small_stack_upload_commit() {
+        crate::xet_session::test_utils::stack_regression::run(
+            &crate::xet_session::test_utils::stack_regression::test_path(
+                module_path!(),
+                "build_survives_small_stack_upload_commit",
+            ),
+            || {
+                let temp = tempdir().unwrap();
+                let endpoint = format!("local://{}", temp.path().join("cas").display());
+                tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async move {
+                        let session = XetSessionBuilder::new().build().unwrap();
+                        session
+                            .new_upload_commit()
+                            .unwrap()
+                            .with_endpoint(&endpoint)
+                            .build()
+                            .await
+                            .unwrap();
+                    });
+            },
+        );
+    }
+
     // ── Mutex guard / concurrency test ───────────────────────────────────────
 
     #[test]

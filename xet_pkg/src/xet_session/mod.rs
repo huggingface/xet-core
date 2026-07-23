@@ -273,6 +273,8 @@ mod file_download_group;
 mod file_download_handle;
 mod session;
 mod task_runtime;
+#[cfg(test)]
+mod test_utils;
 mod upload_commit;
 mod upload_file_handle;
 mod upload_stream_handle;
