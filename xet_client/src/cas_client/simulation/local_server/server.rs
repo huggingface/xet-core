@@ -240,7 +240,6 @@ async fn shutdown_signal() {
     std::future::pending::<()>().await
 }
 
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -251,10 +250,11 @@ mod tests {
     use xet_runtime::core::XetContext;
 
     use crate::cas_client::Client;
-    use crate::cas_client::simulation::LocalTestServerBuilder;
     use crate::cas_client::simulation::client_testing_utils::ClientTestingUtils;
     use crate::cas_client::simulation::local_server::SimulationControlClient;
-    use crate::cas_client::simulation::{DeletionControlableClient, DirectAccessClient, LocalClient};
+    use crate::cas_client::simulation::{
+        DeletionControlableClient, DirectAccessClient, LocalClient, LocalTestServerBuilder,
+    };
 
     const CHUNK_SIZE: usize = 123;
 
