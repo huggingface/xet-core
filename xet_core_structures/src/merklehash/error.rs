@@ -20,11 +20,11 @@ pub enum DataHashError {
 }
 
 impl DataHashError {
-    /// The bad hex input when this is [`Self::InvalidHex`], otherwise `""`.
+    /// Returns the bad input string for either variant.
     pub fn hex_input(&self) -> &str {
         match self {
             Self::InvalidHex { input } => input,
-            Self::InvalidBytes { .. } => "",
+            Self::InvalidBytes { input } => input,
         }
     }
 
