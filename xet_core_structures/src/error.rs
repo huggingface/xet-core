@@ -1,9 +1,7 @@
-use std::convert::Infallible;
-
 use thiserror::Error;
 use tracing::warn;
 
-use crate::merklehash::MerkleHash;
+use crate::merklehash::{DataHashError, MerkleHash};
 
 #[non_exhaustive]
 #[derive(Error, Debug)]
@@ -60,7 +58,7 @@ pub enum CoreError {
     CompressionError(#[from] lz4_flex::frame::Error),
 
     #[error("Hash parsing error: {0}")]
-    HashParsing(#[from] Infallible),
+    HashParsing(#[from] DataHashError),
 
     #[error("Chunk header parse error")]
     ChunkHeaderParse,
@@ -109,17 +107,5 @@ impl<T> Validate<T> for Result<T> {
             },
             Err(e) => Err(e),
         }
-    }
-}
-
-impl From<crate::merklehash::DataHashHexParseError> for CoreError {
-    fn from(_: crate::merklehash::DataHashHexParseError) -> Self {
-        CoreError::Other("Invalid hex input for DataHash".to_string())
-    }
-}
-
-impl From<crate::merklehash::DataHashBytesParseError> for CoreError {
-    fn from(_: crate::merklehash::DataHashBytesParseError) -> Self {
-        CoreError::Other("Invalid bytes input for DataHash".to_string())
     }
 }
