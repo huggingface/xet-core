@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use xet_core_structures::merklehash::{DataHashHexParseError, MerkleHash};
+use xet_core_structures::merklehash::{DataHashError, MerkleHash};
 use xet_runtime::error_printer::ErrorPrinter;
 
 /// A struct that wraps a the Xet file information.
@@ -72,7 +72,7 @@ impl XetFileInfo {
     }
 
     /// Returns the parsed merkle hash of the file.
-    pub fn merkle_hash(&self) -> std::result::Result<MerkleHash, DataHashHexParseError> {
+    pub fn merkle_hash(&self) -> std::result::Result<MerkleHash, DataHashError> {
         MerkleHash::from_hex(&self.hash).log_error("Error parsing hash value for file info")
     }
 

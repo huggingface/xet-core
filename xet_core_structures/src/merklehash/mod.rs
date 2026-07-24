@@ -45,7 +45,9 @@
 #![cfg_attr(feature = "strict", deny(warnings))]
 
 pub mod data_hash;
+pub mod error;
 pub use data_hash::*;
+pub use error::*;
 pub type MerkleHash = DataHash;
 
 /// List of (chunk_hash, chunk_uncompressed_size) pairs for a file or xorb range.

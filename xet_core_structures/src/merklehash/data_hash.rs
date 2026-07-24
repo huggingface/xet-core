@@ -1,9 +1,7 @@
 use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
-use std::error::Error;
 use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::mem::transmute_copy;
-use std::num::ParseIntError;
 use std::ops::{Deref, DerefMut};
 use std::{fmt, str};
 
@@ -16,6 +14,8 @@ use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use safe_transmute::{transmute_to_bytes, transmute_to_bytes_mut};
 use serde::{Deserialize, Serialize};
+
+use super::error::DataHashError;
 
 /************************************************************************* */
 /*  */
@@ -135,24 +135,6 @@ unsafe impl Zeroable for DataHash {
 #[cfg(not(target_family = "wasm"))]
 unsafe impl Pod for DataHash {}
 
-/// The error type that is returned if [DataHash::from_hex] fails.
-#[derive(Debug, Clone)]
-pub struct DataHashHexParseError;
-
-impl Error for DataHashHexParseError {}
-
-impl fmt::Display for DataHashHexParseError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Invalid hex input for DataHash")
-    }
-}
-
-impl From<ParseIntError> for DataHashHexParseError {
-    fn from(_err: ParseIntError) -> Self {
-        DataHashHexParseError {}
-    }
-}
-
 impl DataHash {
     /// Returns the hexadecimal printout of the hash.
     /// Different programming languages and platforms may have different byte order layout
@@ -177,27 +159,30 @@ impl DataHash {
     }
 
     /// Parses a hexadecimal string as a DataHash, returning
-    /// Err(DataHashHexParseError) on failure.
-    pub fn from_hex(h: &str) -> Result<DataHash, DataHashHexParseError> {
+    /// Err(DataHashError) on failure.
+    pub fn from_hex(h: &str) -> Result<DataHash, DataHashError> {
+        let parse_err = || DataHashError::InvalidHex { input: h.to_owned() };
         if h.len() != 64 {
-            return Err(DataHashHexParseError {});
+            return Err(parse_err());
         }
         let mut ret: DataHash = Default::default();
 
         let good = h.as_bytes().iter().all(|c| c.is_ascii_hexdigit());
         if !good {
-            return Err(DataHashHexParseError {});
+            return Err(parse_err());
         }
-        ret.0[0] = u64::from_str_radix(&h[..16], 16)?.to_le();
-        ret.0[1] = u64::from_str_radix(&h[16..32], 16)?.to_le();
-        ret.0[2] = u64::from_str_radix(&h[32..48], 16)?.to_le();
-        ret.0[3] = u64::from_str_radix(&h[48..64], 16)?.to_le();
+        ret.0[0] = u64::from_str_radix(&h[..16], 16).map_err(|_| parse_err())?.to_le();
+        ret.0[1] = u64::from_str_radix(&h[16..32], 16).map_err(|_| parse_err())?.to_le();
+        ret.0[2] = u64::from_str_radix(&h[32..48], 16).map_err(|_| parse_err())?.to_le();
+        ret.0[3] = u64::from_str_radix(&h[48..64], 16).map_err(|_| parse_err())?.to_le();
         Ok(ret)
     }
 
     // Converts the hash from base64 (created by base64 above) to this.  Used for testing.
-    pub fn from_base64(b64: &str) -> Result<DataHash, DataHashBytesParseError> {
-        let bytes = URL_SAFE_NO_PAD.decode(b64.as_bytes()).map_err(|_| DataHashBytesParseError {})?;
+    pub fn from_base64(b64: &str) -> Result<DataHash, DataHashError> {
+        let bytes = URL_SAFE_NO_PAD
+            .decode(b64.as_bytes())
+            .map_err(|_| DataHashError::InvalidBytes { input: b64.to_owned() })?;
         DataHash::from_slice(&bytes)
     }
 
@@ -206,9 +191,11 @@ impl DataHash {
         transmute_to_bytes(&self.0[..])
     }
 
-    pub fn from_slice(value: &[u8]) -> Result<Self, DataHashBytesParseError> {
+    pub fn from_slice(value: &[u8]) -> Result<Self, DataHashError> {
         if value.len() != 32 {
-            return Err(DataHashBytesParseError);
+            return Err(DataHashError::InvalidBytes {
+                input: DataHashError::format_bytes(value),
+            });
         }
         let mut hash: DataHash = DataHash::default();
         unsafe {
@@ -255,20 +242,8 @@ impl DataHash {
     }
 }
 
-/// The error type that is returned if TryFrom<&[u8]> fails.
-#[derive(Debug, Clone)]
-pub struct DataHashBytesParseError;
-
-impl Error for DataHashBytesParseError {}
-
-impl fmt::Display for DataHashBytesParseError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Invalid bytes input for DataHash")
-    }
-}
-
 impl TryFrom<&[u8]> for DataHash {
-    type Error = DataHashBytesParseError;
+    type Error = DataHashError;
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
         Self::from_slice(value)
@@ -585,5 +560,17 @@ mod tests {
 
         assert_eq!(expected_hex_string, data_hash.hex().as_str());
         assert_eq!(DataHash::from_hex(expected_hex_string).unwrap(), data_hash);
+    }
+
+    #[test]
+    fn test_from_hex_parse_error_includes_input() {
+        let empty = DataHash::from_hex("").unwrap_err();
+        assert_eq!(empty.hex_input(), "");
+
+        let short = DataHash::from_hex("abcdef").unwrap_err();
+        assert_eq!(short.hex_input(), "abcdef");
+
+        let bad_chars = DataHash::from_hex(&"g".repeat(64)).unwrap_err();
+        assert_eq!(bad_chars.hex_input(), "g".repeat(64));
     }
 }

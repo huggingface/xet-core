@@ -7,7 +7,7 @@ use tracing::error;
 use xet_client::ClientError;
 use xet_client::cas_client::auth::AuthError;
 use xet_core_structures::CoreError;
-use xet_core_structures::merklehash::DataHashHexParseError;
+use xet_core_structures::merklehash::DataHashError;
 use xet_runtime::RuntimeError;
 use xet_runtime::core::par_utils::ParutilsError;
 use xet_runtime::utils::errors::SingleflightError;
@@ -68,8 +68,8 @@ pub enum DataError {
     #[error("Parameter error: {0}")]
     ParameterError(String),
 
-    #[error("Unable to parse string as hex hash value")]
-    HashStringParsingFailure(#[from] DataHashHexParseError),
+    #[error("Unable to parse string as hex hash value (got '{}')", .0.hex_input())]
+    HashStringParsingFailure(#[from] DataHashError),
 
     #[error("Deprecated feature: {0}")]
     DeprecatedError(String),
