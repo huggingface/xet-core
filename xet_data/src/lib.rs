@@ -14,3 +14,6 @@ pub mod deduplication;
 pub mod file_reconstruction;
 pub mod processing;
 pub mod progress_tracking;
+// Mirrors `xet_client::cas_client::telemetry`, which is unavailable on wasm.
+#[cfg(not(target_family = "wasm"))]
+pub mod telemetry;
