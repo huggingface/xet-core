@@ -18,7 +18,7 @@ doctest = false
 [dependencies]
 xet-runtime = { version = "1.5.4", path = "../xet_runtime" }
 xet-core-structures = { version = "1.5.4", path = "../xet_core_structures" }
-xet-client = { version = "1.5.4", path = "../xet_client" }
+xet-client = { version = "1.5.4", path = "../xet_client", default-features = false }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -94,6 +94,11 @@ name = "reconstruction_bench"
 harness = false
 
 [features]
+default = ["rustls-tls"]
+# TLS backend for the underlying reqwest client; see the xet-client crate.
+rustls-tls = ["xet-client/rustls-tls"]
+native-tls = ["xet-client/native-tls"]
+native-tls-vendored = ["xet-client/native-tls-vendored"]
 strict = []
 smoke-test = []
 expensive_tests = []
