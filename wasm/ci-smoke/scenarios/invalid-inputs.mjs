@@ -1,9 +1,12 @@
-// No-Hub smoke: validate_session_inputs in the wasm wrapper must reject
-// bad token / endpoint / tokenExpiry inputs across both newUploadCommit
-// and newDownloadStreamGroup. Catches regressions to the validation
-// surface (e.g., accidental re-introduction of the 0→u64::MAX sentinel).
+// No-Hub smoke: resolve_auth_inputs in the wasm wrapper must reject bad
+// token / endpoint / tokenExpiry / tokenRefresh* inputs across both
+// newUploadCommit and newDownloadStreamGroup. Catches regressions to the
+// validation surface (e.g., accidental re-introduction of the 0→u64::MAX
+// sentinel), and that both methods wire their arguments in the same order.
 //
-// No network calls — `init()` and the constructor are sufficient.
+// No network calls — `init()` and the constructor are sufficient. The
+// tokenRefresh* cases must fail validation before any refresh GET, so the
+// refresh URLs below point at an unroutable host.
 //
 // Each case below expects newUploadCommit / newDownloadStreamGroup to
 // reject with an Error whose message contains the listed substring.
@@ -14,6 +17,7 @@ import { XetSession } from '../common.mjs';
 const VALID_EXPIRY = 4102444800; // 2100-01-01
 const VALID_TOKEN = 'placeholder-token';
 const VALID_ENDPOINT = 'https://cas-server.invalid';
+const VALID_REFRESH_URL = 'https://hub.invalid/api/models/ns/repo/xet-read-token/main';
 
 function makeCases() {
   return [
@@ -31,6 +35,46 @@ function makeCases() {
     { label: 'endpoint=""',                  endpoint: '',                     token: VALID_TOKEN, expiry: VALID_EXPIRY, mustContain: 'endpoint' },
     { label: 'endpoint missing scheme',      endpoint: 'cas-server.invalid',   token: VALID_TOKEN, expiry: VALID_EXPIRY, mustContain: 'endpoint' },
     { label: 'endpoint=ftp://...',           endpoint: 'ftp://cas.invalid',    token: VALID_TOKEN, expiry: VALID_EXPIRY, mustContain: 'endpoint' },
+
+    // token / tokenExpiry must be supplied as a pair
+    { label: 'expiry without token',  endpoint: VALID_ENDPOINT, token: null,        expiry: VALID_EXPIRY, mustContain: 'together' },
+    { label: 'token without expiry',  endpoint: VALID_ENDPOINT, token: VALID_TOKEN, expiry: null,         mustContain: 'together' },
+
+    // with no tokenRefreshUrl, endpoint and token info are both mandatory
+    { label: 'no token, no refresh url',    endpoint: VALID_ENDPOINT, token: null, expiry: null, mustContain: 'token' },
+    { label: 'no endpoint, no refresh url', endpoint: null,           token: null, expiry: null, mustContain: 'endpoint' },
+
+    // tokenRefreshUrl / tokenRefreshHeaders validation
+    {
+      label: 'refresh url missing scheme',
+      endpoint: VALID_ENDPOINT, token: VALID_TOKEN, expiry: VALID_EXPIRY,
+      refreshUrl: 'hub.invalid/api/models/ns/repo/xet-read-token/main',
+      mustContain: 'tokenRefreshUrl',
+    },
+    {
+      label: 'refresh headers without url',
+      endpoint: VALID_ENDPOINT, token: VALID_TOKEN, expiry: VALID_EXPIRY,
+      refreshHeaders: { Authorization: 'Bearer placeholder' },
+      mustContain: 'tokenRefreshHeaders',
+    },
+    {
+      label: 'refresh headers not an object',
+      endpoint: VALID_ENDPOINT, token: VALID_TOKEN, expiry: VALID_EXPIRY,
+      refreshUrl: VALID_REFRESH_URL, refreshHeaders: 'Bearer placeholder',
+      mustContain: 'tokenRefreshHeaders',
+    },
+    {
+      label: 'refresh header value not a string',
+      endpoint: VALID_ENDPOINT, token: VALID_TOKEN, expiry: VALID_EXPIRY,
+      refreshUrl: VALID_REFRESH_URL, refreshHeaders: { Authorization: 42 },
+      mustContain: 'tokenRefreshHeaders',
+    },
+    {
+      label: 'refresh header name invalid',
+      endpoint: VALID_ENDPOINT, token: VALID_TOKEN, expiry: VALID_EXPIRY,
+      refreshUrl: VALID_REFRESH_URL, refreshHeaders: { 'Bad Header': 'value' },
+      mustContain: 'header name',
+    },
   ];
 }
 
@@ -53,7 +97,7 @@ export async function run() {
   const failures = [];
 
   for (const c of cases) {
-    const args = [c.endpoint, c.token, c.expiry];
+    const args = [c.endpoint, c.token, c.expiry, c.refreshUrl, c.refreshHeaders];
 
     const uploadResult = await expectReject(
       `newUploadCommit / ${c.label}`,

@@ -62,8 +62,21 @@ export function pathInfoEntry(arr, path) {
   return { path, xetHash: entry.xetHash, size: entry.size };
 }
 
+// Hub route that mints a CAS token for a repo. `access` is 'read' or 'write'.
+// Also used directly as the wasm `tokenRefreshUrl`, which re-fetches it as the
+// CAS token nears expiry.
+export function xetTokenUrl({ repoType, namespace, repo, revision }, access) {
+  return `${HUB_BASE}/api/${repoType}s/${namespace}/${repo}/xet-${access}-token/${revision}`;
+}
+
+// Headers for a wasm `tokenRefreshUrl`. Undefined when there is no token to
+// forward, matching the anonymous-fetch behavior of `authHeaders`.
+export function refreshHeaders(hfToken) {
+  return hfToken ? { Authorization: `Bearer ${hfToken}` } : undefined;
+}
+
 export async function fetchXetReadToken({ hfToken, repoType, namespace, repo, revision }) {
-  const url = `${HUB_BASE}/api/${repoType}s/${namespace}/${repo}/xet-read-token/${revision}`;
+  const url = xetTokenUrl({ repoType, namespace, repo, revision }, 'read');
   const resp = await fetch(url, { method: 'GET', headers: authHeaders(hfToken) });
   if (!resp.ok) throw new Error(`xet-read-token ${resp.status}: ${await resp.text()}`);
   const json = await resp.json();
@@ -74,7 +87,7 @@ export async function fetchXetReadToken({ hfToken, repoType, namespace, repo, re
 }
 
 export async function fetchXetWriteToken({ hfToken, repoType, namespace, repo, revision }) {
-  const url = `${HUB_BASE}/api/${repoType}s/${namespace}/${repo}/xet-write-token/${revision}`;
+  const url = xetTokenUrl({ repoType, namespace, repo, revision }, 'write');
   const resp = await fetch(url, { method: 'GET', headers: authHeaders(hfToken) });
   if (!resp.ok) throw new Error(`xet-write-token ${resp.status}: ${await resp.text()}`);
   const json = await resp.json();

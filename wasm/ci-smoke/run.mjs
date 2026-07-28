@@ -148,12 +148,13 @@ const PINNED_H5 = {
 //   assert(result)  — throws on failure; may return a suffix for the PASS line.
 
 const SCENARIOS = {
-  // validate_session_inputs rejects bad token / endpoint / tokenExpiry inputs
-  // in the wasm wrapper. Fully local — no Hub or CAS network calls.
+  // resolve_auth_inputs rejects bad token / endpoint / tokenExpiry /
+  // tokenRefresh* inputs in the wasm wrapper. Fully local — no Hub or CAS
+  // network calls.
   'invalid-inputs': {
     timeoutMs: 1 * MINUTE_MS,
     assert(result) {
-      const expected = 9 * 2; // 9 invalid input cases × 2 methods
+      const expected = 18 * 2; // 18 invalid input cases × 2 methods
       if (result.casesChecked !== expected) {
         throw new Error(`casesChecked=${result.casesChecked}, expected ${expected}`);
       }
@@ -181,6 +182,23 @@ const SCENARIOS = {
   // path. Asserts byte count + content SHA-256. The only wasm coverage of the
   // writer-sink download interface.
   'download-to-bytes': {
+    readToken: true,
+    assert(result) {
+      if (result.byteCount !== PINNED_BIN.size) {
+        throw new Error(`byte count ${result.byteCount} != expected ${PINNED_BIN.size}`);
+      }
+      if (result.sha256 !== PINNED_BIN.sha256) {
+        throw new Error(`sha256 ${result.sha256} != expected ${PINNED_BIN.sha256}`);
+      }
+    },
+  },
+
+  // Same pinned file as `download`, but the group is built from a
+  // tokenRefreshUrl alone — no endpoint, token, or expiry. Passing means the
+  // wrapper resolved casUrl + the initial CAS token by calling the Hub
+  // xet-read-token route through reqwest's wasm backend. Regressions in the
+  // refresher wiring (or a CORS change on the Hub route) fail here.
+  'token-refresh': {
     readToken: true,
     assert(result) {
       if (result.byteCount !== PINNED_BIN.size) {

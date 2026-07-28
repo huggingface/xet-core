@@ -33,31 +33,45 @@ class XetSession {
   // Begin a new upload commit. Resolves to an `XetUploadCommit` to which
   // you can `uploadBytes(...)` / `uploadStream(...)` and finally `commit()`.
   //
-  //   endpoint:    CAS server URL — typically the `casUrl` field of the
-  //                Hugging Face Hub `xet-write-token` response.
-  //   token:       CAS access token (the `accessToken` field of the same
-  //                response).
-  //   tokenExpiry: Unix timestamp in seconds (the `exp` field). Must be
-  //                positive — pass the real `exp` from the Hub response.
-  //                The wrapper does not wire a token refresher, so any
-  //                value at or before "now" causes an auth error on the
-  //                first request.
+  //   endpoint:      CAS server URL — typically the `casUrl` field of the
+  //                  Hugging Face Hub `xet-write-token` response. Optional
+  //                  when `tokenRefreshUrl` is given.
+  //   token:         CAS access token (the `accessToken` field of the same
+  //                  response). Optional when `tokenRefreshUrl` is given.
+  //   tokenExpiry:   Unix timestamp in seconds (the `exp` field). Must be
+  //                  positive and passed together with `token` — pass the
+  //                  real `exp` from the Hub response. Without a
+  //                  `tokenRefreshUrl` no refresher is wired, so any value
+  //                  at or before "now" causes an auth error on the first
+  //                  request.
+  //   tokenRefreshUrl:     Hub `xet-write-token` route for the repo. When
+  //                        set, the CAS token is re-minted as it nears
+  //                        expiry, and any of the three arguments above
+  //                        that were omitted are resolved from the route's
+  //                        first response.
+  //   tokenRefreshHeaders: headers sent with every refresh request, e.g.
+  //                        `{ Authorization: "Bearer <hub-token>" }`.
+  //                        Requires `tokenRefreshUrl`.
+  //
+  // Note: wasm-bindgen emits every argument as required-but-nullable, and
+  // `tokenRefreshHeaders` as `any`. Plain JS may omit trailing arguments;
+  // TypeScript callers must pass explicit `null`s.
   newUploadCommit(
-    endpoint: string,
-    token: string,
-    tokenExpiry: number,
+    endpoint: string | null | undefined,
+    token: string | null | undefined,
+    tokenExpiry: number | null | undefined,
+    tokenRefreshUrl: string | null | undefined,
+    tokenRefreshHeaders: Record<string, string> | null | undefined,
   ): Promise<XetUploadCommit>;
 
-  // Build an authenticated download stream group.
-  //   endpoint:    CAS server URL — typically the `casUrl` field of the
-  //                `xet-read-token` response.
-  //   token:       CAS access token (the `accessToken` field).
-  //   tokenExpiry: Unix timestamp in seconds. Same caveats as
-  //                `newUploadCommit` — no automatic refresh.
+  // Build an authenticated download stream group. Same argument semantics
+  // as `newUploadCommit`, against the `xet-read-token` route.
   newDownloadStreamGroup(
-    endpoint: string,
-    token: string,
-    tokenExpiry: number,
+    endpoint: string | null | undefined,
+    token: string | null | undefined,
+    tokenExpiry: number | null | undefined,
+    tokenRefreshUrl: string | null | undefined,
+    tokenRefreshHeaders: Record<string, string> | null | undefined,
   ): Promise<XetDownloadStreamGroup>;
 }
 
@@ -143,12 +157,16 @@ The full token / file-id derivation is described in the
   the `upload` scenario in `wasm/ci-smoke/` (`node run.mjs upload`).
 - **No `_blocking` variants, no `upload_from_path`.** Wasm cannot block
   the host thread and has no filesystem; the JS surface omits both.
-- **No automatic token refresh.** This wrapper does not expose
-  `XetUploadCommitBuilder::with_token_refresh_url` or the equivalent on
-  the download group builder; if the supplied `tokenExpiry` is reached
-  mid-transfer the underlying request will fail with an auth error.
-  Callers must fetch a fresh `xet-write-token` / `xet-read-token` from
-  the Hub and build a new commit / group before expiry.
+- **Token refresh is URL-based only.** Both builders accept a
+  `tokenRefreshUrl` + `tokenRefreshHeaders` pair, mapping onto
+  `with_token_refresh_url`; the refresh GET is issued by reqwest's wasm
+  backend, so the Hub route must permit the page's origin via CORS (the
+  `xet-read-token` / `xet-write-token` routes do). There is no
+  JS-callback refresher: `TokenRefresher` requires `Send + Sync`, which a
+  `js_sys::Function` cannot satisfy without unsafe wrappers. Omit
+  `tokenRefreshUrl` and no refresher is wired at all — reaching
+  `tokenExpiry` mid-transfer then fails the request with an auth error,
+  and the caller must build a new commit / group.
 - **One bulk progress event per xorb.** reqwest's wasm backend does not
   support streaming request bodies, so the wasm xorb upload sends the
   raw `Bytes` and fires a single `report_progress(n_transfer_bytes)`
