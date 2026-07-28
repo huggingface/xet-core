@@ -52,14 +52,20 @@ impl FileDownloadSession {
             ctx.config.data.progress_update_speed_min_observations,
         ));
 
-        Ok(Arc::new(Self {
+        let session = Arc::new(Self {
             ctx,
             client,
             chunk_cache,
             progress,
             active_stream_abort_callbacks: Mutex::new(HashMap::new()),
             finalized: AtomicBool::new(false),
-        }))
+        });
+
+        // Only fires if this transfer outlives `heartbeat_after`; short ones never emit one.
+        #[cfg(not(target_family = "wasm"))]
+        crate::telemetry::start_download_heartbeat(&session.ctx.clone(), &session);
+
+        Ok(session)
     }
 
     /// Construct a download session from an existing CAS client.
@@ -81,6 +87,10 @@ impl FileDownloadSession {
             active_stream_abort_callbacks: Mutex::new(HashMap::new()),
             finalized: AtomicBool::new(false),
         })
+    }
+
+    pub fn client(&self) -> Arc<dyn Client> {
+        Arc::clone(&self.client)
     }
 
     pub fn report(&self) -> crate::progress_tracking::GroupProgressReport {
@@ -194,13 +204,30 @@ impl FileDownloadSession {
     }
 
     /// Finalizes the session; in debug builds, asserts all items are complete.
+    ///
+    /// Also reports the session as telemetry. Reporting is best-effort and cannot fail, so the
+    /// result is returned untouched either way.
     pub async fn finalize(&self) -> Result<()> {
         if self.finalized.swap(true, Ordering::AcqRel) {
             return Err(DataError::InvalidOperation("FileDownloadSession already finalized".to_string()));
         }
-        #[cfg(debug_assertions)]
-        self.progress.assert_complete();
-        Ok(())
+
+        let result = {
+            #[cfg(debug_assertions)]
+            self.progress.assert_complete();
+            Ok(())
+        };
+
+        #[cfg(not(target_family = "wasm"))]
+        crate::telemetry::emit_download_terminal(
+            &self.client,
+            &result,
+            &self.report(),
+            self.item_reports().len() as u64,
+        )
+        .await;
+
+        result
     }
 
     fn setup_reconstructor(
@@ -384,6 +411,25 @@ fn range_bounds_to_file_range(range: &impl RangeBounds<u64>) -> Result<Option<Fi
         Ok(None)
     } else {
         Ok(Some(FileRange::new(start, end)))
+    }
+}
+
+/// Reports a download session that was dropped without finalizing.
+///
+/// This is the *only* telemetry coverage for `XetDownloadStreamGroup`, which holds an
+/// `Arc<FileDownloadSession>` and has no explicit `finish()` - it is freed when the last user clone
+/// drops. Detached rather than awaited, because `Drop` is synchronous.
+#[cfg(not(target_family = "wasm"))]
+impl Drop for FileDownloadSession {
+    fn drop(&mut self) {
+        if self.finalized.load(Ordering::Acquire) {
+            return;
+        }
+        // Spawning needs a live runtime; outside one there is nothing to send on.
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        crate::telemetry::emit_download_abandoned(&self.client, &self.report(), self.item_reports().len() as u64);
     }
 }
 

@@ -15,14 +15,15 @@
 mod envelope;
 mod sink;
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use http::HeaderMap;
 use http::header::USER_AGENT;
 use reqwest::Url;
 use reqwest_middleware::ClientWithMiddleware;
+use tokio::task::JoinHandle;
 use tracing::debug;
 use uuid::Uuid;
 use xet_runtime::core::XetContext;
@@ -87,6 +88,10 @@ pub struct TransferTelemetry {
     terminal_sent: AtomicBool,
     sink: TelemetrySink,
     final_flush_timeout: Duration,
+    /// Handle to the heartbeat task, aborted when the terminal document goes out.
+    heartbeat: Mutex<Option<JoinHandle<()>>>,
+    heartbeat_after: Duration,
+    heartbeat_interval: Duration,
 }
 
 impl TransferTelemetry {
@@ -136,7 +141,67 @@ impl TransferTelemetry {
             terminal_sent: AtomicBool::new(false),
             sink: TelemetrySink::new(ctx, url, http),
             final_flush_timeout: ctx.config.telemetry.final_flush_timeout,
+            heartbeat: Mutex::new(None),
+            heartbeat_after: ctx.config.telemetry.heartbeat_after,
+            heartbeat_interval: ctx.config.telemetry.heartbeat_interval,
         }))
+    }
+
+    /// Starts emitting periodic progress documents once this transfer passes `heartbeat_after`.
+    ///
+    /// `snapshot` builds the metrics for one heartbeat and returns `None` when the session behind
+    /// it is gone, which stops the task. It **must** capture the session weakly: a strong
+    /// reference would keep the session alive, and the `Drop`-based terminal report would never
+    /// fire.
+    ///
+    /// Short transfers - the overwhelming majority - never emit a heartbeat at all. The task
+    /// itself is skipped entirely when `heartbeat_after` is zero.
+    pub fn start_heartbeat<F>(self: &Arc<Self>, ctx: &XetContext, snapshot: F)
+    where
+        F: Fn(u64) -> Option<serde_json::Value> + Send + Sync + 'static,
+    {
+        if self.heartbeat_after.is_zero() {
+            return;
+        }
+
+        // Weak, so the task cannot keep this alive past the transfer.
+        let weak = Arc::downgrade(self);
+        let (after, interval) = (self.heartbeat_after, self.heartbeat_interval);
+
+        let handle = ctx.runtime.spawn(async move {
+            tokio::time::sleep(after).await;
+
+            let mut seq = 1;
+            loop {
+                let Some(telemetry) = weak.upgrade() else {
+                    return;
+                };
+                if telemetry.terminal_sent() {
+                    return;
+                }
+                let Some(metrics) = snapshot(seq) else {
+                    return;
+                };
+                telemetry.emit_heartbeat(metrics);
+                // Dropped before sleeping so a transfer finishing mid-interval is not held alive
+                // by this task.
+                drop(telemetry);
+
+                seq += 1;
+                tokio::time::sleep(interval).await;
+            }
+        });
+
+        *self.heartbeat.lock().expect("telemetry heartbeat lock poisoned") = Some(handle);
+    }
+
+    /// Stops the heartbeat task, if one is running.
+    fn stop_heartbeat(&self) {
+        if let Ok(mut guard) = self.heartbeat.lock()
+            && let Some(handle) = guard.take()
+        {
+            handle.abort();
+        }
     }
 
     pub fn transfer_id(&self) -> &str {
@@ -181,6 +246,7 @@ impl TransferTelemetry {
         if self.terminal_sent.swap(true, Ordering::AcqRel) {
             return;
         }
+        self.stop_heartbeat();
         let envelope = self.envelope(event, metrics);
         self.sink.submit_awaited(envelope, self.final_flush_timeout).await;
     }
@@ -194,6 +260,7 @@ impl TransferTelemetry {
         if self.terminal_sent.swap(true, Ordering::AcqRel) {
             return;
         }
+        self.stop_heartbeat();
         let envelope = self.envelope(event, metrics);
         self.sink.submit_detached(envelope);
     }
@@ -322,6 +389,57 @@ mod tests {
         let a = build(&ctx, "https://cas.example.com", false).unwrap();
         let b = build(&ctx, "https://cas.example.com", false).unwrap();
         assert_ne!(a.transfer_id(), b.transfer_id());
+    }
+
+    /// A zero `heartbeat_after` means no task is spawned at all.
+    #[test]
+    fn test_heartbeat_disabled_when_after_is_zero() {
+        let mut config = XetConfig::default();
+        config.telemetry.heartbeat_after = Duration::ZERO;
+        let ctx = XetContext::with_config(config).unwrap();
+
+        let t = TransferTelemetry::maybe_new(&ctx, "https://cas.example.com", "s", false, http(&ctx), None).unwrap();
+        t.start_heartbeat(&ctx, |_| Some(serde_json::json!({})));
+
+        assert!(t.heartbeat.lock().unwrap().is_none(), "no task should have been spawned");
+    }
+
+    /// The heartbeat task must not keep the transfer alive. If it held a strong reference the
+    /// session's `Drop`-based terminal report would never fire.
+    #[test]
+    fn test_heartbeat_holds_only_a_weak_reference() {
+        let ctx = ctx_with(true);
+        let t = build(&ctx, "https://cas.example.com", false).unwrap();
+        t.start_heartbeat(&ctx, |_| Some(serde_json::json!({})));
+
+        let weak = Arc::downgrade(&t);
+        drop(t);
+        assert!(weak.upgrade().is_none(), "heartbeat task is keeping the telemetry alive");
+    }
+
+    /// Emitting the terminal document stops the heartbeat, so no progress document can arrive
+    /// after the summary.
+    #[test]
+    fn test_terminal_stops_the_heartbeat() {
+        let ctx = ctx_with(true);
+        let t = build(&ctx, "https://cas.example.com", false).unwrap();
+        t.start_heartbeat(&ctx, |_| Some(serde_json::json!({})));
+        assert!(t.heartbeat.lock().unwrap().is_some());
+
+        t.emit_terminal_detached(Direction::Upload.terminal_event(), serde_json::json!({}));
+        assert!(t.heartbeat.lock().unwrap().is_none(), "terminal emit should have aborted the heartbeat");
+    }
+
+    /// A heartbeat after the summary would be indistinguishable from a stale document.
+    #[test]
+    fn test_heartbeat_suppressed_after_terminal() {
+        let ctx = ctx_with(true);
+        let t = build(&ctx, "https://cas.example.com", false).unwrap();
+        t.emit_terminal_detached(Direction::Upload.terminal_event(), serde_json::json!({}));
+
+        // No panic and no send; the guard is `terminal_sent`.
+        t.emit_heartbeat(serde_json::json!({}));
+        assert!(t.terminal_sent());
     }
 
     /// Only one terminal document per transfer, whichever path gets there first.
