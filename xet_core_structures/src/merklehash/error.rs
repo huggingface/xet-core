@@ -52,11 +52,12 @@ impl DataHashError {
 
     /// Truncate oversized inputs before embedding them in error messages.
     fn truncate_for_display(input: &str) -> String {
-        // Inputs are ASCII (hex / base64); truncate by byte length.
         if input.len() <= MAX_EMBEDDED_INPUT_CHARS {
             return input.to_owned();
         }
-        let mut truncated = input[..MAX_EMBEDDED_INPUT_CHARS].to_owned();
+        // Snap back to a char boundary so multi-byte UTF-8 inputs cannot panic.
+        let end = input.floor_char_boundary(MAX_EMBEDDED_INPUT_CHARS);
+        let mut truncated = input[..end].to_owned();
         truncated.push_str("...");
         truncated
     }
