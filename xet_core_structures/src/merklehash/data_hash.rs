@@ -161,7 +161,7 @@ impl DataHash {
     /// Parses a hexadecimal string as a DataHash, returning
     /// Err(DataHashError) on failure.
     pub fn from_hex(h: &str) -> Result<DataHash, DataHashError> {
-        let parse_err = || DataHashError::InvalidHex { input: h.to_owned() };
+        let parse_err = || DataHashError::invalid_hex(h);
         if h.len() != 64 {
             return Err(parse_err());
         }
@@ -182,7 +182,7 @@ impl DataHash {
     pub fn from_base64(b64: &str) -> Result<DataHash, DataHashError> {
         let bytes = URL_SAFE_NO_PAD
             .decode(b64.as_bytes())
-            .map_err(|_| DataHashError::InvalidBytes { input: b64.to_owned() })?;
+            .map_err(|_| DataHashError::invalid_bytes_str(b64))?;
         DataHash::from_slice(&bytes)
     }
 
@@ -193,9 +193,7 @@ impl DataHash {
 
     pub fn from_slice(value: &[u8]) -> Result<Self, DataHashError> {
         if value.len() != 32 {
-            return Err(DataHashError::InvalidBytes {
-                input: DataHashError::format_bytes(value),
-            });
+            return Err(DataHashError::invalid_bytes_slice(value));
         }
         let mut hash: DataHash = DataHash::default();
         unsafe {
@@ -565,12 +563,40 @@ mod tests {
     #[test]
     fn test_from_hex_parse_error_includes_input() {
         let empty = DataHash::from_hex("").unwrap_err();
-        assert_eq!(empty.hex_input(), "");
+        assert_eq!(empty.input(), "");
+        assert!(empty.to_string().contains("got ''"), "{}", empty);
 
         let short = DataHash::from_hex("abcdef").unwrap_err();
-        assert_eq!(short.hex_input(), "abcdef");
+        assert_eq!(short.input(), "abcdef");
+        assert!(short.to_string().contains("got 'abcdef'"), "{}", short);
 
         let bad_chars = DataHash::from_hex(&"g".repeat(64)).unwrap_err();
-        assert_eq!(bad_chars.hex_input(), "g".repeat(64));
+        assert_eq!(bad_chars.input(), "g".repeat(64));
+        assert!(bad_chars.to_string().contains(&format!("got '{}'", "g".repeat(64))), "{}", bad_chars);
+    }
+
+    #[test]
+    fn test_from_slice_parse_error_includes_input() {
+        let err = DataHash::from_slice(&[1u8; 31]).unwrap_err();
+        let expected_hex = "01".repeat(31);
+        assert_eq!(err.input(), expected_hex);
+        assert!(err.to_string().contains(&format!("got '{expected_hex}'")), "{}", err);
+    }
+
+    #[test]
+    fn test_from_base64_parse_error_includes_input() {
+        let bad = "!!!not-base64!!!";
+        let err = DataHash::from_base64(bad).unwrap_err();
+        assert_eq!(err.input(), bad);
+        assert!(err.to_string().contains(&format!("got '{bad}'")), "{}", err);
+    }
+
+    #[test]
+    fn test_parse_error_truncates_long_input() {
+        let long = "a".repeat(200);
+        let err = DataHash::from_hex(&long).unwrap_err();
+        assert_eq!(err.input(), format!("{}...", "a".repeat(72)));
+        assert!(err.to_string().contains("..."), "{}", err);
+        assert!(!err.to_string().contains(&"a".repeat(200)), "{}", err);
     }
 }

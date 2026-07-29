@@ -68,7 +68,7 @@ pub enum DataError {
     #[error("Parameter error: {0}")]
     ParameterError(String),
 
-    #[error("Unable to parse string as hex hash value (got '{}')", .0.hex_input())]
+    #[error("Unable to parse string as hex hash value (got '{}')", .0.input())]
     HashStringParsingFailure(#[from] DataHashError),
 
     #[error("Deprecated feature: {0}")]
