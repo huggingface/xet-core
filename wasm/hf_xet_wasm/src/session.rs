@@ -65,6 +65,8 @@ impl XetSession {
     ///   expiry.
     /// - `tokenRefreshHeaders`: optional headers object sent with every refresh request, e.g. `{ Authorization: "Bearer
     ///   <hub-token>" }`. Requires `tokenRefreshUrl`.
+    /// - `customHeaders`: optional headers object forwarded with every CAS request, mapping onto `with_custom_headers`.
+    ///   Independent of the refresh headers above.
     #[wasm_bindgen(js_name = "newUploadCommit")]
     pub async fn new_upload_commit(
         &self,
@@ -73,12 +75,21 @@ impl XetSession {
         token_expiry: Option<f64>,
         token_refresh_url: Option<String>,
         token_refresh_headers: JsValue,
+        custom_headers: JsValue,
     ) -> Result<XetUploadCommit, JsValue> {
         let AuthInputs {
             endpoint,
             token_info,
             token_refresh,
-        } = resolve_auth_inputs(endpoint, token, token_expiry, token_refresh_url, token_refresh_headers)?;
+            custom_headers,
+        } = resolve_auth_inputs(
+            endpoint,
+            token,
+            token_expiry,
+            token_refresh_url,
+            token_refresh_headers,
+            custom_headers,
+        )?;
 
         let mut builder = self.inner.new_upload_commit().map_err(js_err)?;
         if let Some(endpoint) = endpoint {
@@ -89,6 +100,9 @@ impl XetSession {
         }
         if let Some((url, headers)) = token_refresh {
             builder = builder.with_token_refresh_url(url, headers);
+        }
+        if let Some(headers) = custom_headers {
+            builder = builder.with_custom_headers(headers);
         }
 
         let commit = builder.build().await.map_err(js_err)?;
@@ -108,6 +122,8 @@ impl XetSession {
     ///   expiry.
     /// - `tokenRefreshHeaders`: optional headers object sent with every refresh request, e.g. `{ Authorization: "Bearer
     ///   <hub-token>" }`. Requires `tokenRefreshUrl`.
+    /// - `customHeaders`: optional headers object forwarded with every CAS request, mapping onto `with_custom_headers`.
+    ///   Independent of the refresh headers above.
     #[wasm_bindgen(js_name = "newDownloadStreamGroup")]
     pub async fn new_download_stream_group(
         &self,
@@ -116,12 +132,21 @@ impl XetSession {
         token_expiry: Option<f64>,
         token_refresh_url: Option<String>,
         token_refresh_headers: JsValue,
+        custom_headers: JsValue,
     ) -> Result<XetDownloadStreamGroup, JsValue> {
         let AuthInputs {
             endpoint,
             token_info,
             token_refresh,
-        } = resolve_auth_inputs(endpoint, token, token_expiry, token_refresh_url, token_refresh_headers)?;
+            custom_headers,
+        } = resolve_auth_inputs(
+            endpoint,
+            token,
+            token_expiry,
+            token_refresh_url,
+            token_refresh_headers,
+            custom_headers,
+        )?;
 
         let mut builder = self.inner.new_download_stream_group().map_err(js_err)?;
         if let Some(endpoint) = endpoint {
@@ -132,6 +157,9 @@ impl XetSession {
         }
         if let Some((url, headers)) = token_refresh {
             builder = builder.with_token_refresh_url(url, headers);
+        }
+        if let Some(headers) = custom_headers {
+            builder = builder.with_custom_headers(headers);
         }
 
         let group = builder.build().await.map_err(js_err)?;

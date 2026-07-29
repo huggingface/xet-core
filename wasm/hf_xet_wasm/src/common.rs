@@ -13,6 +13,7 @@ pub(crate) struct AuthInputs {
     pub(crate) endpoint: Option<String>,
     pub(crate) token_info: Option<(String, u64)>,
     pub(crate) token_refresh: Option<(String, HeaderMap)>,
+    pub(crate) custom_headers: Option<HeaderMap>,
 }
 
 /// Treat `undefined`, `null`, `""` and whitespace-only strings alike as "not
@@ -78,6 +79,7 @@ pub(crate) fn resolve_auth_inputs(
     token_expiry: Option<f64>,
     token_refresh_url: Option<String>,
     token_refresh_headers: JsValue,
+    custom_headers: JsValue,
 ) -> Result<AuthInputs, JsValue> {
     let endpoint = optional_string(endpoint);
     if let Some(endpoint) = endpoint.as_deref() {
@@ -108,6 +110,10 @@ pub(crate) fn resolve_auth_inputs(
         },
     };
 
+    // An empty map is indistinguishable from "not provided" here, and leaving it
+    // as `None` keeps `with_custom_headers` off the builder entirely.
+    let custom_headers = Some(parse_header_map(custom_headers, "customHeaders")?).filter(|h| !h.is_empty());
+
     if endpoint.is_none() && token_refresh.is_none() {
         return Err(JsValue::from_str("endpoint is required unless tokenRefreshUrl is provided"));
     }
@@ -119,5 +125,6 @@ pub(crate) fn resolve_auth_inputs(
         endpoint,
         token_info,
         token_refresh,
+        custom_headers,
     })
 }

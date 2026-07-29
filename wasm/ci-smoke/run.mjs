@@ -149,12 +149,12 @@ const PINNED_H5 = {
 
 const SCENARIOS = {
   // resolve_auth_inputs rejects bad token / endpoint / tokenExpiry /
-  // tokenRefresh* inputs in the wasm wrapper. Fully local — no Hub or CAS
-  // network calls.
+  // tokenRefresh* / customHeaders inputs in the wasm wrapper. Fully local — no
+  // Hub or CAS network calls.
   'invalid-inputs': {
     timeoutMs: 1 * MINUTE_MS,
     assert(result) {
-      const expected = 18 * 2; // 18 invalid input cases × 2 methods
+      const expected = 21 * 2; // 21 invalid input cases × 2 methods
       if (result.casesChecked !== expected) {
         throw new Error(`casesChecked=${result.casesChecked}, expected ${expected}`);
       }

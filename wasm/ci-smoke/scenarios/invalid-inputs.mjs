@@ -1,6 +1,6 @@
 // No-Hub smoke: resolve_auth_inputs in the wasm wrapper must reject bad
-// token / endpoint / tokenExpiry / tokenRefresh* inputs across both
-// newUploadCommit and newDownloadStreamGroup. Catches regressions to the
+// token / endpoint / tokenExpiry / tokenRefresh* / customHeaders inputs across
+// both newUploadCommit and newDownloadStreamGroup. Catches regressions to the
 // validation surface (e.g., accidental re-introduction of the 0→u64::MAX
 // sentinel), and that both methods wire their arguments in the same order.
 //
@@ -75,6 +75,27 @@ function makeCases() {
       refreshUrl: VALID_REFRESH_URL, refreshHeaders: { 'Bad Header': 'value' },
       mustContain: 'header name',
     },
+
+    // customHeaders validation — same parser as the refresh headers, but with
+    // no tokenRefreshUrl requirement
+    {
+      label: 'custom headers not an object',
+      endpoint: VALID_ENDPOINT, token: VALID_TOKEN, expiry: VALID_EXPIRY,
+      customHeaders: 'X-Trace: 1',
+      mustContain: 'customHeaders',
+    },
+    {
+      label: 'custom header value not a string',
+      endpoint: VALID_ENDPOINT, token: VALID_TOKEN, expiry: VALID_EXPIRY,
+      customHeaders: { 'X-Trace': 1 },
+      mustContain: 'customHeaders',
+    },
+    {
+      label: 'custom header name invalid',
+      endpoint: VALID_ENDPOINT, token: VALID_TOKEN, expiry: VALID_EXPIRY,
+      customHeaders: { 'Bad Header': 'value' },
+      mustContain: 'header name',
+    },
   ];
 }
 
@@ -97,7 +118,7 @@ export async function run() {
   const failures = [];
 
   for (const c of cases) {
-    const args = [c.endpoint, c.token, c.expiry, c.refreshUrl, c.refreshHeaders];
+    const args = [c.endpoint, c.token, c.expiry, c.refreshUrl, c.refreshHeaders, c.customHeaders];
 
     const uploadResult = await expectReject(
       `newUploadCommit / ${c.label}`,

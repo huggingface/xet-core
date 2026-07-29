@@ -52,16 +52,21 @@ class XetSession {
   //   tokenRefreshHeaders: headers sent with every refresh request, e.g.
   //                        `{ Authorization: "Bearer <hub-token>" }`.
   //                        Requires `tokenRefreshUrl`.
+  //   customHeaders:       headers forwarded with every CAS request, the
+  //                        `with_custom_headers` knob of the Rust builder.
+  //                        Independent of `tokenRefreshHeaders`, which are
+  //                        sent only to the refresh route.
   //
   // Note: wasm-bindgen emits every argument as required-but-nullable, and
-  // `tokenRefreshHeaders` as `any`. Plain JS may omit trailing arguments;
-  // TypeScript callers must pass explicit `null`s.
+  // the two header arguments as `any`. Plain JS may omit trailing
+  // arguments; TypeScript callers must pass explicit `null`s.
   newUploadCommit(
     endpoint: string | null | undefined,
     token: string | null | undefined,
     tokenExpiry: number | null | undefined,
     tokenRefreshUrl: string | null | undefined,
     tokenRefreshHeaders: Record<string, string> | null | undefined,
+    customHeaders: Record<string, string> | null | undefined,
   ): Promise<XetUploadCommit>;
 
   // Build an authenticated download stream group. Same argument semantics
@@ -72,6 +77,7 @@ class XetSession {
     tokenExpiry: number | null | undefined,
     tokenRefreshUrl: string | null | undefined,
     tokenRefreshHeaders: Record<string, string> | null | undefined,
+    customHeaders: Record<string, string> | null | undefined,
   ): Promise<XetDownloadStreamGroup>;
 }
 
