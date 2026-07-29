@@ -108,6 +108,7 @@ impl XetError {
             | CoreError::InvalidShard(_)
             | CoreError::ShardVersion(_)
             | CoreError::ChunkHeaderParse
+            | CoreError::HashParsing(_)
             | CoreError::MalformedData(_)
             | CoreError::CompressionError(_) => XetError::DataIntegrity(fe.to_string()),
             CoreError::InvalidRange | CoreError::InvalidArguments | CoreError::BadFilename(_) => {
