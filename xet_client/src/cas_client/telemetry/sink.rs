@@ -198,4 +198,120 @@ mod tests {
         assert!(try_acquire(&in_flight, 0).is_none());
         assert_eq!(in_flight.load(Ordering::Acquire), 0);
     }
+
+    mod against_a_server {
+        use std::time::Instant;
+
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use xet_runtime::config::XetConfig;
+        use xet_runtime::core::XetContext;
+
+        use super::*;
+        use crate::cas_client::telemetry::TelemetryEnvelope;
+
+        fn envelope() -> TelemetryEnvelope {
+            TelemetryEnvelope::new("xet_upload_summary", "s".into(), "ua".into(), serde_json::json!({"a": 1}))
+        }
+
+        fn sink(ctx: &XetContext, base: &str) -> TelemetrySink {
+            let http = Arc::new(crate::common::http_client::build_http_client(ctx, "s", None, None).unwrap());
+            TelemetrySink::new(ctx, Url::parse(&format!("{base}/v1/telemetry")).unwrap(), http)
+        }
+
+        fn ctx_with_flush(flush: Duration, request: Duration) -> XetContext {
+            let mut config = XetConfig::default();
+            config.telemetry.final_flush_timeout = flush;
+            config.telemetry.request_timeout = request;
+            XetContext::with_config(config).unwrap()
+        }
+
+        /// The whole point of the design: a telemetry endpoint that never answers must not hold a
+        /// transfer open past its flush budget.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn test_awaited_flush_respects_its_budget_when_the_server_hangs() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/v1/telemetry"))
+                // Far longer than any budget under test.
+                .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(30)))
+                .mount(&server)
+                .await;
+
+            let budget = Duration::from_millis(300);
+            let ctx = ctx_with_flush(budget, Duration::from_secs(30));
+            let sink = sink(&ctx, &server.uri());
+
+            let started = Instant::now();
+            sink.submit_awaited(envelope(), budget).await;
+            let elapsed = started.elapsed();
+
+            assert!(
+                elapsed < budget + Duration::from_secs(2),
+                "flush took {elapsed:?}, which is not bounded by the {budget:?} budget"
+            );
+        }
+
+        /// A zero budget degrades to a detached send, so it returns essentially immediately.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn test_zero_budget_returns_immediately() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/v1/telemetry"))
+                .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(30)))
+                .mount(&server)
+                .await;
+
+            let ctx = ctx_with_flush(Duration::ZERO, Duration::from_secs(30));
+            let sink = sink(&ctx, &server.uri());
+
+            let started = Instant::now();
+            sink.submit_awaited(envelope(), Duration::ZERO).await;
+            assert!(started.elapsed() < Duration::from_secs(1), "a zero budget must not wait on the request");
+        }
+
+        /// A rejection is swallowed, never retried, and never surfaced.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn test_server_rejection_is_swallowed_and_not_retried() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/v1/telemetry"))
+                .respond_with(ResponseTemplate::new(429))
+                // A retry would make this fail: exactly one request is expected.
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let ctx = ctx_with_flush(Duration::from_secs(5), Duration::from_secs(5));
+            sink(&ctx, &server.uri())
+                .submit_awaited(envelope(), Duration::from_secs(5))
+                .await;
+
+            // `MockServer` asserts the expectation on drop.
+            drop(server);
+        }
+
+        /// The body that goes over the wire is the envelope, unmodified.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn test_posts_the_envelope_as_json() {
+            // Built once and reused: `TelemetryEnvelope::new` stamps `time` from the clock, so two
+            // calls would never compare equal.
+            let expected = envelope();
+
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/v1/telemetry"))
+                .and(wiremock::matchers::header("content-type", "application/json"))
+                .and(wiremock::matchers::body_json(serde_json::to_value(&expected).unwrap()))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let ctx = ctx_with_flush(Duration::from_secs(5), Duration::from_secs(5));
+            sink(&ctx, &server.uri()).submit_awaited(expected, Duration::from_secs(5)).await;
+
+            drop(server);
+        }
+    }
 }

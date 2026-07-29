@@ -13,7 +13,7 @@
 //!
 //! Errors are mapped to appropriate HTTP status codes via `error_to_response`.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::Json;
@@ -42,6 +42,11 @@ pub(crate) struct ServerState {
     pub(crate) client: Arc<dyn DirectAccessClient>,
     pub(super) latency_simulation: Arc<LatencySimulation>,
     pub(crate) deletion_client: Option<Arc<dyn DeletionControlableClient>>,
+    /// Telemetry documents received on `POST /v1/telemetry`, in arrival order.
+    ///
+    /// Kept verbatim as `Value` so tests can assert on the exact wire shape, which is what the
+    /// Elasticsearch mapping actually sees.
+    pub(crate) telemetry_docs: Arc<Mutex<Vec<serde_json::Value>>>,
 }
 
 /// Represents the different forms a Range header can take.
@@ -873,6 +878,31 @@ fn parse_congestion_config(value: &str) -> Result<(u64, u64, u64, f64), String> 
 /// Returns 200 OK with a simple success body. Used by the simulation to confirm the server is ready.
 pub async fn ping() -> Response {
     (StatusCode::OK, "ok").into_response()
+}
+
+/// POST /v1/telemetry
+///
+/// Stands in for the real cas_server endpoint, recording each document so tests can assert on
+/// what actually went over the wire. Mirrors the server's status contract closely enough for the
+/// client's purposes: 200 on a well-formed body, 400 otherwise.
+///
+/// Deliberately permissive about the *contents* of the body - the client is what is under test,
+/// so a mismatch should show up as a failed assertion on the recorded document rather than as an
+/// opaque 400.
+pub async fn post_telemetry(State(state): State<ServerState>, body: Bytes) -> Response {
+    let Ok(document) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        return (StatusCode::BAD_REQUEST, "telemetry body is not valid JSON").into_response();
+    };
+    if !document.is_object() {
+        return (StatusCode::BAD_REQUEST, "telemetry body is not a JSON object").into_response();
+    }
+
+    state
+        .telemetry_docs
+        .lock()
+        .expect("telemetry_docs lock poisoned")
+        .push(document);
+    StatusCode::OK.into_response()
 }
 
 /// POST /simulation/dummy_upload
