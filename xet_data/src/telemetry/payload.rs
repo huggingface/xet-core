@@ -1,5 +1,10 @@
 //! The metric vocabulary sent to `POST /v1/telemetry`.
 //!
+//! This module is the source of truth for what the client measures. It is exported to
+//! `telemetry/metrics.schema.json` by `schema.rs`, and that schema is the only definition anyone
+//! outside this repo has - so **every field needs a doc comment**, which becomes its `description`
+//! there. A test enforces it.
+//!
 //! # Rules for changing anything in this file
 //!
 //! Consumers assign each property a field type on first sight and cannot change it in place
@@ -13,7 +18,7 @@
 //!
 //! `test_upload_key_set_is_exact` / `test_download_key_set_is_exact` pin the key sets and
 //! `test_numeric_types_stable` pins the types, so any of the above fails the build rather than
-//! production.
+//! production. CI additionally diffs the generated schema against the merge target.
 //!
 //! Every value is a `u64`, `f64`, `bool`, or `String` - never null, never nested, never an array.
 //! No file names, paths, hashes, repository ids, or user ids appear here; the server derives
@@ -63,9 +68,21 @@ fn finite(value: f64) -> f64 {
 }
 
 /// Keys present in every telemetry document, in both directions, always.
+///
+/// Every field carries a doc comment, and a test enforces that. The comments become the
+/// `description` of each property in the published `telemetry/metrics.schema.json`, which is the
+/// only definition of this vocabulary anyone outside this repo has - so a field documented only by
+/// its name here is undocumented everywhere.
+///
+/// `JsonSchema` is derived only under `cfg(test)`, from a dev-dependency: the schema is generated
+/// by a test and committed, so nothing ships in release builds. See `schema.rs`.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct CommonMetrics {
+    /// Version of this metric vocabulary. Incremented when keys are added, so a query can tell an
+    /// absent key from an older client that never emitted it.
     pub schema_version: u64,
+    /// Which half of the transfer this describes: `upload` or `download`.
     pub direction: &'static str,
     /// Unique per transfer. A single `XetSession` id can cover both an upload commit and a
     /// download group, so `session_id` alone does not identify a transfer.
@@ -76,32 +93,53 @@ pub struct CommonMetrics {
     /// 0 for the first document; increments per heartbeat.
     pub seq: u64,
 
+    /// Version of the `hf-xet` client that produced this document.
     pub client_version: &'static str,
+    /// Operating system the client is running on, as reported by the Rust target
+    /// (`linux`, `macos`, `windows`, ...).
     pub os: &'static str,
+    /// CPU architecture of the client (`x86_64`, `aarch64`, ...).
     pub arch: &'static str,
+    /// Parallelism available to the client process. 0 when it could not be determined.
     pub cpu_count: u64,
-    /// Host component only.
+    /// Host component of the CAS endpoint. Never a full URL - a path or query could carry
+    /// something sensitive.
     pub endpoint_host: String,
+    /// Whether this was a dry run, which performs no real uploads. Always false in practice, since
+    /// dry runs do not report at all; present so the field is never ambiguous.
     pub dry_run: bool,
 
+    /// Wall-clock time from session construction to this document being built, in milliseconds.
     pub duration_ms: u64,
+    /// How the transfer ended: `ok`, `error`, `cancelled`, `aborted`, `dropped`, or
+    /// `in_progress` for a heartbeat.
     pub outcome: &'static str,
+    /// Coarse failure bucket: `none` when nothing went wrong, otherwise `auth`, `network`,
+    /// `timeout`, `rate_limited`, `server_error`, `not_found`, `io`, `format`, `cancelled`,
+    /// `internal`, or `other`. Deliberately coarse - error text could contain file paths.
     pub error_class: &'static str,
 
+    /// Number of files in the transfer.
     pub n_files: u64,
     /// Logical bytes, before dedup and compression.
     pub total_bytes: u64,
+    /// Logical bytes actually finished. Below `total_bytes` for a failed or abandoned transfer.
     pub total_bytes_completed: u64,
     /// Bytes actually moved over the wire.
     pub transfer_bytes: u64,
+    /// Wire bytes actually finished.
     pub transfer_bytes_completed: u64,
-    /// Wire throughput over the whole transfer. Deterministic, unlike the EWMA below.
+    /// Wire throughput over the whole transfer: `transfer_bytes_completed` per second, computed
+    /// from `duration_ms`. Deterministic, unlike the EWMA below.
     pub throughput_bps: f64,
+    /// Logical throughput over the whole transfer: `total_bytes_completed` per second. Exceeds
+    /// `throughput_bps` by the dedup and compression factor.
     pub logical_throughput_bps: f64,
     /// The client's own EWMA estimate, for comparison against the wall-clock figures. Zero rather
     /// than absent when the sampler never had enough observations.
     pub ewma_throughput_bps: f64,
 
+    /// Highest number of concurrent connections the adaptive-concurrency controller reached.
     pub peak_concurrency: u64,
 }
 
@@ -181,35 +219,61 @@ impl CommonMetrics {
 
 /// Upload documents: [`CommonMetrics`] plus dedup effectiveness and shard finalization.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct UploadMetrics {
+    /// Flattened into the same object; these keys appear alongside the upload-specific ones.
     #[serde(flatten)]
     pub common: CommonMetrics,
 
+    /// Logical bytes that did not need uploading because an identical chunk already existed.
     pub dedup_bytes: u64,
+    /// Logical bytes that were new and had to be uploaded.
     pub new_bytes: u64,
+    /// Subset of `dedup_bytes` deduplicated against the global index rather than local state.
+    /// The rest was matched within this session or from the local shard cache.
     pub global_dedup_bytes: u64,
+    /// Bytes that could have been deduplicated but were re-uploaded anyway, because doing
+    /// otherwise would have fragmented the xorb past the defrag threshold. The cost of the
+    /// fragmentation-vs-dedup tradeoff.
     pub defrag_prevented_dedup_bytes: u64,
+    /// Chunks the content-defined chunker produced across all files.
     pub total_chunks: u64,
+    /// Chunks that already existed and were not uploaded.
     pub dedup_chunks: u64,
+    /// Chunks that were new and had to be uploaded.
     pub new_chunks: u64,
+    /// Subset of `dedup_chunks` matched against the global index.
     pub global_dedup_chunks: u64,
+    /// Chunks re-uploaded despite being deduplicable, for the defrag reason above.
     pub defrag_prevented_dedup_chunks: u64,
 
+    /// Compressed xorb bytes sent to CAS. This plus `shard_bytes_uploaded` is the real upload
+    /// cost of the transfer.
     pub xorb_bytes_uploaded: u64,
+    /// Shard (metadata) bytes sent to CAS during finalization.
     pub shard_bytes_uploaded: u64,
 
+    /// Shards this transfer produced.
     pub shards_total: u64,
+    /// Shards the server confirmed as fully registered. Below `shards_total` when finalization
+    /// did not complete.
     pub shards_completed: u64,
+    /// File entries the server verified while registering the shards. A proxy for how much work
+    /// finalization asked of the server.
     pub shard_validation_entries: u64,
 
-    /// Share of logical bytes avoided by dedup.
+    /// Share of logical bytes avoided by dedup: `dedup_bytes / total_bytes`. 0.0 when there was
+    /// nothing to transfer.
     pub dedup_ratio: f64,
-    /// Compressed xorb bytes over the new bytes that produced them.
+    /// Compressed xorb bytes over the new bytes that produced them: below 1.0 means compression
+    /// helped. 0.0 when nothing new was uploaded.
     pub compression_ratio: f64,
 
-    /// Chunking, hashing, and xorb upload: session start until `finalize` was called.
+    /// Chunking, hashing, and xorb upload: session start until `finalize` was called, in
+    /// milliseconds. 0 on a heartbeat, where the phase has not ended.
     pub ingest_ms: u64,
-    /// Shard consolidation, upload, and registration.
+    /// Shard consolidation, upload, and registration, in milliseconds. 0 for a transfer that
+    /// never reached finalization.
     pub finalize_ms: u64,
 }
 
@@ -255,7 +319,9 @@ impl UploadMetrics {
 
 /// Download documents: [`CommonMetrics`] plus how much the wire bytes expanded on disk.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct DownloadMetrics {
+    /// Flattened into the same object; these keys appear alongside the download-specific ones.
     #[serde(flatten)]
     pub common: CommonMetrics,
 

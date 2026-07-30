@@ -20,6 +20,9 @@ mod emit;
 mod outcome;
 #[cfg(not(target_family = "wasm"))]
 mod payload;
+// Generates the schema from the payload types, so it cannot outlive them on wasm.
+#[cfg(all(test, not(target_family = "wasm")))]
+mod schema;
 
 #[cfg(not(target_family = "wasm"))]
 pub(crate) use emit::{
