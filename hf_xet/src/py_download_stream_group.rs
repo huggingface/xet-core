@@ -67,6 +67,42 @@ impl PyXetDownloadStreamGroup {
         "XetDownloadStreamGroup()"
     }
 
+    // ── Context manager ──────────────────────────────────────────────────────
+
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __exit__(
+        &self,
+        py: Python<'_>,
+        _exc_type: Bound<'_, pyo3::PyAny>,
+        _exc_val: Bound<'_, pyo3::PyAny>,
+        _exc_tb: Bound<'_, pyo3::PyAny>,
+    ) -> PyResult<bool> {
+        self.finish(py)?;
+        Ok(false)
+    }
+
+    /// Mark the group as finished, reporting transfer telemetry.
+    ///
+    /// Streams are consumed independently, so the group cannot tell on its own when the caller is
+    /// done; this says so.
+    ///
+    /// **Optional.** A group that is never finished behaves exactly as before and still reports
+    /// when it is collected — as a dropped transfer rather than a clean one. Existing code needs
+    /// no change.
+    ///
+    /// Open every stream you intend to open first: the group is **closed** afterwards, so
+    /// :meth:`download_stream` and :meth:`download_unordered_stream` raise once it has been
+    /// called. Streams already returned stay usable.
+    ///
+    /// Called automatically when exiting a ``with`` block. Calling it twice is a no-op.
+    pub fn finish(&self, py: Python<'_>) -> PyResult<()> {
+        let group = self.inner.clone();
+        py.detach(|| group.finish_blocking().map_err(convert_xet_error))
+    }
+
     // ── Stream constructors ──────────────────────────────────────────────────
 
     /// Open an ordered byte stream for a file.

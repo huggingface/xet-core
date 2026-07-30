@@ -32,17 +32,29 @@ pub(crate) fn telemetry_of_download(client: &Arc<dyn Client>) -> Option<Arc<Tran
 fn classify<T>(result: &Result<T, DataError>) -> (Outcome, &'static str) {
     match result {
         Ok(_) => (Outcome::Ok, ERROR_CLASS_NONE),
-        Err(e) => {
-            let class = error_class(e);
-            // Cancellation is a user action, not a failure; keeping it out of `error` stops it
-            // from polluting failure-rate alerts.
-            let outcome = if class == "cancelled" {
-                Outcome::Cancelled
-            } else {
-                Outcome::Error
-            };
-            (outcome, class)
-        },
+        Err(e) => classify_error(e),
+    }
+}
+
+/// Derives the outcome and error class from a failed transfer.
+///
+/// Split out of [`classify`] so callers that have already reduced their error to a class string -
+/// notably `xet_pkg`, whose `XetError` has lost the original [`DataError`] by the time a group
+/// finishes - can reach the same mapping through [`outcome_for_class`].
+pub fn classify_error(error: &DataError) -> (Outcome, &'static str) {
+    let class = error_class(error);
+    (outcome_for_class(class), class)
+}
+
+/// Maps an error class to the outcome that should accompany it.
+///
+/// Cancellation is a user action, not a failure; keeping it out of `error` stops it from polluting
+/// failure-rate alerts.
+pub fn outcome_for_class(class: &'static str) -> Outcome {
+    if class == "cancelled" {
+        Outcome::Cancelled
+    } else {
+        Outcome::Error
     }
 }
 
@@ -144,16 +156,20 @@ pub(crate) fn emit_upload_abandoned(client: &Arc<dyn Client + Send + Sync>, snap
 }
 
 /// Emits a download session's terminal document, waiting up to `final_flush_timeout`.
-pub(crate) async fn emit_download_terminal<T>(
+///
+/// Takes an already-classified `(outcome, error_class)` rather than a `Result`, because the
+/// callers that know how a download ended live in `xet_pkg` and hold a `XetError`, not a
+/// [`DataError`]. Use [`classify_error`] or [`outcome_for_class`] to produce the pair.
+pub(crate) async fn emit_download_terminal(
     client: &Arc<dyn Client>,
-    result: &Result<T, DataError>,
+    outcome: Outcome,
+    error_class: &'static str,
     progress: &GroupProgressReport,
     n_files: u64,
 ) {
     let Some(telemetry) = telemetry_of_download(client) else {
         return;
     };
-    let (outcome, error_class) = classify(result);
     let metrics = download_metrics(&telemetry, progress, n_files, outcome, error_class);
     telemetry.emit_terminal(Direction::Download.terminal_event(), metrics).await;
 }

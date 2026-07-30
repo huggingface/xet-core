@@ -86,6 +86,40 @@ impl XetError {
         Self::Internal(msg.to_string())
     }
 
+    /// Classifies this error for telemetry as an `(outcome, error_class)` pair.
+    ///
+    /// By the time a group finishes, the originating [`DataError`] has usually been flattened into
+    /// a string variant here, so `xet_data`'s `error_class` cannot be applied directly. This maps
+    /// the surviving categories onto the *same* coarse class vocabulary, so documents produced by
+    /// this path aggregate together with those classified inside `xet_data`.
+    ///
+    /// Deliberately coarse, matching `xet_data::telemetry::error_class`: the question is "are
+    /// downloads failing more than they were, and is it the network or the server", and error text
+    /// can contain paths, so none of it is carried.
+    pub fn telemetry_class(&self) -> (xet_data::telemetry::Outcome, &'static str) {
+        use xet_data::telemetry::outcome_for_class;
+
+        let class = match self {
+            // Cancellation is a user action, not a failure. `outcome_for_class` maps these to
+            // `Outcome::Cancelled` so they stay out of failure-rate alerts.
+            XetError::KeyboardInterrupt | XetError::UserCancelled(_) | XetError::Cancelled(_) => "cancelled",
+            XetError::Authentication(_) => "auth",
+            XetError::Network(_) => "network",
+            XetError::Timeout(_) => "timeout",
+            XetError::NotFound(_) => "not_found",
+            XetError::DataIntegrity(_) => "format",
+            XetError::Io(_) => "io",
+            XetError::Configuration(_) | XetError::InvalidTaskID(_) | XetError::WrongRuntimeMode(_) => "internal",
+            XetError::Internal(_) => "internal",
+            // A task failed and its cause was reduced to a message; the class is genuinely
+            // unknown. Matched exhaustively on purpose - a new variant should not silently
+            // become "other" without someone deciding that is right.
+            XetError::TaskError(_) | XetError::PreviousTaskError(_) | XetError::AlreadyCompleted => "other",
+        };
+
+        (outcome_for_class(class), class)
+    }
+
     pub fn wrong_mode(msg: impl std::fmt::Display) -> Self {
         Self::WrongRuntimeMode(msg.to_string())
     }

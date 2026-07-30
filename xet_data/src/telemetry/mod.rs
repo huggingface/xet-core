@@ -15,6 +15,7 @@ pub(crate) use emit::{
     UploadSnapshot, emit_download_abandoned, emit_download_terminal, emit_upload_abandoned, emit_upload_terminal,
     start_download_heartbeat, start_upload_heartbeat,
 };
+pub use emit::{classify_error, outcome_for_class};
 pub use payload::{
     CommonInputs, CommonMetrics, DownloadMetrics, ERROR_CLASS_NONE, Outcome, TELEMETRY_SCHEMA_VERSION,
     TransferIdentity, UploadMetrics, error_class,

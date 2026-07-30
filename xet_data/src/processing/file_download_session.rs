@@ -203,31 +203,62 @@ impl FileDownloadSession {
         Ok(())
     }
 
-    /// Finalizes the session; in debug builds, asserts all items are complete.
+    /// Finalizes a session whose downloads all completed successfully.
     ///
-    /// Also reports the session as telemetry. Reporting is best-effort and cannot fail, so the
-    /// result is returned untouched either way.
+    /// In debug builds this asserts that every item is complete; a session that ended badly must
+    /// go through [`finalize_failed`](Self::finalize_failed) instead, which makes no such claim.
     pub async fn finalize(&self) -> Result<()> {
         if self.finalized.swap(true, Ordering::AcqRel) {
             return Err(DataError::InvalidOperation("FileDownloadSession already finalized".to_string()));
         }
 
-        let result = {
-            #[cfg(debug_assertions)]
-            self.progress.assert_complete();
-            Ok(())
-        };
+        #[cfg(debug_assertions)]
+        self.progress.assert_complete();
 
         #[cfg(not(target_family = "wasm"))]
+        self.emit_terminal(crate::telemetry::Outcome::Ok, crate::telemetry::ERROR_CLASS_NONE)
+            .await;
+
+        Ok(())
+    }
+
+    /// Finalizes the session, reporting `outcome` and `error_class` on the telemetry document.
+    ///
+    /// Separate from [`finalize`](Self::finalize) because it makes no completeness claim, so it
+    /// suits both a session that ended badly (whose items legitimately are incomplete) and one
+    /// whose notion of "complete" belongs to the caller - notably a stream group, where nothing
+    /// requires every stream to be consumed.
+    ///
+    /// Callers in `xet_pkg` derive the pair with
+    /// [`classify_error`](crate::telemetry::classify_error) or
+    /// [`outcome_for_class`](crate::telemetry::outcome_for_class).
+    ///
+    /// Returns `Err` only if the session was already finalized.
+    pub async fn finalize_with(&self, outcome: crate::telemetry::Outcome, error_class: &'static str) -> Result<()> {
+        if self.finalized.swap(true, Ordering::AcqRel) {
+            return Err(DataError::InvalidOperation("FileDownloadSession already finalized".to_string()));
+        }
+
+        #[cfg(not(target_family = "wasm"))]
+        self.emit_terminal(outcome, error_class).await;
+
+        #[cfg(target_family = "wasm")]
+        let _ = (outcome, error_class);
+
+        Ok(())
+    }
+
+    /// Sends the terminal document for this session. Best-effort and infallible.
+    #[cfg(not(target_family = "wasm"))]
+    async fn emit_terminal(&self, outcome: crate::telemetry::Outcome, error_class: &'static str) {
         crate::telemetry::emit_download_terminal(
             &self.client,
-            &result,
+            outcome,
+            error_class,
             &self.report(),
             self.item_reports().len() as u64,
         )
         .await;
-
-        result
     }
 
     fn setup_reconstructor(
@@ -425,10 +456,11 @@ impl Drop for FileDownloadSession {
         if self.finalized.load(Ordering::Acquire) {
             return;
         }
-        // Spawning needs a live runtime; outside one there is nothing to send on.
-        if tokio::runtime::Handle::try_current().is_err() {
-            return;
-        }
+        // Deliberately *not* gated on `tokio::runtime::Handle::try_current()`. The send is spawned
+        // on the `XetRuntime`'s own stored handle, not the ambient one, so it does not need to run
+        // inside a runtime context - and requiring one silently disabled this path entirely for
+        // embedders that release the last `Arc` from a foreign thread, which is exactly what the
+        // Python bindings do.
         crate::telemetry::emit_download_abandoned(&self.client, &self.report(), self.item_reports().len() as u64);
     }
 }

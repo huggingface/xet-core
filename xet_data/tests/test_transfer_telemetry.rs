@@ -215,8 +215,78 @@ async fn test_transfer_id_separates_directions() {
     assert!(directions.contains(&"upload") && directions.contains(&"download"));
 }
 
-/// A download session dropped without `finalize()` still reports. This is the only coverage
-/// `XetDownloadStreamGroup` gets, since it never calls finalize.
+/// A download that ended badly must say so. `finalize()` alone can only ever report `ok`, so a
+/// failed transfer has to go through `finalize_with` or every document claims success and the
+/// failure-rate signal is silently always zero.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial(env)]
+async fn test_failed_download_reports_error_outcome_and_class() {
+    let env = TestEnvironment::new().await;
+
+    let download = FileDownloadSession::new(env.config.clone(), None).await.unwrap();
+    download
+        .finalize_with(xet_data::telemetry::Outcome::Error, "network")
+        .await
+        .unwrap();
+
+    let docs = env.telemetry_docs();
+    assert_eq!(docs.len(), 1, "expected one terminal document, got {docs:#?}");
+
+    let doc = &docs[0];
+    assert_envelope(doc, "xet_download_summary");
+    assert_eq!(doc["metrics"]["outcome"], "error");
+    assert_eq!(doc["metrics"]["error_class"], "network");
+    assert_eq!(doc["metrics"]["terminal"], true);
+}
+
+/// Cancellation is a user action, so it must not land in the `error` bucket that failure-rate
+/// alerts watch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial(env)]
+async fn test_cancelled_download_is_not_counted_as_an_error() {
+    let env = TestEnvironment::new().await;
+
+    let outcome = xet_data::telemetry::outcome_for_class("cancelled");
+    assert_eq!(outcome, xet_data::telemetry::Outcome::Cancelled);
+
+    let download = FileDownloadSession::new(env.config.clone(), None).await.unwrap();
+    download.finalize_with(outcome, "cancelled").await.unwrap();
+
+    let docs = env.telemetry_docs();
+    assert_eq!(docs[0]["metrics"]["outcome"], "cancelled");
+    assert_eq!(docs[0]["metrics"]["error_class"], "cancelled");
+}
+
+/// The `Drop` fallback must fire even when the last reference is released from a thread that is
+/// not inside a tokio runtime.
+///
+/// This is the shape every embedder produces - notably the Python bindings, where the interpreter
+/// thread drops the session. A `Handle::try_current()` guard here silently disabled download
+/// telemetry entirely in production while every in-process test still passed, because tests drop
+/// inside an async block where a runtime context happens to exist.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial(env)]
+async fn test_download_session_dropped_off_runtime_still_reports() {
+    let env = TestEnvironment::new().await;
+
+    let download = FileDownloadSession::new(env.config.clone(), None).await.unwrap();
+    // A plain OS thread has no ambient tokio runtime, so `Handle::try_current()` fails there.
+    std::thread::spawn(move || {
+        assert!(
+            tokio::runtime::Handle::try_current().is_err(),
+            "this test is meaningless if the spawning thread has a runtime context"
+        );
+        drop(download);
+    })
+    .join()
+    .unwrap();
+
+    let docs = wait_for_docs(|| env.telemetry_docs(), 1).await;
+    assert_envelope(&docs[0], "xet_download_summary");
+    assert_eq!(docs[0]["metrics"]["outcome"], "dropped");
+}
+
+/// A download session dropped without `finalize()` still reports.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial(env)]
 async fn test_dropped_download_session_reports_as_dropped() {

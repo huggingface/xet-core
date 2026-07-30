@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use tracing::info;
 use xet_data::processing::{FileDownloadSession, XetFileInfo};
+use xet_data::telemetry::{ERROR_CLASS_NONE, Outcome};
 use xet_runtime::utils::UniqueId;
 
 use super::auth_group_builder::{AuthGroupBuilder, AuthOptions};
@@ -157,6 +158,39 @@ impl XetDownloadStreamGroup {
     /// Returns the unique ID for this stream group.
     pub(super) fn id(&self) -> UniqueId {
         self.inner.group_id
+    }
+
+    /// Marks the group as finished, releasing its session and reporting transfer telemetry.
+    ///
+    /// Streams are created and consumed independently, so unlike
+    /// [`XetFileDownloadGroup`](super::XetFileDownloadGroup) there is no point at which the group
+    /// can tell on its own that the caller is done. Calling this says so explicitly, and is what
+    /// separates a clean finish from an abandoned one: a group dropped without it still reports,
+    /// but as [`Outcome::Dropped`](xet_data::telemetry::Outcome::Dropped).
+    ///
+    /// Entirely optional: a group that is never finished still works and still reports, just as
+    /// `Dropped`. Existing callers need no change.
+    ///
+    /// Consume every stream you intend to consume first — the report is a snapshot taken here, and
+    /// the group is **closed** afterwards, so starting a new stream returns an error. Streams
+    /// already handed out remain usable. Calling this more than once is a no-op.
+    pub async fn finish(&self) {
+        info!(group_id = %self.id(), "Download stream group finish");
+        let _ = self.inner.download_session.finalize_with(Outcome::Ok, ERROR_CLASS_NONE).await;
+    }
+
+    /// Blocking version of [`finish`](Self::finish).
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async runtime on an Owned-mode session.
+    pub fn finish_blocking(&self) -> Result<(), XetError> {
+        info!(group_id = %self.id(), "Download stream group finish");
+        let session = self.inner.download_session.clone();
+        self.task_runtime.bridge_sync("download_stream_group_finish", async move {
+            let _ = session.finalize_with(Outcome::Ok, ERROR_CLASS_NONE).await;
+            Ok(())
+        })
     }
 
     fn session(&self) -> &XetSession {

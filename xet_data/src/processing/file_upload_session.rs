@@ -768,11 +768,11 @@ impl Drop for FileUploadSession {
         if self.finalized.load(Ordering::Acquire) {
             return;
         }
-        // Spawning needs a live runtime. Outside one there is nothing to send on, and this is
-        // best-effort by construction.
-        if tokio::runtime::Handle::try_current().is_err() {
-            return;
-        }
+        // Deliberately *not* gated on `tokio::runtime::Handle::try_current()`. The send is spawned
+        // on the `XetRuntime`'s own stored handle, not the ambient one, so it does not need to run
+        // inside a runtime context - and requiring one silently disabled this path entirely for
+        // embedders that release the last `Arc` from a foreign thread.
+        //
         // `try_lock` rather than `blocking_lock`: Drop can run on a runtime worker thread, where
         // blocking would stall it. A contended lock here means a task is still writing metrics,
         // in which case the report would be incomplete anyway.

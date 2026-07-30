@@ -40,17 +40,41 @@ Note the failure mode this creates: an override with a mistyped signature compil
 silently never called. `xet_data/tests/test_transfer_telemetry.rs` exists to catch that and should
 not be deleted.
 
+There is a second, subtler failure mode: the emit machinery can work perfectly while no production
+caller ever reaches it. Tests that drive `FileDownloadSession` directly cannot see that, because
+they call `finalize()` themselves. `xet_pkg/tests/test_download_telemetry.rs` exists to close the
+gap — it goes through `XetFileDownloadGroup::finish_blocking()` and asserts on what the server
+received. Keep new coverage at that altitude; a test that calls `finalize()` itself re-opens it.
+
 ### Session behavior
 
 - `FileUploadSession::finalize_impl` now delegates to a new private `finalize_inner` and reports on
   both the success and error paths. Public signatures are unchanged.
-- `FileDownloadSession::finalize` likewise.
+- `FileDownloadSession::finalize` likewise, and reports a successful transfer. It keeps the debug
+  assertion that every item completed, so it must only be used on a clean-completion path.
+- **New:** `FileDownloadSession::finalize_with(outcome, error_class)` finalizes while reporting an
+  explicit outcome, and makes no completeness claim. Use it for a session that ended badly, and for
+  one whose notion of "complete" belongs to the caller. `finalize` alone can only ever report `ok`,
+  so a download that failed has to go through this or the failure-rate signal is always zero.
+- **Download groups now finalize their session.** `XetFileDownloadGroup::finish`/`finish_blocking`
+  and the legacy `data_client::download_async` finalize on both the success and error paths, the
+  latter classified via the new `XetError::telemetry_class()`. Previously nothing called
+  `FileDownloadSession::finalize`, so downloads through the Python bindings reported nothing at all.
+- **New:** `XetDownloadStreamGroup::finish`/`finish_blocking` (and `finish()` plus context-manager
+  support on the Python class). Streams are consumed independently, so the group cannot detect
+  completion itself; without this it could only ever report as `dropped`. **Purely additive** - a
+  group that is never finished behaves exactly as before and still reports, so no existing caller
+  has to change. Note that `finish` closes the group: streams already handed out stay usable, but
+  opening a new one afterwards is an error.
 - **Both sessions gained a `Drop` impl**, emitting an `aborted`/`dropped` summary when the session
-  was never finalized. This is the only reporting path for `XetDownloadStreamGroup`, which holds a
-  download session and has no explicit `finish()`. Anything constructing these sessions in a
-  non-tokio context is unaffected: `Drop` returns early when there is no runtime handle.
+  was never finalized — the safety net for callers that abandon a session. It is deliberately *not*
+  gated on an ambient tokio runtime: the send is spawned on the `XetRuntime`'s own stored handle, so
+  requiring `Handle::try_current()` only served to disable the path for embedders that release the
+  last `Arc` from a foreign thread, which is exactly what the Python bindings do.
 - New public accessors: `FileDownloadSession::client()`, and
   `TestEnvironment::telemetry_docs()` under the `simulation` feature.
+- New public helpers: `xet_data::telemetry::{classify_error, outcome_for_class}`, for callers that
+  need to produce an `(outcome, error_class)` pair themselves.
 
 ### Simulation server
 
