@@ -23,9 +23,9 @@ const API_TAG: &str = "cas::telemetry";
 /// Posts telemetry documents to `POST /v1/telemetry`.
 ///
 /// Deliberately *not* built on [`RetryWrapper`](crate::cas_client::retry_wrapper::RetryWrapper):
-/// telemetry must never retry. A 429 is the server shedding load and a 5xx means its Elasticsearch
-/// is unhappy - in both cases another attempt makes things worse, and a lost document costs
-/// nothing.
+/// telemetry must never retry. A 429 is the server shedding load and a 5xx means its ingestion
+/// pipeline is unhappy - in both cases another attempt makes things worse, and a lost document
+/// costs nothing.
 ///
 /// The HTTP client is *cloned from* [`RemoteClient`](crate::cas_client::RemoteClient)'s
 /// authenticated client rather than built fresh. Building a new one via `build_auth_http_client`
@@ -138,7 +138,7 @@ async fn send(http: &ClientWithMiddleware, url: &Url, envelope: &TelemetryEnvelo
             debug!(target: LOG_TARGET, event = envelope.event, status = %response.status(), "telemetry accepted");
         },
         Ok(response) => {
-            // Includes 429 (indexing saturated) and 5xx (Elasticsearch unhappy). Not retried.
+            // Includes 429 (ingestion saturated) and 5xx (ingestion failing). Not retried.
             debug!(target: LOG_TARGET, event = envelope.event, status = %response.status(), "telemetry rejected; dropping");
         },
         Err(e) => {

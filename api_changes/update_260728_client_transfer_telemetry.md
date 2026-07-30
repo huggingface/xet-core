@@ -70,13 +70,13 @@ end-to-end client throughput, dedup effectiveness, or where a transfer's wall ti
 ## Notes for downstream agents
 
 - **The metric key set is a contract.** `xet_data/src/telemetry/payload.rs` is the source of truth.
-  Adding a key is safe; changing an existing key's JSON type is not — Elasticsearch field mappings
-  are immutable once established, so a type change produces per-document indexing failures and
-  needs a reindex. `test_upload_key_set_is_exact` and `test_numeric_types_stable` enforce this.
+  Adding a key is safe; changing an existing key's JSON type is not — consumers assign a field
+  type on first sight and cannot change it in place, so a type change breaks ingestion for every
+  document carrying it. `test_upload_key_set_is_exact` and `test_numeric_types_stable` enforce this.
 - **All `f64` values must go through the finite guard** in that module. `serde_json` renders NaN
-  and infinity as `null`, and a single such document poisons the field's mapping.
+  and infinity as `null`, and a single such document poisons the field's type for a consumer.
 - **No PII.** The payload carries no file names, paths, hashes, repository ids, or user ids; the
   server derives identity from the request's JWT.
-- A follow-up PR will add the generated schema artifacts (`telemetry/metrics.schema.json` and
-  `telemetry/es-index-template.json`) and a CI compatibility gate. Until then the const key lists
-  in the tests are the only thing pinning the contract.
+- A follow-up PR adds the generated schema (`telemetry/metrics.schema.json`) and a CI
+  compatibility gate. Until then the const key lists in the tests are the only thing pinning the
+  contract.

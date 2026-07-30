@@ -2,12 +2,12 @@
 //!
 //! # Rules for changing anything in this file
 //!
-//! The documents land in Elasticsearch, where a field's mapping is **immutable once
-//! established**. That makes the constraints asymmetric:
+//! Consumers assign each property a field type on first sight and cannot change it in place
+//! afterwards. That makes the constraints asymmetric:
 //!
 //! - Adding a key is safe.
-//! - Changing an existing key's JSON type is **not**: it produces per-document indexing failures that surface to the
-//!   client as 500s, and fixing it needs a reindex. If a key's meaning or unit changes, introduce a new key instead
+//! - Changing an existing key's JSON type is **not**: it breaks ingestion for every document carrying the new type, and
+//!   recovering means rebuilding the stored data. If a key's meaning or unit changes, introduce a new key instead
 //!   (`duration_ms` never becomes a float; a microsecond variant would be `duration_us`).
 //! - Removing a key silently breaks dashboards and alerts.
 //!
@@ -124,7 +124,7 @@ pub fn error_class(error: &DataError) -> &'static str {
 /// Divides, guaranteeing a finite `f64`.
 ///
 /// `serde_json` serializes NaN and infinity as `null`, which would break the type stability the
-/// module docs describe - a single such document can poison a field's mapping. Every ratio and
+/// module docs describe - a single such document can poison a consumer's field type. Every ratio and
 /// rate in this file goes through here; there are no exceptions.
 ///
 /// Rounded to four decimal places to keep documents small and diffs readable.
@@ -445,7 +445,7 @@ mod tests {
     ];
 
     /// The JSON type every key must always have. A key that changes type here breaks the
-    /// Elasticsearch mapping and starts producing per-document 500s.
+    /// consumer's field type and starts breaking ingestion.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Kind {
         U64,
@@ -616,7 +616,7 @@ mod tests {
         assert_eq!(sorted_keys(&download_json()), DOWNLOAD_KEYS);
     }
 
-    /// Guards the mapping hazard described in the module docs.
+    /// Guards the field-typing hazard described in the module docs.
     #[test]
     fn test_numeric_types_stable() {
         let types: std::collections::HashMap<_, _> = TYPES.iter().copied().collect();
@@ -650,7 +650,7 @@ mod tests {
         }
     }
 
-    /// `serde_json` renders NaN and infinity as `null`, which would poison the field mapping.
+    /// `serde_json` renders NaN and infinity as `null`, which would poison the field's type.
     #[test]
     fn test_ratios_are_finite_for_degenerate_inputs() {
         assert_eq!(ratio(5, 0), 0.0);

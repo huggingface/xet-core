@@ -5,8 +5,8 @@
 //! and silently never be called - no unit test in `xet_client` or `xet_data` would notice. Only
 //! driving a real transfer through a real HTTP server catches that.
 //!
-//! They also pin the wire shape. What the Elasticsearch mapping sees is the serialized document,
-//! not the Rust struct, so the key set is asserted here as well as in the payload unit tests.
+//! They also pin the wire shape. What a consumer receives is the serialized document, not the Rust
+//! struct, so the key set is asserted here as well as in the payload unit tests.
 //!
 //! Every test here is `#[serial(env)]`. One of them sets `HF_HUB_DISABLE_TELEMETRY`, which is
 //! process-global: marking only that test serial does not help, because `serial` serializes a test
@@ -328,7 +328,7 @@ async fn test_dry_run_emits_nothing() {
 }
 
 /// Every metric value must be a scalar, and none may be null. `serde_json` renders NaN and
-/// infinity as null, and one such document poisons the field's Elasticsearch mapping.
+/// infinity as null, and one such document poisons the field's type for a consumer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial(env)]
 async fn test_wire_values_are_all_non_null_scalars() {

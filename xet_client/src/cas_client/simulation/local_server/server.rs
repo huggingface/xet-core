@@ -165,7 +165,7 @@ impl LocalServer {
     /// Telemetry documents received on `POST /v1/telemetry`, in arrival order.
     ///
     /// Returned verbatim so tests can assert on the exact wire shape - the key set and the JSON
-    /// type of each value are what the Elasticsearch mapping actually sees.
+    /// type of each value are what a consumer actually receives.
     pub fn telemetry_docs(&self) -> Vec<serde_json::Value> {
         self.telemetry_docs.lock().expect("telemetry_docs lock poisoned").clone()
     }

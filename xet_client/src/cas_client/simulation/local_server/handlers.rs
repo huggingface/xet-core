@@ -44,8 +44,8 @@ pub(crate) struct ServerState {
     pub(crate) deletion_client: Option<Arc<dyn DeletionControlableClient>>,
     /// Telemetry documents received on `POST /v1/telemetry`, in arrival order.
     ///
-    /// Kept verbatim as `Value` so tests can assert on the exact wire shape, which is what the
-    /// Elasticsearch mapping actually sees.
+    /// Kept verbatim as `Value` so tests can assert on the exact wire shape, which is what a
+    /// consumer actually receives.
     pub(crate) telemetry_docs: Arc<Mutex<Vec<serde_json::Value>>>,
 }
 
