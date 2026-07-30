@@ -7,10 +7,8 @@ use std::sync::Arc;
 
 use xet_client::cas_client::{Client, Direction, TransferTelemetry};
 
-use super::payload::{
-    CommonInputs, CommonMetrics, DownloadMetrics, ERROR_CLASS_NONE, Outcome, TransferIdentity, UploadMetrics,
-    error_class,
-};
+use super::outcome::{ERROR_CLASS_NONE, Outcome};
+use super::payload::{CommonInputs, CommonMetrics, DownloadMetrics, TransferIdentity, UploadMetrics};
 use crate::deduplication::DeduplicationMetrics;
 use crate::error::DataError;
 use crate::progress_tracking::GroupProgressReport;
@@ -32,29 +30,7 @@ pub(crate) fn telemetry_of_download(client: &Arc<dyn Client>) -> Option<Arc<Tran
 fn classify<T>(result: &Result<T, DataError>) -> (Outcome, &'static str) {
     match result {
         Ok(_) => (Outcome::Ok, ERROR_CLASS_NONE),
-        Err(e) => classify_error(e),
-    }
-}
-
-/// Derives the outcome and error class from a failed transfer.
-///
-/// Split out of [`classify`] so callers that have already reduced their error to a class string -
-/// notably `xet_pkg`, whose `XetError` has lost the original [`DataError`] by the time a group
-/// finishes - can reach the same mapping through [`outcome_for_class`].
-pub fn classify_error(error: &DataError) -> (Outcome, &'static str) {
-    let class = error_class(error);
-    (outcome_for_class(class), class)
-}
-
-/// Maps an error class to the outcome that should accompany it.
-///
-/// Cancellation is a user action, not a failure; keeping it out of `error` stops it from polluting
-/// failure-rate alerts.
-pub fn outcome_for_class(class: &'static str) -> Outcome {
-    if class == "cancelled" {
-        Outcome::Cancelled
-    } else {
-        Outcome::Error
+        Err(e) => super::outcome::classify_error(e),
     }
 }
 

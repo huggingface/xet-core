@@ -184,6 +184,7 @@ impl XetDownloadStreamGroup {
     /// # Panics
     ///
     /// Panics if called from within a tokio async runtime on an Owned-mode session.
+    #[cfg(not(target_family = "wasm"))]
     pub fn finish_blocking(&self) -> Result<(), XetError> {
         info!(group_id = %self.id(), "Download stream group finish");
         let session = self.inner.download_session.clone();

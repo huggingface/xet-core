@@ -330,6 +330,7 @@ impl LocalTestServerBuilder {
             client,
             deletion_client,
             network_simulation_proxy: proxy_guard,
+            telemetry_docs: telemetry_docs.clone(),
         };
 
         if let Some(profile) = self.server_latency_profile {
