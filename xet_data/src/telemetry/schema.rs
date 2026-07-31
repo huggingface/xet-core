@@ -168,12 +168,19 @@ mod tests {
             return;
         }
 
-        let committed = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-            panic!(
-                "cannot read {}: {e}\n\nGenerate it with:\n    {UPDATE_ENV}=1 cargo test -p xet-data --lib telemetry::schema",
-                path.display()
-            )
-        });
+        // Line endings are normalized before comparing: git checks this file out with CRLF on
+        // Windows under the default `core.autocrlf=true`, while the generated string always uses
+        // `\n`. Without this the test fails there and only there, for a reason that has nothing to
+        // do with the schema being out of date. `.gitattributes` pins the file to LF as well, but
+        // that only governs fresh checkouts, so the test does not rely on it.
+        let committed = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "cannot read {}: {e}\n\nGenerate it with:\n    {UPDATE_ENV}=1 cargo test -p xet-data --lib telemetry::schema",
+                    path.display()
+                )
+            })
+            .replace("\r\n", "\n");
 
         assert_eq!(
             committed, generated,
