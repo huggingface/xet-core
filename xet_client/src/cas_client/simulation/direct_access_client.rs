@@ -61,7 +61,7 @@ pub trait DirectAccessClient: Client + Send + Sync {
     /// Disables V2 endpoints (reconstruction and shard upload) with the given HTTP status code.
     /// When disabled, `/v2/*` handlers return this status, forcing clients to fall back to V1.
     /// Pass 0 to re-enable.
-    fn disable_v2_reconstruction(&self, status_code: u16);
+    fn disable_v2_endpoints(&self, status_code: u16);
 
     /// Returns the HTTP status code V2 endpoints should return when disabled,
     /// or 0 if V2 is enabled.

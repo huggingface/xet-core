@@ -845,9 +845,9 @@ pub async fn set_config(State(state): State<ServerState>, uri: Uri, body: Body) 
             },
             Err(e) => (StatusCode::BAD_REQUEST, format!("Invalid usize value: {e}")).into_response(),
         },
-        "disable_v2_reconstruction" => match value.parse::<u16>() {
+        "disable_v2_endpoints" => match value.parse::<u16>() {
             Ok(code) => {
-                state.client.disable_v2_reconstruction(code);
+                state.client.disable_v2_endpoints(code);
                 (StatusCode::OK, "V2 endpoints (reconstruction + shard upload) config set").into_response()
             },
             Err(e) => (StatusCode::BAD_REQUEST, format!("Invalid status code: {e}")).into_response(),
@@ -876,7 +876,7 @@ pub async fn set_config(State(state): State<ServerState>, uri: Uri, body: Body) 
             format!(
                 "Unknown config: {config_name}. Supported: congestion, random_delay, \
                  global_dedup_shard_expiration, max_ranges_per_fetch, \
-                 disable_v2_reconstruction, api_delay, url_expiration"
+                 disable_v2_endpoints, api_delay, url_expiration"
             ),
         )
             .into_response(),

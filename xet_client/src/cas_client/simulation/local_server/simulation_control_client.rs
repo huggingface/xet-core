@@ -276,8 +276,8 @@ impl DirectAccessClient for SimulationControlClient {
         self.post_config("max_ranges_per_fetch", &max_ranges.to_string());
     }
 
-    fn disable_v2_reconstruction(&self, status_code: u16) {
-        self.post_config("disable_v2_reconstruction", &status_code.to_string());
+    fn disable_v2_endpoints(&self, status_code: u16) {
+        self.post_config("disable_v2_endpoints", &status_code.to_string());
     }
 
     async fn get_reconstruction_v1(

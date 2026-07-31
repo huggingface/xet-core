@@ -590,8 +590,8 @@ impl DirectAccessClient for LocalTestServer {
         self.client.set_max_ranges_per_fetch(max_ranges);
     }
 
-    fn disable_v2_reconstruction(&self, status_code: u16) {
-        self.client.disable_v2_reconstruction(status_code);
+    fn disable_v2_endpoints(&self, status_code: u16) {
+        self.client.disable_v2_endpoints(status_code);
     }
 
     async fn get_reconstruction_v1(
@@ -1088,8 +1088,8 @@ mod tests {
             reqwest::StatusCode::OK
         );
 
-        // --- disable_v2_reconstruction ---
-        assert_eq!(post_set_config(server, "disable_v2_reconstruction", "503").await, reqwest::StatusCode::OK);
+        // --- disable_v2_endpoints ---
+        assert_eq!(post_set_config(server, "disable_v2_endpoints", "503").await, reqwest::StatusCode::OK);
         // Verify effect: V2 reconstruction via HTTP should return 503
         {
             let file = server.client().upload_random_file(&[(1, (0, 3))], CHUNK_SIZE).await.unwrap();
@@ -1098,8 +1098,8 @@ mod tests {
             assert_eq!(resp.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
         }
         // Re-enable
-        assert_eq!(post_set_config(server, "disable_v2_reconstruction", "0").await, reqwest::StatusCode::OK);
-        assert_eq!(post_set_config(server, "disable_v2_reconstruction", "xyz").await, reqwest::StatusCode::BAD_REQUEST);
+        assert_eq!(post_set_config(server, "disable_v2_endpoints", "0").await, reqwest::StatusCode::OK);
+        assert_eq!(post_set_config(server, "disable_v2_endpoints", "xyz").await, reqwest::StatusCode::BAD_REQUEST);
 
         // --- api_delay ---
         assert_eq!(post_set_config(server, "api_delay", "(50ms, 50ms)").await, reqwest::StatusCode::OK);
@@ -1315,7 +1315,7 @@ mod tests {
         }
 
         // 501 first so we don't cache a V1 preference from 404 fallback mid-test.
-        server.client().disable_v2_reconstruction(501);
+        server.client().disable_v2_endpoints(501);
 
         let v2_err = {
             let permit = server.remote_client().acquire_upload_permit().await.unwrap();
@@ -1338,7 +1338,7 @@ mod tests {
         }
 
         // Re-enable, confirm V2 works, then exercise 404 fallback.
-        server.client().disable_v2_reconstruction(0);
+        server.client().disable_v2_endpoints(0);
         {
             let permit = server.remote_client().acquire_upload_permit().await.unwrap();
             // Force V2 so we don't stay on a cached V1 preference from the previous fallback.
@@ -1349,7 +1349,7 @@ mod tests {
                 .unwrap();
         }
 
-        server.client().disable_v2_reconstruction(404);
+        server.client().disable_v2_endpoints(404);
         let v2_err = {
             let permit = server.remote_client().acquire_upload_permit().await.unwrap();
             server
@@ -1376,7 +1376,7 @@ mod tests {
         }
 
         // Leave V2 enabled for subsequent checks on the same server instance.
-        server.client().disable_v2_reconstruction(0);
+        server.client().disable_v2_endpoints(0);
     }
 
     /// Main test that runs all server checks with both in-memory and disk-backed storage.

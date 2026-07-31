@@ -1756,7 +1756,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            server.disable_v2_reconstruction(404);
+            server.disable_v2_endpoints(404);
 
             let config = test_config();
             let result = reconstruct_via_server(&server, file_contents.file_hash, None, &config)
@@ -1774,7 +1774,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            server.disable_v2_reconstruction(404);
+            server.disable_v2_endpoints(404);
 
             let file_len = file_contents.data.len() as u64;
             let range = FileRange::new(file_len / 4, file_len * 3 / 4);
@@ -1795,7 +1795,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            server.disable_v2_reconstruction(404);
+            server.disable_v2_endpoints(404);
 
             let config = test_config();
             let result = reconstruct_via_server(&server, file_contents.file_hash, None, &config)
@@ -1813,7 +1813,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            server.disable_v2_reconstruction(404);
+            server.disable_v2_endpoints(404);
 
             let config = test_config();
             let result = reconstruct_via_server(&server, file_contents.file_hash, None, &config)
@@ -1832,7 +1832,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            server.disable_v2_reconstruction(404);
+            server.disable_v2_endpoints(404);
 
             let config = test_config();
             let result = reconstruct_via_server(&server, file_contents.file_hash, None, &config)
