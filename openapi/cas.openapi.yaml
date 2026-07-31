@@ -262,9 +262,9 @@ paths:
         '413':
           description: Payload Too Large — Body exceeds 1 MiB
         '429':
-          description: Too Many Requests — Indexing saturated. Retryable, but the client does not retry.
+          description: Too Many Requests — Ingestion saturated. Retryable, but the client does not retry.
         '500':
-          description: Internal Server Error — Indexing failed
+          description: Internal Server Error — Ingestion failed
 components:
   securitySchemes:
     bearerAuth:
