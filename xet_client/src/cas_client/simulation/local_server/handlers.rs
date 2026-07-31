@@ -32,8 +32,7 @@ use super::super::super::{DeletionControlableClient, DirectAccessClient};
 use super::latency_simulation::{LatencySimulation, ServerLatencyProfile};
 use crate::cas_types::{
     CommitStage, FileRange, HexKey, HexMerkleHash, QueryReconstructionResponseV2, ShardUploadEvent,
-    UploadShardResponse, UploadShardResponseType, UploadXorbResponse, XorbRangeDescriptor,
-    XorbReconstructionFetchInfo,
+    UploadShardResponse, UploadShardResponseType, UploadXorbResponse, XorbRangeDescriptor, XorbReconstructionFetchInfo,
 };
 use crate::error::ClientError;
 
@@ -646,10 +645,7 @@ fn ndjson_shard_upload_success_response() -> Response {
     }
 
     let mut headers = HeaderMap::new();
-    headers.insert(
-        http::header::CONTENT_TYPE,
-        HeaderValue::from_static("application/x-ndjson"),
-    );
+    headers.insert(http::header::CONTENT_TYPE, HeaderValue::from_static("application/x-ndjson"));
     (StatusCode::OK, headers, body).into_response()
 }
 

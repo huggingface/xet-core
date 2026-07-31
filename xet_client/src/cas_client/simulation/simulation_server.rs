@@ -1360,10 +1360,16 @@ mod tests {
         assert!(v2_err.is_err(), "forced V2 should fail when disabled with 404");
         assert_eq!(v2_err.unwrap_err().status(), Some(reqwest::StatusCode::NOT_FOUND));
 
+        // Exercise the 404 branch of the *auto-detect* path on a fresh client. `server.remote_simulation_client()`
+        // already cached a V1 preference from the auto-detect fallback at 501 above (forced `Some(..)` calls never
+        // write that cache, only a real auto-detect fallback does), so reusing it here would just replay the cached
+        // V1 path and never actually touch V2 or hit the 404.
         {
-            let permit = server.remote_client().acquire_upload_permit().await.unwrap();
-            server
-                .remote_simulation_client()
+            let ctx = XetContext::default().expect("XetContext::new");
+            let fresh_client =
+                RemoteClient::new(ctx, server.http_endpoint(), &None, "test-session-404-fallback", false, None);
+            let permit = fresh_client.acquire_upload_permit().await.unwrap();
+            fresh_client
                 .upload_shard_with_version_override(random_shard_bytes(), permit, None, None)
                 .await
                 .unwrap();
