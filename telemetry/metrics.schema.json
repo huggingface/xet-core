@@ -1,0 +1,440 @@
+{
+  "$defs": {
+    "DownloadMetrics": {
+      "description": "Download documents: [`CommonMetrics`] plus how much the wire bytes expanded on disk.",
+      "properties": {
+        "arch": {
+          "description": "CPU architecture of the client (`x86_64`, `aarch64`, ...).",
+          "type": "string"
+        },
+        "client_version": {
+          "description": "Version of the `hf-xet` client that produced this document.",
+          "type": "string"
+        },
+        "cpu_count": {
+          "description": "Parallelism available to the client process. 0 when it could not be determined.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "direction": {
+          "description": "Which half of the transfer this describes: `upload` or `download`.",
+          "type": "string"
+        },
+        "dry_run": {
+          "description": "Whether this was a dry run, which performs no real uploads. Always false in practice, since\ndry runs do not report at all; present so the field is never ambiguous.",
+          "type": "boolean"
+        },
+        "duration_ms": {
+          "description": "Wall-clock time from session construction to this document being built, in milliseconds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "endpoint_host": {
+          "description": "Host component of the CAS endpoint. Never a full URL - a path or query could carry\nsomething sensitive.",
+          "type": "string"
+        },
+        "error_class": {
+          "description": "Coarse failure bucket: `none` when nothing went wrong, otherwise `auth`, `network`,\n`timeout`, `rate_limited`, `server_error`, `not_found`, `io`, `format`, `cancelled`,\n`internal`, or `other`. Deliberately coarse - error text could contain file paths.",
+          "type": "string"
+        },
+        "ewma_throughput_bps": {
+          "description": "The client's own EWMA estimate, for comparison against the wall-clock figures. Zero rather\nthan absent when the sampler never had enough observations.",
+          "format": "double",
+          "type": "number"
+        },
+        "expansion_ratio": {
+          "description": "Logical bytes produced per wire byte - dedup and compression combined, from the\ndownloader's side.",
+          "format": "double",
+          "type": "number"
+        },
+        "logical_throughput_bps": {
+          "description": "Logical throughput over the whole transfer: `total_bytes_completed` per second. Exceeds\n`throughput_bps` by the dedup and compression factor.",
+          "format": "double",
+          "type": "number"
+        },
+        "n_files": {
+          "description": "Number of files in the transfer.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "os": {
+          "description": "Operating system the client is running on, as reported by the Rust target\n(`linux`, `macos`, `windows`, ...).",
+          "type": "string"
+        },
+        "outcome": {
+          "description": "How the transfer ended: `ok`, `error`, `cancelled`, `aborted`, `dropped`, or\n`in_progress` for a heartbeat.",
+          "type": "string"
+        },
+        "peak_concurrency": {
+          "description": "Highest number of concurrent connections the adaptive-concurrency controller reached.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "schema_version": {
+          "description": "Version of this metric vocabulary. Incremented when keys are added, so a query can tell an\nabsent key from an older client that never emitted it.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "seq": {
+          "description": "0 for the first document; increments per heartbeat.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "terminal": {
+          "description": "Exactly one document per `transfer_id` carries `true`. Filter on it to get one row per\ntransfer without any group-by.",
+          "type": "boolean"
+        },
+        "throughput_bps": {
+          "description": "Wire throughput over the whole transfer: `transfer_bytes_completed` per second, computed\nfrom `duration_ms`. Deterministic, unlike the EWMA below.",
+          "format": "double",
+          "type": "number"
+        },
+        "total_bytes": {
+          "description": "Logical bytes, before dedup and compression.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "total_bytes_completed": {
+          "description": "Logical bytes actually finished. Below `total_bytes` for a failed or abandoned transfer.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "transfer_bytes": {
+          "description": "Bytes actually moved over the wire.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "transfer_bytes_completed": {
+          "description": "Wire bytes actually finished.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "transfer_id": {
+          "description": "Unique per transfer. A single `XetSession` id can cover both an upload commit and a\ndownload group, so `session_id` alone does not identify a transfer.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "direction",
+        "transfer_id",
+        "terminal",
+        "seq",
+        "client_version",
+        "os",
+        "arch",
+        "cpu_count",
+        "endpoint_host",
+        "dry_run",
+        "duration_ms",
+        "outcome",
+        "error_class",
+        "n_files",
+        "total_bytes",
+        "total_bytes_completed",
+        "transfer_bytes",
+        "transfer_bytes_completed",
+        "throughput_bps",
+        "logical_throughput_bps",
+        "ewma_throughput_bps",
+        "peak_concurrency",
+        "expansion_ratio"
+      ],
+      "title": "DownloadMetrics",
+      "type": "object"
+    },
+    "UploadMetrics": {
+      "description": "Upload documents: [`CommonMetrics`] plus dedup effectiveness and shard finalization.",
+      "properties": {
+        "arch": {
+          "description": "CPU architecture of the client (`x86_64`, `aarch64`, ...).",
+          "type": "string"
+        },
+        "client_version": {
+          "description": "Version of the `hf-xet` client that produced this document.",
+          "type": "string"
+        },
+        "compression_ratio": {
+          "description": "Compressed xorb bytes over the new bytes that produced them: below 1.0 means compression\nhelped. 0.0 when nothing new was uploaded.",
+          "format": "double",
+          "type": "number"
+        },
+        "cpu_count": {
+          "description": "Parallelism available to the client process. 0 when it could not be determined.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "dedup_bytes": {
+          "description": "Logical bytes that did not need uploading because an identical chunk already existed.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "dedup_chunks": {
+          "description": "Chunks that already existed and were not uploaded.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "dedup_ratio": {
+          "description": "Share of logical bytes avoided by dedup: `dedup_bytes / total_bytes`. 0.0 when there was\nnothing to transfer.",
+          "format": "double",
+          "type": "number"
+        },
+        "defrag_prevented_dedup_bytes": {
+          "description": "Bytes that could have been deduplicated but were re-uploaded anyway, because doing\notherwise would have fragmented the xorb past the defrag threshold. The cost of the\nfragmentation-vs-dedup tradeoff.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "defrag_prevented_dedup_chunks": {
+          "description": "Chunks re-uploaded despite being deduplicable, for the defrag reason above.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "direction": {
+          "description": "Which half of the transfer this describes: `upload` or `download`.",
+          "type": "string"
+        },
+        "dry_run": {
+          "description": "Whether this was a dry run, which performs no real uploads. Always false in practice, since\ndry runs do not report at all; present so the field is never ambiguous.",
+          "type": "boolean"
+        },
+        "duration_ms": {
+          "description": "Wall-clock time from session construction to this document being built, in milliseconds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "endpoint_host": {
+          "description": "Host component of the CAS endpoint. Never a full URL - a path or query could carry\nsomething sensitive.",
+          "type": "string"
+        },
+        "error_class": {
+          "description": "Coarse failure bucket: `none` when nothing went wrong, otherwise `auth`, `network`,\n`timeout`, `rate_limited`, `server_error`, `not_found`, `io`, `format`, `cancelled`,\n`internal`, or `other`. Deliberately coarse - error text could contain file paths.",
+          "type": "string"
+        },
+        "ewma_throughput_bps": {
+          "description": "The client's own EWMA estimate, for comparison against the wall-clock figures. Zero rather\nthan absent when the sampler never had enough observations.",
+          "format": "double",
+          "type": "number"
+        },
+        "finalize_ms": {
+          "description": "Shard consolidation, upload, and registration, in milliseconds. 0 for a transfer that\nnever reached finalization.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "global_dedup_bytes": {
+          "description": "Subset of `dedup_bytes` deduplicated against the global index rather than local state.\nThe rest was matched within this session or from the local shard cache.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "global_dedup_chunks": {
+          "description": "Subset of `dedup_chunks` matched against the global index.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ingest_ms": {
+          "description": "Chunking, hashing, and xorb upload: session start until `finalize` was called, in\nmilliseconds. 0 on a heartbeat, where the phase has not ended.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "logical_throughput_bps": {
+          "description": "Logical throughput over the whole transfer: `total_bytes_completed` per second. Exceeds\n`throughput_bps` by the dedup and compression factor.",
+          "format": "double",
+          "type": "number"
+        },
+        "n_files": {
+          "description": "Number of files in the transfer.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "new_bytes": {
+          "description": "Logical bytes that were new and had to be uploaded.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "new_chunks": {
+          "description": "Chunks that were new and had to be uploaded.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "os": {
+          "description": "Operating system the client is running on, as reported by the Rust target\n(`linux`, `macos`, `windows`, ...).",
+          "type": "string"
+        },
+        "outcome": {
+          "description": "How the transfer ended: `ok`, `error`, `cancelled`, `aborted`, `dropped`, or\n`in_progress` for a heartbeat.",
+          "type": "string"
+        },
+        "peak_concurrency": {
+          "description": "Highest number of concurrent connections the adaptive-concurrency controller reached.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "schema_version": {
+          "description": "Version of this metric vocabulary. Incremented when keys are added, so a query can tell an\nabsent key from an older client that never emitted it.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "seq": {
+          "description": "0 for the first document; increments per heartbeat.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "shard_bytes_uploaded": {
+          "description": "Shard (metadata) bytes sent to CAS during finalization.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "shard_validation_entries": {
+          "description": "File entries the server verified while registering the shards. A proxy for how much work\nfinalization asked of the server.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "shards_completed": {
+          "description": "Shards the server confirmed as fully registered. Below `shards_total` when finalization\ndid not complete.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "shards_total": {
+          "description": "Shards this transfer produced.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "terminal": {
+          "description": "Exactly one document per `transfer_id` carries `true`. Filter on it to get one row per\ntransfer without any group-by.",
+          "type": "boolean"
+        },
+        "throughput_bps": {
+          "description": "Wire throughput over the whole transfer: `transfer_bytes_completed` per second, computed\nfrom `duration_ms`. Deterministic, unlike the EWMA below.",
+          "format": "double",
+          "type": "number"
+        },
+        "total_bytes": {
+          "description": "Logical bytes, before dedup and compression.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "total_bytes_completed": {
+          "description": "Logical bytes actually finished. Below `total_bytes` for a failed or abandoned transfer.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "total_chunks": {
+          "description": "Chunks the content-defined chunker produced across all files.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "transfer_bytes": {
+          "description": "Bytes actually moved over the wire.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "transfer_bytes_completed": {
+          "description": "Wire bytes actually finished.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "transfer_id": {
+          "description": "Unique per transfer. A single `XetSession` id can cover both an upload commit and a\ndownload group, so `session_id` alone does not identify a transfer.",
+          "type": "string"
+        },
+        "xorb_bytes_uploaded": {
+          "description": "Compressed xorb bytes sent to CAS. This plus `shard_bytes_uploaded` is the real upload\ncost of the transfer.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema_version",
+        "direction",
+        "transfer_id",
+        "terminal",
+        "seq",
+        "client_version",
+        "os",
+        "arch",
+        "cpu_count",
+        "endpoint_host",
+        "dry_run",
+        "duration_ms",
+        "outcome",
+        "error_class",
+        "n_files",
+        "total_bytes",
+        "total_bytes_completed",
+        "transfer_bytes",
+        "transfer_bytes_completed",
+        "throughput_bps",
+        "logical_throughput_bps",
+        "ewma_throughput_bps",
+        "peak_concurrency",
+        "dedup_bytes",
+        "new_bytes",
+        "global_dedup_bytes",
+        "defrag_prevented_dedup_bytes",
+        "total_chunks",
+        "dedup_chunks",
+        "new_chunks",
+        "global_dedup_chunks",
+        "defrag_prevented_dedup_chunks",
+        "xorb_bytes_uploaded",
+        "shard_bytes_uploaded",
+        "shards_total",
+        "shards_completed",
+        "shard_validation_entries",
+        "dedup_ratio",
+        "compression_ratio",
+        "ingest_ms",
+        "finalize_ms"
+      ],
+      "title": "UploadMetrics",
+      "type": "object"
+    }
+  },
+  "$id": "https://raw.githubusercontent.com/huggingface/xet-core/main/telemetry/metrics.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The `metrics` object of a POST /v1/telemetry document, one shape per transfer direction. This file is the source of truth for the metric vocabulary: every property carries a description of what it measures and its unit.\n\nGenerated from xet_data/src/telemetry/payload.rs - edit the Rust structs, not this file, and regenerate with `UPDATE_TELEMETRY_SCHEMA=1 cargo test -p xet-data --lib telemetry::schema`.\n\nCompatibility: adding a property is backward compatible. Removing one, or changing its type, is NOT - consumers typically assign a column or field type on first sight and cannot change it in place afterwards. If a metric's meaning or unit changes, add a new property rather than repurposing the existing one (`duration_us` alongside `duration_ms`, not `duration_ms` becoming a float). CI enforces this.\n\nEvery value is a scalar - never null, never nested, never an array. Integers fit in an unsigned 64-bit integer; numbers are finite doubles. No file names, paths, hashes, repository ids, or user ids appear anywhere in this vocabulary.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/UploadMetrics"
+    },
+    {
+      "$ref": "#/$defs/DownloadMetrics"
+    }
+  ],
+  "title": "Xet client transfer telemetry metrics"
+}

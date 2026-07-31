@@ -1,0 +1,4 @@
+# The telemetry schema is compared byte-for-byte against a generated string in
+# `test_committed_schema_is_current`, and is read by `scripts/check_telemetry_schema_compat.py`.
+# Pin it to LF so a Windows checkout does not rewrite it to CRLF.
+telemetry/metrics.schema.json text eol=lf

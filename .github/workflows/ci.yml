@@ -26,6 +26,21 @@ jobs:
         run: |
           cargo fmt --manifest-path ./Cargo.toml --all -- --check
           cargo fmt --manifest-path ./hf_xet/Cargo.toml --all -- --check
+  telemetry-schema-compat:
+    name: Telemetry schema compatibility
+    runs-on:
+      group: aws-general-8-plus
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          # The baseline is read from the merge target, so the shallow default clone is not enough.
+          fetch-depth: 0
+      - name: Check for breaking metric changes
+        run: |
+          # Consumers of this schema type each property on first sight and cannot change it
+          # in place. Adding a metric is fine; removing one or changing its type is not.
+          python3 scripts/check_telemetry_schema_compat.py \
+            --baseline-ref "origin/${{ github.base_ref || github.event.repository.default_branch }}"
   detect-unused-dependencies:
     runs-on:
       group: aws-general-8-plus
