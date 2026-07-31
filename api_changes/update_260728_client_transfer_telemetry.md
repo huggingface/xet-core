@@ -7,8 +7,8 @@
 ## What changed
 
 The client now reports one performance summary per transfer to `POST /v1/telemetry` on the CAS
-server (added server-side in `huggingface-internal/xetcas#1207`). Reporting is best-effort: it is
-never retried, never surfaces an error, and never blocks data movement.
+server, where a companion change adds the endpoint. Reporting is best-effort: it is never retried,
+never surfaces an error, and never blocks data movement.
 
 ### New config group: `telemetry`
 
