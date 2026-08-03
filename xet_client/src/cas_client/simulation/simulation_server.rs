@@ -1399,7 +1399,10 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), reqwest::StatusCode::OK);
             assert_eq!(
-                response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+                response
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok()),
                 Some("application/x-ndjson")
             );
             let body = response.text().await.unwrap();
@@ -1429,10 +1432,7 @@ mod tests {
                 .upload_shard_v2(fixed_test_shard_bytes(), permit, None)
                 .await
                 .expect_err("fatal Error frame should fail the upload");
-            assert!(
-                err.to_string().contains("simulated fatal shard upload failure"),
-                "unexpected error: {err}"
-            );
+            assert!(err.to_string().contains("simulated fatal shard upload failure"), "unexpected error: {err}");
         }
 
         // RemoteClient: retryable Error stays enabled — RetryWrapper retries until exhausted, then fails.
@@ -1454,30 +1454,18 @@ mod tests {
                 .with_config("client.retry_max_duration", "10ms")
                 .unwrap();
             let ctx = XetContext::with_config(config).expect("XetContext::with_config");
-            let client =
-                RemoteClient::new(ctx, server.http_endpoint(), &None, "test-session-error-frame", false, None);
+            let client = RemoteClient::new(ctx, server.http_endpoint(), &None, "test-session-error-frame", false, None);
             let permit = client.acquire_upload_permit().await.unwrap();
             let err = client
                 .upload_shard_v2(fixed_test_shard_bytes(), permit, Some(callback))
                 .await
                 .expect_err("retryable Error frame should exhaust retries and fail");
-            assert!(
-                err.to_string().contains("simulated retryable shard upload failure"),
-                "unexpected error: {err}"
-            );
+            assert!(err.to_string().contains("simulated retryable shard upload failure"), "unexpected error: {err}");
         }
         let seen = seen.lock().unwrap().clone();
         let retryable_errors = seen
             .iter()
-            .filter(|e| {
-                matches!(
-                    e,
-                    ShardUploadEvent::Error {
-                        retryable: true,
-                        ..
-                    }
-                )
-            })
+            .filter(|e| matches!(e, ShardUploadEvent::Error { retryable: true, .. }))
             .count();
         assert!(
             retryable_errors >= 2,
