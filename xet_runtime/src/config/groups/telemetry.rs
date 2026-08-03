@@ -58,15 +58,22 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_TELEMETRY_FINAL_FLUSH_TIMEOUT` to set this value.
     ref final_flush_timeout: Duration = Duration::from_secs(2);
 
-    /// Maximum number of telemetry requests allowed in flight at once.
+    /// Maximum number of telemetry requests allowed in flight at once, across the whole process.
     ///
     /// Documents submitted beyond this cap are dropped rather than queued; this is the
     /// backpressure mechanism that keeps a degraded telemetry endpoint from accumulating tasks.
     ///
-    /// The default value is 4.
+    /// The cap is process-wide rather than per-transfer, so it bounds a wide fan-out - a snapshot
+    /// download becomes many concurrent per-file transfers, and a per-transfer cap would multiply
+    /// by that count instead of limiting it.
+    ///
+    /// The default value is 32. It is sized as a process-wide number: a transfer emits one terminal
+    /// document, and heartbeats only start after `heartbeat_after`, so the realistic burst is a set
+    /// of concurrent transfers finalizing together. A much smaller ceiling would shed most of a wide
+    /// snapshot's terminal documents, which are the ones worth keeping.
     ///
     /// Use the environment variable `HF_XET_TELEMETRY_MAX_IN_FLIGHT` to set this value.
-    ref max_in_flight: usize = 4;
+    ref max_in_flight: usize = 32;
 });
 
 #[cfg(all(test, not(target_family = "wasm")))]
@@ -160,7 +167,8 @@ mod tests {
         assert_eq!(t.heartbeat_interval.as_secs(), 300);
         assert_eq!(t.request_timeout.as_secs(), 5);
         assert_eq!(t.final_flush_timeout.as_secs(), 2);
-        assert_eq!(t.max_in_flight, 4);
+        // Process-wide, not per-transfer - see `max_in_flight`'s docs for why it is sized this way.
+        assert_eq!(t.max_in_flight, 32);
     }
 
     #[test]

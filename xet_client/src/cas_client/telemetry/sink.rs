@@ -20,6 +20,21 @@ pub(crate) const LOG_TARGET: &str = "xet_telemetry";
 /// accounting.
 const API_TAG: &str = "cas::telemetry";
 
+/// Telemetry requests in flight across the whole process.
+///
+/// Deliberately global rather than per-sink. A sink belongs to one `TransferTelemetry`, i.e. one
+/// transfer, so a per-sink counter bounds a single long transfer's heartbeats but not the aggregate:
+/// a snapshot download fans out into many concurrent per-file transfers, each with its own sink, so
+/// the process-wide total would be `max_in_flight × concurrent transfers` with no ceiling at all.
+/// That put the backpressure in the wrong place - the heaviest telemetry moment, a wide fan-out, was
+/// exactly the one with no limit.
+///
+/// One counter for the process means [`max_in_flight`](xet_runtime::config::TelemetryConfig) is a
+/// real ceiling. Its default is sized for that: as a per-transfer number it would be far too large,
+/// and the old per-transfer default would be far too small here, since a wide snapshot finalizing at
+/// once would shed most of its terminal documents.
+static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+
 /// Posts telemetry documents to `POST /v1/telemetry`.
 ///
 /// Deliberately *not* built on [`RetryWrapper`](crate::cas_client::retry_wrapper::RetryWrapper):
@@ -37,7 +52,10 @@ pub struct TelemetrySink {
     http: Arc<ClientWithMiddleware>,
     /// Backpressure. Documents submitted while this is at `max_in_flight` are dropped rather than
     /// queued, so a hanging endpoint cannot accumulate tasks.
-    in_flight: Arc<AtomicUsize>,
+    ///
+    /// Always [`IN_FLIGHT`] in production - held as a field rather than referenced directly so tests
+    /// can point a sink at an isolated counter instead of the process-wide one.
+    in_flight: &'static AtomicUsize,
     max_in_flight: usize,
     request_timeout: Duration,
 }
@@ -48,19 +66,22 @@ impl TelemetrySink {
             ctx: ctx.clone(),
             url,
             http,
-            in_flight: Arc::new(AtomicUsize::new(0)),
+            in_flight: &IN_FLIGHT,
             max_in_flight: ctx.config.telemetry.max_in_flight,
             request_timeout: ctx.config.telemetry.request_timeout,
         }
     }
 
     /// Claims an in-flight slot, or `None` when the cap is reached.
+    ///
+    /// The cap is process-wide: the counter is shared by every sink, so this is where a wide fan-out
+    /// of concurrent transfers gets bounded rather than multiplying.
     fn acquire_slot(&self) -> Option<InFlightGuard> {
         let max = self.max_in_flight;
         self.in_flight
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| (n < max).then_some(n + 1))
             .ok()?;
-        Some(InFlightGuard(self.in_flight.clone()))
+        Some(InFlightGuard(self.in_flight))
     }
 
     /// Sends without waiting. Used for heartbeats and for terminal documents emitted from `Drop`,
@@ -148,7 +169,7 @@ async fn send(http: &ClientWithMiddleware, url: &Url, envelope: &TelemetryEnvelo
 }
 
 /// Releases an in-flight slot on drop, including when the task is cancelled mid-request.
-struct InFlightGuard(Arc<AtomicUsize>);
+struct InFlightGuard(&'static AtomicUsize);
 
 impl Drop for InFlightGuard {
     fn drop(&mut self) {
@@ -162,41 +183,92 @@ mod tests {
 
     use super::*;
 
-    fn counter(start: usize) -> Arc<AtomicUsize> {
-        Arc::new(AtomicUsize::new(start))
+    /// A fresh `&'static AtomicUsize` so a test never contends with the process-wide [`IN_FLIGHT`]
+    /// counter, which is shared by every other test in this binary.
+    fn counter(start: usize) -> &'static AtomicUsize {
+        Box::leak(Box::new(AtomicUsize::new(start)))
+    }
+
+    /// A sink whose slots come from `counter` rather than the process-wide one, so the shared-budget
+    /// behaviour can be exercised without other tests in this binary interfering. The URL and HTTP
+    /// client are never exercised: these tests only call `acquire_slot`.
+    fn sink_with_counter(ctx: &XetContext, counter: &'static AtomicUsize, max: usize) -> TelemetrySink {
+        let http = Arc::new(crate::common::http_client::build_http_client(ctx, "s", None, None).unwrap());
+        let mut sink = TelemetrySink::new(ctx, Url::parse("https://example.invalid/v1/telemetry").unwrap(), http);
+        sink.in_flight = counter;
+        sink.max_in_flight = max;
+        sink
     }
 
     /// Mirrors `acquire_slot` without needing a XetContext, so the cap logic can be tested alone.
-    fn try_acquire(in_flight: &Arc<AtomicUsize>, max: usize) -> Option<InFlightGuard> {
+    fn try_acquire(in_flight: &'static AtomicUsize, max: usize) -> Option<InFlightGuard> {
         in_flight
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| (n < max).then_some(n + 1))
             .ok()?;
-        Some(InFlightGuard(in_flight.clone()))
+        Some(InFlightGuard(in_flight))
     }
 
     #[test]
     fn test_slots_are_capped_and_released() {
         let in_flight = counter(0);
 
-        let a = try_acquire(&in_flight, 2);
-        let b = try_acquire(&in_flight, 2);
+        let a = try_acquire(in_flight, 2);
+        let b = try_acquire(in_flight, 2);
         assert!(a.is_some() && b.is_some());
         assert_eq!(in_flight.load(Ordering::Acquire), 2);
 
         // At the cap: the next document is dropped, not queued.
-        assert!(try_acquire(&in_flight, 2).is_none());
+        assert!(try_acquire(in_flight, 2).is_none());
 
         drop(a);
         assert_eq!(in_flight.load(Ordering::Acquire), 1);
-        assert!(try_acquire(&in_flight, 2).is_some());
+        assert!(try_acquire(in_flight, 2).is_some());
     }
 
     /// A zero cap disables sending outright rather than letting one request through.
     #[test]
     fn test_zero_cap_admits_nothing() {
         let in_flight = counter(0);
-        assert!(try_acquire(&in_flight, 0).is_none());
+        assert!(try_acquire(in_flight, 0).is_none());
         assert_eq!(in_flight.load(Ordering::Acquire), 0);
+    }
+
+    /// Every sink in the process draws from one budget.
+    ///
+    /// This is the point of the counter being global. A sink belongs to a single transfer, so with a
+    /// per-sink counter a snapshot download - many concurrent per-file transfers, each with its own
+    /// sink - multiplied the cap by the transfer count instead of limiting anything. Two sinks
+    /// sharing a counter must not be able to hold `2 × max` slots between them.
+    #[test]
+    fn test_sinks_share_one_process_wide_budget() {
+        let ctx = xet_runtime::core::XetContext::default().unwrap();
+        let shared = counter(0);
+        let (a, b) = (sink_with_counter(&ctx, shared, 2), sink_with_counter(&ctx, shared, 2));
+
+        let first = a.acquire_slot();
+        let second = b.acquire_slot();
+        assert!(first.is_some() && second.is_some(), "each sink should get one of the two slots");
+
+        // The cap is now reached process-wide, so *neither* sink may acquire again - a per-sink
+        // counter would happily hand each of them two more.
+        assert!(a.acquire_slot().is_none(), "sink A must see the slot sink B took");
+        assert!(b.acquire_slot().is_none(), "sink B must see the slot sink A took");
+        assert_eq!(shared.load(Ordering::Acquire), 2);
+
+        // Releasing through one sink frees capacity for the other.
+        drop(first);
+        assert_eq!(shared.load(Ordering::Acquire), 1);
+        assert!(b.acquire_slot().is_some(), "sink B must see the slot sink A released");
+    }
+
+    /// The production sinks all point at the process-wide counter, which is what makes the cap real.
+    #[test]
+    fn test_new_sinks_use_the_global_counter() {
+        let ctx = xet_runtime::core::XetContext::default().unwrap();
+        let http = Arc::new(crate::common::http_client::build_http_client(&ctx, "s", None, None).unwrap());
+        let sink = TelemetrySink::new(&ctx, Url::parse("https://example.invalid/v1/telemetry").unwrap(), http);
+
+        assert!(std::ptr::eq(sink.in_flight, &IN_FLIGHT), "a real sink must share the process-wide counter");
     }
 
     mod against_a_server {

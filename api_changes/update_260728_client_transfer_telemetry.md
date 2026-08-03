@@ -19,7 +19,16 @@ never surfaces an error, and never blocks data movement.
 | `heartbeat_interval` | `HF_XET_TELEMETRY_HEARTBEAT_INTERVAL` | `300s` |
 | `request_timeout` | `HF_XET_TELEMETRY_REQUEST_TIMEOUT` | `5s` |
 | `final_flush_timeout` | `HF_XET_TELEMETRY_FINAL_FLUSH_TIMEOUT` | `2s` |
-| `max_in_flight` | `HF_XET_TELEMETRY_MAX_IN_FLIGHT` | `4` |
+| `max_in_flight` | `HF_XET_TELEMETRY_MAX_IN_FLIGHT` | `32` |
+
+`max_in_flight` is a **process-wide** ceiling: one counter is shared by every sink, so the total
+number of in-flight telemetry POSTs is bounded no matter how many transfers run at once. A per-sink
+counter would have bounded each transfer separately and multiplied by the transfer count, which puts
+the backpressure in the wrong place — a snapshot download fans out into many concurrent per-file
+transfers, so the heaviest telemetry moment would have been the one with no aggregate limit. The
+default is sized as a process-wide number accordingly: a transfer emits one terminal document and
+heartbeats only begin after `heartbeat_after`, so the realistic burst is a set of concurrent
+transfers finalizing together.
 
 `HF_HUB_DISABLE_TELEMETRY` and `HF_HUB_OFFLINE` also force it off, and win over
 `HF_XET_TELEMETRY_ENABLED=1`. These are applied at the end of `XetConfig::with_env_overrides`
