@@ -1,6 +1,6 @@
 [package]
 name = "hf_xet"
-version = "1.5.2"
+version = "1.6.0"
 edition = "2024"
 license = "Apache-2.0"
 
@@ -19,10 +19,12 @@ pprof = { version = "0.15", features = [
     "prost",
     "protobuf-codec",
 ], optional = true }
-pyo3 = { version = "0.29", features = [
-    "abi3-py38",
-    "auto-initialize",
-] }
+# NOTE: do not add the `auto-initialize` feature here. This crate ships as a cdylib
+# extension module that is always loaded by an already-running interpreter, so it never
+# needs to start one. Enabling it also makes the pyo3 build script hard-fail against a
+# Python built with `--disable-shared` (the manylinux default). It is enabled for tests
+# only, via [dev-dependencies] below. See issue #891.
+pyo3 = { version = "0.29", features = ["abi3-py38"] }
 async-trait = "0.1"
 http = "1"
 itertools = "0.14"
@@ -64,6 +66,11 @@ split-debuginfo = "none"
 
 [dev-dependencies]
 tempfile = "3"
+# The unit tests call `Python::attach` from a plain Rust test binary, where no interpreter
+# is running yet; `auto-initialize` makes pyo3 start one on demand. Declaring it here rather
+# than in [dependencies] keeps it out of the cdylib build: under Cargo's v2/v3 feature
+# resolver, dev-dependency features are only unified when test targets are built.
+pyo3 = { version = "0.29", features = ["auto-initialize"] }
 
 [profile.opt-test]
 inherits = "dev"

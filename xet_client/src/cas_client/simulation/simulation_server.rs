@@ -603,8 +603,8 @@ impl DirectAccessClient for LocalTestServer {
         self.client.set_max_ranges_per_fetch(max_ranges);
     }
 
-    fn disable_v2_reconstruction(&self, status_code: u16) {
-        self.client.disable_v2_reconstruction(status_code);
+    fn disable_v2_endpoints(&self, status_code: u16) {
+        self.client.disable_v2_endpoints(status_code);
     }
 
     async fn get_reconstruction_v1(
@@ -1101,8 +1101,8 @@ mod tests {
             reqwest::StatusCode::OK
         );
 
-        // --- disable_v2_reconstruction ---
-        assert_eq!(post_set_config(server, "disable_v2_reconstruction", "503").await, reqwest::StatusCode::OK);
+        // --- disable_v2_endpoints ---
+        assert_eq!(post_set_config(server, "disable_v2_endpoints", "503").await, reqwest::StatusCode::OK);
         // Verify effect: V2 reconstruction via HTTP should return 503
         {
             let file = server.client().upload_random_file(&[(1, (0, 3))], CHUNK_SIZE).await.unwrap();
@@ -1111,8 +1111,17 @@ mod tests {
             assert_eq!(resp.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
         }
         // Re-enable
-        assert_eq!(post_set_config(server, "disable_v2_reconstruction", "0").await, reqwest::StatusCode::OK);
-        assert_eq!(post_set_config(server, "disable_v2_reconstruction", "xyz").await, reqwest::StatusCode::BAD_REQUEST);
+        assert_eq!(post_set_config(server, "disable_v2_endpoints", "0").await, reqwest::StatusCode::OK);
+        assert_eq!(post_set_config(server, "disable_v2_endpoints", "xyz").await, reqwest::StatusCode::BAD_REQUEST);
+
+        // --- shard_upload_error_frame ---
+        assert_eq!(post_set_config(server, "shard_upload_error_frame", "fatal").await, reqwest::StatusCode::OK);
+        assert_eq!(post_set_config(server, "shard_upload_error_frame", "retryable").await, reqwest::StatusCode::OK);
+        assert_eq!(post_set_config(server, "shard_upload_error_frame", "off").await, reqwest::StatusCode::OK);
+        assert_eq!(
+            post_set_config(server, "shard_upload_error_frame", "bogus").await,
+            reqwest::StatusCode::BAD_REQUEST
+        );
 
         // --- api_delay ---
         assert_eq!(post_set_config(server, "api_delay", "(50ms, 50ms)").await, reqwest::StatusCode::OK);
@@ -1215,6 +1224,273 @@ mod tests {
         check_chunk_hashes_correctness(server).await;
         check_simulation_set_config(server).await;
         check_simulation_dummy_upload(server).await;
+        check_v2_shard_upload(server).await;
+        check_v2_shard_upload_disabled_fallback(server).await;
+        check_v2_shard_upload_error_frame(server).await;
+    }
+
+    /// Builds fixed raw shard bytes suitable for `/v1/shards` and `/v2/shards` upload tests.
+    ///
+    /// Uses a fixed seed so every call returns byte-identical output (duplicate-shard
+    /// re-registration, not a new sync). The shard references xorbs that are never uploaded;
+    /// that is fine while these checks do not call `verify_integrity()`.
+    fn fixed_test_shard_bytes() -> bytes::Bytes {
+        use xet_core_structures::metadata_shard::shard_format::test_routines::gen_random_shard_with_xorb_references;
+
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let shard_dir = tmp_dir.path().join("shard");
+        std::fs::create_dir_all(&shard_dir).unwrap();
+        let shard_in = gen_random_shard_with_xorb_references(0, &[16; 8], &[2; 20], true, true).unwrap();
+        let shard_path = shard_in.write_to_directory(&shard_dir, None).unwrap();
+        bytes::Bytes::from(std::fs::read(&shard_path).unwrap())
+    }
+
+    /// Verifies `/v2/shards` NDJSON streaming via raw HTTP and via `RemoteClient` progress callbacks.
+    async fn check_v2_shard_upload(server: &LocalTestServer) {
+        use std::sync::{Arc, Mutex};
+
+        use crate::cas_client::interface::{ShardUploadProgressCallback, ShardUploadProgressType};
+        use crate::cas_types::{CommitStage, ShardUploadEvent};
+
+        let shard_data = fixed_test_shard_bytes();
+
+        // Raw HTTP: response is NDJSON ending in a terminal `result` frame.
+        let http_client = reqwest::Client::new();
+        let response = http_client
+            .post(format!("{}/v2/shards", server.http_endpoint()))
+            .body(shard_data.clone())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert_eq!(content_type, "application/x-ndjson");
+
+        // Exact deterministic stream from `ndjson_shard_upload_success_response`.
+        let expected = vec![
+            ShardUploadEvent::Validating { verified: 0, total: 1 },
+            ShardUploadEvent::Validating { verified: 1, total: 1 },
+            ShardUploadEvent::Committing {
+                stage: CommitStage::Uploading,
+            },
+            ShardUploadEvent::Committing {
+                stage: CommitStage::Syncing,
+            },
+            ShardUploadEvent::Result,
+        ];
+
+        let body = response.text().await.unwrap();
+        let events: Vec<ShardUploadEvent> = body
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_str(line).expect("valid ShardUploadEvent NDJSON line"))
+            .collect();
+        assert_eq!(events, expected);
+
+        // RemoteClient path: progress callback receives Response frames from the NDJSON stream.
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_cb = seen.clone();
+        let callback: ShardUploadProgressCallback = Arc::new(move |progress| {
+            if let ShardUploadProgressType::Response(event) = progress {
+                seen_cb.lock().unwrap().push(event.clone());
+            }
+        });
+
+        let shard_data = fixed_test_shard_bytes();
+        let permit = server.remote_client().acquire_upload_permit().await.unwrap();
+        server
+            .remote_simulation_client()
+            .upload_shard_v2(shard_data, permit, Some(callback))
+            .await
+            .unwrap();
+
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(seen, expected);
+    }
+
+    /// Verifies `/v2/shards` disable + RemoteClient V2→V1 fallback (same status codes as reconstruction).
+    async fn check_v2_shard_upload_disabled_fallback(server: &LocalTestServer) {
+        let shard_data = fixed_test_shard_bytes();
+
+        // Fresh success on V2 before disabling.
+        {
+            let permit = server.remote_client().acquire_upload_permit().await.unwrap();
+            server
+                .remote_simulation_client()
+                .upload_shard_v2(shard_data.clone(), permit, None)
+                .await
+                .unwrap();
+        }
+
+        // 501 first so we don't cache a V1 preference from 404 fallback mid-test.
+        server.client().disable_v2_endpoints(501);
+
+        let v2_err = {
+            let permit = server.remote_client().acquire_upload_permit().await.unwrap();
+            server
+                .remote_simulation_client()
+                .upload_shard_v2(shard_data.clone(), permit, None)
+                .await
+        };
+        assert!(v2_err.is_err(), "forced V2 should fail when disabled with 501");
+        assert_eq!(v2_err.unwrap_err().status(), Some(reqwest::StatusCode::NOT_IMPLEMENTED));
+
+        // Auto version override should fall back to V1 and succeed.
+        {
+            let permit = server.remote_client().acquire_upload_permit().await.unwrap();
+            server
+                .remote_simulation_client()
+                .upload_shard_with_version_override(shard_data.clone(), permit, None, None)
+                .await
+                .unwrap();
+        }
+
+        // Re-enable, confirm V2 works, then exercise 404 fallback.
+        // Forced `Some(2)` does *not* clear `detected_shard_api_version` (store is gated on
+        // `forced_version.is_none()`), so this only proves the endpoint is healthy again —
+        // the 404 auto-detect case below still needs a fresh client.
+        server.client().disable_v2_endpoints(0);
+        {
+            let permit = server.remote_client().acquire_upload_permit().await.unwrap();
+            server
+                .remote_simulation_client()
+                .upload_shard_with_version_override(fixed_test_shard_bytes(), permit, Some(2), None)
+                .await
+                .unwrap();
+        }
+
+        server.client().disable_v2_endpoints(404);
+        let v2_err = {
+            let permit = server.remote_client().acquire_upload_permit().await.unwrap();
+            server
+                .remote_simulation_client()
+                .upload_shard_v2(fixed_test_shard_bytes(), permit, None)
+                .await
+        };
+        assert!(v2_err.is_err(), "forced V2 should fail when disabled with 404");
+        assert_eq!(v2_err.unwrap_err().status(), Some(reqwest::StatusCode::NOT_FOUND));
+
+        // Exercise the 404 branch of the *auto-detect* path on a fresh client. `server.remote_simulation_client()`
+        // already cached a V1 preference from the auto-detect fallback at 501 above (forced `Some(..)` calls never
+        // write that cache, only a real auto-detect fallback does), so reusing it here would just replay the cached
+        // V1 path and never actually touch V2 or hit the 404.
+        {
+            let ctx = XetContext::default().expect("XetContext::new");
+            let fresh_client =
+                RemoteClient::new(ctx, server.http_endpoint(), &None, "test-session-404-fallback", false, None);
+            let permit = fresh_client.acquire_upload_permit().await.unwrap();
+            fresh_client
+                .upload_shard_with_version_override(fixed_test_shard_bytes(), permit, None, None)
+                .await
+                .unwrap();
+        }
+
+        // Leave V2 enabled for subsequent checks on the same server instance.
+        server.client().disable_v2_endpoints(0);
+    }
+
+    /// Verifies in-stream `/v2/shards` `Error` frames (production 200 + terminal error contract),
+    /// including that `retryable: true` is folded into `RetryWrapper` (multiple attempts, then fail).
+    async fn check_v2_shard_upload_error_frame(server: &LocalTestServer) {
+        use std::sync::{Arc, Mutex};
+
+        use crate::cas_client::interface::{ShardUploadProgressCallback, ShardUploadProgressType};
+        use crate::cas_types::ShardUploadEvent;
+
+        // Raw HTTP: fatal Error frame arrives on a 200 NDJSON stream.
+        assert_eq!(post_set_config(server, "shard_upload_error_frame", "fatal").await, reqwest::StatusCode::OK);
+        {
+            let response = reqwest::Client::new()
+                .post(format!("{}/v2/shards", server.http_endpoint()))
+                .body(fixed_test_shard_bytes())
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), reqwest::StatusCode::OK);
+            assert_eq!(
+                response
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok()),
+                Some("application/x-ndjson")
+            );
+            let body = response.text().await.unwrap();
+            let events: Vec<ShardUploadEvent> = body
+                .lines()
+                .filter(|line| !line.is_empty())
+                .map(|line| serde_json::from_str(line).expect("valid ShardUploadEvent NDJSON line"))
+                .collect();
+            assert_eq!(
+                events,
+                vec![
+                    ShardUploadEvent::Validating { verified: 0, total: 1 },
+                    ShardUploadEvent::Error {
+                        message: "simulated fatal shard upload failure".to_string(),
+                        retryable: false,
+                    },
+                ]
+            );
+        }
+
+        // RemoteClient: fatal Error is a hard failure (no retry success).
+        assert_eq!(post_set_config(server, "shard_upload_error_frame", "fatal").await, reqwest::StatusCode::OK);
+        {
+            let permit = server.remote_client().acquire_upload_permit().await.unwrap();
+            let err = server
+                .remote_simulation_client()
+                .upload_shard_v2(fixed_test_shard_bytes(), permit, None)
+                .await
+                .expect_err("fatal Error frame should fail the upload");
+            assert!(err.to_string().contains("simulated fatal shard upload failure"), "unexpected error: {err}");
+        }
+
+        // RemoteClient: retryable Error stays enabled — RetryWrapper retries until exhausted, then fails.
+        // Use a short retry budget so this stays fast; multiple Error frames prove retries ran.
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_cb = seen.clone();
+        let callback: ShardUploadProgressCallback = Arc::new(move |progress| {
+            if let ShardUploadProgressType::Response(event) = progress {
+                seen_cb.lock().unwrap().push(event.clone());
+            }
+        });
+        assert_eq!(post_set_config(server, "shard_upload_error_frame", "retryable").await, reqwest::StatusCode::OK);
+        {
+            let config = xet_runtime::config::XetConfig::default()
+                .with_config("client.retry_max_attempts", 2)
+                .unwrap()
+                .with_config("client.retry_base_delay", "1ms")
+                .unwrap()
+                .with_config("client.retry_max_duration", "10ms")
+                .unwrap();
+            let ctx = XetContext::with_config(config).expect("XetContext::with_config");
+            let client = RemoteClient::new(ctx, server.http_endpoint(), &None, "test-session-error-frame", false, None);
+            let permit = client.acquire_upload_permit().await.unwrap();
+            let err = client
+                .upload_shard_v2(fixed_test_shard_bytes(), permit, Some(callback))
+                .await
+                .expect_err("retryable Error frame should exhaust retries and fail");
+            assert!(err.to_string().contains("simulated retryable shard upload failure"), "unexpected error: {err}");
+        }
+        let seen = seen.lock().unwrap().clone();
+        let retryable_errors = seen
+            .iter()
+            .filter(|e| matches!(e, ShardUploadEvent::Error { retryable: true, .. }))
+            .count();
+        assert!(
+            retryable_errors >= 2,
+            "callback should observe Error frames across retries, got {retryable_errors} in {seen:?}"
+        );
+        assert!(
+            !seen.iter().any(|e| matches!(e, ShardUploadEvent::Result)),
+            "should not see a Result frame while error frame mode is enabled, got {seen:?}"
+        );
+
+        // Clear so later checks on this server are unaffected.
+        assert_eq!(post_set_config(server, "shard_upload_error_frame", "off").await, reqwest::StatusCode::OK);
     }
 
     /// Main test that runs all server checks with both in-memory and disk-backed storage.

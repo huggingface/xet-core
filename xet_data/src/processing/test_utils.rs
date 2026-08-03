@@ -251,7 +251,7 @@ impl HydrateDehydrateTest {
             #[cfg(feature = "simulation")]
             HydrationMode::ServerV1Fallback => {
                 self.ensure_server_created().await;
-                self.test_server.as_ref().unwrap().client().disable_v2_reconstruction(404);
+                self.test_server.as_ref().unwrap().client().disable_v2_endpoints(404);
             },
             #[cfg(feature = "simulation")]
             HydrationMode::ServerMaxRanges2 => {

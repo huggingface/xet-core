@@ -33,9 +33,11 @@
 //! - `GET /v1/chunks/{prefix}/{hash}` - Query for global deduplication shard
 //! - `HEAD /v1/xorbs/{prefix}/{hash}` - Check if XORB exists
 //! - `POST /v1/xorbs/{prefix}/{hash}` - Upload a XORB
-//! - `POST /shards` - Upload a shard
+//! - `POST /v1/shards` - Upload a shard (JSON response)
+//! - `POST /v2/shards` - Upload a shard (NDJSON progress stream)
+//! - `GET /v2/reconstructions/{file_id}` - V2 file reconstruction
 //! - `HEAD /v1/files/{file_id}` - Get file size
-//! - `GET /get_xorb/{prefix}/{hash}/` - Download XORB data
+//! - `GET /v1/get_xorb/{prefix}/{hash}/` - Download XORB data
 //!
 //! # Environment Variables
 //!
