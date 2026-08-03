@@ -22,8 +22,12 @@ pub enum Outcome {
     Cancelled,
     /// An upload session dropped without finalizing.
     Aborted,
-    /// A download session dropped without finalizing - notably every `XetDownloadStreamGroup`,
-    /// which has no explicit `finish()`.
+    /// A download session dropped without finalizing *and* without completing its transfer.
+    ///
+    /// This means genuinely abandoned: at least one item never had its size finalized or never
+    /// delivered all of its bytes. A session dropped without `finalize()` that nonetheless
+    /// transferred everything reports [`Ok`](Self::Ok) instead, so this variant stays a real
+    /// failure signal rather than an artifact of a caller that skipped `finish()`.
     Dropped,
     /// A heartbeat from a transfer still running.
     InProgress,

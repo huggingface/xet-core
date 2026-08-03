@@ -139,8 +139,7 @@ fn finishing_then_dropping_emits_one_document() {
     let _ = docs;
 }
 
-/// A stream group has no natural completion point, so it gets an explicit `finish`. Without one it
-/// would only ever report as `dropped`.
+/// A stream group has no natural completion point, so it gets an explicit `finish`.
 #[test]
 #[serial(env)]
 fn stream_group_finish_emits_a_clean_document() {
@@ -173,12 +172,17 @@ fn stream_group_finish_emits_a_clean_document() {
 }
 
 /// `finish` is additive: a caller that never calls it keeps working exactly as before, and still
-/// reports - just as `dropped` rather than `ok`.
+/// reports.
 ///
-/// This is the compatibility guarantee for existing embedders. `finish` must stay optional.
+/// The outcome is `ok`, not `dropped`, because the transfer genuinely completed - every stream was
+/// read to its end. Since `finish()` is new and existing embedders have not adopted it, this is the
+/// common shape for stream-group downloads; reporting it as `dropped` would make that outcome mean
+/// "probably fine" and leave a failure-rate dashboard with nothing to measure.
+///
+/// This is also the compatibility guarantee for existing embedders: `finish` must stay optional.
 #[test]
 #[serial(env)]
-fn stream_group_without_finish_still_works_and_still_reports() {
+fn stream_group_without_finish_reports_ok_when_fully_read() {
     let (server, _rt) = start_server();
     let endpoint = server.http_endpoint();
 
@@ -205,7 +209,45 @@ fn stream_group_without_finish_still_works_and_still_reports() {
 
     let docs = wait_for_docs(&server, 2);
     let doc = download_doc(&docs);
-    assert_eq!(doc["metrics"]["outcome"], "dropped", "an unfinished group reports, as dropped");
+    assert_eq!(doc["metrics"]["outcome"], "ok", "a fully-read group is not 'dropped' just for skipping finish()");
+    assert_eq!(doc["metrics"]["terminal"], true);
+}
+
+/// The counterpart: a stream abandoned part-way must still report `dropped`, so the outcome keeps
+/// distinguishing a real abandonment from a caller that merely skipped `finish()`.
+///
+/// The file is large enough to span several chunks, so stopping after the first leaves the transfer
+/// genuinely incomplete.
+#[test]
+#[serial(env)]
+fn stream_group_abandoned_part_way_reports_dropped() {
+    let (server, _rt) = start_server();
+    let endpoint = server.http_endpoint();
+
+    let session = XetSessionBuilder::new().build().unwrap();
+    let data = vec![0x5au8; 4 * 1024 * 1024];
+    let file_info = upload_bytes_sync(&session, endpoint, &data, "partial.bin");
+
+    {
+        let group = session
+            .new_download_stream_group()
+            .unwrap()
+            .with_endpoint(endpoint)
+            .build_blocking()
+            .unwrap();
+
+        let mut stream = group.download_stream_blocking(file_info, None).unwrap();
+        let first = stream
+            .blocking_next()
+            .unwrap()
+            .expect("the stream must yield at least one chunk");
+        assert!(first.len() < data.len(), "this test needs a file that does not arrive in a single chunk");
+        // Abandon the stream and the group here, without reading the rest and without `finish()`.
+    }
+
+    let docs = wait_for_docs(&server, 2);
+    let doc = download_doc(&docs);
+    assert_eq!(doc["metrics"]["outcome"], "dropped", "an abandoned stream must still report as dropped");
     assert_eq!(doc["metrics"]["terminal"], true);
 }
 

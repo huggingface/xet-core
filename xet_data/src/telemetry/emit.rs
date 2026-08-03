@@ -154,11 +154,31 @@ pub(crate) async fn emit_download_terminal(
 ///
 /// This is the only coverage for `XetDownloadStreamGroup`, which holds a `FileDownloadSession` and
 /// never calls `finalize()`.
-pub(crate) fn emit_download_abandoned(client: &Arc<dyn Client>, progress: &GroupProgressReport, n_files: u64) {
+///
+/// `all_items_complete` decides the outcome, because reaching `Drop` says nothing about whether the
+/// transfer succeeded - only that nobody called `finalize()`. Since `finish()` is additive and
+/// existing callers have not adopted it, the overwhelmingly common case here is a download that
+/// transferred everything and simply had no explicit finalize; reporting that as
+/// [`Outcome::Dropped`] would make `dropped` mean "probably fine" and leave a failure-rate
+/// dashboard with no usable signal. Deciding from the progress state instead keeps `dropped`
+/// meaning genuinely abandoned. See
+/// [`GroupProgress::all_items_complete`](crate::progress_tracking::GroupProgress::all_items_complete)
+/// for why that predicate is not just a byte comparison.
+pub(crate) fn emit_download_abandoned(
+    client: &Arc<dyn Client>,
+    progress: &GroupProgressReport,
+    n_files: u64,
+    all_items_complete: bool,
+) {
     let Some(telemetry) = telemetry_of_download(client) else {
         return;
     };
-    let metrics = download_metrics(&telemetry, progress, n_files, Outcome::Dropped, ERROR_CLASS_NONE);
+    let outcome = if all_items_complete {
+        Outcome::Ok
+    } else {
+        Outcome::Dropped
+    };
+    let metrics = download_metrics(&telemetry, progress, n_files, outcome, ERROR_CLASS_NONE);
     telemetry.emit_terminal_detached(Direction::Download.terminal_event(), metrics);
 }
 

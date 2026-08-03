@@ -287,6 +287,11 @@ async fn test_download_session_dropped_off_runtime_still_reports() {
 }
 
 /// A download session dropped without `finalize()` still reports.
+///
+/// `dropped` rather than `ok` because this session never registered a download: the `Drop` path
+/// infers its outcome from progress, and an empty session has completed nothing. A session that
+/// transferred everything and skipped `finalize()` reports `ok` instead - see
+/// `stream_group_without_finish_reports_ok_when_fully_read` in `xet_pkg`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial(env)]
 async fn test_dropped_download_session_reports_as_dropped() {

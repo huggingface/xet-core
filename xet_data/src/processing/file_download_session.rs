@@ -461,7 +461,12 @@ impl Drop for FileDownloadSession {
         // inside a runtime context - and requiring one silently disabled this path entirely for
         // embedders that release the last `Arc` from a foreign thread, which is exactly what the
         // Python bindings do.
-        crate::telemetry::emit_download_abandoned(&self.client, &self.report(), self.item_reports().len() as u64);
+        crate::telemetry::emit_download_abandoned(
+            &self.client,
+            &self.report(),
+            self.item_reports().len() as u64,
+            self.progress.all_items_complete(),
+        );
     }
 }
 

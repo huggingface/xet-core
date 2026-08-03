@@ -62,15 +62,28 @@ received. Keep new coverage at that altitude; a test that calls `finalize()` its
   `FileDownloadSession::finalize`, so downloads through the Python bindings reported nothing at all.
 - **New:** `XetDownloadStreamGroup::finish`/`finish_blocking` (and `finish()` plus context-manager
   support on the Python class). Streams are consumed independently, so the group cannot detect
-  completion itself; without this it could only ever report as `dropped`. **Purely additive** - a
+  completion itself, and `finish` is how a caller states it explicitly. **Purely additive** - a
   group that is never finished behaves exactly as before and still reports, so no existing caller
   has to change. Note that `finish` closes the group: streams already handed out stay usable, but
   opening a new one afterwards is an error.
-- **Both sessions gained a `Drop` impl**, emitting an `aborted`/`dropped` summary when the session
-  was never finalized — the safety net for callers that abandon a session. It is deliberately *not*
-  gated on an ambient tokio runtime: the send is spawned on the `XetRuntime`'s own stored handle, so
+- **Both sessions gained a `Drop` impl**, emitting a terminal summary when the session was never
+  finalized — the safety net for callers that abandon a session. It is deliberately *not* gated on
+  an ambient tokio runtime: the send is spawned on the `XetRuntime`'s own stored handle, so
   requiring `Handle::try_current()` only served to disable the path for embedders that release the
   last `Arc` from a foreign thread, which is exactly what the Python bindings do.
+  - An abandoned **upload** reports `aborted`: the commit never happened, so nothing was durably
+    transferred.
+  - An abandoned **download** reports `ok` or `dropped` depending on what actually transferred, via
+    the new `GroupProgress::all_items_complete()`. Reaching `Drop` only means nobody called
+    `finalize()`, which for downloads is the common case rather than a failure — `finish` is new and
+    existing embedders have not adopted it. Reporting all of those as `dropped` would make the
+    outcome field mean "probably fine" and leave a failure-rate dashboard nothing to measure, so
+    `dropped` is reserved for a genuinely incomplete transfer.
+  - `all_items_complete()` requires every item to have a **finalized size** as well as all of its
+    bytes delivered, and requires at least one item. The size check is not redundant: for an
+    open-ended stream range the size is discovered incrementally, so `bytes_completed` can equal
+    `total_bytes` mid-transfer whenever the consumer catches up to the prefetch frontier. A byte
+    comparison alone would report an abandoned stream as a success.
 - New public accessors: `FileDownloadSession::client()`, and
   `TestEnvironment::telemetry_docs()` under the `simulation` feature.
 - New public helpers: `xet_data::telemetry::{classify_error, outcome_for_class}`, for callers that
