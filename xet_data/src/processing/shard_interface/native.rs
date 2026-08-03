@@ -52,6 +52,9 @@ pub struct SessionShardInterface {
     // The last time we flushed xorb metadata to disk and the current state of xorb metadata.
     xorb_metadata_staging: Mutex<(SystemTime, MDBInMemoryShard)>,
 
+    #[cfg(feature = "console")]
+    console: std::sync::OnceLock<std::sync::Arc<xet_runtime::console::state::UploadCommitConsole>>,
+
     _shard_session_dir: TempDir,
 }
 
@@ -137,10 +140,17 @@ impl SessionShardInterface {
             xorb_metadata_staging: Mutex::new((SystemTime::now(), MDBInMemoryShard::default())),
             resumed_session_shard_manager,
             dry_run,
+            #[cfg(feature = "console")]
+            console: std::sync::OnceLock::new(),
             _shard_session_dir: shard_session_tempdir,
             client,
             completion_tracker,
         })
+    }
+
+    #[cfg(feature = "console")]
+    pub(crate) fn set_console(&self, c: std::sync::Arc<xet_runtime::console::state::UploadCommitConsole>) {
+        let _ = self.console.set(c);
     }
 
     /// Queries the client for global deduplication metrics.
@@ -209,6 +219,11 @@ impl SessionShardInterface {
 
         xorb_shard.add_xorb_block(xorb_block_contents)?;
 
+        #[cfg(feature = "console")]
+        if let Some(c) = self.console.get() {
+            c.shard_staging(xorb_shard.num_xorb_entries(), 0);
+        }
+
         let time_now = SystemTime::now();
         let flush_interval = self.ctx.config.data.session_xorb_metadata_flush_interval;
 
@@ -253,6 +268,13 @@ impl SessionShardInterface {
             self.session_shard_manager.shard_file_cache(),
         )?;
 
+        #[cfg(feature = "console")]
+        if let Some(c) = self.console.get() {
+            for si in &shard_list {
+                c.shard_discovered(si.shard_hash.hex(), 0);
+            }
+        }
+
         // Upload all the shards and move each to the common directory.
         let mut shard_uploads = JoinSet::<Result<()>>::new();
 
@@ -264,6 +286,11 @@ impl SessionShardInterface {
             let shard_bytes_uploaded = shard_bytes_uploaded.clone();
             let dry_run = self.dry_run;
             let completion_tracker = self.completion_tracker.clone();
+            #[cfg(feature = "console")]
+            let console_for_task: Option<std::sync::Arc<xet_runtime::console::state::UploadCommitConsole>> =
+                self.console.get().cloned();
+            #[cfg(feature = "console")]
+            let shard_hex: String = si.shard_hash.hex();
 
             // Acquire a permit for uploading before we spawn the task; the acquired permit is dropped after the task
             // completes. The chosen Semaphore is fair, meaning xorbs added first will be scheduled to upload first.
@@ -303,9 +330,16 @@ impl SessionShardInterface {
                         }));
 
                     // Upload the shard.
+                    #[cfg(feature = "console")]
+                    let shard_size = data.len() as u64;
                     shard_client.upload_shard(data, upload_permit, progress_callback).await?;
 
                     info!("Shard {:?} upload + sync completed successfully.", &si.shard_hash);
+
+                    #[cfg(feature = "console")]
+                    if let Some(c) = &console_for_task {
+                        c.shard_uploaded(&shard_hex, shard_size);
+                    }
 
                     // Now that the upload succeeded, move that shard to the cache directory, adding in an expiration
                     // time.
@@ -327,6 +361,11 @@ impl SessionShardInterface {
         // Now, let them all complete in parallel
         while let Some(jh) = shard_uploads.join_next().await {
             jh??;
+        }
+
+        #[cfg(feature = "console")]
+        if let Some(c) = self.console.get() {
+            c.all_shards_uploaded();
         }
 
         // Now that everything is complete, attempt to remove all the files in the staging

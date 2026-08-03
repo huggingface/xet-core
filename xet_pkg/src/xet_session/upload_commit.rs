@@ -314,6 +314,8 @@ impl XetUploadCommitInner {
 
     pub(super) fn abort(&self) -> Result<(), XetError> {
         self.task_runtime.cancel_subtree()?;
+        #[cfg(feature = "console")]
+        self.upload_session.console_mark_aborted();
         let file_uploads = std::mem::take(&mut *self.file_handles.lock()?);
         for upload in file_uploads {
             upload.abort_task();

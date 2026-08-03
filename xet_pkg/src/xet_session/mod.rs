@@ -263,8 +263,11 @@
 //! attributes are the authoritative target gate.
 
 mod auth_group_builder;
+#[cfg(not(target_family = "wasm"))]
 mod common;
+#[cfg(not(target_family = "wasm"))]
 mod download_stream_group;
+#[cfg(not(target_family = "wasm"))]
 mod download_stream_handle;
 mod errors;
 #[cfg(not(target_family = "wasm"))]
@@ -275,11 +278,16 @@ mod session;
 mod task_runtime;
 #[cfg(test)]
 mod test_utils;
+#[cfg(not(target_family = "wasm"))]
 mod upload_commit;
+#[cfg(not(target_family = "wasm"))]
 mod upload_file_handle;
+#[cfg(not(target_family = "wasm"))]
 mod upload_stream_handle;
 
+#[cfg(not(target_family = "wasm"))]
 pub use download_stream_group::{XetDownloadStreamGroup, XetDownloadStreamGroupBuilder};
+#[cfg(not(target_family = "wasm"))]
 pub use download_stream_handle::{XetDownloadStream, XetUnorderedDownloadStream};
 pub use errors::SessionError;
 #[cfg(not(target_family = "wasm"))]
@@ -289,10 +297,14 @@ pub use file_download_handle::{XetDownloadReport, XetFileDownload};
 pub use http::{HeaderMap, HeaderValue, header};
 pub use session::{XetSession, XetSessionBuilder};
 pub use task_runtime::XetTaskState;
+#[cfg(not(target_family = "wasm"))]
 pub use upload_commit::{XetCommitReport, XetFileMetadata, XetUploadCommit, XetUploadCommitBuilder};
+#[cfg(not(target_family = "wasm"))]
 pub use upload_file_handle::XetFileUpload;
+#[cfg(not(target_family = "wasm"))]
 pub use upload_stream_handle::XetStreamUpload;
 pub use xet_data::deduplication::DeduplicationMetrics;
+#[cfg(not(target_family = "wasm"))]
 pub use xet_data::processing::{Sha256Policy, XetFileInfo};
 pub use xet_data::progress_tracking::{GroupProgressReport, ItemProgressReport, ShardUploadProgressReport};
 pub use xet_runtime::config::XetConfig;

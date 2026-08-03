@@ -287,6 +287,9 @@ pub struct AdaptiveConcurrencyController {
 
     // The minimum number of completed transmissions that must be observed before we start adjusting the concurrency.
     min_completed_transmissions_required_for_adjustment: u64,
+
+    #[cfg(feature = "console")]
+    monitor: Option<std::sync::Arc<xet_runtime::console::state::MonitorConsole>>,
 }
 
 impl AdaptiveConcurrencyController {
@@ -308,12 +311,22 @@ impl AdaptiveConcurrencyController {
         );
 
         let config = ctx.config.clone();
+        let concurrency_semaphore =
+            AdjustableSemaphore::new(current_concurrency as u64, (min_concurrency as u64, max_concurrency as u64));
+
+        #[cfg(feature = "console")]
+        let monitor = ctx.common.console_scope().map(|scope| {
+            scope.new_monitor(
+                logging_tag.to_string(),
+                concurrency_semaphore.clone(),
+                (min_concurrency, max_concurrency),
+                true,
+            )
+        });
+
         Arc::new(Self {
             state: Mutex::new(ConcurrencyControllerState::new(config.clone())),
-            concurrency_semaphore: AdjustableSemaphore::new(
-                current_concurrency as u64,
-                (min_concurrency as u64, max_concurrency as u64),
-            ),
+            concurrency_semaphore,
 
             min_concurrency_increase_delay: Duration::from_millis(config.client.ac_min_adjustment_window_ms),
             min_concurrency_decrease_delay: Duration::from_millis(config.client.ac_min_adjustment_window_ms),
@@ -321,6 +334,8 @@ impl AdaptiveConcurrencyController {
             logging_tag,
             min_bytes_required_for_adjustment,
             min_completed_transmissions_required_for_adjustment,
+            #[cfg(feature = "console")]
+            monitor,
             config,
         })
     }
@@ -329,19 +344,26 @@ impl AdaptiveConcurrencyController {
     pub fn new_fixed(ctx: XetContext, logging_tag: &'static str, concurrency: usize) -> Arc<Self> {
         info!("Fixing maximum concurrency for {logging_tag} at {concurrency}; adaptive concurrency disabled.");
 
+        let concurrency_semaphore =
+            AdjustableSemaphore::new(concurrency as u64, (concurrency as u64, concurrency as u64));
+
+        #[cfg(feature = "console")]
+        let monitor = ctx.common.console_scope().map(|scope| {
+            scope.new_monitor(logging_tag.to_string(), concurrency_semaphore.clone(), (concurrency, concurrency), false)
+        });
+
         Arc::new(Self {
             config: ctx.config.clone(),
             state: Mutex::new(ConcurrencyControllerState::new(ctx.config)),
-            concurrency_semaphore: AdjustableSemaphore::new(
-                concurrency as u64,
-                (concurrency as u64, concurrency as u64),
-            ),
+            concurrency_semaphore,
             adjustment_disabled: true,
             min_concurrency_increase_delay: Default::default(),
             min_concurrency_decrease_delay: Default::default(),
             logging_tag,
             min_bytes_required_for_adjustment: Default::default(),
             min_completed_transmissions_required_for_adjustment: Default::default(),
+            #[cfg(feature = "console")]
+            monitor,
         })
     }
 
@@ -504,6 +526,23 @@ impl AdaptiveConcurrencyController {
         // Now, determine if we should adjust the concurrency.
         let model_state = state_lg.success_model_state();
 
+        #[cfg(feature = "console")]
+        if let Some(m) = &self.monitor {
+            m.set_success_model(xet_runtime::console::model::SuccessModelSnapshot {
+                success_ratio: model_state.success_ratio,
+                thresholds: xet_runtime::console::model::Thresholds {
+                    increase: model_state.success_ratio_thresholds.0,
+                    decrease: model_state.success_ratio_thresholds.1,
+                },
+                recommended_adjustment: match model_state.recommended_adjustment {
+                    1 => xet_runtime::console::model::AdjustmentRecommendation::Increase,
+                    -1 => xet_runtime::console::model::AdjustmentRecommendation::Decrease,
+                    _ => xet_runtime::console::model::AdjustmentRecommendation::Hold,
+                },
+            });
+            m.set_bytes_sent(state_lg.bytes_sent_so_far);
+        }
+
         // Update the rtt predictor if we have a successful transfer.
         if transmission_successful && let Some(n_bytes) = n_bytes_if_known {
             state_lg.rtt_predictor.update(n_bytes, elapsed_time, avg_concurrency, weight);
@@ -545,6 +584,11 @@ impl AdaptiveConcurrencyController {
                 let new_concurrency_actual = self.concurrency_semaphore.total_permits();
                 state_lg.last_adjustment_time = Instant::now();
 
+                #[cfg(feature = "console")]
+                if let Some(m) = &self.monitor {
+                    m.record_limit(new_concurrency_actual as usize);
+                }
+
                 info!(
                     "Concurrency control for {}: Increased concurrency from {} to {}; reason: success ratio {:.3} is above threshold {:.3} and predicted RTT for {}MB at new concurrency is {:.2}s < target {:.1}s",
                     self.logging_tag,
@@ -577,6 +621,11 @@ impl AdaptiveConcurrencyController {
                 let new_concurrency = self.concurrency_semaphore.total_permits();
                 state_lg.last_adjustment_time = Instant::now();
 
+                #[cfg(feature = "console")]
+                if let Some(m) = &self.monitor {
+                    m.record_limit(new_concurrency as usize);
+                }
+
                 let reason = if !transmission_successful {
                     "transfer failed"
                 } else {
@@ -598,6 +647,16 @@ impl AdaptiveConcurrencyController {
         if state_lg.last_logging_time.elapsed() > Duration::from_millis(config.client.ac_logging_interval_ms) {
             state_lg.last_logging_time = Instant::now();
             let latency_state = state_lg.latency_model_state(self.concurrency_semaphore.active_permits() as f64);
+
+            #[cfg(feature = "console")]
+            if let Some(m) = &self.monitor {
+                m.set_latency_model(xet_runtime::console::model::LatencyModelSnapshot {
+                    predicted_max_rtt_ms: Some(latency_state.predicted_max_rtt * 1000.0),
+                    rtt_standard_error_ms: Some(latency_state.prediction_max_rtt_standard_error * 1000.0),
+                    predicted_bandwidth_bps: Some(latency_state.predicted_bandwidth),
+                });
+            }
+
             let ref_size_mb = reference_size as f64 / (1024.0 * 1024.0);
             info!(
                 "Concurrency control for {}: Current concurrency = {}; predicted bandwidth = {:.0}; success_ratio = {:.3}; reference_size = {:.1}MB; observed bytes sent so far = {}; completed transmissions = {}",
@@ -789,6 +848,32 @@ impl AdaptiveConcurrencyController {
             logging_tag: "testing",
             min_bytes_required_for_adjustment: 0,
             min_completed_transmissions_required_for_adjustment: 0,
+            #[cfg(feature = "console")]
+            monitor: None,
+        })
+    }
+
+    #[cfg(feature = "console")]
+    pub fn new_testing_with_monitor(
+        concurrency: usize,
+        concurrency_bounds: (usize, usize),
+        scope: &std::sync::Arc<xet_runtime::console::state::SessionConsole>,
+    ) -> Arc<Self> {
+        let config = Arc::new(XetConfig::new());
+        let semaphore =
+            AdjustableSemaphore::new(concurrency as u64, (concurrency_bounds.0 as u64, concurrency_bounds.1 as u64));
+        let monitor = scope.new_monitor("testing".to_string(), semaphore.clone(), concurrency_bounds, true);
+        Arc::new(Self {
+            config: config.clone(),
+            state: Mutex::new(ConcurrencyControllerState::new_testing(config)),
+            concurrency_semaphore: semaphore,
+            min_concurrency_increase_delay: Duration::from_millis(test_constants::INCR_SPACING_MS),
+            min_concurrency_decrease_delay: Duration::from_millis(test_constants::DECR_SPACING_MS),
+            adjustment_disabled: false,
+            logging_tag: "testing",
+            min_bytes_required_for_adjustment: 0,
+            min_completed_transmissions_required_for_adjustment: 0,
+            monitor: Some(monitor),
         })
     }
 }
@@ -1154,5 +1239,57 @@ mod tests {
             small_concurrency >= large_concurrency,
             "Small-transfer concurrency ({small_concurrency}) should be >= large-transfer concurrency ({large_concurrency})"
         );
+    }
+}
+
+#[cfg(all(test, feature = "console"))]
+mod console_tests {
+    use tokio::time::{self, Duration, advance};
+    use xet_runtime::console::state::SessionConsole;
+
+    use super::test_constants::*;
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn controller_registers_monitor_in_session_scope() {
+        let ctx = XetContext::default().expect("test runtime");
+        let scope = SessionConsole::new("monitor-test".into(), vec![]);
+        ctx.common.console_session_for_test(scope.clone());
+
+        let _controller = AdaptiveConcurrencyController::new_upload(ctx, "upload");
+        let monitors = scope.monitor_snapshots();
+        assert_eq!(monitors.len(), 1);
+        assert_eq!(monitors[0].tag, "upload");
+        assert!(monitors[0].total_permits > 0);
+    }
+
+    /// Drive the controller through failure-triggered limit decreases and verify the monitor
+    /// records a limit adjustment, a success model snapshot, and nonzero bytes sent.
+    #[tokio::test]
+    async fn monitor_hooks_record_limit_and_success_model() {
+        time::pause();
+
+        let scope = SessionConsole::new("hook-test".into(), vec![]);
+        let controller = AdaptiveConcurrencyController::new_testing_with_monitor(10, (5, 10), &scope);
+
+        // Mirror test_permit_decrease_on_explicit_failure: report failures to trigger decrements.
+        for _ in 0..5 {
+            let permit = controller.acquire_connection_permit().await.unwrap();
+            advance(Duration::from_millis(DECR_SPACING_MS + 1)).await;
+            permit.report_completion(LARGE_N_BYTES, false).await;
+        }
+
+        let snapshots = scope.monitor_snapshots();
+        assert_eq!(snapshots.len(), 1);
+        let snap = &snapshots[0];
+
+        // A limit adjustment must have been recorded.
+        assert!(!snap.limit_history.is_empty(), "limit_history should be non-empty after decrements");
+
+        // The success model tee must have run.
+        assert!(snap.success.is_some(), "success model snapshot should be present after completions");
+
+        // Bytes must have been counted.
+        assert!(snap.bytes_sent > 0, "bytes_sent should be > 0 after completions");
     }
 }

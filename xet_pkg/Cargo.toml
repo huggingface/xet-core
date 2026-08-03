@@ -60,6 +60,7 @@ uuid = { workspace = true, features = ["v7"] }
 [features]
 default = ["rustls-tls"]
 smoke-test = []
+console = ["xet-runtime/console", "xet-client/console", "xet-data/console"]
 # Internal tooling (the `xtool` binary). Off by default so the library
 # still compiles for wasm32-unknown-unknown.
 internal-tools = ["dep:clap", "dep:url", "dep:walkdir"]
@@ -85,6 +86,7 @@ tokio_with_wasm = { workspace = true, features = ["rt", "sync"] }
 
 [dev-dependencies]
 async-std = { workspace = true }
+reqwest = { workspace = true }
 futures = { workspace = true }
 serial_test = { workspace = true }
 smol = { workspace = true }

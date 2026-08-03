@@ -7,6 +7,9 @@
 
 #![cfg_attr(feature = "strict", deny(warnings))]
 
+#[cfg(feature = "console")]
+pub mod console;
+
 pub mod error;
 pub use error::RuntimeError;
 

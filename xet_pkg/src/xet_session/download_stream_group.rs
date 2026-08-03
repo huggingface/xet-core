@@ -145,6 +145,13 @@ impl XetDownloadStreamGroup {
         let config = create_translator_config(&session, auth_options).await?;
         let download_session = FileDownloadSession::new(Arc::new(config), None).await?;
 
+        #[cfg(feature = "console")]
+        if let Some(c) = download_session.console() {
+            // Stream groups surface aggregate progress only in the console for now; per-item instrumentation is
+            // deferred, so n_files_in_flight stays 0 while streaming.
+            c.set_kind(xet_runtime::console::model::DownloadGroupKind::Stream);
+        }
+
         let inner = Arc::new(XetDownloadStreamGroupInner {
             session,
             group_id,
