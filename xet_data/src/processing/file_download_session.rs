@@ -47,10 +47,10 @@ impl FileDownloadSession {
 
         let ctx = config.ctx.clone();
         let client = create_remote_client(&config, &session_id, false).await?;
-        let progress = GroupProgress::with_speed_config(
+        let progress = Arc::new(GroupProgress::with_speed_config(
             ctx.config.data.progress_update_speed_sampling_window,
             ctx.config.data.progress_update_speed_min_observations,
-        );
+        ));
 
         Ok(Arc::new(Self {
             ctx,
@@ -72,7 +72,7 @@ impl FileDownloadSession {
         client: Arc<dyn Client>,
         chunk_cache: Option<Arc<dyn ChunkCache>>,
     ) -> Arc<Self> {
-        let progress = GroupProgress::new();
+        let progress = Arc::new(GroupProgress::new());
         Arc::new(Self {
             ctx: ctx.clone(),
             client,

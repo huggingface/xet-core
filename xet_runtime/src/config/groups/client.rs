@@ -264,6 +264,15 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_CLIENT_RECONSTRUCTION_API_VERSION` to set this value.
     ref reconstruction_api_version: Option<u32> = None;
 
+    /// The shard upload API version to request from the CAS server.
+    /// When set to 1 or 2, forces that version with no fallback.
+    /// When unset, auto-detects by trying V2 first, falling back to V1 on 404 or 501.
+    ///
+    /// The default value is None (auto-detect).
+    ///
+    /// Use the environment variable `HF_XET_CLIENT_SHARD_API_VERSION` to set this value.
+    ref shard_api_version: Option<u32> = None;
+
     /// Whether to use multi-range HTTP requests when fetching xorb data.
     /// When false (default), V2 multi-range fetch entries are split into
     /// individual single-range requests executed in parallel, which avoids

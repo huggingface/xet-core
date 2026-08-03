@@ -229,8 +229,11 @@ impl Client for SimulationControlClient {
         &self,
         shard_data: Bytes,
         upload_permit: crate::cas_client::adaptive_concurrency::ConnectionPermit,
-    ) -> Result<bool> {
-        self.remote_client.upload_shard(shard_data, upload_permit).await
+        progress_callback: Option<crate::cas_client::interface::ShardUploadProgressCallback>,
+    ) -> Result<()> {
+        self.remote_client
+            .upload_shard(shard_data, upload_permit, progress_callback)
+            .await
     }
 
     /// Delegates XORB upload to the internal `RemoteClient`.

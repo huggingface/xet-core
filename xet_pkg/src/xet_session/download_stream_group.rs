@@ -377,6 +377,38 @@ mod tests {
             .unwrap()
     }
 
+    // Regression test: `AuthGroupBuilder<XetDownloadStreamGroup>::build()`'s
+    // compiler-generated future once measured 23,664 bytes. See
+    // `test_utils::stack_regression` for why this runs in a child process.
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn build_survives_small_stack_download_stream_group() {
+        crate::xet_session::test_utils::stack_regression::run(
+            &crate::xet_session::test_utils::stack_regression::test_path(
+                module_path!(),
+                "build_survives_small_stack_download_stream_group",
+            ),
+            || {
+                let temp = tempdir().unwrap();
+                let endpoint = format!("local://{}", temp.path().join("cas").display());
+                tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async move {
+                        let session = XetSessionBuilder::new().build().unwrap();
+                        session
+                            .new_download_stream_group()
+                            .unwrap()
+                            .with_endpoint(&endpoint)
+                            .build()
+                            .await
+                            .unwrap();
+                    });
+            },
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     // Async streaming download round-trip: upload, stream, verify content.
     async fn test_download_stream_round_trip() {

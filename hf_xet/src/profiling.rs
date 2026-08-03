@@ -24,17 +24,16 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::LazyLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use chrono::Local;
 use pprof::protos::Message;
 use pprof::{ProfilerGuard, ProfilerGuardBuilder};
 
 const SAMPLING_FREQUENCY: i32 = 100; // 100 Hz
 
 // A global reference to the current profiling session.  The python at_exit function dumps this out.
-lazy_static::lazy_static! {
-    static ref CURRENT_SESSION: ProfilingSession<'static> = ProfilingSession::new();
-}
+static CURRENT_SESSION: LazyLock<ProfilingSession<'static>> = LazyLock::new(ProfilingSession::new);
 
 struct ProfilingSession<'a> {
     guard: Option<ProfilerGuard<'a>>,
@@ -66,7 +65,11 @@ impl ProfilingSession<'_> {
             },
         };
 
-        let date_str = Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+        let date_str = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or_default()
+            .to_string();
         let output_dir = PathBuf::from("profiles").join(date_str);
 
         let Ok(_) = fs::create_dir_all(&output_dir)

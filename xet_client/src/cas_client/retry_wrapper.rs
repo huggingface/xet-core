@@ -461,33 +461,6 @@ impl RetryWrapper {
         .await
     }
 
-    /// Run a connection and process the result as a using the specified function parameter blob,
-    /// retrying on transient errors or on issues parsing the blob with the custom function.
-    ///
-    /// The `make_request` function returns a future that resolves to a Result<Response> object as is returned by the
-    /// client middleware.  For example, `|| client.clone().get(url).send()` returns a future (as `send()` is async)
-    /// that will then be evaluated to get the response.
-    ///
-    /// The `parse` function is a custom parser that takes a Response and returns a future that resolves to
-    /// Result<Dest (your desired output type), ParseErr>. This allows for custom parsing logic beyond simple JSON
-    /// deserialization.
-    ///
-    /// The `map_parse_err` function maps parsing errors to RetryableReqwestError, determining whether parsing
-    /// failures should be treated as fatal or retryable error
-    pub async fn run_and_extract_custom<ReqFn, ReqFut, Parse, ParseFut, Dest>(
-        self,
-        make_request: ReqFn,
-        parse: Parse,
-    ) -> Result<Dest>
-    where
-        ReqFn: Fn() -> ReqFut + Send + Sync + 'static,
-        ReqFut: std::future::Future<Output = std::result::Result<Response, reqwest_middleware::Error>> + 'static,
-        Parse: Fn(Response) -> ParseFut + Send + Sync + 'static,
-        ParseFut: std::future::Future<Output = std::result::Result<Dest, RetryableReqwestError>> + 'static,
-    {
-        self.run_and_process(make_request, parse).await
-    }
-
     /// Run a connection and process the result object, retrying on transient errors.
     ///
     /// The `make_request` function returns a future that resolves to a Result<Response> object as is returned by the

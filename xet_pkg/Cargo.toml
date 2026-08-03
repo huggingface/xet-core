@@ -36,10 +36,10 @@ name = "test_xtool_cli"
 required-features = ["internal-tools"]
 
 [dependencies]
-xet-runtime = { version = "1.5.3", path = "../xet_runtime" }
-xet-core-structures = { version = "1.5.3", path = "../xet_core_structures" }
-xet-client = { version = "1.5.3", path = "../xet_client" }
-xet-data = { version = "1.5.3", path = "../xet_data" }
+xet-runtime = { version = "1.5.4", path = "../xet_runtime" }
+xet-core-structures = { version = "1.5.4", path = "../xet_core_structures" }
+xet-client = { version = "1.5.4", path = "../xet_client", default-features = false }
+xet-data = { version = "1.5.4", path = "../xet_data", default-features = false }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -58,6 +58,7 @@ walkdir = { workspace = true, optional = true }
 uuid = { workspace = true, features = ["v7"] }
 
 [features]
+default = ["rustls-tls"]
 smoke-test = []
 # Internal tooling (the `xtool` binary). Off by default so the library
 # still compiles for wasm32-unknown-unknown.
@@ -65,8 +66,12 @@ internal-tools = ["dep:clap", "dep:url", "dep:walkdir"]
 fd-track = ["xet-runtime/fd-track", "xet-client/fd-track", "xet-data/fd-track"]
 python = ["xet-runtime/python", "xet-data/python", "dep:pyo3"]
 simulation = ["xet-client/simulation"]
-native-tls = ["xet-client/native-tls"]
-native-tls-vendored = ["xet-client/native-tls-vendored"]
+# TLS backend for the underlying reqwest client. rustls is the default; to use
+# the platform-native TLS stack instead, depend on this crate with
+# `default-features = false` and enable `native-tls` (or `native-tls-vendored`).
+rustls-tls = ["xet-client/rustls-tls", "xet-data/rustls-tls"]
+native-tls = ["xet-client/native-tls", "xet-data/native-tls"]
+native-tls-vendored = ["xet-client/native-tls-vendored", "xet-data/native-tls-vendored"]
 elevated_information_level = ["xet-client/elevated_information_level", "xet-runtime/elevated_information_level"]
 no-default-cache = ["xet-runtime/no-default-cache"]
 tokio-console = ["xet-runtime/tokio-console"]

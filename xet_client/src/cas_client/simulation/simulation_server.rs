@@ -544,8 +544,11 @@ impl Client for LocalTestServer {
         &self,
         shard_data: bytes::Bytes,
         upload_permit: super::super::adaptive_concurrency::ConnectionPermit,
-    ) -> Result<bool> {
-        self.remote_simulation_client.upload_shard(shard_data, upload_permit).await
+        progress_callback: Option<super::super::interface::ShardUploadProgressCallback>,
+    ) -> Result<()> {
+        self.remote_simulation_client
+            .upload_shard(shard_data, upload_permit, progress_callback)
+            .await
     }
 
     async fn upload_xorb(

@@ -200,7 +200,7 @@ pub trait ClientTestingUtils: Client + Send + Sync {
         })?;
 
         let upload_permit = self.acquire_upload_permit().await?;
-        self.upload_shard(shard.to_bytes()?.into(), upload_permit).await?;
+        self.upload_shard(shard.to_bytes()?.into(), upload_permit, None).await?;
 
         // Convert xorb_data from seed-keyed to hash-keyed
         let xorbs = xorb_data.into_values().map(|x| (x.hash(), x)).collect();

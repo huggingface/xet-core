@@ -192,8 +192,6 @@ impl LocalServer {
                     .route("/set_config", post(handlers::set_config))
                     .route("/dummy_upload", post(handlers::dummy_upload)),
             )
-            // Routes used by RemoteClient without /v1/ prefix
-            .route("/reconstructions", get(handlers::batch_get_reconstruction))
             .layer(CorsLayer::very_permissive())
             .with_state(handlers::ServerState {
                 client: self.client.clone(),
@@ -478,8 +476,11 @@ impl Client for LocalTestServer {
         &self,
         shard_data: bytes::Bytes,
         upload_permit: crate::cas_client::adaptive_concurrency::ConnectionPermit,
-    ) -> Result<bool> {
-        self.remote_client.upload_shard(shard_data, upload_permit).await
+        progress_callback: Option<crate::cas_client::interface::ShardUploadProgressCallback>,
+    ) -> Result<()> {
+        self.remote_client
+            .upload_shard(shard_data, upload_permit, progress_callback)
+            .await
     }
 
     async fn upload_xorb(

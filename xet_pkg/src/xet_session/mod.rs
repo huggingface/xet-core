@@ -273,6 +273,8 @@ mod file_download_group;
 mod file_download_handle;
 mod session;
 mod task_runtime;
+#[cfg(test)]
+mod test_utils;
 mod upload_commit;
 mod upload_file_handle;
 mod upload_stream_handle;
@@ -292,6 +294,6 @@ pub use upload_file_handle::XetFileUpload;
 pub use upload_stream_handle::XetStreamUpload;
 pub use xet_data::deduplication::DeduplicationMetrics;
 pub use xet_data::processing::{Sha256Policy, XetFileInfo};
-pub use xet_data::progress_tracking::{GroupProgressReport, ItemProgressReport};
+pub use xet_data::progress_tracking::{GroupProgressReport, ItemProgressReport, ShardUploadProgressReport};
 pub use xet_runtime::config::XetConfig;
 pub use xet_runtime::utils::UniqueId;

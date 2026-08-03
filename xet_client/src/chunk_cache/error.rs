@@ -4,7 +4,7 @@ use std::str::Utf8Error;
 use base64::DecodeError;
 use thiserror::Error;
 use tokio::task::JoinError;
-use xet_core_structures::merklehash::DataHashBytesParseError;
+use xet_core_structures::merklehash::DataHashError;
 
 #[derive(Debug, Error)]
 pub enum ChunkCacheError {
@@ -57,5 +57,5 @@ macro_rules! impl_parse_error_from_error {
 
 impl_parse_error_from_error!(TryFromSliceError);
 impl_parse_error_from_error!(DecodeError);
-impl_parse_error_from_error!(DataHashBytesParseError);
+impl_parse_error_from_error!(DataHashError);
 impl_parse_error_from_error!(Utf8Error);

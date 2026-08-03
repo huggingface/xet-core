@@ -106,6 +106,17 @@ impl Stream for UploadProgressStream {
     }
 }
 
+impl Drop for UploadProgressStream {
+    /// `poll_next` only reports a chunk once the *next* chunk is requested (so a chunk is
+    /// counted "sent" only once the caller has moved past it), which means the last chunk is
+    /// never reported that way -- there's no subsequent poll before the terminal `None`. Flush
+    /// it here instead; `report_progress`'s high-water-mark dedup makes this a no-op if
+    /// everything was somehow already reported.
+    fn drop(&mut self) {
+        self.reporter.report_progress(self.bytes_sent);
+    }
+}
+
 impl UploadProgressStream {
     pub fn new(data: impl Into<Bytes>, block_size: usize) -> Self {
         let data = data.into();
@@ -202,6 +213,7 @@ mod tests {
                 result.push(chunk.unwrap());
             }
         });
+        drop(stream); // flushes the last chunk's progress report
 
         assert_eq!(
             result,
@@ -213,7 +225,7 @@ mod tests {
             ]
         );
 
-        assert_eq!(*progress_reported.lock().unwrap(), vec![3, 3, 3]);
+        assert_eq!(*progress_reported.lock().unwrap(), vec![3, 3, 3, 1]);
     }
 
     #[test]
@@ -234,6 +246,7 @@ mod tests {
             assert_eq!(stream.next().await.unwrap().unwrap(), Bytes::from("def"));
             assert!(stream.next().await.is_none());
         });
+        drop(stream); // flushes the last chunk's progress report
 
         let mut retry_stream = UploadProgressStream::wrap_bytes_as_stream(data.clone(), block_size, reporter.clone());
         block_on(async {
@@ -241,8 +254,12 @@ mod tests {
             assert_eq!(retry_stream.next().await.unwrap().unwrap(), Bytes::from("def"));
             assert!(retry_stream.next().await.is_none());
         });
+        drop(retry_stream); // no-op: everything was already reported by the first stream
 
-        assert_eq!(*progress_reported.lock().unwrap(), vec![3]);
+        // The full 6 bytes are reported exactly once, split across the two chunks of the
+        // original stream; the retry contributes nothing further since the shared reporter's
+        // high-water mark already covers the whole transfer.
+        assert_eq!(*progress_reported.lock().unwrap(), vec![3, 3]);
     }
 
     #[test]
@@ -265,8 +282,35 @@ mod tests {
             assert_eq!(stream.next().await.unwrap().unwrap(), Bytes::from("ef"));
             assert!(stream.next().await.is_none());
         });
+        drop(stream); // flushes the last chunk's progress report
 
-        assert_eq!(*progress_reported.lock().unwrap(), vec![2, 2]);
+        assert_eq!(*progress_reported.lock().unwrap(), vec![2, 2, 2]);
+    }
+
+    #[test]
+    fn test_dropping_stream_mid_upload_flushes_bytes_produced_so_far() {
+        let data = Bytes::from("abcdef");
+        let block_size = 2;
+
+        let progress_reported = Arc::new(Mutex::new(Vec::new()));
+        let callback = {
+            let progress_reported = progress_reported.clone();
+            move |delta: u64, _completed: u64, _total: u64| progress_reported.lock().unwrap().push(delta)
+        };
+
+        let reporter = StreamProgressReporter::new(6).with_progress_callback(Arc::new(callback));
+        let mut stream = UploadProgressStream::wrap_bytes_as_stream(data.clone(), block_size, reporter);
+
+        block_on(async {
+            // Only consume the first chunk -- as if the request were cancelled or the
+            // connection dropped partway through the upload.
+            assert_eq!(stream.next().await.unwrap().unwrap(), Bytes::from("ab"));
+        });
+        drop(stream);
+
+        // The one chunk actually produced is still flushed, even though the transfer never
+        // reached completion.
+        assert_eq!(*progress_reported.lock().unwrap(), vec![2]);
     }
 
     #[test]
