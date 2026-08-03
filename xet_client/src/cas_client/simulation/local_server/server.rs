@@ -36,6 +36,7 @@ use std::net::SocketAddr;
 use std::net::TcpListener as StdTcpListener;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU8;
 #[cfg(test)]
 use std::time::Duration;
 
@@ -101,6 +102,8 @@ pub struct LocalServer {
     client: Arc<dyn DirectAccessClient>,
     deletion_client: Option<Arc<dyn DeletionControlableClient>>,
     latency_simulation: Arc<LatencySimulation>,
+    /// `/v2/shards` in-stream Error frame mode (see [`handlers::ShardUploadErrorFrame`]).
+    shard_upload_error_frame: Arc<AtomicU8>,
 }
 
 impl LocalServer {
@@ -125,6 +128,7 @@ impl LocalServer {
             client,
             deletion_client,
             latency_simulation,
+            shard_upload_error_frame: Arc::new(AtomicU8::new(handlers::ShardUploadErrorFrame::Off as u8)),
         })
     }
 
@@ -150,6 +154,7 @@ impl LocalServer {
             client,
             deletion_client,
             latency_simulation,
+            shard_upload_error_frame: Arc::new(AtomicU8::new(handlers::ShardUploadErrorFrame::Off as u8)),
         }
     }
 
@@ -166,8 +171,8 @@ impl LocalServer {
     /// Builds the Axum router with all CAS API routes.
     ///
     /// Routes follow the pattern used by RemoteClient:
-    /// - `/v1/` prefixed routes for chunks, xorbs, reconstructions, and files
-    /// - Root-level `/reconstructions` for batch queries and `/shards` for uploads
+    /// - `/v1/` prefixed routes for chunks, xorbs, reconstructions, files, and shard uploads
+    /// - `/v2/` prefixed routes for V2 reconstructions and NDJSON shard uploads
     /// - `/simulation/` prefixed routes for testing/simulation configuration and direct access
     fn create_router(&self) -> Router {
         Router::new()
@@ -184,7 +189,12 @@ impl LocalServer {
                     .route("/get_xorb/{prefix}/{hash}/", get(handlers::get_file_term_data))
                     .route("/fetch_term", get(handlers::fetch_term)),
             )
-            .nest("/v2", Router::new().route("/reconstructions/{file_id}", get(handlers::get_reconstruction_v2)))
+            .nest(
+                "/v2",
+                Router::new()
+                    .route("/reconstructions/{file_id}", get(handlers::get_reconstruction_v2))
+                    .route("/shards", post(handlers::post_shard_v2)),
+            )
             .nest(
                 "/simulation",
                 super::simulation_handlers::simulation_routes()
@@ -197,6 +207,7 @@ impl LocalServer {
                 client: self.client.clone(),
                 latency_simulation: self.latency_simulation.clone(),
                 deletion_client: self.deletion_client.clone(),
+                shard_upload_error_frame: self.shard_upload_error_frame.clone(),
             })
     }
 
@@ -519,8 +530,8 @@ impl DirectAccessClient for LocalTestServer {
         self.client.set_max_ranges_per_fetch(max_ranges);
     }
 
-    fn disable_v2_reconstruction(&self, status_code: u16) {
-        self.client.disable_v2_reconstruction(status_code);
+    fn disable_v2_endpoints(&self, status_code: u16) {
+        self.client.disable_v2_endpoints(status_code);
     }
 
     fn v2_disabled_status_code(&self) -> u16 {
@@ -1122,7 +1133,7 @@ mod tests {
 
         // Test 501 (Not Implemented) fallback first, before the RemoteClient
         // caches a V1 preference from a 404 fallback.
-        server.disable_v2_reconstruction(501);
+        server.disable_v2_endpoints(501);
 
         let v2_result = server.remote_client().get_reconstruction_v2(&file.file_hash, None).await;
         assert!(v2_result.is_err(), "V2 should return error when disabled with 501");
@@ -1153,13 +1164,13 @@ mod tests {
         assert_eq!(result.terms.len(), 2);
 
         // Re-enable V2, then test 404 fallback.
-        server.disable_v2_reconstruction(0);
+        server.disable_v2_endpoints(0);
 
         // Reset the RemoteClient's cached version by making a successful V2 call.
         let v2_result = server.remote_client().get_reconstruction_v2(&file.file_hash, None).await;
         assert!(v2_result.is_ok(), "V2 should work again after re-enabling");
 
-        server.disable_v2_reconstruction(404);
+        server.disable_v2_endpoints(404);
 
         let v2_result = server.remote_client().get_reconstruction_v2(&file.file_hash, None).await;
         assert!(v2_result.is_err(), "V2 should return error when disabled with 404");

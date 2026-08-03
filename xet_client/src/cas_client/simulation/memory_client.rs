@@ -315,7 +315,7 @@ impl DirectAccessClient for MemoryClient {
         self.max_ranges_per_fetch.store(max_ranges, Ordering::Relaxed);
     }
 
-    fn disable_v2_reconstruction(&self, status_code: u16) {
+    fn disable_v2_endpoints(&self, status_code: u16) {
         self.v2_disabled_status.store(status_code, Ordering::Relaxed);
     }
 
