@@ -1241,10 +1241,20 @@ mod tests {
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
-        assert!(
-            content_type.contains("ndjson") || content_type.contains("json"),
-            "unexpected content-type: {content_type}"
-        );
+        assert_eq!(content_type, "application/x-ndjson");
+
+        // Exact deterministic stream from `ndjson_shard_upload_success_response`.
+        let expected = vec![
+            ShardUploadEvent::Validating { verified: 0, total: 1 },
+            ShardUploadEvent::Validating { verified: 1, total: 1 },
+            ShardUploadEvent::Committing {
+                stage: CommitStage::Uploading,
+            },
+            ShardUploadEvent::Committing {
+                stage: CommitStage::Syncing,
+            },
+            ShardUploadEvent::Result,
+        ];
 
         let body = response.text().await.unwrap();
         let events: Vec<ShardUploadEvent> = body
@@ -1252,15 +1262,7 @@ mod tests {
             .filter(|line| !line.is_empty())
             .map(|line| serde_json::from_str(line).expect("valid ShardUploadEvent NDJSON line"))
             .collect();
-        assert!(
-            events.iter().any(|e| matches!(e, ShardUploadEvent::Validating { .. })),
-            "expected validating frame(s), got {events:?}"
-        );
-        assert!(
-            events.iter().any(|e| matches!(e, ShardUploadEvent::Committing { .. })),
-            "expected committing frame(s), got {events:?}"
-        );
-        assert_eq!(events.last(), Some(&ShardUploadEvent::Result));
+        assert_eq!(events, expected);
 
         // RemoteClient path: progress callback receives Response frames from the NDJSON stream.
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -1280,24 +1282,7 @@ mod tests {
             .unwrap();
 
         let seen = seen.lock().unwrap().clone();
-        assert!(
-            seen.iter().any(|e| matches!(e, ShardUploadEvent::Validating { .. })),
-            "callback should see validating events, got {seen:?}"
-        );
-        assert!(
-            seen.iter().any(|e| {
-                matches!(
-                    e,
-                    ShardUploadEvent::Committing {
-                        stage: CommitStage::Uploading
-                    } | ShardUploadEvent::Committing {
-                        stage: CommitStage::Syncing
-                    }
-                )
-            }),
-            "callback should see committing events, got {seen:?}"
-        );
-        assert_eq!(seen.last(), Some(&ShardUploadEvent::Result));
+        assert_eq!(seen, expected);
     }
 
     /// Verifies `/v2/shards` disable + RemoteClient V2→V1 fallback (same status codes as reconstruction).
@@ -1338,10 +1323,12 @@ mod tests {
         }
 
         // Re-enable, confirm V2 works, then exercise 404 fallback.
+        // Forced `Some(2)` does *not* clear `detected_shard_api_version` (store is gated on
+        // `forced_version.is_none()`), so this only proves the endpoint is healthy again —
+        // the 404 auto-detect case below still needs a fresh client.
         server.client().disable_v2_endpoints(0);
         {
             let permit = server.remote_client().acquire_upload_permit().await.unwrap();
-            // Force V2 so we don't stay on a cached V1 preference from the previous fallback.
             server
                 .remote_simulation_client()
                 .upload_shard_with_version_override(random_shard_bytes(), permit, Some(2), None)
