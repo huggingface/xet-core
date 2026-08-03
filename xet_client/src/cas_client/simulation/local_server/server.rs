@@ -36,6 +36,7 @@ use std::net::SocketAddr;
 use std::net::TcpListener as StdTcpListener;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU8;
 #[cfg(test)]
 use std::time::Duration;
 
@@ -101,6 +102,8 @@ pub struct LocalServer {
     client: Arc<dyn DirectAccessClient>,
     deletion_client: Option<Arc<dyn DeletionControlableClient>>,
     latency_simulation: Arc<LatencySimulation>,
+    /// `/v2/shards` in-stream Error frame mode (see [`handlers::ShardUploadErrorFrame`]).
+    shard_upload_error_frame: Arc<AtomicU8>,
 }
 
 impl LocalServer {
@@ -125,6 +128,7 @@ impl LocalServer {
             client,
             deletion_client,
             latency_simulation,
+            shard_upload_error_frame: Arc::new(AtomicU8::new(handlers::ShardUploadErrorFrame::Off as u8)),
         })
     }
 
@@ -150,6 +154,7 @@ impl LocalServer {
             client,
             deletion_client,
             latency_simulation,
+            shard_upload_error_frame: Arc::new(AtomicU8::new(handlers::ShardUploadErrorFrame::Off as u8)),
         }
     }
 
@@ -202,6 +207,7 @@ impl LocalServer {
                 client: self.client.clone(),
                 latency_simulation: self.latency_simulation.clone(),
                 deletion_client: self.deletion_client.clone(),
+                shard_upload_error_frame: self.shard_upload_error_frame.clone(),
             })
     }
 

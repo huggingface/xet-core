@@ -14,6 +14,7 @@
 //! Errors are mapped to appropriate HTTP status codes via `error_to_response`.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 use axum::Json;
@@ -36,12 +37,25 @@ use crate::cas_types::{
 };
 use crate::error::ClientError;
 
+/// `/v2/shards` in-stream `Error` frame mode (`set_config` + handler encoding).
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ShardUploadErrorFrame {
+    #[default]
+    Off = 0,
+    Fatal = 1,
+    Retryable = 2,
+}
+
 /// Server state passed to all handlers.
 #[derive(Clone)]
 pub(crate) struct ServerState {
     pub(crate) client: Arc<dyn DirectAccessClient>,
     pub(super) latency_simulation: Arc<LatencySimulation>,
     pub(crate) deletion_client: Option<Arc<dyn DeletionControlableClient>>,
+    /// While set, `/v2/shards` emits an in-stream `Error` frame instead of committing.
+    /// Encodes [`ShardUploadErrorFrame`] as `u8`.
+    pub(crate) shard_upload_error_frame: Arc<AtomicU8>,
 }
 
 /// Represents the different forms a Range header can take.
@@ -593,7 +607,10 @@ pub async fn post_shard(State(state): State<ServerState>, body: Body) -> Respons
 /// Respects [`DirectAccessClient::v2_disabled_status_code`] so clients can exercise V2→V1 fallback.
 ///
 /// On success the response is `200` with `application/x-ndjson` frames ending in `result`.
-/// Backend upload failures map to HTTP errors (the stream never starts).
+/// Once the stream has started, failures are signaled by an in-stream `Error` frame (not a
+/// non-200 status), matching production: clients MUST treat that frame as the error signal.
+/// Use `/simulation/set_config?config=shard_upload_error_frame&value=retryable|fatal` to force
+/// that path (cleared with `off`).
 pub async fn post_shard_v2(State(state): State<ServerState>, body: Body) -> Response {
     let connection_guard = state.latency_simulation.register_connection().await;
     if let Some(simulated_error) = connection_guard.simulate_error() {
@@ -612,6 +629,14 @@ pub async fn post_shard_v2(State(state): State<ServerState>, body: Body) -> Resp
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
     };
 
+    // In-stream Error frame (production contract: 200 + terminal error frame).
+    // Checked before upload so the shard is not committed while the client sees failure.
+    match state.shard_upload_error_frame.load(Ordering::Relaxed) {
+        v if v == ShardUploadErrorFrame::Fatal as u8 => return ndjson_shard_upload_error_response(false),
+        v if v == ShardUploadErrorFrame::Retryable as u8 => return ndjson_shard_upload_error_response(true),
+        _ => {},
+    }
+
     let permit = match state.client.acquire_upload_permit().await {
         Ok(p) => p,
         Err(e) => return error_to_response(e),
@@ -625,7 +650,7 @@ pub async fn post_shard_v2(State(state): State<ServerState>, body: Body) -> Resp
 
 /// Builds a minimal production-shaped NDJSON success stream for `/v2/shards`.
 fn ndjson_shard_upload_success_response() -> Response {
-    let events = [
+    ndjson_shard_upload_response(&[
         ShardUploadEvent::Validating { verified: 0, total: 1 },
         ShardUploadEvent::Validating { verified: 1, total: 1 },
         ShardUploadEvent::Committing {
@@ -635,10 +660,28 @@ fn ndjson_shard_upload_success_response() -> Response {
             stage: CommitStage::Syncing,
         },
         ShardUploadEvent::Result,
-    ];
+    ])
+}
 
+/// Builds a 200 NDJSON stream that ends in a terminal `Error` frame (production failure contract).
+fn ndjson_shard_upload_error_response(retryable: bool) -> Response {
+    let message = if retryable {
+        "simulated retryable shard upload failure"
+    } else {
+        "simulated fatal shard upload failure"
+    };
+    ndjson_shard_upload_response(&[
+        ShardUploadEvent::Validating { verified: 0, total: 1 },
+        ShardUploadEvent::Error {
+            message: message.to_string(),
+            retryable,
+        },
+    ])
+}
+
+fn ndjson_shard_upload_response(events: &[ShardUploadEvent]) -> Response {
     let mut body = Vec::new();
-    for event in &events {
+    for event in events {
         // Simulation frames are always valid `ShardUploadEvent` values.
         serde_json::to_writer(&mut body, event).expect("ShardUploadEvent serializes");
         body.push(b'\n');
@@ -852,6 +895,31 @@ pub async fn set_config(State(state): State<ServerState>, uri: Uri, body: Body) 
             },
             Err(e) => (StatusCode::BAD_REQUEST, format!("Invalid status code: {e}")).into_response(),
         },
+        "shard_upload_error_frame" => match value.trim().to_lowercase().as_str() {
+            "off" | "none" | "0" | "" => {
+                state
+                    .shard_upload_error_frame
+                    .store(ShardUploadErrorFrame::Off as u8, Ordering::Relaxed);
+                (StatusCode::OK, "Shard upload error frame cleared").into_response()
+            },
+            "fatal" => {
+                state
+                    .shard_upload_error_frame
+                    .store(ShardUploadErrorFrame::Fatal as u8, Ordering::Relaxed);
+                (StatusCode::OK, "/v2/shards will emit a fatal Error frame").into_response()
+            },
+            "retryable" => {
+                state
+                    .shard_upload_error_frame
+                    .store(ShardUploadErrorFrame::Retryable as u8, Ordering::Relaxed);
+                (StatusCode::OK, "/v2/shards will emit a retryable Error frame").into_response()
+            },
+            _ => (
+                StatusCode::BAD_REQUEST,
+                "Invalid shard_upload_error_frame value; expected retryable|fatal|off".to_string(),
+            )
+                .into_response(),
+        },
         "api_delay" => match parse_random_delay_value(value) {
             Ok((min_ms, max_ms)) => {
                 let range = if min_ms == 0 && max_ms == 0 {
@@ -876,7 +944,7 @@ pub async fn set_config(State(state): State<ServerState>, uri: Uri, body: Body) 
             format!(
                 "Unknown config: {config_name}. Supported: congestion, random_delay, \
                  global_dedup_shard_expiration, max_ranges_per_fetch, \
-                 disable_v2_endpoints, api_delay, url_expiration"
+                 disable_v2_endpoints, shard_upload_error_frame, api_delay, url_expiration"
             ),
         )
             .into_response(),
