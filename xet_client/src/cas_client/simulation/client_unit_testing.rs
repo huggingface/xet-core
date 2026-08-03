@@ -645,7 +645,7 @@ pub async fn test_global_dedup(client: Arc<dyn DirectAccessClient>) {
 
     let permit = client.acquire_upload_permit().await.unwrap();
     client
-        .upload_shard(std::fs::read(&new_shard_path).unwrap().into(), permit)
+        .upload_shard(std::fs::read(&new_shard_path).unwrap().into(), permit, None)
         .await
         .unwrap();
 
@@ -708,7 +708,7 @@ async fn upload_shard_and_get_dedup_hashes(client: &Arc<dyn DirectAccessClient>)
 
     let permit = client.acquire_upload_permit().await.unwrap();
     client
-        .upload_shard(std::fs::read(&shard_path).unwrap().into(), permit)
+        .upload_shard(std::fs::read(&shard_path).unwrap().into(), permit, None)
         .await
         .unwrap();
 

@@ -98,7 +98,8 @@ jobs:
           cargo test --verbose --no-fail-fast --features "strict simulation internal-tools git-xet-for-integration-test"
       - name: Build and Test (console feature)
         run: |
-          cargo test --verbose --no-fail-fast -p xet-runtime -p xet-client -p xet-data -p hf-xet --features "console simulation"
+          # internal-tools is needed because hf-xet's examples use clap, which it gates.
+          cargo test --verbose --no-fail-fast -p xet-runtime -p xet-client -p xet-data -p hf-xet --features "console simulation internal-tools"
           cargo test --verbose --no-fail-fast -p xet-console
       - name: Build and Test hf_xet
         run: |

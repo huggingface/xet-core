@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 xet_runtime::test_configurable_constants! {
     /// This will target 1024 chunks per Xorb / CAS block
     ref TARGET_CHUNK_SIZE: usize = 64 * 1024;
@@ -23,10 +25,8 @@ xet_runtime::test_configurable_constants! {
     ref XORB_BLOCK_SIZE: usize = 64 * 1024 * 1024;
 }
 
-lazy_static::lazy_static! {
-    /// The maximum chunk size, calculated from the configurable constants above
-    pub static ref MAX_CHUNK_SIZE: usize = (*TARGET_CHUNK_SIZE) * (*MAXIMUM_CHUNK_MULTIPLIER);
-}
+/// The maximum chunk size, calculated from the configurable constants above
+pub static MAX_CHUNK_SIZE: LazyLock<usize> = LazyLock::new(|| (*TARGET_CHUNK_SIZE) * (*MAXIMUM_CHUNK_MULTIPLIER));
 
 /// Given a list of chunk boundaries in a file and an arbitrary reference position,
 /// returns the next stable chunk boundary at or after that position.

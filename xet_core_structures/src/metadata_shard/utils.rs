@@ -1,17 +1,16 @@
 use std::ffi::OsStr;
 use std::ops::Deref;
 use std::path::Path;
+use std::sync::LazyLock;
 use std::time::Duration;
 
-use lazy_static::lazy_static;
 use regex::Regex;
 use uuid::Uuid;
 
 use crate::merklehash::MerkleHash;
 
-lazy_static! {
-    static ref MERKLE_DB_FILE_PATTERN: Regex = Regex::new(r"^(?P<hash>[0-9a-fA-F]{64})\.mdb$").unwrap();
-}
+static MERKLE_DB_FILE_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?P<hash>[0-9a-fA-F]{64})\.mdb$").unwrap());
 
 /// Parses a shard filename.  If the filename matches the shard filename pattern,
 /// then Some(hash) is returned, where hash is the XORB hash of the merkledb file.  

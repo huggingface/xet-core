@@ -35,7 +35,7 @@ use crate::deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use crate::deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
 use crate::error::{DataError, Result};
 use crate::progress_tracking::upload_tracking::{CompletionTracker, FileXorbDependency};
-use crate::progress_tracking::{GroupProgress, GroupProgressReport, ItemProgressReport};
+use crate::progress_tracking::{GroupProgressReport, ItemProgressReport, UploadGroupProgress};
 
 /// Manages the translation of files between the
 /// MerkleDB / pointer file format and the materialized version.
@@ -50,9 +50,6 @@ pub struct FileUploadSession {
 
     /// Tracking upload completion between xorbs and files.
     pub(crate) completion_tracker: Arc<CompletionTracker>,
-
-    /// Aggregate progress across all files in this upload session.
-    progress: Arc<GroupProgress>,
 
     /// Deduplicated data shared across files.
     current_session_data: Mutex<DataAggregator>,
@@ -89,15 +86,21 @@ impl FileUploadSession {
             .map(Cow::Borrowed)
             .unwrap_or_else(|| Cow::Owned(UniqueId::new().to_string()));
 
-        let progress = GroupProgress::with_speed_config(
+        let progress = UploadGroupProgress::with_speed_config(
             ctx.config.data.progress_update_speed_sampling_window,
             ctx.config.data.progress_update_speed_min_observations,
         );
-        let completion_tracker = Arc::new(CompletionTracker::new(progress.clone()));
+        let completion_tracker = Arc::new(CompletionTracker::new(progress));
 
         let client = create_remote_client(&config, &session_id, dry_run).await?;
 
+        #[cfg(target_family = "wasm")]
         let shard_interface = SessionShardInterface::new(&ctx, config.clone(), client.clone(), dry_run).await?;
+
+        #[cfg(not(target_family = "wasm"))]
+        let shard_interface =
+            SessionShardInterface::new(&ctx, config.clone(), client.clone(), completion_tracker.clone(), dry_run)
+                .await?;
 
         #[cfg(feature = "console")]
         let console = ctx.common.console_scope().map(|scope| {
@@ -105,7 +108,7 @@ impl FileUploadSession {
                 Some(scope),
                 Some(config.session.endpoint.clone()),
             );
-            let p = progress.clone();
+            let p = completion_tracker.progress().clone();
             c.set_progress_provider(Box::new(move || {
                 let r = p.report();
                 xet_runtime::console::model::ProgressSnapshot {
@@ -126,7 +129,6 @@ impl FileUploadSession {
             shard_interface,
             client,
             completion_tracker,
-            progress,
             current_session_data: Mutex::new(DataAggregator::default()),
             deduplication_metrics: Mutex::new(DeduplicationMetrics::default()),
             xorb_upload_tasks: Mutex::new(JoinSet::new()),
@@ -150,8 +152,9 @@ impl FileUploadSession {
 
             let file_size = std::fs::metadata(&file_path)?.len();
 
-            let updater = self.progress.new_item(UniqueId::new(), file_name.clone());
-            let file_id = self.completion_tracker.register_new_file(updater, Some(file_size));
+            let file_id =
+                self.completion_tracker
+                    .register_new_file(UniqueId::new(), file_name.clone(), Some(file_size));
 
             let ingestion_concurrency_limiter = self.ctx.common.file_ingestion_semaphore.clone();
             let ingestion_block_size = *self.ctx.config.data.ingestion_block_size;
@@ -265,8 +268,9 @@ impl FileUploadSession {
         size: Option<u64>,
         sha256: Sha256Policy,
     ) -> SingleFileCleaner {
-        let updater = self.progress.new_item(id, tracking_name.clone().unwrap_or_default());
-        let file_id = self.completion_tracker.register_new_file(updater, size);
+        let file_id = self
+            .completion_tracker
+            .register_new_file(id, tracking_name.clone().unwrap_or_default(), size);
 
         #[cfg(feature = "console")]
         let file_console = self.console.as_ref().map(|c| {
@@ -716,7 +720,6 @@ impl FileUploadSession {
         #[cfg(debug_assertions)]
         {
             self.completion_tracker.assert_complete();
-            self.progress.assert_complete();
         }
 
         #[cfg(feature = "console")]
@@ -769,20 +772,20 @@ impl FileUploadSession {
         Arc::clone(&self.client)
     }
 
-    pub fn progress(&self) -> &Arc<GroupProgress> {
-        &self.progress
+    pub fn progress(&self) -> &Arc<UploadGroupProgress> {
+        self.completion_tracker.progress()
     }
 
     pub fn report(&self) -> GroupProgressReport {
-        self.progress.report()
+        self.completion_tracker.progress().report()
     }
 
     pub fn item_report(&self, id: UniqueId) -> Option<ItemProgressReport> {
-        self.progress.item_report(id)
+        self.completion_tracker.progress().item_report(id)
     }
 
     pub fn item_reports(&self) -> HashMap<UniqueId, ItemProgressReport> {
-        self.progress.item_reports()
+        self.completion_tracker.progress().item_reports()
     }
 
     pub async fn finalize(self: Arc<Self>) -> Result<DeduplicationMetrics> {

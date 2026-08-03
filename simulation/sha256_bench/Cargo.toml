@@ -1,0 +1,27 @@
+[workspace]
+
+[package]
+name = "sha256_bench"
+version = "0.1.0"
+edition = "2021"
+
+# Depends on BOTH sha2 versions simultaneously (via Cargo package renaming) so a
+# single run compares them apples-to-apples:
+#   * sha2_010: 0.10.9 with the `asm` feature — what xet_data used pre-#899 on
+#     non-Windows targets.
+#   * sha2_011: 0.11.0 — the version #899 upgrades to (the `asm` feature was
+#     removed upstream).
+# This crate exists to justify dropping the `asm` feature: see benches/results.md.
+[dependencies]
+sha2_010 = { package = "sha2", version = "=0.10.9", features = ["asm"] }
+sha2_011 = { package = "sha2", version = "=0.11.0" }
+
+[[bin]]
+name = "sha256_bench"
+path = "src/main.rs"
+
+# Mirror the xet-core release profile so the comparison is representative.
+[profile.release]
+opt-level = 3
+lto = true
+debug = 1

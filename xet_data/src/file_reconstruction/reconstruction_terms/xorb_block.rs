@@ -126,7 +126,7 @@ impl XorbBlock {
                         if let Some(ref updater) = progress_updater {
                             let (_, _, http_ranges) = url_info.get_retrieval_url(xorb_block_index).await;
                             let transfer_bytes: u64 = http_ranges.iter().map(|r| r.length()).sum();
-                            updater.report_transfer_progress(transfer_bytes);
+                            updater.report_transfer_bytes_completed(transfer_bytes);
                         }
                         let chunk_offsets = build_chunk_offsets(&chunk_ranges, &cache_range.offsets);
                         let data = Bytes::from(cache_range.data);
@@ -150,7 +150,7 @@ impl XorbBlock {
                 let progress_callback: Option<ProgressCallback> = progress_updater.as_ref().map(|updater| {
                     let updater = updater.clone();
                     Arc::new(move |delta: u64, _completed: u64, _total: u64| {
-                        updater.report_transfer_progress(delta);
+                        updater.report_transfer_bytes_completed(delta);
                     }) as ProgressCallback
                 });
 

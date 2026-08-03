@@ -1,8 +1,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::Duration;
 
-use lazy_static::lazy_static;
 use pyo3::exceptions::PyKeyboardInterrupt;
 use pyo3::prelude::*;
 use tracing::info;
@@ -11,11 +10,9 @@ use xet_runtime::RuntimeError;
 use xet_runtime::core::XetContext;
 use xet_runtime::core::sync_primatives::spawn_os_thread;
 
-lazy_static! {
-    static ref SIGINT_DETECTED: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
-    static ref SIGINT_HANDLER_INSTALL_PID: (AtomicU32, Mutex<()>) = (AtomicU32::new(0), Mutex::new(()));
-    static ref MULTITHREADED_RUNTIME: RwLock<Option<(u32, XetContext)>> = RwLock::new(None);
-}
+static SIGINT_DETECTED: LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::new(AtomicBool::new(false)));
+static SIGINT_HANDLER_INSTALL_PID: (AtomicU32, Mutex<()>) = (AtomicU32::new(0), Mutex::new(()));
+static MULTITHREADED_RUNTIME: RwLock<Option<(u32, XetContext)>> = RwLock::new(None);
 
 #[cfg(unix)]
 fn install_sigint_handler() -> Result<(), RuntimeError> {

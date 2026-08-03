@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
-use xet_core_structures::merklehash::{DataHashHexParseError, MerkleHash, MerkleHashSubtree, xorb_hash};
+use xet_core_structures::merklehash::{DataHashError, MerkleHash, MerkleHashSubtree, xorb_hash};
 
 // un-comment following 2 sections for console_log!() printing support
 // macro_rules! console_log {
@@ -85,7 +85,7 @@ fn parse_chunks_in(chunks_array: JsValue) -> Result<Vec<(MerkleHash, u64)>, JsVa
     js_chunks
         .into_iter()
         .map(|jsc| Ok((MerkleHash::from_hex(&jsc.hash)?, jsc.length as u64)))
-        .collect::<Result<_, DataHashHexParseError>>()
+        .collect::<Result<_, DataHashError>>()
         .map_err(|e| JsValue::from(e.to_string()))
 }
 
@@ -113,7 +113,7 @@ pub fn compute_verification_hash(chunk_hashes: Vec<String>) -> Result<String, Js
     let chunk_hashes: Vec<MerkleHash> = chunk_hashes
         .into_iter()
         .map(|hash| MerkleHash::from_hex(&hash))
-        .collect::<Result<_, DataHashHexParseError>>()
+        .collect::<Result<_, DataHashError>>()
         .map_err(|e| JsValue::from(e.to_string()))?;
     Ok(xet_core_structures::metadata_shard::chunk_verification::range_hash_from_chunks(&chunk_hashes).hex())
 }

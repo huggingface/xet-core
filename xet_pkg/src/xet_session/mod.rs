@@ -276,6 +276,8 @@ mod file_download_group;
 mod file_download_handle;
 mod session;
 mod task_runtime;
+#[cfg(test)]
+mod test_utils;
 #[cfg(not(target_family = "wasm"))]
 mod upload_commit;
 #[cfg(not(target_family = "wasm"))]
@@ -304,6 +306,6 @@ pub use upload_stream_handle::XetStreamUpload;
 pub use xet_data::deduplication::DeduplicationMetrics;
 #[cfg(not(target_family = "wasm"))]
 pub use xet_data::processing::{Sha256Policy, XetFileInfo};
-pub use xet_data::progress_tracking::{GroupProgressReport, ItemProgressReport};
+pub use xet_data::progress_tracking::{GroupProgressReport, ItemProgressReport, ShardUploadProgressReport};
 pub use xet_runtime::config::XetConfig;
 pub use xet_runtime::utils::UniqueId;

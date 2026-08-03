@@ -142,7 +142,7 @@ impl SyncWriterThread {
             writer.write_all(&data)?;
             self.bytes_written.fetch_add(len, Ordering::Relaxed);
             if let Some(ref updater) = self.progress_updater {
-                updater.report_bytes_written(len);
+                updater.report_bytes_completed(len);
             }
             drop(permit);
 
@@ -202,7 +202,7 @@ impl SyncWriterThread {
 
             self.bytes_written.fetch_add(written as u64, Ordering::Relaxed);
             if let Some(ref updater) = self.progress_updater {
-                updater.report_bytes_written(written as u64);
+                updater.report_bytes_completed(written as u64);
             }
 
             // Pop completed writes, releasing permits. For partial writes, slice the Bytes.

@@ -19,8 +19,11 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_CLIENT_RETRY_BASE_DELAY` to set this value.
     ref retry_base_delay : Duration = Duration::from_millis(3000);
 
-    /// After this much time has passed since the first attempt,
-    /// no more retries are attempted.
+    /// Cap each individual retry sleep at this duration.
+    ///
+    /// Applied as the per-attempt maximum backoff delay. Retries continue until
+    /// `retry_max_attempts` is exhausted; the total time spent sleeping across
+    /// retries may exceed this value.
     ///
     /// The default value is 6min.
     ///
@@ -260,6 +263,15 @@ crate::config_group!({
     ///
     /// Use the environment variable `HF_XET_CLIENT_RECONSTRUCTION_API_VERSION` to set this value.
     ref reconstruction_api_version: Option<u32> = None;
+
+    /// The shard upload API version to request from the CAS server.
+    /// When set to 1 or 2, forces that version with no fallback.
+    /// When unset, auto-detects by trying V2 first, falling back to V1 on 404 or 501.
+    ///
+    /// The default value is None (auto-detect).
+    ///
+    /// Use the environment variable `HF_XET_CLIENT_SHARD_API_VERSION` to set this value.
+    ref shard_api_version: Option<u32> = None;
 
     /// Whether to use multi-range HTTP requests when fetching xorb data.
     /// When false (default), V2 multi-range fetch entries are split into

@@ -525,7 +525,7 @@ fn snap_to_segment_end(seg_byte_starts: &[u64], byte: u64) -> u64 {
     seg_byte_starts[idx]
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "simulation"))]
 mod tests {
     use std::io::Cursor;
     use std::ops::Range;
