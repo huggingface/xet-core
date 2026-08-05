@@ -18,8 +18,8 @@ The body carries exactly five keys — `time`, `event`, `session_id`, `user_agen
 
 `user_agent` was previously emitted as camelCase `userAgent`. The server accepts that spelling as a
 serde alias for older clients, so both work, but a body carrying **both** is rejected as a
-duplicate-field 400 — so exactly one must be sent, and it is now the snake_case one. A test asserts
-no envelope key contains a capital letter.
+duplicate-field 400 — so exactly one must be sent, and it is now the snake_case one. The key set is
+pinned by `test_envelope_has_exactly_the_five_contract_keys`.
 
 ### New config group: `telemetry`
 

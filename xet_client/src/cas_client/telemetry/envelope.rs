@@ -57,25 +57,6 @@ mod tests {
         assert_eq!(keys, vec!["event", "metrics", "session_id", "time", "user_agent"]);
     }
 
-    /// Every envelope key is snake_case. The camelCase spelling is only a server-side alias for
-    /// older clients, and a body carrying both is rejected as a duplicate field - so exactly one of
-    /// the two must appear, and it must be the snake_case one.
-    #[test]
-    fn test_envelope_emits_only_the_snake_case_user_agent() {
-        let v = serde_json::to_value(sample()).unwrap();
-        assert_eq!(v["user_agent"], "hf_xet/1.5.4");
-        assert!(v.get("userAgent").is_none());
-    }
-
-    /// No key anywhere in the envelope carries a capital letter.
-    #[test]
-    fn test_every_envelope_key_is_snake_case() {
-        let v = serde_json::to_value(sample()).unwrap();
-        for key in v.as_object().unwrap().keys() {
-            assert!(!key.chars().any(char::is_uppercase), "envelope key '{key}' is not snake_case");
-        }
-    }
-
     #[test]
     fn test_time_is_parseable_rfc3339_utc() {
         let v = serde_json::to_value(sample()).unwrap();
