@@ -80,6 +80,19 @@ received. Keep new coverage at that altitude; a test that calls `finalize()` its
   and the legacy `data_client::download_async` finalize on both the success and error paths, the
   latter classified via the new `XetError::telemetry_class()`. Previously nothing called
   `FileDownloadSession::finalize`, so downloads through the Python bindings reported nothing at all.
+- **`XetError` gained two variants: `RateLimited(String)` and `ServerError(String)`**, for HTTP 429
+  and 5xx respectively. Additive, and the enum is already `#[non_exhaustive]`.
+  - **Python-visible behavior is unchanged**: both map to `PyConnectionError`, exactly as
+    `XetError::Network` did before. Only the message prefix differs (`Rate limited:` /
+    `Server error:` instead of `Network error:`).
+  - They exist because HTTP status did not survive the flattening into `XetError`. Every HTTP failure
+    became `Network`, so `telemetry_class()` could never return `rate_limited` or `server_error`,
+    while the upload path — which classifies from `DataError` and inspects `reqwest::Error::status()`
+    — reported both. A 429 therefore meant two different things depending on direction, defeating the
+    point of a shared `error_class` vocabulary.
+  - One gap is deliberately left: a 404 arriving as a `reqwest` status still classifies as `network`,
+    not `not_found`. Routing it correctly would change the Python exception type callers catch, which
+    is a user-visible change rather than a telemetry fix. Pinned by a test so it stays a decision.
 - **New:** `XetDownloadStreamGroup::finish`/`finish_blocking` (and `finish()` plus context-manager
   support on the Python class). Streams are consumed independently, so the group cannot detect
   completion itself, and `finish` is how a caller states it explicitly. **Purely additive** - a
