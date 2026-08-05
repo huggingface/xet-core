@@ -113,15 +113,16 @@ fn sorted_keys(metrics: &Value) -> Vec<String> {
 fn assert_envelope(doc: &Value, expected_event: &str) {
     let mut keys: Vec<_> = doc.as_object().unwrap().keys().cloned().collect();
     keys.sort();
-    assert_eq!(keys, vec!["event", "metrics", "session_id", "time", "userAgent"]);
+    assert_eq!(keys, vec!["event", "metrics", "session_id", "time", "user_agent"]);
 
     assert_eq!(doc["event"], expected_event);
     assert!(doc["session_id"].as_str().is_some_and(|s| !s.is_empty()));
-    assert!(doc["userAgent"].as_str().is_some_and(|s| !s.is_empty()));
+    assert!(doc["user_agent"].as_str().is_some_and(|s| !s.is_empty()));
     chrono::DateTime::parse_from_rfc3339(doc["time"].as_str().unwrap()).expect("time must be RFC3339");
 
-    // The server rejects a body carrying both spellings.
-    assert!(doc.get("user_agent").is_none(), "must not send the snake_case spelling too");
+    // The camelCase spelling is only a server-side alias for older clients, and a body carrying
+    // both is rejected as a duplicate field.
+    assert!(doc.get("userAgent").is_none(), "must not send the camelCase spelling too");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

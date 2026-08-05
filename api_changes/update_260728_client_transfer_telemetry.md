@@ -10,6 +10,17 @@ The client now reports one performance summary per transfer to `POST /v1/telemet
 server, where a companion change adds the endpoint. Reporting is best-effort: it is never retried,
 never surfaces an error, and never blocks data movement.
 
+### Wire format: the envelope is entirely snake_case
+
+The body carries exactly five keys — `time`, `event`, `session_id`, `user_agent`, `metrics` — and
+**every one is snake_case**, matching the naming convention across the whole document (envelope,
+`metrics`, and the fields the server stamps itself).
+
+`user_agent` was previously emitted as camelCase `userAgent`. The server accepts that spelling as a
+serde alias for older clients, so both work, but a body carrying **both** is rejected as a
+duplicate-field 400 — so exactly one must be sent, and it is now the snake_case one. A test asserts
+no envelope key contains a capital letter.
+
 ### New config group: `telemetry`
 
 | Field | Env var | Default |

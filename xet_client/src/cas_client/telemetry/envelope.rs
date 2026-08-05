@@ -3,13 +3,16 @@ use serde::Serialize;
 
 /// The wire body of `POST /v1/telemetry`.
 ///
-/// The server validates exactly these five keys and ignores any others; the field names and
-/// casing below are its contract, not a stylistic choice. Note the deliberate mix: `session_id`
-/// is snake_case while `userAgent` is camelCase. The server also accepts `user_agent`, but
-/// sending both spellings is a 400, so only ever emit the camelCase one.
+/// The server validates exactly these five keys and ignores any others; the field names below are
+/// its contract, not a stylistic choice. **Every key is snake_case**, matching the agreed naming
+/// across the whole document - envelope, metrics, and the fields the server stamps itself.
 ///
-/// Identity is intentionally absent. The server derives `repoId`/`userId` from the request's JWT
-/// and stamps `clientIp`, `serverTime`, `env`, and `casVersion` itself, so anything this struct
+/// The server accepts a camelCase `userAgent` as a serde alias for compatibility with clients that
+/// predate the convention. Emit only `user_agent`: a body carrying both spellings is a
+/// duplicate-field 400.
+///
+/// Identity is intentionally absent. The server derives `repo_id`/`user_id` from the request's JWT
+/// and stamps `client_ip`, `server_time`, `env`, and `cas_version` itself, so anything this struct
 /// added would be redundant at best.
 #[derive(Debug, Clone, Serialize)]
 pub struct TelemetryEnvelope {
@@ -18,7 +21,6 @@ pub struct TelemetryEnvelope {
     pub time: String,
     pub event: &'static str,
     pub session_id: String,
-    #[serde(rename = "userAgent")]
     pub user_agent: String,
     /// A flat object of scalars. Built in `xet_data`, which owns the metric definitions.
     pub metrics: serde_json::Value,
@@ -52,15 +54,26 @@ mod tests {
         let v = serde_json::to_value(sample()).unwrap();
         let mut keys: Vec<_> = v.as_object().unwrap().keys().cloned().collect();
         keys.sort();
-        assert_eq!(keys, vec!["event", "metrics", "session_id", "time", "userAgent"]);
+        assert_eq!(keys, vec!["event", "metrics", "session_id", "time", "user_agent"]);
     }
 
-    /// The server rejects a body carrying both `userAgent` and `user_agent` as a duplicate field.
+    /// Every envelope key is snake_case. The camelCase spelling is only a server-side alias for
+    /// older clients, and a body carrying both is rejected as a duplicate field - so exactly one of
+    /// the two must appear, and it must be the snake_case one.
     #[test]
-    fn test_envelope_emits_only_the_camel_case_user_agent() {
+    fn test_envelope_emits_only_the_snake_case_user_agent() {
         let v = serde_json::to_value(sample()).unwrap();
-        assert_eq!(v["userAgent"], "hf_xet/1.5.4");
-        assert!(v.get("user_agent").is_none());
+        assert_eq!(v["user_agent"], "hf_xet/1.5.4");
+        assert!(v.get("userAgent").is_none());
+    }
+
+    /// No key anywhere in the envelope carries a capital letter.
+    #[test]
+    fn test_every_envelope_key_is_snake_case() {
+        let v = serde_json::to_value(sample()).unwrap();
+        for key in v.as_object().unwrap().keys() {
+            assert!(!key.chars().any(char::is_uppercase), "envelope key '{key}' is not snake_case");
+        }
     }
 
     #[test]
