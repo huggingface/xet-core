@@ -21,6 +21,11 @@ serde alias for older clients, so both work, but a body carrying **both** is rej
 duplicate-field 400 — so exactly one must be sent, and it is now the snake_case one. The key set is
 pinned by `test_envelope_has_exactly_the_five_contract_keys`.
 
+`metrics` carries **40 keys on an upload document and 23 on a download**, pinned by
+`UPLOAD_KEYS`/`DOWNLOAD_KEYS`. There is no `dry_run` key: a dry run never builds a
+`TransferTelemetry` at all (`maybe_new` returns `None`), so the field could only ever serialize
+`false` — a constant in every document, and key names are over half a document's bytes.
+
 ### New config group: `telemetry`
 
 | Field | Env var | Default |

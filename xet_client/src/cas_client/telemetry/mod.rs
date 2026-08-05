@@ -79,7 +79,6 @@ pub struct TransferTelemetry {
     /// Host component only - never a full URL, which could carry a path or query.
     endpoint_host: String,
     transfer_id: String,
-    dry_run: bool,
     started_at: Instant,
     /// Highest concurrency observed, via `fetch_max` from the permit acquisition path.
     peak_concurrency: AtomicU64,
@@ -135,7 +134,6 @@ impl TransferTelemetry {
             user_agent,
             endpoint_host,
             transfer_id: Uuid::now_v7().to_string(),
-            dry_run,
             started_at: Instant::now(),
             peak_concurrency: AtomicU64::new(0),
             terminal_sent: AtomicBool::new(false),
@@ -214,10 +212,6 @@ impl TransferTelemetry {
 
     pub fn endpoint_host(&self) -> &str {
         &self.endpoint_host
-    }
-
-    pub fn dry_run(&self) -> bool {
-        self.dry_run
     }
 
     pub fn elapsed(&self) -> Duration {

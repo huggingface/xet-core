@@ -82,7 +82,6 @@ pub struct CommonMetrics {
     pub cpu_count: u64,
     /// Host component only.
     pub endpoint_host: String,
-    pub dry_run: bool,
 
     pub duration_ms: u64,
     pub outcome: &'static str,
@@ -124,7 +123,6 @@ pub struct CommonInputs<'a> {
 pub struct TransferIdentity {
     pub transfer_id: String,
     pub endpoint_host: String,
-    pub dry_run: bool,
     pub duration_ms: u64,
     pub peak_concurrency: u64,
 }
@@ -134,7 +132,6 @@ impl From<&TransferTelemetry> for TransferIdentity {
         Self {
             transfer_id: telemetry.transfer_id().to_owned(),
             endpoint_host: telemetry.endpoint_host().to_owned(),
-            dry_run: telemetry.dry_run(),
             // Saturating: `as u64` on an out-of-range u128 would wrap.
             duration_ms: u64::try_from(telemetry.elapsed().as_millis()).unwrap_or(u64::MAX),
             peak_concurrency: telemetry.peak_concurrency(),
@@ -159,7 +156,6 @@ impl CommonMetrics {
             arch: std::env::consts::ARCH,
             cpu_count: std::thread::available_parallelism().map(|n| n.get() as u64).unwrap_or(0),
             endpoint_host: identity.endpoint_host,
-            dry_run: identity.dry_run,
 
             duration_ms,
             outcome: inputs.outcome.as_str(),
@@ -292,7 +288,6 @@ mod tests {
         "defrag_prevented_dedup_bytes",
         "defrag_prevented_dedup_chunks",
         "direction",
-        "dry_run",
         "duration_ms",
         "endpoint_host",
         "error_class",
@@ -331,7 +326,6 @@ mod tests {
         "client_version",
         "cpu_count",
         "direction",
-        "dry_run",
         "duration_ms",
         "endpoint_host",
         "error_class",
@@ -374,7 +368,6 @@ mod tests {
         ("defrag_prevented_dedup_bytes", Kind::U64),
         ("defrag_prevented_dedup_chunks", Kind::U64),
         ("direction", Kind::Str),
-        ("dry_run", Kind::Bool),
         ("duration_ms", Kind::U64),
         ("endpoint_host", Kind::Str),
         ("error_class", Kind::Str),
@@ -412,7 +405,6 @@ mod tests {
         TransferIdentity {
             transfer_id: "0199-transfer".into(),
             endpoint_host: "cas.example.com".into(),
-            dry_run: false,
             duration_ms: 4_000,
             peak_concurrency: 16,
         }
@@ -444,7 +436,6 @@ mod tests {
             arch: "x86_64",
             cpu_count: 8,
             endpoint_host: "cas.example.com".into(),
-            dry_run: false,
             duration_ms: 4_000,
             outcome: Outcome::Ok.as_str(),
             error_class: ERROR_CLASS_NONE,

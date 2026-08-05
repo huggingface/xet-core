@@ -39,7 +39,6 @@ const UPLOAD_KEYS: &[&str] = &[
     "defrag_prevented_dedup_bytes",
     "defrag_prevented_dedup_chunks",
     "direction",
-    "dry_run",
     "duration_ms",
     "endpoint_host",
     "error_class",
@@ -149,7 +148,6 @@ async fn test_upload_emits_one_terminal_document() {
     assert_eq!(metrics["terminal"], true);
     assert_eq!(metrics["seq"], 0);
     assert_eq!(metrics["n_files"], 2);
-    assert_eq!(metrics["dry_run"], false);
     assert_eq!(metrics["total_bytes"], 96 * 1024);
     assert!(metrics["new_bytes"].as_u64().unwrap() > 0);
     assert!(metrics["xorb_bytes_uploaded"].as_u64().unwrap() > 0);
