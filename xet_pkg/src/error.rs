@@ -1,3 +1,4 @@
+use http::StatusCode;
 use thiserror::Error;
 use xet_client::ClientError;
 use xet_core_structures::CoreError;
@@ -194,12 +195,10 @@ impl XetError {
             // `rate_limited` or `server_error` - the two classes that distinguish "the server is
             // shedding load" from "the network is broken". `ClientError::status()` covers the
             // middleware variant too, where the status is otherwise unreachable.
-            ClientError::ReqwestError(_, _) | ClientError::ReqwestMiddlewareError(_) => {
-                match ce.status().map(|s| s.as_u16()) {
-                    Some(429) => XetError::RateLimited(ce.to_string()),
-                    Some(status) if (500..600).contains(&status) => XetError::ServerError(ce.to_string()),
-                    _ => XetError::Network(ce.to_string()),
-                }
+            ClientError::ReqwestError(_, _) | ClientError::ReqwestMiddlewareError(_) => match ce.status() {
+                Some(StatusCode::TOO_MANY_REQUESTS) => XetError::RateLimited(ce.to_string()),
+                Some(status) if status.is_server_error() => XetError::ServerError(ce.to_string()),
+                _ => XetError::Network(ce.to_string()),
             },
             ClientError::FileNotFound(_) | ClientError::XORBNotFound(_) => XetError::NotFound(ce.to_string()),
             ClientError::ConfigurationError(_)
