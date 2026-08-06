@@ -104,6 +104,19 @@ received. Keep new coverage at that altitude; a test that calls `finalize()` its
   group that is never finished behaves exactly as before and still reports, so no existing caller
   has to change. Note that `finish` closes the group: streams already handed out stay usable, but
   opening a new one afterwards is an error.
+- **New:** `XetDownloadStreamGroup::abort` (and `abort()` on the Python class) — the counterpart to
+  `finish` for a caller giving up rather than completing. Cancels every active stream.
+  - It emits **no** telemetry, matching `XetFileDownloadGroup::abort`. The session is left
+    unfinalized so its `Drop` derives the outcome from what actually transferred.
+  - `__exit__` now branches on `exc_type`, as the upload-commit and file-download-group context
+    managers already did: normal exit finishes, an exception aborts. Previously it called `finish`
+    unconditionally, which reports `ok` — so a `with` block that raised recorded the failed transfer
+    as a successful one, and `Drop` never got to correct it because `finish` had already set
+    `terminal_sent`.
+  - Reporting `error` on that path would have been wrong: the exception is often from the caller's
+    own code rather than the transfer, and classifying those as failures would inflate the very
+    failure rate this feature exists to measure. `cancelled` is reserved for a real user interrupt.
+    Deriving the outcome from progress avoids guessing.
 - **Both sessions gained a `Drop` impl**, emitting a terminal summary when the session was never
   finalized — the safety net for callers that abandon a session. It is deliberately *not* gated on
   an ambient tokio runtime: the send is spawned on the `XetRuntime`'s own stored handle, so

@@ -251,6 +251,47 @@ fn stream_group_abandoned_part_way_reports_dropped() {
     assert_eq!(doc["metrics"]["terminal"], true);
 }
 
+/// `abort` must not report success. This is the path a Python `with` block takes when its body
+/// raises: `__exit__` calls `abort` rather than `finish`, because `finish` claims `Outcome::Ok` and
+/// would record a failed transfer as a successful one.
+///
+/// `abort` emits nothing itself - it cancels the streams and leaves the session unfinalized, so the
+/// `Drop` path derives the outcome from what actually transferred. Matches
+/// `XetFileDownloadGroup::abort`, which is also telemetry-silent.
+#[test]
+#[serial(env)]
+fn stream_group_abort_does_not_report_success() {
+    let (server, _rt) = start_server();
+    let endpoint = server.http_endpoint();
+
+    let session = XetSessionBuilder::new().build().unwrap();
+    let data = vec![0x6bu8; 4 * 1024 * 1024];
+    let file_info = upload_bytes_sync(&session, endpoint, &data, "aborted.bin");
+
+    {
+        let group = session
+            .new_download_stream_group()
+            .unwrap()
+            .with_endpoint(endpoint)
+            .build_blocking()
+            .unwrap();
+
+        let mut stream = group.download_stream_blocking(file_info, None).unwrap();
+        stream
+            .blocking_next()
+            .unwrap()
+            .expect("the stream must yield at least one chunk");
+
+        // What `__exit__` now does on the exception path.
+        group.abort().unwrap();
+    }
+
+    let docs = wait_for_docs(&server, 2);
+    let doc = download_doc(&docs);
+    assert_eq!(doc["metrics"]["outcome"], "dropped", "an aborted partial transfer must not be reported as 'ok'");
+    assert_eq!(doc["metrics"]["terminal"], true);
+}
+
 /// After `finish`, the group is closed: new streams cannot be started. Documents the sharp edge
 /// that comes with the context-manager form.
 #[test]

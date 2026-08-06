@@ -76,12 +76,22 @@ impl PyXetDownloadStreamGroup {
     fn __exit__(
         &self,
         py: Python<'_>,
-        _exc_type: Bound<'_, pyo3::PyAny>,
+        exc_type: Bound<'_, pyo3::PyAny>,
         _exc_val: Bound<'_, pyo3::PyAny>,
         _exc_tb: Bound<'_, pyo3::PyAny>,
     ) -> PyResult<bool> {
-        self.finish(py)?;
-        Ok(false)
+        if exc_type.is_none() {
+            // Normal exit: the caller is done, so report a clean finish.
+            self.finish(py)?;
+        } else {
+            // Exception: cancel the streams and leave the session unfinalized, so its `Drop`
+            // derives the outcome from what actually transferred. Calling `finish` here would
+            // report `ok` and record a failed transfer as a successful one.
+            if let Err(e) = self.abort(py) {
+                tracing::warn!("abort() failed during __exit__ exception path: {e}");
+            }
+        }
+        Ok(false) // do not suppress the exception
     }
 
     /// Mark the group as finished, reporting transfer telemetry.
@@ -101,6 +111,19 @@ impl PyXetDownloadStreamGroup {
     pub fn finish(&self, py: Python<'_>) -> PyResult<()> {
         let group = self.inner.clone();
         py.detach(|| group.finish_blocking().map_err(convert_xet_error))
+    }
+
+    /// Cancel every active stream in this group, abandoning the transfer.
+    ///
+    /// The counterpart to :meth:`finish` for a caller giving up rather than completing. Called
+    /// automatically when a ``with`` block exits on an exception.
+    ///
+    /// Unlike :meth:`finish`, this reports no outcome of its own: the transfer is recorded from
+    /// what actually transferred once the group is collected, so an abandoned partial download is
+    /// not counted as a success.
+    pub fn abort(&self, py: Python<'_>) -> PyResult<()> {
+        let group = self.inner.clone();
+        py.detach(|| group.abort().map_err(convert_xet_error))
     }
 
     // ── Stream constructors ──────────────────────────────────────────────────

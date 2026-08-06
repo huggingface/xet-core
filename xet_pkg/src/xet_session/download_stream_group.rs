@@ -194,6 +194,24 @@ impl XetDownloadStreamGroup {
         })
     }
 
+    /// Cancels every active stream in this group, abandoning the transfer.
+    ///
+    /// The counterpart to [`finish`](Self::finish) for a caller that is giving up rather than
+    /// completing - notably a `with` block exiting on an exception.
+    ///
+    /// Deliberately emits **no** telemetry, matching
+    /// [`XetFileDownloadGroup::abort`](super::XetFileDownloadGroup::abort). Calling `finish` here
+    /// instead would report [`Outcome::Ok`](xet_data::telemetry::Outcome::Ok) and record a failed
+    /// transfer as a successful one. Leaving the session unfinalized lets its `Drop` derive the
+    /// outcome from what actually transferred: `dropped` for a genuinely partial transfer, and `ok`
+    /// only when every stream really was consumed to its end - which is the honest answer when the
+    /// transfer completed and the exception came from the caller's own code.
+    pub fn abort(&self) -> Result<(), XetError> {
+        info!(group_id = %self.id(), "Download stream group abort");
+        self.inner.download_session.abort_active_streams();
+        Ok(())
+    }
+
     fn session(&self) -> &XetSession {
         &self.inner.session
     }

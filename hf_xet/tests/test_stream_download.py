@@ -216,3 +216,47 @@ class TestDownloadUnorderedStream:
         assert assembled == _LARGE_DATA[:_RANGE_END]
 
 
+
+
+# ── Context manager ──────────────────────────────────────────────────────────
+
+class TestDownloadStreamGroupContextManager:
+    """`__exit__` must distinguish a clean finish from an abandoned transfer.
+
+    On a normal exit the group is finished, which reports the transfer as
+    successful. On the exception path it is aborted instead: `finish` would claim
+    success and record a failed transfer as a clean one. Mirrors
+    `TestUploadCommit`'s context-manager coverage.
+
+    The outcome actually reported is asserted in Rust
+    (`xet_pkg/tests/test_download_telemetry.rs`), which has a CAS server to read
+    the telemetry document back from; a `local://` endpoint builds no telemetry
+    at all.
+    """
+
+    def test_context_manager_finishes_on_normal_exit(self, endpoint):
+        data = b"context manager stream"
+        info = upload_bytes_get_info(endpoint, data)
+        with hf_xet.XetSession().new_download_stream_group(endpoint=endpoint) as group:
+            chunks = list(group.download_stream(info))
+        assert b"".join(chunks) == data
+
+    def test_context_manager_aborts_on_exception(self, endpoint):
+        info = upload_bytes_get_info(endpoint, _LARGE_DATA)
+        raised = False
+        try:
+            with hf_xet.XetSession().new_download_stream_group(endpoint=endpoint) as group:
+                stream = group.download_stream(info)
+                next(iter(stream))  # consume part of the transfer, then fail
+                raise ValueError("intentional error")
+        except ValueError:
+            raised = True
+        assert raised  # exception must propagate, not be suppressed
+
+    def test_abort_is_callable_directly(self, endpoint):
+        """`abort` is public, so a caller not using `with` can abandon explicitly."""
+        info = upload_bytes_get_info(endpoint, _LARGE_DATA)
+        group = hf_xet.XetSession().new_download_stream_group(endpoint=endpoint)
+        stream = group.download_stream(info)
+        next(iter(stream))
+        group.abort()
