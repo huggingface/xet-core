@@ -57,7 +57,9 @@ async fn upload_session_rejecting_dedup(dir: &std::path::Path) -> Arc<FileUpload
         .expect("min_n_chunks_per_range config path should exist");
     let ctx = XetContext::with_config(config).expect("failed to build XetContext");
     let translator = Arc::new(TranslatorConfig::local_config(&ctx, dir).expect("failed to build TranslatorConfig"));
-    FileUploadSession::new(translator).await.expect("failed to create upload session")
+    FileUploadSession::new(translator)
+        .await
+        .expect("failed to create upload session")
 }
 
 /// The reported file size must equal the bytes fed in, even when defrag prevention rejects dedup
@@ -92,9 +94,5 @@ async fn defrag_prevented_dedup_does_not_inflate_reported_file_size() {
         metrics.total_bytes as i128 - data.len() as i128,
         metrics.defrag_prevented_dedup_bytes
     );
-    assert_eq!(
-        file_info.file_size,
-        Some(data.len() as u64),
-        "reported file size must match the bytes written"
-    );
+    assert_eq!(file_info.file_size, Some(data.len() as u64), "reported file size must match the bytes written");
 }
