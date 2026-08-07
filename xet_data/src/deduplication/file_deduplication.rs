@@ -197,16 +197,23 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
             }
 
             if let Some((n_deduped, fse, is_external)) = dedupe_query {
-                dedup_metrics.deduped_chunks += n_deduped as u64;
-                dedup_metrics.deduped_bytes += fse.unpacked_segment_bytes as u64;
-                dedup_metrics.total_chunks += n_deduped as u64;
-                dedup_metrics.total_bytes += fse.unpacked_segment_bytes as u64;
+                let deduped_bytes = fse.unpacked_segment_bytes as u64;
 
                 // check the fragmentation state and if it is pretty fragmented,
                 // we skip dedupe.  However, continuing the previous is always fine.
                 if self.file_data_sequence_continues_current(&fse)
                     || self.defrag_tracker.allow_dedup_on_next_range(n_deduped)
                 {
+                    // Only account for the range once the dedup is actually taken. Counting it
+                    // before this check meant a defrag-prevented range was added here and then
+                    // again below as new data, inflating `total_bytes` by exactly
+                    // `defrag_prevented_dedup_bytes` — and `total_bytes` is what
+                    // `FileCleaner::finish_inner` reports as the file's size.
+                    dedup_metrics.deduped_chunks += n_deduped as u64;
+                    dedup_metrics.deduped_bytes += deduped_bytes;
+                    dedup_metrics.total_chunks += n_deduped as u64;
+                    dedup_metrics.total_bytes += deduped_bytes;
+
                     // Report this as a dependency
                     // The case where it's dededuped against the present xorb is handled
                     // when the xorb gets cut and we know the hash.
@@ -214,7 +221,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
                         xorb_dependencies.push(FileXorbDependency {
                             file_id: self.file_id,
                             xorb_hash: fse.xorb_hash,
-                            n_bytes: fse.unpacked_segment_bytes as u64,
+                            n_bytes: deduped_bytes,
                             is_external,
                         });
                     }
@@ -225,8 +232,10 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
                     cur_idx += n_deduped;
                     continue;
                 } else {
+                    // The range is not deduped: it falls through and is counted as new data
+                    // below, one chunk at a time.
                     dedup_metrics.defrag_prevented_dedup_chunks += n_deduped as u64;
-                    dedup_metrics.defrag_prevented_dedup_bytes += fse.unpacked_segment_bytes as u64;
+                    dedup_metrics.defrag_prevented_dedup_bytes += deduped_bytes;
                 }
             }
 
