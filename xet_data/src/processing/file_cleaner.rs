@@ -17,7 +17,7 @@ use super::deduplication_interface::UploadSessionDataManager;
 use super::file_upload_session::FileUploadSession;
 use super::sha256::Sha256Generator;
 use crate::deduplication::{Chunk, Chunker, DeduplicationMetrics, FileDeduper};
-use crate::error::Result;
+use crate::error::{DataError, Result};
 use crate::progress_tracking::upload_tracking::CompletionTrackerFileId;
 
 /// Controls how SHA-256 is handled during file cleaning.
@@ -254,10 +254,27 @@ impl SingleFileCleaner {
             sha256: sha256.map(|s| s.hex()),
         };
 
-        #[cfg(debug_assertions)]
-        {
-            debug_assert_eq!(remaining_file_data.pending_file_info.len(), 1);
-            debug_assert_eq!(remaining_file_data.pending_file_info[0].0.file_size(), deduplication_metrics.total_bytes)
+        // `file_size` above is reported from `total_bytes`, an accumulated metrics counter, while
+        // the file's actual content is described by the entries in `pending_file_info`. If the two
+        // disagree, the size handed back to the caller does not describe the data that was just
+        // written. Callers persist that size alongside the file hash, so a mismatch is only
+        // detected much later — and by then the two are permanently out of step. Fail here instead.
+        //
+        // This was a debug-only assertion, which meant release builds shipped a wrong size in
+        // silence; see the defrag-prevented dedup double-count fixed in `FileDeduper`.
+        if remaining_file_data.pending_file_info.len() != 1 {
+            return Err(DataError::InternalError(format!(
+                "expected exactly one pending file info after clean, found {}",
+                remaining_file_data.pending_file_info.len()
+            )));
+        }
+        let described_size = remaining_file_data.pending_file_info[0].0.file_size();
+        if described_size != deduplication_metrics.total_bytes {
+            return Err(DataError::InternalError(format!(
+                "file size mismatch after clean: file info describes {described_size} bytes but \
+                 deduplication metrics report {}",
+                deduplication_metrics.total_bytes
+            )));
         }
 
         let mdb_file_info = if register {
