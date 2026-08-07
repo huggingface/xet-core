@@ -197,16 +197,20 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
             }
 
             if let Some((n_deduped, fse, is_external)) = dedupe_query {
-                dedup_metrics.deduped_chunks += n_deduped as u64;
-                dedup_metrics.deduped_bytes += fse.unpacked_segment_bytes as u64;
-                dedup_metrics.total_chunks += n_deduped as u64;
-                dedup_metrics.total_bytes += fse.unpacked_segment_bytes as u64;
-
                 // check the fragmentation state and if it is pretty fragmented,
                 // we skip dedupe.  However, continuing the previous is always fine.
                 if self.file_data_sequence_continues_current(&fse)
                     || self.defrag_tracker.allow_dedup_on_next_range(n_deduped)
                 {
+                    // Only count the range as deduped once it passes the defrag gate;
+                    // otherwise its chunks go through the new-data path below, which
+                    // does its own total/new accounting, and counting here as well
+                    // double-counts them in total_bytes and misreports them as deduped.
+                    dedup_metrics.deduped_chunks += n_deduped as u64;
+                    dedup_metrics.deduped_bytes += fse.unpacked_segment_bytes as u64;
+                    dedup_metrics.total_chunks += n_deduped as u64;
+                    dedup_metrics.total_bytes += fse.unpacked_segment_bytes as u64;
+
                     // Report this as a dependency
                     // The case where it's dededuped against the present xorb is handled
                     // when the xorb gets cut and we know the hash.
