@@ -101,6 +101,31 @@ RUST_LOG=info                # enable hf-xet logging
 HF_XET_LOG_FILE=/tmp/xet.log # write logs to a file (defaults to stdout)
 ```
 
+### Telemetry
+
+hf-xet reports a small performance summary — byte counts, dedup effectiveness, throughput, and
+wall time — to the CAS server at the end of each upload or download. It is best-effort: never
+retried, and it cannot delay or fail a transfer. The payload contains **no file names, paths,
+hashes, repository ids, or user ids**.
+
+To turn it off, use any of:
+
+```bash
+HF_XET_TELEMETRY_ENABLED=0   # hf-xet specific
+HF_HUB_DISABLE_TELEMETRY=1   # shared with the rest of the huggingface_hub stack
+HF_HUB_OFFLINE=1             # implies the above
+```
+
+Tuning (rarely needed):
+
+```bash
+HF_XET_TELEMETRY_FINAL_FLUSH_TIMEOUT=2s  # how long a transfer waits for its final report; 0 = don't wait
+HF_XET_TELEMETRY_HEARTBEAT_AFTER=5m      # long transfers report progress after this; 0 disables
+HF_XET_TELEMETRY_HEARTBEAT_INTERVAL=5m   # and then at this interval
+HF_XET_TELEMETRY_REQUEST_TIMEOUT=5s      # per-request budget
+HF_XET_TELEMETRY_MAX_IN_FLIGHT=4         # concurrent reports before dropping
+```
+
 ## Local Development
 
 ### Repo Organization

@@ -214,6 +214,57 @@ paths:
           description: Unauthorized — Missing/expired token
         '403':
           description: Forbidden — Token does not have required scope
+  /v1/telemetry:
+    post:
+      summary: Report Client Telemetry
+      description: |
+        Ingests a single client transfer-performance document. Fire-and-forget: the client never
+        retries and ignores the response, so a failure here has no effect on a transfer.
+
+        The server enriches each document with its own context (`serverTime`, `env`, `casVersion`,
+        `clientIp`) and the request token's claims (`repoId`, `userId`, ...), so the client sends
+        no repository or user identity of its own.
+
+        The `metrics` object is a flat map of scalars whose keys are defined by the client. Their
+        vocabulary is intentionally not enumerated here — see
+        `xet_data/src/telemetry/payload.rs`, which is the source of truth.
+
+        Minimum token scope: `read`.
+        x-required-scope: read
+      operationId: postTelemetry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TelemetryEnvelope'
+            examples:
+              uploadSummary:
+                summary: Terminal document for a completed upload
+                value:
+                  time: '2026-07-28T12:00:00.000Z'
+                  event: xet_upload_summary
+                  session_id: 019813f1-0000-7000-8000-000000000000
+                  userAgent: hf_xet/1.5.4
+                  metrics:
+                    schema_version: 1
+                    direction: upload
+                    terminal: true
+                    duration_ms: 4210
+                    outcome: ok
+      responses:
+        '200':
+          description: Accepted — also returned when server-side telemetry is disabled
+        '400':
+          description: Bad Request — Missing key, wrong type, or non-ISO `time`
+        '401':
+          description: Unauthorized — Missing/expired token
+        '413':
+          description: Payload Too Large — Body exceeds 1 MiB
+        '429':
+          description: Too Many Requests — Ingestion saturated. Retryable, but the client does not retry.
+        '500':
+          description: Internal Server Error — Ingestion failed
 components:
   securitySchemes:
     bearerAuth:
@@ -411,5 +462,38 @@ components:
             0 = Shard already exists, 1 = SyncPerformed — the Shard was registered. Any 200 OK means success.
       required: [result]
       additionalProperties: false
+    TelemetryEnvelope:
+      type: object
+      description: |
+        Body of `POST /v1/telemetry`. Note the deliberate casing mix: `session_id` is snake_case
+        while `userAgent` is camelCase. The server also accepts `user_agent`, but a body carrying
+        both spellings is rejected as a duplicate field.
+      properties:
+        time:
+          type: string
+          format: date-time
+          description: ISO-8601 / RFC3339. Any offset is accepted; the server normalizes to UTC.
+        event:
+          type: string
+          description: |
+            `xet_upload_summary` and `xet_download_summary` are terminal, one per transfer.
+            `xet_transfer_heartbeat` is emitted periodically by transfers that run long enough.
+        session_id:
+          type: string
+          description: |
+            Groups activity within one client session. Not unique per transfer — an upload and a
+            download in the same session share it, so use `metrics.transfer_id` to identify a
+            single transfer.
+        userAgent:
+          type: string
+        metrics:
+          type: object
+          description: Flat map of scalar values. Never null, nested, or an array.
+          additionalProperties:
+            oneOf:
+              - type: string
+              - type: number
+              - type: boolean
+      required: [time, event, session_id, userAgent, metrics]
 
 

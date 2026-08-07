@@ -7,7 +7,7 @@ pub mod config_enum;
 pub use config_enum::ConfigEnum;
 
 pub mod configuration_utils;
-pub use configuration_utils::is_high_performance;
+pub use configuration_utils::{is_high_performance, telemetry_opted_out};
 
 #[cfg(not(target_family = "wasm"))]
 mod file_paths;

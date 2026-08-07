@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use tracing::info;
 use xet_data::processing::{FileDownloadSession, XetFileInfo};
+use xet_data::telemetry::{ERROR_CLASS_NONE, Outcome};
 use xet_runtime::utils::UniqueId;
 
 use super::auth_group_builder::{AuthGroupBuilder, AuthOptions};
@@ -157,6 +158,71 @@ impl XetDownloadStreamGroup {
     /// Returns the unique ID for this stream group.
     pub(super) fn id(&self) -> UniqueId {
         self.inner.group_id
+    }
+
+    /// Marks the group as finished, releasing its session and reporting transfer telemetry.
+    ///
+    /// Streams are created and consumed independently, so unlike
+    /// [`XetFileDownloadGroup`](super::XetFileDownloadGroup) there is no point at which the group
+    /// can tell on its own that the caller is done. Calling this says so explicitly.
+    ///
+    /// Entirely optional: a group that is never finished still works and still reports. Its `Drop`
+    /// path derives the outcome from what actually transferred, so a group whose streams were all
+    /// read to the end reports [`Outcome::Ok`](xet_data::telemetry::Outcome::Ok) either way, and
+    /// only a genuinely partial transfer reports
+    /// [`Outcome::Dropped`](xet_data::telemetry::Outcome::Dropped). Existing callers need no change.
+    ///
+    /// What calling this does buy:
+    ///
+    /// - **Delivery.** The terminal document is awaited here, bounded by `final_flush_timeout`,
+    ///   whereas the `Drop` path is detached and is frequently lost - host processes routinely exit
+    ///   within milliseconds of a transfer returning.
+    /// - **An explicit outcome rather than an inferred one.** This reports success unconditionally,
+    ///   so it suits a caller whose notion of "done" is not "every byte of every stream" - a
+    ///   deliberately partial read that `Drop` would classify as `Dropped`.
+    /// - **Closing the group**, which nothing else does.
+    ///
+    /// Consume every stream you intend to consume first — the report is a snapshot taken here, and
+    /// the group is **closed** afterwards, so starting a new stream returns an error. Streams
+    /// already handed out remain usable. Calling this more than once is a no-op.
+    ///
+    /// For a caller giving up rather than completing, use [`abort`](Self::abort) instead.
+    pub async fn finish(&self) {
+        info!(group_id = %self.id(), "Download stream group finish");
+        let _ = self.inner.download_session.finalize_with(Outcome::Ok, ERROR_CLASS_NONE).await;
+    }
+
+    /// Blocking version of [`finish`](Self::finish).
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async runtime on an Owned-mode session.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn finish_blocking(&self) -> Result<(), XetError> {
+        info!(group_id = %self.id(), "Download stream group finish");
+        let session = self.inner.download_session.clone();
+        self.task_runtime.bridge_sync("download_stream_group_finish", async move {
+            let _ = session.finalize_with(Outcome::Ok, ERROR_CLASS_NONE).await;
+            Ok(())
+        })
+    }
+
+    /// Cancels every active stream in this group, abandoning the transfer.
+    ///
+    /// The counterpart to [`finish`](Self::finish) for a caller that is giving up rather than
+    /// completing - notably a `with` block exiting on an exception.
+    ///
+    /// Deliberately emits **no** telemetry, matching
+    /// [`XetFileDownloadGroup::abort`](super::XetFileDownloadGroup::abort). Calling `finish` here
+    /// instead would report [`Outcome::Ok`](xet_data::telemetry::Outcome::Ok) and record a failed
+    /// transfer as a successful one. Leaving the session unfinalized lets its `Drop` derive the
+    /// outcome from what actually transferred: `dropped` for a genuinely partial transfer, and `ok`
+    /// only when every stream really was consumed to its end - which is the honest answer when the
+    /// transfer completed and the exception came from the caller's own code.
+    pub fn abort(&self) -> Result<(), XetError> {
+        info!(group_id = %self.id(), "Download stream group abort");
+        self.inner.download_session.abort_active_streams();
+        Ok(())
     }
 
     fn session(&self) -> &XetSession {

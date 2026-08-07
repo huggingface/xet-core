@@ -254,10 +254,15 @@ impl XetFileDownloadGroup {
         info!(group_id = %self.id(), "Download group finish");
         let inner = self.inner.clone();
         let download_session = self.inner.download_session.clone();
-        let downloads = self
+        // Not `?` on the bridge: the result is needed to finalize the session before it is
+        // propagated, otherwise a failed download - the case most worth reporting - would return
+        // early and emit nothing.
+        let result = self
             .task_runtime
             .bridge_async_finalizing("download_finish", false, async move { inner.handle_finish().await })
-            .await?;
+            .await;
+        finalize_download_session(&download_session, &result).await;
+        let downloads = result?;
         let progress = download_session.report();
         Ok(XetDownloadGroupReport { progress, downloads })
     }
@@ -306,12 +311,33 @@ impl XetFileDownloadGroup {
         info!(group_id = %self.id(), "Download group finish");
         let inner = self.inner.clone();
         let download_session = self.inner.download_session.clone();
+        // Finalize *inside* the bridged future: it is async, and this is the last point at which
+        // an async context is available before the result is propagated to a sync caller.
+        let ds = download_session.clone();
         let downloads = self
             .task_runtime
-            .bridge_sync_finalizing("download_finish_blocking", false, async move { inner.handle_finish().await })?;
+            .bridge_sync_finalizing("download_finish_blocking", false, async move {
+                let result = inner.handle_finish().await;
+                finalize_download_session(&ds, &result).await;
+                result
+            })?;
         let progress = download_session.report();
         Ok(XetDownloadGroupReport { progress, downloads })
     }
+}
+
+/// Finalizes `session`, reporting how the group actually ended.
+///
+/// Telemetry is best-effort, so the `Err` from a double-finalize is discarded: a session may
+/// already have been finalized by a concurrent path, and that is not a caller error.
+pub(super) async fn finalize_download_session<T>(session: &Arc<FileDownloadSession>, result: &Result<T, XetError>) {
+    let _ = match result {
+        Ok(_) => session.finalize().await,
+        Err(e) => {
+            let (outcome, class) = e.telemetry_class();
+            session.finalize_with(outcome, class).await
+        },
+    };
 }
 
 pub(super) struct XetFileDownloadGroupInner {

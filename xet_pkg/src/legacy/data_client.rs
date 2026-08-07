@@ -177,7 +177,12 @@ pub async fn download_async(
 
     let mut paths = Vec::with_capacity(tasks.len());
     for ((file_path, handle), bridge) in tasks.into_iter().zip(bridges) {
-        handle.await??;
+        // Not `handle.await??`: the session has to be finalized before the error propagates, or a
+        // failed download returns early and reports nothing.
+        if let Err(e) = handle.await.map_err(DataError::from).and_then(|r| r.map(|_| ())) {
+            finalize_download_session(&session, Some(&e)).await;
+            return Err(e);
+        }
 
         if let Some(bridge) = bridge {
             bridge.finalize().await;
@@ -186,5 +191,20 @@ pub async fn download_async(
         paths.push(file_path);
     }
 
+    finalize_download_session(&session, None).await;
+
     Ok(paths)
+}
+
+/// Finalizes a download session, reporting how it ended.
+///
+/// Telemetry is best-effort, so a double-finalize `Err` is discarded rather than propagated.
+async fn finalize_download_session(session: &Arc<FileDownloadSession>, error: Option<&DataError>) {
+    let _ = match error {
+        None => session.finalize().await,
+        Some(e) => {
+            let (outcome, class) = xet_data::telemetry::classify_error(e);
+            session.finalize_with(outcome, class).await
+        },
+    };
 }

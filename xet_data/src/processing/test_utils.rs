@@ -473,4 +473,10 @@ impl TestEnvironment {
             _server: server,
         }
     }
+
+    /// Telemetry documents the simulation server has received, in arrival order.
+    #[cfg(feature = "simulation")]
+    pub fn telemetry_docs(&self) -> Vec<serde_json::Value> {
+        self._server.as_ref().map(|s| s.telemetry_docs()).unwrap_or_default()
+    }
 }

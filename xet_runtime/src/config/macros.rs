@@ -6,7 +6,7 @@
 #[macro_export]
 macro_rules! all_config_groups {
     ($mac:ident) => {
-        $mac!(data, shard, deduplication, chunk_cache, client, log, reconstruction, xorb, session);
+        $mac!(data, shard, deduplication, chunk_cache, client, log, reconstruction, xorb, session, telemetry);
     };
 }
 

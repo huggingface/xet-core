@@ -67,6 +67,77 @@ impl PyXetDownloadStreamGroup {
         "XetDownloadStreamGroup()"
     }
 
+    // ── Context manager ──────────────────────────────────────────────────────
+
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __exit__(
+        &self,
+        py: Python<'_>,
+        exc_type: Bound<'_, pyo3::PyAny>,
+        _exc_val: Bound<'_, pyo3::PyAny>,
+        _exc_tb: Bound<'_, pyo3::PyAny>,
+    ) -> PyResult<bool> {
+        if exc_type.is_none() {
+            // Normal exit: the caller is done, so report a clean finish.
+            self.finish(py)?;
+        } else {
+            // Exception: cancel the streams and leave the session unfinalized, so its `Drop`
+            // derives the outcome from what actually transferred. Calling `finish` here would
+            // report `ok` and record a failed transfer as a successful one.
+            if let Err(e) = self.abort(py) {
+                tracing::warn!("abort() failed during __exit__ exception path: {e}");
+            }
+        }
+        Ok(false) // do not suppress the exception
+    }
+
+    /// Mark the group as finished, reporting transfer telemetry.
+    ///
+    /// Streams are consumed independently, so the group cannot tell on its own when the caller is
+    /// done; this says so.
+    ///
+    /// **Optional.** A group that is never finished behaves exactly as before and still reports
+    /// when it is collected. The reported outcome comes from what actually transferred, so a group
+    /// whose streams were all read to the end is recorded as successful either way — only a
+    /// genuinely partial transfer is recorded as abandoned. Existing code needs no change.
+    ///
+    /// What calling it does buy:
+    ///
+    /// - **Delivery.** The report is sent before this returns, whereas the collected-without-finish
+    ///   path sends it in the background and frequently loses it, because processes often exit
+    ///   within milliseconds of a transfer finishing.
+    /// - **An explicit result rather than an inferred one.** This records success unconditionally,
+    ///   which suits a caller whose notion of "done" is not "every byte of every stream" — a
+    ///   deliberately partial read would otherwise be recorded as abandoned.
+    /// - **Closing the group**, which nothing else does.
+    ///
+    /// Open every stream you intend to open first: the group is **closed** afterwards, so
+    /// :meth:`download_stream` and :meth:`download_unordered_stream` raise once it has been
+    /// called. Streams already returned stay usable.
+    ///
+    /// Called automatically when exiting a ``with`` block that does not raise; on an exception
+    /// :meth:`abort` is called instead. Calling it twice is a no-op.
+    pub fn finish(&self, py: Python<'_>) -> PyResult<()> {
+        let group = self.inner.clone();
+        py.detach(|| group.finish_blocking().map_err(convert_xet_error))
+    }
+
+    /// Cancel every active stream in this group, abandoning the transfer.
+    ///
+    /// The counterpart to :meth:`finish` for a caller giving up rather than completing. Called
+    /// automatically when a ``with`` block exits on an exception.
+    ///
+    /// Unlike :meth:`finish`, this reports no outcome of its own: the transfer is recorded from
+    /// what actually transferred once the group is collected, so an abandoned partial download is
+    /// not counted as a success.
+    pub fn abort(&self, py: Python<'_>) -> PyResult<()> {
+        let group = self.inner.clone();
+        py.detach(|| group.abort().map_err(convert_xet_error))
+    }
+
     // ── Stream constructors ──────────────────────────────────────────────────
 
     /// Open an ordered byte stream for a file.

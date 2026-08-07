@@ -24,9 +24,14 @@ pub mod retry_wrapper;
 #[cfg(not(target_family = "wasm"))]
 mod shard_upload_v2;
 pub mod simulation;
+// No `XetRuntime::spawn` on wasm, so there is no way to report without blocking a transfer.
+#[cfg(not(target_family = "wasm"))]
+pub mod telemetry;
 
 pub use interface::{ShardUploadProgressCallback, ShardUploadProgressType};
 pub use progress_tracked_streams::{DownloadProgressStream, ProgressCallback, UploadProgressStream};
+#[cfg(not(target_family = "wasm"))]
+pub use telemetry::{Direction, TelemetryEnvelope, TransferTelemetry};
 
 #[cfg(not(feature = "elevated_information_level"))]
 pub const INFORMATION_LOG_LEVEL: Level = Level::DEBUG;
