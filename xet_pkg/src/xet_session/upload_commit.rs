@@ -303,7 +303,7 @@ impl XetUploadCommitInner {
             // just because its own finalize succeeded.
             Some(e) => {
                 let (outcome, class) = e.telemetry_class();
-                session.finalize_with_report_as(outcome, class).await
+                session.finalize_with(outcome, class).await
             },
         };
         let (dedup_metrics, progress) = match finalize_result {

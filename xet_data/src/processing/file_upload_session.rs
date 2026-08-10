@@ -761,7 +761,7 @@ impl FileUploadSession {
     /// returns that error afterwards, so the session can finalize cleanly for a commit that fails.
     /// Mirrors [`FileDownloadSession::finalize_with`](super::FileDownloadSession::finalize_with).
     /// A failure in this finalize still takes precedence, matching which error the caller returns.
-    pub async fn finalize_with_report_as(
+    pub async fn finalize_with(
         self: Arc<Self>,
         outcome: crate::telemetry::Outcome,
         error_class: &'static str,
