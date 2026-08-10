@@ -248,7 +248,9 @@ class TestDownloadStreamGroupContextManager:
         except ValueError:
             raised = True
         assert raised
-        assert b"".join(group.download_stream(info)) == _LARGE_DATA
+        with pytest.raises(Exception) as exc:
+            group.download_stream(info)
+        assert "cancelled" in str(exc.value).lower()
 
 
 # ── finish() / abort() ───────────────────────────────────────────────────────
@@ -278,3 +280,25 @@ class TestDownloadStreamGroupFinishAbort:
         stream = group.download_stream(info)
         group.abort()
         assert b"".join(stream) == b""
+
+    def test_abort_closes_the_group(self, endpoint):
+        info = upload_bytes_get_info(endpoint, DATA)
+        group = hf_xet.XetSession().new_download_stream_group(endpoint=endpoint)
+        group.abort()
+
+        for open_stream in (group.download_stream, group.download_unordered_stream):
+            with pytest.raises(Exception) as exc:
+                open_stream(info)
+            assert "cancelled" in str(exc.value).lower()
+
+    def test_abort_makes_finish_fail(self, endpoint):
+        group = hf_xet.XetSession().new_download_stream_group(endpoint=endpoint)
+        group.abort()
+        with pytest.raises(Exception) as exc:
+            group.finish()
+        assert "cancelled" in str(exc.value).lower()
+
+    def test_abort_twice_is_a_no_op(self, endpoint):
+        group = hf_xet.XetSession().new_download_stream_group(endpoint=endpoint)
+        group.abort()
+        group.abort()

@@ -125,10 +125,15 @@ impl PyXetDownloadStreamGroup {
         blocking_call_with_signal_check(py, move || group.finish_blocking())
     }
 
-    /// Cancel every active stream in this group, abandoning the transfer.
+    /// Cancel every active stream in this group and close it, abandoning the transfer.
     ///
     /// The counterpart to :meth:`finish` for a caller giving up rather than completing. Called
     /// automatically when a ``with`` block exits on an exception.
+    ///
+    /// The group is **closed** afterwards, like :meth:`finish`: :meth:`download_stream`,
+    /// :meth:`download_unordered_stream`, and :meth:`finish` all raise once it has been called.
+    /// Streams already returned stay usable, though the active ones stop yielding. Calling it
+    /// twice is a no-op.
     ///
     /// Unlike :meth:`finish`, this reports no outcome of its own: the transfer is recorded from
     /// what actually transferred once the group is collected, so an abandoned partial download is
