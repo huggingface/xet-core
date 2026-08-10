@@ -55,6 +55,10 @@ web-time = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 axum = { workspace = true, optional = true }
+# Telemetry only; it is compiled out on wasm (no XetRuntime::spawn there), which also keeps
+# chrono's clock off a target where it needs `wasmbind` to work.
+chrono = { workspace = true }
+uuid = { workspace = true, features = ["v7"] }
 humantime = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 redb = { workspace = true }
