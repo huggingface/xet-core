@@ -43,6 +43,18 @@ impl EnvVarGuard {
         }
         Self { key, prev }
     }
+
+    /// Removes the variable for the guard's lifetime, restoring it on drop.
+    ///
+    /// Useful for tests that assert default behavior and must not be perturbed by a value the
+    /// developer happens to have exported.
+    pub fn unset(key: &'static str) -> Self {
+        let prev = env::var(key).ok();
+        unsafe {
+            env::remove_var(key);
+        }
+        Self { key, prev }
+    }
 }
 
 #[cfg(not(target_family = "wasm"))]
