@@ -22,10 +22,22 @@ pub(crate) fn telemetry_of(client: &Arc<dyn Client>) -> Option<Arc<TransferTelem
 }
 
 /// Derives the outcome and error class from a session's finalize result.
-fn classify<T>(result: &Result<T, DataError>) -> (Outcome, &'static str) {
-    match result {
-        Ok(_) => (Outcome::Ok, ERROR_CLASS_NONE),
-        Err(e) => super::outcome::classify_error(e),
+///
+/// `reported_failure` is for a caller that already knows the transfer failed for a reason the
+/// session cannot see - `XetUploadCommit` finalizes a file's ingestion before it finalizes the
+/// session, and returns that error afterwards. Without it a session that finalizes cleanly reports
+/// `ok` for a transfer its caller reports as failed.
+///
+/// The session's own failure wins when there is one, matching what the caller returns: it takes the
+/// finalize error in preference to the one it was already holding.
+fn classify<T>(
+    result: &Result<T, DataError>,
+    reported_failure: Option<(Outcome, &'static str)>,
+) -> (Outcome, &'static str) {
+    match (result, reported_failure) {
+        (Err(e), _) => super::outcome::classify_error(e),
+        (Ok(_), Some(failure)) => failure,
+        (Ok(_), None) => (Outcome::Ok, ERROR_CLASS_NONE),
     }
 }
 
@@ -107,12 +119,13 @@ fn to_value<T: serde::Serialize>(metrics: T) -> serde_json::Value {
 pub(crate) async fn emit_upload_terminal<T>(
     client: &Arc<dyn Client>,
     result: &Result<T, DataError>,
+    reported_failure: Option<(Outcome, &'static str)>,
     snapshot: UploadSnapshot<'_>,
 ) {
     let Some(telemetry) = telemetry_of(client) else {
         return;
     };
-    let (outcome, error_class) = classify(result);
+    let (outcome, error_class) = classify(result, reported_failure);
     let metrics = upload_metrics(&telemetry, &snapshot, outcome, error_class);
     telemetry.emit_terminal(Direction::Upload.terminal_event(), metrics).await;
 }
@@ -244,14 +257,14 @@ mod tests {
 
     #[test]
     fn test_ok_classifies_as_ok_with_no_error_class() {
-        let (outcome, class) = classify::<()>(&Ok(()));
+        let (outcome, class) = classify::<()>(&Ok(()), None);
         assert_eq!(outcome, Outcome::Ok);
         assert_eq!(class, ERROR_CLASS_NONE);
     }
 
     #[test]
     fn test_failure_classifies_as_error() {
-        let (outcome, class) = classify::<()>(&Err(DataError::InternalError("boom".into())));
+        let (outcome, class) = classify::<()>(&Err(DataError::InternalError("boom".into())), None);
         assert_eq!(outcome, Outcome::Error);
         assert_eq!(class, "internal");
     }
@@ -260,8 +273,25 @@ mod tests {
     #[test]
     fn test_cancellation_classifies_as_cancelled_not_error() {
         let err = DataError::RuntimeError(xet_runtime::error::RuntimeError::KeyboardInterrupt);
-        let (outcome, class) = classify::<()>(&Err(err));
+        let (outcome, class) = classify::<()>(&Err(err), None);
         assert_eq!(outcome, Outcome::Cancelled);
         assert_eq!(class, "cancelled");
+    }
+
+    /// A clean finalize under a caller that already failed must report the caller's failure.
+    #[test]
+    fn test_reported_failure_overrides_a_clean_finalize() {
+        let (outcome, class) = classify::<()>(&Ok(()), Some((Outcome::Error, "network")));
+        assert_eq!(outcome, Outcome::Error);
+        assert_eq!(class, "network");
+    }
+
+    /// The session's own failure is what the caller returns, so it is what gets reported.
+    #[test]
+    fn test_finalize_failure_wins_over_a_reported_failure() {
+        let result: Result<(), DataError> = Err(DataError::InternalError("boom".into()));
+        let (outcome, class) = classify(&result, Some((Outcome::Cancelled, "cancelled")));
+        assert_eq!(outcome, Outcome::Error);
+        assert_eq!(class, "internal");
     }
 }

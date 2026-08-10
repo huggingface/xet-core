@@ -296,7 +296,16 @@ impl XetUploadCommitInner {
             }
         }
 
-        let finalize_result = self.upload_session.clone().finalize_with_report().await;
+        let session = self.upload_session.clone();
+        let finalize_result = match &first_error {
+            None => session.finalize_with_report().await,
+            // This commit is going to return `first_error`, so the session must not report `ok`
+            // just because its own finalize succeeded.
+            Some(e) => {
+                let (outcome, class) = e.telemetry_class();
+                session.finalize_with_report_as(outcome, class).await
+            },
+        };
         let (dedup_metrics, progress) = match finalize_result {
             Ok(v) => v,
             Err(e) => return Err(e.into()),

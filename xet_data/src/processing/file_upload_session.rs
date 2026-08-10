@@ -589,6 +589,10 @@ impl FileUploadSession {
     async fn finalize_impl(
         self: Arc<Self>,
         return_files: bool,
+        #[cfg_attr(target_family = "wasm", allow(unused_variables))] reported_failure: Option<(
+            crate::telemetry::Outcome,
+            &'static str,
+        )>,
     ) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>, GroupProgressReport)> {
         if self.finalized.swap(true, Ordering::AcqRel) {
             return Err(DataError::InvalidOperation("FileUploadSession already finalized".to_string()));
@@ -612,6 +616,7 @@ impl FileUploadSession {
             crate::telemetry::emit_upload_terminal(
                 &self.client,
                 &result,
+                reported_failure,
                 crate::telemetry::UploadSnapshot {
                     progress: &self.report(),
                     dedup: &dedup,
@@ -741,16 +746,32 @@ impl FileUploadSession {
     }
 
     pub async fn finalize(self: Arc<Self>) -> Result<DeduplicationMetrics> {
-        Ok(self.finalize_impl(false).await?.0)
+        Ok(self.finalize_impl(false, None).await?.0)
     }
 
     pub async fn finalize_with_report(self: Arc<Self>) -> Result<(DeduplicationMetrics, GroupProgressReport)> {
-        let (metrics, _file_info, report) = self.finalize_impl(false).await?;
+        let (metrics, _file_info, report) = self.finalize_impl(false, None).await?;
+        Ok((metrics, report))
+    }
+
+    /// Finalizes and reports the transfer as already failed, for a caller holding a failure the
+    /// session cannot see.
+    ///
+    /// `XetUploadCommit` finalizes each file's ingestion before it finalizes the session and
+    /// returns that error afterwards, so the session can finalize cleanly for a commit that fails.
+    /// Mirrors [`FileDownloadSession::finalize_with`](super::FileDownloadSession::finalize_with).
+    /// A failure in this finalize still takes precedence, matching which error the caller returns.
+    pub async fn finalize_with_report_as(
+        self: Arc<Self>,
+        outcome: crate::telemetry::Outcome,
+        error_class: &'static str,
+    ) -> Result<(DeduplicationMetrics, GroupProgressReport)> {
+        let (metrics, _file_info, report) = self.finalize_impl(false, Some((outcome, error_class))).await?;
         Ok((metrics, report))
     }
 
     pub async fn finalize_with_file_info(self: Arc<Self>) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>)> {
-        let (metrics, file_info, _report) = self.finalize_impl(true).await?;
+        let (metrics, file_info, _report) = self.finalize_impl(true, None).await?;
         Ok((metrics, file_info))
     }
 }
