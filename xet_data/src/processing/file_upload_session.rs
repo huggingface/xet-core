@@ -653,8 +653,6 @@ impl FileUploadSession {
             result??;
         }
 
-        let mut metrics = take(&mut *self.deduplication_metrics.lock().await);
-
         let all_file_info = if return_files {
             self.shard_interface.session_file_info_list().await?
         } else {
@@ -663,7 +661,13 @@ impl FileUploadSession {
 
         // Upload and register the current shards in the session, moving them
         // to the cache.
-        metrics.shard_bytes_uploaded = self.shard_interface.upload_and_register_session_shards().await?;
+        let shard_bytes_uploaded = self.shard_interface.upload_and_register_session_shards().await?;
+
+        // Taken only once both fallible calls above have succeeded, so that a failure in either
+        // leaves the metrics in the session for the error path to report. Nothing writes to them
+        // after the join above, so taking here captures the same values as taking earlier would.
+        let mut metrics = take(&mut *self.deduplication_metrics.lock().await);
+        metrics.shard_bytes_uploaded = shard_bytes_uploaded;
         metrics.total_bytes_uploaded = metrics.shard_bytes_uploaded + metrics.xorb_bytes_uploaded;
 
         #[cfg(debug_assertions)]
