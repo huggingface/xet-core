@@ -7,7 +7,7 @@ use xet_pkg::xet_session::{XetDownloadStreamGroup, XetFileInfo, XetSession};
 use crate::convert_xet_error;
 use crate::headers::{build_header_map, build_headers_with_user_agent};
 use crate::py_download_stream_handle::{PyXetDownloadStream, PyXetUnorderedDownloadStream};
-
+use crate::utils::blocking_call_with_signal_check;
 // ── build_download_stream_group ───────────────────────────────────────────────
 
 /// Create an :class:`XetDownloadStreamGroup` from a session and optional configuration.
@@ -122,7 +122,7 @@ impl PyXetDownloadStreamGroup {
     /// :meth:`abort` is called instead. Calling it twice is a no-op.
     pub fn finish(&self, py: Python<'_>) -> PyResult<()> {
         let group = self.inner.clone();
-        py.detach(|| group.finish_blocking().map_err(convert_xet_error))
+        blocking_call_with_signal_check(py, move || group.finish_blocking())
     }
 
     /// Cancel every active stream in this group, abandoning the transfer.
@@ -135,7 +135,7 @@ impl PyXetDownloadStreamGroup {
     /// not counted as a success.
     pub fn abort(&self, py: Python<'_>) -> PyResult<()> {
         let group = self.inner.clone();
-        py.detach(|| group.abort().map_err(convert_xet_error))
+        blocking_call_with_signal_check(py, move || group.abort())
     }
 
     // ── Stream constructors ──────────────────────────────────────────────────
