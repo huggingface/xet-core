@@ -1027,11 +1027,10 @@ pub async fn post_telemetry(State(state): State<ServerState>, body: Bytes) -> Re
         return (StatusCode::BAD_REQUEST, "telemetry body is not a JSON object").into_response();
     }
 
-    state
-        .telemetry_docs
-        .lock()
-        .expect("telemetry_docs lock poisoned")
-        .push(document);
+    let Ok(mut docs) = state.telemetry_docs.lock() else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "telemetry_docs lock poisoned").into_response();
+    };
+    docs.push(document);
     StatusCode::OK.into_response()
 }
 
