@@ -45,7 +45,7 @@ use crate::progress_tracking::{GroupProgressReport, ItemProgressReport, UploadGr
 /// and xorbs needed to reconstruct those files are properly uploaded and registered.
 pub struct FileUploadSession {
     pub(crate) ctx: XetContext,
-    pub(crate) client: Arc<dyn Client + Send + Sync>,
+    pub(crate) client: Arc<dyn Client>,
     pub(crate) shard_interface: SessionShardInterface,
 
     /// Tracking upload completion between xorbs and files.
@@ -706,7 +706,7 @@ impl FileUploadSession {
         Ok(())
     }
 
-    pub fn client(&self) -> Arc<dyn Client + Send + Sync> {
+    pub fn client(&self) -> Arc<dyn Client> {
         Arc::clone(&self.client)
     }
 

@@ -17,12 +17,7 @@ use crate::progress_tracking::GroupProgressReport;
 ///
 /// `None` for local, in-memory, and simulation clients, for dry runs, on wasm, and whenever
 /// telemetry is disabled - so every call site below is a cheap no-op in tests.
-pub(crate) fn telemetry_of(client: &Arc<dyn Client + Send + Sync>) -> Option<Arc<TransferTelemetry>> {
-    client.transfer_telemetry()
-}
-
-/// Same, for the `Arc<dyn Client>` the download session holds.
-pub(crate) fn telemetry_of_download(client: &Arc<dyn Client>) -> Option<Arc<TransferTelemetry>> {
+pub(crate) fn telemetry_of(client: &Arc<dyn Client>) -> Option<Arc<TransferTelemetry>> {
     client.transfer_telemetry()
 }
 
@@ -110,7 +105,7 @@ fn to_value<T: serde::Serialize>(metrics: T) -> serde_json::Value {
 
 /// Emits an upload session's terminal document, waiting up to `final_flush_timeout`.
 pub(crate) async fn emit_upload_terminal<T>(
-    client: &Arc<dyn Client + Send + Sync>,
+    client: &Arc<dyn Client>,
     result: &Result<T, DataError>,
     snapshot: UploadSnapshot<'_>,
 ) {
@@ -123,7 +118,7 @@ pub(crate) async fn emit_upload_terminal<T>(
 }
 
 /// Emits an upload session's terminal document from `Drop`, without waiting.
-pub(crate) fn emit_upload_abandoned(client: &Arc<dyn Client + Send + Sync>, snapshot: UploadSnapshot<'_>) {
+pub(crate) fn emit_upload_abandoned(client: &Arc<dyn Client>, snapshot: UploadSnapshot<'_>) {
     let Some(telemetry) = telemetry_of(client) else {
         return;
     };
@@ -143,7 +138,7 @@ pub(crate) async fn emit_download_terminal(
     progress: &GroupProgressReport,
     n_files: u64,
 ) {
-    let Some(telemetry) = telemetry_of_download(client) else {
+    let Some(telemetry) = telemetry_of(client) else {
         return;
     };
     let metrics = download_metrics(&telemetry, progress, n_files, outcome, error_class);
@@ -170,7 +165,7 @@ pub(crate) fn emit_download_abandoned(
     n_files: u64,
     all_items_complete: bool,
 ) {
-    let Some(telemetry) = telemetry_of_download(client) else {
+    let Some(telemetry) = telemetry_of(client) else {
         return;
     };
     let outcome = if all_items_complete {
@@ -220,7 +215,7 @@ pub(crate) fn start_download_heartbeat(
     ctx: &xet_runtime::core::XetContext,
     session: &Arc<crate::processing::FileDownloadSession>,
 ) {
-    let Some(telemetry) = telemetry_of_download(&session.client()) else {
+    let Some(telemetry) = telemetry_of(&session.client()) else {
         return;
     };
     let identity = Arc::clone(&telemetry);
