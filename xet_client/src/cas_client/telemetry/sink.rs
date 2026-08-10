@@ -207,7 +207,6 @@ async fn send(http: &ClientWithMiddleware, url: &Url, envelope: &TelemetryEnvelo
 
     match request.send().await {
         Ok(response) if response.status().is_success() => {
-            // The one line at `info!`: a client log should show that telemetry is on and landing.
             info!(target: LOG_TARGET, event = envelope.event, status = %response.status(), "telemetry accepted");
         },
         Ok(response) => {
@@ -215,7 +214,7 @@ async fn send(http: &ClientWithMiddleware, url: &Url, envelope: &TelemetryEnvelo
             debug!(target: LOG_TARGET, event = envelope.event, status = %response.status(), "telemetry rejected; dropping");
         },
         Err(e) => {
-            debug!(target: LOG_TARGET, event = envelope.event, error = %e, "telemetry send failed; dropping");
+            info!(target: LOG_TARGET, event = envelope.event, error = %e, "telemetry send failed; dropping");
         },
     }
 }
