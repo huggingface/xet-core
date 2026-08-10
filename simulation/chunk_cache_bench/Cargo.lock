@@ -4197,12 +4197,13 @@ dependencies = [
 
 [[package]]
 name = "xet-client"
-version = "1.5.3"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.22.1",
  "bytes",
+ "chrono",
  "crc32fast",
  "futures",
  "http",
@@ -4224,6 +4225,7 @@ dependencies = [
  "tracing",
  "url",
  "urlencoding",
+ "uuid",
  "web-time",
  "xet-core-structures",
  "xet-runtime",
@@ -4231,7 +4233,7 @@ dependencies = [
 
 [[package]]
 name = "xet-core-structures"
-version = "1.5.3"
+version = "1.6.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -4262,7 +4264,7 @@ dependencies = [
 
 [[package]]
 name = "xet-runtime"
-version = "1.5.3"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
