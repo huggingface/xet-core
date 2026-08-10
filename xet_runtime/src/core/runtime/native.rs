@@ -79,6 +79,25 @@ thread_local! {
 static EXTERNAL_THREADPOOL_REGISTRY: LazyLock<std::sync::RwLock<HashMap<tokio::runtime::Id, Weak<XetRuntime>>>> =
     LazyLock::new(|| std::sync::RwLock::new(HashMap::new()));
 
+/// Runs just before an owned runtime is shut down, while it can still drive tasks to completion.
+///
+/// Exists for best-effort detached work that would otherwise be cancelled by shutdown. Shutting a
+/// runtime down *cancels* pending tasks rather than completing them, so a fire-and-forget task -
+/// notably a telemetry POST - is lost unless something waits for it first. This is the only point
+/// that knows both "the runtime is still alive" and "it is about to die"; a hook registered later,
+/// at process exit, would run after the task had already been cancelled.
+///
+/// Registered from a higher layer ([`xet_client`]'s telemetry sink) so this crate stays unaware of
+/// what is being drained. A plain `fn` rather than a boxed closure: there is exactly one drain, it
+/// lives for the process, and the budget it uses is its own business.
+static PRE_SHUTDOWN_DRAIN: OnceLock<fn()> = OnceLock::new();
+
+/// Registers the pre-shutdown drain. The first registration wins; later calls are ignored, so this
+/// is safe to call on every client construction.
+pub fn register_pre_shutdown_drain(drain: fn()) {
+    let _ = PRE_SHUTDOWN_DRAIN.set(drain);
+}
+
 #[derive(Debug)]
 enum RuntimeBackend {
     External { handle_id: Option<tokio::runtime::Id> },
@@ -617,6 +636,21 @@ impl Drop for XetRuntime {
         // Avoid this by taking ownership of the runtime and using shutdown_background(),
         // which spawns a thread for the blocking shutdown work instead.
         let in_async_context = TokioRuntimeHandle::try_current().is_ok();
+
+        // Let best-effort detached work finish before the shutdown below cancels it. Only on the
+        // synchronous path: blocking inside an async context is the very thing the branch below
+        // avoids, and `shutdown_background()` does not wait for anything anyway.
+        //
+        // Deliberately after the fork and External early-returns above: a forked child has no
+        // worker threads to make progress, and an external runtime outlives us, so its tasks are
+        // never cancelled by this Drop.
+        if !in_async_context
+            && matches!(self.backend, RuntimeBackend::OwnedThreadPool { .. })
+            && let Some(drain) = PRE_SHUTDOWN_DRAIN.get()
+        {
+            drain();
+        }
+
         if let RuntimeBackend::OwnedThreadPool { runtime } = &self.backend
             && let Ok(mut guard) = runtime.write()
             && let Some(rt_arc) = guard.take()

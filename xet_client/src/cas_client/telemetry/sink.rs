@@ -1,6 +1,6 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use http::header::CONTENT_TYPE;
 use reqwest::Url;
@@ -35,6 +35,51 @@ const API_TAG: &str = "cas::telemetry";
 /// once would shed most of its terminal documents.
 static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 
+/// Budget for [`flush_pending_telemetry`] when it runs from the runtime's pre-shutdown hook,
+/// mirrored from `final_flush_timeout` whenever a sink is built.
+///
+/// Parked in a static because `XetRuntime`'s `Drop` is where the drain has to happen and it holds no
+/// config. Zero disables the drain, which is the right reading of `final_flush_timeout = 0`: that
+/// setting means "do not let telemetry delay anything".
+static FLUSH_TIMEOUT_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Waits for outstanding telemetry POSTs to finish, up to `timeout`. Returns whether they drained.
+///
+/// Needed because [`submit_detached`](TelemetrySink::submit_detached) is fire-and-forget and runtime
+/// shutdown *cancels* pending tasks rather than completing them. Measured against a CAS endpoint,
+/// the detached terminal document arrived 0 times out of 8 once the POST took ~50ms, and adding a
+/// single scheduler yield was enough to lose it against loopback - so without this, every abandoned
+/// transfer's document and every heartbeat is lost in practice.
+///
+/// Sleep-polls rather than using a `Notify` or condvar: this runs once, at teardown, and the
+/// alternative would put signalling on the guard-drop path for no benefit. 2ms granularity is
+/// irrelevant against a network round trip.
+///
+/// Callable from any thread and needs no async context, so it also suits an embedder that wants to
+/// flush without tearing its runtime down.
+pub fn flush_pending_telemetry(timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if IN_FLIGHT.load(Ordering::Acquire) == 0 {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            debug!(target: LOG_TARGET, "telemetry flush gave up with {} request(s) still in flight", IN_FLIGHT.load(Ordering::Acquire));
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// The hook the runtime calls before shutting down. Reads its budget from [`FLUSH_TIMEOUT_MS`].
+fn drain_before_runtime_shutdown() {
+    let ms = FLUSH_TIMEOUT_MS.load(Ordering::Relaxed);
+    if ms == 0 {
+        return;
+    }
+    flush_pending_telemetry(Duration::from_millis(ms));
+}
+
 /// Posts telemetry documents to `POST /v1/telemetry`.
 ///
 /// Deliberately *not* built on [`RetryWrapper`](crate::cas_client::retry_wrapper::RetryWrapper):
@@ -62,6 +107,12 @@ pub struct TelemetrySink {
 
 impl TelemetrySink {
     pub(crate) fn new(ctx: &XetContext, url: Url, http: Arc<ClientWithMiddleware>) -> Self {
+        // Arm the drain. Done here rather than at some init entry point so it is impossible to have
+        // a sink without it: registration is idempotent, and the budget tracks the live config.
+        let flush = ctx.config.telemetry.final_flush_timeout;
+        FLUSH_TIMEOUT_MS.store(u64::try_from(flush.as_millis()).unwrap_or(u64::MAX), Ordering::Relaxed);
+        xet_runtime::core::register_pre_shutdown_drain(drain_before_runtime_shutdown);
+
         Self {
             ctx: ctx.clone(),
             url,
