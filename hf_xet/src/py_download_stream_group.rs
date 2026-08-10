@@ -106,12 +106,12 @@ impl PyXetDownloadStreamGroup {
     ///
     /// What calling it does buy:
     ///
-    /// - **Delivery.** The report is sent before this returns, whereas the collected-without-finish
-    ///   path sends it in the background and frequently loses it, because processes often exit
-    ///   within milliseconds of a transfer finishing.
-    /// - **An explicit result rather than an inferred one.** This records success unconditionally,
-    ///   which suits a caller whose notion of "done" is not "every byte of every stream" — a
-    ///   deliberately partial read would otherwise be recorded as abandoned.
+    /// - **Delivery.** The report is sent before this returns, whereas the collected-without-finish path sends it in
+    ///   the background and frequently loses it, because processes often exit within milliseconds of a transfer
+    ///   finishing.
+    /// - **An explicit result rather than an inferred one.** This records success unconditionally, which suits a caller
+    ///   whose notion of "done" is not "every byte of every stream" — a deliberately partial read would otherwise be
+    ///   recorded as abandoned.
     /// - **Closing the group**, which nothing else does.
     ///
     /// Open every stream you intend to open first: the group is **closed** afterwards, so

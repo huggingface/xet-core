@@ -174,12 +174,12 @@ impl XetDownloadStreamGroup {
     ///
     /// What calling this does buy:
     ///
-    /// - **Delivery.** The terminal document is awaited here, bounded by `final_flush_timeout`,
-    ///   whereas the `Drop` path is detached and is frequently lost - host processes routinely exit
-    ///   within milliseconds of a transfer returning.
-    /// - **An explicit outcome rather than an inferred one.** This reports success unconditionally,
-    ///   so it suits a caller whose notion of "done" is not "every byte of every stream" - a
-    ///   deliberately partial read that `Drop` would classify as `Dropped`.
+    /// - **Delivery.** The terminal document is awaited here, bounded by `final_flush_timeout`, whereas the `Drop` path
+    ///   is detached and is frequently lost - host processes routinely exit within milliseconds of a transfer
+    ///   returning.
+    /// - **An explicit outcome rather than an inferred one.** This reports success unconditionally, so it suits a
+    ///   caller whose notion of "done" is not "every byte of every stream" - a deliberately partial read that `Drop`
+    ///   would classify as `Dropped`.
     /// - **Closing the group**, which nothing else does.
     ///
     /// Consume every stream you intend to consume first — the report is a snapshot taken here, and
