@@ -142,10 +142,42 @@ impl GroupProgress {
         items.iter().map(|(id, item)| (*id, item.report())).collect()
     }
 
+    /// How many items are registered, without snapshotting any of them.
+    pub fn n_items(&self) -> usize {
+        self.items.lock().unwrap().len()
+    }
+
     /// Snapshot of one item's progress.
     pub fn item_report(&self, id: UniqueId) -> Option<ItemProgressReport> {
         let items = self.items.lock().unwrap();
         items.get(&id).map(|item| item.report())
+    }
+
+    /// True when every registered item has a finalized size and has delivered every byte of it.
+    ///
+    /// Requires at least one item: a group that never registered a download has not "completed"
+    /// anything, and reporting it as complete would turn a no-op session into a success.
+    ///
+    /// Checking `size_finalized` is load-bearing rather than redundant with the byte comparison.
+    /// When an item's size is discovered incrementally - an open-ended stream range, where
+    /// [`update_item_size`](ItemProgressUpdater::update_item_size) is called with `is_final =
+    /// false` per block - `total_bytes` tracks only what the prefetcher has found so far while
+    /// `bytes_completed` tracks what the consumer has taken. A consumer that catches up to the
+    /// prefetch frontier makes the two equal *mid-transfer*, so the byte comparison alone would
+    /// report an abandoned download as a finished one. `size_finalized` is set only once the
+    /// prefetcher reaches the real end of the file, which is the fact that actually distinguishes
+    /// "read to the end" from "stopped reading".
+    ///
+    /// Completions are read before totals so that a concurrent size discovery can only make this
+    /// predicate stricter, never falsely satisfy it.
+    pub fn all_items_complete(&self) -> bool {
+        let items = self.items.lock().unwrap();
+        !items.is_empty()
+            && items.values().all(|item| {
+                let completed = item.bytes_completed.load(Ordering::Acquire);
+                let total = item.total_bytes.load(Ordering::Acquire);
+                item.size_finalized.load(Ordering::Acquire) && completed >= total
+            })
     }
 
     /// Debug verification that all items are complete.
@@ -421,6 +453,11 @@ impl UploadGroupProgress {
         self.file_data.item_reports()
     }
 
+    /// How many items are registered, without snapshotting any of them.
+    pub fn n_items(&self) -> usize {
+        self.file_data.n_items()
+    }
+
     /// Snapshot of one item's progress.
     pub fn item_report(&self, id: UniqueId) -> Option<ItemProgressReport> {
         self.file_data.item_report(id)
@@ -666,6 +703,79 @@ mod tests {
         assert_eq!(group.total_transfer_bytes_completed.load(Ordering::Relaxed), 30);
     }
 
+    /// The case that motivates inferring an outcome at all: a download that transferred everything
+    /// but whose caller never called `finish()`.
+    #[test]
+    fn test_all_items_complete_when_every_item_finished() {
+        let group = Arc::new(GroupProgress::new());
+        for name in ["a.bin", "b.bin"] {
+            let updater = group.new_item(UniqueId::new(), name);
+            updater.update_item_size(100, true);
+            updater.report_bytes_completed(100);
+        }
+
+        assert!(group.all_items_complete());
+    }
+
+    /// A group with no registered items has not completed anything, so it must not read as
+    /// complete - otherwise a session that was created and dropped without a single download
+    /// would be indistinguishable from a successful one (0 bytes of 0 bytes).
+    #[test]
+    fn test_all_items_complete_rejects_an_empty_group() {
+        let group = Arc::new(GroupProgress::new());
+        assert!(!group.all_items_complete());
+    }
+
+    #[test]
+    fn test_all_items_complete_rejects_a_partial_item() {
+        let group = Arc::new(GroupProgress::new());
+        let done = group.new_item(UniqueId::new(), "done.bin");
+        done.update_item_size(100, true);
+        done.report_bytes_completed(100);
+
+        let partial = group.new_item(UniqueId::new(), "partial.bin");
+        partial.update_item_size(100, true);
+        partial.report_bytes_completed(40);
+
+        assert!(!group.all_items_complete());
+    }
+
+    /// The trap: an item whose size is still being discovered can transiently show
+    /// `bytes_completed == total_bytes` when the consumer catches up to the prefetch frontier. A
+    /// byte comparison alone would call this complete and report an abandoned stream as a success,
+    /// so an unfinalized size must disqualify the item no matter how the bytes compare.
+    #[test]
+    fn test_all_items_complete_rejects_an_unfinalized_size_at_equal_bytes() {
+        let group = Arc::new(GroupProgress::new());
+        let updater = group.new_item(UniqueId::new(), "stream");
+        // Prefetcher has discovered 60 bytes so far and the consumer has taken all 60.
+        updater.update_item_size(60, false);
+        updater.report_bytes_completed(60);
+
+        assert_eq!(updater.item().bytes_completed.load(Ordering::Relaxed), 60);
+        assert_eq!(updater.item().total_bytes.load(Ordering::Relaxed), 60);
+        assert!(
+            !group.all_items_complete(),
+            "an item whose size is not finalized must not count as complete even at equal bytes"
+        );
+
+        // Reaching the real end of the file finalizes the size, and only then is it complete.
+        updater.update_item_size(60, true);
+        assert!(group.all_items_complete());
+    }
+
+    /// A stream abandoned while the prefetcher was still ahead of the consumer - the ordinary
+    /// abandoned shape, caught by the byte comparison rather than the finalized flag.
+    #[test]
+    fn test_all_items_complete_rejects_an_abandoned_stream() {
+        let group = Arc::new(GroupProgress::new());
+        let updater = group.new_item(UniqueId::new(), "stream");
+        updater.update_item_size(100, false);
+        updater.report_bytes_completed(30);
+
+        assert!(!group.all_items_complete());
+    }
+
     #[test]
     fn test_update_item_size_finalized() {
         let group = Arc::new(GroupProgress::new());
@@ -732,6 +842,7 @@ mod tests {
         assert_eq!(reports.len(), 2);
         assert_eq!(reports[&id1].bytes_completed, 60);
         assert_eq!(reports[&id2].bytes_completed, 200);
+        assert_eq!(group.n_items(), reports.len());
     }
 
     #[test]
