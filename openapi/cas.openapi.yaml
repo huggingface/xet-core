@@ -221,8 +221,8 @@ paths:
         Ingests a single client transfer-performance document. Fire-and-forget: the client never
         retries and ignores the response, so a failure here has no effect on a transfer.
 
-        The server enriches each document with its own context (`serverTime`, `env`, `casVersion`,
-        `clientIp`) and the request token's claims (`repoId`, `userId`, ...), so the client sends
+        The server enriches each document with its own context (`server_time`, `env`, `cas_version`,
+        `client_ip`) and the request token's claims (`repo_id`, `user_id`, ...), so the client sends
         no repository or user identity of its own.
 
         The `metrics` object is a flat map of scalars whose keys are defined by the client. Their
@@ -245,7 +245,7 @@ paths:
                   time: '2026-07-28T12:00:00.000Z'
                   event: xet_upload_summary
                   session_id: 019813f1-0000-7000-8000-000000000000
-                  userAgent: hf_xet/1.5.4
+                  user_agent: hf_xet/1.5.4
                   metrics:
                     schema_version: 1
                     direction: upload
