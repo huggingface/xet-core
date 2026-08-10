@@ -183,9 +183,6 @@ pub(crate) fn emit_download_abandoned(
 }
 
 /// Starts the heartbeat for an upload session.
-///
-/// `session` is held weakly: a strong reference would keep the session alive and its `Drop`-based
-/// terminal report would never fire.
 pub(crate) fn start_upload_heartbeat(
     ctx: &xet_runtime::core::XetContext,
     session: &Arc<crate::processing::FileUploadSession>,
@@ -193,12 +190,12 @@ pub(crate) fn start_upload_heartbeat(
     let Some(telemetry) = telemetry_of(&session.client()) else {
         return;
     };
-    let weak = Arc::downgrade(session);
     let identity = Arc::clone(&telemetry);
 
-    telemetry.start_heartbeat(ctx, move |seq| {
-        let session = weak.upgrade()?;
+    telemetry.start_heartbeat(ctx, session, move |session, seq| {
         let progress = session.report();
+        // `dedup_snapshot` uses `try_lock`, so an in-flight xorb upload recording its transmitted
+        // bytes costs this one beat and nothing more.
         let dedup = session.dedup_snapshot()?;
         let common = CommonMetrics::new(
             TransferIdentity::from(identity.as_ref()),
@@ -226,11 +223,9 @@ pub(crate) fn start_download_heartbeat(
     let Some(telemetry) = telemetry_of_download(&session.client()) else {
         return;
     };
-    let weak = Arc::downgrade(session);
     let identity = Arc::clone(&telemetry);
 
-    telemetry.start_heartbeat(ctx, move |seq| {
-        let session = weak.upgrade()?;
+    telemetry.start_heartbeat(ctx, session, move |session, seq| {
         let progress = session.report();
         let common = CommonMetrics::new(
             TransferIdentity::from(identity.as_ref()),

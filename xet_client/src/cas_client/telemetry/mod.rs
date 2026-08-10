@@ -147,23 +147,32 @@ impl TransferTelemetry {
 
     /// Starts emitting periodic progress documents once this transfer passes `heartbeat_after`.
     ///
-    /// `snapshot` builds the metrics for one heartbeat and returns `None` when the session behind
-    /// it is gone, which stops the task. It **must** capture the session weakly: a strong
-    /// reference would keep the session alive, and the `Drop`-based terminal report would never
-    /// fire.
+    /// `snapshot` builds the metrics for one heartbeat from `session`, or returns `None` to skip
+    /// this beat and try again at the next interval. Skipping must stay cheap: metrics are read
+    /// with `try_lock` so a heartbeat never blocks a transfer, and losing that race is routine on
+    /// exactly the long transfers this exists for. A skip costs one document, nothing more - the
+    /// sequence number is not consumed either, so `seq` stays dense across the documents that do
+    /// arrive.
+    ///
+    /// Ending the task is this loop's decision, not the closure's: `session` is held weakly here
+    /// and the task returns once it is gone. That is also why the closure takes `&S` rather than
+    /// capturing it - a strong capture would keep the session alive and its `Drop`-based terminal
+    /// report would never fire.
     ///
     /// Short transfers - the overwhelming majority - never emit a heartbeat at all. The task
     /// itself is skipped entirely when `heartbeat_after` is zero.
-    pub fn start_heartbeat<F>(self: &Arc<Self>, ctx: &XetContext, snapshot: F)
+    pub fn start_heartbeat<S, F>(self: &Arc<Self>, ctx: &XetContext, session: &Arc<S>, snapshot: F)
     where
-        F: Fn(u64) -> Option<serde_json::Value> + Send + Sync + 'static,
+        S: Send + Sync + 'static,
+        F: Fn(&S, u64) -> Option<serde_json::Value> + Send + Sync + 'static,
     {
         if self.heartbeat_after.is_zero() {
             return;
         }
 
-        // Weak, so the task cannot keep this alive past the transfer.
+        // Weak, so the task cannot keep either of these alive past the transfer.
         let weak = Arc::downgrade(self);
+        let weak_session = Arc::downgrade(session);
         let (after, interval) = (self.heartbeat_after, self.heartbeat_interval);
 
         let handle = ctx.runtime.spawn(async move {
@@ -171,21 +180,22 @@ impl TransferTelemetry {
 
             let mut seq = 1;
             loop {
-                let Some(telemetry) = weak.upgrade() else {
+                let (Some(telemetry), Some(session)) = (weak.upgrade(), weak_session.upgrade()) else {
                     return;
                 };
                 if telemetry.terminal_sent() {
                     return;
                 }
-                let Some(metrics) = snapshot(seq) else {
-                    return;
-                };
-                telemetry.emit_heartbeat(metrics);
-                // Dropped before sleeping so a transfer finishing mid-interval is not held alive
-                // by this task.
-                drop(telemetry);
+                if let Some(metrics) = snapshot(&session, seq) {
+                    telemetry.emit_heartbeat(metrics);
+                    seq += 1;
+                } else {
+                    debug!(target: LOG_TARGET, transfer_id = %telemetry.transfer_id, seq, "skipping heartbeat");
+                }
+                // Dropped before sleeping so neither the transfer nor the session is held alive by
+                // this task while it waits out the interval.
+                drop((telemetry, session));
 
-                seq += 1;
                 tokio::time::sleep(interval).await;
             }
         });
@@ -393,22 +403,63 @@ mod tests {
         let ctx = XetContext::with_config(config).unwrap();
 
         let t = TransferTelemetry::maybe_new(&ctx, "https://cas.example.com", "s", false, http(&ctx), None).unwrap();
-        t.start_heartbeat(&ctx, |_| Some(serde_json::json!({})));
+        t.start_heartbeat(&ctx, &Arc::new(()), |_, _| Some(serde_json::json!({})));
 
         assert!(t.heartbeat.lock().unwrap().is_none(), "no task should have been spawned");
     }
 
-    /// The heartbeat task must not keep the transfer alive. If it held a strong reference the
-    /// session's `Drop`-based terminal report would never fire.
+    /// A snapshot that cannot be taken *right now* must cost one beat and no more. Metrics are
+    /// read with `try_lock`, so losing that race is routine on exactly the long transfers a
+    /// heartbeat exists for - treating it as session death would silence the rest of the transfer.
     #[test]
-    fn test_heartbeat_holds_only_a_weak_reference() {
+    fn test_a_skipped_snapshot_does_not_end_the_heartbeat() {
+        let mut config = XetConfig::default();
+        config.telemetry.heartbeat_after = Duration::from_millis(5);
+        config.telemetry.heartbeat_interval = Duration::from_millis(5);
+        let ctx = XetContext::with_config(config).unwrap();
+        let t = TransferTelemetry::maybe_new(&ctx, "https://cas.example.com", "s", false, http(&ctx), None).unwrap();
+
+        let calls = Arc::new(AtomicU64::new(0));
+        let highest_seq = Arc::new(AtomicU64::new(0));
+        let (seen, seqs) = (Arc::clone(&calls), Arc::clone(&highest_seq));
+        // Held for the whole test: a dropped session ends the task for a legitimate reason, which
+        // would make the assertion below pass or fail for the wrong one.
+        let live_session = Arc::new(());
+        t.start_heartbeat(&ctx, &live_session, move |_, seq| {
+            seen.fetch_add(1, Ordering::Relaxed);
+            seqs.fetch_max(seq, Ordering::Relaxed);
+            None
+        });
+
+        let observed = ctx
+            .runtime
+            .external_run_async_task(async move {
+                let start = tokio::time::Instant::now();
+                while calls.load(Ordering::Relaxed) < 3 && start.elapsed() < Duration::from_secs(5) {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                calls.load(Ordering::Relaxed)
+            })
+            .unwrap();
+
+        assert!(observed >= 3, "the task stopped after {observed} skipped snapshot(s)");
+        // Skips consume no sequence number, so `seq` is dense across the documents that do arrive.
+        assert_eq!(highest_seq.load(Ordering::Relaxed), 1);
+    }
+
+    /// The heartbeat task must not keep the transfer or its session alive. If it held a strong
+    /// reference to either, the session's `Drop`-based terminal report would never fire.
+    #[test]
+    fn test_heartbeat_holds_only_weak_references() {
         let ctx = ctx_with(true);
         let t = build(&ctx, "https://cas.example.com", false).unwrap();
-        t.start_heartbeat(&ctx, |_| Some(serde_json::json!({})));
+        let s = Arc::new(());
+        t.start_heartbeat(&ctx, &s, |_, _| Some(serde_json::json!({})));
 
-        let weak = Arc::downgrade(&t);
-        drop(t);
-        assert!(weak.upgrade().is_none(), "heartbeat task is keeping the telemetry alive");
+        let (weak_t, weak_s) = (Arc::downgrade(&t), Arc::downgrade(&s));
+        drop((t, s));
+        assert!(weak_t.upgrade().is_none(), "heartbeat task is keeping the telemetry alive");
+        assert!(weak_s.upgrade().is_none(), "heartbeat task is keeping the session alive");
     }
 
     /// Emitting the terminal document stops the heartbeat, so no progress document can arrive
@@ -417,7 +468,7 @@ mod tests {
     fn test_terminal_stops_the_heartbeat() {
         let ctx = ctx_with(true);
         let t = build(&ctx, "https://cas.example.com", false).unwrap();
-        t.start_heartbeat(&ctx, |_| Some(serde_json::json!({})));
+        t.start_heartbeat(&ctx, &Arc::new(()), |_, _| Some(serde_json::json!({})));
         assert!(t.heartbeat.lock().unwrap().is_some());
 
         t.emit_terminal_detached(Direction::Upload.terminal_event(), serde_json::json!({}));
