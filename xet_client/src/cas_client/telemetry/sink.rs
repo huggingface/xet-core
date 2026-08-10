@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use http::header::CONTENT_TYPE;
 use reqwest::Url;
 use reqwest_middleware::ClientWithMiddleware;
-use tracing::debug;
+use tracing::{debug, info};
 use xet_runtime::core::XetContext;
 
 use super::envelope::TelemetryEnvelope;
@@ -207,7 +207,8 @@ async fn send(http: &ClientWithMiddleware, url: &Url, envelope: &TelemetryEnvelo
 
     match request.send().await {
         Ok(response) if response.status().is_success() => {
-            debug!(target: LOG_TARGET, event = envelope.event, status = %response.status(), "telemetry accepted");
+            // The one line at `info!`: a client log should show that telemetry is on and landing.
+            info!(target: LOG_TARGET, event = envelope.event, status = %response.status(), "telemetry accepted");
         },
         Ok(response) => {
             // Includes 429 (ingestion saturated) and 5xx (ingestion failing). Not retried.
