@@ -36,14 +36,6 @@ macro_rules! impl_xet_config_group_dispatch {
                 #[cfg(not(target_family = "wasm"))]
                 self.system_monitor.apply_env_overrides();
 
-                // `HF_HUB_DISABLE_TELEMETRY` / `HF_HUB_OFFLINE` are shared with the rest of the
-                // huggingface_hub stack and have inverted polarity, so they cannot be expressed as
-                // entries in ENVIRONMENT_NAME_ALIASES. Applied last and unconditionally: a user
-                // asking for privacy wins over HF_XET_TELEMETRY_ENABLED=1.
-                if $crate::utils::telemetry_opted_out() {
-                    self.telemetry.enabled = false;
-                }
-
                 self
             }
 

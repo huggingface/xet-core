@@ -345,28 +345,6 @@ pub fn is_high_performance() -> bool {
     *HIGH_PERFORMANCE
 }
 
-/// Environment variables, shared with the rest of the `huggingface_hub` stack, that suppress
-/// client telemetry regardless of `HF_XET_TELEMETRY_ENABLED`.
-///
-/// These are *not* handled through [`ENVIRONMENT_NAME_ALIASES`](crate::config::ENVIRONMENT_NAME_ALIASES):
-/// aliases map one name onto another with identical polarity, and these are inverted.
-const TELEMETRY_OPT_OUT_VARS: &[&str] = &["HF_HUB_DISABLE_TELEMETRY", "HF_HUB_OFFLINE"];
-
-/// Whether the user has opted out of telemetry through the shared `huggingface_hub` variables.
-///
-/// A bare presence of the variable is not enough - the value must parse as truthy - so that
-/// `HF_HUB_OFFLINE=0` does not silently disable reporting.
-///
-/// Deliberately not memoized in a `LazyLock`: this is read each time a [`XetConfig`] is built, so
-/// a process that changes the variable (notably a test) sees the new value.
-///
-/// [`XetConfig`]: crate::config::XetConfig
-pub fn telemetry_opted_out() -> bool {
-    TELEMETRY_OPT_OUT_VARS
-        .iter()
-        .any(|name| std::env::var(name).ok().and_then(|v| parse_bool_value(&v)).unwrap_or(false))
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::Duration;

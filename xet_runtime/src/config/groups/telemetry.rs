@@ -10,9 +10,6 @@ crate::config_group!({
     ///
     /// The payload carries no file names, paths, hashes, repository ids, or user ids.
     ///
-    /// Telemetry is force-disabled regardless of this value when either
-    /// `HF_HUB_DISABLE_TELEMETRY` or `HF_HUB_OFFLINE` is set to a truthy value.
-    ///
     /// The default value is true.
     ///
     /// Use the environment variable `HF_XET_TELEMETRY_ENABLED` to set this value.
@@ -84,13 +81,11 @@ mod tests {
     use crate::utils::EnvVarGuard;
 
     const XET_ENABLED: &str = "HF_XET_TELEMETRY_ENABLED";
-    const HUB_DISABLE: &str = "HF_HUB_DISABLE_TELEMETRY";
-    const HUB_OFFLINE: &str = "HF_HUB_OFFLINE";
 
     /// Clears every variable that participates in the gating decision, so a value exported in the
     /// developer's shell cannot make these tests pass or fail spuriously.
     fn clear_all() -> Vec<EnvVarGuard> {
-        [XET_ENABLED, HUB_DISABLE, HUB_OFFLINE].into_iter().map(EnvVarGuard::unset).collect()
+        [XET_ENABLED].into_iter().map(EnvVarGuard::unset).collect()
     }
 
     fn telemetry_enabled() -> bool {
@@ -110,52 +105,6 @@ mod tests {
         let _guards = clear_all();
         let _g = EnvVarGuard::set(XET_ENABLED, "0");
         assert!(!telemetry_enabled());
-    }
-
-    #[test]
-    #[serial(env)]
-    fn test_disabled_by_hub_disable_telemetry() {
-        let _guards = clear_all();
-        let _g = EnvVarGuard::set(HUB_DISABLE, "1");
-        assert!(!telemetry_enabled());
-    }
-
-    #[test]
-    #[serial(env)]
-    fn test_disabled_by_hub_offline() {
-        let _guards = clear_all();
-        let _g = EnvVarGuard::set(HUB_OFFLINE, "1");
-        assert!(!telemetry_enabled());
-    }
-
-    /// A user asking for privacy wins over an explicit opt-in.
-    #[test]
-    #[serial(env)]
-    fn test_hub_opt_out_beats_explicit_enable() {
-        let _guards = clear_all();
-        let _enabled = EnvVarGuard::set(XET_ENABLED, "1");
-        let _disable = EnvVarGuard::set(HUB_DISABLE, "1");
-        assert!(!telemetry_enabled());
-    }
-
-    /// Presence alone must not disable: the value has to parse as truthy, so `HF_HUB_OFFLINE=0`
-    /// leaves telemetry on.
-    #[test]
-    #[serial(env)]
-    fn test_falsy_opt_out_does_not_disable() {
-        let _guards = clear_all();
-        let _offline = EnvVarGuard::set(HUB_OFFLINE, "0");
-        let _disable = EnvVarGuard::set(HUB_DISABLE, "false");
-        assert!(telemetry_enabled());
-    }
-
-    /// An unparseable opt-out value is ignored rather than treated as truthy.
-    #[test]
-    #[serial(env)]
-    fn test_unparseable_opt_out_is_ignored() {
-        let _guards = clear_all();
-        let _disable = EnvVarGuard::set(HUB_DISABLE, "maybe");
-        assert!(telemetry_enabled());
     }
 
     #[test]

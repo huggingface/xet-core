@@ -96,9 +96,9 @@ pub struct TransferTelemetry {
 impl TransferTelemetry {
     /// Builds a telemetry aggregator, or `None` when telemetry should not run at all.
     ///
-    /// Returns `None` for: telemetry disabled by config or by the shared `HF_HUB_*` opt-outs,
-    /// dry-run, and any endpoint that is not http/https (which covers `local://` and `memory://`,
-    /// though in practice those never reach `RemoteClient` at all).
+    /// Returns `None` for: telemetry disabled by config, dry-run, and any endpoint that is not
+    /// http/https (which covers `local://` and `memory://`, though in practice those never reach
+    /// `RemoteClient` at all).
     pub(crate) fn maybe_new(
         ctx: &XetContext,
         endpoint: &str,

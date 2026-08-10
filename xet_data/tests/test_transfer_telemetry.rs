@@ -8,9 +8,9 @@
 //! They also pin the wire shape. What a consumer receives is the serialized document, not the Rust
 //! struct, so the key set is asserted here as well as in the payload unit tests.
 //!
-//! Every test here is `#[serial(env)]`. One of them sets `HF_HUB_DISABLE_TELEMETRY`, which is
-//! process-global: marking only that test serial does not help, because `serial` serializes a test
-//! against other *serial* tests, not against the parallel ones it would otherwise poison.
+//! Every test here is `#[serial(env)]`: several set process-global environment variables, and
+//! `serial` serializes a test against other *serial* tests, not against the parallel ones it would
+//! otherwise poison.
 
 #![cfg(feature = "simulation")]
 
@@ -369,23 +369,6 @@ async fn test_disabled_emits_nothing() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(server.telemetry_docs().is_empty(), "telemetry was disabled but documents were sent");
-}
-
-/// The shared huggingface_hub opt-out must suppress reporting even with telemetry enabled.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[serial_test::serial(env)]
-async fn test_hub_opt_out_emits_nothing() {
-    let _enabled = EnvVarGuard::set("HF_XET_TELEMETRY_ENABLED", "1");
-    let _disabled = EnvVarGuard::set("HF_HUB_DISABLE_TELEMETRY", "1");
-
-    let (server, translator, _temp) = env_with_config(XetConfig::new()).await;
-
-    let session = FileUploadSession::new(translator).await.unwrap();
-    upload_bytes(&session, "a.bin", &vec![0x55; 16 * 1024]).await;
-    session.finalize().await.unwrap();
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(server.telemetry_docs().is_empty(), "HF_HUB_DISABLE_TELEMETRY did not suppress reporting");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
