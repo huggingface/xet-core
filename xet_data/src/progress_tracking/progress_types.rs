@@ -142,6 +142,11 @@ impl GroupProgress {
         items.iter().map(|(id, item)| (*id, item.report())).collect()
     }
 
+    /// How many items are registered, without snapshotting any of them.
+    pub fn n_items(&self) -> usize {
+        self.items.lock().unwrap().len()
+    }
+
     /// Snapshot of one item's progress.
     pub fn item_report(&self, id: UniqueId) -> Option<ItemProgressReport> {
         let items = self.items.lock().unwrap();
@@ -446,6 +451,11 @@ impl UploadGroupProgress {
     /// Snapshot of all per-item progress.
     pub fn item_reports(&self) -> HashMap<UniqueId, ItemProgressReport> {
         self.file_data.item_reports()
+    }
+
+    /// How many items are registered, without snapshotting any of them.
+    pub fn n_items(&self) -> usize {
+        self.file_data.n_items()
     }
 
     /// Snapshot of one item's progress.
@@ -832,6 +842,7 @@ mod tests {
         assert_eq!(reports.len(), 2);
         assert_eq!(reports[&id1].bytes_completed, 60);
         assert_eq!(reports[&id2].bytes_completed, 200);
+        assert_eq!(group.n_items(), reports.len());
     }
 
     #[test]

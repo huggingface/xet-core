@@ -200,7 +200,7 @@ pub(crate) fn start_upload_heartbeat(
                 error_class: ERROR_CLASS_NONE,
                 terminal: false,
                 seq,
-                n_files: session.item_reports().len() as u64,
+                n_files: session.n_items() as u64,
                 progress: &progress,
             },
         );
@@ -230,7 +230,7 @@ pub(crate) fn start_download_heartbeat(
                 error_class: ERROR_CLASS_NONE,
                 terminal: false,
                 seq,
-                n_files: session.item_reports().len() as u64,
+                n_files: session.n_items() as u64,
                 progress: &progress,
             },
         );

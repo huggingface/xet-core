@@ -105,6 +105,10 @@ impl FileDownloadSession {
         self.progress.item_reports()
     }
 
+    pub fn n_items(&self) -> usize {
+        self.progress.n_items()
+    }
+
     fn register_stream_abort_callback(&self, id: UniqueId, callback: Box<dyn Fn() + Send + Sync>) {
         self.active_stream_abort_callbacks.lock().unwrap().insert(id, callback);
     }
@@ -256,7 +260,7 @@ impl FileDownloadSession {
             outcome,
             error_class,
             &self.report(),
-            self.item_reports().len() as u64,
+            self.n_items() as u64,
         )
         .await;
     }
@@ -464,7 +468,7 @@ impl Drop for FileDownloadSession {
         crate::telemetry::emit_download_abandoned(
             &self.client,
             &self.report(),
-            self.item_reports().len() as u64,
+            self.n_items() as u64,
             self.progress.all_items_complete(),
         );
     }

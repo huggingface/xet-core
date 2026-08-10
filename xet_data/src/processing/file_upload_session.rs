@@ -615,7 +615,7 @@ impl FileUploadSession {
                 crate::telemetry::UploadSnapshot {
                     progress: &self.report(),
                     dedup: &dedup,
-                    n_files: self.item_reports().len() as u64,
+                    n_files: self.n_items() as u64,
                     ingest_ms,
                     finalize_ms: elapsed_ms(finalize_started),
                 },
@@ -736,6 +736,10 @@ impl FileUploadSession {
         self.completion_tracker.progress().item_reports()
     }
 
+    pub fn n_items(&self) -> usize {
+        self.completion_tracker.progress().n_items()
+    }
+
     pub async fn finalize(self: Arc<Self>) -> Result<DeduplicationMetrics> {
         Ok(self.finalize_impl(false).await?.0)
     }
@@ -783,7 +787,7 @@ impl Drop for FileUploadSession {
             crate::telemetry::UploadSnapshot {
                 progress: &self.report(),
                 dedup: &dedup,
-                n_files: self.item_reports().len() as u64,
+                n_files: self.n_items() as u64,
                 ingest_ms: elapsed_ms(self.started_at),
                 finalize_ms: 0,
             },
