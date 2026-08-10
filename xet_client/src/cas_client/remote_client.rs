@@ -571,7 +571,7 @@ impl Client for RemoteClient {
         let permit = self.download_concurrency_controller.acquire_connection_permit().await;
         #[cfg(not(target_family = "wasm"))]
         if let Some(telemetry) = &self.telemetry {
-            telemetry.record_concurrency(self.download_concurrency_controller.total_permits());
+            telemetry.record_concurrency(self.download_concurrency_controller.active_permits());
         }
         permit
     }
@@ -784,7 +784,7 @@ impl Client for RemoteClient {
         let permit = self.upload_concurrency_controller.acquire_connection_permit().await;
         #[cfg(not(target_family = "wasm"))]
         if let Some(telemetry) = &self.telemetry {
-            telemetry.record_concurrency(self.upload_concurrency_controller.total_permits());
+            telemetry.record_concurrency(self.upload_concurrency_controller.active_permits());
         }
         permit
     }
