@@ -13,8 +13,12 @@ Covers:
   - Full-file unordered stream (reassemble from offsets), small and large
   - Bounded range unordered on large files
   - Open-ended range unordered on large files
+  - finish() closing the group, abort() stopping an unstarted stream
+  - Context manager: finish on a clean exit, abort on an exception
 Not covered here (require a real CAS server):
   - token, token_refresh_url, custom_headers kwargs
+  - The telemetry outcome each path reports, which needs a server to read the
+    document back from (see xet_pkg/tests/test_download_telemetry.rs)
 """
 
 import pytest
@@ -221,42 +225,56 @@ class TestDownloadUnorderedStream:
 # ── Context manager ──────────────────────────────────────────────────────────
 
 class TestDownloadStreamGroupContextManager:
-    """`__exit__` must distinguish a clean finish from an abandoned transfer.
-
-    On a normal exit the group is finished, which reports the transfer as
-    successful. On the exception path it is aborted instead: `finish` would claim
-    success and record a failed transfer as a clean one. Mirrors
-    `TestUploadCommit`'s context-manager coverage.
-
-    The outcome actually reported is asserted in Rust
-    (`xet_pkg/tests/test_download_telemetry.rs`), which has a CAS server to read
-    the telemetry document back from; a `local://` endpoint builds no telemetry
-    at all.
-    """
-
     def test_context_manager_finishes_on_normal_exit(self, endpoint):
         data = b"context manager stream"
         info = upload_bytes_get_info(endpoint, data)
-        with hf_xet.XetSession().new_download_stream_group(endpoint=endpoint) as group:
-            chunks = list(group.download_stream(info))
+        group = hf_xet.XetSession().new_download_stream_group(endpoint=endpoint)
+        with group as entered:
+            chunks = list(entered.download_stream(info))
         assert b"".join(chunks) == data
+        with pytest.raises(Exception) as exc:
+            group.download_stream(info)
+        assert "already finalized" in str(exc.value)
 
     def test_context_manager_aborts_on_exception(self, endpoint):
         info = upload_bytes_get_info(endpoint, _LARGE_DATA)
+        group = hf_xet.XetSession().new_download_stream_group(endpoint=endpoint)
         raised = False
         try:
-            with hf_xet.XetSession().new_download_stream_group(endpoint=endpoint) as group:
-                stream = group.download_stream(info)
-                next(iter(stream))  # consume part of the transfer, then fail
+            with group as entered:
+                stream = entered.download_stream(info)
+                next(iter(stream))
                 raise ValueError("intentional error")
         except ValueError:
             raised = True
-        assert raised  # exception must propagate, not be suppressed
+        assert raised
+        assert b"".join(group.download_stream(info)) == _LARGE_DATA
 
-    def test_abort_is_callable_directly(self, endpoint):
-        """`abort` is public, so a caller not using `with` can abandon explicitly."""
+
+# ── finish() / abort() ───────────────────────────────────────────────────────
+
+class TestDownloadStreamGroupFinishAbort:
+    def test_finish_closes_the_group(self, endpoint):
+        info = upload_bytes_get_info(endpoint, DATA)
+        group = hf_xet.XetSession().new_download_stream_group(endpoint=endpoint)
+        assert b"".join(group.download_stream(info)) == DATA
+
+        group.finish()
+        with pytest.raises(Exception) as ordered:
+            group.download_stream(info)
+        assert "already finalized" in str(ordered.value)
+        with pytest.raises(Exception) as unordered:
+            group.download_unordered_stream(info)
+        assert "already finalized" in str(unordered.value)
+
+    def test_finish_twice_no_op(self, endpoint):
+        group = hf_xet.XetSession().new_download_stream_group(endpoint=endpoint)
+        group.finish()
+        group.finish()
+
+    def test_abort_stops_a_stream(self, endpoint):
         info = upload_bytes_get_info(endpoint, _LARGE_DATA)
         group = hf_xet.XetSession().new_download_stream_group(endpoint=endpoint)
         stream = group.download_stream(info)
-        next(iter(stream))
         group.abort()
+        assert b"".join(stream) == b""
