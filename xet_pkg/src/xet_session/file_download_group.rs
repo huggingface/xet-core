@@ -177,6 +177,11 @@ impl XetFileDownloadGroup {
     /// Cancel all active downloads in this group.
     pub fn abort(&self) -> Result<(), XetError> {
         info!(group_id = %self.id(), "Download group abort");
+        // Report before cancelling. The only other place an abandoned download reports is the
+        // session's `Drop`, and callers that abort are frequently about to destroy the runtime
+        // (`sigint_abort` on Ctrl-C), leaving that `Drop` with nothing to send on. Idempotent, so
+        // the later `Drop` stays a no-op and this does not double-report.
+        self.inner.download_session.finalize_abandoned();
         self.task_runtime.cancel_subtree()?;
         for handle in self.inner.active_tasks.read()?.values() {
             handle.cancel();

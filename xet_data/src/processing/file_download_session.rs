@@ -457,7 +457,21 @@ fn range_bounds_to_file_range(range: &impl RangeBounds<u64>) -> Result<Option<Fi
 #[cfg(not(target_family = "wasm"))]
 impl Drop for FileDownloadSession {
     fn drop(&mut self) {
-        if self.finalized.load(Ordering::Acquire) {
+        self.finalize_abandoned();
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl FileDownloadSession {
+    /// Reports this session as abandoned, inferring the outcome from progress, and marks it
+    /// finalized so [`Drop`] does not report it a second time. Idempotent.
+    ///
+    /// `Drop` is the normal caller. It is also public because `Drop` is too late for a caller that
+    /// is about to tear the runtime down: `XetSession::sigint_abort` destroys the tokio runtime
+    /// while the group is still alive, so a session left to report from `Drop` would have nothing
+    /// to send on by the time it ran. Such a caller reports here first, while sending still works.
+    pub fn finalize_abandoned(&self) {
+        if self.finalized.swap(true, Ordering::AcqRel) {
             return;
         }
         // Deliberately *not* gated on `tokio::runtime::Handle::try_current()`. The send is spawned

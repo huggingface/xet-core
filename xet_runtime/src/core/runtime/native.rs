@@ -334,6 +334,14 @@ impl XetRuntime {
             return;
         };
 
+        // Let best-effort detached work finish before the drop below cancels it, exactly as
+        // `Drop for XetRuntime` does. Without this, a SIGINT teardown silently discards work that
+        // the graceful path delivers - notably the telemetry document reporting the very transfer
+        // the user just interrupted, which is the abandonment most worth capturing.
+        if let Some(drain) = PRE_SHUTDOWN_DRAIN.get() {
+            drain();
+        }
+
         // Dropping the runtime will cancel all the tasks; shutdown occurs when the next async call
         // is encountered.  Ideally, all async code should be cancellation safe.
         drop(runtime);
