@@ -35,8 +35,8 @@ use std::net::SocketAddr;
 #[cfg(test)]
 use std::net::TcpListener as StdTcpListener;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
+use std::sync::{Arc, Mutex};
 #[cfg(test)]
 use std::time::Duration;
 
@@ -102,6 +102,8 @@ pub struct LocalServer {
     client: Arc<dyn DirectAccessClient>,
     deletion_client: Option<Arc<dyn DeletionControlableClient>>,
     latency_simulation: Arc<LatencySimulation>,
+    /// Telemetry documents received on `POST /v1/telemetry`. See [`Self::telemetry_docs`].
+    telemetry_docs: Arc<Mutex<Vec<serde_json::Value>>>,
     /// `/v2/shards` in-stream Error frame mode (see [`handlers::ShardUploadErrorFrame`]).
     shard_upload_error_frame: Arc<AtomicU8>,
 }
@@ -128,6 +130,7 @@ impl LocalServer {
             client,
             deletion_client,
             latency_simulation,
+            telemetry_docs: Arc::default(),
             shard_upload_error_frame: Arc::new(AtomicU8::new(handlers::ShardUploadErrorFrame::Off as u8)),
         })
     }
@@ -154,6 +157,7 @@ impl LocalServer {
             client,
             deletion_client,
             latency_simulation,
+            telemetry_docs: Arc::default(),
             shard_upload_error_frame: Arc::new(AtomicU8::new(handlers::ShardUploadErrorFrame::Off as u8)),
         }
     }
@@ -161,6 +165,20 @@ impl LocalServer {
     /// Returns a clone of the underlying client.
     pub fn client(&self) -> Arc<dyn DirectAccessClient> {
         self.client.clone()
+    }
+
+    /// Telemetry documents received on `POST /v1/telemetry`, in arrival order.
+    ///
+    /// Returned verbatim so tests can assert on the exact wire shape - the key set and the JSON
+    /// type of each value are what a consumer actually receives.
+    pub fn telemetry_docs(&self) -> Vec<serde_json::Value> {
+        self.telemetry_docs.lock().expect("telemetry_docs lock poisoned").clone()
+    }
+
+    /// Shared handle to the received documents, so a caller can keep reading them after the
+    /// server has been moved into its serving task.
+    pub(crate) fn telemetry_docs_handle(&self) -> Arc<Mutex<Vec<serde_json::Value>>> {
+        self.telemetry_docs.clone()
     }
 
     /// Returns the server's bind address as "host:port".
@@ -187,7 +205,8 @@ impl LocalServer {
                     .route("/shards", post(handlers::post_shard))
                     .route("/files/{file_id}", head(handlers::head_file))
                     .route("/get_xorb/{prefix}/{hash}/", get(handlers::get_file_term_data))
-                    .route("/fetch_term", get(handlers::fetch_term)),
+                    .route("/fetch_term", get(handlers::fetch_term))
+                    .route("/telemetry", post(handlers::post_telemetry)),
             )
             .nest(
                 "/v2",
@@ -207,6 +226,7 @@ impl LocalServer {
                 client: self.client.clone(),
                 latency_simulation: self.latency_simulation.clone(),
                 deletion_client: self.deletion_client.clone(),
+                telemetry_docs: self.telemetry_docs.clone(),
                 shard_upload_error_frame: self.shard_upload_error_frame.clone(),
             })
     }

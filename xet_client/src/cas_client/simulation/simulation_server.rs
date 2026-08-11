@@ -255,6 +255,8 @@ impl LocalTestServerBuilder {
             };
 
         let server = LocalServer::from_client(client.clone(), deletion_client.clone(), host, port);
+        // Grabbed before the server moves into its serving task.
+        let telemetry_docs = server.telemetry_docs_handle();
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         tokio::spawn(async move {
             let _ = server.run_until_stopped(shutdown_rx).await;
@@ -317,6 +319,7 @@ impl LocalTestServerBuilder {
             socket_proxy,
             _ephemeral_socket_tempdir: ephemeral_tempdir,
             network_simulation_proxy: proxy_guard.clone(),
+            telemetry_docs: telemetry_docs.clone(),
         };
 
         #[cfg(not(unix))]
@@ -327,6 +330,7 @@ impl LocalTestServerBuilder {
             client,
             deletion_client,
             network_simulation_proxy: proxy_guard,
+            telemetry_docs: telemetry_docs.clone(),
         };
 
         if let Some(profile) = self.server_latency_profile {
@@ -380,6 +384,7 @@ pub struct LocalTestServer {
     client: Arc<dyn DirectAccessClient>,
     deletion_client: Option<Arc<dyn DeletionControlableClient>>,
     network_simulation_proxy: Option<Arc<NetworkSimulationProxy>>,
+    telemetry_docs: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
 
     #[cfg(unix)]
     socket_proxy: Option<UnixSocketProxy>,
@@ -442,6 +447,14 @@ impl LocalTestServer {
     }
 
     /// Returns the underlying `DirectAccessClient` for direct state access.
+    /// Telemetry documents received on `POST /v1/telemetry`, in arrival order.
+    ///
+    /// Returned verbatim so tests can assert on the exact wire shape - the key set and the JSON
+    /// type of each value are what a consumer actually receives.
+    pub fn telemetry_docs(&self) -> Vec<serde_json::Value> {
+        self.telemetry_docs.lock().expect("telemetry_docs lock poisoned").clone()
+    }
+
     pub fn client(&self) -> &Arc<dyn DirectAccessClient> {
         &self.client
     }
