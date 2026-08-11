@@ -359,3 +359,48 @@ fn sigint_abort_still_reports_the_abandoned_download() {
     assert_eq!(doc["metrics"]["outcome"], "dropped", "an interrupted download must report as dropped");
     assert_eq!(doc["metrics"]["terminal"], true);
 }
+
+/// The real Ctrl-C shape: `finish_blocking` is already in flight on another thread when
+/// `sigint_abort` lands.
+///
+/// This is what `hf` does. `start_download_file` only starts the transfer; the wait happens in the
+/// binding's `__exit__` via `finish_blocking`, which pyo3 runs on a spawned thread so it can poll
+/// for Python signals. SIGINT therefore arrives *during* `finish_blocking`, and the interrupt
+/// handler calls `sigint_abort()` while that thread is still inside the finalizing bridge - the
+/// bridge whose `select!` drops the future carrying `finalize_download_session`.
+#[test]
+#[serial(env)]
+fn sigint_during_finish_still_reports() {
+    let temp: TempDir = tempdir().unwrap();
+    let (server, _rt) = start_server();
+    let endpoint = server.http_endpoint();
+
+    let session = XetSessionBuilder::new().build().unwrap();
+    let data = vec![0x5Au8; 96 * 1024];
+    let file_info = upload_bytes_sync(&session, endpoint, &data, "interrupted.bin");
+
+    let dest = temp.path().join("interrupted.out");
+    let group = session
+        .new_file_download_group()
+        .unwrap()
+        .with_endpoint(endpoint)
+        .build_blocking()
+        .unwrap();
+    group.download_file_to_path_blocking(file_info, dest).unwrap();
+
+    // finish_blocking on its own thread, exactly as the pyo3 signal-check bridge runs it.
+    let finisher = std::thread::spawn(move || {
+        let _ = group.finish_blocking();
+    });
+
+    // ...and the interrupt handler fires while it is still running. The pause is what makes
+    // that true: in the real flow SIGINT arrives during `finish_blocking`, not before it starts.
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    session.sigint_abort().unwrap();
+    let _ = finisher.join();
+
+    let docs = wait_for_docs(&server, 2);
+    let doc = download_doc(&docs);
+    assert_eq!(doc["metrics"]["direction"], "download");
+    assert_eq!(doc["metrics"]["terminal"], true);
+}

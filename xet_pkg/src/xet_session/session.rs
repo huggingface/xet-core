@@ -349,7 +349,11 @@ impl XetSession {
         let _fd_scope = track_fd_scope(format!("XetSession::sigint_abort({})", self.inner.id));
 
         info!("Session SIGINT abort, session_id={}", self.inner.id);
-        self.inner.ctx.runtime.perform_sigint_shutdown();
+
+        // Cancel before tearing anything down. In-flight work observes the token and returns
+        // promptly, which lets the finalizing bridge it is running under reach its tail - the
+        // terminal telemetry report - while the runtime can still send it.
+        self.inner.task_runtime.cancel_subtree()?;
 
         let active_download_stream_groups = std::mem::take(&mut *self.inner.active_download_stream_groups.lock()?);
         for (_id, weak_group) in active_download_stream_groups {
@@ -357,6 +361,19 @@ impl XetSession {
                 inner.abort();
             }
         }
+
+        // Those reports are produced on whichever thread called `finish`, not this one - the
+        // Python bindings run it on a spawned thread so they can poll for signals - so wait for
+        // them rather than racing them. Bounded, because an interrupt must stay responsive and a
+        // report is best-effort; the budget is the telemetry flush budget, since delivering that
+        // report is the whole reason for waiting.
+        let deadline = std::time::Instant::now() + self.inner.ctx.config.telemetry.final_flush_timeout;
+        while self.inner.ctx.runtime.finalizing_in_flight() > 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+
+        // Only now: this cancels every remaining task, and drains pending telemetry first.
+        self.inner.ctx.runtime.perform_sigint_shutdown();
 
         #[cfg(feature = "fd-track")]
         report_fd_count("XetSession::sigint_abort complete");

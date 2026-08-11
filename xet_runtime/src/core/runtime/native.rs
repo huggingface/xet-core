@@ -98,6 +98,16 @@ pub fn register_pre_shutdown_drain(drain: fn()) {
     let _ = PRE_SHUTDOWN_DRAIN.set(drain);
 }
 
+/// Held for the duration of work a shutdown must not interrupt. See
+/// [`XetRuntime::enter_finalizing`].
+pub struct FinalizingGuard(Arc<XetRuntime>);
+
+impl Drop for FinalizingGuard {
+    fn drop(&mut self) {
+        self.0.finalizing.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 #[derive(Debug)]
 enum RuntimeBackend {
     External { handle_id: Option<tokio::runtime::Id> },
@@ -144,6 +154,10 @@ pub struct XetRuntime {
     // Are we in the middle of a sigint shutdown?
     sigint_shutdown: AtomicBool,
 
+    // Callers currently inside work that must not be interrupted by a shutdown - see
+    // [`enter_finalizing`](XetRuntime::enter_finalizing).
+    finalizing: AtomicUsize,
+
     // PID of the process that created this runtime; used in Drop to detect fork.
     creation_pid: u32,
 
@@ -177,6 +191,7 @@ impl XetRuntime {
             handle_ref: OnceLock::new(),
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
+            finalizing: AtomicUsize::new(0),
             creation_pid: std::process::id(),
             system_monitor: system_monitor_for_config(config),
         });
@@ -237,6 +252,7 @@ impl XetRuntime {
             handle_ref: rt_handle.into(),
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
+            finalizing: AtomicUsize::new(0),
             creation_pid: std::process::id(),
             system_monitor: system_monitor_for_config(config),
         });
@@ -256,6 +272,7 @@ impl XetRuntime {
             handle_ref: rt_handle.into(),
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
+            finalizing: AtomicUsize::new(0),
             creation_pid: std::process::id(),
             system_monitor: None,
         })
@@ -383,6 +400,21 @@ impl XetRuntime {
     /// and false otherwise.
     pub fn in_sigint_shutdown(&self) -> bool {
         self.sigint_shutdown.load(Ordering::SeqCst)
+    }
+
+    /// Marks the caller as inside work that a shutdown must not interrupt, until the guard drops.
+    ///
+    /// Shutting this runtime down cancels whatever is still running, so a caller about to do that
+    /// can poll [`finalizing_in_flight`](Self::finalizing_in_flight) first and give such work a
+    /// chance to finish. The runtime does not care what the work is; it only counts.
+    pub fn enter_finalizing(self: &Arc<Self>) -> FinalizingGuard {
+        self.finalizing.fetch_add(1, Ordering::AcqRel);
+        FinalizingGuard(self.clone())
+    }
+
+    /// How many [`enter_finalizing`](Self::enter_finalizing) guards are currently held.
+    pub fn finalizing_in_flight(&self) -> usize {
+        self.finalizing.load(Ordering::Acquire)
     }
 
     fn check_sigint(&self) -> Result<(), RuntimeError> {
