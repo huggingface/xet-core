@@ -108,12 +108,10 @@ wall time — to the CAS server at the end of each upload or download. It is bes
 retried, and it cannot delay or fail a transfer. The payload contains **no file names, paths,
 hashes, repository ids, or user ids**.
 
-To turn it off, use any of:
+To turn it off:
 
 ```bash
-HF_XET_TELEMETRY_ENABLED=0   # hf-xet specific
-HF_HUB_DISABLE_TELEMETRY=1   # shared with the rest of the huggingface_hub stack
-HF_HUB_OFFLINE=1             # implies the above
+HF_XET_TELEMETRY_ENABLED=0
 ```
 
 Tuning (rarely needed):

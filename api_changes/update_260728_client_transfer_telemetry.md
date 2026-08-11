@@ -46,11 +46,6 @@ default is sized as a process-wide number accordingly: a transfer emits one term
 heartbeats only begin after `heartbeat_after`, so the realistic burst is a set of concurrent
 transfers finalizing together.
 
-`HF_HUB_DISABLE_TELEMETRY` and `HF_HUB_OFFLINE` also force it off, and win over
-`HF_XET_TELEMETRY_ENABLED=1`. These are applied at the end of `XetConfig::with_env_overrides`
-rather than through `ENVIRONMENT_NAME_ALIASES`, because that table maps names with identical
-polarity and these are inverted.
-
 ### `Client` trait gained a method — **with a default body**
 
 ```rust
