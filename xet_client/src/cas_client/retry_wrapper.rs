@@ -82,10 +82,9 @@ impl RetryWrapper {
         self
     }
 
-    /// Mark 416 responses as expected (reconstruction walking past the end of the file). When set,
-    /// a 416 is still returned as a fatal (non-retried) error to the caller — which converts it to
-    /// `Ok(None)` — but it is logged at debug level as an expected end-of-reconstruction instead of
-    /// as a failed api call.
+    /// Mark 416 responses as expected (reconstruction past the end of the file). Still returned as a
+    /// fatal (non-retried) error, which the caller converts to `Ok(None)`, but logged at debug level
+    /// instead of as a failed api call.
     pub fn with_expected_416(mut self) -> Self {
         self.expected_416 = true;
         self
@@ -206,10 +205,8 @@ impl RetryWrapper {
                     let cas_err = process_error("Retry on 403 (Forbidden) enabled)", e, true);
                     Err(RetryableReqwestError::RetryableError(cas_err))
                 } else if e.status() == Some(StatusCode::RANGE_NOT_SATISFIABLE) && self.expected_416 {
-                    // Not a failure: reconstruction requests successive segments until the server
-                    // reports the requested range is past the end of the file, so a 416 is the
-                    // normal termination signal. Log at debug only and skip `process_error`, whose
-                    // "api call failed" wording is misleading here.
+                    // Not a failure: every download requests segments until one comes back 416, so
+                    // this is the normal termination signal, not a failed api call.
                     debug!(
                         "Reached end of reconstruction: {api:?} returned 416 (Range Not Satisfiable) (request id {request_id}{retry_str})"
                     );
