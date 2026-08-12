@@ -2,20 +2,6 @@ use crate::utils::ByteSize;
 
 crate::config_group!({
 
-    /// The target shard size in bytes.
-    ///
-    /// The default value is 67108864.
-    ///
-    /// Use the environment variable `HF_XET_SHARD_TARGET_SIZE` to set this value.
-    ref target_size: u64 = 64 * 1024 * 1024;
-
-    /// Maximum shard size; small shards are aggregated until they are at most this.
-    ///
-    /// The default value is 67108864.
-    ///
-    /// Use the environment variable `HF_XET_SHARD_MAX_TARGET_SIZE` to set this value.
-    ref max_target_size: u64 = 64 * 1024 * 1024;
-
     /// The (soft) maximum size in bytes of the shard cache.  Default is 16 GB.
     ///
     /// As a rough calculation, a cache of size X will allow for dedup against data

@@ -293,8 +293,10 @@ mod tests {
 
     #[test]
     fn test_with_config_roundtrip_all_groups() {
-        let config = XetConfig::default().with_config("shard.target_size", "2048").unwrap();
-        assert_eq!(config.get("shard.target_size").unwrap(), "2048");
+        let config = XetConfig::default()
+            .with_config("shard.chunk_index_table_max_size", "2048")
+            .unwrap();
+        assert_eq!(config.get("shard.chunk_index_table_max_size").unwrap(), "2048");
 
         let config = XetConfig::default()
             .with_config("deduplication.min_n_chunks_per_range", "4")
@@ -342,7 +344,7 @@ mod tests {
         let keys = XetConfig::default().all_keys();
         let expected_samples = [
             "data.max_concurrent_file_ingestion",
-            "shard.target_size",
+            "shard.chunk_index_table_max_size",
             "deduplication.min_n_chunks_per_range",
             "chunk_cache.size_bytes",
             "client.retry_max_attempts",

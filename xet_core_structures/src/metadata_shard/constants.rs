@@ -7,6 +7,9 @@ xet_runtime::test_configurable_constants! {
     /// eligible if the hash modulus this value is zero.
     ref MDB_SHARD_GLOBAL_DEDUP_CHUNK_MODULUS: u64 = 1024;
 
+    /// The target shard size in bytes.
+    ref MDB_SHARD_TARGET_SIZE: u64 = 64 * 1024 * 1024;
+
     /// The amount of time a shard should be expired by before it's deleted, in seconds.
     /// By default set to 7 days.
     ref MDB_SHARD_EXPIRATION_BUFFER: Duration = Duration::from_secs(7 * 24 * 3600);

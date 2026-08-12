@@ -2,6 +2,7 @@ use std::time::Duration;
 
 // Run tests that determine deduplication, especially across different test subjects.
 use xet_data::deduplication::constants::{MAX_XORB_CHUNKS, TARGET_CHUNK_SIZE};
+use xet_core_structures::metadata_shard::MDB_SHARD_TARGET_SIZE;
 use xet_runtime::{test_set_config, test_set_constants};
 
 // Runs this test suite with small chunks and xorbs so that we can make sure that all the different edge
@@ -9,6 +10,7 @@ use xet_runtime::{test_set_config, test_set_constants};
 test_set_constants! {
     TARGET_CHUNK_SIZE = 1024;
     MAX_XORB_CHUNKS = 2;
+    MDB_SHARD_TARGET_SIZE = 1024u64;
 }
 
 test_set_config! {
@@ -19,9 +21,6 @@ test_set_config! {
         // Set the maximum xorb flush count to 1 so that every xorb gets flushed to the temporary session
         // pool.
         session_xorb_metadata_flush_max_count = 1;
-    }
-    metadata_shard {
-        target_size = 1024u64;
     }
 }
 
