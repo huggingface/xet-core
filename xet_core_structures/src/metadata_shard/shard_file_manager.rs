@@ -9,7 +9,7 @@ use tracing::{debug, info, instrument, trace, warn};
 use xet_runtime::core::{XetCommon, XetContext};
 use xet_runtime::utils::RwTaskLock;
 
-use super::constants::MDB_SHARD_EXPIRATION_BUFFER;
+use super::constants::{MDB_SHARD_EXPIRATION_BUFFER, MDB_SHARD_TARGET_SIZE};
 use super::file_structs::*;
 use super::shard_file_handle::{MDBShardFile, ShardFileCache};
 use super::shard_file_reconstructor::FileReconstructor;
@@ -112,7 +112,7 @@ impl ShardFileManager {
         session_directory: impl AsRef<Path>,
         scan_directory: bool,
     ) -> Result<Arc<Self>> {
-        Self::new_impl(ctx, session_directory, false, ctx.config.shard.max_target_size, scan_directory, 0).await
+        Self::new_impl(ctx, session_directory, false, *MDB_SHARD_TARGET_SIZE, scan_directory, 0).await
     }
 
     // Construction functions
@@ -121,7 +121,7 @@ impl ShardFileManager {
             ctx,
             cache_directory,
             true,
-            ctx.config.shard.max_target_size,
+            *MDB_SHARD_TARGET_SIZE,
             true,
             ctx.config.shard.cache_size_limit.as_u64(),
         )
@@ -498,7 +498,7 @@ impl ShardFileManager {
     pub async fn add_file_reconstruction_info(&self, file_info: MDBFileInfo) -> Result<()> {
         let mut lg = self.current_state.write().await;
 
-        let new_shard_path = if lg.shard_file_size() + file_info.num_bytes() > self.target_shard_max_size {
+        let new_shard_path = if lg.shard_file_size() + file_info.num_bytes()? > self.target_shard_max_size {
             let path = Self::cut_shard(&mut lg, &self.shard_directory)?;
             Some(path)
         } else {
@@ -845,7 +845,7 @@ mod tests {
             let merged_shards = consolidate_shards_in_directory(
                 &ctx.runtime,
                 tmp_dir.path(),
-                ctx.config.shard.max_target_size,
+                *MDB_SHARD_TARGET_SIZE,
                 false,
                 &sfc,
             )?;
@@ -930,7 +930,7 @@ mod tests {
                 let merged_shards = consolidate_shards_in_directory(
                     &ctx.runtime,
                     tmp_dir.path(),
-                    ctx.config.shard.max_target_size,
+                    *MDB_SHARD_TARGET_SIZE,
                     false,
                     &sfc,
                 )
@@ -1166,7 +1166,7 @@ mod tests {
     }
 
     async fn shard_list_with_timestamp_filtering(ctx: &XetContext, path: &Path) -> Result<Vec<Arc<MDBShardFile>>> {
-        ShardFileManager::new_impl(ctx, path, false, ctx.config.shard.max_target_size, true, 0)
+        ShardFileManager::new_impl(ctx, path, false, *MDB_SHARD_TARGET_SIZE, true, 0)
             .await?
             .registered_shard_list()
             .await
