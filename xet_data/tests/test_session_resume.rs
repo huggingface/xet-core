@@ -1,8 +1,8 @@
 use std::time::Duration;
 
+use xet_core_structures::metadata_shard::MDB_SHARD_TARGET_SIZE;
 // Run tests that determine deduplication, especially across different test subjects.
 use xet_data::deduplication::constants::{MAX_XORB_CHUNKS, TARGET_CHUNK_SIZE};
-use xet_core_structures::metadata_shard::MDB_SHARD_TARGET_SIZE;
 use xet_runtime::{test_set_config, test_set_constants};
 
 // Runs this test suite with small chunks and xorbs so that we can make sure that all the different edge

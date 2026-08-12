@@ -842,13 +842,8 @@ mod tests {
             verify_metadata_shards_match(&mdb2, &mdb_in_mem, true).await?;
 
             // Now, merge shards in the background.
-            let merged_shards = consolidate_shards_in_directory(
-                &ctx.runtime,
-                tmp_dir.path(),
-                *MDB_SHARD_TARGET_SIZE,
-                false,
-                &sfc,
-            )?;
+            let merged_shards =
+                consolidate_shards_in_directory(&ctx.runtime, tmp_dir.path(), *MDB_SHARD_TARGET_SIZE, false, &sfc)?;
 
             assert_eq!(merged_shards.len(), 1);
             for si in merged_shards {
@@ -927,14 +922,9 @@ mod tests {
             }
 
             {
-                let merged_shards = consolidate_shards_in_directory(
-                    &ctx.runtime,
-                    tmp_dir.path(),
-                    *MDB_SHARD_TARGET_SIZE,
-                    false,
-                    &sfc,
-                )
-                .unwrap();
+                let merged_shards =
+                    consolidate_shards_in_directory(&ctx.runtime, tmp_dir.path(), *MDB_SHARD_TARGET_SIZE, false, &sfc)
+                        .unwrap();
 
                 assert_eq!(merged_shards.len(), 1);
 

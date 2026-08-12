@@ -650,10 +650,7 @@ mod tests {
         let file_info = gen_random_file_info(&mut rng, &2, true, true);
 
         assert!(file_info.metadata_ext.is_some());
-        assert_eq!(
-            file_info.metadata.num_info_entry_following().unwrap(),
-            file_info.metadata.num_entries * 2 + 1
-        );
+        assert_eq!(file_info.metadata.num_info_entry_following().unwrap(), file_info.metadata.num_entries * 2 + 1);
 
         let size = file_info.num_bytes().unwrap();
         let mut buffer = Vec::new();

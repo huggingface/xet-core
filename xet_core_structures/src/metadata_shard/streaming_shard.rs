@@ -36,9 +36,8 @@ fn checked_section_bytes(num_payload_entries: u64, entry_size: u64, size_limit: 
     if n_bytes > size_limit {
         return Err(CoreError::invalid_shard(format!("shard section size {n_bytes} exceeds limit {size_limit}")));
     }
-    usize::try_from(n_bytes).map_err(|_| {
-        CoreError::invalid_shard(format!("shard section size {n_bytes} exceeds addressable memory"))
-    })
+    usize::try_from(n_bytes)
+        .map_err(|_| CoreError::invalid_shard(format!("shard section size {n_bytes} exceeds addressable memory")))
 }
 
 /// Runs through a shard file info section, calling the specified callback function for each entry.
@@ -117,11 +116,8 @@ where
             break;
         }
 
-        let n_bytes = checked_section_bytes(
-            header.num_entries as u64,
-            size_of::<XorbChunkSequenceEntry>() as u64,
-            size_limit,
-        )?;
+        let n_bytes =
+            checked_section_bytes(header.num_entries as u64, size_of::<XorbChunkSequenceEntry>() as u64, size_limit)?;
         account_bytes(&mut size_limit, n_bytes as u64)?;
 
         let mut xorb_data = Vec::with_capacity(size_of::<XorbChunkSequenceHeader>() + n_bytes);
@@ -206,11 +202,8 @@ where
             break;
         }
 
-        let n_bytes = checked_section_bytes(
-            header.num_entries as u64,
-            size_of::<XorbChunkSequenceEntry>() as u64,
-            size_limit,
-        )?;
+        let n_bytes =
+            checked_section_bytes(header.num_entries as u64, size_of::<XorbChunkSequenceEntry>() as u64, size_limit)?;
         account_bytes(&mut size_limit, n_bytes as u64)?;
         let total_len = header_size + n_bytes;
 
