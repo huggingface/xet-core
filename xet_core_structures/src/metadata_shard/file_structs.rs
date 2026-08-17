@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use super::shard_file::MDB_FILE_INFO_ENTRY_SIZE;
 use super::xorb_structs::{XorbChunkSequenceEntry, XorbChunkSequenceHeader};
-use crate::error::{CoreError, Result as CoreResult};
+use crate::error::CoreError;
 use crate::merklehash::data_hash::hex;
 use crate::merklehash::{DataHash, MerkleHash};
 use crate::serialization_utils::*;
@@ -121,7 +121,7 @@ impl FileDataSequenceHeader {
 
     /// Get the number of info entries following the header in this shard,
     /// this includes "FileDataSequenceEntry"s, "FileVerificationEntry"s, and "FileMetadataExt".
-    pub fn num_info_entry_following(&self) -> CoreResult<u32> {
+    pub fn num_info_entry_following(&self) -> Result<u32, CoreError> {
         let num_metadata_ext: u32 = if self.contains_metadata_ext() { 1 } else { 0 };
         let n = if self.contains_verification() {
             self.num_entries.checked_mul(2).and_then(|n| n.checked_add(num_metadata_ext))
@@ -357,7 +357,7 @@ pub struct MDBFileInfo {
 }
 
 impl MDBFileInfo {
-    pub fn num_bytes(&self) -> CoreResult<u64> {
+    pub fn num_bytes(&self) -> Result<u64, CoreError> {
         Ok(size_of::<FileDataSequenceHeader>() as u64
             + self.metadata.num_info_entry_following()? as u64 * MDB_FILE_INFO_ENTRY_SIZE as u64)
     }
