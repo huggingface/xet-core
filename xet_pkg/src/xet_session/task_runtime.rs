@@ -286,37 +286,35 @@ impl TaskRuntime {
         self.bridge_async_finalizing_inner(task_name, allow_repeat, Box::pin(fut), true)
     }
 
-    fn bridge_async_finalizing_inner<T>(
+    async fn bridge_async_finalizing_inner<T>(
         &self,
         task_name: &'static str,
         allow_repeat: bool,
         fut: BoxedBridgeFuture<T>,
         cancellable: bool,
-    ) -> impl Future<Output = Result<T, XetError>> + MaybeSend + '_
+    ) -> Result<T, XetError>
     where
         T: MaybeSend + 'static,
     {
-        async move {
-            self.transition_to_finalizing(task_name, allow_repeat)?;
-            // A terminal report is produced at the tail of `fut`; hold the runtime open until it
-            // has. `sigint_abort` polls this rather than sleeping a fixed budget.
-            #[cfg(not(target_family = "wasm"))]
-            let _finalizing = self.runtime.enter_finalizing();
+        self.transition_to_finalizing(task_name, allow_repeat)?;
+        // A terminal report is produced at the tail of `fut`; hold the runtime open until it
+        // has. `sigint_abort` polls this rather than sleeping a fixed budget.
+        #[cfg(not(target_family = "wasm"))]
+        let _finalizing = self.runtime.enter_finalizing();
 
-            let result = if cancellable {
-                self.run_inner_async(task_name, fut).await
-            } else {
-                self.run_inner_async_to_completion(task_name, fut).await
-            };
-            match &result {
-                Ok(_) => self.set_state(XetTaskState::Completed)?,
-                Err(XetError::UserCancelled(_)) => {
-                    self.set_state(XetTaskState::UserCancelled)?;
-                },
-                Err(e) => self.set_state(XetTaskState::Error(e.to_string()))?,
-            }
-            result
+        let result = if cancellable {
+            self.run_inner_async(task_name, fut).await
+        } else {
+            self.run_inner_async_to_completion(task_name, fut).await
+        };
+        match &result {
+            Ok(_) => self.set_state(XetTaskState::Completed)?,
+            Err(XetError::UserCancelled(_)) => {
+                self.set_state(XetTaskState::UserCancelled)?;
+            },
+            Err(e) => self.set_state(XetTaskState::Error(e.to_string()))?,
         }
+        result
     }
 }
 
