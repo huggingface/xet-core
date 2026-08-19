@@ -26,14 +26,23 @@ High-performance mode (`HF_XET_HIGH_PERFORMANCE` / `HF_XET_HP`) uses fractions
 twice as aggressive (usable/8, usable/32, usable/2) with the same floors and
 ceilings — it no longer sets a 16GB base buffer on an 8GB machine.
 
+## Toolchain and dependency changes
+
+- **Rust toolchain: 1.94.1 -> 1.95.0** (all CI workflow pins). Required by
+  sysinfo 0.39.
+- **sysinfo: 0.38.4 -> 0.39.6** (workspace pin `0.39`; all four lockfiles).
+  0.39 adds `Process::cgroup_limits()`, which resolves the cgroup path from
+  `/proc/<pid>/cgroup` and takes the tightest memory limit across ancestor
+  cgroups (v1 and v2) — the container-aware probe this change needs, so no
+  hand-rolled `/proc` parsing is maintained in this repo.
+
 ## New API
 
 - `xet_runtime::utils::system_memory` (new module): `usable_system_memory()`
-  (cached probe; host total via sysinfo, cgroup limit via a hand-rolled walk of
-  the paths in `/proc/self/cgroup`, handling cgroup v1, v2, nested paths, and
-  namespaced roots), `default_download_buffer_sizes()`,
-  `high_performance_download_buffer_sizes()`, `STATIC_DEFAULTS`,
-  `STATIC_HP_DEFAULTS`.
+  (cached probe; host total via sysinfo, cgroup limit via sysinfo 0.39's
+  `Process::cgroup_limits` — cgroup v1 + v2, nested paths, namespaced roots),
+  `default_download_buffer_sizes()`, `high_performance_download_buffer_sizes()`,
+  `STATIC_DEFAULTS`, `STATIC_HP_DEFAULTS`.
 - `reconstruction::ConfigValueGroup::normalize()`: raises
   `download_buffer_limit` to `download_buffer_size` if it is below it. Called
   by `XetContext::new` before the config is frozen. Previously an env

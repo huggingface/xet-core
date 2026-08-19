@@ -3,16 +3,15 @@
 //! The download buffer configuration defaults (see `config::groups::reconstruction`) are
 //! derived from the memory actually usable by this process: the minimum of the host's
 //! physical RAM and the effective cgroup memory limit. Inside a container, the cgroup
-//! limit is what matters; `sysinfo` (and `psutil` in Python) report the host total, which
-//! is how a 1 GiB pod would otherwise size a multi-GB buffer.
+//! limit is what matters; `System::total_memory` (and `psutil` in Python) report the
+//! host total, which is how a 1 GiB pod would otherwise size a multi-GB buffer.
 //!
-//! The cgroup probe walks the cgroup path listed in `/proc/self/cgroup` rather than
-//! reading the controller root: under cgroup v2 the limit lives at that path (the
-//! controller root has no `memory.max` at all on a host), and under cgroup v1 a nested
-//! path (a Slurm step, a systemd slice) reads "unlimited" at the controller root.
-//! Ancestors are also consulted, taking the tightest bound.
+//! The cgroup limit comes from sysinfo's `Process::cgroup_limits` (sysinfo >= 0.39),
+//! which resolves the cgroup path listed in `/proc/self/cgroup` rather than reading the
+//! controller root, and takes the tightest bound across ancestor cgroups. That covers
+//! cgroup v2 and v1, nested paths (a Slurm step, a systemd slice), and namespaced
+//! container roots.
 
-use std::path::Path;
 use std::sync::LazyLock;
 
 use tracing::info;
@@ -22,10 +21,6 @@ use crate::utils::configuration_utils::parse_bool_value;
 
 /// Round derived values down to a multiple of this, for clean display values.
 const ROUND_TO: u64 = 8_000_000;
-
-/// cgroup v1 reports "no limit" as a very large page-aligned value (PAGE_COUNTER_MAX,
-/// typically 0x7FFF_FFFF_FFFF_F000). Anything at or above this is treated as unbounded.
-const CGROUP_V1_UNLIMITED: u64 = 0x7FFF_FFFF_FFFF_F000;
 
 /// Memory available to this process, as best we can determine.
 #[derive(Debug, Clone, Copy)]
@@ -117,76 +112,26 @@ fn derive(usable: u64, fractions: &Fractions) -> DownloadBufferDefaults {
     }
 }
 
-/// Read the limit file at `base/<cg_path>` and each of its ancestors up to and
-/// including `base`, feeding every bounded numeric value found to `consider`.
-/// Missing files or directories are skipped: a namespaced or partially-visible
-/// hierarchy degrades to reading the root, never to an error.
-fn walk_limit_files(base: &Path, cg_path: &str, file_name: &str, consider: &mut impl FnMut(u64)) {
-    let mut dir = base.join(cg_path.trim_matches('/'));
-    loop {
-        if let Ok(contents) = std::fs::read_to_string(dir.join(file_name)) {
-            // Non-numeric contents (the literal "max" under cgroup v2) mean unbounded.
-            if let Ok(value) = contents.trim().parse::<u64>() {
-                consider(value);
-            }
-        }
-        if dir == *base || !dir.pop() {
-            break;
-        }
-    }
-}
-
-/// Parse `/proc/self/cgroup` contents and resolve the effective memory limit by walking
-/// the named cgroup path (and its ancestors) under `cgroup_fs_root`.
-///
-/// Handles cgroup v2 (`0::<path>` entries, `memory.max` files, literal `max` meaning
-/// unbounded), cgroup v1 (`<n>:memory:<path>` entries, `memory.limit_in_bytes` files,
-/// PAGE_COUNTER_MAX meaning unbounded), and hybrid setups (minimum of both). Missing
-/// files and directories are skipped, so a namespaced or partially-visible hierarchy
-/// degrades to reading the root, never to an error.
-pub fn cgroup_effective_memory_limit(proc_cgroup_contents: &str, cgroup_fs_root: &Path) -> Option<u64> {
-    let mut effective: Option<u64> = None;
-    let mut consider = |value: u64| {
-        if value < CGROUP_V1_UNLIMITED {
-            effective = Some(effective.map_or(value, |current: u64| current.min(value)));
-        }
-    };
-
-    for line in proc_cgroup_contents.lines() {
-        let mut parts = line.splitn(3, ':');
-        let (Some(_hierarchy), Some(controllers), Some(cg_path)) = (parts.next(), parts.next(), parts.next()) else {
-            continue;
-        };
-
-        if controllers.is_empty() {
-            // cgroup v2 unified entry: "0::<path>".
-            walk_limit_files(cgroup_fs_root, cg_path, "memory.max", &mut consider);
-        } else if controllers.split(',').any(|c| c == "memory") {
-            // cgroup v1: the memory controller hierarchy is mounted at <root>/memory.
-            walk_limit_files(&cgroup_fs_root.join("memory"), cg_path, "memory.limit_in_bytes", &mut consider);
-        }
-    }
-
-    effective
-}
-
 #[cfg(not(target_family = "wasm"))]
 fn probe_usable_memory() -> UsableMemory {
-    use sysinfo::{MemoryRefreshKind, RefreshKind, System};
+    use sysinfo::{MemoryRefreshKind, ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System};
 
-    let system =
+    let mut system =
         System::new_with_specifics(RefreshKind::nothing().with_memory(MemoryRefreshKind::nothing().with_ram()));
     let host_total = match system.total_memory() {
         0 => None,
         total => Some(total),
     };
 
-    #[cfg(target_os = "linux")]
-    let cgroup_limit = std::fs::read_to_string("/proc/self/cgroup")
-        .ok()
-        .and_then(|contents| cgroup_effective_memory_limit(&contents, Path::new("/sys/fs/cgroup")));
-    #[cfg(not(target_os = "linux"))]
-    let cgroup_limit = None;
+    // `Process::cgroup_limits` resolves this process's cgroup path from /proc and takes
+    // the tightest memory limit across ancestor cgroups (v1 and v2). It returns None on
+    // non-Linux systems. When no limit binds, its total_memory equals the host total, so
+    // filter that case out to keep `cgroup_limit = None` meaning "no limit set".
+    let cgroup_limit = sysinfo::get_current_pid().ok().and_then(|pid| {
+        system.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), false, ProcessRefreshKind::nothing());
+        let limits = system.process(pid)?.cgroup_limits()?;
+        Some(limits.total_memory).filter(|&limit| host_total.is_none_or(|host| limit < host))
+    });
 
     UsableMemory {
         host_total,
@@ -271,8 +216,6 @@ pub fn high_performance_download_buffer_sizes() -> DownloadBufferDefaults {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
 
     fn triple(d: DownloadBufferDefaults) -> (u64, u64, u64) {
@@ -368,107 +311,6 @@ mod tests {
                 usable = usable * 5 / 4;
             }
         }
-    }
-
-    // --- cgroup parsing fixtures ---
-
-    fn write_cgroup_file(root: &Path, rel: &str, file: &str, contents: &str) {
-        let dir = root.join(rel);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(file), contents).unwrap();
-    }
-
-    #[test]
-    fn test_cgroup_v2_nested_path() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        write_cgroup_file(root, "a/b", "memory.max", "1073741824\n");
-        write_cgroup_file(root, "a", "memory.max", "max\n");
-        assert_eq!(cgroup_effective_memory_limit("0::/a/b\n", root), Some(1_073_741_824));
-    }
-
-    #[test]
-    fn test_cgroup_v2_min_of_ancestors() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        write_cgroup_file(root, "a", "memory.max", "536870912\n");
-        write_cgroup_file(root, "a/b", "memory.max", "1073741824\n");
-        assert_eq!(cgroup_effective_memory_limit("0::/a/b\n", root), Some(536_870_912));
-    }
-
-    #[test]
-    fn test_cgroup_v2_container_root() {
-        // In a Docker/k8s container with cgroup namespaces, the process sees "0::/".
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        write_cgroup_file(root, "", "memory.max", "2147483648\n");
-        assert_eq!(cgroup_effective_memory_limit("0::/\n", root), Some(2_147_483_648));
-    }
-
-    #[test]
-    fn test_cgroup_v2_unlimited() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        write_cgroup_file(root, "a", "memory.max", "max\n");
-        write_cgroup_file(root, "", "memory.max", "max\n");
-        assert_eq!(cgroup_effective_memory_limit("0::/a\n", root), None);
-    }
-
-    #[test]
-    fn test_cgroup_v1_nested_slurm_style() {
-        // Nested v1 path (e.g. a Slurm step): the limit is on the nested path while
-        // the controller root reads PAGE_COUNTER_MAX ("unlimited").
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        write_cgroup_file(root, "memory/slurm/job123/step0", "memory.limit_in_bytes", "4294967296\n");
-        write_cgroup_file(root, "memory", "memory.limit_in_bytes", "9223372036854771712\n");
-        let contents = "12:memory:/slurm/job123/step0\n11:cpu,cpuacct:/\n";
-        assert_eq!(cgroup_effective_memory_limit(contents, root), Some(4_294_967_296));
-    }
-
-    #[test]
-    fn test_cgroup_v1_comounted_controllers() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        write_cgroup_file(root, "memory/x", "memory.limit_in_bytes", "1000000000\n");
-        assert_eq!(cgroup_effective_memory_limit("5:memory,hugetlb:/x\n", root), Some(1_000_000_000));
-    }
-
-    #[test]
-    fn test_cgroup_v1_unlimited_sentinel() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        write_cgroup_file(root, "memory", "memory.limit_in_bytes", "9223372036854771712\n");
-        assert_eq!(cgroup_effective_memory_limit("12:memory:/\n", root), None);
-    }
-
-    #[test]
-    fn test_cgroup_hybrid_takes_min() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        write_cgroup_file(root, "foo", "memory.max", "8000000000\n");
-        write_cgroup_file(root, "memory/bar", "memory.limit_in_bytes", "4000000000\n");
-        let contents = "0::/foo\n7:memory:/bar\n";
-        assert_eq!(cgroup_effective_memory_limit(contents, root), Some(4_000_000_000));
-    }
-
-    #[test]
-    fn test_cgroup_malformed_contents() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        assert_eq!(cgroup_effective_memory_limit("garbage with no colons\n", root), None);
-        assert_eq!(cgroup_effective_memory_limit("", root), None);
-    }
-
-    #[test]
-    fn test_cgroup_missing_dirs_fall_back_to_root() {
-        // A path from /proc/self/cgroup that is not visible under the mounted
-        // hierarchy (mount/cgroup namespace mismatch): the walk skips missing
-        // directories and still picks up a root-level limit.
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        write_cgroup_file(root, "", "memory.max", "1000000000\n");
-        assert_eq!(cgroup_effective_memory_limit("0::/nonexistent/deep/path\n", root), Some(1_000_000_000));
     }
 
     // --- probe and kill switch ---
