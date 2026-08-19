@@ -50,10 +50,10 @@ crate::config_group!({
     ///
     /// Set to zero to make the terminal send fully detached.
     ///
-    /// The default value is 2 seconds.
+    /// The default value is 500 milliseconds.
     ///
     /// Use the environment variable `HF_XET_TELEMETRY_FINAL_FLUSH_TIMEOUT` to set this value.
-    ref final_flush_timeout: Duration = Duration::from_secs(2);
+    ref final_flush_timeout: Duration = Duration::from_millis(500);
 
     /// Maximum number of telemetry requests allowed in flight at once, across the whole process.
     ///
@@ -115,7 +115,7 @@ mod tests {
         assert_eq!(t.heartbeat_after.as_secs(), 300);
         assert_eq!(t.heartbeat_interval.as_secs(), 300);
         assert_eq!(t.request_timeout.as_secs(), 5);
-        assert_eq!(t.final_flush_timeout.as_secs(), 2);
+        assert_eq!(t.final_flush_timeout.as_millis(), 500);
         // Process-wide, not per-transfer - see `max_in_flight`'s docs for why it is sized this way.
         assert_eq!(t.max_in_flight, 32);
     }

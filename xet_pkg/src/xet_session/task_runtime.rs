@@ -249,6 +249,12 @@ impl TaskRuntime {
         }
     }
 
+    /// Finalizing bridge for inner work that observes the cancellation token itself.
+    ///
+    /// Runs the future to completion instead of racing it against the token, so its tail - the
+    /// terminal report - always runs. Use
+    /// [`bridge_async_finalizing_cancellable`](Self::bridge_async_finalizing_cancellable) instead
+    /// if the inner future doesn't watch the token itself.
     pub(super) fn bridge_async_finalizing<T, F>(
         &self,
         task_name: &'static str,
@@ -259,20 +265,56 @@ impl TaskRuntime {
         F: Future<Output = Result<T, XetError>> + MaybeSend + 'static,
         T: MaybeSend + 'static,
     {
-        let fut: BoxedBridgeFuture<T> = Box::pin(fut);
-        async move {
-            self.transition_to_finalizing(task_name, allow_repeat)?;
+        self.bridge_async_finalizing_inner(task_name, allow_repeat, Box::pin(fut), false)
+    }
 
-            let result = self.run_inner_async(task_name, fut).await;
-            match &result {
-                Ok(_) => self.set_state(XetTaskState::Completed)?,
-                Err(XetError::UserCancelled(_)) => {
-                    self.set_state(XetTaskState::UserCancelled)?;
-                },
-                Err(e) => self.set_state(XetTaskState::Error(e.to_string()))?,
-            }
-            result
+    /// Finalizing bridge that races the inner future against cancellation.
+    ///
+    /// Only for inner work that cannot observe the token itself; costs the terminal report when
+    /// the race fires, so prefer [`bridge_async_finalizing`](Self::bridge_async_finalizing)
+    /// wherever the inner work watches the token.
+    pub(super) fn bridge_async_finalizing_cancellable<T, F>(
+        &self,
+        task_name: &'static str,
+        allow_repeat: bool,
+        fut: F,
+    ) -> impl Future<Output = Result<T, XetError>> + MaybeSend + '_
+    where
+        F: Future<Output = Result<T, XetError>> + MaybeSend + 'static,
+        T: MaybeSend + 'static,
+    {
+        self.bridge_async_finalizing_inner(task_name, allow_repeat, Box::pin(fut), true)
+    }
+
+    async fn bridge_async_finalizing_inner<T>(
+        &self,
+        task_name: &'static str,
+        allow_repeat: bool,
+        fut: BoxedBridgeFuture<T>,
+        cancellable: bool,
+    ) -> Result<T, XetError>
+    where
+        T: MaybeSend + 'static,
+    {
+        self.transition_to_finalizing(task_name, allow_repeat)?;
+        // A terminal report is produced at the tail of `fut`; hold the runtime open until it
+        // has. `sigint_abort` polls this rather than sleeping a fixed budget.
+        #[cfg(not(target_family = "wasm"))]
+        let _finalizing = self.runtime.enter_finalizing();
+
+        let result = if cancellable {
+            self.run_inner_async(task_name, fut).await
+        } else {
+            self.run_inner_async_to_completion(task_name, fut).await
+        };
+        match &result {
+            Ok(_) => self.set_state(XetTaskState::Completed)?,
+            Err(XetError::UserCancelled(_)) => {
+                self.set_state(XetTaskState::UserCancelled)?;
+            },
+            Err(e) => self.set_state(XetTaskState::Error(e.to_string()))?,
         }
+        result
     }
 }
 
@@ -325,6 +367,21 @@ impl TaskRuntime {
         }
     }
 
+    /// Like [`run_inner_async`](Self::run_inner_async) but without the cancellation race, so the
+    /// future's tail - the terminal report - still runs after cancelled work returns.
+    fn run_inner_async_to_completion<T, F>(
+        &self,
+        task_name: &'static str,
+        fut: F,
+    ) -> impl Future<Output = Result<T, XetError>> + Send + 'static
+    where
+        F: Future<Output = Result<T, XetError>> + Send + 'static,
+        T: Send + 'static,
+    {
+        let runtime = self.runtime.clone();
+        async move { runtime.bridge_async(task_name, fut).await.map_err(XetError::from)? }
+    }
+
     pub(super) fn bridge_sync<T, F>(&self, task_name: &'static str, fut: F) -> Result<T, XetError>
     where
         F: Future<Output = Result<T, XetError>> + Send + 'static,
@@ -349,6 +406,10 @@ impl TaskRuntime {
         result
     }
 
+    /// Blocking counterpart of [`bridge_async_finalizing`](Self::bridge_async_finalizing): runs
+    /// the future to completion so its terminal report survives a cancel. See that method for
+    /// when to use [`bridge_sync_finalizing_cancellable`](Self::bridge_sync_finalizing_cancellable)
+    /// instead.
     pub(super) fn bridge_sync_finalizing<T, F>(
         &self,
         task_name: &'static str,
@@ -359,12 +420,46 @@ impl TaskRuntime {
         F: Future<Output = Result<T, XetError>> + Send + 'static,
         T: Send + 'static,
     {
+        self.bridge_sync_finalizing_inner(task_name, allow_repeat, fut, false)
+    }
+
+    /// Blocking counterpart of
+    /// [`bridge_async_finalizing_cancellable`](Self::bridge_async_finalizing_cancellable).
+    pub(super) fn bridge_sync_finalizing_cancellable<T, F>(
+        &self,
+        task_name: &'static str,
+        allow_repeat: bool,
+        fut: F,
+    ) -> Result<T, XetError>
+    where
+        F: Future<Output = Result<T, XetError>> + Send + 'static,
+        T: Send + 'static,
+    {
+        self.bridge_sync_finalizing_inner(task_name, allow_repeat, fut, true)
+    }
+
+    fn bridge_sync_finalizing_inner<T, F>(
+        &self,
+        task_name: &'static str,
+        allow_repeat: bool,
+        fut: F,
+        cancellable: bool,
+    ) -> Result<T, XetError>
+    where
+        F: Future<Output = Result<T, XetError>> + Send + 'static,
+        T: Send + 'static,
+    {
         self.transition_to_finalizing(task_name, allow_repeat)?;
+        // See the async variant: keeps the runtime alive until the terminal report is produced.
+        let _finalizing = self.runtime.enter_finalizing();
 
         let token = self.cancellation_token.clone();
         let result = self
             .runtime
             .bridge_sync(async move {
+                if !cancellable {
+                    return fut.await;
+                }
                 tokio::select! {
                     _ = token.cancelled() => Err(XetError::UserCancelled(
                         format!("{task_name} cancelled by user"),
@@ -407,5 +502,19 @@ impl TaskRuntime {
                 result = fut => result,
             }
         }
+    }
+
+    /// Like [`run_inner_async`](Self::run_inner_async) but without the cancellation race, so the
+    /// future's tail - the terminal report - still runs after cancelled work returns.
+    fn run_inner_async_to_completion<T, F>(
+        &self,
+        _task_name: &'static str,
+        fut: F,
+    ) -> impl Future<Output = Result<T, XetError>> + 'static
+    where
+        F: Future<Output = Result<T, XetError>> + 'static,
+        T: 'static,
+    {
+        fut
     }
 }
