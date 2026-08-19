@@ -24,7 +24,12 @@ pub struct XetContext {
 
 impl XetContext {
     /// Creates a context from a pre-built thread pool and configuration.
-    pub fn new(config: XetConfig, runtime: Arc<XetRuntime>) -> Self {
+    ///
+    /// The reconstruction buffer values are normalized here, before the config is
+    /// frozen, so the buffer semaphore bounds and the per-download scaling target
+    /// always read identical, coherent values.
+    pub fn new(mut config: XetConfig, runtime: Arc<XetRuntime>) -> Self {
+        config.reconstruction.normalize();
         let config = Arc::new(config);
         let common = Arc::new(XetCommon::new(&config));
         Self {

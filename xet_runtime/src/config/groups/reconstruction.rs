@@ -25,26 +25,33 @@ crate::config_group!({
     /// file downloads times the per file size up to the global limit of
     /// download_buffer_limit.
     ///
-    /// The default value is 2GB.
+    /// The default is derived from usable memory (the minimum of host RAM and the
+    /// effective cgroup limit): usable/16, clamped to [32MB, 16GB]. If memory cannot
+    /// be determined, or derivation is disabled via
+    /// `HF_XET_MEMORY_DERIVED_DOWNLOAD_BUFFERS=0`, the default is 2GB.
     ///
     /// Use the environment variable `HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE` to set this value.
-    ref download_buffer_size: ByteSize = ByteSize::from("2gb");
+    ref download_buffer_size: ByteSize = crate::utils::system_memory::default_download_buffer_sizes().size;
 
     /// The additional download buffer allocated per active file download.
     /// Each active file download increases the total buffer by this amount.
     ///
-    /// The default value is 512MB.
+    /// The default is derived from usable memory: usable/64, clamped to [8MB, 2GB].
+    /// If memory cannot be determined, or derivation is disabled via
+    /// `HF_XET_MEMORY_DERIVED_DOWNLOAD_BUFFERS=0`, the default is 512MB.
     ///
     /// Use the environment variable `HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERFILE_SIZE` to set this value.
-    ref download_buffer_perfile_size: ByteSize = ByteSize::from("512mb");
+    ref download_buffer_perfile_size: ByteSize = crate::utils::system_memory::default_download_buffer_sizes().perfile;
 
     /// The maximum total download buffer allowed during file reconstruction.
     /// The buffer will not grow beyond this limit regardless of the number of concurrent downloads.
     ///
-    /// The default value is 8GB.
+    /// The default is derived from usable memory: usable/4, clamped to [128MB, 64GB].
+    /// If memory cannot be determined, or derivation is disabled via
+    /// `HF_XET_MEMORY_DERIVED_DOWNLOAD_BUFFERS=0`, the default is 8GB.
     ///
     /// Use the environment variable `HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT` to set this value.
-    ref download_buffer_limit: ByteSize = ByteSize::from("8gb");
+    ref download_buffer_limit: ByteSize = crate::utils::system_memory::default_download_buffer_sizes().limit;
 
     /// The half-life in count of observations for the exponentially weighted moving average used to estimate
     /// completion rate during reconstruction prefetching.
@@ -81,3 +88,20 @@ crate::config_group!({
     ref use_vectored_write: bool = true;
 
 });
+
+impl ConfigValueGroup {
+    /// Ensure the download buffer values are mutually coherent: `download_buffer_limit`
+    /// must be at least `download_buffer_size`, since the buffer semaphore uses the two
+    /// as its (floor, ceiling) bounds. A user raising only the size (e.g. via the env
+    /// var) gets the limit raised to match rather than a panic at context construction.
+    pub fn normalize(&mut self) {
+        if self.download_buffer_limit < self.download_buffer_size {
+            tracing::warn!(
+                "download_buffer_limit ({}) is below download_buffer_size ({}); raising the limit to match",
+                self.download_buffer_limit,
+                self.download_buffer_size
+            );
+            self.download_buffer_limit = self.download_buffer_size;
+        }
+    }
+}
