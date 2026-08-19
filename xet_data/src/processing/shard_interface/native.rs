@@ -19,7 +19,8 @@ use xet_core_structures::metadata_shard::session_directory::{
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::metadata_shard::xorb_structs::MDBXorbInfo;
 use xet_core_structures::metadata_shard::{
-    MDB_SHARD_LOCAL_CACHE_EXPIRATION, MDBShardFile, MDBShardFileHeader, ShardFileManager, get_shard_file_cache,
+    MDB_SHARD_LOCAL_CACHE_EXPIRATION, MDB_SHARD_TARGET_SIZE, MDBShardFile, MDBShardFileHeader, ShardFileManager,
+    get_shard_file_cache,
 };
 use xet_runtime::core::XetContext;
 use xet_runtime::error_printer::ErrorPrinter;
@@ -86,7 +87,7 @@ impl SessionShardInterface {
                     ctx.runtime.clone(),
                     &xorb_metadata_staging_dir,
                     &session_dir,
-                    ctx.config.shard.max_target_size,
+                    *MDB_SHARD_TARGET_SIZE,
                     true,
                     get_shard_file_cache(&ctx.common),
                 ))
@@ -248,7 +249,7 @@ impl SessionShardInterface {
         let shard_list = consolidate_shards_in_directory(
             &self.ctx.runtime,
             self.session_shard_manager.shard_directory(),
-            self.ctx.config.shard.max_target_size,
+            *MDB_SHARD_TARGET_SIZE,
             false,
             self.session_shard_manager.shard_file_cache(),
         )?;

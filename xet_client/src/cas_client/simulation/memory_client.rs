@@ -1179,7 +1179,7 @@ impl super::DeletionControlableClient for MemoryClient {
     async fn delete_file_entry(&self, file_hash: &MerkleHash) -> Result<()> {
         let mut shard = self.shard.write().await;
         if shard.file_content.remove(file_hash).is_some() {
-            shard.recalculate_shard_size();
+            shard.recalculate_shard_size()?;
         }
         Ok(())
     }
