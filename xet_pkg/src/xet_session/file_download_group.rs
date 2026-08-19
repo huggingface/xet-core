@@ -448,7 +448,11 @@ mod tests {
 
     use anyhow::Result;
     use tempfile::tempdir;
+    #[cfg(all(feature = "simulation", not(target_family = "wasm")))]
+    use xet_client::cas_client::simulation::{ClientTestingUtils, LocalTestServerBuilder, NetworkProfileOptions};
     use xet_data::processing::Sha256Policy;
+    #[cfg(all(feature = "simulation", not(target_family = "wasm")))]
+    use xet_runtime::config::XetConfig;
     use xet_runtime::core::RuntimeMode;
 
     use super::*;
@@ -647,6 +651,92 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, XetError::UserCancelled(_)));
+    }
+
+    // ── Abort behavior ────────────────────────────────────────────────────────
+
+    #[cfg(all(feature = "simulation", not(target_family = "wasm")))]
+    fn assert_network_transfer_stops_after(abort: impl FnOnce(&XetSession, &XetFileDownloadGroup)) {
+        const CHUNK_SIZE: usize = 64 * 1024;
+        const DOWNLOAD_STARTED_BYTES: u64 = 128 * 1024;
+
+        // The server must outlive an owned Xet runtime so sigint_abort() can tear
+        // down the client without also stopping the measurement endpoint.
+        let server_runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let server = server_runtime.block_on(async {
+            LocalTestServerBuilder::new()
+                .with_network_profile(NetworkProfileOptions::new().with_bandwidth_bytes_per_sec(512 * 1024).build())
+                .start()
+                .await
+        });
+
+        // Keep each range at 64 KiB. With download concurrency capped at one, a
+        // cancellation may let one range drain but must stop scheduling further ranges.
+        let term_spec: Vec<(u64, (u64, u64))> = (1..=64).map(|seed| (seed, (0, 1))).collect();
+        let file = server_runtime
+            .block_on(server.client().upload_random_file(&term_spec, CHUNK_SIZE))
+            .unwrap();
+
+        let config = XetConfig::default()
+            .with_config("client.ac_max_download_concurrency", 1)
+            .unwrap();
+        let session = XetSessionBuilder::new_with_config(config).build().unwrap();
+        assert_eq!(session.inner.ctx.runtime.mode(), RuntimeMode::Owned);
+        let group = session
+            .new_file_download_group()
+            .unwrap()
+            .with_endpoint(server.http_endpoint())
+            .build_blocking()
+            .unwrap();
+        let temp = tempdir().unwrap();
+        let download_bytes_before = server.total_download_bytes_transferred();
+
+        group
+            .download_file_to_path_blocking(
+                XetFileInfo {
+                    hash: file.file_hash.to_string(),
+                    file_size: Some(file.data.len() as u64),
+                    sha256: None,
+                },
+                temp.path().join("download.bin"),
+            )
+            .unwrap();
+
+        let start_deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while server.total_download_bytes_transferred() < download_bytes_before + DOWNLOAD_STARTED_BYTES {
+            assert!(std::time::Instant::now() < start_deadline, "download never started");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        abort(&session, &group);
+
+        // One second is ample for one 64 KiB in-flight range to drain at <= 512 KiB/s.
+        std::thread::sleep(Duration::from_secs(1));
+        let download_bytes_after_grace = server.total_download_bytes_transferred();
+        std::thread::sleep(Duration::from_millis(500));
+        let download_bytes_after_observation = server.total_download_bytes_transferred();
+
+        assert_eq!(
+            download_bytes_after_observation,
+            download_bytes_after_grace,
+            "download kept transferring after cancellation: {} bytes",
+            download_bytes_after_observation - download_bytes_after_grace,
+        );
+    }
+
+    #[cfg(all(feature = "simulation", not(target_family = "wasm")))]
+    #[test]
+    #[ignore = "known failure: #942"]
+    // group.abort() must stop the group's network transfer, not only the caller-facing task.
+    fn test_group_abort_stops_network_transfer() {
+        assert_network_transfer_stops_after(|_, group| group.abort().unwrap());
+    }
+
+    #[cfg(all(feature = "simulation", not(target_family = "wasm")))]
+    #[test]
+    // session.sigint_abort() is a positive control that stops the same network transfer.
+    fn test_sigint_abort_stops_network_transfer() {
+        assert_network_transfer_stops_after(|session, _| session.sigint_abort().unwrap());
     }
 
     // ── Independence ─────────────────────────────────────────────────────────
