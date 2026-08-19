@@ -333,7 +333,9 @@ fn sigint_abort_still_reports_the_abandoned_download() {
     let endpoint = server.http_endpoint();
 
     let session = XetSessionBuilder::new().build().unwrap();
-    let data = vec![0x5Au8; 96 * 1024];
+    // Large and multi-chunk, like the sibling abandonment tests, so the transfer cannot
+    // complete in the gap between starting it and calling `abort()` below.
+    let data = vec![0x5Au8; 4 * 1024 * 1024];
     let file_info = upload_bytes_sync(&session, endpoint, &data, "aborted.bin");
 
     let dest = temp.path().join("aborted.out");
@@ -360,14 +362,9 @@ fn sigint_abort_still_reports_the_abandoned_download() {
     assert_eq!(doc["metrics"]["terminal"], true);
 }
 
-/// The real Ctrl-C shape: `finish_blocking` is already in flight on another thread when
-/// `sigint_abort` lands.
-///
-/// This is what `hf` does. `start_download_file` only starts the transfer; the wait happens in the
-/// binding's `__exit__` via `finish_blocking`, which pyo3 runs on a spawned thread so it can poll
-/// for Python signals. SIGINT therefore arrives *during* `finish_blocking`, and the interrupt
-/// handler calls `sigint_abort()` while that thread is still inside the finalizing bridge - the
-/// bridge whose `select!` drops the future carrying `finalize_download_session`.
+/// The real Ctrl-C shape: `finish_blocking` is already in flight on another (pyo3-spawned)
+/// thread when `sigint_abort` lands, so the interrupt hits mid-bridge rather than before it
+/// starts.
 #[test]
 #[serial(env)]
 fn sigint_during_finish_still_reports() {

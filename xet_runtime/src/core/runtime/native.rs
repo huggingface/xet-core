@@ -351,10 +351,8 @@ impl XetRuntime {
             return;
         };
 
-        // Let best-effort detached work finish before the drop below cancels it, exactly as
-        // `Drop for XetRuntime` does. Without this, a SIGINT teardown silently discards work that
-        // the graceful path delivers - notably the telemetry document reporting the very transfer
-        // the user just interrupted, which is the abandonment most worth capturing.
+        // Let best-effort detached work finish before the drop below cancels it - notably the
+        // telemetry document reporting the transfer the user just interrupted.
         if let Some(drain) = PRE_SHUTDOWN_DRAIN.get() {
             drain();
         }
@@ -406,7 +404,7 @@ impl XetRuntime {
     ///
     /// Shutting this runtime down cancels whatever is still running, so a caller about to do that
     /// can poll [`finalizing_in_flight`](Self::finalizing_in_flight) first and give such work a
-    /// chance to finish. The runtime does not care what the work is; it only counts.
+    /// chance to finish.
     pub fn enter_finalizing(self: &Arc<Self>) -> FinalizingGuard {
         self.finalizing.fetch_add(1, Ordering::AcqRel);
         FinalizingGuard(self.clone())

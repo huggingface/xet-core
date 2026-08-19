@@ -251,14 +251,10 @@ impl TaskRuntime {
 
     /// Finalizing bridge for inner work that observes the cancellation token itself.
     ///
-    /// The future is run to completion rather than raced against the token. These bridges wrap
-    /// work whose tail *is* the terminal report, so racing the bridge drops that report along with
-    /// the cancelled work - an interrupted transfer then goes unreported entirely. The inner work
-    /// still returns promptly on cancel, via the per-task handles that do watch the token.
-    ///
-    /// Callers whose inner future does **not** watch the token must use
-    /// [`bridge_async_finalizing_cancellable`](Self::bridge_async_finalizing_cancellable), or a
-    /// cancel would block here instead of returning.
+    /// Runs the future to completion instead of racing it against the token, so its tail - the
+    /// terminal report - always runs. Use
+    /// [`bridge_async_finalizing_cancellable`](Self::bridge_async_finalizing_cancellable) instead
+    /// if the inner future doesn't watch the token itself.
     pub(super) fn bridge_async_finalizing<T, F>(
         &self,
         task_name: &'static str,
@@ -274,10 +270,9 @@ impl TaskRuntime {
 
     /// Finalizing bridge that races the inner future against cancellation.
     ///
-    /// Only for inner work that cannot observe the token itself - the race is then the sole thing
-    /// making a cancel prompt. It costs the terminal report when it fires, so prefer
-    /// [`bridge_async_finalizing`](Self::bridge_async_finalizing) wherever the inner work watches
-    /// the token.
+    /// Only for inner work that cannot observe the token itself; costs the terminal report when
+    /// the race fires, so prefer [`bridge_async_finalizing`](Self::bridge_async_finalizing)
+    /// wherever the inner work watches the token.
     pub(super) fn bridge_async_finalizing_cancellable<T, F>(
         &self,
         task_name: &'static str,

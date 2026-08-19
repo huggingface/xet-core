@@ -362,11 +362,9 @@ impl XetSession {
             }
         }
 
-        // Those reports are produced on whichever thread called `finish`, not this one - the
-        // Python bindings run it on a spawned thread so they can poll for signals - so wait for
-        // them rather than racing them. Bounded, because an interrupt must stay responsive and a
-        // report is best-effort; the budget is the telemetry flush budget, since delivering that
-        // report is the whole reason for waiting.
+        // Reports are produced on whichever thread called `finish`, not this one, so wait for
+        // them rather than racing them. Bounded by the telemetry flush budget, since an interrupt
+        // must stay responsive and the report is best-effort.
         let deadline = std::time::Instant::now() + self.inner.ctx.config.telemetry.final_flush_timeout;
         while self.inner.ctx.runtime.finalizing_in_flight() > 0 && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(2));

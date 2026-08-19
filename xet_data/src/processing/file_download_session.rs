@@ -463,13 +463,12 @@ impl Drop for FileDownloadSession {
 
 #[cfg(not(target_family = "wasm"))]
 impl FileDownloadSession {
-    /// Reports this session as abandoned, inferring the outcome from progress, and marks it
-    /// finalized so [`Drop`] does not report it a second time. Idempotent.
+    /// Reports this session as abandoned, inferring the outcome from progress. Idempotent, and
+    /// marks the session finalized so [`Drop`] does not report it again.
     ///
-    /// `Drop` is the normal caller. It is also public because `Drop` is too late for a caller that
-    /// is about to tear the runtime down: `XetSession::sigint_abort` destroys the tokio runtime
-    /// while the group is still alive, so a session left to report from `Drop` would have nothing
-    /// to send on by the time it ran. Such a caller reports here first, while sending still works.
+    /// `Drop` is the normal caller. This is also public for `XetSession::sigint_abort`, which
+    /// destroys the tokio runtime while the group is still alive - too late for `Drop` to send
+    /// anything - so such a caller reports here first, while sending still works.
     pub fn finalize_abandoned(&self) {
         if self.finalized.swap(true, Ordering::AcqRel) {
             return;
