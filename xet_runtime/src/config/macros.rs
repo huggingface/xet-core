@@ -106,7 +106,11 @@ macro_rules! config_group {
                             }
                     }
 
-                    let default_value: $type = $value;
+                    // Fall back to the field's current value (initialized by Default, possibly
+                    // adjusted by a preset such as with_high_performance) rather than
+                    // re-evaluating the default expression: env overrides always win, and
+                    // values applied before this call are preserved.
+                    let default_value: $type = self.$name.clone();
                     self.$name = <$type>::parse_config_value(stringify!($name), maybe_env_value, default_value);
                 }
                 )+

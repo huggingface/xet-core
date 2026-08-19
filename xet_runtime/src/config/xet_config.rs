@@ -134,15 +134,14 @@ crate::all_config_groups!(impl_xet_config_group_dispatch);
 impl XetConfig {
     /// Create a new XetConfig instance with default values and apply environment variable overrides.
     /// If high performance mode is enabled (via environment variables HF_XET_HIGH_PERFORMANCE or HF_XET_HP),
-    /// also applies high performance settings automatically.
-    /// This is equivalent to `XetConfig::default().with_env_overrides()`, with `with_high_performance()`
-    /// called conditionally if high performance mode is enabled.
+    /// high performance settings are applied first and environment variable overrides afterwards,
+    /// so an explicitly set environment variable always beats the high performance preset.
     pub fn new() -> Self {
-        let mut config = Self::default().with_env_overrides();
+        let mut config = Self::default();
         if crate::utils::is_high_performance() {
             config = config.with_high_performance();
         }
-        config
+        config.with_env_overrides()
     }
 
     /// Apply high performance mode settings to this configuration.
@@ -152,10 +151,13 @@ impl XetConfig {
     /// - HF_XET_HIGH_PERFORMANCE
     /// - HF_XET_HP
     ///
-    /// This method sets the following values to their high performance defaults:
-    /// - data.max_concurrent_file_ingestion: 8 -> 100
+    /// This method raises file ingestion concurrency, widens the adaptive concurrency
+    /// bands, raises the reconstruction fetch sizes, and applies the high performance
+    /// (memory-derived) download buffer values.
     ///
-    /// Note: This method is automatically called by `XetConfig::new()` if high performance mode is enabled.
+    /// Note: This method is automatically called by `XetConfig::new()` if high performance mode
+    /// is enabled, before environment variable overrides are applied; explicitly set environment
+    /// variables therefore take precedence over these values.
     pub fn with_high_performance(mut self) -> Self {
         self.data.max_concurrent_file_ingestion = 100;
 
@@ -169,9 +171,10 @@ impl XetConfig {
 
         self.reconstruction.min_reconstruction_fetch_size = ByteSize::from("1gb");
         self.reconstruction.max_reconstruction_fetch_size = ByteSize::from("16gb");
-        self.reconstruction.download_buffer_size = ByteSize::from("16gb");
-        self.reconstruction.download_buffer_perfile_size = ByteSize::from("2gb");
-        self.reconstruction.download_buffer_limit = ByteSize::from("64gb");
+        let hp_buffers = crate::utils::system_memory::high_performance_download_buffer_sizes();
+        self.reconstruction.download_buffer_size = hp_buffers.size;
+        self.reconstruction.download_buffer_perfile_size = hp_buffers.perfile;
+        self.reconstruction.download_buffer_limit = hp_buffers.limit;
 
         self
     }
