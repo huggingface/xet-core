@@ -17,6 +17,7 @@ use super::download_stream_group::{
 use super::errors::SessionError;
 #[cfg(not(target_family = "wasm"))]
 use super::file_download_group::XetFileDownloadGroupBuilder;
+use super::range_upload_commit::XetRangeUploadCommitBuilder;
 use super::task_runtime::{TaskRuntime, XetTaskState};
 use super::upload_commit::XetUploadCommitBuilder;
 
@@ -311,6 +312,33 @@ impl XetSession {
         #[cfg(feature = "fd-track")]
         report_fd_count("XetSession::new_download_stream_group");
         Ok(XetDownloadStreamGroupBuilder::new(self.clone()))
+    }
+
+    /// Create a [`XetRangeUploadCommitBuilder`] for configuring and constructing a range upload (dirty upload).
+    ///
+    /// A range upload edits an existing file by uploading only the changed byte ranges.
+    /// The untouched regions are pulled from the original file in CAS.
+    ///
+    /// Configure the builder with any combination of:
+    /// - [`with_endpoint`](crate::xet_session::auth_group_builder::AuthGroupBuilder::with_endpoint) — CAS server URL
+    /// - [`with_token_info`](crate::xet_session::auth_group_builder::AuthGroupBuilder::with_token_info) — CAS token and expiry
+    /// - [`with_token_refresh_url`](crate::xet_session::auth_group_builder::AuthGroupBuilder::with_token_refresh_url) — URL to refresh the token
+    ///
+    /// Then call [`build`](XetRangeUploadCommitBuilder::build) (async) or
+    /// [`build_blocking`](XetRangeUploadCommitBuilder::build_blocking) (sync) with the original
+    /// file's hash and size.  Queue edits with [`edit`](XetRangeUploadCommit::edit),
+    /// [`insert`](XetRangeUploadCommit::insert), [`delete`](XetRangeUploadCommit::delete), or
+    /// [`append`](XetRangeUploadCommit::append), then call
+    /// [`commit`](XetRangeUploadCommit::commit) (async) or
+    /// [`commit_blocking`](XetRangeUploadCommit::commit_blocking) (sync).
+    ///
+    /// Returns `Err(SessionError::UserCancelled)` if the session has been aborted.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn new_range_upload(&self) -> Result<XetRangeUploadCommitBuilder, SessionError> {
+        self.inner.task_runtime.check_state("new_range_upload")?;
+        #[cfg(feature = "fd-track")]
+        report_fd_count("XetSession::new_range_upload");
+        Ok(XetRangeUploadCommitBuilder::new(self.clone()))
     }
 
     pub fn status(&self) -> Result<XetTaskState, SessionError> {

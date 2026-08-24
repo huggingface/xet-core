@@ -271,6 +271,8 @@ mod errors;
 mod file_download_group;
 #[cfg(not(target_family = "wasm"))]
 mod file_download_handle;
+mod range_upload_commit;
+mod range_upload_edit;
 mod session;
 mod task_runtime;
 #[cfg(test)]
@@ -292,6 +294,8 @@ pub use task_runtime::XetTaskState;
 pub use upload_commit::{XetCommitReport, XetFileMetadata, XetUploadCommit, XetUploadCommitBuilder};
 pub use upload_file_handle::XetFileUpload;
 pub use upload_stream_handle::XetStreamUpload;
+pub use range_upload_commit::{XetRangeUploadCommit, XetRangeUploadCommitBuilder, XetRangeUploadReport};
+pub use range_upload_edit::XetRangeUploadEdit;
 pub use xet_data::deduplication::DeduplicationMetrics;
 pub use xet_data::processing::{Sha256Policy, XetFileInfo};
 pub use xet_data::progress_tracking::{GroupProgressReport, ItemProgressReport, ShardUploadProgressReport};

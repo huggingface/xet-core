@@ -89,6 +89,8 @@ futures = { workspace = true }
 serial_test = { workspace = true }
 smol = { workspace = true }
 tempfile = { workspace = true }
+sha2 = { workspace = true }
+dirs = { workspace = true }
 tokio = { workspace = true, features = [
     "rt-multi-thread",
     "rt",
