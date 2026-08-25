@@ -31,7 +31,6 @@ rand = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sysinfo = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
@@ -62,6 +61,7 @@ web-time = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 shellexpand = { workspace = true, features = ["path"] }
+sysinfo = { workspace = true }
 tracing-appender = { workspace = true }
 tokio = { workspace = true, features = [
     "time",
