@@ -672,7 +672,7 @@ mod tests {
             original_hash,
             original_size,
             make_legacy_inputs(&[(dirty_start as u64, dirty_end as u64)], &modified_data, original_size, total_size),
-        )
+            None,        )
         .await
         .unwrap();
 
@@ -717,7 +717,7 @@ mod tests {
             original_hash,
             original_size,
             make_legacy_inputs(&[], &[], original_size, truncated_size),
-        )
+            None,        )
         .await
         .unwrap();
 
@@ -757,7 +757,7 @@ mod tests {
             original_hash,
             original_size,
             make_legacy_inputs(&[(original_size, total_size)], &full_data, original_size, total_size),
-        )
+            None,        )
         .await
         .unwrap();
 
@@ -796,7 +796,7 @@ mod tests {
             original_hash,
             original_size,
             make_legacy_inputs(&[(0, 4096)], &modified_data, original_size, total_size),
-        )
+            None,        )
         .await
         .unwrap();
 
@@ -836,7 +836,7 @@ mod tests {
             original_hash,
             original_size,
             make_legacy_inputs(&[(10_000, 12_000), (200_000, 202_000)], &modified_data, original_size, total_size),
-        )
+            None,        )
         .await
         .unwrap();
 
@@ -882,7 +882,7 @@ mod tests {
             original_hash,
             original_size,
             make_legacy_inputs(&[(original_size, total_size)], &full_data, original_size, total_size),
-        )
+            None,        )
         .await
         .unwrap();
 
@@ -924,7 +924,7 @@ mod tests {
             original_hash,
             original_size,
             make_legacy_inputs(&[(original_size, total_size)], &sparse_staging, original_size, total_size),
-        )
+            None,        )
         .await
         .unwrap();
 
@@ -1024,7 +1024,7 @@ mod tests {
                     original_hash,
                     size,
                     make_legacy_inputs(&[(boundary, dirty_end)], &expected, size, size),
-                )
+            None,                )
                 .await
                 .unwrap();
                 let downloaded = download_file(&config, MerkleHash::from_hex(result.hash()).unwrap(), size).await;
@@ -1066,7 +1066,7 @@ mod tests {
         let data = random_data(71, 256 * 1024);
         let hash = upload_file(&config, &data).await;
         let size = data.len() as u64;
-        let err = upload_ranges(config, cas_client, hash, size, make_dummy_inputs(&[(100, size + 1)])).await;
+        let err = upload_ranges(config, cas_client, hash, size, make_dummy_inputs(&[(100, size + 1)]), None).await;
         assert!(err.is_err(), "dirty range past total_size should be rejected");
     }
 
@@ -1080,7 +1080,7 @@ mod tests {
         let data = random_data(60, 256 * 1024);
         let hash = upload_file(&config, &data).await;
         let size = data.len() as u64;
-        let err = upload_ranges(config, cas_client, hash, size, make_dummy_inputs(&[(100, 300), (200, 400)])).await;
+        let err = upload_ranges(config, cas_client, hash, size, make_dummy_inputs(&[(100, 300), (200, 400)]), None).await;
         assert!(err.is_err(), "overlapping ranges should be rejected");
     }
 
@@ -1109,7 +1109,7 @@ mod tests {
                 reader: Box::pin(Cursor::new(vec![0xBB; 10])),
             },
         ];
-        let err = upload_ranges(config, cas_client, original_hash, 0, inputs).await;
+        let err = upload_ranges(config, cas_client, original_hash, 0, inputs, None).await;
         assert!(err.is_err(), "ranges with end > original_size must be rejected for empty originals too");
     }
 
@@ -1123,7 +1123,7 @@ mod tests {
         let data = random_data(62, 256 * 1024);
         let hash = upload_file(&config, &data).await;
         let size = data.len() as u64;
-        let err = upload_ranges(config, cas_client, hash, size, make_dummy_inputs(&[(300, 400), (100, 200)])).await;
+        let err = upload_ranges(config, cas_client, hash, size, make_dummy_inputs(&[(300, 400), (100, 200)]), None).await;
         assert!(err.is_err(), "unsorted ranges should be rejected");
     }
 
@@ -1155,7 +1155,7 @@ mod tests {
             original_hash,
             original_size,
             make_legacy_inputs(&[(dirty_start, dirty_end)], &modified, original_size, original_size),
-        )
+            None,        )
         .await
         .unwrap();
 
@@ -1233,7 +1233,7 @@ mod tests {
             original_hash,
             original_size,
             make_legacy_inputs(&[], &[], original_size, truncated_size),
-        )
+            None,        )
         .await
         .unwrap();
 
@@ -1286,7 +1286,7 @@ mod tests {
             original_hash,
             original_size,
             make_legacy_inputs(&[(dirty_start, dirty_end)], &staging, original_size, truncated_size),
-        )
+            None,        )
         .await
         .unwrap();
 
@@ -1631,7 +1631,7 @@ mod tests {
             original_hash,
             original_size,
             make_legacy_inputs(&[], &[], original_size, 0),
-        )
+            None,        )
         .await
         .unwrap();
 
