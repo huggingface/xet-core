@@ -15,10 +15,11 @@ use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
 use xet_data::processing::DirtyInput;
+use xet_data::processing::FileUploadSession;
 use xet_data::processing::XetFileInfo;
 use xet_data::processing::configurations::TranslatorConfig;
 use xet_data::processing::create_remote_client;
-use xet_data::progress_tracking::GroupProgressReport;
+use xet_data::progress_tracking::{GroupProgressReport, ItemProgressReport};
 use xet_core_structures::merklehash::MerkleHash;
 use xet_runtime::utils::UniqueId;
 
@@ -133,6 +134,9 @@ impl XetRangeUploadCommit {
         let config = Arc::new(create_translator_config(&session, auth_options).await?);
         let client = create_remote_client(&config, &session.inner.id.to_string(), false).await?;
 
+        // Create upload session for progress tracking
+        let upload_session = FileUploadSession::new(Arc::clone(&config)).await?;
+        
         let commit_id = UniqueId::new();
         let inner = Arc::new(XetRangeUploadCommitInner {
             commit_id,
@@ -142,6 +146,7 @@ impl XetRangeUploadCommit {
             original_hash,
             original_size,
             pending_edits: Mutex::new(Vec::new()),
+            upload_session: Arc::new(std::sync::Mutex::new(Some(upload_session))),
         });
 
         Ok(Self { inner, task_runtime })
@@ -222,7 +227,12 @@ impl XetRangeUploadCommit {
 
     /// Aggregate progress for this commit.
     pub fn progress(&self) -> GroupProgressReport {
-        self.task_runtime.progress()
+        self.inner.upload_session.lock().unwrap().as_ref().map(|s| s.report()).unwrap_or_default()
+    }
+
+    /// Get item reports from the upload session.
+    pub fn item_reports_from_upload_session(&self) -> std::collections::HashMap<UniqueId, ItemProgressReport> {
+        self.inner.upload_session.lock().unwrap().as_ref().map(|s| s.item_reports()).unwrap_or_default()
     }
 }
 
@@ -239,6 +249,8 @@ struct XetRangeUploadCommitInner {
     original_size: u64,
     /// Pending edit handles that will be consumed by commit.
     pending_edits: Mutex<Vec<XetRangeUploadEdit>>,
+    /// Upload session for progress tracking (created lazily on first edit).
+    upload_session: Arc<std::sync::Mutex<Option<Arc<FileUploadSession>>>>,
 }
 
 impl XetRangeUploadCommitInner {
@@ -268,12 +280,18 @@ impl XetRangeUploadCommitInner {
         })?;
 
         // Run upload_ranges with the config and client.
+        let upload_session_for_ranges = {
+            let guard = self.upload_session.lock().unwrap();
+            guard.as_ref().cloned()
+        };
+        
         let file_info = xet_data::processing::upload_ranges(
             Arc::clone(&self.config),
             Arc::clone(&self.client),
             original_hash,
             self.original_size,
             dirty_inputs,
+            upload_session_for_ranges,
         )
         .await?;
 

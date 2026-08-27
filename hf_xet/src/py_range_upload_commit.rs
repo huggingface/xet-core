@@ -74,7 +74,7 @@ pub(crate) fn build_range_upload_commit(
         let handles_for_thread = handles.clone();
         let progress = BackgroundProgress::spawn(py, callback, progress_interval_ms, move || {
             let is_terminal = !matches!(inner.status(), Ok(XetTaskState::Running) | Ok(XetTaskState::Finalizing));
-            let item_reports = item_reports_from_edit_handles(&handles_for_thread);
+            let item_reports = inner.item_reports_from_upload_session();
             (inner.progress(), item_reports, is_terminal)
         });
         (Some(handles), Some(progress))
@@ -255,6 +255,11 @@ impl PyXetRangeUploadCommit {
     /// Aggregate progress for this commit.
     pub fn progress(&self) -> GroupProgressReport {
         self.inner.progress()
+    }
+
+    /// Get item reports from the upload session.
+    pub fn item_reports_from_upload_session(&self) -> std::collections::HashMap<UniqueId, ItemProgressReport> {
+        self.inner.item_reports_from_upload_session()
     }
 
     /// Current task state as a :class:`XetTaskState` enum value.  Raises on error.

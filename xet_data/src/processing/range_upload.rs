@@ -90,6 +90,7 @@ pub async fn upload_ranges(
     original_hash: MerkleHash,
     original_size: u64,
     mut dirty_inputs: Vec<DirtyInput>,
+    upload_session: Option<Arc<FileUploadSession>>,
 ) -> Result<XetFileInfo> {
     validate_dirty_ranges(&dirty_inputs, original_size)?;
     let total_size = compute_total_size(original_size, &dirty_inputs)?;
@@ -184,7 +185,10 @@ pub async fn upload_ranges(
     let gap_verification = response.gap_verification;
 
     let ctx = config.ctx.clone();
-    let session = FileUploadSession::new(config.clone()).await?;
+    let session: Arc<FileUploadSession> = match upload_session {
+        Some(upload_session) => upload_session,
+        None => FileUploadSession::new(config.clone()).await?,
+    };
     let mut input_idx = 0usize;
     let mut uploaded: Vec<UploadedWindow> = Vec::with_capacity(response.windows.len());
 
