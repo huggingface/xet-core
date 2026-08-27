@@ -15,11 +15,8 @@ use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
 use xet_core_structures::merklehash::MerkleHash;
-use xet_data::processing::DirtyInput;
-use xet_data::processing::FileUploadSession;
-use xet_data::processing::XetFileInfo;
 use xet_data::processing::configurations::TranslatorConfig;
-use xet_data::processing::create_remote_client;
+use xet_data::processing::{DirtyInput, FileUploadSession, XetFileInfo, create_remote_client};
 use xet_data::progress_tracking::{GroupProgressReport, ItemProgressReport};
 use xet_runtime::utils::UniqueId;
 
@@ -303,11 +300,12 @@ impl XetRangeUploadCommitInner {
 
 #[cfg(test)]
 mod tests {
+    use http::HeaderMap;
+    use tempfile::tempdir;
+
     use super::*;
     use crate::xet_session::Sha256Policy;
     use crate::xet_session::session::XetSessionBuilder;
-    use http::HeaderMap;
-    use tempfile::tempdir;
 
     // Helper: read the HF Hub token from the default cache path.
     fn read_hf_token() -> String {

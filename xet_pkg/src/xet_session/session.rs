@@ -321,8 +321,10 @@ impl XetSession {
     ///
     /// Configure the builder with any combination of:
     /// - [`with_endpoint`](crate::xet_session::auth_group_builder::AuthGroupBuilder::with_endpoint) — CAS server URL
-    /// - [`with_token_info`](crate::xet_session::auth_group_builder::AuthGroupBuilder::with_token_info) — CAS token and expiry
-    /// - [`with_token_refresh_url`](crate::xet_session::auth_group_builder::AuthGroupBuilder::with_token_refresh_url) — URL to refresh the token
+    /// - [`with_token_info`](crate::xet_session::auth_group_builder::AuthGroupBuilder::with_token_info) — CAS token and
+    ///   expiry
+    /// - [`with_token_refresh_url`](crate::xet_session::auth_group_builder::AuthGroupBuilder::with_token_refresh_url) —
+    ///   URL to refresh the token
     ///
     /// Then call [`build`](XetRangeUploadCommitBuilder::build) (async) or
     /// [`build_blocking`](XetRangeUploadCommitBuilder::build_blocking) (sync) with the original

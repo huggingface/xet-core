@@ -1,8 +1,7 @@
 //! XetRangeUploadEdit — pending data for a single edit within a range upload.
 
 use std::ops::Range;
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use xet_data::processing::DirtyInput;
 
