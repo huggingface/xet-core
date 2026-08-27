@@ -5,6 +5,21 @@ use std::sync::{Arc, Mutex};
 
 use xet_data::processing::DirtyInput;
 
+#[derive(Debug)]
+pub enum RangeUploadEditError {
+    AlreadyFinished,
+}
+
+impl std::fmt::Display for RangeUploadEditError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RangeUploadEditError::AlreadyFinished => write!(f, "edit already finished"),
+        }
+    }
+}
+
+impl std::error::Error for RangeUploadEditError {}
+
 // ── XetRangeUploadEditInner ─────────────────────────────────────────────────
 
 pub(super) struct XetRangeUploadEditInner {
@@ -23,12 +38,9 @@ impl XetRangeUploadEditInner {
     }
 
     /// Finalise the edit, returning the pending [`DirtyInput`] and clearing the buffer.
-    fn finish(self: &Arc<Self>) -> Result<DirtyInput, ()> {
-        let data = {
-            let mut guard = self.data.lock().unwrap();
-            let data = guard.take().ok_or(())?;
-            data
-        };
+    fn finish(self: &Arc<Self>) -> Result<DirtyInput, RangeUploadEditError> {
+        let mut guard = self.data.lock().unwrap();
+        let data = guard.take().ok_or(RangeUploadEditError::AlreadyFinished)?;
         Ok(DirtyInput {
             original_range: self.original_range.clone(),
             new_length: self.new_length,
@@ -98,12 +110,12 @@ impl XetRangeUploadEdit {
 
     /// Finalise the edit, returning the pending [`DirtyInput`].
     ///
-    /// Must be called before [`XetRangeUploadCommit::commit`].  A second call returns `Err(())`
+    /// Must be called before [`XetRangeUploadCommit::commit`].  A second call returns `Err`
     /// after a successful finish; use [`try_finish`] to read cached data without
     /// finalising again.
     ///
     /// [`try_finish`]: Self::try_finish
-    pub fn finish(self: &Arc<Self>) -> Result<DirtyInput, ()> {
+    pub fn finish(self: &Arc<Self>) -> Result<DirtyInput, RangeUploadEditError> {
         self.inner.finish()
     }
 

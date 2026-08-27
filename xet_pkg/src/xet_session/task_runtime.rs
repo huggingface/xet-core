@@ -6,7 +6,6 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 #[cfg(target_family = "wasm")]
 use tokio_with_wasm::alias as tokio;
-use xet_data::progress_tracking::GroupProgressReport;
 use xet_runtime::core::XetRuntime;
 
 use crate::error::XetError;
@@ -96,11 +95,6 @@ impl TaskRuntime {
 
     pub(super) fn status(&self) -> Result<XetTaskState, XetError> {
         Ok(self.state.lock()?.clone())
-    }
-
-    /// Aggregate progress for this task.
-    pub(super) fn progress(&self) -> GroupProgressReport {
-        GroupProgressReport::default()
     }
 
     fn set_state(&self, new_state: XetTaskState) -> Result<(), XetError> {

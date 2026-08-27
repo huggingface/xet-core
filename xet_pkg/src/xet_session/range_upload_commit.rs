@@ -125,7 +125,6 @@ impl XetRangeUploadCommit {
         let commit_id = UniqueId::new();
         let inner = Arc::new(XetRangeUploadCommitInner {
             commit_id,
-            session,
             config,
             client,
             original_hash,
@@ -236,9 +235,8 @@ impl XetRangeUploadCommit {
 
 // ── XetRangeUploadCommitInner ───────────────────────────────────────────────
 
-struct XetRangeUploadCommitInner {
+pub(crate) struct XetRangeUploadCommitInner {
     commit_id: UniqueId,
-    session: XetSession,
     /// Translator config with endpoint, auth, etc. (wrapped in Arc for sharing).
     config: Arc<TranslatorConfig>,
     /// CAS client for fetching original file segments.
