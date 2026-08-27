@@ -21,6 +21,12 @@ automatically picked up by both `hf-xet` consumers and the thin Wasm package;
 native targets continue to use BLAKE3's default target-specific implementation.
 The resulting `wasm32` modules require a runtime with WebAssembly SIMD support.
 
+A follow-up compared the current `@huggingface/xetchunk-wasm` implementation
+used by huggingface.js. In a controlled three-way browser run, it reached about
+51% of the SIMD Rust-Wasm API throughput on the M2 and 36-37% on x86. It is not
+currently output-compatible with xet-core for all inputs, however, so its speed
+cannot be interpreted as an interchangeable implementation.
+
 ## Methodology
 
 The benchmark used the same `xet_data::deduplication::Chunker` implementation
@@ -38,7 +44,7 @@ for native and Wasm builds.
 - Browser API build: the existing `wasm-pack build --release` configuration
 - Wasm target and post-processing: `wasm32-unknown-unknown`, wasm-opt `-O3`
 
-Three workloads were measured:
+The native/Rust-Wasm benchmark measured three workloads:
 
 - **Boundaries** calls the gear-hash boundary scanner and excludes chunk
   allocation and content hashing.
@@ -50,7 +56,7 @@ Three workloads were measured:
   result objects. The native baseline performs equivalent hash and dedup-result
   conversion.
 
-Each native/Wasm workload produced an identical validation checksum.
+Each Rust native/Rust-Wasm workload produced an identical validation checksum.
 
 The local host was an Apple M2 running headless Chrome 151. The x86 host was an
 EC2 `m6i.xlarge` with an Intel Xeon Platinum 8375C running Ubuntu 22.04 and
@@ -96,6 +102,51 @@ portable Wasm SIMD is 128-bit. The remaining difference between the SIMD core
 and browser-API results is the practical cost of the binding boundary and
 result serialization.
 
+## Current huggingface.js implementation
+
+At huggingface.js commit
+[`c174aaa6`](https://github.com/huggingface/huggingface.js/tree/c174aaa64668555d660b9976a81a1e3a83fffeac),
+`@huggingface/hub` uses
+[`@huggingface/xetchunk-wasm`](https://github.com/huggingface/huggingface.js/blob/c174aaa64668555d660b9976a81a1e3a83fffeac/packages/hub/src/utils/createXorbs.ts).
+Despite the package name, its
+[current chunker](https://github.com/huggingface/huggingface.js/blob/c174aaa64668555d660b9976a81a1e3a83fffeac/packages/xetchunk-wasm/src/xet-chunker.ts)
+is TypeScript orchestration around the hand-written `gearhash-jit` and
+`@huggingface/blake3-jit` Wasm modules. The benchmark exercised the same
+exported `createChunker`, `nextBlock`, `finalize`, and `hashToHex` functions
+used by the Hub upload path.
+
+The following numbers come from a controlled three-way run. All implementations
+were loaded by the same headless Chrome 152 page and processed the same data with
+the methodology above. The SIMD Rust-Wasm build used the target-scoped
+`blake3/wasm32_simd` change in this pull request, without global `RUSTFLAGS`.
+
+| Host and corpus | Scalar Rust Wasm API | SIMD Rust Wasm API | huggingface.js API | JS/scalar | JS/SIMD |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| M2, pseudo-random | 522 MiB/s | 716 MiB/s | 364 MiB/s | 69.8% | 50.8% |
+| M2, zeros | 510 MiB/s | 713 MiB/s | 364 MiB/s | 71.3% | 51.0% |
+| x86, pseudo-random | 410 MiB/s | 648 MiB/s | 236 MiB/s | 57.6% | 36.4% |
+| x86, zeros | 409 MiB/s | 647 MiB/s | 239 MiB/s | 58.5% | 37.0% |
+
+### Output compatibility
+
+The scalar and SIMD Rust-Wasm builds produced identical chunk lengths and full
+hashes. The huggingface.js implementation also matched them for the zero-filled
+corpus: all three produced 256 identical chunks. It did not match for the
+pseudo-random corpus:
+
+- xet-core produced 527 chunks; huggingface.js produced 566.
+- The first divergence was at chunk 44.
+- xet-core produced a 131,072-byte chunk there, while huggingface.js accepted
+  an 8,128-byte chunk, below the configured 8,192-byte minimum.
+
+xet-core added an explicit minimum-size guard in
+[`fe71e3dd`](https://github.com/huggingface/xet-core/commit/fe71e3dd543acd00af4c9721a935c303d777f04f)
+to reject rare gear-hash matches that fire before the rolling-hash window is
+fully warmed. The current huggingface.js `nextBlock` path does not contain the
+equivalent retry. Its random-corpus timing therefore includes more chunk hashes
+and describes the implementation currently deployed by huggingface.js, but it
+is not a protocol-equivalent alternative to current xet-core.
+
 ## Binary size impact
 
 The final `hf_xet_thin_wasm_bg.wasm` artifact was also measured before and
@@ -122,6 +173,9 @@ the wire with compression.
   scheduling.
 - Input shape affects the number and size of chunks, so both pseudo-random and
   zero-filled corpora are included.
+- Throughput comparisons assume equivalent output. The huggingface.js result is
+  reported for operational context, with its output difference called out
+  above.
 - Browser, compiler, dependency, and CPU changes can move these numbers. Treat
   them as a dated baseline and rerun the benchmark before making a performance
   regression decision.
