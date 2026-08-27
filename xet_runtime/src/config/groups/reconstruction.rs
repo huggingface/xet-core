@@ -26,7 +26,7 @@ crate::config_group!({
     /// download_buffer_limit.
     ///
     /// The default is derived from usable memory (the minimum of host RAM and the
-    /// effective cgroup limit): usable/16, clamped to [32MB, 16GB]. If memory cannot
+    /// effective cgroup limit): usable/16, clamped to [64MB, 16GB]. If memory cannot
     /// be determined, or derivation is disabled via
     /// `HF_XET_MEMORY_DERIVED_DOWNLOAD_BUFFERS=0`, the default is 2GB.
     ///
@@ -36,7 +36,7 @@ crate::config_group!({
     /// The additional download buffer allocated per active file download.
     /// Each active file download increases the total buffer by this amount.
     ///
-    /// The default is derived from usable memory: usable/64, clamped to [8MB, 2GB].
+    /// The default is derived from usable memory: usable/64, clamped to [16MB, 2GB].
     /// If memory cannot be determined, or derivation is disabled via
     /// `HF_XET_MEMORY_DERIVED_DOWNLOAD_BUFFERS=0`, the default is 512MB.
     ///
@@ -46,7 +46,7 @@ crate::config_group!({
     /// The maximum total download buffer allowed during file reconstruction.
     /// The buffer will not grow beyond this limit regardless of the number of concurrent downloads.
     ///
-    /// The default is derived from usable memory: usable/4, clamped to [128MB, 64GB].
+    /// The default is derived from usable memory: usable/4, clamped to [264MB, 64GB].
     /// If memory cannot be determined, or derivation is disabled via
     /// `HF_XET_MEMORY_DERIVED_DOWNLOAD_BUFFERS=0`, the default is 8GB.
     ///

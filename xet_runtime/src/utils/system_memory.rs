@@ -105,7 +105,7 @@ const LIMIT_FLOOR: u64 = 264_000_000;
 const LIMIT_CEILING: u64 = STATIC_HP_DEFAULTS.limit.as_u64();
 
 /// Derive the three buffer values from a usable-memory figure.
-fn derive(usable: u64, fractions: &Fractions) -> DownloadBufferDefaults {
+fn derive_download_buffer_defaults(usable: u64, fractions: &Fractions) -> DownloadBufferDefaults {
     let apply = |divisor: u64, floor: u64, ceiling: u64| -> u64 {
         let value = (usable / divisor).clamp(floor, ceiling);
         (value / ROUND_TO) * ROUND_TO
@@ -166,13 +166,38 @@ struct DerivedDefaults {
     high_performance: DownloadBufferDefaults,
 }
 
-/// Computed once and logged on first use.
-static DERIVED_DEFAULTS: LazyLock<DerivedDefaults> = LazyLock::new(|| {
+/// Computed once on first use. Deliberately does no logging: this LazyLock is
+/// typically first forced by the `XetConfig::new()` call inside logging setup itself
+/// (e.g. `xet_pkg::init_logging`), before any tracing subscriber is installed, so an
+/// event emitted here would be dropped and — the initializer running only once —
+/// never fire again. [`log_derived_defaults`] emits the values after `logging::init`
+/// has installed the subscriber.
+static DERIVED_DEFAULTS: LazyLock<DerivedDefaults> = LazyLock::new(|| match USABLE_MEMORY.usable() {
+    Some(usable) => DerivedDefaults {
+        standard: derive_download_buffer_defaults(usable, &STANDARD_FRACTIONS),
+        high_performance: derive_download_buffer_defaults(usable, &HIGH_PERFORMANCE_FRACTIONS),
+    },
+    None => DerivedDefaults {
+        standard: STATIC_DEFAULTS,
+        high_performance: STATIC_HP_DEFAULTS,
+    },
+});
+
+/// Log the probed memory and the derived download buffer defaults.
+///
+/// Called by `logging::init` once the tracing subscriber is installed; see the note on
+/// [`DERIVED_DEFAULTS`] for why the values cannot be logged where they are computed.
+pub fn log_derived_defaults() {
+    if !memory_derived_defaults_enabled() {
+        info!(
+            "Memory-derived download buffer defaults disabled via HF_XET_MEMORY_DERIVED_DOWNLOAD_BUFFERS; using static defaults"
+        );
+        return;
+    }
     let memory = &*USABLE_MEMORY;
     match memory.usable() {
         Some(usable) => {
-            let standard = derive(usable, &STANDARD_FRACTIONS);
-            let high_performance = derive(usable, &HIGH_PERFORMANCE_FRACTIONS);
+            let standard = DERIVED_DEFAULTS.standard;
             info!(
                 host_total = ?memory.host_total,
                 cgroup_limit = ?memory.cgroup_limit,
@@ -182,20 +207,12 @@ static DERIVED_DEFAULTS: LazyLock<DerivedDefaults> = LazyLock::new(|| {
                 standard.perfile,
                 standard.limit
             );
-            DerivedDefaults {
-                standard,
-                high_performance,
-            }
         },
         None => {
             info!("System memory could not be determined; using static download buffer defaults");
-            DerivedDefaults {
-                standard: STATIC_DEFAULTS,
-                high_performance: STATIC_HP_DEFAULTS,
-            }
         },
     }
-});
+}
 
 /// Whether memory-derived defaults are enabled. Read on every call (cheap) so the
 /// switch is testable in-process; only the probe and derived values are cached.
@@ -269,10 +286,14 @@ mod tests {
             (2_000_000_000_000, (16_000_000_000, 2_000_000_000, 64_000_000_000)), // 2 TB host
         ];
         for &(usable, expected) in cases {
-            assert_eq!(triple(derive(usable, &STANDARD_FRACTIONS)), expected, "standard, usable={usable}");
+            assert_eq!(
+                triple(derive_download_buffer_defaults(usable, &STANDARD_FRACTIONS)),
+                expected,
+                "standard, usable={usable}"
+            );
         }
         // A huge host derives exactly the historical high-performance constants.
-        assert_eq!(derive(2_000_000_000_000, &STANDARD_FRACTIONS), STATIC_HP_DEFAULTS);
+        assert_eq!(derive_download_buffer_defaults(2_000_000_000_000, &STANDARD_FRACTIONS), STATIC_HP_DEFAULTS);
     }
 
     #[test]
@@ -289,7 +310,11 @@ mod tests {
             (2_000_000_000_000, (16_000_000_000, 2_000_000_000, 64_000_000_000)),
         ];
         for &(usable, expected) in cases {
-            assert_eq!(triple(derive(usable, &HIGH_PERFORMANCE_FRACTIONS)), expected, "hp, usable={usable}");
+            assert_eq!(
+                triple(derive_download_buffer_defaults(usable, &HIGH_PERFORMANCE_FRACTIONS)),
+                expected,
+                "hp, usable={usable}"
+            );
         }
     }
 
@@ -301,7 +326,7 @@ mod tests {
             let mut prev: Option<(u64, u64, u64)> = None;
             let mut usable: u64 = 268_435_456;
             while usable < 2_500_000_000_000 {
-                let (size, perfile, limit) = triple(derive(usable, fractions));
+                let (size, perfile, limit) = triple(derive_download_buffer_defaults(usable, fractions));
 
                 // One coherent allocation: base + 8 concurrent files * perfile fits the limit.
                 assert!(
@@ -350,11 +375,11 @@ mod tests {
     fn test_derived_defaults_match_probe() {
         let _g = crate::utils::EnvVarGuard::set("HF_XET_MEMORY_DERIVED_DOWNLOAD_BUFFERS", "1");
         let expected_std = match USABLE_MEMORY.usable() {
-            Some(u) => derive(u, &STANDARD_FRACTIONS),
+            Some(u) => derive_download_buffer_defaults(u, &STANDARD_FRACTIONS),
             None => STATIC_DEFAULTS,
         };
         let expected_hp = match USABLE_MEMORY.usable() {
-            Some(u) => derive(u, &HIGH_PERFORMANCE_FRACTIONS),
+            Some(u) => derive_download_buffer_defaults(u, &HIGH_PERFORMANCE_FRACTIONS),
             None => STATIC_HP_DEFAULTS,
         };
         assert_eq!(default_download_buffer_sizes(), expected_std);
