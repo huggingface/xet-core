@@ -5,7 +5,8 @@ use std::sync::{Arc, RwLock};
 
 use pyo3::prelude::*;
 use xet_pkg::xet_session::{
-    GroupProgressReport, ItemProgressReport, XetRangeUploadCommit, XetRangeUploadEdit, XetRangeUploadReport, XetTaskState,
+    GroupProgressReport, ItemProgressReport, XetRangeUploadCommit, XetRangeUploadEdit, XetRangeUploadReport,
+    XetTaskState,
 };
 use xet_runtime::utils::UniqueId;
 
@@ -16,7 +17,9 @@ use crate::utils::{blocking_call_with_signal_check, convert_xet_error, task_stat
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-fn item_reports_from_edit_handles(handles: &Arc<RwLock<Vec<XetRangeUploadEdit>>>) -> HashMap<UniqueId, ItemProgressReport> {
+fn item_reports_from_edit_handles(
+    handles: &Arc<RwLock<Vec<XetRangeUploadEdit>>>,
+) -> HashMap<UniqueId, ItemProgressReport> {
     // XetRangeUploadEdit doesn't expose progress directly like XetFileUpload does.
     // For now, return an empty map.
     handles
@@ -41,10 +44,7 @@ pub(crate) fn build_range_upload_commit(
     progress_callback: Option<Py<PyAny>>,
     progress_interval_ms: u64,
 ) -> PyResult<PyXetRangeUploadCommit> {
-    let mut builder = session
-        .new_range_upload()
-        .map_err(convert_xet_error)?;
-
+    let mut builder = session.new_range_upload().map_err(convert_xet_error)?;
     if let Some(ep) = endpoint {
         builder = builder.with_endpoint(&ep);
     }
@@ -62,11 +62,7 @@ pub(crate) fn build_range_upload_commit(
         builder = builder.with_custom_headers(hm);
     }
 
-    let commit = py.detach(move || {
-        builder
-            .build_blocking(original_hash, original_size)
-            .map_err(convert_xet_error)
-    })?;
+    let commit = py.detach(move || builder.build_blocking(original_hash, original_size).map_err(convert_xet_error))?;
 
     let (edit_handles, progress) = if let Some(callback) = progress_callback {
         let handles: Arc<RwLock<Vec<XetRangeUploadEdit>>> = Arc::new(RwLock::new(Vec::new()));
@@ -152,11 +148,7 @@ impl PyXetRangeUploadCommit {
     /// before committing.
     ///
     /// The ``original_range`` parameter accepts a tuple ``(start, end)``.
-    pub fn edit(
-        &self,
-        original_range: (u64, u64),
-        new_length: u64,
-    ) -> PyResult<PyXetRangeUploadEdit> {
+    pub fn edit(&self, original_range: (u64, u64), new_length: u64) -> PyResult<PyXetRangeUploadEdit> {
         let inner = self.inner.clone();
         let edit = inner.edit(original_range.0..original_range.1, new_length);
         if let Some(ref handles) = self.edit_handles {

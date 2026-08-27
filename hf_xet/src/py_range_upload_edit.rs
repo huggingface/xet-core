@@ -33,9 +33,7 @@ impl PyXetRangeUploadEdit {
         let inner = Arc::new(self.inner.clone());
         match inner.finish() {
             Ok(_) => Ok(()),
-            Err(_) => Err(pyo3::exceptions::PyRuntimeError::new_err(
-                "edit was already finished",
-            )),
+            Err(_) => Err(pyo3::exceptions::PyRuntimeError::new_err("edit was already finished")),
         }
     }
 }
