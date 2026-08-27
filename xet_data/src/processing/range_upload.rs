@@ -22,7 +22,7 @@ use crate::file_reconstruction::FileReconstructor;
 /// A single edit applied to the original file: replace `original_range` with `new_length`
 /// bytes from `reader`.
 ///
-/// All three combinations are supported:
+/// All of these are supported:
 /// - `original_range.len() == new_length` → in-place edit (no file size change).
 /// - `original_range.len() != new_length` → resize edit (file grows or shrinks).
 /// - `original_range.start == original_range.end` → pure insert at that position.
@@ -40,8 +40,9 @@ pub struct DirtyInput {
 const STREAM_BLOCK_SIZE: usize = 4 * 1024 * 1024; // 4 MB
 
 /// A dirty window the server told us to re-upload, augmented with the bytes the cleaner
-/// produced and the resulting per-window file info. `start`/`end` are file byte offsets
-/// extended for append/truncation past `original_size` if needed.
+/// produced and the resulting per-window file info. `start`/`end` are byte offsets in the
+/// ORIGINAL file's coordinates and never exceed `original_size` (append and truncate edits
+/// are carried by the last window, whose end is clamped to `original_size`).
 struct UploadedWindow {
     start: u64,
     /// Window end as reported by the server. Chunk-aligned, but usually *not*
@@ -54,11 +55,11 @@ struct UploadedWindow {
     /// whole segments and never has to keep the tail of a segment partially covered by the
     /// window.
     effective_end: u64,
-    /// Number of leading entries of `chunks` that cover `[start, end)` (in output-file
-    /// coordinates). Only these participate in the file-hash merge; the chunks past this
-    /// index re-chunk `[end, effective_end)` and are bit-identical duplicates of original
-    /// chunks already covered by the server's gap subtrees.
-    merge_chunk_count: usize,
+    /// Chunks covering `[start, end)` in output-file coordinates, i.e. exactly the ones
+    /// that participate in the file-hash merge. The cleaner also produces chunks for
+    /// `[end, effective_end)`, but those are bit-identical duplicates of original chunks
+    /// already covered by the server's gap subtrees, so they're trimmed off before this
+    /// window is recorded.
     chunks: ChunkHashList,
     mdb: MDBFileInfo,
 }
@@ -214,10 +215,14 @@ pub async fn upload_ranges(
         // `[w_end, effective_end)` as part of this window, so `compose_mdb` swaps whole
         // segments and never drops the tail of a partially-covered segment.
         //
-        // This is safe hash-wise: the server's stable-boundary rule guarantees the
-        // re-chunker has re-synced with the original chunk sequence by `w_end`, and the
-        // chunker resets its state at every chunk boundary, so the chunks produced for
-        // `[w_end, effective_end)` are bit-identical to the original file's chunks there.
+        // The tail chunks must come out bit-identical to the original file's chunks there:
+        // the composed file's hash covers `[w_end, effective_end)` via the server's gap
+        // subtree (original chunk hashes), while the *data* for those bytes comes from this
+        // window's newly uploaded segments, so the server's file-hash re-verification only
+        // passes if the boundaries match. That holds once the re-chunker lands a boundary at
+        // `w_end` — the chunker resets its state there, so identical trailing bytes re-chunk
+        // identically. The server's stable-boundary rule is what makes that likely; the
+        // `acc == hash_split_size` check below is what makes it certain.
         let effective_end = snap_to_segment_end(&seg_byte_starts, w_end);
         if let Some(next) = response.windows.get(win_idx + 1) {
             // Can't happen: both `effective_end` and the next window's start derive from
@@ -291,9 +296,9 @@ pub async fn upload_ranges(
             stream_cas_range(&ctx, &cas_client, original_hash, cursor, effective_end, &mut cleaner).await?;
         }
 
-        let (_info, chunks, mdb, _metrics) = cleaner.finish_with_chunks_detached().await?;
+        let (_info, mut chunks, mdb, _metrics) = cleaner.finish_with_chunks_detached().await?;
 
-        // Split the chunk list for the hash merge: the server's gap subtrees
+        // Trim the chunk list down to the hash merge's share: the server's gap subtrees
         // (`hash_ranges`) cover the original chunks starting at `w_end`, so only the
         // chunks covering the first `hash_split_size` output bytes (i.e. `[w_start, w_end)`
         // adjusted for the edits' size delta) may enter the merge sequence. The chunks past
@@ -313,15 +318,15 @@ pub async fn upload_ranges(
             // boundary exactly at `w_end`; if it didn't, composing would corrupt the hash.
             return Err(DataError::InternalError(format!(
                 "window [{w_start}, {w_end}) (extended to {effective_end}): re-chunking did not produce a chunk \
-                 boundary at {hash_split_size} bytes into the window (closest boundary at {acc})"
+                 boundary at {hash_split_size} bytes into the window (chunk boundaries reach {acc} instead)"
             )));
         }
+        chunks.truncate(merge_chunk_count);
 
         uploaded.push(UploadedWindow {
             start: w_start,
             end: w_end,
             effective_end,
-            merge_chunk_count,
             chunks,
             mdb,
         });
@@ -353,10 +358,10 @@ pub async fn upload_ranges(
         }
         let at_start = i == 0 && first_window_at_start;
         let at_end = i == last_idx && last_window_at_end;
-        // Only the chunks covering `[w.start, w.end)` enter the merge; the tail chunks
-        // (covering `[w.end, w.effective_end)`) duplicate chunks in the following gap
-        // subtree. When the window reaches EOF, `merge_chunk_count == chunks.len()`.
-        merge_seq.push(MerkleHashSubtree::from_chunks(at_start, &w.chunks[..w.merge_chunk_count], at_end));
+        // `w.chunks` was trimmed to cover exactly `[w.start, w.end)`; the tail chunks
+        // (covering `[w.end, w.effective_end)`) are already accounted for by the following
+        // gap subtree.
+        merge_seq.push(MerkleHashSubtree::from_chunks(at_start, &w.chunks, at_end));
     }
     if let Some(g) = trailing_gap {
         merge_seq.push(g);
@@ -453,13 +458,14 @@ fn compose_mdb(
             w.effective_end,
             original_size
         );
-        // Skip the original segments covered by the window. `effective_end` is a segment
-        // boundary, so no segment is ever partially swallowed: the window's own
-        // `mdb.segments` cover `[w.start, w.effective_end)` in full. Using the server's
-        // `w.end` here would drop the tail `[w.end, effective_end)` of a segment the
-        // window only partially covers. Note the server emits no `gap_verification` entry
-        // for a segment that overlaps one of its windows, so re-uploading that whole
-        // segment (and consuming no entry) keeps the two sides in sync.
+        // Skip the original copies of the segments this window replaces. Bounding by
+        // `w.effective_end` rather than `w.end` is equivalent here — `effective_end` is the
+        // first segment boundary >= `w.end`, so no segment starts in between — but it states
+        // the intent: what keeps the tail `[w.end, effective_end)` alive is that the window
+        // streamed and re-chunked the original bytes through `effective_end`, so its own
+        // `mdb.segments` already cover `[w.start, w.effective_end)` in full. The server emits
+        // no `gap_verification` entry for a segment overlapping a window, so consuming no
+        // entry for the skipped segments keeps the two sides in sync.
         while seg_idx < n_segs && seg_byte_starts[seg_idx] < w.effective_end {
             seg_idx += 1;
         }
@@ -1444,7 +1450,7 @@ mod tests {
         // The composed MDB must cover the whole file. With the bug, its segments summed to
         // the window end (~600 KB) instead of the full 8 MB.
         let (mdb, _) = cas_client.get_file_reconstruction_info(&round2_hash).await.unwrap().unwrap();
-        let mdb_bytes: u64 = mdb.segments.iter().map(|s| s.unpacked_segment_bytes as u64).sum();
+        let mdb_bytes = mdb.file_size();
         assert_eq!(
             mdb_bytes, original_size,
             "composed MDB is truncated: segments cover {mdb_bytes} of {original_size} bytes"
@@ -1530,7 +1536,7 @@ mod tests {
         let result_hash = MerkleHash::from_hex(result.hash()).unwrap();
 
         let (mdb, _) = cas_client.get_file_reconstruction_info(&result_hash).await.unwrap().unwrap();
-        let mdb_bytes: u64 = mdb.segments.iter().map(|s| s.unpacked_segment_bytes as u64).sum();
+        let mdb_bytes = mdb.file_size();
         assert_eq!(
             mdb_bytes, original_size,
             "composed MDB is truncated: segments cover {mdb_bytes} of {original_size} bytes"
@@ -1539,6 +1545,122 @@ mod tests {
         let downloaded = download_file(&config, result_hash, original_size).await;
         assert_eq!(downloaded, expected, "content mismatch");
 
+        let clean_hash = upload_file(&config, &expected).await;
+        assert_eq!(result.hash(), clean_hash.hex(), "hash mismatch with clean upload");
+    }
+
+    // Multi-window coverage for the segment-extension logic: two distant edits produce two
+    // separate server windows, each extended past its dirty range to a stable CDC boundary
+    // that lands mid-segment. Both windows therefore go through the `effective_end`
+    // bookkeeping, and `compose_mdb` has to skip the right original segments and consume the
+    // matching `gap_verification` entries for each window in turn.
+    //
+    // Reaching two windows takes a base file with segment boundaries near *both* edit sites:
+    // a pristine upload is a single segment, so any snapped query would cover the whole file
+    // and the server would answer with one window. Round 1 therefore makes both edits in one
+    // call — dedup against the original xorb splits the composed file around each edited
+    // region, leaving five segments to aim at.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_two_windows_each_ending_mid_segment() {
+        let server = LocalTestServerBuilder::new().start().await;
+        let base_dir = TempDir::new().unwrap();
+        let config = test_config(server.http_endpoint(), base_dir.path());
+        let cas_client: Arc<dyn Client> = Arc::new(server);
+
+        let original_data = strong_random_data(0xBEEF, 8 * 1024 * 1024);
+        let original_hash = upload_file(&config, &original_data).await;
+        let original_size = original_data.len() as u64;
+
+        // Round 1: two distant edits in one call, so the composed base file has segments
+        // around both of them.
+        let mut base_data = original_data.clone();
+        base_data[500_000..501_000].fill(0xAB);
+        base_data[4_000_000..4_001_000].fill(0xAB);
+        let base = upload_ranges(
+            config.clone(),
+            cas_client.clone(),
+            original_hash,
+            original_size,
+            make_dirty_inputs(&[(500_000, 501_000), (4_000_000, 4_001_000)], &base_data),
+        )
+        .await
+        .unwrap();
+        let base_hash = MerkleHash::from_hex(base.hash()).unwrap();
+
+        let seg_sizes = fetch_segment_sizes(&cas_client, &base_hash).await;
+        let mut seg_starts: Vec<u64> = Vec::with_capacity(seg_sizes.len() + 1);
+        seg_starts.push(0);
+        let mut acc = 0u64;
+        for s in &seg_sizes {
+            acc += s;
+            seg_starts.push(acc);
+        }
+        assert!(
+            seg_sizes.len() >= 4,
+            "test needs segments around both edit sites, got {} segment(s)",
+            seg_sizes.len()
+        );
+
+        // Round 2: one edit near the start, one just inside the second round-1 edit's
+        // segment, far enough apart that the server can't coalesce them.
+        let edits = [(100u64, 200u64), (4_000_500u64, 4_000_600u64)];
+
+        // Probe the server the same way `upload_ranges` does (segment-snapped dirty ranges)
+        // and assert the scenario really is two windows that each stop mid-segment.
+        let query: Vec<FileRange> = edits
+            .iter()
+            .map(|&(s, e)| FileRange::new(snap_to_segment_start(&seg_starts, s), snap_to_segment_end(&seg_starts, e)))
+            .collect();
+        let response = cas_client.get_file_chunk_hashes(&base_hash, query).await.unwrap();
+        assert_eq!(response.windows.len(), 2, "expected two separate windows, got {}", response.windows.len());
+        for w in response.windows.iter() {
+            let w_end = w.dirty_byte_range[1];
+            assert!(w_end <= original_size, "window end {w_end} past EOF {original_size}");
+            assert!(
+                !seg_starts.contains(&w_end),
+                "window end {w_end} is a segment boundary; scenario doesn't exercise partial swallow"
+            );
+        }
+        // The first window's extension must stay clear of the second window's start.
+        // Meeting it exactly is allowed (and is what happens here) — crossing is what
+        // `upload_ranges` refuses to compose.
+        let first_effective_end = snap_to_segment_end(&seg_starts, response.windows[0].dirty_byte_range[1]);
+        let second_start = response.windows[1].dirty_byte_range[0];
+        assert!(
+            first_effective_end <= second_start,
+            "first window extends to {first_effective_end}, past the second window's start {second_start}"
+        );
+
+        let mut expected = base_data.clone();
+        for &(s, e) in edits.iter() {
+            expected[s as usize..e as usize].fill(0xCD);
+        }
+        let result = upload_ranges(
+            config.clone(),
+            cas_client.clone(),
+            base_hash,
+            original_size,
+            make_dirty_inputs(&edits, &expected),
+        )
+        .await
+        .unwrap();
+        let result_hash = MerkleHash::from_hex(result.hash()).unwrap();
+
+        // Composition must cover the whole file, with both windows' segments spliced in and
+        // every remaining original segment matched to a `gap_verification` entry (a missing
+        // or surplus entry would have failed the upload above).
+        let (mdb, _) = cas_client.get_file_reconstruction_info(&result_hash).await.unwrap().unwrap();
+        let mdb_bytes = mdb.file_size();
+        assert_eq!(
+            mdb_bytes, original_size,
+            "composed MDB is truncated: segments cover {mdb_bytes} of {original_size} bytes"
+        );
+
+        let downloaded = download_file(&config, result_hash, original_size).await;
+        assert_eq!(downloaded, expected, "content mismatch after two-window edit");
+
+        // Only safe after the checks above (a clean upload would register a correct MDB
+        // under the same hash).
         let clean_hash = upload_file(&config, &expected).await;
         assert_eq!(result.hash(), clean_hash.hex(), "hash mismatch with clean upload");
     }
