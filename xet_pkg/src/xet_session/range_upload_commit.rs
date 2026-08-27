@@ -14,13 +14,13 @@
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
+use xet_core_structures::merklehash::MerkleHash;
 use xet_data::processing::DirtyInput;
 use xet_data::processing::FileUploadSession;
 use xet_data::processing::XetFileInfo;
 use xet_data::processing::configurations::TranslatorConfig;
 use xet_data::processing::create_remote_client;
 use xet_data::progress_tracking::{GroupProgressReport, ItemProgressReport};
-use xet_core_structures::merklehash::MerkleHash;
 use xet_runtime::utils::UniqueId;
 
 use super::auth_group_builder::{AuthGroupBuilder, AuthOptions};
@@ -46,15 +46,9 @@ pub type XetRangeUploadCommitBuilder = AuthGroupBuilder<XetRangeUploadCommit>;
 
 impl AuthGroupBuilder<XetRangeUploadCommit> {
     /// Create the [`XetRangeUploadCommit`] from an async context.
-    pub async fn build(
-        self,
-        original_hash: String,
-        original_size: u64,
-    ) -> Result<XetRangeUploadCommit, XetError> {
+    pub async fn build(self, original_hash: String, original_size: u64) -> Result<XetRangeUploadCommit, XetError> {
         let AuthGroupBuilder {
-            session,
-            auth_options,
-            ..
+            session, auth_options, ..
         } = self;
         let parent_runtime = session.inner.task_runtime.clone();
         let child_parent = parent_runtime.clone();
@@ -78,15 +72,9 @@ impl AuthGroupBuilder<XetRangeUploadCommit> {
     ///
     /// Panics if called from within a tokio async runtime on an Owned-mode session.
     #[cfg(not(target_family = "wasm"))]
-    pub fn build_blocking(
-        self,
-        original_hash: String,
-        original_size: u64,
-    ) -> Result<XetRangeUploadCommit, XetError> {
+    pub fn build_blocking(self, original_hash: String, original_size: u64) -> Result<XetRangeUploadCommit, XetError> {
         let AuthGroupBuilder {
-            session,
-            auth_options,
-            ..
+            session, auth_options, ..
         } = self;
         let parent_runtime = session.inner.task_runtime.clone();
         let child_parent = parent_runtime.clone();
@@ -136,7 +124,7 @@ impl XetRangeUploadCommit {
 
         // Create upload session for progress tracking
         let upload_session = FileUploadSession::new(Arc::clone(&config)).await?;
-        
+
         let commit_id = UniqueId::new();
         let inner = Arc::new(XetRangeUploadCommitInner {
             commit_id,
@@ -211,10 +199,11 @@ impl XetRangeUploadCommit {
     #[cfg(not(target_family = "wasm"))]
     pub fn commit_blocking(&self) -> Result<XetRangeUploadReport, XetError> {
         let inner = Arc::clone(&self.inner);
-        self.task_runtime
-            .bridge_sync_finalizing("range_upload_commit_blocking", false, async move {
-                inner.commit().await
-            })
+        self.task_runtime.bridge_sync_finalizing(
+            "range_upload_commit_blocking",
+            false,
+            async move { inner.commit().await },
+        )
     }
 
     /// Cancel all pending edits.
@@ -227,12 +216,24 @@ impl XetRangeUploadCommit {
 
     /// Aggregate progress for this commit.
     pub fn progress(&self) -> GroupProgressReport {
-        self.inner.upload_session.lock().unwrap().as_ref().map(|s| s.report()).unwrap_or_default()
+        self.inner
+            .upload_session
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|s| s.report())
+            .unwrap_or_default()
     }
 
     /// Get item reports from the upload session.
     pub fn item_reports_from_upload_session(&self) -> std::collections::HashMap<UniqueId, ItemProgressReport> {
-        self.inner.upload_session.lock().unwrap().as_ref().map(|s| s.item_reports()).unwrap_or_default()
+        self.inner
+            .upload_session
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|s| s.item_reports())
+            .unwrap_or_default()
     }
 }
 
@@ -275,16 +276,15 @@ impl XetRangeUploadCommitInner {
         tracing::debug!("Committing range upload with {} edits", dirty_inputs.len());
 
         // Convert the original hash string to MerkleHash.
-        let original_hash = MerkleHash::from_hex(&self.original_hash).map_err(|e| {
-            XetError::other(format!("invalid original_hash: {e}"))
-        })?;
+        let original_hash = MerkleHash::from_hex(&self.original_hash)
+            .map_err(|e| XetError::other(format!("invalid original_hash: {e}")))?;
 
         // Run upload_ranges with the config and client.
         let upload_session_for_ranges = {
             let guard = self.upload_session.lock().unwrap();
             guard.as_ref().cloned()
         };
-        
+
         let file_info = xet_data::processing::upload_ranges(
             Arc::clone(&self.config),
             Arc::clone(&self.client),
@@ -304,8 +304,8 @@ impl XetRangeUploadCommitInner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::xet_session::session::XetSessionBuilder;
     use crate::xet_session::Sha256Policy;
+    use crate::xet_session::session::XetSessionBuilder;
     use http::HeaderMap;
     use tempfile::tempdir;
 
@@ -320,12 +320,7 @@ mod tests {
             .to_string()
     }
 
-    fn upload_file(
-        session: &XetSession,
-        endpoint: &str,
-        data: &[u8],
-        name: &str,
-    ) -> XetFileInfo {
+    fn upload_file(session: &XetSession, endpoint: &str, data: &[u8], name: &str) -> XetFileInfo {
         let commit = session
             .new_upload_commit()
             .unwrap()
@@ -478,8 +473,7 @@ mod tests {
             http::header::AUTHORIZATION,
             http::header::HeaderValue::from_str(&format!("Bearer {}", token)).unwrap(),
         );
-        let refresh_url =
-            "https://huggingface.co/api/buckets/lhoestq/range-upload-test/xet-write-token".to_string();
+        let refresh_url = "https://huggingface.co/api/buckets/lhoestq/range-upload-test/xet-write-token".to_string();
 
         let commit = session
             .new_upload_commit()
@@ -519,82 +513,82 @@ mod tests {
         futures::executor::block_on(async {
             let session = XetSessionBuilder::new().build().unwrap();
 
-        // ── Step 1: Create and upload an original file to HF Hub ──────────────
-        let original_data = b"Hello, World! This is a test file for range upload.";
-        let original_info = upload_to_hub(&session, original_data, "original.txt");
-        println!("Original: hash={}, size={}", original_info.hash, original_info.file_size.unwrap());
+            // ── Step 1: Create and upload an original file to HF Hub ──────────────
+            let original_data = b"Hello, World! This is a test file for range upload.";
+            let original_info = upload_to_hub(&session, original_data, "original.txt");
+            println!("Original: hash={}, size={}", original_info.hash, original_info.file_size.unwrap());
 
-        // Verify the hash matches
-        use sha2::{Digest, Sha256};
-        let hash_bytes: Vec<u8> = Sha256::digest(original_data).to_vec();
-        let expected_sha: String = hash_bytes.iter().map(|b| format!("{:02x}", b)).collect();
-        assert_eq!(original_info.sha256.as_deref(), Some(expected_sha.as_str()));
+            // Verify the hash matches
+            use sha2::{Digest, Sha256};
+            let hash_bytes: Vec<u8> = Sha256::digest(original_data).to_vec();
+            let expected_sha: String = hash_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+            assert_eq!(original_info.sha256.as_deref(), Some(expected_sha.as_str()));
 
-        // ── Step 2: Download the original file to verify contents ──────────────
-        let dl_session = XetSessionBuilder::new().build().unwrap();
+            // ── Step 2: Download the original file to verify contents ──────────────
+            let dl_session = XetSessionBuilder::new().build().unwrap();
 
-        let group = dl_session
-            .new_file_download_group()
-            .unwrap()
-            .with_token_refresh_url(make_read_refresh_url(), make_auth_headers())
-            .build_blocking()
-            .unwrap();
+            let group = dl_session
+                .new_file_download_group()
+                .unwrap()
+                .with_token_refresh_url(make_read_refresh_url(), make_auth_headers())
+                .build_blocking()
+                .unwrap();
 
-        let dest_path = tempfile::tempdir().unwrap().path().join("downloaded.txt");
-        let _handle = group
-            .download_file_to_path_blocking(original_info.clone(), dest_path.clone())
-            .unwrap();
+            let dest_path = tempfile::tempdir().unwrap().path().join("downloaded.txt");
+            let _handle = group
+                .download_file_to_path_blocking(original_info.clone(), dest_path.clone())
+                .unwrap();
 
-        let report = group.finish_blocking().unwrap();
-        assert_eq!(report.downloads.len(), 1);
+            let report = group.finish_blocking().unwrap();
+            assert_eq!(report.downloads.len(), 1);
 
-        let downloaded_data = std::fs::read(&dest_path).unwrap();
-        assert_eq!(downloaded_data, original_data);
+            let downloaded_data = std::fs::read(&dest_path).unwrap();
+            assert_eq!(downloaded_data, original_data);
 
-        // ── Step 3: Perform a range upload (edit) ─────────────────────────────
-        let edit_data = b"Universe! ";
-        let write_headers = make_auth_headers();
+            // ── Step 3: Perform a range upload (edit) ─────────────────────────────
+            let edit_data = b"Universe! ";
+            let write_headers = make_auth_headers();
 
-        let commit = session
-            .new_range_upload()
-            .unwrap()
-            .with_token_refresh_url(make_write_refresh_url(), write_headers)
-            .build_blocking(original_info.hash, original_info.file_size.unwrap())
-            .unwrap();
+            let commit = session
+                .new_range_upload()
+                .unwrap()
+                .with_token_refresh_url(make_write_refresh_url(), write_headers)
+                .build_blocking(original_info.hash, original_info.file_size.unwrap())
+                .unwrap();
 
-        // Edit: replace bytes 0..13 ("Hello, World!") with "Universe! " (10 bytes)
-        // Original: 51 bytes ("Hello, World! This is a test file for range upload.")
-        // After: 51 - 13 + 10 = 48 bytes
+            // Edit: replace bytes 0..13 ("Hello, World!") with "Universe! " (10 bytes)
+            // Original: 51 bytes ("Hello, World! This is a test file for range upload.")
+            // After: 51 - 13 + 10 = 48 bytes
 
-        let edit = commit.edit(0..13, 10);
-        edit.write(edit_data);
+            let edit = commit.edit(0..13, 10);
+            edit.write(edit_data);
 
-        let report = commit.commit_blocking().unwrap();
-        assert_eq!(report.file_info.file_size, Some(48));
+            let report = commit.commit_blocking().unwrap();
+            assert_eq!(report.file_info.file_size, Some(48));
 
-        // ── Step 4: Download the modified file and verify ──────────────────────
-        let dl_session2 = XetSessionBuilder::new().build().unwrap();
-        let dl_headers2 = make_auth_headers();
+            // ── Step 4: Download the modified file and verify ──────────────────────
+            let dl_session2 = XetSessionBuilder::new().build().unwrap();
+            let dl_headers2 = make_auth_headers();
 
-        let group2 = dl_session2
-            .new_file_download_group()
-            .unwrap()
-            .with_token_refresh_url(make_read_refresh_url(), dl_headers2)
-            .build_blocking()
-            .unwrap();
+            let group2 = dl_session2
+                .new_file_download_group()
+                .unwrap()
+                .with_token_refresh_url(make_read_refresh_url(), dl_headers2)
+                .build_blocking()
+                .unwrap();
 
-        let dest_path2 = tempfile::tempdir().unwrap().path().join("downloaded2.txt");
-        let _handle2 = group2
-            .download_file_to_path_blocking(report.file_info.clone(), dest_path2.clone())
-            .unwrap();
+            let dest_path2 = tempfile::tempdir().unwrap().path().join("downloaded2.txt");
+            let _handle2 = group2
+                .download_file_to_path_blocking(report.file_info.clone(), dest_path2.clone())
+                .unwrap();
 
-        let report2 = group2.finish_blocking().unwrap();
-        assert_eq!(report2.downloads.len(), 1);
+            let report2 = group2.finish_blocking().unwrap();
+            assert_eq!(report2.downloads.len(), 1);
 
-        let modified_data = std::fs::read(&dest_path2).unwrap();
-        let expected_modified = b"Universe!  This is a test file for range upload.";
-        assert_eq!(expected_modified.len(), 48);
-        assert_eq!(modified_data, expected_modified);
+            let modified_data = std::fs::read(&dest_path2).unwrap();
+            let expected_modified = b"Universe!  This is a test file for range upload.";
+            assert_eq!(expected_modified.len(), 48);
+            assert_eq!(modified_data, expected_modified);
         });
     }
 
@@ -603,46 +597,46 @@ mod tests {
         futures::executor::block_on(async {
             let session = XetSessionBuilder::new().build().unwrap();
 
-        // Upload original
-        let original_data = b"ABCDEF";
-        let original_info = upload_to_hub(&session, original_data, "insert_test.txt");
+            // Upload original
+            let original_data = b"ABCDEF";
+            let original_info = upload_to_hub(&session, original_data, "insert_test.txt");
 
-        // Insert 3 bytes at position 2: "XYZ"
-        // Result: "ABXYZCDEF" (9 bytes)
-        let write_headers = make_auth_headers();
+            // Insert 3 bytes at position 2: "XYZ"
+            // Result: "ABXYZCDEF" (9 bytes)
+            let write_headers = make_auth_headers();
 
-        let commit = session
-            .new_range_upload()
-            .unwrap()
-            .with_token_refresh_url(make_write_refresh_url(), write_headers)
-            .build_blocking(original_info.hash, original_info.file_size.unwrap())
-            .unwrap();
+            let commit = session
+                .new_range_upload()
+                .unwrap()
+                .with_token_refresh_url(make_write_refresh_url(), write_headers)
+                .build_blocking(original_info.hash, original_info.file_size.unwrap())
+                .unwrap();
 
-        commit.insert(2, 3).write(b"XYZ");
+            commit.insert(2, 3).write(b"XYZ");
 
-        let report = commit.commit_blocking().unwrap();
-        assert_eq!(report.file_info.file_size, Some(9));
+            let report = commit.commit_blocking().unwrap();
+            assert_eq!(report.file_info.file_size, Some(9));
 
-        // Verify by downloading
-        let dl_session = XetSessionBuilder::new().build().unwrap();
-        let dl_headers = make_auth_headers();
+            // Verify by downloading
+            let dl_session = XetSessionBuilder::new().build().unwrap();
+            let dl_headers = make_auth_headers();
 
-        let group = dl_session
-            .new_file_download_group()
-            .unwrap()
-            .with_token_refresh_url(make_read_refresh_url(), dl_headers)
-            .build_blocking()
-            .unwrap();
+            let group = dl_session
+                .new_file_download_group()
+                .unwrap()
+                .with_token_refresh_url(make_read_refresh_url(), dl_headers)
+                .build_blocking()
+                .unwrap();
 
-        let dest = tempfile::tempdir().unwrap().path().join("inserted.txt");
-        group
-            .download_file_to_path_blocking(report.file_info.clone(), dest.clone())
-            .unwrap();
+            let dest = tempfile::tempdir().unwrap().path().join("inserted.txt");
+            group
+                .download_file_to_path_blocking(report.file_info.clone(), dest.clone())
+                .unwrap();
 
-        group.finish_blocking().unwrap();
+            group.finish_blocking().unwrap();
 
-        let data = std::fs::read(&dest).unwrap();
-        assert_eq!(data, b"ABXYZCDEF");
+            let data = std::fs::read(&dest).unwrap();
+            assert_eq!(data, b"ABXYZCDEF");
         });
     }
 
@@ -651,45 +645,45 @@ mod tests {
         futures::executor::block_on(async {
             let session = XetSessionBuilder::new().build().unwrap();
 
-        let original_data = b"Hello, World!";
-        let original_info = upload_to_hub(&session, original_data, "delete_test.txt");
+            let original_data = b"Hello, World!";
+            let original_info = upload_to_hub(&session, original_data, "delete_test.txt");
 
-        // Delete bytes 5..12 (", World") => 7 bytes removed
-        // Result: "Hello!" (6 bytes)
-        let write_headers = make_auth_headers();
+            // Delete bytes 5..12 (", World") => 7 bytes removed
+            // Result: "Hello!" (6 bytes)
+            let write_headers = make_auth_headers();
 
-        let commit = session
-            .new_range_upload()
-            .unwrap()
-            .with_token_refresh_url(make_write_refresh_url(), write_headers)
-            .build_blocking(original_info.hash, original_info.file_size.unwrap())
-            .unwrap();
+            let commit = session
+                .new_range_upload()
+                .unwrap()
+                .with_token_refresh_url(make_write_refresh_url(), write_headers)
+                .build_blocking(original_info.hash, original_info.file_size.unwrap())
+                .unwrap();
 
-        commit.delete(5, 12);
+            commit.delete(5, 12);
 
-        let report = commit.commit_blocking().unwrap();
-        assert_eq!(report.file_info.file_size, Some(6));
+            let report = commit.commit_blocking().unwrap();
+            assert_eq!(report.file_info.file_size, Some(6));
 
-        // Verify
-        let dl_session = XetSessionBuilder::new().build().unwrap();
-        let dl_headers = make_auth_headers();
+            // Verify
+            let dl_session = XetSessionBuilder::new().build().unwrap();
+            let dl_headers = make_auth_headers();
 
-        let group = dl_session
-            .new_file_download_group()
-            .unwrap()
-            .with_token_refresh_url(make_read_refresh_url(), dl_headers)
-            .build_blocking()
-            .unwrap();
+            let group = dl_session
+                .new_file_download_group()
+                .unwrap()
+                .with_token_refresh_url(make_read_refresh_url(), dl_headers)
+                .build_blocking()
+                .unwrap();
 
-        let dest = tempfile::tempdir().unwrap().path().join("deleted.txt");
-        group
-            .download_file_to_path_blocking(report.file_info.clone(), dest.clone())
-            .unwrap();
+            let dest = tempfile::tempdir().unwrap().path().join("deleted.txt");
+            group
+                .download_file_to_path_blocking(report.file_info.clone(), dest.clone())
+                .unwrap();
 
-        group.finish_blocking().unwrap();
+            group.finish_blocking().unwrap();
 
-        let data = std::fs::read(&dest).unwrap();
-        assert_eq!(data, b"Hello!");
+            let data = std::fs::read(&dest).unwrap();
+            assert_eq!(data, b"Hello!");
         });
     }
 }
