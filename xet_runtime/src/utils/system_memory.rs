@@ -60,6 +60,7 @@ pub const STATIC_DEFAULTS: DownloadBufferDefaults = DownloadBufferDefaults {
 };
 
 /// Static fallback for high-performance mode; the historical `HF_XET_HP` constants.
+/// These values also serve as the derivation ceilings below.
 pub const STATIC_HP_DEFAULTS: DownloadBufferDefaults = DownloadBufferDefaults {
     size: ByteSize::new(16_000_000_000),
     perfile: ByteSize::new(2_000_000_000),
@@ -88,16 +89,20 @@ const HIGH_PERFORMANCE_FRACTIONS: Fractions = Fractions {
     limit_divisor: 2,
 };
 
-/// Floors keep tiny environments functional; ceilings are the historical
-/// high-performance values. All are multiples of `ROUND_TO`, so rounding a clamped
-/// value down never violates the clamp. The floors satisfy
-/// `size + 8 * perfile <= limit` just like the fractions do.
-const SIZE_FLOOR: u64 = 32_000_000;
-const SIZE_CEILING: u64 = 16_000_000_000;
-const PERFILE_FLOOR: u64 = 8_000_000;
-const PERFILE_CEILING: u64 = 2_000_000_000;
-const LIMIT_FLOOR: u64 = 128_000_000;
-const LIMIT_CEILING: u64 = 64_000_000_000;
+/// Floors are the values derived for 1 GiB of usable memory, the smallest environment
+/// the derivation distinguishes; anything smaller receives the same values. At the
+/// floors a single maximum-size term (one unpacked xorb block, <= 64 MiB) fits the
+/// budget once one file download is active (size + perfile = 80 MB), and the floors
+/// satisfy `size + 8 * perfile <= limit` just like the fractions do.
+///
+/// Ceilings are the historical high-performance values. All floors and ceilings are
+/// multiples of `ROUND_TO`, so rounding a clamped value down never violates the clamp.
+const SIZE_FLOOR: u64 = 64_000_000;
+const SIZE_CEILING: u64 = STATIC_HP_DEFAULTS.size.as_u64();
+const PERFILE_FLOOR: u64 = 16_000_000;
+const PERFILE_CEILING: u64 = STATIC_HP_DEFAULTS.perfile.as_u64();
+const LIMIT_FLOOR: u64 = 264_000_000;
+const LIMIT_CEILING: u64 = STATIC_HP_DEFAULTS.limit.as_u64();
 
 /// Derive the three buffer values from a usable-memory figure.
 fn derive(usable: u64, fractions: &Fractions) -> DownloadBufferDefaults {
@@ -147,39 +152,50 @@ fn probe_usable_memory() -> UsableMemory {
     }
 }
 
-/// Probe the system once and cache the result for the process lifetime.
-pub fn usable_system_memory() -> &'static UsableMemory {
-    static USABLE_MEMORY: LazyLock<UsableMemory> = LazyLock::new(probe_usable_memory);
-    &USABLE_MEMORY
+/// The system memory reading, probed once and cached for the process lifetime.
+///
+/// Cached because the `config_group!` default expressions run on every config
+/// construction, and so that every consumer derives from a single reading even if
+/// cgroup limits are edited at runtime.
+pub static USABLE_MEMORY: LazyLock<UsableMemory> = LazyLock::new(probe_usable_memory);
+
+/// The standard and high-performance default sets, derived together from one
+/// [`USABLE_MEMORY`] reading.
+struct DerivedDefaults {
+    standard: DownloadBufferDefaults,
+    high_performance: DownloadBufferDefaults,
 }
 
-/// The derived (standard, high-performance) default pairs, computed once and logged.
-fn derived_defaults() -> &'static (DownloadBufferDefaults, DownloadBufferDefaults) {
-    static DERIVED: LazyLock<(DownloadBufferDefaults, DownloadBufferDefaults)> = LazyLock::new(|| {
-        let memory = usable_system_memory();
-        match memory.usable() {
-            Some(usable) => {
-                let standard = derive(usable, &STANDARD_FRACTIONS);
-                let high_performance = derive(usable, &HIGH_PERFORMANCE_FRACTIONS);
-                info!(
-                    host_total = ?memory.host_total,
-                    cgroup_limit = ?memory.cgroup_limit,
-                    usable,
-                    "Derived download buffer defaults from system memory: size={} perfile={} limit={}",
-                    standard.size,
-                    standard.perfile,
-                    standard.limit
-                );
-                (standard, high_performance)
-            },
-            None => {
-                info!("System memory could not be determined; using static download buffer defaults");
-                (STATIC_DEFAULTS, STATIC_HP_DEFAULTS)
-            },
-        }
-    });
-    &DERIVED
-}
+/// Computed once and logged on first use.
+static DERIVED_DEFAULTS: LazyLock<DerivedDefaults> = LazyLock::new(|| {
+    let memory = &*USABLE_MEMORY;
+    match memory.usable() {
+        Some(usable) => {
+            let standard = derive(usable, &STANDARD_FRACTIONS);
+            let high_performance = derive(usable, &HIGH_PERFORMANCE_FRACTIONS);
+            info!(
+                host_total = ?memory.host_total,
+                cgroup_limit = ?memory.cgroup_limit,
+                usable,
+                "Derived download buffer defaults from system memory: size={} perfile={} limit={}",
+                standard.size,
+                standard.perfile,
+                standard.limit
+            );
+            DerivedDefaults {
+                standard,
+                high_performance,
+            }
+        },
+        None => {
+            info!("System memory could not be determined; using static download buffer defaults");
+            DerivedDefaults {
+                standard: STATIC_DEFAULTS,
+                high_performance: STATIC_HP_DEFAULTS,
+            }
+        },
+    }
+});
 
 /// Whether memory-derived defaults are enabled. Read on every call (cheap) so the
 /// switch is testable in-process; only the probe and derived values are cached.
@@ -193,10 +209,11 @@ fn memory_derived_defaults_enabled() -> bool {
 /// The memory-derived defaults for the standard configuration.
 ///
 /// Falls back to [`STATIC_DEFAULTS`] when memory cannot be determined, on wasm, or when
-/// disabled via `HF_XET_MEMORY_DERIVED_DOWNLOAD_BUFFERS=0`.
+/// disabled via `HF_XET_MEMORY_DERIVED_DOWNLOAD_BUFFERS=0`. A function rather than a
+/// static because the kill switch is consulted on every call.
 pub fn default_download_buffer_sizes() -> DownloadBufferDefaults {
     if memory_derived_defaults_enabled() {
-        derived_defaults().0
+        DERIVED_DEFAULTS.standard
     } else {
         STATIC_DEFAULTS
     }
@@ -208,7 +225,7 @@ pub fn default_download_buffer_sizes() -> DownloadBufferDefaults {
 /// [`default_download_buffer_sizes`].
 pub fn high_performance_download_buffer_sizes() -> DownloadBufferDefaults {
     if memory_derived_defaults_enabled() {
-        derived_defaults().1
+        DERIVED_DEFAULTS.high_performance
     } else {
         STATIC_HP_DEFAULTS
     }
@@ -239,9 +256,9 @@ mod tests {
     fn test_standard_derivation_table() {
         // (usable, (size, perfile, limit))
         let cases: &[(u64, (u64, u64, u64))] = &[
-            (268_435_456, (32_000_000, 8_000_000, 128_000_000)), // 256 MiB: floors
-            (512_000_000, (32_000_000, 8_000_000, 128_000_000)), // floor boundary
-            (1_073_741_824, (64_000_000, 16_000_000, 264_000_000)), // 1 GiB container
+            (268_435_456, (64_000_000, 16_000_000, 264_000_000)), // 256 MiB: floors
+            (512_000_000, (64_000_000, 16_000_000, 264_000_000)), // still floors
+            (1_073_741_824, (64_000_000, 16_000_000, 264_000_000)), // 1 GiB container ~= floors
             (2_000_000_000, (120_000_000, 24_000_000, 496_000_000)),
             (8_000_000_000, (496_000_000, 120_000_000, 2_000_000_000)),
             (16_000_000_000, (1_000_000_000, 248_000_000, 4_000_000_000)),
@@ -261,8 +278,8 @@ mod tests {
     #[test]
     fn test_high_performance_derivation_table() {
         let cases: &[(u64, (u64, u64, u64))] = &[
-            (268_435_456, (32_000_000, 8_000_000, 128_000_000)),
-            (512_000_000, (64_000_000, 16_000_000, 256_000_000)),
+            (268_435_456, (64_000_000, 16_000_000, 264_000_000)), // floors
+            (512_000_000, (64_000_000, 16_000_000, 264_000_000)), // limit floor binds (u/2 = 256 MB)
             (8_000_000_000, (1_000_000_000, 248_000_000, 4_000_000_000)),
             (16_000_000_000, (2_000_000_000, 496_000_000, 8_000_000_000)),
             (32_000_000_000, (4_000_000_000, 1_000_000_000, 16_000_000_000)),
@@ -317,8 +334,7 @@ mod tests {
 
     #[test]
     fn test_probe_reports_host_total() {
-        let mem = usable_system_memory();
-        assert!(mem.host_total.is_some_and(|t| t > 0), "host total should be detectable on test hosts");
+        assert!(USABLE_MEMORY.host_total.is_some_and(|t| t > 0), "host total should be detectable on test hosts");
     }
 
     #[test]
@@ -333,11 +349,11 @@ mod tests {
     #[serial_test::serial(config_env)]
     fn test_derived_defaults_match_probe() {
         let _g = crate::utils::EnvVarGuard::set("HF_XET_MEMORY_DERIVED_DOWNLOAD_BUFFERS", "1");
-        let expected_std = match usable_system_memory().usable() {
+        let expected_std = match USABLE_MEMORY.usable() {
             Some(u) => derive(u, &STANDARD_FRACTIONS),
             None => STATIC_DEFAULTS,
         };
-        let expected_hp = match usable_system_memory().usable() {
+        let expected_hp = match USABLE_MEMORY.usable() {
             Some(u) => derive(u, &HIGH_PERFORMANCE_FRACTIONS),
             None => STATIC_HP_DEFAULTS,
         };

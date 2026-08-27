@@ -4,22 +4,23 @@ use xet_runtime::core::{XetCommon, XetContext};
 use xet_runtime::utils::system_memory::{default_download_buffer_sizes, high_performance_download_buffer_sizes};
 use xet_runtime::utils::{ByteSize, EnvVarGuard};
 
-fn clear_buffer_env_vars() {
-    for var in [
+/// Clears the buffer-related env vars for the guards' lifetime, so tests see default
+/// behavior regardless of what the developer has exported.
+#[must_use]
+fn clear_buffer_env_vars() -> [EnvVarGuard; 4] {
+    [
         "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE",
         "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERFILE_SIZE",
         "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT",
         "HF_XET_MEMORY_DERIVED_DOWNLOAD_BUFFERS",
-    ] {
-        // Same pattern as config_values_test.rs: ensure a clean environment.
-        unsafe { std::env::remove_var(var) };
-    }
+    ]
+    .map(EnvVarGuard::unset)
 }
 
 #[test]
 #[serial(config_env)]
 fn test_download_buffer_defaults_are_memory_derived() {
-    clear_buffer_env_vars();
+    let _env_guards = clear_buffer_env_vars();
     let expected = default_download_buffer_sizes();
     let config = XetConfig::default();
     assert_eq!(config.reconstruction.download_buffer_size, expected.size);
@@ -30,7 +31,7 @@ fn test_download_buffer_defaults_are_memory_derived() {
 #[test]
 #[serial(config_env)]
 fn test_normalize_raises_limit_to_size() {
-    clear_buffer_env_vars();
+    let _env_guards = clear_buffer_env_vars();
     let mut group = XetConfig::default().reconstruction.clone();
     group.download_buffer_size = ByteSize::from("16gb");
     group.download_buffer_limit = ByteSize::from("8gb");
@@ -48,7 +49,7 @@ fn test_normalize_raises_limit_to_size() {
 #[test]
 #[serial(config_env)]
 fn test_high_performance_values_are_memory_aware() {
-    clear_buffer_env_vars();
+    let _env_guards = clear_buffer_env_vars();
     let config = XetConfig::default().with_high_performance();
     let hp = high_performance_download_buffer_sizes();
     assert_eq!(config.reconstruction.download_buffer_size, hp.size);
@@ -66,7 +67,7 @@ fn test_high_performance_values_are_memory_aware() {
 #[test]
 #[serial(config_env)]
 fn test_env_override_beats_high_performance() {
-    clear_buffer_env_vars();
+    let _env_guards = clear_buffer_env_vars();
     let _guard = EnvVarGuard::set("HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE", "123mb");
 
     // Mirrors the XetConfig::new() ordering when the HP flag is set: defaults ->
@@ -88,7 +89,7 @@ fn test_env_override_beats_high_performance() {
 #[test]
 #[serial(config_env)]
 fn test_incoherent_buffer_config_does_not_panic_common() {
-    clear_buffer_env_vars();
+    let _env_guards = clear_buffer_env_vars();
     let mut config = XetConfig::default();
     config.reconstruction.download_buffer_size = ByteSize::from("16gb");
     config.reconstruction.download_buffer_limit = ByteSize::from("8gb");
@@ -102,7 +103,7 @@ fn test_incoherent_buffer_config_does_not_panic_common() {
 #[test]
 #[serial(config_env)]
 fn test_context_normalizes_reconstruction_config() {
-    clear_buffer_env_vars();
+    let _env_guards = clear_buffer_env_vars();
     // Raising only the size via env (a limit below it) previously panicked at
     // context construction; now the limit is normalized up to match.
     let _guard = EnvVarGuard::set("HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE", "100gb");
@@ -114,7 +115,7 @@ fn test_context_normalizes_reconstruction_config() {
 #[test]
 #[serial(config_env)]
 fn test_env_override_beats_derived_default() {
-    clear_buffer_env_vars();
+    let _env_guards = clear_buffer_env_vars();
     let _guard = EnvVarGuard::set("HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE", "123mb");
     let config = XetConfig::new();
     assert_eq!(config.reconstruction.download_buffer_size, ByteSize::from("123mb"));
@@ -128,7 +129,7 @@ fn test_env_override_beats_derived_default() {
 #[test]
 #[serial(config_env)]
 fn test_kill_switch_restores_static_defaults_in_config() {
-    clear_buffer_env_vars();
+    let _env_guards = clear_buffer_env_vars();
     let _guard = EnvVarGuard::set("HF_XET_MEMORY_DERIVED_DOWNLOAD_BUFFERS", "0");
     let config = XetConfig::new();
     assert_eq!(config.reconstruction.download_buffer_size, ByteSize::from("2gb"));

@@ -141,7 +141,13 @@ impl XetConfig {
         if crate::utils::is_high_performance() {
             config = config.with_high_performance();
         }
-        config.with_env_overrides()
+        let mut config = config.with_env_overrides();
+        // Sanity-check env-provided values so the caller sees the same coherent
+        // numbers the runtime will use. Configs can still be mutated after this
+        // (e.g. Python's `with_config`), so `XetContext::new` normalizes again
+        // before freezing the config.
+        config.reconstruction.normalize();
+        config
     }
 
     /// Apply high performance mode settings to this configuration.
