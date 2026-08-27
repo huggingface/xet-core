@@ -7,15 +7,19 @@ chunking implementation in a browser, not to predict end-to-end upload speed.
 
 ## Summary
 
-With the current Wasm build, full chunking in Chrome reached 61-63% of native
-throughput on an Apple M2 and 30-35% on an x86 EC2 host. The browser-facing API,
-which also copies input into Wasm and serializes chunk metadata back to
-JavaScript, reached 61-62% and 29-34%, respectively.
+With the scalar Wasm build used as the baseline, full chunking in Chrome reached
+61-63% of native throughput on an Apple M2 and 30-35% on an x86 EC2 host. The
+browser-facing API, which also copies input into Wasm and serializes chunk
+metadata back to JavaScript, reached 61-62% and 29-34%, respectively.
 
-BLAKE3 has a separate `wasm32_simd` Cargo feature that is not enabled by the
-current build. In an experimental build that enabled both that feature and the
-Wasm `simd128` target feature, core chunking reached 94-95% of native on the M2
-and 50-57% on x86. The browser API reached 85-87% and 46-55%, respectively.
+BLAKE3 has a separate `wasm32_simd` Cargo feature. In an experimental build that
+enabled both that feature and the Wasm `simd128` target feature, core chunking
+reached 94-95% of native on the M2 and 50-57% on x86. The browser API reached
+85-87% and 46-55%, respectively. Based on these results,
+`xet-core-structures` now enables `wasm32_simd` for `wasm32` targets. This is
+automatically picked up by both `hf-xet` consumers and the thin Wasm package;
+native targets continue to use BLAKE3's default target-specific implementation.
+The resulting `wasm32` modules require a runtime with WebAssembly SIMD support.
 
 ## Methodology
 
@@ -52,7 +56,7 @@ The local host was an Apple M2 running headless Chrome 151. The x86 host was an
 EC2 `m6i.xlarge` with an Intel Xeon Platinum 8375C running Ubuntu 22.04 and
 headless Chrome 152. The benchmark itself is single-threaded.
 
-## Current build results
+## Scalar baseline results
 
 | Host and corpus | Native full | Wasm full | Full ratio | Native API | Browser API | API ratio |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -62,12 +66,13 @@ headless Chrome 152. The benchmark itself is single-threaded.
 | x86, zeros | 1,187 MiB/s | 418 MiB/s | 35.3% | 1,183 MiB/s | 407 MiB/s | 34.4% |
 
 Boundary-only Wasm throughput was 94% of native on the M2 and 50-52% on x86.
-The larger full-chunking gap in the current build shows that content hashing is
-an additional bottleneck, particularly on x86.
+The larger full-chunking gap in the scalar baseline shows that content hashing
+is an additional bottleneck, particularly on x86.
 
-## BLAKE3 Wasm-SIMD experiment
+## BLAKE3 Wasm-SIMD results
 
-The experiment added BLAKE3's `wasm32_simd` feature and built Wasm with:
+The benchmark experiment added BLAKE3's `wasm32_simd` feature and built Wasm
+with:
 
 ```text
 RUSTFLAGS='-C target-feature=+simd128'
@@ -90,6 +95,23 @@ closed it on x86. Native x86 code can use wider host-specific SIMD paths, while
 portable Wasm SIMD is 128-bit. The remaining difference between the SIMD core
 and browser-API results is the practical cost of the binding boundary and
 result serialization.
+
+## Binary size impact
+
+The final `hf_xet_thin_wasm_bg.wasm` artifact was also measured before and
+after enabling `wasm32_simd`. Both variants used the normal
+`wasm-pack build --release --target web` pipeline, including `wasm-opt`. The
+SIMD variant enabled only BLAKE3's target-scoped Cargo feature; it did not set a
+global `RUSTFLAGS` target feature.
+
+| Build | Raw Wasm | gzip -9 | Brotli quality 11 |
+| --- | ---: | ---: | ---: |
+| Scalar baseline | 155,218 bytes | 65,128 bytes | 54,165 bytes |
+| BLAKE3 Wasm SIMD | 169,297 bytes | 69,115 bytes | 57,185 bytes |
+| Increase | 14,079 bytes (9.1%) | 3,987 bytes (6.1%) | 3,020 bytes (5.6%) |
+
+The size increase is therefore about 14 KiB in the raw module and 3-4 KiB over
+the wire with compression.
 
 ## Interpreting the numbers
 
