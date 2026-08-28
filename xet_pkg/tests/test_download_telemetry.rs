@@ -317,3 +317,87 @@ fn stream_group_rejects_new_streams_after_finish() {
         "a finished group must not hand out new streams"
     );
 }
+
+/// The Ctrl-C path must still report the abandoned download.
+///
+/// `hf`'s `except KeyboardInterrupt` runs the group's `__exit__` (which calls `abort()`) and then
+/// `abort_xet_session()` -> `XetSession::sigint_abort()`. `abort()` deliberately leaves the session
+/// unfinalized so `Drop` can derive `dropped` from progress, but `sigint_abort()` tears the tokio
+/// runtime down first, so that `Drop` has nothing left to send on and the transfer is never
+/// reported. A user aborting a large download is the abandonment case most worth capturing.
+#[test]
+#[serial(env)]
+fn sigint_abort_still_reports_the_abandoned_download() {
+    let temp: TempDir = tempdir().unwrap();
+    let (server, _rt) = start_server();
+    let endpoint = server.http_endpoint();
+
+    let session = XetSessionBuilder::new().build().unwrap();
+    // Large and multi-chunk, like the sibling abandonment tests, so the transfer cannot
+    // complete in the gap between starting it and calling `abort()` below.
+    let data = vec![0x5Au8; 4 * 1024 * 1024];
+    let file_info = upload_bytes_sync(&session, endpoint, &data, "aborted.bin");
+
+    let dest = temp.path().join("aborted.out");
+    let group = session
+        .new_file_download_group()
+        .unwrap()
+        .with_endpoint(endpoint)
+        .build_blocking()
+        .unwrap();
+
+    // Starts the download and returns without waiting, so there is something in flight.
+    group.download_file_to_path_blocking(file_info, dest).unwrap();
+
+    // Exactly the order huggingface_hub uses on Ctrl-C.
+    group.abort().unwrap();
+    session.sigint_abort().unwrap();
+    drop(group);
+
+    let docs = wait_for_docs(&server, 2);
+    let doc = download_doc(&docs);
+
+    assert_eq!(doc["metrics"]["direction"], "download");
+    assert_eq!(doc["metrics"]["outcome"], "dropped", "an interrupted download must report as dropped");
+    assert_eq!(doc["metrics"]["terminal"], true);
+}
+
+/// The real Ctrl-C shape: `finish_blocking` is already in flight on another (pyo3-spawned)
+/// thread when `sigint_abort` lands, so the interrupt hits mid-bridge rather than before it
+/// starts.
+#[test]
+#[serial(env)]
+fn sigint_during_finish_still_reports() {
+    let temp: TempDir = tempdir().unwrap();
+    let (server, _rt) = start_server();
+    let endpoint = server.http_endpoint();
+
+    let session = XetSessionBuilder::new().build().unwrap();
+    let data = vec![0x5Au8; 96 * 1024];
+    let file_info = upload_bytes_sync(&session, endpoint, &data, "interrupted.bin");
+
+    let dest = temp.path().join("interrupted.out");
+    let group = session
+        .new_file_download_group()
+        .unwrap()
+        .with_endpoint(endpoint)
+        .build_blocking()
+        .unwrap();
+    group.download_file_to_path_blocking(file_info, dest).unwrap();
+
+    // finish_blocking on its own thread, exactly as the pyo3 signal-check bridge runs it.
+    let finisher = std::thread::spawn(move || {
+        let _ = group.finish_blocking();
+    });
+
+    // ...and the interrupt handler fires while it is still running. The pause is what makes
+    // that true: in the real flow SIGINT arrives during `finish_blocking`, not before it starts.
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    session.sigint_abort().unwrap();
+    let _ = finisher.join();
+
+    let docs = wait_for_docs(&server, 2);
+    let doc = download_doc(&docs);
+    assert_eq!(doc["metrics"]["direction"], "download");
+    assert_eq!(doc["metrics"]["terminal"], true);
+}

@@ -142,7 +142,9 @@ impl XetStreamUpload {
         let result_cell = self.inner.result.clone();
         let meta = self
             .task_runtime
-            .bridge_async_finalizing("upload_stream_finish", false, async move { inner.finish().await })
+            // `cleaner.finish()` does not observe the cancellation token, so the bridge's race is the
+            // only thing making a cancel prompt here. Costs the terminal report when it fires.
+            .bridge_async_finalizing_cancellable("upload_stream_finish", false, async move { inner.finish().await })
             .await?;
         let _ = result_cell.set(meta.clone());
         Ok(meta)
@@ -160,7 +162,10 @@ impl XetStreamUpload {
         let result_cell = self.inner.result.clone();
         let meta = self
             .task_runtime
-            .bridge_sync_finalizing("upload_stream_finish_blocking", false, async move { inner.finish().await })?;
+            // See the async variant: `cleaner.finish()` is not cancellation-aware.
+            .bridge_sync_finalizing_cancellable("upload_stream_finish_blocking", false, async move {
+                inner.finish().await
+            })?;
         let _ = result_cell.set(meta.clone());
         Ok(meta)
     }
