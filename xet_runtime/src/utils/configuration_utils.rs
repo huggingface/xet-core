@@ -91,7 +91,7 @@ impl FromStrParseable for ByteSize {}
 /// Special handling for bool:
 /// - true: "1","true","yes","y","on"  -> true
 /// - false: "0","false","no","n","off" -> false
-fn parse_bool_value(value: &str) -> Option<bool> {
+pub(crate) fn parse_bool_value(value: &str) -> Option<bool> {
     let t = value.trim().to_ascii_lowercase();
 
     match t.as_str() {

@@ -43,3 +43,5 @@ pub mod pipe;
 
 mod unique_id;
 pub use unique_id::UniqueId;
+
+pub mod system_memory;
