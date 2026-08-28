@@ -354,13 +354,17 @@ impl XetFileDownloadGroupInner {
         parent_task_runtime: &Arc<TaskRuntime>,
     ) -> Result<XetFileDownload, XetError> {
         let absolute_path = std::path::absolute(dest_path)?;
-        let (task_id, join_handle) = self
-            .download_session
-            .download_file_background(file_info.clone(), absolute_path.clone())
-            .await?;
 
+        // The child runtime is created before the download starts so its token can be handed
+        // to the transfer itself. Aborting the join handle below only drops the wrapper task;
+        // the reconstruction's own work is not its child and would otherwise run to completion.
         let task_runtime = parent_task_runtime.child()?;
         let token = task_runtime.cancellation_token();
+
+        let (task_id, join_handle) = self
+            .download_session
+            .download_file_background(file_info.clone(), absolute_path.clone(), Some(token.clone()))
+            .await?;
 
         let fi = file_info.clone();
         let dp = absolute_path.clone();

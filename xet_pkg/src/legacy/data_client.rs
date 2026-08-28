@@ -167,7 +167,7 @@ pub async fn download_async(
 
     for ((file_info, file_path), updater) in file_infos.into_iter().zip(updaters) {
         let path = PathBuf::from(&file_path);
-        let (id, handle) = session.download_file_background(file_info, path).await?;
+        let (id, handle) = session.download_file_background(file_info, path, None).await?;
 
         let bridge = updater.map(|u| ItemProgressCallbackUpdater::start(session.clone(), id, u));
 
