@@ -51,7 +51,7 @@ pub struct DownloadBufferDefaults {
 }
 
 /// Static fallback defaults, used when memory cannot be determined or derivation is
-/// disabled via `HF_XET_MEMORY_DERIVED_DOWNLOAD_BUFFERS=0`. These are the historical
+/// disabled via `HF_XET_DISABLE_MEMORY_DERIVED_DOWNLOAD_BUFFERS=1`. These are the historical
 /// constant defaults.
 pub const STATIC_DEFAULTS: DownloadBufferDefaults = DownloadBufferDefaults {
     size: ByteSize::new(2_000_000_000),
@@ -190,7 +190,7 @@ static DERIVED_DEFAULTS: LazyLock<DerivedDefaults> = LazyLock::new(|| match USAB
 pub fn log_derived_defaults() {
     if !memory_derived_defaults_enabled() {
         info!(
-            "Memory-derived download buffer defaults disabled via HF_XET_MEMORY_DERIVED_DOWNLOAD_BUFFERS; using static defaults"
+            "Memory-derived download buffer defaults disabled via HF_XET_DISABLE_MEMORY_DERIVED_DOWNLOAD_BUFFERS; using static defaults"
         );
         return;
     }
@@ -214,11 +214,12 @@ pub fn log_derived_defaults() {
     }
 }
 
-/// Whether memory-derived defaults are enabled. Read on every call (cheap) so the
-/// switch is testable in-process; only the probe and derived values are cached.
+/// Whether memory-derived defaults are enabled: on unless disabled via
+/// `HF_XET_DISABLE_MEMORY_DERIVED_DOWNLOAD_BUFFERS=1`. Read on every call (cheap) so
+/// the switch is testable in-process; only the probe and derived values are cached.
 fn memory_derived_defaults_enabled() -> bool {
-    match std::env::var("HF_XET_MEMORY_DERIVED_DOWNLOAD_BUFFERS") {
-        Ok(value) => parse_bool_value(&value).unwrap_or(true),
+    match std::env::var("HF_XET_DISABLE_MEMORY_DERIVED_DOWNLOAD_BUFFERS") {
+        Ok(value) => !parse_bool_value(&value).unwrap_or(false),
         Err(_) => true,
     }
 }
@@ -226,8 +227,8 @@ fn memory_derived_defaults_enabled() -> bool {
 /// The memory-derived defaults for the standard configuration.
 ///
 /// Falls back to [`STATIC_DEFAULTS`] when memory cannot be determined, on wasm, or when
-/// disabled via `HF_XET_MEMORY_DERIVED_DOWNLOAD_BUFFERS=0`. A function rather than a
-/// static because the kill switch is consulted on every call.
+/// disabled via `HF_XET_DISABLE_MEMORY_DERIVED_DOWNLOAD_BUFFERS=1`. A function rather
+/// than a static because the kill switch is consulted on every call.
 pub fn default_download_buffer_sizes() -> DownloadBufferDefaults {
     if memory_derived_defaults_enabled() {
         DERIVED_DEFAULTS.standard
@@ -365,7 +366,7 @@ mod tests {
     #[test]
     #[serial_test::serial(config_env)]
     fn test_kill_switch_restores_static_defaults() {
-        let _g = crate::utils::EnvVarGuard::set("HF_XET_MEMORY_DERIVED_DOWNLOAD_BUFFERS", "0");
+        let _g = crate::utils::EnvVarGuard::set("HF_XET_DISABLE_MEMORY_DERIVED_DOWNLOAD_BUFFERS", "1");
         assert_eq!(default_download_buffer_sizes(), STATIC_DEFAULTS);
         assert_eq!(high_performance_download_buffer_sizes(), STATIC_HP_DEFAULTS);
     }
@@ -373,7 +374,7 @@ mod tests {
     #[test]
     #[serial_test::serial(config_env)]
     fn test_derived_defaults_match_probe() {
-        let _g = crate::utils::EnvVarGuard::set("HF_XET_MEMORY_DERIVED_DOWNLOAD_BUFFERS", "1");
+        let _g = crate::utils::EnvVarGuard::set("HF_XET_DISABLE_MEMORY_DERIVED_DOWNLOAD_BUFFERS", "0");
         let expected_std = match USABLE_MEMORY.usable() {
             Some(u) => derive_download_buffer_defaults(u, &STANDARD_FRACTIONS),
             None => STATIC_DEFAULTS,

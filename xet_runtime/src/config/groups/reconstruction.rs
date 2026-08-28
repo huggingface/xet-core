@@ -28,7 +28,7 @@ crate::config_group!({
     /// The default is derived from usable memory (the minimum of host RAM and the
     /// effective cgroup limit): usable/16, clamped to [64MB, 16GB]. If memory cannot
     /// be determined, or derivation is disabled via
-    /// `HF_XET_MEMORY_DERIVED_DOWNLOAD_BUFFERS=0`, the default is 2GB.
+    /// `HF_XET_DISABLE_MEMORY_DERIVED_DOWNLOAD_BUFFERS=1`, the default is 2GB.
     ///
     /// Use the environment variable `HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE` to set this value.
     ref download_buffer_size: ByteSize = crate::utils::system_memory::default_download_buffer_sizes().size;
@@ -38,7 +38,7 @@ crate::config_group!({
     ///
     /// The default is derived from usable memory: usable/64, clamped to [16MB, 2GB].
     /// If memory cannot be determined, or derivation is disabled via
-    /// `HF_XET_MEMORY_DERIVED_DOWNLOAD_BUFFERS=0`, the default is 512MB.
+    /// `HF_XET_DISABLE_MEMORY_DERIVED_DOWNLOAD_BUFFERS=1`, the default is 512MB.
     ///
     /// Use the environment variable `HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERFILE_SIZE` to set this value.
     ref download_buffer_perfile_size: ByteSize = crate::utils::system_memory::default_download_buffer_sizes().perfile;
@@ -48,7 +48,7 @@ crate::config_group!({
     ///
     /// The default is derived from usable memory: usable/4, clamped to [264MB, 64GB].
     /// If memory cannot be determined, or derivation is disabled via
-    /// `HF_XET_MEMORY_DERIVED_DOWNLOAD_BUFFERS=0`, the default is 8GB.
+    /// `HF_XET_DISABLE_MEMORY_DERIVED_DOWNLOAD_BUFFERS=1`, the default is 8GB.
     ///
     /// Use the environment variable `HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT` to set this value.
     ref download_buffer_limit: ByteSize = crate::utils::system_memory::default_download_buffer_sizes().limit;

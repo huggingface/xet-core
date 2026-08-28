@@ -12,7 +12,7 @@ fn clear_buffer_env_vars() -> [EnvVarGuard; 4] {
         "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE",
         "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERFILE_SIZE",
         "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT",
-        "HF_XET_MEMORY_DERIVED_DOWNLOAD_BUFFERS",
+        "HF_XET_DISABLE_MEMORY_DERIVED_DOWNLOAD_BUFFERS",
     ]
     .map(EnvVarGuard::unset)
 }
@@ -130,7 +130,7 @@ fn test_env_override_beats_derived_default() {
 #[serial(config_env)]
 fn test_kill_switch_restores_static_defaults_in_config() {
     let _env_guards = clear_buffer_env_vars();
-    let _guard = EnvVarGuard::set("HF_XET_MEMORY_DERIVED_DOWNLOAD_BUFFERS", "0");
+    let _guard = EnvVarGuard::set("HF_XET_DISABLE_MEMORY_DERIVED_DOWNLOAD_BUFFERS", "1");
     let config = XetConfig::new();
     assert_eq!(config.reconstruction.download_buffer_size, ByteSize::from("2gb"));
     assert_eq!(config.reconstruction.download_buffer_perfile_size, ByteSize::from("512mb"));
