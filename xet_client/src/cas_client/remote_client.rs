@@ -654,35 +654,70 @@ impl Client for RemoteClient {
                         let is_multipart = content_type.contains("multipart/byteranges");
 
                         if is_multipart {
-                            let body = resp
-                                .bytes()
-                                .await
-                                .map_err(|e| RetryableReqwestError::RetryableError(ClientError::from(e)))?;
-
-                            let multipart_parts = crate::cas_client::multipart::parse_multipart_byteranges(&content_type, body)
+                            let mut incoming_stream = resp.bytes_stream();
+                            let mut parser = crate::cas_client::multipart::StreamingMultipartParser::new(&content_type)
                                 .map_err(RetryableReqwestError::FatalError)?;
-
                             let mut all_decompressed = Vec::with_capacity(uncompressed_size_if_known.unwrap_or(0));
-                            let mut all_chunk_indices = Vec::<u32>::new();
+                            let mut decoded_parts = Vec::new();
                             let mut total_compressed_bytes = 0u64;
 
-                            for part in multipart_parts {
-                                total_compressed_bytes += part.data.len() as u64;
+                            let mut process_parts = |parts: Vec<crate::cas_client::multipart::MultipartPart>| {
+                                for part in parts {
+                                    total_compressed_bytes += part.data.len() as u64;
+                                    let data_start = all_decompressed.len();
+                                    let mut reader = std::io::Cursor::new(part.data.as_ref());
+                                    let (_, chunk_indices) = xet_core_structures::xorb_object::deserialize_chunks_to_writer(
+                                        &mut reader,
+                                        &mut all_decompressed,
+                                    )
+                                    .map_err(|e| {
+                                        RetryableReqwestError::RetryableError(ClientError::FormatError(e))
+                                    })?;
 
-                                let (data, chunk_indices) =
-                                    xet_core_structures::xorb_object::deserialize_chunks(&mut std::io::Cursor::new(part.data.as_ref()))
-                                        .map_err(|e| {
-                                            RetryableReqwestError::RetryableError(ClientError::FormatError(e))
-                                        })?;
+                                    let data_end = all_decompressed.len();
+                                    decoded_parts.push((part.range, data_start..data_end, chunk_indices));
+                                    transfer_reporter.report_progress(total_compressed_bytes as usize);
+                                }
+                                Ok::<_, RetryableReqwestError>(())
+                            };
 
-                                xet_core_structures::xorb_object::append_chunk_segment(
-                                    &mut all_decompressed,
-                                    &mut all_chunk_indices,
-                                    &data,
-                                    &chunk_indices,
-                                );
+                            while let Some(chunk) = incoming_stream
+                                .try_next()
+                                .await
+                                .map_err(|e| RetryableReqwestError::RetryableError(ClientError::from(e)))?
+                            {
+                                let parts = parser.push(chunk).map_err(RetryableReqwestError::FatalError)?;
+                                process_parts(parts)?;
+                            }
 
-                                transfer_reporter.report_progress(total_compressed_bytes as usize);
+                            let final_parts = parser.finish().map_err(RetryableReqwestError::FatalError)?;
+                            process_parts(final_parts)?;
+
+                            // Servers normally return parts in request order, so the common path writes directly
+                            // into the final buffer. Preserve the previous parser's range ordering without an extra
+                            // allocation unless a server actually returns parts out of order.
+                            let response_was_ordered = decoded_parts
+                                .windows(2)
+                                .all(|parts| parts[0].0.start <= parts[1].0.start);
+                            decoded_parts.sort_by_key(|(range, _, _)| range.start);
+                            if !response_was_ordered {
+                                let mut reordered = Vec::with_capacity(all_decompressed.len());
+                                for (_, data_range, _) in &decoded_parts {
+                                    reordered.extend_from_slice(&all_decompressed[data_range.clone()]);
+                                }
+                                all_decompressed = reordered;
+                            }
+
+                            let mut all_chunk_indices = Vec::<u32>::new();
+                            let mut base_offset = 0u32;
+                            for (_, data_range, chunk_indices) in decoded_parts {
+                                if all_chunk_indices.is_empty() {
+                                    all_chunk_indices.extend_from_slice(&chunk_indices);
+                                } else {
+                                    all_chunk_indices
+                                        .extend(chunk_indices.iter().skip(1).map(|&offset| offset + base_offset));
+                                }
+                                base_offset += (data_range.end - data_range.start) as u32;
                             }
 
                             if let Some(expected) = uncompressed_size_if_known
@@ -979,13 +1014,84 @@ impl Client for RemoteClient {
 #[cfg(test)]
 #[cfg(not(target_family = "wasm"))]
 mod tests {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
     use tracing_test::traced_test;
     use xet_core_structures::xorb_object::CompressionScheme;
     use xet_core_structures::xorb_object::xorb_format_test_utils::{
-        ChunkSize, build_and_verify_xorb_object, build_raw_xorb,
+        ChunkSize, build_and_verify_xorb_object, build_raw_xorb, build_xorb_object,
     };
 
     use super::*;
+
+    struct FixedURLProvider {
+        url: String,
+        ranges: Vec<HttpRange>,
+    }
+
+    #[async_trait::async_trait]
+    impl URLProvider for FixedURLProvider {
+        async fn retrieve_url(&self) -> Result<(String, Vec<HttpRange>)> {
+            Ok((self.url.clone(), self.ranges.clone()))
+        }
+
+        async fn refresh_url(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn write_http_chunk(stream: &mut TcpStream, data: &[u8]) {
+        write!(stream, "{:x}\r\n", data.len()).unwrap();
+        stream.write_all(data).unwrap();
+        stream.write_all(b"\r\n").unwrap();
+        stream.flush().unwrap();
+    }
+
+    fn spawn_staged_multipart_server(
+        boundary: &'static str,
+        first_stage: Vec<u8>,
+        second_stage: Vec<u8>,
+        progress_received: mpsc::Receiver<()>,
+    ) -> (String, mpsc::Receiver<bool>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (observed_sender, observed_receiver) = mpsc::channel();
+
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+
+            let mut request = Vec::new();
+            let mut read_buffer = [0u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let count = stream.read(&mut read_buffer).unwrap();
+                assert_ne!(count, 0, "client closed before sending HTTP headers");
+                request.extend_from_slice(&read_buffer[..count]);
+            }
+
+            write!(
+                stream,
+                "HTTP/1.1 206 Partial Content\r\nContent-Type: multipart/byteranges; boundary={boundary}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            write_http_chunk(&mut stream, &first_stage);
+
+            // The second part and terminating HTTP chunk are deliberately withheld. With the
+            // old `resp.bytes().await` path no progress can be reported before this wait expires.
+            let progressed_before_eof = progress_received.recv_timeout(Duration::from_secs(2)).is_ok();
+            observed_sender.send(progressed_before_eof).unwrap();
+
+            write_http_chunk(&mut stream, &second_stage);
+            stream.write_all(b"0\r\n\r\n").unwrap();
+            stream.flush().unwrap();
+        });
+
+        (format!("http://{address}/xorb"), observed_receiver, server)
+    }
 
     #[test]
     fn test_clients_share_controllers_per_ctx_and_endpoint() {
@@ -1009,6 +1115,72 @@ mod tests {
         let ctx2 = XetContext::default().unwrap();
         let c4 = RemoteClient::new(ctx2, "https://cas-a.example.com", &None, "", false, None);
         assert!(!Arc::ptr_eq(&c1.upload_concurrency_controller, &c4.upload_concurrency_controller));
+    }
+
+    #[test]
+    fn test_multirange_streams_before_eof_and_preserves_range_order() {
+        let (_, compressed_low, raw_low, _) = build_xorb_object(1, ChunkSize::Fixed(2048), CompressionScheme::None);
+        let (_, compressed_high, raw_high, _) = build_xorb_object(1, ChunkSize::Fixed(3072), CompressionScheme::None);
+
+        let boundary = "staged-xet-boundary";
+        let low_range = HttpRange::new(0, compressed_low.len() as u64 - 1);
+        let high_range = HttpRange::new(100_000, 100_000 + compressed_high.len() as u64 - 1);
+
+        // Return the higher range first to exercise the legacy range-sorting behavior while the
+        // response itself is consumed incrementally.
+        let mut first_stage = format!(
+            "--{boundary}\r\nContent-Type: application/octet-stream\r\nContent-Range: bytes {}-{}/200000\r\n\r\n",
+            high_range.start, high_range.end
+        )
+        .into_bytes();
+        first_stage.extend_from_slice(&compressed_high);
+        first_stage.extend_from_slice(
+            format!(
+                "\r\n--{boundary}\r\nContent-Type: application/octet-stream\r\nContent-Range: bytes {}-{}/200000\r\n\r\n",
+                low_range.start, low_range.end
+            )
+            .as_bytes(),
+        );
+
+        let mut second_stage = compressed_low;
+        second_stage.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+        let (progress_sender, progress_receiver) = mpsc::channel();
+        let (url, progress_before_eof, server) =
+            spawn_staged_multipart_server(boundary, first_stage, second_stage, progress_receiver);
+
+        let ctx = XetContext::default().unwrap();
+        let client = RemoteClient::new(ctx.clone(), &url, &None, "", false, None);
+        let expected_len = raw_low.len() + raw_high.len();
+        let provider = FixedURLProvider {
+            url,
+            ranges: vec![low_range, high_range],
+        };
+        let progress_callback: ProgressCallback = Arc::new(move |_, _, _| {
+            let _ = progress_sender.send(());
+        });
+
+        let result = ctx
+            .runtime
+            .bridge_sync(async move {
+                let permit = client.acquire_download_permit().await.unwrap();
+                client
+                    .get_file_term_data(Box::new(provider), permit, Some(progress_callback), Some(expected_len))
+                    .await
+            })
+            .unwrap()
+            .unwrap();
+
+        server.join().unwrap();
+        assert!(
+            progress_before_eof.recv().unwrap(),
+            "the first multipart part did not report progress before the server sent EOF"
+        );
+
+        let mut expected = raw_low;
+        expected.extend_from_slice(&raw_high);
+        assert_eq!(result.0.as_ref(), expected);
+        assert_eq!(result.1, vec![0, 2048, 5120]);
     }
 
     #[ignore = "requires a running CAS server"]
