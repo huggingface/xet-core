@@ -1202,9 +1202,10 @@ mod tests {
             reader: Box::pin(Cursor::new(dirty_data.to_vec())),
         }];
 
-        let result = upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, dirty_inputs, None)
-            .await
-            .unwrap();
+        let result =
+            upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, dirty_inputs, None)
+                .await
+                .unwrap();
 
         assert_eq!(result.file_size(), Some(original_size));
 
@@ -2012,10 +2013,9 @@ mod tests {
             let edits_summary = summarize_edits(&edits);
             let expected_next = apply_planned_edits(&expected, &edits);
             let inputs = edits_to_dirty_inputs(&edits);
-            let result =
-                upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, inputs, None)
-                    .await
-                    .unwrap();
+            let result = upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, inputs, None)
+                .await
+                .unwrap();
             let result_hash = MerkleHash::from_hex(result.hash()).unwrap();
 
             let clean_hash = upload_file(&config, &expected_next).await;
