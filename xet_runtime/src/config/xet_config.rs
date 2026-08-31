@@ -157,9 +157,34 @@ impl XetConfig {
     /// - HF_XET_HIGH_PERFORMANCE
     /// - HF_XET_HP
     ///
-    /// This method raises file ingestion concurrency, widens the adaptive concurrency
-    /// bands, raises the reconstruction fetch sizes, and applies the high performance
-    /// (memory-derived) download buffer values.
+    /// This method sets the following values (default -> high performance):
+    /// - data.max_concurrent_file_ingestion: 8 -> 100
+    /// - client.ac_max_upload_concurrency: 64 -> 124
+    /// - client.ac_max_download_concurrency: 64 -> 124
+    /// - client.ac_min_upload_concurrency: 1 -> 4
+    /// - client.ac_min_download_concurrency: 1 -> 4
+    /// - client.ac_initial_upload_concurrency: 2 -> 16
+    /// - client.ac_initial_download_concurrency: 4 -> 16
+    /// - reconstruction.min_reconstruction_fetch_size: 256MB -> 1GB
+    /// - reconstruction.max_reconstruction_fetch_size: 8GB -> 16GB
+    /// - reconstruction.download_buffer_size: usable/16 -> usable/8, clamped to [64MB, 16GB]
+    /// - reconstruction.download_buffer_perfile_size: usable/64 -> usable/32, clamped to [16MB, 2GB]
+    /// - reconstruction.download_buffer_limit: usable/4 -> usable/2, clamped to [264MB, 64GB]
+    ///
+    /// "usable" is the minimum of host RAM and the effective cgroup limit (see
+    /// `utils::system_memory`); if it cannot be determined, or derivation is disabled via
+    /// `HF_XET_DISABLE_MEMORY_DERIVED_DOWNLOAD_BUFFERS=1`, the three buffer values fall back
+    /// to the static high performance constants 16GB / 2GB / 64GB regardless of actual RAM.
+    ///
+    /// Memory cost: downloads may buffer up to `download_buffer_size +
+    /// n_active_downloads * download_buffer_perfile_size` bytes in memory, capped at
+    /// `download_buffer_limit` — up to 32GB at the high performance ceilings with the
+    /// default 8 concurrent file downloads. Note that `data.max_concurrent_file_downloads`
+    /// itself is not raised by this preset; only its ingestion counterpart is.
+    ///
+    /// Every field above also has its own `HF_XET_*` environment variable (see the field
+    /// docs in `config/groups/`), so individual values can be adopted without enabling the
+    /// whole preset.
     ///
     /// Note: This method is automatically called by `XetConfig::new()` if high performance mode
     /// is enabled, before environment variable overrides are applied; explicitly set environment
