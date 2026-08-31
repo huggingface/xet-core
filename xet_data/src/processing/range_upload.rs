@@ -1055,7 +1055,7 @@ mod tests {
         let data = random_data(70, 256 * 1024);
         let hash = upload_file(&config, &data).await;
         let size = data.len() as u64;
-        let result = upload_ranges(config, cas_client, hash, size, make_legacy_inputs(&[], &[], size, size))
+        let result = upload_ranges(config, cas_client, hash, size, make_legacy_inputs(&[], &[], size, size), None)
             .await
             .unwrap();
 
@@ -1202,7 +1202,7 @@ mod tests {
             reader: Box::pin(Cursor::new(dirty_data.to_vec())),
         }];
 
-        let result = upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, dirty_inputs)
+        let result = upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, dirty_inputs, None)
             .await
             .unwrap();
 
@@ -1489,7 +1489,7 @@ mod tests {
     ) {
         let original_hash = upload_file(config, original).await;
         let original_size = original.len() as u64;
-        let result = upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, inputs)
+        let result = upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, inputs, None)
             .await
             .unwrap();
         assert_eq!(result.file_size(), Some(expected.len() as u64), "file size mismatch");
@@ -1539,7 +1539,7 @@ mod tests {
             inputs.sort_by_key(|d| d.original_range.start);
         }
 
-        let result = upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, inputs)
+        let result = upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, inputs, None)
             .await
             .unwrap();
 
@@ -1586,7 +1586,7 @@ mod tests {
                 reader: Box::pin(Cursor::new(append_extra)),
             },
         ];
-        let result = upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, inputs)
+        let result = upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, inputs, None)
             .await
             .unwrap();
 
@@ -1615,7 +1615,7 @@ mod tests {
             new_length: total_size,
             reader: Box::pin(Cursor::new(new_data.clone())),
         }];
-        let result = upload_ranges(config.clone(), cas_client.clone(), original_hash, 0, inputs)
+        let result = upload_ranges(config.clone(), cas_client.clone(), original_hash, 0, inputs, None)
             .await
             .unwrap();
 
@@ -1969,7 +1969,7 @@ mod tests {
                 let edits = build_random_non_overlapping_edits(&mut rng, expected.len(), 8);
                 let expected_next = apply_planned_edits(&expected, &edits);
                 let inputs = edits_to_dirty_inputs(&edits);
-                let result = upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, inputs)
+                let result = upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, inputs, None)
                     .await
                     .unwrap();
                 let result_hash = MerkleHash::from_hex(result.hash()).unwrap();
@@ -2011,7 +2011,7 @@ mod tests {
             let edits_summary = summarize_edits(&edits);
             let expected_next = apply_planned_edits(&expected, &edits);
             let inputs = edits_to_dirty_inputs(&edits);
-            let result = upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, inputs)
+            let result = upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, inputs, None)
                 .await
                 .unwrap();
             let result_hash = MerkleHash::from_hex(result.hash()).unwrap();
@@ -2093,7 +2093,7 @@ mod tests {
                     let expected_next = apply_planned_edits(&expected, &edits);
                     let inputs = edits_to_dirty_inputs(&edits);
                     let result =
-                        upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, inputs)
+                        upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, inputs, None)
                             .await
                             .unwrap();
                     let result_hash = MerkleHash::from_hex(result.hash()).unwrap();
