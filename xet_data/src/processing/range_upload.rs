@@ -1969,9 +1969,10 @@ mod tests {
                 let edits = build_random_non_overlapping_edits(&mut rng, expected.len(), 8);
                 let expected_next = apply_planned_edits(&expected, &edits);
                 let inputs = edits_to_dirty_inputs(&edits);
-                let result = upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, inputs, None)
-                    .await
-                    .unwrap();
+                let result =
+                    upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, inputs, None)
+                        .await
+                        .unwrap();
                 let result_hash = MerkleHash::from_hex(result.hash()).unwrap();
 
                 assert_eq!(
@@ -2011,9 +2012,10 @@ mod tests {
             let edits_summary = summarize_edits(&edits);
             let expected_next = apply_planned_edits(&expected, &edits);
             let inputs = edits_to_dirty_inputs(&edits);
-            let result = upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, inputs, None)
-                .await
-                .unwrap();
+            let result =
+                upload_ranges(config.clone(), cas_client.clone(), original_hash, original_size, inputs, None)
+                    .await
+                    .unwrap();
             let result_hash = MerkleHash::from_hex(result.hash()).unwrap();
 
             let clean_hash = upload_file(&config, &expected_next).await;

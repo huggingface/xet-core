@@ -298,9 +298,10 @@ impl XetRangeUploadCommitInner {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::OnceLock;
+
     use http::HeaderMap;
     use tempfile::tempdir;
-    use std::sync::OnceLock;
 
     use super::*;
     use crate::xet_session::Sha256Policy;
@@ -502,7 +503,8 @@ mod tests {
             http::header::AUTHORIZATION,
             http::header::HeaderValue::from_str(&format!("Bearer {}", token)).unwrap(),
         );
-        let refresh_url = "https://huggingface.co/api/buckets/hf-internal-testing/test-xet-core/xet-write-token".to_string();
+        let refresh_url =
+            "https://huggingface.co/api/buckets/hf-internal-testing/test-xet-core/xet-write-token".to_string();
 
         let commit = session
             .new_upload_commit()
