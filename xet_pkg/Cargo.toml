@@ -85,12 +85,15 @@ tokio_with_wasm = { workspace = true, features = ["rt", "sync"] }
 
 [dev-dependencies]
 async-std = { workspace = true }
+chrono = { workspace = true }
+ctor = { workspace = true }
 futures = { workspace = true }
 serial_test = { workspace = true }
 smol = { workspace = true }
 tempfile = { workspace = true }
 sha2 = { workspace = true }
 dirs = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
 tokio = { workspace = true, features = [
     "rt-multi-thread",
     "rt",

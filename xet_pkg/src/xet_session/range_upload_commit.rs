@@ -300,13 +300,42 @@ impl XetRangeUploadCommitInner {
 mod tests {
     use http::HeaderMap;
     use tempfile::tempdir;
+    use std::sync::OnceLock;
 
     use super::*;
     use crate::xet_session::Sha256Policy;
     use crate::xet_session::session::XetSessionBuilder;
 
-    // Helper: read the HF Hub token from the default cache path.
+    /// Computes the test directory once (date-uuid) and reuses it for all uploads.
+    static TEST_DIR: OnceLock<String> = OnceLock::new();
+
+    fn get_test_dir() -> &'static str {
+        TEST_DIR
+            .get_or_init(|| {
+                let date = chrono::Utc::now().format("%Y-%m-%d");
+                let uuid = uuid::Uuid::new_v4();
+                format!("{date}-{uuid}")
+            })
+            .as_str()
+    }
+
+    /// Cleanup: remove the test directory and all its contents when the process exits.
+    #[ctor::ctor(unsafe)]
+    fn cleanup_test_dir() {
+        if let Some(dir) = TEST_DIR.get() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    /// Helper: read the HF Hub token, preferring the HF_TOKEN env var and falling back
+    /// to the default cache path.
     fn read_hf_token() -> String {
+        if let Ok(token) = std::env::var("HF_TOKEN") {
+            let token = token.trim().to_string();
+            if !token.is_empty() {
+                return token;
+            }
+        }
         let token_path = dirs::home_dir()
             .map(|d| d.join(".cache/huggingface/token"))
             .expect("could not resolve home dir");
@@ -317,6 +346,8 @@ mod tests {
     }
 
     fn upload_file(session: &XetSession, endpoint: &str, data: &[u8], name: &str) -> XetFileInfo {
+        let dir = get_test_dir();
+        let full_name = format!("{}/{}", dir, name);
         let commit = session
             .new_upload_commit()
             .unwrap()
@@ -324,7 +355,7 @@ mod tests {
             .build_blocking()
             .unwrap();
         let _handle = commit
-            .upload_bytes_blocking(data.to_vec(), Sha256Policy::Compute, Some(name.into()))
+            .upload_bytes_blocking(data.to_vec(), Sha256Policy::Compute, Some(full_name))
             .unwrap();
         let results = commit.commit_blocking().unwrap();
         let meta = results.uploads.into_values().next().expect("one uploaded file");
@@ -463,13 +494,15 @@ mod tests {
 
     /// Helper: upload a single file to the HF Hub repo.
     fn upload_to_hub(session: &XetSession, data: &[u8], name: &str) -> XetFileInfo {
+        let dir = get_test_dir();
+        let full_name = format!("{}/{}", dir, name);
         let token = read_hf_token();
         let mut headers = HeaderMap::new();
         headers.insert(
             http::header::AUTHORIZATION,
             http::header::HeaderValue::from_str(&format!("Bearer {}", token)).unwrap(),
         );
-        let refresh_url = "https://huggingface.co/api/buckets/lhoestq/range-upload-test/xet-write-token".to_string();
+        let refresh_url = "https://huggingface.co/api/buckets/hf-internal-testing/test-xet-core/xet-write-token".to_string();
 
         let commit = session
             .new_upload_commit()
@@ -479,7 +512,7 @@ mod tests {
             .unwrap();
 
         let _handle = commit
-            .upload_bytes_blocking(data.to_vec(), Sha256Policy::Compute, Some(name.into()))
+            .upload_bytes_blocking(data.to_vec(), Sha256Policy::Compute, Some(full_name))
             .unwrap();
         let results = commit.commit_blocking().unwrap();
         let meta = results.uploads.into_values().next().expect("one uploaded file");
@@ -497,11 +530,11 @@ mod tests {
     }
 
     fn make_write_refresh_url() -> String {
-        "https://huggingface.co/api/buckets/lhoestq/range-upload-test/xet-write-token".to_string()
+        "https://huggingface.co/api/buckets/hf-internal-testing/test-xet-core/xet-write-token".to_string()
     }
 
     fn make_read_refresh_url() -> String {
-        "https://huggingface.co/api/buckets/lhoestq/range-upload-test/xet-read-token".to_string()
+        "https://huggingface.co/api/buckets/hf-internal-testing/test-xet-core/xet-read-token".to_string()
     }
 
     #[test]
