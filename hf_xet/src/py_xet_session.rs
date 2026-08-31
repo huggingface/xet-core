@@ -281,8 +281,10 @@ impl PyXetSession {
     ///
     /// Then call :meth:`XetRangeUploadCommit.edit`, :meth:`XetRangeUploadCommit.insert`,
     /// :meth:`XetRangeUploadCommit.delete`, or :meth:`XetRangeUploadCommit.append` to queue
-    /// edits.  Feed data with :meth:`XetRangeUploadEdit.write`, then call
-    /// :meth:`XetRangeUploadEdit.finish` before calling :meth:`XetRangeUploadCommit.commit`.
+    /// edits.  Feed data incrementally with :meth:`XetRangeUploadEdit.write`.  Call
+    /// :meth:`XetRangeUploadEdit.finish` to finalise the edit before committing, or
+    /// call :meth:`XetRangeUploadCommit.commit` directly — it will finalise all
+    /// pending edits automatically.
     #[pyo3(signature = (
         original_hash,
         original_size,

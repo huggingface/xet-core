@@ -89,15 +89,15 @@ pub(crate) fn build_range_upload_commit(
 
 /// A commit that edits an existing file by uploading only changed byte ranges.
 ///
-/// Implements the context-manager protocol.
+/// Implements the context-manager protocol.  Entering the ``with`` block returns
+/// the commit itself.  On normal exit :meth:`commit` is called automatically;
+/// on exception :meth:`abort` is called automatically.
 ///
-/// ```text
-/// with session.new_range_upload() as commit:
+/// ```python
+/// with session.new_range_upload(hash, size) as commit:
 ///     commit.edit(1000, 2000).write(b"new data")
 ///     commit.append(500)
-/// report = commit.commit()
-/// # on normal exit: wait_to_finish() is called automatically
-/// # on exception:   abort() is called automatically
+/// # commit() is called automatically on normal exit.
 /// ```
 #[pyclass(name = "XetRangeUploadCommit")]
 pub struct PyXetRangeUploadCommit {
@@ -144,8 +144,9 @@ impl PyXetRangeUploadCommit {
     /// Start a new edit: replace ``original_range`` with ``new_length`` bytes.
     ///
     /// Returns an :class:`XetRangeUploadEdit` handle.  Feed data incrementally
-    /// with :meth:`XetRangeUploadEdit.write`, then call :meth:`XetRangeUploadEdit.finish`
-    /// before committing.
+    /// with :meth:`XetRangeUploadEdit.write`.  Call :meth:`XetRangeUploadEdit.finish`
+    /// before committing, or call :meth:`commit` directly — it will finalise all
+    /// pending edits automatically.
     ///
     /// The ``original_range`` parameter accepts a tuple ``(start, end)``.
     pub fn edit(&self, original_range: (u64, u64), new_length: u64) -> PyResult<PyXetRangeUploadEdit> {
