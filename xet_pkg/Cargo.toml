@@ -35,6 +35,17 @@ required-features = ["internal-tools"]
 name = "test_xtool_cli"
 required-features = ["internal-tools"]
 
+# The examples are CLIs built on clap, which is only available with this feature.
+[[example]]
+name = "example"
+path = "examples/example.rs"
+required-features = ["internal-tools"]
+
+[[example]]
+name = "example_sync"
+path = "examples/example_sync.rs"
+required-features = ["internal-tools"]
+
 [dependencies]
 xet-runtime = { version = "1.6.0", path = "../xet_runtime" }
 xet-core-structures = { version = "1.6.0", path = "../xet_core_structures" }
