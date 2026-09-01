@@ -29,7 +29,6 @@ xet-runtime = { version = "1.6.0", path = "../xet_runtime" }
 
 async-trait = { workspace = true }
 base64 = { workspace = true }
-blake3 = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true, optional = true }
 countio = { workspace = true }
@@ -48,6 +47,16 @@ static_assertions = { workspace = true }
 tempfile = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+blake3 = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# WebAssembly SIMD substantially improves chunk hashing throughput. Enabling
+# this here makes the optimized implementation available to every wasm32
+# consumer of xet-core-structures, including hf-xet and hf_xet_thin_wasm,
+# without changing native builds.
+blake3 = { workspace = true, features = ["wasm32_simd"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 bytemuck = { workspace = true }
