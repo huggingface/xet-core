@@ -74,6 +74,7 @@ default = ["rustls-tls"]
 elevated_information_level = []
 fd-track = ["xet-runtime/fd-track"]
 rustls-tls = ["reqwest/rustls"]
+rustls-no-provider = ["reqwest/rustls-no-provider"]
 native-tls = ["reqwest/native-tls"]
 native-tls-vendored = ["reqwest/native-tls-vendored"]
 # The cache_analysis binary needs clap for argument parsing.
