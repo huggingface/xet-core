@@ -255,7 +255,7 @@ impl XetRangeUploadCommitInner {
         // Finalise each edit and collect DirtyInputs.  All edits use **original-file**
         // coordinates and must be non-overlapping.  The caller is responsible for
         // merging any overlapping operations before calling commit().
-        let dirty_inputs: Vec<DirtyInput> = {
+        let mut dirty_inputs: Vec<DirtyInput> = {
             let mut pending = self.pending_edits.lock().unwrap();
             let mut inputs = Vec::new();
             for edit in pending.drain(..) {
@@ -265,6 +265,9 @@ impl XetRangeUploadCommitInner {
                     .map_err(|_| XetError::other("edit was already finished before commit"))?;
                 inputs.push(dirty);
             }
+            // Sort by original_range so the non-overlapping check and merge logic below
+            // work correctly regardless of edit insertion order.
+            inputs.sort_by_key(|d| d.original_range.start);
             inputs
         };
 

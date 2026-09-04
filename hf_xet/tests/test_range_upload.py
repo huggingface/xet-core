@@ -196,3 +196,35 @@ class TestRangeUploadMultipleEdits:
         _download_via_group(session, endpoint, report.file_info, str(dest_path))
         content = dest_path.read_bytes()
         assert content == b"XXXX4567---89ABCD"
+
+    def test_e2e_range_upload_multiple_edits_unsorted(self, endpoint, tmp_path):
+        original_data = b"0123456789ABCDEF"  # 16 bytes
+        session = hf_xet.XetSession()
+
+        # Step 1: upload original
+        original_info = _upload_bytes(session, endpoint, original_data)
+        assert original_info.file_size == 16
+
+        # Step 2: apply multiple edits
+        # - delete 14..16 ("EF") — 2 bytes removed
+        # - insert 8, 3 ("---") - 3 bytes added
+        # - edit 0..4 ("0123" -> "XXXX") - keep same length
+        # Expected: "XXXX4567---89ABCD" = 17 bytes
+        commit = session.new_range_upload(original_info.hash, original_info.file_size, endpoint=endpoint)
+
+        edit3 = commit.delete(14, 16)
+
+        edit2 = commit.insert(8, 3)
+        edit2.write(b"---")
+
+        edit1 = commit.edit((0, 4), 4)
+        edit1.write(b"XXXX")
+
+        report = commit.commit()
+        assert report.file_info.file_size == 17
+
+        # Step 3: download and verify
+        dest_path = tmp_path / "range_upload_multi_test.txt"
+        _download_via_group(session, endpoint, report.file_info, str(dest_path))
+        content = dest_path.read_bytes()
+        assert content == b"XXXX4567---89ABCD"
