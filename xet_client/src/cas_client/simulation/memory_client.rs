@@ -91,6 +91,7 @@ pub struct MemoryClient {
     gc_tagged_shard: RwLock<Option<MerkleHash>>,
     /// S3-style tag sets per XORB. Held separately from `xorbs` so writing one
     /// cannot perturb the bytes the [`ObjectETag`] is derived from.
+    #[cfg(not(target_family = "wasm"))]
     xorb_tag_sets: RwLock<MerkleHashMap<ObjectTagSet>>,
 }
 
@@ -111,6 +112,7 @@ impl MemoryClient {
             lifecycle_tag_deletion: AtomicBool::new(false),
             gc_tagged_xorbs: RwLock::new(HashSet::new()),
             gc_tagged_shard: RwLock::new(None),
+            #[cfg(not(target_family = "wasm"))]
             xorb_tag_sets: RwLock::new(MerkleHashMap::new()),
         })
     }
