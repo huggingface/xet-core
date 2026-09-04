@@ -10,6 +10,13 @@ use crate::error::Result;
 /// to reduce false matches when objects are rapidly rewritten.
 pub type ObjectTag = [u8; 32];
 
+/// S3-style `(key, value)` tag set attached to an object.
+///
+/// Distinct from [`ObjectTag`]: writing this leaves the object's bytes, and so its
+/// [`ObjectTag`], untouched. That is what lets a caller record something about an object
+/// without invalidating anything keyed on its content.
+pub type ObjectTagSet = Vec<(String, String)>;
+
 /// Trait for clients that support deletion and integrity operations on shards and file entries.
 ///
 /// Implemented by `LocalClient` (disk-backed) and `MemoryClient` (in-memory).
@@ -47,6 +54,12 @@ pub trait DeletionControlableClient: Send + Sync {
     /// Deletes a XORB only if its current tag matches the provided tag.
     /// Returns `Ok(true)` if deleted, `Ok(false)` if the tag did not match.
     async fn delete_xorb_if_tag_matches(&self, hash: &MerkleHash, tag: &ObjectTag) -> Result<bool>;
+
+    /// Returns a XORB's tag set, empty if it has none.
+    async fn get_xorb_tag_set(&self, hash: &MerkleHash) -> Result<ObjectTagSet>;
+
+    /// Replaces a XORB's tag set wholesale, as S3 `PutObjectTagging` does.
+    async fn set_xorb_tag_set(&self, hash: &MerkleHash, tags: ObjectTagSet) -> Result<()>;
 
     /// Returns all shard hashes with their associated object tags.
     async fn list_shards_with_tags(&self) -> Result<Vec<(MerkleHash, ObjectTag)>>;

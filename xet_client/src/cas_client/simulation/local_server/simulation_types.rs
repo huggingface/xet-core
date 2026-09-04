@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use xet_core_structures::merklehash::MerkleHash;
 
-use crate::cas_client::simulation::deletion_controls::ObjectTag;
+use crate::cas_client::simulation::deletion_controls::{ObjectTag, ObjectTagSet};
 use crate::cas_types::XorbReconstructionFetchInfo;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -77,4 +77,11 @@ pub struct TagDeleteRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TagDeleteResponse {
     pub deleted: bool,
+}
+
+/// Body of a tag-set read or write. Ordered pairs rather than a map so the
+/// wire form matches S3's tag set, where key order is preserved.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TagSetBody {
+    pub tags: ObjectTagSet,
 }

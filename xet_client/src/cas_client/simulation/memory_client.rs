@@ -27,7 +27,7 @@ use super::super::interface::{ShardUploadProgressCallback, ShardUploadProgressTy
 use super::super::progress_tracked_streams::ProgressCallback;
 use super::client_testing_utils::{FileTermReference, RandomFileContents};
 #[cfg(not(target_family = "wasm"))]
-use super::deletion_controls::ObjectTag;
+use super::deletion_controls::{ObjectTag, ObjectTagSet};
 use super::direct_access_client::DirectAccessClient;
 use super::random_xorb::RandomXorb;
 use super::xorb_utils::{self, REFERENCE_INSTANT, duration_to_expiration_secs_ceil};
@@ -89,6 +89,9 @@ pub struct MemoryClient {
     /// Shard hash currently tagged for lifecycle deletion. Shard data is
     /// retained in `shard` so a re-upload can clear the tag.
     gc_tagged_shard: RwLock<Option<MerkleHash>>,
+    /// S3-style tag sets per XORB. Held separately from `xorbs` so writing one
+    /// cannot perturb the bytes the [`ObjectTag`] is derived from.
+    xorb_tag_sets: RwLock<MerkleHashMap<ObjectTagSet>>,
 }
 
 impl MemoryClient {
@@ -108,6 +111,7 @@ impl MemoryClient {
             lifecycle_tag_deletion: AtomicBool::new(false),
             gc_tagged_xorbs: RwLock::new(HashSet::new()),
             gc_tagged_shard: RwLock::new(None),
+            xorb_tag_sets: RwLock::new(MerkleHashMap::new()),
         })
     }
 
@@ -1235,6 +1239,21 @@ impl super::DeletionControlableClient for MemoryClient {
         Ok(true)
     }
 
+    async fn get_xorb_tag_set(&self, hash: &MerkleHash) -> Result<ObjectTagSet> {
+        if !self.xorbs.read().await.contains_key(hash) {
+            return Err(ClientError::Other(format!("XORB not found: {}", hash.hex())));
+        }
+        Ok(self.xorb_tag_sets.read().await.get(hash).cloned().unwrap_or_default())
+    }
+
+    async fn set_xorb_tag_set(&self, hash: &MerkleHash, tags: ObjectTagSet) -> Result<()> {
+        if !self.xorbs.read().await.contains_key(hash) {
+            return Err(ClientError::Other(format!("XORB not found: {}", hash.hex())));
+        }
+        self.xorb_tag_sets.write().await.insert(*hash, tags);
+        Ok(())
+    }
+
     async fn list_shards_with_tags(&self) -> Result<Vec<(MerkleHash, ObjectTag)>> {
         let shard = self.shard.read().await;
         let Some((shard_hash, shard_bytes)) = Self::current_shard_hash_and_bytes(&shard)? else {
@@ -1616,6 +1635,47 @@ mod tests {
 
         // Hard-deleted: data is gone.
         assert!(client.xorbs.read().await.get(&xorb_hash).is_none());
+    }
+
+    /// Tag sets round-trip, replace wholesale on the next write, and leave the
+    /// xorb's `ObjectTag` alone — the same contract `LocalClient` provides.
+    #[tokio::test]
+    async fn test_xorb_tag_set_round_trip_leaves_object_tag_intact() {
+        let client = new_deletion_client();
+        let file = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
+        let xorb_hash = file.terms[0].xorb_hash;
+
+        let before = client.list_xorbs_and_tags().await.unwrap();
+        assert!(client.get_xorb_tag_set(&xorb_hash).await.unwrap().is_empty());
+
+        client
+            .set_xorb_tag_set(&xorb_hash, vec![("last-upload".to_string(), "1234".to_string())])
+            .await
+            .unwrap();
+        assert_eq!(
+            client.get_xorb_tag_set(&xorb_hash).await.unwrap(),
+            vec![("last-upload".to_string(), "1234".to_string())]
+        );
+
+        client
+            .set_xorb_tag_set(&xorb_hash, vec![("other".to_string(), "x".to_string())])
+            .await
+            .unwrap();
+        assert_eq!(
+            client.get_xorb_tag_set(&xorb_hash).await.unwrap(),
+            vec![("other".to_string(), "x".to_string())],
+            "PutObjectTagging semantics replace the whole set"
+        );
+
+        assert_eq!(client.list_xorbs_and_tags().await.unwrap(), before, "tagging must not move the ObjectTag");
+    }
+
+    #[tokio::test]
+    async fn test_xorb_tag_set_requires_the_xorb_to_exist() {
+        let client = new_deletion_client();
+        let missing = MerkleHash::default();
+        assert!(client.get_xorb_tag_set(&missing).await.is_err());
+        assert!(client.set_xorb_tag_set(&missing, vec![]).await.is_err());
     }
 
     #[tokio::test]

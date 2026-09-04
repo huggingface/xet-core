@@ -31,7 +31,7 @@ use xet_runtime::core::XetContext;
 use xet_runtime::fd_diagnostics::{report_fd_count, track_fd_scope};
 use xet_runtime::file_utils::SafeFileCreator;
 
-use super::deletion_controls::ObjectTag;
+use super::deletion_controls::{ObjectTag, ObjectTagSet};
 use super::direct_access_client::DirectAccessClient;
 use super::xorb_utils::{self, REFERENCE_INSTANT, duration_to_expiration_secs_ceil};
 use crate::cas_client::Client;
@@ -372,6 +372,16 @@ impl LocalClient {
         let canonical = self.get_path_for_entry(hash);
         let mut name = canonical.into_os_string();
         name.push(".gctag");
+        PathBuf::from(name)
+    }
+
+    /// Path of a xorb's S3-style tag set: `<canonical>.tagset`, holding JSON.
+    /// A sidecar so writing tags cannot disturb the bytes the [`ObjectTag`] is
+    /// derived from.
+    fn tag_set_xorb_path(&self, hash: &MerkleHash) -> PathBuf {
+        let canonical = self.get_path_for_entry(hash);
+        let mut name = canonical.into_os_string();
+        name.push(".tagset");
         PathBuf::from(name)
     }
 
@@ -1051,6 +1061,33 @@ impl super::DeletionControlableClient for LocalClient {
             std::fs::remove_file(&tmp_path)?;
         }
         Ok(true)
+    }
+
+    async fn get_xorb_tag_set(&self, hash: &MerkleHash) -> Result<ObjectTagSet> {
+        if !self.get_path_for_entry(hash).exists() {
+            return Err(ClientError::Other(format!("XORB not found: {}", hash.hex())));
+        }
+        let path = self.tag_set_xorb_path(hash);
+        if !path.exists() {
+            return Ok(ObjectTagSet::new());
+        }
+        let raw = std::fs::read(&path)?;
+        serde_json::from_slice(&raw)
+            .map_err(|e| ClientError::Other(format!("invalid tag set at {}: {e}", path.display())))
+    }
+
+    async fn set_xorb_tag_set(&self, hash: &MerkleHash, tags: ObjectTagSet) -> Result<()> {
+        if !self.get_path_for_entry(hash).exists() {
+            return Err(ClientError::Other(format!("XORB not found: {}", hash.hex())));
+        }
+        let path = self.tag_set_xorb_path(hash);
+        let raw = serde_json::to_vec(&tags).map_err(|e| ClientError::Other(format!("serialize tag set: {e}")))?;
+        #[cfg(windows)]
+        if path.exists() {
+            Self::clear_readonly(&path);
+        }
+        std::fs::write(&path, raw)?;
+        Ok(())
     }
 
     async fn list_shards_with_tags(&self) -> Result<Vec<(MerkleHash, ObjectTag)>> {
@@ -2276,6 +2313,58 @@ mod tests {
             .verify_integrity()
             .await
             .expect("Integrity should pass: the old shard's stale file entry with dangling xorb refs is not consulted");
+    }
+
+    /// A tag set is stored, replaced wholesale on the next write (as S3
+    /// `PutObjectTagging` does), and never disturbs the xorb's `ObjectTag` or
+    /// its appearance in the xorb listing — the sidecar must not read as a xorb.
+    #[tokio::test]
+    async fn test_xorb_tag_set_round_trip_leaves_object_tag_intact() {
+        let client = LocalClient::temporary(test_context()).await.unwrap();
+        let file = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
+        let xorb_hash = file.terms[0].xorb_hash;
+
+        let before = client.list_xorbs_and_tags().await.unwrap();
+        let (_, tag_before) = before.iter().find(|(h, _)| *h == xorb_hash).unwrap();
+        assert!(client.get_xorb_tag_set(&xorb_hash).await.unwrap().is_empty(), "a fresh xorb has no tag set");
+
+        client
+            .set_xorb_tag_set(&xorb_hash, vec![("last-upload".to_string(), "1234".to_string())])
+            .await
+            .unwrap();
+        assert_eq!(
+            client.get_xorb_tag_set(&xorb_hash).await.unwrap(),
+            vec![("last-upload".to_string(), "1234".to_string())]
+        );
+
+        // A second write replaces the set rather than merging into it.
+        client
+            .set_xorb_tag_set(&xorb_hash, vec![("other".to_string(), "x".to_string())])
+            .await
+            .unwrap();
+        assert_eq!(
+            client.get_xorb_tag_set(&xorb_hash).await.unwrap(),
+            vec![("other".to_string(), "x".to_string())],
+            "PutObjectTagging semantics replace the whole set"
+        );
+
+        // Both listing paths must ignore the sidecar, not just the tagged one.
+        let listed = client.list_xorbs().await.unwrap();
+        assert_eq!(listed, vec![xorb_hash], "the .tagset sidecar must not be listed as a xorb");
+
+        let after = client.list_xorbs_and_tags().await.unwrap();
+        assert_eq!(after.len(), before.len(), "the sidecar must not appear as an extra tagged xorb");
+        let (_, tag_after) = after.iter().find(|(h, _)| *h == xorb_hash).unwrap();
+        assert_eq!(tag_before, tag_after, "tagging must not move the ObjectTag");
+    }
+
+    /// Tagging an absent xorb is an error rather than creating an orphan sidecar.
+    #[tokio::test]
+    async fn test_xorb_tag_set_requires_the_xorb_to_exist() {
+        let client = LocalClient::temporary(test_context()).await.unwrap();
+        let missing = MerkleHash::default();
+        assert!(client.get_xorb_tag_set(&missing).await.is_err());
+        assert!(client.set_xorb_tag_set(&missing, vec![]).await.is_err());
     }
 
     /// Tests that list_xorbs_and_tags tags change after file re-creation with a timestamp delay.

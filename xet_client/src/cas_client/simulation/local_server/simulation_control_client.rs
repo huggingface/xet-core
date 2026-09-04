@@ -11,12 +11,12 @@ use xet_runtime::core::XetContext;
 
 use super::simulation_types::{
     FetchTermDataRequest, FetchTermDataResponse, FileShardsEntry, FileSizeResponse, HashWithTag, TagDeleteRequest,
-    TagDeleteResponse, XorbExistsResponse, XorbLengthResponse, XorbRangesRequest, XorbRangesResponse,
+    TagDeleteResponse, TagSetBody, XorbExistsResponse, XorbLengthResponse, XorbRangesRequest, XorbRangesResponse,
     XorbRawLengthResponse,
 };
 use crate::cas_client::RemoteClient;
 use crate::cas_client::interface::Client;
-use crate::cas_client::simulation::deletion_controls::ObjectTag;
+use crate::cas_client::simulation::deletion_controls::{ObjectTag, ObjectTagSet};
 use crate::cas_client::simulation::xorb_utils::duration_to_expiration_secs_ceil;
 use crate::cas_client::simulation::{DeletionControlableClient, DirectAccessClient};
 use crate::cas_types::{
@@ -580,6 +580,32 @@ impl DeletionControlableClient for SimulationControlClient {
         let resp = Self::check_status(resp).await?;
         let result: TagDeleteResponse = resp.json().await.map_err(|e| ClientError::Other(e.to_string()))?;
         Ok(result.deleted)
+    }
+
+    async fn get_xorb_tag_set(&self, hash: &MerkleHash) -> Result<ObjectTagSet> {
+        let hex = HexMerkleHash::from(*hash);
+        let resp = self
+            .http_client
+            .get(self.sim_url(&format!("/xorbs/{hex}/tag_set")))
+            .send()
+            .await
+            .map_err(|e| ClientError::Other(e.to_string()))?;
+        let resp = Self::check_status(resp).await?;
+        let body: TagSetBody = resp.json().await.map_err(|e| ClientError::Other(e.to_string()))?;
+        Ok(body.tags)
+    }
+
+    async fn set_xorb_tag_set(&self, hash: &MerkleHash, tags: ObjectTagSet) -> Result<()> {
+        let hex = HexMerkleHash::from(*hash);
+        let resp = self
+            .http_client
+            .put(self.sim_url(&format!("/xorbs/{hex}/tag_set")))
+            .json(&TagSetBody { tags })
+            .send()
+            .await
+            .map_err(|e| ClientError::Other(e.to_string()))?;
+        Self::check_status(resp).await?;
+        Ok(())
     }
 
     async fn list_shards_with_tags(&self) -> Result<Vec<(MerkleHash, ObjectTag)>> {
