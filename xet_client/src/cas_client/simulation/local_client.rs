@@ -31,7 +31,7 @@ use xet_runtime::core::XetContext;
 use xet_runtime::fd_diagnostics::{report_fd_count, track_fd_scope};
 use xet_runtime::file_utils::SafeFileCreator;
 
-use super::deletion_controls::ObjectTag;
+use super::deletion_controls::{ObjectETag, ObjectTagSet, last_upload_tag_set_now};
 use super::direct_access_client::DirectAccessClient;
 use super::xorb_utils::{self, REFERENCE_INSTANT, duration_to_expiration_secs_ceil};
 use crate::cas_client::Client;
@@ -375,6 +375,31 @@ impl LocalClient {
         PathBuf::from(name)
     }
 
+    /// Path of a xorb's S3-style tag set: `<canonical>.tagset`, holding JSON.
+    /// A sidecar so writing tags cannot disturb the bytes the [`ObjectETag`] is
+    /// derived from.
+    fn tag_set_xorb_path(&self, hash: &MerkleHash) -> PathBuf {
+        let canonical = self.get_path_for_entry(hash);
+        let mut name = canonical.into_os_string();
+        name.push(".tagset");
+        PathBuf::from(name)
+    }
+
+    /// Drops a xorb's tag-set sidecar. Called from every path that removes the
+    /// object or condemns it: a hard delete takes the tags with it, and GC's
+    /// `gc-delete` write replaces the whole set, dropping `last-upload` either
+    /// way. Leaving the sidecar behind would orphan it on disk, and let a later
+    /// upload of the same hash inherit tags from the object that used to live
+    /// there.
+    fn clear_tag_set_xorb(&self, hash: &MerkleHash) {
+        let path = self.tag_set_xorb_path(hash);
+        #[cfg(windows)]
+        if path.exists() {
+            Self::clear_readonly(&path);
+        }
+        let _ = std::fs::remove_file(path);
+    }
+
     /// Path used to park a tagged-for-deletion shard: `<hex>.mdb.gctag`.
     fn gctag_shard_path(&self, hash: &MerkleHash) -> PathBuf {
         let canonical = self.shard_dir.join(shard_file_name(hash));
@@ -422,26 +447,26 @@ impl LocalClient {
         }
     }
 
-    /// Builds an `ObjectTag` from file metadata at the given path.
+    /// Builds an `ObjectETag` from file metadata at the given path.
     ///
     /// We hash multiple metadata fields to increase entropy and reduce false
     /// matches during rapid rewrite/delete races.
-    fn object_tag_from_path(path: &Path) -> Result<ObjectTag> {
-        let meta = std::fs::metadata(path).map_err(ClientError::internal)?;
-        let modified = meta.modified().map_err(ClientError::internal)?;
-        let modified_nanos = modified.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
-        let created_nanos = meta
-            .created()
-            .ok()
-            .and_then(|ts| ts.duration_since(std::time::UNIX_EPOCH).ok())
-            .map_or(0u128, |d| d.as_nanos());
-
-        let mut entropy = Vec::with_capacity(16 + 16 + 8 + 1);
-        entropy.extend_from_slice(&modified_nanos.to_le_bytes());
-        entropy.extend_from_slice(&created_nanos.to_le_bytes());
-        entropy.extend_from_slice(&meta.len().to_le_bytes());
-        entropy.push(u8::from(meta.permissions().readonly()));
-
+    /// The object's etag, derived from its key and stored length rather than
+    /// from filesystem timestamps.
+    ///
+    /// S3's ETag is a function of content, so a byte-identical re-upload leaves
+    /// it unchanged. Xorbs and shards are content-addressed, so the key already
+    /// fixes the content and the length is what distinguishes a differently
+    /// serialized rewrite of the same key. Hashing mtime/ctime instead made
+    /// every write look like different content — including a re-upload, and
+    /// including the rename onto a temp path that the conditional deletes do.
+    fn object_etag_for(prefix: &[u8], key: &MerkleHash, path: &Path) -> Result<ObjectETag> {
+        let len = std::fs::metadata(path).map_err(ClientError::internal)?.len();
+        let key_bytes: [u8; 32] = (*key).into();
+        let mut entropy = Vec::with_capacity(prefix.len() + key_bytes.len() + 8);
+        entropy.extend_from_slice(prefix);
+        entropy.extend_from_slice(&key_bytes);
+        entropy.extend_from_slice(&len.to_le_bytes());
         Ok(compute_data_hash(&entropy).into())
     }
 
@@ -994,9 +1019,10 @@ impl super::DeletionControlableClient for LocalClient {
         } else {
             let _ = std::fs::remove_file(file_path);
         }
+        self.clear_tag_set_xorb(hash);
     }
 
-    async fn list_xorbs_and_tags(&self) -> Result<Vec<(MerkleHash, ObjectTag)>> {
+    async fn list_xorbs_and_etags(&self) -> Result<Vec<(MerkleHash, ObjectETag)>> {
         let mut ret = Vec::new();
         for entry in self.xorb_dir.read_dir().map_err(ClientError::internal)? {
             let entry = entry.map_err(ClientError::internal)?;
@@ -1007,15 +1033,15 @@ impl super::DeletionControlableClient for LocalClient {
             if let Some(pos) = name.rfind('.') {
                 let hex = &name[(pos + 1)..];
                 if let Ok(hash) = MerkleHash::from_hex(hex) {
-                    let tag = Self::object_tag_from_path(&path)?;
-                    ret.push((hash, tag));
+                    let etag = Self::object_etag_for(b"xorb", &hash, &path)?;
+                    ret.push((hash, etag));
                 }
             }
         }
         Ok(ret)
     }
 
-    async fn delete_xorb_if_tag_matches(&self, hash: &MerkleHash, tag: &ObjectTag) -> Result<bool> {
+    async fn delete_xorb_if_etag_matches(&self, hash: &MerkleHash, etag: &ObjectETag) -> Result<bool> {
         let file_path = self.get_path_for_entry(hash);
 
         // Atomically move the file out of the namespace before checking the
@@ -1026,7 +1052,7 @@ impl super::DeletionControlableClient for LocalClient {
             return Err(ClientError::XORBNotFound(*hash));
         }
 
-        let current_tag = match Self::object_tag_from_path(&tmp_path) {
+        let current_etag = match Self::object_etag_for(b"xorb", hash, &tmp_path) {
             Ok(t) => t,
             Err(e) => {
                 Self::restore_from_tmp(&tmp_path, &file_path);
@@ -1034,7 +1060,7 @@ impl super::DeletionControlableClient for LocalClient {
             },
         };
 
-        if &current_tag != tag {
+        if &current_etag != etag {
             Self::restore_from_tmp(&tmp_path, &file_path);
             return Ok(false);
         }
@@ -1050,19 +1076,47 @@ impl super::DeletionControlableClient for LocalClient {
         } else {
             std::fs::remove_file(&tmp_path)?;
         }
+        self.clear_tag_set_xorb(hash);
         Ok(true)
     }
 
-    async fn list_shards_with_tags(&self) -> Result<Vec<(MerkleHash, ObjectTag)>> {
+    async fn get_xorb_tag_set(&self, hash: &MerkleHash) -> Result<ObjectTagSet> {
+        if !self.get_path_for_entry(hash).exists() {
+            return Err(ClientError::Other(format!("XORB not found: {}", hash.hex())));
+        }
+        let path = self.tag_set_xorb_path(hash);
+        if !path.exists() {
+            return Ok(ObjectTagSet::new());
+        }
+        let raw = std::fs::read(&path)?;
+        serde_json::from_slice(&raw)
+            .map_err(|e| ClientError::Other(format!("invalid tag set at {}: {e}", path.display())))
+    }
+
+    async fn set_xorb_tag_set(&self, hash: &MerkleHash, tags: ObjectTagSet) -> Result<()> {
+        if !self.get_path_for_entry(hash).exists() {
+            return Err(ClientError::Other(format!("XORB not found: {}", hash.hex())));
+        }
+        let path = self.tag_set_xorb_path(hash);
+        let raw = serde_json::to_vec(&tags).map_err(|e| ClientError::Other(format!("serialize tag set: {e}")))?;
+        #[cfg(windows)]
+        if path.exists() {
+            Self::clear_readonly(&path);
+        }
+        std::fs::write(&path, raw)?;
+        Ok(())
+    }
+
+    async fn list_shards_with_etags(&self) -> Result<Vec<(MerkleHash, ObjectETag)>> {
         let mut ret = Vec::new();
         for (hash, path) in self.shard_file_paths()? {
-            let tag = Self::object_tag_from_path(&path)?;
-            ret.push((hash, tag));
+            let etag = Self::object_etag_for(b"shard", &hash, &path)?;
+            ret.push((hash, etag));
         }
         Ok(ret)
     }
 
-    async fn delete_shard_if_tag_matches(&self, hash: &MerkleHash, tag: &ObjectTag) -> Result<bool> {
+    async fn delete_shard_if_etag_matches(&self, hash: &MerkleHash, etag: &ObjectETag) -> Result<bool> {
         let path = self.shard_path_for_hash(hash)?;
 
         let tmp_path = path.with_extension(format!("gc_del_{:x}", rand::random::<u64>()));
@@ -1070,7 +1124,7 @@ impl super::DeletionControlableClient for LocalClient {
             return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
         }
 
-        let current_tag = match Self::object_tag_from_path(&tmp_path) {
+        let current_etag = match Self::object_etag_for(b"shard", hash, &tmp_path) {
             Ok(t) => t,
             Err(e) => {
                 Self::restore_from_tmp(&tmp_path, &path);
@@ -1078,7 +1132,7 @@ impl super::DeletionControlableClient for LocalClient {
             },
         };
 
-        if &current_tag != tag {
+        if &current_etag != etag {
             Self::restore_from_tmp(&tmp_path, &path);
             return Ok(false);
         }
@@ -1606,7 +1660,7 @@ impl Client for LocalClient {
 
         // Always rewrite: even if the xorb already exists, the file must be
         // re-created so its filesystem metadata (mtime/ctime) changes, producing
-        // a new tag for delete_xorb_if_tag_matches.  SafeFileCreator uses
+        // a new etag for delete_xorb_if_etag_matches.  SafeFileCreator uses
         // temp-file + atomic rename, so concurrent readers are safe.
 
         // Reconstruct footer if not present
@@ -1662,6 +1716,23 @@ impl Client for LocalClient {
         // lifecycle-tagged copy: clear the `.gctag` file so the xorb is
         // readable again. Mirrors S3 PutObject overwriting a tagged object.
         let _ = std::fs::remove_file(self.gctag_xorb_path(&hash));
+
+        // CAS stamps `last-upload` on every xorb write, and PutObject replaces
+        // the whole tag set, so the stamp both records this write and clears
+        // whatever was there.
+        let tag_set_path = self.tag_set_xorb_path(&hash);
+        match serde_json::to_vec(&last_upload_tag_set_now()) {
+            Ok(raw) => {
+                #[cfg(windows)]
+                if tag_set_path.exists() {
+                    Self::clear_readonly(&tag_set_path);
+                }
+                if let Err(e) = std::fs::write(&tag_set_path, raw) {
+                    warn!("failed to stamp last-upload tag at {}: {e}", tag_set_path.display());
+                }
+            },
+            Err(e) => warn!("failed to serialize last-upload tag set: {e}"),
+        }
 
         info!("{file_path:?} successfully written with {bytes_written} bytes.");
 
@@ -2278,15 +2349,114 @@ mod tests {
             .expect("Integrity should pass: the old shard's stale file entry with dangling xorb refs is not consulted");
     }
 
-    /// Tests that list_xorbs_and_tags tags change after file re-creation with a timestamp delay.
+    /// A tag set is stored, replaced wholesale on the next write (as S3
+    /// `PutObjectTagging` does), and never disturbs the xorb's `ObjectETag` or
+    /// its appearance in the xorb listing — the sidecar must not read as a xorb.
     #[tokio::test]
-    async fn test_list_xorbs_and_tags_timestamp_changes() {
+    async fn test_xorb_tag_set_round_trip_leaves_object_tag_intact() {
+        let client = LocalClient::temporary(test_context()).await.unwrap();
+        let file = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
+        let xorb_hash = file.terms[0].xorb_hash;
+
+        let before = client.list_xorbs_and_etags().await.unwrap();
+        let (_, tag_before) = before.iter().find(|(h, _)| *h == xorb_hash).unwrap();
+
+        client
+            .set_xorb_tag_set(&xorb_hash, vec![("last-upload".to_string(), "1234".to_string())])
+            .await
+            .unwrap();
+        assert_eq!(
+            client.get_xorb_tag_set(&xorb_hash).await.unwrap(),
+            vec![("last-upload".to_string(), "1234".to_string())]
+        );
+
+        // A second write replaces the set rather than merging into it.
+        client
+            .set_xorb_tag_set(&xorb_hash, vec![("other".to_string(), "x".to_string())])
+            .await
+            .unwrap();
+        assert_eq!(
+            client.get_xorb_tag_set(&xorb_hash).await.unwrap(),
+            vec![("other".to_string(), "x".to_string())],
+            "PutObjectTagging semantics replace the whole set"
+        );
+
+        // Both listing paths must ignore the sidecar, not just the tagged one.
+        let listed = client.list_xorbs().await.unwrap();
+        assert_eq!(listed, vec![xorb_hash], "the .tagset sidecar must not be listed as a xorb");
+
+        let after = client.list_xorbs_and_etags().await.unwrap();
+        assert_eq!(after.len(), before.len(), "the sidecar must not appear as an extra tagged xorb");
+        let (_, tag_after) = after.iter().find(|(h, _)| *h == xorb_hash).unwrap();
+        assert_eq!(tag_before, tag_after, "tagging must not move the ObjectETag");
+    }
+
+    /// With upload tagging on, an uploaded xorb carries `last-upload` and the
+    /// sidecar still does not show up as a xorb in either listing.
+    #[tokio::test]
+    async fn test_upload_tagging_stamps_last_upload() {
+        let client = LocalClient::temporary(test_context()).await.unwrap();
+
+        let file = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
+        let xorb_hash = file.terms[0].xorb_hash;
+
+        let tags = client.get_xorb_tag_set(&xorb_hash).await.unwrap();
+        let (key, value) = tags.first().expect("upload must stamp a tag set");
+        assert_eq!(key, super::super::deletion_controls::LAST_UPLOAD_TAG_KEY);
+        assert!(value.parse::<u64>().is_ok(), "value must be unix seconds, got {value:?}");
+
+        assert_eq!(client.list_xorbs().await.unwrap(), vec![xorb_hash]);
+    }
+
+    /// A hard delete removes the sidecar, so it is not orphaned on disk and a
+    /// later upload of the same hash cannot inherit the old tags.
+    #[tokio::test]
+    async fn test_delete_xorb_clears_its_tag_set_sidecar() {
+        let client = LocalClient::temporary(test_context()).await.unwrap();
+        let file = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
+        let xorb_hash = file.terms[0].xorb_hash;
+
+        client
+            .set_xorb_tag_set(&xorb_hash, vec![("stale".to_string(), "value".to_string())])
+            .await
+            .unwrap();
+        let sidecar = client.tag_set_xorb_path(&xorb_hash);
+        assert!(sidecar.exists());
+
+        client.delete_xorb(&xorb_hash).await;
+        assert!(!sidecar.exists(), "the sidecar outlived the xorb");
+
+        let refile = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
+        assert_eq!(refile.terms[0].xorb_hash, xorb_hash);
+        let tags = client.get_xorb_tag_set(&xorb_hash).await.unwrap();
+        assert!(!tags.iter().any(|(k, _)| k == "stale"), "stale tags survived a delete: {tags:?}");
+    }
+
+    /// Tagging an absent xorb is an error rather than creating an orphan sidecar.
+    #[tokio::test]
+    async fn test_xorb_tag_set_requires_the_xorb_to_exist() {
+        let client = LocalClient::temporary(test_context()).await.unwrap();
+        let missing = MerkleHash::default();
+        assert!(client.get_xorb_tag_set(&missing).await.is_err());
+        assert!(client.set_xorb_tag_set(&missing, vec![]).await.is_err());
+    }
+
+    /// Tests that list_xorbs_and_etags etags change after file re-creation with a timestamp delay.
+    /// A xorb deleted and re-uploaded with the same content keeps its etag,
+    /// even across a filesystem timestamp change.
+    ///
+    /// This is S3's contract — the ETag is a function of content — and the
+    /// resurrection hazard it creates is real: a stale etag snapshot still
+    /// matches the new object. That is what the `last-upload` tag is for; the
+    /// etag deliberately no longer hides it.
+    #[tokio::test]
+    async fn test_etag_is_stable_across_an_identical_reupload() {
         let client = LocalClient::temporary(test_context()).await.unwrap();
 
         let file1 = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
         let xorb_hash = file1.terms[0].xorb_hash;
 
-        let tags1 = client.list_xorbs_and_tags().await.unwrap();
+        let tags1 = client.list_xorbs_and_etags().await.unwrap();
         let (_, tag1) = tags1.iter().find(|(h, _)| *h == xorb_hash).unwrap();
 
         // Delete and wait 1 second so the filesystem timestamp advances.
@@ -2296,11 +2466,16 @@ mod tests {
         // Re-upload a file that creates a new xorb with the same hash seed.
         let file2 = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
         let xorb_hash2 = file2.terms[0].xorb_hash;
+        assert_eq!(xorb_hash, xorb_hash2, "the seed must reproduce the same xorb");
 
-        let tags2 = client.list_xorbs_and_tags().await.unwrap();
+        let tags2 = client.list_xorbs_and_etags().await.unwrap();
         let (_, tag2) = tags2.iter().find(|(h, _)| *h == xorb_hash2).unwrap();
 
-        assert_ne!(tag1, tag2, "Tags should differ after re-creation with timestamp delay");
+        assert_eq!(tag1, tag2, "identical content must keep its etag despite a newer mtime");
+
+        // The `last-upload` tag is what moved instead.
+        let tags = client.get_xorb_tag_set(&xorb_hash).await.unwrap();
+        assert_eq!(tags.first().map(|(k, _)| k.as_str()), Some(super::super::deletion_controls::LAST_UPLOAD_TAG_KEY));
     }
 
     // ── Lifecycle-tag deletion mode tests ───────────────────────────────
