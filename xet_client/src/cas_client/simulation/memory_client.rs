@@ -27,7 +27,7 @@ use super::super::interface::{ShardUploadProgressCallback, ShardUploadProgressTy
 use super::super::progress_tracked_streams::ProgressCallback;
 use super::client_testing_utils::{FileTermReference, RandomFileContents};
 #[cfg(not(target_family = "wasm"))]
-use super::deletion_controls::{ObjectETag, ObjectTagSet};
+use super::deletion_controls::{ObjectETag, ObjectTagSet, last_upload_tag_set_now};
 use super::direct_access_client::DirectAccessClient;
 use super::random_xorb::RandomXorb;
 use super::xorb_utils::{self, REFERENCE_INSTANT, duration_to_expiration_secs_ceil};
@@ -93,6 +93,10 @@ pub struct MemoryClient {
     /// cannot perturb the bytes the [`ObjectETag`] is derived from.
     #[cfg(not(target_family = "wasm"))]
     xorb_tag_sets: RwLock<MerkleHashMap<ObjectTagSet>>,
+    /// When true, `upload_xorb` stamps a `last-upload` tag set, modelling what
+    /// CAS does on every xorb write. Off by default; opt in via
+    /// [`Self::set_upload_tagging`].
+    upload_tagging: AtomicBool,
 }
 
 impl MemoryClient {
@@ -114,12 +118,22 @@ impl MemoryClient {
             gc_tagged_shard: RwLock::new(None),
             #[cfg(not(target_family = "wasm"))]
             xorb_tag_sets: RwLock::new(MerkleHashMap::new()),
+            upload_tagging: AtomicBool::new(false),
         })
     }
 
     /// Toggle lifecycle-tag deletion mode (see [`Self::lifecycle_tag_deletion`]).
     pub fn set_lifecycle_tag_deletion(&self, on: bool) {
         self.lifecycle_tag_deletion.store(on, Ordering::Relaxed);
+    }
+
+    /// Toggle `last-upload` stamping on xorb upload (see [`Self::upload_tagging`]).
+    pub fn set_upload_tagging(&self, on: bool) {
+        self.upload_tagging.store(on, Ordering::Relaxed);
+    }
+
+    fn upload_tagging_enabled(&self) -> bool {
+        self.upload_tagging.load(Ordering::Relaxed)
     }
 
     fn lifecycle_tag_deletion_enabled(&self) -> bool {
@@ -964,6 +978,14 @@ impl Client for MemoryClient {
         // Mirrors S3 PutObject overwriting a tagged object.
         self.gc_tagged_xorbs.write().await.remove(&hash);
 
+        // CAS stamps `last-upload` on every xorb write, and PutObject replaces
+        // the whole tag set, so the stamp both records this write and clears
+        // whatever was there.
+        #[cfg(not(target_family = "wasm"))]
+        if self.upload_tagging_enabled() {
+            self.xorb_tag_sets.write().await.insert(hash, last_upload_tag_set_now());
+        }
+
         if let Some(ref cb) = progress_callback {
             let n = bytes_written as u64;
             cb(n, n, n);
@@ -1670,6 +1692,32 @@ mod tests {
         );
 
         assert_eq!(client.list_xorbs_and_etags().await.unwrap(), before, "tagging must not move the ObjectETag");
+    }
+
+    /// With upload tagging on, an uploaded xorb carries `last-upload` without
+    /// its etag moving; with it off, no tag set appears at all.
+    #[tokio::test]
+    async fn test_upload_tagging_stamps_last_upload() {
+        let client = new_deletion_client();
+        client.set_upload_tagging(true);
+
+        let file = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
+        let xorb_hash = file.terms[0].xorb_hash;
+
+        let tags = client.get_xorb_tag_set(&xorb_hash).await.unwrap();
+        let (key, value) = tags.first().expect("upload must stamp a tag set");
+        assert_eq!(key, super::super::deletion_controls::LAST_UPLOAD_TAG_KEY);
+        assert!(value.parse::<u64>().is_ok(), "value must be unix seconds, got {value:?}");
+    }
+
+    #[tokio::test]
+    async fn test_upload_tagging_off_leaves_no_tag_set() {
+        let client = new_deletion_client();
+        assert!(!client.upload_tagging_enabled());
+
+        let file = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
+        let xorb_hash = file.terms[0].xorb_hash;
+        assert!(client.get_xorb_tag_set(&xorb_hash).await.unwrap().is_empty());
     }
 
     #[tokio::test]

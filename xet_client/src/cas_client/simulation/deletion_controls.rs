@@ -18,6 +18,22 @@ pub type ObjectETag = [u8; 32];
 /// without invalidating anything keyed on its content.
 pub type ObjectTagSet = Vec<(String, String)>;
 
+/// Tag key CAS stamps with the unix seconds of a xorb's most recent write.
+///
+/// Named here so the simulation can model that write (see
+/// `LocalTestServerBuilder::with_upload_tagging`). What the value *means* is
+/// the reader's business — xet-core only reproduces the stamp.
+pub const LAST_UPLOAD_TAG_KEY: &str = "last-upload";
+
+/// The tag set CAS puts on a xorb it has just written.
+pub fn last_upload_tag_set_now() -> ObjectTagSet {
+    let unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    vec![(LAST_UPLOAD_TAG_KEY.to_string(), unix.to_string())]
+}
+
 /// Trait for clients that support deletion and integrity operations on shards and file entries.
 ///
 /// Implemented by `LocalClient` (disk-backed) and `MemoryClient` (in-memory).

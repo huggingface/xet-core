@@ -31,7 +31,7 @@ use xet_runtime::core::XetContext;
 use xet_runtime::fd_diagnostics::{report_fd_count, track_fd_scope};
 use xet_runtime::file_utils::SafeFileCreator;
 
-use super::deletion_controls::{ObjectETag, ObjectTagSet};
+use super::deletion_controls::{ObjectETag, ObjectTagSet, last_upload_tag_set_now};
 use super::direct_access_client::DirectAccessClient;
 use super::xorb_utils::{self, REFERENCE_INSTANT, duration_to_expiration_secs_ceil};
 use crate::cas_client::Client;
@@ -267,6 +267,10 @@ pub struct LocalClient {
     /// clears the `.gctag` file (matching S3 PutObject overwriting a tagged
     /// object). Off by default; opt in via [`Self::set_lifecycle_tag_deletion`].
     lifecycle_tag_deletion: AtomicBool,
+    /// When true, `upload_xorb` stamps a `last-upload` tag set, modelling what
+    /// CAS does on every xorb write. Off by default; opt in via
+    /// [`Self::set_upload_tagging`].
+    upload_tagging: AtomicBool,
     _tmp_dir: Option<TempDir>,
 }
 
@@ -343,6 +347,7 @@ impl LocalClient {
             max_ranges_per_fetch: AtomicUsize::new(usize::MAX),
             v2_disabled_status: AtomicU16::new(0),
             lifecycle_tag_deletion: AtomicBool::new(false),
+            upload_tagging: AtomicBool::new(false),
             _tmp_dir: tmp_dir,
         })
     }
@@ -359,6 +364,15 @@ impl LocalClient {
     /// Toggle lifecycle-tag deletion mode (see [`Self::lifecycle_tag_deletion`]).
     pub fn set_lifecycle_tag_deletion(&self, on: bool) {
         self.lifecycle_tag_deletion.store(on, Ordering::Relaxed);
+    }
+
+    /// Toggle `last-upload` stamping on xorb upload (see [`Self::upload_tagging`]).
+    pub fn set_upload_tagging(&self, on: bool) {
+        self.upload_tagging.store(on, Ordering::Relaxed);
+    }
+
+    fn upload_tagging_enabled(&self) -> bool {
+        self.upload_tagging.load(Ordering::Relaxed)
     }
 
     fn lifecycle_tag_deletion_enabled(&self) -> bool {
@@ -1700,6 +1714,25 @@ impl Client for LocalClient {
         // readable again. Mirrors S3 PutObject overwriting a tagged object.
         let _ = std::fs::remove_file(self.gctag_xorb_path(&hash));
 
+        // CAS stamps `last-upload` on every xorb write, and PutObject replaces
+        // the whole tag set, so the stamp both records this write and clears
+        // whatever was there.
+        if self.upload_tagging_enabled() {
+            let path = self.tag_set_xorb_path(&hash);
+            match serde_json::to_vec(&last_upload_tag_set_now()) {
+                Ok(raw) => {
+                    #[cfg(windows)]
+                    if path.exists() {
+                        Self::clear_readonly(&path);
+                    }
+                    if let Err(e) = std::fs::write(&path, raw) {
+                        warn!("failed to stamp last-upload tag at {}: {e}", path.display());
+                    }
+                },
+                Err(e) => warn!("failed to serialize last-upload tag set: {e}"),
+            }
+        }
+
         info!("{file_path:?} successfully written with {bytes_written} bytes.");
 
         Ok(bytes_written as u64)
@@ -2356,6 +2389,24 @@ mod tests {
         assert_eq!(after.len(), before.len(), "the sidecar must not appear as an extra tagged xorb");
         let (_, tag_after) = after.iter().find(|(h, _)| *h == xorb_hash).unwrap();
         assert_eq!(tag_before, tag_after, "tagging must not move the ObjectETag");
+    }
+
+    /// With upload tagging on, an uploaded xorb carries `last-upload` and the
+    /// sidecar still does not show up as a xorb in either listing.
+    #[tokio::test]
+    async fn test_upload_tagging_stamps_last_upload() {
+        let client = LocalClient::temporary(test_context()).await.unwrap();
+        client.set_upload_tagging(true);
+
+        let file = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
+        let xorb_hash = file.terms[0].xorb_hash;
+
+        let tags = client.get_xorb_tag_set(&xorb_hash).await.unwrap();
+        let (key, value) = tags.first().expect("upload must stamp a tag set");
+        assert_eq!(key, super::super::deletion_controls::LAST_UPLOAD_TAG_KEY);
+        assert!(value.parse::<u64>().is_ok(), "value must be unix seconds, got {value:?}");
+
+        assert_eq!(client.list_xorbs().await.unwrap(), vec![xorb_hash]);
     }
 
     /// Tagging an absent xorb is an error rather than creating an orphan sidecar.
