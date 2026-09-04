@@ -9,8 +9,8 @@ use http::header::RANGE;
 
 use super::handlers::{FileRangeVariant, ServerState, error_to_response, parse_range_header};
 use super::simulation_types::{
-    ConfigDelayRangeRequest, ConfigDurationRequest, FetchTermDataRequest, FetchTermDataResponse, FileShardsEntry,
-    FileSizeResponse, HashWithTag, TagDeleteRequest, TagDeleteResponse, TagSetBody, XorbExistsResponse,
+    ConfigDelayRangeRequest, ConfigDurationRequest, ETagDeleteRequest, ETagDeleteResponse, FetchTermDataRequest,
+    FetchTermDataResponse, FileShardsEntry, FileSizeResponse, HashWithETag, TagSetBody, XorbExistsResponse,
     XorbLengthResponse, XorbRangesRequest, XorbRangesResponse, XorbRawLengthResponse,
 };
 use crate::cas_types::{FileRange, HexMerkleHash};
@@ -36,13 +36,13 @@ pub fn simulation_routes() -> Router<ServerState> {
         .route("/config/api_delay", post(set_api_delay))
         .route("/fetch_term_data", post(fetch_term_data))
         // DeletionControlableClient routes
-        .route("/xorbs_with_tags", get(list_xorbs_and_tags))
-        .route("/xorbs/{hash}/tag_delete", post(delete_xorb_if_tag_matches))
+        .route("/xorbs_with_etags", get(list_xorbs_and_etags))
+        .route("/xorbs/{hash}/etag_delete", post(delete_xorb_if_etag_matches))
         .route("/xorbs/{hash}/tag_set", get(get_xorb_tag_set).put(set_xorb_tag_set))
         .route("/shards", get(list_shard_entries))
-        .route("/shards_with_tags", get(list_shards_with_tags))
+        .route("/shards_with_etags", get(list_shards_with_etags))
         .route("/shards/{hash}", get(get_shard_bytes).delete(delete_shard_entry))
-        .route("/shards/{hash}/tag_delete", post(delete_shard_if_tag_matches))
+        .route("/shards/{hash}/etag_delete", post(delete_shard_if_etag_matches))
         .route("/shards/{hash}/dedup_entries", delete(remove_shard_dedup_entries))
         .route("/file_entries", get(list_file_shard_entries))
         .route("/file_entries/{hash}", delete(delete_file_entry))
@@ -204,29 +204,30 @@ async fn delete_xorb(State(state): State<ServerState>, Path(HexMerkleHash(hash))
     StatusCode::NO_CONTENT.into_response()
 }
 
-async fn list_xorbs_and_tags(State(state): State<ServerState>) -> Response {
+async fn list_xorbs_and_etags(State(state): State<ServerState>) -> Response {
     let Some(dc) = &state.deletion_client else {
         return not_implemented();
     };
-    match dc.list_xorbs_and_tags().await {
+    match dc.list_xorbs_and_etags().await {
         Ok(entries) => {
-            let response: Vec<HashWithTag> = entries.into_iter().map(|(hash, tag)| HashWithTag { hash, tag }).collect();
+            let response: Vec<HashWithETag> =
+                entries.into_iter().map(|(hash, etag)| HashWithETag { hash, etag }).collect();
             Json(response).into_response()
         },
         Err(e) => error_to_response(e),
     }
 }
 
-async fn delete_xorb_if_tag_matches(
+async fn delete_xorb_if_etag_matches(
     State(state): State<ServerState>,
     Path(HexMerkleHash(hash)): Path<HexMerkleHash>,
-    Json(body): Json<TagDeleteRequest>,
+    Json(body): Json<ETagDeleteRequest>,
 ) -> Response {
     let Some(dc) = &state.deletion_client else {
         return not_implemented();
     };
-    match dc.delete_xorb_if_tag_matches(&hash, &body.tag).await {
-        Ok(deleted) => Json(TagDeleteResponse { deleted }).into_response(),
+    match dc.delete_xorb_if_etag_matches(&hash, &body.etag).await {
+        Ok(deleted) => Json(ETagDeleteResponse { deleted }).into_response(),
         Err(e) => error_to_response(e),
     }
 }
@@ -258,29 +259,30 @@ async fn set_xorb_tag_set(
     }
 }
 
-async fn list_shards_with_tags(State(state): State<ServerState>) -> Response {
+async fn list_shards_with_etags(State(state): State<ServerState>) -> Response {
     let Some(dc) = &state.deletion_client else {
         return not_implemented();
     };
-    match dc.list_shards_with_tags().await {
+    match dc.list_shards_with_etags().await {
         Ok(entries) => {
-            let response: Vec<HashWithTag> = entries.into_iter().map(|(hash, tag)| HashWithTag { hash, tag }).collect();
+            let response: Vec<HashWithETag> =
+                entries.into_iter().map(|(hash, etag)| HashWithETag { hash, etag }).collect();
             Json(response).into_response()
         },
         Err(e) => error_to_response(e),
     }
 }
 
-async fn delete_shard_if_tag_matches(
+async fn delete_shard_if_etag_matches(
     State(state): State<ServerState>,
     Path(HexMerkleHash(hash)): Path<HexMerkleHash>,
-    Json(body): Json<TagDeleteRequest>,
+    Json(body): Json<ETagDeleteRequest>,
 ) -> Response {
     let Some(dc) = &state.deletion_client else {
         return not_implemented();
     };
-    match dc.delete_shard_if_tag_matches(&hash, &body.tag).await {
-        Ok(deleted) => Json(TagDeleteResponse { deleted }).into_response(),
+    match dc.delete_shard_if_etag_matches(&hash, &body.etag).await {
+        Ok(deleted) => Json(ETagDeleteResponse { deleted }).into_response(),
         Err(e) => error_to_response(e),
     }
 }

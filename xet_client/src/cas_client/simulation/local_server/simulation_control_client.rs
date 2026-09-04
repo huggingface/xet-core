@@ -10,13 +10,13 @@ use xet_core_structures::xorb_object::XorbObject;
 use xet_runtime::core::XetContext;
 
 use super::simulation_types::{
-    FetchTermDataRequest, FetchTermDataResponse, FileShardsEntry, FileSizeResponse, HashWithTag, TagDeleteRequest,
-    TagDeleteResponse, TagSetBody, XorbExistsResponse, XorbLengthResponse, XorbRangesRequest, XorbRangesResponse,
-    XorbRawLengthResponse,
+    ETagDeleteRequest, ETagDeleteResponse, FetchTermDataRequest, FetchTermDataResponse, FileShardsEntry,
+    FileSizeResponse, HashWithETag, TagSetBody, XorbExistsResponse, XorbLengthResponse, XorbRangesRequest,
+    XorbRangesResponse, XorbRawLengthResponse,
 };
 use crate::cas_client::RemoteClient;
 use crate::cas_client::interface::Client;
-use crate::cas_client::simulation::deletion_controls::{ObjectTag, ObjectTagSet};
+use crate::cas_client::simulation::deletion_controls::{ObjectETag, ObjectTagSet};
 use crate::cas_client::simulation::xorb_utils::duration_to_expiration_secs_ceil;
 use crate::cas_client::simulation::{DeletionControlableClient, DirectAccessClient};
 use crate::cas_types::{
@@ -554,22 +554,22 @@ impl DeletionControlableClient for SimulationControlClient {
         let _ = self.http_client.delete(&url).send().await;
     }
 
-    async fn list_xorbs_and_tags(&self) -> Result<Vec<(MerkleHash, ObjectTag)>> {
+    async fn list_xorbs_and_etags(&self) -> Result<Vec<(MerkleHash, ObjectETag)>> {
         let resp = self
             .http_client
-            .get(self.sim_url("/xorbs_with_tags"))
+            .get(self.sim_url("/xorbs_with_etags"))
             .send()
             .await
             .map_err(|e| ClientError::Other(e.to_string()))?;
         let resp = Self::check_status(resp).await?;
-        let entries: Vec<HashWithTag> = resp.json().await.map_err(|e| ClientError::Other(e.to_string()))?;
-        Ok(entries.into_iter().map(|e| (e.hash, e.tag)).collect())
+        let entries: Vec<HashWithETag> = resp.json().await.map_err(|e| ClientError::Other(e.to_string()))?;
+        Ok(entries.into_iter().map(|e| (e.hash, e.etag)).collect())
     }
 
-    async fn delete_xorb_if_tag_matches(&self, hash: &MerkleHash, tag: &ObjectTag) -> Result<bool> {
+    async fn delete_xorb_if_etag_matches(&self, hash: &MerkleHash, etag: &ObjectETag) -> Result<bool> {
         let hex = HexMerkleHash::from(*hash);
-        let url = self.sim_url(&format!("/xorbs/{hex}/tag_delete"));
-        let body = TagDeleteRequest { tag: *tag };
+        let url = self.sim_url(&format!("/xorbs/{hex}/etag_delete"));
+        let body = ETagDeleteRequest { etag: *etag };
         let resp = self
             .http_client
             .post(&url)
@@ -578,7 +578,7 @@ impl DeletionControlableClient for SimulationControlClient {
             .await
             .map_err(|e| ClientError::Other(e.to_string()))?;
         let resp = Self::check_status(resp).await?;
-        let result: TagDeleteResponse = resp.json().await.map_err(|e| ClientError::Other(e.to_string()))?;
+        let result: ETagDeleteResponse = resp.json().await.map_err(|e| ClientError::Other(e.to_string()))?;
         Ok(result.deleted)
     }
 
@@ -608,22 +608,22 @@ impl DeletionControlableClient for SimulationControlClient {
         Ok(())
     }
 
-    async fn list_shards_with_tags(&self) -> Result<Vec<(MerkleHash, ObjectTag)>> {
+    async fn list_shards_with_etags(&self) -> Result<Vec<(MerkleHash, ObjectETag)>> {
         let resp = self
             .http_client
-            .get(self.sim_url("/shards_with_tags"))
+            .get(self.sim_url("/shards_with_etags"))
             .send()
             .await
             .map_err(|e| ClientError::Other(e.to_string()))?;
         let resp = Self::check_status(resp).await?;
-        let entries: Vec<HashWithTag> = resp.json().await.map_err(|e| ClientError::Other(e.to_string()))?;
-        Ok(entries.into_iter().map(|e| (e.hash, e.tag)).collect())
+        let entries: Vec<HashWithETag> = resp.json().await.map_err(|e| ClientError::Other(e.to_string()))?;
+        Ok(entries.into_iter().map(|e| (e.hash, e.etag)).collect())
     }
 
-    async fn delete_shard_if_tag_matches(&self, hash: &MerkleHash, tag: &ObjectTag) -> Result<bool> {
+    async fn delete_shard_if_etag_matches(&self, hash: &MerkleHash, etag: &ObjectETag) -> Result<bool> {
         let hex = HexMerkleHash::from(*hash);
-        let url = self.sim_url(&format!("/shards/{hex}/tag_delete"));
-        let body = TagDeleteRequest { tag: *tag };
+        let url = self.sim_url(&format!("/shards/{hex}/etag_delete"));
+        let body = ETagDeleteRequest { etag: *etag };
         let resp = self
             .http_client
             .post(&url)
@@ -632,7 +632,7 @@ impl DeletionControlableClient for SimulationControlClient {
             .await
             .map_err(|e| ClientError::Other(e.to_string()))?;
         let resp = Self::check_status(resp).await?;
-        let result: TagDeleteResponse = resp.json().await.map_err(|e| ClientError::Other(e.to_string()))?;
+        let result: ETagDeleteResponse = resp.json().await.map_err(|e| ClientError::Other(e.to_string()))?;
         Ok(result.deleted)
     }
 

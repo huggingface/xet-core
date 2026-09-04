@@ -27,7 +27,7 @@ use super::super::interface::{ShardUploadProgressCallback, ShardUploadProgressTy
 use super::super::progress_tracked_streams::ProgressCallback;
 use super::client_testing_utils::{FileTermReference, RandomFileContents};
 #[cfg(not(target_family = "wasm"))]
-use super::deletion_controls::{ObjectTag, ObjectTagSet};
+use super::deletion_controls::{ObjectETag, ObjectTagSet};
 use super::direct_access_client::DirectAccessClient;
 use super::random_xorb::RandomXorb;
 use super::xorb_utils::{self, REFERENCE_INSTANT, duration_to_expiration_secs_ceil};
@@ -47,7 +47,7 @@ struct MaterializedXorb {
 
 /// Storage for a XORB - either fully materialized or generated on-the-fly.
 /// Each variant carries a monotonic `generation` counter that is bumped on
-/// every insert, so the tag changes even when content is identical (matching
+/// every insert, so the etag changes even when content is identical (matching
 /// production ETag semantics).
 enum XorbStorage {
     Materialized { entry: MaterializedXorb, generation: u64 },
@@ -64,7 +64,7 @@ pub struct MemoryClient {
     global_dedup: RwLock<MerkleHashMap<Bytes>>,
     /// Upload concurrency controller
     upload_concurrency_controller: Arc<AdaptiveConcurrencyController>,
-    /// Monotonic counter for xorb upload generations (tag freshness).
+    /// Monotonic counter for xorb upload generations (etag freshness).
     xorb_generation: AtomicU64,
     /// URL expiration in milliseconds
     url_expiration_ms: AtomicU64,
@@ -90,7 +90,7 @@ pub struct MemoryClient {
     /// retained in `shard` so a re-upload can clear the tag.
     gc_tagged_shard: RwLock<Option<MerkleHash>>,
     /// S3-style tag sets per XORB. Held separately from `xorbs` so writing one
-    /// cannot perturb the bytes the [`ObjectTag`] is derived from.
+    /// cannot perturb the bytes the [`ObjectETag`] is derived from.
     xorb_tag_sets: RwLock<MerkleHashMap<ObjectTagSet>>,
 }
 
@@ -275,7 +275,7 @@ impl MemoryClient {
     }
 
     #[cfg(not(target_family = "wasm"))]
-    fn object_tag_from_key_and_payload(prefix: &[u8], key: &MerkleHash, payload: &[u8]) -> ObjectTag {
+    fn object_etag_from_key_and_payload(prefix: &[u8], key: &MerkleHash, payload: &[u8]) -> ObjectETag {
         let key_bytes: [u8; 32] = (*key).into();
         let payload_hash: [u8; 32] = compute_data_hash(payload).into();
         let mut entropy = Vec::with_capacity(prefix.len() + key_bytes.len() + payload_hash.len());
@@ -286,18 +286,18 @@ impl MemoryClient {
     }
 
     #[cfg(not(target_family = "wasm"))]
-    fn xorb_tag(hash: &MerkleHash, storage: &XorbStorage) -> ObjectTag {
+    fn xorb_etag(hash: &MerkleHash, storage: &XorbStorage) -> ObjectETag {
         match storage {
             XorbStorage::Materialized { entry, generation } => {
                 let mut payload = Vec::from(entry.serialized_data.as_ref());
                 payload.extend_from_slice(&generation.to_le_bytes());
-                Self::object_tag_from_key_and_payload(b"xorb", hash, &payload)
+                Self::object_etag_from_key_and_payload(b"xorb", hash, &payload)
             },
             XorbStorage::Random { xorb, generation } => {
                 let mut entropy = Vec::with_capacity(16);
                 entropy.extend_from_slice(&xorb.num_chunks().to_le_bytes());
                 entropy.extend_from_slice(&generation.to_le_bytes());
-                Self::object_tag_from_key_and_payload(b"xorb", hash, &entropy)
+                Self::object_etag_from_key_and_payload(b"xorb", hash, &entropy)
             },
         }
     }
@@ -913,8 +913,8 @@ impl Client for MemoryClient {
         let serialized_data = serialized_xorb_object.serialized_data;
 
         // Always overwrite: even if the xorb already exists, we must store it
-        // with a fresh generation so its tag changes, matching production ETag
-        // semantics and ensuring delete_xorb_if_tag_matches is safe under
+        // with a fresh generation so its etag changes, matching production ETag
+        // semantics and ensuring delete_xorb_if_etag_matches is safe under
         // concurrent uploads.
 
         info!("Storing XORB {hash:?} in memory");
@@ -1210,25 +1210,25 @@ impl super::DeletionControlableClient for MemoryClient {
         }
     }
 
-    async fn list_xorbs_and_tags(&self) -> Result<Vec<(MerkleHash, ObjectTag)>> {
+    async fn list_xorbs_and_etags(&self) -> Result<Vec<(MerkleHash, ObjectETag)>> {
         let tagged = self.gc_tagged_xorbs.read().await;
         let xorbs = self.xorbs.read().await;
         Ok(xorbs
             .iter()
             .filter(|(hash, _)| !tagged.contains(hash))
-            .map(|(hash, storage)| (*hash, Self::xorb_tag(hash, storage)))
+            .map(|(hash, storage)| (*hash, Self::xorb_etag(hash, storage)))
             .collect())
     }
 
-    async fn delete_xorb_if_tag_matches(&self, hash: &MerkleHash, tag: &ObjectTag) -> Result<bool> {
-        let current_tag = {
+    async fn delete_xorb_if_etag_matches(&self, hash: &MerkleHash, etag: &ObjectETag) -> Result<bool> {
+        let current_etag = {
             let xorbs = self.xorbs.read().await;
             let Some(storage) = xorbs.get(hash) else {
                 return Err(ClientError::XORBNotFound(*hash));
             };
-            Self::xorb_tag(hash, storage)
+            Self::xorb_etag(hash, storage)
         };
-        if &current_tag != tag {
+        if &current_etag != etag {
             return Ok(false);
         }
         if self.lifecycle_tag_deletion_enabled() {
@@ -1254,7 +1254,7 @@ impl super::DeletionControlableClient for MemoryClient {
         Ok(())
     }
 
-    async fn list_shards_with_tags(&self) -> Result<Vec<(MerkleHash, ObjectTag)>> {
+    async fn list_shards_with_etags(&self) -> Result<Vec<(MerkleHash, ObjectETag)>> {
         let shard = self.shard.read().await;
         let Some((shard_hash, shard_bytes)) = Self::current_shard_hash_and_bytes(&shard)? else {
             return Ok(Vec::new());
@@ -1262,12 +1262,12 @@ impl super::DeletionControlableClient for MemoryClient {
         if self.shard_is_tagged(&shard_hash).await {
             return Ok(Vec::new());
         }
-        let tag = Self::object_tag_from_key_and_payload(b"shard", &shard_hash, shard_bytes.as_ref());
-        Ok(vec![(shard_hash, tag)])
+        let etag = Self::object_etag_from_key_and_payload(b"shard", &shard_hash, shard_bytes.as_ref());
+        Ok(vec![(shard_hash, etag)])
     }
 
-    async fn delete_shard_if_tag_matches(&self, hash: &MerkleHash, tag: &ObjectTag) -> Result<bool> {
-        let (current_hash, current_tag) = {
+    async fn delete_shard_if_etag_matches(&self, hash: &MerkleHash, etag: &ObjectETag) -> Result<bool> {
+        let (current_hash, current_etag) = {
             let shard = self.shard.read().await;
             let Some((current_hash, shard_bytes)) = Self::current_shard_hash_and_bytes(&shard)? else {
                 return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
@@ -1275,10 +1275,10 @@ impl super::DeletionControlableClient for MemoryClient {
             if &current_hash != hash {
                 return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
             }
-            let current_tag = Self::object_tag_from_key_and_payload(b"shard", &current_hash, shard_bytes.as_ref());
-            (current_hash, current_tag)
+            let current_etag = Self::object_etag_from_key_and_payload(b"shard", &current_hash, shard_bytes.as_ref());
+            (current_hash, current_etag)
         };
-        if &current_tag != tag {
+        if &current_etag != etag {
             return Ok(false);
         }
         if self.lifecycle_tag_deletion_enabled() {
@@ -1388,26 +1388,26 @@ mod tests {
         let client = new_deletion_client();
         let file = client.upload_random_file(&[(1, (0, 3))], 2048).await.unwrap();
 
-        let xorbs_and_tags = client.list_xorbs_and_tags().await.unwrap();
-        assert!(!xorbs_and_tags.is_empty());
-        let (xorb_hash, tag) = xorbs_and_tags[0];
+        let xorbs_and_etags = client.list_xorbs_and_etags().await.unwrap();
+        assert!(!xorbs_and_etags.is_empty());
+        let (xorb_hash, tag) = xorbs_and_etags[0];
 
         let wrong_tag = [0xABu8; 32];
-        assert!(!client.delete_xorb_if_tag_matches(&xorb_hash, &wrong_tag).await.unwrap());
+        assert!(!client.delete_xorb_if_etag_matches(&xorb_hash, &wrong_tag).await.unwrap());
         assert!(client.xorb_exists(&xorb_hash).await.unwrap());
 
-        assert!(client.delete_xorb_if_tag_matches(&xorb_hash, &tag).await.unwrap());
+        assert!(client.delete_xorb_if_etag_matches(&xorb_hash, &tag).await.unwrap());
         assert!(!client.xorb_exists(&xorb_hash).await.unwrap());
 
         // file deletion is idempotent for parity with the disk-backed behavior.
         client.delete_file_entry(&file.file_hash).await.unwrap();
         client.delete_file_entry(&file.file_hash).await.unwrap();
 
-        let shards_and_tags = client.list_shards_with_tags().await.unwrap();
+        let shards_and_tags = client.list_shards_with_etags().await.unwrap();
         if !shards_and_tags.is_empty() {
-            let (shard_hash, shard_tag) = shards_and_tags[0];
-            assert!(!client.delete_shard_if_tag_matches(&shard_hash, &wrong_tag).await.unwrap());
-            assert!(client.delete_shard_if_tag_matches(&shard_hash, &shard_tag).await.unwrap());
+            let (shard_hash, shard_etag) = shards_and_tags[0];
+            assert!(!client.delete_shard_if_etag_matches(&shard_hash, &wrong_tag).await.unwrap());
+            assert!(client.delete_shard_if_etag_matches(&shard_hash, &shard_etag).await.unwrap());
             assert!(client.list_shard_entries().await.unwrap().is_empty());
         }
     }
@@ -1638,14 +1638,14 @@ mod tests {
     }
 
     /// Tag sets round-trip, replace wholesale on the next write, and leave the
-    /// xorb's `ObjectTag` alone — the same contract `LocalClient` provides.
+    /// xorb's `ObjectETag` alone — the same contract `LocalClient` provides.
     #[tokio::test]
     async fn test_xorb_tag_set_round_trip_leaves_object_tag_intact() {
         let client = new_deletion_client();
         let file = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
         let xorb_hash = file.terms[0].xorb_hash;
 
-        let before = client.list_xorbs_and_tags().await.unwrap();
+        let before = client.list_xorbs_and_etags().await.unwrap();
         assert!(client.get_xorb_tag_set(&xorb_hash).await.unwrap().is_empty());
 
         client
@@ -1667,7 +1667,7 @@ mod tests {
             "PutObjectTagging semantics replace the whole set"
         );
 
-        assert_eq!(client.list_xorbs_and_tags().await.unwrap(), before, "tagging must not move the ObjectTag");
+        assert_eq!(client.list_xorbs_and_etags().await.unwrap(), before, "tagging must not move the ObjectETag");
     }
 
     #[tokio::test]

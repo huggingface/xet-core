@@ -4,16 +4,17 @@ use xet_core_structures::merklehash::MerkleHash;
 
 use crate::error::Result;
 
-/// An opaque 32-byte tag used for conditional deletion (compare-and-delete).
+/// An opaque 32-byte etag used for conditional deletion (compare-and-delete), standing in
+/// for S3's ETag.
 ///
 /// Implementations should derive this from object metadata/content with enough entropy
 /// to reduce false matches when objects are rapidly rewritten.
-pub type ObjectTag = [u8; 32];
+pub type ObjectETag = [u8; 32];
 
 /// S3-style `(key, value)` tag set attached to an object.
 ///
-/// Distinct from [`ObjectTag`]: writing this leaves the object's bytes, and so its
-/// [`ObjectTag`], untouched. That is what lets a caller record something about an object
+/// Distinct from [`ObjectETag`]: writing this leaves the object's bytes, and so its
+/// [`ObjectETag`], untouched. That is what lets a caller record something about an object
 /// without invalidating anything keyed on its content.
 pub type ObjectTagSet = Vec<(String, String)>;
 
@@ -48,12 +49,12 @@ pub trait DeletionControlableClient: Send + Sync {
     /// Deletes a XORB by hash.
     async fn delete_xorb(&self, hash: &MerkleHash);
 
-    /// Returns all XORB hashes with their associated object tags.
-    async fn list_xorbs_and_tags(&self) -> Result<Vec<(MerkleHash, ObjectTag)>>;
+    /// Returns all XORB hashes with their associated object etags.
+    async fn list_xorbs_and_etags(&self) -> Result<Vec<(MerkleHash, ObjectETag)>>;
 
-    /// Deletes a XORB only if its current tag matches the provided tag.
-    /// Returns `Ok(true)` if deleted, `Ok(false)` if the tag did not match.
-    async fn delete_xorb_if_tag_matches(&self, hash: &MerkleHash, tag: &ObjectTag) -> Result<bool>;
+    /// Deletes a XORB only if its current etag matches the provided etag.
+    /// Returns `Ok(true)` if deleted, `Ok(false)` if the etag did not match.
+    async fn delete_xorb_if_etag_matches(&self, hash: &MerkleHash, etag: &ObjectETag) -> Result<bool>;
 
     /// Returns a XORB's tag set, empty if it has none.
     async fn get_xorb_tag_set(&self, hash: &MerkleHash) -> Result<ObjectTagSet>;
@@ -61,12 +62,12 @@ pub trait DeletionControlableClient: Send + Sync {
     /// Replaces a XORB's tag set wholesale, as S3 `PutObjectTagging` does.
     async fn set_xorb_tag_set(&self, hash: &MerkleHash, tags: ObjectTagSet) -> Result<()>;
 
-    /// Returns all shard hashes with their associated object tags.
-    async fn list_shards_with_tags(&self) -> Result<Vec<(MerkleHash, ObjectTag)>>;
+    /// Returns all shard hashes with their associated object etags.
+    async fn list_shards_with_etags(&self) -> Result<Vec<(MerkleHash, ObjectETag)>>;
 
-    /// Deletes a shard only if its current tag matches the provided tag.
-    /// Returns `Ok(true)` if deleted, `Ok(false)` if the tag did not match.
-    async fn delete_shard_if_tag_matches(&self, hash: &MerkleHash, tag: &ObjectTag) -> Result<bool>;
+    /// Deletes a shard only if its current etag matches the provided etag.
+    /// Returns `Ok(true)` if deleted, `Ok(false)` if the etag did not match.
+    async fn delete_shard_if_etag_matches(&self, hash: &MerkleHash, etag: &ObjectETag) -> Result<bool>;
 
     /// Verifies referential integrity of all shards on disk.
     async fn verify_integrity(&self) -> Result<()>;

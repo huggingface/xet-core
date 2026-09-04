@@ -30,7 +30,7 @@ mod deletion_controls;
 mod local_client;
 
 #[cfg(not(target_family = "wasm"))]
-pub use deletion_controls::{DeletionControlableClient, ObjectTag, ObjectTagSet};
+pub use deletion_controls::{DeletionControlableClient, ObjectETag, ObjectTagSet};
 #[cfg(not(target_family = "wasm"))]
 pub use local_client::LocalClient;
 
