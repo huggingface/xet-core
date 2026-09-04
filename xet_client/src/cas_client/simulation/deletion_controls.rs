@@ -7,8 +7,9 @@ use crate::error::Result;
 /// An opaque 32-byte etag used for conditional deletion (compare-and-delete), standing in
 /// for S3's ETag.
 ///
-/// Implementations should derive this from object metadata/content with enough entropy
-/// to reduce false matches when objects are rapidly rewritten.
+/// Derived from what is stored, not from when it was written: a byte-identical re-upload
+/// leaves it unchanged, as S3's content-derived ETag does. A caller that needs to tell a
+/// re-upload apart cannot do it from this value — see [`LAST_UPLOAD_TAG_KEY`].
 pub type ObjectETag = [u8; 32];
 
 /// S3-style `(key, value)` tag set attached to an object.

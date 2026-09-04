@@ -50,8 +50,8 @@ struct MaterializedXorb {
 /// every insert, so the etag changes even when content is identical (matching
 /// production ETag semantics).
 enum XorbStorage {
-    Materialized { entry: MaterializedXorb, generation: u64 },
-    Random { xorb: RandomXorb, generation: u64 },
+    Materialized { entry: MaterializedXorb },
+    Random { xorb: RandomXorb },
 }
 
 /// In-memory client for testing purposes. Stores all data in memory using hash tables.
@@ -65,7 +65,6 @@ pub struct MemoryClient {
     /// Upload concurrency controller
     upload_concurrency_controller: Arc<AdaptiveConcurrencyController>,
     /// Monotonic counter for xorb upload generations (etag freshness).
-    xorb_generation: AtomicU64,
     /// URL expiration in milliseconds
     url_expiration_ms: AtomicU64,
     /// Global dedup shard expiration in seconds (0 = disabled).
@@ -103,7 +102,6 @@ impl MemoryClient {
             shard: RwLock::new(MDBInMemoryShard::default()),
             global_dedup: RwLock::new(MerkleHashMap::new()),
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload(ctx, "memory_uploads"),
-            xorb_generation: AtomicU64::new(0),
             url_expiration_ms: AtomicU64::new(u64::MAX),
             global_dedup_expiration_secs: AtomicU64::new(0),
             random_ms_delay_window: (AtomicU64::new(0), AtomicU64::new(0)),
@@ -177,8 +175,7 @@ impl MemoryClient {
             shard.add_xorb_block(cas_info)?;
         }
 
-        let generation = self.xorb_generation.fetch_add(1, Ordering::Relaxed);
-        self.xorbs.write().await.insert(hash, XorbStorage::Random { xorb, generation });
+        self.xorbs.write().await.insert(hash, XorbStorage::Random { xorb });
         Ok(hash)
     }
 
@@ -290,16 +287,11 @@ impl MemoryClient {
     #[cfg(not(target_family = "wasm"))]
     fn xorb_etag(hash: &MerkleHash, storage: &XorbStorage) -> ObjectETag {
         match storage {
-            XorbStorage::Materialized { entry, generation } => {
-                let mut payload = Vec::from(entry.serialized_data.as_ref());
-                payload.extend_from_slice(&generation.to_le_bytes());
-                Self::object_etag_from_key_and_payload(b"xorb", hash, &payload)
+            XorbStorage::Materialized { entry } => {
+                Self::object_etag_from_key_and_payload(b"xorb", hash, entry.serialized_data.as_ref())
             },
-            XorbStorage::Random { xorb, generation } => {
-                let mut entropy = Vec::with_capacity(16);
-                entropy.extend_from_slice(&xorb.num_chunks().to_le_bytes());
-                entropy.extend_from_slice(&generation.to_le_bytes());
-                Self::object_etag_from_key_and_payload(b"xorb", hash, &entropy)
+            XorbStorage::Random { xorb } => {
+                Self::object_etag_from_key_and_payload(b"xorb", hash, &xorb.num_chunks().to_le_bytes())
             },
         }
     }
@@ -914,10 +906,10 @@ impl Client for MemoryClient {
         let footer_start = serialized_xorb_object.footer_start;
         let serialized_data = serialized_xorb_object.serialized_data;
 
-        // Always overwrite: even if the xorb already exists, we must store it
-        // with a fresh generation so its etag changes, matching production ETag
-        // semantics and ensuring delete_xorb_if_etag_matches is safe under
-        // concurrent uploads.
+        // Always overwrite, but the etag is derived from the stored bytes alone,
+        // so a byte-identical re-upload leaves it unchanged — as S3 does, whose
+        // ETag is a function of content. What tells a re-upload apart is the
+        // `last-upload` tag stamped below, not the etag.
 
         info!("Storing XORB {hash:?} in memory");
 
@@ -943,7 +935,6 @@ impl Client for MemoryClient {
         };
 
         let bytes_written = serialized_data.len();
-        let generation = self.xorb_generation.fetch_add(1, Ordering::Relaxed);
 
         {
             let mut xorbs = self.xorbs.write().await;
@@ -954,7 +945,6 @@ impl Client for MemoryClient {
                         serialized_data: Bytes::from(serialized_data),
                         xorb_object: xorb_obj,
                     },
-                    generation,
                 },
             );
         }

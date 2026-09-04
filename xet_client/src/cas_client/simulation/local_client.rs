@@ -436,22 +436,22 @@ impl LocalClient {
     ///
     /// We hash multiple metadata fields to increase entropy and reduce false
     /// matches during rapid rewrite/delete races.
-    fn object_etag_from_path(path: &Path) -> Result<ObjectETag> {
-        let meta = std::fs::metadata(path).map_err(ClientError::internal)?;
-        let modified = meta.modified().map_err(ClientError::internal)?;
-        let modified_nanos = modified.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
-        let created_nanos = meta
-            .created()
-            .ok()
-            .and_then(|ts| ts.duration_since(std::time::UNIX_EPOCH).ok())
-            .map_or(0u128, |d| d.as_nanos());
-
-        let mut entropy = Vec::with_capacity(16 + 16 + 8 + 1);
-        entropy.extend_from_slice(&modified_nanos.to_le_bytes());
-        entropy.extend_from_slice(&created_nanos.to_le_bytes());
-        entropy.extend_from_slice(&meta.len().to_le_bytes());
-        entropy.push(u8::from(meta.permissions().readonly()));
-
+    /// The object's etag, derived from its key and stored length rather than
+    /// from filesystem timestamps.
+    ///
+    /// S3's ETag is a function of content, so a byte-identical re-upload leaves
+    /// it unchanged. Xorbs and shards are content-addressed, so the key already
+    /// fixes the content and the length is what distinguishes a differently
+    /// serialized rewrite of the same key. Hashing mtime/ctime instead made
+    /// every write look like different content — including a re-upload, and
+    /// including the rename onto a temp path that the conditional deletes do.
+    fn object_etag_for(prefix: &[u8], key: &MerkleHash, path: &Path) -> Result<ObjectETag> {
+        let len = std::fs::metadata(path).map_err(ClientError::internal)?.len();
+        let key_bytes: [u8; 32] = (*key).into();
+        let mut entropy = Vec::with_capacity(prefix.len() + key_bytes.len() + 8);
+        entropy.extend_from_slice(prefix);
+        entropy.extend_from_slice(&key_bytes);
+        entropy.extend_from_slice(&len.to_le_bytes());
         Ok(compute_data_hash(&entropy).into())
     }
 
@@ -1017,7 +1017,7 @@ impl super::DeletionControlableClient for LocalClient {
             if let Some(pos) = name.rfind('.') {
                 let hex = &name[(pos + 1)..];
                 if let Ok(hash) = MerkleHash::from_hex(hex) {
-                    let etag = Self::object_etag_from_path(&path)?;
+                    let etag = Self::object_etag_for(b"xorb", &hash, &path)?;
                     ret.push((hash, etag));
                 }
             }
@@ -1036,7 +1036,7 @@ impl super::DeletionControlableClient for LocalClient {
             return Err(ClientError::XORBNotFound(*hash));
         }
 
-        let current_etag = match Self::object_etag_from_path(&tmp_path) {
+        let current_etag = match Self::object_etag_for(b"xorb", hash, &tmp_path) {
             Ok(t) => t,
             Err(e) => {
                 Self::restore_from_tmp(&tmp_path, &file_path);
@@ -1093,7 +1093,7 @@ impl super::DeletionControlableClient for LocalClient {
     async fn list_shards_with_etags(&self) -> Result<Vec<(MerkleHash, ObjectETag)>> {
         let mut ret = Vec::new();
         for (hash, path) in self.shard_file_paths()? {
-            let etag = Self::object_etag_from_path(&path)?;
+            let etag = Self::object_etag_for(b"shard", &hash, &path)?;
             ret.push((hash, etag));
         }
         Ok(ret)
@@ -1107,7 +1107,7 @@ impl super::DeletionControlableClient for LocalClient {
             return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
         }
 
-        let current_etag = match Self::object_etag_from_path(&tmp_path) {
+        let current_etag = match Self::object_etag_for(b"shard", hash, &tmp_path) {
             Ok(t) => t,
             Err(e) => {
                 Self::restore_from_tmp(&tmp_path, &path);
@@ -2401,8 +2401,15 @@ mod tests {
     }
 
     /// Tests that list_xorbs_and_etags etags change after file re-creation with a timestamp delay.
+    /// A xorb deleted and re-uploaded with the same content keeps its etag,
+    /// even across a filesystem timestamp change.
+    ///
+    /// This is S3's contract — the ETag is a function of content — and the
+    /// resurrection hazard it creates is real: a stale etag snapshot still
+    /// matches the new object. That is what the `last-upload` tag is for; the
+    /// etag deliberately no longer hides it.
     #[tokio::test]
-    async fn test_list_xorbs_and_etags_timestamp_changes() {
+    async fn test_etag_is_stable_across_an_identical_reupload() {
         let client = LocalClient::temporary(test_context()).await.unwrap();
 
         let file1 = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
@@ -2418,11 +2425,16 @@ mod tests {
         // Re-upload a file that creates a new xorb with the same hash seed.
         let file2 = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
         let xorb_hash2 = file2.terms[0].xorb_hash;
+        assert_eq!(xorb_hash, xorb_hash2, "the seed must reproduce the same xorb");
 
         let tags2 = client.list_xorbs_and_etags().await.unwrap();
         let (_, tag2) = tags2.iter().find(|(h, _)| *h == xorb_hash2).unwrap();
 
-        assert_ne!(tag1, tag2, "Tags should differ after re-creation with timestamp delay");
+        assert_eq!(tag1, tag2, "identical content must keep its etag despite a newer mtime");
+
+        // The `last-upload` tag is what moved instead.
+        let tags = client.get_xorb_tag_set(&xorb_hash).await.unwrap();
+        assert_eq!(tags.first().map(|(k, _)| k.as_str()), Some(super::super::deletion_controls::LAST_UPLOAD_TAG_KEY));
     }
 
     // ── Lifecycle-tag deletion mode tests ───────────────────────────────
