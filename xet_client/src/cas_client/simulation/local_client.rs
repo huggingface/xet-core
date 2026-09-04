@@ -385,6 +385,21 @@ impl LocalClient {
         PathBuf::from(name)
     }
 
+    /// Drops a xorb's tag-set sidecar. Called from every path that removes the
+    /// object or condemns it: a hard delete takes the tags with it, and GC's
+    /// `gc-delete` write replaces the whole set, dropping `last-upload` either
+    /// way. Leaving the sidecar behind would orphan it on disk, and let a later
+    /// upload of the same hash inherit tags from the object that used to live
+    /// there.
+    fn clear_tag_set_xorb(&self, hash: &MerkleHash) {
+        let path = self.tag_set_xorb_path(hash);
+        #[cfg(windows)]
+        if path.exists() {
+            Self::clear_readonly(&path);
+        }
+        let _ = std::fs::remove_file(path);
+    }
+
     /// Path used to park a tagged-for-deletion shard: `<hex>.mdb.gctag`.
     fn gctag_shard_path(&self, hash: &MerkleHash) -> PathBuf {
         let canonical = self.shard_dir.join(shard_file_name(hash));
@@ -1004,6 +1019,7 @@ impl super::DeletionControlableClient for LocalClient {
         } else {
             let _ = std::fs::remove_file(file_path);
         }
+        self.clear_tag_set_xorb(hash);
     }
 
     async fn list_xorbs_and_etags(&self) -> Result<Vec<(MerkleHash, ObjectETag)>> {
@@ -1060,6 +1076,7 @@ impl super::DeletionControlableClient for LocalClient {
         } else {
             std::fs::remove_file(&tmp_path)?;
         }
+        self.clear_tag_set_xorb(hash);
         Ok(true)
     }
 
@@ -2389,6 +2406,30 @@ mod tests {
         assert!(value.parse::<u64>().is_ok(), "value must be unix seconds, got {value:?}");
 
         assert_eq!(client.list_xorbs().await.unwrap(), vec![xorb_hash]);
+    }
+
+    /// A hard delete removes the sidecar, so it is not orphaned on disk and a
+    /// later upload of the same hash cannot inherit the old tags.
+    #[tokio::test]
+    async fn test_delete_xorb_clears_its_tag_set_sidecar() {
+        let client = LocalClient::temporary(test_context()).await.unwrap();
+        let file = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
+        let xorb_hash = file.terms[0].xorb_hash;
+
+        client
+            .set_xorb_tag_set(&xorb_hash, vec![("stale".to_string(), "value".to_string())])
+            .await
+            .unwrap();
+        let sidecar = client.tag_set_xorb_path(&xorb_hash);
+        assert!(sidecar.exists());
+
+        client.delete_xorb(&xorb_hash).await;
+        assert!(!sidecar.exists(), "the sidecar outlived the xorb");
+
+        let refile = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
+        assert_eq!(refile.terms[0].xorb_hash, xorb_hash);
+        let tags = client.get_xorb_tag_set(&xorb_hash).await.unwrap();
+        assert!(!tags.iter().any(|(k, _)| k == "stale"), "stale tags survived a delete: {tags:?}");
     }
 
     /// Tagging an absent xorb is an error rather than creating an orphan sidecar.
