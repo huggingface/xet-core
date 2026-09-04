@@ -84,7 +84,6 @@ pub struct LocalTestServerBuilder {
     server_latency_profile: Option<ServerLatencyProfile>,
     network_profile: Option<NetworkProfile>,
     lifecycle_tag_deletion: bool,
-    upload_tagging: bool,
 }
 
 #[allow(dead_code)]
@@ -101,7 +100,6 @@ impl LocalTestServerBuilder {
             server_latency_profile: None,
             network_profile: None,
             lifecycle_tag_deletion: false,
-            upload_tagging: false,
         }
     }
 
@@ -187,17 +185,6 @@ impl LocalTestServerBuilder {
         self
     }
 
-    /// When enabled, a xorb upload stamps a `last-upload` tag set carrying the
-    /// unix seconds of the write, modelling what CAS does on every xorb write.
-    /// Enable it to exercise a consumer that reads that tag; leave it off and
-    /// uploaded xorbs carry no tag set at all.
-    ///
-    /// Only applies to the `LocalClient` and `MemoryClient` backends.
-    pub fn with_upload_tagging(mut self, on: bool) -> Self {
-        self.upload_tagging = on;
-        self
-    }
-
     /// Builds and starts the test server.
     pub async fn start(self) -> LocalTestServer {
         let ctx = XetContext::default().expect("XetContext::new");
@@ -221,7 +208,6 @@ impl LocalTestServerBuilder {
             } else if self.in_memory {
                 let mc = MemoryClient::new(ctx.clone());
                 mc.set_lifecycle_tag_deletion(self.lifecycle_tag_deletion);
-                mc.set_upload_tagging(self.upload_tagging);
                 let dc: Arc<dyn DeletionControlableClient> = mc.clone();
                 (mc, Some(dc))
             } else if self.ephemeral_disk {
@@ -229,7 +215,6 @@ impl LocalTestServerBuilder {
                     .await
                     .expect("Failed to create LocalClient with temporary directory");
                 lc.set_lifecycle_tag_deletion(self.lifecycle_tag_deletion);
-                lc.set_upload_tagging(self.upload_tagging);
                 let dc: Arc<dyn DeletionControlableClient> = lc.clone();
                 (lc, Some(dc))
             } else {
@@ -240,7 +225,6 @@ impl LocalTestServerBuilder {
                     .await
                     .expect("Failed to create LocalClient");
                 lc.set_lifecycle_tag_deletion(self.lifecycle_tag_deletion);
-                lc.set_upload_tagging(self.upload_tagging);
                 let dc: Arc<dyn DeletionControlableClient> = lc.clone();
                 (lc, Some(dc))
             };

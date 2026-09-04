@@ -20,9 +20,8 @@ pub type ObjectTagSet = Vec<(String, String)>;
 
 /// Tag key CAS stamps with the unix seconds of a xorb's most recent write.
 ///
-/// Named here so the simulation can model that write (see
-/// `LocalTestServerBuilder::with_upload_tagging`). What the value *means* is
-/// the reader's business — xet-core only reproduces the stamp.
+/// Every simulated xorb upload stamps this, as CAS does. What the value
+/// *means* is the reader's business — xet-core only reproduces the stamp.
 pub const LAST_UPLOAD_TAG_KEY: &str = "last-upload";
 
 /// The tag set CAS puts on a xorb it has just written.
