@@ -267,7 +267,7 @@ impl DiskCache {
                     debug!("key dir name len < {PREFIX_DIR_NAME_LEN}: {key_dir_name:?}");
                     continue;
                 };
-                if key_dir_prefix != key_prefix_dir_name.as_encoded_bytes() {
+                if !key_dir_prefix.eq_ignore_ascii_case(key_prefix_dir_name.as_encoded_bytes()) {
                     debug!("key dir prefix does not match parent directory: {key_dir_name:?}");
                     continue;
                 }
