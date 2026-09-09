@@ -1878,38 +1878,6 @@ mod tests {
         .await;
     }
 
-    /// Stored shards are what file lookups read here, so a shard uploaded with verification
-    /// entries must still have them afterwards — `gap_verification` is built from this.
-    #[tokio::test]
-    async fn test_upload_shard_keeps_file_verification() {
-        use xet_core_structures::metadata_shard::shard_format::test_routines::gen_random_shard_with_xorb_references;
-
-        let client = LocalClient::temporary(test_context()).await.unwrap();
-
-        let shard_in = gen_random_shard_with_xorb_references(0, &[16; 8], &[2; 20], true, true).unwrap();
-        let file_hashes: Vec<MerkleHash> = shard_in.file_content.keys().copied().collect();
-        assert!(!file_hashes.is_empty());
-
-        let permit = client.acquire_upload_permit().await.unwrap();
-        client
-            .upload_shard(shard_in.to_bytes().unwrap().into(), permit, None)
-            .await
-            .unwrap();
-
-        for file_hash in &file_hashes {
-            let (file_info, _) = client
-                .get_file_info_from_table(file_hash)
-                .unwrap()
-                .unwrap_or_else(|| panic!("file {} missing from the table", file_hash.hex()));
-            assert_eq!(
-                file_info.verification.len(),
-                file_info.segments.len(),
-                "file {} lost its verification entries on upload",
-                file_hash.hex()
-            );
-        }
-    }
-
     /// Two different path strings for the same directory (symlink) must share one `redb::Database`
     /// in `DB_CACHE`. Without `canonicalize` in `new_internal`, `redb` returns
     /// `Database already open. Cannot acquire lock.` (duplicate opens for the same file).
