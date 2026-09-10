@@ -95,7 +95,7 @@ impl BG4Predictor {
         }
     }
 
-    /// Generic per-byte popcount driver over a word type `T` (e.g. u128 for SWAR).
+    /// Generic per-byte popcount driver over a word type `T` (e.g. u128 for SWAR, `__m512i` for AVX-512).
     ///
     /// `calc_popcnt` takes a word read (aligned) from the input and must return a word whose byte at each
     /// position holds the popcount of the input byte at the same position, in native byte order.  Per-byte
@@ -103,9 +103,10 @@ impl BG4Predictor {
     /// the same byte order.
     ///
     /// `T: Pod` is what makes the raw aligned reads and byte views below sound: no padding, every bit pattern
-    /// valid, zeroable.  Words must be a multiple of 4 bytes for the histogram lane-index math.
+    /// valid, zeroable.  Words must be a multiple of 16 bytes: the lane-index math needs a multiple of 4, and
+    /// the body scatter loop processes words in 16-byte chunks.
     fn add_data_impl<T: Pod>(&mut self, offset: usize, data: &[u8], calc_popcnt: impl Fn(T) -> T) {
-        debug_assert_eq!(size_of::<T>() % 4, 0, "lane-index math requires a multiple of 4");
+        debug_assert_eq!(size_of::<T>() % 16, 0, "lane-index math and scatter chunking require a multiple of 16");
 
         if data.is_empty() {
             return;
@@ -175,7 +176,23 @@ impl BG4Predictor {
                 // the original u128-specialized version).
                 for i in 0..raw_input.len() {
                     let popcnt = *popcnt_v.get_unchecked(i);
-                    self.apply_perbyte_popcounts(bytes_of(&popcnt), word_common_offset, (0, size_of::<T>()));
+                    let bytes = bytes_of(&popcnt);
+
+                    if size_of::<T>() == 16 {
+                        self.apply_perbyte_popcounts(bytes, word_common_offset, (0, size_of::<T>()));
+                    } else {
+                        // For words wider than 16 bytes, apply the scatter in 16-byte chunks, each
+                        // copied into a u128 local, with constant bounds.  Small constant trip
+                        // counts make the compiler fully unroll the scatter and hoist the per-lane
+                        // histogram row pointers out of the loop, and holding the chunk in a u128
+                        // makes it extract the per-byte popcounts with shifts from registers
+                        // instead of round-tripping through memory (a 64-byte AVX-512 word
+                        // otherwise gets per-byte vector extracts).
+                        for chunk_start in (0..size_of::<T>()).step_by(16) {
+                            let chunk = u128::from_ne_bytes(bytes[chunk_start..chunk_start + 16].try_into().unwrap());
+                            self.apply_perbyte_popcounts(bytes_of(&chunk), word_common_offset + chunk_start, (0, 16));
+                        }
+                    }
                 }
 
                 ptr = ptr.add(BLOCK_SIZE * size_of::<T>());
@@ -209,6 +226,28 @@ impl BG4Predictor {
 
     pub fn add_data_swar(&mut self, offset: usize, data: &[u8]) {
         self.add_data_impl(offset, data, Self::popcnt_u128_swar);
+    }
+
+    /// x86-64 method using AVX-512: `vpopcntb` computes the per-byte popcount of a whole 64-byte word
+    /// in a single instruction.  Runtime-detects `avx512bitalg` and falls back to the SWAR method
+    /// when the CPU lacks it.
+    ///
+    /// Note: byte-wise popcount comes from AVX512-BITALG; AVX512-VPOPCNTDQ covers only the 32/64-bit
+    /// lane variants.
+    #[cfg(target_arch = "x86_64")]
+    pub fn add_data_avx512(&mut self, offset: usize, data: &[u8]) {
+        if std::arch::is_x86_feature_detected!("avx512bitalg") {
+            // Safety: the feature was just detected.
+            unsafe { self.add_data_avx512_bitalg(offset, data) };
+        } else {
+            self.add_data_swar(offset, data);
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx512bitalg")]
+    unsafe fn add_data_avx512_bitalg(&mut self, offset: usize, data: &[u8]) {
+        self.add_data_impl(offset, data, |v: core::arch::x86_64::__m512i| core::arch::x86_64::_mm512_popcnt_epi8(v));
     }
 
     #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
@@ -296,6 +335,18 @@ mod tests {
             "Histogram mismatch at offset {} with data {:?}",
             offset, &data
         );
+
+        // Runs the real vpopcntb path when the CPU supports it and exercises the SWAR fallback otherwise.
+        #[cfg(target_arch = "x86_64")]
+        {
+            let mut avx512 = BG4Predictor::default();
+            avx512.add_data_avx512(offset, data);
+            assert_eq!(
+                reference.histograms, avx512.histograms,
+                "Histogram mismatch at offset {} with data {:?} (avx512 method)",
+                offset, &data
+            );
+        }
     }
 
     #[test]

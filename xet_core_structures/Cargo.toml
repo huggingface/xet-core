@@ -59,6 +59,10 @@ blake3 = { workspace = true }
 # without changing native builds.
 blake3 = { workspace = true, features = ["wasm32_simd"] }
 
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+# Pod impls for the __m512i word type used by the AVX-512 BG4 popcount path.
+bytemuck = { workspace = true, features = ["avx512_simd"] }
+
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 tokio = { workspace = true, features = [
     "time",

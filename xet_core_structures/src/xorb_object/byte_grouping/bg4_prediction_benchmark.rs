@@ -37,5 +37,21 @@ fn main() {
     let duration = start.elapsed().as_secs_f64();
     println!("Optimized: {:.2} MB/s", SIZE_MB as f64 / duration);
 
+    #[cfg(target_arch = "x86_64")]
+    {
+        let mut avx512_pred = BG4Predictor::default();
+        let start = Instant::now();
+        avx512_pred.add_data_avx512(offset, &data);
+        let duration = start.elapsed().as_secs_f64();
+        let suffix = if std::arch::is_x86_feature_detected!("avx512bitalg") {
+            ""
+        } else {
+            " (SWAR fallback, avx512bitalg not detected)"
+        };
+        println!("AVX512: {:.2} MB/s{suffix}", SIZE_MB as f64 / duration);
+
+        assert_eq!(ref_pred.histograms(), avx512_pred.histograms());
+    }
+
     assert_eq!(ref_pred.histograms(), new_pred.histograms());
 }
