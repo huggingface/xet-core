@@ -29,6 +29,7 @@ xet-runtime = { version = "1.6.0", path = "../xet_runtime" }
 
 async-trait = { workspace = true }
 base64 = { workspace = true }
+bytemuck = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true, optional = true }
 countio = { workspace = true }
@@ -59,7 +60,6 @@ blake3 = { workspace = true }
 blake3 = { workspace = true, features = ["wasm32_simd"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-bytemuck = { workspace = true }
 tokio = { workspace = true, features = [
     "time",
     "rt",
