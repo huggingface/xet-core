@@ -13,8 +13,8 @@
 // SWAR: 2392.19 MB/s (Fallback method on intel)
 // Neon: 3222.63 MB/s (simd method with neon)
 //
-// The default currently is to use Neon on Aarch64 when supported and fall back
-// to SWAR elsewhere.
+// The default currently is to use Neon on Aarch64 when supported, the AVX512 method on
+// x86-64 when the CPU has avx512bitalg (runtime detected), and SWAR elsewhere.
 
 use bytemuck::{Pod, bytes_of};
 
@@ -255,7 +255,13 @@ impl BG4Predictor {
         self.add_data_impl(offset, data, Self::popcnt_u128_aarch64_vctnq);
     }
 
-    #[cfg(not(all(target_arch = "aarch64", target_feature = "neon")))]
+    /// On x86-64, use the AVX-512 method when the CPU supports it (runtime detection), else SWAR.
+    #[cfg(target_arch = "x86_64")]
+    pub fn add_data(&mut self, offset: usize, data: &[u8]) {
+        self.add_data_avx512(offset, data);
+    }
+
+    #[cfg(not(any(target_arch = "x86_64", all(target_arch = "aarch64", target_feature = "neon"))))]
     pub fn add_data(&mut self, offset: usize, data: &[u8]) {
         self.add_data_impl(offset, data, Self::popcnt_u128_swar);
     }
