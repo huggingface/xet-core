@@ -128,19 +128,6 @@ impl MemoryClient {
         self.gc_tagged_xorbs.read().await.contains(hash)
     }
 
-    /// Drops a xorb's tag set. Called from every path that removes the object
-    /// or condemns it: a hard delete takes the tags with it, and GC's
-    /// `gc-delete` write replaces the whole set, dropping `last-upload` either
-    /// way. Leaving them behind would let a later upload of the same hash
-    /// inherit tags from the object that used to live there.
-    #[cfg(not(target_family = "wasm"))]
-    async fn clear_xorb_tag_set(&self, hash: &MerkleHash) {
-        self.xorb_tag_sets.write().await.remove(hash);
-    }
-
-    #[cfg(target_family = "wasm")]
-    async fn clear_xorb_tag_set(&self, _hash: &MerkleHash) {}
-
     /// Errors unless the xorb is present and not condemned. A lifecycle-tagged
     /// xorb reads as gone everywhere else here, and `LocalClient` errors on it
     /// because the canonical file has been renamed away.
@@ -961,7 +948,15 @@ impl Client for MemoryClient {
         let bytes_written = serialized_data.len();
 
         {
+            // The write, the un-tag and the `last-upload` stamp are one critical section:
+            // a delete interleaving between them would erase the tag of the xorb this call
+            // just wrote. Locks are taken tagged-before-xorbs everywhere, so readers that
+            // hold both cannot deadlock against this.
+            let mut tagged = self.gc_tagged_xorbs.write().await;
             let mut xorbs = self.xorbs.write().await;
+            #[cfg(not(target_family = "wasm"))]
+            let mut tag_sets = self.xorb_tag_sets.write().await;
+
             xorbs.insert(
                 hash,
                 XorbStorage::Materialized {
@@ -971,18 +966,12 @@ impl Client for MemoryClient {
                     },
                 },
             );
+
+            tagged.remove(&hash);
+
+            #[cfg(not(target_family = "wasm"))]
+            tag_sets.insert(hash, last_upload_tag_set_now());
         }
-
-        // A re-upload of the same xorb hash supersedes any prior
-        // lifecycle-tagged copy: clear the tag so the xorb is readable again.
-        // Mirrors S3 PutObject overwriting a tagged object.
-        self.gc_tagged_xorbs.write().await.remove(&hash);
-
-        // CAS stamps `last-upload` on every xorb write, and PutObject replaces
-        // the whole tag set, so the stamp both records this write and clears
-        // whatever was there.
-        #[cfg(not(target_family = "wasm"))]
-        self.xorb_tag_sets.write().await.insert(hash, last_upload_tag_set_now());
 
         if let Some(ref cb) = progress_callback {
             let n = bytes_written as u64;
@@ -1225,12 +1214,20 @@ impl super::DeletionControlableClient for MemoryClient {
     }
 
     async fn delete_xorb(&self, hash: &MerkleHash) {
+        // Removal and tag clear under one critical section, so a concurrent upload cannot
+        // land between them and have its fresh `last-upload` stamp erased by this delete.
+        let mut tagged = self.gc_tagged_xorbs.write().await;
+        let mut xorbs = self.xorbs.write().await;
+        #[cfg(not(target_family = "wasm"))]
+        let mut tag_sets = self.xorb_tag_sets.write().await;
+
         if self.lifecycle_tag_deletion_enabled() {
-            self.gc_tagged_xorbs.write().await.insert(*hash);
+            tagged.insert(*hash);
         } else {
-            self.xorbs.write().await.remove(hash);
+            xorbs.remove(hash);
         }
-        self.clear_xorb_tag_set(hash).await;
+        #[cfg(not(target_family = "wasm"))]
+        tag_sets.remove(hash);
     }
 
     async fn list_xorbs_and_etags(&self) -> Result<Vec<(MerkleHash, ObjectETag)>> {
@@ -1244,8 +1241,15 @@ impl super::DeletionControlableClient for MemoryClient {
     }
 
     async fn delete_xorb_if_etag_matches(&self, hash: &MerkleHash, etag: &ObjectETag) -> Result<bool> {
+        // The etag comparison and the delete share one critical section. Dropping the lock
+        // between them would let a re-upload slip in and be deleted on the strength of the
+        // etag it no longer has, which is the very thing this guard exists to prevent.
+        let mut tagged = self.gc_tagged_xorbs.write().await;
+        let mut xorbs = self.xorbs.write().await;
+        #[cfg(not(target_family = "wasm"))]
+        let mut tag_sets = self.xorb_tag_sets.write().await;
+
         let current_etag = {
-            let xorbs = self.xorbs.read().await;
             let Some(storage) = xorbs.get(hash) else {
                 return Err(ClientError::XORBNotFound(*hash));
             };
@@ -1254,12 +1258,14 @@ impl super::DeletionControlableClient for MemoryClient {
         if &current_etag != etag {
             return Ok(false);
         }
+
         if self.lifecycle_tag_deletion_enabled() {
-            self.gc_tagged_xorbs.write().await.insert(*hash);
+            tagged.insert(*hash);
         } else {
-            self.xorbs.write().await.remove(hash);
+            xorbs.remove(hash);
         }
-        self.clear_xorb_tag_set(hash).await;
+        #[cfg(not(target_family = "wasm"))]
+        tag_sets.remove(hash);
         Ok(true)
     }
 

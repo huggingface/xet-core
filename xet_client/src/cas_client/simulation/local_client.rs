@@ -1103,7 +1103,11 @@ impl super::DeletionControlableClient for LocalClient {
         if path.exists() {
             Self::clear_readonly(&path);
         }
-        std::fs::write(&path, raw)?;
+        // Temp file plus rename: `get_xorb_tag_set` reads this path without coordination,
+        // so a truncate-in-place write would let it observe a half-written tag set.
+        let mut file = SafeFileCreator::replace_existing(&path)?;
+        file.write_all(&raw)?;
+        file.close()?;
         Ok(())
     }
 
