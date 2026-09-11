@@ -4,11 +4,35 @@ use xet_core_structures::merklehash::MerkleHash;
 
 use crate::error::Result;
 
-/// An opaque 32-byte tag used for conditional deletion (compare-and-delete).
+/// An opaque 32-byte etag used for conditional deletion (compare-and-delete), standing in
+/// for S3's ETag.
 ///
-/// Implementations should derive this from object metadata/content with enough entropy
-/// to reduce false matches when objects are rapidly rewritten.
-pub type ObjectTag = [u8; 32];
+/// Derived from what is stored, not from when it was written: a byte-identical re-upload
+/// leaves it unchanged, as S3's content-derived ETag does. A caller that needs to tell a
+/// re-upload apart cannot do it from this value — see [`LAST_UPLOAD_TAG_KEY`].
+pub type ObjectETag = [u8; 32];
+
+/// S3-style `(key, value)` tag set attached to an object.
+///
+/// Distinct from [`ObjectETag`]: writing this leaves the object's bytes, and so its
+/// [`ObjectETag`], untouched. That is what lets a caller record something about an object
+/// without invalidating anything keyed on its content.
+pub type ObjectTagSet = Vec<(String, String)>;
+
+/// Tag key CAS stamps with the unix seconds of a xorb's most recent write.
+///
+/// Every simulated xorb upload stamps this, as CAS does. What the value
+/// *means* is the reader's business — xet-core only reproduces the stamp.
+pub const LAST_UPLOAD_TAG_KEY: &str = "last-upload";
+
+/// The tag set CAS puts on a xorb it has just written.
+pub fn last_upload_tag_set_now() -> ObjectTagSet {
+    let unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    vec![(LAST_UPLOAD_TAG_KEY.to_string(), unix.to_string())]
+}
 
 /// Trait for clients that support deletion and integrity operations on shards and file entries.
 ///
@@ -41,19 +65,25 @@ pub trait DeletionControlableClient: Send + Sync {
     /// Deletes a XORB by hash.
     async fn delete_xorb(&self, hash: &MerkleHash);
 
-    /// Returns all XORB hashes with their associated object tags.
-    async fn list_xorbs_and_tags(&self) -> Result<Vec<(MerkleHash, ObjectTag)>>;
+    /// Returns all XORB hashes with their associated object etags.
+    async fn list_xorbs_and_etags(&self) -> Result<Vec<(MerkleHash, ObjectETag)>>;
 
-    /// Deletes a XORB only if its current tag matches the provided tag.
-    /// Returns `Ok(true)` if deleted, `Ok(false)` if the tag did not match.
-    async fn delete_xorb_if_tag_matches(&self, hash: &MerkleHash, tag: &ObjectTag) -> Result<bool>;
+    /// Deletes a XORB only if its current etag matches the provided etag.
+    /// Returns `Ok(true)` if deleted, `Ok(false)` if the etag did not match.
+    async fn delete_xorb_if_etag_matches(&self, hash: &MerkleHash, etag: &ObjectETag) -> Result<bool>;
 
-    /// Returns all shard hashes with their associated object tags.
-    async fn list_shards_with_tags(&self) -> Result<Vec<(MerkleHash, ObjectTag)>>;
+    /// Returns a XORB's tag set, empty if it has none.
+    async fn get_xorb_tag_set(&self, hash: &MerkleHash) -> Result<ObjectTagSet>;
 
-    /// Deletes a shard only if its current tag matches the provided tag.
-    /// Returns `Ok(true)` if deleted, `Ok(false)` if the tag did not match.
-    async fn delete_shard_if_tag_matches(&self, hash: &MerkleHash, tag: &ObjectTag) -> Result<bool>;
+    /// Replaces a XORB's tag set wholesale, as S3 `PutObjectTagging` does.
+    async fn set_xorb_tag_set(&self, hash: &MerkleHash, tags: ObjectTagSet) -> Result<()>;
+
+    /// Returns all shard hashes with their associated object etags.
+    async fn list_shards_with_etags(&self) -> Result<Vec<(MerkleHash, ObjectETag)>>;
+
+    /// Deletes a shard only if its current etag matches the provided etag.
+    /// Returns `Ok(true)` if deleted, `Ok(false)` if the etag did not match.
+    async fn delete_shard_if_etag_matches(&self, hash: &MerkleHash, etag: &ObjectETag) -> Result<bool>;
 
     /// Verifies referential integrity of all shards on disk.
     async fn verify_integrity(&self) -> Result<()>;
