@@ -15,13 +15,14 @@ use redb::{ReadableDatabase, ReadableTable, TableDefinition};
 use tempfile::TempDir;
 use tokio::time::{Duration, Instant};
 use tracing::{error, info, warn};
-use xet_core_structures::merklehash::{MerkleHash, compute_data_hash};
+use xet_core_structures::merklehash::{HashedWrite, MerkleHash, compute_data_hash};
 use xet_core_structures::metadata_shard::file_structs::{FileDataSequenceHeader, MDBFileInfo, MDBFileInfoView};
-use xet_core_structures::metadata_shard::shard_file_reconstructor::FileReconstructor;
 use xet_core_structures::metadata_shard::shard_format::MDB_FILE_INFO_ENTRY_SIZE;
+#[cfg(test)]
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::metadata_shard::streaming_shard::MDBMinimalShard;
 use xet_core_structures::metadata_shard::utils::{parse_shard_filename, shard_file_name};
+#[cfg(test)]
 use xet_core_structures::metadata_shard::xorb_structs::MDBXorbInfo;
 use xet_core_structures::metadata_shard::{MDBShardFile, MDBShardFileHeader, ShardFileManager};
 use xet_core_structures::serialization_utils::read_u32;
@@ -325,8 +326,11 @@ impl LocalClient {
             write_txn.commit().map_err(map_redb_db_error)?;
         }
 
-        // Open / set up the shard lookup
-        let shard_manager = ShardFileManager::new_in_session_directory(&ctx, shard_dir.clone(), true).await?;
+        // Open / set up the shard lookup. Not scanned on open: the scan prunes shards whose
+        // key expiry has passed, and shards here are stored as CAS stores them, which records
+        // a zero expiry. This directory is a server-side store, not an expiring client cache,
+        // and nothing reads it back through the manager.
+        let shard_manager = ShardFileManager::new_in_session_directory(&ctx, shard_dir.clone(), false).await?;
         #[cfg(feature = "fd-track")]
         report_fd_count("LocalClient::new_internal after shard manager init");
 
@@ -1522,34 +1526,40 @@ impl Client for LocalClient {
         let mut reader = Cursor::new(&shard_data);
         let minimal_shard = MDBMinimalShard::from_reader(&mut reader, true, true)?;
 
-        // Rebuild a full in-memory shard to rebuild the new shard.  Quick and convenient.
-        let mut in_memory_shard = MDBInMemoryShard::default();
+        // Store the shard exactly as CAS does: re-serialize the validated shard through the
+        // streaming serializer and store those bytes under their own hash, discarding the
+        // hash the client sent (see `validate_shard_from_async_read` in cas_server). That
+        // footer stamps a creation timestamp, so re-uploading identical content produces a
+        // distinct object rather than reusing one hash forever.
+        // Verification is kept, where CAS trims it: CAS serves file info from its own
+        // database, which retains verification, while here the stored shard is what file
+        // lookups read, and `gap_verification` is built from it. `serialize` rejects the
+        // request unless every file carries it, so ask only when they all do.
+        let with_verification =
+            (0..minimal_shard.num_files()).all(|i| minimal_shard.file(i).is_some_and(|f| f.contains_verification()));
 
-        // Add file info from the views
-        for i in 0..minimal_shard.num_files() {
-            let file_view = minimal_shard.file(i).unwrap();
-            in_memory_shard.add_file_reconstruction_info(MDBFileInfo::from(file_view))?;
-        }
+        let mut cas_form = Vec::with_capacity(minimal_shard.serialized_size(with_verification));
+        let mut hashed_writer = HashedWrite::new(&mut cas_form);
+        minimal_shard.serialize(&mut hashed_writer, with_verification)?;
+        hashed_writer.flush()?;
+        let shard_hash = hashed_writer.hash();
 
-        // Add XORB info from the views
-        for i in 0..minimal_shard.num_xorb() {
-            let xorb_view = minimal_shard.xorb(i).unwrap();
-            in_memory_shard.add_xorb_block(MDBXorbInfo::from(xorb_view))?;
-        }
+        // Temp name first: two concurrent uploads of the same content must not race on the
+        // final path, and a reader must never observe a partial shard.
+        let shard_path = self.shard_dir.join(shard_file_name(&shard_hash));
+        let tmp_path = shard_path.with_extension(format!("upload_{:x}", rand::random::<u64>()));
+        std::fs::write(&tmp_path, &cas_form)?;
+        std::fs::rename(&tmp_path, &shard_path)?;
 
-        // Write the rebuilt shard to disk (creates proper lookup tables)
-        let shard_path = in_memory_shard.write_to_directory(&self.shard_dir, None)?;
         let shard = MDBShardFile::load_from_file(&shard_path, self.shard_manager.shard_file_cache())?;
-        let shard_hash = shard.shard_hash;
 
         self.shard_manager.register_shards(&[shard]).await?;
 
         // Get global dedup chunks from the minimal shard
         let chunk_hashes = minimal_shard.global_dedup_eligible_chunks();
 
-        // Compute byte ranges for each file entry in the written shard
-        let written_shard_bytes = std::fs::read(&shard_path)?;
-        let file_ranges = file_entry_byte_ranges(&written_shard_bytes)?;
+        // Byte ranges into the stored shard, which is `cas_form` itself.
+        let file_ranges = file_entry_byte_ranges(&cas_form)?;
 
         let shard_hash_redb = RedbHash::from(shard_hash);
         let write_txn = self.db().begin_write().map_err(map_redb_db_error)?;
@@ -1787,7 +1797,7 @@ impl Client for LocalClient {
     ) -> Result<FileChunkHashesResponse> {
         self.apply_api_delay().await;
 
-        let Some((file_info, _)) = self.shard_manager.get_file_reconstruction_info(file_id).await? else {
+        let Some((file_info, _)) = self.get_file_info_from_table(file_id)? else {
             return Err(ClientError::FileNotFound(*file_id));
         };
 
