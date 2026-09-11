@@ -81,6 +81,7 @@ simulation = ["xet-client/simulation"]
 # the platform-native TLS stack instead, depend on this crate with
 # `default-features = false` and enable `native-tls` (or `native-tls-vendored`).
 rustls-tls = ["xet-client/rustls-tls", "xet-data/rustls-tls"]
+rustls-no-provider = ["xet-client/rustls-no-provider", "xet-data/rustls-no-provider"]
 native-tls = ["xet-client/native-tls", "xet-data/native-tls"]
 native-tls-vendored = ["xet-client/native-tls-vendored", "xet-data/native-tls-vendored"]
 elevated_information_level = ["xet-client/elevated_information_level", "xet-runtime/elevated_information_level"]

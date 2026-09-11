@@ -97,6 +97,7 @@ harness = false
 default = ["rustls-tls"]
 # TLS backend for the underlying reqwest client; see the xet-client crate.
 rustls-tls = ["xet-client/rustls-tls"]
+rustls-no-provider = ["xet-client/rustls-no-provider"]
 native-tls = ["xet-client/native-tls"]
 native-tls-vendored = ["xet-client/native-tls-vendored"]
 strict = []
