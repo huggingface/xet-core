@@ -327,7 +327,10 @@ async fn remove_shard_dedup_entries(
         return not_implemented();
     };
     match dc.remove_shard_dedup_entries(&hash).await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Ok(removed) => {
+            let response: Vec<HexMerkleHash> = removed.into_iter().map(HexMerkleHash::from).collect();
+            Json(response).into_response()
+        },
         Err(e) => error_to_response(e),
     }
 }
