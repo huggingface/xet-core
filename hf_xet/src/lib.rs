@@ -8,6 +8,8 @@ mod py_download_stream_handle;
 mod py_file_download_group;
 mod py_file_download_handle;
 mod py_file_upload_handle;
+mod py_range_upload_commit;
+mod py_range_upload_edit;
 mod py_stream_upload_handle;
 mod py_upload_commit;
 mod py_xet_session;
@@ -71,6 +73,8 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<py_upload_commit::PyXetUploadCommit>()?;
     m.add_class::<py_file_upload_handle::PyXetFileUpload>()?;
     m.add_class::<py_stream_upload_handle::PyXetStreamUpload>()?;
+    m.add_class::<py_range_upload_commit::PyXetRangeUploadCommit>()?;
+    m.add_class::<py_range_upload_edit::PyXetRangeUploadEdit>()?;
     m.add_class::<py_file_download_group::PyXetFileDownloadGroup>()?;
     m.add_class::<py_file_download_handle::PyXetFileDownload>()?;
     m.add_class::<py_download_stream_group::PyXetDownloadStreamGroup>()?;
