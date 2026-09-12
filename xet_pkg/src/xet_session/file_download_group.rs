@@ -177,6 +177,11 @@ impl XetFileDownloadGroup {
     /// Cancel all active downloads in this group.
     pub fn abort(&self) -> Result<(), XetError> {
         info!(group_id = %self.id(), "Download group abort");
+        // Report before cancelling. The only other place an abandoned download reports is the
+        // session's `Drop`, and callers that abort are frequently about to destroy the runtime
+        // (`sigint_abort` on Ctrl-C), leaving that `Drop` with nothing to send on. Idempotent, so
+        // the later `Drop` stays a no-op and this does not double-report.
+        self.inner.download_session.finalize_abandoned();
         self.task_runtime.cancel_subtree()?;
         for handle in self.inner.active_tasks.read()?.values() {
             handle.cancel();
@@ -254,15 +259,18 @@ impl XetFileDownloadGroup {
         info!(group_id = %self.id(), "Download group finish");
         let inner = self.inner.clone();
         let download_session = self.inner.download_session.clone();
-        // Not `?` on the bridge: the result is needed to finalize the session before it is
-        // propagated, otherwise a failed download - the case most worth reporting - would return
-        // early and emit nothing.
-        let result = self
+        // Finalize *inside* the bridged future, not after: `enter_finalizing`'s guard only
+        // covers the bridge's duration, so finalizing after it returns would let a concurrent
+        // `sigint_abort` tear the runtime down before the report is sent.
+        let ds = download_session.clone();
+        let downloads = self
             .task_runtime
-            .bridge_async_finalizing("download_finish", false, async move { inner.handle_finish().await })
-            .await;
-        finalize_download_session(&download_session, &result).await;
-        let downloads = result?;
+            .bridge_async_finalizing("download_finish", false, async move {
+                let result = inner.handle_finish().await;
+                finalize_download_session(&ds, &result).await;
+                result
+            })
+            .await?;
         let progress = download_session.report();
         Ok(XetDownloadGroupReport { progress, downloads })
     }
