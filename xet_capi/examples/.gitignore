@@ -1,0 +1,10 @@
+# Built example binaries and downloaded test artifacts
+upload_download
+downloaded.bin
+
+# Go build cache module file (created on first build)
+go/go.sum
+
+# Zig build artifacts
+zig/.zig-cache/
+zig/zig-out/
