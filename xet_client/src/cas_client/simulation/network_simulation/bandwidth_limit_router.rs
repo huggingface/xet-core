@@ -36,6 +36,7 @@ pub struct NetworkSimulationProxy {
     current_network_profile: Mutex<NetworkConfig>,
     total_upload_possible: Arc<AtomicU64>,
     total_download_possible: Arc<AtomicU64>,
+    total_download_transferred: Arc<AtomicU64>,
     shutdown_flag: AtomicBool,
     network_profile_provider: NetworkProfile,
     start_instant: Instant,
@@ -74,6 +75,7 @@ impl NetworkSimulationProxy {
             current_network_profile: Mutex::new(initial),
             total_upload_possible: Arc::new(AtomicU64::new(0)),
             total_download_possible: Arc::new(AtomicU64::new(0)),
+            total_download_transferred: Arc::new(AtomicU64::new(0)),
             shutdown_flag: AtomicBool::new(false),
             network_profile_provider: network_profile,
             start_instant: now,
@@ -190,10 +192,16 @@ impl NetworkSimulationProxy {
         let latency = (profile.latency, profile.jitter);
         let upload_limiter = Arc::clone(&self.upload_limiter);
         let download_limiter = Arc::clone(&self.download_limiter);
+        let download_transferred = Arc::clone(&self.total_download_transferred);
         let to_upstream =
-            tokio::spawn(copy_with_rate_and_latency(client_read, upstream_write, Some(upload_limiter), latency));
-        let from_upstream =
-            tokio::spawn(copy_with_rate_and_latency(upstream_read, client_write, Some(download_limiter), latency));
+            tokio::spawn(copy_with_rate_and_latency(client_read, upstream_write, Some(upload_limiter), latency, None));
+        let from_upstream = tokio::spawn(copy_with_rate_and_latency(
+            upstream_read,
+            client_write,
+            Some(download_limiter),
+            latency,
+            Some(download_transferred),
+        ));
         let (to_res, from_res) = tokio::join!(to_upstream, from_upstream);
         to_res.map_err(std::io::Error::other)??;
         from_res.map_err(std::io::Error::other)??;
@@ -212,6 +220,11 @@ impl NetworkSimulationProxy {
     /// Total bytes that could have been downloaded since proxy start (from refill loop).
     pub fn total_download_bytes_possible(&self) -> u64 {
         self.total_download_possible.load(Ordering::Relaxed)
+    }
+
+    /// Total bytes actually forwarded from the upstream server to clients.
+    pub fn total_download_bytes_transferred(&self) -> u64 {
+        self.total_download_transferred.load(Ordering::Relaxed)
     }
 
     /// Current bandwidth from the current network profile, in bytes per second, or `None` if unlimited.
@@ -240,6 +253,7 @@ async fn copy_with_rate_and_latency<R, W>(
     writer: W,
     limiter: Option<Arc<Semaphore>>,
     latency: (Duration, Duration),
+    transferred: Option<Arc<AtomicU64>>,
 ) -> std::io::Result<u64>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
@@ -248,7 +262,7 @@ where
     let has_latency = latency.0 > Duration::ZERO || latency.1 > Duration::ZERO;
 
     if !has_latency {
-        return copy_bandwidth_only(reader, writer, limiter).await;
+        return copy_bandwidth_only(reader, writer, limiter, transferred).await;
     }
 
     // Pipeline: reader task enqueues (delivery_time, data), current task dequeues and delivers.
@@ -293,6 +307,9 @@ where
         }
         writer.write_all(&chunk).await?;
         total += chunk.len() as u64;
+        if let Some(counter) = &transferred {
+            counter.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+        }
     }
 
     reader_handle.await.map_err(std::io::Error::other)??;
@@ -305,6 +322,7 @@ async fn copy_bandwidth_only<R, W>(
     mut reader: R,
     mut writer: W,
     limiter: Option<Arc<Semaphore>>,
+    transferred: Option<Arc<AtomicU64>>,
 ) -> std::io::Result<u64>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -327,6 +345,9 @@ where
         }
         writer.write_all(&buf[..n]).await?;
         total += n as u64;
+        if let Some(counter) = &transferred {
+            counter.fetch_add(n as u64, Ordering::Relaxed);
+        }
     }
     Ok(total)
 }
