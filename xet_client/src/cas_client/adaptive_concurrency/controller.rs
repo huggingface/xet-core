@@ -870,6 +870,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_near_singular_rtt_fit_does_not_increase_concurrency() {
+        time::pause();
+
+        let controller = AdaptiveConcurrencyController::new_testing(2, (1, 4));
+        let base_size = 32 * 1024 * 1024;
+
+        {
+            let mut state = controller.state.lock().await;
+
+            // Nearly identical transfer sizes with small RTT jitter produce an
+            // unstable negative slope. Extrapolating that fit to the reference
+            // size at the next concurrency level would clamp the RTT to zero.
+            for (offset, duration) in [(0, 1.3), (5, 1.2), (10, 1.1), (15, 1.0)] {
+                let size = base_size + offset;
+                state.rtt_predictor.update(size, Duration::from_secs_f64(duration), 2.0, 1.0);
+                state.update_size_tracking(size);
+                state.update_success(true, 1.0);
+            }
+        }
+
+        advance(Duration::from_millis(INCR_SPACING_MS + 1)).await;
+
+        let _first_permit = controller.acquire_connection_permit().await.unwrap();
+        let permit = controller.acquire_connection_permit().await.unwrap();
+        advance(Duration::from_secs(1)).await;
+        permit.report_completion(base_size + 20, true).await;
+
+        // An unidentifiable fit must not be treated as a zero-RTT prediction and
+        // used to approve an increase from two permits to three.
+        assert_eq!(controller.total_permits(), 2);
+    }
+
+    #[tokio::test]
     async fn test_permit_decrease_on_explicit_failure() {
         time::pause();
 
