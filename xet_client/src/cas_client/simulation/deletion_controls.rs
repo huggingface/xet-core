@@ -36,7 +36,11 @@ pub trait DeletionControlableClient: Send + Sync {
 
     /// Removes all global-dedup table entries contributed by the given shard.
     /// Called by GC Stage 4 before replacing or discarding a shard.
-    async fn remove_shard_dedup_entries(&self, shard_hash: &MerkleHash) -> Result<()>;
+    ///
+    /// Returns the chunk hashes that were removed from the global-dedup table,
+    /// mirroring the production CAS `gc_delete_shard_dedup` endpoint so callers
+    /// can audit the reclaimed dedup keys.
+    async fn remove_shard_dedup_entries(&self, shard_hash: &MerkleHash) -> Result<Vec<MerkleHash>>;
 
     /// Deletes a XORB by hash.
     async fn delete_xorb(&self, hash: &MerkleHash);
