@@ -1491,17 +1491,17 @@ mod tests {
 
     #[test]
     fn test_blocking_upload_round_trip_in_smol() {
-        assert_blocking_upload_round_trip(|fut| smol::block_on(fut));
+        assert_blocking_upload_round_trip(smol::block_on);
     }
 
     #[test]
     fn test_blocking_upload_round_trip_in_futures_executor() {
-        assert_blocking_upload_round_trip(|fut| futures::executor::block_on(fut));
+        assert_blocking_upload_round_trip(futures::executor::block_on);
     }
 
     #[test]
     fn test_blocking_upload_round_trip_in_async_std() {
-        assert_blocking_upload_round_trip(|fut| async_std::task::block_on(fut));
+        assert_blocking_upload_round_trip(async_std::task::block_on);
     }
 
     // ── External-mode _blocking guard ────────────────────────────────────────
