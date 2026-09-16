@@ -358,10 +358,11 @@ impl FileDownloadSession {
     async fn download_file_with_id(&self, file_info: &XetFileInfo, write_path: &Path, id: UniqueId) -> Result<u64> {
         let name = Arc::from(write_path.to_string_lossy().as_ref());
         let progress_updater = self.progress.new_item(id, name);
-        let chunk_layout = Arc::new(ChunkLayout::default());
-        let reconstructor = self
-            .setup_reconstructor(file_info, None, Some(progress_updater))?
-            .with_chunk_layout(chunk_layout.clone());
+        let mut reconstructor = self.setup_reconstructor(file_info, None, Some(progress_updater))?;
+        let chunk_layout = self.ctx.config.data.verify_downloaded_files.then(Arc::<ChunkLayout>::default);
+        if let Some(layout) = &chunk_layout {
+            reconstructor = reconstructor.with_chunk_layout(layout.clone());
+        }
         let n_bytes = reconstructor.reconstruct_to_file(write_path, None, true).await?;
         // Caller is responsible for cleaning up the file on error (consistent
         // with other error paths); see download_group.rs error handling.
@@ -373,13 +374,15 @@ impl FileDownloadSession {
                 actual: n_bytes,
             });
         }
-        let path = write_path.to_path_buf();
-        let expected = file_info.merkle_hash()?;
-        self.ctx
-            .runtime
-            .spawn_blocking(move || verify_written_file(&path, expected, &chunk_layout.chunk_lengths()))
-            .await
-            .map_err(|e| std::io::Error::other(e.to_string()))??;
+        if let Some(layout) = chunk_layout {
+            let path = write_path.to_path_buf();
+            let expected = file_info.merkle_hash()?;
+            self.ctx
+                .runtime
+                .spawn_blocking(move || verify_written_file(&path, expected, &layout.chunk_lengths()))
+                .await
+                .map_err(|e| std::io::Error::other(e.to_string()))??;
+        }
         Ok(n_bytes)
     }
 }
@@ -648,6 +651,37 @@ mod tests {
                 // A download of the same file is refused.
                 let result = session.download_file(&xfi, &temp.path().join("downloaded.bin")).await;
                 assert!(matches!(result, Err(DataError::HashMismatch { .. })), "{result:?}");
+
+                // With the check turned off, the same download goes through as before.
+                let mut config = xet_runtime::config::XetConfig::default();
+                config.data.verify_downloaded_files = false;
+                let ctx = XetContext::with_config(config).unwrap();
+                let session =
+                    FileDownloadSession::new(TranslatorConfig::local_config(&ctx, &cas_path).unwrap().into(), None)
+                        .await
+                        .unwrap();
+                session.download_file(&xfi, &temp.path().join("unchecked.bin")).await.unwrap();
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_download_empty_file_passes_the_check() {
+        let runtime = get_runtime();
+        runtime
+            .bridge_sync(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let xfi = upload_data(&cas_path, b"").await;
+                let ctx = XetContext::default().unwrap();
+                let session =
+                    FileDownloadSession::new(TranslatorConfig::local_config(&ctx, &cas_path).unwrap().into(), None)
+                        .await
+                        .unwrap();
+                let out_path = temp.path().join("empty.bin");
+                let (_id, n_bytes) = session.download_file(&xfi, &out_path).await.unwrap();
+                assert_eq!(n_bytes, 0);
+                assert_eq!(read(&out_path).unwrap(), b"");
             })
             .unwrap();
     }

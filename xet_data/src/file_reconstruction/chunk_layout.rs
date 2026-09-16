@@ -29,14 +29,15 @@ impl ChunkLayout {
         }
     }
 
-    /// Returns the chunk lengths in file order.
+    /// Returns the chunk lengths in file order, and clears the record; call it once.
     ///
     /// Terms can finish in any order, and a fetch batch can begin part way into a chunk that
-    /// the previous batch also delivered, so chunks are ordered by offset and kept once each.
+    /// the previous batch also delivered, so chunks are ordered and each (offset, length) is kept
+    /// once. Comparing the length as well keeps an empty chunk distinct from the chunk after it.
     pub fn chunk_lengths(&self) -> Vec<u64> {
         let mut chunks = std::mem::take(&mut *self.chunks.lock().expect("ChunkLayout mutex poisoned"));
-        chunks.sort_unstable_by_key(|(offset, _)| *offset);
-        chunks.dedup_by_key(|(offset, _)| *offset);
+        chunks.sort_unstable();
+        chunks.dedup();
         chunks.into_iter().map(|(_, len)| len).collect()
     }
 }
@@ -61,6 +62,19 @@ mod tests {
         layout.record(30, 2, 1, &block());
         layout.record(0, 0, 2, &block());
         assert_eq!(layout.chunk_lengths(), vec![10, 20, 30]);
+    }
+
+    #[test]
+    fn test_an_empty_chunk_is_not_merged_with_the_next() {
+        // Chunks of 0, 10 and 20 bytes: the first two start at the same offset.
+        let block = XorbBlockData {
+            chunk_offsets: vec![(0, 0), (1, 0), (2, 10)],
+            data: Bytes::from(vec![0u8; 30]),
+        };
+        let layout = ChunkLayout::default();
+        layout.record(0, 0, 3, &block);
+        layout.record(0, 0, 2, &block);
+        assert_eq!(layout.chunk_lengths(), vec![0, 10, 20]);
     }
 
     #[test]

@@ -91,9 +91,10 @@ pub fn error_class(error: &DataError) -> &'static str {
     match error {
         DataError::AuthError(_) => "auth",
         DataError::IOError(_) => "io",
-        DataError::FormatError(_) | DataError::HashStringParsingFailure(_) | DataError::FileNotCleanedError(_) => {
-            "format"
-        },
+        DataError::FormatError(_)
+        | DataError::HashStringParsingFailure(_)
+        | DataError::HashMismatch { .. }
+        | DataError::FileNotCleanedError(_) => "format",
         DataError::HashNotFound => "not_found",
         DataError::RuntimeError(RuntimeError::TaskCanceled(_) | RuntimeError::KeyboardInterrupt) => "cancelled",
         DataError::RuntimeError(_) => "internal",
@@ -144,6 +145,13 @@ mod tests {
         assert_eq!(error_class(&DataError::IOError(IoError::other("x"))), "io");
         assert_eq!(error_class(&DataError::InternalError("x".into())), "internal");
         assert_eq!(error_class(&DataError::HashNotFound), "not_found");
+        assert_eq!(
+            error_class(&DataError::HashMismatch {
+                expected: "a".into(),
+                actual: "b".into()
+            }),
+            "format"
+        );
         assert_eq!(error_class(&DataError::InvalidOperation("x".into())), "internal");
         assert_eq!(error_class(&DataError::ParameterError("x".into())), "other");
         assert_eq!(

@@ -115,4 +115,13 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_DATA_STAGING_SUBDIR` to set this value.
     ref staging_subdir: String = "staging".to_string();
 
+    /// Whether to check each fully downloaded file against its hash once it is written.
+    /// Turning this off skips the extra read of the finished file; it is meant as an escape hatch
+    /// if the check ever refuses files it should accept.
+    ///
+    /// The default value is true.
+    ///
+    /// Use the environment variable `HF_XET_DATA_VERIFY_DOWNLOADED_FILES` to set this value.
+    ref verify_downloaded_files: bool = true;
+
 });
