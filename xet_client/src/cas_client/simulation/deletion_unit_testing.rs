@@ -13,7 +13,7 @@ use std::sync::Arc;
 use xet_core_structures::merklehash::MerkleHash;
 
 use super::client_testing_utils::RandomFileContents;
-use super::deletion_controls::ObjectTag;
+use super::deletion_controls::ObjectETag;
 use super::{ClientTestingUtils, DeletionControlableClient, DirectAccessClient};
 
 /// Runs all common DeletionControlableClient tests using a factory that creates fresh clients.
@@ -340,19 +340,19 @@ async fn test_verify_integrity_after_file_deletion<C: DirectAccessClient + Delet
     client.verify_integrity().await.unwrap();
 }
 
-/// Tests that list_xorbs_and_tags returns entries matching list_xorbs with non-zero tags.
+/// Tests that list_xorbs_and_etags returns entries matching list_xorbs with non-zero tags.
 async fn test_list_xorbs_and_tags<C: DirectAccessClient + DeletionControlableClient + 'static>(client: Arc<C>) {
-    assert!(client.list_xorbs_and_tags().await.unwrap().is_empty());
+    assert!(client.list_xorbs_and_etags().await.unwrap().is_empty());
 
     let file = client.upload_random_file(&[(1, (0, 3))], 2048).await.unwrap();
     let expected_xorbs = expected_xorb_hashes(&[&file]);
 
-    let xorbs_and_tags = client.list_xorbs_and_tags().await.unwrap();
-    let listed_hashes: HashSet<MerkleHash> = xorbs_and_tags.iter().map(|(h, _)| *h).collect();
+    let xorbs_and_etags = client.list_xorbs_and_etags().await.unwrap();
+    let listed_hashes: HashSet<MerkleHash> = xorbs_and_etags.iter().map(|(h, _)| *h).collect();
     assert_eq!(listed_hashes, expected_xorbs);
 
-    let zero_tag: ObjectTag = [0u8; 32];
-    for (_, tag) in &xorbs_and_tags {
+    let zero_tag: ObjectETag = [0u8; 32];
+    for (_, tag) in &xorbs_and_etags {
         assert_ne!(tag, &zero_tag, "Tag should be non-zero");
     }
 }
@@ -362,32 +362,32 @@ async fn test_delete_xorb_if_tag_matches<C: DirectAccessClient + DeletionControl
     let file = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
     let xorb_hash = file.terms[0].xorb_hash;
 
-    let xorbs_and_tags = client.list_xorbs_and_tags().await.unwrap();
-    let (_, correct_tag) = xorbs_and_tags.iter().find(|(h, _)| *h == xorb_hash).unwrap();
+    let xorbs_and_etags = client.list_xorbs_and_etags().await.unwrap();
+    let (_, correct_tag) = xorbs_and_etags.iter().find(|(h, _)| *h == xorb_hash).unwrap();
 
-    let wrong_tag: ObjectTag = [0xFFu8; 32];
-    let deleted = client.delete_xorb_if_tag_matches(&xorb_hash, &wrong_tag).await.unwrap();
+    let wrong_tag: ObjectETag = [0xFFu8; 32];
+    let deleted = client.delete_xorb_if_etag_matches(&xorb_hash, &wrong_tag).await.unwrap();
     assert!(!deleted, "Wrong tag should not delete the xorb");
     assert!(client.xorb_exists(&xorb_hash).await.unwrap(), "Xorb should still exist after wrong tag");
 
-    let deleted = client.delete_xorb_if_tag_matches(&xorb_hash, correct_tag).await.unwrap();
+    let deleted = client.delete_xorb_if_etag_matches(&xorb_hash, correct_tag).await.unwrap();
     assert!(deleted, "Correct tag should delete the xorb");
     assert!(!client.xorb_exists(&xorb_hash).await.unwrap(), "Xorb should be gone after correct tag");
 }
 
-/// Tests that list_shards_with_tags returns entries matching list_shard_entries with non-zero tags.
+/// Tests that list_shards_with_etags returns entries matching list_shard_entries with non-zero tags.
 async fn test_list_shards_with_tags<C: DirectAccessClient + DeletionControlableClient + 'static>(client: Arc<C>) {
-    assert!(client.list_shards_with_tags().await.unwrap().is_empty());
+    assert!(client.list_shards_with_etags().await.unwrap().is_empty());
 
     client.upload_random_file(&[(1, (0, 3))], 2048).await.unwrap();
 
-    let shards_and_tags = client.list_shards_with_tags().await.unwrap();
+    let shards_and_tags = client.list_shards_with_etags().await.unwrap();
     let shard_entries = client.list_shard_entries().await.unwrap();
     let listed_hashes: HashSet<MerkleHash> = shards_and_tags.iter().map(|(h, _)| *h).collect();
     let expected_hashes: HashSet<MerkleHash> = shard_entries.into_iter().collect();
     assert_eq!(listed_hashes, expected_hashes);
 
-    let zero_tag: ObjectTag = [0u8; 32];
+    let zero_tag: ObjectETag = [0u8; 32];
     for (_, tag) in &shards_and_tags {
         assert_ne!(tag, &zero_tag, "Tag should be non-zero");
     }
@@ -397,16 +397,16 @@ async fn test_list_shards_with_tags<C: DirectAccessClient + DeletionControlableC
 async fn test_delete_shard_if_tag_matches<C: DirectAccessClient + DeletionControlableClient + 'static>(client: Arc<C>) {
     let _file = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
 
-    let shards_and_tags = client.list_shards_with_tags().await.unwrap();
+    let shards_and_tags = client.list_shards_with_etags().await.unwrap();
     assert!(!shards_and_tags.is_empty());
     let (shard_hash, correct_tag) = &shards_and_tags[0];
 
-    let wrong_tag: ObjectTag = [0xFFu8; 32];
-    let deleted = client.delete_shard_if_tag_matches(shard_hash, &wrong_tag).await.unwrap();
-    assert!(!deleted, "Wrong tag should not delete the shard");
-    assert!(!client.list_shard_entries().await.unwrap().is_empty(), "Shard should still exist after wrong tag");
+    let wrong_tag: ObjectETag = [0xFFu8; 32];
+    let deleted = client.delete_shard_if_etag_matches(shard_hash, &wrong_tag).await.unwrap();
+    assert!(!deleted, "Wrong etag should not delete the shard");
+    assert!(!client.list_shard_entries().await.unwrap().is_empty(), "Shard should still exist after wrong etag");
 
-    let deleted = client.delete_shard_if_tag_matches(shard_hash, correct_tag).await.unwrap();
-    assert!(deleted, "Correct tag should delete the shard");
-    assert!(client.list_shard_entries().await.unwrap().is_empty(), "Shard should be gone after correct tag");
+    let deleted = client.delete_shard_if_etag_matches(shard_hash, correct_tag).await.unwrap();
+    assert!(deleted, "Correct etag should delete the shard");
+    assert!(client.list_shard_entries().await.unwrap().is_empty(), "Shard should be gone after correct etag");
 }
