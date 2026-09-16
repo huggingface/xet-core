@@ -378,26 +378,41 @@ impl LocalClient {
     /// Path of a xorb's S3-style tag set: `<canonical>.tagset`, holding JSON.
     /// A sidecar so writing tags cannot disturb the bytes the [`ObjectETag`] is
     /// derived from.
+    /// Writes a tag set through a temp file and a rename. Readers of this path are
+    /// uncoordinated, so truncating in place would let one observe a half-written set.
+    fn write_tag_set_file(path: &Path, tags: &ObjectTagSet) -> Result<()> {
+        let raw = serde_json::to_vec(tags).map_err(|e| ClientError::Other(format!("serialize tag set: {e}")))?;
+        #[cfg(windows)]
+        if path.exists() {
+            Self::clear_readonly(path);
+        }
+        let mut file = SafeFileCreator::replace_existing(path)?;
+        file.write_all(&raw)?;
+        file.close()?;
+        Ok(())
+    }
+
+    /// Moves a xorb's tag-set sidecar out of the namespace, returning the path it was
+    /// claimed at. Deletes operate only on what they claimed this way, so a sidecar a
+    /// concurrent upload writes afterwards is never unlinked by them.
+    fn claim_tag_set_xorb(&self, hash: &MerkleHash) -> Option<PathBuf> {
+        let path = self.tag_set_xorb_path(hash);
+        let mut claimed = path.clone().into_os_string();
+        claimed.push(format!(".gc_del_{:x}", rand::random::<u64>()));
+        let claimed = PathBuf::from(claimed);
+
+        #[cfg(windows)]
+        if path.exists() {
+            Self::clear_readonly(&path);
+        }
+        std::fs::rename(&path, &claimed).ok().map(|()| claimed)
+    }
+
     fn tag_set_xorb_path(&self, hash: &MerkleHash) -> PathBuf {
         let canonical = self.get_path_for_entry(hash);
         let mut name = canonical.into_os_string();
         name.push(".tagset");
         PathBuf::from(name)
-    }
-
-    /// Drops a xorb's tag-set sidecar. Called from every path that removes the
-    /// object or condemns it: a hard delete takes the tags with it, and GC's
-    /// `gc-delete` write replaces the whole set, dropping `last-upload` either
-    /// way. Leaving the sidecar behind would orphan it on disk, and let a later
-    /// upload of the same hash inherit tags from the object that used to live
-    /// there.
-    fn clear_tag_set_xorb(&self, hash: &MerkleHash) {
-        let path = self.tag_set_xorb_path(hash);
-        #[cfg(windows)]
-        if path.exists() {
-            Self::clear_readonly(&path);
-        }
-        let _ = std::fs::remove_file(path);
     }
 
     /// Path used to park a tagged-for-deletion shard: `<hex>.mdb.gctag`.
@@ -1008,6 +1023,12 @@ impl super::DeletionControlableClient for LocalClient {
     async fn delete_xorb(&self, hash: &MerkleHash) {
         let file_path = self.get_path_for_entry(hash);
 
+        // Claim the sidecar before touching the data, then unlink only what was claimed, so
+        // a tag set written by an upload that overtakes this delete survives. The data race
+        // itself is inherent to an unconditional delete, as it is for S3 DeleteObject
+        // against PutObject; `delete_xorb_if_etag_matches` is the guarded path.
+        let claimed_tag_set = self.claim_tag_set_xorb(hash);
+
         #[cfg(windows)]
         Self::clear_readonly(&file_path);
 
@@ -1019,7 +1040,10 @@ impl super::DeletionControlableClient for LocalClient {
         } else {
             let _ = std::fs::remove_file(file_path);
         }
-        self.clear_tag_set_xorb(hash);
+
+        if let Some(claimed) = claimed_tag_set {
+            let _ = std::fs::remove_file(claimed);
+        }
     }
 
     async fn list_xorbs_and_etags(&self) -> Result<Vec<(MerkleHash, ObjectETag)>> {
@@ -1052,15 +1076,27 @@ impl super::DeletionControlableClient for LocalClient {
             return Err(ClientError::XORBNotFound(*hash));
         }
 
+        // Claim the sidecar the same way, and put it back on every path that backs out.
+        // An upload that overtakes this delete rewrites both canonical paths, and neither
+        // of those is what gets unlinked below.
+        let claimed_tag_set = self.claim_tag_set_xorb(hash);
+        let restore = |claimed: &Option<PathBuf>| {
+            if let Some(claimed) = claimed {
+                Self::restore_from_tmp(claimed, &self.tag_set_xorb_path(hash));
+            }
+        };
+
         let current_etag = match Self::object_etag_for(b"xorb", hash, &tmp_path) {
             Ok(t) => t,
             Err(e) => {
+                restore(&claimed_tag_set);
                 Self::restore_from_tmp(&tmp_path, &file_path);
                 return Err(e);
             },
         };
 
         if &current_etag != etag {
+            restore(&claimed_tag_set);
             Self::restore_from_tmp(&tmp_path, &file_path);
             return Ok(false);
         }
@@ -1076,7 +1112,10 @@ impl super::DeletionControlableClient for LocalClient {
         } else {
             std::fs::remove_file(&tmp_path)?;
         }
-        self.clear_tag_set_xorb(hash);
+
+        if let Some(claimed) = claimed_tag_set {
+            let _ = std::fs::remove_file(claimed);
+        }
         Ok(true)
     }
 
@@ -1097,18 +1136,7 @@ impl super::DeletionControlableClient for LocalClient {
         if !self.get_path_for_entry(hash).exists() {
             return Err(ClientError::Other(format!("XORB not found: {}", hash.hex())));
         }
-        let path = self.tag_set_xorb_path(hash);
-        let raw = serde_json::to_vec(&tags).map_err(|e| ClientError::Other(format!("serialize tag set: {e}")))?;
-        #[cfg(windows)]
-        if path.exists() {
-            Self::clear_readonly(&path);
-        }
-        // Temp file plus rename: `get_xorb_tag_set` reads this path without coordination,
-        // so a truncate-in-place write would let it observe a half-written tag set.
-        let mut file = SafeFileCreator::replace_existing(&path)?;
-        file.write_all(&raw)?;
-        file.close()?;
-        Ok(())
+        Self::write_tag_set_file(&self.tag_set_xorb_path(hash), &tags)
     }
 
     async fn list_shards_with_etags(&self) -> Result<Vec<(MerkleHash, ObjectETag)>> {
@@ -1725,17 +1753,8 @@ impl Client for LocalClient {
         // the whole tag set, so the stamp both records this write and clears
         // whatever was there.
         let tag_set_path = self.tag_set_xorb_path(&hash);
-        match serde_json::to_vec(&last_upload_tag_set_now()) {
-            Ok(raw) => {
-                #[cfg(windows)]
-                if tag_set_path.exists() {
-                    Self::clear_readonly(&tag_set_path);
-                }
-                if let Err(e) = std::fs::write(&tag_set_path, raw) {
-                    warn!("failed to stamp last-upload tag at {}: {e}", tag_set_path.display());
-                }
-            },
-            Err(e) => warn!("failed to serialize last-upload tag set: {e}"),
+        if let Err(e) = Self::write_tag_set_file(&tag_set_path, &last_upload_tag_set_now()) {
+            warn!("failed to stamp last-upload tag at {}: {e}", tag_set_path.display());
         }
 
         info!("{file_path:?} successfully written with {bytes_written} bytes.");

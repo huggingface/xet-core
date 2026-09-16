@@ -54,10 +54,27 @@ enum XorbStorage {
     Random { xorb: RandomXorb },
 }
 
+/// A XORB's bytes and its lifecycle metadata, kept under a single lock.
+///
+/// These were three locks. A delete has to remove the object and drop its tag set
+/// indivisibly, or an upload interleaving between the two loses its `last-upload` stamp,
+/// and holding three locks made correctness depend on every call site acquiring them in
+/// the same order. One lock removes both hazards.
+struct XorbState {
+    /// XORBs stored by hash.
+    xorbs: MerkleHashMap<XorbStorage>,
+    /// XORB hashes currently tagged for lifecycle deletion. Data is retained
+    /// in `xorbs` so a re-upload can clear the tag.
+    tagged: HashSet<MerkleHash>,
+    /// S3-style tag sets per XORB.
+    #[cfg(not(target_family = "wasm"))]
+    tag_sets: MerkleHashMap<ObjectTagSet>,
+}
+
 /// In-memory client for testing purposes. Stores all data in memory using hash tables.
 pub struct MemoryClient {
-    /// XORBs stored by hash
-    xorbs: RwLock<MerkleHashMap<XorbStorage>>,
+    /// XORB bytes and their lifecycle metadata, under one lock (see [`XorbState`]).
+    xorb_state: RwLock<XorbState>,
     /// In-memory shard for file reconstruction info
     shard: RwLock<MDBInMemoryShard>,
     /// Global dedup lookup: chunk_hash -> shard bytes
@@ -82,23 +99,21 @@ pub struct MemoryClient {
     /// hash clears the tag (matching S3 PutObject overwriting a tagged
     /// object). Off by default; opt in via [`Self::set_lifecycle_tag_deletion`].
     lifecycle_tag_deletion: AtomicBool,
-    /// XORB hashes currently tagged for lifecycle deletion. Data is retained
-    /// in `xorbs` so a re-upload can clear the tag.
-    gc_tagged_xorbs: RwLock<HashSet<MerkleHash>>,
     /// Shard hash currently tagged for lifecycle deletion. Shard data is
     /// retained in `shard` so a re-upload can clear the tag.
     gc_tagged_shard: RwLock<Option<MerkleHash>>,
-    /// S3-style tag sets per XORB. Held separately from `xorbs` so writing one
-    /// cannot perturb the bytes the [`ObjectETag`] is derived from.
-    #[cfg(not(target_family = "wasm"))]
-    xorb_tag_sets: RwLock<MerkleHashMap<ObjectTagSet>>,
 }
 
 impl MemoryClient {
     /// Create a new in-memory client.
     pub fn new(ctx: XetContext) -> Arc<Self> {
         Arc::new(Self {
-            xorbs: RwLock::new(MerkleHashMap::new()),
+            xorb_state: RwLock::new(XorbState {
+                xorbs: MerkleHashMap::new(),
+                tagged: HashSet::new(),
+                #[cfg(not(target_family = "wasm"))]
+                tag_sets: MerkleHashMap::new(),
+            }),
             shard: RwLock::new(MDBInMemoryShard::default()),
             global_dedup: RwLock::new(MerkleHashMap::new()),
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload(ctx, "memory_uploads"),
@@ -108,10 +123,7 @@ impl MemoryClient {
             max_ranges_per_fetch: AtomicUsize::new(usize::MAX),
             v2_disabled_status: AtomicU16::new(0),
             lifecycle_tag_deletion: AtomicBool::new(false),
-            gc_tagged_xorbs: RwLock::new(HashSet::new()),
             gc_tagged_shard: RwLock::new(None),
-            #[cfg(not(target_family = "wasm"))]
-            xorb_tag_sets: RwLock::new(MerkleHashMap::new()),
         })
     }
 
@@ -125,7 +137,7 @@ impl MemoryClient {
     }
 
     async fn xorb_is_tagged(&self, hash: &MerkleHash) -> bool {
-        self.gc_tagged_xorbs.read().await.contains(hash)
+        self.xorb_state.read().await.tagged.contains(hash)
     }
 
     /// Errors unless the xorb is present and not condemned. A lifecycle-tagged
@@ -133,7 +145,7 @@ impl MemoryClient {
     /// because the canonical file has been renamed away.
     #[cfg(not(target_family = "wasm"))]
     async fn require_readable_xorb(&self, hash: &MerkleHash) -> Result<()> {
-        if !self.xorbs.read().await.contains_key(hash) || self.xorb_is_tagged(hash).await {
+        if !self.xorb_state.read().await.xorbs.contains_key(hash) || self.xorb_is_tagged(hash).await {
             return Err(ClientError::Other(format!("XORB not found: {}", hash.hex())));
         }
         Ok(())
@@ -186,7 +198,7 @@ impl MemoryClient {
             shard.add_xorb_block(cas_info)?;
         }
 
-        self.xorbs.write().await.insert(hash, XorbStorage::Random { xorb });
+        self.xorb_state.write().await.xorbs.insert(hash, XorbStorage::Random { xorb });
         Ok(hash)
     }
 
@@ -383,22 +395,16 @@ impl DirectAccessClient for MemoryClient {
     }
 
     async fn list_xorbs(&self) -> Result<Vec<MerkleHash>> {
-        let tagged = self.gc_tagged_xorbs.read().await;
-        Ok(self
-            .xorbs
-            .read()
-            .await
-            .keys()
-            .copied()
-            .filter(|h| !tagged.contains(h))
-            .collect())
+        let state = self.xorb_state.read().await;
+        Ok(state.xorbs.keys().copied().filter(|h| !state.tagged.contains(h)).collect())
     }
 
     async fn get_full_xorb(&self, hash: &MerkleHash) -> Result<Bytes> {
         if self.xorb_is_tagged(hash).await {
             return Err(ClientError::XORBNotFound(*hash));
         }
-        let xorbs = self.xorbs.read().await;
+        let state = self.xorb_state.read().await;
+        let xorbs = &state.xorbs;
         let storage = xorbs.get(hash).ok_or_else(|| {
             error!("Unable to find xorb in memory CAS {:?}", hash);
             ClientError::XORBNotFound(*hash)
@@ -425,7 +431,8 @@ impl DirectAccessClient for MemoryClient {
             return Ok(vec![Bytes::new()]);
         }
 
-        let xorbs = self.xorbs.read().await;
+        let state = self.xorb_state.read().await;
+        let xorbs = &state.xorbs;
         let storage = xorbs.get(hash).ok_or_else(|| {
             error!("Unable to find xorb in memory CAS {:?}", hash);
             ClientError::XORBNotFound(*hash)
@@ -474,14 +481,15 @@ impl DirectAccessClient for MemoryClient {
         if self.xorb_is_tagged(hash).await {
             return Ok(false);
         }
-        Ok(self.xorbs.read().await.contains_key(hash))
+        Ok(self.xorb_state.read().await.xorbs.contains_key(hash))
     }
 
     async fn xorb_footer(&self, hash: &MerkleHash) -> Result<XorbObject> {
         if self.xorb_is_tagged(hash).await {
             return Err(ClientError::XORBNotFound(*hash));
         }
-        let xorbs = self.xorbs.read().await;
+        let state = self.xorb_state.read().await;
+        let xorbs = &state.xorbs;
         let storage = xorbs.get(hash).ok_or_else(|| {
             error!("Unable to find xorb in memory CAS {:?}", hash);
             ClientError::XORBNotFound(*hash)
@@ -561,7 +569,8 @@ impl DirectAccessClient for MemoryClient {
         if self.xorb_is_tagged(hash).await {
             return Err(ClientError::XORBNotFound(*hash));
         }
-        let xorbs = self.xorbs.read().await;
+        let state = self.xorb_state.read().await;
+        let xorbs = &state.xorbs;
         let storage = xorbs.get(hash).ok_or(ClientError::XORBNotFound(*hash))?;
 
         match storage {
@@ -599,7 +608,8 @@ impl DirectAccessClient for MemoryClient {
         if self.xorb_is_tagged(hash).await {
             return Err(ClientError::XORBNotFound(*hash));
         }
-        let xorbs = self.xorbs.read().await;
+        let state = self.xorb_state.read().await;
+        let xorbs = &state.xorbs;
         let storage = xorbs.get(hash).ok_or(ClientError::XORBNotFound(*hash))?;
 
         match storage {
@@ -638,7 +648,8 @@ impl DirectAccessClient for MemoryClient {
             return Err(ClientError::XORBNotFound(xorb_hash));
         }
 
-        let xorbs = self.xorbs.read().await;
+        let state = self.xorb_state.read().await;
+        let xorbs = &state.xorbs;
         let storage = xorbs.get(&xorb_hash).ok_or_else(|| {
             error!("Unable to find xorb in memory CAS {:?}", hash);
             ClientError::XORBNotFound(hash)
@@ -696,8 +707,8 @@ impl MemoryClient {
         // Snapshot the tagged set so the sync closure can refuse tagged xorbs
         // without an async lock acquire — a lifecycle-tagged xorb must appear
         // "gone" to reconstruction, matching get_full_xorb.
-        let tagged = self.gc_tagged_xorbs.read().await.clone();
-        let xorbs = self.xorbs.read().await;
+        let state = self.xorb_state.read().await;
+        let (tagged, xorbs) = (&state.tagged, &state.xorbs);
         xorb_utils::compute_reconstruction_ranges(&file_info, bytes_range, &mut |hash| {
             if tagged.contains(hash) {
                 return Err(ClientError::XORBNotFound(*hash));
@@ -952,10 +963,11 @@ impl Client for MemoryClient {
             // a delete interleaving between them would erase the tag of the xorb this call
             // just wrote. Locks are taken tagged-before-xorbs everywhere, so readers that
             // hold both cannot deadlock against this.
-            let mut tagged = self.gc_tagged_xorbs.write().await;
-            let mut xorbs = self.xorbs.write().await;
+            let mut state = self.xorb_state.write().await;
+            let state = &mut *state;
+            let (xorbs, tagged) = (&mut state.xorbs, &mut state.tagged);
             #[cfg(not(target_family = "wasm"))]
-            let mut tag_sets = self.xorb_tag_sets.write().await;
+            let tag_sets = &mut state.tag_sets;
 
             xorbs.insert(
                 hash,
@@ -1042,7 +1054,8 @@ impl Client for MemoryClient {
             return Err(ClientError::XORBNotFound(xorb_hash));
         }
 
-        let xorbs = self.xorbs.read().await;
+        let state = self.xorb_state.read().await;
+        let xorbs = &state.xorbs;
         let storage = xorbs.get(&xorb_hash).ok_or(ClientError::XORBNotFound(xorb_hash))?;
 
         // Extract each byte range from the serialized data and deserialize
@@ -1106,8 +1119,8 @@ impl Client for MemoryClient {
 
         // Snapshot tagged xorbs so a lifecycle-tagged xorb appears "gone" and
         // is surfaced as XORBNotFound, matching get_xorb_ranges.
-        let tagged = self.gc_tagged_xorbs.read().await.clone();
-        let xorbs = self.xorbs.read().await;
+        let state = self.xorb_state.read().await;
+        let (tagged, xorbs) = (&state.tagged, &state.xorbs);
         let mut chunks: Vec<(MerkleHash, u64)> = Vec::new();
         for segment in &file_info.segments {
             if tagged.contains(&segment.xorb_hash) {
@@ -1216,10 +1229,11 @@ impl super::DeletionControlableClient for MemoryClient {
     async fn delete_xorb(&self, hash: &MerkleHash) {
         // Removal and tag clear under one critical section, so a concurrent upload cannot
         // land between them and have its fresh `last-upload` stamp erased by this delete.
-        let mut tagged = self.gc_tagged_xorbs.write().await;
-        let mut xorbs = self.xorbs.write().await;
+        let mut state = self.xorb_state.write().await;
+        let state = &mut *state;
+        let (xorbs, tagged) = (&mut state.xorbs, &mut state.tagged);
         #[cfg(not(target_family = "wasm"))]
-        let mut tag_sets = self.xorb_tag_sets.write().await;
+        let tag_sets = &mut state.tag_sets;
 
         if self.lifecycle_tag_deletion_enabled() {
             tagged.insert(*hash);
@@ -1231,8 +1245,8 @@ impl super::DeletionControlableClient for MemoryClient {
     }
 
     async fn list_xorbs_and_etags(&self) -> Result<Vec<(MerkleHash, ObjectETag)>> {
-        let tagged = self.gc_tagged_xorbs.read().await;
-        let xorbs = self.xorbs.read().await;
+        let state = self.xorb_state.read().await;
+        let (tagged, xorbs) = (&state.tagged, &state.xorbs);
         Ok(xorbs
             .iter()
             .filter(|(hash, _)| !tagged.contains(hash))
@@ -1244,10 +1258,11 @@ impl super::DeletionControlableClient for MemoryClient {
         // The etag comparison and the delete share one critical section. Dropping the lock
         // between them would let a re-upload slip in and be deleted on the strength of the
         // etag it no longer has, which is the very thing this guard exists to prevent.
-        let mut tagged = self.gc_tagged_xorbs.write().await;
-        let mut xorbs = self.xorbs.write().await;
+        let mut state = self.xorb_state.write().await;
+        let state = &mut *state;
+        let (xorbs, tagged) = (&mut state.xorbs, &mut state.tagged);
         #[cfg(not(target_family = "wasm"))]
-        let mut tag_sets = self.xorb_tag_sets.write().await;
+        let tag_sets = &mut state.tag_sets;
 
         let current_etag = {
             let Some(storage) = xorbs.get(hash) else {
@@ -1271,12 +1286,12 @@ impl super::DeletionControlableClient for MemoryClient {
 
     async fn get_xorb_tag_set(&self, hash: &MerkleHash) -> Result<ObjectTagSet> {
         self.require_readable_xorb(hash).await?;
-        Ok(self.xorb_tag_sets.read().await.get(hash).cloned().unwrap_or_default())
+        Ok(self.xorb_state.read().await.tag_sets.get(hash).cloned().unwrap_or_default())
     }
 
     async fn set_xorb_tag_set(&self, hash: &MerkleHash, tags: ObjectTagSet) -> Result<()> {
         self.require_readable_xorb(hash).await?;
-        self.xorb_tag_sets.write().await.insert(*hash, tags);
+        self.xorb_state.write().await.tag_sets.insert(*hash, tags);
         Ok(())
     }
 
@@ -1316,8 +1331,8 @@ impl super::DeletionControlableClient for MemoryClient {
     }
 
     async fn verify_integrity(&self) -> Result<()> {
-        let tagged = self.gc_tagged_xorbs.read().await;
-        let xorbs = self.xorbs.read().await;
+        let state = self.xorb_state.read().await;
+        let (tagged, xorbs) = (&state.tagged, &state.xorbs);
         let shard = self.shard.read().await;
         // Files living in a lifecycle-tagged shard are "gone" from the
         // namespace (list APIs hide them too), so do not walk their
@@ -1660,7 +1675,7 @@ mod tests {
         client.delete_xorb(&xorb_hash).await;
 
         // Hard-deleted: data is gone.
-        assert!(client.xorbs.read().await.get(&xorb_hash).is_none());
+        assert!(client.xorb_state.read().await.xorbs.get(&xorb_hash).is_none());
     }
 
     /// Tag sets round-trip, replace wholesale on the next write, and leave the
@@ -1728,7 +1743,7 @@ mod tests {
         // xorb, so the leak is invisible through the public surface, and a
         // re-upload would mask it by replacing the entry wholesale.
         assert!(
-            !client.xorb_tag_sets.read().await.contains_key(&xorb_hash),
+            !client.xorb_state.read().await.tag_sets.contains_key(&xorb_hash),
             "the tag set outlived the xorb it belonged to"
         );
 
