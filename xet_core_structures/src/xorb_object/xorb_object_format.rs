@@ -57,6 +57,18 @@ fn prealloc_num_chunks(declared_size: usize) -> usize {
     declared_size.min(average_num_chunks_per_xorb * 9 / 8)
 }
 
+/// Allocates a buffer without zero-filling it. Only sound when the caller immediately hands
+/// the whole buffer to a full `read_exact` (or equivalent) that either writes every byte or
+/// returns an error before the buffer is read from.
+#[allow(clippy::uninit_vec)]
+fn alloc_uninit(len: usize) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(len);
+    // SAFETY: `u8` has no invalid bit patterns, and callers only read `buf` after a
+    // successful full read fills all `len` bytes.
+    unsafe { buf.set_len(len) };
+    buf
+}
+
 #[derive(Clone, PartialEq, Eq, Debug, Serialize)]
 /// Info struct for [XorbObject]. This is stored at the end of the XORB.
 /// DO NOT USE in any new code
@@ -1215,8 +1227,9 @@ impl XorbObject {
         // make sure the end of the range is within the bounds of the xorb
         let end = min(byte_end, self.get_contents_length()?);
 
-        // read chunk bytes
-        let mut chunk_data = vec![0u8; (end - byte_start) as usize];
+        // read chunk bytes. Skipping the zero-fill is sound: `read_exact` below either
+        // writes every byte of `chunk_data` or returns an error before it is read.
+        let mut chunk_data = alloc_uninit((end - byte_start) as usize);
         reader.seek(SeekFrom::Start(byte_start as u64))?;
         reader.read_exact(&mut chunk_data)?;
 
@@ -1763,7 +1776,9 @@ pub fn reconstruct_xorb_with_footer(
         };
 
         let compressed_len = chunk_header.get_compressed_length() as usize;
-        let mut compressed_buf = vec![0u8; compressed_len];
+        // Skipping the zero-fill is sound: `read_exact` below either writes every byte of
+        // `compressed_buf` or returns an error before it is read.
+        let mut compressed_buf = alloc_uninit(compressed_len);
         reader
             .read_exact(&mut compressed_buf)
             .map_err(|e| CoreError::MalformedData(format!("Failed to read chunk data: {e}")))?;

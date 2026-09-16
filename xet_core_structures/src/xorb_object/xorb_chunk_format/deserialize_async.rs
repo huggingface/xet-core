@@ -22,12 +22,24 @@ pub async fn deserialize_chunk_to_writer<R: AsyncRead + Unpin, W: Write>(
     deserialize_chunk_with_header_to_writer(reader, writer, header).await
 }
 
+/// Allocates a buffer without zero-filling it. Sound because every call site immediately
+/// hands the whole buffer to `read_exact`, which either writes every byte or returns an
+/// error before the buffer is read from.
+#[allow(clippy::uninit_vec)]
+fn alloc_uninit(len: usize) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(len);
+    // SAFETY: `u8` has no invalid bit patterns, and callers only read `buf` after a
+    // successful `read_exact` fills the full `len` bytes.
+    unsafe { buf.set_len(len) };
+    buf
+}
+
 async fn deserialize_chunk_with_header_to_writer<R: AsyncRead + Unpin, W: Write>(
     reader: &mut R,
     writer: &mut W,
     header: XorbChunkHeader,
 ) -> Result<(usize, u32), CoreError> {
-    let mut compressed_data = vec![0u8; header.get_compressed_length() as usize];
+    let mut compressed_data = alloc_uninit(header.get_compressed_length() as usize);
     reader.read_exact(&mut compressed_data).await?;
 
     let uncompressed_data = header.get_compression_scheme()?.decompress_from_slice(&compressed_data)?;
@@ -131,10 +143,11 @@ where
 mod tests {
     use bytes::Bytes;
     use futures::Stream;
+    use futures::io::Cursor;
     use rand::{Rng, RngExt, rng};
 
-    use super::super::{CompressionScheme, serialize_chunk};
-    use super::deserialize_chunks_to_writer_from_stream;
+    use super::super::{CompressionScheme, XORB_CHUNK_HEADER_LENGTH, parse_chunk_header, serialize_chunk};
+    use super::{deserialize_chunk, deserialize_chunks_to_writer_from_stream};
 
     fn gen_random_bytes(rng: &mut impl Rng, uncompressed_chunk_size: u32) -> Vec<u8> {
         let mut data = vec![0u8; uncompressed_chunk_size as usize];
@@ -234,5 +247,34 @@ mod tests {
         assert_eq!(num_read, first_chunk_end);
         assert_eq!(chunk_byte_indices, vec![0, CHUNK_SIZE as u32]);
         assert_eq!(out.len(), CHUNK_SIZE);
+    }
+
+    /// Round-trips a chunk whose compressed length differs from its uncompressed length and
+    /// asserts byte-exact equality on deserialize. This guards the uninitialized-buffer reads
+    /// in `deserialize_chunk_with_header_to_writer`: an under-filled buffer would leave stale
+    /// or garbage bytes in the tail of `compressed_data`, which would surface here either as a
+    /// decompression failure or as a mismatch against the original bytes.
+    #[tokio::test]
+    async fn test_roundtrip_byte_exact_with_differing_compressed_length() {
+        // Highly compressible, non-trivial data so LZ4 actually shrinks it.
+        let original: Vec<u8> = (0..CHUNK_SIZE).map(|i| (i / 64) as u8).collect();
+
+        let mut serialized = Vec::new();
+        serialize_chunk(&original, &mut serialized, CompressionScheme::LZ4).unwrap();
+
+        let header =
+            parse_chunk_header(serialized[..XORB_CHUNK_HEADER_LENGTH].try_into().expect("header length")).unwrap();
+        assert_ne!(
+            header.get_compressed_length(),
+            header.get_uncompressed_length(),
+            "test data must actually compress for this case to exercise differing lengths"
+        );
+
+        let mut reader = Cursor::new(serialized);
+        let (data, compressed_len, uncompressed_len) = deserialize_chunk(&mut reader).await.unwrap();
+
+        assert_eq!(uncompressed_len as usize, original.len());
+        assert_ne!(compressed_len, uncompressed_len as usize + XORB_CHUNK_HEADER_LENGTH);
+        assert_eq!(data, original, "round-tripped bytes must exactly match the original chunk");
     }
 }
