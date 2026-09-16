@@ -243,6 +243,7 @@ impl XetError {
             | DataError::DeprecatedError(_) => XetError::Configuration(de.to_string()),
             DataError::HashNotFound => XetError::NotFound(de.to_string()),
             DataError::HashStringParsingFailure(_) => XetError::DataIntegrity(de.to_string()),
+            DataError::HashMismatch { .. } => XetError::DataIntegrity(de.to_string()),
             DataError::InvalidOperation(_) => XetError::Configuration(de.to_string()),
             DataError::FileReconstructionError(fre) => XetError::from_file_reconstruction_error_ref(fre),
             _ => XetError::Internal(de.to_string()),

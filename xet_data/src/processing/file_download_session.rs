@@ -13,6 +13,8 @@ use tracing::instrument;
 use xet_client::cas_client::Client;
 use xet_client::cas_types::FileRange;
 use xet_client::chunk_cache::ChunkCache;
+#[cfg(not(target_family = "wasm"))]
+use xet_core_structures::merklehash::{MerkleHash, compute_data_hash, file_hash};
 use xet_runtime::core::XetContext;
 use xet_runtime::utils::UniqueId;
 
@@ -20,6 +22,8 @@ use super::XetFileInfo;
 use super::configurations::TranslatorConfig;
 use super::remote_client_interface::create_remote_client;
 use crate::error::{DataError, Result};
+#[cfg(not(target_family = "wasm"))]
+use crate::file_reconstruction::ChunkLayout;
 use crate::file_reconstruction::{DownloadStream, FileReconstructor, UnorderedDownloadStream};
 use crate::progress_tracking::{GroupProgress, ItemProgressUpdater};
 
@@ -354,7 +358,10 @@ impl FileDownloadSession {
     async fn download_file_with_id(&self, file_info: &XetFileInfo, write_path: &Path, id: UniqueId) -> Result<u64> {
         let name = Arc::from(write_path.to_string_lossy().as_ref());
         let progress_updater = self.progress.new_item(id, name);
-        let reconstructor = self.setup_reconstructor(file_info, None, Some(progress_updater))?;
+        let chunk_layout = Arc::new(ChunkLayout::default());
+        let reconstructor = self
+            .setup_reconstructor(file_info, None, Some(progress_updater))?
+            .with_chunk_layout(chunk_layout.clone());
         let n_bytes = reconstructor.reconstruct_to_file(write_path, None, true).await?;
         // Caller is responsible for cleaning up the file on error (consistent
         // with other error paths); see download_group.rs error handling.
@@ -366,8 +373,46 @@ impl FileDownloadSession {
                 actual: n_bytes,
             });
         }
+        let path = write_path.to_path_buf();
+        let expected = file_info.merkle_hash()?;
+        self.ctx
+            .runtime
+            .spawn_blocking(move || verify_written_file(&path, expected, &chunk_layout.chunk_lengths()))
+            .await
+            .map_err(|e| std::io::Error::other(e.to_string()))??;
         Ok(n_bytes)
     }
+}
+
+/// Hashes the file as it is on disk, chunk by chunk along the delivered boundaries, and checks
+/// the result against the hash that was requested. This covers the write as well as the
+/// transfer, at the cost of one read of the finished file.
+#[cfg(not(target_family = "wasm"))]
+fn verify_written_file(path: &Path, expected: MerkleHash, chunk_lengths: &[u64]) -> Result<()> {
+    let expected_size: u64 = chunk_lengths.iter().sum();
+    let actual_size = std::fs::metadata(path)?.len();
+    if actual_size != expected_size {
+        return Err(DataError::SizeMismatch {
+            expected: expected_size,
+            actual: actual_size,
+        });
+    }
+    let mut file = std::io::BufReader::new(std::fs::File::open(path)?);
+    let mut chunk = Vec::new();
+    let mut chunks = Vec::with_capacity(chunk_lengths.len());
+    for &len in chunk_lengths {
+        chunk.resize(len as usize, 0);
+        std::io::Read::read_exact(&mut file, &mut chunk)?;
+        chunks.push((compute_data_hash(&chunk), len));
+    }
+    let actual = file_hash(&chunks);
+    if actual != expected {
+        return Err(DataError::HashMismatch {
+            expected: expected.hex(),
+            actual: actual.hex(),
+        });
+    }
+    Ok(())
 }
 
 // Writer-sink download — available on all targets. Unlike the filesystem
@@ -534,6 +579,124 @@ mod tests {
 
                 assert_eq!(n_bytes, original_data.len() as u64);
                 assert_eq!(read(&out_path).unwrap(), original_data);
+            })
+            .unwrap();
+    }
+
+    fn random_bytes(len: usize) -> Vec<u8> {
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state as u8
+            })
+            .collect()
+    }
+
+    /// Flips one byte in the middle of the largest xorb under `cas_path`, keeping its length.
+    fn corrupt_largest_xorb(cas_path: &Path) {
+        let mut xorbs = Vec::new();
+        let mut dirs = vec![cas_path.to_path_buf()];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.parent().is_some_and(|d| d.ends_with("xorbs")) {
+                    xorbs.push(path);
+                }
+            }
+        }
+        let xorb = xorbs.into_iter().max_by_key(|x| x.metadata().unwrap().len()).unwrap();
+        let mut bytes = read(&xorb).unwrap();
+        let middle = bytes.len() / 2;
+        bytes[middle] ^= 0xff;
+        write(&xorb, bytes).unwrap();
+    }
+
+    #[test]
+    fn test_download_file_rejects_corrupted_content() {
+        let runtime = get_runtime();
+        runtime
+            .bridge_sync(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = random_bytes(4 * 1024 * 1024);
+                let xfi = upload_data(&cas_path, &original_data).await;
+
+                corrupt_largest_xorb(&cas_path);
+
+                let ctx = XetContext::default().unwrap();
+                let session =
+                    FileDownloadSession::new(TranslatorConfig::local_config(&ctx, &cas_path).unwrap().into(), None)
+                        .await
+                        .unwrap();
+
+                // Reconstruction on its own writes the wrong bytes and reports success.
+                let reconstructed = temp.path().join("reconstructed.bin");
+                session
+                    .setup_reconstructor(&xfi, None, None)
+                    .unwrap()
+                    .reconstruct_to_file(&reconstructed, None, true)
+                    .await
+                    .unwrap();
+                assert_eq!(read(&reconstructed).unwrap().len(), original_data.len());
+                assert_ne!(read(&reconstructed).unwrap(), original_data);
+
+                // A download of the same file is refused.
+                let result = session.download_file(&xfi, &temp.path().join("downloaded.bin")).await;
+                assert!(matches!(result, Err(DataError::HashMismatch { .. })), "{result:?}");
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_verify_written_file_reads_what_is_on_disk() {
+        let runtime = get_runtime();
+        runtime
+            .bridge_sync(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = random_bytes(1024 * 1024);
+                let xfi = upload_data(&cas_path, &original_data).await;
+
+                let ctx = XetContext::default().unwrap();
+                let session =
+                    FileDownloadSession::new(TranslatorConfig::local_config(&ctx, &cas_path).unwrap().into(), None)
+                        .await
+                        .unwrap();
+                let layout = Arc::new(ChunkLayout::default());
+                let out_path = temp.path().join("output.bin");
+                session
+                    .setup_reconstructor(&xfi, None, None)
+                    .unwrap()
+                    .with_chunk_layout(layout.clone())
+                    .reconstruct_to_file(&out_path, None, true)
+                    .await
+                    .unwrap();
+                let lengths = layout.chunk_lengths();
+                let expected = xfi.merkle_hash().unwrap();
+                verify_written_file(&out_path, expected, &lengths).unwrap();
+
+                // One byte changed after writing.
+                let mut changed = original_data.clone();
+                changed[1000] ^= 0xff;
+                write(&out_path, &changed).unwrap();
+                assert!(matches!(
+                    verify_written_file(&out_path, expected, &lengths),
+                    Err(DataError::HashMismatch { .. })
+                ));
+
+                // Correct bytes, plus one stale byte left at the end.
+                let mut longer = original_data.clone();
+                longer.push(0);
+                write(&out_path, &longer).unwrap();
+                assert!(matches!(
+                    verify_written_file(&out_path, expected, &lengths),
+                    Err(DataError::SizeMismatch { .. })
+                ));
             })
             .unwrap();
     }

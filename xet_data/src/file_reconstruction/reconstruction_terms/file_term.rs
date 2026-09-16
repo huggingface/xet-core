@@ -13,9 +13,9 @@ use xet_core_structures::merklehash::MerkleHash;
 use xet_runtime::core::XetContext;
 use xet_runtime::utils::UniqueId;
 
-use super::super::FileReconstructionError;
 use super::super::data_writer::DataFuture;
 use super::super::error::Result;
+use super::super::{ChunkLayout, FileReconstructionError};
 use super::retrieval_urls::TermBlockRetrievalURLs;
 use super::xorb_block::{XorbBlock, XorbBlockData, XorbReference};
 use crate::progress_tracking::ItemProgressUpdater;
@@ -52,6 +52,17 @@ impl FileTerm {
         xorb_block_data.data.slice(start_byte_offset..end_byte_offset)
     }
 
+    fn record_chunks(&self, chunk_layout: Option<&ChunkLayout>, xorb_block_data: &XorbBlockData) {
+        if let Some(layout) = chunk_layout {
+            layout.record(
+                self.byte_range.start - self.offset_into_first_range,
+                self.xorb_block_start_index,
+                (self.xorb_chunk_range.end - self.xorb_chunk_range.start) as usize,
+                xorb_block_data,
+            );
+        }
+    }
+
     /// Get a future that will retrieve and extract the data bytes for this file term.
     ///
     /// If the xorb data is already cached, returns a future that immediately resolves (no progress
@@ -64,9 +75,11 @@ impl FileTerm {
         client: Arc<dyn Client>,
         progress_updater: Option<Arc<ItemProgressUpdater>>,
         chunk_cache: Option<Arc<dyn ChunkCache>>,
+        chunk_layout: Option<Arc<ChunkLayout>>,
     ) -> Result<DataFuture> {
         // Fast path: data already cached, no need to spawn a task.
         if let Some(xorb_block_data) = self.xorb_block.data.get() {
+            self.record_chunks(chunk_layout.as_deref(), xorb_block_data);
             let bytes = self.extract_bytes(xorb_block_data);
             return Ok(Box::pin(async move { Ok(bytes) }));
         }
@@ -79,6 +92,7 @@ impl FileTerm {
             let xorb_block_data = xorb_block
                 .retrieve_data(ctx, client, url_info, progress_updater, chunk_cache)
                 .await?;
+            file_term.record_chunks(chunk_layout.as_deref(), &xorb_block_data);
             Ok(file_term.extract_bytes(&xorb_block_data))
         });
 
@@ -487,7 +501,7 @@ mod tests {
 
             // Get the data task and await it.
             let data_future = file_term
-                .get_data_task(ctx.clone(), dyn_client.clone(), None, None)
+                .get_data_task(ctx.clone(), dyn_client.clone(), None, None, None)
                 .await
                 .unwrap();
             let data = data_future.await.unwrap();
@@ -652,6 +666,41 @@ mod tests {
     async fn test_xorb_block_deduplication() {
         let (runtime, client, file_contents) = setup_test_file(&[(1, (0, 5)), (1, (0, 5))]).await;
         retrieve_and_verify(&runtime, &client, &file_contents, None).await;
+    }
+
+    /// A term whose xorb block was already fetched by an earlier term must still record its chunks.
+    #[tokio::test]
+    async fn test_chunk_layout_records_terms_served_from_a_fetched_block() {
+        let (ctx, client, file_contents) = setup_test_file(&[(1, (0, 5)), (2, (0, 3)), (1, (0, 5))]).await;
+        let dyn_client: Arc<dyn Client> = client.clone();
+        let full = FileRange::new(0, file_contents.data.len() as u64);
+        let (_, _, file_terms) = retrieve_file_term_block(&ctx, dyn_client.clone(), file_contents.file_hash, full)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let layout = Arc::new(ChunkLayout::default());
+        let mut data = Vec::new();
+        let mut served_from_fetched_block = false;
+        for term in &file_terms {
+            served_from_fetched_block |= term.xorb_block.data.get().is_some();
+            let future = term
+                .get_data_task(ctx.clone(), dyn_client.clone(), None, None, Some(layout.clone()))
+                .await
+                .unwrap();
+            data.extend_from_slice(&future.await.unwrap());
+        }
+        assert!(served_from_fetched_block);
+
+        let mut offset = 0;
+        let mut chunks = Vec::new();
+        for len in layout.chunk_lengths() {
+            let end = offset + len as usize;
+            chunks.push((xet_core_structures::merklehash::compute_data_hash(&data[offset..end]), len));
+            offset = end;
+        }
+        assert_eq!(offset, data.len());
+        assert_eq!(xet_core_structures::merklehash::file_hash(&chunks), file_contents.file_hash);
     }
 
     #[tokio::test]

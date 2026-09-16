@@ -1,9 +1,11 @@
+mod chunk_layout;
 mod data_writer;
 mod error;
 mod file_reconstructor;
 mod reconstruction_terms;
 mod run_state;
 
+pub use chunk_layout::ChunkLayout;
 pub use data_writer::{DataWriter, DownloadStream, SequentialWriter, UnorderedDownloadStream, UnorderedWriter};
 pub use error::{FileReconstructionError, Result};
 pub use file_reconstructor::FileReconstructor;

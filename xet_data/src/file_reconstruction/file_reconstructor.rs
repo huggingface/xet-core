@@ -19,6 +19,7 @@ use xet_runtime::core::XetContext;
 use xet_runtime::utils::ClosureGuard;
 use xet_runtime::utils::adjustable_semaphore::AdjustableSemaphore;
 
+use super::ChunkLayout;
 use super::data_writer::{DataWriter, DownloadStream, SequentialWriter, UnorderedDownloadStream};
 use super::error::{FileReconstructionError, Result};
 use super::reconstruction_terms::ReconstructionTermManager;
@@ -39,6 +40,9 @@ pub struct FileReconstructor {
     /// Optional on-disk chunk cache for cross-file deduplication.
     chunk_cache: Option<Arc<dyn ChunkCache>>,
 
+    /// Optional record of the chunk boundaries delivered, used to check the finished file.
+    chunk_layout: Option<Arc<ChunkLayout>>,
+
     /// Custom buffer semaphore for testing or specialized use cases.
     custom_buffer_semaphore: Option<Arc<AdjustableSemaphore>>,
 
@@ -58,6 +62,7 @@ impl FileReconstructor {
             progress_updater: default_progress_updater(),
             config: Arc::new(ctx.config.reconstruction.clone()),
             chunk_cache: None,
+            chunk_layout: None,
             custom_buffer_semaphore: None,
             cancellation_token: CancellationToken::new(),
         }
@@ -80,6 +85,14 @@ impl FileReconstructor {
     pub fn with_chunk_cache(self, cache: Arc<dyn ChunkCache>) -> Self {
         Self {
             chunk_cache: Some(cache),
+            ..self
+        }
+    }
+
+    /// Records the length of every chunk delivered, in file order, into `layout`.
+    pub fn with_chunk_layout(self, layout: Arc<ChunkLayout>) -> Self {
+        Self {
+            chunk_layout: Some(layout),
             ..self
         }
     }
@@ -270,6 +283,7 @@ impl FileReconstructor {
             byte_range,
             config,
             chunk_cache,
+            chunk_layout,
             custom_buffer_semaphore,
             ..
         } = self;
@@ -391,6 +405,7 @@ impl FileReconstructor {
                         client.clone(),
                         run_state.progress_updater().cloned(),
                         chunk_cache.clone(),
+                        chunk_layout.clone(),
                     )
                     .await?;
 
@@ -512,6 +527,37 @@ mod tests {
 
         let data = buffer.lock().unwrap().get_ref().clone();
         Ok(data)
+    }
+
+    /// The recorded chunk lengths must reproduce the file hash, even when the file is fetched in
+    /// many small batches whose boundaries fall inside chunks and terms finish out of order.
+    #[tokio::test]
+    async fn test_chunk_layout_reproduces_file_hash() {
+        let (client, file_contents) = setup_test_file(&[(0, (0, 10)), (1, (0, 8)), (0, (3, 7)), (2, (0, 12))]).await;
+        let layout = Arc::new(ChunkLayout::default());
+        let buffer = Arc::new(std::sync::Mutex::new(Cursor::new(Vec::new())));
+
+        FileReconstructor::new(
+            &XetContext::default().unwrap(),
+            &(client.clone() as Arc<dyn Client>),
+            file_contents.file_hash,
+        )
+        .with_config(test_config())
+        .with_chunk_layout(layout.clone())
+        .reconstruct_to_writer(StaticCursorWriter(buffer.clone()))
+        .await
+        .unwrap();
+
+        let data = buffer.lock().unwrap().get_ref().clone();
+        let mut offset = 0;
+        let mut chunks = Vec::new();
+        for len in layout.chunk_lengths() {
+            let end = offset + len as usize;
+            chunks.push((xet_core_structures::merklehash::compute_data_hash(&data[offset..end]), len));
+            offset = end;
+        }
+        assert_eq!(offset, data.len());
+        assert_eq!(xet_core_structures::merklehash::file_hash(&chunks), file_contents.file_hash);
     }
 
     /// Reconstructs to a file and returns the reconstructed data.

@@ -79,6 +79,9 @@ pub enum DataError {
 
     #[error("File size mismatch: expected {expected} bytes but downloaded {actual} bytes")]
     SizeMismatch { expected: u64, actual: u64 },
+
+    #[error("File hash mismatch: expected {expected} but the downloaded file hashes to {actual}")]
+    HashMismatch { expected: String, actual: String },
     #[error("Auth error: {0}")]
     AuthError(#[from] AuthError),
 
