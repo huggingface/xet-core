@@ -145,7 +145,11 @@ impl MemoryClient {
     /// because the canonical file has been renamed away.
     #[cfg(not(target_family = "wasm"))]
     async fn require_readable_xorb(&self, hash: &MerkleHash) -> Result<()> {
-        if !self.xorb_state.read().await.xorbs.contains_key(hash) || self.xorb_is_tagged(hash).await {
+        // One guard for both checks. Re-entering the lock while still holding a read guard
+        // deadlocks: tokio queues a new read behind any waiting writer, and that writer is
+        // waiting on the guard we are holding.
+        let state = self.xorb_state.read().await;
+        if !state.xorbs.contains_key(hash) || state.tagged.contains(hash) {
             return Err(ClientError::Other(format!("XORB not found: {}", hash.hex())));
         }
         Ok(())

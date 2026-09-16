@@ -1068,23 +1068,25 @@ impl super::DeletionControlableClient for LocalClient {
     async fn delete_xorb_if_etag_matches(&self, hash: &MerkleHash, etag: &ObjectETag) -> Result<bool> {
         let file_path = self.get_path_for_entry(hash);
 
+        // Claim the sidecar before the data, not after. Claiming it second leaves a window
+        // where an upload completes both of its writes, and the claim then takes the tags
+        // belonging to that new xorb and unlinks them on the success path below.
+        let claimed_tag_set = self.claim_tag_set_xorb(hash);
+        let restore = |claimed: &Option<PathBuf>| {
+            if let Some(claimed) = claimed {
+                // `restore_from_tmp` declines to clobber a path an upload has recreated.
+                Self::restore_from_tmp(claimed, &self.tag_set_xorb_path(hash));
+            }
+        };
+
         // Atomically move the file out of the namespace before checking the
         // tag.  This closes the TOCTOU window with concurrent upload_xorb
         // (which always rewrites via SafeFileCreator atomic rename).
         let tmp_path = file_path.with_extension(format!("gc_del_{:x}", rand::random::<u64>()));
         if std::fs::rename(&file_path, &tmp_path).is_err() {
+            restore(&claimed_tag_set);
             return Err(ClientError::XORBNotFound(*hash));
         }
-
-        // Claim the sidecar the same way, and put it back on every path that backs out.
-        // An upload that overtakes this delete rewrites both canonical paths, and neither
-        // of those is what gets unlinked below.
-        let claimed_tag_set = self.claim_tag_set_xorb(hash);
-        let restore = |claimed: &Option<PathBuf>| {
-            if let Some(claimed) = claimed {
-                Self::restore_from_tmp(claimed, &self.tag_set_xorb_path(hash));
-            }
-        };
 
         let current_etag = match Self::object_etag_for(b"xorb", hash, &tmp_path) {
             Ok(t) => t,
