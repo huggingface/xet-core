@@ -117,8 +117,14 @@ impl RTTPredictor {
         // How long would it take to transmit this at full bandwidth
         let min_rtt = self.predicted_rtt(query_bytes, 1.)?;
 
+        // A non-positive RTT is not a physically meaningful bandwidth estimate. In
+        // particular, predicted_rtt clamps negative regression output to zero.
+        if min_rtt <= 0.0 {
+            return None;
+        }
+
         // Report bytes per sec in this model.
-        Some(query_bytes as f64 / min_rtt.max(1e-6))
+        Some(query_bytes as f64 / min_rtt)
     }
 
     /// Computes the quantile (0.0 to 1.0) of an observed RTT under the predicted normal distribution.
@@ -279,6 +285,26 @@ mod tests {
         // Standard error should be positive
         let se = predictor.prediction_standard_error(5 * 1024 * 1024, 1.0).unwrap();
         assert!(se >= 0.0);
+    }
+
+    #[test]
+    fn test_predicted_bandwidth_rejects_non_positive_rtt() {
+        let mut predictor = RTTPredictor::new(1000.0);
+
+        // Fit a decreasing relationship whose extrapolated RTT at 10 MiB is negative.
+        // predicted_rtt() clamps it to zero, so bandwidth must not turn that clamp
+        // into an enormous synthetic throughput estimate.
+        for (size_mb, duration_secs) in [(1, 3.0), (2, 2.0), (3, 1.0), (4, 0.1)] {
+            predictor.update(
+                size_mb * 1024 * 1024,
+                Duration::from_secs_f64(duration_secs),
+                1.0,
+                1.0,
+            );
+        }
+
+        assert_eq!(predictor.predicted_rtt(10 * 1024 * 1024, 1.0), Some(0.0));
+        assert!(predictor.predicted_bandwidth().is_none());
     }
 
     #[test]
