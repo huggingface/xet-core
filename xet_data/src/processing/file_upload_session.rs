@@ -384,17 +384,15 @@ impl FileUploadSession {
         self.shard_interface.add_xorb_block(xorb_info.clone()).await?;
 
         // Serialize the object; this can be relatively expensive, so run it on a compute thread.
-        // The footer is only written for direct-to-bucket uploads; the regular CAS upload sends the
-        // chunks alone and the server reconstructs the footer from them.
+        // XORBs are sent without footer - the server/client reconstructs it from chunk data.
         let runtime = self.ctx.runtime.clone();
         let compression_policy = self.ctx.config.xorb.compression_policy.clone();
         let compression_scheme_retest_interval = self.ctx.config.xorb.compression_scheme_retest_interval;
-        let serialize_footer = self.ctx.config.xorb.direct_upload;
         let xorb_obj = runtime
             .spawn_blocking(move || {
                 SerializedXorbObject::from_xorb(
                     xorb,
-                    serialize_footer,
+                    false,
                     compression_policy.as_str(),
                     compression_scheme_retest_interval,
                 )

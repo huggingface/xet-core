@@ -570,8 +570,9 @@ fn presigned_put_request(grant: &XorbGrant) -> std::result::Result<(Url, HeaderM
 }
 
 impl RemoteClient {
-    /// Stages the complete serialized xorb (chunks and client-written footer) in the bucket
-    /// through a presigned PUT obtained from CAS, then asks CAS to validate and commit it.
+    /// Stages the chunks-only serialized xorb (exactly the bytes `POST /v1/xorbs` would carry) in
+    /// the bucket through a presigned PUT obtained from CAS, then asks CAS to validate it and
+    /// write the canonical object; CAS regenerates and appends the footer at commit.
     ///
     /// Any failure before CAS delivers a verdict is reported as [`DirectUploadOutcome::Fallback`]
     /// so the caller uploads through CAS as before.
@@ -1195,10 +1196,7 @@ impl Client for RemoteClient {
 
         let serialized_data = Bytes::from(std::mem::take(&mut serialized_xorb_object.serialized_data));
 
-        // The direct path needs the client-written footer; without it the staged bytes could not
-        // be committed as-is.
-        let direct_upload =
-            self.ctx.config.xorb.direct_upload && serialized_xorb_object.footer_start.is_some() && !self.dry_run;
+        let direct_upload = self.ctx.config.xorb.direct_upload && !self.dry_run;
 
         let upload_permit = if direct_upload {
             let upload_reporter = xorb_upload_reporter(n_upload_bytes, &upload_permit, progress_callback.as_ref());
@@ -1307,6 +1305,20 @@ mod tests {
         RemoteClient::new(ctx.clone(), &server.uri(), &auth, "test-session", false, None)
     }
 
+    /// The chunks-only serialization the upload session produces; the footer is written by CAS.
+    fn chunks_only_xorb(num_chunks: u32) -> SerializedXorbObject {
+        let cfg = XetConfig::default();
+        let xorb_obj = SerializedXorbObject::from_xorb(
+            build_raw_xorb(num_chunks, ChunkSize::Fixed(1024)),
+            false,
+            cfg.xorb.compression_policy.as_str(),
+            cfg.xorb.compression_scheme_retest_interval,
+        )
+        .unwrap();
+        assert!(xorb_obj.footer_start.is_none());
+        xorb_obj
+    }
+
     fn staged_path(hash: &MerkleHash) -> String {
         format!("/cas-staging/staging/{}/{GRANT_ID}", hash.hex())
     }
@@ -1412,7 +1424,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_direct_upload_stages_commits_and_skips_the_cas_upload() {
         let server = MockServer::start().await;
-        let xorb_obj = build_and_verify_xorb_object(build_raw_xorb(3, ChunkSize::Fixed(1024)), CompressionScheme::LZ4);
+        let xorb_obj = chunks_only_xorb(3);
         let (hash, n_bytes) = (xorb_obj.hash, xorb_obj.serialized_data.len() as u64);
 
         mount_grant(&server, hash).await;
@@ -1431,7 +1443,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_direct_upload_falls_back_to_cas_when_grants_are_unavailable() {
         let server = MockServer::start().await;
-        let xorb_obj = build_and_verify_xorb_object(build_raw_xorb(3, ChunkSize::Fixed(1024)), CompressionScheme::LZ4);
+        let xorb_obj = chunks_only_xorb(3);
         let (hash, n_bytes) = (xorb_obj.hash, xorb_obj.serialized_data.len() as u64);
 
         // A CAS without a staging bucket answers 404; the xorb goes through the regular route.
@@ -1454,12 +1466,12 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_direct_upload_rejected_at_commit_is_an_error_without_fallback() {
         let server = MockServer::start().await;
-        let xorb_obj = build_and_verify_xorb_object(build_raw_xorb(3, ChunkSize::Fixed(1024)), CompressionScheme::LZ4);
+        let xorb_obj = chunks_only_xorb(3);
         let hash = xorb_obj.hash;
 
         mount_grant(&server, hash).await;
         mount_staged_put(&server, hash, &xorb_obj.serialized_data).await;
-        mount_commit(&server, hash, XorbCommitStatus::Rejected, Some("footer mismatch")).await;
+        mount_commit(&server, hash, XorbCommitStatus::Rejected, Some("xorb hash mismatch")).await;
         mount_cas_upload(&server, hash, 0).await;
 
         let ctx = direct_upload_ctx();
@@ -1468,14 +1480,14 @@ mod tests {
 
         let message = result.unwrap_err().to_string();
         assert!(message.contains("rejected"), "{message}");
-        assert!(message.contains("footer mismatch"), "{message}");
+        assert!(message.contains("xorb hash mismatch"), "{message}");
         assert!(message.contains(&hash.hex()), "{message}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_direct_upload_missing_at_commit_falls_back_to_cas() {
         let server = MockServer::start().await;
-        let xorb_obj = build_and_verify_xorb_object(build_raw_xorb(3, ChunkSize::Fixed(1024)), CompressionScheme::LZ4);
+        let xorb_obj = chunks_only_xorb(3);
         let (hash, n_bytes) = (xorb_obj.hash, xorb_obj.serialized_data.len() as u64);
 
         // The PUT consumed the upload permit; the fallback must acquire a fresh one and go through.
@@ -1490,35 +1502,6 @@ mod tests {
 
         assert_eq!(result.unwrap(), n_bytes);
         assert_eq!(reported, n_bytes, "the bytes staged and then re-sent through CAS are reported once");
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_direct_upload_needs_a_client_written_footer() {
-        let server = MockServer::start().await;
-        let cfg = XetConfig::default();
-        let xorb_obj = SerializedXorbObject::from_xorb(
-            build_raw_xorb(3, ChunkSize::Fixed(1024)),
-            false,
-            cfg.xorb.compression_policy.as_str(),
-            cfg.xorb.compression_scheme_retest_interval,
-        )
-        .unwrap();
-        assert!(xorb_obj.footer_start.is_none());
-        let (hash, n_bytes) = (xorb_obj.hash, xorb_obj.serialized_data.len() as u64);
-
-        Mock::given(method("POST"))
-            .and(path("/v1/xorbs/grants"))
-            .respond_with(ResponseTemplate::new(500))
-            .expect(0)
-            .mount(&server)
-            .await;
-        mount_cas_upload(&server, hash, 1).await;
-
-        let ctx = direct_upload_ctx();
-        let client = direct_upload_client(&ctx, &server);
-        let (result, _) = upload(&client, xorb_obj).await;
-
-        assert_eq!(result.unwrap(), n_bytes);
     }
 
     #[test]

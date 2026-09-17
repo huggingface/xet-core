@@ -22,8 +22,9 @@ crate::config_group!({
     ref compression_policy: ConfigEnum = ConfigEnum::new("auto", &["", "auto", "none", "lz4", "bg4-lz4"]);
 
     /// Upload xorbs directly to the storage bucket instead of through the CAS server.
-    /// When true, the client serializes the xorb footer itself, asks CAS for a presigned
-    /// staging URL, PUTs the complete xorb there and then asks CAS to validate and commit it.
+    /// When true, the client asks CAS for a presigned staging URL, PUTs the chunks-only
+    /// serialized xorb there (the same bytes the regular upload sends) and then asks CAS to
+    /// validate it and write the canonical object with its footer.
     /// Any failure before the commit verdict falls back to the regular CAS upload.
     ///
     /// The default value is false.

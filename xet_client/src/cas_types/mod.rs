@@ -33,18 +33,20 @@ pub struct XorbGrantRequest {
     pub commits: Vec<XorbCommitItem>,
 }
 
-/// One xorb the client wants to stage: the complete serialized bytes (chunks and footer) are
-/// described by their length and SHA-256 so the presigned PUT is bound to exactly those bytes.
+/// One xorb the client wants to stage: the chunks-only serialized bytes (what `POST /v1/xorbs`
+/// carries, no footer) are described by their length and SHA-256 so the presigned PUT is bound to
+/// exactly those bytes.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct XorbGrantItem {
     pub hash: HexMerkleHash,
-    /// Byte length of the complete serialized xorb, footer included.
+    /// Byte length of the chunks-only serialized xorb.
     pub size: u64,
     /// Standard padded base64 of the 32-byte SHA-256 of those bytes.
     pub sha256: String,
 }
 
-/// One staged xorb the client asks CAS to validate and copy into the canonical bucket.
+/// One staged xorb the client asks CAS to validate and write, footer appended, into the canonical
+/// bucket.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct XorbCommitItem {
     pub hash: HexMerkleHash,
@@ -577,7 +579,7 @@ mod tests {
                     hash,
                     grant_id: "g2".to_string(),
                     status: XorbCommitStatus::Rejected,
-                    error: Some("footer mismatch".to_string()),
+                    error: Some("xorb hash mismatch".to_string()),
                 },
             ],
         };
@@ -595,7 +597,7 @@ mod tests {
             assert_eq!(serde_json::from_str::<XorbCommitStatus>(tag).unwrap(), status);
         }
         assert!(json.contains(r#""status":"inserted"}"#));
-        assert!(json.contains(r#""status":"rejected","error":"footer mismatch"}"#));
+        assert!(json.contains(r#""status":"rejected","error":"xorb hash mismatch"}"#));
 
         // A response with no `grants` key still parses (the server omits what it did not compute).
         let commit_only: XorbGrantResponse = serde_json::from_str(&format!(
