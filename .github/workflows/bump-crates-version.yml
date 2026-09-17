@@ -8,12 +8,14 @@ on:
         description: 'Version to publish (e.g. 1.6.0, no v prefix)'
         required: true
 
-permissions:
-  contents: write
-  pull-requests: write
+
+permissions: {}
 
 jobs:
   bump_crates_version:
+    permissions:
+      contents: write
+      pull-requests: write
     name: Bump crate versions and create PR
     runs-on:
       group: aws-general-8-plus
@@ -78,7 +80,7 @@ jobs:
         run: python3 -m venv .venv
         
       - name: Build hf-xet wheel
-        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1.51.0
         with:
           command: develop
           sccache: 'true'

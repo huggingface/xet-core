@@ -8,16 +8,18 @@ name: Crates.io Release — Publish
 on:
   workflow_dispatch:
 
-permissions:
-  id-token: write
-  contents: read
 
 concurrency:
   group: crates-release
   cancel-in-progress: false
 
+permissions: {}
+
 jobs:
   publish:
+    permissions:
+      contents: read
+      id-token: write
     name: Publish to crates.io
     runs-on: ubuntu-latest
     environment: crates-release
