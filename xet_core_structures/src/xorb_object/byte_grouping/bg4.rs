@@ -1,13 +1,33 @@
 use std::ptr::copy_nonoverlapping;
 
+/// Allocates a `Vec<u8>` of length `n` without zero-initializing its contents.
+///
+/// # Safety
+/// The caller must write every one of the `n` bytes before the vector is read
+/// (including before it is dropped, since `u8` has no drop glue this only
+/// matters for reads).
+#[allow(clippy::uninit_vec)] // intentional: callers write every byte before reading, per the contract above
+unsafe fn alloc_uninit(n: usize) -> Vec<u8> {
+    let mut v = Vec::with_capacity(n);
+    // SAFETY: `v` has capacity `n` and holds `u8`, which has no validity
+    // invariants, so extending its length to `n` before writing is sound as
+    // long as the caller's contract (every byte written before read) holds.
+    unsafe { v.set_len(n) };
+    v
+}
+
 pub fn bg4_split_separate(data: &[u8]) -> [Vec<u8>; 4] {
     let n = data.len();
     let split = n / 4;
     let rem = n % 4;
-    let mut d0 = vec![0u8; split + 1.min(rem)];
-    let mut d1 = vec![0u8; split + 1.min(rem.saturating_sub(1))];
-    let mut d2 = vec![0u8; split + 1.min(rem.saturating_sub(2))];
-    let mut d3 = vec![0u8; split];
+    // SAFETY: the loop over `0..split` below writes index `i` of every one of
+    // d0..d3, and the `match rem` block writes the one remaining tail index
+    // for whichever of d0..d2 has length `split + 1`; d3 never has a tail
+    // element. Together every byte of d0..d3 is written before return.
+    let mut d0 = unsafe { alloc_uninit(split + 1.min(rem)) };
+    let mut d1 = unsafe { alloc_uninit(split + 1.min(rem.saturating_sub(1))) };
+    let mut d2 = unsafe { alloc_uninit(split + 1.min(rem.saturating_sub(2))) };
+    let mut d3 = unsafe { alloc_uninit(split) };
 
     for i in 0..split {
         d0[i] = data[4 * i];
@@ -39,7 +59,11 @@ pub fn bg4_split_together(data: &[u8]) -> Vec<u8> {
     let n = data.len();
     let split = n / 4;
     let rem = n % 4;
-    let mut d = vec![0u8; n];
+    // SAFETY: the loop below writes 4 bytes per iteration, one into each of
+    // the four contiguous regions of `d` (sized so they partition all n
+    // bytes), and the `match rem` block writes the final `rem` bytes; every
+    // byte of `d` is written before return.
+    let mut d = unsafe { alloc_uninit(n) };
 
     unsafe {
         let data = data.as_ptr();
@@ -90,7 +114,11 @@ pub fn bg4_regroup_separate(groups: &[Vec<u8>]) -> Vec<u8> {
     let g2 = &groups[2];
     let g3 = &groups[3];
 
-    let mut data = vec![0u8; n];
+    // SAFETY: the loop below writes 4 bytes per iteration (indices
+    // `4*i..4*i+4`) covering `4*split` bytes, and the `match rem` block
+    // writes the remaining `rem` bytes; together every byte of `data` up to
+    // `n` is written before return.
+    let mut data = unsafe { alloc_uninit(n) };
 
     for i in 0..split {
         data[4 * i] = g0[i];
@@ -123,7 +151,11 @@ pub fn bg4_regroup_together(g: &[u8]) -> Vec<u8> {
     let split = n / 4;
     let rem = n % 4;
 
-    let mut data = vec![0u8; n];
+    // SAFETY: the loop below writes 4 bytes per iteration (indices
+    // `4*i..4*i+4`) covering `4*split` bytes, and the `match rem` block
+    // writes the remaining `rem` bytes; together every byte of `data` up to
+    // `n` is written before return.
+    let mut data = unsafe { alloc_uninit(n) };
 
     unsafe {
         let data = data.as_mut_ptr();
@@ -164,7 +196,11 @@ pub fn bg4_regroup_together_combined_write_4(g: &[u8]) -> Vec<u8> {
     let split = n / 4;
     let rem = n % 4;
 
-    let mut data = vec![0u8; n];
+    // SAFETY: the loop below writes 4 bytes per iteration (`4*split` bytes
+    // total) via `copy_nonoverlapping`, and the `match rem` block writes the
+    // remaining `rem` bytes; together every byte of `data` is written before
+    // return.
+    let mut data = unsafe { alloc_uninit(n) };
 
     unsafe {
         let d_ptr = data.as_mut_ptr();
@@ -203,7 +239,11 @@ pub fn bg4_regroup_together_combined_write_8(g: &[u8]) -> Vec<u8> {
     let split = n / 4;
     let rem = n % 4;
 
-    let mut data = vec![0u8; n];
+    // SAFETY: the paired loop below writes 8 bytes per iteration covering
+    // whole quadruple-pairs, the odd-`split` branch writes the one leftover
+    // quadruple, and the `match rem` block writes the final `rem` bytes;
+    // together every byte of `data` is written before return.
+    let mut data = unsafe { alloc_uninit(n) };
 
     unsafe {
         let d_ptr = data.as_mut_ptr();
