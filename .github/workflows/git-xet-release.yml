@@ -26,9 +26,9 @@ jobs:
           - runner: ubuntu-22.04-arm
             target: aarch64
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Install Rust 1.95
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # master
         with:
           toolchain: 1.95.0
       - uses: ./.github/actions/cache-rust-build
@@ -36,7 +36,7 @@ jobs:
         run: |
           cargo build --release
       - name: Upload binary
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: git-xet-linux-${{ matrix.platform.target }}
           path: target/release/git-xet
@@ -51,9 +51,9 @@ jobs:
           - runner: macos-15
             target: aarch64
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Install Rust 1.95
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # master
         with:
           toolchain: 1.95.0
       - uses: ./.github/actions/cache-rust-build
@@ -74,7 +74,7 @@ jobs:
           apple-notary-password: ${{ secrets.CLI_MACOS_NOTARY_PWD }}
           options: --options runtime --entitlements dist/entitlements.xml
       - name: Upload binary
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: git-xet-macos-${{ matrix.platform.target }}
           path: dist/git-xet
@@ -91,9 +91,9 @@ jobs:
             target: aarch64
             wix_arch: arm64
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Install Rust 1.95
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # master
         with:
           toolchain: 1.95.0
       - uses: ./.github/actions/cache-rust-build
@@ -113,10 +113,12 @@ jobs:
           azure_client_id: ${{ secrets.AZURE_CLIENT_ID }}
           azure_client_secret: ${{ secrets.AZURE_CLIENT_SECRET }}
       - name: Build installer
+        env:
+          WIX_ARCH: ${{ matrix.platform.wix_arch }}
         run: |
           cp git_xet/windows_installer/Package.wxs dist/
           cd dist
-          wix build -acceptEula wix7 Package.wxs -o bin\git-xet-windows-installer -arch ${{ matrix.platform.wix_arch }}
+          wix build -acceptEula wix7 Package.wxs -o bin\git-xet-windows-installer -arch $env:WIX_ARCH
       - name: Codesign the installer
         uses: ./.github/actions/windows-codesign
         with:
@@ -125,12 +127,12 @@ jobs:
           azure_client_id: ${{ secrets.AZURE_CLIENT_ID }}
           azure_client_secret: ${{ secrets.AZURE_CLIENT_SECRET }}
       - name: Upload binary
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: git-xet-windows-${{ matrix.platform.target }}
           path: dist/git-xet.exe
       - name: Upload installer
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: git-xet-windows-installer-${{ matrix.platform.target }}
           path: dist/bin/git-xet-windows-installer.msi
@@ -143,14 +145,16 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     needs: [linux, windows, macos]
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           path: dist
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.inputs.tag }}
+          TARGET_SHA: ${{ github.sha }}
         run: |
           ls -l dist
           for dir in dist/*; do (cd "$dir" && zip -r "../$(basename "$dir").zip" .); done
-          gh release create git-xet-${{ github.event.inputs.tag}} dist/*.zip --generate-notes --prerelease --target ${{github.sha}}
+          gh release create "git-xet-${RELEASE_TAG}" dist/*.zip --generate-notes --prerelease --target "${TARGET_SHA}"
