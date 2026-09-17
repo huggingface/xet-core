@@ -2,13 +2,16 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use anyhow::anyhow;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use bytes::Bytes;
 use futures::TryStreamExt;
 use http::HeaderValue;
-use http::header::{CONTENT_LENGTH, HeaderMap, RANGE};
+use http::header::{CONTENT_LENGTH, CONTENT_TYPE, HeaderMap, HeaderName, RANGE};
 use reqwest::{Body, Response, StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
-use tracing::{event, info, instrument};
+use sha2::{Digest, Sha256};
+use tracing::{debug, event, info, instrument, warn};
 use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::metadata_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use xet_core_structures::xorb_object::SerializedXorbObject;
@@ -32,7 +35,8 @@ use crate::cas_client::ShardUploadProgressType;
 use crate::cas_types::{
     BatchQueryReconstructionResponse, FileChunkHashesResponse, FileRange, HttpRange, Key, QueryReconstructionResponse,
     QueryReconstructionResponseV2, ShardUploadEvent, UploadShardResponse, UploadShardResponseType, UploadXorbResponse,
-    X_RANGE_DIRTY_HEADER,
+    X_RANGE_DIRTY_HEADER, XorbCommitItem, XorbCommitStatus, XorbGrant, XorbGrantItem, XorbGrantRequest,
+    XorbGrantResponse,
 };
 use crate::common::http_client::{self, Api};
 use crate::error::{ClientError, Result};
@@ -519,6 +523,354 @@ impl RemoteClient {
     }
 }
 
+/// Outcome of one direct-to-bucket xorb upload attempt.
+enum DirectUploadOutcome {
+    /// CAS validated the staged bytes and copied them into the canonical bucket; `inserted` is
+    /// false when the xorb was already there (duplicate path).
+    Committed { inserted: bool },
+    /// CAS validated the staged bytes and refused them. The regular upload would refuse them
+    /// too, so there is no fallback.
+    Rejected(String),
+    /// Direct upload did not go through for this xorb; upload it through CAS instead. Carries the
+    /// upload permit back when the staging PUT did not consume it.
+    Fallback {
+        reason: String,
+        permit: Option<ConnectionPermit>,
+    },
+}
+
+/// Builds the progress reporter shared by the user callback and the adaptive concurrency
+/// controller of `upload_permit`.
+fn xorb_upload_reporter(
+    n_upload_bytes: u64,
+    upload_permit: &ConnectionPermit,
+    progress_callback: Option<&ProgressCallback>,
+) -> StreamProgressReporter {
+    let mut upload_reporter = StreamProgressReporter::new(n_upload_bytes)
+        .with_adaptive_concurrency_reporter(upload_permit.get_partial_completion_reporting_function());
+    if let Some(cb) = progress_callback {
+        upload_reporter = upload_reporter.with_progress_callback(cb.clone());
+    }
+    upload_reporter
+}
+
+/// Turns a grant into the URL and header map of the presigned PUT. Every header is part of the
+/// SigV4 signature and is forwarded verbatim.
+fn presigned_put_request(grant: &XorbGrant) -> std::result::Result<(Url, HeaderMap), String> {
+    let url = Url::parse(&grant.url).map_err(|err| format!("invalid presigned url: {err}"))?;
+    let mut headers = HeaderMap::with_capacity(grant.headers.len());
+    for (name, value) in &grant.headers {
+        let header_name = HeaderName::from_bytes(name.as_bytes())
+            .map_err(|err| format!("invalid presigned header {name:?}: {err}"))?;
+        let header_value = HeaderValue::from_str(value)
+            .map_err(|err| format!("invalid value for presigned header {name:?}: {err}"))?;
+        headers.insert(header_name, header_value);
+    }
+    Ok((url, headers))
+}
+
+impl RemoteClient {
+    /// Stages the complete serialized xorb (chunks and client-written footer) in the bucket
+    /// through a presigned PUT obtained from CAS, then asks CAS to validate and commit it.
+    ///
+    /// Any failure before CAS delivers a verdict is reported as [`DirectUploadOutcome::Fallback`]
+    /// so the caller uploads through CAS as before.
+    async fn upload_xorb_direct(
+        &self,
+        call_id: u64,
+        hash: MerkleHash,
+        serialized_data: Bytes,
+        upload_reporter: StreamProgressReporter,
+        upload_permit: ConnectionPermit,
+    ) -> DirectUploadOutcome {
+        let n_upload_bytes = serialized_data.len() as u64;
+        let grants_url = match Url::parse(&format!("{}/v1/xorbs/grants", self.endpoint)) {
+            Ok(url) => url,
+            Err(err) => {
+                return DirectUploadOutcome::Fallback {
+                    reason: format!("invalid grants url: {err}"),
+                    permit: Some(upload_permit),
+                };
+            },
+        };
+
+        // The grant binds the presigned PUT to these exact bytes.
+        let sha256 = BASE64_STANDARD.encode(Sha256::digest(&serialized_data));
+        let grant_request = XorbGrantRequest {
+            grants: vec![XorbGrantItem {
+                hash: hash.into(),
+                size: n_upload_bytes,
+                sha256,
+            }],
+            commits: vec![],
+        };
+        let grant_body = match serde_json::to_vec(&grant_request) {
+            Ok(body) => Bytes::from(body),
+            Err(err) => {
+                return DirectUploadOutcome::Fallback {
+                    reason: format!("could not encode grant request: {err}"),
+                    permit: Some(upload_permit),
+                };
+            },
+        };
+
+        let client = self.authenticated_http_client.clone();
+        let api_tag = "cas::xorb_grant";
+        let url = grants_url.clone();
+        let grant_response: Result<XorbGrantResponse> = RetryWrapper::new(self.ctx.clone(), api_tag)
+            .log_errors_as_info()
+            .run_and_extract_json(move || {
+                client
+                    .post(url.clone())
+                    .with_extension(Api(api_tag))
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(grant_body.clone())
+                    .send()
+            })
+            .await;
+        let grant = match grant_response {
+            Ok(response) => match response.grants.into_iter().find(|grant| MerkleHash::from(grant.hash) == hash) {
+                Some(grant) => grant,
+                None => {
+                    return DirectUploadOutcome::Fallback {
+                        reason: "grant response carried no grant for this xorb".to_string(),
+                        permit: Some(upload_permit),
+                    };
+                },
+            },
+            Err(err) => {
+                return DirectUploadOutcome::Fallback {
+                    reason: format!("grant request failed: {err}"),
+                    permit: Some(upload_permit),
+                };
+            },
+        };
+        // The presigned URL is a capability: debug level only.
+        debug!(
+            call_id,
+            %hash,
+            grant_id = %grant.grant_id,
+            url = %grant.url,
+            expires_in_secs = grant.expires_in_secs,
+            "Obtained xorb staging grant"
+        );
+
+        // The PUT goes through the plain client: the CAS bearer token must not reach the bucket.
+        let (put_url, put_headers) = match presigned_put_request(&grant) {
+            Ok(request) => request,
+            Err(reason) => {
+                return DirectUploadOutcome::Fallback {
+                    reason,
+                    permit: Some(upload_permit),
+                };
+            },
+        };
+        let put_client = self.http_client.clone();
+        let api_tag = "s3::put_staged_xorb";
+        let body = serialized_data.clone();
+        let put_result = RetryWrapper::new(self.ctx.clone(), api_tag)
+            .log_errors_as_info()
+            .with_redacted_url()
+            .with_connection_permit(upload_permit, Some(n_upload_bytes))
+            .run(move || {
+                put_client
+                    .put(put_url.clone())
+                    .headers(put_headers.clone())
+                    .with_extension(Api(api_tag))
+                    .body(body.clone())
+                    .send()
+            })
+            .await;
+        if let Err(err) = put_result {
+            // A reqwest error prints its URL, and this one carries the signature: strip the query
+            // before the reason reaches the fallback warning.
+            let err = match err {
+                ClientError::ReqwestMiddlewareError(reqwest_middleware::Error::Reqwest(err)) => ClientError::from(err),
+                other => other,
+            };
+            return DirectUploadOutcome::Fallback {
+                reason: format!("staging PUT failed: {err}"),
+                permit: None,
+            };
+        }
+
+        let commit_request = XorbGrantRequest {
+            grants: vec![],
+            commits: vec![XorbCommitItem {
+                hash: hash.into(),
+                grant_id: grant.grant_id.clone(),
+            }],
+        };
+        let commit_body = match serde_json::to_vec(&commit_request) {
+            Ok(body) => Bytes::from(body),
+            Err(err) => {
+                return DirectUploadOutcome::Fallback {
+                    reason: format!("could not encode commit request: {err}"),
+                    permit: None,
+                };
+            },
+        };
+        let client = self.authenticated_http_client.clone();
+        let api_tag = "cas::xorb_commit";
+        let commit_response: Result<XorbGrantResponse> = RetryWrapper::new(self.ctx.clone(), api_tag)
+            .log_errors_as_info()
+            .run_and_extract_json(move || {
+                client
+                    .post(grants_url.clone())
+                    .with_extension(Api(api_tag))
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(commit_body.clone())
+                    .send()
+            })
+            .await;
+        let commit = match commit_response {
+            Ok(response) => match response
+                .commits
+                .into_iter()
+                .find(|commit| MerkleHash::from(commit.hash) == hash && commit.grant_id == grant.grant_id)
+            {
+                Some(commit) => commit,
+                None => {
+                    return DirectUploadOutcome::Fallback {
+                        reason: "commit response carried no verdict for this grant".to_string(),
+                        permit: None,
+                    };
+                },
+            },
+            Err(err) => {
+                return DirectUploadOutcome::Fallback {
+                    reason: format!("commit request failed: {err}"),
+                    permit: None,
+                };
+            },
+        };
+
+        // Progress is reported once the verdict is in: a fallback after the PUT streams the same
+        // bytes again through CAS and reports them there.
+        match commit.status {
+            XorbCommitStatus::Inserted => {
+                upload_reporter.report_progress(n_upload_bytes as usize);
+                DirectUploadOutcome::Committed { inserted: true }
+            },
+            XorbCommitStatus::Exists => {
+                upload_reporter.report_progress(n_upload_bytes as usize);
+                DirectUploadOutcome::Committed { inserted: false }
+            },
+            XorbCommitStatus::Rejected => {
+                DirectUploadOutcome::Rejected(commit.error.unwrap_or_else(|| "no reason given".to_string()))
+            },
+            XorbCommitStatus::Missing => DirectUploadOutcome::Fallback {
+                reason: format!("no staged object for grant {} at commit", grant.grant_id),
+                permit: None,
+            },
+        }
+    }
+
+    /// Uploads the serialized xorb through `POST /v1/xorbs/{prefix}/{hash}`; CAS validates it and
+    /// writes it to the bucket. A footer in the body is ignored and regenerated server side.
+    async fn upload_xorb_via_cas(
+        &self,
+        call_id: u64,
+        prefix: &str,
+        hash: MerkleHash,
+        serialized_data: Bytes,
+        progress_callback: Option<ProgressCallback>,
+        upload_permit: ConnectionPermit,
+    ) -> Result<u64> {
+        let key = Key {
+            prefix: prefix.to_string(),
+            hash,
+        };
+        let url = Url::parse(&format!("{}/v1/xorbs/{key}", self.endpoint))?;
+        let n_upload_bytes = serialized_data.len() as u64;
+
+        #[cfg(not(target_family = "wasm"))]
+        let block_size = self.ctx.config.client.upload_reporting_block_size;
+
+        let upload_reporter = xorb_upload_reporter(n_upload_bytes, &upload_permit, progress_callback.as_ref());
+
+        let xorb_uploaded = {
+            if !self.dry_run {
+                let client = self.authenticated_http_client.clone();
+
+                let api_tag = "cas::upload_xorb";
+
+                let response: UploadXorbResponse = RetryWrapper::new(self.ctx.clone(), api_tag)
+                    .with_connection_permit(upload_permit, Some(n_upload_bytes))
+                    .run_and_extract_json(move || {
+                        let url = url.clone();
+                        let serialized_data = serialized_data.clone();
+
+                        let request = {
+                            #[cfg(not(target_family = "wasm"))]
+                            {
+                                let upload_stream = UploadProgressStream::wrap_bytes_as_stream(
+                                    serialized_data,
+                                    block_size,
+                                    upload_reporter.clone(),
+                                );
+                                client
+                                    .post(url)
+                                    .with_extension(Api(api_tag))
+                                    .header(CONTENT_LENGTH, HeaderValue::from(n_upload_bytes)) // must be set because of streaming
+                                    .body(Body::wrap_stream(upload_stream))
+                            }
+
+                            // reqwest's wasm backend does not support streaming request bodies;
+                            // pass the raw Bytes directly (CONTENT_LENGTH is set by reqwest from the body length).
+                            #[cfg(target_family = "wasm")]
+                            {
+                                client.post(url).with_extension(Api(api_tag)).body(serialized_data)
+                            }
+                        };
+
+                        request.send()
+                    })
+                    .await?;
+
+                // Wasm has no per-chunk progress hook (no streaming body); emit one bulk
+                // event after success so the user callback and adaptive-concurrency
+                // reporter both observe the full byte count.
+                #[cfg(target_family = "wasm")]
+                upload_reporter.report_progress(n_upload_bytes as usize);
+
+                response.was_inserted
+            } else {
+                true
+            }
+        };
+
+        log_upload_xorb_completed(call_id, prefix, hash, n_upload_bytes, xorb_uploaded, "cas");
+
+        Ok(n_upload_bytes)
+    }
+}
+
+fn log_upload_xorb_completed(call_id: u64, prefix: &str, hash: MerkleHash, size: u64, inserted: bool, path: &str) {
+    if !inserted {
+        event!(
+            INFORMATION_LOG_LEVEL,
+            call_id,
+            prefix,
+            %hash,
+            path,
+            result = "not_inserted",
+            "Completed upload_xorb API call",
+        );
+    } else {
+        event!(
+            INFORMATION_LOG_LEVEL,
+            call_id,
+            prefix,
+            %hash,
+            size,
+            path,
+            result = "inserted",
+            "Completed upload_xorb API call",
+        );
+    }
+}
+
 #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl Client for RemoteClient {
@@ -828,20 +1180,14 @@ impl Client for RemoteClient {
         progress_callback: Option<ProgressCallback>,
         upload_permit: ConnectionPermit,
     ) -> Result<u64> {
-        let key = Key {
-            prefix: prefix.to_string(),
-            hash: serialized_xorb_object.hash,
-        };
-
         let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
-        let url = Url::parse(&format!("{}/v1/xorbs/{key}", self.endpoint))?;
-
+        let hash = serialized_xorb_object.hash;
         let n_upload_bytes = serialized_xorb_object.serialized_data.len() as u64;
         event!(
             INFORMATION_LOG_LEVEL,
             call_id,
             prefix,
-            hash=%serialized_xorb_object.hash,
+            %hash,
             size=n_upload_bytes,
             num_chunks=serialized_xorb_object.num_chunks,
             "Starting upload_xorb API call",
@@ -849,88 +1195,38 @@ impl Client for RemoteClient {
 
         let serialized_data = Bytes::from(std::mem::take(&mut serialized_xorb_object.serialized_data));
 
-        #[cfg(not(target_family = "wasm"))]
-        let block_size = self.ctx.config.client.upload_reporting_block_size;
+        // The direct path needs the client-written footer; without it the staged bytes could not
+        // be committed as-is.
+        let direct_upload =
+            self.ctx.config.xorb.direct_upload && serialized_xorb_object.footer_start.is_some() && !self.dry_run;
 
-        let mut upload_reporter = StreamProgressReporter::new(n_upload_bytes)
-            .with_adaptive_concurrency_reporter(upload_permit.get_partial_completion_reporting_function());
-        if let Some(cb) = progress_callback {
-            upload_reporter = upload_reporter.with_progress_callback(cb);
-        }
-
-        let xorb_uploaded = {
-            if !self.dry_run {
-                let client = self.authenticated_http_client.clone();
-
-                let api_tag = "cas::upload_xorb";
-
-                let response: UploadXorbResponse = RetryWrapper::new(self.ctx.clone(), api_tag)
-                    .with_connection_permit(upload_permit, Some(n_upload_bytes))
-                    .run_and_extract_json(move || {
-                        let url = url.clone();
-                        let serialized_data = serialized_data.clone();
-
-                        let request = {
-                            #[cfg(not(target_family = "wasm"))]
-                            {
-                                let upload_stream = UploadProgressStream::wrap_bytes_as_stream(
-                                    serialized_data,
-                                    block_size,
-                                    upload_reporter.clone(),
-                                );
-                                client
-                                    .post(url)
-                                    .with_extension(Api(api_tag))
-                                    .header(CONTENT_LENGTH, HeaderValue::from(n_upload_bytes)) // must be set because of streaming
-                                    .body(Body::wrap_stream(upload_stream))
-                            }
-
-                            // reqwest's wasm backend does not support streaming request bodies;
-                            // pass the raw Bytes directly (CONTENT_LENGTH is set by reqwest from the body length).
-                            #[cfg(target_family = "wasm")]
-                            {
-                                client.post(url).with_extension(Api(api_tag)).body(serialized_data)
-                            }
-                        };
-
-                        request.send()
-                    })
-                    .await?;
-
-                // Wasm has no per-chunk progress hook (no streaming body); emit one bulk
-                // event after success so the user callback and adaptive-concurrency
-                // reporter both observe the full byte count.
-                #[cfg(target_family = "wasm")]
-                upload_reporter.report_progress(n_upload_bytes as usize);
-
-                response.was_inserted
-            } else {
-                true
+        let upload_permit = if direct_upload {
+            let upload_reporter = xorb_upload_reporter(n_upload_bytes, &upload_permit, progress_callback.as_ref());
+            match self
+                .upload_xorb_direct(call_id, hash, serialized_data.clone(), upload_reporter, upload_permit)
+                .await
+            {
+                DirectUploadOutcome::Committed { inserted } => {
+                    log_upload_xorb_completed(call_id, prefix, hash, n_upload_bytes, inserted, "direct");
+                    return Ok(n_upload_bytes);
+                },
+                DirectUploadOutcome::Rejected(error) => {
+                    return Err(ClientError::Other(format!("xorb {} rejected at commit: {error}", hash.hex())));
+                },
+                DirectUploadOutcome::Fallback { reason, permit } => {
+                    warn!(call_id, prefix, %hash, reason, "Direct xorb upload unavailable; uploading through CAS");
+                    match permit {
+                        Some(permit) => permit,
+                        None => self.acquire_upload_permit().await?,
+                    }
+                },
             }
+        } else {
+            upload_permit
         };
 
-        if !xorb_uploaded {
-            event!(
-                INFORMATION_LOG_LEVEL,
-                call_id,
-                prefix,
-                hash=%serialized_xorb_object.hash,
-                result="not_inserted",
-                "Completed upload_xorb API call",
-            );
-        } else {
-            event!(
-                INFORMATION_LOG_LEVEL,
-                call_id,
-                prefix,
-                hash=%serialized_xorb_object.hash,
-                size=n_upload_bytes,
-                result="inserted",
-                "Completed upload_xorb API call",
-            );
-        }
-
-        Ok(n_upload_bytes)
+        self.upload_xorb_via_cas(call_id, prefix, hash, serialized_data, progress_callback, upload_permit)
+            .await
     }
 
     #[instrument(skip_all, name = "RemoteClient::get_file_chunk_hashes", fields(file.hash = file_id.hex(), n_ranges = dirty_ranges.len()))]
@@ -979,13 +1275,251 @@ impl Client for RemoteClient {
 #[cfg(test)]
 #[cfg(not(target_family = "wasm"))]
 mod tests {
+    use std::collections::HashMap;
+    use std::time::Duration;
+
     use tracing_test::traced_test;
+    use wiremock::matchers::{body_string_contains, header, method, path};
+    use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
     use xet_core_structures::xorb_object::CompressionScheme;
     use xet_core_structures::xorb_object::xorb_format_test_utils::{
         ChunkSize, build_and_verify_xorb_object, build_raw_xorb,
     };
+    use xet_runtime::config::XetConfig;
 
     use super::*;
+    use crate::cas_types::{XorbCommitResult, XorbCommitStatus, XorbGrant, XorbGrantResponse};
+
+    const GRANT_ID: &str = "0123456789abcdef0123456789abcdef";
+    const TOKEN: &str = "write-token";
+
+    fn direct_upload_ctx() -> XetContext {
+        let mut config = XetConfig::default();
+        config.xorb.direct_upload = true;
+        config.telemetry.enabled = false;
+        config.client.retry_max_attempts = 1;
+        config.client.retry_base_delay = Duration::from_millis(10);
+        XetContext::with_config(config).unwrap()
+    }
+
+    fn direct_upload_client(ctx: &XetContext, server: &MockServer) -> Arc<RemoteClient> {
+        let auth = AuthConfig::maybe_new(Some(TOKEN.to_string()), None, None);
+        RemoteClient::new(ctx.clone(), &server.uri(), &auth, "test-session", false, None)
+    }
+
+    fn staged_path(hash: &MerkleHash) -> String {
+        format!("/cas-staging/staging/{}/{GRANT_ID}", hash.hex())
+    }
+
+    fn grant_response(server: &MockServer, hash: MerkleHash) -> XorbGrantResponse {
+        XorbGrantResponse {
+            grants: vec![XorbGrant {
+                hash: hash.into(),
+                grant_id: GRANT_ID.to_string(),
+                url: format!("{}{}?X-Amz-Signature=test", server.uri(), staged_path(&hash)),
+                headers: HashMap::from([
+                    ("x-amz-checksum-sha256".to_string(), "checksum".to_string()),
+                    // Mixed case on purpose: header names are forwarded case-insensitively.
+                    ("X-Amz-Sdk-Checksum-Algorithm".to_string(), "SHA256".to_string()),
+                ]),
+                expires_in_secs: 900,
+            }],
+            commits: vec![],
+        }
+    }
+
+    fn commit_response(hash: MerkleHash, status: XorbCommitStatus, error: Option<&str>) -> XorbGrantResponse {
+        XorbGrantResponse {
+            grants: vec![],
+            commits: vec![XorbCommitResult {
+                hash: hash.into(),
+                grant_id: GRANT_ID.to_string(),
+                status,
+                error: error.map(str::to_string),
+            }],
+        }
+    }
+
+    /// The bearer token is for CAS only; the presigned PUT must not carry it.
+    struct NoAuthorizationHeader;
+
+    impl Match for NoAuthorizationHeader {
+        fn matches(&self, request: &Request) -> bool {
+            !request.headers.contains_key("authorization")
+        }
+    }
+
+    async fn mount_grant(server: &MockServer, hash: MerkleHash) {
+        Mock::given(method("POST"))
+            .and(path("/v1/xorbs/grants"))
+            .and(header("authorization", format!("Bearer {TOKEN}").as_str()))
+            .and(header("content-type", "application/json"))
+            .and(body_string_contains("\"grants\""))
+            .respond_with(ResponseTemplate::new(200).set_body_json(grant_response(server, hash)))
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+
+    async fn mount_staged_put(server: &MockServer, hash: MerkleHash, body: &[u8]) {
+        Mock::given(method("PUT"))
+            .and(path(staged_path(&hash)))
+            .and(header("x-amz-checksum-sha256", "checksum"))
+            .and(header("x-amz-sdk-checksum-algorithm", "SHA256"))
+            .and(NoAuthorizationHeader)
+            .and(wiremock::matchers::body_bytes(body.to_vec()))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+
+    async fn mount_commit(server: &MockServer, hash: MerkleHash, status: XorbCommitStatus, error: Option<&str>) {
+        Mock::given(method("POST"))
+            .and(path("/v1/xorbs/grants"))
+            .and(header("authorization", format!("Bearer {TOKEN}").as_str()))
+            .and(body_string_contains(format!(
+                "\"commits\":[{{\"hash\":\"{}\",\"grant_id\":\"{GRANT_ID}\"}}]",
+                hash.hex()
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(commit_response(hash, status, error)))
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+
+    async fn mount_cas_upload(server: &MockServer, hash: MerkleHash, expected_calls: u64) {
+        Mock::given(method("POST"))
+            .and(path(format!("/v1/xorbs/default/{}", hash.hex())))
+            .and(header("authorization", format!("Bearer {TOKEN}").as_str()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(UploadXorbResponse { was_inserted: true }))
+            .expect(expected_calls)
+            .mount(server)
+            .await;
+    }
+
+    async fn upload(client: &RemoteClient, xorb_obj: SerializedXorbObject) -> (Result<u64>, u64) {
+        let reported = Arc::new(AtomicU64::new(0));
+        let reported_ = reported.clone();
+        let progress: ProgressCallback = Arc::new(move |delta, _, _| {
+            reported_.fetch_add(delta, Ordering::Relaxed);
+        });
+        let permit = client.acquire_upload_permit().await.unwrap();
+        let result = client.upload_xorb(PREFIX_DEFAULT, xorb_obj, Some(progress), permit).await;
+        (result, reported.load(Ordering::Relaxed))
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_direct_upload_stages_commits_and_skips_the_cas_upload() {
+        let server = MockServer::start().await;
+        let xorb_obj = build_and_verify_xorb_object(build_raw_xorb(3, ChunkSize::Fixed(1024)), CompressionScheme::LZ4);
+        let (hash, n_bytes) = (xorb_obj.hash, xorb_obj.serialized_data.len() as u64);
+
+        mount_grant(&server, hash).await;
+        mount_staged_put(&server, hash, &xorb_obj.serialized_data).await;
+        mount_commit(&server, hash, XorbCommitStatus::Exists, None).await;
+        mount_cas_upload(&server, hash, 0).await;
+
+        let ctx = direct_upload_ctx();
+        let client = direct_upload_client(&ctx, &server);
+        let (result, reported) = upload(&client, xorb_obj).await;
+
+        assert_eq!(result.unwrap(), n_bytes);
+        assert_eq!(reported, n_bytes, "the progress callback sees the full transfer");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_direct_upload_falls_back_to_cas_when_grants_are_unavailable() {
+        let server = MockServer::start().await;
+        let xorb_obj = build_and_verify_xorb_object(build_raw_xorb(3, ChunkSize::Fixed(1024)), CompressionScheme::LZ4);
+        let (hash, n_bytes) = (xorb_obj.hash, xorb_obj.serialized_data.len() as u64);
+
+        // A CAS without a staging bucket answers 404; the xorb goes through the regular route.
+        Mock::given(method("POST"))
+            .and(path("/v1/xorbs/grants"))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&server)
+            .await;
+        mount_cas_upload(&server, hash, 1).await;
+
+        let ctx = direct_upload_ctx();
+        let client = direct_upload_client(&ctx, &server);
+        let (result, reported) = upload(&client, xorb_obj).await;
+
+        assert_eq!(result.unwrap(), n_bytes);
+        assert_eq!(reported, n_bytes);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_direct_upload_rejected_at_commit_is_an_error_without_fallback() {
+        let server = MockServer::start().await;
+        let xorb_obj = build_and_verify_xorb_object(build_raw_xorb(3, ChunkSize::Fixed(1024)), CompressionScheme::LZ4);
+        let hash = xorb_obj.hash;
+
+        mount_grant(&server, hash).await;
+        mount_staged_put(&server, hash, &xorb_obj.serialized_data).await;
+        mount_commit(&server, hash, XorbCommitStatus::Rejected, Some("footer mismatch")).await;
+        mount_cas_upload(&server, hash, 0).await;
+
+        let ctx = direct_upload_ctx();
+        let client = direct_upload_client(&ctx, &server);
+        let (result, _) = upload(&client, xorb_obj).await;
+
+        let message = result.unwrap_err().to_string();
+        assert!(message.contains("rejected"), "{message}");
+        assert!(message.contains("footer mismatch"), "{message}");
+        assert!(message.contains(&hash.hex()), "{message}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_direct_upload_missing_at_commit_falls_back_to_cas() {
+        let server = MockServer::start().await;
+        let xorb_obj = build_and_verify_xorb_object(build_raw_xorb(3, ChunkSize::Fixed(1024)), CompressionScheme::LZ4);
+        let (hash, n_bytes) = (xorb_obj.hash, xorb_obj.serialized_data.len() as u64);
+
+        // The PUT consumed the upload permit; the fallback must acquire a fresh one and go through.
+        mount_grant(&server, hash).await;
+        mount_staged_put(&server, hash, &xorb_obj.serialized_data).await;
+        mount_commit(&server, hash, XorbCommitStatus::Missing, None).await;
+        mount_cas_upload(&server, hash, 1).await;
+
+        let ctx = direct_upload_ctx();
+        let client = direct_upload_client(&ctx, &server);
+        let (result, reported) = upload(&client, xorb_obj).await;
+
+        assert_eq!(result.unwrap(), n_bytes);
+        assert_eq!(reported, n_bytes, "the bytes staged and then re-sent through CAS are reported once");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_direct_upload_needs_a_client_written_footer() {
+        let server = MockServer::start().await;
+        let cfg = XetConfig::default();
+        let xorb_obj = SerializedXorbObject::from_xorb(
+            build_raw_xorb(3, ChunkSize::Fixed(1024)),
+            false,
+            cfg.xorb.compression_policy.as_str(),
+            cfg.xorb.compression_scheme_retest_interval,
+        )
+        .unwrap();
+        assert!(xorb_obj.footer_start.is_none());
+        let (hash, n_bytes) = (xorb_obj.hash, xorb_obj.serialized_data.len() as u64);
+
+        Mock::given(method("POST"))
+            .and(path("/v1/xorbs/grants"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+        mount_cas_upload(&server, hash, 1).await;
+
+        let ctx = direct_upload_ctx();
+        let client = direct_upload_client(&ctx, &server);
+        let (result, _) = upload(&client, xorb_obj).await;
+
+        assert_eq!(result.unwrap(), n_bytes);
+    }
 
     #[test]
     fn test_clients_share_controllers_per_ctx_and_endpoint() {

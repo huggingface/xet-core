@@ -1462,7 +1462,9 @@ impl SerializedXorbObject {
 
         let mut footer_start = None;
         if serialize_footer {
-            // Serialize the XorbObject footer
+            // A client-written footer carries a fresh nonce so two uploads of the same xorb never
+            // serialize to identical bytes; the nonce is excluded from the xorb hash.
+            xorb_object_info.set_uniqueness_nonce(rand::random());
             footer_start = Some(serialized_data.len() as u64);
             XorbObject::serialize_given_info(&mut serialized_data, xorb_object_info)?;
         }
@@ -1594,7 +1596,12 @@ pub mod test_utils {
 
         assert_eq!(verification_data.len(), nbytes_trans);
 
-        assert_eq!(xorb_obj.serialized_data, verification_data);
+        // The reference footer carries a zero nonce while `from_xorb` draws a random one, so
+        // compare everything except the nonce bytes.
+        assert_eq!(xorb_obj.serialized_data.len(), verification_data.len());
+        let (nonce_start, nonce_end) = footer_nonce_range(verification_data.len());
+        assert_eq!(xorb_obj.serialized_data[..nonce_start], verification_data[..nonce_start]);
+        assert_eq!(xorb_obj.serialized_data[nonce_end..], verification_data[nonce_end..]);
 
         assert_eq!(xorb_obj.raw_num_bytes, xorb.num_bytes() as u64);
 
@@ -1606,6 +1613,14 @@ pub mod test_utils {
         let mut data = vec![0u8; size as usize];
         rng.fill(&mut data[..]);
         data
+    }
+
+    /// Byte range `[start, end)` of the uniqueness nonce in a serialized xorb of `len` bytes that
+    /// ends with a footer: the footer buffer sits right before the trailing `info_length` u32 and
+    /// the nonce occupies its leading bytes.
+    pub fn footer_nonce_range(len: usize) -> (usize, usize) {
+        let nonce_start = len - size_of::<u32>() - XORB_OBJECT_FORMAT_FOOTER_BUFFER_LEN;
+        (nonce_start, nonce_start + XORB_OBJECT_FORMAT_NONCE_LEN)
     }
 
     #[derive(Debug, Clone, Copy)]
@@ -2795,5 +2810,48 @@ mod tests {
         .unwrap();
         assert_eq!(serialized.num_chunks, 4);
         assert!(!serialized.serialized_data.is_empty());
+    }
+
+    #[test]
+    fn test_from_xorb_with_footer_draws_a_fresh_nonce() {
+        let raw = build_raw_xorb(4, ChunkSize::Random(512, 2048));
+        let cfg = xet_runtime::config::XetConfig::new();
+        let serialize = || {
+            SerializedXorbObject::from_xorb(
+                raw.clone(),
+                true,
+                cfg.xorb.compression_policy.as_str(),
+                cfg.xorb.compression_scheme_retest_interval,
+            )
+            .unwrap()
+        };
+        let first = serialize();
+        let second = serialize();
+
+        // Same length, and the footer starts at the same place.
+        let len = first.serialized_data.len();
+        assert_eq!(second.serialized_data.len(), len);
+        assert!(first.footer_start.is_some());
+        assert_eq!(first.footer_start, second.footer_start);
+
+        // The two serializations differ only in the 4 nonce bytes at [len - 20, len - 16).
+        let (nonce_start, nonce_end) = footer_nonce_range(len);
+        assert_eq!(nonce_start, len - 20);
+        assert_eq!(nonce_end, len - 16);
+        assert_eq!(first.serialized_data[..nonce_start], second.serialized_data[..nonce_start]);
+        assert_eq!(first.serialized_data[nonce_end..], second.serialized_data[nonce_end..]);
+        assert_ne!(
+            first.serialized_data[nonce_start..nonce_end],
+            second.serialized_data[nonce_start..nonce_end],
+            "two footers drew the same 32-bit nonce (probability 2^-32); rerun"
+        );
+
+        // The nonce is not part of the hash: both footers deserialize to the xorb hash.
+        for obj in [&first, &second] {
+            let footer_start = obj.footer_start.unwrap() as usize;
+            let ret = XorbObject::deserialize(&mut Cursor::new(&obj.serialized_data[footer_start..])).unwrap();
+            assert_eq!(ret.info.xorb_hash, raw.hash());
+            assert_ne!(ret.info.uniqueness_nonce(), [0u8; XORB_OBJECT_FORMAT_NONCE_LEN]);
+        }
     }
 }

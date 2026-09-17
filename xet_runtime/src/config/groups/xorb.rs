@@ -21,6 +21,16 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_XORB_COMPRESSION_POLICY` to set this value.
     ref compression_policy: ConfigEnum = ConfigEnum::new("auto", &["", "auto", "none", "lz4", "bg4-lz4"]);
 
+    /// Upload xorbs directly to the storage bucket instead of through the CAS server.
+    /// When true, the client serializes the xorb footer itself, asks CAS for a presigned
+    /// staging URL, PUTs the complete xorb there and then asks CAS to validate and commit it.
+    /// Any failure before the commit verdict falls back to the regular CAS upload.
+    ///
+    /// The default value is false.
+    ///
+    /// Use the environment variable `HF_XET_XORB_DIRECT_UPLOAD` to set this value.
+    ref direct_upload: bool = false;
+
     /// Override the maximum xorb size in bytes for simulation mode.
     /// When set to Some(value), this overrides the hard-coded MAX_XORB_BYTES
     /// cutting threshold in simulation builds. When None (default), the
