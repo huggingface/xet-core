@@ -572,7 +572,8 @@ fn xorb_upload_reporter(
 /// Turns a grant into the URL and header map of the presigned PUT. CAS is trusted, but a grant
 /// must not turn the client into a relay for arbitrary requests: the URL must be https unless the
 /// CAS endpoint itself is plain http (a local stack), and only the headers a presigned object
-/// store PUT can sign are forwarded.
+/// store PUT can sign are forwarded (`if-none-match` is how a grant onto the canonical key
+/// forbids overwriting an existing object).
 fn presigned_put_request(grant: &XorbGrant, allow_http: bool) -> std::result::Result<(Url, HeaderMap), String> {
     let url = Url::parse(&grant.url).map_err(|err| format!("invalid presigned url: {err}"))?;
     match url.scheme() {
@@ -585,7 +586,11 @@ fn presigned_put_request(grant: &XorbGrant, allow_http: bool) -> std::result::Re
         let header_name = HeaderName::from_bytes(name.as_bytes())
             .map_err(|err| format!("invalid presigned header {name:?}: {err}"))?;
         let lowered = header_name.as_str();
-        if !(lowered.starts_with("x-amz-") || lowered == "content-length" || lowered == "content-type") {
+        if !(lowered.starts_with("x-amz-")
+            || lowered == "content-length"
+            || lowered == "content-type"
+            || lowered == "if-none-match")
+        {
             return Err(format!("presigned header {name:?} refused"));
         }
         let header_value = HeaderValue::from_str(value)
@@ -611,6 +616,7 @@ impl RemoteClient {
         upload_permit: ConnectionPermit,
     ) -> DirectUploadOutcome {
         let n_upload_bytes = serialized_data.len() as u64;
+        let phase_start = std::time::Instant::now();
         let grants_url = match Url::parse(&format!("{}/v1/xorbs/grants", self.endpoint)) {
             Ok(url) => url,
             Err(err) => {
@@ -704,6 +710,8 @@ impl RemoteClient {
         let put_client = self.bucket_http_client.clone();
         let api_tag = "s3::put_staged_xorb";
         let body = serialized_data.clone();
+        let grant_ms = phase_start.elapsed().as_millis() as u64;
+        let put_start = std::time::Instant::now();
         let put_result = RetryWrapper::new(self.ctx.clone(), api_tag)
             .log_errors_as_info()
             .with_redacted_url()
@@ -748,6 +756,8 @@ impl RemoteClient {
         };
         let client = self.authenticated_http_client.clone();
         let api_tag = "cas::xorb_commit";
+        let put_ms = put_start.elapsed().as_millis() as u64;
+        let commit_start = std::time::Instant::now();
         let commit_response: Result<XorbGrantResponse> = RetryWrapper::new(self.ctx.clone(), api_tag)
             .log_errors_as_info()
             .run_and_extract_json(move || {
@@ -783,6 +793,17 @@ impl RemoteClient {
 
         // Progress is reported once the verdict is in: a fallback after the PUT streams the same
         // bytes again through CAS and reports them there.
+        event!(
+            INFORMATION_LOG_LEVEL,
+            call_id,
+            %hash,
+            size = n_upload_bytes,
+            grant_ms,
+            put_ms,
+            commit_ms = commit_start.elapsed().as_millis() as u64,
+            status = ?commit.status,
+            "Direct xorb upload phases",
+        );
         match commit.status {
             XorbCommitStatus::Inserted => {
                 upload_reporter.report_progress(n_upload_bytes as usize);
