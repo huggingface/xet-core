@@ -60,6 +60,9 @@ pub struct RemoteClient {
     /// Xorbs staged through the direct path whose commit has not been asked for yet. Flushed by
     /// [`RemoteClient::flush_pending_commits`]; never held across an await.
     pending_commits: Mutex<Vec<PendingCommit>>,
+    /// Read-locked for the duration of every commit call, so the barrier in
+    /// [`RemoteClient::flush_pending_commits`] can wait for the calls other tasks have in flight.
+    commits_in_flight: tokio::sync::RwLock<()>,
     /// Authenticated client with no read_timeout, used for shard uploads where server-side
     /// processing time scales with file entry count and can exceed the global read_timeout.
     #[cfg(not(target_family = "wasm"))]
@@ -130,6 +133,7 @@ impl RemoteClient {
             bucket_http_client,
             direct_upload_unavailable: AtomicBool::new(false),
             pending_commits: Mutex::new(Vec::new()),
+            commits_in_flight: tokio::sync::RwLock::new(()),
             #[cfg(not(target_family = "wasm"))]
             shard_upload_http_client: Arc::new(
                 http_client::build_auth_http_client_no_read_timeout(
@@ -540,7 +544,7 @@ impl RemoteClient {
     }
 }
 
-/// A flush is triggered by the upload that brings the pending queue to this length, so the queue
+/// The upload that brings the pending queue to this length commits the queued batch, so the queue
 /// stays bounded and a verdict never lags more than a few xorbs behind its PUT.
 const FLUSH_AT: usize = 8;
 /// The grants endpoint accepts at most this many commits per call.
@@ -868,35 +872,47 @@ impl RemoteClient {
         queue.len()
     }
 
-    /// Asks CAS for a verdict on every staged xorb whose commit is pending, in batches of at most
-    /// [`MAX_COMMITS_PER_CALL`]. `inserted` and `exists` complete the upload; `missing`, or no
-    /// verdict at all, re-uploads the xorb through CAS; `rejected` is an error, returned once the
-    /// other verdicts of the batch are processed. A commit call that fails before delivering
-    /// verdicts falls back to CAS for the whole batch.
+    /// Takes at most `max` queued commits, oldest first.
+    fn take_pending_commits(&self, max: usize) -> Vec<PendingCommit> {
+        let mut queue = self.pending_commits();
+        let n = queue.len().min(max);
+        queue.drain(..n).collect()
+    }
+
+    /// Commits the xorbs queued when the call starts, in batches of at most
+    /// [`MAX_COMMITS_PER_CALL`], then waits for the commit calls other tasks have in flight. On
+    /// return, every xorb staged before the call has a verdict. Xorbs staged by uploads that are
+    /// still running when the call starts are left to the next flush: the shard about to be
+    /// uploaded cannot reference them.
+    ///
+    /// `inserted` and `exists` complete the upload; `missing`, or no verdict at all, re-uploads
+    /// the xorb through CAS; `rejected` is an error, returned once the other verdicts of the batch
+    /// are processed. A commit call that fails before delivering verdicts falls back to CAS for
+    /// the whole batch.
     ///
     /// [`Client::upload_shard`] calls this first, so a shard is only registered once every xorb it
     /// references has a verdict.
     pub async fn flush_pending_commits(&self) -> Result<()> {
         let mut first_error = None;
-        loop {
-            let batch: Vec<PendingCommit> = {
-                let mut queue = self.pending_commits();
-                let n = queue.len().min(MAX_COMMITS_PER_CALL);
-                queue.drain(..n).collect()
-            };
+        let mut remaining = self.pending_commits().len();
+        while remaining > 0 {
+            let batch = self.take_pending_commits(remaining.min(MAX_COMMITS_PER_CALL));
             if batch.is_empty() {
                 break;
             }
+            remaining -= batch.len();
             if let Err(err) = self.commit_batch(batch).await
                 && first_error.is_none()
             {
                 first_error = Some(err);
             }
         }
+        drop(self.commits_in_flight.write().await);
         first_error.map_or(Ok(()), Err)
     }
 
     async fn commit_batch(&self, batch: Vec<PendingCommit>) -> Result<()> {
+        let _in_flight = self.commits_in_flight.read().await;
         let flush_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
         let batch_size = batch.len();
         let commit_start = std::time::Instant::now();
@@ -1393,8 +1409,14 @@ impl Client for RemoteClient {
                         n_bytes: n_upload_bytes,
                         prefix: prefix.to_string(),
                     });
+                    // One call for the batch that just filled up. Draining until the queue is
+                    // empty would keep this task on the hook for every xorb its neighbours stage
+                    // meanwhile, one small commit call at a time.
                     if queued >= FLUSH_AT {
-                        self.flush_pending_commits().await?;
+                        let batch = self.take_pending_commits(MAX_COMMITS_PER_CALL);
+                        if !batch.is_empty() {
+                            self.commit_batch(batch).await?;
+                        }
                     }
                     return Ok(n_upload_bytes);
                 },

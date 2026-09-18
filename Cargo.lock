@@ -6000,7 +6000,6 @@ version = "1.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
  "bytes",
  "chrono",
  "clap",
@@ -6014,7 +6013,6 @@ dependencies = [
  "pyo3",
  "rand 0.10.1",
  "regex",
- "reqwest",
  "serde",
  "serde_json",
  "serial_test",
