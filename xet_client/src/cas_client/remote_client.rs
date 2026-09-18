@@ -558,7 +558,6 @@ struct PendingCommit {
     hash: MerkleHash,
     grant_id: String,
     bytes: Bytes,
-    n_bytes: u64,
     prefix: String,
 }
 
@@ -624,6 +623,61 @@ fn presigned_put_request(grant: &XorbGrant, allow_http: bool) -> std::result::Re
 }
 
 impl RemoteClient {
+    /// Asks CAS for a staging grant bound to `bytes` and turns it into the presigned PUT. A 404
+    /// on the grants endpoint switches the direct path off for the rest of the session.
+    async fn obtain_grant(
+        &self,
+        hash: MerkleHash,
+        bytes: &Bytes,
+    ) -> std::result::Result<(Url, HeaderMap, XorbGrant), String> {
+        let url = Url::parse(&format!("{}/v1/xorbs/grants", self.endpoint))
+            .map_err(|err| format!("invalid grants url: {err}"))?;
+
+        // The grant binds the presigned PUT to these exact bytes.
+        let grant_request = XorbGrantRequest {
+            grants: vec![XorbGrantItem {
+                hash: hash.into(),
+                size: bytes.len() as u64,
+                sha256: BASE64_STANDARD.encode(Sha256::digest(bytes)),
+            }],
+            commits: vec![],
+        };
+        let grant_body = serde_json::to_vec(&grant_request)
+            .map(Bytes::from)
+            .map_err(|err| format!("could not encode grant request: {err}"))?;
+
+        let client = self.authenticated_http_client.clone();
+        let api_tag = "cas::xorb_grant";
+        let response: XorbGrantResponse = RetryWrapper::new(self.ctx.clone(), api_tag)
+            .log_errors_as_info()
+            .run_and_extract_json(move || {
+                client
+                    .post(url.clone())
+                    .with_extension(Api(api_tag))
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(grant_body.clone())
+                    .send()
+            })
+            .await
+            .map_err(|err| {
+                if err.status() == Some(StatusCode::NOT_FOUND) {
+                    self.direct_upload_unavailable.store(true, Ordering::Relaxed);
+                    "no direct upload on this endpoint (404 on grants); direct path off for this session".to_string()
+                } else {
+                    format!("grant request failed: {err}")
+                }
+            })?;
+        let grant = response
+            .grants
+            .into_iter()
+            .find(|grant| MerkleHash::from(grant.hash) == hash)
+            .ok_or_else(|| "grant response carried no grant for this xorb".to_string())?;
+
+        let allow_http = self.endpoint.starts_with("http://");
+        let (put_url, put_headers) = presigned_put_request(&grant, allow_http)?;
+        Ok((put_url, put_headers, grant))
+    }
+
     /// Stages the chunks-only serialized xorb (exactly the bytes `POST /v1/xorbs` would carry) in
     /// the bucket through a presigned PUT obtained from CAS. The commit, where CAS validates the
     /// staged bytes and writes the canonical object with its footer, is left to
@@ -641,70 +695,11 @@ impl RemoteClient {
     ) -> DirectUploadOutcome {
         let n_upload_bytes = serialized_data.len() as u64;
         let phase_start = std::time::Instant::now();
-        let url = match Url::parse(&format!("{}/v1/xorbs/grants", self.endpoint)) {
-            Ok(url) => url,
-            Err(err) => {
+        let (put_url, put_headers, grant) = match self.obtain_grant(hash, &serialized_data).await {
+            Ok(grant) => grant,
+            Err(reason) => {
                 return DirectUploadOutcome::Fallback {
-                    reason: format!("invalid grants url: {err}"),
-                    permit: Some(upload_permit),
-                };
-            },
-        };
-
-        // The grant binds the presigned PUT to these exact bytes.
-        let sha256 = BASE64_STANDARD.encode(Sha256::digest(&serialized_data));
-        let grant_request = XorbGrantRequest {
-            grants: vec![XorbGrantItem {
-                hash: hash.into(),
-                size: n_upload_bytes,
-                sha256,
-            }],
-            commits: vec![],
-        };
-        let grant_body = match serde_json::to_vec(&grant_request) {
-            Ok(body) => Bytes::from(body),
-            Err(err) => {
-                return DirectUploadOutcome::Fallback {
-                    reason: format!("could not encode grant request: {err}"),
-                    permit: Some(upload_permit),
-                };
-            },
-        };
-
-        let client = self.authenticated_http_client.clone();
-        let api_tag = "cas::xorb_grant";
-        let grant_response: Result<XorbGrantResponse> = RetryWrapper::new(self.ctx.clone(), api_tag)
-            .log_errors_as_info()
-            .run_and_extract_json(move || {
-                client
-                    .post(url.clone())
-                    .with_extension(Api(api_tag))
-                    .header(CONTENT_TYPE, "application/json")
-                    .body(grant_body.clone())
-                    .send()
-            })
-            .await;
-        let grant = match grant_response {
-            Ok(response) => match response.grants.into_iter().find(|grant| MerkleHash::from(grant.hash) == hash) {
-                Some(grant) => grant,
-                None => {
-                    return DirectUploadOutcome::Fallback {
-                        reason: "grant response carried no grant for this xorb".to_string(),
-                        permit: Some(upload_permit),
-                    };
-                },
-            },
-            Err(err) => {
-                if err.status() == Some(StatusCode::NOT_FOUND) {
-                    self.direct_upload_unavailable.store(true, Ordering::Relaxed);
-                    return DirectUploadOutcome::Fallback {
-                        reason: "no direct upload on this endpoint (404 on grants); direct path off for this session"
-                            .to_string(),
-                        permit: Some(upload_permit),
-                    };
-                }
-                return DirectUploadOutcome::Fallback {
-                    reason: format!("grant request failed: {err}"),
+                    reason,
                     permit: Some(upload_permit),
                 };
             },
@@ -720,16 +715,6 @@ impl RemoteClient {
         );
 
         // The PUT goes through the plain client: the CAS bearer token must not reach the bucket.
-        let allow_http = self.endpoint.starts_with("http://");
-        let (put_url, put_headers) = match presigned_put_request(&grant, allow_http) {
-            Ok(request) => request,
-            Err(reason) => {
-                return DirectUploadOutcome::Fallback {
-                    reason,
-                    permit: Some(upload_permit),
-                };
-            },
-        };
         let put_client = self.bucket_http_client.clone();
         let api_tag = "s3::put_staged_xorb";
         let body = serialized_data.clone();
@@ -749,12 +734,6 @@ impl RemoteClient {
             })
             .await;
         if let Err(err) = put_result {
-            // A reqwest error prints its URL, and this one carries the signature: strip the query
-            // before the reason reaches the fallback warning.
-            let err = match err {
-                ClientError::ReqwestMiddlewareError(reqwest_middleware::Error::Reqwest(err)) => ClientError::from(err),
-                other => other,
-            };
             return DirectUploadOutcome::Fallback {
                 reason: format!("staging PUT failed: {err}"),
                 permit: None,
@@ -894,13 +873,10 @@ impl RemoteClient {
     /// references has a verdict.
     pub async fn flush_pending_commits(&self) -> Result<()> {
         let mut first_error = None;
-        let mut remaining = self.pending_commits().len();
-        while remaining > 0 {
-            let batch = self.take_pending_commits(remaining.min(MAX_COMMITS_PER_CALL));
-            if batch.is_empty() {
-                break;
-            }
-            remaining -= batch.len();
+        let mut queued = std::mem::take(&mut *self.pending_commits());
+        while !queued.is_empty() {
+            let batch_len = queued.len().min(MAX_COMMITS_PER_CALL);
+            let batch: Vec<PendingCommit> = queued.drain(..batch_len).collect();
             if let Err(err) = self.commit_batch(batch).await
                 && first_error.is_none()
             {
@@ -943,25 +919,14 @@ impl RemoteClient {
                 .find(|verdict| MerkleHash::from(verdict.hash) == pending.hash && verdict.grant_id == pending.grant_id);
             match verdict {
                 Some(XorbCommitResult {
-                    status: XorbCommitStatus::Inserted,
+                    status: status @ (XorbCommitStatus::Inserted | XorbCommitStatus::Exists),
                     ..
                 }) => log_upload_xorb_completed(
                     pending.call_id,
                     &pending.prefix,
                     pending.hash,
-                    pending.n_bytes,
-                    true,
-                    "direct",
-                ),
-                Some(XorbCommitResult {
-                    status: XorbCommitStatus::Exists,
-                    ..
-                }) => log_upload_xorb_completed(
-                    pending.call_id,
-                    &pending.prefix,
-                    pending.hash,
-                    pending.n_bytes,
-                    false,
+                    pending.bytes.len() as u64,
+                    *status == XorbCommitStatus::Inserted,
                     "direct",
                 ),
                 Some(XorbCommitResult {
@@ -1406,7 +1371,6 @@ impl Client for RemoteClient {
                         hash,
                         grant_id,
                         bytes: serialized_data,
-                        n_bytes: n_upload_bytes,
                         prefix: prefix.to_string(),
                     });
                     // One call for the batch that just filled up. Draining until the queue is
