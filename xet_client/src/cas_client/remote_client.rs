@@ -54,7 +54,8 @@ pub struct RemoteClient {
     http_client: Arc<ClientWithMiddleware>,
     authenticated_http_client: Arc<ClientWithMiddleware>,
     /// Client for the presigned PUTs of the direct upload path: no auth, no logging, no redirects.
-    bucket_http_client: Arc<ClientWithMiddleware>,
+    /// Built only when `xorb.direct_upload` is on.
+    bucket_http_client: Option<Arc<ClientWithMiddleware>>,
     /// Set once the endpoint answered 404 to a grant request: no staging bucket there, so the
     /// direct path is skipped for the rest of the session instead of costing one request per xorb.
     direct_upload_unavailable: AtomicBool,
@@ -121,9 +122,13 @@ impl RemoteClient {
             http_client::build_http_client(&ctx, session_id, unix_socket_path, custom_headers.clone()).unwrap(),
         );
         #[cfg(not(target_family = "wasm"))]
-        let bucket_http_client = Arc::new(http_client::build_bucket_http_client(custom_headers.clone()).unwrap());
+        let bucket_http_client = ctx
+            .config
+            .xorb
+            .direct_upload
+            .then(|| Arc::new(http_client::build_bucket_http_client(custom_headers.clone()).unwrap()));
         #[cfg(target_family = "wasm")]
-        let bucket_http_client = http_client.clone();
+        let bucket_http_client = ctx.config.xorb.direct_upload.then(|| http_client.clone());
 
         Arc::new(Self {
             ctx: ctx.clone(),
@@ -697,6 +702,12 @@ impl RemoteClient {
         upload_reporter: StreamProgressReporter,
         upload_permit: ConnectionPermit,
     ) -> DirectUploadOutcome {
+        let Some(put_client) = self.bucket_http_client.clone() else {
+            return DirectUploadOutcome::Fallback {
+                reason: "no bucket client: direct upload is off".to_string(),
+                permit: Some(upload_permit),
+            };
+        };
         let n_upload_bytes = serialized_data.len() as u64;
         let phase_start = std::time::Instant::now();
         let (put_url, put_headers, grant) = match self.obtain_grant(hash, &serialized_data).await {
@@ -719,7 +730,6 @@ impl RemoteClient {
         );
 
         // The PUT goes through the plain client: the CAS bearer token must not reach the bucket.
-        let put_client = self.bucket_http_client.clone();
         let api_tag = "s3::put_staged_xorb";
         let body = serialized_data.clone();
         let grant_ms = phase_start.elapsed().as_millis() as u64;
