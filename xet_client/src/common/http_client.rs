@@ -249,6 +249,20 @@ pub fn build_http_client(
     build_auth_http_client(ctx, &None, session_id, unix_socket_path, custom_headers)
 }
 
+/// Client for the PUTs a CAS grant points at (a presigned object store URL). No auth, no
+/// request logging (the URL carries a signature), no redirects (a redirect would re-send the
+/// whole body and leak the signed URL as Referer to the next host).
+#[cfg(not(target_family = "wasm"))]
+pub fn build_bucket_http_client(custom_headers: Option<Arc<HeaderMap>>) -> Result<ClientWithMiddleware> {
+    let mut builder = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .referer(false);
+    if let Some(custom_headers) = custom_headers {
+        builder = builder.default_headers((*custom_headers).clone());
+    }
+    Ok(ClientBuilder::new(builder.build()?).build())
+}
+
 /// Helper trait to allow the reqwest_middleware client to optionally add a middleware.
 trait OptionalMiddleware {
     fn maybe_with<M: Middleware>(self, middleware: Option<M>) -> Self;

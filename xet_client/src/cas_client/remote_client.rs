@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use anyhow::anyhow;
 use base64::Engine;
@@ -52,6 +52,11 @@ pub struct RemoteClient {
     dry_run: bool,
     http_client: Arc<ClientWithMiddleware>,
     authenticated_http_client: Arc<ClientWithMiddleware>,
+    /// Client for the presigned PUTs of the direct upload path: no auth, no logging, no redirects.
+    bucket_http_client: Arc<ClientWithMiddleware>,
+    /// Set once the endpoint answered 404 to a grant request: no staging bucket there, so the
+    /// direct path is skipped for the rest of the session instead of costing one request per xorb.
+    direct_upload_unavailable: AtomicBool,
     /// Authenticated client with no read_timeout, used for shard uploads where server-side
     /// processing time scales with file entry count and can exceed the global read_timeout.
     #[cfg(not(target_family = "wasm"))]
@@ -105,14 +110,22 @@ impl RemoteClient {
             custom_headers.as_deref(),
         );
 
+        let http_client = Arc::new(
+            http_client::build_http_client(&ctx, session_id, unix_socket_path, custom_headers.clone()).unwrap(),
+        );
+        #[cfg(not(target_family = "wasm"))]
+        let bucket_http_client = Arc::new(http_client::build_bucket_http_client(custom_headers.clone()).unwrap());
+        #[cfg(target_family = "wasm")]
+        let bucket_http_client = http_client.clone();
+
         Arc::new(Self {
             ctx: ctx.clone(),
             endpoint: endpoint.to_string(),
             dry_run,
             authenticated_http_client,
-            http_client: Arc::new(
-                http_client::build_http_client(&ctx, session_id, unix_socket_path, custom_headers.clone()).unwrap(),
-            ),
+            http_client,
+            bucket_http_client,
+            direct_upload_unavailable: AtomicBool::new(false),
             #[cfg(not(target_family = "wasm"))]
             shard_upload_http_client: Arc::new(
                 http_client::build_auth_http_client_no_read_timeout(
@@ -556,12 +569,25 @@ fn xorb_upload_reporter(
 
 /// Turns a grant into the URL and header map of the presigned PUT. Every header is part of the
 /// SigV4 signature and is forwarded verbatim.
-fn presigned_put_request(grant: &XorbGrant) -> std::result::Result<(Url, HeaderMap), String> {
+/// Turns a grant into the URL and header map of the presigned PUT. CAS is trusted, but a grant
+/// must not turn the client into a relay for arbitrary requests: the URL must be https unless the
+/// CAS endpoint itself is plain http (a local stack), and only the headers a presigned object
+/// store PUT can sign are forwarded.
+fn presigned_put_request(grant: &XorbGrant, allow_http: bool) -> std::result::Result<(Url, HeaderMap), String> {
     let url = Url::parse(&grant.url).map_err(|err| format!("invalid presigned url: {err}"))?;
+    match url.scheme() {
+        "https" => {},
+        "http" if allow_http => {},
+        scheme => return Err(format!("presigned url scheme {scheme:?} refused")),
+    }
     let mut headers = HeaderMap::with_capacity(grant.headers.len());
     for (name, value) in &grant.headers {
         let header_name = HeaderName::from_bytes(name.as_bytes())
             .map_err(|err| format!("invalid presigned header {name:?}: {err}"))?;
+        let lowered = header_name.as_str();
+        if !(lowered.starts_with("x-amz-") || lowered == "content-length" || lowered == "content-type") {
+            return Err(format!("presigned header {name:?} refused"));
+        }
         let header_value = HeaderValue::from_str(value)
             .map_err(|err| format!("invalid value for presigned header {name:?}: {err}"))?;
         headers.insert(header_name, header_value);
@@ -640,6 +666,14 @@ impl RemoteClient {
                 },
             },
             Err(err) => {
+                if err.status() == Some(StatusCode::NOT_FOUND) {
+                    self.direct_upload_unavailable.store(true, Ordering::Relaxed);
+                    return DirectUploadOutcome::Fallback {
+                        reason: "no direct upload on this endpoint (404 on grants); direct path off for this session"
+                            .to_string(),
+                        permit: Some(upload_permit),
+                    };
+                }
                 return DirectUploadOutcome::Fallback {
                     reason: format!("grant request failed: {err}"),
                     permit: Some(upload_permit),
@@ -657,7 +691,8 @@ impl RemoteClient {
         );
 
         // The PUT goes through the plain client: the CAS bearer token must not reach the bucket.
-        let (put_url, put_headers) = match presigned_put_request(&grant) {
+        let allow_http = self.endpoint.starts_with("http://");
+        let (put_url, put_headers) = match presigned_put_request(&grant, allow_http) {
             Ok(request) => request,
             Err(reason) => {
                 return DirectUploadOutcome::Fallback {
@@ -666,7 +701,7 @@ impl RemoteClient {
                 };
             },
         };
-        let put_client = self.http_client.clone();
+        let put_client = self.bucket_http_client.clone();
         let api_tag = "s3::put_staged_xorb";
         let body = serialized_data.clone();
         let put_result = RetryWrapper::new(self.ctx.clone(), api_tag)
@@ -1196,7 +1231,9 @@ impl Client for RemoteClient {
 
         let serialized_data = Bytes::from(std::mem::take(&mut serialized_xorb_object.serialized_data));
 
-        let direct_upload = self.ctx.config.xorb.direct_upload && !self.dry_run;
+        let direct_upload = self.ctx.config.xorb.direct_upload
+            && !self.dry_run
+            && !self.direct_upload_unavailable.load(Ordering::Relaxed);
 
         let upload_permit = if direct_upload {
             let upload_reporter = xorb_upload_reporter(n_upload_bytes, &upload_permit, progress_callback.as_ref());
@@ -1461,6 +1498,14 @@ mod tests {
 
         assert_eq!(result.unwrap(), n_bytes);
         assert_eq!(reported, n_bytes);
+
+        // The 404 is remembered: the next xorb goes straight through CAS (the grants mock
+        // expects exactly one call over the whole test).
+        let second = chunks_only_xorb(4);
+        let (second_hash, second_bytes) = (second.hash, second.serialized_data.len() as u64);
+        mount_cas_upload(&server, second_hash, 1).await;
+        let (result, _) = upload(&client, second).await;
+        assert_eq!(result.unwrap(), second_bytes);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
