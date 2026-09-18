@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -589,13 +590,12 @@ fn xorb_upload_reporter(
     upload_reporter
 }
 
-/// Turns a grant into the URL and header map of the presigned PUT. Every header is part of the
-/// SigV4 signature and is forwarded verbatim.
 /// Turns a grant into the URL and header map of the presigned PUT. CAS is trusted, but a grant
 /// must not turn the client into a relay for arbitrary requests: the URL must be https unless the
-/// CAS endpoint itself is plain http (a local stack), and only the headers a presigned object
-/// store PUT can sign are forwarded (`if-none-match` is how a grant onto the canonical key
-/// forbids overwriting an existing object).
+/// CAS endpoint itself is plain http (a local stack), and the headers are forwarded only if the
+/// URL signed them. `X-Amz-SignedHeaders` in the presigned query is the authority: a grant whose
+/// URL has none, or that carries a header outside that set, is refused. `host` is signed by every
+/// presigned URL but set by the HTTP client, so a grant may not carry it.
 fn presigned_put_request(grant: &XorbGrant, allow_http: bool) -> std::result::Result<(Url, HeaderMap), String> {
     let url = Url::parse(&grant.url).map_err(|err| format!("invalid presigned url: {err}"))?;
     match url.scheme() {
@@ -603,17 +603,21 @@ fn presigned_put_request(grant: &XorbGrant, allow_http: bool) -> std::result::Re
         "http" if allow_http => {},
         scheme => return Err(format!("presigned url scheme {scheme:?} refused")),
     }
+    let mut signed_headers: HashSet<String> = url
+        .query_pairs()
+        .find(|(key, _)| key == "X-Amz-SignedHeaders")
+        .ok_or_else(|| "presigned url carries no X-Amz-SignedHeaders".to_string())?
+        .1
+        .split(';')
+        .map(str::to_ascii_lowercase)
+        .collect();
+    signed_headers.remove("host");
     let mut headers = HeaderMap::with_capacity(grant.headers.len());
     for (name, value) in &grant.headers {
         let header_name = HeaderName::from_bytes(name.as_bytes())
             .map_err(|err| format!("invalid presigned header {name:?}: {err}"))?;
-        let lowered = header_name.as_str();
-        if !(lowered.starts_with("x-amz-")
-            || lowered == "content-length"
-            || lowered == "content-type"
-            || lowered == "if-none-match")
-        {
-            return Err(format!("presigned header {name:?} refused"));
+        if !signed_headers.contains(header_name.as_str()) {
+            return Err(format!("presigned header {name:?} refused: not signed by the url"));
         }
         let header_value = HeaderValue::from_str(value)
             .map_err(|err| format!("invalid value for presigned header {name:?}: {err}"))?;
@@ -1521,7 +1525,11 @@ mod tests {
             grants: vec![XorbGrant {
                 hash: hash.into(),
                 grant_id: GRANT_ID.to_string(),
-                url: format!("{}{}?X-Amz-Signature=test", server.uri(), staged_path(&hash)),
+                url: format!(
+                    "{}{}?X-Amz-SignedHeaders=host%3Bx-amz-checksum-sha256%3Bx-amz-sdk-checksum-algorithm&X-Amz-Signature=test",
+                    server.uri(),
+                    staged_path(&hash)
+                ),
                 headers: HashMap::from([
                     ("x-amz-checksum-sha256".to_string(), "checksum".to_string()),
                     // Mixed case on purpose: header names are forwarded case-insensitively.
@@ -1857,6 +1865,44 @@ mod tests {
         mount_cas_upload(&server, second_hash, 1).await;
         assert_eq!(upload(&client, second, &reported).await.unwrap(), second_bytes);
         client.flush_pending_commits().await.unwrap();
+    }
+
+    fn grant_with(url: &str, headers: &[(&str, &str)]) -> XorbGrant {
+        XorbGrant {
+            hash: MerkleHash::default().into(),
+            grant_id: GRANT_ID.to_string(),
+            url: url.to_string(),
+            headers: headers
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .collect(),
+            expires_in_secs: 900,
+        }
+    }
+
+    #[test]
+    fn test_presigned_put_forwards_exactly_the_headers_the_url_signed() {
+        let url = "https://bucket.example.com/staging/key?X-Amz-SignedHeaders=host%3Bif-none-match%3Bx-amz-checksum-sha256&X-Amz-Signature=test";
+
+        // Header names are matched case-insensitively; `host` need not be in the grant.
+        let signed = grant_with(url, &[("If-None-Match", "*"), ("x-amz-checksum-sha256", "checksum")]);
+        let (_, headers) = presigned_put_request(&signed, false).unwrap();
+        assert_eq!(headers.len(), 2);
+        assert_eq!(headers.get("if-none-match").unwrap(), "*");
+        assert_eq!(headers.get("x-amz-checksum-sha256").unwrap(), "checksum");
+
+        // A header the URL did not sign is refused, even one the object store would accept.
+        let unsigned_header = grant_with(url, &[("x-amz-storage-class", "STANDARD")]);
+        let refused = presigned_put_request(&unsigned_header, false).unwrap_err();
+        assert!(refused.contains("x-amz-storage-class"), "{refused}");
+
+        // `host` is the HTTP client's to set, never the grant's.
+        let host_header = grant_with(url, &[("host", "other.example.com")]);
+        assert!(presigned_put_request(&host_header, false).is_err());
+
+        // Without the signed set there is no authority to check the headers against.
+        let no_signed_set = grant_with("https://bucket.example.com/staging/key?X-Amz-Signature=test", &[]);
+        assert!(presigned_put_request(&no_signed_set, false).is_err());
     }
 
     #[test]
