@@ -8,7 +8,8 @@ crate-type = ["cdylib"]
 
 [dependencies]
 xet-core-structures = { path = "../../xet_core_structures" }
-xet-data = { path = "../../xet_data" }
+# Chunker (content-defined chunking) is upload-side; make the feature explicit (default-on).
+xet-data = { path = "../../xet_data", features = ["upload"] }
 
 getrandom = { version = "0.3", features = ["wasm_js"] }
 serde = { version = "1", features = ["derive"] }

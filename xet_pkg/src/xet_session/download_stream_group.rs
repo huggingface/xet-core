@@ -396,6 +396,7 @@ impl XetDownloadStreamGroup {
 }
 
 #[cfg(test)]
+#[cfg(feature = "upload")]
 mod tests {
     use tempfile::tempdir;
     use xet_data::processing::{Sha256Policy, XetFileInfo};

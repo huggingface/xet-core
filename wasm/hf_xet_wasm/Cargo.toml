@@ -7,7 +7,8 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
-hf-xet = { path = "../../xet_pkg" }
+# The wasm upload API (upload_bytes/upload_stream) needs the upload feature (default-on).
+hf-xet = { path = "../../xet_pkg", features = ["upload"] }
 
 console_error_panic_hook = "0.1"
 console_log = { version = "1.0", features = ["color"] }

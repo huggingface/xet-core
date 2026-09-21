@@ -34,7 +34,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_repr = { workspace = true }
 statrs = { workspace = true }
-tempfile = { workspace = true }
+tempfile = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio-retry = { workspace = true }
 tracing = { workspace = true }
@@ -70,7 +70,12 @@ tower-http = { version = "0.6", features = ["cors"], optional = true }
 [features]
 strict = []
 smoke-test = []
-default = ["rustls-tls"]
+default = ["rustls-tls", "upload"]
+# Upload-side CAS operations: shard upload (V1/V2), xorb upload, dirty-window
+# queries, and the local/simulation test clients. Download-only consumers can
+# disable this with `default-features = false` to compile out the upload code
+# paths and the simulation client dependencies.
+upload = ["dep:tempfile"]
 elevated_information_level = []
 fd-track = ["xet-runtime/fd-track"]
 rustls-tls = ["reqwest/rustls"]
@@ -86,7 +91,9 @@ simulation = [
     "dep:human-bandwidth",
     "dep:tower-http",
     "dep:clap",
+    "dep:tempfile",
     "dep:tracing-subscriber",
+    "upload",
     "xet-core-structures/simulation",
 ]
 
@@ -107,6 +114,7 @@ mockall = { workspace = true }
 httpmock = { workspace = true }
 rand_distr = { workspace = true }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing-test = { workspace = true }
 wiremock = { workspace = true }

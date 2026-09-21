@@ -3,19 +3,20 @@ use std::sync::Arc;
 use bytes::Bytes;
 use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
+#[cfg(feature = "upload")]
 use xet_core_structures::xorb_object::SerializedXorbObject;
 
 use super::adaptive_concurrency::ConnectionPermit;
 use super::progress_tracked_streams::ProgressCallback;
 #[cfg(not(target_family = "wasm"))]
 use super::telemetry::TransferTelemetry;
-use crate::cas_types::{
-    BatchQueryReconstructionResponse, FileChunkHashesResponse, FileRange, HttpRange, QueryReconstructionResponseV2,
-    ShardUploadEvent,
-};
+use crate::cas_types::{BatchQueryReconstructionResponse, FileRange, HttpRange, QueryReconstructionResponseV2};
+#[cfg(feature = "upload")]
+use crate::cas_types::{FileChunkHashesResponse, ShardUploadEvent};
 use crate::error::Result;
 
 /// Progress update delivered to the shard-upload callback.
+#[cfg(feature = "upload")]
 #[derive(Debug)]
 pub enum ShardUploadProgressType<'a> {
     /// Incremental request-body bytes transferred to the server.
@@ -26,6 +27,7 @@ pub enum ShardUploadProgressType<'a> {
     /// NDJSON progress event from the v2 response stream.
     Response(&'a ShardUploadEvent),
 }
+#[cfg(feature = "upload")]
 pub type ShardUploadProgressCallback = Arc<dyn Fn(ShardUploadProgressType) + Send + Sync>;
 
 #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
@@ -78,9 +80,11 @@ pub trait Client: Send + Sync {
     async fn query_for_global_dedup_shard(&self, prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Bytes>>;
 
     /// Acquire an upload permit.
+    #[cfg(feature = "upload")]
     async fn acquire_upload_permit(&self) -> Result<ConnectionPermit>;
 
     /// Upload a new shard. The optional callback receives v2 NDJSON progress events.
+    #[cfg(feature = "upload")]
     async fn upload_shard(
         &self,
         shard_data: bytes::Bytes,
@@ -89,6 +93,7 @@ pub trait Client: Send + Sync {
     ) -> Result<()>;
 
     /// Upload a new xorb. Optional progress callback receives (delta, completed, total) in transfer bytes.
+    #[cfg(feature = "upload")]
     async fn upload_xorb(
         &self,
         prefix: &str,
@@ -104,6 +109,7 @@ pub trait Client: Send + Sync {
     /// the response carries only `windows.len()` dirty windows and `windows.len() + 1` gap
     /// subtrees, which the client merges with locally-recomputed window subtrees to obtain the
     /// new file hash.
+    #[cfg(feature = "upload")]
     async fn get_file_chunk_hashes(
         &self,
         file_id: &MerkleHash,

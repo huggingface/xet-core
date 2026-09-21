@@ -13,11 +13,14 @@
 //! build upload commits or download groups:
 //!
 //! ```rust,no_run
-//! use xet::xet_session::{Sha256Policy, XetFileInfo, XetSessionBuilder};
+//! use xet::xet_session::XetSessionBuilder;
 //!
 //! # fn example() -> Result<(), xet::xet_session::SessionError> {
 //! let session = XetSessionBuilder::new().build()?;
 //!
+//! # #[cfg(feature = "upload")]
+//! # {
+//! # use xet::xet_session::{Sha256Policy, XetFileInfo};
 //! // Upload a file
 //! let commit = session
 //!     .new_upload_commit()?
@@ -29,12 +32,14 @@
 //!
 //! // Download a file using the metadata from the upload
 //! let meta = report.uploads.values().next().unwrap();
+//! let info: XetFileInfo = meta.xet_info.clone();
 //! let group = session
 //!     .new_file_download_group()?
 //!     .with_token_info("read-token", 1_700_000_000)
 //!     .build_blocking()?;
-//! group.download_file_to_path_blocking(meta.xet_info.clone(), "out/file.bin".into())?;
+//! group.download_file_to_path_blocking(info, "out/file.bin".into())?;
 //! group.finish_blocking()?;
+//! # }
 //! # Ok(())
 //! # }
 //! ```
@@ -49,9 +54,19 @@
 //! `_blocking` variants and `upload_from_path` / `download_file_to_path`,
 //! all of which are non-wasm-only — wasm cannot block the host thread and
 //! has no filesystem. On wasm the supported entry points are the async
-//! variants of [`new_upload_commit`](xet_session::XetSession::new_upload_commit)
-//! (with [`upload_bytes`](xet_session::XetUploadCommit::upload_bytes) /
-//! [`upload_stream`](xet_session::XetUploadCommit::upload_stream)) and
+//! variants of
+#![cfg_attr(
+    feature = "upload",
+    doc = "[`new_upload_commit`](xet_session::XetSession::new_upload_commit)"
+)]
+#![cfg_attr(
+    feature = "upload",
+    doc = "(with [`upload_bytes`](xet_session::XetUploadCommit::upload_bytes) /"
+)]
+#![cfg_attr(
+    feature = "upload",
+    doc = "[`upload_stream`](xet_session::XetUploadCommit::upload_stream)) and"
+)]
 //! [`new_download_stream_group`](xet_session::XetSession::new_download_stream_group)
 //! (with [`download_stream`](xet_session::XetDownloadStreamGroup::download_stream)).
 //! The `legacy` module and `XetSession::new_file_download_group` (along

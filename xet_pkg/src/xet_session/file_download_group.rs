@@ -188,8 +188,8 @@ impl XetFileDownloadGroup {
     ///
     /// # Parameters
     ///
-    /// * `file_info` – Content-addressed hash and size returned by a previous
-    ///   [`XetUploadCommit::commit`](crate::xet_session::XetUploadCommit::commit).
+    /// * `file_info` – Content-addressed hash and size returned by a previous upload commit (`XetUploadCommit::commit`
+    ///   with the `upload` feature enabled).
     /// * `dest_path` – Local path where the downloaded file will be written. Parent directories are created
     ///   automatically.
     ///
@@ -269,6 +269,7 @@ impl XetFileDownloadGroup {
 
     /// Returns `true` if [`finish`](Self::finish) has been called and completed.
     #[cfg(test)]
+    #[cfg(feature = "upload")]
     fn is_finished(&self) -> bool {
         matches!(self.task_runtime.status(), Ok(XetTaskState::Completed))
     }
@@ -441,6 +442,7 @@ impl XetFileDownloadGroupInner {
 }
 
 #[cfg(test)]
+#[cfg(feature = "upload")]
 mod tests {
     use std::path::PathBuf;
     use std::sync::mpsc;

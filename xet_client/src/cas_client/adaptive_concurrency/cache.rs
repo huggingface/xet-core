@@ -16,12 +16,14 @@ const CACHE_KEY: &str = "cas_client::concurrency_controllers";
 
 #[derive(Default)]
 struct ConcurrencyControllerCache {
+    #[cfg(feature = "upload")]
     upload: Mutex<HashMap<String, Arc<AdaptiveConcurrencyController>>>,
     download: Mutex<HashMap<String, Arc<AdaptiveConcurrencyController>>>,
 }
 
 /// Returns the shared upload concurrency controller for this (ctx, endpoint) pair,
 /// creating it on first use.
+#[cfg(feature = "upload")]
 pub fn upload_controller(ctx: &XetContext, endpoint: &str) -> Arc<AdaptiveConcurrencyController> {
     let cache: Arc<ConcurrencyControllerCache> = ctx.common.cache_get_or_create(CACHE_KEY, Default::default);
     let mut map = cache.upload.lock().unwrap();
@@ -42,6 +44,7 @@ pub fn download_controller(ctx: &XetContext, endpoint: &str) -> Arc<AdaptiveConc
 
 #[cfg(test)]
 #[cfg(not(target_family = "wasm"))]
+#[cfg(feature = "upload")]
 mod tests {
     use super::*;
 

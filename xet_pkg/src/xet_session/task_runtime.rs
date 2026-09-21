@@ -180,6 +180,7 @@ impl TaskRuntime {
         Ok(status)
     }
 
+    #[cfg(feature = "upload")]
     pub(super) fn background_success<T: Clone>(&self, state: &tokio::sync::Mutex<BackgroundTaskState<T>>) -> Option<T> {
         let guard = state.try_lock().ok()?;
         match &*guard {

@@ -8,8 +8,12 @@ use std::sync::Arc;
 use xet_client::cas_client::{Client, Direction, TransferTelemetry};
 
 use super::outcome::{ERROR_CLASS_NONE, Outcome};
-use super::payload::{CommonInputs, CommonMetrics, DownloadMetrics, TransferIdentity, UploadMetrics};
+#[cfg(feature = "upload")]
+use super::payload::UploadMetrics;
+use super::payload::{CommonInputs, CommonMetrics, DownloadMetrics, TransferIdentity};
+#[cfg(feature = "upload")]
 use crate::deduplication::DeduplicationMetrics;
+#[cfg(feature = "upload")]
 use crate::error::DataError;
 use crate::progress_tracking::GroupProgressReport;
 
@@ -30,6 +34,7 @@ pub(crate) fn telemetry_of(client: &Arc<dyn Client>) -> Option<Arc<TransferTelem
 ///
 /// The session's own failure wins when there is one, matching what the caller returns: it takes the
 /// finalize error in preference to the one it was already holding.
+#[cfg(feature = "upload")]
 fn classify<T>(
     result: &Result<T, DataError>,
     reported_failure: Option<(Outcome, &'static str)>,
@@ -42,6 +47,7 @@ fn classify<T>(
 }
 
 /// Everything an upload document needs beyond the transfer's own identity.
+#[cfg(feature = "upload")]
 pub(crate) struct UploadSnapshot<'a> {
     pub progress: &'a GroupProgressReport,
     pub dedup: &'a DeduplicationMetrics,
@@ -54,6 +60,7 @@ pub(crate) struct UploadSnapshot<'a> {
 }
 
 /// Builds an upload document.
+#[cfg(feature = "upload")]
 fn upload_metrics(
     telemetry: &TransferTelemetry,
     snapshot: &UploadSnapshot<'_>,
@@ -116,6 +123,7 @@ fn to_value<T: serde::Serialize>(metrics: T) -> serde_json::Value {
 }
 
 /// Emits an upload session's terminal document, waiting up to `final_flush_timeout`.
+#[cfg(feature = "upload")]
 pub(crate) async fn emit_upload_terminal<T>(
     client: &Arc<dyn Client>,
     result: &Result<T, DataError>,
@@ -131,6 +139,7 @@ pub(crate) async fn emit_upload_terminal<T>(
 }
 
 /// Emits an upload session's terminal document from `Drop`, without waiting.
+#[cfg(feature = "upload")]
 pub(crate) fn emit_upload_abandoned(client: &Arc<dyn Client>, snapshot: UploadSnapshot<'_>) {
     let Some(telemetry) = telemetry_of(client) else {
         return;
@@ -191,6 +200,7 @@ pub(crate) fn emit_download_abandoned(
 }
 
 /// Starts the heartbeat for an upload session.
+#[cfg(feature = "upload")]
 pub(crate) fn start_upload_heartbeat(
     ctx: &xet_runtime::core::XetContext,
     session: &Arc<crate::processing::FileUploadSession>,
@@ -252,6 +262,7 @@ pub(crate) fn start_download_heartbeat(
 }
 
 #[cfg(test)]
+#[cfg(feature = "upload")]
 mod tests {
     use super::*;
 

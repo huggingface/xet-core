@@ -2,17 +2,28 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use http::header::HeaderMap;
-use tracing::{Instrument, Span, info_span, instrument};
+#[cfg(feature = "upload")]
+use tracing::{Instrument, info_span};
+use tracing::{Span, instrument};
 use xet_client::cas_client::auth::TokenRefresher;
+#[cfg(feature = "upload")]
+use xet_data::processing::data_client::clean_bytes;
+use xet_data::processing::data_client::default_config;
+#[cfg(feature = "upload")]
 pub use xet_data::processing::data_client::hash_files_async;
-use xet_data::processing::data_client::{clean_bytes, default_config};
-use xet_data::processing::{FileDownloadSession, FileUploadSession, Sha256Policy, XetFileInfo};
+use xet_data::processing::{FileDownloadSession, XetFileInfo};
+#[cfg(feature = "upload")]
+use xet_data::processing::{FileUploadSession, Sha256Policy};
 use xet_data::{DataError, Result};
 use xet_runtime::core::XetContext;
+#[cfg(feature = "upload")]
 use xet_runtime::core::par_utils::run_constrained_with_semaphore;
 
-use super::progress_tracking::{GroupProgressCallbackUpdater, ItemProgressCallbackUpdater, TrackingProgressUpdater};
+#[cfg(feature = "upload")]
+use super::progress_tracking::GroupProgressCallbackUpdater;
+use super::progress_tracking::{ItemProgressCallbackUpdater, TrackingProgressUpdater};
 
+#[cfg(feature = "upload")]
 #[allow(clippy::too_many_arguments)]
 #[instrument(skip_all, name = "data_client::upload_bytes", fields(session_id = tracing::field::Empty, num_files=file_contents.len()))]
 pub async fn upload_bytes_async(
@@ -64,6 +75,7 @@ pub async fn upload_bytes_async(
     Ok(files)
 }
 
+#[cfg(feature = "upload")]
 #[allow(clippy::too_many_arguments)]
 #[instrument(skip_all, name = "data_client::upload_files",
     fields(session_id = tracing::field::Empty,

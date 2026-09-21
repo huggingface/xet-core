@@ -452,6 +452,7 @@ fn default_progress_updater() -> Option<Arc<ItemProgressUpdater>> {
 }
 
 #[cfg(test)]
+#[cfg(feature = "upload")]
 mod tests {
     use std::io::{Cursor, Write};
     use std::sync::Arc;

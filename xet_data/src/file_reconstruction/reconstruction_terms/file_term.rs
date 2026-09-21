@@ -351,6 +351,7 @@ pub async fn retrieve_file_term_block(
 }
 
 #[cfg(test)]
+#[cfg(feature = "upload")]
 mod tests {
     use std::sync::Arc;
 

@@ -18,6 +18,7 @@ use super::errors::SessionError;
 #[cfg(not(target_family = "wasm"))]
 use super::file_download_group::XetFileDownloadGroupBuilder;
 use super::task_runtime::{TaskRuntime, XetTaskState};
+#[cfg(feature = "upload")]
 use super::upload_commit::XetUploadCommitBuilder;
 
 /// All shared state for a session.
@@ -72,6 +73,8 @@ pub struct XetSessionInner {
 /// # use xet::xet_session::XetSessionBuilder;
 /// let session = XetSessionBuilder::new().build()?;
 ///
+/// # #[cfg(feature = "upload")]
+/// # {
 /// // Upload token (write access)
 /// let mut upload_headers = HeaderMap::new();
 /// upload_headers.insert("Authorization", "Bearer hub-write-token".parse().unwrap());
@@ -81,6 +84,7 @@ pub struct XetSessionInner {
 ///     .with_token_info("CAS_WRITE_JWT", 900)
 ///     .with_token_refresh_url("https://huggingface.co/api/repos/token/write", upload_headers)
 ///     .build_blocking()?;
+/// # }
 ///
 /// // File download token (read access)
 /// let mut dl_headers = HeaderMap::new();
@@ -214,7 +218,10 @@ impl XetSessionBuilder {
 ///
 /// 1. Create a session with [`XetSessionBuilder`].
 /// 2. Create operations:
-///    - uploads via [`new_upload_commit`](Self::new_upload_commit) → [`XetUploadCommitBuilder`] → [`XetUploadCommit`]
+#[cfg_attr(
+    feature = "upload",
+    doc = "    - uploads via [`new_upload_commit`](Self::new_upload_commit) → [`XetUploadCommitBuilder`] → [`XetUploadCommit`]"
+)]
 ///    - file downloads via [`new_file_download_group`](Self::new_file_download_group) → [`XetFileDownloadGroupBuilder`]
 ///      → [`XetFileDownloadGroup`]
 ///    - streaming downloads via [`new_download_stream_group`](Self::new_download_stream_group) →
@@ -255,6 +262,7 @@ impl XetSession {
     /// [`build_blocking`](XetUploadCommitBuilder::build_blocking) (sync).
     ///
     /// Returns `Err(SessionError::UserCancelled)` if the session has been aborted.
+    #[cfg(feature = "upload")]
     pub fn new_upload_commit(&self) -> Result<XetUploadCommitBuilder, SessionError> {
         self.inner.task_runtime.check_state("new_upload_commit")?;
         #[cfg(feature = "fd-track")]
@@ -364,6 +372,7 @@ impl XetSession {
     }
 
     #[cfg(test)]
+    #[cfg(feature = "upload")]
     pub(super) fn check_alive(&self) -> Result<(), SessionError> {
         if self.inner.ctx.runtime.in_sigint_shutdown() {
             return Err(SessionError::KeyboardInterrupt);
@@ -389,6 +398,7 @@ impl XetSession {
 }
 
 #[cfg(test)]
+#[cfg(feature = "upload")]
 mod tests {
     use tempfile::tempdir;
     use xet_data::processing::{Sha256Policy, XetFileInfo};

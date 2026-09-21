@@ -23,6 +23,7 @@ use serde::Serialize;
 use xet_client::cas_client::{Direction, TransferTelemetry};
 
 use super::outcome::Outcome;
+#[cfg(feature = "upload")]
 use crate::deduplication::DeduplicationMetrics;
 use crate::progress_tracking::GroupProgressReport;
 
@@ -176,6 +177,7 @@ impl CommonMetrics {
 }
 
 /// Upload documents: [`CommonMetrics`] plus dedup effectiveness and shard finalization.
+#[cfg(feature = "upload")]
 #[derive(Debug, Clone, Serialize)]
 pub struct UploadMetrics {
     #[serde(flatten)]
@@ -209,6 +211,7 @@ pub struct UploadMetrics {
     pub finalize_ms: u64,
 }
 
+#[cfg(feature = "upload")]
 impl UploadMetrics {
     pub fn new(
         common: CommonMetrics,
@@ -270,6 +273,7 @@ impl DownloadMetrics {
 }
 
 #[cfg(test)]
+#[cfg(feature = "upload")]
 mod tests {
     use serde_json::Value;
 

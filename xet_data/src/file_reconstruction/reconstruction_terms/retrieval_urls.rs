@@ -163,6 +163,7 @@ impl URLProvider for XorbURLProvider {
 }
 
 #[cfg(test)]
+#[cfg(feature = "upload")]
 mod tests {
     use std::sync::Arc;
 

@@ -10,6 +10,7 @@
 pub mod error;
 pub use error::{DataError, Result};
 
+#[cfg(feature = "upload")]
 pub mod deduplication;
 pub mod file_reconstruction;
 pub mod processing;

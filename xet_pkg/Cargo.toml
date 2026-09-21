@@ -35,6 +35,20 @@ required-features = ["internal-tools"]
 name = "test_xtool_cli"
 required-features = ["internal-tools"]
 
+# These integration tests exercise the upload API (or seed fixtures through it),
+# so they require the `upload` feature.
+[[test]]
+name = "test_download_telemetry"
+required-features = ["upload"]
+
+[[test]]
+name = "test_legacy_data_client"
+required-features = ["upload"]
+
+[[test]]
+name = "test_xet_session"
+required-features = ["upload"]
+
 # The examples are CLIs built on clap, which is only available with this feature.
 [[example]]
 name = "example"
@@ -69,11 +83,17 @@ walkdir = { workspace = true, optional = true }
 uuid = { workspace = true, features = ["v7"] }
 
 [features]
-default = ["rustls-tls"]
+default = ["rustls-tls", "upload"]
 smoke-test = []
+# Upload functionality: upload commits, chunking/deduplication, and the CAS
+# shard/xorb upload pipeline. Download-only consumers can disable this with
+# `default-features = false` (keeping any TLS feature they need) to compile out
+# the upload code paths across hf-xet, xet-data, and xet-client.
+upload = ["xet-data/upload", "xet-client/upload"]
 # Internal tooling (the `xtool` binary). Off by default so the library
-# still compiles for wasm32-unknown-unknown.
-internal-tools = ["dep:clap", "dep:url", "dep:walkdir"]
+# still compiles for wasm32-unknown-unknown. xtool exercises uploads, so it
+# requires the upload feature.
+internal-tools = ["dep:clap", "dep:url", "dep:walkdir", "upload"]
 fd-track = ["xet-runtime/fd-track", "xet-client/fd-track", "xet-data/fd-track"]
 python = ["xet-runtime/python", "xet-data/python", "dep:pyo3"]
 simulation = ["xet-client/simulation"]

@@ -1,5 +1,16 @@
 # Plan: `upload` feature flag for `hf-xet`
 
+> **Implementation status (2025-09-21):** implemented on branch
+> `feat/upload-feature-flag`. Key deviation from the original plan discovered
+> during implementation: **`xet_core_structures` is NOT gated** — the audit
+> revealed that downloads deserialize xorb-object term data (BG4 regroup +
+> lz4 decompress), so `xorb_object` (and `lz4_flex`/`countio`) are shared
+> between upload and download. The `upload` feature therefore starts at the
+> `xet-client`/`xet-data` level and sheds `gearhash`, `sha2` (xet-data) and
+> the simulation-client `tempfile` dep (xet-client). `multipart` is also
+> shared (used by V2 multi-range download responses). See
+> `api_changes/update_260921_upload_feature_flag.md` for the full record.
+
 Goal: add an `upload` cargo feature to the published `hf-xet` crate (xet_pkg), **enabled by
 default**, that — when disabled — compiles out all upload functionality and the dependencies
 only uploads need, leaving a download-only (smaller) build.
