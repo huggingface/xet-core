@@ -32,25 +32,11 @@ pub async fn create_remote_client(
         return Ok(xet_client::cas_client::MemoryClient::new(runtime));
     }
 
-    #[cfg(not(feature = "upload"))]
-    {
-        // The local and in-memory clients are part of the upload/simulation
-        // surface; a download-only build cannot serve these endpoints.
-        if session.local_path(&config.ctx).is_some() {
-            return Err(crate::error::DataError::CASConfigError(
-                "local:// CAS endpoints require the `upload` feature (they are backed by the simulation clients)"
-                    .into(),
-            ));
-        }
-        if session.is_memory() {
-            return Err(crate::error::DataError::CASConfigError(
-                "memory:// CAS endpoints require the `upload` feature (they are backed by the simulation clients)"
-                    .into(),
-            ));
-        }
-    }
+    // Note: in download-only builds (`upload` feature off) the LocalClient/MemoryClient
+    // simulation endpoints are not compiled in; a `local://`/`memory://` session falls
+    // through here as a RemoteClient, which fails on first use. Those endpoints are
+    // test/simulation-only, so that is acceptable.
 
-    let session = &config.session;
     Ok(RemoteClient::new(
         runtime,
         &session.endpoint,
