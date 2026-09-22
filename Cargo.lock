@@ -1768,7 +1768,6 @@ version = "0.2.2-dev.1"
 dependencies = [
  "anyhow",
  "async-trait",
- "axum",
  "clap",
  "git-url-parse",
  "git2",
