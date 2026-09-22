@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-use crate::app::Command::Transfer;
 use crate::constants::{GIT_LFS_CUSTOM_TRANSFER_AGENT_NAME, GIT_LFS_CUSTOM_TRANSFER_AGENT_PROGRAM};
 use crate::errors::{GitXetError, Result};
 use crate::utils::process_wrapping::{run_git_captured, run_git_captured_with_input_and_output};
@@ -87,7 +86,7 @@ fn install_impl(location: ConfigLocation, concurrency: Option<u32>) -> Result<()
         [
             loc_profile,
             &format!("lfs.customtransfer.{}.args", GIT_LFS_CUSTOM_TRANSFER_AGENT_NAME),
-            Transfer.name(),
+            "transfer",
         ],
     )?;
 
@@ -113,6 +112,19 @@ fn install_impl(location: ConfigLocation, concurrency: Option<u32>) -> Result<()
         eprintln!("WARNING: git-lfs is not properly installed, please install git-lfs for git-xet to work.");
     }
 
+    Ok(())
+}
+
+pub fn standalone(repo_path: Option<PathBuf>, url: &str) -> Result<()> {
+    super::lfs_client::remote_from_lfs_url(url)?;
+    let wd = repo_path.unwrap_or(std::env::current_dir()?);
+    let args = format!("transfer --lfs-url {}", shell_words::quote(url));
+    run_git_captured(&wd, "config", ["--local", "lfs.customtransfer.xet.args", &args])?;
+    run_git_captured(&wd, "config", ["--local", "lfs.customtransfer.xet.direction", "both"])?;
+    // Keep working when installed in a virtualenv that is not currently activated.
+    let executable = std::env::current_exe()?;
+    run_git_captured(&wd, "config", ["--local", "lfs.customtransfer.xet.path", &executable.to_string_lossy()])?;
+    run_git_captured(&wd, "config", ["--local", &format!("lfs.{url}.standalonetransferagent"), "xet"])?;
     Ok(())
 }
 
