@@ -41,6 +41,14 @@ hf-xet = { version = "1", default-features = false, features = ["rustls-tls"] }
 For native TLS use `native-tls` instead of `rustls-tls`; see `[features]` in
 `Cargo.toml` for the full list.
 
+Because `upload` is a default feature, `default-features = false` turns it off
+even when it was only used to select a TLS backend. Builds that still want
+uploads need to list it explicitly:
+
+```toml
+hf-xet = { version = "1", default-features = false, features = ["native-tls", "upload"] }
+```
+
 ## License
 
 Apache-2.0

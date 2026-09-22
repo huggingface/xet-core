@@ -2,10 +2,14 @@
 //!
 //! Delivery, identity, and timing live in `xet_client`
 //! ([`TransferTelemetry`](xet_client::cas_client::TransferTelemetry)). This module owns the metric
-//! *definitions*, because it is the only place that can see [`DeduplicationMetrics`] and
-//! [`GroupProgressReport`].
+//! *definitions*, because it is the only place that can see
+#![cfg_attr(feature = "upload", doc = "[`DeduplicationMetrics`] and [`GroupProgressReport`].")]
+#![cfg_attr(not(feature = "upload"), doc = "[`GroupProgressReport`].")]
 //!
-//! [`DeduplicationMetrics`]: crate::deduplication::DeduplicationMetrics
+#![cfg_attr(
+    feature = "upload",
+    doc = "[`DeduplicationMetrics`]: crate::deduplication::DeduplicationMetrics"
+)]
 //! [`GroupProgressReport`]: crate::progress_tracking::GroupProgressReport
 //!
 //! # Targets
@@ -23,7 +27,6 @@ mod payload;
 
 #[cfg(all(not(target_family = "wasm"), feature = "upload"))]
 pub(crate) use emit::{UploadSnapshot, emit_upload_abandoned, emit_upload_terminal, start_upload_heartbeat};
-#[cfg(not(target_family = "wasm"))]
 #[cfg(not(target_family = "wasm"))]
 pub(crate) use emit::{emit_download_abandoned, emit_download_terminal, start_download_heartbeat};
 pub use outcome::{ERROR_CLASS_NONE, Outcome, classify_error, error_class, outcome_for_class};

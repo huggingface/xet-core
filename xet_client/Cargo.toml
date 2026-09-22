@@ -78,6 +78,9 @@ default = ["rustls-tls", "upload"]
 upload = ["dep:tempfile"]
 elevated_information_level = []
 fd-track = ["xet-runtime/fd-track"]
+# TLS backend for the underlying reqwest client. Selecting a non-default
+# backend means `default-features = false`, which also drops `upload` -
+# re-enable it unless you want a download-only build.
 rustls-tls = ["reqwest/rustls"]
 rustls-no-provider = ["reqwest/rustls-no-provider"]
 native-tls = ["reqwest/native-tls"]

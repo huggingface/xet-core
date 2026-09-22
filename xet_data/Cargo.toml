@@ -135,6 +135,8 @@ harness = false
 [features]
 default = ["rustls-tls", "upload"]
 # TLS backend for the underlying reqwest client; see the xet-client crate.
+# Selecting a non-default backend means `default-features = false`, which also
+# drops `upload` - re-enable it unless you want a download-only build.
 rustls-tls = ["xet-client/rustls-tls"]
 rustls-no-provider = ["xet-client/rustls-no-provider"]
 native-tls = ["xet-client/native-tls"]

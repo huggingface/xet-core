@@ -52,7 +52,11 @@ jobs:
       - uses: ./.github/actions/cache-rust-build
       - name: Check download-only configuration
         run: |
-          cargo check -p xet-client -p xet-data -p hf-xet \
+          # xet-client gets its own invocation: xet-data's dev-dependency on it
+          # enables `simulation` (and so `upload`), which feature unification
+          # would otherwise leak into a combined `-p xet-client` check.
+          cargo check -p xet-client --no-default-features --features rustls-tls --all-targets
+          cargo check -p xet-data -p hf-xet \
             --no-default-features --features rustls-tls --all-targets
           cargo test --doc -p hf-xet --no-default-features --features rustls-tls
   check-bench-compiles:

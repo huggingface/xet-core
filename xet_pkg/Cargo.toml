@@ -100,6 +100,9 @@ simulation = ["xet-client/simulation"]
 # TLS backend for the underlying reqwest client. rustls is the default; to use
 # the platform-native TLS stack instead, depend on this crate with
 # `default-features = false` and enable `native-tls` (or `native-tls-vendored`).
+# Note that `default-features = false` also drops `upload`, so add it back
+# unless you want a download-only build:
+# `features = ["native-tls", "upload"]`.
 rustls-tls = ["xet-client/rustls-tls", "xet-data/rustls-tls"]
 rustls-no-provider = ["xet-client/rustls-no-provider", "xet-data/rustls-no-provider"]
 native-tls = ["xet-client/native-tls", "xet-data/native-tls"]
