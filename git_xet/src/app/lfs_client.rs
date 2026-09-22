@@ -170,7 +170,9 @@ impl LfsClient {
         let progress = Arc::new(progress);
         if req.size >= PARALLEL_HTTP_MIN_SIZE {
             match parallel_ranged_download(&self.client, &action, path, req.size, progress.clone()).await? {
-                false => tracing::info!(oid = %req.oid, "download URL rejected range requests, using a single connection"),
+                false => {
+                    tracing::info!(oid = %req.oid, "download URL rejected range requests, using a single connection")
+                },
                 true => return verify_download(path, &req.oid, req.size),
             }
         }
@@ -289,7 +291,10 @@ async fn parallel_ranged_download<W: Write + Send + Sync + 'static>(
     }
 
     for task in tasks {
-        match task.await.map_err(|error| GitXetError::internal(format!("ranged task failed: {error}")))?? {
+        match task
+            .await
+            .map_err(|error| GitXetError::internal(format!("ranged task failed: {error}")))??
+        {
             None | Some(true) => {},
             Some(false) => return Ok(false),
         }
@@ -330,10 +335,7 @@ mod tests {
     fn test_plan_ranges_bounds() {
         // the smallest object that takes this path: four equal minimum-size ranges
         let m = PARALLEL_HTTP_MIN_RANGE;
-        assert_eq!(
-            plan_ranges(PARALLEL_HTTP_MIN_SIZE),
-            vec![(0, m), (m, 2 * m), (2 * m, 3 * m), (3 * m, 4 * m)]
-        );
+        assert_eq!(plan_ranges(PARALLEL_HTTP_MIN_SIZE), vec![(0, m), (m, 2 * m), (2 * m, 3 * m), (3 * m, 4 * m)]);
         // large object: capped stream count, contiguous disjoint ranges covering everything
         let size = 773_082_315;
         let ranges = plan_ranges(size);
