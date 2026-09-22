@@ -76,7 +76,8 @@ jobs:
       - uses: ./.github/actions/cache-rust-build
       - name: Check no-logging configuration
         run: |
-          cargo check -p xet-runtime --no-default-features --all-targets
+          # xet-runtime's `logging` is opt-in, so a plain check is the no-logging build.
+          cargo check -p xet-runtime --all-targets
           cargo check -p hf-xet --no-default-features --features rustls-tls --all-targets
           # The point of the feature is shedding the subscriber stack, so fail if a
           # dependency edge quietly puts it back.
