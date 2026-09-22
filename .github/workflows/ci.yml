@@ -233,3 +233,43 @@ jobs:
         run: cargo install --locked cargo-audit
       - name: Run cargo audit
         run: cargo audit -D warnings
+  check-tls-backends:
+    name: Check TLS backend selection
+    permissions:
+      contents: read
+    runs-on:
+      group: aws-general-8-plus
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: huggingface/hf-workflows/.github/actions/setup-hf-registry-proxies@21845492ef47d4e46b07a3b2a6e14fd4748c39cc  # main
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
+        with:
+          toolchain: 1.95.0
+      - uses: ./.github/actions/cache-rust-build
+      - name: Check every TLS backend builds
+        run: |
+          set -euo pipefail
+          # Only rustls-tls, the default, gets exercised by the other jobs. The rest
+          # are reachable only through `default-features = false`, so without this
+          # they can break without anyone noticing.
+          for backend in rustls-tls rustls-no-provider native-tls native-tls-vendored; do
+            echo "::group::$backend"
+            cargo check -p hf-xet --no-default-features --features "$backend" --all-targets
+            echo "::endgroup::"
+          done
+      - name: Check native-tls resolves no rustls stack
+        run: |
+          set -euo pipefail
+          # The reason to pick native-tls is usually that rustls must not be linked
+          # at all (FIPS hosts, for one), so a build that quietly keeps it is a
+          # failure even though it compiles. Resolve the tree in its own step so a
+          # cargo failure aborts rather than reading as "nothing leaked".
+          tree=$(cargo tree -p hf-xet -e normal --no-default-features \
+            --features native-tls --prefix none --no-dedupe)
+          leaked=$(echo "$tree" | awk '{print $1}' | sort -u \
+            | grep -xE 'rustls|ring|aws-lc-rs' || true)
+          if [ -n "$leaked" ]; then
+            echo "native-tls build still resolves:"
+            echo "$leaked"
+            exit 1
+          fi
