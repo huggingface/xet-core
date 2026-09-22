@@ -240,6 +240,10 @@ impl Client for RemoteSimulationClient {
             .await
     }
 
+    async fn flush_pending_uploads(&self) -> Result<()> {
+        self.inner.flush_pending_uploads().await
+    }
+
     async fn get_file_chunk_hashes(
         &self,
         file_id: &xet_core_structures::merklehash::MerkleHash,

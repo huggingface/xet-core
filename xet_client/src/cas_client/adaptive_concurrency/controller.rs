@@ -26,6 +26,8 @@ const PARTIAL_REPORT_WEIGHT_RATIO: f64 = 0.2;
 
 const REFERENCE_SIZE_QUANTILE_Z: f64 = 1.645; // z-score for 95th percentile
 const MIN_SIZE_OBSERVATIONS_FOR_REFERENCE: u64 = 3;
+/// Starting upload concurrency when the direct-to-bucket path is on.
+pub const DIRECT_UPLOAD_INITIAL_CONCURRENCY: usize = 16;
 
 /// The network model state extracted from the concurrency controller.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -349,10 +351,21 @@ impl AdaptiveConcurrencyController {
     /// This will use adaptive concurrency if enabled, otherwise fixed concurrency.
     pub fn new_upload(ctx: XetContext, logging_tag: &'static str) -> Arc<Self> {
         let config = ctx.config.clone();
+        // The direct path PUTs to the bucket, which takes far more parallel streams than a CAS
+        // pod, and a 1 to 4 GB upload is over before a start at 2 has ramped up (30% slower from
+        // Paris; 32 gains nothing over 16). Never below what the configuration asks.
+        let initial_concurrency = if config.xorb.direct_upload {
+            config
+                .client
+                .ac_initial_upload_concurrency
+                .max(DIRECT_UPLOAD_INITIAL_CONCURRENCY)
+        } else {
+            config.client.ac_initial_upload_concurrency
+        };
         Self::new(
             ctx,
             logging_tag,
-            config.client.ac_initial_upload_concurrency,
+            initial_concurrency,
             (config.client.ac_min_upload_concurrency, config.client.ac_max_upload_concurrency),
             config.client.ac_min_bytes_required_for_adjustment.into(),
             config.client.ac_num_transmissions_required_for_adjustment,
