@@ -10,8 +10,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions: {}
+
 jobs:
   fmt:
+    permissions:
+      contents: read
     name: Rustfmt
     runs-on:
       group: aws-general-8-plus
@@ -27,6 +31,8 @@ jobs:
           cargo fmt --manifest-path ./Cargo.toml --all -- --check
           cargo fmt --manifest-path ./hf_xet/Cargo.toml --all -- --check
   detect-unused-dependencies:
+    permissions:
+      contents: read
     runs-on:
       group: aws-general-8-plus
     steps:
@@ -40,6 +46,8 @@ jobs:
       - name: Run cargo-machete
         run: cargo machete
   check-bench-compiles:
+    permissions:
+      contents: read
     name: Check benchmarks compile
     runs-on:
       group: aws-general-8-plus
@@ -54,6 +62,8 @@ jobs:
         run: |
           cargo bench --no-run --workspace --exclude git_xet
   build_and_test-linux:
+    permissions:
+      contents: read
     runs-on:
       group: aws-general-8-plus
     steps:
@@ -65,7 +75,7 @@ jobs:
         with:
           toolchain: 1.95.0
           components: clippy
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version: '3.10'
       - name: Install libpython for pyo3 linking
@@ -98,7 +108,7 @@ jobs:
       - name: Create venv
         run: python3 -m venv .venv
       - name: Build wheel
-        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1
+        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1.50.1
         with:
           command: develop
           sccache: 'true'
@@ -113,6 +123,8 @@ jobs:
           # the build and test steps would update Cargo.lock if it is out of date
           test -z "$(git status --porcelain Cargo.lock)" || (echo "Cargo.lock has uncommitted changes!" && exit 1)
   build_and_test-win:
+    permissions:
+      contents: read
     runs-on: windows-latest
     steps:
       - name: Checkout repository
@@ -128,13 +140,13 @@ jobs:
       - name: Build and Test hf_xet
         run: |
           cd hf_xet && cargo test --verbose --no-fail-fast
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version: '3.10'
       - name: Create venv
         run: python -m venv .venv
       - name: Build wheel
-        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1
+        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1.50.1
         with:
           command: develop
           sccache: 'true'
@@ -146,6 +158,8 @@ jobs:
           pip install pytest
           pytest hf_xet/tests/ -v
   build_and_test-macos:
+    permissions:
+      contents: read
     runs-on: macos-latest
     steps:
       - name: Checkout repository
@@ -165,13 +179,13 @@ jobs:
       - name: Build and Test hf_xet
         run: |
           cd hf_xet && cargo test --verbose --no-fail-fast
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version: '3.10'
       - name: Create venv
         run: python3 -m venv .venv
       - name: Build wheel
-        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1
+        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1.50.1
         with:
           command: develop
           sccache: 'true'
@@ -182,6 +196,8 @@ jobs:
           pip install pytest
           pytest hf_xet/tests/ -v
   build_and_test-wasm:
+    permissions:
+      contents: read
     name: Build WASM
     runs-on:
       group: aws-general-8-plus
@@ -220,6 +236,8 @@ jobs:
           HF_SMOKE_TEST_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
         run: node run.mjs all
   cargo-audit:
+    permissions:
+      contents: read
     name: Cargo Audit
     runs-on:
       group: aws-general-8-plus
