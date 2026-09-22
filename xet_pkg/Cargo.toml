@@ -47,7 +47,7 @@ path = "examples/example_sync.rs"
 required-features = ["internal-tools"]
 
 [dependencies]
-xet-runtime = { version = "1.6.0", path = "../xet_runtime" }
+xet-runtime = { version = "1.6.0", path = "../xet_runtime", default-features = false }
 xet-core-structures = { version = "1.6.0", path = "../xet_core_structures" }
 xet-client = { version = "1.6.0", path = "../xet_client", default-features = false }
 xet-data = { version = "1.6.0", path = "../xet_data", default-features = false }
@@ -69,8 +69,13 @@ walkdir = { workspace = true, optional = true }
 uuid = { workspace = true, features = ["v7"] }
 
 [features]
-default = ["rustls-tls"]
+default = ["rustls-tls", "logging"]
 smoke-test = []
+# Logging setup: [`init_logging`] and the `tracing` subscriber stack behind it.
+# Consumers that install their own subscriber can disable this with
+# `default-features = false` to drop `tracing-subscriber` and
+# `tracing-appender`; the spans and events this crate emits are unaffected.
+logging = ["xet-runtime/logging"]
 # Internal tooling (the `xtool` binary). Off by default so the library
 # still compiles for wasm32-unknown-unknown.
 internal-tools = ["dep:clap", "dep:url", "dep:walkdir"]
@@ -80,6 +85,8 @@ simulation = ["xet-client/simulation"]
 # TLS backend for the underlying reqwest client. rustls is the default; to use
 # the platform-native TLS stack instead, depend on this crate with
 # `default-features = false` and enable `native-tls` (or `native-tls-vendored`).
+# Note that `default-features = false` also drops `logging`, so add it back
+# unless you install your own subscriber: `features = ["native-tls", "logging"]`.
 rustls-tls = ["xet-client/rustls-tls", "xet-data/rustls-tls"]
 rustls-no-provider = ["xet-client/rustls-no-provider", "xet-data/rustls-no-provider"]
 native-tls = ["xet-client/native-tls", "xet-data/native-tls"]

@@ -29,6 +29,29 @@ downloading files with chunk-based deduplication.
 This crate is part of [xet-core](https://github.com/huggingface/xet-core),
 the Rust backend for [huggingface_hub](https://github.com/huggingface/huggingface_hub).
 
+## Feature flags
+
+`logging` (on by default) provides [`init_logging`], which installs the global
+`tracing` subscriber along with the console, rolling-file, and JSON sinks.
+Consumers that install their own subscriber can turn it off, dropping
+`tracing-subscriber`, `tracing-appender`, and their transitive dependencies -
+16 crates in total:
+
+```toml
+hf-xet = { version = "1", default-features = false, features = ["rustls-tls"] }
+```
+
+The spans and events this crate emits are unaffected; only the setup code goes
+away. Because `logging` is a default feature, `default-features = false` turns
+it off even when it was only used to select a TLS backend, so re-enable it
+explicitly if you still want it:
+
+```toml
+hf-xet = { version = "1", default-features = false, features = ["native-tls", "logging"] }
+```
+
+[`init_logging`]: https://docs.rs/hf-xet/latest/xet/fn.init_logging.html
+
 ## License
 
 Apache-2.0

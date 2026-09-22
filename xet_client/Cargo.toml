@@ -15,7 +15,7 @@ name = "xet_client"
 path = "src/lib.rs"
 
 [dependencies]
-xet-runtime = { version = "1.6.0", path = "../xet_runtime" }
+xet-runtime = { version = "1.6.0", path = "../xet_runtime", default-features = false }
 xet-core-structures = { version = "1.6.0", path = "../xet_core_structures" }
 
 anyhow = { workspace = true }

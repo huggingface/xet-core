@@ -78,7 +78,10 @@ pub mod xet_session;
 ///
 /// Reads `HF_XET_LOG_FILE` / `RUST_LOG` environment variables.  Repeated calls
 /// are no-ops — the global subscriber is installed only once.
-#[cfg(not(target_family = "wasm"))]
+///
+/// Requires the `logging` feature (on by default); disable it to install your
+/// own subscriber instead.
+#[cfg(all(not(target_family = "wasm"), feature = "logging"))]
 pub fn init_logging(version_info: String) {
     let log_dir = xet_runtime::core::xet_cache_root().join("logs");
 

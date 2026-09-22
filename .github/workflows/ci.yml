@@ -53,6 +53,28 @@ jobs:
       - name: Compile benchmarks
         run: |
           cargo bench --no-run --workspace --exclude git_xet
+  check-no-logging:
+    name: Check build without the logging feature
+    runs-on:
+      group: aws-general-8-plus
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: huggingface/hf-workflows/.github/actions/setup-hf-registry-proxies@21845492ef47d4e46b07a3b2a6e14fd4748c39cc  # main
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
+        with:
+          toolchain: 1.95.0
+      - uses: ./.github/actions/cache-rust-build
+      - name: Check no-logging configuration
+        run: |
+          cargo check -p xet-runtime --no-default-features --all-targets
+          cargo check -p hf-xet --no-default-features --features rustls-tls --all-targets
+          # The point of the feature is shedding the subscriber stack, so fail if a
+          # dependency edge quietly puts it back.
+          if cargo tree -p hf-xet -e normal --no-default-features --features rustls-tls \
+            | grep -q tracing-subscriber; then
+            echo "tracing-subscriber is still in the dependency tree without \`logging\`"
+            exit 1
+          fi
   build_and_test-linux:
     runs-on:
       group: aws-general-8-plus
