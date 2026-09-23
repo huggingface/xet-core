@@ -25,9 +25,12 @@ jobs:
     steps:
       - name: Determine PyPi version from tag
         id: get-version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            TAG=${{ inputs.tag }}
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            TAG="$INPUT_TAG"
           else
             TAG=${GITHUB_REF#refs/tags/}
           fi
@@ -49,8 +52,9 @@ jobs:
           git config user.name "Hugging Face Bot (Xet RC Testing)"
           git config user.email "bot+xet@huggingface.co"
       - name: Wait for prerelease to be out on PyPI
+        env:
+          VERSION: ${{ steps.get-version.outputs.VERSION }}
         run: |
-          VERSION=${{ steps.get-version.outputs.VERSION }}
           echo "Waiting for hf_xet==${VERSION} to be available on PyPI"
           while ! pip install hf_xet==${VERSION}; do
             echo "hf_xet==${VERSION} not available yet, retrying in 15s"
@@ -59,10 +63,12 @@ jobs:
 
       - name: Create test branch and update dependencies
         id: create-pr
+        env:
+          VERSION: ${{ steps.get-version.outputs.VERSION }}
+          BRANCH_NAME: ${{ steps.get-version.outputs.BRANCH_NAME }}
+          TARGET_REPO: ${{ matrix.target-repo }}
         run: |
-          cd ${{ matrix.target-repo }}
-          VERSION=${{ steps.get-version.outputs.VERSION }}
-          BRANCH_NAME=${{ steps.get-version.outputs.BRANCH_NAME }}
+          cd "$TARGET_REPO"
 
           # Create and checkout new branch
           git checkout -b $BRANCH_NAME
@@ -81,9 +87,11 @@ jobs:
           git push --set-upstream origin $BRANCH_NAME
 
       - name: Print URLs for manual check
+        env:
+          VERSION: ${{ steps.get-version.outputs.VERSION }}
+          BRANCH_NAME: ${{ steps.get-version.outputs.BRANCH_NAME }}
+          TARGET_REPO: ${{ matrix.target-repo }}
         run: |
-          VERSION=${{ steps.get-version.outputs.VERSION }}
-          BRANCH_NAME=${{ steps.get-version.outputs.BRANCH_NAME }}
-          echo "https://github.com/huggingface/${{ matrix.target-repo }}/actions"
-          echo "https://github.com/huggingface/${{matrix.target-repo}}/tree/refs/heads/${BRANCH_NAME}"
-          echo "https://github.com/huggingface/huggingface_hub/${{ matrix.target-repo }}/compare/main...${BRANCH_NAME}"
+          echo "https://github.com/huggingface/${TARGET_REPO}/actions"
+          echo "https://github.com/huggingface/${TARGET_REPO}/tree/refs/heads/${BRANCH_NAME}"
+          echo "https://github.com/huggingface/huggingface_hub/${TARGET_REPO}/compare/main...${BRANCH_NAME}"

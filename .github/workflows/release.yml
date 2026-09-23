@@ -57,7 +57,7 @@ jobs:
         with:
           tag: ${{ github.event.inputs.tag }}
       - name: Build wheels
-        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1.51.0
         with:
           target: ${{ matrix.platform.target }}
           args: --profile ${{ env.BUILD_PROFILE }} -i ${{ matrix.python-version }} --out dist
@@ -152,7 +152,7 @@ jobs:
         with:
           tag: ${{ github.event.inputs.tag }}
       - name: Build wheels
-        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1.51.0
         with:
           target: ${{ matrix.platform.target }}
           args: --profile ${{ env.BUILD_PROFILE }} -i ${{ matrix.python-version }}  --out dist
@@ -235,7 +235,7 @@ jobs:
             sed -i '/^version /s/=.*$/= "'"$VERSION"'"/' hf_xet/Cargo.toml
           fi
       - name: Build wheels
-        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1.51.0
         with:
           target: ${{ matrix.platform.target }}
           args: --release -i python${{ matrix.python-version }} --out dist
@@ -299,7 +299,7 @@ jobs:
         with:
           tag: ${{ github.event.inputs.tag }}
       - name: Build wheels
-        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1.51.0
         with:
           target: ${{ matrix.platform.target }}
           args: --profile ${{ env.BUILD_PROFILE }} -i ${{ matrix.python-version }} --strip --out dist
@@ -347,7 +347,7 @@ jobs:
             sed -i '/^version /s/=.*$/= "'"$VERSION"'"/' hf_xet/Cargo.toml
           fi
       - name: Build sdist
-        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1.51.0
         with:
           command: sdist
           args: --out dist
