@@ -17,7 +17,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # hf-xet is published as `hf-xet` but the lib name is `xet`. Pull it via path.
-hf-xet = { path = "../../xet_pkg" }
+# This binding exposes `initLogging` to Node, so it needs hf-xet's `logging`
+# feature; it is off by default there.
+hf-xet = { path = "../../xet_pkg", features = ["logging"] }
 
 # napi-rs 2.x — the standard for Rust → Node.js native addons.
 

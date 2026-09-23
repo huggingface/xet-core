@@ -6071,6 +6071,8 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "tracing-test",
+ "wasm-bindgen",
+ "web-sys",
  "web-time",
  "whoami",
  "winapi",

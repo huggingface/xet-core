@@ -125,6 +125,7 @@ url = "2.5"
 urlencoding = "2.1"
 uuid = "1"
 walkdir = "2"
+web-sys = "0.3"
 web-time = "1.1"
 whoami = "2"
 

@@ -31,24 +31,21 @@ the Rust backend for [huggingface_hub](https://github.com/huggingface/huggingfac
 
 ## Feature flags
 
-`logging` (on by default) provides [`init_logging`], which installs the global
-`tracing` subscriber along with the console, rolling-file, and JSON sinks.
-Consumers that install their own subscriber can turn it off, dropping
-`tracing-subscriber`, `tracing-appender`, and their transitive dependencies -
-16 crates in total:
+`logging` (**off** by default) provides [`init_logging`], which installs the
+global `tracing` subscriber: console, rolling-file, and JSON sinks on native
+targets, and the browser console on `wasm32-unknown-unknown`. It is off by
+default because a library should not choose the subscriber for the binary it
+ends up in, and cargo gives a consumer no way to un-enable a default. Turn it on
+if you want this crate to set logging up for you:
 
 ```toml
-hf-xet = { version = "1", default-features = false, features = ["rustls-tls"] }
+hf-xet = { version = "1", features = ["logging"] }
 ```
 
-The spans and events this crate emits are unaffected; only the setup code goes
-away. Because `logging` is a default feature, `default-features = false` turns
-it off even when it was only used to select a TLS backend, so re-enable it
-explicitly if you still want it:
-
-```toml
-hf-xet = { version = "1", default-features = false, features = ["native-tls", "logging"] }
-```
+Leaving it off keeps `tracing-subscriber`, `tracing-appender`, and their
+transitive dependencies out of the build - 16 crates in total. The spans and
+events this crate emits are unaffected either way; only the setup code goes
+away, so your own subscriber still sees everything.
 
 [`init_logging`]: https://docs.rs/hf-xet/latest/xet/fn.init_logging.html
 

@@ -69,12 +69,13 @@ walkdir = { workspace = true, optional = true }
 uuid = { workspace = true, features = ["v7"] }
 
 [features]
-default = ["rustls-tls", "logging"]
+default = ["rustls-tls"]
 smoke-test = []
-# Logging setup: [`init_logging`] and the `tracing` subscriber stack behind it.
-# Consumers that install their own subscriber can disable this with
-# `default-features = false` to drop `tracing-subscriber` and
-# `tracing-appender`; the spans and events this crate emits are unaffected.
+# Logging setup: `init_logging` and the `tracing` subscriber stack behind it.
+# Off by default - this is a library, so the binary at the top of the tree is the
+# one that gets to choose a subscriber, and a default feature cannot be un-enabled
+# by a consumer that wants to install its own. The spans and events this crate
+# emits are unaffected either way. Enabled by `hf_xet` and `git_xet` in this repo.
 logging = ["xet-runtime/logging"]
 # Internal tooling (the `xtool` binary). Off by default so the library
 # still compiles for wasm32-unknown-unknown.
@@ -85,15 +86,14 @@ simulation = ["xet-client/simulation"]
 # TLS backend for the underlying reqwest client. rustls is the default; to use
 # the platform-native TLS stack instead, depend on this crate with
 # `default-features = false` and enable `native-tls` (or `native-tls-vendored`).
-# Note that `default-features = false` also drops `logging`, so add it back
-# unless you install your own subscriber: `features = ["native-tls", "logging"]`.
 rustls-tls = ["xet-client/rustls-tls", "xet-data/rustls-tls"]
 rustls-no-provider = ["xet-client/rustls-no-provider", "xet-data/rustls-no-provider"]
 native-tls = ["xet-client/native-tls", "xet-data/native-tls"]
 native-tls-vendored = ["xet-client/native-tls-vendored", "xet-data/native-tls-vendored"]
 elevated_information_level = ["xet-client/elevated_information_level", "xet-runtime/elevated_information_level"]
 no-default-cache = ["xet-runtime/no-default-cache"]
-tokio-console = ["xet-runtime/tokio-console"]
+# tokio-console is a subscriber layer, so it only does anything once the stack is in.
+tokio-console = ["logging", "xet-runtime/tokio-console"]
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 tokio = { workspace = true, features = ["net", "time"] }

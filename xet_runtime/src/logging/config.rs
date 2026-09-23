@@ -44,6 +44,24 @@ pub struct LoggingConfig {
 }
 
 impl LoggingConfig {
+    /// Set up console-only logging using the given config.
+    ///
+    /// The only mode available on wasm, which has no filesystem to roll log files
+    /// into; on native targets `from_directory` below is normally what you want.
+    pub fn for_console(config: &XetConfig, version: String) -> LoggingConfig {
+        Self {
+            logging_mode: LoggingMode::Console,
+            use_json: config
+                .log
+                .format
+                .as_ref()
+                .is_some_and(|format| format.as_str().to_ascii_lowercase().trim() == "json"),
+            enable_log_dir_cleanup: false,
+            version,
+            log_dir_config: LogDirConfig::from_config(config),
+        }
+    }
+
     /// Set up logging to a directory using the given config.
     #[cfg(not(target_family = "wasm"))]
     pub fn from_directory(config: &XetConfig, version: String, log_directory: impl AsRef<Path>) -> LoggingConfig {

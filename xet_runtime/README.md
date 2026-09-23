@@ -14,7 +14,8 @@ xet-core ecosystem:
 
 - **Async runtime** — Tokio-based runtime with configurable thread pools
 - **Configuration** — Hierarchical configuration for Xet clients
-- **Structured logging** — Tracing-based logging with file and console outputs
+- **Structured logging** — Tracing-based logging with file and console outputs,
+  behind the off-by-default `logging` feature (browser console on wasm)
 - **Error handling** — `RuntimeError` type for the runtime layer
 - **Utilities** — File operations, sync primitives, and platform abstractions
 
