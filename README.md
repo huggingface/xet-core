@@ -114,6 +114,10 @@ To turn it off:
 HF_XET_TELEMETRY_ENABLED=0
 ```
 
+It is also off whenever huggingface_hub's telemetry opt-outs are set: `HF_HUB_DISABLE_TELEMETRY`,
+`DISABLE_TELEMETRY`, `DO_NOT_TRACK`, `HF_HUB_OFFLINE`, or `TRANSFORMERS_OFFLINE` (any of `1`, `ON`,
+`YES`, `TRUE`). These win over `HF_XET_TELEMETRY_ENABLED=1`.
+
 Tuning (rarely needed):
 
 ```bash
