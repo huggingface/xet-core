@@ -8,12 +8,14 @@ on:
         description: 'Version to publish (e.g. 1.6.0, no v prefix)'
         required: true
 
-permissions:
-  contents: write
-  pull-requests: write
+
+permissions: {}
 
 jobs:
   bump_crates_version:
+    permissions:
+      contents: write
+      pull-requests: write
     name: Bump crate versions and create PR
     runs-on:
       group: aws-general-8-plus
@@ -22,7 +24,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: huggingface/hf-workflows/.github/actions/setup-hf-registry-proxies@21845492ef47d4e46b07a3b2a6e14fd4748c39cc  # main
       - name: Install Rust 1.95
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # master
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: 1.95.0
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
@@ -78,7 +80,7 @@ jobs:
         run: python3 -m venv .venv
         
       - name: Build hf-xet wheel
-        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1.51.0
         with:
           command: develop
           sccache: 'true'
