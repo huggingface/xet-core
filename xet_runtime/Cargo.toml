@@ -98,8 +98,11 @@ logging = [
     "dep:web-sys",
 ]
 python = ["dep:pyo3"]
-# tokio-console is installed as a subscriber layer, so it needs the logging stack.
-tokio-console = ["dep:console-subscriber", "logging"]
+# tokio-console is installed as a subscriber layer by `logging::init`, so it needs
+# `logging` too. It requires rather than enables it: turning the whole subscriber
+# stack on as a side effect is the thing `logging` exists to stop. Build without
+# both and `logging/mod.rs` says so.
+tokio-console = ["dep:console-subscriber"]
 simulation = []
 
 [[bin]]

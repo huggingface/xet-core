@@ -53,7 +53,7 @@ native-tls-vendored = ["xet-pkg/native-tls-vendored"]
 logging = ["xet-pkg/logging"]
 no-default-cache = ["xet-pkg/no-default-cache"]
 profiling = ["pprof"]
-tokio-console = ["logging", "xet-pkg/tokio-console"]
+tokio-console = ["xet-pkg/tokio-console"]
 elevated_information_level = ["xet-pkg/elevated_information_level"]
 
 [profile.release]

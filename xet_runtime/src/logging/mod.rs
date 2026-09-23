@@ -1,3 +1,8 @@
+// The tokio-console layer is installed by `init`, which is not compiled without
+// `logging`; enabling one without the other would build cleanly and collect nothing.
+#[cfg(all(feature = "tokio-console", not(feature = "logging")))]
+compile_error!("the `tokio-console` feature also needs the `logging` feature - enable both");
+
 mod config;
 #[cfg(feature = "logging")]
 mod constants;

@@ -92,8 +92,8 @@ native-tls = ["xet-client/native-tls", "xet-data/native-tls"]
 native-tls-vendored = ["xet-client/native-tls-vendored", "xet-data/native-tls-vendored"]
 elevated_information_level = ["xet-client/elevated_information_level", "xet-runtime/elevated_information_level"]
 no-default-cache = ["xet-runtime/no-default-cache"]
-# tokio-console is a subscriber layer, so it only does anything once the stack is in.
-tokio-console = ["logging", "xet-runtime/tokio-console"]
+# Needs `logging` alongside it; see the note on xet-runtime's copy of this feature.
+tokio-console = ["xet-runtime/tokio-console"]
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 tokio = { workspace = true, features = ["net", "time"] }
