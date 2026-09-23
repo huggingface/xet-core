@@ -12,11 +12,13 @@ on:
         required: true
         default: "v0.1.0"
 
-permissions:
-  contents: read
+
+permissions: {}
 
 jobs:
   linux:
+    permissions:
+      contents: read
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       matrix:
@@ -42,6 +44,8 @@ jobs:
           path: target/release/git-xet
 
   macos:
+    permissions:
+      contents: read
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       matrix:
@@ -80,6 +84,8 @@ jobs:
           path: dist/git-xet
 
   windows:
+    permissions:
+      contents: read
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       matrix:

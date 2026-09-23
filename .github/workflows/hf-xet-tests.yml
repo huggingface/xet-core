@@ -9,11 +9,13 @@ on:
   pull_request:
   workflow_dispatch:
 
-permissions:
-  contents: read
+
+permissions: {}
 
 jobs:
   hub-python-tests:
+    permissions:
+      contents: read
     runs-on:
       group: aws-general-8-plus
     steps:

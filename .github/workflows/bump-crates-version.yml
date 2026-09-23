@@ -8,12 +8,14 @@ on:
         description: 'Version to publish (e.g. 1.6.0, no v prefix)'
         required: true
 
-permissions:
-  contents: write
-  pull-requests: write
+
+permissions: {}
 
 jobs:
   bump_crates_version:
+    permissions:
+      contents: write
+      pull-requests: write
     name: Bump crate versions and create PR
     runs-on:
       group: aws-general-8-plus
