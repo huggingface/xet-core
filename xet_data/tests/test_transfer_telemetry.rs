@@ -359,16 +359,36 @@ async fn env_with_config(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial(env)]
 async fn test_disabled_emits_nothing() {
-    let mut config = XetConfig::default();
-    config.telemetry.enabled = false;
-    let (server, translator, _temp) = env_with_config(config).await;
+    // `None` disables through config. The rest are huggingface_hub's opt-outs, read by
+    // `XetConfig::new()` and each required to beat an explicit HF_XET_TELEMETRY_ENABLED=1. They are
+    // spelled out rather than taken from xet_runtime so a variable dropped from that list fails here.
+    let _enabled = EnvVarGuard::set("HF_XET_TELEMETRY_ENABLED", "1");
+    for opt_out in [
+        None,
+        Some("HF_HUB_DISABLE_TELEMETRY"),
+        Some("DISABLE_TELEMETRY"),
+        Some("DO_NOT_TRACK"),
+        Some("HF_HUB_OFFLINE"),
+        Some("TRANSFORMERS_OFFLINE"),
+    ] {
+        let _opt_out = opt_out.map(|var| EnvVarGuard::set(var, "1"));
+        let config = match opt_out {
+            Some(_) => XetConfig::new(),
+            None => {
+                let mut config = XetConfig::default();
+                config.telemetry.enabled = false;
+                config
+            },
+        };
+        let (server, translator, _temp) = env_with_config(config).await;
 
-    let session = FileUploadSession::new(translator).await.unwrap();
-    upload_bytes(&session, "a.bin", &vec![0x44; 16 * 1024]).await;
-    session.finalize().await.unwrap();
+        let session = FileUploadSession::new(translator).await.unwrap();
+        upload_bytes(&session, "a.bin", &vec![0x44; 16 * 1024]).await;
+        session.finalize().await.unwrap();
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(server.telemetry_docs().is_empty(), "telemetry was disabled but documents were sent");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(server.telemetry_docs().is_empty(), "telemetry disabled by {opt_out:?} but documents were sent");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

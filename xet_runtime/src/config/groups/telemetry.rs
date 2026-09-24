@@ -10,6 +10,10 @@ crate::config_group!({
     ///
     /// The payload carries no file names, paths, hashes, repository ids, or user ids.
     ///
+    /// Telemetry is force-disabled regardless of this value when any of huggingface_hub's opt-out
+    /// variables (`HF_HUB_DISABLE_TELEMETRY`, `DISABLE_TELEMETRY`, `DO_NOT_TRACK`, `HF_HUB_OFFLINE`,
+    /// `TRANSFORMERS_OFFLINE`) is set to a truthy value.
+    ///
     /// The default value is true.
     ///
     /// Use the environment variable `HF_XET_TELEMETRY_ENABLED` to set this value.
@@ -79,32 +83,59 @@ mod tests {
 
     use crate::config::XetConfig;
     use crate::utils::EnvVarGuard;
+    use crate::utils::configuration_utils::TELEMETRY_OPT_OUT_VARS;
 
     const XET_ENABLED: &str = "HF_XET_TELEMETRY_ENABLED";
 
     /// Clears every variable that participates in the gating decision, so a value exported in the
     /// developer's shell cannot make these tests pass or fail spuriously.
     fn clear_all() -> Vec<EnvVarGuard> {
-        [XET_ENABLED].into_iter().map(EnvVarGuard::unset).collect()
+        std::iter::once(XET_ENABLED)
+            .chain(TELEMETRY_OPT_OUT_VARS.iter().copied())
+            .map(EnvVarGuard::unset)
+            .collect()
     }
 
     fn telemetry_enabled() -> bool {
         XetConfig::default().with_env_overrides().telemetry.enabled
     }
 
+    /// Also covers opt-out variables whose value does not parse as truthy: presence alone must not
+    /// disable, so `HF_HUB_OFFLINE=0` leaves telemetry on.
     #[test]
     #[serial(env)]
     fn test_enabled_by_default() {
         let _guards = clear_all();
         assert!(telemetry_enabled());
+
+        for &var in TELEMETRY_OPT_OUT_VARS {
+            for value in ["0", "false", "", "unparseable"] {
+                let _g = EnvVarGuard::set(var, value);
+                assert!(telemetry_enabled(), "{var}={value:?} must not disable telemetry");
+            }
+        }
     }
 
+    /// Disabled by our own variable, and by any huggingface_hub opt-out set to a truthy value. A user
+    /// asking for privacy wins over an explicit `HF_XET_TELEMETRY_ENABLED=1`.
     #[test]
     #[serial(env)]
-    fn test_disabled_by_own_env_var() {
+    fn test_disabled_by_env_vars() {
         let _guards = clear_all();
-        let _g = EnvVarGuard::set(XET_ENABLED, "0");
-        assert!(!telemetry_enabled());
+        {
+            let _g = EnvVarGuard::set(XET_ENABLED, "0");
+            assert!(!telemetry_enabled());
+        }
+
+        let _enabled = EnvVarGuard::set(XET_ENABLED, "1");
+        assert!(telemetry_enabled());
+        for &var in TELEMETRY_OPT_OUT_VARS {
+            // huggingface_hub's truthy set is 1/ON/YES/TRUE, case-insensitive.
+            for value in ["1", "ON", "yes", "True"] {
+                let _g = EnvVarGuard::set(var, value);
+                assert!(!telemetry_enabled(), "{var}={value:?} must disable telemetry");
+            }
+        }
     }
 
     #[test]
