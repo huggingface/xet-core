@@ -13,6 +13,7 @@ Covers:
   - Full-file unordered stream (reassemble from offsets), small and large
   - Bounded range unordered on large files
   - Open-ended range unordered on large files
+  - next() releasing the GIL while it waits for a chunk (ordered and unordered)
   - finish() closing the group, abort() stopping an unstarted stream
   - Context manager: finish on a clean exit, abort on an exception
 Not covered here (require a real CAS server):
@@ -20,6 +21,11 @@ Not covered here (require a real CAS server):
   - The telemetry outcome each path reports, which needs a server to read the
     document back from (see xet_pkg/tests/test_download_telemetry.rs)
 """
+
+import subprocess
+import sys
+import threading
+import time
 
 import pytest
 
@@ -220,6 +226,65 @@ class TestDownloadUnorderedStream:
         assert assembled == _LARGE_DATA[:_RANGE_END]
 
 
+# ── GIL release ──────────────────────────────────────────────────────────────
+
+# Answers every request with a 404 after 1s. It runs in its own process so it
+# keeps answering even when the test process holds the GIL.
+_SLOW_SERVER = """
+import http.server, time
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        time.sleep(1)
+        self.send_response(404)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+    def log_message(self, *args):
+        pass
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+print(server.server_address[1], flush=True)
+server.serve_forever()
+"""
+
+
+@pytest.fixture
+def slow_endpoint():
+    proc = subprocess.Popen([sys.executable, "-c", _SLOW_SERVER], stdout=subprocess.PIPE, text=True)
+    try:
+        yield f"http://127.0.0.1:{proc.stdout.readline().strip()}"
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+@pytest.mark.parametrize("method", ["download_stream", "download_unordered_stream"])
+def test_next_releases_gil_while_waiting(slow_endpoint, method):
+    """Another Python thread keeps running while next() waits for the server."""
+    group = hf_xet.XetSession().new_download_stream_group(
+        endpoint=slow_endpoint, token="token", token_expiry_unix_secs=int(time.time()) + 3600
+    )
+    stream = getattr(group, method)(hf_xet.XetFileInfo("0" * 64, 1000))
+
+    ticks = []
+    stop = threading.Event()
+
+    def tick():
+        while not stop.is_set():
+            ticks.append(time.monotonic())
+            time.sleep(0.01)
+
+    ticker = threading.Thread(target=tick)
+    ticker.start()
+    start = time.monotonic()
+    try:
+        with pytest.raises(Exception):
+            next(stream)
+    finally:
+        end = time.monotonic()
+        stop.set()
+        ticker.join()
+
+    assert end - start >= 0.9
+    assert any(start + 0.2 < t < end - 0.2 for t in ticks)
 
 
 # ── Context manager ──────────────────────────────────────────────────────────
