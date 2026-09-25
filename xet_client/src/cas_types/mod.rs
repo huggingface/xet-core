@@ -184,6 +184,11 @@ pub struct XorbReconstructionTerm {
     pub unpacked_length: u32,
     // chunk index start and end in a xorb
     pub range: ChunkRange,
+    /// Verification range hash of the file segment this term covers (keyed blake3 over the
+    /// segment's chunk hashes, see `range_hash_from_chunks`). Only set when the term covers a
+    /// whole segment. Lets a client check existing local bytes before resuming a download.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_hash: Option<HexMerkleHash>,
 }
 
 /// To use a XorbReconstructionFetchInfo fetch info all that's needed
