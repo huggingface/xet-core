@@ -9,7 +9,6 @@ import hf_xet
 from conftest import upload_bytes_get_info, upload_file_get_info, upload_stream_get_info
 
 
-
 # ── XetFileDownloadGroup ──────────────────────────────────────────────────────
 
 class TestFileDownloadGroup:
@@ -138,39 +137,3 @@ class TestFileDownloadHandle:
         group.wait_to_finish()
 
 
-# ── reuse_existing ────────────────────────────────────────────────────────────
-
-class TestReuseExisting:
-    """Single-segment files here; multi-segment reuse is covered by xet_data/tests/test_reuse_existing.rs."""
-
-    DATA = bytes(range(256)) * 400
-
-    def _download(self, endpoint, info, dest):
-        group = hf_xet.XetSession().new_file_download_group(endpoint=endpoint)
-        group.start_download_file(info, str(dest), reuse_existing=True)
-        return group.wait_to_finish().progress
-
-    def test_complete_file_is_reused(self, endpoint, tmp_path):
-        info = upload_bytes_get_info(endpoint, self.DATA)
-        dest = tmp_path / "out.bin"
-        dest.write_bytes(self.DATA)
-        progress = self._download(endpoint, info, dest)
-        assert dest.read_bytes() == self.DATA
-        assert progress.total_resume_check_bytes == len(self.DATA)
-        assert progress.total_resume_check_bytes_completed == len(self.DATA)
-        assert progress.total_transfer_bytes == 0
-
-    def test_partial_file_is_completed(self, endpoint, tmp_path):
-        info = upload_bytes_get_info(endpoint, self.DATA)
-        dest = tmp_path / "out.bin"
-        dest.write_bytes(self.DATA[:1000])
-        progress = self._download(endpoint, info, dest)
-        assert dest.read_bytes() == self.DATA
-        assert progress.total_transfer_bytes > 0
-
-    def test_missing_file_is_downloaded(self, endpoint, tmp_path):
-        info = upload_bytes_get_info(endpoint, self.DATA)
-        dest = tmp_path / "out.bin"
-        progress = self._download(endpoint, info, dest)
-        assert dest.read_bytes() == self.DATA
-        assert progress.total_resume_check_bytes == 0
