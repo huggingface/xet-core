@@ -19,7 +19,7 @@ Rust libraries for Xet Storage: chunk-based deduplication, uploads, and file rec
 - [Browser WASM wrapper](wasm/hf_xet_wasm/README.md) — upload/download APIs and smoke tests; an example, not a published SDK.
 - [Thin WASM extension](wasm/hf_xet_thin_wasm/README.md) — chunking and hashing for JavaScript; [benchmarks](wasm/hf_xet_thin_wasm/CHUNKER_BENCHMARK.md).
 
-`CLAUDE.md` links to this file. Keep shared agent guidance here.
+`CLAUDE.md` links to this file. Keep shared agent guidance here. Component-specific build and test instructions live in [hf_xet/AGENTS.md](hf_xet/AGENTS.md), [git_xet/AGENTS.md](git_xet/AGENTS.md), and [wasm/AGENTS.md](wasm/AGENTS.md).
 
 ## Setup
 
@@ -48,17 +48,43 @@ Run from the repository root unless noted.
 | `pytest hf_xet/tests/ -v` | Test the rebuilt Python extension |
 | `cargo bench --no-run --workspace --exclude git_xet` | Check benchmark compilation |
 
-**After Rust changes, format both manifests, run Clippy for affected workspaces, and test touched crates.** Add `-- --check` for formatting checks. Documentation-only changes need no Rust builds or tests.
+Use Cargo for binding tests/lints and maturin for importable extensions. Keep PyO3's `auto-initialize` feature in test dependencies only.
 
-For CI parity or changes to Git/simulation integration, run:
+The `simulation` feature enables workspace support, not the excluded `simulation/` package. The `cargo smoke-test` alias currently references that excluded package; use targeted tests instead.
+
+## Verification
+
+Run the checks that cover what you changed before claiming work is done. Documentation-only changes need no builds or tests. These mirror [CI](.github/workflows/ci.yml); everything here runs locally without network access or Hub credentials.
+
+Every Rust change:
+
+```bash
+cargo +nightly fmt --manifest-path Cargo.toml --all -- --check
+cargo +nightly fmt --manifest-path hf_xet/Cargo.toml --all -- --check
+cargo clippy -r --verbose -- -D warnings
+cargo clippy -r --verbose --manifest-path hf_xet/Cargo.toml -- -D warnings
+cargo test --package <changed-package>
+```
+
+Full root workspace with CI features (required for Git, simulation, or cross-crate changes):
 
 ```bash
 cargo test --verbose --no-fail-fast --features "strict simulation internal-tools git-xet-for-integration-test"
 ```
 
-The `simulation` feature enables workspace support, not the excluded `simulation/` package. The `cargo smoke-test` alias currently references that excluded package; use targeted tests instead.
+Per-component checks; each directory has its own `AGENTS.md` with setup details:
 
-Use Cargo for binding tests/lints and maturin for importable extensions. Keep PyO3's `auto-initialize` feature in test dependencies only.
+| Changed area | Run | Details |
+| --- | --- | --- |
+| `hf_xet/` or anything it depends on | `cargo test --manifest-path hf_xet/Cargo.toml --no-fail-fast`, then `(cd hf_xet && maturin develop) && pytest hf_xet/tests/ -v` | [hf_xet/AGENTS.md](hf_xet/AGENTS.md) |
+| `git_xet/` | `cargo test --package git_xet --features git-xet-for-integration-test` | [git_xet/AGENTS.md](git_xet/AGENTS.md) |
+| `wasm/*` or the crates they depend on | `(cd xet_pkg && ./build_wasm.sh)`, `(cd wasm/hf_xet_thin_wasm && ./build_wasm.sh)`, `(cd wasm/hf_xet_wasm && ./build_wasm.sh)` | [wasm/AGENTS.md](wasm/AGENTS.md) |
+| `benches/` or bench dependencies | `cargo bench --no-run --workspace --exclude git_xet` | |
+| Dependency changes | `cargo machete`, `cargo audit -D warnings`, then confirm `git status --porcelain '*Cargo.lock'` is empty | |
+
+Lockfiles are committed for the root workspace, `hf_xet`, and both `wasm/*` crates; CI fails if a build leaves them modified.
+
+Report which checks ran, which failed, and which were skipped.
 
 ## Code structure
 
@@ -212,4 +238,4 @@ pub type Result<T> = std::result::Result<T, DataError>;
 
 Use `RUST_BACKTRACE=full`, `RUST_LOG=info` (or `debug` / `trace`), and `HF_XET_LOG_FILE=/tmp/xet.log`.
 
-See [diagnostic scripts](scripts/diag/README.md) for symbol/trace capture and [smoke tests](scripts/smoke_tests/README.md) for end-to-end checks.
+See [diagnostic scripts](scripts/diag/README.md) for symbol/trace capture. The [smoke tests](scripts/smoke_tests/README.md) exercise a released or locally built `hf_xet` wheel against the real Hub and need an `HF_TOKEN`; they are a release check, not part of routine verification.
