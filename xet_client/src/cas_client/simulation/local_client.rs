@@ -400,7 +400,15 @@ impl LocalClient {
     /// claimed at. Deletes operate only on what they claimed this way, so a sidecar a
     /// concurrent upload writes afterwards is never unlinked by them.
     fn claim_tag_set_xorb(&self, hash: &MerkleHash) -> Option<PathBuf> {
-        let path = self.tag_set_xorb_path(hash);
+        Self::claim_tag_set_at(self.tag_set_xorb_path(hash))
+    }
+
+    /// As [`Self::claim_tag_set_xorb`], for a shard's sidecar.
+    fn claim_tag_set_shard(&self, hash: &MerkleHash) -> Option<PathBuf> {
+        Self::claim_tag_set_at(self.tag_set_shard_path(hash))
+    }
+
+    fn claim_tag_set_at(path: PathBuf) -> Option<PathBuf> {
         let mut claimed = path.clone().into_os_string();
         claimed.push(format!(".gc_del_{:x}", rand::random::<u64>()));
         let claimed = PathBuf::from(claimed);
@@ -414,6 +422,13 @@ impl LocalClient {
 
     fn tag_set_xorb_path(&self, hash: &MerkleHash) -> PathBuf {
         let canonical = self.get_path_for_entry(hash);
+        let mut name = canonical.into_os_string();
+        name.push(".tagset");
+        PathBuf::from(name)
+    }
+
+    fn tag_set_shard_path(&self, hash: &MerkleHash) -> PathBuf {
+        let canonical = self.shard_dir.join(shard_file_name(hash));
         let mut name = canonical.into_os_string();
         name.push(".tagset");
         PathBuf::from(name)
@@ -942,12 +957,16 @@ impl super::DeletionControlableClient for LocalClient {
 
     async fn delete_shard_entry(&self, hash: &MerkleHash) -> Result<()> {
         let path = self.shard_path_for_hash(hash)?;
+        let claimed_tag_set = self.claim_tag_set_shard(hash);
         self.remove_file_entries_for_shard(hash)?;
         if self.lifecycle_tag_deletion_enabled() {
             let gctag = self.gctag_shard_path(hash);
             std::fs::rename(&path, &gctag)?;
         } else {
             std::fs::remove_file(&path)?;
+        }
+        if let Some(claimed) = claimed_tag_set {
+            let _ = std::fs::remove_file(claimed);
         }
         Ok(())
     }
@@ -1145,6 +1164,26 @@ impl super::DeletionControlableClient for LocalClient {
         Self::write_tag_set_file(&self.tag_set_xorb_path(hash), &tags)
     }
 
+    async fn get_shard_tag_set(&self, hash: &MerkleHash) -> Result<ObjectTagSet> {
+        if self.shard_path_for_hash(hash).is_err() {
+            return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
+        }
+        let path = self.tag_set_shard_path(hash);
+        if !path.exists() {
+            return Ok(ObjectTagSet::new());
+        }
+        let raw = std::fs::read(&path)?;
+        serde_json::from_slice(&raw)
+            .map_err(|e| ClientError::Other(format!("invalid tag set at {}: {e}", path.display())))
+    }
+
+    async fn set_shard_tag_set(&self, hash: &MerkleHash, tags: ObjectTagSet) -> Result<()> {
+        if self.shard_path_for_hash(hash).is_err() {
+            return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
+        }
+        Self::write_tag_set_file(&self.tag_set_shard_path(hash), &tags)
+    }
+
     async fn list_shards_with_etags(&self) -> Result<Vec<(MerkleHash, ObjectETag)>> {
         let mut ret = Vec::new();
         for (hash, path) in self.shard_file_paths()? {
@@ -1157,25 +1196,38 @@ impl super::DeletionControlableClient for LocalClient {
     async fn delete_shard_if_etag_matches(&self, hash: &MerkleHash, etag: &ObjectETag) -> Result<bool> {
         let path = self.shard_path_for_hash(hash)?;
 
+        // Claimed before the data, as in the xorb path: claiming second would let an upload
+        // land both writes in the gap and have its fresh tags unlinked on the success path.
+        let claimed_tag_set = self.claim_tag_set_shard(hash);
+        let restore_tag_set = |claimed: &Option<PathBuf>| {
+            if let Some(claimed) = claimed {
+                Self::restore_from_tmp(claimed, &self.tag_set_shard_path(hash));
+            }
+        };
+
         let tmp_path = path.with_extension(format!("gc_del_{:x}", rand::random::<u64>()));
         if std::fs::rename(&path, &tmp_path).is_err() {
+            restore_tag_set(&claimed_tag_set);
             return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
         }
 
         let current_etag = match Self::object_etag_for(b"shard", hash, &tmp_path) {
             Ok(t) => t,
             Err(e) => {
+                restore_tag_set(&claimed_tag_set);
                 Self::restore_from_tmp(&tmp_path, &path);
                 return Err(e);
             },
         };
 
         if &current_etag != etag {
+            restore_tag_set(&claimed_tag_set);
             Self::restore_from_tmp(&tmp_path, &path);
             return Ok(false);
         }
 
         if let Err(e) = self.remove_file_entries_for_shard(hash) {
+            restore_tag_set(&claimed_tag_set);
             Self::restore_from_tmp(&tmp_path, &path);
             return Err(e);
         }
@@ -1184,6 +1236,9 @@ impl super::DeletionControlableClient for LocalClient {
             std::fs::rename(&tmp_path, &gctag)?;
         } else {
             std::fs::remove_file(&tmp_path)?;
+        }
+        if let Some(claimed) = claimed_tag_set {
+            let _ = std::fs::remove_file(claimed);
         }
         Ok(true)
     }
@@ -1679,6 +1734,14 @@ impl Client for LocalClient {
         // lifecycle-tagged copy: clear the `.gctag` file so the shard is
         // readable again. Mirrors S3 PutObject overwriting a tagged object.
         let _ = std::fs::remove_file(self.gctag_shard_path(&shard_hash));
+
+        // CAS stamps `last-upload` on every shard write, and PutObject replaces the whole tag
+        // set. Shards are content-addressed, so this stamp is the only trace a re-upload of
+        // identical content leaves: the key and the etag are both unchanged.
+        let tag_set_path = self.tag_set_shard_path(&shard_hash);
+        if let Err(e) = Self::write_tag_set_file(&tag_set_path, &last_upload_tag_set_now()) {
+            warn!("failed to stamp last-upload tag at {}: {e}", tag_set_path.display());
+        }
 
         // No NDJSON stream in the local sim; synthesize transfer + terminal Result so
         // SessionShardInterface progress counters complete like production V1.

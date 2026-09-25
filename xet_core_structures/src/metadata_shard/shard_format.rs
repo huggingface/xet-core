@@ -146,7 +146,9 @@ impl Default for MDBShardFileFooter {
             chunk_lookup_num_entry: 0,
             chunk_hash_hmac_key: HMACKey::default(), // No HMAC key
 
-            // On serialization, this is set to current time if this is zero.
+            // Left zero by the serializers that produce an uploaded shard, so the same
+            // content always hashes the same. Only the local-cache exports stamp it, where
+            // it orders eviction.
             shard_creation_timestamp: 0,
             shard_key_expiry: u64::MAX,
             _buffer: [0u64; 6],

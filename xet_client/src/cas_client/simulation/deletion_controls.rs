@@ -78,6 +78,12 @@ pub trait DeletionControlableClient: Send + Sync {
     /// Replaces a XORB's tag set wholesale, as S3 `PutObjectTagging` does.
     async fn set_xorb_tag_set(&self, hash: &MerkleHash, tags: ObjectTagSet) -> Result<()>;
 
+    /// Returns a shard's tag set, empty if it has none.
+    async fn get_shard_tag_set(&self, hash: &MerkleHash) -> Result<ObjectTagSet>;
+
+    /// Replaces a shard's tag set wholesale, as S3 `PutObjectTagging` does.
+    async fn set_shard_tag_set(&self, hash: &MerkleHash, tags: ObjectTagSet) -> Result<()>;
+
     /// Returns all shard hashes with their associated object etags.
     async fn list_shards_with_etags(&self) -> Result<Vec<(MerkleHash, ObjectETag)>>;
 

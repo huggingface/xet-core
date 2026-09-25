@@ -10,7 +10,7 @@ use itertools::Itertools;
 use more_asserts::debug_assert_lt;
 
 use super::file_structs::{FileDataSequenceHeader, MDBFileInfoView};
-use super::shard_file::{MDB_FILE_INFO_ENTRY_SIZE, current_timestamp};
+use super::shard_file::MDB_FILE_INFO_ENTRY_SIZE;
 use super::xorb_structs::{MDBXorbInfoView, XorbChunkSequenceEntry, XorbChunkSequenceHeader};
 use super::{MDBShardFileFooter, MDBShardFileHeader};
 use crate::MerkleHashMap;
@@ -489,7 +489,11 @@ impl MDBMinimalShard {
             xorb_lookup_num_entry: 0,
             chunk_lookup_offset: footer_start,
             chunk_lookup_num_entry: 0,
-            shard_creation_timestamp: current_timestamp(),
+            // Deliberately left at zero. CAS stores the bytes this produces under their own
+            // hash, so stamping the clock here would give the same shard a different S3 object
+            // on every upload. GC tells a re-upload from an untouched object by its
+            // `last-upload` tag instead, as it already does for xorbs.
+            shard_creation_timestamp: 0,
             shard_key_expiry: expiry
                 .map_or(0, |t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()),
             stored_bytes_on_disk,
@@ -589,10 +593,10 @@ mod tests {
     use rand::{RngExt, SeedableRng};
 
     use super::super::file_structs::{FileDataSequenceHeader, MDBFileInfo};
-    use super::super::shard_file::MDB_FILE_INFO_ENTRY_SIZE;
     use super::super::shard_file::test_routines::{
         convert_to_file, gen_random_file_info, gen_random_shard, gen_random_shard_with_xorb_references,
     };
+    use super::super::shard_file::{MDB_FILE_INFO_ENTRY_SIZE, current_timestamp};
     use super::super::shard_in_memory::MDBInMemoryShard;
     use super::super::xorb_structs::{MDBXorbInfo, XorbChunkSequenceEntry, XorbChunkSequenceHeader};
     use super::super::{MDBShardFileHeader, MDBShardInfo};
@@ -954,7 +958,7 @@ mod tests {
         let no_expiry_info = MDBShardInfo::load_from_reader(&mut Cursor::new(&no_expiry_buffer)).unwrap();
         assert_eq!(no_expiry_info.metadata.shard_key_expiry, 0);
 
-        let expiry_secs = super::current_timestamp().saturating_add(12345);
+        let expiry_secs = current_timestamp().saturating_add(12345);
         let expiry = SystemTime::UNIX_EPOCH + Duration::from_secs(expiry_secs);
         let mut expiry_buffer = Vec::new();
         min_shard
@@ -963,7 +967,33 @@ mod tests {
 
         let expiry_info = MDBShardInfo::load_from_reader(&mut Cursor::new(&expiry_buffer)).unwrap();
         assert_eq!(expiry_info.metadata.shard_key_expiry, expiry_secs);
-        assert!(expiry_info.metadata.shard_key_expiry > super::current_timestamp());
+        assert!(expiry_info.metadata.shard_key_expiry > current_timestamp());
+    }
+
+    /// CAS stores the bytes `serialize` produces under their own hash, so the same shard
+    /// content has to serialize identically no matter when it is uploaded. A clock reading
+    /// in the footer would give each upload a distinct S3 object.
+    #[test]
+    fn serialize_is_byte_identical_across_time() {
+        let shard = gen_random_shard_with_xorb_references(2, &[4, 3], &[2, 5], true, true).unwrap();
+        let buffer = convert_to_file(&shard).unwrap();
+        let min_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&buffer), true, true).unwrap();
+
+        let serialize_now = || {
+            let mut out = Vec::new();
+            min_shard.serialize(&mut out, false).unwrap();
+            out
+        };
+
+        let first = serialize_now();
+        // Cross a whole-second boundary, the granularity `current_timestamp` records.
+        std::thread::sleep(Duration::from_millis(1100));
+        let second = serialize_now();
+
+        assert_eq!(first, second, "shard serialization must not depend on the wall clock");
+
+        let info = MDBShardInfo::load_from_reader(&mut Cursor::new(&first)).unwrap();
+        assert_eq!(info.metadata.shard_creation_timestamp, 0);
     }
 
     /// Small artificial budget for allocation-cap unit tests (not tied to production defaults).

@@ -608,6 +608,32 @@ impl DeletionControlableClient for SimulationControlClient {
         Ok(())
     }
 
+    async fn get_shard_tag_set(&self, hash: &MerkleHash) -> Result<ObjectTagSet> {
+        let hex = HexMerkleHash::from(*hash);
+        let resp = self
+            .http_client
+            .get(self.sim_url(&format!("/shards/{hex}/tag_set")))
+            .send()
+            .await
+            .map_err(|e| ClientError::Other(e.to_string()))?;
+        let resp = Self::check_status(resp).await?;
+        let body: TagSetBody = resp.json().await.map_err(|e| ClientError::Other(e.to_string()))?;
+        Ok(body.tags)
+    }
+
+    async fn set_shard_tag_set(&self, hash: &MerkleHash, tags: ObjectTagSet) -> Result<()> {
+        let hex = HexMerkleHash::from(*hash);
+        let resp = self
+            .http_client
+            .put(self.sim_url(&format!("/shards/{hex}/tag_set")))
+            .json(&TagSetBody { tags })
+            .send()
+            .await
+            .map_err(|e| ClientError::Other(e.to_string()))?;
+        Self::check_status(resp).await?;
+        Ok(())
+    }
+
     async fn list_shards_with_etags(&self) -> Result<Vec<(MerkleHash, ObjectETag)>> {
         let resp = self
             .http_client
