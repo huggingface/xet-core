@@ -61,6 +61,40 @@ jobs:
       - name: Compile benchmarks
         run: |
           cargo bench --no-run --workspace --exclude git_xet
+  check-no-logging:
+    permissions:
+      contents: read
+    name: Check build without the logging feature
+    runs-on:
+      group: aws-general-8-plus
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: huggingface/hf-workflows/.github/actions/setup-hf-registry-proxies@21845492ef47d4e46b07a3b2a6e14fd4748c39cc  # main
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
+        with:
+          toolchain: 1.95.0
+      - uses: ./.github/actions/cache-rust-build
+      - name: Check no-logging configuration
+        run: |
+          set -euo pipefail
+          # `logging` is opt-in on both crates, so a plain check is the no-logging
+          # build. Everything else in CI reaches it through git_xet or hf_xet, which
+          # turn it on, so without this job the feature-off path is never compiled.
+          # The wasm side is covered by the build-wasm action: hf_xet_wasm enables
+          # `logging`, and xet_pkg/build_wasm.sh checks hf-xet without it.
+          cargo check -p xet-runtime --all-targets
+          cargo check -p hf-xet --all-targets
+          # The point of the feature is shedding the subscriber stack, so fail if a
+          # dependency edge quietly puts it back. Resolve the tree in its own step
+          # so a cargo failure aborts rather than reading as "nothing leaked".
+          tree=$(cargo tree -p hf-xet -e normal --prefix none --no-dedupe)
+          leaked=$(echo "$tree" | awk '{print $1}' | sort -u \
+            | grep -xE 'tracing-subscriber|tracing-appender' || true)
+          if [ -n "$leaked" ]; then
+            echo "still in the dependency tree without \`logging\`:"
+            echo "$leaked"
+            exit 1
+          fi
   build_and_test-linux:
     permissions:
       contents: read
@@ -75,7 +109,7 @@ jobs:
         with:
           toolchain: 1.95.0
           components: clippy
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version: '3.10'
       - name: Install libpython for pyo3 linking
@@ -108,7 +142,7 @@ jobs:
       - name: Create venv
         run: python3 -m venv .venv
       - name: Build wheel
-        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1
+        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1.50.1
         with:
           command: develop
           sccache: 'true'
@@ -140,13 +174,13 @@ jobs:
       - name: Build and Test hf_xet
         run: |
           cd hf_xet && cargo test --verbose --no-fail-fast
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version: '3.10'
       - name: Create venv
         run: python -m venv .venv
       - name: Build wheel
-        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1
+        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1.50.1
         with:
           command: develop
           sccache: 'true'
@@ -179,13 +213,13 @@ jobs:
       - name: Build and Test hf_xet
         run: |
           cd hf_xet && cargo test --verbose --no-fail-fast
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version: '3.10'
       - name: Create venv
         run: python3 -m venv .venv
       - name: Build wheel
-        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1
+        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1.50.1
         with:
           command: develop
           sccache: 'true'

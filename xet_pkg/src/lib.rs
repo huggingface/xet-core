@@ -78,7 +78,10 @@ pub mod xet_session;
 ///
 /// Reads `HF_XET_LOG_FILE` / `RUST_LOG` environment variables.  Repeated calls
 /// are no-ops — the global subscriber is installed only once.
-#[cfg(not(target_family = "wasm"))]
+///
+/// Requires the `logging` feature, which is off by default: a library should not
+/// pick the subscriber for the binary it is linked into.
+#[cfg(all(not(target_family = "wasm"), feature = "logging"))]
 pub fn init_logging(version_info: String) {
     let log_dir = xet_runtime::core::xet_cache_root().join("logs");
 
@@ -89,6 +92,17 @@ pub fn init_logging(version_info: String) {
         version_info,
         log_dir,
     );
+
+    xet_runtime::logging::init(cfg);
+}
+
+/// Initialize the global tracing subscriber, logging to the browser console.
+///
+/// The wasm build of `init_logging`: there is no filesystem to roll log files
+/// into, so the browser console is the only mode. Requires the `logging` feature.
+#[cfg(all(target_family = "wasm", feature = "logging"))]
+pub fn init_logging(version_info: String) {
+    let cfg = xet_runtime::logging::LoggingConfig::for_console(&xet_runtime::config::XetConfig::new(), version_info);
 
     xet_runtime::logging::init(cfg);
 }

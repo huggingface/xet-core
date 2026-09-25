@@ -12,7 +12,9 @@ path = "src/bin/main.rs"
 xet-data = { path = "../xet_data" }
 xet-runtime = { path = "../xet_runtime" }
 xet-client = { path = "../xet_client" }
-xet-pkg = { package = "hf-xet", path = "../xet_pkg" }
+# `logging` is off by default in hf-xet so libraries do not choose a subscriber for
+# their consumers; git-xet is a binary, so it is the one that gets to choose.
+xet-pkg = { package = "hf-xet", path = "../xet_pkg", features = ["logging"] }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }

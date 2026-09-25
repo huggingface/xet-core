@@ -71,6 +71,12 @@ uuid = { workspace = true, features = ["v7"] }
 [features]
 default = ["rustls-tls"]
 smoke-test = []
+# Logging setup: `init_logging` and the `tracing` subscriber stack behind it.
+# Off by default - this is a library, so the binary at the top of the tree is the
+# one that gets to choose a subscriber, and a default feature cannot be un-enabled
+# by a consumer that wants to install its own. The spans and events this crate
+# emits are unaffected either way. Enabled by `hf_xet` and `git_xet` in this repo.
+logging = ["xet-runtime/logging"]
 # Internal tooling (the `xtool` binary). Off by default so the library
 # still compiles for wasm32-unknown-unknown.
 internal-tools = ["dep:clap", "dep:url", "dep:walkdir"]
@@ -86,6 +92,7 @@ native-tls = ["xet-client/native-tls", "xet-data/native-tls"]
 native-tls-vendored = ["xet-client/native-tls-vendored", "xet-data/native-tls-vendored"]
 elevated_information_level = ["xet-client/elevated_information_level", "xet-runtime/elevated_information_level"]
 no-default-cache = ["xet-runtime/no-default-cache"]
+# Needs `logging` alongside it; see the note on xet-runtime's copy of this feature.
 tokio-console = ["xet-runtime/tokio-console"]
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]

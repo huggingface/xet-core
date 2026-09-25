@@ -37,10 +37,10 @@ futures = { workspace = true }
 pin-project = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 
 console-subscriber = { workspace = true, optional = true }
 pyo3 = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 winapi = { workspace = true }
@@ -57,12 +57,14 @@ tokio = { workspace = true, features = [
     "time",
 ] }
 tokio_with_wasm = { workspace = true, features = ["rt", "sync", "time"] }
+wasm-bindgen = { workspace = true, optional = true }
+web-sys = { workspace = true, features = ["console"], optional = true }
 web-time = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 shellexpand = { workspace = true, features = ["path"] }
 sysinfo = { workspace = true }
-tracing-appender = { workspace = true }
+tracing-appender = { workspace = true, optional = true }
 tokio = { workspace = true, features = [
     "time",
     "rt",
@@ -83,13 +85,37 @@ smoke-test = []
 elevated_information_level = []
 no-default-cache = []
 fd-track = []
+# Logging setup: installs the global tracing subscriber. On native targets that
+# means the console, rolling-file, and JSON sinks; on wasm it is a browser-console
+# sink, since there is no filesystem to roll files into. Off by default so that a
+# consumer chooses the subscriber - cargo has no way to un-enable a default, so a
+# crate that wants to install its own could not opt out. Instrumentation - the
+# `tracing` macros and the spans and events this crate emits - is unaffected by it.
+logging = [
+    "dep:tracing-subscriber",
+    "dep:tracing-appender",
+    "dep:wasm-bindgen",
+    "dep:web-sys",
+]
 python = ["dep:pyo3"]
+# tokio-console is installed as a subscriber layer by `logging::init`, so it needs
+# `logging` too. It requires rather than enables it: turning the whole subscriber
+# stack on as a side effect is the thing `logging` exists to stop. Build without
+# both and `logging/mod.rs` says so.
 tokio-console = ["dep:console-subscriber"]
 simulation = []
 
 [[bin]]
 name = "log_test_executable"
 path = "tests/bin/log_test_executable.rs"
+required-features = ["logging"]
+
+# Drives the log_test_executable binary above, so it needs the same feature.
+# Run `cargo test -p xet-runtime --features logging` to exercise it in isolation;
+# a workspace-wide `cargo test` gets the feature from git_xet.
+[[test]]
+name = "integration_tests"
+required-features = ["logging"]
 
 [dev-dependencies]
 futures-util = { workspace = true }

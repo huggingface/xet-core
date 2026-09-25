@@ -27,5 +27,5 @@ use wasm_bindgen::prelude::*;
 #[wasm_bindgen(start)]
 pub fn init() {
     console_error_panic_hook::set_once();
-    let _ = console_log::init_with_level(log::Level::Info);
+    xet::init_logging(concat!("hf_xet_wasm/", env!("CARGO_PKG_VERSION")).to_string());
 }
