@@ -1764,7 +1764,7 @@ dependencies = [
 
 [[package]]
 name = "git_xet"
-version = "0.2.1"
+version = "0.2.2-dev.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1780,10 +1780,13 @@ dependencies = [
  "serde",
  "serde_json",
  "serial_test",
+ "sha2 0.11.0",
  "shell-words",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "xet-client",
  "xet-data",
  "xet-runtime",
