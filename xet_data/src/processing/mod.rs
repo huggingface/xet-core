@@ -8,6 +8,8 @@ mod file_upload_session;
 pub mod migration_tool;
 pub mod range_upload;
 mod remote_client_interface;
+#[cfg(not(target_family = "wasm"))]
+mod reuse_existing;
 mod sha256;
 mod shard_interface;
 mod xet_file;
