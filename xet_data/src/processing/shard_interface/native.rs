@@ -217,6 +217,8 @@ impl SessionShardInterface {
         if *last_flush + flush_interval < time_now
             || xorb_shard.num_xorb_entries() >= self.ctx.config.data.session_xorb_metadata_flush_max_count
         {
+            // Later sessions dedup against this file: every xorb it names must be durable first.
+            self.client.flush_pending_uploads().await?;
             xorb_shard.write_to_directory(&self.xorb_metadata_staging_dir, Some(*MDB_SHARD_LOCAL_CACHE_EXPIRATION))?;
 
             *last_flush = time_now + flush_interval;

@@ -249,6 +249,10 @@ impl Client for SimulationControlClient {
             .await
     }
 
+    async fn flush_pending_uploads(&self) -> Result<()> {
+        self.remote_client.flush_pending_uploads().await
+    }
+
     async fn get_file_chunk_hashes(
         &self,
         file_id: &MerkleHash,

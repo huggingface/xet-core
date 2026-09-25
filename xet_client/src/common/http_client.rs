@@ -68,19 +68,19 @@ fn headers_tag(headers: Option<&HeaderMap>) -> String {
     format!("{:016x}", hasher.finish())
 }
 
+/// The builder every client shares: config-driven pool and timeout settings, the Unix socket
+/// when one is configured, and the custom headers.
 #[allow(unused_variables)]
 #[cfg(not(target_family = "wasm"))]
-fn reqwest_client_raw(
+fn reqwest_client_builder(
     config: &XetConfig,
     unix_socket_path: Option<&str>,
     custom_headers: Option<Arc<HeaderMap>>,
-) -> std::result::Result<reqwest::Client, reqwest::Error> {
+) -> reqwest::ClientBuilder {
     let socket_path = unix_socket_path
         .map(|s| s.to_string())
         .or_else(|| config.client.unix_socket_path.clone());
 
-    let socket_path_for_builder = socket_path.clone();
-    let custom_headers_for_client = custom_headers.clone();
     let client_cfg = &config.client;
     let mut builder = reqwest::Client::builder()
         .pool_idle_timeout(client_cfg.idle_connection_timeout)
@@ -90,15 +90,15 @@ fn reqwest_client_raw(
         .http1_only();
 
     #[cfg(unix)]
-    if let Some(ref path) = socket_path_for_builder {
+    if let Some(ref path) = socket_path {
         builder = builder.unix_socket(path.clone());
     }
 
-    if let Some(headers) = custom_headers_for_client {
+    if let Some(headers) = custom_headers {
         builder = builder.default_headers((*headers).clone());
     }
 
-    builder.build()
+    builder
 }
 
 /// Creates a reqwest client with no read_timeout. Used for shard uploads where server-side
@@ -142,16 +142,16 @@ fn reqwest_client_no_read_timeout(
 }
 
 #[cfg(target_family = "wasm")]
-fn reqwest_client_raw(
+fn reqwest_client_builder(
     _config: &XetConfig,
     _unix_socket_path: Option<&str>,
     custom_headers: Option<Arc<HeaderMap>>,
-) -> std::result::Result<reqwest::Client, reqwest::Error> {
+) -> reqwest::ClientBuilder {
     let mut builder = reqwest::Client::builder();
     if let Some(custom_headers) = custom_headers {
         builder = builder.default_headers((*custom_headers).clone());
     }
-    builder.build()
+    builder
 }
 
 /// Builds authenticated HTTP Client to talk to CAS.
@@ -176,7 +176,7 @@ pub fn build_auth_http_client(
     let tag = format!("{}|{}", socket_path.as_deref().unwrap_or("tcp"), headers_tag(custom_headers.as_deref()));
 
     let raw_client = ctx.common.get_or_create_reqwest_client(tag, move || {
-        reqwest_client_raw(config_arc.as_ref(), unix_owned.as_deref(), custom_for_client)
+        reqwest_client_builder(config_arc.as_ref(), unix_owned.as_deref(), custom_for_client).build()
     })?;
 
     if socket_path.is_some() {
@@ -247,6 +247,27 @@ pub fn build_http_client(
     custom_headers: Option<Arc<HeaderMap>>,
 ) -> Result<ClientWithMiddleware> {
     build_auth_http_client(ctx, &None, session_id, unix_socket_path, custom_headers)
+}
+
+/// Client for the PUTs a CAS grant points at (a presigned object store URL). No auth, no
+/// request logging (the URL carries a signature), no redirects (a redirect would re-send the
+/// whole body and leak the signed URL as Referer to the next host). It carries none of the CAS
+/// client's settings either: no default headers (the caller's custom headers can hold CAS
+/// credentials, and a PUT must send exactly the headers the grant signed) and no Unix socket
+/// (that proxies CAS traffic, not object store traffic).
+#[cfg(not(target_family = "wasm"))]
+pub fn build_bucket_http_client(config: &XetConfig) -> Result<ClientWithMiddleware> {
+    let client_cfg = &config.client;
+    let raw_client = reqwest::Client::builder()
+        .pool_idle_timeout(client_cfg.idle_connection_timeout)
+        .pool_max_idle_per_host(client_cfg.max_idle_connections)
+        .connect_timeout(client_cfg.connect_timeout)
+        .read_timeout(client_cfg.read_timeout)
+        .http1_only()
+        .redirect(reqwest::redirect::Policy::none())
+        .referer(false)
+        .build()?;
+    Ok(ClientBuilder::new(raw_client).build())
 }
 
 /// Helper trait to allow the reqwest_middleware client to optionally add a middleware.
