@@ -1,7 +1,8 @@
 pub use interface::{Client, URLProvider};
 pub use remote_client::RemoteClient;
+#[cfg(feature = "upload")]
 pub use simulation::{ClientTestingUtils, DirectAccessClient, MemoryClient, RandomFileContents, RandomXorb};
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(feature = "upload", not(target_family = "wasm")))]
 pub use simulation::{DeletionControlableClient, LocalClient};
 #[cfg(all(feature = "simulation", not(target_family = "wasm")))]
 pub use simulation::{
@@ -14,6 +15,7 @@ pub use crate::common::http_client::{Api, ResponseErrorLogger, build_auth_http_c
 
 pub mod adaptive_concurrency;
 pub mod auth;
+#[cfg(feature = "upload")]
 pub mod chunk_window_builder;
 pub mod exports;
 mod interface;
@@ -21,15 +23,19 @@ pub mod multipart;
 pub mod progress_tracked_streams;
 pub mod remote_client;
 pub mod retry_wrapper;
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(feature = "upload", not(target_family = "wasm")))]
 mod shard_upload_v2;
+#[cfg(feature = "upload")]
 pub mod simulation;
 // No `XetRuntime::spawn` on wasm, so there is no way to report without blocking a transfer.
 #[cfg(not(target_family = "wasm"))]
 pub mod telemetry;
 
+#[cfg(feature = "upload")]
 pub use interface::{ShardUploadProgressCallback, ShardUploadProgressType};
-pub use progress_tracked_streams::{DownloadProgressStream, ProgressCallback, UploadProgressStream};
+#[cfg(feature = "upload")]
+pub use progress_tracked_streams::UploadProgressStream;
+pub use progress_tracked_streams::{DownloadProgressStream, ProgressCallback};
 #[cfg(not(target_family = "wasm"))]
 pub use telemetry::{Direction, TelemetryEnvelope, TransferTelemetry};
 

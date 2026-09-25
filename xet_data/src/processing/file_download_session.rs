@@ -475,6 +475,7 @@ impl Drop for FileDownloadSession {
 }
 
 #[cfg(test)]
+#[cfg(feature = "upload")]
 mod tests {
     use std::fs::{read, write};
     use std::io::{Seek, SeekFrom};

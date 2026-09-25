@@ -33,6 +33,7 @@ impl ProgressReporter for xet_data::processing::FileDownloadSession {
     }
 }
 
+#[cfg(feature = "upload")]
 impl ProgressReporter for xet_data::processing::FileUploadSession {
     fn report(&self) -> GroupProgressReport {
         self.report()

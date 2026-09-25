@@ -3,8 +3,10 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::task::{Context, Poll};
 
+#[cfg(feature = "upload")]
 use bytes::Bytes;
 use futures::Stream;
+#[cfg(feature = "upload")]
 use more_asserts::debug_assert_le;
 
 /// Progress callback receiving (delta, completed, total) in bytes.
@@ -76,6 +78,7 @@ impl StreamProgressReporter {
     }
 }
 
+#[cfg(feature = "upload")]
 pub struct UploadProgressStream {
     data: Bytes,
     block_size: usize,
@@ -83,6 +86,7 @@ pub struct UploadProgressStream {
     reporter: StreamProgressReporter,
 }
 
+#[cfg(feature = "upload")]
 impl Stream for UploadProgressStream {
     type Item = std::result::Result<Bytes, std::io::Error>;
 
@@ -106,6 +110,7 @@ impl Stream for UploadProgressStream {
     }
 }
 
+#[cfg(feature = "upload")]
 impl Drop for UploadProgressStream {
     /// `poll_next` only reports a chunk once the *next* chunk is requested (so a chunk is
     /// counted "sent" only once the caller has moved past it), which means the last chunk is
@@ -117,6 +122,7 @@ impl Drop for UploadProgressStream {
     }
 }
 
+#[cfg(feature = "upload")]
 impl UploadProgressStream {
     pub fn new(data: impl Into<Bytes>, block_size: usize) -> Self {
         let data = data.into();
@@ -185,6 +191,7 @@ where
 }
 
 #[cfg(test)]
+#[cfg(feature = "upload")]
 mod tests {
     use std::sync::{Arc, Mutex};
 

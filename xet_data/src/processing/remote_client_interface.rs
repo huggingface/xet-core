@@ -13,27 +13,36 @@ pub async fn create_remote_client(
     let session = &config.session;
     let runtime = config.ctx.clone();
 
+    #[cfg(feature = "upload")]
     if let Some(local_path) = session.local_path(&config.ctx) {
         #[cfg(not(target_family = "wasm"))]
         {
             let xorb_path = local_path.join("xet").join("xorbs");
-            Ok(xet_client::cas_client::LocalClient::new(runtime, xorb_path).await?)
+            return Ok(xet_client::cas_client::LocalClient::new(runtime, xorb_path).await?);
         }
         #[cfg(target_family = "wasm")]
         {
             let _ = local_path;
             unimplemented!("Local file system access is not available in WASM")
         }
-    } else if session.is_memory() {
-        Ok(xet_client::cas_client::MemoryClient::new(runtime))
-    } else {
-        Ok(RemoteClient::new(
-            runtime,
-            &session.endpoint,
-            &session.auth,
-            session_id,
-            dry_run,
-            session.custom_headers.clone(),
-        ))
     }
+
+    #[cfg(feature = "upload")]
+    if session.is_memory() {
+        return Ok(xet_client::cas_client::MemoryClient::new(runtime));
+    }
+
+    // Note: in download-only builds (`upload` feature off) the LocalClient/MemoryClient
+    // simulation endpoints are not compiled in; a `local://`/`memory://` session falls
+    // through here as a RemoteClient, which fails on first use. Those endpoints are
+    // test/simulation-only, so that is acceptable.
+
+    Ok(RemoteClient::new(
+        runtime,
+        &session.endpoint,
+        &session.auth,
+        session_id,
+        dry_run,
+        session.custom_headers.clone(),
+    ))
 }

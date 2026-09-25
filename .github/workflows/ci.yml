@@ -45,6 +45,26 @@ jobs:
         run: cargo install --locked cargo-machete@0.9.2
       - name: Run cargo-machete
         run: cargo machete
+  check-download-only:
+    name: Check download-only build (no upload feature)
+    runs-on:
+      group: aws-general-8-plus
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: huggingface/hf-workflows/.github/actions/setup-hf-registry-proxies@21845492ef47d4e46b07a3b2a6e14fd4748c39cc  # main
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
+        with:
+          toolchain: 1.95.0
+      - uses: ./.github/actions/cache-rust-build
+      - name: Check download-only configuration
+        run: |
+          # xet-client gets its own invocation: xet-data's dev-dependency on it
+          # enables `simulation` (and so `upload`), which feature unification
+          # would otherwise leak into a combined `-p xet-client` check.
+          cargo check -p xet-client --no-default-features --features rustls-tls --all-targets
+          cargo check -p xet-data -p hf-xet \
+            --no-default-features --features rustls-tls --all-targets
+          cargo test --doc -p hf-xet --no-default-features --features rustls-tls
   check-bench-compiles:
     permissions:
       contents: read

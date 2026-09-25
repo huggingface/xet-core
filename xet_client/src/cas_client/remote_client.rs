@@ -4,34 +4,47 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use anyhow::anyhow;
 use bytes::Bytes;
 use futures::TryStreamExt;
+#[cfg(feature = "upload")]
 use http::HeaderValue;
-use http::header::{CONTENT_LENGTH, HeaderMap, RANGE};
-use reqwest::{Body, Response, StatusCode, Url};
+#[cfg(all(feature = "upload", not(target_family = "wasm")))]
+use http::header::CONTENT_LENGTH;
+use http::header::{HeaderMap, RANGE};
+#[cfg(all(feature = "upload", not(target_family = "wasm")))]
+use reqwest::Body;
+use reqwest::{Response, StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
 use tracing::{event, info, instrument};
 use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::metadata_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
+#[cfg(feature = "upload")]
 use xet_core_structures::xorb_object::SerializedXorbObject;
 use xet_runtime::core::XetContext;
 
-use super::adaptive_concurrency::{
-    AdaptiveConcurrencyController, ConnectionPermit, download_controller, upload_controller,
-};
+#[cfg(feature = "upload")]
+use super::adaptive_concurrency::upload_controller;
+use super::adaptive_concurrency::{AdaptiveConcurrencyController, ConnectionPermit, download_controller};
 use super::auth::AuthConfig;
-use super::interface::{ShardUploadProgressCallback, URLProvider};
-use super::progress_tracked_streams::{
-    DownloadProgressStream, ProgressCallback, StreamProgressReporter, UploadProgressStream,
-};
+#[cfg(feature = "upload")]
+use super::interface::ShardUploadProgressCallback;
+use super::interface::URLProvider;
+#[cfg(all(feature = "upload", not(target_family = "wasm")))]
+use super::progress_tracked_streams::UploadProgressStream;
+use super::progress_tracked_streams::{DownloadProgressStream, ProgressCallback, StreamProgressReporter};
 use super::retry_wrapper::{RetryWrapper, RetryableReqwestError};
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(feature = "upload", not(target_family = "wasm")))]
 use super::shard_upload_v2::read_shard_upload_ndjson;
 #[cfg(not(target_family = "wasm"))]
 use super::telemetry::TransferTelemetry;
 use super::{Client, INFORMATION_LOG_LEVEL};
+#[cfg(feature = "upload")]
 use crate::cas_client::ShardUploadProgressType;
 use crate::cas_types::{
-    BatchQueryReconstructionResponse, FileChunkHashesResponse, FileRange, HttpRange, Key, QueryReconstructionResponse,
-    QueryReconstructionResponseV2, ShardUploadEvent, UploadShardResponse, UploadShardResponseType, UploadXorbResponse,
+    BatchQueryReconstructionResponse, FileRange, HttpRange, Key, QueryReconstructionResponse,
+    QueryReconstructionResponseV2,
+};
+#[cfg(feature = "upload")]
+use crate::cas_types::{
+    FileChunkHashesResponse, ShardUploadEvent, UploadShardResponse, UploadShardResponseType, UploadXorbResponse,
     X_RANGE_DIRTY_HEADER,
 };
 use crate::common::http_client::{self, Api};
@@ -45,18 +58,21 @@ static FN_CALL_ID: AtomicU64 = AtomicU64::new(1);
 pub struct RemoteClient {
     pub(crate) ctx: XetContext,
     endpoint: String,
+    #[cfg(feature = "upload")]
     dry_run: bool,
     http_client: Arc<ClientWithMiddleware>,
     authenticated_http_client: Arc<ClientWithMiddleware>,
     /// Authenticated client with no read_timeout, used for shard uploads where server-side
     /// processing time scales with file entry count and can exceed the global read_timeout.
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(all(feature = "upload", not(target_family = "wasm")))]
     shard_upload_http_client: Arc<ClientWithMiddleware>,
+    #[cfg(feature = "upload")]
     upload_concurrency_controller: Arc<AdaptiveConcurrencyController>,
     download_concurrency_controller: Arc<AdaptiveConcurrencyController>,
     /// Caches the discovered reconstruction API version (0 = not yet probed, 1 = V1, 2 = V2).
     detected_reconstruction_api_version: AtomicU32,
     /// Caches the discovered shard upload API version (0 = not yet probed, 1 = V1, 2 = V2).
+    #[cfg(all(feature = "upload", not(target_family = "wasm")))]
     detected_shard_api_version: AtomicU32,
     /// Per-transfer performance telemetry, or `None` when telemetry is disabled, this is a dry
     /// run, or the endpoint is not http/https. See [`TransferTelemetry::maybe_new`].
@@ -104,12 +120,13 @@ impl RemoteClient {
         Arc::new(Self {
             ctx: ctx.clone(),
             endpoint: endpoint.to_string(),
+            #[cfg(feature = "upload")]
             dry_run,
             authenticated_http_client,
             http_client: Arc::new(
                 http_client::build_http_client(&ctx, session_id, unix_socket_path, custom_headers.clone()).unwrap(),
             ),
-            #[cfg(not(target_family = "wasm"))]
+            #[cfg(all(feature = "upload", not(target_family = "wasm")))]
             shard_upload_http_client: Arc::new(
                 http_client::build_auth_http_client_no_read_timeout(
                     &ctx,
@@ -120,9 +137,11 @@ impl RemoteClient {
                 )
                 .unwrap(),
             ),
+            #[cfg(feature = "upload")]
             upload_concurrency_controller: upload_controller(&ctx, endpoint),
             download_concurrency_controller: download_controller(&ctx, endpoint),
             detected_reconstruction_api_version: AtomicU32::new(0),
+            #[cfg(all(feature = "upload", not(target_family = "wasm")))]
             detected_shard_api_version: AtomicU32::new(0),
             #[cfg(not(target_family = "wasm"))]
             telemetry,
@@ -334,6 +353,7 @@ impl RemoteClient {
         }
     }
 
+    #[cfg(feature = "upload")]
     pub(crate) async fn upload_shard_v1(
         &self,
         shard_data: Bytes,
@@ -380,7 +400,7 @@ impl RemoteClient {
         Ok(())
     }
 
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(all(feature = "upload", not(target_family = "wasm")))]
     pub(crate) async fn upload_shard_v2(
         &self,
         shard_data: Bytes,
@@ -471,7 +491,7 @@ impl RemoteClient {
         Ok(())
     }
 
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(all(feature = "upload", not(target_family = "wasm")))]
     pub(crate) async fn upload_shard_with_version_override(
         &self,
         shard_data: Bytes,
@@ -780,6 +800,7 @@ impl Client for RemoteClient {
         Ok(Some(response.bytes().await?))
     }
 
+    #[cfg(feature = "upload")]
     async fn acquire_upload_permit(&self) -> Result<ConnectionPermit> {
         let permit = self.upload_concurrency_controller.acquire_connection_permit().await;
         #[cfg(not(target_family = "wasm"))]
@@ -795,6 +816,7 @@ impl Client for RemoteClient {
     }
 
     #[instrument(skip_all, name = "RemoteClient::upload_shard", fields(shard.len = shard_data.len()))]
+    #[cfg(feature = "upload")]
     async fn upload_shard(
         &self,
         shard_data: Bytes,
@@ -821,6 +843,7 @@ impl Client for RemoteClient {
     #[instrument(skip_all, name = "RemoteClient::upload_xorb", fields(key = Key{prefix : prefix.to_string(), hash : serialized_xorb_object.hash}.to_string(),
                  xorb.len = serialized_xorb_object.serialized_data.len(), xorb.num_chunks = serialized_xorb_object.num_chunks
     ))]
+    #[cfg(feature = "upload")]
     async fn upload_xorb(
         &self,
         prefix: &str,
@@ -934,6 +957,7 @@ impl Client for RemoteClient {
     }
 
     #[instrument(skip_all, name = "RemoteClient::get_file_chunk_hashes", fields(file.hash = file_id.hex(), n_ranges = dirty_ranges.len()))]
+    #[cfg(feature = "upload")]
     async fn get_file_chunk_hashes(
         &self,
         file_id: &MerkleHash,
@@ -978,6 +1002,7 @@ impl Client for RemoteClient {
 
 #[cfg(test)]
 #[cfg(not(target_family = "wasm"))]
+#[cfg(feature = "upload")]
 mod tests {
     use tracing_test::traced_test;
     use xet_core_structures::xorb_object::CompressionScheme;

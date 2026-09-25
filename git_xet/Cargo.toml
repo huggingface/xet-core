@@ -9,10 +9,11 @@ name = "git-xet"
 path = "src/bin/main.rs"
 
 [dependencies]
-xet-data = { path = "../xet_data" }
+# git-xet uploads and downloads; make the (default-on) upload feature explicit.
+xet-data = { path = "../xet_data", features = ["upload"] }
 xet-runtime = { path = "../xet_runtime" }
 xet-client = { path = "../xet_client" }
-xet-pkg = { package = "hf-xet", path = "../xet_pkg" }
+xet-pkg = { package = "hf-xet", path = "../xet_pkg", features = ["upload"] }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }

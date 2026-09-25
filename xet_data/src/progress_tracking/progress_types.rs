@@ -1,10 +1,15 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+#[cfg(feature = "upload")]
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use more_asserts::debug_assert_le;
-use xet_client::cas_types::{CommitStage, ShardUploadEvent};
+#[cfg(feature = "upload")]
+use xet_client::cas_types::CommitStage;
+#[cfg(feature = "upload")]
+use xet_client::cas_types::ShardUploadEvent;
 use xet_runtime::utils::UniqueId;
 
 use super::speed_tracker::{DEFAULT_MIN_OBSERVATIONS_FOR_RATE, DEFAULT_SPEED_HALF_LIFE, SpeedTracker};
@@ -243,6 +248,7 @@ impl std::fmt::Debug for GroupProgress {
 /// server-reported validation/commit progress streamed back on the v2 NDJSON shard
 /// upload response. Per-shard state is keyed by the `UniqueId` returned from
 /// `register_shard_transfer`.
+#[cfg(feature = "upload")]
 #[derive(Default)]
 pub struct ShardUploadProgress {
     pub total_shard_bytes: AtomicU64,
@@ -258,6 +264,7 @@ pub struct ShardUploadProgress {
     pub shard_upload_state: Mutex<HashMap<UniqueId, ShardUploadEvent>>,
 }
 
+#[cfg(feature = "upload")]
 impl ShardUploadProgress {
     /// Snapshot of aggregate shard upload/validation progress.
     pub fn report(&self) -> ShardUploadProgressReport {
@@ -402,12 +409,14 @@ impl ShardUploadProgress {
     }
 }
 
+#[cfg(feature = "upload")]
 impl std::fmt::Debug for ShardUploadProgress {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!("{:?}", self.report()))
     }
 }
 
+#[cfg(feature = "upload")]
 pub struct UploadGroupProgress {
     // File read and Xorb upload progress
     pub file_data: Arc<GroupProgress>,
@@ -415,12 +424,14 @@ pub struct UploadGroupProgress {
     pub shards: Arc<ShardUploadProgress>,
 }
 
+#[cfg(feature = "upload")]
 impl Default for UploadGroupProgress {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(feature = "upload")]
 impl UploadGroupProgress {
     /// Create a group progress tracker using default speed estimation parameters.
     pub fn new() -> Self {
@@ -666,6 +677,7 @@ pub struct ItemProgressReport {
 }
 
 #[cfg(test)]
+#[cfg(feature = "upload")]
 mod tests {
     use tokio::time::{Duration, advance, pause};
 
