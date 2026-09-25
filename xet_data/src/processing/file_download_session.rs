@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(not(target_family = "wasm"))]
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 use xet_client::cas_client::Client;
 use xet_client::cas_types::FileRange;
@@ -146,7 +147,7 @@ impl FileDownloadSession {
         let id = UniqueId::new();
         let progress_updater = self.progress.new_item(id, "stream");
         let range = source_range.map(|r| FileRange::new(r.start, r.end));
-        let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater))?;
+        let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater), None)?;
         let stream = reconstructor.reconstruct_to_stream();
         self.register_stream_abort_callback(id, stream.abort_callback());
         Ok((id, stream))
@@ -174,7 +175,7 @@ impl FileDownloadSession {
         let id = UniqueId::new();
         let progress_updater = self.progress.new_item(id, "unordered_stream");
         let range = source_range.map(|r| FileRange::new(r.start, r.end));
-        let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater))?;
+        let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater), None)?;
         let stream = reconstructor.reconstruct_to_unordered_stream();
         self.register_stream_abort_callback(id, stream.abort_callback());
         Ok((id, stream))
@@ -195,7 +196,7 @@ impl FileDownloadSession {
         let file_range = range_bounds_to_file_range(&range)?;
         let id = UniqueId::new();
         let progress_updater = self.progress.new_item(id, "stream");
-        let reconstructor = self.setup_reconstructor(file_info, file_range, Some(progress_updater))?;
+        let reconstructor = self.setup_reconstructor(file_info, file_range, Some(progress_updater), None)?;
         let stream = reconstructor.reconstruct_to_stream();
         self.register_stream_abort_callback(id, stream.abort_callback());
         Ok((id, stream))
@@ -270,10 +271,18 @@ impl FileDownloadSession {
         file_info: &XetFileInfo,
         range: Option<FileRange>,
         progress_updater: Option<Arc<ItemProgressUpdater>>,
+        cancellation_token: Option<CancellationToken>,
     ) -> Result<FileReconstructor> {
         let file_id = file_info.merkle_hash()?;
 
         let mut reconstructor = FileReconstructor::new(&self.ctx, &self.client, file_id);
+
+        // Without a caller-supplied token the reconstructor builds its own, which nothing
+        // holds a handle to, so its cancellation checks can never fire. Callers that can be
+        // aborted pass their token here so the term loop stops scheduling new ranges.
+        if let Some(token) = cancellation_token {
+            reconstructor = reconstructor.with_cancellation_token(token);
+        }
 
         match range {
             Some(range) if range.end < u64::MAX => {
@@ -329,6 +338,7 @@ impl FileDownloadSession {
         self: &Arc<Self>,
         file_info: XetFileInfo,
         write_path: PathBuf,
+        cancellation_token: Option<CancellationToken>,
     ) -> Result<(UniqueId, JoinHandle<Result<u64>>)> {
         self.check_not_finalized()?;
         let id = UniqueId::new();
@@ -336,8 +346,13 @@ impl FileDownloadSession {
         let runtime = self.ctx.runtime.clone();
         let semaphore = self.ctx.common.file_download_semaphore.clone();
         let handle = runtime.spawn(async move {
+            // Aborting the returned handle only drops this task; work the reconstruction
+            // already spawned is not its child and keeps running. The token has to travel
+            // with the work itself so the term loop stops scheduling new ranges.
             let _permit = semaphore.acquire().await?;
-            session.download_file_with_id(&file_info, &write_path, id).await
+            session
+                .download_file_with_id(&file_info, &write_path, id, cancellation_token)
+                .await
         });
         Ok((id, handle))
     }
@@ -347,15 +362,29 @@ impl FileDownloadSession {
     pub async fn download_file(&self, file_info: &XetFileInfo, write_path: &Path) -> Result<(UniqueId, u64)> {
         self.check_not_finalized()?;
         let id = UniqueId::new();
-        let n_bytes = self.download_file_with_id(file_info, write_path, id).await?;
+        let n_bytes = self.download_file_with_id(file_info, write_path, id, None).await?;
         Ok((id, n_bytes))
     }
 
-    async fn download_file_with_id(&self, file_info: &XetFileInfo, write_path: &Path, id: UniqueId) -> Result<u64> {
+    async fn download_file_with_id(
+        &self,
+        file_info: &XetFileInfo,
+        write_path: &Path,
+        id: UniqueId,
+        cancellation_token: Option<CancellationToken>,
+    ) -> Result<u64> {
         let name = Arc::from(write_path.to_string_lossy().as_ref());
         let progress_updater = self.progress.new_item(id, name);
-        let reconstructor = self.setup_reconstructor(file_info, None, Some(progress_updater))?;
+        let cancellation = cancellation_token.clone();
+        let reconstructor = self.setup_reconstructor(file_info, None, Some(progress_updater), cancellation_token)?;
         let n_bytes = reconstructor.reconstruct_to_file(write_path, None, true).await?;
+
+        // A cancelled transfer stops short on purpose, so the short read is expected. Running
+        // it through the size check below would report a user abort as a corrupt download.
+        if cancellation.is_some_and(|token| token.is_cancelled()) {
+            return Ok(n_bytes);
+        }
+
         // Caller is responsible for cleaning up the file on error (consistent
         // with other error paths); see download_group.rs error handling.
         if let Some(expected_size) = file_info.file_size()
@@ -400,7 +429,7 @@ impl FileDownloadSession {
         let id = UniqueId::new();
         let name = Arc::from("");
         let progress_updater = self.progress.new_item(id, name);
-        let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater))?;
+        let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater), None)?;
         let n_bytes = reconstructor.reconstruct_to_writer(writer).await?;
 
         let expected_size = match range {
@@ -531,6 +560,101 @@ mod tests {
 
                 let out_path = temp.path().join("output.txt");
                 let (_id, n_bytes) = session.download_file(&xfi, &out_path).await.unwrap();
+
+                assert_eq!(n_bytes, original_data.len() as u64);
+                assert_eq!(read(&out_path).unwrap(), original_data);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_download_file_background_honours_a_cancelled_token() {
+        // A token that is already cancelled must stop the transfer rather than run it to
+        // completion. Before the token was threaded through, the reconstructor built its own
+        // token that nothing could cancel, so the download finished and wrote the whole file.
+        let runtime = get_runtime();
+        runtime
+            .bridge_sync(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = b"cancelled before it starts";
+
+                let xfi = upload_data(&cas_path, original_data).await;
+
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
+                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+
+                let token = CancellationToken::new();
+                token.cancel();
+
+                let out_path = temp.path().join("cancelled.txt");
+                let (_id, handle) = session
+                    .download_file_background(xfi, out_path.clone(), Some(token))
+                    .await
+                    .unwrap();
+
+                let n_bytes = handle.await.unwrap().unwrap();
+
+                assert_eq!(n_bytes, 0, "a cancelled download must not transfer the file");
+                assert!(
+                    read(&out_path).map(|d| d.is_empty()).unwrap_or(true),
+                    "a cancelled download must not write the file contents"
+                );
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_download_file_background_without_a_token_still_downloads() {
+        // The token is optional; callers that cannot be aborted keep the old behaviour.
+        let runtime = get_runtime();
+        runtime
+            .bridge_sync(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = b"no token, ordinary download";
+
+                let xfi = upload_data(&cas_path, original_data).await;
+
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
+                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+
+                let out_path = temp.path().join("plain.txt");
+                let (_id, handle) = session
+                    .download_file_background(xfi, out_path.clone(), None)
+                    .await
+                    .unwrap();
+
+                let n_bytes = handle.await.unwrap().unwrap();
+
+                assert_eq!(n_bytes, original_data.len() as u64);
+                assert_eq!(read(&out_path).unwrap(), original_data);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_download_file_background_with_a_live_token_downloads() {
+        // An uncancelled token must not interfere with a normal transfer.
+        let runtime = get_runtime();
+        runtime
+            .bridge_sync(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = b"live token, ordinary download";
+
+                let xfi = upload_data(&cas_path, original_data).await;
+
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
+                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+
+                let out_path = temp.path().join("live.txt");
+                let (_id, handle) = session
+                    .download_file_background(xfi, out_path.clone(), Some(CancellationToken::new()))
+                    .await
+                    .unwrap();
+
+                let n_bytes = handle.await.unwrap().unwrap();
 
                 assert_eq!(n_bytes, original_data.len() as u64);
                 assert_eq!(read(&out_path).unwrap(), original_data);
