@@ -7,7 +7,7 @@ use reqwest::{Error as ReqwestError, Response, StatusCode};
 use tokio::sync::Mutex;
 use tokio_retry::RetryIf;
 use tokio_retry::strategy::{ExponentialBackoff, jitter};
-use tracing::{error, info};
+use tracing::{debug, error, info};
 use xet_runtime::core::XetContext;
 
 use super::adaptive_concurrency::ConnectionPermit;
@@ -82,6 +82,9 @@ impl RetryWrapper {
         self
     }
 
+    /// Mark 416 responses as expected (reconstruction past the end of the file). Still returned as a
+    /// fatal (non-retried) error, which the caller converts to `Ok(None)`, but logged at debug level
+    /// instead of as a failed api call.
     pub fn with_expected_416(mut self) -> Self {
         self.expected_416 = true;
         self
@@ -202,8 +205,12 @@ impl RetryWrapper {
                     let cas_err = process_error("Retry on 403 (Forbidden) enabled)", e, true);
                     Err(RetryableReqwestError::RetryableError(cas_err))
                 } else if e.status() == Some(StatusCode::RANGE_NOT_SATISFIABLE) && self.expected_416 {
-                    let cas_err = process_error("Reached end of reconstruction 416 (Range Not Satisfiable)", e, true);
-                    Err(RetryableReqwestError::FatalError(cas_err))
+                    // Not a failure: every download requests segments until one comes back 416, so
+                    // this is the normal termination signal, not a failed api call.
+                    debug!(
+                        "Reached end of reconstruction: {api:?} returned 416 (Range Not Satisfiable) (request id {request_id}{retry_str})"
+                    );
+                    Err(RetryableReqwestError::FatalError(ClientError::from(e)))
                 } else if e.status() == Some(StatusCode::NOT_FOUND) && self.expected_404 {
                     let cas_err = process_error("Not Found (cache miss)", e, true);
                     Err(RetryableReqwestError::FatalError(cas_err))
@@ -596,6 +603,7 @@ mod tests {
 
     use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
     use serde::{Deserialize, Serialize};
+    use tracing_test::traced_test;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
     use xet_runtime::config::XetConfig;
@@ -965,6 +973,50 @@ mod tests {
         let err = result.unwrap_err();
         assert_eq!(err.status(), Some(StatusCode::NOT_FOUND));
         assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    #[traced_test]
+    async fn test_416_expected_is_fatal_and_not_logged_as_failure() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/past_eof"))
+            .respond_with(ResponseTemplate::new(416))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = make_client();
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_ = counter.clone();
+
+        let result = connection_wrapper("test_416_expected_is_fatal_and_not_logged_as_failure")
+            .with_max_attempts(3)
+            .with_expected_416()
+            .run(move || {
+                let url = format!("{}/past_eof", server.uri());
+                counter_.fetch_add(1, Ordering::Relaxed);
+                client.clone().get(&url).send()
+            })
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.status(), Some(StatusCode::RANGE_NOT_SATISFIABLE));
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+
+        logs_assert(|lines: &[&str]| {
+            for line in lines {
+                if line.contains("ERROR") || line.contains("WARN") {
+                    return Err(format!("expected 416 logged above debug level: {line}"));
+                }
+                if line.contains("api call failed") {
+                    return Err(format!("expected 416 logged as a failed api call: {line}"));
+                }
+            }
+            Ok(())
+        });
     }
 
     #[tokio::test]
