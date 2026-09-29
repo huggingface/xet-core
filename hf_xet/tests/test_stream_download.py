@@ -228,19 +228,17 @@ class TestDownloadUnorderedStream:
 
 # ── GIL release ──────────────────────────────────────────────────────────────
 
-# Answers every request with a 404 after 1s. It runs in its own process so it
-# keeps answering even when the test process holds the GIL.
 _SLOW_SERVER = """
 import http.server, time
 class Handler(http.server.BaseHTTPRequestHandler):
+    slept = False
     def do_GET(self):
-        time.sleep(1)
-        self.send_response(404)
-        self.send_header("Content-Length", "0")
-        self.end_headers()
-    def log_message(self, *args):
-        pass
-server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        if not Handler.slept:
+            Handler.slept = True
+            time.sleep(0.5)
+        self.send_error(404)
+    log_message = lambda *args: None
+server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
 print(server.server_address[1], flush=True)
 server.serve_forever()
 """
@@ -248,43 +246,28 @@ server.serve_forever()
 
 @pytest.fixture
 def slow_endpoint():
+    """Server answering 404s, after 0.5s for the first request. It runs in its own process so it doesn't need our GIL."""
     proc = subprocess.Popen([sys.executable, "-c", _SLOW_SERVER], stdout=subprocess.PIPE, text=True)
-    try:
-        yield f"http://127.0.0.1:{proc.stdout.readline().strip()}"
-    finally:
-        proc.kill()
-        proc.wait()
+    yield f"http://127.0.0.1:{proc.stdout.readline().strip()}"
+    proc.kill()
+    proc.wait()
 
 
 @pytest.mark.parametrize("method", ["download_stream", "download_unordered_stream"])
 def test_next_releases_gil_while_waiting(slow_endpoint, method):
-    """Another Python thread keeps running while next() waits for the server."""
+    """A timer thread fires while next() is still waiting for the server."""
     group = hf_xet.XetSession().new_download_stream_group(
         endpoint=slow_endpoint, token="token", token_expiry_unix_secs=int(time.time()) + 3600
     )
     stream = getattr(group, method)(hf_xet.XetFileInfo("0" * 64, 1000))
-
-    ticks = []
-    stop = threading.Event()
-
-    def tick():
-        while not stop.is_set():
-            ticks.append(time.monotonic())
-            time.sleep(0.01)
-
-    ticker = threading.Thread(target=tick)
-    ticker.start()
-    start = time.monotonic()
-    try:
-        with pytest.raises(Exception):
-            next(stream)
-    finally:
-        end = time.monotonic()
-        stop.set()
-        ticker.join()
-
-    assert end - start >= 0.9
-    assert any(start + 0.2 < t < end - 0.2 for t in ticks)
+    fired_at = []
+    timer = threading.Timer(0.1, lambda: fired_at.append(time.monotonic()))
+    timer.start()
+    with pytest.raises(Exception):
+        next(stream)
+    returned_at = time.monotonic()
+    timer.join()
+    assert fired_at[0] < returned_at - 0.1
 
 
 # ── Context manager ──────────────────────────────────────────────────────────
