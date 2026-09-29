@@ -419,6 +419,7 @@ impl MDBMinimalShard {
         with_file_section: bool,
         with_verification: bool,
         expiry: Option<SystemTime>,
+        creation_timestamp: Option<u64>,
         xorb_filter_fn: impl Fn(&MDBXorbInfoView) -> bool,
     ) -> Result<usize> {
         let mut bytes = 0;
@@ -489,11 +490,7 @@ impl MDBMinimalShard {
             xorb_lookup_num_entry: 0,
             chunk_lookup_offset: footer_start,
             chunk_lookup_num_entry: 0,
-            // Deliberately left at zero. CAS stores the bytes this produces under their own
-            // hash, so stamping the clock here would give the same shard a different S3 object
-            // on every upload. GC tells a re-upload from an untouched object by its
-            // `last-upload` tag instead, as it already does for xorbs.
-            shard_creation_timestamp: 0,
+            shard_creation_timestamp: creation_timestamp.unwrap_or(0),
             shard_key_expiry: expiry
                 .map_or(0, |t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()),
             stored_bytes_on_disk,
@@ -509,29 +506,46 @@ impl MDBMinimalShard {
 
     /// Serialize out a shard without any of the file information and a subset of xorb data that is given
     /// by the xorb_filter_fn.  Global deduplication chunk information is preserved.
+    ///
+    /// See [`Self::serialize`] for what `creation_timestamp` records.
     pub fn serialize_xorb_subset_only<W: Write>(
         &self,
         writer: &mut W,
+        creation_timestamp: Option<u64>,
         xorb_filter_fn: impl Fn(&MDBXorbInfoView) -> bool,
     ) -> Result<usize> {
-        self.serialize_impl(writer, false, false, None, xorb_filter_fn)
+        self.serialize_impl(writer, false, false, None, creation_timestamp, xorb_filter_fn)
     }
 
     /// Serialize out a shard without file information, with the given expiration time set in the footer.
     /// Pass `None` for no expiration.
+    ///
+    /// See [`Self::serialize`] for what `creation_timestamp` records.
     pub fn serialize_xorb_subset_with_expiry<W: Write>(
         &self,
         writer: &mut W,
         expiry: Option<SystemTime>,
+        creation_timestamp: Option<u64>,
         xorb_filter_fn: impl Fn(&MDBXorbInfoView) -> bool,
     ) -> Result<usize> {
-        self.serialize_impl(writer, false, false, expiry, xorb_filter_fn)
+        self.serialize_impl(writer, false, false, expiry, creation_timestamp, xorb_filter_fn)
     }
 
     /// Serialize out the given shard, sanitizing and updating the global dedup chunk flags and optionally
     /// dropping the file verification section.
-    pub fn serialize<W: Write>(&self, writer: &mut W, with_verification: bool) -> Result<usize> {
-        self.serialize_impl(writer, true, with_verification, None, |_| true)
+    ///
+    /// `creation_timestamp` is written to the footer verbatim; `None` records nothing, which makes
+    /// the output depend only on the shard's content. Pass [`current_timestamp`] to record when the
+    /// shard was written — appropriate for a local shard cache, which evicts oldest-first. Anything
+    /// stored under the hash of these bytes wants `None`, or the same shard lands under a different
+    /// key on every write.
+    pub fn serialize<W: Write>(
+        &self,
+        writer: &mut W,
+        with_verification: bool,
+        creation_timestamp: Option<u64>,
+    ) -> Result<usize> {
+        self.serialize_impl(writer, true, with_verification, None, creation_timestamp, |_| true)
     }
 
     /// Returns a list of all the global dedup eligible chunks, as given either by the hash value, file starts, or
@@ -631,7 +645,7 @@ mod tests {
 
             // Now verify that the serialized version is the same too.
             let mut reloaded_shard = Vec::new();
-            let serialize_result = min_shard.serialize(&mut reloaded_shard, verification);
+            let serialize_result = min_shard.serialize(&mut reloaded_shard, verification, None);
             if !min_shard.has_file_verification() && verification && min_shard.num_files() > 0 {
                 assert!(serialize_result.is_err());
                 continue;
@@ -804,7 +818,7 @@ mod tests {
         assert_eq!(callback_file_infos, vec![first.clone(), duplicate]);
 
         let mut reserialized = Vec::new();
-        min_shard.serialize(&mut reserialized, false).unwrap();
+        min_shard.serialize(&mut reserialized, false, None).unwrap();
         let shard_info = MDBShardInfo::load_from_reader(&mut Cursor::new(&reserialized)).unwrap();
         let file_infos = shard_info.read_all_file_info_sections(&mut Cursor::new(&reserialized)).unwrap();
         assert_eq!(file_infos, vec![first]);
@@ -847,7 +861,7 @@ mod tests {
         // Produce a new minimal shard without the file info.
         let mut xorb_only_shard_buffer = Vec::<u8>::new();
         min_shard
-            .serialize_xorb_subset_only(&mut xorb_only_shard_buffer, |_| true)
+            .serialize_xorb_subset_only(&mut xorb_only_shard_buffer, None, |_| true)
             .unwrap();
 
         let xorb_only_shard =
@@ -899,7 +913,7 @@ mod tests {
 
             let mut xo_subset_shard_buffer = Vec::<u8>::new();
             min_shard
-                .serialize_xorb_subset_only(&mut xo_subset_shard_buffer, |xorb| xorb_filter_fn(xorb.xorb_hash()))
+                .serialize_xorb_subset_only(&mut xo_subset_shard_buffer, None, |xorb| xorb_filter_fn(xorb.xorb_hash()))
                 .unwrap();
 
             let xo_subset_shard =
@@ -953,7 +967,7 @@ mod tests {
 
         let mut no_expiry_buffer = Vec::new();
         min_shard
-            .serialize_xorb_subset_with_expiry(&mut no_expiry_buffer, None, |_| true)
+            .serialize_xorb_subset_with_expiry(&mut no_expiry_buffer, None, None, |_| true)
             .unwrap();
         let no_expiry_info = MDBShardInfo::load_from_reader(&mut Cursor::new(&no_expiry_buffer)).unwrap();
         assert_eq!(no_expiry_info.metadata.shard_key_expiry, 0);
@@ -962,7 +976,7 @@ mod tests {
         let expiry = SystemTime::UNIX_EPOCH + Duration::from_secs(expiry_secs);
         let mut expiry_buffer = Vec::new();
         min_shard
-            .serialize_xorb_subset_with_expiry(&mut expiry_buffer, Some(expiry), |_| true)
+            .serialize_xorb_subset_with_expiry(&mut expiry_buffer, Some(expiry), None, |_| true)
             .unwrap();
 
         let expiry_info = MDBShardInfo::load_from_reader(&mut Cursor::new(&expiry_buffer)).unwrap();
@@ -981,7 +995,7 @@ mod tests {
 
         let serialize_now = || {
             let mut out = Vec::new();
-            min_shard.serialize(&mut out, false).unwrap();
+            min_shard.serialize(&mut out, false, None).unwrap();
             out
         };
 

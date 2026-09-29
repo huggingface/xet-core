@@ -15,6 +15,7 @@ use xet_core_structures::merklehash::MerkleHash;
 #[cfg(not(target_family = "wasm"))]
 use xet_core_structures::merklehash::compute_data_hash;
 use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
+use xet_core_structures::metadata_shard::shard_file::current_timestamp;
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::metadata_shard::streaming_shard::MDBMinimalShard;
 use xet_core_structures::metadata_shard::xorb_structs::MDBXorbInfo;
@@ -878,7 +879,8 @@ impl Client for MemoryClient {
         let minimal_shard = MDBMinimalShard::from_reader(&mut reader, true, true)?;
 
         let mut out = Vec::new();
-        minimal_shard.serialize_xorb_subset_with_expiry(&mut out, Some(expiry), |_| true)?;
+        // Cached by the client, where the creation time orders cache eviction, so stamp it.
+        minimal_shard.serialize_xorb_subset_with_expiry(&mut out, Some(expiry), Some(current_timestamp()), |_| true)?;
         Ok(Some(out.into()))
     }
 

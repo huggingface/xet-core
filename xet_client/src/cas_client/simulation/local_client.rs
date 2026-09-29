@@ -17,6 +17,7 @@ use tokio::time::{Duration, Instant};
 use tracing::{error, info, warn};
 use xet_core_structures::merklehash::{HashedWrite, MerkleHash, compute_data_hash};
 use xet_core_structures::metadata_shard::file_structs::{FileDataSequenceHeader, MDBFileInfo, MDBFileInfoView};
+use xet_core_structures::metadata_shard::shard_file::current_timestamp;
 use xet_core_structures::metadata_shard::shard_format::MDB_FILE_INFO_ENTRY_SIZE;
 #[cfg(test)]
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
@@ -1645,7 +1646,13 @@ impl Client for LocalClient {
             let minimal_shard = MDBMinimalShard::from_reader(&mut reader, true, true)?;
 
             let mut out = Vec::new();
-            minimal_shard.serialize_xorb_subset_with_expiry(&mut out, Some(expiry), |_| true)?;
+            // Cached by the client, where the creation time orders cache eviction, so stamp it.
+            minimal_shard.serialize_xorb_subset_with_expiry(
+                &mut out,
+                Some(expiry),
+                Some(current_timestamp()),
+                |_| true,
+            )?;
             Ok(Some(out.into()))
         } else {
             Ok(None)
@@ -1683,16 +1690,19 @@ impl Client for LocalClient {
 
         let mut cas_form = Vec::with_capacity(minimal_shard.serialized_size(with_verification));
         let mut hashed_writer = HashedWrite::new(&mut cas_form);
-        minimal_shard.serialize(&mut hashed_writer, with_verification)?;
+        // `None`: these bytes are stored under their own hash, so recording a clock reading
+        // would give the same shard a different key on every upload.
+        minimal_shard.serialize(&mut hashed_writer, with_verification, None)?;
         hashed_writer.flush()?;
         let shard_hash = hashed_writer.hash();
 
-        // Temp name first: two concurrent uploads of the same content must not race on the
-        // final path, and a reader must never observe a partial shard.
+        // Written through `SafeFileCreator` (temp file plus rename) rather than in place: a
+        // reader must never observe a partial shard, and content-addressed shards mean two
+        // concurrent uploads of the same content now target this one path.
         let shard_path = self.shard_dir.join(shard_file_name(&shard_hash));
-        let tmp_path = shard_path.with_extension(format!("upload_{:x}", rand::random::<u64>()));
-        std::fs::write(&tmp_path, &cas_form)?;
-        std::fs::rename(&tmp_path, &shard_path)?;
+        let mut file = SafeFileCreator::replace_existing(&shard_path)?;
+        file.write_all(&cas_form)?;
+        file.close()?;
 
         let shard = MDBShardFile::load_from_file(&shard_path, self.shard_manager.shard_file_cache())?;
 
