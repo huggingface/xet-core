@@ -2,7 +2,7 @@
 
 ## Project overview
 
-Rust libraries for Xet Storage: chunk-based deduplication, uploads, and file reconstruction for the Hugging Face Hub. `hf_xet` exposes them to Python through `huggingface_hub`. Preserve data integrity, transfer throughput, and bounded memory use.
+Rust libraries for Xet Storage: chunk-based deduplication, uploads, and file reconstruction for the Hugging Face Hub. `hf_xet` exposes them to Python through `huggingface_hub`.
 
 ## Architecture documentation
 
@@ -14,16 +14,16 @@ Rust libraries for Xet Storage: chunk-based deduplication, uploads, and file rec
 - [Client](xet_client/README.md) — CAS and Hub communication.
 - [Core structures](xet_core_structures/README.md) — hashes, shards, and Xorb objects.
 - [Runtime](xet_runtime/README.md) — async runtime, configuration, and logging.
-- [Python extension](hf_xet/README.md) — Python package usage.
-- [Git extension](git_xet/README.md) — Git LFS transfer agent and installation.
-- [Browser WASM wrapper](wasm/hf_xet_wasm/README.md) — upload/download APIs and smoke tests; an example, not a published SDK.
+- [Python extension](hf_xet/README.md) — hf-xet Python package.
+- [Git extension](git_xet/README.md) — Git LFS transfer agent.
+- [Browser WASM wrapper](wasm/hf_xet_wasm/README.md) — upload/download WASM APIs and smoke tests; an example, not a published SDK.
 - [Thin WASM extension](wasm/hf_xet_thin_wasm/README.md) — chunking and hashing for JavaScript; [benchmarks](wasm/hf_xet_thin_wasm/CHUNKER_BENCHMARK.md).
 
 `CLAUDE.md` links to this file. Keep shared agent guidance here. Component-specific build and test instructions live in [hf_xet/AGENTS.md](hf_xet/AGENTS.md), [git_xet/AGENTS.md](git_xet/AGENTS.md), and [wasm/AGENTS.md](wasm/AGENTS.md).
 
 ## Setup
 
-- **Rust**: follow the version pinned in [CI](.github/workflows/ci.yml), currently 1.95.0. Use nightly `rustfmt`.
+- **Rust**: follow the version pinned in [CI](.github/workflows/ci.yml). Use nightly `rustfmt`.
 - **Python**: activate a virtualenv and install `maturin` and `pytest`. Build/install with `maturin develop`; produce wheels with `maturin build`.
 - **Git tests**: install Git LFS and run `git lfs install`.
 - **Separate manifests**: `hf_xet`, `simulation`, `wasm/*`, and `examples/xet_pkg_napi` are excluded from the root workspace. Check them separately when affected.
@@ -43,7 +43,7 @@ Run from the repository root unless noted.
 | `cargo clippy -r --verbose --manifest-path hf_xet/Cargo.toml -- -D warnings` | Lint Python bindings |
 | `cargo +nightly fmt --manifest-path Cargo.toml --all` | Format the root workspace |
 | `cargo +nightly fmt --manifest-path hf_xet/Cargo.toml --all` | Format Python bindings |
-| `cargo test --manifest-path hf_xet/Cargo.toml --verbose --no-fail-fast` | Test bindings in Rust |
+| `cargo test --manifest-path hf_xet/Cargo.toml --verbose --no-fail-fast` | Test Python bindings in Rust |
 | `(cd hf_xet && maturin develop)` | Build/install the Python extension |
 | `pytest hf_xet/tests/ -v` | Test the rebuilt Python extension |
 | `cargo bench --no-run --workspace --exclude git_xet` | Check benchmark compilation |
@@ -88,7 +88,7 @@ Report which checks ran, which failed, and which were skipped.
 
 ## Code structure
 
-API layers: `hf_xet` → `hf-xet` → `xet-data`, supported by `xet-client`, `xet-core-structures`, and `xet-runtime`.
+API layers: `hf_xet` Python extension → `hf-xet` Rust crate → `xet-data`, supported by `xet-client`, `xet-core-structures`, and `xet-runtime`.
 
 | Path | Cargo package | Responsibility |
 | --- | --- | --- |
@@ -97,7 +97,7 @@ API layers: `hf_xet` → `hf-xet` → `xet-data`, supported by `xet-client`, `xe
 | `xet_client/` | `xet-client` | CAS/Hub clients, retries, connections, chunk cache |
 | `xet_core_structures/` | `xet-core-structures` | Hashes, shard/Xorb formats, shared structures |
 | `xet_runtime/` | `xet-runtime` | Runtime, configuration, logging, utilities |
-| `git_xet/` | `git_xet` | Git CLI and integration |
+| `git_xet/` | `git_xet` | Git LFS integration |
 | `hf_xet/` | `hf_xet` | PyO3 bindings; separate manifest |
 | `simulation/` | `simulation` | Simulations/benchmarks; separate manifest |
 | `wasm/` | Separate crates | Browser/WASM builds |
@@ -136,7 +136,7 @@ Follow nearby conventions. Do not rename existing APIs or reformat unrelated cod
 - Files/modules, functions, fields, and variables: `snake_case`. Types/traits/variants: `UpperCamelCase`. Constants/statics: `SCREAMING_SNAKE_CASE`.
 - Name files by responsibility (`file_upload_session.rs`); related types can share a module.
 - Use `lib.rs` / `mod.rs` for declarations and re-exports. Expose needed types without making implementation modules public.
-- Errors usually live in `error.rs`; Git and session modules use `errors.rs`. Helpers use `utils`, `common`, or `test_utils`; keep domain helpers near consumers.
+- Errors usually live in `error.rs` or `errors.rs`. Helpers use `utils`, `common`, or `test_utils`; keep domain helpers near consumers.
 - Name types by role: `FileUploadSession`, `ShardFileManager`, `DataWriter`. Traits have no `I` prefix. Use `Builder`, `Inner`, `Report`, `Info`, and `State` suffixes where meaningful.
 - Session types use `Xet...`; Python wrappers use `PyXet...` in `py_*.rs`, with `#[pyclass(name = "...")]`. Thin WASM wrappers use `Js...`.
 - Use `new`, `with_*`, `build`, and `_blocking` for sync counterparts. Predicates use `is_*` / `has_*`; accessors describe their value (`progress`, `task_id`).
