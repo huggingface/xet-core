@@ -25,3 +25,4 @@ pub type ClientConfig = groups::client::ConfigValues;
 pub type LogConfig = groups::log::ConfigValues;
 pub type XorbConfig = groups::xorb::ConfigValues;
 pub type SessionConfig = groups::session::ConfigValues;
+pub type TelemetryConfig = groups::telemetry::ConfigValues;

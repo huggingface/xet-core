@@ -25,6 +25,8 @@ use super::progress_tracked_streams::{
 use super::retry_wrapper::{RetryWrapper, RetryableReqwestError};
 #[cfg(not(target_family = "wasm"))]
 use super::shard_upload_v2::read_shard_upload_ndjson;
+#[cfg(not(target_family = "wasm"))]
+use super::telemetry::TransferTelemetry;
 use super::{Client, INFORMATION_LOG_LEVEL};
 use crate::cas_client::ShardUploadProgressType;
 use crate::cas_types::{
@@ -56,6 +58,10 @@ pub struct RemoteClient {
     detected_reconstruction_api_version: AtomicU32,
     /// Caches the discovered shard upload API version (0 = not yet probed, 1 = V1, 2 = V2).
     detected_shard_api_version: AtomicU32,
+    /// Per-transfer performance telemetry, or `None` when telemetry is disabled, this is a dry
+    /// run, or the endpoint is not http/https. See [`TransferTelemetry::maybe_new`].
+    #[cfg(not(target_family = "wasm"))]
+    telemetry: Option<Arc<TransferTelemetry>>,
 }
 
 impl RemoteClient {
@@ -77,14 +83,29 @@ impl RemoteClient {
         unix_socket_path: Option<&str>,
         custom_headers: Option<Arc<HeaderMap>>,
     ) -> Arc<Self> {
+        let authenticated_http_client = Arc::new(
+            http_client::build_auth_http_client(&ctx, auth, session_id, unix_socket_path, custom_headers.clone())
+                .unwrap(),
+        );
+
+        // Telemetry shares the authenticated client rather than building its own: a second
+        // `build_auth_http_client` would create a second `AuthMiddleware` with its own
+        // `TokenProvider`, giving telemetry an independent token-refresh cycle against the Hub.
+        #[cfg(not(target_family = "wasm"))]
+        let telemetry = TransferTelemetry::maybe_new(
+            &ctx,
+            endpoint,
+            session_id,
+            dry_run,
+            authenticated_http_client.clone(),
+            custom_headers.as_deref(),
+        );
+
         Arc::new(Self {
             ctx: ctx.clone(),
             endpoint: endpoint.to_string(),
             dry_run,
-            authenticated_http_client: Arc::new(
-                http_client::build_auth_http_client(&ctx, auth, session_id, unix_socket_path, custom_headers.clone())
-                    .unwrap(),
-            ),
+            authenticated_http_client,
             http_client: Arc::new(
                 http_client::build_http_client(&ctx, session_id, unix_socket_path, custom_headers.clone()).unwrap(),
             ),
@@ -103,6 +124,8 @@ impl RemoteClient {
             download_concurrency_controller: download_controller(&ctx, endpoint),
             detected_reconstruction_api_version: AtomicU32::new(0),
             detected_shard_api_version: AtomicU32::new(0),
+            #[cfg(not(target_family = "wasm"))]
+            telemetry,
         })
     }
 
@@ -545,7 +568,12 @@ impl Client for RemoteClient {
     }
 
     async fn acquire_download_permit(&self) -> Result<ConnectionPermit> {
-        self.download_concurrency_controller.acquire_connection_permit().await
+        let permit = self.download_concurrency_controller.acquire_connection_permit().await;
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(telemetry) = &self.telemetry {
+            telemetry.record_concurrency(self.download_concurrency_controller.active_permits());
+        }
+        permit
     }
 
     async fn get_file_term_data(
@@ -753,7 +781,17 @@ impl Client for RemoteClient {
     }
 
     async fn acquire_upload_permit(&self) -> Result<ConnectionPermit> {
-        self.upload_concurrency_controller.acquire_connection_permit().await
+        let permit = self.upload_concurrency_controller.acquire_connection_permit().await;
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(telemetry) = &self.telemetry {
+            telemetry.record_concurrency(self.upload_concurrency_controller.active_permits());
+        }
+        permit
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn transfer_telemetry(&self) -> Option<Arc<TransferTelemetry>> {
+        self.telemetry.clone()
     }
 
     #[instrument(skip_all, name = "RemoteClient::upload_shard", fields(shard.len = shard_data.len()))]

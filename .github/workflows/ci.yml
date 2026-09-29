@@ -10,8 +10,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions: {}
+
 jobs:
   fmt:
+    permissions:
+      contents: read
     name: Rustfmt
     runs-on:
       group: aws-general-8-plus
@@ -27,6 +31,8 @@ jobs:
           cargo fmt --manifest-path ./Cargo.toml --all -- --check
           cargo fmt --manifest-path ./hf_xet/Cargo.toml --all -- --check
   detect-unused-dependencies:
+    permissions:
+      contents: read
     runs-on:
       group: aws-general-8-plus
     steps:
@@ -34,12 +40,14 @@ jobs:
       - uses: huggingface/hf-workflows/.github/actions/setup-hf-registry-proxies@21845492ef47d4e46b07a3b2a6e14fd4748c39cc  # main
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
         with:
-          toolchain: 1.94.1
+          toolchain: 1.95.0
       - name: Install cargo-machete
         run: cargo install --locked cargo-machete@0.9.2
       - name: Run cargo-machete
         run: cargo machete
   check-bench-compiles:
+    permissions:
+      contents: read
     name: Check benchmarks compile
     runs-on:
       group: aws-general-8-plus
@@ -48,22 +56,24 @@ jobs:
       - uses: huggingface/hf-workflows/.github/actions/setup-hf-registry-proxies@21845492ef47d4e46b07a3b2a6e14fd4748c39cc  # main
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
         with:
-          toolchain: 1.94.1
+          toolchain: 1.95.0
       - uses: ./.github/actions/cache-rust-build
       - name: Compile benchmarks
         run: |
           cargo bench --no-run --workspace --exclude git_xet
   build_and_test-linux:
+    permissions:
+      contents: read
     runs-on:
       group: aws-general-8-plus
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - uses: huggingface/hf-workflows/.github/actions/setup-hf-registry-proxies@21845492ef47d4e46b07a3b2a6e14fd4748c39cc  # main
-      - name: Install Rust 1.94
+      - name: Install Rust 1.95
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
         with:
-          toolchain: 1.94.1
+          toolchain: 1.95.0
           components: clippy
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
         with:
@@ -122,14 +132,16 @@ jobs:
           # the build and test steps would update Cargo.lock if it is out of date
           test -z "$(git status --porcelain Cargo.lock)" || (echo "Cargo.lock has uncommitted changes!" && exit 1)
   build_and_test-win:
+    permissions:
+      contents: read
     runs-on: windows-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - name: Install Rust 1.94
+      - name: Install Rust 1.95
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
         with:
-          toolchain: 1.94.1
+          toolchain: 1.95.0
       - uses: ./.github/actions/cache-rust-build
       - name: Build and Test
         run: |
@@ -155,14 +167,16 @@ jobs:
           pip install pytest
           pytest hf_xet/tests/ -v
   build_and_test-macos:
+    permissions:
+      contents: read
     runs-on: macos-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - name: Install Rust 1.94
+      - name: Install Rust 1.95
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
         with:
-          toolchain: 1.94.1
+          toolchain: 1.95.0
       - name: Set up Git LFS
         run: |
           brew install git-lfs
@@ -191,6 +205,8 @@ jobs:
           pip install pytest
           pytest hf_xet/tests/ -v
   build_and_test-wasm:
+    permissions:
+      contents: read
     name: Build WASM
     runs-on:
       group: aws-general-8-plus
@@ -198,10 +214,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - uses: huggingface/hf-workflows/.github/actions/setup-hf-registry-proxies@21845492ef47d4e46b07a3b2a6e14fd4748c39cc  # main
-      - name: Install Rust 1.94
+      - name: Install Rust 1.95
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
         with:
-          toolchain: 1.94.1
+          toolchain: 1.95.0
       - uses: ./.github/actions/build-wasm
       - name: Check hf_xet_thin_wasm Cargo.lock has no uncommitted changes
         working-directory: wasm/hf_xet_thin_wasm
@@ -229,6 +245,8 @@ jobs:
           HF_SMOKE_TEST_TOKEN: ${{ secrets.HF_SMOKE_TEST_TOKEN }}
         run: node run.mjs all
   cargo-audit:
+    permissions:
+      contents: read
     name: Cargo Audit
     runs-on:
       group: aws-general-8-plus
@@ -237,7 +255,7 @@ jobs:
       - uses: huggingface/hf-workflows/.github/actions/setup-hf-registry-proxies@21845492ef47d4e46b07a3b2a6e14fd4748c39cc  # main
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
         with:
-          toolchain: 1.94.1
+          toolchain: 1.95.0
       - name: Install cargo-audit
         run: cargo install --locked cargo-audit
       - name: Run cargo audit

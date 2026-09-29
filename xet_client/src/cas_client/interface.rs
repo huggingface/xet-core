@@ -7,6 +7,8 @@ use xet_core_structures::xorb_object::SerializedXorbObject;
 
 use super::adaptive_concurrency::ConnectionPermit;
 use super::progress_tracked_streams::ProgressCallback;
+#[cfg(not(target_family = "wasm"))]
+use super::telemetry::TransferTelemetry;
 use crate::cas_types::{
     BatchQueryReconstructionResponse, FileChunkHashesResponse, FileRange, HttpRange, QueryReconstructionResponseV2,
     ShardUploadEvent,
@@ -107,4 +109,19 @@ pub trait Client: Send + Sync {
         file_id: &MerkleHash,
         dirty_ranges: Vec<FileRange>,
     ) -> Result<FileChunkHashesResponse>;
+
+    /// This transfer's performance telemetry aggregator, if it has one.
+    ///
+    /// Defaults to `None` so only [`RemoteClient`](crate::cas_client::RemoteClient) has to
+    /// implement it; the local, in-memory, and simulation clients inherit the default and are
+    /// silently excluded from reporting. `RemoteClient` also returns `None` when telemetry is
+    /// disabled or this is a dry run.
+    ///
+    /// Because this has a default body, an override with a mistyped signature would compile and
+    /// silently never be called - the integration tests in `xet_data/tests/test_transfer_telemetry.rs`
+    /// exist to catch that.
+    #[cfg(not(target_family = "wasm"))]
+    fn transfer_telemetry(&self) -> Option<Arc<TransferTelemetry>> {
+        None
+    }
 }

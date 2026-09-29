@@ -7,6 +7,7 @@ use serde::Serialize;
 
 use super::shard_file::MDB_FILE_INFO_ENTRY_SIZE;
 use super::xorb_structs::{XorbChunkSequenceEntry, XorbChunkSequenceHeader};
+use crate::error::CoreError;
 use crate::merklehash::data_hash::hex;
 use crate::merklehash::{DataHash, MerkleHash};
 use crate::serialization_utils::*;
@@ -120,13 +121,15 @@ impl FileDataSequenceHeader {
 
     /// Get the number of info entries following the header in this shard,
     /// this includes "FileDataSequenceEntry"s, "FileVerificationEntry"s, and "FileMetadataExt".
-    pub fn num_info_entry_following(&self) -> u32 {
-        let num_metadata_ext = if self.contains_metadata_ext() { 1 } else { 0 };
-        if self.contains_verification() {
-            self.num_entries * 2 + num_metadata_ext
+    pub fn num_info_entry_following(&self) -> Result<u32, CoreError> {
+        let num_metadata_ext: u32 = if self.contains_metadata_ext() { 1 } else { 0 };
+        let n = if self.contains_verification() {
+            self.num_entries.checked_mul(2).and_then(|n| n.checked_add(num_metadata_ext))
         } else {
-            self.num_entries + num_metadata_ext
-        }
+            self.num_entries.checked_add(num_metadata_ext)
+        };
+        // We choose max shard size to be 64 MiB, so entry-count overflow indicates a corrupt header.
+        n.ok_or_else(|| CoreError::invalid_shard("file info entry count overflow"))
     }
 
     /// Verifies that the two headers correspond to the same file. Checks that
@@ -354,9 +357,9 @@ pub struct MDBFileInfo {
 }
 
 impl MDBFileInfo {
-    pub fn num_bytes(&self) -> u64 {
-        size_of::<FileDataSequenceHeader>() as u64
-            + self.metadata.num_info_entry_following() as u64 * MDB_FILE_INFO_ENTRY_SIZE as u64
+    pub fn num_bytes(&self) -> Result<u64, CoreError> {
+        Ok(size_of::<FileDataSequenceHeader>() as u64
+            + self.metadata.num_info_entry_following()? as u64 * MDB_FILE_INFO_ENTRY_SIZE as u64)
     }
 
     /// The size of the file if unpacked.
@@ -647,9 +650,9 @@ mod tests {
         let file_info = gen_random_file_info(&mut rng, &2, true, true);
 
         assert!(file_info.metadata_ext.is_some());
-        assert_eq!(file_info.metadata.num_info_entry_following(), file_info.metadata.num_entries * 2 + 1);
+        assert_eq!(file_info.metadata.num_info_entry_following().unwrap(), file_info.metadata.num_entries * 2 + 1);
 
-        let size = file_info.num_bytes();
+        let size = file_info.num_bytes().unwrap();
         let mut buffer = Vec::new();
         let bytes_written = file_info.serialize(&mut buffer).unwrap();
         assert_eq!(bytes_written as u64, size);

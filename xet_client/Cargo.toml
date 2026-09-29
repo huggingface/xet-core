@@ -15,8 +15,8 @@ name = "xet_client"
 path = "src/lib.rs"
 
 [dependencies]
-xet-runtime = { version = "1.5.4", path = "../xet_runtime" }
-xet-core-structures = { version = "1.5.4", path = "../xet_core_structures" }
+xet-runtime = { version = "1.6.0", path = "../xet_runtime" }
+xet-core-structures = { version = "1.6.0", path = "../xet_core_structures" }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -55,6 +55,10 @@ web-time = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 axum = { workspace = true, optional = true }
+# Telemetry only; it is compiled out on wasm (no XetRuntime::spawn there), which also keeps
+# chrono's clock off a target where it needs `wasmbind` to work.
+chrono = { workspace = true }
+uuid = { workspace = true, features = ["v7"] }
 humantime = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 redb = { workspace = true }
@@ -70,6 +74,7 @@ default = ["rustls-tls"]
 elevated_information_level = []
 fd-track = ["xet-runtime/fd-track"]
 rustls-tls = ["reqwest/rustls"]
+rustls-no-provider = ["reqwest/rustls-no-provider"]
 native-tls = ["reqwest/native-tls"]
 native-tls-vendored = ["reqwest/native-tls-vendored"]
 # The cache_analysis binary needs clap for argument parsing.

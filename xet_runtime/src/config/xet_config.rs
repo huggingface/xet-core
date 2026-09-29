@@ -35,6 +35,14 @@ macro_rules! impl_xet_config_group_dispatch {
                 $(self.$group.apply_env_overrides();)*
                 #[cfg(not(target_family = "wasm"))]
                 self.system_monitor.apply_env_overrides();
+
+                // huggingface_hub's telemetry opt-outs have inverted polarity, so they can't be
+                // ENVIRONMENT_NAME_ALIASES entries. Applied last so an opt-out beats an explicit
+                // HF_XET_TELEMETRY_ENABLED=1.
+                if $crate::utils::configuration_utils::telemetry_opted_out() {
+                    self.telemetry.enabled = false;
+                }
+
                 self
             }
 
@@ -134,14 +142,19 @@ crate::all_config_groups!(impl_xet_config_group_dispatch);
 impl XetConfig {
     /// Create a new XetConfig instance with default values and apply environment variable overrides.
     /// If high performance mode is enabled (via environment variables HF_XET_HIGH_PERFORMANCE or HF_XET_HP),
-    /// also applies high performance settings automatically.
-    /// This is equivalent to `XetConfig::default().with_env_overrides()`, with `with_high_performance()`
-    /// called conditionally if high performance mode is enabled.
+    /// high performance settings are applied first and environment variable overrides afterwards,
+    /// so an explicitly set environment variable always beats the high performance preset.
     pub fn new() -> Self {
-        let mut config = Self::default().with_env_overrides();
+        let mut config = Self::default();
         if crate::utils::is_high_performance() {
             config = config.with_high_performance();
         }
+        let mut config = config.with_env_overrides();
+        // Sanity-check env-provided values so the caller sees the same coherent
+        // numbers the runtime will use. Configs can still be mutated after this
+        // (e.g. Python's `with_config`), so `XetContext::new` normalizes again
+        // before freezing the config.
+        config.reconstruction.normalize();
         config
     }
 
@@ -152,10 +165,13 @@ impl XetConfig {
     /// - HF_XET_HIGH_PERFORMANCE
     /// - HF_XET_HP
     ///
-    /// This method sets the following values to their high performance defaults:
-    /// - data.max_concurrent_file_ingestion: 8 -> 100
+    /// This method raises file ingestion concurrency, widens the adaptive concurrency
+    /// bands, raises the reconstruction fetch sizes, and applies the high performance
+    /// (memory-derived) download buffer values.
     ///
-    /// Note: This method is automatically called by `XetConfig::new()` if high performance mode is enabled.
+    /// Note: This method is automatically called by `XetConfig::new()` if high performance mode
+    /// is enabled, before environment variable overrides are applied; explicitly set environment
+    /// variables therefore take precedence over these values.
     pub fn with_high_performance(mut self) -> Self {
         self.data.max_concurrent_file_ingestion = 100;
 
@@ -169,9 +185,10 @@ impl XetConfig {
 
         self.reconstruction.min_reconstruction_fetch_size = ByteSize::from("1gb");
         self.reconstruction.max_reconstruction_fetch_size = ByteSize::from("16gb");
-        self.reconstruction.download_buffer_size = ByteSize::from("16gb");
-        self.reconstruction.download_buffer_perfile_size = ByteSize::from("2gb");
-        self.reconstruction.download_buffer_limit = ByteSize::from("64gb");
+        let hp_buffers = crate::utils::system_memory::high_performance_download_buffer_sizes();
+        self.reconstruction.download_buffer_size = hp_buffers.size;
+        self.reconstruction.download_buffer_perfile_size = hp_buffers.perfile;
+        self.reconstruction.download_buffer_limit = hp_buffers.limit;
 
         self
     }
@@ -293,8 +310,10 @@ mod tests {
 
     #[test]
     fn test_with_config_roundtrip_all_groups() {
-        let config = XetConfig::default().with_config("shard.target_size", "2048").unwrap();
-        assert_eq!(config.get("shard.target_size").unwrap(), "2048");
+        let config = XetConfig::default()
+            .with_config("shard.chunk_index_table_max_size", "2048")
+            .unwrap();
+        assert_eq!(config.get("shard.chunk_index_table_max_size").unwrap(), "2048");
 
         let config = XetConfig::default()
             .with_config("deduplication.min_n_chunks_per_range", "4")
@@ -342,7 +361,7 @@ mod tests {
         let keys = XetConfig::default().all_keys();
         let expected_samples = [
             "data.max_concurrent_file_ingestion",
-            "shard.target_size",
+            "shard.chunk_index_table_max_size",
             "deduplication.min_n_chunks_per_range",
             "chunk_cache.size_bytes",
             "client.retry_max_attempts",

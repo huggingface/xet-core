@@ -91,7 +91,7 @@ impl FromStrParseable for ByteSize {}
 /// Special handling for bool:
 /// - true: "1","true","yes","y","on"  -> true
 /// - false: "0","false","no","n","off" -> false
-fn parse_bool_value(value: &str) -> Option<bool> {
+pub(crate) fn parse_bool_value(value: &str) -> Option<bool> {
     let t = value.trim().to_ascii_lowercase();
 
     match t.as_str() {
@@ -343,6 +343,31 @@ pub static HIGH_PERFORMANCE: LazyLock<bool> = LazyLock::new(get_high_performance
 #[inline]
 pub fn is_high_performance() -> bool {
     *HIGH_PERFORMANCE
+}
+
+/// `huggingface_hub` environment variables that suppress client telemetry regardless of
+/// `HF_XET_TELEMETRY_ENABLED`: the same variables `huggingface_hub` checks before sending its own
+/// telemetry (`constants.HF_HUB_DISABLE_TELEMETRY` and `constants.HF_HUB_OFFLINE`).
+///
+/// Temporary: lets an hf-xet release honor these opt-outs without waiting on a `huggingface_hub`
+/// release. Remove once `huggingface_hub` sets `telemetry.enabled` on the `XetConfig` it passes to
+/// `XetSession`.
+pub(crate) const TELEMETRY_OPT_OUT_VARS: &[&str] = &[
+    "HF_HUB_DISABLE_TELEMETRY",
+    "DISABLE_TELEMETRY",
+    "DO_NOT_TRACK",
+    "HF_HUB_OFFLINE",
+    "TRANSFORMERS_OFFLINE",
+];
+
+/// Whether any of [`TELEMETRY_OPT_OUT_VARS`] is set to a truthy value.
+///
+/// The value must parse as truthy, so `HF_HUB_OFFLINE=0` leaves telemetry on. Not memoized: it is
+/// read each time a `XetConfig` is built, so a process that changes the variables sees the change.
+pub(crate) fn telemetry_opted_out() -> bool {
+    TELEMETRY_OPT_OUT_VARS
+        .iter()
+        .any(|name| std::env::var(name).ok().and_then(|v| parse_bool_value(&v)).unwrap_or(false))
 }
 
 #[cfg(test)]

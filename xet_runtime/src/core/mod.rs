@@ -6,6 +6,8 @@ pub mod runtime;
 
 pub use common::XetCommon;
 pub use context::XetContext;
+#[cfg(not(target_family = "wasm"))]
+pub use runtime::register_pre_shutdown_drain;
 pub use runtime::{RuntimeMode, XetRuntime};
 
 pub mod sync_primatives;

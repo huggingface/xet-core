@@ -251,7 +251,7 @@ impl HydrateDehydrateTest {
             #[cfg(feature = "simulation")]
             HydrationMode::ServerV1Fallback => {
                 self.ensure_server_created().await;
-                self.test_server.as_ref().unwrap().client().disable_v2_reconstruction(404);
+                self.test_server.as_ref().unwrap().client().disable_v2_endpoints(404);
             },
             #[cfg(feature = "simulation")]
             HydrationMode::ServerMaxRanges2 => {
@@ -472,5 +472,11 @@ impl TestEnvironment {
             #[cfg(feature = "simulation")]
             _server: server,
         }
+    }
+
+    /// Telemetry documents the simulation server has received, in arrival order.
+    #[cfg(feature = "simulation")]
+    pub fn telemetry_docs(&self) -> Vec<serde_json::Value> {
+        self._server.as_ref().map(|s| s.telemetry_docs()).unwrap_or_default()
     }
 }

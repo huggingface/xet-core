@@ -11,10 +11,12 @@ on:
         description: "Tag to test (e.g., v1.0.3-rc2)"
         required: true
 
+
 permissions: {}
 
 jobs:
   trigger_rc_testing:
+    permissions: {}
     runs-on: ubuntu-latest
 
     strategy:
