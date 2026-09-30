@@ -291,7 +291,7 @@ impl FileDownloadSession {
                 // pass the range to set the start position and let ReconstructionTermManager
                 // discover the actual end and finalize progress incrementally.
                 match file_info.file_size() {
-                    Some(file_size) if file_size > 0 && range.start < file_size => {
+                    Some(file_size) if range.start < file_size => {
                         let bounded = FileRange::new(range.start, file_size);
                         if let Some(ref updater) = progress_updater {
                             updater.update_item_size(bounded.end - bounded.start, true);
@@ -308,16 +308,14 @@ impl FileDownloadSession {
                 // percentage-based progress, and bound the range so the term manager never
                 // requests reconstruction segments past the end of the file. A size larger than
                 // the real file still yields a short read, reported as SizeMismatch after
-                // reconstruction. A size of 0 is treated as unknown: some callers fall back to 0
-                // when the size header is missing, and bounding to an empty range would silently
-                // produce an empty file instead of that SizeMismatch.
+                // reconstruction. A size of 0 is a valid length for an empty file: the term
+                // manager skips the empty range, so no reconstruction is fetched and 0 bytes are
+                // written.
                 let file_size = file_info.file_size().unwrap();
                 if let Some(ref updater) = progress_updater {
                     updater.update_item_size(file_size, true);
                 }
-                if file_size > 0 {
-                    reconstructor = reconstructor.with_byte_range(FileRange::new(0, file_size));
-                }
+                reconstructor = reconstructor.with_byte_range(FileRange::new(0, file_size));
             },
             None => {
                 // Full file with unknown size: the reconstructor uses
