@@ -58,6 +58,7 @@ pub(crate) struct ServerState {
     /// Kept verbatim as `Value` so tests can assert on the exact wire shape, which is what a
     /// consumer actually receives.
     pub(crate) telemetry_docs: Arc<Mutex<Vec<serde_json::Value>>>,
+    pub(crate) v1_reconstruction_ranges: Arc<Mutex<Vec<Option<String>>>>,
     /// While set, `/v2/shards` emits an in-stream `Error` frame instead of committing.
     /// Encodes [`ShardUploadErrorFrame`] as `u8`.
     pub(crate) shard_upload_error_frame: Arc<AtomicU8>,
@@ -266,6 +267,12 @@ pub async fn get_reconstruction(
         Ok(None) => None,
         Err((status, msg)) => return (status, msg).into_response(),
     };
+
+    state
+        .v1_reconstruction_ranges
+        .lock()
+        .expect("v1_reconstruction_ranges lock poisoned")
+        .push(headers.get(RANGE).map(|value| value.to_str().unwrap().to_owned()));
 
     match state.client.get_reconstruction_v1(&file_id, range).await {
         Ok(Some(mut response)) => {

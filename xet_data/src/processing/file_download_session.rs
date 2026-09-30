@@ -290,13 +290,14 @@ impl FileDownloadSession {
                 // the actual end and finalize progress incrementally.
                 reconstructor = reconstructor.with_byte_range(range);
             },
-            None if file_info.file_size().is_some() => {
+            None if let Some(file_size) = file_info.file_size() => {
                 // Full file with caller-provided size. Set progress upfront so
                 // UI consumers get percentage-based progress. SizeMismatch is
                 // validated after reconstruction in download_file_with_id.
                 if let Some(ref updater) = progress_updater {
-                    updater.update_item_size(file_info.file_size().unwrap(), true);
+                    updater.update_item_size(file_size, true);
                 }
+                reconstructor = reconstructor.with_file_size(file_size);
             },
             None => {
                 // Full file with unknown size: the reconstructor uses
