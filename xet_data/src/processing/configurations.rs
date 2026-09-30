@@ -109,12 +109,12 @@ impl TranslatorConfig {
 
                 (base_path.join(&config.shard.cache_subdir), base_path.join(&config.session.dir_name))
             } else if session.is_memory() {
-                let cache_path = xet_cache_root().join("memory");
+                let cache_path = cache_root(ctx).join("memory");
                 std::fs::create_dir_all(&cache_path)?;
 
                 (cache_path.join(&config.shard.cache_subdir), cache_path.join(&config.session.dir_name))
             } else {
-                let cache_path = compute_cache_path(&session.endpoint);
+                let cache_path = compute_cache_path(&cache_root(ctx), &session.endpoint);
                 std::fs::create_dir_all(&cache_path)?;
 
                 let staging_directory = cache_path.join(&config.data.staging_subdir);
@@ -191,11 +191,18 @@ impl TranslatorConfig {
     }
 }
 
+/// Returns the configured `data.cache_root`, or the environment-derived default.
+#[cfg(not(target_family = "wasm"))]
+fn cache_root(ctx: &XetContext) -> PathBuf {
+    match &ctx.config.data.cache_root {
+        Some(path) => path.as_path().to_path_buf(),
+        None => xet_cache_root(),
+    }
+}
+
 /// Computes a cache-safe path from an endpoint URL.
 #[cfg(not(target_family = "wasm"))]
-fn compute_cache_path(endpoint: &str) -> PathBuf {
-    let cache_root = xet_cache_root();
-
+fn compute_cache_path(cache_root: &Path, endpoint: &str) -> PathBuf {
     let endpoint_prefix = endpoint
         .chars()
         .take(16)
@@ -211,7 +218,9 @@ fn compute_cache_path(endpoint: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;
+    use xet_runtime::config::XetConfig;
     use xet_runtime::core::XetContext;
+    use xet_runtime::utils::TemplatedPathBuf;
 
     use super::{SessionContext, TranslatorConfig};
 
@@ -239,6 +248,28 @@ mod tests {
         assert!(!remote_session.is_local(&ctx));
         assert!(!remote_session.is_memory());
         assert!(remote_session.local_path(&ctx).is_none());
+    }
+
+    #[test]
+    fn test_configured_cache_root_is_used() {
+        let temp_dir = tempdir().unwrap();
+        let mut config = XetConfig::new();
+        config.data.cache_root = Some(TemplatedPathBuf::new(temp_dir.path()));
+        let ctx = XetContext::with_config(config).unwrap();
+
+        let session = SessionContext {
+            endpoint: "http://localhost:8080".into(),
+            auth: None,
+            custom_headers: None,
+            repo_paths: Vec::new(),
+            session_id: None,
+        };
+        let remote_config = TranslatorConfig::new(&ctx, session).unwrap();
+        assert!(remote_config.shard_cache_directory.starts_with(temp_dir.path()));
+        assert!(remote_config.shard_session_directory.starts_with(temp_dir.path()));
+
+        let memory_config = TranslatorConfig::new(&ctx, SessionContext::for_memory()).unwrap();
+        assert!(memory_config.shard_cache_directory.starts_with(temp_dir.path().join("memory")));
     }
 
     #[test]

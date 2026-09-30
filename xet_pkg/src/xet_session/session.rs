@@ -1,6 +1,8 @@
 //! XetSession - manages runtime and configuration
 
 use std::collections::HashMap;
+#[cfg(not(target_family = "wasm"))]
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
 
 use tracing::info;
@@ -9,6 +11,8 @@ use xet_runtime::config::XetConfig;
 use xet_runtime::core::XetContext;
 #[cfg(feature = "fd-track")]
 use xet_runtime::fd_diagnostics::{report_fd_count, track_fd_scope};
+#[cfg(not(target_family = "wasm"))]
+use xet_runtime::utils::TemplatedPathBuf;
 use xet_runtime::utils::UniqueId;
 
 use super::download_stream_group::{
@@ -133,6 +137,16 @@ impl XetSessionBuilder {
             config,
             tokio_handle: None,
         }
+    }
+
+    /// Set the root directory for the xet cache (shard cache and staging data).
+    ///
+    /// Overrides `data.cache_root` in the [`XetConfig`]; when not set, the root is derived from
+    /// `HF_XET_CACHE`, `HF_HOME`, or `XDG_CACHE_HOME`, falling back to `~/.cache/huggingface/xet`.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn with_cache_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.config.data.cache_root = Some(TemplatedPathBuf::new(dir));
+        self
     }
 
     /// Attach to an existing tokio runtime handle.
@@ -395,6 +409,16 @@ mod tests {
     use xet_runtime::core::{RuntimeMode, XetContext};
 
     use super::*;
+
+    // ── Builder ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_builder_with_cache_dir_sets_cache_root() {
+        let temp_dir = tempdir().unwrap();
+        let session = XetSessionBuilder::new().with_cache_dir(temp_dir.path()).build().unwrap();
+        let cache_root = session.inner.ctx.config.data.cache_root.as_ref().unwrap();
+        assert_eq!(cache_root.as_path(), temp_dir.path());
+    }
 
     // ── Identity ─────────────────────────────────────────────────────────────
 
