@@ -975,8 +975,9 @@ impl super::DeletionControlableClient for LocalClient {
         Ok(())
     }
 
-    async fn remove_shard_dedup_entries(&self, shard_hash: &MerkleHash) -> Result<()> {
+    async fn remove_shard_dedup_entries(&self, shard_hash: &MerkleHash) -> Result<Vec<MerkleHash>> {
         let shard_redb = RedbHash::from(*shard_hash);
+        let mut removed_chunks = Vec::new();
         for _ in 0..4 {
             let to_delete: Vec<RedbHash> = {
                 let read_txn = self.db().begin_read().map_err(map_redb_db_error)?;
@@ -991,7 +992,7 @@ impl super::DeletionControlableClient for LocalClient {
             };
 
             if to_delete.is_empty() {
-                return Ok(());
+                return Ok(removed_chunks);
             }
 
             let write_txn = self.db().begin_write().map_err(map_redb_db_error)?;
@@ -1002,6 +1003,7 @@ impl super::DeletionControlableClient for LocalClient {
                 }
             }
             write_txn.commit().map_err(map_redb_db_error)?;
+            removed_chunks.extend(to_delete.into_iter().map(MerkleHash::from));
         }
 
         let still_present = {
@@ -1021,7 +1023,7 @@ impl super::DeletionControlableClient for LocalClient {
             )));
         }
 
-        Ok(())
+        Ok(removed_chunks)
     }
 
     async fn delete_xorb(&self, hash: &MerkleHash) {
