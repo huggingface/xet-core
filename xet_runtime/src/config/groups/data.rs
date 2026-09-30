@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::utils::{ByteSize, TemplatedPathBuf};
+use crate::utils::ByteSize;
 
 crate::config_group!({
 
@@ -100,16 +100,6 @@ crate::config_group!({
     ///
     /// Use the environment variable `HF_XET_DATA_AGGREGATE_PROGRESS` to set this value.
     ref aggregate_progress: bool = true;
-
-    /// Root directory for the xet cache (shard cache and staging data).
-    ///
-    /// When unset, the root is derived from `HF_XET_CACHE`, `HF_HOME`, or `XDG_CACHE_HOME`, falling back to
-    /// `~/.cache/huggingface/xet`. Supports the same template variables as other path settings.
-    ///
-    /// The default value is None.
-    ///
-    /// Use the environment variable `HF_XET_DATA_CACHE_ROOT` to set this value.
-    ref cache_root: Option<TemplatedPathBuf> = None;
 
     /// Default prefix used for CAS and shard operations.
     ///

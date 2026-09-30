@@ -1,7 +1,6 @@
 //! XetSession - manages runtime and configuration
 
 use std::collections::HashMap;
-#[cfg(not(target_family = "wasm"))]
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
 
@@ -11,8 +10,6 @@ use xet_runtime::config::XetConfig;
 use xet_runtime::core::XetContext;
 #[cfg(feature = "fd-track")]
 use xet_runtime::fd_diagnostics::{report_fd_count, track_fd_scope};
-#[cfg(not(target_family = "wasm"))]
-use xet_runtime::utils::TemplatedPathBuf;
 use xet_runtime::utils::UniqueId;
 
 use super::download_stream_group::{
@@ -29,6 +26,9 @@ use super::upload_commit::XetUploadCommitBuilder;
 #[doc(hidden)]
 pub struct XetSessionInner {
     pub(super) ctx: XetContext,
+
+    // Root directory for the shard cache and staging data; `None` uses the environment-derived default.
+    pub(super) cache_dir: Option<PathBuf>,
 
     // Root of the cancellation tree. Child commits/groups create child TaskRuntimes via
     // task_runtime.child(), which links their cancellation tokens to this root. Calling
@@ -113,6 +113,7 @@ pub struct XetSessionInner {
 /// override runtime settings such as cache directories or concurrency limits.
 pub struct XetSessionBuilder {
     config: XetConfig,
+    cache_dir: Option<PathBuf>,
     tokio_handle: Option<tokio::runtime::Handle>,
 }
 
@@ -127,6 +128,7 @@ impl XetSessionBuilder {
     pub fn new() -> Self {
         Self {
             config: XetConfig::new(),
+            cache_dir: None,
             tokio_handle: None,
         }
     }
@@ -135,17 +137,18 @@ impl XetSessionBuilder {
     pub fn new_with_config(config: XetConfig) -> Self {
         Self {
             config,
+            cache_dir: None,
             tokio_handle: None,
         }
     }
 
     /// Set the root directory for the xet cache (shard cache and staging data).
     ///
-    /// Overrides `data.cache_root` in the [`XetConfig`]; when not set, the root is derived from
-    /// `HF_XET_CACHE`, `HF_HOME`, or `XDG_CACHE_HOME`, falling back to `~/.cache/huggingface/xet`.
+    /// When not set, the root is derived from `HF_XET_CACHE`, `HF_HOME`, or `XDG_CACHE_HOME`, falling back to
+    /// `~/.cache/huggingface/xet`.
     #[cfg(not(target_family = "wasm"))]
     pub fn with_cache_dir(mut self, dir: impl Into<PathBuf>) -> Self {
-        self.config.data.cache_root = Some(TemplatedPathBuf::new(dir));
+        self.cache_dir = Some(dir.into());
         self
     }
 
@@ -202,7 +205,7 @@ impl XetSessionBuilder {
         #[cfg(target_family = "wasm")]
         let ctx = XetContext::with_config(self.config)?;
 
-        let session = XetSession::new(ctx);
+        let session = XetSession::new(ctx, self.cache_dir);
         info!("Session created, session_id={}", session.inner.id);
         #[cfg(feature = "fd-track")]
         report_fd_count("XetSessionBuilder::build complete");
@@ -241,11 +244,12 @@ pub struct XetSession {
 
 impl XetSession {
     /// Low-level constructor used by [`XetSessionBuilder::build`].
-    fn new(ctx: XetContext) -> Self {
+    fn new(ctx: XetContext, cache_dir: Option<PathBuf>) -> Self {
         let task_runtime = TaskRuntime::new_root(ctx.runtime.clone());
         Self {
             inner: Arc::new(XetSessionInner {
                 ctx,
+                cache_dir,
                 task_runtime,
                 active_download_stream_groups: Mutex::new(HashMap::new()),
                 id: Uuid::now_v7(),
@@ -416,8 +420,7 @@ mod tests {
     fn test_builder_with_cache_dir_sets_cache_root() {
         let temp_dir = tempdir().unwrap();
         let session = XetSessionBuilder::new().with_cache_dir(temp_dir.path()).build().unwrap();
-        let cache_root = session.inner.ctx.config.data.cache_root.as_ref().unwrap();
-        assert_eq!(cache_root.as_path(), temp_dir.path());
+        assert_eq!(session.inner.cache_dir.as_deref(), Some(temp_dir.path()));
     }
 
     // ── Identity ─────────────────────────────────────────────────────────────
