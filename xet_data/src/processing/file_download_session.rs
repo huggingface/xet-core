@@ -285,17 +285,38 @@ impl FileDownloadSession {
                 reconstructor = reconstructor.with_byte_range(range);
             },
             Some(range) => {
-                // Open-ended range (end == u64::MAX): pass the range to set the
-                // start position, but let ReconstructionTermManager discover
-                // the actual end and finalize progress incrementally.
-                reconstructor = reconstructor.with_byte_range(range);
+                // Open-ended range (end == u64::MAX). When the file size is known and the
+                // start lies within the file, bound the range so the term manager never
+                // requests reconstruction segments past the end of the file. Otherwise
+                // pass the range to set the start position and let ReconstructionTermManager
+                // discover the actual end and finalize progress incrementally.
+                match file_info.file_size() {
+                    Some(file_size) if file_size > 0 && range.start < file_size => {
+                        let bounded = FileRange::new(range.start, file_size);
+                        if let Some(ref updater) = progress_updater {
+                            updater.update_item_size(bounded.end - bounded.start, true);
+                        }
+                        reconstructor = reconstructor.with_byte_range(bounded);
+                    },
+                    _ => {
+                        reconstructor = reconstructor.with_byte_range(range);
+                    },
+                }
             },
             None if file_info.file_size().is_some() => {
-                // Full file with caller-provided size. Set progress upfront so
-                // UI consumers get percentage-based progress. SizeMismatch is
-                // validated after reconstruction in download_file_with_id.
+                // Full file with caller-provided size. Set progress upfront so UI consumers get
+                // percentage-based progress, and bound the range so the term manager never
+                // requests reconstruction segments past the end of the file. A size larger than
+                // the real file still yields a short read, reported as SizeMismatch after
+                // reconstruction. A size of 0 is treated as unknown: some callers fall back to 0
+                // when the size header is missing, and bounding to an empty range would silently
+                // produce an empty file instead of that SizeMismatch.
+                let file_size = file_info.file_size().unwrap();
                 if let Some(ref updater) = progress_updater {
-                    updater.update_item_size(file_info.file_size().unwrap(), true);
+                    updater.update_item_size(file_size, true);
+                }
+                if file_size > 0 {
+                    reconstructor = reconstructor.with_byte_range(FileRange::new(0, file_size));
                 }
             },
             None => {
@@ -1302,6 +1323,182 @@ mod tests {
                 let result = session.download_to_writer(&xfi, 100000.., file).await;
 
                 assert!(result.is_err());
+            })
+            .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod reconstruction_range_tests {
+    use std::sync::{Arc, Mutex};
+
+    use async_trait::async_trait;
+    use bytes::Bytes;
+    use xet_client::cas_client::adaptive_concurrency::ConnectionPermit;
+    use xet_client::cas_client::{
+        Client, ClientTestingUtils, LocalClient, ProgressCallback, ShardUploadProgressCallback, URLProvider,
+    };
+    use xet_client::cas_types::{
+        BatchQueryReconstructionResponse, FileChunkHashesResponse, FileRange, QueryReconstructionResponseV2,
+    };
+    use xet_core_structures::merklehash::MerkleHash;
+    use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
+    use xet_core_structures::xorb_object::SerializedXorbObject;
+    use xet_runtime::core::XetContext;
+
+    use super::FileDownloadSession;
+    use crate::processing::XetFileInfo;
+
+    /// Delegates to a `LocalClient` while recording every reconstruction range requested.
+    struct RecordingClient {
+        inner: Arc<LocalClient>,
+        reconstruction_ranges: Mutex<Vec<Option<FileRange>>>,
+    }
+
+    #[async_trait]
+    impl Client for RecordingClient {
+        async fn get_file_reconstruction_info(
+            &self,
+            file_hash: &MerkleHash,
+        ) -> xet_client::error::Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
+            self.inner.get_file_reconstruction_info(file_hash).await
+        }
+
+        async fn get_reconstruction(
+            &self,
+            file_id: &MerkleHash,
+            bytes_range: Option<FileRange>,
+        ) -> xet_client::error::Result<Option<QueryReconstructionResponseV2>> {
+            self.reconstruction_ranges.lock().unwrap().push(bytes_range);
+            self.inner.get_reconstruction(file_id, bytes_range).await
+        }
+
+        async fn batch_get_reconstruction(
+            &self,
+            file_ids: &[MerkleHash],
+        ) -> xet_client::error::Result<BatchQueryReconstructionResponse> {
+            self.inner.batch_get_reconstruction(file_ids).await
+        }
+
+        async fn acquire_download_permit(&self) -> xet_client::error::Result<ConnectionPermit> {
+            self.inner.acquire_download_permit().await
+        }
+
+        async fn get_file_term_data(
+            &self,
+            url_info: Box<dyn URLProvider>,
+            download_permit: ConnectionPermit,
+            progress_callback: Option<ProgressCallback>,
+            uncompressed_size_if_known: Option<usize>,
+        ) -> xet_client::error::Result<(Bytes, Vec<u32>)> {
+            self.inner
+                .get_file_term_data(url_info, download_permit, progress_callback, uncompressed_size_if_known)
+                .await
+        }
+
+        async fn query_for_global_dedup_shard(
+            &self,
+            prefix: &str,
+            chunk_hash: &MerkleHash,
+        ) -> xet_client::error::Result<Option<Bytes>> {
+            self.inner.query_for_global_dedup_shard(prefix, chunk_hash).await
+        }
+
+        async fn acquire_upload_permit(&self) -> xet_client::error::Result<ConnectionPermit> {
+            self.inner.acquire_upload_permit().await
+        }
+
+        async fn upload_shard(
+            &self,
+            shard_data: Bytes,
+            upload_permit: ConnectionPermit,
+            progress_callback: Option<ShardUploadProgressCallback>,
+        ) -> xet_client::error::Result<()> {
+            self.inner.upload_shard(shard_data, upload_permit, progress_callback).await
+        }
+
+        async fn upload_xorb(
+            &self,
+            prefix: &str,
+            serialized_xorb_object: SerializedXorbObject,
+            progress_callback: Option<ProgressCallback>,
+            upload_permit: ConnectionPermit,
+        ) -> xet_client::error::Result<u64> {
+            self.inner
+                .upload_xorb(prefix, serialized_xorb_object, progress_callback, upload_permit)
+                .await
+        }
+
+        async fn get_file_chunk_hashes(
+            &self,
+            file_id: &MerkleHash,
+            dirty_ranges: Vec<FileRange>,
+        ) -> xet_client::error::Result<FileChunkHashesResponse> {
+            self.inner.get_file_chunk_hashes(file_id, dirty_ranges).await
+        }
+    }
+
+    /// Uploads a random multi-chunk file and returns the recording client plus a
+    /// `XetFileInfo` carrying the true file size.
+    async fn setup() -> (XetContext, Arc<RecordingClient>, XetFileInfo, u64) {
+        let ctx = XetContext::default().unwrap();
+        let local = LocalClient::temporary(ctx.clone()).await.unwrap();
+        let contents = local.upload_random_file(&[(1, (0, 64))], 1024).await.unwrap();
+        let data_len = contents.data.len() as u64;
+        let client = Arc::new(RecordingClient {
+            inner: local,
+            reconstruction_ranges: Mutex::new(Vec::new()),
+        });
+        (ctx, client, XetFileInfo::new(contents.file_hash.hex(), data_len), data_len)
+    }
+
+    fn assert_no_request_past_end(client: &RecordingClient, file_size: u64) {
+        let ranges = client.reconstruction_ranges.lock().unwrap();
+        assert!(!ranges.is_empty(), "expected at least one reconstruction request");
+        for range in ranges.iter() {
+            let range = range.expect("reconstruction request should carry a byte range");
+            assert!(
+                range.start < file_size && range.end <= file_size,
+                "reconstruction request {range:?} extends past end of file (size {file_size})"
+            );
+        }
+    }
+
+    #[test]
+    fn test_known_size_full_download_never_requests_past_end() {
+        let ctx = XetContext::default().unwrap();
+        ctx.runtime
+            .clone()
+            .external_run_async_task(async {
+                let (ctx, client, xfi, data_len) = setup().await;
+                let session = FileDownloadSession::from_client(&ctx, client.clone(), None);
+
+                let (_id, mut stream) = session.download_stream(&xfi, None).await.unwrap();
+                let mut n_bytes = 0u64;
+                while let Some(chunk) = stream.next().await.unwrap() {
+                    n_bytes += chunk.len() as u64;
+                }
+                assert_eq!(n_bytes, data_len);
+
+                assert_no_request_past_end(&client, data_len);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_known_size_open_ended_range_never_requests_past_end() {
+        let ctx = XetContext::default().unwrap();
+        ctx.runtime
+            .clone()
+            .external_run_async_task(async {
+                let (ctx, client, xfi, data_len) = setup().await;
+                let start = data_len / 4;
+                let session = FileDownloadSession::from_client(&ctx, client.clone(), None);
+
+                let (_id, n_bytes) = session.download_to_writer(&xfi, start.., Vec::new()).await.unwrap();
+                assert_eq!(n_bytes, data_len - start);
+
+                assert_no_request_past_end(&client, data_len);
             })
             .unwrap();
     }
