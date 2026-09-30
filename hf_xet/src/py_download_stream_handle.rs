@@ -45,12 +45,10 @@ impl PyXetDownloadStream {
 
     /// Return the next ``bytes`` chunk, or raise ``StopIteration`` when done.
     ///
-    /// Note: the GIL is held while waiting for the next chunk.
-    /// ``XetDownloadStream`` is not ``Clone``, so ``py.detach()`` cannot be
-    /// used here.  In practice chunks arrive quickly from the background task,
-    /// so this is not expected to cause significant contention.
+    /// Releases the GIL while waiting for the next chunk.
     fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyBytes>>> {
-        match self.inner.blocking_next().map_err(convert_xet_error)? {
+        let inner = &mut self.inner;
+        match py.detach(|| inner.blocking_next()).map_err(convert_xet_error)? {
             Some(bytes) => Ok(Some(PyBytes::new(py, &bytes).unbind())),
             None => Ok(None),
         }
@@ -106,13 +104,10 @@ impl PyXetUnorderedDownloadStream {
     /// Return the next ``(offset, bytes)`` chunk, or raise ``StopIteration``
     /// when done.
     ///
-    /// Note: the GIL is held while waiting for the next chunk.
-    /// ``XetUnorderedDownloadStream`` is not ``Clone``, so ``py.detach()``
-    /// cannot be used here.  In practice chunks arrive quickly from the
-    /// background task, so this is not expected to cause significant
-    /// contention.
+    /// Releases the GIL while waiting for the next chunk.
     fn __next__<'py>(&mut self, py: Python<'py>) -> PyResult<Option<(u64, Bound<'py, PyBytes>)>> {
-        match self.inner.blocking_next().map_err(convert_xet_error)? {
+        let inner = &mut self.inner;
+        match py.detach(|| inner.blocking_next()).map_err(convert_xet_error)? {
             Some((offset, bytes)) => Ok(Some((offset, PyBytes::new(py, &bytes)))),
             None => Ok(None),
         }
