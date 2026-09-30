@@ -110,7 +110,8 @@ pub struct XetSessionInner {
 ///
 /// For most use cases, [`new`](Self::new) with the default [`XetConfig`] is
 /// sufficient.  Use [`new_with_config`](Self::new_with_config) when you need to
-/// override runtime settings such as cache directories or concurrency limits.
+/// override runtime settings such as concurrency limits, and
+/// [`with_cache_dir`](Self::with_cache_dir) to set the cache directory.
 pub struct XetSessionBuilder {
     config: XetConfig,
     cache_dir: Option<PathBuf>,
@@ -142,10 +143,14 @@ impl XetSessionBuilder {
         }
     }
 
-    /// Set the root directory for the xet cache (shard cache and staging data).
+    /// Set the root directory for this session's shard cache and staging data.
     ///
-    /// When not set, the root is derived from `HF_XET_CACHE`, `HF_HOME`, or `XDG_CACHE_HOME`, falling back to
+    /// The path is used as-is: no `xet` subdirectory is appended and no template variables are expanded. When not
+    /// set, the root is derived from `HF_XET_CACHE`, `HF_HOME`, or `XDG_CACHE_HOME`, falling back to
     /// `~/.cache/huggingface/xet`.
+    ///
+    /// This only applies to uploads and downloads created from this session. The log directory set up by
+    /// [`init_logging`](crate::init_logging) and the legacy APIs still use the environment-derived root.
     #[cfg(not(target_family = "wasm"))]
     pub fn with_cache_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.cache_dir = Some(dir.into());
@@ -413,15 +418,6 @@ mod tests {
     use xet_runtime::core::{RuntimeMode, XetContext};
 
     use super::*;
-
-    // ── Builder ──────────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_builder_with_cache_dir_sets_cache_root() {
-        let temp_dir = tempdir().unwrap();
-        let session = XetSessionBuilder::new().with_cache_dir(temp_dir.path()).build().unwrap();
-        assert_eq!(session.inner.cache_dir.as_deref(), Some(temp_dir.path()));
-    }
 
     // ── Identity ─────────────────────────────────────────────────────────────
 

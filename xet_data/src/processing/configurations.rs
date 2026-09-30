@@ -21,7 +21,8 @@ pub struct SessionContext {
     pub custom_headers: Option<Arc<HeaderMap>>,
     pub repo_paths: Vec<String>,
     pub session_id: Option<String>,
-    /// Root directory for the shard cache and staging data. When `None`, `xet_cache_root()` is used.
+    /// Root directory for the shard cache and staging data, used as-is. When `None`, `xet_cache_root()` is used.
+    /// Ignored for local (`local://`) endpoints.
     pub cache_root: Option<PathBuf>,
 }
 
@@ -106,6 +107,7 @@ impl TranslatorConfig {
         #[cfg(not(target_family = "wasm"))]
         let (shard_cache_directory, shard_session_directory) = {
             let config = ctx.config.as_ref();
+            let cache_root = session.cache_root.clone().unwrap_or_else(xet_cache_root);
 
             if let Some(local_path) = session.local_path(ctx) {
                 let base_path = local_path.join("xet");
@@ -113,12 +115,12 @@ impl TranslatorConfig {
 
                 (base_path.join(&config.shard.cache_subdir), base_path.join(&config.session.dir_name))
             } else if session.is_memory() {
-                let cache_path = cache_root(&session).join("memory");
+                let cache_path = cache_root.join("memory");
                 std::fs::create_dir_all(&cache_path)?;
 
                 (cache_path.join(&config.shard.cache_subdir), cache_path.join(&config.session.dir_name))
             } else {
-                let cache_path = compute_cache_path(&cache_root(&session), &session.endpoint);
+                let cache_path = compute_cache_path(&cache_root, &session.endpoint);
                 std::fs::create_dir_all(&cache_path)?;
 
                 let staging_directory = cache_path.join(&config.data.staging_subdir);
@@ -194,12 +196,6 @@ impl TranslatorConfig {
         self.force_disable_progress_aggregation = true;
         self
     }
-}
-
-/// Returns the session's cache root, or the environment-derived default.
-#[cfg(not(target_family = "wasm"))]
-fn cache_root(session: &SessionContext) -> PathBuf {
-    session.cache_root.clone().unwrap_or_else(xet_cache_root)
 }
 
 /// Computes a cache-safe path from an endpoint URL.

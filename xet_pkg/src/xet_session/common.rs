@@ -117,6 +117,25 @@ mod tests {
         assert_eq!(config.session.endpoint, "https://cas.example.com");
     }
 
+    /// The session's cache directory is used as the root for the shard cache and staging data.
+    #[tokio::test]
+    async fn test_session_cache_dir_is_used() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let session = XetSessionBuilder::new().with_cache_dir(temp_dir.path()).build().unwrap();
+
+        let auth_options = AuthOptions {
+            endpoint: Some("https://cas.example.com".to_string()),
+            custom_headers: None,
+            token_info: None,
+            token_refresh: None,
+        };
+
+        let config = create_translator_config(&session, auth_options).await.unwrap();
+
+        assert!(config.shard_cache_directory.starts_with(temp_dir.path()));
+        assert!(config.shard_session_directory.starts_with(temp_dir.path()));
+    }
+
     /// Pattern B: when `endpoint` is not set but `token_refresh` is set, `create_translator_config`
     /// calls the refresh URL exactly once, uses the returned `cas_url` as the endpoint,
     /// and seeds `token_info` from the response when none was pre-supplied.
