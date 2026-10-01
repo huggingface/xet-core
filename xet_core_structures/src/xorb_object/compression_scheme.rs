@@ -10,7 +10,7 @@ use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 use web_time::Instant;
 
 use super::byte_grouping::BG4Predictor;
-use super::byte_grouping::bg4::{bg4_regroup, bg4_split};
+use super::byte_grouping::bg4::{bg4_regroup, bg4_regroup_into, bg4_split};
 use crate::error::{CoreError, Result};
 
 pub static mut BG4_SPLIT_RUNTIME: f64 = 0.;
@@ -101,14 +101,48 @@ impl CompressionScheme {
     }
 
     pub fn decompress_from_slice<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, [u8]>> {
-        Ok(match self {
-            CompressionScheme::Auto => {
-                return Err(CoreError::MalformedData("Cannot decompress with Auto scheme".to_string()));
+        match self {
+            CompressionScheme::None => Ok(Cow::Borrowed(data)),
+            _ => {
+                let mut buffers = DecompressBuffers::default();
+                self.decompress_from_slice_into(data, &mut buffers)?;
+                Ok(Cow::Owned(buffers.data))
             },
-            CompressionScheme::None => data.into(),
-            CompressionScheme::LZ4 => lz4_decompress_from_slice(data).map(Cow::from)?,
-            CompressionScheme::ByteGrouping4LZ4 => bg4_lz4_decompress_from_slice(data).map(Cow::from)?,
-        })
+        }
+    }
+
+    /// Decompresses `data` into `buffers`, reused from one chunk to the next so a stream of
+    /// chunks allocates nothing per chunk. The returned slice borrows `data` itself when the
+    /// scheme is `None`, and `buffers` otherwise; it is valid until the next call.
+    pub fn decompress_from_slice_into<'a>(
+        &self,
+        data: &'a [u8],
+        buffers: &'a mut DecompressBuffers,
+    ) -> Result<&'a [u8]> {
+        match self {
+            CompressionScheme::Auto => Err(CoreError::MalformedData("Cannot decompress with Auto scheme".to_string())),
+            CompressionScheme::None => Ok(data),
+            CompressionScheme::LZ4 => {
+                buffers.data.clear();
+                FrameDecoder::new(Cursor::new(data)).read_to_end(&mut buffers.data)?;
+                Ok(&buffers.data)
+            },
+            CompressionScheme::ByteGrouping4LZ4 => {
+                let s = Instant::now();
+                buffers.grouped.clear();
+                FrameDecoder::new(Cursor::new(data)).read_to_end(&mut buffers.grouped)?;
+                unsafe {
+                    BG4_LZ4_DECOMPRESS_RUNTIME += s.elapsed().as_secs_f64();
+                }
+
+                let s = Instant::now();
+                bg4_regroup_into(&buffers.grouped, &mut buffers.data);
+                unsafe {
+                    BG4_REGROUP_RUNTIME += s.elapsed().as_secs_f64();
+                }
+                Ok(&buffers.data)
+            },
+        }
     }
 
     pub fn decompress_from_reader<R: Read, W: Write>(&self, reader: &mut R, writer: &mut W) -> Result<u64> {
@@ -136,6 +170,14 @@ impl CompressionScheme {
     }
 }
 
+/// Scratch space for [`CompressionScheme::decompress_from_slice_into`]: the LZ4 output (the
+/// byte groups, for BG4) and the decompressed data. Both keep their capacity across calls.
+#[derive(Default)]
+pub struct DecompressBuffers {
+    grouped: Vec<u8>,
+    data: Vec<u8>,
+}
+
 pub fn lz4_compress_from_slice(data: &[u8]) -> Result<Vec<u8>> {
     let mut enc = FrameEncoder::new(Vec::new());
     enc.write_all(data)?;
@@ -143,9 +185,9 @@ pub fn lz4_compress_from_slice(data: &[u8]) -> Result<Vec<u8>> {
 }
 
 pub fn lz4_decompress_from_slice(data: &[u8]) -> Result<Vec<u8>> {
-    let mut dest = vec![];
-    lz4_decompress_from_reader(&mut Cursor::new(data), &mut dest)?;
-    Ok(dest)
+    let mut buffers = DecompressBuffers::default();
+    CompressionScheme::LZ4.decompress_from_slice_into(data, &mut buffers)?;
+    Ok(buffers.data)
 }
 
 fn lz4_decompress_from_reader<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> Result<u64> {
@@ -173,9 +215,9 @@ pub fn bg4_lz4_compress_from_slice(data: &[u8]) -> Result<Vec<u8>> {
 }
 
 pub fn bg4_lz4_decompress_from_slice(data: &[u8]) -> Result<Vec<u8>> {
-    let mut dest = vec![];
-    bg4_lz4_decompress_from_reader(&mut Cursor::new(data), &mut dest)?;
-    Ok(dest)
+    let mut buffers = DecompressBuffers::default();
+    CompressionScheme::ByteGrouping4LZ4.decompress_from_slice_into(data, &mut buffers)?;
+    Ok(buffers.data)
 }
 
 fn bg4_lz4_decompress_from_reader<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> Result<u64> {
@@ -205,6 +247,28 @@ mod tests {
     use rand::RngExt;
 
     use super::*;
+
+    #[test]
+    fn test_decompress_from_slice_into_reuses_its_buffers() {
+        // Low entropy, so LZ4 compresses it and the decoder really runs.
+        let data: Vec<u8> = (0..100_003u32).map(|i| (i % 251) as u8 ^ (i / 1000) as u8).collect();
+        let mut buffers = DecompressBuffers::default();
+        for scheme in [
+            CompressionScheme::None,
+            CompressionScheme::LZ4,
+            CompressionScheme::ByteGrouping4LZ4,
+        ] {
+            let compressed = scheme.compress_from_slice(&data).unwrap();
+            // Twice in a row: the buffers are reused, nothing of the previous chunk may leak.
+            for _ in 0..2 {
+                let out = scheme.decompress_from_slice_into(&compressed, &mut buffers).unwrap();
+                assert_eq!(out, &data[..], "{scheme}");
+            }
+            let short = scheme.compress_from_slice(&data[..10]).unwrap();
+            assert_eq!(scheme.decompress_from_slice_into(&short, &mut buffers).unwrap(), &data[..10], "{scheme}");
+        }
+        assert!(CompressionScheme::Auto.decompress_from_slice_into(&[], &mut buffers).is_err());
+    }
 
     #[test]
     fn test_default_is_auto() {
