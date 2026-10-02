@@ -477,6 +477,8 @@ mod tests {
             total_transfer_bytes: 500,
             total_transfer_bytes_completed: 400,
             total_transfer_bytes_completion_rate: Some(111.5),
+            total_resume_check_bytes: 0,
+            total_resume_check_bytes_completed: 0,
             shard: Some(crate::progress_tracking::ShardUploadProgressReport {
                 total_shard_bytes: 25,
                 total_shard_bytes_upload_completed: 25,
