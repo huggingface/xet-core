@@ -29,7 +29,7 @@ jobs:
         id: get-version
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            TAG=${{ inputs.tag }}
+            TAG=${INPUTS_TAG}
           else
             TAG=${GITHUB_REF#refs/tags/}
           fi
@@ -37,6 +37,8 @@ jobs:
           TRIMMED_VERSION=${SEM_VERSION//-}
           echo "VERSION=${TRIMMED_VERSION}" >> $GITHUB_OUTPUT
           echo "BRANCH_NAME=ci_test_hf_xet_${TRIMMED_VERSION}_release" >> $GITHUB_OUTPUT
+        env:
+          INPUTS_TAG: ${{ inputs.tag }}
 
       - name: Checkout target repo
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -52,19 +54,21 @@ jobs:
           git config user.email "bot+xet@huggingface.co"
       - name: Wait for prerelease to be out on PyPI
         run: |
-          VERSION=${{ steps.get-version.outputs.VERSION }}
+          VERSION=${STEPS_GET_VERSION_OUTPUTS_VERSION}
           echo "Waiting for hf_xet==${VERSION} to be available on PyPI"
           while ! pip install hf_xet==${VERSION}; do
             echo "hf_xet==${VERSION} not available yet, retrying in 15s"
             sleep 15
           done
+        env:
+          STEPS_GET_VERSION_OUTPUTS_VERSION: ${{ steps.get-version.outputs.VERSION }}
 
       - name: Create test branch and update dependencies
         id: create-pr
         run: |
           cd ${{ matrix.target-repo }}
-          VERSION=${{ steps.get-version.outputs.VERSION }}
-          BRANCH_NAME=${{ steps.get-version.outputs.BRANCH_NAME }}
+          VERSION=${STEPS_GET_VERSION_OUTPUTS_VERSION}
+          BRANCH_NAME=${STEPS_GET_VERSION_OUTPUTS_BRANCH_NAME}
 
           # Create and checkout new branch
           git checkout -b $BRANCH_NAME
@@ -81,11 +85,17 @@ jobs:
           git --no-pager diff --staged
           git commit -m "Test hfh ${VERSION}"
           git push --set-upstream origin $BRANCH_NAME
+        env:
+          STEPS_GET_VERSION_OUTPUTS_VERSION: ${{ steps.get-version.outputs.VERSION }}
+          STEPS_GET_VERSION_OUTPUTS_BRANCH_NAME: ${{ steps.get-version.outputs.BRANCH_NAME }}
 
       - name: Print URLs for manual check
         run: |
-          VERSION=${{ steps.get-version.outputs.VERSION }}
-          BRANCH_NAME=${{ steps.get-version.outputs.BRANCH_NAME }}
+          VERSION=${STEPS_GET_VERSION_OUTPUTS_VERSION}
+          BRANCH_NAME=${STEPS_GET_VERSION_OUTPUTS_BRANCH_NAME}
           echo "https://github.com/huggingface/${{ matrix.target-repo }}/actions"
           echo "https://github.com/huggingface/${{matrix.target-repo}}/tree/refs/heads/${BRANCH_NAME}"
           echo "https://github.com/huggingface/huggingface_hub/${{ matrix.target-repo }}/compare/main...${BRANCH_NAME}"
+        env:
+          STEPS_GET_VERSION_OUTPUTS_VERSION: ${{ steps.get-version.outputs.VERSION }}
+          STEPS_GET_VERSION_OUTPUTS_BRANCH_NAME: ${{ steps.get-version.outputs.BRANCH_NAME }}
