@@ -38,6 +38,7 @@ pub struct XorbUploadGrantRequest {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct XorbUploadGrant {
+    pub id: String,
     pub method: String,
     pub url: String,
     pub headers: HashMap<String, String>,
