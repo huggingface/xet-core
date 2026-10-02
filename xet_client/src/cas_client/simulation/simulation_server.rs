@@ -257,6 +257,7 @@ impl LocalTestServerBuilder {
         let server = LocalServer::from_client(client.clone(), deletion_client.clone(), host, port);
         // Grabbed before the server moves into its serving task.
         let telemetry_docs = server.telemetry_docs_handle();
+        let v1_reconstruction_ranges = server.v1_reconstruction_ranges_handle();
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         tokio::spawn(async move {
             let _ = server.run_until_stopped(shutdown_rx).await;
@@ -320,6 +321,7 @@ impl LocalTestServerBuilder {
             _ephemeral_socket_tempdir: ephemeral_tempdir,
             network_simulation_proxy: proxy_guard.clone(),
             telemetry_docs: telemetry_docs.clone(),
+            v1_reconstruction_ranges: v1_reconstruction_ranges.clone(),
         };
 
         #[cfg(not(unix))]
@@ -331,6 +333,7 @@ impl LocalTestServerBuilder {
             deletion_client,
             network_simulation_proxy: proxy_guard,
             telemetry_docs: telemetry_docs.clone(),
+            v1_reconstruction_ranges: v1_reconstruction_ranges.clone(),
         };
 
         if let Some(profile) = self.server_latency_profile {
@@ -385,6 +388,7 @@ pub struct LocalTestServer {
     deletion_client: Option<Arc<dyn DeletionControlableClient>>,
     network_simulation_proxy: Option<Arc<NetworkSimulationProxy>>,
     telemetry_docs: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    v1_reconstruction_ranges: Arc<std::sync::Mutex<Vec<Option<String>>>>,
 
     #[cfg(unix)]
     socket_proxy: Option<UnixSocketProxy>,
@@ -446,7 +450,17 @@ impl LocalTestServer {
         &self.remote_simulation_client
     }
 
-    /// Returns the underlying `DirectAccessClient` for direct state access.
+    /// Drains the raw Range headers received by `/v1/reconstructions/{file_id}`.
+    /// A missing Range header is recorded as `None`.
+    pub fn take_v1_reconstruction_ranges(&self) -> Vec<Option<String>> {
+        std::mem::take(
+            &mut *self
+                .v1_reconstruction_ranges
+                .lock()
+                .expect("v1_reconstruction_ranges lock poisoned"),
+        )
+    }
+
     /// Telemetry documents received on `POST /v1/telemetry`, in arrival order.
     ///
     /// Returned verbatim so tests can assert on the exact wire shape - the key set and the JSON
@@ -455,6 +469,7 @@ impl LocalTestServer {
         self.telemetry_docs.lock().expect("telemetry_docs lock poisoned").clone()
     }
 
+    /// Returns the underlying `DirectAccessClient` for direct state access.
     pub fn client(&self) -> &Arc<dyn DirectAccessClient> {
         &self.client
     }
