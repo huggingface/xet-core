@@ -8,6 +8,7 @@ use crate::errors::Result;
 use crate::lfs_agent_protocol::lfs_protocol_loop;
 
 mod install;
+mod lfs_client;
 mod uninstall;
 mod xet_agent;
 
@@ -37,7 +38,7 @@ Remove "lfs.concurrenttransfers" from the global Git config."#)]
 
     /// Run this program as a LFS custom transfer agent. This is not meant
     /// to be used directly by users, but instead to be invoked by git-lfs.
-    Transfer,
+    Transfer(TransferArg),
 
     /// Start tracking the given patterns(s) through Git LFS. This directly
     /// calls the "git lfs track" command with the following options and args.
@@ -68,6 +69,17 @@ struct InstallArg {
     /// The number of concurrent LFS uploads/downloads. Default 8.
     #[clap(long)]
     concurrency: Option<u32>,
+
+    /// Use native uploads and downloads for this HTTP(S) LFS endpoint without server-side Xet negotiation.
+    #[clap(long, requires = "local")]
+    lfs_url: Option<String>,
+}
+
+#[derive(Args, Debug, Default)]
+struct TransferArg {
+    /// Perform LFS batch requests directly for this endpoint (standalone mode).
+    #[clap(long)]
+    lfs_url: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -113,7 +125,7 @@ struct CliOverrides {
     #[clap(long, short = 'v', action = ArgAction::Count)]
     pub verbose: u8,
 
-    /// Set the output log directory. Writes to stderr if not provided.
+    /// Append diagnostic logs to this file. Writes to stderr if not provided.
     #[clap(long, short)]
     pub log: Option<PathBuf>,
 }
@@ -141,6 +153,17 @@ pub struct XetAgentApp {
 
 impl XetAgentApp {
     pub async fn run(self) -> Result<()> {
+        // stdout is reserved for Git LFS's JSON protocol.
+        let writer: Box<dyn std::io::Write + Send> = match self.overrides.log {
+            Some(path) => Box::new(std::fs::OpenOptions::new().create(true).append(true).open(path)?),
+            None => Box::new(std::io::stderr()),
+        };
+        let level = if self.overrides.verbose > 0 { "info" } else { "warn" };
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| level.into()))
+            .with_writer(std::sync::Mutex::new(writer))
+            .with_ansi(false)
+            .try_init();
         self.command.run().await
     }
 }
@@ -150,26 +173,18 @@ impl Command {
         match self {
             Command::Install(args) => install_command(args),
             Command::Uninstall(args) => uninstall_command(args),
-            Command::Transfer => transfer_command().await,
+            Command::Transfer(args) => transfer_command(args).await,
             Command::Track(args) => track_command(args),
             #[cfg(feature = "git-xet-for-integration-test")]
             Command::RunAny(args) => run_any_command(args),
         }
     }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Command::Install(_) => "install",
-            Command::Uninstall(_) => "uninstall",
-            Command::Transfer => "transfer",
-            Command::Track(_) => "track",
-            #[cfg(feature = "git-xet-for-integration-test")]
-            Command::RunAny(_) => "runany",
-        }
-    }
 }
 
 fn install_command(args: InstallArg) -> Result<()> {
+    if let Some(url) = &args.lfs_url {
+        lfs_client::remote_from_lfs_url(url)?;
+    }
     if args.system as u8 + args.local as u8 > 1 {
         eprintln!("Error: at most one configuration location can be specified.");
         return Ok(());
@@ -186,7 +201,10 @@ fn install_command(args: InstallArg) -> Result<()> {
         install::system(args.concurrency)?;
         println!("{} installed to system config!", GIT_LFS_CUSTOM_TRANSFER_AGENT_PROGRAM);
     } else if args.local {
-        install::local(args.path, args.concurrency)?;
+        install::local(args.path.clone(), args.concurrency)?;
+        if let Some(url) = args.lfs_url {
+            install::standalone(args.path, &url)?;
+        }
         println!("{} installed to local repository config!", GIT_LFS_CUSTOM_TRANSFER_AGENT_PROGRAM);
     } else {
         install::global(args.concurrency)?;
@@ -219,8 +237,8 @@ fn uninstall_command(args: UninstallArg) -> Result<()> {
     Ok(())
 }
 
-async fn transfer_command() -> Result<()> {
-    let mut agent = XetAgent::default();
+async fn transfer_command(args: TransferArg) -> Result<()> {
+    let mut agent = XetAgent::new(args.lfs_url);
 
     let input = std::io::stdin();
     let output = std::io::stdout();

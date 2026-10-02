@@ -4,12 +4,14 @@ use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use http::header;
+use tempfile::TempDir;
 use xet_client::cas_client::auth::TokenRefresher;
 use xet_client::hub_client::Operation;
 use xet_pkg::legacy::progress_tracking::{GroupProgressCallbackUpdater, ProgressUpdate, TrackingProgressUpdater};
 use xet_pkg::legacy::{FileUploadSession, Sha256Policy, clean_file, default_config};
 use xet_runtime::core::XetContext;
 
+use super::lfs_client::{LfsClient, remote_from_lfs_url};
 use crate::constants::{
     HF_ENDPOINT_ENV, XET_ACCESS_TOKEN_HEADER, XET_CAS_URL, XET_SESSION_ID, XET_TOKEN_EXPIRATION_HEADER,
 };
@@ -35,17 +37,33 @@ pub struct XetAgent {
     repo: OnceLock<GitRepo>,
     remote_url: Option<GitUrl>,
     hf_endpoint: Option<String>,
+    lfs_url: Option<String>,
+    lfs: Option<LfsClient>,
+    downloads: Option<TempDir>,
+}
+
+impl XetAgent {
+    pub fn new(lfs_url: Option<String>) -> Self {
+        Self {
+            lfs_url,
+            ..Self::default()
+        }
+    }
 }
 
 impl TransferAgent for XetAgent {
     async fn init_upload(&mut self, req: &InitRequestInner) -> Result<()> {
         let repo = GitRepo::open_from_cur_dir()?;
-        let remote_url = match repo.remote_name_to_url(&req.remote) {
-            Ok(url) => url, // the provided `remote` is a remote name
-            Err(_) => {
-                // the provided `remote` is likely a remote URL, try parse it
-                GitUrl::from_str(&req.remote)?
-            },
+        let remote_url = if let Some(url) = &self.lfs_url {
+            remote_from_lfs_url(url)?
+        } else {
+            match repo.remote_name_to_url(&req.remote) {
+                Ok(url) => url, // the provided `remote` is a remote name
+                Err(_) => {
+                    // the provided `remote` is likely a remote URL, try parse it
+                    GitUrl::from_str(&req.remote)?
+                },
+            }
         };
 
         let hf_endpoint = if !matches!(remote_url.scheme(), Scheme::Http | Scheme::Https) && remote_url.port().is_some()
@@ -60,6 +78,7 @@ impl TransferAgent for XetAgent {
             None
         };
 
+        self.lfs = Some(LfsClient::new(xet_runtime(), repo.clone(), remote_url.clone(), self.lfs_url.clone())?);
         self.repo.get_or_init(|| repo);
         self.remote_url = Some(remote_url);
         self.hf_endpoint = hf_endpoint;
@@ -67,11 +86,12 @@ impl TransferAgent for XetAgent {
         Ok(())
     }
 
-    async fn init_download(&mut self, _: &InitRequestInner) -> Result<()> {
-        Err(GitXetError::not_supported(
-            "custom transfer for download is not implemented yet. Downloads should operate through standard git-lfs download protocol.
-            If you encounter errors downloading, contact Xet Team at Hugging Face.",
-        ))
+    async fn init_download(&mut self, req: &InitRequestInner) -> Result<()> {
+        self.init_upload(req).await?;
+        let directory = self.repo.get().unwrap().git_path()?.join("lfs/tmp");
+        std::fs::create_dir_all(&directory)?;
+        self.downloads = Some(tempfile::Builder::new().prefix("xet-").tempdir_in(directory)?);
+        Ok(())
     }
 
     async fn upload_one<W: Write + Send + Sync + 'static>(
@@ -79,6 +99,19 @@ impl TransferAgent for XetAgent {
         req: &TransferRequest,
         progress_updater: ProgressUpdater<W>,
     ) -> Result<()> {
+        let resolved;
+        let req = if req.action.href.is_empty() {
+            if self.lfs_url.is_none() {
+                return Err(GitXetError::config_error("Standalone transfers require --lfs-url"));
+            }
+            let Some(action) = self.lfs.as_mut().unwrap().batch(req, Operation::Upload).await? else {
+                return Ok(()); // The server already has this object.
+            };
+            resolved = TransferRequest { action, ..req.clone() };
+            &resolved
+        } else {
+            req
+        };
         // Get the token refresher set up before the dummy progress update below,
         // so that if the internal git credential helper needs to prompt the user for credential,
         // only one prompt is presented.
@@ -91,15 +124,19 @@ impl TransferAgent for XetAgent {
         };
 
         let session_id = req.action.header.get(XET_SESSION_ID).map(|s| s.as_str()).unwrap_or_default();
-        let token_refresher: Arc<dyn TokenRefresher> = Arc::new(new_git_token_refresher(
-            xet_runtime(),
-            repo,
-            self.remote_url.clone(),
-            &req.action.href,
-            Operation::Upload,
-            session_id,
-            Some(Arc::new(user_agent_headers.clone())),
-        )?);
+        let token_refresher: Arc<dyn TokenRefresher> = if self.lfs_url.is_some() {
+            self.lfs.as_ref().unwrap().token_refresher(&req.action.href)
+        } else {
+            Arc::new(new_git_token_refresher(
+                xet_runtime(),
+                repo,
+                self.remote_url.clone(),
+                &req.action.href,
+                Operation::Upload,
+                session_id,
+                Some(Arc::new(user_agent_headers.clone())),
+            )?)
+        };
         // From git-lfs:
         // > First worker is the only one allowed to start immediately.
         // > The rest wait until successful response from 1st worker to
@@ -183,10 +220,15 @@ impl TransferAgent for XetAgent {
 
     async fn download_one<W: Write + Send + Sync + 'static>(
         &mut self,
-        _req: &TransferRequest,
-        _progress_updater: ProgressUpdater<W>,
+        req: &TransferRequest,
+        progress_updater: ProgressUpdater<W>,
     ) -> Result<std::path::PathBuf> {
-        unimplemented!()
+        if req.action.href.is_empty() && self.lfs_url.is_none() {
+            return Err(GitXetError::config_error("Standalone transfers require --lfs-url"));
+        }
+        let file = tempfile::NamedTempFile::new_in(self.downloads.as_ref().unwrap().path())?.into_temp_path();
+        self.lfs.as_mut().unwrap().download(req, &file, progress_updater).await?;
+        file.keep().map_err(GitXetError::internal)
     }
 
     async fn terminate(&mut self) -> Result<()> {
@@ -194,8 +236,8 @@ impl TransferAgent for XetAgent {
     }
 }
 
-struct XetProgressUpdaterWrapper<W: Write + Send + Sync + 'static> {
-    updater: ProgressUpdater<W>,
+pub(super) struct XetProgressUpdaterWrapper<W: Write + Send + Sync + 'static> {
+    pub(super) updater: ProgressUpdater<W>,
 }
 
 #[async_trait]

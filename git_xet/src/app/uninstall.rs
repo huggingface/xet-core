@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use super::install::ConfigLocation;
 use crate::constants::GIT_LFS_CUSTOM_TRANSFER_AGENT_NAME;
 use crate::errors::Result;
-use crate::utils::process_wrapping::run_git_captured;
+use crate::utils::process_wrapping::{run_git_captured, run_git_captured_with_input_and_output};
 
 // Remove git-xet registration from the system Git config.
 pub fn system() -> Result<()> {
@@ -39,6 +39,24 @@ fn uninstall_impl(location: ConfigLocation) -> Result<()> {
         ConfigLocation::Global => (cwd, "--global"),
         ConfigLocation::Local(maybe_loc) => (maybe_loc.unwrap_or(cwd), "--local"),
     };
+
+    if let Ok(child) = run_git_captured_with_input_and_output(
+        &wd,
+        "config",
+        [
+            loc_profile,
+            "--get-regexp",
+            r"^lfs\..*\.standalonetransferagent$",
+            "^xet$",
+        ],
+    ) && let Ok((config, _)) = child.wait_with_output()
+    {
+        for line in String::from_utf8_lossy(&config).lines() {
+            if let Some((key, _)) = line.split_once(' ') {
+                let _ = run_git_captured(&wd, "config", [loc_profile, "--unset-all", key]);
+            }
+        }
+    }
 
     let _ = run_git_captured(
         &wd,

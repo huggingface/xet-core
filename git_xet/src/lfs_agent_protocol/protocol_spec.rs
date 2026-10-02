@@ -56,12 +56,13 @@ pub struct InitRequestInner {
                            */
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct TransferRequest {
     pub oid: String, // oid of the LFS object
     pub size: u64,   // size of the LFS object
     pub path: Option<PathBuf>, /* only for "upload" event, the file which this agent should read the
                       * data from */
+    #[serde(default, deserialize_with = "nullable_action")] // Standalone agents perform the batch request themselves.
     pub action: GitBatchApiResponseAction, // the action copied from the response from the batch API
 }
 
@@ -82,10 +83,17 @@ pub struct CompleteResponse {
     pub path: Option<PathBuf>, // only for "download" event, the file which this agent wrote the data to
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 pub struct GitBatchApiResponseAction {
     pub href: String,
+    #[serde(default)]
     pub header: HashMap<String, String>,
+}
+
+fn nullable_action<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<GitBatchApiResponseAction, D::Error> {
+    Ok(Option::<GitBatchApiResponseAction>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 #[derive(Debug, Serialize)]
@@ -111,7 +119,7 @@ impl LFSProtocolRequestEvent {
                 Ok(())
             },
             LFSProtocolRequestEvent::Upload(req) => {
-                if req.oid.len() != OID_LEN {
+                if req.oid.len() != OID_LEN || !req.oid.bytes().all(|b| b.is_ascii_hexdigit()) {
                     return Err(GitLFSProtocolError::bad_argument("invalid oid"));
                 }
 
@@ -123,14 +131,10 @@ impl LFSProtocolRequestEvent {
                     return Err(GitLFSProtocolError::bad_syntax("file path not provided for upload request"));
                 }
 
-                if req.action.href.is_empty() {
-                    return Err(GitLFSProtocolError::bad_argument("empty action.href in server response"));
-                }
-
                 Ok(())
             },
             LFSProtocolRequestEvent::Download(req) => {
-                if req.oid.len() != OID_LEN {
+                if req.oid.len() != OID_LEN || !req.oid.bytes().all(|b| b.is_ascii_hexdigit()) {
                     return Err(GitLFSProtocolError::bad_argument("invalid oid"));
                 }
 
@@ -140,10 +144,6 @@ impl LFSProtocolRequestEvent {
 
                 if req.path.is_some() {
                     return Err(GitLFSProtocolError::bad_syntax("file path provided for download request"));
-                }
-
-                if req.action.href.is_empty() {
-                    return Err(GitLFSProtocolError::bad_argument("empty action.href in server response"));
                 }
 
                 Ok(())
@@ -347,15 +347,37 @@ mod tests {
     }
 
     #[test]
-    fn test_protocol_serde_transfer_req_bad() -> Result<()> {
-        // transfer event missing required field
+    fn test_protocol_standalone_actions() -> Result<()> {
+        // Standalone upload events omit the batch action.
         let message1 = r#"
             { "event": "upload", "oid": "bf3e3e2af9366a3b704ae0c31de5afa64193ebabffde2091936ad2e7510bc03a", "size": 346232,
             "path": "/path/to/file.png" }"#;
         let parsed1: std::result::Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message1.parse();
 
-        assert!(matches!(parsed1, Err(GitLFSProtocolError::Syntax(_))));
+        assert!(parsed1.unwrap().eq(&LFSProtocolRequestEvent::Upload(TransferRequest {
+            oid: "bf3e3e2af9366a3b704ae0c31de5afa64193ebabffde2091936ad2e7510bc03a".into(),
+            size: 346232,
+            path: Some("/path/to/file.png".into()),
+            action: GitBatchApiResponseAction::default(),
+        })));
 
+        for action in [None, Some(serde_json::Value::Null)] {
+            let mut message = json!({ "event": "download", "oid": "ab".repeat(32), "size": 10 });
+            if let Some(action) = action {
+                message["action"] = action;
+            }
+            assert!(matches!(
+                message.to_string().parse::<LFSProtocolRequestEvent>()?,
+                LFSProtocolRequestEvent::Download(_)
+            ));
+            message["oid"] = json!("zz".repeat(32));
+            assert!(message.to_string().parse::<LFSProtocolRequestEvent>().is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_protocol_serde_transfer_req_bad() -> Result<()> {
         // transfer event with invalid oid
         let message2 = r#"
             { "event": "upload", "oid": "bf3e3e2af9366abc03a", "size": 346232,
