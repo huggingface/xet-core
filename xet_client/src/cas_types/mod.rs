@@ -23,6 +23,26 @@ pub struct UploadXorbResponse {
     pub was_inserted: bool,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(tag = "algo", content = "value", rename_all = "lowercase")]
+pub enum Checksum {
+    Crc64Nvme(u64),
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct XorbUploadGrantRequest {
+    pub hash: HexMerkleHash,
+    pub length: u64,
+    pub checksum: Checksum,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct XorbUploadGrant {
+    pub method: String,
+    pub url: String,
+    pub headers: HashMap<String, String>,
+}
+
 /// These types are defined to help differentiate the Range<,> type aliases,
 /// so that they don't silently cast to each other without range adjustments.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default, Hash, Copy)]
