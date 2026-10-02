@@ -415,6 +415,14 @@ impl LocalTestServer {
             .unwrap_or(0)
     }
 
+    /// Returns total bytes actually forwarded from the server to clients (0 if no proxy).
+    pub fn total_download_bytes_transferred(&self) -> u64 {
+        self.network_simulation_proxy
+            .as_ref()
+            .map(|p| p.total_download_bytes_transferred())
+            .unwrap_or(0)
+    }
+
     /// Current bandwidth from the proxy's network profile (bytes/sec), or `None` if no proxy or unlimited.
     pub async fn current_bandwidth(&self) -> Option<u64> {
         match &self.network_simulation_proxy {
