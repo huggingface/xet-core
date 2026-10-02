@@ -271,6 +271,8 @@ mod errors;
 mod file_download_group;
 #[cfg(not(target_family = "wasm"))]
 mod file_download_handle;
+mod range_upload_commit;
+mod range_upload_edit;
 mod session;
 mod task_runtime;
 #[cfg(test)]
@@ -287,6 +289,8 @@ pub use file_download_group::{XetDownloadGroupReport, XetFileDownloadGroup, XetF
 #[cfg(not(target_family = "wasm"))]
 pub use file_download_handle::{XetDownloadReport, XetFileDownload};
 pub use http::{HeaderMap, HeaderValue, header};
+pub use range_upload_commit::{XetRangeUploadCommit, XetRangeUploadCommitBuilder, XetRangeUploadReport};
+pub use range_upload_edit::XetRangeUploadEdit;
 pub use session::{XetSession, XetSessionBuilder};
 pub use task_runtime::XetTaskState;
 pub use upload_commit::{XetCommitReport, XetFileMetadata, XetUploadCommit, XetUploadCommitBuilder};
