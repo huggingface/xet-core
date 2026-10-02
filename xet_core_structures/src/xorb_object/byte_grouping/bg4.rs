@@ -119,14 +119,23 @@ pub fn bg4_regroup_separate(groups: &[Vec<u8>]) -> Vec<u8> {
 }
 
 pub fn bg4_regroup_together(g: &[u8]) -> Vec<u8> {
+    let mut data = Vec::new();
+    bg4_regroup_into(g, &mut data);
+    data
+}
+
+/// [`bg4_regroup_together`] into a caller-owned buffer, cleared first, so a stream of chunks can
+/// reuse one allocation.
+pub fn bg4_regroup_into(g: &[u8], out: &mut Vec<u8>) {
     let n = g.len();
     let split = n / 4;
     let rem = n % 4;
 
-    let mut data = vec![0u8; n];
+    out.clear();
+    out.reserve(n);
 
     unsafe {
-        let data = data.as_mut_ptr();
+        let data = out.as_mut_ptr();
         let g0 = g.as_ptr();
         let g1 = g0.add(split + 1.min(rem));
         let g2 = g1.add(split + 1.min(rem.saturating_sub(1)));
@@ -154,9 +163,9 @@ pub fn bg4_regroup_together(g: &[u8]) -> Vec<u8> {
             },
             _ => (),
         }
+        // Every one of the `n` bytes was written above: `split` groups of four plus `rem` more.
+        out.set_len(n);
     }
-
-    data
 }
 
 pub fn bg4_regroup_together_combined_write_4(g: &[u8]) -> Vec<u8> {

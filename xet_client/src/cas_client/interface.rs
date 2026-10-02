@@ -89,6 +89,10 @@ pub trait Client: Send + Sync {
     ) -> Result<()>;
 
     /// Upload a new xorb. Optional progress callback receives (delta, completed, total) in transfer bytes.
+    ///
+    /// A returned `Ok` means the bytes are accepted, not that the xorb is durable in its final
+    /// location: an implementation may stage it and commit it later (see
+    /// [`Client::flush_pending_uploads`]).
     async fn upload_xorb(
         &self,
         prefix: &str,
@@ -96,6 +100,15 @@ pub trait Client: Send + Sync {
         progress_callback: Option<ProgressCallback>,
         upload_permit: ConnectionPermit,
     ) -> Result<u64>;
+
+    /// Makes every upload this client has reported as complete durable. Persisting resume
+    /// metadata (the local shard cache later sessions dedup against) requires every xorb it
+    /// names to have reached its canonical location, so the caller flushes right before such a
+    /// write. An error is terminal for the session. Clients that upload synchronously have
+    /// nothing to flush and keep this default.
+    async fn flush_pending_uploads(&self) -> Result<()> {
+        Ok(())
+    }
 
     /// Compute chunk-aligned dirty windows + opaque gap [`MerkleHashSubtree`] summaries for the
     /// given file, narrowed to `dirty_ranges`.

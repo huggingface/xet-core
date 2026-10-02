@@ -34,6 +34,7 @@ pub struct RetryWrapper {
     expected_416: bool,
     expected_404: bool,
     log_errors_as_info: bool,
+    redact_url: bool,
     api_tag: &'static str,
     connection_permit: Option<Mutex<ConnectionPermitInfo>>,
 }
@@ -52,6 +53,7 @@ impl RetryWrapper {
             expected_416: false,
             expected_404: false,
             log_errors_as_info: false,
+            redact_url: false,
             api_tag,
             connection_permit: None,
         }
@@ -101,6 +103,13 @@ impl RetryWrapper {
         self
     }
 
+    /// Strip the request URL from logged errors. For presigned URLs, whose query string carries
+    /// the signature.
+    pub fn with_redacted_url(mut self) -> Self {
+        self.redact_url = true;
+        self
+    }
+
     pub fn with_connection_permit(mut self, permit: ConnectionPermit, transfer_size_if_known: Option<u64>) -> Self {
         self.connection_permit = Some(Mutex::new(ConnectionPermitInfo {
             permit: Some(permit),
@@ -130,6 +139,12 @@ impl std::fmt::Debug for RetryWrapper {
 impl RetryWrapper {
     fn process_error_response(&self, try_idx: usize, err: reqwest_middleware::Error) -> RetryableReqwestError {
         let api = &self.api_tag;
+        let err = match err {
+            reqwest_middleware::Error::Reqwest(err) if self.redact_url => {
+                reqwest_middleware::Error::Reqwest(err.without_url())
+            },
+            other => other,
+        };
 
         let process_error = |txt, log_as_info, err: reqwest_middleware::Error| {
             let msg = {
@@ -185,6 +200,7 @@ impl RetryWrapper {
 
         // Log the errors and create a message string with the information in it to expose to users.
         let process_error = |context, err: ReqwestError, log_as_info| {
+            let err = if self.redact_url { err.without_url() } else { err };
             if self.log_errors_as_info || log_as_info {
                 info!("{context}: {api:?} api call failed (request id {request_id}{retry_str}): {err}");
             } else {

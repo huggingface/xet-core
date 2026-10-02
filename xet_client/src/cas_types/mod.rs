@@ -23,6 +23,89 @@ pub struct UploadXorbResponse {
     pub was_inserted: bool,
 }
 
+// The wire contract of `POST /v1/xorbs/grants`; the server side (xetcas `cas_server`) imports
+// these types.
+
+/// Request body of `POST /v1/xorbs/grants`: ask for presigned staging URLs (`grants`) and/or ask
+/// CAS to validate and commit previously staged xorbs (`commits`). Both lists default to empty.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub struct XorbGrantRequest {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub grants: Vec<XorbGrantItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commits: Vec<XorbCommitItem>,
+}
+
+/// One xorb the client wants to stage: the chunks-only serialized bytes (what `POST /v1/xorbs`
+/// carries, no footer) are described by their length and CRC-64/NVME so the presigned PUT is bound to
+/// exactly those bytes.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct XorbGrantItem {
+    pub hash: HexMerkleHash,
+    /// Byte length of the chunks-only serialized xorb.
+    pub size: u64,
+    /// Standard padded base64 of the 8-byte big-endian CRC-64/NVME of those bytes.
+    pub crc64nvme: String,
+}
+
+/// One staged xorb the client asks CAS to validate and write, footer appended, into the canonical
+/// bucket.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct XorbCommitItem {
+    pub hash: HexMerkleHash,
+    pub grant_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub struct XorbGrantResponse {
+    pub grants: Vec<XorbGrantOutcome>,
+    pub commits: Vec<XorbCommitResult>,
+}
+
+/// A presigned staging PUT. Every entry of `headers` is part of the signature and must be sent
+/// verbatim with the exact bytes declared in the grant.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct XorbGrant {
+    pub hash: HexMerkleHash,
+    pub grant_id: String,
+    pub url: String,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    pub expires_in_secs: u64,
+}
+
+/// What a grant request gets back: the presigned PUT, or `exists` when a xorb with that hash is
+/// already published, in which case there is nothing to upload or commit.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(tag = "status", rename_all = "lowercase")]
+pub enum XorbGrantOutcome {
+    Granted(XorbGrant),
+    Exists { hash: HexMerkleHash },
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct XorbCommitResult {
+    pub hash: HexMerkleHash,
+    pub grant_id: String,
+    pub status: XorbCommitStatus,
+    /// Why validation failed; only present when `status` is `Rejected`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum XorbCommitStatus {
+    /// First write: the xorb is now in the canonical bucket.
+    Inserted,
+    /// The xorb was already there; its GC liveness tag was stamped, as a duplicate POST does.
+    Exists,
+    /// Validation failed; the regular upload path would reject it too.
+    Rejected,
+    /// No staged object for that grant (never uploaded, expired, or already committed).
+    Missing,
+}
+
 /// These types are defined to help differentiate the Range<,> type aliases,
 /// so that they don't silently cast to each other without range adjustments.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default, Hash, Copy)]
@@ -453,6 +536,83 @@ mod tests {
         assert_eq!(HttpRange::from(FileRange::new(0, 10)), HttpRange::new(0, 9));
 
         assert_eq!(FileRange::from(HttpRange::new(0, 10)), FileRange::new(0, 11));
+    }
+
+    #[test]
+    fn test_xorb_grant_request_json_roundtrip() {
+        let hash = HexMerkleHash(MerkleHash::from_hex(&"ab".repeat(32)).unwrap());
+        let request = XorbGrantRequest {
+            grants: vec![XorbGrantItem {
+                hash,
+                size: 12345,
+                crc64nvme: "AAAAAAAAAAA=".to_string(),
+            }],
+            commits: vec![XorbCommitItem {
+                hash,
+                grant_id: "0123456789abcdef0123456789abcdef".to_string(),
+            }],
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        assert_eq!(
+            json,
+            format!(
+                r#"{{"grants":[{{"hash":"{h}","size":12345,"crc64nvme":"AAAAAAAAAAA="}}],"commits":[{{"hash":"{h}","grant_id":"0123456789abcdef0123456789abcdef"}}]}}"#,
+                h = "ab".repeat(32)
+            )
+        );
+        assert_eq!(serde_json::from_str::<XorbGrantRequest>(&json).unwrap(), request);
+
+        // Empty lists are omitted on the wire and default when absent.
+        assert_eq!(serde_json::to_string(&XorbGrantRequest::default()).unwrap(), "{}");
+        assert_eq!(serde_json::from_str::<XorbGrantRequest>("{}").unwrap(), XorbGrantRequest::default());
+    }
+
+    #[test]
+    fn test_xorb_grant_response_json_roundtrip() {
+        let hash = HexMerkleHash(MerkleHash::from_hex(&"cd".repeat(32)).unwrap());
+        let response = XorbGrantResponse {
+            grants: vec![
+                XorbGrantOutcome::Granted(XorbGrant {
+                    hash,
+                    grant_id: "0123456789abcdef0123456789abcdef".to_string(),
+                    url: "http://localhost:9000/cas-staging/staging/x?X-Amz-Signature=sig".to_string(),
+                    headers: HashMap::from([("x-amz-checksum-crc64nvme".to_string(), "abc=".to_string())]),
+                    expires_in_secs: 900,
+                }),
+                XorbGrantOutcome::Exists { hash },
+            ],
+            commits: vec![
+                XorbCommitResult {
+                    hash,
+                    grant_id: "g1".to_string(),
+                    status: XorbCommitStatus::Inserted,
+                    error: None,
+                },
+                XorbCommitResult {
+                    hash,
+                    grant_id: "g2".to_string(),
+                    status: XorbCommitStatus::Rejected,
+                    error: Some("xorb hash mismatch".to_string()),
+                },
+            ],
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert_eq!(serde_json::from_str::<XorbGrantResponse>(&json).unwrap(), response);
+
+        // Statuses are lowercase on the wire; `error` is omitted unless present.
+        for (status, tag) in [
+            (XorbCommitStatus::Inserted, "\"inserted\""),
+            (XorbCommitStatus::Exists, "\"exists\""),
+            (XorbCommitStatus::Rejected, "\"rejected\""),
+            (XorbCommitStatus::Missing, "\"missing\""),
+        ] {
+            assert_eq!(serde_json::to_string(&status).unwrap(), tag);
+            assert_eq!(serde_json::from_str::<XorbCommitStatus>(tag).unwrap(), status);
+        }
+        assert!(json.contains(r#"{"status":"granted","hash":"#));
+        assert!(json.contains(r#"{"status":"exists","hash":"#));
+        assert!(json.contains(r#""status":"inserted"}"#));
+        assert!(json.contains(r#""status":"rejected","error":"xorb hash mismatch"}"#));
     }
 
     #[test]

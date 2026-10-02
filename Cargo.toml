@@ -55,6 +55,7 @@ clap = { version = "4", features = ["derive"] }
 colored = "3"
 console-subscriber = "0.5"
 countio = { version = "0.3", features = ["futures"] }
+crc = "3.3"
 crc32fast = "1.5"
 csv = "1"
 ctor = "1"
