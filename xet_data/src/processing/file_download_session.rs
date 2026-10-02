@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 #[cfg(not(target_family = "wasm"))]
 use tokio::task::JoinHandle;
 use tracing::instrument;
+use xet_client::ClientError;
 use xet_client::cas_client::Client;
 use xet_client::cas_types::FileRange;
 use xet_client::chunk_cache::ChunkCache;
@@ -273,12 +274,22 @@ impl FileDownloadSession {
     ) -> Result<FileReconstructor> {
         let file_id = file_info.merkle_hash()?;
 
+        // The reconstructor treats a start past a known size as an empty read; surface it as an error
+        // like the server's 416 for an unknown size.
+        if let (Some(range), Some(file_size)) = (range, file_info.file_size())
+            && range.start > 0
+            && range.start >= file_size
+        {
+            return Err(ClientError::InvalidRange.into());
+        }
+
         let mut reconstructor = FileReconstructor::new(&self.ctx, &self.client, file_id);
 
         match range {
             Some(range) if range.end < u64::MAX => {
                 // Fully bounded range: we know the exact download size upfront.
-                let size = range.end - range.start;
+                let end = file_info.file_size().map_or(range.end, |s| range.end.min(s));
+                let size = end.saturating_sub(range.start);
                 if let Some(ref updater) = progress_updater {
                     updater.update_item_size(size, true);
                 }
@@ -297,13 +308,16 @@ impl FileDownloadSession {
                 if let Some(ref updater) = progress_updater {
                     updater.update_item_size(file_size, true);
                 }
-                reconstructor = reconstructor.with_file_size(file_size);
             },
             None => {
                 // Full file with unknown size: the reconstructor uses
                 // FileRange::full() internally and ReconstructionTermManager
                 // discovers the size incrementally.
             },
+        }
+
+        if let Some(file_size) = file_info.file_size() {
+            reconstructor = reconstructor.with_file_size(file_size);
         }
 
         if let Some(updater) = progress_updater {
@@ -1206,6 +1220,35 @@ mod tests {
 
                 assert!(
                     matches!(err, DataError::SizeMismatch { expected: 999, .. }),
+                    "Expected SizeMismatch error, got: {err:?}"
+                );
+            })
+            .unwrap();
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    #[ignore = "known-size capping truncates when the caller understates the size"]
+    fn test_download_file_declared_size_smaller_than_actual_errors() {
+        let runtime = get_runtime();
+        runtime
+            .clone()
+            .external_run_async_task(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = b"Size mismatch test data";
+
+                let xfi = upload_data(&cas_path, original_data).await;
+                let short_xfi = XetFileInfo::new(xfi.hash().to_string(), 10);
+
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
+                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+
+                let out_path = temp.path().join("output_truncated.txt");
+                let err = session.download_file(&short_xfi, &out_path).await.unwrap_err();
+
+                assert!(
+                    matches!(err, DataError::SizeMismatch { expected: 10, .. }),
                     "Expected SizeMismatch error, got: {err:?}"
                 );
             })
