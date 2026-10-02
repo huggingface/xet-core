@@ -43,6 +43,13 @@ pub struct XorbUploadGrant {
     pub headers: HashMap<String, String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct XorbUploadGrantResponse {
+    pub hash: HexMerkleHash,
+    pub grant: XorbUploadGrant,
+    pub commit_url: String,
+}
+
 /// These types are defined to help differentiate the Range<,> type aliases,
 /// so that they don't silently cast to each other without range adjustments.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default, Hash, Copy)]
