@@ -40,6 +40,7 @@ pub fn default_config(
         custom_headers,
         repo_paths: vec!["".into()],
         session_id: Some(Uuid::now_v7().to_string()),
+        cache_root: None,
     };
 
     TranslatorConfig::new(ctx, session)
