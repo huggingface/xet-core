@@ -223,7 +223,10 @@ impl RemoteClient {
         T: serde::de::DeserializeOwned + 'static,
     {
         let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
-        let url = Url::parse(&format!("{}/{api_version}/reconstructions/{}", self.endpoint, file_id.hex()))?;
+        let mut url = Url::parse(&format!("{}/{api_version}/reconstructions/{}", self.endpoint, file_id.hex()))?;
+        if self.ctx.config.client.reconstruction_chunk_byte_sizes {
+            url.query_pairs_mut().append_pair("chunk_byte_sizes", "true");
+        }
         let api_tag = match api_version {
             "v1" => "cas::get_reconstruction_v1",
             "v2" => "cas::get_reconstruction_v2",
@@ -980,12 +983,16 @@ impl Client for RemoteClient {
 #[cfg(not(target_family = "wasm"))]
 mod tests {
     use tracing_test::traced_test;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
     use xet_core_structures::xorb_object::CompressionScheme;
     use xet_core_structures::xorb_object::xorb_format_test_utils::{
         ChunkSize, build_and_verify_xorb_object, build_raw_xorb,
     };
+    use xet_runtime::config::XetConfig;
 
     use super::*;
+    use crate::cas_types::{ChunkRange, XorbReconstructionTerm};
 
     #[test]
     fn test_clients_share_controllers_per_ctx_and_endpoint() {
@@ -1009,6 +1016,42 @@ mod tests {
         let ctx2 = XetContext::default().unwrap();
         let c4 = RemoteClient::new(ctx2, "https://cas-a.example.com", &None, "", false, None);
         assert!(!Arc::ptr_eq(&c1.upload_concurrency_controller, &c4.upload_concurrency_controller));
+    }
+
+    #[tokio::test]
+    async fn test_reconstruction_asks_for_chunk_byte_sizes_when_configured() {
+        let server = MockServer::start().await;
+        let file_id = MerkleHash::default();
+        let response = QueryReconstructionResponseV2 {
+            offset_into_first_range: 0,
+            terms: vec![XorbReconstructionTerm {
+                hash: MerkleHash::default().into(),
+                unpacked_length: 300,
+                range: ChunkRange::new(0, 2),
+                chunk_byte_sizes: vec![100, 200],
+            }],
+            xorbs: Default::default(),
+        };
+        Mock::given(method("GET"))
+            .and(path(format!("/v2/reconstructions/{}", file_id.hex())))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+            .mount(&server)
+            .await;
+
+        for enabled in [false, true] {
+            let mut config = XetConfig::new();
+            config.client.reconstruction_chunk_byte_sizes = enabled;
+            config.telemetry.enabled = false;
+            let ctx = XetContext::from_external(tokio::runtime::Handle::current(), config);
+            let client = RemoteClient::new(ctx, &server.uri(), &None, "", false, None);
+
+            let received = client.get_reconstruction_v2(&file_id, None).await.unwrap().unwrap();
+            assert_eq!(received.terms[0].chunk_byte_sizes, [100, 200]);
+
+            let requests = server.received_requests().await.unwrap();
+            let query = requests.last().unwrap().url.query();
+            assert_eq!(query, enabled.then_some("chunk_byte_sizes=true"));
+        }
     }
 
     #[ignore = "requires a running CAS server"]

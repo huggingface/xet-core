@@ -264,6 +264,15 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_CLIENT_RECONSTRUCTION_API_VERSION` to set this value.
     ref reconstruction_api_version: Option<u32> = None;
 
+    /// Whether to ask the CAS server for the uncompressed size of each chunk of each
+    /// reconstruction term (`chunk_byte_sizes`). The server lists them only for ranges
+    /// up to a size limit, and leaves the field empty for longer ones.
+    ///
+    /// The default value is false.
+    ///
+    /// Use the environment variable `HF_XET_CLIENT_RECONSTRUCTION_CHUNK_BYTE_SIZES` to set this value.
+    ref reconstruction_chunk_byte_sizes: bool = false;
+
     /// The shard upload API version to request from the CAS server.
     /// When set to 1 or 2, forces that version with no fallback.
     /// When unset, auto-detects by trying V2 first, falling back to V1 on 404 or 501.
