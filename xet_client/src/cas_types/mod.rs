@@ -184,6 +184,12 @@ pub struct XorbReconstructionTerm {
     pub unpacked_length: u32,
     // chunk index start and end in a xorb
     pub range: ChunkRange,
+    // Uncompressed byte size of each chunk of `range`, in chunk order. With
+    // it, a client can trim a term to chunk boundaries itself, and derive the
+    // plan of a sub-range from a cached plan without fetching whole terms.
+    // Empty unless the client asked for it (and the server provides it).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chunk_byte_sizes: Vec<u32>,
 }
 
 /// To use a XorbReconstructionFetchInfo fetch info all that's needed
@@ -453,6 +459,22 @@ mod tests {
         assert_eq!(HttpRange::from(FileRange::new(0, 10)), HttpRange::new(0, 9));
 
         assert_eq!(FileRange::from(HttpRange::new(0, 10)), FileRange::new(0, 11));
+    }
+
+    #[test]
+    fn test_reconstruction_term_chunk_byte_sizes_are_optional() {
+        let hash = "0".repeat(64);
+        let without = format!(r#"{{"hash":"{hash}","unpacked_length":300,"range":{{"start":2,"end":4}}}}"#);
+        let term: XorbReconstructionTerm = serde_json::from_str(&without).unwrap();
+        assert!(term.chunk_byte_sizes.is_empty());
+        assert_eq!(serde_json::to_string(&term).unwrap(), without);
+
+        let with = format!(
+            r#"{{"hash":"{hash}","unpacked_length":300,"range":{{"start":2,"end":4}},"chunk_byte_sizes":[100,200]}}"#
+        );
+        let term: XorbReconstructionTerm = serde_json::from_str(&with).unwrap();
+        assert_eq!(term.chunk_byte_sizes, vec![100, 200]);
+        assert_eq!(serde_json::to_string(&term).unwrap(), with);
     }
 
     #[test]

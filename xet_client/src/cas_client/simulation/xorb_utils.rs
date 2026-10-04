@@ -146,6 +146,7 @@ pub(crate) fn compute_reconstruction_ranges(
             hash: segment.xorb_hash.into(),
             unpacked_length: segment.unpacked_segment_bytes,
             range: chunk_range,
+            chunk_byte_sizes: Vec::new(),
         });
 
         fetch_info_map
