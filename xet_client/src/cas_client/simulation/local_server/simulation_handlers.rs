@@ -39,6 +39,7 @@ pub fn simulation_routes() -> Router<ServerState> {
         .route("/xorbs_with_etags", get(list_xorbs_and_etags))
         .route("/xorbs/{hash}/etag_delete", post(delete_xorb_if_etag_matches))
         .route("/xorbs/{hash}/tag_set", get(get_xorb_tag_set).put(set_xorb_tag_set))
+        .route("/shards/{hash}/tag_set", get(get_shard_tag_set).put(set_shard_tag_set))
         .route("/shards", get(list_shard_entries))
         .route("/shards_with_etags", get(list_shards_with_etags))
         .route("/shards/{hash}", get(get_shard_bytes).delete(delete_shard_entry))
@@ -254,6 +255,33 @@ async fn set_xorb_tag_set(
         return not_implemented();
     };
     match dc.set_xorb_tag_set(&hash, body.tags).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => error_to_response(e),
+    }
+}
+
+async fn get_shard_tag_set(
+    State(state): State<ServerState>,
+    Path(HexMerkleHash(hash)): Path<HexMerkleHash>,
+) -> Response {
+    let Some(dc) = &state.deletion_client else {
+        return not_implemented();
+    };
+    match dc.get_shard_tag_set(&hash).await {
+        Ok(tags) => Json(TagSetBody { tags }).into_response(),
+        Err(e) => error_to_response(e),
+    }
+}
+
+async fn set_shard_tag_set(
+    State(state): State<ServerState>,
+    Path(HexMerkleHash(hash)): Path<HexMerkleHash>,
+    Json(body): Json<TagSetBody>,
+) -> Response {
+    let Some(dc) = &state.deletion_client else {
+        return not_implemented();
+    };
+    match dc.set_shard_tag_set(&hash, body.tags).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => error_to_response(e),
     }
