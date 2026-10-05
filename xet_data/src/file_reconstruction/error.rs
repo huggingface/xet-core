@@ -18,6 +18,9 @@ pub enum FileReconstructionError {
     #[error("Corrupted Reconstruction: {0}")]
     CorruptedReconstruction(String),
 
+    #[error("File size mismatch: expected {expected} bytes but the server reports {actual} bytes")]
+    FileSizeMismatch { expected: u64, actual: u64 },
+
     #[error("Configuration Error: {0}")]
     ConfigurationError(String),
 

@@ -1516,12 +1516,14 @@ impl LocalClient {
         let Some((offset_into_first_range, terms, merged_ranges)) = result else {
             return Ok(None);
         };
+        let file_size = Some(self.get_file_size(file_id).await?);
 
         if terms.is_empty() {
             return Ok(Some(QueryReconstructionResponseV2 {
                 offset_into_first_range,
                 terms,
                 xorbs: HashMap::new(),
+                file_size,
             }));
         }
 
@@ -1555,6 +1557,7 @@ impl LocalClient {
             offset_into_first_range,
             terms,
             xorbs,
+            file_size,
         }))
     }
 }

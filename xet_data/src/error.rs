@@ -86,13 +86,24 @@ pub enum DataError {
     PermitAcquisitionError(#[from] AcquireError),
 
     #[error("File reconstruction error: {0}")]
-    FileReconstructionError(#[from] FileReconstructionError),
+    FileReconstructionError(FileReconstructionError),
 
     #[error("Runtime error: {0}")]
     RuntimeError(#[from] RuntimeError),
 }
 
 pub type Result<T> = std::result::Result<T, DataError>;
+
+impl From<FileReconstructionError> for DataError {
+    fn from(err: FileReconstructionError) -> Self {
+        match err {
+            FileReconstructionError::FileSizeMismatch { expected, actual } => {
+                DataError::SizeMismatch { expected, actual }
+            },
+            err => DataError::FileReconstructionError(err),
+        }
+    }
+}
 
 impl From<SingleflightError<DataError>> for DataError {
     fn from(value: SingleflightError<DataError>) -> Self {
