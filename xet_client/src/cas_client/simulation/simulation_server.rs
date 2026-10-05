@@ -17,7 +17,7 @@ use tokio::sync::oneshot;
 use xet_runtime::core::XetContext;
 
 use super::super::RemoteClient;
-use super::super::interface::Client;
+use super::super::interface::{Client, ReconstructionResponse};
 use super::super::progress_tracked_streams::ProgressCallback;
 use super::local_server::{LocalServer, ServerLatencyProfile};
 use super::network_simulation::{NetworkProfile, NetworkSimulationProxy};
@@ -527,7 +527,7 @@ impl Client for LocalTestServer {
         &self,
         file_id: &xet_core_structures::merklehash::MerkleHash,
         bytes_range: Option<crate::cas_types::FileRange>,
-    ) -> Result<Option<crate::cas_types::QueryReconstructionResponseV2>> {
+    ) -> Result<Option<ReconstructionResponse>> {
         self.remote_simulation_client.get_reconstruction(file_id, bytes_range).await
     }
 
@@ -740,13 +740,15 @@ mod tests {
             .get_reconstruction(&file.file_hash, None)
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .reconstruction;
         let local_recon = server
             .client()
             .get_reconstruction(&file.file_hash, None)
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .reconstruction;
         assert_eq!(remote_recon.terms.len(), local_recon.terms.len());
         assert_eq!(remote_recon.offset_into_first_range, local_recon.offset_into_first_range);
         for (remote_term, local_term) in remote_recon.terms.iter().zip(local_recon.terms.iter()) {
@@ -772,7 +774,8 @@ mod tests {
             .get_reconstruction(&multi_file.file_hash, None)
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .reconstruction;
         assert_eq!(multi_recon.terms.len(), 3);
 
         // Batch reconstruction
@@ -874,7 +877,8 @@ mod tests {
             .get_reconstruction(&file1.file_hash, None)
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .reconstruction;
         for (hash, multi_range_fetches) in &recon1.xorbs {
             for mrf in multi_range_fetches {
                 assert!(
@@ -894,7 +898,8 @@ mod tests {
             .get_reconstruction(&multi_file.file_hash, None)
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .reconstruction;
         assert!(multi_recon.xorbs.len() >= 2);
         for multi_range_fetches in multi_recon.xorbs.values() {
             for mrf in multi_range_fetches {
@@ -910,7 +915,8 @@ mod tests {
             .get_reconstruction(&multi_file.file_hash, Some(range))
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .reconstruction;
         for multi_range_fetches in range_recon.xorbs.values() {
             for mrf in multi_range_fetches {
                 assert!(mrf.url.starts_with("http://"));
@@ -941,7 +947,8 @@ mod tests {
             .get_reconstruction(&file.file_hash, None)
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .reconstruction;
 
         // Verify term count matches
         assert_eq!(recon.terms.len(), file.terms.len());
@@ -965,7 +972,8 @@ mod tests {
             .get_reconstruction(&file.file_hash, None)
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .reconstruction;
 
         // Verify term count and XORB hashes match
         assert_eq!(recon.terms.len(), file.terms.len());

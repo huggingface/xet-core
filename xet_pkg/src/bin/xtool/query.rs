@@ -45,7 +45,8 @@ pub async fn run_query(
 ) -> Result<Option<QueryReconstructionResponseV2>> {
     let hash = MerkleHash::from_hex(&args.hash).map_err(|e| anyhow::anyhow!("invalid hash '{}': {e}", args.hash))?;
     let range: Option<FileRange> = args.source_range.as_deref().map(parse_range).transpose()?;
-    client.get_reconstruction(&hash, range).await.map_err(anyhow::Error::from)
+    let response = client.get_reconstruction(&hash, range).await?;
+    Ok(response.map(|r| r.reconstruction))
 }
 
 #[cfg(test)]

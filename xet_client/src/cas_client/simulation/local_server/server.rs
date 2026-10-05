@@ -55,7 +55,7 @@ use xet_runtime::core::XetContext;
 #[cfg(test)]
 use super::super::super::RemoteClient;
 #[cfg(test)]
-use super::super::super::interface::Client;
+use super::super::super::interface::{Client, ReconstructionResponse};
 #[cfg(test)]
 #[cfg(unix)]
 use super::super::socket_proxy::UnixSocketProxy;
@@ -472,7 +472,7 @@ impl Client for LocalTestServer {
         &self,
         file_id: &xet_core_structures::merklehash::MerkleHash,
         bytes_range: Option<crate::cas_types::FileRange>,
-    ) -> Result<Option<crate::cas_types::QueryReconstructionResponseV2>> {
+    ) -> Result<Option<ReconstructionResponse>> {
         self.remote_client.get_reconstruction(file_id, bytes_range).await
     }
 
@@ -1204,7 +1204,8 @@ mod tests {
             .get_reconstruction_with_version_override(&file.file_hash, None, Some(1))
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .reconstruction;
         assert_eq!(forced_v1.terms.len(), 2);
 
         let result = server
@@ -1212,7 +1213,8 @@ mod tests {
             .get_reconstruction(&file.file_hash, None)
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .reconstruction;
         assert_eq!(result.terms.len(), 2);
 
         // Re-enable V2, then test 404 fallback.
@@ -1239,7 +1241,8 @@ mod tests {
             .get_reconstruction_with_version_override(&file.file_hash, None, Some(1))
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .reconstruction;
         assert_eq!(forced_v1.terms.len(), 2);
 
         let result = server
@@ -1247,7 +1250,8 @@ mod tests {
             .get_reconstruction(&file.file_hash, None)
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .reconstruction;
         assert_eq!(result.terms.len(), 2);
     }
 

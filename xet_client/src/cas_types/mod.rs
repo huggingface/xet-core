@@ -227,10 +227,6 @@ pub struct QueryReconstructionResponseV2 {
     /// Typically 1 entry per xorb. Multiple entries when the URL length limit
     /// (~8 KiB, roughly ~500 ranges) forces a split.
     pub xorbs: HashMap<HexMerkleHash, Vec<XorbMultiRangeFetch>>,
-    /// Total file size in bytes, taken from the [`X_XET_FILE_SIZE_HEADER`] response header rather than the
-    /// JSON body. `None` when the server did not send it.
-    #[serde(skip)]
-    pub file_size: Option<u64>,
 }
 
 /// A signed multi-range fetch: one URL covering a subset of ranges for a xorb.
@@ -276,7 +272,6 @@ impl From<QueryReconstructionResponse> for QueryReconstructionResponseV2 {
             offset_into_first_range: v1.offset_into_first_range,
             terms: v1.terms,
             xorbs,
-            file_size: None,
         }
     }
 }

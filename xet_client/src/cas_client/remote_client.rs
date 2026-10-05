@@ -18,7 +18,7 @@ use super::adaptive_concurrency::{
     AdaptiveConcurrencyController, ConnectionPermit, download_controller, upload_controller,
 };
 use super::auth::AuthConfig;
-use super::interface::{ShardUploadProgressCallback, URLProvider};
+use super::interface::{ReconstructionResponse, ShardUploadProgressCallback, URLProvider};
 use super::progress_tracked_streams::{
     DownloadProgressStream, ProgressCallback, StreamProgressReporter, UploadProgressStream,
 };
@@ -316,11 +316,21 @@ impl RemoteClient {
         file_id: &MerkleHash,
         bytes_range: Option<FileRange>,
     ) -> Result<Option<QueryReconstructionResponseV2>> {
-        let result: Option<(QueryReconstructionResponseV2, Option<u64>)> =
-            self.get_reconstruction_impl(file_id, bytes_range, "v2").await?;
-        Ok(result.map(|(mut response, file_size)| {
-            response.file_size = file_size;
-            response
+        Ok(self
+            .get_reconstruction_v2_with_file_size(file_id, bytes_range)
+            .await?
+            .map(|r| r.reconstruction))
+    }
+
+    async fn get_reconstruction_v2_with_file_size(
+        &self,
+        file_id: &MerkleHash,
+        bytes_range: Option<FileRange>,
+    ) -> Result<Option<ReconstructionResponse>> {
+        let result = self.get_reconstruction_impl(file_id, bytes_range, "v2").await?;
+        Ok(result.map(|(reconstruction, file_size)| ReconstructionResponse {
+            reconstruction,
+            file_size,
         }))
     }
 
@@ -329,12 +339,11 @@ impl RemoteClient {
         &self,
         file_id: &MerkleHash,
         bytes_range: Option<FileRange>,
-    ) -> Result<Option<QueryReconstructionResponseV2>> {
+    ) -> Result<Option<ReconstructionResponse>> {
         let result = self.get_reconstruction_v1_with_file_size(file_id, bytes_range).await?;
-        Ok(result.map(|(response, file_size)| {
-            let mut response: QueryReconstructionResponseV2 = response.into();
-            response.file_size = file_size;
-            response
+        Ok(result.map(|(response, file_size)| ReconstructionResponse {
+            reconstruction: response.into(),
+            file_size,
         }))
     }
 
@@ -343,7 +352,7 @@ impl RemoteClient {
         file_id: &MerkleHash,
         bytes_range: Option<FileRange>,
         forced_version: Option<u32>,
-    ) -> Result<Option<QueryReconstructionResponseV2>> {
+    ) -> Result<Option<ReconstructionResponse>> {
         // Prefer V2; fall back to V1 on 404/501; persist detected version to
         // avoid repeated fallback attempts.
         let version = match forced_version {
@@ -355,7 +364,7 @@ impl RemoteClient {
         };
 
         match version {
-            2 => match self.get_reconstruction_v2(file_id, bytes_range).await {
+            2 => match self.get_reconstruction_v2_with_file_size(file_id, bytes_range).await {
                 Ok(result) => {
                     if forced_version.is_none() {
                         self.detected_reconstruction_api_version.store(2, Ordering::Relaxed);
@@ -571,7 +580,7 @@ impl Client for RemoteClient {
         &self,
         file_id: &MerkleHash,
         bytes_range: Option<FileRange>,
-    ) -> Result<Option<QueryReconstructionResponseV2>> {
+    ) -> Result<Option<ReconstructionResponse>> {
         let forced_version = self.ctx.config.client.reconstruction_api_version;
         self.get_reconstruction_with_version_override(file_id, bytes_range, forced_version)
             .await

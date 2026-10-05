@@ -6,7 +6,7 @@ use bytes::Bytes;
 use tokio::sync::OnceCell;
 #[cfg(target_family = "wasm")]
 use tokio_with_wasm::alias as tokio;
-use xet_client::cas_client::Client;
+use xet_client::cas_client::{Client, ReconstructionResponse};
 use xet_client::cas_types::{ChunkRange, FileRange, HttpRange};
 use xet_client::chunk_cache::ChunkCache;
 use xet_core_structures::merklehash::MerkleHash;
@@ -121,12 +121,16 @@ pub async fn retrieve_file_term_block(
     expected_file_size: Option<u64>,
 ) -> Result<Option<(FileRange, u64, Vec<FileTerm>)>> {
     // get_reconstruction always returns V2 format (the client converts V1 internally).
-    let Some(raw_reconstruction) = client.get_reconstruction(&file_hash, Some(query_file_byte_range)).await? else {
+    let Some(ReconstructionResponse {
+        reconstruction: raw_reconstruction,
+        file_size,
+    }) = client.get_reconstruction(&file_hash, Some(query_file_byte_range)).await?
+    else {
         // None means we've requested a byte range beyond the end of the file.
         return Ok(None);
     };
 
-    if let (Some(expected), Some(actual)) = (expected_file_size, raw_reconstruction.file_size)
+    if let (Some(expected), Some(actual)) = (expected_file_size, file_size)
         && expected != actual
     {
         return Err(FileReconstructionError::FileSizeMismatch { expected, actual });
