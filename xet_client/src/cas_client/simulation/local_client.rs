@@ -1669,7 +1669,7 @@ impl Client for LocalClient {
         shard_data: Bytes,
         _permit: super::super::adaptive_concurrency::ConnectionPermit,
         progress_callback: Option<ShardUploadProgressCallback>,
-    ) -> Result<()> {
+    ) -> Result<Option<MerkleHash>> {
         self.apply_api_delay().await;
 
         // Parse the shard using the streaming parser (handles shards without footer)
@@ -1760,7 +1760,7 @@ impl Client for LocalClient {
             cb(ShardUploadProgressType::Response(&ShardUploadEvent::Result));
         }
 
-        Ok(())
+        Ok(Some(shard_hash))
     }
 
     async fn upload_xorb(

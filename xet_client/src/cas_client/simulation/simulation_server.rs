@@ -14,6 +14,7 @@ use http::header::{self, HeaderMap, HeaderValue};
 #[cfg(unix)]
 use tempfile::TempDir;
 use tokio::sync::oneshot;
+use xet_core_structures::merklehash::MerkleHash;
 use xet_runtime::core::XetContext;
 
 use super::super::RemoteClient;
@@ -558,7 +559,7 @@ impl Client for LocalTestServer {
         shard_data: bytes::Bytes,
         upload_permit: super::super::adaptive_concurrency::ConnectionPermit,
         progress_callback: Option<super::super::interface::ShardUploadProgressCallback>,
-    ) -> Result<()> {
+    ) -> Result<Option<MerkleHash>> {
         self.remote_simulation_client
             .upload_shard(shard_data, upload_permit, progress_callback)
             .await

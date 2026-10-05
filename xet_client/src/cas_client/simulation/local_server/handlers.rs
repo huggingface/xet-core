@@ -598,8 +598,9 @@ pub async fn post_shard(State(state): State<ServerState>, body: Body) -> Respons
     };
 
     match state.client.upload_shard(data, permit, None).await {
-        Ok(()) => Json(UploadShardResponse {
+        Ok(shard_hash) => Json(UploadShardResponse {
             result: UploadShardResponseType::SyncPerformed,
+            shard_hash: shard_hash.map(Into::into),
         })
         .into_response(),
         Err(e) => error_to_response(e),
@@ -648,7 +649,7 @@ pub async fn post_shard_v2(State(state): State<ServerState>, body: Body) -> Resp
     };
 
     match state.client.upload_shard(data, permit, None).await {
-        Ok(()) => ndjson_shard_upload_success_response(),
+        Ok(_) => ndjson_shard_upload_success_response(),
         Err(e) => error_to_response(e),
     }
 }
