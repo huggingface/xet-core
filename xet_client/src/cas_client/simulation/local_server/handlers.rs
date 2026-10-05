@@ -282,7 +282,7 @@ pub async fn get_reconstruction(
                 Err(e) => return error_to_response(e),
             };
             transform_fetch_info_urls(&mut response.fetch_info, &base_url);
-            ([(X_XET_FILE_SIZE_HEADER, file_size.to_string())], Json(response)).into_response()
+            ([(X_XET_FILE_SIZE_HEADER, HeaderValue::from(file_size))], Json(response)).into_response()
         },
         Ok(None) => (StatusCode::RANGE_NOT_SATISFIABLE, "Range not satisfiable").into_response(),
         Err(e) => error_to_response(e),
@@ -343,7 +343,7 @@ pub async fn get_reconstruction_v2(
                 Err(e) => return error_to_response(e),
             };
             transform_v2_xorb_urls(&mut response, &base_url);
-            ([(X_XET_FILE_SIZE_HEADER, file_size.to_string())], Json(response)).into_response()
+            ([(X_XET_FILE_SIZE_HEADER, HeaderValue::from(file_size))], Json(response)).into_response()
         },
         Ok(None) => (StatusCode::RANGE_NOT_SATISFIABLE, "Range not satisfiable").into_response(),
         Err(e) => error_to_response(e),
