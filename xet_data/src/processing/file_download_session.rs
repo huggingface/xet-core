@@ -292,11 +292,15 @@ impl FileDownloadSession {
             },
             None if file_info.file_size().is_some() => {
                 // Full file with caller-provided size. Set progress upfront so
-                // UI consumers get percentage-based progress. SizeMismatch is
-                // validated after reconstruction in download_file_with_id.
+                // UI consumers get percentage-based progress, and bound the range
+                // so that ReconstructionTermManager does not request blocks past
+                // the end of the file. A file shorter than the size fails the
+                // SizeMismatch check in download_file_with_id.
+                let size = file_info.file_size().unwrap();
                 if let Some(ref updater) = progress_updater {
-                    updater.update_item_size(file_info.file_size().unwrap(), true);
+                    updater.update_item_size(size, true);
                 }
+                reconstructor = reconstructor.with_byte_range(FileRange::new(0, size));
             },
             None => {
                 // Full file with unknown size: the reconstructor uses
@@ -478,9 +482,19 @@ impl Drop for FileDownloadSession {
 mod tests {
     use std::fs::{read, write};
     use std::io::{Seek, SeekFrom};
+    use std::sync::atomic::AtomicUsize;
     use std::sync::{Arc, OnceLock};
 
+    use bytes::Bytes;
     use tempfile::tempdir;
+    use xet_client::cas_client::adaptive_concurrency::ConnectionPermit;
+    use xet_client::cas_client::{ProgressCallback, ShardUploadProgressCallback, URLProvider};
+    use xet_client::cas_types::{
+        BatchQueryReconstructionResponse, FileChunkHashesResponse, QueryReconstructionResponseV2,
+    };
+    use xet_core_structures::merklehash::MerkleHash;
+    use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
+    use xet_core_structures::xorb_object::SerializedXorbObject;
     use xet_runtime::core::XetContext;
 
     use super::*;
@@ -1302,6 +1316,158 @@ mod tests {
                 let result = session.download_to_writer(&xfi, 100000.., file).await;
 
                 assert!(result.is_err());
+            })
+            .unwrap();
+    }
+
+    /// Forwards every call to the wrapped client and counts `get_reconstruction` calls.
+    struct CountingClient {
+        inner: Arc<dyn Client>,
+        reconstruction_calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl Client for CountingClient {
+        async fn get_file_reconstruction_info(
+            &self,
+            file_hash: &MerkleHash,
+        ) -> xet_client::error::Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
+            self.inner.get_file_reconstruction_info(file_hash).await
+        }
+
+        async fn get_reconstruction(
+            &self,
+            file_id: &MerkleHash,
+            bytes_range: Option<FileRange>,
+        ) -> xet_client::error::Result<Option<QueryReconstructionResponseV2>> {
+            self.reconstruction_calls.fetch_add(1, Ordering::Relaxed);
+            self.inner.get_reconstruction(file_id, bytes_range).await
+        }
+
+        async fn batch_get_reconstruction(
+            &self,
+            file_ids: &[MerkleHash],
+        ) -> xet_client::error::Result<BatchQueryReconstructionResponse> {
+            self.inner.batch_get_reconstruction(file_ids).await
+        }
+
+        async fn acquire_download_permit(&self) -> xet_client::error::Result<ConnectionPermit> {
+            self.inner.acquire_download_permit().await
+        }
+
+        async fn get_file_term_data(
+            &self,
+            url_info: Box<dyn URLProvider>,
+            download_permit: ConnectionPermit,
+            progress_callback: Option<ProgressCallback>,
+            uncompressed_size_if_known: Option<usize>,
+        ) -> xet_client::error::Result<(Bytes, Vec<u32>)> {
+            self.inner
+                .get_file_term_data(url_info, download_permit, progress_callback, uncompressed_size_if_known)
+                .await
+        }
+
+        async fn query_for_global_dedup_shard(
+            &self,
+            prefix: &str,
+            chunk_hash: &MerkleHash,
+        ) -> xet_client::error::Result<Option<Bytes>> {
+            self.inner.query_for_global_dedup_shard(prefix, chunk_hash).await
+        }
+
+        async fn acquire_upload_permit(&self) -> xet_client::error::Result<ConnectionPermit> {
+            self.inner.acquire_upload_permit().await
+        }
+
+        async fn upload_shard(
+            &self,
+            shard_data: Bytes,
+            upload_permit: ConnectionPermit,
+            progress_callback: Option<ShardUploadProgressCallback>,
+        ) -> xet_client::error::Result<()> {
+            self.inner.upload_shard(shard_data, upload_permit, progress_callback).await
+        }
+
+        async fn upload_xorb(
+            &self,
+            prefix: &str,
+            serialized_xorb_object: SerializedXorbObject,
+            progress_callback: Option<ProgressCallback>,
+            upload_permit: ConnectionPermit,
+        ) -> xet_client::error::Result<u64> {
+            self.inner
+                .upload_xorb(prefix, serialized_xorb_object, progress_callback, upload_permit)
+                .await
+        }
+
+        async fn get_file_chunk_hashes(
+            &self,
+            file_id: &MerkleHash,
+            dirty_ranges: Vec<FileRange>,
+        ) -> xet_client::error::Result<FileChunkHashesResponse> {
+            self.inner.get_file_chunk_hashes(file_id, dirty_ranges).await
+        }
+    }
+
+    /// Returns a session whose client counts reconstruction calls, for a local CAS at `cas_path`.
+    async fn counting_session(cas_path: &Path) -> (Arc<FileDownloadSession>, Arc<CountingClient>) {
+        let ctx = XetContext::default().unwrap();
+        let config = TranslatorConfig::local_config(&ctx, cas_path).unwrap();
+        let base = FileDownloadSession::new(config.into(), None).await.unwrap();
+        let counting = Arc::new(CountingClient {
+            inner: base.client(),
+            reconstruction_calls: AtomicUsize::new(0),
+        });
+        let session = FileDownloadSession::from_client(&ctx, counting.clone(), None);
+        (session, counting)
+    }
+
+    #[test]
+    fn test_full_download_with_known_size_makes_one_reconstruction_call() {
+        let runtime = get_runtime();
+        runtime
+            .bridge_sync(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = b"one reconstruction call for a file of known size";
+                let xfi = upload_data(&cas_path, original_data).await;
+                assert_eq!(xfi.file_size(), Some(original_data.len() as u64));
+
+                let (session, counting) = counting_session(&cas_path).await;
+
+                let out_path = temp.path().join("output.txt");
+                session.download_file(&xfi, &out_path).await.unwrap();
+                assert_eq!(read(&out_path).unwrap(), original_data);
+                assert_eq!(counting.reconstruction_calls.load(Ordering::Relaxed), 1);
+
+                let (_id, mut stream) = session.download_stream(&xfi, None).await.unwrap();
+                let mut streamed = Vec::new();
+                while let Some(chunk) = stream.next().await.unwrap() {
+                    streamed.extend_from_slice(&chunk);
+                }
+                assert_eq!(streamed, original_data);
+                assert_eq!(counting.reconstruction_calls.load(Ordering::Relaxed), 2);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_full_download_with_unknown_size_still_completes() {
+        let runtime = get_runtime();
+        runtime
+            .bridge_sync(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = b"unknown size downloads find the end from the server";
+                let xfi = upload_data(&cas_path, original_data).await;
+                let hash_only = XetFileInfo::new_hash_only(xfi.hash().to_string());
+
+                let (session, _counting) = counting_session(&cas_path).await;
+
+                let out_path = temp.path().join("output.txt");
+                let (_id, n_bytes) = session.download_file(&hash_only, &out_path).await.unwrap();
+                assert_eq!(n_bytes, original_data.len() as u64);
+                assert_eq!(read(&out_path).unwrap(), original_data);
             })
             .unwrap();
     }
