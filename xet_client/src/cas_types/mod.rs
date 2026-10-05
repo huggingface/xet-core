@@ -31,7 +31,6 @@ pub enum Checksum {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct XorbUploadGrantRequest {
-    pub hash: HexMerkleHash,
     pub length: u64,
     pub checksum: Checksum,
 }
