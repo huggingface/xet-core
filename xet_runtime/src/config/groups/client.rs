@@ -76,6 +76,13 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_CLIENT_ENABLE_ADAPTIVE_CONCURRENCY` to set this value.
     ref enable_adaptive_concurrency: bool = true;
 
+    /// Upload xorbs through the xorb upload API (`/v1/xorbs`) instead of requesting upload grants.
+    ///
+    /// The default value is false.
+    ///
+    /// Use the environment variable `HF_XET_CLIENT_LEGACY_DIRECT_XORB_UPLOAD` to set this value.
+    ref legacy_direct_xorb_upload: bool = false;
+
     /// The minimum time in milliseconds between adjustments when increasing the concurrency.
     ///
     /// The default value is 500ms.

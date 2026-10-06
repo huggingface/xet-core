@@ -25,7 +25,7 @@ use super::network_simulation::{NetworkProfile, NetworkSimulationProxy};
 #[cfg(unix)]
 use super::socket_proxy::UnixSocketProxy;
 use super::{DeletionControlableClient, DirectAccessClient, LocalClient, MemoryClient, RemoteSimulationClient};
-use crate::error::Result;
+use crate::error::{ClientError, Result};
 
 /// Builder for creating a `LocalTestServer` with various configuration options.
 ///
@@ -472,6 +472,19 @@ impl LocalTestServer {
     /// Returns an error if the profile cannot be applied.
     pub async fn set_server_latency_profile(&self, profile: ServerLatencyProfile) -> Result<()> {
         self.remote_simulation_client().simulation_set_latency_profile(profile).await
+    }
+
+    /// Enables or disables the XORB upload grant API; while disabled it answers 404.
+    pub async fn set_xorb_upload_grants_enabled(&self, enabled: bool) -> Result<()> {
+        let value = if enabled { "on" } else { "off" };
+        let url = format!("{}/simulation/set_config?config=xorb_upload_grants&value={value}", self.http_endpoint);
+        reqwest::Client::new()
+            .post(url)
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status)
+            .map_err(ClientError::from)?;
+        Ok(())
     }
 
     /// Verifies referential integrity by calling through to the underlying `DeletionControlableClient`.
