@@ -355,8 +355,9 @@ impl RemoteClient {
 
         #[cfg(not(target_family = "wasm"))]
         let reporter = upload_reporter.clone();
-        let result = RetryWrapper::new(self.ctx.clone(), api_tag)
+        let response = RetryWrapper::new(self.ctx.clone(), api_tag)
             .with_connection_permit(upload_permit, Some(n_upload_bytes))
+            .with_412_as_success()
             .run(move || {
                 let request = client
                     .request(method.clone(), url.clone())
@@ -376,16 +377,15 @@ impl RemoteClient {
 
                 request.send()
             })
-            .await;
+            .await?;
 
-        let result = match result {
-            Ok(_) => "uploaded",
-            Err(e) if e.status() == Some(StatusCode::PRECONDITION_FAILED) => "already_uploaded",
-            Err(e) => return Err(e),
+        let result = match response.status() {
+            StatusCode::PRECONDITION_FAILED => "already_uploaded",
+            _ => "uploaded",
         };
 
-        // Wasm has no per-chunk progress hook (no streaming body); report all bytes after success.
-        #[cfg(target_family = "wasm")]
+        // Wasm has no per-chunk progress hook (no streaming body), and a 412 may arrive before the
+        // body is fully sent; report all bytes after success.
         upload_reporter.report_progress(n_upload_bytes as usize);
 
         event!(INFORMATION_LOG_LEVEL, call_id, grant_id = grant.id, result, "Completed upload_xorb_to_grant call");
@@ -1444,10 +1444,50 @@ mod tests {
                 .mount(&server)
                 .await;
 
+            let data = Bytes::from_static(b"xorb");
+            let (progress, callback) = progress_recorder();
+
             let client = test_client(&server.uri());
-            upload_to_grant(&client, &grant, Bytes::from_static(b"xorb"), None)
-                .await
-                .unwrap();
+            upload_to_grant(&client, &grant, data.clone(), Some(callback)).await.unwrap();
+
+            assert_eq!(progress.load(Ordering::Relaxed), data.len() as u64);
+        }
+
+        #[tokio::test]
+        async fn test_upload_to_grant_precondition_failed_on_retry_is_success() {
+            let server = MockServer::start().await;
+            let grant = test_grant(&server);
+            Mock::given(method("PUT"))
+                .and(path("/upload/xorb-object"))
+                .respond_with(ResponseTemplate::new(503))
+                .up_to_n_times(1)
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("PUT"))
+                .and(path("/upload/xorb-object"))
+                .respond_with(ResponseTemplate::new(412))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let data = Bytes::from_static(b"xorb");
+            let (progress, callback) = progress_recorder();
+
+            let client = test_client(&server.uri());
+            upload_to_grant(&client, &grant, data.clone(), Some(callback)).await.unwrap();
+
+            assert_eq!(progress.load(Ordering::Relaxed), data.len() as u64);
+        }
+
+        /// Returns the total bytes reported to the callback and the callback itself.
+        fn progress_recorder() -> (Arc<AtomicU64>, ProgressCallback) {
+            let progress = Arc::new(AtomicU64::new(0));
+            let progress_ = progress.clone();
+            let callback: ProgressCallback = Arc::new(move |delta, _, _| {
+                progress_.fetch_add(delta, Ordering::Relaxed);
+            });
+            (progress, callback)
         }
 
         #[tokio::test]
