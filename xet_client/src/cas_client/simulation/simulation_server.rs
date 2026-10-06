@@ -1228,6 +1228,96 @@ mod tests {
         check_v2_shard_upload(server).await;
         check_v2_shard_upload_disabled_fallback(server).await;
         check_v2_shard_upload_error_frame(server).await;
+        check_xorb_upload_grant_flow(server).await;
+    }
+
+    /// Verifies the grant → upload to grant URL → commit flow through `RemoteClient`, including
+    /// re-uploads, commits of unknown or not-yet-uploaded grants, existing xorbs, checksum
+    /// mismatches, and grants being disabled.
+    async fn check_xorb_upload_grant_flow(server: &LocalTestServer) {
+        use xet_core_structures::xorb_object::CompressionScheme;
+        use xet_core_structures::xorb_object::xorb_format_test_utils::{
+            ChunkSize, build_and_verify_xorb_object, build_raw_xorb,
+        };
+
+        use crate::cas_client::remote_client::{XorbCommitResult, XorbUploadGrantResult, xorb_checksum};
+        use crate::cas_types::Checksum;
+
+        let ctx = XetContext::default().unwrap();
+        let client = RemoteClient::new(ctx, server.http_endpoint(), &None, "test-session-xorb-grants", false, None);
+        let prefix = "default";
+
+        let new_xorb = || {
+            let xorb =
+                build_and_verify_xorb_object(build_raw_xorb(3, ChunkSize::Random(512, 10248)), CompressionScheme::LZ4);
+            (xorb.hash, bytes::Bytes::from(xorb.serialized_data))
+        };
+        let request_grant = |hash, data: bytes::Bytes| {
+            let client = client.clone();
+            async move {
+                client
+                    .request_xorb_upload_grant(prefix, &hash, data.len() as u64, xorb_checksum(&data))
+                    .await
+                    .unwrap()
+            }
+        };
+        let upload = |grant, data| {
+            let client = client.clone();
+            async move {
+                let permit = client.acquire_upload_permit().await.unwrap();
+                client.upload_xorb_to_grant(&grant, data, None, permit).await
+            }
+        };
+
+        let (hash, data) = new_xorb();
+
+        let result = client.commit_xorb_upload(prefix, &hash, "unknown-grant").await.unwrap();
+        assert!(matches!(result, XorbCommitResult::GrantNotFound), "got {result:?}");
+
+        let XorbUploadGrantResult::Granted(grant) = request_grant(hash, data.clone()).await else {
+            panic!("expected a grant");
+        };
+
+        // A grant whose data was never uploaded cannot be committed.
+        let result = client.commit_xorb_upload(prefix, &hash, &grant.id).await.unwrap();
+        assert!(matches!(result, XorbCommitResult::GrantNotFound), "got {result:?}");
+
+        // A repeated upload to the same grant URL is answered with 412, which counts as success.
+        upload(grant.clone(), data.clone()).await.unwrap();
+        upload(grant.clone(), data.clone()).await.unwrap();
+        assert!(!server.client().xorb_exists(&hash).await.unwrap());
+
+        let result = client.commit_xorb_upload(prefix, &hash, &grant.id).await.unwrap();
+        assert!(matches!(result, XorbCommitResult::Committed), "got {result:?}");
+        assert!(server.client().xorb_exists(&hash).await.unwrap());
+
+        // Committing again, or requesting a grant for the stored xorb, sees that it already exists.
+        let result = client.commit_xorb_upload(prefix, &hash, &grant.id).await.unwrap();
+        assert!(matches!(result, XorbCommitResult::Committed), "got {result:?}");
+        let result = request_grant(hash, data.clone()).await;
+        assert!(matches!(result, XorbUploadGrantResult::AlreadyExists), "got {result:?}");
+
+        // Data that does not match the grant's checksum is rejected.
+        let (hash, data) = new_xorb();
+        let permit = client.acquire_upload_permit().await.unwrap();
+        let XorbUploadGrantResult::Granted(grant) = client
+            .request_xorb_upload_grant(prefix, &hash, data.len() as u64, Checksum::Crc64Nvme(0))
+            .await
+            .unwrap()
+        else {
+            panic!("expected a grant");
+        };
+        let err = client
+            .upload_xorb_to_grant(&grant, data.clone(), None, permit)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status(), Some(reqwest::StatusCode::BAD_REQUEST));
+
+        // With grants disabled, the grant API is unavailable.
+        assert_eq!(post_set_config(server, "xorb_upload_grants", "off").await, reqwest::StatusCode::OK);
+        let result = request_grant(hash, data).await;
+        assert!(matches!(result, XorbUploadGrantResult::Unavailable), "got {result:?}");
+        assert_eq!(post_set_config(server, "xorb_upload_grants", "on").await, reqwest::StatusCode::OK);
     }
 
     /// Builds fixed raw shard bytes suitable for `/v1/shards` and `/v2/shards` upload tests.
