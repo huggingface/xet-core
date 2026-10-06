@@ -290,7 +290,8 @@ async fn test_remove_shard_dedup_entries_removes_correct_entries<
         assert!(dedup.is_some(), "Chunk from file B should have a dedup entry");
     }
 
-    client.remove_shard_dedup_entries(&shard_a).await.unwrap();
+    let removed_chunks: HashSet<MerkleHash> =
+        client.remove_shard_dedup_entries(&shard_a).await.unwrap().into_iter().collect();
 
     for t in &file_a.terms {
         let dedup = client
@@ -298,6 +299,10 @@ async fn test_remove_shard_dedup_entries_removes_correct_entries<
             .await
             .unwrap();
         assert!(dedup.is_none(), "Dedup entries for shard A's chunks should be removed");
+        assert!(
+            removed_chunks.contains(&t.chunk_hashes[0]),
+            "Returned chunk list should report shard A's deregistered chunk"
+        );
     }
     for t in &file_b.terms {
         let dedup = client
@@ -305,6 +310,10 @@ async fn test_remove_shard_dedup_entries_removes_correct_entries<
             .await
             .unwrap();
         assert!(dedup.is_some(), "Dedup entries for shard B's chunks should be preserved");
+        assert!(
+            !removed_chunks.contains(&t.chunk_hashes[0]),
+            "Returned chunk list must not include shard B's chunks"
+        );
     }
 }
 
@@ -317,7 +326,8 @@ async fn test_remove_shard_dedup_entries_noop_on_unknown_hash<
     let file = client.upload_random_file(&[(1, (0, 2))], 2048).await.unwrap();
 
     let bogus_hash = MerkleHash::from([0xFFu8; 32]);
-    client.remove_shard_dedup_entries(&bogus_hash).await.unwrap();
+    let removed = client.remove_shard_dedup_entries(&bogus_hash).await.unwrap();
+    assert!(removed.is_empty(), "Removing dedup entries for an unknown shard should report no removed chunks");
 
     for t in &file.terms {
         let dedup = client
