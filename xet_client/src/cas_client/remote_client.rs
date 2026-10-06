@@ -415,10 +415,7 @@ impl RemoteClient {
         };
 
         let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
-        let mut url = Url::parse(&format!("{}/v1/xorb-commits/{key}", self.endpoint))?;
-        url.path_segments_mut()
-            .map_err(|_| ClientError::Other(format!("invalid CAS endpoint {}", self.endpoint)))?
-            .extend(["grant", grant_id]);
+        let url = Url::parse(&format!("{}/v1/xorb-commits/{key}/grant/{grant_id}", self.endpoint))?;
         event!(INFORMATION_LOG_LEVEL, call_id, prefix, %hash, grant_id, "Starting commit_xorb_upload API call");
 
         let client = self.authenticated_http_client.clone();
