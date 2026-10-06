@@ -33,6 +33,7 @@ pub struct RetryWrapper {
     retry_on_403: bool,
     expected_416: bool,
     expected_404: bool,
+    precondition_failed_as_success: bool,
     log_errors_as_info: bool,
     api_tag: &'static str,
     connection_permit: Option<Mutex<ConnectionPermitInfo>>,
@@ -51,6 +52,7 @@ impl RetryWrapper {
             retry_on_403: false,
             expected_416: false,
             expected_404: false,
+            precondition_failed_as_success: false,
             log_errors_as_info: false,
             api_tag,
             connection_permit: None,
@@ -96,6 +98,14 @@ impl RetryWrapper {
         self
     }
 
+    /// Treat 412 (Precondition Failed) responses as success, for conditional uploads where a 412 means an
+    /// earlier attempt already stored the data. The response is passed to the caller and reported to the
+    /// connection permit as a completed transfer.
+    pub fn with_412_as_success(mut self) -> Self {
+        self.precondition_failed_as_success = true;
+        self
+    }
+
     pub fn log_errors_as_info(mut self) -> Self {
         self.log_errors_as_info = true;
         self
@@ -120,6 +130,7 @@ impl std::fmt::Debug for RetryWrapper {
             .field("retry_on_403", &self.retry_on_403)
             .field("expected_416", &self.expected_416)
             .field("expected_404", &self.expected_404)
+            .field("precondition_failed_as_success", &self.precondition_failed_as_success)
             .field("log_errors_as_info", &self.log_errors_as_info)
             .field("api_tag", &self.api_tag)
             .field("has_connection_permit", &self.connection_permit.is_some())
@@ -192,6 +203,13 @@ impl RetryWrapper {
             }
             ClientError::from(err)
         };
+
+        if resp.status() == StatusCode::PRECONDITION_FAILED && self.precondition_failed_as_success {
+            info!(
+                "Request Success: {api} api call returned 412 (request id {request_id}{retry_str}), treated as success."
+            );
+            return Ok(resp);
+        }
 
         let retriability = default_on_request_success(&resp);
 
@@ -964,6 +982,35 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.status(), Some(StatusCode::NOT_FOUND));
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_412_as_success_returns_response() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("PUT"))
+            .and(path("/precondition_failed"))
+            .respond_with(ResponseTemplate::new(412))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = make_client();
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_ = counter.clone();
+
+        let result = connection_wrapper("test_412_as_success_returns_response")
+            .with_max_attempts(3)
+            .with_412_as_success()
+            .run(move || {
+                let url = format!("{}/precondition_failed", server.uri());
+                counter_.fetch_add(1, Ordering::Relaxed);
+                client.clone().put(&url).send()
+            })
+            .await;
+
+        assert_eq!(result.unwrap().status(), StatusCode::PRECONDITION_FAILED);
         assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 
