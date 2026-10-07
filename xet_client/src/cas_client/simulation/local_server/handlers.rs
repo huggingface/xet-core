@@ -578,23 +578,31 @@ pub async fn post_xorb(State(state): State<ServerState>, Path(key): Path<HexKey>
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
     };
 
+    match store_uploaded_xorb(&state, &key.prefix, key.hash, &data).await {
+        Ok(()) => Json(UploadXorbResponse { was_inserted: true }).into_response(),
+        Err(e) => error_to_response(e),
+    }
+}
+
+/// Stores serialized xorb data as uploaded by a client.
+///
+/// Clients upload xorbs without a footer, so the backing client rebuilds it; `num_chunks` is only used for logging.
+async fn store_uploaded_xorb(
+    state: &ServerState,
+    prefix: &str,
+    hash: MerkleHash,
+    data: &[u8],
+) -> crate::error::Result<()> {
     let xorb_obj = xet_core_structures::xorb_object::SerializedXorbObject {
-        hash: key.hash,
+        hash,
         serialized_data: data.to_vec(),
         raw_num_bytes: data.len() as u64,
         num_chunks: 0,
         footer_start: None,
     };
-
-    let permit = match state.client.acquire_upload_permit().await {
-        Ok(p) => p,
-        Err(e) => return error_to_response(e),
-    };
-
-    match state.client.upload_xorb(&key.prefix, xorb_obj, None, permit).await {
-        Ok(_) => Json(UploadXorbResponse { was_inserted: true }).into_response(),
-        Err(e) => error_to_response(e),
-    }
+    let permit = state.client.acquire_upload_permit().await?;
+    state.client.upload_xorb(prefix, xorb_obj, None, permit).await?;
+    Ok(())
 }
 
 /// POST /v1/xorb-grants/{prefix}/{hash}
@@ -705,21 +713,8 @@ pub async fn post_xorb_commit(
         return (StatusCode::NOT_FOUND, "No uploaded data for this grant").into_response();
     };
 
-    let xorb_obj = xet_core_structures::xorb_object::SerializedXorbObject {
-        hash,
-        serialized_data: data.to_vec(),
-        raw_num_bytes: data.len() as u64,
-        num_chunks: 0,
-        footer_start: None,
-    };
-
-    let permit = match state.client.acquire_upload_permit().await {
-        Ok(p) => p,
-        Err(e) => return error_to_response(e),
-    };
-
-    match state.client.upload_xorb(&prefix, xorb_obj, None, permit).await {
-        Ok(_) => {
+    match store_uploaded_xorb(&state, &prefix, hash, &data).await {
+        Ok(()) => {
             state.xorb_upload_grants.grants.lock().unwrap().remove(&grant_id);
             StatusCode::OK.into_response()
         },
