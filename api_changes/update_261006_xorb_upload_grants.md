@@ -17,10 +17,10 @@
 3. `POST /v1/xorb-commits/{prefix}/{hash}/grant/{grant_id}`. 404 means no data was uploaded for
    the grant; the client requests a new grant and uploads again, up to three grants.
 
-A 404 from the grant request makes the client use `/v1/xorbs` for that xorb and every later xorb
-from the same `RemoteClient`. Any other error after retries fails the upload; there is no
-fallback. The `Client` trait and the `upload_xorb` signature are unchanged, and the caller still
-acquires the upload permit before calling `upload_xorb`.
+A 404 from any grant request for a xorb makes the client upload that xorb through `/v1/xorbs`;
+every xorb requests a grant first. Any other error after retries fails the upload; there is no
+fallback. The `Client` trait and the `upload_xorb` signature are unchanged. The caller still
+acquires the upload permit before calling `upload_xorb`, which holds it until the xorb is committed.
 
 ## New public items
 
