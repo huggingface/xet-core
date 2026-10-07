@@ -8,7 +8,9 @@
 `RemoteClient::upload_xorb` now uploads each xorb through an upload grant instead of
 `POST /v1/xorbs/{prefix}/{hash}`:
 
-1. `POST /v1/xorb-grants/{prefix}/{hash}` with the serialized length and CRC-64/NVME checksum.
+1. `POST /v1/xorb-grants/{prefix}/{hash}` with the serialized length and CRC-64/NVME checksum,
+   e.g. `{"length": 1234, "checksum": {"algo": "crc64nvme", "value": "18446744073709551615"}}`.
+   The checksum value is a decimal string because CRC-64 values exceed 2^53.
    201 returns a grant; 200 means the xorb already exists and nothing is uploaded.
 2. Upload the serialized xorb to the grant's URL with the grant's method and headers, without
    CAS credentials. 412 counts as already uploaded.
@@ -39,9 +41,12 @@ The local server serves the grant flow: `POST /v1/xorb-grants/{prefix}/{hash}`,
 tests that upload through a `LocalTestServer` now use the grant path. Disable it with
 `set_xorb_upload_grants_enabled(false)` or `/simulation/set_config?config=xorb_upload_grants&value=off`.
 
-## New dependency
+## New dependencies
 
-`crc-fast` (default features off, `std` only) in `xet-client`, for the CRC-64/NVME checksum.
+In `xet-client`:
+
+- `crc-fast` (default features off, `std` only), for the CRC-64/NVME checksum.
+- `serde_with` (no features), to serialize the checksum value as a decimal string.
 
 ## Migration
 
