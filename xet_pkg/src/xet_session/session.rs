@@ -157,6 +157,15 @@ impl XetSessionBuilder {
         self
     }
 
+    /// Enable or disable transfer telemetry for this session.
+    ///
+    /// Overrides `HF_XET_TELEMETRY_ENABLED` and the `huggingface_hub` opt-out variables, including when `enabled` is
+    /// `true`. When not called, telemetry follows the config and environment (on by default).
+    pub fn with_telemetry_enabled(mut self, enabled: bool) -> Self {
+        self.config.telemetry.enabled = enabled;
+        self
+    }
+
     /// Attach to an existing tokio runtime handle.
     ///
     /// If the handle meets runtime requirements (multi-thread flavor, time driver, IO driver),
@@ -418,6 +427,15 @@ mod tests {
     use xet_runtime::core::{RuntimeMode, XetContext};
 
     use super::*;
+
+    #[test]
+    fn test_with_telemetry_enabled_overrides_config() {
+        let session = XetSessionBuilder::new().with_telemetry_enabled(false).build().unwrap();
+        assert!(!session.config().telemetry.enabled);
+
+        let session = XetSessionBuilder::new().with_telemetry_enabled(true).build().unwrap();
+        assert!(session.config().telemetry.enabled);
+    }
 
     // ── Identity ─────────────────────────────────────────────────────────────
 
