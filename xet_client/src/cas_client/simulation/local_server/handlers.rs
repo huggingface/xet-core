@@ -662,9 +662,7 @@ pub async fn put_xorb_upload(
     if pending.data.is_some() && headers.get(IF_NONE_MATCH).is_some_and(|v| v == "*") {
         return StatusCode::PRECONDITION_FAILED.into_response();
     }
-    let Checksum::Crc64Nvme(expected) = pending.checksum;
-    let Checksum::Crc64Nvme(actual) = xorb_checksum(&data);
-    if data.len() as u64 != pending.length || actual != expected {
+    if data.len() as u64 != pending.length || xorb_checksum(&data) != pending.checksum {
         return (StatusCode::BAD_REQUEST, "Data does not match the upload grant").into_response();
     }
     pending.data = Some(data);
