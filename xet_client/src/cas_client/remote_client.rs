@@ -414,8 +414,14 @@ impl RemoteClient {
             hash: *hash,
         };
 
+        // Escaping keeps the id in one path segment, but URL parsing still resolves dot segments.
+        if matches!(grant_id, "" | "." | "..") {
+            return Err(ClientError::InvalidResponse(format!("invalid upload grant id {grant_id:?}")));
+        }
+
         let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
-        let url = Url::parse(&format!("{}/v1/xorb-commits/{key}/grant/{grant_id}", self.endpoint))?;
+        let url =
+            Url::parse(&format!("{}/v1/xorb-commits/{key}/grant/{}", self.endpoint, urlencoding::encode(grant_id)))?;
         event!(INFORMATION_LOG_LEVEL, call_id, prefix, %hash, grant_id, "Starting commit_xorb_upload API call");
 
         let client = self.authenticated_http_client.clone();
@@ -1530,6 +1536,44 @@ mod tests {
             let result = commit(&client).await.unwrap();
 
             assert!(matches!(result, XorbCommitResult::Committed), "got {result:?}");
+        }
+
+        #[tokio::test]
+        async fn test_commit_escapes_grant_id() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path(format!("/v1/xorb-commits/{PREFIX_DEFAULT}/{}/grant/..%2Fa%3Fb%23c", test_hash().hex())))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let client = test_client(&server.uri());
+            let result = client
+                .commit_xorb_upload(PREFIX_DEFAULT, &test_hash(), "../a?b#c")
+                .await
+                .unwrap();
+
+            assert!(matches!(result, XorbCommitResult::Committed), "got {result:?}");
+        }
+
+        #[tokio::test]
+        async fn test_commit_rejects_dot_segment_grant_ids() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(0)
+                .mount(&server)
+                .await;
+
+            let client = test_client(&server.uri());
+            for grant_id in ["", ".", ".."] {
+                let err = client
+                    .commit_xorb_upload(PREFIX_DEFAULT, &test_hash(), grant_id)
+                    .await
+                    .unwrap_err();
+                assert!(matches!(err, ClientError::InvalidResponse(_)), "{grant_id:?} got {err:?}");
+            }
         }
 
         #[tokio::test]
