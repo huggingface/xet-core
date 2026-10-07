@@ -320,12 +320,13 @@ impl RemoteClient {
     ///
     /// A commit that finds no uploaded data for its grant, or a grant URL that rejects the upload with 403
     /// (e.g. an expired grant), starts over with a new grant, up to [`MAX_XORB_GRANT_ATTEMPTS`] grants. Every upload
-    /// holds `upload_permit`'s concurrency slot, which the caller keeps until the xorb is committed.
+    /// holds `upload_permit`'s concurrency slot, which the caller keeps until the xorb is committed. The first upload
+    /// takes `progress_callback`, so a later fallback upload reports progress only if no grant upload ran.
     async fn upload_xorb_through_grants(
         &self,
         key: &Key,
         serialized_data: Bytes,
-        mut progress_callback: Option<ProgressCallback>,
+        progress_callback: &mut Option<ProgressCallback>,
         upload_permit: &ConnectionPermit,
     ) -> Result<GrantUploadOutcome> {
         let length = serialized_data.len() as u64;
@@ -1196,7 +1197,7 @@ impl Client for RemoteClient {
         &self,
         prefix: &str,
         mut serialized_xorb_object: SerializedXorbObject,
-        progress_callback: Option<ProgressCallback>,
+        mut progress_callback: Option<ProgressCallback>,
         upload_permit: ConnectionPermit,
     ) -> Result<u64> {
         let key = Key {
@@ -1224,7 +1225,7 @@ impl Client for RemoteClient {
             (self.post_xorb(&key, serialized_data, progress_callback, upload_permit).await?, n_upload_bytes)
         } else {
             match self
-                .upload_xorb_through_grants(&key, serialized_data.clone(), progress_callback.clone(), &upload_permit)
+                .upload_xorb_through_grants(&key, serialized_data.clone(), &mut progress_callback, &upload_permit)
                 .await?
             {
                 GrantUploadOutcome::Stored {
@@ -1823,8 +1824,12 @@ mod tests {
             mount(&server, "POST", ANY_COMMIT_PATH, ResponseTemplate::new(404), 1).await;
             mount(&server, "POST", ANY_XORB_PATH, xorb_inserted(), 1).await;
 
+            let (progress, callback) = progress_recorder();
             let client = test_client(&server.uri());
-            upload_test_xorb(&client, None).await.unwrap();
+            let n_bytes = upload_test_xorb(&client, Some(callback)).await.unwrap();
+
+            // The fallback upload does not report progress a second time, but its bytes count as uploaded.
+            assert_eq!(n_bytes, 2 * progress.load(Ordering::Relaxed));
         }
 
         #[tokio::test]
