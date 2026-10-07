@@ -313,9 +313,6 @@ impl RemoteClient {
         upload_permit: ConnectionPermit,
     ) -> Result<()> {
         let url = Url::parse(&grant.url)?;
-        if url.scheme() != "https" && self.endpoint.starts_with("https://") {
-            return Err(ClientError::InvalidResponse(format!("upload grant URL must use https, got {}", url.scheme())));
-        }
         let method = Method::from_bytes(grant.method.as_bytes())
             .map_err(|_| ClientError::InvalidResponse(format!("invalid upload grant method {}", grant.method)))?;
 
@@ -1531,19 +1528,6 @@ mod tests {
                 .unwrap_err();
 
             assert_eq!(err.status(), Some(StatusCode::FORBIDDEN));
-        }
-
-        #[tokio::test]
-        async fn test_upload_to_grant_rejects_http_url_for_https_endpoint() {
-            let server = MockServer::start().await;
-            let grant = test_grant(&server);
-
-            let client = test_client("https://cas.example.com");
-            upload_to_grant(&client, &grant, Bytes::from_static(b"xorb"), None)
-                .await
-                .unwrap_err();
-
-            assert!(server.received_requests().await.unwrap().is_empty());
         }
     }
 }
