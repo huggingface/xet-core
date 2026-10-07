@@ -10,6 +10,7 @@ members = [
 
     # Top-level crates (not published as packages)
     "git_xet",
+    "git_hf",
     "git_extension_common",
 ]
 exclude = [
