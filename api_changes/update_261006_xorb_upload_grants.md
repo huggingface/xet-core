@@ -21,6 +21,8 @@ A 404 from any grant request for a xorb makes the client upload that xorb throug
 every xorb requests a grant first. Any other error after retries fails the upload; there is no
 fallback. The `Client` trait and the `upload_xorb` signature are unchanged. The caller still
 acquires the upload permit before calling `upload_xorb`, which holds it until the xorb is committed.
+`upload_xorb` returns the bytes actually sent, which is 0 when the xorb already exists and counts
+each re-upload.
 
 ## New public items
 
