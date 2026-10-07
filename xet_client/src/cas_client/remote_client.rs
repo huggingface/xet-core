@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use anyhow::anyhow;
 use bytes::Bytes;
@@ -9,7 +9,7 @@ use http::header::{CONTENT_LENGTH, CONTENT_TYPE, HeaderMap, HeaderName, RANGE};
 use http::{HeaderValue, Method};
 use reqwest::{Body, Response, StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
-use tracing::{event, info, instrument};
+use tracing::{debug, event, info, instrument};
 use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::metadata_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use xet_core_structures::xorb_object::SerializedXorbObject;
@@ -59,8 +59,6 @@ pub struct RemoteClient {
     detected_reconstruction_api_version: AtomicU32,
     /// Caches the discovered shard upload API version (0 = not yet probed, 1 = V1, 2 = V2).
     detected_shard_api_version: AtomicU32,
-    /// Set once the server answers 404 to an upload grant request; later xorbs use the xorb upload API.
-    xorb_upload_grants_unavailable: AtomicBool,
     /// Per-transfer performance telemetry, or `None` when telemetry is disabled, this is a dry
     /// run, or the endpoint is not http/https. See [`TransferTelemetry::maybe_new`].
     #[cfg(not(target_family = "wasm"))]
@@ -127,7 +125,6 @@ impl RemoteClient {
             download_concurrency_controller: download_controller(&ctx, endpoint),
             detected_reconstruction_api_version: AtomicU32::new(0),
             detected_shard_api_version: AtomicU32::new(0),
-            xorb_upload_grants_unavailable: AtomicBool::new(false),
             #[cfg(not(target_family = "wasm"))]
             telemetry,
         })
@@ -245,8 +242,8 @@ pub(crate) fn xorb_checksum(data: &[u8]) -> Checksum {
 enum GrantUploadOutcome {
     /// The xorb is stored; `inserted` is false if it already existed.
     Stored { inserted: bool },
-    /// The server does not offer upload grants; the permit is returned for the xorb upload API.
-    Unavailable(ConnectionPermit),
+    /// The server does not offer an upload grant for this xorb.
+    Unavailable,
 }
 
 /// Grants requested for one xorb before giving up when commits keep finding no uploaded data.
@@ -322,18 +319,17 @@ impl RemoteClient {
     /// Uploads a xorb by requesting an upload grant, uploading to the grant URL, and committing it.
     ///
     /// A commit that finds no uploaded data for its grant starts over with a new grant, up to
-    /// [`MAX_XORB_GRANT_ATTEMPTS`] grants. `upload_permit` is used for the first upload; later uploads acquire
-    /// their own.
+    /// [`MAX_XORB_GRANT_ATTEMPTS`] grants. Every upload holds `upload_permit`'s concurrency slot, which the
+    /// caller keeps until the xorb is committed.
     async fn upload_xorb_through_grants(
         &self,
         key: &Key,
         serialized_data: Bytes,
         mut progress_callback: Option<ProgressCallback>,
-        upload_permit: ConnectionPermit,
+        upload_permit: &ConnectionPermit,
     ) -> Result<GrantUploadOutcome> {
         let length = serialized_data.len() as u64;
         let checksum = xorb_checksum(&serialized_data);
-        let mut upload_permit = Some(upload_permit);
 
         for attempt in 1..=MAX_XORB_GRANT_ATTEMPTS {
             let grant = match self
@@ -342,22 +338,17 @@ impl RemoteClient {
             {
                 XorbUploadGrantResult::Granted(grant) => grant,
                 XorbUploadGrantResult::AlreadyExists => return Ok(GrantUploadOutcome::Stored { inserted: false }),
-                XorbUploadGrantResult::Unavailable => {
-                    let permit = match upload_permit.take() {
-                        Some(permit) => permit,
-                        None => self.acquire_upload_permit().await?,
-                    };
-                    return Ok(GrantUploadOutcome::Unavailable(permit));
-                },
+                XorbUploadGrantResult::Unavailable => return Ok(GrantUploadOutcome::Unavailable),
             };
 
-            let permit = match upload_permit.take() {
-                Some(permit) => permit,
-                None => self.acquire_upload_permit().await?,
-            };
             // A completed upload has reported all of its progress, so only the first upload gets the callback.
-            self.upload_xorb_to_grant(&grant, serialized_data.clone(), progress_callback.take(), permit)
-                .await?;
+            self.upload_xorb_to_grant(
+                &grant,
+                serialized_data.clone(),
+                progress_callback.take(),
+                upload_permit.new_transfer().await,
+            )
+            .await?;
 
             match self.commit_xorb_upload(&key.prefix, &key.hash, &grant.id).await? {
                 XorbCommitResult::Committed => return Ok(GrantUploadOutcome::Stored { inserted: true }),
@@ -1214,20 +1205,16 @@ impl Client for RemoteClient {
 
         let xorb_uploaded = if self.dry_run {
             true
-        } else if self.ctx.config.client.legacy_direct_xorb_upload
-            || self.xorb_upload_grants_unavailable.load(Ordering::Relaxed)
-        {
+        } else if self.ctx.config.client.legacy_direct_xorb_upload {
             self.post_xorb(&key, serialized_data, progress_callback, upload_permit).await?
         } else {
             match self
-                .upload_xorb_through_grants(&key, serialized_data.clone(), progress_callback.clone(), upload_permit)
+                .upload_xorb_through_grants(&key, serialized_data.clone(), progress_callback.clone(), &upload_permit)
                 .await?
             {
                 GrantUploadOutcome::Stored { inserted } => inserted,
-                GrantUploadOutcome::Unavailable(upload_permit) => {
-                    if !self.xorb_upload_grants_unavailable.swap(true, Ordering::Relaxed) {
-                        info!("XORB upload grants unavailable; uploading xorbs through the xorb upload API");
-                    }
+                GrantUploadOutcome::Unavailable => {
+                    debug!(hash=%key.hash, "No upload grant for xorb; uploading through the xorb upload API");
                     self.post_xorb(&key, serialized_data, progress_callback, upload_permit).await?
                 },
             }
@@ -1368,7 +1355,7 @@ mod tests {
 
         use serde_json::json;
         use wiremock::matchers::{body_json, header, method, path, path_regex};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use wiremock::{Mock, MockServer, Respond, ResponseTemplate};
         use xet_runtime::config::XetConfig;
 
         use super::*;
@@ -1709,7 +1696,13 @@ mod tests {
         const ANY_COMMIT_PATH: &str = r"^/v1/xorb-commits/default/[0-9a-f]{64}/grant/grant-id$";
         const ANY_XORB_PATH: &str = r"^/v1/xorbs/default/[0-9a-f]{64}$";
 
-        async fn mount(server: &MockServer, http_method: &str, path_pattern: &str, response: ResponseTemplate, n: u64) {
+        async fn mount(
+            server: &MockServer,
+            http_method: &str,
+            path_pattern: &str,
+            response: impl Respond + 'static,
+            n: u64,
+        ) {
             Mock::given(method(http_method))
                 .and(path_regex(path_pattern))
                 .respond_with(response)
@@ -1759,13 +1752,67 @@ mod tests {
         #[tokio::test]
         async fn test_upload_xorb_falls_back_when_grants_unavailable() {
             let server = MockServer::start().await;
-            mount(&server, "POST", ANY_GRANT_PATH, ResponseTemplate::new(404), 1).await;
+            mount(&server, "POST", ANY_GRANT_PATH, ResponseTemplate::new(404), 2).await;
             mount(&server, "POST", ANY_XORB_PATH, xorb_inserted(), 2).await;
 
             let client = test_client(&server.uri());
             upload_test_xorb(&client, None).await.unwrap();
-            // The second xorb skips the grant API.
+            // The second xorb requests a grant again.
             upload_test_xorb(&client, None).await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn test_upload_xorb_falls_back_when_regrant_unavailable() {
+            let server = MockServer::start().await;
+            let grant = test_grant(&server);
+            Mock::given(method("POST"))
+                .and(path_regex(ANY_GRANT_PATH))
+                .respond_with(ResponseTemplate::new(201).set_body_json(&grant))
+                .up_to_n_times(1)
+                .expect(1)
+                .mount(&server)
+                .await;
+            mount(&server, "POST", ANY_GRANT_PATH, ResponseTemplate::new(404), 1).await;
+            mount(&server, "PUT", "^/upload/xorb-object$", ResponseTemplate::new(200), 1).await;
+            mount(&server, "POST", ANY_COMMIT_PATH, ResponseTemplate::new(404), 1).await;
+            mount(&server, "POST", ANY_XORB_PATH, xorb_inserted(), 1).await;
+
+            let client = test_client(&server.uri());
+            upload_test_xorb(&client, None).await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn test_upload_xorb_holds_permit_until_commit() {
+            let server = MockServer::start().await;
+            let client = test_client(&server.uri());
+            let active_permits = Arc::new(Mutex::new(Vec::new()));
+            let recording = |response: ResponseTemplate| {
+                let controller = client.upload_concurrency_controller.clone();
+                let active_permits = active_permits.clone();
+                move |_: &wiremock::Request| {
+                    active_permits.lock().unwrap().push(controller.active_permits());
+                    response.clone()
+                }
+            };
+
+            let grant = test_grant(&server);
+            mount(&server, "POST", ANY_GRANT_PATH, recording(ResponseTemplate::new(201).set_body_json(&grant)), 2)
+                .await;
+            mount(&server, "PUT", "^/upload/xorb-object$", recording(ResponseTemplate::new(200)), 2).await;
+            Mock::given(method("POST"))
+                .and(path_regex(ANY_COMMIT_PATH))
+                .respond_with(recording(ResponseTemplate::new(404)))
+                .up_to_n_times(1)
+                .expect(1)
+                .mount(&server)
+                .await;
+            mount(&server, "POST", ANY_COMMIT_PATH, recording(ResponseTemplate::new(200)), 1).await;
+
+            upload_test_xorb(&client, None).await.unwrap();
+
+            // Grant, upload, and commit for each of the two grants all run under the one permit.
+            assert_eq!(*active_permits.lock().unwrap(), vec![1; 6]);
+            assert_eq!(client.upload_concurrency_controller.active_permits(), 0);
         }
 
         #[tokio::test]
