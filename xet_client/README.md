@@ -20,9 +20,9 @@ This crate is part of [xet-core](https://github.com/huggingface/xet-core).
 2. **Upload**: send the serialized xorb to the grant URL with exactly the grant's headers and no CAS credentials. A 412 means an earlier attempt already uploaded it.
 3. **Commit**: `POST /v1/xorb-commits/{prefix}/{hash}/grant/{grant_id}`. A 404 means no data was uploaded for the grant, so the client requests a new grant and uploads again, up to three grants.
 
-If the grant request returns 404, the client uploads that xorb and all later ones through `POST /v1/xorbs/{prefix}/{hash}`. Any other error after retries fails the upload. Set `HF_XET_CLIENT_LEGACY_DIRECT_XORB_UPLOAD=1` to always use `/v1/xorbs`.
+If any grant request for a xorb returns 404, the client uploads that xorb through `POST /v1/xorbs/{prefix}/{hash}`; every xorb requests a grant first. Any other error after retries fails the upload. Set `HF_XET_CLIENT_LEGACY_DIRECT_XORB_UPLOAD=1` to always use `/v1/xorbs`.
 
-The upload permit is acquired before the grant request and is held until the upload to the grant URL finishes.
+The upload permit is acquired before the first grant request and is held through every grant, upload, and commit until the xorb is stored.
 
 ## License
 
