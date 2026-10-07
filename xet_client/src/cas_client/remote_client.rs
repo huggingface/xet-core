@@ -238,12 +238,12 @@ pub(crate) fn xorb_checksum(data: &[u8]) -> Checksum {
     Checksum::Crc64Nvme(crc_fast::checksum(CrcAlgorithm::Crc64Nvme, data))
 }
 
-/// Result of uploading a xorb through upload grants.
+/// Result of uploading a xorb through upload grants, with the bytes sent to grant URLs.
 enum GrantUploadOutcome {
     /// The xorb is stored; `inserted` is false if it already existed.
-    Stored { inserted: bool },
+    Stored { inserted: bool, n_bytes_uploaded: u64 },
     /// The server does not offer an upload grant for this xorb.
-    Unavailable,
+    Unavailable { n_bytes_uploaded: u64 },
 }
 
 /// Grants requested for one xorb before giving up when commits keep finding no uploaded data.
@@ -330,15 +330,18 @@ impl RemoteClient {
     ) -> Result<GrantUploadOutcome> {
         let length = serialized_data.len() as u64;
         let checksum = xorb_checksum(&serialized_data);
+        let mut n_bytes_uploaded = 0;
 
         for attempt in 1..=MAX_XORB_GRANT_ATTEMPTS {
-            let grant = match self
-                .request_xorb_upload_grant(&key.prefix, &key.hash, length, checksum.clone())
-                .await?
-            {
+            let grant = match self.request_xorb_upload_grant(&key.prefix, &key.hash, length, checksum).await? {
                 XorbUploadGrantResult::Granted(grant) => grant,
-                XorbUploadGrantResult::AlreadyExists => return Ok(GrantUploadOutcome::Stored { inserted: false }),
-                XorbUploadGrantResult::Unavailable => return Ok(GrantUploadOutcome::Unavailable),
+                XorbUploadGrantResult::AlreadyExists => {
+                    return Ok(GrantUploadOutcome::Stored {
+                        inserted: false,
+                        n_bytes_uploaded,
+                    });
+                },
+                XorbUploadGrantResult::Unavailable => return Ok(GrantUploadOutcome::Unavailable { n_bytes_uploaded }),
             };
 
             // A completed upload has reported all of its progress, so only the first upload gets the callback.
@@ -349,9 +352,15 @@ impl RemoteClient {
                 upload_permit.new_transfer().await,
             )
             .await?;
+            n_bytes_uploaded += length;
 
             match self.commit_xorb_upload(&key.prefix, &key.hash, &grant.id).await? {
-                XorbCommitResult::Committed => return Ok(GrantUploadOutcome::Stored { inserted: true }),
+                XorbCommitResult::Committed => {
+                    return Ok(GrantUploadOutcome::Stored {
+                        inserted: true,
+                        n_bytes_uploaded,
+                    });
+                },
                 XorbCommitResult::GrantNotFound => {
                     info!(hash=%key.hash, grant_id=grant.id, attempt, "Commit found no uploaded data for grant");
                 },
@@ -1203,19 +1212,23 @@ impl Client for RemoteClient {
 
         let serialized_data = Bytes::from(std::mem::take(&mut serialized_xorb_object.serialized_data));
 
-        let xorb_uploaded = if self.dry_run {
-            true
+        let (xorb_uploaded, n_bytes_uploaded) = if self.dry_run {
+            (true, n_upload_bytes)
         } else if self.ctx.config.client.legacy_direct_xorb_upload {
-            self.post_xorb(&key, serialized_data, progress_callback, upload_permit).await?
+            (self.post_xorb(&key, serialized_data, progress_callback, upload_permit).await?, n_upload_bytes)
         } else {
             match self
                 .upload_xorb_through_grants(&key, serialized_data.clone(), progress_callback.clone(), &upload_permit)
                 .await?
             {
-                GrantUploadOutcome::Stored { inserted } => inserted,
-                GrantUploadOutcome::Unavailable => {
+                GrantUploadOutcome::Stored {
+                    inserted,
+                    n_bytes_uploaded,
+                } => (inserted, n_bytes_uploaded),
+                GrantUploadOutcome::Unavailable { n_bytes_uploaded } => {
                     debug!(hash=%key.hash, "No upload grant for xorb; uploading through the xorb upload API");
-                    self.post_xorb(&key, serialized_data, progress_callback, upload_permit).await?
+                    let inserted = self.post_xorb(&key, serialized_data, progress_callback, upload_permit).await?;
+                    (inserted, n_bytes_uploaded + n_upload_bytes)
                 },
             }
         };
@@ -1241,7 +1254,7 @@ impl Client for RemoteClient {
             );
         }
 
-        Ok(n_upload_bytes)
+        Ok(n_bytes_uploaded)
     }
 
     #[instrument(skip_all, name = "RemoteClient::get_file_chunk_hashes", fields(file.hash = file_id.hex(), n_ranges = dirty_ranges.len()))]
@@ -1696,6 +1709,31 @@ mod tests {
         const ANY_COMMIT_PATH: &str = r"^/v1/xorb-commits/default/[0-9a-f]{64}/grant/grant-id$";
         const ANY_XORB_PATH: &str = r"^/v1/xorbs/default/[0-9a-f]{64}$";
 
+        fn grant_with_id(server: &MockServer, id: &str) -> XorbUploadGrant {
+            XorbUploadGrant {
+                id: id.to_string(),
+                url: format!("{}/upload/{id}?signature=abc", server.uri()),
+                ..test_grant(server)
+            }
+        }
+
+        fn commit_path_pattern(grant_id: &str) -> String {
+            format!(r"^/v1/xorb-commits/default/[0-9a-f]{{64}}/grant/{grant_id}$")
+        }
+
+        /// Mounts one grant response per id, served in order.
+        async fn mount_grants_in_order(server: &MockServer, ids: &[&str]) {
+            for id in ids {
+                Mock::given(method("POST"))
+                    .and(path_regex(ANY_GRANT_PATH))
+                    .respond_with(ResponseTemplate::new(201).set_body_json(grant_with_id(server, id)))
+                    .up_to_n_times(1)
+                    .expect(1)
+                    .mount(server)
+                    .await;
+            }
+        }
+
         async fn mount(
             server: &MockServer,
             http_method: &str,
@@ -1746,7 +1784,9 @@ mod tests {
             mount(&server, "POST", ANY_XORB_PATH, xorb_inserted(), 0).await;
 
             let client = test_client(&server.uri());
-            upload_test_xorb(&client, None).await.unwrap();
+            let n_bytes = upload_test_xorb(&client, None).await.unwrap();
+
+            assert_eq!(n_bytes, 0);
         }
 
         #[tokio::test]
@@ -1818,34 +1858,30 @@ mod tests {
         #[tokio::test]
         async fn test_upload_xorb_regrants_when_commit_finds_no_upload() {
             let server = MockServer::start().await;
-            let grant = test_grant(&server);
-            mount(&server, "POST", ANY_GRANT_PATH, ResponseTemplate::new(201).set_body_json(&grant), 2).await;
-            mount(&server, "PUT", "^/upload/xorb-object$", ResponseTemplate::new(200), 2).await;
-            Mock::given(method("POST"))
-                .and(path_regex(ANY_COMMIT_PATH))
-                .respond_with(ResponseTemplate::new(404))
-                .up_to_n_times(1)
-                .expect(1)
-                .mount(&server)
-                .await;
-            mount(&server, "POST", ANY_COMMIT_PATH, ResponseTemplate::new(200), 1).await;
+            mount_grants_in_order(&server, &["grant-1", "grant-2"]).await;
+            mount(&server, "PUT", "^/upload/grant-1$", ResponseTemplate::new(200), 1).await;
+            mount(&server, "PUT", "^/upload/grant-2$", ResponseTemplate::new(200), 1).await;
+            mount(&server, "POST", &commit_path_pattern("grant-1"), ResponseTemplate::new(404), 1).await;
+            mount(&server, "POST", &commit_path_pattern("grant-2"), ResponseTemplate::new(200), 1).await;
             mount(&server, "POST", ANY_XORB_PATH, xorb_inserted(), 0).await;
 
             let (progress, callback) = progress_recorder();
             let client = test_client(&server.uri());
             let n_bytes = upload_test_xorb(&client, Some(callback)).await.unwrap();
 
-            // The re-upload does not report progress a second time.
-            assert_eq!(progress.load(Ordering::Relaxed), n_bytes);
+            // The re-upload does not report progress a second time, but its bytes count as uploaded.
+            assert_eq!(n_bytes, 2 * progress.load(Ordering::Relaxed));
         }
 
         #[tokio::test]
         async fn test_upload_xorb_fails_after_max_grant_attempts() {
             let server = MockServer::start().await;
-            let grant = test_grant(&server);
-            mount(&server, "POST", ANY_GRANT_PATH, ResponseTemplate::new(201).set_body_json(&grant), 3).await;
-            mount(&server, "PUT", "^/upload/xorb-object$", ResponseTemplate::new(200), 3).await;
-            mount(&server, "POST", ANY_COMMIT_PATH, ResponseTemplate::new(404), 3).await;
+            let ids = ["grant-1", "grant-2", "grant-3"];
+            mount_grants_in_order(&server, &ids).await;
+            for id in ids {
+                mount(&server, "PUT", &format!("^/upload/{id}$"), ResponseTemplate::new(200), 1).await;
+                mount(&server, "POST", &commit_path_pattern(id), ResponseTemplate::new(404), 1).await;
+            }
             mount(&server, "POST", ANY_XORB_PATH, xorb_inserted(), 0).await;
 
             let client = test_client(&server.uri());
