@@ -23,7 +23,7 @@ pub struct UploadXorbResponse {
     pub was_inserted: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(tag = "algo", content = "value", rename_all = "lowercase")]
 pub enum Checksum {
     /// Serialized as a decimal string, since JSON numbers above 2^53 lose precision in many parsers.
