@@ -23,6 +23,7 @@ pub struct UploadXorbResponse {
     pub was_inserted: bool,
 }
 
+/// Checksum of serialized xorb data.
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(tag = "algo", content = "value", rename_all = "lowercase")]
 pub enum Checksum {
@@ -30,17 +31,23 @@ pub enum Checksum {
     Crc64Nvme(#[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")] u64),
 }
 
+/// Request body for a xorb upload grant.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct XorbUploadGrantRequest {
+    /// Length of the serialized xorb in bytes.
     pub length: u64,
     pub checksum: Checksum,
 }
 
+/// A grant to upload a serialized xorb directly to `url`.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct XorbUploadGrant {
+    /// Grant id, used to commit the upload.
     pub id: String,
+    /// HTTP method for the upload.
     pub method: String,
     pub url: String,
+    /// Headers the upload must send exactly as given.
     pub headers: HashMap<String, String>,
 }
 
