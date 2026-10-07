@@ -215,10 +215,10 @@ impl RemoteClient {
 /// Parses the total file size from the [`X_XET_FILE_SIZE_HEADER`] response header. Returns `None` when the
 /// header is absent or malformed; a malformed value is logged and otherwise ignored.
 fn file_size_from_headers(headers: &HeaderMap) -> Option<u64> {
-    let value = headers.get(X_XET_FILE_SIZE_HEADER)?;
+    let value = headers.get(&X_XET_FILE_SIZE_HEADER)?;
     let parsed = value.to_str().ok().and_then(|s| s.parse::<u64>().ok());
     if parsed.is_none() {
-        warn!(header = X_XET_FILE_SIZE_HEADER, ?value, "Ignoring malformed file size header");
+        warn!(header = X_XET_FILE_SIZE_HEADER.as_str(), ?value, "Ignoring malformed file size header");
     }
     parsed
 }
