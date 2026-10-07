@@ -229,8 +229,8 @@ pub(crate) enum XorbUploadGrantResult {
 pub(crate) enum XorbCommitResult {
     /// The xorb is stored, either by this commit or because it already existed.
     Committed,
-    /// The server has no uploaded data for this grant; request a new grant and upload again.
-    GrantNotFound,
+    /// The server has no uploaded data for this grant; request a new grant and upload again. Holds the 404 error.
+    GrantNotFound(ClientError),
 }
 
 /// Checksum of serialized xorb data, sent when requesting an upload grant.
@@ -332,7 +332,9 @@ impl RemoteClient {
         let checksum = xorb_checksum(&serialized_data);
         let mut n_bytes_uploaded = 0;
 
-        for attempt in 1..=MAX_XORB_GRANT_ATTEMPTS {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
             let grant = match self.request_xorb_upload_grant(&key.prefix, &key.hash, length, checksum).await? {
                 XorbUploadGrantResult::Granted(grant) => grant,
                 XorbUploadGrantResult::AlreadyExists => {
@@ -355,7 +357,7 @@ impl RemoteClient {
                 .await;
             match upload_result {
                 Ok(()) => n_bytes_uploaded += length,
-                Err(err) if err.status() == Some(StatusCode::FORBIDDEN) => {
+                Err(err) if err.status() == Some(StatusCode::FORBIDDEN) && attempt < MAX_XORB_GRANT_ATTEMPTS => {
                     info!(hash=%key.hash, grant_id=grant.id, attempt, "Grant URL rejected the upload");
                     continue;
                 },
@@ -369,16 +371,12 @@ impl RemoteClient {
                         n_bytes_uploaded,
                     });
                 },
-                XorbCommitResult::GrantNotFound => {
+                XorbCommitResult::GrantNotFound(err) if attempt == MAX_XORB_GRANT_ATTEMPTS => return Err(err),
+                XorbCommitResult::GrantNotFound(_) => {
                     info!(hash=%key.hash, grant_id=grant.id, attempt, "Commit found no uploaded data for grant");
                 },
             }
         }
-
-        Err(ClientError::Other(format!(
-            "xorb {} was not committed after {MAX_XORB_GRANT_ATTEMPTS} upload grants",
-            key.hash
-        )))
     }
 
     /// Requests a grant to upload `length` bytes of serialized xorb data with the given checksum.
@@ -572,7 +570,7 @@ impl RemoteClient {
 
         let result = match result {
             Ok(_) => XorbCommitResult::Committed,
-            Err(e) if e.status() == Some(StatusCode::NOT_FOUND) => XorbCommitResult::GrantNotFound,
+            Err(e) if e.status() == Some(StatusCode::NOT_FOUND) => XorbCommitResult::GrantNotFound(e),
             Err(e) => return Err(e),
         };
 
@@ -1694,7 +1692,7 @@ mod tests {
             let client = test_client(&server.uri());
             let result = commit(&client).await.unwrap();
 
-            assert!(matches!(result, XorbCommitResult::GrantNotFound), "got {result:?}");
+            assert!(matches!(result, XorbCommitResult::GrantNotFound(_)), "got {result:?}");
         }
 
         #[tokio::test]
@@ -1893,7 +1891,9 @@ mod tests {
             mount(&server, "POST", ANY_XORB_PATH, xorb_inserted(), 0).await;
 
             let client = test_client(&server.uri());
-            upload_test_xorb(&client, None).await.unwrap_err();
+            let err = upload_test_xorb(&client, None).await.unwrap_err();
+
+            assert_eq!(err.status(), Some(StatusCode::NOT_FOUND));
         }
 
         #[tokio::test]
@@ -1922,7 +1922,9 @@ mod tests {
             mount(&server, "POST", ANY_XORB_PATH, xorb_inserted(), 0).await;
 
             let client = test_client(&server.uri());
-            upload_test_xorb(&client, None).await.unwrap_err();
+            let err = upload_test_xorb(&client, None).await.unwrap_err();
+
+            assert_eq!(err.status(), Some(StatusCode::FORBIDDEN));
         }
 
         #[tokio::test]
