@@ -223,7 +223,9 @@ impl XetError {
             },
             FileReconstructionError::TaskJoinError(je) => XetError::Internal(format!("Task join error: {je}")),
             FileReconstructionError::ConfigurationError(_) => XetError::Configuration(fre.to_string()),
-            FileReconstructionError::CorruptedReconstruction(_) => XetError::DataIntegrity(fre.to_string()),
+            FileReconstructionError::CorruptedReconstruction(_) | FileReconstructionError::FileSizeMismatch { .. } => {
+                XetError::DataIntegrity(fre.to_string())
+            },
             _ => XetError::Internal(fre.to_string()),
         }
     }
@@ -242,7 +244,9 @@ impl XetError {
             | DataError::ParameterError(_)
             | DataError::DeprecatedError(_) => XetError::Configuration(de.to_string()),
             DataError::HashNotFound => XetError::NotFound(de.to_string()),
-            DataError::HashStringParsingFailure(_) => XetError::DataIntegrity(de.to_string()),
+            DataError::HashStringParsingFailure(_) | DataError::SizeMismatch { .. } => {
+                XetError::DataIntegrity(de.to_string())
+            },
             DataError::InvalidOperation(_) => XetError::Configuration(de.to_string()),
             DataError::FileReconstructionError(fre) => XetError::from_file_reconstruction_error_ref(fre),
             _ => XetError::Internal(de.to_string()),
@@ -498,6 +502,19 @@ mod tests {
     fn data_nested_client_maps_using_client_rules() {
         let err = XetError::from(DataError::ClientError(ClientError::FileNotFound(MerkleHash::default())));
         assert!(matches!(err, XetError::NotFound(_)));
+    }
+
+    #[test]
+    fn size_mismatch_maps_to_data_integrity() {
+        let err = XetError::from(DataError::SizeMismatch { expected: 2, actual: 1 });
+        assert!(matches!(err, XetError::DataIntegrity(_)));
+        assert_eq!(err.telemetry_class().1, "format");
+
+        let err = XetError::from(DataError::from(FileReconstructionError::FileSizeMismatch { expected: 2, actual: 1 }));
+        assert!(matches!(err, XetError::DataIntegrity(_)));
+
+        let err = XetError::from(FileReconstructionError::FileSizeMismatch { expected: 2, actual: 1 });
+        assert!(matches!(err, XetError::DataIntegrity(_)));
     }
 
     #[test]
