@@ -5,7 +5,7 @@ use netrc::Netrc;
 use xet_client::hub_client::{BearerCredentialHelper, CredentialHelper, NoopCredentialHelper, Operation};
 
 use crate::constants::HF_TOKEN_ENV;
-use crate::errors::{GitXetError, Result};
+use crate::errors::{GitExtensionError, Result};
 use crate::git_repo::GitRepo;
 use crate::git_url::{GitUrl, Scheme};
 
@@ -14,7 +14,7 @@ mod ssh;
 
 use git::GitCredentialHelper;
 use ssh::SSHCredentialHelper;
-#[cfg(any(test, feature = "git-xet-for-integration-test"))]
+#[cfg(any(test, feature = "test-utils"))]
 pub use ssh::{GitLFSAuthentationResponseHeader, GitLFSAuthenticateResponse};
 
 // This mod derives credentials for the Xet CAS token API on HF Hub from the local repository's credentials.
@@ -50,7 +50,7 @@ pub enum AccessMode {
 }
 
 impl FromStr for AccessMode {
-    type Err = GitXetError;
+    type Err = GitExtensionError;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s.to_ascii_lowercase().as_str() {
@@ -59,7 +59,7 @@ impl FromStr for AccessMode {
             "private" => Ok(AccessMode::Private),
             "negotiate" => Ok(AccessMode::Negotiate),
             "" => Ok(AccessMode::Empty),
-            _ => Err(GitXetError::config_error(format!("invalid \"lfs.<url>.access\" type: {s}"))),
+            _ => Err(GitExtensionError::config_error(format!("invalid \"lfs.<url>.access\" type: {s}"))),
         }
     }
 }

@@ -4,7 +4,7 @@ use git_url_parse::GitUrl as innerGitUrl;
 pub use git_url_parse::Scheme;
 use xet_client::hub_client::{HFRepoType, RepoInfo};
 
-use crate::errors::{GitXetError, Result};
+use crate::errors::{GitExtensionError, Result};
 
 // This mod implements functionalities to handle Git remote URLs, especially tailored for
 // Git LFS and Hugging Face repo needs, including deriving Git LFS server endpoint from
@@ -19,7 +19,7 @@ pub struct GitUrl {
 }
 
 impl FromStr for GitUrl {
-    type Err = GitXetError;
+    type Err = GitExtensionError;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         let raw = s.to_owned();
@@ -30,7 +30,6 @@ impl FromStr for GitUrl {
 }
 
 impl GitUrl {
-    #[allow(unused)]
     pub fn as_str(&self) -> &str {
         self._raw.as_str()
     }
@@ -62,7 +61,7 @@ impl GitUrl {
             .inner
             .host
             .as_ref()
-            .ok_or_else(|| GitXetError::config_error("remote URL missing host name"))?;
+            .ok_or_else(|| GitExtensionError::config_error("remote URL missing host name"))?;
 
         let port = self.inner.port;
 
@@ -87,7 +86,7 @@ impl GitUrl {
             .inner
             .host
             .as_ref()
-            .ok_or_else(|| GitXetError::config_error("remote URL missing host name"))?;
+            .ok_or_else(|| GitExtensionError::config_error("remote URL missing host name"))?;
 
         let port = self.inner.port;
 
@@ -107,13 +106,13 @@ impl GitUrl {
         match self.inner.scheme {
             Scheme::Http => Ok(("http", false)),
             Scheme::Https => Ok(("https", false)),
-            Scheme::File | Scheme::Ftp | Scheme::Ftps => Err(GitXetError::not_supported(format!(
+            Scheme::File | Scheme::Ftp | Scheme::Ftps => Err(GitExtensionError::not_supported(format!(
                 "cannot convert from scheme \"{}://\" to \"http(s)://\"",
                 self.inner.scheme
             ))),
             Scheme::Git | Scheme::GitSsh | Scheme::Ssh => Ok(("https", true)),
             Scheme::Unspecified => {
-                Err(GitXetError::not_supported("cannot convert from unspecified scheme to \"http(s)://\""))
+                Err(GitExtensionError::not_supported("cannot convert from unspecified scheme to \"http(s)://\""))
             },
         }
     }
@@ -125,7 +124,6 @@ impl GitUrl {
 
     // Returns the front part of the Git remote URL removing repo path,
     // e.g. (scheme://)(auth@)[host_name](:port)
-    #[allow(unused)]
     pub fn host_url(&self) -> Result<String> {
         let scheme_str = if self.inner.scheme_prefix {
             format!("{}://", self.inner.scheme)
@@ -149,7 +147,7 @@ impl GitUrl {
             .inner
             .host
             .as_ref()
-            .ok_or_else(|| GitXetError::config_error("remote URL missing host name"))?;
+            .ok_or_else(|| GitExtensionError::config_error("remote URL missing host name"))?;
 
         let port_str = if let Some(p) = self.inner.port {
             format!(":{}", p)
@@ -178,7 +176,7 @@ impl GitUrl {
             .inner
             .host
             .as_ref()
-            .ok_or_else(|| GitXetError::config_error("remote URL missing host name"))?;
+            .ok_or_else(|| GitExtensionError::config_error("remote URL missing host name"))?;
 
         Ok(format!("{auth_str}{host}"))
     }
@@ -200,7 +198,6 @@ impl GitUrl {
     }
 
     // Returns the parsed full repo path into `RepoInfo`.
-    #[allow(unused)]
     pub fn repo_info(&self) -> Result<RepoInfo> {
         let path = self.full_repo_path();
         let full_name = self.inner.fullname.clone(); // The full name of the repo, formatted as "owner/name"
@@ -214,7 +211,7 @@ impl GitUrl {
 #[cfg(test)]
 mod test_lfs_server_discovery {
     use super::GitUrl;
-    use crate::errors::{GitXetError, Result};
+    use crate::errors::{GitExtensionError, Result};
 
     #[test]
     fn test_canonicalize_to_https() -> Result<()> {
@@ -378,9 +375,9 @@ mod test_lfs_server_discovery {
             for input in inputs {
                 let parsed_url: GitUrl = input.parse()?;
                 let translated = parsed_url.to_derived_http_format_url();
-                assert!(matches!(translated, Err(GitXetError::NotSupported(_))));
+                assert!(matches!(translated, Err(GitExtensionError::NotSupported(_))));
                 let translated = parsed_url.to_derived_http_host_url();
-                assert!(matches!(translated, Err(GitXetError::NotSupported(_))));
+                assert!(matches!(translated, Err(GitExtensionError::NotSupported(_))));
             }
         }
         Ok(())

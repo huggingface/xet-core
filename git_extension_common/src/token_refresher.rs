@@ -11,7 +11,7 @@ use crate::errors::Result;
 use crate::git_repo::GitRepo;
 use crate::git_url::GitUrl;
 
-/// Build a [`DirectRefreshRouteTokenRefresher`] for the git-xet path,
+/// Build a [`DirectRefreshRouteTokenRefresher`] for a Git client,
 /// deriving credentials from the git repo's credential helper.
 pub fn new_git_token_refresher(
     ctx: &XetContext,

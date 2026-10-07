@@ -69,3 +69,9 @@ If you manually installed:
 Git-Xet works by registering itself as a custom transfer agent to Git LFS by name "xet". On `git push`, `git fetch` or `git pull`, `git-lfs` negotiates with the remote server to determine the transfer agent to use. During this process, `git-lfs` sends to the server all locally registered agent names in the Batch API request, and the server replies with exactly one agent name in the response. Should "xet" be picked, `git-lfs` delegates the uploading or downloading operation to `git-xet` through a sequential protocol.
 
 For more details, see the Git LFS [Batch API](https://github.com/git-lfs/git-lfs/blob/main/docs/api/batch.md) and [Custom Transfer Agent](https://github.com/git-lfs/git-lfs/blob/main/docs/custom-transfers.md) documentation.
+
+## Shared Git support
+
+Repository discovery, URL handling, authentication, token refresh, and captured
+subprocess helpers live in [`git_extension_common`](../git_extension_common/README.md).
+The CLI, installation configuration, and LFS transfer-agent protocol remain here.

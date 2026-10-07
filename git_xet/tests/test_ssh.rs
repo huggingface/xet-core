@@ -39,7 +39,7 @@ use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
 use anyhow::Result;
-use git_xet::test_utils::{GitLFSAuthenticateResponse, start_local_ssh_server};
+use git_extension_common::test_utils::{GitLFSAuthenticateResponse, start_local_ssh_server};
 
 fn git_xet_run<I, S>(command: I) -> std::io::Result<Output>
 where
