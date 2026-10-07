@@ -91,9 +91,10 @@ pub fn error_class(error: &DataError) -> &'static str {
     match error {
         DataError::AuthError(_) => "auth",
         DataError::IOError(_) => "io",
-        DataError::FormatError(_) | DataError::HashStringParsingFailure(_) | DataError::FileNotCleanedError(_) => {
-            "format"
-        },
+        DataError::FormatError(_)
+        | DataError::HashStringParsingFailure(_)
+        | DataError::FileNotCleanedError(_)
+        | DataError::SizeMismatch { .. } => "format",
         DataError::HashNotFound => "not_found",
         DataError::RuntimeError(RuntimeError::TaskCanceled(_) | RuntimeError::KeyboardInterrupt) => "cancelled",
         DataError::RuntimeError(_) => "internal",
@@ -146,6 +147,7 @@ mod tests {
         assert_eq!(error_class(&DataError::HashNotFound), "not_found");
         assert_eq!(error_class(&DataError::InvalidOperation("x".into())), "internal");
         assert_eq!(error_class(&DataError::ParameterError("x".into())), "other");
+        assert_eq!(error_class(&DataError::SizeMismatch { expected: 2, actual: 1 }), "format");
         assert_eq!(
             error_class(&DataError::RuntimeError(xet_runtime::error::RuntimeError::KeyboardInterrupt)),
             "cancelled"
