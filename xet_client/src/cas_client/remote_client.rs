@@ -1279,7 +1279,7 @@ mod tests {
             Mock::given(method("POST"))
                 .and(path(grant_path()))
                 .and(header("authorization", format!("Bearer {TEST_TOKEN}").as_str()))
-                .and(body_json(json!({"length": 1234, "checksum": {"algo": "crc64nvme", "value": 7}})))
+                .and(body_json(json!({"length": 1234, "checksum": {"algo": "crc64nvme", "value": "7"}})))
                 .respond_with(ResponseTemplate::new(201).set_body_json(&grant))
                 .expect(1)
                 .mount(&server)
