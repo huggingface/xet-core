@@ -17,8 +17,8 @@ This crate is part of [xet-core](https://github.com/huggingface/xet-core).
 `RemoteClient::upload_xorb` uploads each xorb through an upload grant:
 
 1. **Grant**: `POST /v1/xorb-grants/{prefix}/{hash}` with the serialized length and CRC-64/NVME checksum. A 201 returns a grant (method, URL, and headers); a 200 means the xorb already exists and nothing is uploaded.
-2. **Upload**: send the serialized xorb to the grant URL with exactly the grant's headers and no CAS credentials. A 412 means an earlier attempt already uploaded it.
-3. **Commit**: `POST /v1/xorb-commits/{prefix}/{hash}/grant/{grant_id}`. A 404 means no data was uploaded for the grant, so the client requests a new grant and uploads again, up to three grants.
+2. **Upload**: send the serialized xorb to the grant URL with exactly the grant's headers and no CAS credentials. A 412 means an earlier attempt already uploaded it. A 403 (e.g. an expired grant) starts a new grant.
+3. **Commit**: `POST /v1/xorb-commits/{prefix}/{hash}/grant/{grant_id}`. A 404 means no data was uploaded for the grant, so the client requests a new grant and uploads again, up to three grants in total, counting grants replaced after a 403 upload.
 
 If any grant request for a xorb returns 404, the client uploads that xorb through `POST /v1/xorbs/{prefix}/{hash}`; every xorb requests a grant first. Any other error after retries fails the upload. Set `HF_XET_CLIENT_LEGACY_DIRECT_XORB_UPLOAD=1` to always use `/v1/xorbs`.
 

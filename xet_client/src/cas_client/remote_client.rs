@@ -318,9 +318,9 @@ impl RemoteClient {
 
     /// Uploads a xorb by requesting an upload grant, uploading to the grant URL, and committing it.
     ///
-    /// A commit that finds no uploaded data for its grant starts over with a new grant, up to
-    /// [`MAX_XORB_GRANT_ATTEMPTS`] grants. Every upload holds `upload_permit`'s concurrency slot, which the
-    /// caller keeps until the xorb is committed.
+    /// A commit that finds no uploaded data for its grant, or a grant URL that rejects the upload with 403
+    /// (e.g. an expired grant), starts over with a new grant, up to [`MAX_XORB_GRANT_ATTEMPTS`] grants. Every upload
+    /// holds `upload_permit`'s concurrency slot, which the caller keeps until the xorb is committed.
     async fn upload_xorb_through_grants(
         &self,
         key: &Key,
@@ -345,14 +345,22 @@ impl RemoteClient {
             };
 
             // A completed upload has reported all of its progress, so only the first upload gets the callback.
-            self.upload_xorb_to_grant(
-                &grant,
-                serialized_data.clone(),
-                progress_callback.take(),
-                upload_permit.new_transfer().await,
-            )
-            .await?;
-            n_bytes_uploaded += length;
+            let upload_result = self
+                .upload_xorb_to_grant(
+                    &grant,
+                    serialized_data.clone(),
+                    progress_callback.take(),
+                    upload_permit.new_transfer().await,
+                )
+                .await;
+            match upload_result {
+                Ok(()) => n_bytes_uploaded += length,
+                Err(err) if err.status() == Some(StatusCode::FORBIDDEN) => {
+                    info!(hash=%key.hash, grant_id=grant.id, attempt, "Grant URL rejected the upload");
+                    continue;
+                },
+                Err(err) => return Err(err),
+            }
 
             match self.commit_xorb_upload(&key.prefix, &key.hash, &grant.id).await? {
                 XorbCommitResult::Committed => {
@@ -1889,6 +1897,35 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn test_upload_xorb_regrants_when_upload_forbidden() {
+            let server = MockServer::start().await;
+            mount_grants_in_order(&server, &["grant-1", "grant-2"]).await;
+            mount(&server, "PUT", "^/upload/grant-1$", ResponseTemplate::new(403), 1).await;
+            mount(&server, "PUT", "^/upload/grant-2$", ResponseTemplate::new(200), 1).await;
+            mount(&server, "POST", &commit_path_pattern("grant-1"), ResponseTemplate::new(200), 0).await;
+            mount(&server, "POST", &commit_path_pattern("grant-2"), ResponseTemplate::new(200), 1).await;
+            mount(&server, "POST", ANY_XORB_PATH, xorb_inserted(), 0).await;
+
+            let client = test_client(&server.uri());
+            upload_test_xorb(&client, None).await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn test_upload_xorb_fails_when_every_upload_forbidden() {
+            let server = MockServer::start().await;
+            let ids = ["grant-1", "grant-2", "grant-3"];
+            mount_grants_in_order(&server, &ids).await;
+            for id in ids {
+                mount(&server, "PUT", &format!("^/upload/{id}$"), ResponseTemplate::new(403), 1).await;
+            }
+            mount(&server, "POST", ANY_COMMIT_PATH, ResponseTemplate::new(200), 0).await;
+            mount(&server, "POST", ANY_XORB_PATH, xorb_inserted(), 0).await;
+
+            let client = test_client(&server.uri());
+            upload_test_xorb(&client, None).await.unwrap_err();
+        }
+
+        #[tokio::test]
         async fn test_upload_xorb_grant_error_fails_without_fallback() {
             let server = MockServer::start().await;
             Mock::given(method("POST"))
@@ -1909,14 +1946,14 @@ mod tests {
             let server = MockServer::start().await;
             let grant = test_grant(&server);
             mount(&server, "POST", ANY_GRANT_PATH, ResponseTemplate::new(201).set_body_json(&grant), 1).await;
-            mount(&server, "PUT", "^/upload/xorb-object$", ResponseTemplate::new(403), 1).await;
+            mount(&server, "PUT", "^/upload/xorb-object$", ResponseTemplate::new(400), 1).await;
             mount(&server, "POST", ANY_COMMIT_PATH, ResponseTemplate::new(200), 0).await;
             mount(&server, "POST", ANY_XORB_PATH, xorb_inserted(), 0).await;
 
             let client = test_client(&server.uri());
             let err = upload_test_xorb(&client, None).await.unwrap_err();
 
-            assert_eq!(err.status(), Some(StatusCode::FORBIDDEN));
+            assert_eq!(err.status(), Some(StatusCode::BAD_REQUEST));
         }
 
         #[tokio::test]
