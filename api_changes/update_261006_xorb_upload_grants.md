@@ -16,6 +16,7 @@
    CAS credentials. 412 counts as already uploaded.
 3. `POST /v1/xorb-commits/{prefix}/{hash}/grant/{grant_id}`. 404 means no data was uploaded for
    the grant; the client requests a new grant and uploads again, up to three grants.
+   A 403 from the grant URL (e.g. an expired grant) also starts a new grant, within the same limit.
 
 A 404 from any grant request for a xorb makes the client upload that xorb through `/v1/xorbs`;
 every xorb requests a grant first. Any other error after retries fails the upload; there is no
