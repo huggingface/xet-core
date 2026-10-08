@@ -26,6 +26,12 @@ native-Git policies should introduce those explicitly in subsequent changes.
 feature. The process integration tests remain in `git_xet` and import the shared
 fixtures directly through a dev-dependency.
 
+`TempHome::new()` isolates Git environment overrides and disables system config
+before any setup commands run. `TestRepo` inherits this behavior. The original
+environment is restored when the last fixture clone is dropped; tests using these
+fixtures must use `#[serial(env_var_write_read)]`. Set intentional Git environment
+overrides after constructing the fixture.
+
 Run from the repository root:
 
 ```sh

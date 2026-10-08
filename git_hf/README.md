@@ -1,11 +1,37 @@
 # git-hf (development foundation)
 
-`git-hf` is the native Xet V2 Git client. This unpublished PR 2 build provides
-command contracts, native pointer parsing/serialization, and read-only repository
-discovery. It does not yet install filters, clone repositories, transfer data, or
-modify worktrees. Every command handler is a `todo!()` placeholder and panics when
-invoked. Help/version exit successfully; argument errors exit with status 2.
-Command handlers write nothing to stdout, including `filter-process` and `pre-push`.
+`git-hf` is the native Xet V2 Git client.
+
+## Installation
+
+Run `git hf install` (or `git-hf install`) to register the filter globally, or
+`git hf install --local` inside a repository to register it in the repository's
+shared config. Use `--local --path <repository>` to select a repository explicitly,
+or `git hf install --system` for system-wide registration. `--global` is the explicit
+default. Global installation works outside a repository and follows Git's global
+configuration location rules.
+
+Installation sets:
+
+```gitconfig
+[filter "hf"]
+    process = git-hf filter-process --smudge-passthrough
+    required = true
+```
+
+Installation rejects conflicting `filter.hf.process` values before changing either
+setting. When the process is absent or matches, it sets `filter.hf.required=true`,
+replacing any existing values. Repeated installation leaves the same settings. Other scopes and included files are
+left untouched; Git's usual configuration precedence still applies.
+
+`git hf uninstall` removes the entire `filter.hf` section from global config,
+including modified values. Use `--system` or `--local` to select another scope,
+or `--all` to attempt removal from system, global, and current repository config.
+`--local --path <repository>` selects a repository explicitly. Removal is best
+effort: Git configuration command errors are ignored, including missing sections.
+
+Neither command modifies attributes, hooks, `core.hooksPath`, or diff/merge
+configuration. Hook installation belongs with the pre-push implementation.
 
 ## Command contracts
 
@@ -13,11 +39,11 @@ Run `git-hf --help`, or put the binary on PATH and use `git hf --help`.
 
 | Command | Contract for subsequent implementation PRs |
 | --- | --- |
-| `add <paths...>` | Stage whole files concurrently using automatic Xet selection, leaving worktree contents unchanged (not yet available). |
+| `add <paths...>` | Stage whole files concurrently using automatic Xet selection, leaving worktree contents unchanged. |
 | `track` | Explain automatic file selection; no manual tracking is needed. |
-| `install [--local \| --global]` | Register the required `hf` filter; default scope is global. |
-| `uninstall [--local \| --global]` | Remove owned configuration; default scope is global. |
-| `clone <git-clone-args...>` | Accept Git clone options, repository, and destination as an opaque argument list. Execution remains unavailable. |
+| `install [--local \| --global \| --system] [--path <repository>]` | Register the required `hf` filter; default scope is global. |
+| `uninstall [--local \| --global \| --system \| --all] [--path <repository>]` | Remove the hf filter section; default scope is global. |
+| `clone <git-clone-args...>` | Accept Git clone options, repository, and destination as an opaque argument list. |
 | `fetch [remote] [revision]` | Cache reconstruction metadata and xorb ranges for a local revision (default HEAD); do not fetch Git refs or reconstruct files. |
 | `checkout [--force] [paths...]` | Reconstruct selected index entries from local data only. |
 | `pull [remote] [--force]` | Fetch content for the current checkout, then reconstruct; do not run `git pull`. |
@@ -26,8 +52,7 @@ Run `git-hf --help`, or put the binary on PATH and use `git hf --help`.
 
 Internal commands are hidden from top-level help but have their own `--help`.
 Use `--` before paths beginning with `-`. Paths and clone locations retain native
-OS strings; they are not interpolated into shell commands. Remote resolution and
-operational command execution are deferred to later PRs.
+OS strings; they are not interpolated into shell commands.
 
 Clone retains its original argument list, including `--` and non-UTF-8 paths,
 for eventual forwarding to Git. `clone --help` and `clone --version` currently
@@ -73,6 +98,9 @@ cargo test -p git_hf
 cargo +nightly fmt -p git_hf -- --check
 ```
 
-Unit tests cover pointer boundaries and malformed inputs, canonical serialization,
-and CLI argument parsing. They require no Git repositories, Hub credentials, or
-network access.
+Unit tests cover pointer boundaries, malformed inputs, and canonical serialization.
+Install/uninstall unit tests live beside their implementations and call the handlers
+directly, using shared `TestRepo`/`TempHome` fixtures and serialized environment guards.
+They cover filter registration/removal, process conflicts, required-value replacement,
+idempotence, uninstall scopes, and installation error propagation. Tests need Git, but no Hub
+credentials or network access.

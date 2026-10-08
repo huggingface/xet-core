@@ -1,8 +1,10 @@
 //! Foundation for the native Xet V2 Git client. Transfer commands are not yet implemented.
 
 mod cli;
+mod constants;
 mod error;
 mod pointer;
+mod utils;
 
 pub use cli::GitHfApp;
 pub use error::{GitHfError, Result};
