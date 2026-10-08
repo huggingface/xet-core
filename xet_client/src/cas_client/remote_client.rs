@@ -19,7 +19,7 @@ use super::adaptive_concurrency::{
 };
 use super::auth::AuthConfig;
 #[cfg(all(feature = "dragonfly", unix))]
-use super::dragonfly::DragonflyClient;
+use super::dragonfly::{DragonflyClient, DragonflyMode};
 use super::interface::{ShardUploadProgressCallback, URLProvider};
 use super::progress_tracked_streams::{
     DownloadProgressStream, ProgressCallback, StreamProgressReporter, UploadProgressStream,
@@ -67,7 +67,7 @@ pub struct RemoteClient {
     /// Peer-to-peer source for xorb ranges, tried before the direct download. Set when
     /// `HF_XET_CLIENT_DFDAEMON_SOCKET_PATH` is set.
     #[cfg(all(feature = "dragonfly", unix))]
-    dragonfly: Option<DragonflyClient>,
+    dragonfly: Option<Arc<DragonflyClient>>,
 }
 
 impl RemoteClient {
@@ -108,9 +108,19 @@ impl RemoteClient {
         );
 
         #[cfg(all(feature = "dragonfly", unix))]
-        let dragonfly = ctx.config.client.dfdaemon_socket_path.clone().map(|socket_path| {
-            info!(socket_path, "Xorb downloads go through the Dragonfly dfdaemon first");
-            DragonflyClient::new(socket_path, ctx.config.client.read_timeout)
+        let dragonfly = ctx.config.client.dfdaemon_socket_path.clone().and_then(|socket_path| {
+            let client_cfg = &ctx.config.client;
+            let Some(mode) = DragonflyMode::parse(&client_cfg.dfdaemon_mode) else {
+                warn!(mode = client_cfg.dfdaemon_mode, "Unknown HF_XET_CLIENT_DFDAEMON_MODE, Dragonfly is disabled");
+                return None;
+            };
+            let import_dir = client_cfg
+                .dfdaemon_import_dir
+                .clone()
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(std::env::temp_dir);
+            info!(socket_path, ?mode, ?import_dir, "Xorb downloads go through the Dragonfly dfdaemon first");
+            Some(Arc::new(DragonflyClient::new(mode, socket_path, import_dir, client_cfg.read_timeout)))
         });
         #[cfg(not(all(feature = "dragonfly", unix)))]
         if ctx.config.client.dfdaemon_socket_path.is_some() {
@@ -182,20 +192,16 @@ impl RemoteClient {
     async fn get_file_term_data_from_dragonfly(
         &self,
         dragonfly: &DragonflyClient,
-        xorb_hash: MerkleHash,
+        key: &Key,
         url_info: &dyn URLProvider,
         uncompressed_size_if_known: Option<usize>,
     ) -> Result<(Bytes, Vec<u32>)> {
-        let key = Key {
-            prefix: self.ctx.config.data.default_prefix.clone(),
-            hash: xorb_hash,
-        };
         let (url, url_ranges) = url_info.retrieve_url().await?;
 
         let mut data = Vec::with_capacity(uncompressed_size_if_known.unwrap_or(0));
         let mut chunk_indices = Vec::<u32>::new();
         for range in url_ranges {
-            let compressed = dragonfly.fetch_range(&key, &url, range).await?;
+            let compressed = dragonfly.fetch_range(key, &url, range).await?;
             let (segment, segment_indices) =
                 xet_core_structures::xorb_object::deserialize_chunks(&mut std::io::Cursor::new(compressed.as_ref()))?;
             xet_core_structures::xorb_object::append_chunk_segment(
@@ -654,12 +660,19 @@ impl Client for RemoteClient {
         // Peer-to-peer first. The download permit is held but gets no completion report, so these
         // transfers do not train the adaptive concurrency model of the direct download. Progress is
         // reported once, on success, so that a fallback never counts the same bytes twice.
+        // In cache mode, a miss on a single-range block is imported after the direct download.
+        #[cfg(all(feature = "dragonfly", unix))]
+        let mut import_after_download: Option<(Arc<DragonflyClient>, Key, HttpRange)> = None;
         #[cfg(all(feature = "dragonfly", unix))]
         if let (Some(dragonfly), Some(xorb_hash)) = (&self.dragonfly, url_info.xorb_hash()) {
+            let key = Key {
+                prefix: self.ctx.config.data.default_prefix.clone(),
+                hash: xorb_hash,
+            };
             match self
                 .get_file_term_data_from_dragonfly(
                     dragonfly,
-                    xorb_hash,
+                    &key,
                     url_info.as_ref().as_ref(),
                     uncompressed_size_if_known,
                 )
@@ -671,11 +684,21 @@ impl Client for RemoteClient {
                     }
                     return Ok(result);
                 },
+                Err(e) if dragonfly.mode() == DragonflyMode::Cache => {
+                    event!(INFORMATION_LOG_LEVEL, xorb = %xorb_hash, error = %e, "Not in the Dragonfly cache, downloading directly");
+                    if let [range] = url_ranges[..] {
+                        import_after_download = Some((dragonfly.clone(), key, range));
+                    }
+                },
                 Err(e) => {
                     warn!(xorb = %xorb_hash, error = %e, "Dragonfly download failed, downloading directly");
                 },
             }
         }
+        #[cfg(all(feature = "dragonfly", unix))]
+        let capture_compressed = import_after_download.is_some();
+        #[cfg(not(all(feature = "dragonfly", unix)))]
+        let capture_compressed = false;
 
         let mut transfer_reporter = StreamProgressReporter::new(total_download_bytes)
             .with_adaptive_concurrency_reporter(download_permit.get_partial_completion_reporting_function());
@@ -780,10 +803,18 @@ impl Client for RemoteClient {
                                     all_decompressed.len()
                                 ))));
                             }
-                            Ok((Bytes::from(all_decompressed), all_chunk_indices))
+                            Ok((Bytes::from(all_decompressed), all_chunk_indices, None))
                         } else {
+                            // The compressed bytes are kept only when they will be imported into Dragonfly.
+                            let compressed = std::sync::Mutex::new(Vec::new());
                             let incoming_stream = DownloadProgressStream::wrap_stream(
-                                resp.bytes_stream().map_err(std::io::Error::other),
+                                resp.bytes_stream()
+                                    .inspect_ok(|bytes| {
+                                        if capture_compressed {
+                                            compressed.lock().unwrap().extend_from_slice(bytes);
+                                        }
+                                    })
+                                    .map_err(std::io::Error::other),
                                 transfer_reporter,
                             );
 
@@ -807,7 +838,9 @@ impl Client for RemoteClient {
                                             buffer.len()
                                         ))));
                                     }
-                                    Ok((Bytes::from(buffer), chunk_byte_indices))
+                                    let compressed = capture_compressed
+                                        .then(|| Bytes::from(compressed.into_inner().unwrap_or_default()));
+                                    Ok((Bytes::from(buffer), chunk_byte_indices, compressed))
                                 },
                                 Err(e) => Err(RetryableReqwestError::RetryableError(ClientError::FormatError(e))),
                             }
@@ -817,7 +850,23 @@ impl Client for RemoteClient {
             )
             .await?;
 
-        Ok(result)
+        let (data, chunk_byte_indices, compressed) = result;
+
+        // Import in the background: the download is done, and other nodes can wait.
+        #[cfg(all(feature = "dragonfly", unix))]
+        if let (Some((dragonfly, key, range)), Some(compressed)) = (import_after_download, compressed)
+            && compressed.len() as u64 == range.length()
+        {
+            tokio::spawn(async move {
+                if let Err(e) = dragonfly.import_range(&key, range, &compressed).await {
+                    info!(xorb = %key.hash, error = %e, "Dragonfly import failed");
+                }
+            });
+        }
+        #[cfg(not(all(feature = "dragonfly", unix)))]
+        let _ = compressed;
+
+        Ok((data, chunk_byte_indices))
     }
 
     #[instrument(skip_all, name = "RemoteClient::get_file_reconstruction", fields(file.hash = file_hash.hex()
@@ -1098,70 +1147,142 @@ mod tests {
         assert!(!Arc::ptr_eq(&c1.upload_concurrency_controller, &c4.upload_concurrency_controller));
     }
 
-    /// Without a reachable dfdaemon, a xorb range still downloads over HTTP.
     #[cfg(all(feature = "dragonfly", unix))]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_dragonfly_falls_back_to_http() {
-        use wiremock::matchers::{header, method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-        use xet_core_structures::xorb_object::serialize_chunk;
-        use xet_runtime::config::XetConfig;
+    struct FixedUrl {
+        url: String,
+        range: HttpRange,
+        xorb_hash: MerkleHash,
+    }
 
-        struct FixedUrl {
-            url: String,
-            range: HttpRange,
-            xorb_hash: MerkleHash,
+    #[cfg(all(feature = "dragonfly", unix))]
+    #[async_trait::async_trait]
+    impl URLProvider for FixedUrl {
+        async fn retrieve_url(&self) -> Result<(String, Vec<HttpRange>)> {
+            Ok((self.url.clone(), vec![self.range]))
         }
-
-        #[async_trait::async_trait]
-        impl URLProvider for FixedUrl {
-            async fn retrieve_url(&self) -> Result<(String, Vec<HttpRange>)> {
-                Ok((self.url.clone(), vec![self.range]))
-            }
-            async fn refresh_url(&self) -> Result<()> {
-                Ok(())
-            }
-            fn xorb_hash(&self) -> Option<MerkleHash> {
-                Some(self.xorb_hash)
-            }
+        async fn refresh_url(&self) -> Result<()> {
+            Ok(())
         }
+        fn xorb_hash(&self) -> Option<MerkleHash> {
+            Some(self.xorb_hash)
+        }
+    }
 
+    /// Three chunks of 1000 bytes, and their serialized (compressed) form.
+    #[cfg(all(feature = "dragonfly", unix))]
+    fn test_chunks() -> (Vec<Vec<u8>>, Vec<u8>) {
         let chunks: Vec<Vec<u8>> = (0..3u8).map(|i| vec![i; 1000]).collect();
         let mut compressed = Vec::new();
         for chunk in &chunks {
-            serialize_chunk(chunk, &mut compressed, CompressionScheme::LZ4).unwrap();
+            xet_core_structures::xorb_object::serialize_chunk(chunk, &mut compressed, CompressionScheme::LZ4).unwrap();
         }
-        let range = HttpRange::new(0, compressed.len() as u64 - 1);
+        (chunks, compressed)
+    }
 
+    /// A mock CDN that serves `compressed` for exactly its range, `expected_calls` times.
+    #[cfg(all(feature = "dragonfly", unix))]
+    async fn mock_cdn(compressed: &[u8], expected_calls: u64) -> (wiremock::MockServer, HttpRange) {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let range = HttpRange::new(0, compressed.len() as u64 - 1);
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/xorb"))
             .and(header("range", range.range_header().as_str()))
-            .respond_with(ResponseTemplate::new(206).set_body_bytes(compressed.clone()))
-            .expect(1)
+            .respond_with(ResponseTemplate::new(206).set_body_bytes(compressed.to_vec()))
+            .expect(expected_calls)
             .mount(&server)
             .await;
+        (server, range)
+    }
 
-        let config = XetConfig::new()
-            .with_config("client.dfdaemon_socket_path", "/nonexistent/dfdaemon.sock")
+    #[cfg(all(feature = "dragonfly", unix))]
+    fn dragonfly_client(socket_path: &str, mode: &str, import_dir: &str, endpoint: &str) -> Arc<RemoteClient> {
+        let config = xet_runtime::config::XetConfig::new()
+            .with_config("client.dfdaemon_socket_path", socket_path)
+            .unwrap()
+            .with_config("client.dfdaemon_mode", mode)
+            .unwrap()
+            .with_config("client.dfdaemon_import_dir", import_dir)
             .unwrap();
         let ctx = XetContext::from_external(tokio::runtime::Handle::current(), config);
-        let client = RemoteClient::new(ctx, &server.uri(), &None, "", false, None);
-        assert!(client.dragonfly.is_some());
+        RemoteClient::new(ctx, endpoint, &None, "", false, None)
+    }
 
-        let url_info = FixedUrl {
-            url: format!("{}/xorb", server.uri()),
-            range,
-            xorb_hash: MerkleHash::default(),
-        };
-        let permit = client.acquire_download_permit().await.unwrap();
-        let (data, chunk_offsets) = client
-            .get_file_term_data(Box::new(url_info), permit, None, Some(3000))
-            .await
-            .unwrap();
+    /// Without a reachable dfdaemon, a xorb range still downloads over HTTP, in both modes.
+    #[cfg(all(feature = "dragonfly", unix))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_dragonfly_falls_back_to_http() {
+        for mode in ["cache", "source"] {
+            let (chunks, compressed) = test_chunks();
+            let (server, range) = mock_cdn(&compressed, 1).await;
+            let client = dragonfly_client("/nonexistent/dfdaemon.sock", mode, "/nonexistent", &server.uri());
+            assert!(client.dragonfly.is_some());
 
-        assert_eq!(data.as_ref(), chunks.concat().as_slice());
-        assert_eq!(chunk_offsets, vec![0, 1000, 2000, 3000]);
+            let url_info = FixedUrl {
+                url: format!("{}/xorb", server.uri()),
+                range,
+                xorb_hash: MerkleHash::default(),
+            };
+            let permit = client.acquire_download_permit().await.unwrap();
+            let (data, chunk_offsets) = client
+                .get_file_term_data(Box::new(url_info), permit, None, Some(3000))
+                .await
+                .unwrap();
+
+            assert_eq!(data.as_ref(), chunks.concat().as_slice(), "mode {mode}");
+            assert_eq!(chunk_offsets, vec![0, 1000, 2000, 3000], "mode {mode}");
+        }
+    }
+
+    /// An unknown mode disables Dragonfly.
+    #[cfg(all(feature = "dragonfly", unix))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_dragonfly_unknown_mode_is_disabled() {
+        let client = dragonfly_client("/nonexistent/dfdaemon.sock", "peer", "/nonexistent", "http://localhost:1");
+        assert!(client.dragonfly.is_none());
+    }
+
+    /// Cache mode: the first download misses the dfdaemon, goes to the CDN and imports the range; the second
+    /// one comes from the dfdaemon. The CDN sees one request.
+    #[cfg(all(feature = "dragonfly", unix))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_dragonfly_cache_mode_imports_a_miss_then_serves_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (fake, socket_path) = super::super::dragonfly::fake_dfdaemon::start(dir.path());
+        let (chunks, compressed) = test_chunks();
+        let (server, range) = mock_cdn(&compressed, 1).await;
+        let client =
+            dragonfly_client(&socket_path.to_string_lossy(), "cache", &dir.path().to_string_lossy(), &server.uri());
+
+        for attempt in 0..2 {
+            let url_info = FixedUrl {
+                url: format!("{}/xorb", server.uri()),
+                range,
+                xorb_hash: MerkleHash::default(),
+            };
+            let permit = client.acquire_download_permit().await.unwrap();
+            let (data, chunk_offsets) = client
+                .get_file_term_data(Box::new(url_info), permit, None, Some(3000))
+                .await
+                .unwrap();
+            assert_eq!(data.as_ref(), chunks.concat().as_slice(), "attempt {attempt}");
+            assert_eq!(chunk_offsets, vec![0, 1000, 2000, 3000], "attempt {attempt}");
+
+            if attempt == 0 {
+                // The import runs in the background.
+                for _ in 0..200 {
+                    if !fake.tasks.lock().unwrap().is_empty() {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                let tasks = fake.tasks.lock().unwrap();
+                assert_eq!(tasks.values().collect::<Vec<_>>(), vec![&compressed]);
+            }
+        }
+        // `mock_cdn` verifies on drop that the CDN got exactly one request.
     }
 
     #[ignore = "requires a running CAS server"]

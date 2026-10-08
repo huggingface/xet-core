@@ -265,6 +265,29 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_CLIENT_DFDAEMON_SOCKET_PATH` to set this value.
     ref dfdaemon_socket_path: Option<String> = None;
 
+    /// How the dfdaemon is used, when `dfdaemon_socket_path` is set:
+    /// - `cache`: the dfdaemon is a peer-to-peer cache that never contacts the CDN. A range
+    ///   that no peer has is downloaded directly, then imported into the dfdaemon. Needs a
+    ///   Dragonfly scheduler with Redis.
+    /// - `source`: the dfdaemon downloads missing ranges from the CDN itself. Needs xorb URLs
+    ///   that accept any byte range.
+    ///
+    /// Any other value disables Dragonfly.
+    ///
+    /// The default value is "cache".
+    ///
+    /// Use the environment variable `HF_XET_CLIENT_DFDAEMON_MODE` to set this value.
+    ref dfdaemon_mode: String = "cache".to_owned();
+
+    /// Directory for the temporary files that `cache` mode imports into the dfdaemon. The
+    /// dfdaemon reads them by path, so it must see this directory at the same path (for
+    /// example, a hostPath volume mounted in both the dfdaemon and the application pods).
+    ///
+    /// The default value is None (the system temporary directory).
+    ///
+    /// Use the environment variable `HF_XET_CLIENT_DFDAEMON_IMPORT_DIR` to set this value.
+    ref dfdaemon_import_dir: Option<String> = None;
+
     /// The reconstruction API version to request from the CAS server.
     /// When set to 1 or 2, forces that version with no fallback.
     /// When unset, auto-detects by trying V2 first, falling back to V1 on 404 or 501.

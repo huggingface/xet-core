@@ -4198,6 +4198,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_repr",
+ "sha2",
  "statrs",
  "tempfile",
  "thiserror 2.0.18",

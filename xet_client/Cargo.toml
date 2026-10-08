@@ -68,6 +68,7 @@ tokio = { workspace = true }
 # Optional gRPC client for a local Dragonfly dfdaemon (see the `dragonfly` feature).
 dragonfly-api = { workspace = true, optional = true }
 hyper-util = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
 tonic = { workspace = true, optional = true }
 tower = { workspace = true, optional = true }
 tower-http = { version = "0.6", features = ["cors"], optional = true }
@@ -84,7 +85,7 @@ native-tls = ["reqwest/native-tls"]
 native-tls-vendored = ["reqwest/native-tls-vendored"]
 # Fetch xorb ranges peer-to-peer through a local Dragonfly dfdaemon when
 # `HF_XET_CLIENT_DFDAEMON_SOCKET_PATH` is set. Unix only. Building it needs `protoc`.
-dragonfly = ["dep:dragonfly-api", "dep:hyper-util", "dep:tonic", "dep:tower"]
+dragonfly = ["dep:dragonfly-api", "dep:hyper-util", "dep:sha2", "dep:tonic", "dep:tower"]
 # The cache_analysis binary needs clap for argument parsing.
 analysis = ["dep:clap"]
 simulation = [
