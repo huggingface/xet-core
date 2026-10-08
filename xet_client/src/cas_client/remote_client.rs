@@ -347,7 +347,8 @@ impl RemoteClient {
                 XorbUploadGrantResult::Unavailable => return Ok(GrantUploadOutcome::Unavailable { n_bytes_uploaded }),
             };
 
-            // A completed upload has reported all of its progress, so only the first upload gets the callback.
+            // Only the first upload reports progress, so an upload after a re-grant does not report the same bytes
+            // again.
             let upload_result = self
                 .upload_xorb_to_grant(
                     &grant,
@@ -1956,6 +1957,21 @@ mod tests {
             mount(&server, "POST", ANY_GRANT_PATH, ResponseTemplate::new(201).set_body_json(&grant), 1).await;
             mount(&server, "PUT", "^/upload/xorb-object$", ResponseTemplate::new(400), 1).await;
             mount(&server, "POST", ANY_COMMIT_PATH, ResponseTemplate::new(200), 0).await;
+            mount(&server, "POST", ANY_XORB_PATH, xorb_inserted(), 0).await;
+
+            let client = test_client(&server.uri());
+            let err = upload_test_xorb(&client, None).await.unwrap_err();
+
+            assert_eq!(err.status(), Some(StatusCode::BAD_REQUEST));
+        }
+
+        #[tokio::test]
+        async fn test_upload_xorb_commit_error_fails_without_regrant() {
+            let server = MockServer::start().await;
+            let grant = test_grant(&server);
+            mount(&server, "POST", ANY_GRANT_PATH, ResponseTemplate::new(201).set_body_json(&grant), 1).await;
+            mount(&server, "PUT", "^/upload/xorb-object$", ResponseTemplate::new(200), 1).await;
+            mount(&server, "POST", ANY_COMMIT_PATH, ResponseTemplate::new(400), 1).await;
             mount(&server, "POST", ANY_XORB_PATH, xorb_inserted(), 0).await;
 
             let client = test_client(&server.uri());
