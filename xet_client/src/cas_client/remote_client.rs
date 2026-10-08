@@ -504,6 +504,7 @@ impl RemoteClient {
         let response = RetryWrapper::new(self.ctx.clone(), api_tag)
             .with_connection_permit(upload_permit, Some(n_upload_bytes))
             .with_412_as_success()
+            .with_expected_403()
             .run(move || {
                 let request = client
                     .request(method.clone(), url.clone())

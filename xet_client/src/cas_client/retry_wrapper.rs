@@ -31,6 +31,7 @@ pub struct RetryWrapper {
     max_duration: Duration,
     no_retry_on_429: bool,
     retry_on_403: bool,
+    expected_403: bool,
     expected_416: bool,
     expected_404: bool,
     precondition_failed_as_success: bool,
@@ -50,6 +51,7 @@ impl RetryWrapper {
             max_duration,
             no_retry_on_429: false,
             retry_on_403: false,
+            expected_403: false,
             expected_416: false,
             expected_404: false,
             precondition_failed_as_success: false,
@@ -81,6 +83,13 @@ impl RetryWrapper {
 
     pub fn with_retry_on_403(mut self) -> Self {
         self.retry_on_403 = true;
+        self
+    }
+
+    /// Mark 403 responses as expected (e.g. an expired upload grant that the caller replaces). A 403 is returned as
+    /// a fatal error, logged as info, and not reported to the connection permit as a failed transfer.
+    pub fn with_expected_403(mut self) -> Self {
+        self.expected_403 = true;
         self
     }
 
@@ -128,6 +137,7 @@ impl std::fmt::Debug for RetryWrapper {
             .field("max_duration", &self.max_duration)
             .field("no_retry_on_429", &self.no_retry_on_429)
             .field("retry_on_403", &self.retry_on_403)
+            .field("expected_403", &self.expected_403)
             .field("expected_416", &self.expected_416)
             .field("expected_404", &self.expected_404)
             .field("precondition_failed_as_success", &self.precondition_failed_as_success)
@@ -219,6 +229,9 @@ impl RetryWrapper {
                 if e.status() == Some(StatusCode::FORBIDDEN) && self.retry_on_403 {
                     let cas_err = process_error("Retry on 403 (Forbidden) enabled)", e, true);
                     Err(RetryableReqwestError::RetryableError(cas_err))
+                } else if e.status() == Some(StatusCode::FORBIDDEN) && self.expected_403 {
+                    let cas_err = process_error("Forbidden", e, true);
+                    Err(RetryableReqwestError::FatalError(cas_err))
                 } else if e.status() == Some(StatusCode::RANGE_NOT_SATISFIABLE) && self.expected_416 {
                     let cas_err = process_error("Reached end of reconstruction 416 (Range Not Satisfiable)", e, true);
                     Err(RetryableReqwestError::FatalError(cas_err))
@@ -347,6 +360,13 @@ impl RetryWrapper {
                                         )
                                         .await;
                                 }
+                            },
+                            Err(RetryableReqwestError::FatalError(e))
+                                if self_.expected_403 && e.status() == Some(StatusCode::FORBIDDEN) =>
+                            {
+                                // Dropping the permit without reporting keeps the expected 403 out of the
+                                // concurrency statistics.
+                                permit_info.permit.take();
                             },
                             Err(RetryableReqwestError::FatalError(_)) => {
                                 if let Some(permit) = permit_info.permit.take() {
@@ -620,6 +640,7 @@ mod tests {
     use xet_runtime::core::XetContext;
 
     use super::*;
+    use crate::cas_client::adaptive_concurrency::AdaptiveConcurrencyController;
 
     #[test]
     fn test_exponential_retry_strategy() {
@@ -1040,6 +1061,33 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_403_expected_keeps_concurrency() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("PUT"))
+            .and(path("/forbidden"))
+            .respond_with(ResponseTemplate::new(403))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let controller = AdaptiveConcurrencyController::new_testing(4, (1, 4));
+        // Wait out the testing controller's minimum delay between concurrency decreases.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let permit = controller.acquire_connection_permit().await.unwrap();
+
+        let client = make_client();
+        let result = connection_wrapper("test_403_expected_keeps_concurrency")
+            .with_expected_403()
+            .with_connection_permit(permit, Some(1))
+            .run(move || client.clone().put(format!("{}/forbidden", server.uri())).send())
+            .await;
+
+        assert_eq!(result.unwrap_err().status(), Some(StatusCode::FORBIDDEN));
+        assert_eq!(controller.total_permits(), 4);
     }
 
     #[tokio::test]
