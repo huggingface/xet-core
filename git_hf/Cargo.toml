@@ -18,6 +18,10 @@ xet-client = { path = "../xet_client" }
 xet-core-structures = { path = "../xet_core_structures" }
 
 [dev-dependencies]
+anyhow = { workspace = true }
+git_extension_common = { path = "../git_extension_common", features = ["test-utils"] }
+serial_test = { workspace = true }
+xet-runtime = { path = "../xet_runtime" }
 tempfile = { workspace = true }
 
 [features]

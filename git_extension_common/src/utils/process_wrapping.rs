@@ -1,6 +1,6 @@
 use std::ffi::OsStr;
 use std::path::Path;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Output, Stdio};
 
 use crate::constants::GIT_EXECUTABLE;
 use crate::errors::{GitExtensionError, Result};
@@ -167,19 +167,32 @@ impl CapturedCommand {
     /// returning a tuple of captured output if the child exits with status code 0; otherwise, return the captured
     /// output wrapped in an `Err(GitExtensionError::CommandFailed(_))`.
     pub fn wait_with_output(self) -> Result<(Vec<u8>, Vec<u8>)> {
-        let ret = self.child_process.wait_with_output()?;
+        let ret = self.wait_with_status()?;
 
-        match ret.status.code() {
-            Some(0) => Ok((ret.stdout, ret.stderr)),
-            _ => {
-                let stdout = std::str::from_utf8(&ret.stdout).unwrap_or("<Binary Data>").trim();
-                let stderr = std::str::from_utf8(&ret.stderr).unwrap_or("<Binary Data>").trim();
-                Err(GitExtensionError::cmd_failed(
-                    format!("err_code = {:?}, stdout = \"{}\", stderr = \"{}\"", ret.status.code(), stdout, stderr),
-                    None,
-                ))
-            },
-        }
+        check_command_output(ret)
+    }
+
+    /// Waits for the child and returns its exit status and captured stdout/stderr without treating
+    /// nonzero status as an error. Use when a command gives specific exit codes meaning, such as
+    /// `git config --get-all` returning 1 for a missing key. Spawn and wait errors still propagate.
+    /// Any stdin handle still owned by the child wrapper is closed before waiting.
+    pub fn wait_with_status(self) -> Result<Output> {
+        Ok(self.child_process.wait_with_output()?)
+    }
+}
+
+/// Returns captured stdout/stderr on success, or the standard command error with status and output.
+pub fn check_command_output(ret: Output) -> Result<(Vec<u8>, Vec<u8>)> {
+    match ret.status.code() {
+        Some(0) => Ok((ret.stdout, ret.stderr)),
+        _ => {
+            let stdout = std::str::from_utf8(&ret.stdout).unwrap_or("<Binary Data>").trim();
+            let stderr = std::str::from_utf8(&ret.stderr).unwrap_or("<Binary Data>").trim();
+            Err(GitExtensionError::cmd_failed(
+                format!("err_code = {:?}, stdout = \"{}\", stderr = \"{}\"", ret.status.code(), stdout, stderr),
+                None,
+            ))
+        },
     }
 }
 
@@ -191,6 +204,28 @@ mod tests {
     use anyhow::Result;
 
     use super::{CapturedCommand, run_program_captured, run_program_captured_with_input_and_output};
+
+    #[test]
+    fn test_wait_with_status_preserves_nonzero_exit_and_output() -> Result<()> {
+        let command = if cfg!(windows) {
+            run_program_captured_with_input_and_output(
+                "cmd",
+                std::env::current_dir()?,
+                ["/C", "echo output& echo diagnostic 1>&2& exit /b 5"],
+            )?
+        } else {
+            run_program_captured_with_input_and_output(
+                "sh",
+                std::env::current_dir()?,
+                ["-c", "printf output; printf diagnostic >&2; exit 5"],
+            )?
+        };
+        let output = command.wait_with_status()?;
+        assert_eq!(output.status.code(), Some(5));
+        assert_eq!(String::from_utf8(output.stdout)?.trim(), "output");
+        assert_eq!(String::from_utf8(output.stderr)?.trim(), "diagnostic");
+        Ok(())
+    }
 
     #[test]
     fn test_run_program_captured() -> Result<()> {
