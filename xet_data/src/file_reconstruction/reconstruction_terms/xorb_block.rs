@@ -139,6 +139,7 @@ impl XorbBlock {
 
                 let url_provider = XorbURLProvider {
                     ctx: ctx.clone(),
+                    xorb_hash: self.xorb_hash,
                     client: client.clone(),
                     url_info,
                     xorb_block_index,

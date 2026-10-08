@@ -86,6 +86,8 @@ native-tls = ["xet-client/native-tls", "xet-data/native-tls"]
 native-tls-vendored = ["xet-client/native-tls-vendored", "xet-data/native-tls-vendored"]
 elevated_information_level = ["xet-client/elevated_information_level", "xet-runtime/elevated_information_level"]
 no-default-cache = ["xet-runtime/no-default-cache"]
+# Peer-to-peer xorb downloads through a local Dragonfly dfdaemon; see xet-client.
+dragonfly = ["xet-client/dragonfly"]
 tokio-console = ["xet-runtime/tokio-console"]
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]

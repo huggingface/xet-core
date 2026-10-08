@@ -38,6 +38,13 @@ pub trait URLProvider: Send + Sync {
 
     /// Asks for a refresh of the URL; triggered on 403 errors.
     async fn refresh_url(&self) -> Result<()>;
+
+    /// The hash of the xorb that the URL points to, if known. A content-addressed transport
+    /// (e.g. the Dragonfly peer-to-peer path) needs it to identify the xorb independently of
+    /// the signed URL.
+    fn xorb_hash(&self) -> Option<MerkleHash> {
+        None
+    }
 }
 
 /// A Client to the Shard service. The shard service

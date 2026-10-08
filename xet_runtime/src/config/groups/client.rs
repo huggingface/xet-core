@@ -255,6 +255,16 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_CLIENT_UNIX_SOCKET_PATH` to set this value.
     ref unix_socket_path: Option<String> = None;
 
+    /// Path to the gRPC Unix socket of a local Dragonfly dfdaemon (https://d7y.io).
+    /// When set, xorb ranges are first requested through the dfdaemon, which shares them
+    /// peer-to-peer between nodes; any failure falls back to the direct HTTP download.
+    /// Takes effect only when xet-client is built with the `dragonfly` feature, on Unix.
+    ///
+    /// The default value is None (Dragonfly disabled).
+    ///
+    /// Use the environment variable `HF_XET_CLIENT_DFDAEMON_SOCKET_PATH` to set this value.
+    ref dfdaemon_socket_path: Option<String> = None;
+
     /// The reconstruction API version to request from the CAS server.
     /// When set to 1 or 2, forces that version with no fallback.
     /// When unset, auto-detects by trying V2 first, falling back to V1 on 404 or 501.

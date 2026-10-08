@@ -138,6 +138,7 @@ impl TermBlockRetrievalURLs {
 /// Provides download URLs for a xorb block, handling URL refresh on expiration.
 pub struct XorbURLProvider {
     pub ctx: XetContext,
+    pub xorb_hash: MerkleHash,
     pub client: Arc<dyn Client>,
     pub url_info: Arc<TermBlockRetrievalURLs>,
     pub xorb_block_index: usize,
@@ -159,6 +160,10 @@ impl URLProvider for XorbURLProvider {
             .refresh_retrieval_urls(&self.ctx, self.client.clone(), *self.last_acquisition_id.lock().await)
             .await
             .map_err(|e| xet_client::ClientError::Other(e.to_string()))
+    }
+
+    fn xorb_hash(&self) -> Option<MerkleHash> {
+        Some(self.xorb_hash)
     }
 }
 
@@ -258,6 +263,7 @@ mod tests {
 
         let provider = XorbURLProvider {
             ctx: ctx.clone(),
+            xorb_hash: file_terms[0].xorb_block.xorb_hash,
             client: dyn_client.clone(),
             url_info,
             xorb_block_index: 0,

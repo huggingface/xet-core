@@ -8,7 +8,7 @@ use http::HeaderValue;
 use http::header::{CONTENT_LENGTH, HeaderMap, RANGE};
 use reqwest::{Body, Response, StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
-use tracing::{event, info, instrument};
+use tracing::{event, info, instrument, warn};
 use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::metadata_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use xet_core_structures::xorb_object::SerializedXorbObject;
@@ -18,6 +18,8 @@ use super::adaptive_concurrency::{
     AdaptiveConcurrencyController, ConnectionPermit, download_controller, upload_controller,
 };
 use super::auth::AuthConfig;
+#[cfg(all(feature = "dragonfly", unix))]
+use super::dragonfly::DragonflyClient;
 use super::interface::{ShardUploadProgressCallback, URLProvider};
 use super::progress_tracked_streams::{
     DownloadProgressStream, ProgressCallback, StreamProgressReporter, UploadProgressStream,
@@ -62,6 +64,10 @@ pub struct RemoteClient {
     /// run, or the endpoint is not http/https. See [`TransferTelemetry::maybe_new`].
     #[cfg(not(target_family = "wasm"))]
     telemetry: Option<Arc<TransferTelemetry>>,
+    /// Peer-to-peer source for xorb ranges, tried before the direct download. Set when
+    /// `HF_XET_CLIENT_DFDAEMON_SOCKET_PATH` is set.
+    #[cfg(all(feature = "dragonfly", unix))]
+    dragonfly: Option<DragonflyClient>,
 }
 
 impl RemoteClient {
@@ -101,6 +107,18 @@ impl RemoteClient {
             custom_headers.as_deref(),
         );
 
+        #[cfg(all(feature = "dragonfly", unix))]
+        let dragonfly = ctx.config.client.dfdaemon_socket_path.clone().map(|socket_path| {
+            info!(socket_path, "Xorb downloads go through the Dragonfly dfdaemon first");
+            DragonflyClient::new(socket_path, ctx.config.client.read_timeout)
+        });
+        #[cfg(not(all(feature = "dragonfly", unix)))]
+        if ctx.config.client.dfdaemon_socket_path.is_some() {
+            warn!(
+                "HF_XET_CLIENT_DFDAEMON_SOCKET_PATH is ignored: this build has no Dragonfly support (xet-client `dragonfly` feature, Unix only)"
+            );
+        }
+
         Arc::new(Self {
             ctx: ctx.clone(),
             endpoint: endpoint.to_string(),
@@ -126,6 +144,8 @@ impl RemoteClient {
             detected_shard_api_version: AtomicU32::new(0),
             #[cfg(not(target_family = "wasm"))]
             telemetry,
+            #[cfg(all(feature = "dragonfly", unix))]
+            dragonfly,
         })
     }
 
@@ -154,6 +174,47 @@ impl RemoteClient {
     /// Get the endpoint URL.
     pub fn endpoint(&self) -> &str {
         &self.endpoint
+    }
+
+    /// Downloads and decompresses all the ranges of a xorb block through the Dragonfly dfdaemon.
+    /// Returns the same values as `get_file_term_data`.
+    #[cfg(all(feature = "dragonfly", unix))]
+    async fn get_file_term_data_from_dragonfly(
+        &self,
+        dragonfly: &DragonflyClient,
+        xorb_hash: MerkleHash,
+        url_info: &dyn URLProvider,
+        uncompressed_size_if_known: Option<usize>,
+    ) -> Result<(Bytes, Vec<u32>)> {
+        let key = Key {
+            prefix: self.ctx.config.data.default_prefix.clone(),
+            hash: xorb_hash,
+        };
+        let (url, url_ranges) = url_info.retrieve_url().await?;
+
+        let mut data = Vec::with_capacity(uncompressed_size_if_known.unwrap_or(0));
+        let mut chunk_indices = Vec::<u32>::new();
+        for range in url_ranges {
+            let compressed = dragonfly.fetch_range(&key, &url, range).await?;
+            let (segment, segment_indices) =
+                xet_core_structures::xorb_object::deserialize_chunks(&mut std::io::Cursor::new(compressed.as_ref()))?;
+            xet_core_structures::xorb_object::append_chunk_segment(
+                &mut data,
+                &mut chunk_indices,
+                &segment,
+                &segment_indices,
+            );
+        }
+
+        if let Some(expected) = uncompressed_size_if_known
+            && expected != data.len()
+        {
+            return Err(ClientError::Other(format!(
+                "dfdaemon: expected {expected} uncompressed bytes, got {}",
+                data.len()
+            )));
+        }
+        Ok((Bytes::from(data), chunk_indices))
     }
 
     #[cfg(feature = "simulation")]
@@ -590,6 +651,32 @@ impl Client for RemoteClient {
         let (_, url_ranges) = url_info.retrieve_url().await?;
         let total_download_bytes: u64 = url_ranges.iter().map(|r| r.length()).sum();
 
+        // Peer-to-peer first. The download permit is held but gets no completion report, so these
+        // transfers do not train the adaptive concurrency model of the direct download. Progress is
+        // reported once, on success, so that a fallback never counts the same bytes twice.
+        #[cfg(all(feature = "dragonfly", unix))]
+        if let (Some(dragonfly), Some(xorb_hash)) = (&self.dragonfly, url_info.xorb_hash()) {
+            match self
+                .get_file_term_data_from_dragonfly(
+                    dragonfly,
+                    xorb_hash,
+                    url_info.as_ref().as_ref(),
+                    uncompressed_size_if_known,
+                )
+                .await
+            {
+                Ok(result) => {
+                    if let Some(cb) = &progress_callback {
+                        cb(total_download_bytes, total_download_bytes, total_download_bytes);
+                    }
+                    return Ok(result);
+                },
+                Err(e) => {
+                    warn!(xorb = %xorb_hash, error = %e, "Dragonfly download failed, downloading directly");
+                },
+            }
+        }
+
         let mut transfer_reporter = StreamProgressReporter::new(total_download_bytes)
             .with_adaptive_concurrency_reporter(download_permit.get_partial_completion_reporting_function());
         if let Some(cb) = progress_callback {
@@ -1009,6 +1096,72 @@ mod tests {
         let ctx2 = XetContext::default().unwrap();
         let c4 = RemoteClient::new(ctx2, "https://cas-a.example.com", &None, "", false, None);
         assert!(!Arc::ptr_eq(&c1.upload_concurrency_controller, &c4.upload_concurrency_controller));
+    }
+
+    /// Without a reachable dfdaemon, a xorb range still downloads over HTTP.
+    #[cfg(all(feature = "dragonfly", unix))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_dragonfly_falls_back_to_http() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use xet_core_structures::xorb_object::serialize_chunk;
+        use xet_runtime::config::XetConfig;
+
+        struct FixedUrl {
+            url: String,
+            range: HttpRange,
+            xorb_hash: MerkleHash,
+        }
+
+        #[async_trait::async_trait]
+        impl URLProvider for FixedUrl {
+            async fn retrieve_url(&self) -> Result<(String, Vec<HttpRange>)> {
+                Ok((self.url.clone(), vec![self.range]))
+            }
+            async fn refresh_url(&self) -> Result<()> {
+                Ok(())
+            }
+            fn xorb_hash(&self) -> Option<MerkleHash> {
+                Some(self.xorb_hash)
+            }
+        }
+
+        let chunks: Vec<Vec<u8>> = (0..3u8).map(|i| vec![i; 1000]).collect();
+        let mut compressed = Vec::new();
+        for chunk in &chunks {
+            serialize_chunk(chunk, &mut compressed, CompressionScheme::LZ4).unwrap();
+        }
+        let range = HttpRange::new(0, compressed.len() as u64 - 1);
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/xorb"))
+            .and(header("range", range.range_header().as_str()))
+            .respond_with(ResponseTemplate::new(206).set_body_bytes(compressed.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let config = XetConfig::new()
+            .with_config("client.dfdaemon_socket_path", "/nonexistent/dfdaemon.sock")
+            .unwrap();
+        let ctx = XetContext::from_external(tokio::runtime::Handle::current(), config);
+        let client = RemoteClient::new(ctx, &server.uri(), &None, "", false, None);
+        assert!(client.dragonfly.is_some());
+
+        let url_info = FixedUrl {
+            url: format!("{}/xorb", server.uri()),
+            range,
+            xorb_hash: MerkleHash::default(),
+        };
+        let permit = client.acquire_download_permit().await.unwrap();
+        let (data, chunk_offsets) = client
+            .get_file_term_data(Box::new(url_info), permit, None, Some(3000))
+            .await
+            .unwrap();
+
+        assert_eq!(data.as_ref(), chunks.concat().as_slice());
+        assert_eq!(chunk_offsets, vec![0, 1000, 2000, 3000]);
     }
 
     #[ignore = "requires a running CAS server"]

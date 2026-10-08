@@ -45,6 +45,7 @@ extension-module = ["pyo3/extension-module"] # Only enabled when building with m
 native-tls = ["xet-pkg/native-tls"]
 native-tls-vendored = ["xet-pkg/native-tls-vendored"]
 no-default-cache = ["xet-pkg/no-default-cache"]
+dragonfly = ["xet-pkg/dragonfly"] # Peer-to-peer xorb downloads through a local Dragonfly dfdaemon
 profiling = ["pprof"]
 tokio-console = ["xet-pkg/tokio-console"]
 elevated_information_level = ["xet-pkg/elevated_information_level"]

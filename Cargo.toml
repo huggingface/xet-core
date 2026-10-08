@@ -59,6 +59,7 @@ crc32fast = "1.5"
 csv = "1"
 ctor = "1"
 dirs = "6.0"
+dragonfly-api = "2.3"
 futures = "0.3"
 humantime = "2.1"
 futures-util = "0.3"
@@ -110,6 +111,8 @@ tokio = { version = "1.49" }
 tokio-retry = "0.3"
 tokio-util = { version = "0.7" }
 tokio_with_wasm = "0.8"
+tonic = "0.14"
+tower = { version = "0.5", features = ["util"] }
 # wasm-bindgen runtime version must match the wasm-bindgen-cli version used in
 # wasm/*/build_wasm.sh — bump them together (and the cargo-tools cache key in
 # .github/actions/build-wasm/action.yml). The wasm/* subcrates are separate
