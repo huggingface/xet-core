@@ -28,12 +28,12 @@ impl AuthGroupBuilder<XetUploadCommit> {
         let AuthGroupBuilder {
             session, auth_options, ..
         } = self;
-        let parent_runtime = session.inner.task_runtime.clone();
-        let child_parent = parent_runtime.clone();
-        let commit = parent_runtime
+        // Construction failures belong to this operation, not the reusable session.
+        let child_runtime = session.inner.task_runtime.child()?;
+        let build_runtime = child_runtime.clone();
+        let commit = build_runtime
             .bridge_async("new_upload_commit", async move {
-                let commit_runtime = child_parent.child()?;
-                XetUploadCommit::new(session, commit_runtime, auth_options).await
+                XetUploadCommit::new(session, child_runtime, auth_options).await
             })
             .await?;
         info!("New upload commit, session_id={}, commit_id={}", commit.session().id(), commit.id());
@@ -56,11 +56,11 @@ impl AuthGroupBuilder<XetUploadCommit> {
         let AuthGroupBuilder {
             session, auth_options, ..
         } = self;
-        let parent_runtime = session.inner.task_runtime.clone();
-        let child_parent = parent_runtime.clone();
-        let commit = parent_runtime.bridge_sync("new_upload_commit_blocking", async move {
-            let commit_runtime = child_parent.child()?;
-            XetUploadCommit::new(session, commit_runtime, auth_options).await
+        // Construction failures belong to this operation, not the reusable session.
+        let child_runtime = session.inner.task_runtime.child()?;
+        let build_runtime = child_runtime.clone();
+        let commit = build_runtime.bridge_sync("new_upload_commit_blocking", async move {
+            XetUploadCommit::new(session, child_runtime, auth_options).await
         })?;
         info!("New upload commit, session_id={}, commit_id={}", commit.session().id(), commit.id());
         Ok(commit)
