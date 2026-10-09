@@ -31,6 +31,7 @@ pub struct RetryWrapper {
     max_duration: Duration,
     no_retry_on_429: bool,
     retry_on_403: bool,
+    retry_on_409: bool,
     expected_403: bool,
     expected_416: bool,
     expected_404: bool,
@@ -51,6 +52,7 @@ impl RetryWrapper {
             max_duration,
             no_retry_on_429: false,
             retry_on_403: false,
+            retry_on_409: false,
             expected_403: false,
             expected_416: false,
             expected_404: false,
@@ -83,6 +85,13 @@ impl RetryWrapper {
 
     pub fn with_retry_on_403(mut self) -> Self {
         self.retry_on_403 = true;
+        self
+    }
+
+    /// Retry 409 (Conflict) responses, e.g. a conditional write that conflicts with an earlier attempt that is
+    /// still completing.
+    pub fn with_retry_on_409(mut self) -> Self {
+        self.retry_on_409 = true;
         self
     }
 
@@ -137,6 +146,7 @@ impl std::fmt::Debug for RetryWrapper {
             .field("max_duration", &self.max_duration)
             .field("no_retry_on_429", &self.no_retry_on_429)
             .field("retry_on_403", &self.retry_on_403)
+            .field("retry_on_409", &self.retry_on_409)
             .field("expected_403", &self.expected_403)
             .field("expected_416", &self.expected_416)
             .field("expected_404", &self.expected_404)
@@ -228,6 +238,9 @@ impl RetryWrapper {
                 // Intercept the forbidden condition if retry on 403 is enabled.
                 if e.status() == Some(StatusCode::FORBIDDEN) && self.retry_on_403 {
                     let cas_err = process_error("Retry on 403 (Forbidden) enabled)", e, true);
+                    Err(RetryableReqwestError::RetryableError(cas_err))
+                } else if e.status() == Some(StatusCode::CONFLICT) && self.retry_on_409 {
+                    let cas_err = process_error("Retry on 409 (Conflict) enabled", e, true);
                     Err(RetryableReqwestError::RetryableError(cas_err))
                 } else if e.status() == Some(StatusCode::FORBIDDEN) && self.expected_403 {
                     let cas_err = process_error("Forbidden", e, true);
@@ -1153,5 +1166,37 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(&result.unwrap().bytes().await.unwrap()[..], b"Success");
         assert_eq!(counter.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_409_retry_then_success() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("PUT"))
+            .and(path("/conflict_then_ok"))
+            .respond_with(ResponseTemplate::new(409))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("PUT"))
+            .and(path("/conflict_then_ok"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = make_client();
+        let result = connection_wrapper("test_409_retry_then_success")
+            .with_max_attempts(3)
+            .with_retry_on_409()
+            .run(move || {
+                let url = format!("{}/conflict_then_ok", server.uri());
+                client.clone().put(&url).send()
+            })
+            .await;
+
+        assert_eq!(result.unwrap().status(), StatusCode::OK);
     }
 }

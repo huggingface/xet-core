@@ -13,14 +13,16 @@
    The checksum value is a decimal string because CRC-64 values exceed 2^53.
    201 returns a grant; 200 means the xorb already exists and nothing is uploaded.
 2. Upload the serialized xorb to the grant's URL with the grant's method and headers, without
-   CAS credentials. 412 counts as already uploaded.
+   CAS credentials. 412 counts as already uploaded; 409 is retried.
 3. `POST /v1/xorb-commits/{prefix}/{hash}/grant/{grant_id}`. 404 means no data was uploaded for
-   the grant; the client requests a new grant and uploads again, up to three grants.
-   A 403 from the grant URL (e.g. an expired grant) also starts a new grant, within the same limit.
+   the grant; the client requests a new grant and uploads again, up to
+   `HF_XET_CLIENT_MAX_XORB_GRANT_ATTEMPTS` grants (default 3).
+   A 403 from the grant URL (e.g. an expired grant), or a 409 that persists after retries, also
+   starts a new grant, within the same limit.
 
-A 404 from any grant request for a xorb makes the client upload that xorb through `/v1/xorbs`;
-every xorb requests a grant first. Any other error after retries fails the upload; there is no
-fallback. The `Client` trait and the `upload_xorb` signature are unchanged. The caller still
+A 404 from any grant request for a xorb, or the last grant that still does not store it, makes the
+client upload that xorb through `/v1/xorbs`; every xorb requests a grant first. Any other error
+after retries fails the upload; there is no fallback. The `Client` trait and the `upload_xorb` signature are unchanged. The caller still
 acquires the upload permit before calling `upload_xorb`, which holds it until the xorb is committed.
 `upload_xorb` returns the bytes actually sent, which is 0 when the xorb already exists and counts
 each re-upload.
