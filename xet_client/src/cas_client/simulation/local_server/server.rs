@@ -106,6 +106,7 @@ pub struct LocalServer {
     latency_simulation: Arc<LatencySimulation>,
     /// Telemetry documents received on `POST /v1/telemetry`. See [`Self::telemetry_docs`].
     telemetry_docs: Arc<Mutex<Vec<serde_json::Value>>>,
+    v1_reconstruction_ranges: Arc<Mutex<Vec<Option<String>>>>,
     /// `/v2/shards` in-stream Error frame mode (see [`handlers::ShardUploadErrorFrame`]).
     shard_upload_error_frame: Arc<AtomicU8>,
 }
@@ -133,6 +134,7 @@ impl LocalServer {
             deletion_client,
             latency_simulation,
             telemetry_docs: Arc::default(),
+            v1_reconstruction_ranges: Arc::default(),
             shard_upload_error_frame: Arc::new(AtomicU8::new(handlers::ShardUploadErrorFrame::Off as u8)),
         })
     }
@@ -160,6 +162,7 @@ impl LocalServer {
             deletion_client,
             latency_simulation,
             telemetry_docs: Arc::default(),
+            v1_reconstruction_ranges: Arc::default(),
             shard_upload_error_frame: Arc::new(AtomicU8::new(handlers::ShardUploadErrorFrame::Off as u8)),
         }
     }
@@ -186,6 +189,10 @@ impl LocalServer {
     /// Returns the server's bind address as "host:port".
     pub fn addr(&self) -> String {
         format!("{}:{}", self.config.host, self.config.port)
+    }
+
+    pub(crate) fn v1_reconstruction_ranges_handle(&self) -> Arc<Mutex<Vec<Option<String>>>> {
+        self.v1_reconstruction_ranges.clone()
     }
 
     /// Builds the Axum router with all CAS API routes.
@@ -229,6 +236,7 @@ impl LocalServer {
                 latency_simulation: self.latency_simulation.clone(),
                 deletion_client: self.deletion_client.clone(),
                 telemetry_docs: self.telemetry_docs.clone(),
+                v1_reconstruction_ranges: self.v1_reconstruction_ranges.clone(),
                 shard_upload_error_frame: self.shard_upload_error_frame.clone(),
             })
     }
