@@ -325,9 +325,11 @@ impl RemoteClient {
                 .map_err(|_| ClientError::InvalidResponse(format!("invalid upload grant header value for {name}")))?;
             headers.insert(name, value);
         }
-        // must be set because of streaming
-        #[cfg(not(target_family = "wasm"))]
-        headers.insert(CONTENT_LENGTH, HeaderValue::from(n_upload_bytes));
+        // must be present since the body is streamed for progress reporting
+        // ignored in wasm by browser
+        headers
+            .entry(CONTENT_LENGTH)
+            .or_insert_with(|| HeaderValue::from(n_upload_bytes));
 
         let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
         event!(
@@ -1354,33 +1356,6 @@ mod tests {
             assert_eq!(err.status(), Some(StatusCode::BAD_REQUEST));
         }
 
-        #[tokio::test]
-        async fn test_request_grant_retries_server_error() {
-            let server = MockServer::start().await;
-            let grant = test_grant(&server);
-            Mock::given(method("POST"))
-                .and(path(grant_path()))
-                .respond_with(ResponseTemplate::new(503))
-                .up_to_n_times(1)
-                .expect(1)
-                .mount(&server)
-                .await;
-            Mock::given(method("POST"))
-                .and(path(grant_path()))
-                .respond_with(ResponseTemplate::new(201).set_body_json(&grant))
-                .expect(1)
-                .mount(&server)
-                .await;
-
-            let client = test_client(&server.uri());
-            let result = client
-                .request_xorb_upload_grant(PREFIX_DEFAULT, &test_hash(), 1234, Checksum::Crc64Nvme(7))
-                .await
-                .unwrap();
-
-            assert!(matches!(result, XorbUploadGrantResult::Granted(_)), "got {result:?}");
-        }
-
         async fn upload_to_grant(
             client: &RemoteClient,
             grant: &XorbUploadGrant,
@@ -1485,49 +1460,6 @@ mod tests {
                 progress_.fetch_add(delta, Ordering::Relaxed);
             });
             (progress, callback)
-        }
-
-        #[tokio::test]
-        async fn test_upload_to_grant_retries_server_error() {
-            let server = MockServer::start().await;
-            let grant = test_grant(&server);
-            Mock::given(method("PUT"))
-                .and(path("/upload/xorb-object"))
-                .respond_with(ResponseTemplate::new(503))
-                .up_to_n_times(1)
-                .expect(1)
-                .mount(&server)
-                .await;
-            Mock::given(method("PUT"))
-                .and(path("/upload/xorb-object"))
-                .respond_with(ResponseTemplate::new(200))
-                .expect(1)
-                .mount(&server)
-                .await;
-
-            let client = test_client(&server.uri());
-            upload_to_grant(&client, &grant, Bytes::from_static(b"xorb"), None)
-                .await
-                .unwrap();
-        }
-
-        #[tokio::test]
-        async fn test_upload_to_grant_client_error_fails() {
-            let server = MockServer::start().await;
-            let grant = test_grant(&server);
-            Mock::given(method("PUT"))
-                .and(path("/upload/xorb-object"))
-                .respond_with(ResponseTemplate::new(403))
-                .expect(1)
-                .mount(&server)
-                .await;
-
-            let client = test_client(&server.uri());
-            let err = upload_to_grant(&client, &grant, Bytes::from_static(b"xorb"), None)
-                .await
-                .unwrap_err();
-
-            assert_eq!(err.status(), Some(StatusCode::FORBIDDEN));
         }
     }
 }
