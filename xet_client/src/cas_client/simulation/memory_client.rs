@@ -894,7 +894,7 @@ impl Client for MemoryClient {
         shard_data: Bytes,
         _permit: super::super::adaptive_concurrency::ConnectionPermit,
         progress_callback: Option<ShardUploadProgressCallback>,
-    ) -> Result<()> {
+    ) -> Result<Option<MerkleHash>> {
         self.apply_api_delay().await;
         // Parse the shard using the streaming parser (handles shards without footer)
         let mut reader = Cursor::new(&shard_data);
@@ -950,7 +950,9 @@ impl Client for MemoryClient {
             cb(ShardUploadProgressType::Response(&ShardUploadEvent::Result));
         }
 
-        Ok(())
+        // Uploads accumulate into one merged shard here rather than a per-upload object, so
+        // there is no hash this particular shard was stored under.
+        Ok(None)
     }
 
     async fn upload_xorb(

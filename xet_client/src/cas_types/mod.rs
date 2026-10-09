@@ -304,6 +304,11 @@ pub enum UploadShardResponseType {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct UploadShardResponse {
     pub result: UploadShardResponseType,
+    /// Hash the server stored the shard under. The server re-serializes what it is sent and
+    /// keys the object on the result, so this is authoritative where the uploader's own
+    /// computation is only a prediction. `None` when the server predates this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shard_hash: Option<HexMerkleHash>,
 }
 
 /// Sub-stage of the durable-write (commit) phase, so a stalled `committing` stream
@@ -612,6 +617,53 @@ mod tests {
         // Extra fields on an unknown type are fine; the catch-all only keys off `type`.
         let event: ShardUploadEvent = serde_json::from_str(r#"{"type":"future_stage","detail":{"n":1}}"#).unwrap();
         assert_eq!(event, ShardUploadEvent::Unknown);
+    }
+
+    /// A server predating `shard_hash` omits it, and that must stay readable rather than
+    /// failing the upload.
+    #[test]
+    fn test_upload_shard_response_without_hash_deserializes() {
+        let response: UploadShardResponse = serde_json::from_str(r#"{"result":1}"#).unwrap();
+        assert_eq!(response.result, UploadShardResponseType::SyncPerformed);
+        assert!(response.shard_hash.is_none());
+    }
+
+    #[test]
+    fn test_upload_shard_response_hash_round_trips() {
+        let hash = MerkleHash::from_hex(&"ab".repeat(32)).unwrap();
+        let response = UploadShardResponse {
+            result: UploadShardResponseType::SyncPerformed,
+            shard_hash: Some(hash.into()),
+        };
+
+        let decoded: UploadShardResponse = serde_json::from_str(&serde_json::to_string(&response).unwrap()).unwrap();
+        assert_eq!(decoded.shard_hash.map(MerkleHash::from), Some(hash));
+    }
+
+    /// A client compiled before `shard_hash` existed must keep parsing responses that carry
+    /// it. Serde ignores unknown fields unless `deny_unknown_fields` is set, and this pins
+    /// that: adding the field is not a wire break.
+    #[test]
+    fn test_upload_shard_response_is_readable_without_the_new_field() {
+        #[derive(Deserialize)]
+        struct PreviousShape {
+            #[allow(dead_code)]
+            result: UploadShardResponseType,
+        }
+
+        let with_hash = format!(r#"{{"result":1,"shard_hash":"{}"}}"#, "ab".repeat(32));
+        serde_json::from_str::<PreviousShape>(&with_hash).expect("an older client must still parse this");
+    }
+
+    /// Omitted rather than serialized as null, so an older server and this one produce the
+    /// same bytes when there is no hash to report.
+    #[test]
+    fn test_upload_shard_response_omits_absent_hash() {
+        let response = UploadShardResponse {
+            result: UploadShardResponseType::Exists,
+            shard_hash: None,
+        };
+        assert_eq!(serde_json::to_string(&response).unwrap(), r#"{"result":0}"#);
     }
 
     #[test]
