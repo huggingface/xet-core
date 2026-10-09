@@ -225,6 +225,16 @@ pub(crate) enum XorbUploadGrantResult {
     Unavailable,
 }
 
+/// Outcome of committing a xorb uploaded through an upload grant.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) enum XorbCommitResult {
+    /// The xorb is stored, either by this commit or because it already existed.
+    Committed,
+    /// The server has no uploaded data for this grant; request a new grant and upload again.
+    GrantNotFound,
+}
+
 /// Checksum of serialized xorb data, sent when requesting an upload grant.
 #[allow(dead_code)]
 pub(crate) fn xorb_checksum(data: &[u8]) -> Checksum {
@@ -390,6 +400,47 @@ impl RemoteClient {
         event!(INFORMATION_LOG_LEVEL, call_id, grant_id = grant.id, result, "Completed upload_xorb_to_grant call");
 
         Ok(())
+    }
+
+    /// Commits a xorb whose data was uploaded through the grant `grant_id`.
+    pub(crate) async fn commit_xorb_upload(
+        &self,
+        prefix: &str,
+        hash: &MerkleHash,
+        grant_id: &str,
+    ) -> Result<XorbCommitResult> {
+        let key = Key {
+            prefix: prefix.to_string(),
+            hash: *hash,
+        };
+
+        // Escaping keeps the id in one path segment, but URL parsing still resolves dot segments.
+        if matches!(grant_id, "" | "." | "..") {
+            return Err(ClientError::InvalidResponse(format!("invalid upload grant id {grant_id:?}")));
+        }
+
+        let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
+        let url =
+            Url::parse(&format!("{}/v1/xorb-commits/{key}/grant/{}", self.endpoint, urlencoding::encode(grant_id)))?;
+        event!(INFORMATION_LOG_LEVEL, call_id, prefix, %hash, grant_id, "Starting commit_xorb_upload API call");
+
+        let client = self.authenticated_http_client.clone();
+        let api_tag = "cas::commit_xorb_upload";
+
+        let result = RetryWrapper::new(self.ctx.clone(), api_tag)
+            .with_expected_404()
+            .run(move || client.post(url.clone()).with_extension(Api(api_tag)).send())
+            .await;
+
+        let result = match result {
+            Ok(_) => XorbCommitResult::Committed,
+            Err(e) if e.status() == Some(StatusCode::NOT_FOUND) => XorbCommitResult::GrantNotFound,
+            Err(e) => return Err(e),
+        };
+
+        event!(INFORMATION_LOG_LEVEL, call_id, prefix, %hash, grant_id, result=?result, "Completed commit_xorb_upload API call");
+
+        Ok(result)
     }
 }
 
@@ -1460,6 +1511,101 @@ mod tests {
                 progress_.fetch_add(delta, Ordering::Relaxed);
             });
             (progress, callback)
+        }
+
+        fn commit_path() -> String {
+            format!("/v1/xorb-commits/{PREFIX_DEFAULT}/{}/grant/grant-id", test_hash().hex())
+        }
+
+        async fn commit(client: &RemoteClient) -> Result<XorbCommitResult> {
+            client.commit_xorb_upload(PREFIX_DEFAULT, &test_hash(), "grant-id").await
+        }
+
+        #[tokio::test]
+        async fn test_commit_succeeds() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path(commit_path()))
+                .and(header("authorization", format!("Bearer {TEST_TOKEN}").as_str()))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let client = test_client(&server.uri());
+            let result = commit(&client).await.unwrap();
+
+            assert!(matches!(result, XorbCommitResult::Committed), "got {result:?}");
+        }
+
+        #[tokio::test]
+        async fn test_commit_escapes_grant_id() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path(format!("/v1/xorb-commits/{PREFIX_DEFAULT}/{}/grant/..%2Fa%3Fb%23c", test_hash().hex())))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let client = test_client(&server.uri());
+            let result = client
+                .commit_xorb_upload(PREFIX_DEFAULT, &test_hash(), "../a?b#c")
+                .await
+                .unwrap();
+
+            assert!(matches!(result, XorbCommitResult::Committed), "got {result:?}");
+        }
+
+        #[tokio::test]
+        async fn test_commit_rejects_dot_segment_grant_ids() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(0)
+                .mount(&server)
+                .await;
+
+            let client = test_client(&server.uri());
+            for grant_id in ["", ".", ".."] {
+                let err = client
+                    .commit_xorb_upload(PREFIX_DEFAULT, &test_hash(), grant_id)
+                    .await
+                    .unwrap_err();
+                assert!(matches!(err, ClientError::InvalidResponse(_)), "{grant_id:?} got {err:?}");
+            }
+        }
+
+        #[tokio::test]
+        async fn test_commit_not_found_is_grant_not_found() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path(commit_path()))
+                .respond_with(ResponseTemplate::new(404))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let client = test_client(&server.uri());
+            let result = commit(&client).await.unwrap();
+
+            assert!(matches!(result, XorbCommitResult::GrantNotFound), "got {result:?}");
+        }
+
+        #[tokio::test]
+        async fn test_commit_bad_request_fails() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path(commit_path()))
+                .respond_with(ResponseTemplate::new(400))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let client = test_client(&server.uri());
+            let err = commit(&client).await.unwrap_err();
+
+            assert_eq!(err.status(), Some(StatusCode::BAD_REQUEST));
         }
     }
 }
