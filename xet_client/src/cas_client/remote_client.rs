@@ -1947,8 +1947,12 @@ mod tests {
             mount(&server, "POST", ANY_COMMIT_PATH, ResponseTemplate::new(200), 0).await;
             mount(&server, "POST", ANY_XORB_PATH, xorb_inserted(), 1).await;
 
+            let (progress, callback) = progress_recorder();
             let client = test_client(&server.uri());
-            upload_test_xorb(&client, None).await.unwrap();
+            let n_bytes = upload_test_xorb(&client, Some(callback)).await.unwrap();
+
+            // Rejected uploads do not count as uploaded, and the fallback upload does not report progress again.
+            assert_eq!(n_bytes, progress.load(Ordering::Relaxed));
         }
 
         #[tokio::test]
