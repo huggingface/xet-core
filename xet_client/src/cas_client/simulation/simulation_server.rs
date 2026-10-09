@@ -1285,7 +1285,7 @@ mod tests {
         let (hash, data) = new_xorb();
 
         let result = client.commit_xorb_upload(prefix, &hash, "unknown-grant").await.unwrap();
-        assert!(matches!(result, XorbCommitResult::GrantNotFound(_)), "got {result:?}");
+        assert!(matches!(result, XorbCommitResult::GrantNotFound), "got {result:?}");
 
         let XorbUploadGrantResult::Granted(grant) = request_grant(hash, data.clone()).await else {
             panic!("expected a grant");
@@ -1293,7 +1293,7 @@ mod tests {
 
         // A grant whose data was never uploaded cannot be committed.
         let result = client.commit_xorb_upload(prefix, &hash, &grant.id).await.unwrap();
-        assert!(matches!(result, XorbCommitResult::GrantNotFound(_)), "got {result:?}");
+        assert!(matches!(result, XorbCommitResult::GrantNotFound), "got {result:?}");
 
         // A repeated upload to the same grant URL is answered with 412, which counts as success.
         upload(grant.clone(), data.clone()).await.unwrap();
