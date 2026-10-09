@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::str::FromStr;
 
+use http::HeaderName;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use thiserror::Error;
@@ -392,6 +393,10 @@ pub struct QueryChunkResponse {
 /// regions that the client intends to re-chunk, and the response covers the whole file (windows +
 /// gap subtrees). Value uses the same `bytes=A-B,C-D` syntax as `Range`.
 pub const X_RANGE_DIRTY_HEADER: &str = "X-Range-Dirty";
+
+/// Response header on `/v1/reconstructions` and `/v2/reconstructions` carrying the total file size in bytes.
+/// Older servers do not send it.
+pub const X_XET_FILE_SIZE_HEADER: HeaderName = HeaderName::from_static("x-xet-file-size");
 
 /// One chunk-aligned dirty window of a file, returned by `GET /v2/file-chunk-hashes/{file_id}`.
 ///

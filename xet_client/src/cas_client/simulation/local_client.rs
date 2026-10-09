@@ -39,7 +39,7 @@ use super::xorb_utils::{self, REFERENCE_INSTANT, duration_to_expiration_secs_cei
 use crate::cas_client::Client;
 use crate::cas_client::adaptive_concurrency::AdaptiveConcurrencyController;
 use crate::cas_client::chunk_window_builder::build_file_chunk_hashes_response;
-use crate::cas_client::interface::{ShardUploadProgressCallback, ShardUploadProgressType};
+use crate::cas_client::interface::{ReconstructionResponse, ShardUploadProgressCallback, ShardUploadProgressType};
 use crate::cas_client::progress_tracked_streams::ProgressCallback;
 use crate::cas_types::{
     BatchQueryReconstructionResponse, FileChunkHashesResponse, FileRange, HexMerkleHash, HttpRange,
@@ -1572,7 +1572,6 @@ impl LocalClient {
         let Some((offset_into_first_range, terms, merged_ranges)) = result else {
             return Ok(None);
         };
-
         if terms.is_empty() {
             return Ok(Some(QueryReconstructionResponseV2 {
                 offset_into_first_range,
@@ -1851,8 +1850,14 @@ impl Client for LocalClient {
         &self,
         file_id: &MerkleHash,
         bytes_range: Option<FileRange>,
-    ) -> Result<Option<QueryReconstructionResponseV2>> {
-        self.get_reconstruction_v2(file_id, bytes_range).await
+    ) -> Result<Option<ReconstructionResponse>> {
+        let Some(reconstruction) = self.get_reconstruction_v2(file_id, bytes_range).await? else {
+            return Ok(None);
+        };
+        Ok(Some(ReconstructionResponse {
+            reconstruction,
+            file_size: Some(self.get_file_size(file_id).await?),
+        }))
     }
 
     async fn batch_get_reconstruction(&self, file_ids: &[MerkleHash]) -> Result<BatchQueryReconstructionResponse> {

@@ -15,7 +15,7 @@ use serde_json;
 use xet_core_structures::merklehash::MerkleHash;
 
 use super::super::adaptive_concurrency::ConnectionPermit;
-use super::super::interface::Client;
+use super::super::interface::{Client, ReconstructionResponse};
 use super::super::progress_tracked_streams::{ProgressCallback, UploadProgressStream};
 use super::super::remote_client::RemoteClient;
 use super::super::retry_wrapper::RetryWrapper;
@@ -181,7 +181,7 @@ impl Client for RemoteSimulationClient {
         &self,
         file_id: &xet_core_structures::merklehash::MerkleHash,
         bytes_range: Option<crate::cas_types::FileRange>,
-    ) -> Result<Option<crate::cas_types::QueryReconstructionResponseV2>> {
+    ) -> Result<Option<ReconstructionResponse>> {
         self.inner.get_reconstruction(file_id, bytes_range).await
     }
 

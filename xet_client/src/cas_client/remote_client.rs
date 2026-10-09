@@ -8,7 +8,7 @@ use http::HeaderValue;
 use http::header::{CONTENT_LENGTH, HeaderMap, RANGE};
 use reqwest::{Body, Response, StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
-use tracing::{event, info, instrument};
+use tracing::{event, info, instrument, warn};
 use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::metadata_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use xet_core_structures::xorb_object::SerializedXorbObject;
@@ -18,7 +18,7 @@ use super::adaptive_concurrency::{
     AdaptiveConcurrencyController, ConnectionPermit, download_controller, upload_controller,
 };
 use super::auth::AuthConfig;
-use super::interface::{ShardUploadProgressCallback, URLProvider};
+use super::interface::{ReconstructionResponse, ShardUploadProgressCallback, URLProvider};
 use super::progress_tracked_streams::{
     DownloadProgressStream, ProgressCallback, StreamProgressReporter, UploadProgressStream,
 };
@@ -32,7 +32,7 @@ use crate::cas_client::ShardUploadProgressType;
 use crate::cas_types::{
     BatchQueryReconstructionResponse, FileChunkHashesResponse, FileRange, HttpRange, Key, QueryReconstructionResponse,
     QueryReconstructionResponseV2, ShardUploadEvent, UploadShardResponse, UploadShardResponseType, UploadXorbResponse,
-    X_RANGE_DIRTY_HEADER,
+    X_RANGE_DIRTY_HEADER, X_XET_FILE_SIZE_HEADER,
 };
 use crate::common::http_client::{self, Api};
 use crate::error::{ClientError, Result};
@@ -212,13 +212,26 @@ impl RemoteClient {
     }
 }
 
+/// Parses the total file size from the [`X_XET_FILE_SIZE_HEADER`] response header. Returns `None` when the
+/// header is absent or malformed; a malformed value is logged and otherwise ignored.
+fn file_size_from_headers(headers: &HeaderMap) -> Option<u64> {
+    let value = headers.get(&X_XET_FILE_SIZE_HEADER)?;
+    let parsed = value.to_str().ok().and_then(|s| s.parse::<u64>().ok());
+    if parsed.is_none() {
+        warn!(header = X_XET_FILE_SIZE_HEADER.as_str(), ?value, "Ignoring malformed file size header");
+    }
+    parsed
+}
+
 impl RemoteClient {
+    /// Queries a reconstruction endpoint, returning the parsed body and the file size advertised in the
+    /// response headers, if any.
     async fn get_reconstruction_impl<T>(
         &self,
         file_id: &MerkleHash,
         bytes_range: Option<FileRange>,
         api_version: &str,
-    ) -> Result<Option<T>>
+    ) -> Result<Option<(T, Option<u64>)>>
     where
         T: serde::de::DeserializeOwned + 'static,
     {
@@ -245,9 +258,9 @@ impl RemoteClient {
 
         let client = self.authenticated_http_client.clone();
 
-        let result: Result<T> = RetryWrapper::new(self.ctx.clone(), api_tag)
+        let result: Result<(HeaderMap, T)> = RetryWrapper::new(self.ctx.clone(), api_tag)
             .with_expected_416()
-            .run_and_extract_json(move || {
+            .run_and_extract_json_with_headers(move || {
                 let mut request = client.get(url.clone()).with_extension(Api(api_tag));
                 if let Some(range) = bytes_range {
                     request = request.header(RANGE, HttpRange::from(range).range_header())
@@ -257,16 +270,18 @@ impl RemoteClient {
             .await;
 
         match result {
-            Ok(response) => {
+            Ok((headers, response)) => {
+                let file_size = file_size_from_headers(&headers);
                 event!(
                     INFORMATION_LOG_LEVEL,
                     call_id,
                     %file_id,
                     ?bytes_range,
                     api_version,
+                    file_size,
                     "Completed get_reconstruction API call"
                 );
-                Ok(Some(response))
+                Ok(Some((response, file_size)))
             },
             Err(ClientError::ReqwestError(ref e, _)) if e.status() == Some(StatusCode::RANGE_NOT_SATISFIABLE) => {
                 Ok(None)
@@ -281,6 +296,17 @@ impl RemoteClient {
         file_id: &MerkleHash,
         bytes_range: Option<FileRange>,
     ) -> Result<Option<QueryReconstructionResponse>> {
+        Ok(self
+            .get_reconstruction_v1_with_file_size(file_id, bytes_range)
+            .await?
+            .map(|(r, _)| r))
+    }
+
+    async fn get_reconstruction_v1_with_file_size(
+        &self,
+        file_id: &MerkleHash,
+        bytes_range: Option<FileRange>,
+    ) -> Result<Option<(QueryReconstructionResponse, Option<u64>)>> {
         self.get_reconstruction_impl(file_id, bytes_range, "v1").await
     }
 
@@ -290,7 +316,35 @@ impl RemoteClient {
         file_id: &MerkleHash,
         bytes_range: Option<FileRange>,
     ) -> Result<Option<QueryReconstructionResponseV2>> {
-        self.get_reconstruction_impl(file_id, bytes_range, "v2").await
+        Ok(self
+            .get_reconstruction_v2_with_file_size(file_id, bytes_range)
+            .await?
+            .map(|r| r.reconstruction))
+    }
+
+    async fn get_reconstruction_v2_with_file_size(
+        &self,
+        file_id: &MerkleHash,
+        bytes_range: Option<FileRange>,
+    ) -> Result<Option<ReconstructionResponse>> {
+        let result = self.get_reconstruction_impl(file_id, bytes_range, "v2").await?;
+        Ok(result.map(|(reconstruction, file_size)| ReconstructionResponse {
+            reconstruction,
+            file_size,
+        }))
+    }
+
+    /// V1 reconstruction converted to the V2 format, carrying the advertised file size.
+    async fn get_reconstruction_v1_as_v2(
+        &self,
+        file_id: &MerkleHash,
+        bytes_range: Option<FileRange>,
+    ) -> Result<Option<ReconstructionResponse>> {
+        let result = self.get_reconstruction_v1_with_file_size(file_id, bytes_range).await?;
+        Ok(result.map(|(response, file_size)| ReconstructionResponse {
+            reconstruction: response.into(),
+            file_size,
+        }))
     }
 
     pub(crate) async fn get_reconstruction_with_version_override(
@@ -298,7 +352,7 @@ impl RemoteClient {
         file_id: &MerkleHash,
         bytes_range: Option<FileRange>,
         forced_version: Option<u32>,
-    ) -> Result<Option<QueryReconstructionResponseV2>> {
+    ) -> Result<Option<ReconstructionResponse>> {
         // Prefer V2; fall back to V1 on 404/501; persist detected version to
         // avoid repeated fallback attempts.
         let version = match forced_version {
@@ -310,7 +364,7 @@ impl RemoteClient {
         };
 
         match version {
-            2 => match self.get_reconstruction_v2(file_id, bytes_range).await {
+            2 => match self.get_reconstruction_v2_with_file_size(file_id, bytes_range).await {
                 Ok(result) => {
                     if forced_version.is_none() {
                         self.detected_reconstruction_api_version.store(2, Ordering::Relaxed);
@@ -322,14 +376,14 @@ impl RemoteClient {
                         && matches!(e.status(), Some(StatusCode::NOT_FOUND) | Some(StatusCode::NOT_IMPLEMENTED)) =>
                 {
                     info!(status = ?e.status(), "V2 reconstruction not available, falling back to V1");
-                    let result = self.get_reconstruction_v1(file_id, bytes_range).await?.map(Into::into);
+                    let result = self.get_reconstruction_v1_as_v2(file_id, bytes_range).await?;
                     // Store after success to make sure we don't mess up on e.g. network failure.
                     self.detected_reconstruction_api_version.store(1, Ordering::Relaxed);
                     Ok(result)
                 },
                 Err(e) => Err(e),
             },
-            1 => Ok(self.get_reconstruction_v1(file_id, bytes_range).await?.map(Into::into)),
+            1 => self.get_reconstruction_v1_as_v2(file_id, bytes_range).await,
             other => Err(ClientError::InternalError(anyhow!("unsupported reconstruction API version: {other}"))),
         }
     }
@@ -528,7 +582,7 @@ impl Client for RemoteClient {
         &self,
         file_id: &MerkleHash,
         bytes_range: Option<FileRange>,
-    ) -> Result<Option<QueryReconstructionResponseV2>> {
+    ) -> Result<Option<ReconstructionResponse>> {
         let forced_version = self.ctx.config.client.reconstruction_api_version;
         self.get_reconstruction_with_version_override(file_id, bytes_range, forced_version)
             .await

@@ -24,7 +24,7 @@ use xet_runtime::core::XetContext;
 
 use super::super::Client;
 use super::super::adaptive_concurrency::AdaptiveConcurrencyController;
-use super::super::interface::{ShardUploadProgressCallback, ShardUploadProgressType};
+use super::super::interface::{ReconstructionResponse, ShardUploadProgressCallback, ShardUploadProgressType};
 use super::super::progress_tracked_streams::ProgressCallback;
 use super::client_testing_utils::{FileTermReference, RandomFileContents};
 #[cfg(not(target_family = "wasm"))]
@@ -803,7 +803,6 @@ impl MemoryClient {
         let Some((offset_into_first_range, terms, merged_ranges)) = result else {
             return Ok(None);
         };
-
         if terms.is_empty() {
             return Ok(Some(QueryReconstructionResponseV2 {
                 offset_into_first_range,
@@ -1038,8 +1037,14 @@ impl Client for MemoryClient {
         &self,
         file_id: &MerkleHash,
         bytes_range: Option<FileRange>,
-    ) -> Result<Option<QueryReconstructionResponseV2>> {
-        self.get_reconstruction_v2(file_id, bytes_range).await
+    ) -> Result<Option<ReconstructionResponse>> {
+        let Some(reconstruction) = self.get_reconstruction_v2(file_id, bytes_range).await? else {
+            return Ok(None);
+        };
+        Ok(Some(ReconstructionResponse {
+            reconstruction,
+            file_size: Some(self.get_file_size(file_id).await?),
+        }))
     }
 
     async fn batch_get_reconstruction(&self, file_ids: &[MerkleHash]) -> Result<BatchQueryReconstructionResponse> {
