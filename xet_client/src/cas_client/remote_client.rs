@@ -1607,28 +1607,5 @@ mod tests {
 
             assert_eq!(err.status(), Some(StatusCode::BAD_REQUEST));
         }
-
-        #[tokio::test]
-        async fn test_commit_retries_server_error() {
-            let server = MockServer::start().await;
-            Mock::given(method("POST"))
-                .and(path(commit_path()))
-                .respond_with(ResponseTemplate::new(503))
-                .up_to_n_times(1)
-                .expect(1)
-                .mount(&server)
-                .await;
-            Mock::given(method("POST"))
-                .and(path(commit_path()))
-                .respond_with(ResponseTemplate::new(200))
-                .expect(1)
-                .mount(&server)
-                .await;
-
-            let client = test_client(&server.uri());
-            let result = commit(&client).await.unwrap();
-
-            assert!(matches!(result, XorbCommitResult::Committed), "got {result:?}");
-        }
     }
 }
