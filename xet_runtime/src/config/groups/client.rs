@@ -83,6 +83,14 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_CLIENT_LEGACY_DIRECT_XORB_UPLOAD` to set this value.
     ref legacy_direct_xorb_upload: bool = false;
 
+    /// Upload grants requested for one xorb before uploading it through the xorb upload API instead. A new grant is
+    /// requested when a commit finds no uploaded data or the grant URL rejects the upload. Values below 1 count as 1.
+    ///
+    /// The default value is 3.
+    ///
+    /// Use the environment variable `HF_XET_CLIENT_MAX_XORB_GRANT_ATTEMPTS` to set this value.
+    ref max_xorb_grant_attempts: usize = 3;
+
     /// The minimum time in milliseconds between adjustments when increasing the concurrency.
     ///
     /// The default value is 500ms.
