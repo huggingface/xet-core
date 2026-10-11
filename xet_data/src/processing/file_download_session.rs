@@ -19,6 +19,8 @@ use xet_runtime::utils::UniqueId;
 use super::XetFileInfo;
 use super::configurations::TranslatorConfig;
 use super::remote_client_interface::create_remote_client;
+#[cfg(not(target_family = "wasm"))]
+use super::reuse_existing::plan_reuse;
 use crate::error::{DataError, Result};
 use crate::file_reconstruction::{DownloadStream, FileReconstructor, UnorderedDownloadStream};
 use crate::progress_tracking::{GroupProgress, ItemProgressUpdater};
@@ -325,10 +327,15 @@ impl FileDownloadSession {
     ///
     /// Acquires a permit from the global download semaphore before starting.
     /// Returns the tracking ID and the join handle for the spawned task.
+    ///
+    /// When `reuse_existing` is `true`, bytes already present at `write_path` are checked
+    /// segment by segment and only the missing or mismatching ranges are downloaded. See
+    /// [`Self::download_file_reusing_existing`].
     pub async fn download_file_background(
         self: &Arc<Self>,
         file_info: XetFileInfo,
         write_path: PathBuf,
+        reuse_existing: bool,
     ) -> Result<(UniqueId, JoinHandle<Result<u64>>)> {
         self.check_not_finalized()?;
         let id = UniqueId::new();
@@ -337,7 +344,7 @@ impl FileDownloadSession {
         let semaphore = self.ctx.common.file_download_semaphore.clone();
         let handle = runtime.spawn(async move {
             let _permit = semaphore.acquire().await?;
-            session.download_file_with_id(&file_info, &write_path, id).await
+            session.download_file_with_id(&file_info, &write_path, id, reuse_existing).await
         });
         Ok((id, handle))
     }
@@ -347,13 +354,45 @@ impl FileDownloadSession {
     pub async fn download_file(&self, file_info: &XetFileInfo, write_path: &Path) -> Result<(UniqueId, u64)> {
         self.check_not_finalized()?;
         let id = UniqueId::new();
-        let n_bytes = self.download_file_with_id(file_info, write_path, id).await?;
+        let n_bytes = self.download_file_with_id(file_info, write_path, id, false).await?;
         Ok((id, n_bytes))
     }
 
-    async fn download_file_with_id(&self, file_info: &XetFileInfo, write_path: &Path, id: UniqueId) -> Result<u64> {
+    /// Downloads a complete file to the given path, reusing the bytes already present there.
+    ///
+    /// Each file segment lying entirely within the existing file is re-chunked and compared
+    /// against the segment's verification hash; matching segments are kept and only the other
+    /// byte ranges are downloaded, written in place without truncating the file. A missing or
+    /// empty file, or a file without verification entries, falls back to a full download.
+    ///
+    /// Progress for the check is reported through the item's `resume_check_bytes` counters;
+    /// reused bytes are credited to `bytes_completed` without any transfer.
+    #[instrument(skip_all, name = "FileDownloadSession::download_file_reusing_existing", fields(hash = file_info.hash()))]
+    pub async fn download_file_reusing_existing(
+        &self,
+        file_info: &XetFileInfo,
+        write_path: &Path,
+    ) -> Result<(UniqueId, u64)> {
+        self.check_not_finalized()?;
+        let id = UniqueId::new();
+        let n_bytes = self.download_file_with_id(file_info, write_path, id, true).await?;
+        Ok((id, n_bytes))
+    }
+
+    async fn download_file_with_id(
+        &self,
+        file_info: &XetFileInfo,
+        write_path: &Path,
+        id: UniqueId,
+        reuse_existing: bool,
+    ) -> Result<u64> {
         let name = Arc::from(write_path.to_string_lossy().as_ref());
         let progress_updater = self.progress.new_item(id, name);
+        if reuse_existing
+            && let Some(n_bytes) = self.download_missing_ranges(file_info, write_path, &progress_updater).await?
+        {
+            return Ok(n_bytes);
+        }
         let reconstructor = self.setup_reconstructor(file_info, None, Some(progress_updater))?;
         let n_bytes = reconstructor.reconstruct_to_file(write_path, None, true).await?;
         // Caller is responsible for cleaning up the file on error (consistent
@@ -367,6 +406,65 @@ impl FileDownloadSession {
             });
         }
         Ok(n_bytes)
+    }
+
+    /// Downloads only the ranges of `file_info` that the existing file at `write_path` is missing.
+    ///
+    /// Returns `None` when there is nothing to reuse; the caller then does a full download.
+    async fn download_missing_ranges(
+        &self,
+        file_info: &XetFileInfo,
+        write_path: &Path,
+        progress_updater: &Arc<ItemProgressUpdater>,
+    ) -> Result<Option<u64>> {
+        let file_id = file_info.merkle_hash()?;
+        let Some((mdb_info, _)) = self.client.get_file_reconstruction_info(&file_id).await? else {
+            // Let the regular download path report the missing file.
+            return Ok(None);
+        };
+        let total_size = mdb_info.file_size();
+        if let Some(expected_size) = file_info.file_size()
+            && expected_size != total_size
+        {
+            return Err(DataError::SizeMismatch {
+                expected: expected_size,
+                actual: total_size,
+            });
+        }
+
+        let Some(plan) = plan_reuse(&self.ctx, write_path, &mdb_info, progress_updater).await? else {
+            return Ok(None);
+        };
+
+        progress_updater.update_item_size(total_size, true);
+        progress_updater.report_bytes_completed(plan.reused_bytes);
+
+        // Drop any trailing bytes beyond the expected size; missing bytes are written below.
+        let file = std::fs::OpenOptions::new().write(true).open(write_path)?;
+        if file.metadata()?.len() > total_size {
+            file.set_len(total_size)?;
+        }
+        drop(file);
+
+        let mut n_bytes = plan.reused_bytes;
+        for range in plan.ranges_to_download {
+            let mut reconstructor = FileReconstructor::new(&self.ctx, &self.client, file_id)
+                .with_byte_range(range)
+                .with_progress_updater(progress_updater.new_range_child());
+            if let Some(ref cache) = self.chunk_cache {
+                reconstructor = reconstructor.with_chunk_cache(cache.clone());
+            }
+            // Writes at `range.start` without truncating the file.
+            n_bytes += reconstructor.reconstruct_to_file(write_path, None, false).await?;
+        }
+
+        if n_bytes != total_size {
+            return Err(DataError::SizeMismatch {
+                expected: total_size,
+                actual: n_bytes,
+            });
+        }
+        Ok(Some(n_bytes))
     }
 }
 
