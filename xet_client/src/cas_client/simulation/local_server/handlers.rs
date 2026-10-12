@@ -33,7 +33,8 @@ use super::super::super::{DeletionControlableClient, DirectAccessClient};
 use super::latency_simulation::{LatencySimulation, ServerLatencyProfile};
 use crate::cas_types::{
     CommitStage, FileRange, HexKey, HexMerkleHash, QueryReconstructionResponseV2, ShardUploadEvent,
-    UploadShardResponse, UploadShardResponseType, UploadXorbResponse, XorbRangeDescriptor, XorbReconstructionFetchInfo,
+    UploadShardResponse, UploadShardResponseType, UploadXorbResponse, X_XET_FILE_SIZE_HEADER, XorbRangeDescriptor,
+    XorbReconstructionFetchInfo,
 };
 use crate::error::ClientError;
 
@@ -276,8 +277,12 @@ pub async fn get_reconstruction(
 
     match state.client.get_reconstruction_v1(&file_id, range).await {
         Ok(Some(mut response)) => {
+            let file_size = match state.client.get_file_size(&file_id).await {
+                Ok(size) => size,
+                Err(e) => return error_to_response(e),
+            };
             transform_fetch_info_urls(&mut response.fetch_info, &base_url);
-            Json(response).into_response()
+            ([(X_XET_FILE_SIZE_HEADER, HeaderValue::from(file_size))], Json(response)).into_response()
         },
         Ok(None) => (StatusCode::RANGE_NOT_SATISFIABLE, "Range not satisfiable").into_response(),
         Err(e) => error_to_response(e),
@@ -333,8 +338,12 @@ pub async fn get_reconstruction_v2(
 
     match state.client.get_reconstruction_v2(&file_id, range).await {
         Ok(Some(mut response)) => {
+            let file_size = match state.client.get_file_size(&file_id).await {
+                Ok(size) => size,
+                Err(e) => return error_to_response(e),
+            };
             transform_v2_xorb_urls(&mut response, &base_url);
-            Json(response).into_response()
+            ([(X_XET_FILE_SIZE_HEADER, HeaderValue::from(file_size))], Json(response)).into_response()
         },
         Ok(None) => (StatusCode::RANGE_NOT_SATISFIABLE, "Range not satisfiable").into_response(),
         Err(e) => error_to_response(e),

@@ -40,6 +40,15 @@ pub trait URLProvider: Send + Sync {
     async fn refresh_url(&self) -> Result<()>;
 }
 
+/// A reconstruction query result: the response body plus metadata carried in response headers.
+#[derive(Debug, Clone)]
+pub struct ReconstructionResponse {
+    pub reconstruction: QueryReconstructionResponseV2,
+    /// Total file size in bytes from the `x-xet-file-size` response header; `None` when the server did not
+    /// send it.
+    pub file_size: Option<u64>,
+}
+
 /// A Client to the Shard service. The shard service
 /// provides for
 /// 1. upload shard to the shard service
@@ -59,7 +68,7 @@ pub trait Client: Send + Sync {
         &self,
         file_id: &MerkleHash,
         bytes_range: Option<FileRange>,
-    ) -> Result<Option<QueryReconstructionResponseV2>>;
+    ) -> Result<Option<ReconstructionResponse>>;
 
     async fn batch_get_reconstruction(&self, file_ids: &[MerkleHash]) -> Result<BatchQueryReconstructionResponse>;
 

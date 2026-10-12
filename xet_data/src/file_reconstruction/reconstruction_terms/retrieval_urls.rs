@@ -97,7 +97,7 @@ impl TermBlockRetrievalURLs {
 
         // Re-fetch the entire block to get fresh URLs, then verify the structure matches.
         let Some((returned_range, _transfer_bytes, file_terms)) =
-            retrieve_file_term_block(ctx, client, self.file_hash, self.byte_range).await?
+            retrieve_file_term_block(ctx, client, self.file_hash, self.byte_range, None).await?
         else {
             return Err(FileReconstructionError::CorruptedReconstruction(
                 "On URL refresh, the returned reconstruction was None.".to_owned(),
@@ -208,7 +208,7 @@ mod tests {
         let dyn_client: Arc<dyn xet_client::cas_client::Client> = client.clone();
 
         let (_, _, file_terms) =
-            super::retrieve_file_term_block(&ctx, dyn_client.clone(), file_contents.file_hash, file_range)
+            super::retrieve_file_term_block(&ctx, dyn_client.clone(), file_contents.file_hash, file_range, None)
                 .await
                 .unwrap()
                 .unwrap();
@@ -249,7 +249,7 @@ mod tests {
         let dyn_client: Arc<dyn xet_client::cas_client::Client> = client.clone();
 
         let (_, _, file_terms) =
-            super::retrieve_file_term_block(&ctx, dyn_client.clone(), file_contents.file_hash, file_range)
+            super::retrieve_file_term_block(&ctx, dyn_client.clone(), file_contents.file_hash, file_range, None)
                 .await
                 .unwrap()
                 .unwrap();

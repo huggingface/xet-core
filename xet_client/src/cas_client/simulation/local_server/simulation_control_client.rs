@@ -15,7 +15,7 @@ use super::simulation_types::{
     XorbRangesResponse, XorbRawLengthResponse,
 };
 use crate::cas_client::RemoteClient;
-use crate::cas_client::interface::Client;
+use crate::cas_client::interface::{Client, ReconstructionResponse};
 use crate::cas_client::simulation::deletion_controls::{ObjectETag, ObjectTagSet};
 use crate::cas_client::simulation::xorb_utils::duration_to_expiration_secs_ceil;
 use crate::cas_client::simulation::{DeletionControlableClient, DirectAccessClient};
@@ -184,7 +184,7 @@ impl Client for SimulationControlClient {
         &self,
         file_id: &MerkleHash,
         bytes_range: Option<FileRange>,
-    ) -> Result<Option<QueryReconstructionResponseV2>> {
+    ) -> Result<Option<ReconstructionResponse>> {
         self.remote_client.get_reconstruction(file_id, bytes_range).await
     }
 
