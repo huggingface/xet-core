@@ -37,6 +37,11 @@ jobs:
         python-version:
           - 3.14
           - 3.14t
+          - 3.15t
+        include:
+          # Free-threaded 3.15+ uses the abi3t stable ABI (PEP 803).
+          - python-version: 3.15t
+            maturin-features: --features pyo3/abi3t-py315
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
@@ -62,7 +67,7 @@ jobs:
         uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --profile ${{ env.BUILD_PROFILE }} -i ${{ matrix.python-version }} --out dist
+          args: --profile ${{ env.BUILD_PROFILE }} -i ${{ matrix.python-version }} ${{ matrix.maturin-features }} --out dist
           sccache: 'true'
           manylinux: ${{ matrix.platform.manylinux }}
           working-directory: hf_xet
@@ -134,6 +139,11 @@ jobs:
         python-version:
           - 3.14
           - 3.14t
+          - 3.15t
+        include:
+          # Free-threaded 3.15+ uses the abi3t stable ABI (PEP 803).
+          - python-version: 3.15t
+            maturin-features: --features pyo3/abi3t-py315
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
@@ -159,7 +169,7 @@ jobs:
         uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --profile ${{ env.BUILD_PROFILE }} -i ${{ matrix.python-version }}  --out dist
+          args: --profile ${{ env.BUILD_PROFILE }} -i ${{ matrix.python-version }} ${{ matrix.maturin-features }} --out dist
           sccache: 'true'
           manylinux: musllinux_1_2
           working-directory: hf_xet
@@ -225,6 +235,11 @@ jobs:
         python-version:
           - 3.14
           - 3.14t
+          - 3.15t
+        include:
+          # Free-threaded 3.15+ uses the abi3t stable ABI (PEP 803).
+          - python-version: 3.15t
+            maturin-features: --features pyo3/abi3t-py315
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
@@ -244,7 +259,7 @@ jobs:
         uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release -i python${{ matrix.python-version }} --out dist
+          args: --release -i python${{ matrix.python-version }} ${{ matrix.maturin-features }} --out dist
           sccache: 'true'
           working-directory: hf_xet
       - name: Copy debug symbols
@@ -285,6 +300,11 @@ jobs:
         python-version:
           - 3.14
           - 3.14t
+          - 3.15t
+        include:
+          # Free-threaded 3.15+ uses the abi3t stable ABI (PEP 803).
+          - python-version: 3.15t
+            maturin-features: --features pyo3/abi3t-py315
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
@@ -310,7 +330,7 @@ jobs:
         uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --profile ${{ env.BUILD_PROFILE }} -i ${{ matrix.python-version }} --strip --out dist
+          args: --profile ${{ env.BUILD_PROFILE }} -i ${{ matrix.python-version }} ${{ matrix.maturin-features }} --strip --out dist
           sccache: 'true'
           working-directory: hf_xet
       - name: Retarget and copy debug symbols
