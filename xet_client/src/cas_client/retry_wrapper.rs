@@ -143,6 +143,10 @@ impl RetryWrapper {
         let api = &self.api_tag;
 
         let process_error = |txt, log_as_info, err: reqwest_middleware::Error| {
+            let err = match err {
+                reqwest_middleware::Error::Reqwest(e) => reqwest_middleware::Error::Reqwest(strip_url_query(e)),
+                e => e,
+            };
             let msg = {
                 if try_idx > 0 {
                     format!("{txt}: {api} api call failed (retry {try_idx}): {err}")
@@ -196,6 +200,7 @@ impl RetryWrapper {
 
         // Log the errors and create a message string with the information in it to expose to users.
         let process_error = |context, err: ReqwestError, log_as_info| {
+            let err = strip_url_query(err);
             if self.log_errors_as_info || log_as_info {
                 info!("{context}: {api:?} api call failed (request id {request_id}{retry_str}): {err}");
             } else {
@@ -500,6 +505,14 @@ impl RetryWrapper {
 /// first delay and the per-step multiplier (e.g. 3000 -> 3s, 9000s, ...). Instead, the
 /// per-step multiplier is derived from `base_delay` in whole seconds and `factor` scales
 /// the first delay back to `base_delay`.
+/// Removes the query from the error's URL so presigned URL signatures are not logged.
+fn strip_url_query(mut err: ReqwestError) -> ReqwestError {
+    if let Some(url) = err.url_mut() {
+        url.set_query(None);
+    }
+    err
+}
+
 fn exponential_retry_delays(
     base_delay: Duration,
     max_attempts: usize,
@@ -1105,5 +1118,21 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(&result.unwrap().bytes().await.unwrap()[..], b"Success");
         assert_eq!(counter.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_error_strips_url_query() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let client = make_client();
+        let err = connection_wrapper("test_error_strips_url_query")
+            .with_max_attempts(1)
+            .run(move || client.clone().put(format!("http://{addr}/xorb?X-Amz-Signature=secret")).send())
+            .await
+            .unwrap_err();
+
+        assert!(!format!("{err} {err:?}").contains("secret"));
     }
 }
