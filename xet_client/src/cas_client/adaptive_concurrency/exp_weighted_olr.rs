@@ -65,15 +65,17 @@ impl ExpWeightedOnlineLinearRegression {
     /// Predict the mean and standard deviation of the *fitted mean* at x.
     ///
     /// Returns:
-    ///   - (None, None) if the model is not identifiable yet (normal matrix singular).
+    ///   - (None, None) if the model is not identifiable yet (normal matrix singular or ill-conditioned).
     ///   - (Some(mean), None) if coefficients can be estimated but df <= 0, so we can't compute a standard deviation
     ///     yet.
     ///   - (Some(mean), Some(std_dev)) otherwise.
     pub fn predict(&self, x0: f64) -> (Option<f64>, Option<f64>) {
-        // Need a well-conditioned normal matrix to estimate beta.
+        // Need a well-conditioned normal matrix to estimate beta. Use a relative
+        // threshold so near-collinear x values are rejected independent of scale.
         let delta = self.sw * self.sxx - self.sx * self.sx;
-        if delta.abs() < 1e-12 {
-            // Can't estimate beta0/beta1 at all.
+        let scale = (self.sw * self.sxx).abs();
+        if scale == 0.0 || delta <= 1e-12 * scale {
+            // Can't estimate beta0/beta1 reliably.
             return (None, None);
         }
 
@@ -114,7 +116,8 @@ impl ExpWeightedOnlineLinearRegression {
     #[allow(dead_code)]
     pub fn coefficients(&self) -> Option<(f64, f64)> {
         let delta = self.sw * self.sxx - self.sx * self.sx;
-        if delta.abs() < 1e-12 {
+        let scale = (self.sw * self.sxx).abs();
+        if scale == 0.0 || delta <= 1e-12 * scale {
             return None;
         }
 
@@ -319,6 +322,26 @@ mod tests {
         assert!(mean_off.is_some());
         assert!(std_off.is_none());
         assert_abs_diff_eq!(mean2.unwrap(), mean_off.unwrap(), epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_near_singular_x_rejected() {
+        let mut model = ExpWeightedOnlineLinearRegression::new(1000.0);
+
+        // The determinant is non-zero in absolute terms, but x has effectively no
+        // spread relative to its magnitude. The old absolute threshold accepted this.
+        for (x, y) in [
+            (64.0, 1.0000),
+            (64.00001, 1.0001),
+            (64.00002, 0.9999),
+            (64.00003, 1.0002),
+        ] {
+            model.update(1.0, x, y);
+        }
+
+        let (mean, std_dev) = model.predict(10.0);
+        assert!(mean.is_none());
+        assert!(std_dev.is_none());
     }
 
     #[test]
