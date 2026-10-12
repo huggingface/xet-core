@@ -23,6 +23,34 @@ pub struct UploadXorbResponse {
     pub was_inserted: bool,
 }
 
+/// Checksum of serialized xorb data.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(tag = "algo", content = "value", rename_all = "lowercase")]
+pub enum Checksum {
+    /// Serialized as a decimal string, since JSON numbers above 2^53 lose precision in many parsers.
+    Crc64Nvme(#[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")] u64),
+}
+
+/// Request body for a xorb upload grant.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct XorbUploadGrantRequest {
+    /// Length of the serialized xorb in bytes.
+    pub length: u64,
+    pub checksum: Checksum,
+}
+
+/// A grant to upload a serialized xorb directly to `url`.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct XorbUploadGrant {
+    /// Grant id, used to commit the upload.
+    pub id: String,
+    /// HTTP method for the upload.
+    pub method: String,
+    pub url: String,
+    /// Headers the upload must send exactly as given.
+    pub headers: HashMap<String, String>,
+}
+
 /// These types are defined to help differentiate the Range<,> type aliases,
 /// so that they don't silently cast to each other without range adjustments.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default, Hash, Copy)]
@@ -425,6 +453,20 @@ pub struct FileChunkHashesResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_xorb_upload_grant_request_checksum_is_decimal_string() {
+        let request = XorbUploadGrantRequest {
+            length: 1234,
+            checksum: Checksum::Crc64Nvme(u64::MAX),
+        };
+        let json = r#"{"length":1234,"checksum":{"algo":"crc64nvme","value":"18446744073709551615"}}"#;
+
+        assert_eq!(serde_json::to_string(&request).unwrap(), json);
+        let parsed: XorbUploadGrantRequest = serde_json::from_str(json).unwrap();
+        assert!(matches!(parsed.checksum, Checksum::Crc64Nvme(u64::MAX)));
+        assert!(serde_json::from_str::<Checksum>(r#"{"algo":"crc64nvme","value":7}"#).is_err());
+    }
 
     #[test]
     fn test_file_range_segment() {
