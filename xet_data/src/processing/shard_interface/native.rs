@@ -27,12 +27,14 @@ use xet_runtime::error_printer::ErrorPrinter;
 
 use super::super::configurations::TranslatorConfig;
 use crate::error::Result;
+use crate::processing::UploadShardCachePolicy;
 use crate::progress_tracking::upload_tracking::CompletionTracker;
 
 pub struct SessionShardInterface {
     ctx: XetContext,
     session_shard_manager: Arc<ShardFileManager>,
     cache_shard_manager: Arc<ShardFileManager>,
+    cache_policy: UploadShardCachePolicy,
 
     client: Arc<dyn Client + Send + Sync>,
     completion_tracker: Arc<CompletionTracker>,
@@ -63,6 +65,7 @@ impl SessionShardInterface {
         client: Arc<dyn Client + Send + Sync>,
         completion_tracker: Arc<CompletionTracker>,
         dry_run: bool,
+        cache_policy: UploadShardCachePolicy,
     ) -> Result<Self> {
         // Create a temporary session directory where we hold all the shards before upload.
         std::fs::create_dir_all(&config.shard_session_directory)?;
@@ -133,6 +136,7 @@ impl SessionShardInterface {
             ctx: ctx.clone(),
             session_shard_manager,
             cache_shard_manager,
+            cache_policy,
             xorb_metadata_staging_dir,
             staged_shards_to_remove_on_success,
             xorb_metadata_staging: Mutex::new((SystemTime::now(), MDBInMemoryShard::default())),
@@ -162,7 +166,7 @@ impl SessionShardInterface {
         Ok(true)
     }
 
-    /// Returns the number of chunks and xorb to dedup against, as well as whether it's already known to be uploaded.
+    /// Returns matching chunks, their xorb, and whether its transfer to the session's client has already completed.
     pub async fn chunk_hash_dedup_query(
         &self,
         query_hashes: &[MerkleHash],
@@ -264,6 +268,7 @@ impl SessionShardInterface {
             let cache_shard_manager = self.cache_shard_manager.clone();
             let shard_bytes_uploaded = shard_bytes_uploaded.clone();
             let dry_run = self.dry_run;
+            let cache_policy = self.cache_policy;
             let completion_tracker = self.completion_tracker.clone();
 
             // Acquire a permit for uploading before we spawn the task; the acquired permit is dropped after the task
@@ -307,6 +312,11 @@ impl SessionShardInterface {
                     shard_client.upload_shard(data, upload_permit, progress_callback).await?;
 
                     info!("Shard {:?} upload + sync completed successfully.", &si.shard_hash);
+
+                    // A successful staging write does not establish remote availability.
+                    if cache_policy == UploadShardCachePolicy::Skip {
+                        return Ok(());
+                    }
 
                     // Now that the upload succeeded, move that shard to the cache directory, adding in an expiration
                     // time.
@@ -366,6 +376,60 @@ mod tests {
     use std::io::Cursor;
 
     use super::*;
+
+    #[tokio::test]
+    async fn remote_dedup_populates_shared_cache_for_staging_sessions() -> anyhow::Result<()> {
+        use std::time::Duration;
+
+        use xet_client::cas_client::{DirectAccessClient, MemoryClient};
+        use xet_core_structures::metadata_shard::xorb_structs::{XorbChunkSequenceEntry, XorbChunkSequenceHeader};
+
+        use crate::progress_tracking::UploadGroupProgress;
+
+        let ctx = XetContext::default()?;
+        let dir = tempfile::tempdir()?;
+        let client = MemoryClient::new(ctx.clone());
+        client.set_global_dedup_shard_expiration(Some(Duration::from_secs(300)));
+        let chunk_hash = MerkleHash::from([1, 2, 3, 4]);
+        let xorb_hash = MerkleHash::from([5, 6, 7, 8]);
+        let mut shard = MDBInMemoryShard::default();
+        shard.add_xorb_block(Arc::new(MDBXorbInfo {
+            metadata: XorbChunkSequenceHeader::new(xorb_hash, 1, 10),
+            chunks: vec![XorbChunkSequenceEntry::new(chunk_hash, 10, 0).with_global_dedup_flag(true)],
+        }))?;
+        let source = dir.path().join("remote");
+        std::fs::create_dir_all(&source)?;
+        let shard_path = shard.write_to_directory(&source, None)?;
+        client
+            .upload_shard(std::fs::read(shard_path)?.into(), client.acquire_upload_permit().await?, None)
+            .await?;
+        let cache = dir.path().join("cache");
+        for i in 0..2 {
+            let ctx = XetContext::default()?;
+            let mut config = TranslatorConfig::memory_config(&ctx, dir.path().join(format!("session-{i}")))?;
+            config.shard_cache_directory = cache.clone();
+            let interface = SessionShardInterface::new(
+                &ctx,
+                Arc::new(config),
+                client.clone(),
+                Arc::new(CompletionTracker::new(UploadGroupProgress::new())),
+                false,
+                UploadShardCachePolicy::Skip,
+            )
+            .await?;
+            if i == 0 {
+                assert!(interface.chunk_hash_dedup_query(&[chunk_hash]).await?.is_none());
+                assert!(interface.query_dedup_shard_by_chunk(&chunk_hash).await?);
+            }
+            // The second repository finds the persisted shard without querying the remote.
+            let (chunks, entry, completed) = interface.chunk_hash_dedup_query(&[chunk_hash]).await?.unwrap();
+            assert_eq!(chunks, 1);
+            assert_eq!(entry.xorb_hash, xorb_hash);
+            assert!(completed);
+            assert_eq!(std::fs::read_dir(&cache)?.count(), 1);
+        }
+        Ok(())
+    }
 
     #[test]
     fn test_read_shard_to_bytes_remove_footer() -> Result<()> {

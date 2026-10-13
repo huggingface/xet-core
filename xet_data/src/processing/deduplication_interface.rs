@@ -41,7 +41,15 @@ impl DeduplicationDataInterface for UploadSessionDataManager {
         &self,
         query_hashes: &[MerkleHash],
     ) -> Result<Option<(usize, FileDataSequenceEntry, bool)>> {
-        Ok(self.session.shard_interface.chunk_hash_dedup_query(query_hashes).await?)
+        if let Some(result) = self.session.shard_interface.chunk_hash_dedup_query(query_hashes).await? {
+            return Ok(Some(result));
+        }
+        if let Some(source) = &self.session.dedup_source
+            && let Some((count, entry)) = source.query(query_hashes).await?
+        {
+            return Ok(Some((count, entry, true)));
+        }
+        Ok(None)
     }
 
     /// Registers a new query for more information about the
