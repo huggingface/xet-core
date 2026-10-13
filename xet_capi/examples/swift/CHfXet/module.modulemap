@@ -1,0 +1,6 @@
+// Exposes the hf_xet C API to Swift as the module `CHfXet`.
+// The header lives in the crate's committed include/ directory.
+module CHfXet {
+    header "../../../include/hf_xet.h"
+    export *
+}
