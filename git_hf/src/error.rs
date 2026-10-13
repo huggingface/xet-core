@@ -8,6 +8,13 @@ use crate::PointerError;
 
 #[derive(Error, Debug)]
 pub enum GitHfError {
+    #[error("Invalid filter protocol: {0}")]
+    FilterProtocol(String),
+    #[error("Cleaning failed: {0}")]
+    Data(#[from] xet_data::DataError),
+    #[error("Runtime error: {0}")]
+    Runtime(#[from] xet_runtime::RuntimeError),
+
     #[error("Command failed: {reason}, {source:?}")]
     CommandFailed {
         reason: String,

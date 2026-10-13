@@ -9,6 +9,8 @@ name = "git-hf"
 path = "src/bin/main.rs"
 
 [dependencies]
+async-trait = { workspace = true }
+bytes = { workspace = true }
 clap = { workspace = true }
 dirs = { workspace = true }
 git_extension_common = { path = "../git_extension_common" }
@@ -16,16 +18,18 @@ git-url-parse = { workspace = true }
 git2 = { workspace = true }
 rust-netrc = { workspace = true }
 shellexpand = { workspace = true, features = ["path"] }
+tempfile = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
 xet-client = { path = "../xet_client" }
 xet-core-structures = { path = "../xet_core_structures" }
+xet-data = { path = "../xet_data" }
+xet-runtime = { path = "../xet_runtime" }
 
 [dev-dependencies]
 anyhow = { workspace = true }
 git_extension_common = { path = "../git_extension_common", features = ["test-utils"] }
 serial_test = { workspace = true }
-xet-runtime = { path = "../xet_runtime" }
-tempfile = { workspace = true }
 
 [features]
 git2-vendored-openssl = ["git_extension_common/git2-vendored-openssl"]
