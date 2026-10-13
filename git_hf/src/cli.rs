@@ -6,6 +6,7 @@ use clap::{Args, Parser, Subcommand};
 use crate::Result;
 use crate::constants::GIT_HF_PROGRAM;
 
+mod filter_process;
 mod install;
 mod uninstall;
 
@@ -116,9 +117,10 @@ struct PullArgs {
 
 #[derive(Debug, Args)]
 struct FilterArgs {
-    /// Explicitly request identity smudge (the only Phase 1 smudge mode).
-    #[arg(long)]
-    smudge_passthrough: bool,
+    /// Accepted for compatibility with installed configurations and ignored: smudge always returns
+    /// the stored bytes unchanged.
+    #[arg(long = "smudge-passthrough")]
+    _smudge_passthrough: bool,
 }
 
 #[derive(Debug, Args)]
@@ -157,7 +159,7 @@ impl GitHfApp {
             Command::Fetch(_) => todo!(),
             Command::Checkout(_) => todo!(),
             Command::Pull(_) => todo!(),
-            Command::FilterProcess(_) => todo!(),
+            Command::FilterProcess(_) => filter_process::run(),
             Command::PrePush(_) => todo!(),
         }
     }
