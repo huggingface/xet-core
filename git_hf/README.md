@@ -33,6 +33,68 @@ effort: Git configuration command errors are ignored, including missing sections
 Neither command modifies attributes, hooks, `core.hooksPath`, or diff/merge
 configuration. Hook installation belongs with the pre-push implementation.
 
+## Process filter and local staging
+
+`filter-process --smudge-passthrough` handles Git's version 2 filter protocol.
+Smudge returns the original bytes. Clean preserves valid native pointers and
+ordinary files byte-for-byte, and selects files larger than 10 MiB or binary
+files larger than 100,000 bytes for Xet storage. Binary detection samples the first
+512 bytes. Selected files larger than 500,000,000,000 bytes are rejected.
+Recognized malformed, unsupported-version, and LFS pointers fail cleaning.
+
+The filter consumes Git's input rather than reopening worktree paths. Selected
+content is chunked and deduplicated without SHA-256 computation. Remote dedup
+is optional: only local URL, environment, or netrc credentials are used, with
+anonymous requests when none are available. Credential helpers, SSH authentication,
+and prompts are never invoked. Token discovery and each lookup have a two-second
+timeout; any lookup error or timeout disables remote lookup for that process. Once the CAS
+endpoint is resolved, protected remote shards are imported into the normal global
+Xet cache for that endpoint, and existing cached shards also participate in dedup.
+If initial endpoint discovery fails, cleaning uses repository staging alone.
+Local staging errors fail the operation. Any failed request receives `status=error`
+and ends the filter without finalizing. With `filter.hf.required=true`, Git aborts the
+whole command on that error before writing the index, so pointers already returned for
+earlier files are never staged and their data is not needed. A failed file's in-flight
+work is abandoned with the process. Xorbs already written in full remain in staging,
+unreferenced by any shard, until cleanup.
+
+A `CleanSession` owns one lazily initialized `FileUploadSession`. Each
+`SelectingFileCleaner` handles a single file using that shared state; cleaners can
+run concurrently and contribute to the same xorb aggregation. The session owner
+finalizes after all cleaners have finished and Git has closed the input stream.
+
+All processes share `<common-git-dir>/xet/staging/xorbs/` and `shards/`, with
+content-addressed objects published atomically. Each process keeps temporary
+metadata in its own `staging/session-*/` directory and maintains its own in-memory
+xorb aggregation. Completed staged shards are registered for local deduplication
+before each selected file, so a running process can reuse another process's
+completed staging work. They are read directly from staging through a separate
+shard manager owned by `git_hf`, never copied into the global cache. `xet_data`
+consults it through the optional `DeduplicationSource` interface. Persistent shards are never
+subject to cache expiration. Successful local staging writes do not promote
+shards into the remote cache.
+
+Shards remain in temporary session storage until Git closes the input stream.
+Finalization writes the remaining xorb and publishes reconstruction shards under
+`shards/`. These shards map pointer file hashes to xorb dependencies for later
+push. Each shard's xorb table lists only xorbs its session wrote, so the union of
+staged xorb tables defines local dependencies: push uploads them, and a missing
+`xorbs/<hash>.xorb` for one of them is a local error. Referenced xorbs absent from
+every table came from remote dedup data.
+Cleaning sends no xorb or shard uploads to the remote service.
+
+Staging survives normal process exit and is shared by linked worktrees.
+A pointer response can precede persistence of its partial xorb and reconstruction
+metadata. Git closes the filter only after writing the index (or commit) and ignores
+its exit status, so a failed finalization cannot fail the Git command. Instead the
+filter prints the affected paths and writes the originating worktree root followed
+by those paths, NUL-terminated, to `staging/finalize-failed/<session>`. Staging is
+shared by linked worktrees, while the paths are relative to that worktree. The pre-push hook will report these markers.
+A process killed during finalization leaves no marker; its pointers have no local
+staging record and are rejected by server validation at push. In both cases, run
+`git add --renormalize -- <paths>` in the originating worktree while its files still exist. No automatic
+staging cleanup is performed.
+
 ## Command contracts
 
 Run `git-hf --help`, or put the binary on PATH and use `git hf --help`.
@@ -85,10 +147,9 @@ calling the byte parser. It returns `GitHfError::IO` for file errors and
 
 Recognition scans only the first 4096 bytes for a native version URL or `oid xet:`
 line (or an LFS version URL). This keeps probing bounded even for large file input.
-A future streaming filter must supply the complete small blob or at least 4097
-bytes of a larger input, so the parser can reject oversized recognized pointers.
-The size field represents logical file size; selection/upload size limits are
-separate policy, to be implemented with clean.
+The streaming filter supplies the complete small blob or at least 4097 bytes of
+a larger input, so the parser can reject oversized recognized pointers. The size
+field represents logical file size; file selection uses the actual input size.
 
 ## Development
 

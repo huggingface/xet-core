@@ -6,6 +6,7 @@ use clap::{Args, Parser, Subcommand};
 use crate::Result;
 use crate::constants::GIT_HF_PROGRAM;
 
+mod filter_process;
 mod install;
 mod uninstall;
 
@@ -163,7 +164,7 @@ impl GitHfApp {
             Command::Fetch(_) => todo!(),
             Command::Checkout(_) => todo!(),
             Command::Pull(_) => todo!(),
-            Command::FilterProcess(_) => todo!(),
+            Command::FilterProcess(args) => filter_process::run(args.smudge_passthrough),
             Command::PrePush(_) => todo!(),
         }
     }
