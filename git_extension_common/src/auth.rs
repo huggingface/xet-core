@@ -93,37 +93,10 @@ impl AccessMode {
 //  2. The Git Remote URL, which should be something like "https://git.com/repo.git" This URL is used for the Git
 //     Credential Helper. This way existing https Git remote credentials can be re-used for LFS.
 pub fn get_credential(repo: &GitRepo, remote_url: &GitUrl, operation: Operation) -> Result<Arc<dyn CredentialHelper>> {
-    let access = AccessMode::from_repo_and_remote_url(repo, remote_url)?;
+    if let Some(credential) = get_noninteractive_credential(repo, remote_url)? {
+        return Ok(credential);
+    }
     let derived_host_url = remote_url.to_derived_http_host_url()?;
-
-    // 1. check access mode
-    if access == AccessMode::None {
-        return Ok(NoopCredentialHelper::new());
-    }
-
-    // 2. check embedded authentication
-    let credential = remote_url.credential();
-    // valid only when both user and token exist
-    if let (Some(_user), Some(token)) = credential {
-        return Ok(BearerCredentialHelper::new(token, "url"));
-    }
-
-    // 3. check credential from environment
-    if let Ok(token) = std::env::var(HF_TOKEN_ENV) {
-        return Ok(BearerCredentialHelper::new(token, "env"));
-    }
-
-    // 4. check netrc file
-    if let Ok(nrc) = Netrc::new() {
-        let derived_host_name = derived_host_url.split("://").last();
-        if let Some(host_name) = derived_host_name {
-            for (host, auth) in nrc.hosts {
-                if host.eq(host_name) {
-                    return Ok(BearerCredentialHelper::new(auth.password, "netrc"));
-                }
-            }
-        }
-    }
 
     // 5. check remote URL scheme
     if matches!(remote_url.scheme(), Scheme::Ssh | Scheme::GitSsh) {
@@ -132,6 +105,45 @@ pub fn get_credential(repo: &GitRepo, remote_url: &GitUrl, operation: Operation)
 
     // 6. check Git credential helper
     Ok(GitCredentialHelper::new(repo.git_path()?, &derived_host_url)?)
+}
+
+/// Resolves only local credentials: explicit anonymous access, URL, environment, or netrc.
+/// Never invokes credential helpers, SSH, askpass, or terminal prompts. `None` means no
+/// local credential was found; callers may make an anonymous request or skip remote work.
+pub fn get_noninteractive_credential(repo: &GitRepo, remote_url: &GitUrl) -> Result<Option<Arc<dyn CredentialHelper>>> {
+    let access = AccessMode::from_repo_and_remote_url(repo, remote_url)?;
+    let derived_host_url = remote_url.to_derived_http_host_url()?;
+
+    // 1. check access mode
+    if access == AccessMode::None {
+        return Ok(Some(NoopCredentialHelper::new()));
+    }
+
+    // 2. check embedded authentication
+    let credential = remote_url.credential();
+    // valid only when both user and token exist
+    if let (Some(_user), Some(token)) = credential {
+        return Ok(Some(BearerCredentialHelper::new(token, "url")));
+    }
+
+    // 3. check credential from environment
+    if let Ok(token) = std::env::var(HF_TOKEN_ENV) {
+        return Ok(Some(BearerCredentialHelper::new(token, "env")));
+    }
+
+    // 4. check netrc file
+    if let Ok(nrc) = Netrc::new() {
+        let derived_host_name = derived_host_url.split("://").last();
+        if let Some(host_name) = derived_host_name {
+            for (host, auth) in nrc.hosts {
+                if host.eq(host_name) {
+                    return Ok(Some(BearerCredentialHelper::new(auth.password, "netrc")));
+                }
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -183,6 +195,26 @@ mod test_cred_helpers {
     use crate::git_repo::GitRepo;
     use crate::test_utils::TestRepo;
     use crate::utils::process_wrapping::run_git_captured_with_input_and_output;
+
+    #[test]
+    #[serial(env_var_write_read)]
+    fn noninteractive_credentials_never_invoke_helpers() -> Result<()> {
+        let test_repo = TestRepo::new("main")?;
+        let _token = EnvVarGuard::unset(HF_TOKEN_ENV);
+        let netrc = NamedTempFile::new()?;
+        let _netrc = EnvVarGuard::set("NETRC", netrc.path());
+        let marker = test_repo.path().join("credential-helper-called");
+        let command = format!("!touch '{}'; exit 1", marker.display());
+        test_repo.set_config("credential.helper", &command)?;
+        let _askpass = EnvVarGuard::set("GIT_ASKPASS", "/this-must-never-be-executed");
+        let repo = GitRepo::open(test_repo.path())?;
+        for url in ["https://example.invalid/user/repo", "git@example.invalid:user/repo"] {
+            let url = url.parse()?;
+            assert!(super::get_noninteractive_credential(&repo, &url)?.is_none());
+        }
+        assert!(!marker.exists());
+        Ok(())
+    }
 
     #[test]
     #[serial(env_var_write_read)]

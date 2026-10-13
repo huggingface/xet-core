@@ -8,7 +8,7 @@ mod git_url;
 mod token_refresher;
 mod utils;
 
-pub use auth::{AccessMode, get_credential};
+pub use auth::{AccessMode, get_credential, get_noninteractive_credential};
 pub use errors::{GitExtensionError, Result};
 pub use git_repo::GitRepo;
 pub use git_url::{GitUrl, Scheme};
