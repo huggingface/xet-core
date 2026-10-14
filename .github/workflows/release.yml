@@ -38,8 +38,8 @@ jobs:
           - 3.14
           - 3.14t
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: 'pip'
@@ -59,7 +59,7 @@ jobs:
         with:
           tag: ${{ github.event.inputs.tag }}
       - name: Build wheels
-        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1.51.0
         with:
           target: ${{ matrix.platform.target }}
           args: --profile ${{ env.BUILD_PROFILE }} -i ${{ matrix.python-version }} --out dist
@@ -110,12 +110,12 @@ jobs:
           cp hf_xet/dist/* dist/
       - name: Upload debug symbols
         if: env.IS_RELEASE == 'true'
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: dbg-linux-${{ matrix.python-version }}-${{ matrix.platform.target }}
           path: hf_xet/dbg
       - name: Upload wheels
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: wheels-linux-${{ matrix.python-version }}-${{ matrix.platform.target }}
           path: dist
@@ -135,8 +135,8 @@ jobs:
           - 3.14
           - 3.14t
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: 'pip'
@@ -156,7 +156,7 @@ jobs:
         with:
           tag: ${{ github.event.inputs.tag }}
       - name: Build wheels
-        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1.51.0
         with:
           target: ${{ matrix.platform.target }}
           args: --profile ${{ env.BUILD_PROFILE }} -i ${{ matrix.python-version }}  --out dist
@@ -199,12 +199,12 @@ jobs:
           cp hf_xet/dist/* dist/
       - name: Upload debug symbols
         if: env.IS_RELEASE == 'true'
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: dbg-musllinux-${{ matrix.python-version }}-${{ matrix.platform.target }}
           path: hf_xet/dbg
       - name: Upload wheels with separated debug symbols
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: wheels-musllinux-${{ matrix.python-version }}-${{ matrix.platform.target }}
           path: dist
@@ -226,8 +226,8 @@ jobs:
           - 3.14
           - 3.14t
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: 'pip'
@@ -241,7 +241,7 @@ jobs:
             sed -i '/^version /s/=.*$/= "'"$VERSION"'"/' hf_xet/Cargo.toml
           fi
       - name: Build wheels
-        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1.51.0
         with:
           target: ${{ matrix.platform.target }}
           args: --release -i python${{ matrix.python-version }} --out dist
@@ -259,12 +259,12 @@ jobs:
           mkdir hf_xet/dbg
           cp hf_xet/target/${{ matrix.platform.rust_target }}/release/hf_xet.pdb hf_xet/dbg/${SYMBOL_FILE}
       - name: Upload debug symbols
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: dbg-windows-${{ matrix.python-version }}-${{ matrix.platform.target }}
           path: hf_xet/dbg
       - name: Upload wheels
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: wheels-windows-${{ matrix.python-version }}-${{ matrix.platform.target }}
           path: hf_xet/dist
@@ -286,8 +286,8 @@ jobs:
           - 3.14
           - 3.14t
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: 'pip'
@@ -307,7 +307,7 @@ jobs:
         with:
           tag: ${{ github.event.inputs.tag }}
       - name: Build wheels
-        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1.51.0
         with:
           target: ${{ matrix.platform.target }}
           args: --profile ${{ env.BUILD_PROFILE }} -i ${{ matrix.python-version }} --strip --out dist
@@ -332,12 +332,12 @@ jobs:
           cp -r libhf_xet.dylib.dSYM ../../../dbg/${SYMBOL_FILE}
       - name: Upload debug symbols
         if: env.IS_RELEASE == 'true'
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: dbg-macos-${{ matrix.python-version }}-${{ matrix.platform.target }}
           path: hf_xet/dbg
       - name: Upload wheels
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: wheels-macos-${{ matrix.python-version }}-${{ matrix.platform.target }}
           path: hf_xet/dist
@@ -347,7 +347,7 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Update version in toml
         env:
           TAG: ${{ github.event.inputs.tag }}
@@ -357,7 +357,7 @@ jobs:
             sed -i '/^version /s/=.*$/= "'"$VERSION"'"/' hf_xet/Cargo.toml
           fi
       - name: Build sdist
-        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad  # v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1.51.0
         with:
           command: sdist
           args: --out dist
@@ -374,7 +374,7 @@ jobs:
           tar -cvzf ${DISTFILE} ${DISTNAME}
           rm -rf ${DISTNAME}
       - name: Upload sdist
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: wheels-sdist
           path: hf_xet/dist
@@ -392,7 +392,7 @@ jobs:
       attestations: write
     environment: release
     steps:
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
       - name: Collect wheels and sdist into dist/
         run: |
           set -euo pipefail
@@ -402,11 +402,11 @@ jobs:
           cp wheels-*/* dist/
           ls -l dist
       - name: Generate GitHub build provenance attestation
-        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a  # v3
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
         with:
           subject-path: 'dist/*'
       - name: Publish to PyPI (Trusted Publishing + PEP 740 attestations)
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
         with:
           attestations: true
           skip-existing: true
@@ -420,8 +420,8 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     needs: [ linux, musllinux, windows, macos, sdist ]
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}

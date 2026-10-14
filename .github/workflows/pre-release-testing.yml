@@ -27,9 +27,12 @@ jobs:
     steps:
       - name: Determine PyPi version from tag
         id: get-version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            TAG=${{ inputs.tag }}
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            TAG="$INPUT_TAG"
           else
             TAG=${GITHUB_REF#refs/tags/}
           fi
@@ -39,20 +42,23 @@ jobs:
           echo "BRANCH_NAME=ci_test_hf_xet_${TRIMMED_VERSION}_release" >> $GITHUB_OUTPUT
 
       - name: Checkout target repo
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: huggingface/${{ matrix.target-repo }}
           path: ${{ matrix.target-repo }}
           token: ${{ secrets.TOKEN_HUGGINGFACE_HUB_AUTO_BY_XET }}
 
       - name: Configure Git
+        env:
+          TARGET_REPO: ${{ matrix.target-repo }}
         run: |
-          cd ${{ matrix.target-repo }}
+          cd "$TARGET_REPO"
           git config user.name "Hugging Face Bot (Xet RC Testing)"
           git config user.email "bot+xet@huggingface.co"
       - name: Wait for prerelease to be out on PyPI
+        env:
+          VERSION: ${{ steps.get-version.outputs.VERSION }}
         run: |
-          VERSION=${{ steps.get-version.outputs.VERSION }}
           echo "Waiting for hf_xet==${VERSION} to be available on PyPI"
           while ! pip install hf_xet==${VERSION}; do
             echo "hf_xet==${VERSION} not available yet, retrying in 15s"
@@ -61,10 +67,12 @@ jobs:
 
       - name: Create test branch and update dependencies
         id: create-pr
+        env:
+          TARGET_REPO: ${{ matrix.target-repo }}
+          VERSION: ${{ steps.get-version.outputs.VERSION }}
+          BRANCH_NAME: ${{ steps.get-version.outputs.BRANCH_NAME }}
         run: |
-          cd ${{ matrix.target-repo }}
-          VERSION=${{ steps.get-version.outputs.VERSION }}
-          BRANCH_NAME=${{ steps.get-version.outputs.BRANCH_NAME }}
+          cd "$TARGET_REPO"
 
           # Create and checkout new branch
           git checkout -b $BRANCH_NAME
@@ -83,9 +91,11 @@ jobs:
           git push --set-upstream origin $BRANCH_NAME
 
       - name: Print URLs for manual check
+        env:
+          TARGET_REPO: ${{ matrix.target-repo }}
+          VERSION: ${{ steps.get-version.outputs.VERSION }}
+          BRANCH_NAME: ${{ steps.get-version.outputs.BRANCH_NAME }}
         run: |
-          VERSION=${{ steps.get-version.outputs.VERSION }}
-          BRANCH_NAME=${{ steps.get-version.outputs.BRANCH_NAME }}
-          echo "https://github.com/huggingface/${{ matrix.target-repo }}/actions"
-          echo "https://github.com/huggingface/${{matrix.target-repo}}/tree/refs/heads/${BRANCH_NAME}"
-          echo "https://github.com/huggingface/huggingface_hub/${{ matrix.target-repo }}/compare/main...${BRANCH_NAME}"
+          echo "https://github.com/huggingface/${TARGET_REPO}/actions"
+          echo "https://github.com/huggingface/${TARGET_REPO}/tree/refs/heads/${BRANCH_NAME}"
+          echo "https://github.com/huggingface/huggingface_hub/${TARGET_REPO}/compare/main...${BRANCH_NAME}"
