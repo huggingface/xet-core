@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use git2::{Config, Repository};
 
-use crate::errors::{GitXetError, Result};
+use crate::errors::{GitExtensionError, Result};
 use crate::git_url::GitUrl;
 
 #[derive(Clone)]
@@ -21,7 +21,7 @@ impl GitRepo {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let start_path = path.as_ref();
 
-        let raw_repo = Repository::discover(start_path).map_err(|e| GitXetError::NoGitRepo {
+        let raw_repo = Repository::discover(start_path).map_err(|e| GitExtensionError::NoGitRepo {
             path: start_path.to_path_buf(),
             source: e,
         })?;
@@ -33,13 +33,13 @@ impl GitRepo {
 
     // Returns the path to the .git folder for normal repositories or the repository itself for bare repositories.
     pub fn git_path(&self) -> Result<PathBuf> {
-        let repo = self.repo.lock().map_err(GitXetError::internal)?;
+        let repo = self.repo.lock().map_err(GitExtensionError::internal)?;
         Ok(repo.path().to_path_buf())
     }
 
     // Resolves the reference pointed at by HEAD, returns branch name if it is a branch.
     pub fn branch_name(&self) -> Result<Option<String>> {
-        let repo = self.repo.lock().map_err(GitXetError::internal)?;
+        let repo = self.repo.lock().map_err(GitExtensionError::internal)?;
 
         let maybe_head_ref = repo.head();
         Ok(maybe_head_ref.ok().and_then(|head_ref| {
@@ -64,7 +64,7 @@ impl GitRepo {
     pub fn remote_name(&self) -> Result<String> {
         let maybe_branch_name = self.branch_name()?;
 
-        let repo = self.repo.lock().map_err(GitXetError::internal)?;
+        let repo = self.repo.lock().map_err(GitExtensionError::internal)?;
         let config = repo.config()?.snapshot()?;
 
         // try tracking remote
@@ -94,7 +94,7 @@ impl GitRepo {
 
     // Returns the URL for a specific remote name.
     pub fn remote_name_to_url(&self, remote: &str) -> Result<GitUrl> {
-        let repo = self.repo.lock().map_err(GitXetError::internal)?;
+        let repo = self.repo.lock().map_err(GitExtensionError::internal)?;
 
         let url: GitUrl = repo
             .find_remote(remote)?
@@ -102,7 +102,7 @@ impl GitRepo {
             .ok()
             .map(|s| s.to_string())
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| GitXetError::config_error(format!("no url for remote \"{remote}\"")))?
+            .ok_or_else(|| GitExtensionError::config_error(format!("no url for remote \"{remote}\"")))?
             .parse()?;
 
         Ok(url)
@@ -117,7 +117,7 @@ impl GitRepo {
 
     // Returns a snapshot of the current Git repo config.
     pub fn config(&self) -> Result<Config> {
-        let repo = self.repo.lock().map_err(GitXetError::internal)?;
+        let repo = self.repo.lock().map_err(GitExtensionError::internal)?;
 
         Ok(repo.config()?.snapshot()?)
     }
