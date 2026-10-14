@@ -12,4 +12,5 @@ pub const XET_TOKEN_EXPIRATION_HEADER: &str = "X-Xet-Token-Expiration";
 pub const XET_SESSION_ID: &str = "X-Xet-Session-Id";
 
 // Environment variable names
+pub const HF_TOKEN_ENV: &str = "HF_TOKEN";
 pub const HF_ENDPOINT_ENV: &str = "HF_ENDPOINT";

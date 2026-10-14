@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use git_extension_common::{GitRepo, GitUrl};
 use http::header::HeaderMap;
 use xet_client::cas_client::auth::DirectRefreshRouteTokenRefresher;
 use xet_client::common::http_client::build_http_client;
@@ -8,10 +9,8 @@ use xet_runtime::core::XetContext;
 
 use crate::auth::get_credential;
 use crate::errors::Result;
-use crate::git_repo::GitRepo;
-use crate::git_url::GitUrl;
 
-/// Build a [`DirectRefreshRouteTokenRefresher`] for a Git client,
+/// Build a [`DirectRefreshRouteTokenRefresher`] for the git-xet path,
 /// deriving credentials from the git repo's credential helper.
 pub fn new_git_token_refresher(
     ctx: &XetContext,

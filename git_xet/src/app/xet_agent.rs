@@ -3,7 +3,7 @@ use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use git_extension_common::{GitRepo, GitUrl, Scheme, new_git_token_refresher};
+use git_extension_common::{GitRepo, GitUrl, Scheme};
 use http::header;
 use xet_client::cas_client::auth::TokenRefresher;
 use xet_client::hub_client::Operation;
@@ -26,6 +26,7 @@ use crate::errors::{GitXetError, Result};
 use crate::lfs_agent_protocol::{
     GitLFSProtocolError, InitRequestInner, ProgressUpdater, TransferAgent, TransferRequest,
 };
+use crate::token_refresher::new_git_token_refresher;
 
 // This implements a Git LFS custom transfer agent that uploads and downloads files using the Xet protocol.
 #[derive(Default)]

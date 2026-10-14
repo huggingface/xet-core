@@ -6,12 +6,10 @@ use xet_client::hub_client::{HFRepoType, RepoInfo};
 
 use crate::errors::{GitExtensionError, Result};
 
-// This mod implements functionalities to handle Git remote URLs, especially tailored for
-// Git LFS and Hugging Face repo needs, including deriving Git LFS server endpoint from
-// Git remote URL and handling HF specific repo types.
+// This mod implements functionalities to handle Git remote URLs for Hugging Face repos, including
+// deriving the HTTP(S) host of an SSH or HTTP(S) remote and handling HF specific repo types.
 
-// `GitUrl` wraps inside a parsed Git remote URL and extends its capability for Git LFS
-// and HF repo specific needs.
+// `GitUrl` wraps inside a parsed Git remote URL and extends its capability for HF repo specific needs.
 #[derive(Debug, Clone)]
 pub struct GitUrl {
     _raw: String,
@@ -77,8 +75,9 @@ impl GitUrl {
         Ok(format!("{scheme}://{auth_str}{host}{port_str}/{path}.git"))
     }
 
-    // Returns the same host as the LFS server endpoint determined from this Git remote URL.
-    // This helps find credentials stored under this host name.
+    // Returns the HTTP(S) host URL derived from this Git remote URL, e.g. "https://hf.co" for
+    // "git@hf.co:user/repo". Hub APIs, including the Xet token API and Git LFS, are served from this
+    // host, and credentials are looked up under it.
     pub fn to_derived_http_host_url(&self) -> Result<String> {
         let (scheme, translated) = self.to_derived_http_scheme()?;
 

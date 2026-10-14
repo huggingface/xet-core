@@ -2,29 +2,30 @@
 
 `git_extension_common` contains Git support shared by `git-xet` and the planned
 `git-hf` client. It is an unpublished workspace crate, with no dependency on the
-LFS transfer-agent protocol or CLI.
+LFS transfer-agent protocol, CLI, or credential selection policy.
 
-The crate exports `GitRepo`, `GitUrl`, `Scheme`, `AccessMode`, `get_credential`,
-`new_git_token_refresher`, `GitExtensionError`, and `Result`. The
-`process_wrapping` module provides captured subprocess helpers.
+The crate exports `GitRepo`, `GitUrl`, `Scheme`, `GitCredentialHelper`,
+`SSHCredentialHelper`, `GitExtensionError`, and `Result`. The `process_wrapping`
+module provides captured subprocess helpers.
 
 This extraction preserves existing behavior:
 
 - Repository discovery uses libgit2. Default remote selection checks the tracked
   branch, `remote.lfsdefault`, a single configured remote, then `origin`.
-- Credentials respect `lfs.<url>.access`, URL credentials, `HF_TOKEN`, netrc,
-  SSH `git-lfs-authenticate`, and Git credential helpers, in that order.
-- SSH command construction respects Git's existing environment/configuration
-  precedence. Token refresh uses the same credential helper and HTTP client.
+- `GitUrl` derives the HTTP(S) host of SSH and HTTP(S) remotes and parses Hugging
+  Face repo types.
+- `GitCredentialHelper` reads credentials for the remote's HTTP(S) host through
+  `git credential fill`. `SSHCredentialHelper` runs `git-lfs-authenticate` over
+  SSH, constructing the SSH command with Git's environment/configuration precedence.
 
-These defaults retain git-xet's LFS conventions. Callers needing different
-native-Git policies should introduce those explicitly in subsequent changes.
+Choosing a credential source stays in each client. git-xet's `get_credential`
+follows Git LFS conventions, including `lfs.<url>.access`, which other clients
+should not inherit implicitly.
 
 `test-utils` exposes temporary-home/repository fixtures, SSH response types, and
 `start_local_ssh_server` for dependent test targets. Its `anyhow`, `tempfile`,
 `russh`, and `tokio` dependencies are optional; normal builds do not enable this
-feature. The process integration tests remain in `git_xet` and import the shared
-fixtures directly through a dev-dependency.
+feature.
 
 Run from the repository root:
 

@@ -10,10 +10,8 @@ xet-runtime = { path = "../xet_runtime" }
 async-trait = { workspace = true }
 git-url-parse = { workspace = true }
 git2 = { workspace = true }
-http = { workspace = true }
 reqwest = { workspace = true }
 reqwest-middleware = { workspace = true }
-rust-netrc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 shell-words = { workspace = true }
@@ -33,6 +31,3 @@ tokio = { workspace = true }
 [features]
 test-utils = ["dep:anyhow", "dep:tempfile", "dep:russh", "dep:tokio"]
 git2-vendored-openssl = ["git2/vendored-openssl"]
-
-[package.metadata.cargo-machete.renamed]
-rust-netrc = "netrc"
