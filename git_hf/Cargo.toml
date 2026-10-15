@@ -1,0 +1,24 @@
+[package]
+name = "git_hf"
+version = "0.1.0-dev"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "git-hf"
+path = "src/bin/main.rs"
+
+[dependencies]
+clap = { workspace = true }
+git_extension_common = { path = "../git_extension_common" }
+git-url-parse = { workspace = true }
+git2 = { workspace = true }
+thiserror = { workspace = true }
+xet-client = { path = "../xet_client" }
+xet-core-structures = { path = "../xet_core_structures" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[features]
+git2-vendored-openssl = ["git_extension_common/git2-vendored-openssl"]

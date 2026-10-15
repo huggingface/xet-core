@@ -14,6 +14,7 @@ including Merkle hashes, metadata shards, and Xorb objects.
 - **Metadata shards** — Compact shard format mapping file ranges to Xorb chunks
 - **Xorb objects** — Content-addressed storage objects with byte-grouping compression
 - **Data structures** — Specialized hash maps and utilities for deduplication
+- **Xet pointer files** — Parsing and canonical serialization of the text files that stand in for Xet content
 
 This crate is part of [xet-core](https://github.com/huggingface/xet-core),
 the Rust backend for [huggingface_hub](https://github.com/huggingface/huggingface_hub).

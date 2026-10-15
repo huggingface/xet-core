@@ -63,6 +63,10 @@ pub enum CoreError {
     #[error("Chunk header parse error")]
     ChunkHeaderParse,
 
+    // -- Pointer files ---------------------------------------------------
+    #[error(transparent)]
+    XetPointer(#[from] crate::xet_pointer::PointerError),
+
     // -- Runtime ---------------------------------------------------------
     #[error("Runtime error: {0}")]
     RuntimeError(#[from] xet_runtime::RuntimeError),
