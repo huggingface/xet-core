@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use git_extension_common::process_wrapping::run_git_captured;
 
 use crate::utils::git_get_all_config_values;
@@ -14,7 +12,18 @@ pub(super) enum ConfigLocation {
     System,
     #[default]
     Global,
-    Local(Option<PathBuf>),
+    Local,
+}
+
+impl ConfigLocation {
+    // The `git config` scope option. --local follows Git's repository selection for the current directory.
+    pub(super) fn profile(&self) -> &'static str {
+        match self {
+            ConfigLocation::System => "--system",
+            ConfigLocation::Global => "--global",
+            ConfigLocation::Local => "--local",
+        }
+    }
 }
 
 // Install git-hf in the system Git config.
@@ -27,19 +36,15 @@ pub(super) fn global() -> Result<()> {
     install_impl(ConfigLocation::Global)
 }
 
-// Install git-hf in the local repo's Git config at repo_path, or the current directory.
-pub(super) fn local(repo_path: Option<PathBuf>) -> Result<()> {
-    install_impl(ConfigLocation::Local(repo_path))
+// Install git-hf in the Git config of the repository Git selects for the current directory.
+pub(super) fn local() -> Result<()> {
+    install_impl(ConfigLocation::Local)
 }
 
 // Set up the required "hf" process filter.
 fn install_impl(location: ConfigLocation) -> Result<()> {
-    let cwd = std::env::current_dir()?;
-    let (wd, loc_profile) = match location {
-        ConfigLocation::System => (cwd, "--system"),
-        ConfigLocation::Global => (cwd, "--global"),
-        ConfigLocation::Local(maybe_loc) => (maybe_loc.unwrap_or(cwd), "--local"),
-    };
+    let wd = std::env::current_dir()?;
+    let loc_profile = location.profile();
 
     // Check every process value before changing config, so a conflicting duplicate is not overlooked.
     let process = git_get_all_config_values(&wd, loc_profile, PROCESS_KEY)?;
@@ -68,7 +73,7 @@ mod tests {
     use git_extension_common::process_wrapping::run_git_captured;
     use git_extension_common::test_utils::{TempHome, TestRepo};
     use serial_test::serial;
-    use xet_runtime::utils::EnvVarGuard;
+    use xet_runtime::utils::{CwdGuard, EnvVarGuard};
 
     use super::{PROCESS, PROCESS_KEY, REQUIRED_KEY, global, local};
     use crate::GitHfError;
@@ -91,14 +96,14 @@ mod tests {
     #[serial(env_var_write_read)]
     fn test_install_local() -> Result<()> {
         let test_repo = TestRepo::new("main")?;
-        let mut args = ["git-hf", "install", "--local", "--path"].map(OsString::from).to_vec();
-        args.push(test_repo.path().as_os_str().to_owned());
+        let _cwd = CwdGuard::set(test_repo.path())?;
+        let args = ["git-hf", "install", "--local"].map(OsString::from);
         GitHfApp::try_parse_args_from(args)?.run()?;
         let repo = GitRepo::open(test_repo.path())?;
         assert_eq!(repo.config()?.get_string(PROCESS_KEY)?, PROCESS);
         assert!(repo.config()?.get_bool(REQUIRED_KEY)?);
         let before = fs::read(repo.common_dir()?.join("config"))?;
-        local(Some(test_repo.path().to_owned()))?;
+        local()?;
         assert_eq!(fs::read(repo.common_dir()?.join("config"))?, before);
         Ok(())
     }
@@ -123,7 +128,8 @@ mod tests {
         test_repo.set_config(REQUIRED_KEY, "false")?;
         let config_path = GitRepo::open(test_repo.path())?.common_dir()?.join("config");
         let before = fs::read(&config_path)?;
-        assert!(matches!(local(Some(test_repo.path().to_owned())), Err(GitHfError::InvalidGitConfig(_))));
+        let _cwd = CwdGuard::set(test_repo.path())?;
+        assert!(matches!(local(), Err(GitHfError::InvalidGitConfig(_))));
         assert_eq!(fs::read(config_path)?, before);
         Ok(())
     }
@@ -133,6 +139,7 @@ mod tests {
     fn test_install_overwrites_required_values() -> Result<()> {
         for existing_process in [None, Some(PROCESS)] {
             let test_repo = TestRepo::new("main")?;
+            let _cwd = CwdGuard::set(test_repo.path())?;
             if let Some(process) = existing_process {
                 test_repo.set_config(PROCESS_KEY, process)?;
             }
@@ -141,7 +148,7 @@ mod tests {
                 for value in &values[1..] {
                     run_git_captured(test_repo.path(), "config", ["--add", REQUIRED_KEY, value])?;
                 }
-                local(Some(test_repo.path().to_owned()))?;
+                local()?;
                 assert_eq!(
                     git_get_all_config_values(test_repo.path(), "--local", REQUIRED_KEY)?,
                     vec![b"true".to_vec()]
@@ -161,11 +168,12 @@ mod tests {
         let test_repo = TestRepo::new("main")?;
         test_repo.set_config(PROCESS_KEY, "custom")?;
         run_git_captured(test_repo.path(), "config", ["--add", PROCESS_KEY, PROCESS])?;
-        assert!(matches!(local(Some(test_repo.path().to_owned())), Err(GitHfError::InvalidGitConfig(_))));
+        let _cwd = CwdGuard::set(test_repo.path())?;
+        assert!(matches!(local(), Err(GitHfError::InvalidGitConfig(_))));
         assert!(git_get_all_config_values(test_repo.path(), "--local", REQUIRED_KEY)?.is_empty());
         run_git_captured(test_repo.path(), "config", ["--replace-all", PROCESS_KEY, PROCESS])?;
         run_git_captured(test_repo.path(), "config", ["--add", PROCESS_KEY, PROCESS])?;
-        local(Some(test_repo.path().to_owned()))?;
+        local()?;
         assert_eq!(git_get_all_config_values(test_repo.path(), "--local", PROCESS_KEY)?.len(), 2);
         Ok(())
     }

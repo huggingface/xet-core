@@ -56,15 +56,12 @@ struct InstallArgs {
     /// Use system configuration.
     #[arg(long, conflicts_with_all = ["local", "global"])]
     system: bool,
-    /// Use repository-local configuration instead of the default global scope.
+    /// Use the current repository's configuration instead of the default global scope.
     #[arg(long, conflicts_with = "global")]
     local: bool,
     /// Use global configuration (the default).
     #[arg(long)]
     global: bool,
-    /// Repository path for --local; defaults to the current directory.
-    #[arg(long, requires = "local")]
-    path: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -75,15 +72,12 @@ struct UninstallArgs {
     /// Use system configuration.
     #[arg(long, conflicts_with_all = ["local", "global"])]
     system: bool,
-    /// Use repository-local configuration.
+    /// Use the current repository's configuration.
     #[arg(long, conflicts_with = "global")]
     local: bool,
     /// Use global configuration (the default).
     #[arg(long)]
     global: bool,
-    /// Repository path for --local; defaults to the current directory.
-    #[arg(long, requires = "local")]
-    path: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -174,7 +168,7 @@ fn install_command(args: InstallArgs) -> Result<()> {
         install::system()?;
         println!("{GIT_HF_PROGRAM} installed to system config!");
     } else if args.local {
-        install::local(args.path)?;
+        install::local()?;
         println!("{GIT_HF_PROGRAM} installed to local repository config!");
     } else {
         install::global()?;
@@ -191,7 +185,7 @@ fn uninstall_command(args: UninstallArgs) -> Result<()> {
         uninstall::system()?;
         println!("{GIT_HF_PROGRAM} uninstalled from system config!");
     } else if args.local {
-        uninstall::local(args.path)?;
+        uninstall::local()?;
         println!("{GIT_HF_PROGRAM} uninstalled from local repository config!");
     } else {
         uninstall::global()?;

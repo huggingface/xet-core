@@ -6,8 +6,7 @@
 
 Run `git hf install` (or `git-hf install`) to register the filter globally, or
 `git hf install --local` inside a repository to register it in the repository's
-shared config. Use `--local --path <repository>` to select a repository explicitly,
-or `git hf install --system` for system-wide registration. `--global` is the explicit
+shared config, or `git hf install --system` for system-wide registration. `--global` is the explicit
 default. Global installation works outside a repository and follows Git's global
 configuration location rules.
 
@@ -27,8 +26,8 @@ left untouched; Git's usual configuration precedence still applies.
 `git hf uninstall` removes the entire `filter.hf` section from global config,
 including modified values. Use `--system` or `--local` to select another scope,
 or `--all` to attempt removal from system, global, and current repository config.
-`--local --path <repository>` selects a repository explicitly. Removal is best
-effort: Git configuration command errors are ignored, including missing sections.
+`--local` uses the repository Git selects for the current directory, as
+`git config --local` does. Removal is best effort: Git configuration command errors are ignored, including missing sections.
 
 Neither command modifies attributes, hooks, `core.hooksPath`, or diff/merge
 configuration. Hook installation belongs with the pre-push implementation.
@@ -41,8 +40,8 @@ Run `git-hf --help`, or put the binary on PATH and use `git hf --help`.
 | --- | --- |
 | `add <paths...>` | Stage whole files concurrently using automatic Xet selection, leaving worktree contents unchanged. |
 | `track` | Explain automatic file selection; no manual tracking is needed. |
-| `install [--local \| --global \| --system] [--path <repository>]` | Register the required `hf` filter; default scope is global. |
-| `uninstall [--local \| --global \| --system \| --all] [--path <repository>]` | Remove the hf filter section; default scope is global. |
+| `install [--local \| --global \| --system]` | Register the required `hf` filter; default scope is global. |
+| `uninstall [--local \| --global \| --system \| --all]` | Remove the hf filter section; default scope is global. |
 | `clone <git-clone-args...>` | Accept Git clone options, repository, and destination as an opaque argument list. |
 | `fetch [remote] [revision]` | Cache reconstruction metadata and xorb ranges for a local revision (default HEAD); do not fetch Git refs or reconstruct files. |
 | `checkout [--force] [paths...]` | Reconstruct selected index entries from local data only. |
