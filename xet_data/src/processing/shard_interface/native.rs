@@ -27,12 +27,14 @@ use xet_runtime::error_printer::ErrorPrinter;
 
 use super::super::configurations::TranslatorConfig;
 use crate::error::Result;
+use crate::processing::UploadShardCachePolicy;
 use crate::progress_tracking::upload_tracking::CompletionTracker;
 
 pub struct SessionShardInterface {
     ctx: XetContext,
     session_shard_manager: Arc<ShardFileManager>,
     cache_shard_manager: Arc<ShardFileManager>,
+    cache_policy: UploadShardCachePolicy,
 
     client: Arc<dyn Client + Send + Sync>,
     completion_tracker: Arc<CompletionTracker>,
@@ -63,6 +65,7 @@ impl SessionShardInterface {
         client: Arc<dyn Client + Send + Sync>,
         completion_tracker: Arc<CompletionTracker>,
         dry_run: bool,
+        cache_policy: UploadShardCachePolicy,
     ) -> Result<Self> {
         // Create a temporary session directory where we hold all the shards before upload.
         std::fs::create_dir_all(&config.shard_session_directory)?;
@@ -133,6 +136,7 @@ impl SessionShardInterface {
             ctx: ctx.clone(),
             session_shard_manager,
             cache_shard_manager,
+            cache_policy,
             xorb_metadata_staging_dir,
             staged_shards_to_remove_on_success,
             xorb_metadata_staging: Mutex::new((SystemTime::now(), MDBInMemoryShard::default())),
@@ -162,7 +166,7 @@ impl SessionShardInterface {
         Ok(true)
     }
 
-    /// Returns the number of chunks and xorb to dedup against, as well as whether it's already known to be uploaded.
+    /// Returns matching chunks, their xorb, and whether its transfer to the session's client has already completed.
     pub async fn chunk_hash_dedup_query(
         &self,
         query_hashes: &[MerkleHash],
@@ -264,6 +268,7 @@ impl SessionShardInterface {
             let cache_shard_manager = self.cache_shard_manager.clone();
             let shard_bytes_uploaded = shard_bytes_uploaded.clone();
             let dry_run = self.dry_run;
+            let cache_policy = self.cache_policy;
             let completion_tracker = self.completion_tracker.clone();
 
             // Acquire a permit for uploading before we spawn the task; the acquired permit is dropped after the task
@@ -307,6 +312,11 @@ impl SessionShardInterface {
                     shard_client.upload_shard(data, upload_permit, progress_callback).await?;
 
                     info!("Shard {:?} upload + sync completed successfully.", &si.shard_hash);
+
+                    // A successful staging write does not establish remote availability.
+                    if matches!(cache_policy, UploadShardCachePolicy::Skip) {
+                        return Ok(());
+                    }
 
                     // Now that the upload succeeded, move that shard to the cache directory, adding in an expiration
                     // time.
