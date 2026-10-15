@@ -37,6 +37,10 @@ will be handled when clone execution is implemented.
 
 ## Pointer API
 
+The pointer format is implemented in the `xet_pointer` module of
+`xet-core-structures`; git-hf re-exports `XetPointer`, `PointerError`, and
+`MAX_POINTER_SIZE`.
+
 `XetPointer::new(MerkleHash, size)` creates a pointer with the current version. `to_string()` and `write_to()` serialize it as:
 
 ```text
@@ -47,21 +51,24 @@ size 12345
 
 `XetPointer::parse` returns `Ok(None)` for ordinary file data, a validated
 pointer for native content, or a typed `PointerError` for recognized malformed,
-unsupported-version, or LFS pointers. It enforces the 4096-byte limit, UTF-8/LF
-syntax with a final newline, unique required fields, exact version, lowercase
+unsupported-version, or LFS pointers. Input longer than 4096 bytes is always
+ordinary data. Otherwise it enforces UTF-8/LF
+syntax with a final newline, unique required fields, exact version, case-insensitive
 64-digit Xet hash, and a u64 decimal size with no leading zeroes except `0`.
 The `hash`, `size`, and `version` fields are directly accessible. Empty lines and unknown
 extension keys are accepted and discarded. `to_string()` and `write_to()` serialize
 the stored version, hash, and size in canonical order.
 
-`XetPointer::parse_file(path)` opens a file and reads at most 4097 bytes before
-calling the byte parser. It returns `GitHfError::IO` for file errors and
-`GitHfError::Pointer` for pointer validation errors, or `Ok(None)` for ordinary data.
+`XetPointer::parse_file(path)` opens a file and returns `Ok(None)` without reading
+it when its metadata shows a regular file larger than 4096 bytes. Otherwise,
+including when metadata is unavailable, it reads at most 4097 bytes (the file may
+grow, or report no size) before calling the byte parser. It returns `CoreError::Io` for file errors and
+`CoreError::XetPointer` for pointer validation errors, or `Ok(None)` for ordinary data.
 
-Recognition scans only the first 4096 bytes for a native version URL or `oid xet:`
-line (or an LFS version URL). This keeps probing bounded even for large file input.
-A future streaming filter must supply the complete small blob or at least 4097
-bytes of a larger input, so the parser can reject oversized recognized pointers.
+Recognition scans at most 4096 bytes for a native version URL or `oid xet:` line
+(or an LFS version URL), so probing stays bounded even for large file input. A
+future streaming filter must supply the complete small blob or at least 4097 bytes
+of a larger input, so the parser can recognize oversized input as ordinary data.
 The size field represents logical file size; selection/upload size limits are
 separate policy, to be implemented with clean.
 

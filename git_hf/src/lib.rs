@@ -2,8 +2,7 @@
 
 mod cli;
 mod error;
-mod pointer;
 
 pub use cli::GitHfApp;
 pub use error::{GitHfError, Result};
-pub use pointer::{MAX_POINTER_SIZE, PointerError, XetPointer};
+pub use xet_core_structures::xet_pointer::{MAX_POINTER_SIZE, PointerError, XetPointer};
