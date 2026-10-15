@@ -4,6 +4,10 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 
 use crate::Result;
+use crate::constants::GIT_HF_PROGRAM;
+
+mod install;
+mod uninstall;
 
 /// Native Xet V2 Git client
 #[derive(Debug, Parser)]
@@ -15,27 +19,27 @@ pub struct GitHfApp {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Stage files concurrently without replacing worktree contents with pointers (not yet available).
+    /// Stage files concurrently without replacing worktree contents with pointers.
     Add(AddArgs),
     /// Explain automatic selection of files for Xet storage.
     #[command(hide = true)]
     Track,
-    /// Register the required hf process filter (not yet available).
-    Install(ConfigArgs),
-    /// Remove git-hf-owned configuration (not yet available).
-    Uninstall(ConfigArgs),
-    /// Clone a V2 repository and materialize its Xet files (not yet available).
+    /// Register the required hf process filter.
+    Install(InstallArgs),
+    /// Remove hf filter configuration.
+    Uninstall(UninstallArgs),
+    /// Clone a V2 repository and materialize its Xet files.
     Clone(CloneArgs),
-    /// Cache Xet metadata and xorb ranges for a local Git ref, without checkout (not yet available).
+    /// Cache Xet metadata and xorb ranges for a local Git ref, without checkout.
     Fetch(FetchArgs),
-    /// Reconstruct indexed Xet files from the local cache, without network access (not yet available).
+    /// Reconstruct indexed Xet files from the local cache, without network access.
     Checkout(CheckoutArgs),
-    /// Fetch Xet content for the current checkout and materialize it; does not run git pull (not yet available).
+    /// Fetch Xet content for the current checkout and materialize it; does not run git pull.
     Pull(PullArgs),
-    /// Internal required Git process filter (not yet available).
+    /// Internal required Git process filter.
     #[command(hide = true)]
     FilterProcess(FilterArgs),
-    /// Internal pre-push hook; reads ref updates from stdin (not yet available).
+    /// Internal pre-push hook; reads ref updates from stdin.
     #[command(hide = true)]
     PrePush(PrePushArgs),
 }
@@ -48,8 +52,27 @@ struct AddArgs {
 }
 
 #[derive(Debug, Args)]
-struct ConfigArgs {
-    /// Use repository-local configuration instead of the default global scope.
+struct InstallArgs {
+    /// Use system configuration.
+    #[arg(long, conflicts_with_all = ["local", "global"])]
+    system: bool,
+    /// Use the current repository's configuration instead of the default global scope.
+    #[arg(long, conflicts_with = "global")]
+    local: bool,
+    /// Use global configuration (the default).
+    #[arg(long)]
+    global: bool,
+}
+
+#[derive(Debug, Args)]
+struct UninstallArgs {
+    /// Remove configuration from system, global, and current repository scopes.
+    #[arg(long, conflicts_with_all = ["system", "local", "global"])]
+    all: bool,
+    /// Use system configuration.
+    #[arg(long, conflicts_with_all = ["local", "global"])]
+    system: bool,
+    /// Use the current repository's configuration.
     #[arg(long, conflicts_with = "global")]
     local: bool,
     /// Use global configuration (the default).
@@ -123,13 +146,13 @@ impl GitHfApp {
         Ok(app)
     }
 
-    /// Executes the selected command (not yet implemented).
+    /// Executes the selected command.
     pub fn run(self) -> Result<()> {
         match self.command {
             Command::Add(_) => todo!(),
             Command::Track => todo!(),
-            Command::Install(_) => todo!(),
-            Command::Uninstall(_) => todo!(),
+            Command::Install(args) => install_command(args),
+            Command::Uninstall(args) => uninstall_command(args),
             Command::Clone(_) => todo!(),
             Command::Fetch(_) => todo!(),
             Command::Checkout(_) => todo!(),
@@ -138,4 +161,35 @@ impl GitHfApp {
             Command::PrePush(_) => todo!(),
         }
     }
+}
+
+fn install_command(args: InstallArgs) -> Result<()> {
+    if args.system {
+        install::system()?;
+        println!("{GIT_HF_PROGRAM} installed to system config!");
+    } else if args.local {
+        install::local()?;
+        println!("{GIT_HF_PROGRAM} installed to local repository config!");
+    } else {
+        install::global()?;
+        println!("{GIT_HF_PROGRAM} installed to global config!");
+    }
+    Ok(())
+}
+
+fn uninstall_command(args: UninstallArgs) -> Result<()> {
+    if args.all {
+        uninstall::all()?;
+        println!("{GIT_HF_PROGRAM} uninstalled from all config!");
+    } else if args.system {
+        uninstall::system()?;
+        println!("{GIT_HF_PROGRAM} uninstalled from system config!");
+    } else if args.local {
+        uninstall::local()?;
+        println!("{GIT_HF_PROGRAM} uninstalled from local repository config!");
+    } else {
+        uninstall::global()?;
+        println!("{GIT_HF_PROGRAM} uninstalled from global config!");
+    }
+    Ok(())
 }
