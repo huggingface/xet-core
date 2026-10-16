@@ -10,7 +10,8 @@ use crate::errors::{GitExtensionError, Result};
 // deriving the HTTP(S) host of an SSH or HTTP(S) remote and handling HF specific repo types.
 
 // `GitUrl` wraps inside a parsed Git remote URL and extends its capability for HF repo specific needs.
-#[derive(Debug, Clone)]
+// `Debug` shows the redacted URL, since remote URLs may embed tokens.
+#[derive(Clone)]
 pub struct GitUrl {
     _raw: String,
     inner: innerGitUrl,
@@ -27,9 +28,36 @@ impl FromStr for GitUrl {
     }
 }
 
+impl std::fmt::Debug for GitUrl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("GitUrl").field(&self.redacted()).finish()
+    }
+}
+
 impl GitUrl {
+    /// The URL as given, including any embedded credential. Use [`Self::redacted`] for display.
     pub fn as_str(&self) -> &str {
         self._raw.as_str()
+    }
+
+    /// The URL with any secret in its user-info replaced by `***`, for messages and logs. In
+    /// `scheme://user:secret@host/...` the secret is masked; a lone `scheme://value@host/...` is
+    /// masked entirely, since it may be a token. SCP-like `user@host:path` URLs carry no secret.
+    pub fn redacted(&self) -> String {
+        let raw = self._raw.as_str();
+        let Some(authority_start) = raw.find("://").map(|i| i + 3) else {
+            return raw.to_owned();
+        };
+        let authority_end = raw[authority_start..].find('/').map_or(raw.len(), |i| authority_start + i);
+        let Some(at) = raw[authority_start..authority_end].rfind('@').map(|i| authority_start + i) else {
+            return raw.to_owned();
+        };
+        let userinfo = &raw[authority_start..at];
+        let masked = match userinfo.split_once(':') {
+            Some((user, _)) => format!("{user}:***"),
+            None => "***".to_owned(),
+        };
+        format!("{}{masked}{}", &raw[..authority_start], &raw[at..])
     }
 
     // Determine the LFS server endpoint from Git remote URL according to
@@ -204,6 +232,28 @@ impl GitUrl {
         let repo_type = HFRepoType::from_str(path.trim_end_matches(&full_name).trim_end_matches('/'))?;
 
         Ok(RepoInfo { repo_type, full_name })
+    }
+}
+
+#[cfg(test)]
+mod test_redaction {
+    use super::GitUrl;
+    use crate::errors::Result;
+
+    #[test]
+    fn redacts_embedded_credentials() -> Result<()> {
+        for (url, expected) in [
+            ("https://user:hf_secret@huggingface.co/datasets/a/b", "https://user:***@huggingface.co/datasets/a/b"),
+            ("https://hf_secret@huggingface.co/a/b", "https://***@huggingface.co/a/b"),
+            ("https://huggingface.co/a/b", "https://huggingface.co/a/b"),
+            ("ssh://git@hf.co/a/b", "ssh://***@hf.co/a/b"),
+            ("git@hf.co:a/b", "git@hf.co:a/b"),
+        ] {
+            let parsed: GitUrl = url.parse()?;
+            assert_eq!(parsed.redacted(), expected);
+            assert!(!format!("{parsed:?}").contains("hf_secret"));
+        }
+        Ok(())
     }
 }
 

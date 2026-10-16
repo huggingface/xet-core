@@ -1,6 +1,7 @@
 use std::ffi::OsStr;
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use crate::constants::GIT_EXECUTABLE;
 use crate::errors::{GitExtensionError, Result};
@@ -179,6 +180,24 @@ impl CapturedCommand {
     pub fn wait_with_status(self) -> Result<Output> {
         Ok(self.child_process.wait_with_output()?)
     }
+
+    /// Like [`Self::wait_with_status`], but kills the child and returns `Ok(None)` if it has not exited
+    /// within `timeout`. Output is collected after exit, so a child that fills a pipe before exiting
+    /// times out; use only for commands with small output.
+    pub fn wait_with_status_timeout(mut self, timeout: Duration) -> Result<Option<Output>> {
+        drop(self.child_process.stdin.take());
+        let deadline = Instant::now() + timeout;
+        while self.child_process.try_wait()?.is_none() {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                let _ = self.child_process.kill();
+                let _ = self.child_process.wait();
+                return Ok(None);
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(10)));
+        }
+        Ok(Some(self.child_process.wait_with_output()?))
+    }
 }
 
 /// Returns captured stdout/stderr on success, or the standard command error with status and output.
@@ -200,10 +219,27 @@ pub fn check_command_output(ret: Output) -> Result<(Vec<u8>, Vec<u8>)> {
 mod tests {
     use std::io::Write;
     use std::process::Command;
+    use std::time::Duration;
 
     use anyhow::Result;
 
     use super::{CapturedCommand, run_program_captured, run_program_captured_with_input_and_output};
+
+    #[cfg(unix)]
+    #[test]
+    fn test_wait_with_status_timeout_kills_slow_child() -> Result<()> {
+        let wd = std::env::current_dir()?;
+        let slow = run_program_captured_with_input_and_output("sh", &wd, ["-c", "sleep 30"])?;
+        let start = std::time::Instant::now();
+        assert!(slow.wait_with_status_timeout(Duration::from_millis(200))?.is_none());
+        assert!(start.elapsed() < Duration::from_secs(5));
+
+        let quick = run_program_captured_with_input_and_output("sh", &wd, ["-c", "printf done; exit 3"])?;
+        let output = quick.wait_with_status_timeout(Duration::from_secs(5))?.unwrap();
+        assert_eq!(output.status.code(), Some(3));
+        assert_eq!(output.stdout, b"done");
+        Ok(())
+    }
 
     #[test]
     fn test_wait_with_status_preserves_nonzero_exit_and_output() -> Result<()> {
