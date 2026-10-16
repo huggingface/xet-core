@@ -1,7 +1,7 @@
 use std::str::FromStr;
 use std::sync::Arc;
 
-use git_extension_common::{GitCredentialHelper, GitRepo, GitUrl, SSHCredentialHelper, Scheme};
+use git_extension_common::{GitCredentialHelper, GitRepo, GitUrl, Interaction, SSHCredentialHelper, Scheme};
 use netrc::Netrc;
 use xet_client::hub_client::{BearerCredentialHelper, CredentialHelper, NoopCredentialHelper, Operation};
 
@@ -118,11 +118,13 @@ pub fn get_credential(repo: &GitRepo, remote_url: &GitUrl, operation: Operation)
 
     // 5. check remote URL scheme
     if matches!(remote_url.scheme(), Scheme::Ssh | Scheme::GitSsh) {
-        return Ok(SSHCredentialHelper::new(remote_url, repo, operation));
+        return Ok(SSHCredentialHelper::new(remote_url, repo, operation, Interaction::Allowed));
     }
 
     // 6. check Git credential helper
-    Ok(GitCredentialHelper::new(repo.git_path()?, &derived_host_url)?)
+    let helper = GitCredentialHelper::new(repo.git_path()?, &derived_host_url, Interaction::Allowed)?
+        .ok_or_else(|| GitXetError::config_error(format!("failed to find authentication for {derived_host_url}")))?;
+    Ok(helper)
 }
 
 #[cfg(test)]
