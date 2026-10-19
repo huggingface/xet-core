@@ -20,7 +20,7 @@ rust-netrc = { workspace = true }
 shellexpand = { workspace = true, features = ["path"] }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["fs", "rt"] }
 xet-client = { path = "../xet_client" }
 xet-core-structures = { path = "../xet_core_structures" }
 xet-data = { path = "../xet_data" }
