@@ -20,6 +20,9 @@ pub enum GitHfError {
     #[error("Internal Git error: {0}")]
     GitError(#[from] git2::Error),
 
+    #[error("Authentication failed: {0}")]
+    Auth(String),
+
     #[error("Invalid Git config: {0}")]
     InvalidGitConfig(String),
 
