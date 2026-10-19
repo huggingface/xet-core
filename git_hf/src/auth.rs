@@ -231,8 +231,9 @@ mod tests {
 
     // Configures a store helper with one credential, and verifies it is the only helper.
     fn store_credential(repo: &TestRepo, password: &str) -> anyhow::Result<()> {
-        let store = repo.path().join("credential-store");
-        let helper = format!("store --file={}", store.display());
+        // Git runs the helper through a shell, which would treat Windows backslashes as escapes.
+        let store = repo.path().join("credential-store").to_string_lossy().replace('\\', "/");
+        let helper = format!("store --file={store}");
         run_git_captured(repo.path(), "config", ["--add", "credential.helper", helper.as_str()])?;
         let (helpers, _) =
             run_git_captured_with_input_and_output(repo.path(), "config", ["--get-all", "credential.helper"])?
