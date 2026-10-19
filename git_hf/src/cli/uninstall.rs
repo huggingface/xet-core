@@ -29,6 +29,9 @@ pub(super) fn all() -> Result<()> {
 fn uninstall_impl(location: ConfigLocation) -> Result<()> {
     let wd = std::env::current_dir()?;
     let _ = run_git_captured(&wd, "config", [location.profile(), "--remove-section", "filter.hf"]);
+    if matches!(location, ConfigLocation::Local) {
+        let _ = crate::hook::uninstall(&wd);
+    }
     Ok(())
 }
 
