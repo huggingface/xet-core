@@ -16,6 +16,8 @@ pub enum GitHfError {
 
     #[error("Runtime error: {0}")]
     Runtime(#[from] xet_runtime::RuntimeError),
+    #[error("Pre-push hook error: {0}")]
+    Hook(String),
 
     #[error("Local staging error: {0}")]
     Staging(String),
