@@ -29,6 +29,9 @@ pub struct SSHMetadata {
     pub user_and_host: String,
     pub port: Option<u16>,
     pub arg_list: Vec<String>,
+    /// Never prompt (passphrase, password, or host key confirmation) and fail fast instead. Agent and
+    /// unencrypted keys still work. Use for background work, such as a Git filter, that must not block.
+    pub batch: bool,
 }
 
 const DEFAULT_SSH_CMD: &str = "ssh";
@@ -103,6 +106,14 @@ pub fn get_sshexe_and_args(meta: &SSHMetadata, repo: &GitRepo) -> Result<(String
     if matches!(variant, Variant::Tortoise) {
         // TortoisePlink requires the -batch argument to behave like ssh/plink
         args.push("-batch".into());
+    }
+
+    if meta.batch {
+        match variant {
+            Variant::Putty => args.push("-batch".into()),
+            Variant::Tortoise => {}, // already batch, see above
+            _ => args.extend(["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"].map(String::from)),
+        }
     }
 
     if let Some(p) = meta.port {
@@ -293,6 +304,42 @@ mod tests {
 
     #[test]
     #[serial(env_var_write_read)]
+    fn test_get_sshexe_and_args_batch() -> Result<()> {
+        let test_repo = TestRepo::new("main")?;
+        let repo = GitRepo::open(test_repo.path())?;
+        let meta = SSHMetadata {
+            user_and_host: "git@hf.co".into(),
+            port: Some(22),
+            arg_list: vec!["auth".into()],
+            batch: true,
+        };
+        let (_, args, _) = get_sshexe_and_args(&meta, &repo)?;
+        assert_eq!(
+            args,
+            [
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=5",
+                "-p",
+                "22",
+                "git@hf.co",
+                "auth"
+            ]
+        );
+        for (variant, expected) in [
+            ("putty", vec!["-batch", "-P", "22"]),
+            ("tortoiseplink", vec!["-batch", "-P", "22"]),
+        ] {
+            let _env = EnvVarGuard::set("GIT_SSH_VARIANT", variant);
+            let (_, args, _) = get_sshexe_and_args(&meta, &repo)?;
+            assert_eq!(args[..3], expected[..], "{variant}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[serial(env_var_write_read)]
     fn test_get_sshexe_and_args_no_port() -> Result<()> {
         let test_repo = TestRepo::new("main")?;
         let repo = GitRepo::open(test_repo.path())?;
@@ -301,6 +348,7 @@ mod tests {
             user_and_host: "git@hf.co".into(),
             port: None,
             arg_list: vec!["auth".into(), "org/repo".into(), "upload".into()],
+            batch: false,
         };
 
         // Test with default SSH variant (OpenSSH)
@@ -370,6 +418,7 @@ mod tests {
             user_and_host: "git@hf.co".to_string(),
             port: Some(2222),
             arg_list: vec!["auth".into(), "org/repo".into(), "upload".into()],
+            batch: false,
         };
 
         // Test with default SSH variant (OpenSSH)
@@ -409,6 +458,7 @@ mod tests {
             user_and_host: "git@github.com".to_string(),
             port: None,
             arg_list: vec!["auth".into(), "org/repo".into(), "upload".into()],
+            batch: false,
         };
 
         // Test with 'simple' variant, which should error
@@ -432,6 +482,7 @@ mod tests {
             user_and_host: "git@hf.co".into(),
             port: None,
             arg_list: vec!["auth".into(), "org/repo".into(), "upload".into()],
+            batch: false,
         };
 
         // Test with default SSH variant (OpenSSH)
@@ -495,6 +546,7 @@ mod tests {
             user_and_host: "git@hf.co".to_string(),
             port: Some(2222),
             arg_list: vec!["auth".into(), "org/repo".into(), "upload".into()],
+            batch: false,
         };
 
         // Test with default SSH variant (OpenSSH)

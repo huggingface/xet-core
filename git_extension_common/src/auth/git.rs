@@ -1,11 +1,18 @@
-use std::io::{BufRead, BufReader, Cursor, Write};
+use std::io::Write;
 use std::path::Path;
+use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 
 use xet_client::hub_client::BearerCredentialHelper;
 
-use crate::errors::{GitExtensionError, Result};
-use crate::utils::process_wrapping::run_git_captured_with_input_and_output;
+use super::Interaction;
+use crate::constants::GIT_EXECUTABLE;
+use crate::errors::Result;
+use crate::utils::process_wrapping::CapturedCommand;
+
+/// How long a non-interactive lookup waits for a credential helper before giving up.
+const NON_INTERACTIVE_TIMEOUT: Duration = Duration::from_secs(2);
 
 // This implements the mechanism to get credential stored in configured git credential helpers, including
 // git-credential-cache, git-credential-store, git-credential-libsecret (Linux), git-credential-osxkeychain (macOS),
@@ -42,18 +49,38 @@ use crate::utils::process_wrapping::run_git_captured_with_input_and_output;
 // In case 4, dedicated channels (file descriptors) are opened from "/dev/tty" (unix-like systems) or "CONIN$ and
 // "CONOUT$" (Windows) so the process can still communicate with the parent process, i.e. git-xet over stdin (fd 0) and
 // stdout (fd 1). See https://github.com/git/git/blob/2462961280690837670d997bde64bd4ebf8ae66d/compat/terminal.c#L427 for details.
-pub struct GitCredentialHelper {}
+pub struct GitCredentialHelper;
 
 impl GitCredentialHelper {
+    /// Asks Git's credential helpers for `host_url`'s credential and returns a helper that sends its
+    /// password as a bearer token, or `Ok(None)` if no credential was produced.
+    ///
+    /// With [`Interaction::Never`], every prompt path is disabled: an empty `GIT_ASKPASS` stops Git
+    /// from running `core.askPass` or `SSH_ASKPASS`, `GIT_TERMINAL_PROMPT=0` stops terminal prompts,
+    /// and `GCM_INTERACTIVE=never` stops Git Credential Manager's UI. Only a stored credential is
+    /// returned; a helper that does not answer within 2 seconds is killed. With
+    /// [`Interaction::Allowed`], Git may prompt.
     #[allow(clippy::new_ret_no_self)]
-    pub fn new(repo_path: impl AsRef<Path>, host_url: &str) -> Result<Arc<BearerCredentialHelper>> {
-        let hf_token = Self::authenticate(repo_path.as_ref(), host_url)?;
+    pub fn new(
+        repo_path: impl AsRef<Path>,
+        host_url: &str,
+        interaction: Interaction,
+    ) -> Result<Option<Arc<BearerCredentialHelper>>> {
+        let hf_token = Self::authenticate(repo_path.as_ref(), host_url, interaction)?;
 
-        Ok(BearerCredentialHelper::new(hf_token, "git"))
+        Ok(hf_token.map(|hf_token| BearerCredentialHelper::new(hf_token, "git")))
     }
 
-    fn authenticate(repo_path: &Path, host_url: &str) -> Result<String> {
-        let mut cred_query = run_git_captured_with_input_and_output(repo_path, "credential", ["fill"])?;
+    fn authenticate(repo_path: &Path, host_url: &str, interaction: Interaction) -> Result<Option<String>> {
+        let mut command = Command::new(GIT_EXECUTABLE);
+        command.current_dir(repo_path).args(["credential", "fill"]);
+        if matches!(interaction, Interaction::Never) {
+            command
+                .env("GIT_ASKPASS", "")
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("GCM_INTERACTIVE", "never");
+        }
+        let mut cred_query = CapturedCommand::new_with_piped_stdin(command)?;
 
         // writer is dropped at the end of the scope
         {
@@ -61,23 +88,29 @@ impl GitCredentialHelper {
             write!(writer, "url={host_url}\n\n")?;
         }
 
-        let (response, _err) = cred_query.wait_with_output()?;
-
-        let reader = BufReader::new(Cursor::new(response));
-
-        for line in reader.lines() {
-            let mut line = line?;
-            line.retain(|c| !c.is_whitespace());
-
-            if let Some(hf_token) = line.strip_prefix("password=")
-                && !hf_token.is_empty()
-            {
-                return Ok(hf_token.to_owned());
-            }
+        let output = match interaction {
+            Interaction::Allowed => cred_query.wait_with_status()?,
+            Interaction::Never => match cred_query.wait_with_status_timeout(NON_INTERACTIVE_TIMEOUT)? {
+                Some(output) => output,
+                None => return Ok(None),
+            },
+        };
+        if !output.status.success() {
+            return Ok(None);
         }
 
-        Err(GitExtensionError::config_error(format!("failed to find authentication for {host_url}")))
+        Ok(parse_password(&output.stdout))
     }
+}
+
+fn parse_password(output: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(output).lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("password=")
+            .map(str::trim)
+            .filter(|password| !password.is_empty())
+            .map(str::to_owned)
+    })
 }
 
 #[cfg(test)]
@@ -88,6 +121,7 @@ mod test_cred_helpers {
     use serial_test::serial;
 
     use super::GitCredentialHelper;
+    use crate::auth::Interaction;
     use crate::git_url::GitUrl;
     use crate::test_utils::TestRepo;
     use crate::utils::process_wrapping::run_git_captured_with_input_and_output;
@@ -116,8 +150,8 @@ mod test_cred_helpers {
         let parsed_url: GitUrl = remote_url.parse()?;
         let host_url = parsed_url.host_url()?;
 
-        let git_cred_helper = GitCredentialHelper::new(test_repo.path(), &host_url)?;
-        assert_eq!(git_cred_helper.hf_token, password);
+        let helper = GitCredentialHelper::new(test_repo.path(), &host_url, Interaction::Allowed)?.unwrap();
+        assert_eq!(helper.hf_token, password);
 
         Ok(())
     }
