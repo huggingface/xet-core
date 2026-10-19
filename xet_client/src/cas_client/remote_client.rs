@@ -1,5 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+#[cfg(not(target_family = "wasm"))]
+use std::time::Instant;
 
 use anyhow::anyhow;
 use bytes::Bytes;
@@ -10,6 +12,8 @@ use http::{HeaderValue, Method};
 use reqwest::{Body, Response, StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
 use tracing::{debug, event, info, instrument, warn};
+#[cfg(target_family = "wasm")]
+use web_time::Instant;
 use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::metadata_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use xet_core_structures::xorb_object::SerializedXorbObject;
@@ -259,7 +263,30 @@ enum GrantUploadOutcome {
     Unavailable { n_bytes_uploaded: u64 },
 }
 
+/// The API a xorb was uploaded through, for telemetry.
+#[derive(Debug, Clone, Copy)]
+enum XorbUploadPath {
+    /// Upload grant, upload to the grant URL, and commit.
+    Grant,
+    /// `POST /v1/xorbs`.
+    Post,
+}
+
 impl RemoteClient {
+    /// Records a xorb of `n_bytes` serialized bytes uploaded through `path`, timed from `started_at`.
+    fn record_xorb_upload(&self, path: XorbUploadPath, n_bytes: u64, started_at: Instant) {
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(telemetry) = &self.telemetry {
+            let elapsed = started_at.elapsed();
+            match path {
+                XorbUploadPath::Grant => telemetry.record_grant_xorb_upload(n_bytes, elapsed),
+                XorbUploadPath::Post => telemetry.record_post_xorb_upload(n_bytes, elapsed),
+            }
+        }
+        #[cfg(target_family = "wasm")]
+        let _ = (path, n_bytes, started_at);
+    }
+
     /// Uploads a xorb through the xorb upload API (`/v1/xorbs`). Returns whether the xorb was newly inserted.
     async fn post_xorb(
         &self,
@@ -1253,13 +1280,13 @@ impl Client for RemoteClient {
         let (xorb_uploaded, n_bytes_uploaded) = if self.dry_run {
             (true, n_upload_bytes)
         } else if self.ctx.config.client.legacy_direct_xorb_upload {
+            let started_at = Instant::now();
             let inserted = self.post_xorb(&key, serialized_data, progress_callback, upload_permit).await?;
-            if let Some(telemetry) = &self.telemetry {
-                telemetry.record_post_xorb_upload();
-            }
+            self.record_xorb_upload(XorbUploadPath::Post, n_upload_bytes, started_at);
             (inserted, n_upload_bytes)
         } else {
             let progress_callback = progress_callback.map(report_each_byte_once);
+            let started_at = Instant::now();
             match self
                 .upload_xorb_through_grants(&key, serialized_data.clone(), &progress_callback, &upload_permit)
                 .await?
@@ -1269,17 +1296,17 @@ impl Client for RemoteClient {
                     n_bytes_uploaded,
                 } => {
                     // Not inserted means the grant request found the xorb already stored; nothing was uploaded.
-                    if inserted && let Some(telemetry) = &self.telemetry {
-                        telemetry.record_grant_xorb_upload();
+                    if inserted {
+                        self.record_xorb_upload(XorbUploadPath::Grant, n_upload_bytes, started_at);
                     }
                     (inserted, n_bytes_uploaded)
                 },
                 GrantUploadOutcome::Unavailable { n_bytes_uploaded } => {
                     debug!(hash=%key.hash, "Upload grants did not store xorb; uploading through the xorb upload API");
+                    // Time only the POST, so failed grant attempts do not count against the POST path.
+                    let started_at = Instant::now();
                     let inserted = self.post_xorb(&key, serialized_data, progress_callback, upload_permit).await?;
-                    if let Some(telemetry) = &self.telemetry {
-                        telemetry.record_post_xorb_upload();
-                    }
+                    self.record_xorb_upload(XorbUploadPath::Post, n_upload_bytes, started_at);
                     (inserted, n_bytes_uploaded + n_upload_bytes)
                 },
             }

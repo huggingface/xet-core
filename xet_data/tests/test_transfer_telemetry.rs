@@ -46,7 +46,9 @@ const UPLOAD_KEYS: &[&str] = &[
     "finalize_ms",
     "global_dedup_bytes",
     "global_dedup_chunks",
+    "grant_xorb_upload_bytes",
     "grant_xorb_upload_count",
+    "grant_xorb_upload_ms",
     "ingest_ms",
     "logical_throughput_bps",
     "n_files",
@@ -55,7 +57,9 @@ const UPLOAD_KEYS: &[&str] = &[
     "os",
     "outcome",
     "peak_concurrency",
+    "post_xorb_upload_bytes",
     "post_xorb_upload_count",
+    "post_xorb_upload_ms",
     "schema_version",
     "seq",
     "shard_bytes_uploaded",
@@ -154,7 +158,10 @@ async fn test_upload_emits_one_terminal_document() {
     assert!(metrics["new_bytes"].as_u64().unwrap() > 0);
     assert!(metrics["xorb_bytes_uploaded"].as_u64().unwrap() > 0);
     assert!(metrics["grant_xorb_upload_count"].as_u64().unwrap() > 0);
+    assert_eq!(metrics["grant_xorb_upload_bytes"], metrics["xorb_bytes_uploaded"]);
     assert_eq!(metrics["post_xorb_upload_count"], 0);
+    assert_eq!(metrics["post_xorb_upload_bytes"], 0);
+    assert_eq!(metrics["post_xorb_upload_ms"], 0);
     assert!(metrics["endpoint_host"].as_str().unwrap().starts_with("127.0.0.1"));
 }
 
@@ -173,7 +180,10 @@ async fn test_upload_counts_xorbs_uploaded_through_post_fallback() {
     assert_eq!(docs.len(), 1, "expected exactly one terminal document, got {docs:#?}");
     let metrics = &docs[0]["metrics"];
     assert_eq!(metrics["grant_xorb_upload_count"], 0);
+    assert_eq!(metrics["grant_xorb_upload_bytes"], 0);
+    assert_eq!(metrics["grant_xorb_upload_ms"], 0);
     assert!(metrics["post_xorb_upload_count"].as_u64().unwrap() > 0);
+    assert!(metrics["post_xorb_upload_bytes"].as_u64().unwrap() > 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

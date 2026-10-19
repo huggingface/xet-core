@@ -72,6 +72,43 @@ impl Direction {
 /// than the event name so heartbeats have one shape regardless of direction.
 pub const HEARTBEAT_EVENT: &str = "xet_transfer_heartbeat";
 
+/// Running totals for xorbs uploaded through one upload path.
+#[derive(Default)]
+struct XorbUploadPathStats {
+    count: AtomicU64,
+    bytes: AtomicU64,
+    /// Summed per-xorb upload time; microseconds so short uploads do not round down to zero.
+    duration_us: AtomicU64,
+}
+
+impl XorbUploadPathStats {
+    fn record(&self, bytes: u64, elapsed: Duration) {
+        self.count.fetch_add(1, Ordering::Relaxed);
+        self.bytes.fetch_add(bytes, Ordering::Relaxed);
+        let elapsed_us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+        self.duration_us.fetch_add(elapsed_us, Ordering::Relaxed);
+    }
+
+    fn totals(&self) -> XorbUploadPathTotals {
+        XorbUploadPathTotals {
+            count: self.count.load(Ordering::Relaxed),
+            bytes: self.bytes.load(Ordering::Relaxed),
+            duration_ms: self.duration_us.load(Ordering::Relaxed) / 1000,
+        }
+    }
+}
+
+/// Snapshot of the xorbs uploaded through one upload path.
+///
+/// `duration_ms` sums each xorb's own upload time, so it exceeds wall-clock time when uploads run
+/// concurrently; `bytes / duration_ms` is the average per-xorb upload rate.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct XorbUploadPathTotals {
+    pub count: u64,
+    pub bytes: u64,
+    pub duration_ms: u64,
+}
+
 /// Per-transfer telemetry state and delivery.
 pub struct TransferTelemetry {
     session_id: String,
@@ -83,9 +120,9 @@ pub struct TransferTelemetry {
     /// Highest concurrency observed, via `fetch_max` from the permit acquisition path.
     peak_concurrency: AtomicU64,
     /// Xorbs stored through an upload grant (grant, upload, commit).
-    grant_xorb_uploads: AtomicU64,
+    grant_xorb_uploads: XorbUploadPathStats,
     /// Xorbs uploaded through `POST /v1/xorbs`, including fallbacks from upload grants.
-    post_xorb_uploads: AtomicU64,
+    post_xorb_uploads: XorbUploadPathStats,
     /// Set by whichever of `finalize` or `Drop` gets there first, so exactly one terminal
     /// document is emitted per transfer.
     terminal_sent: AtomicBool,
@@ -140,8 +177,8 @@ impl TransferTelemetry {
             transfer_id: Uuid::now_v7().to_string(),
             started_at: Instant::now(),
             peak_concurrency: AtomicU64::new(0),
-            grant_xorb_uploads: AtomicU64::new(0),
-            post_xorb_uploads: AtomicU64::new(0),
+            grant_xorb_uploads: XorbUploadPathStats::default(),
+            post_xorb_uploads: XorbUploadPathStats::default(),
             terminal_sent: AtomicBool::new(false),
             sink: TelemetrySink::new(ctx, url, http),
             final_flush_timeout: ctx.config.telemetry.final_flush_timeout,
@@ -243,20 +280,22 @@ impl TransferTelemetry {
         self.peak_concurrency.fetch_max(concurrency as u64, Ordering::Relaxed);
     }
 
-    pub fn grant_xorb_uploads(&self) -> u64 {
-        self.grant_xorb_uploads.load(Ordering::Relaxed)
+    pub fn grant_xorb_uploads(&self) -> XorbUploadPathTotals {
+        self.grant_xorb_uploads.totals()
     }
 
-    pub fn post_xorb_uploads(&self) -> u64 {
-        self.post_xorb_uploads.load(Ordering::Relaxed)
+    pub fn post_xorb_uploads(&self) -> XorbUploadPathTotals {
+        self.post_xorb_uploads.totals()
     }
 
-    pub fn record_grant_xorb_upload(&self) {
-        self.grant_xorb_uploads.fetch_add(1, Ordering::Relaxed);
+    /// Records a xorb of `bytes` serialized bytes stored through an upload grant in `elapsed`.
+    pub fn record_grant_xorb_upload(&self, bytes: u64, elapsed: Duration) {
+        self.grant_xorb_uploads.record(bytes, elapsed);
     }
 
-    pub fn record_post_xorb_upload(&self) {
-        self.post_xorb_uploads.fetch_add(1, Ordering::Relaxed);
+    /// Records a xorb of `bytes` serialized bytes uploaded through `POST /v1/xorbs` in `elapsed`.
+    pub fn record_post_xorb_upload(&self, bytes: u64, elapsed: Duration) {
+        self.post_xorb_uploads.record(bytes, elapsed);
     }
 
     /// Whether a terminal document has already been emitted.
@@ -413,11 +452,25 @@ mod tests {
     fn test_xorb_upload_paths_are_counted_separately() {
         let ctx = ctx_with(true);
         let t = build(&ctx, "https://cas.example.com", false).unwrap();
-        t.record_grant_xorb_upload();
-        t.record_grant_xorb_upload();
-        t.record_post_xorb_upload();
-        assert_eq!(t.grant_xorb_uploads(), 2);
-        assert_eq!(t.post_xorb_uploads(), 1);
+        t.record_grant_xorb_upload(100, Duration::from_micros(1_500));
+        t.record_grant_xorb_upload(200, Duration::from_micros(2_000));
+        t.record_post_xorb_upload(50, Duration::from_millis(7));
+        assert_eq!(
+            t.grant_xorb_uploads(),
+            XorbUploadPathTotals {
+                count: 2,
+                bytes: 300,
+                duration_ms: 3
+            }
+        );
+        assert_eq!(
+            t.post_xorb_uploads(),
+            XorbUploadPathTotals {
+                count: 1,
+                bytes: 50,
+                duration_ms: 7
+            }
+        );
     }
 
     #[test]
