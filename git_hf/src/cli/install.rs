@@ -1,5 +1,6 @@
 use git_extension_common::process_wrapping::run_git_captured;
 
+use crate::hook::{InstallOutcome, ensure_installed};
 use crate::utils::git_get_all_config_values;
 use crate::{GitHfError, Result};
 
@@ -58,6 +59,13 @@ fn install_impl(location: ConfigLocation) -> Result<()> {
     run_git_captured(&wd, "config", [loc_profile, "--replace-all", REQUIRED_KEY, "true"])?;
     if process.is_empty() {
         run_git_captured(&wd, "config", [loc_profile, PROCESS_KEY, PROCESS])?;
+    }
+
+    // Hooks are per repository. The filter also installs the hook when it first stages a file.
+    if matches!(location, ConfigLocation::Local)
+        && let InstallOutcome::Chained(path) = ensure_installed(&wd)?
+    {
+        println!("Existing pre-push hook preserved; git-hf runs it first from {}", path.display());
     }
 
     Ok(())

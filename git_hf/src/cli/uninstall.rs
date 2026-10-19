@@ -38,6 +38,10 @@ pub(super) fn all() -> Result<()> {
 fn uninstall_impl(location: ConfigLocation) -> Result<()> {
     let wd = std::env::current_dir()?;
     let loc_profile = location.profile();
+    // The hook is per repository and may outlive the local registration, so remove it first. Best effort.
+    if matches!(location, ConfigLocation::Local) {
+        let _ = crate::hook::uninstall(&wd);
+    }
     if git_get_all_config_values(&wd, loc_profile, PROCESS_KEY)?.is_empty()
         && git_get_all_config_values(&wd, loc_profile, REQUIRED_KEY)?.is_empty()
     {
