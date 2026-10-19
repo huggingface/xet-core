@@ -7,6 +7,7 @@ mod cli;
 mod constants;
 mod error;
 mod filter_protocol;
+mod hook;
 mod selection;
 mod staging;
 mod utils;
