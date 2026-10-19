@@ -1789,10 +1789,13 @@ version = "0.1.0-dev"
 dependencies = [
  "anyhow",
  "clap",
+ "dirs",
  "git-url-parse",
  "git2",
  "git_extension_common",
+ "rust-netrc",
  "serial_test",
+ "shellexpand",
  "tempfile",
  "thiserror 2.0.18",
  "xet-client",

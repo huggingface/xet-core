@@ -1,5 +1,6 @@
 //! Foundation for the native Xet V2 Git client. Transfer commands are not yet implemented.
 
+mod auth;
 mod cli;
 mod constants;
 mod error;
