@@ -82,6 +82,10 @@ pub struct TransferTelemetry {
     started_at: Instant,
     /// Highest concurrency observed, via `fetch_max` from the permit acquisition path.
     peak_concurrency: AtomicU64,
+    /// Xorbs stored through an upload grant (grant, upload, commit).
+    grant_xorb_uploads: AtomicU64,
+    /// Xorbs uploaded through `POST /v1/xorbs`, including fallbacks from upload grants.
+    post_xorb_uploads: AtomicU64,
     /// Set by whichever of `finalize` or `Drop` gets there first, so exactly one terminal
     /// document is emitted per transfer.
     terminal_sent: AtomicBool,
@@ -136,6 +140,8 @@ impl TransferTelemetry {
             transfer_id: Uuid::now_v7().to_string(),
             started_at: Instant::now(),
             peak_concurrency: AtomicU64::new(0),
+            grant_xorb_uploads: AtomicU64::new(0),
+            post_xorb_uploads: AtomicU64::new(0),
             terminal_sent: AtomicBool::new(false),
             sink: TelemetrySink::new(ctx, url, http),
             final_flush_timeout: ctx.config.telemetry.final_flush_timeout,
@@ -235,6 +241,22 @@ impl TransferTelemetry {
     /// Records an observed concurrency level, keeping the maximum.
     pub fn record_concurrency(&self, concurrency: usize) {
         self.peak_concurrency.fetch_max(concurrency as u64, Ordering::Relaxed);
+    }
+
+    pub fn grant_xorb_uploads(&self) -> u64 {
+        self.grant_xorb_uploads.load(Ordering::Relaxed)
+    }
+
+    pub fn post_xorb_uploads(&self) -> u64 {
+        self.post_xorb_uploads.load(Ordering::Relaxed)
+    }
+
+    pub fn record_grant_xorb_upload(&self) {
+        self.grant_xorb_uploads.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_post_xorb_upload(&self) {
+        self.post_xorb_uploads.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Whether a terminal document has already been emitted.
@@ -385,6 +407,17 @@ mod tests {
         t.record_concurrency(9);
         t.record_concurrency(2);
         assert_eq!(t.peak_concurrency(), 9);
+    }
+
+    #[test]
+    fn test_xorb_upload_paths_are_counted_separately() {
+        let ctx = ctx_with(true);
+        let t = build(&ctx, "https://cas.example.com", false).unwrap();
+        t.record_grant_xorb_upload();
+        t.record_grant_xorb_upload();
+        t.record_post_xorb_upload();
+        assert_eq!(t.grant_xorb_uploads(), 2);
+        assert_eq!(t.post_xorb_uploads(), 1);
     }
 
     #[test]

@@ -46,6 +46,7 @@ const UPLOAD_KEYS: &[&str] = &[
     "finalize_ms",
     "global_dedup_bytes",
     "global_dedup_chunks",
+    "grant_xorb_upload_count",
     "ingest_ms",
     "logical_throughput_bps",
     "n_files",
@@ -54,6 +55,7 @@ const UPLOAD_KEYS: &[&str] = &[
     "os",
     "outcome",
     "peak_concurrency",
+    "post_xorb_upload_count",
     "schema_version",
     "seq",
     "shard_bytes_uploaded",
@@ -151,7 +153,27 @@ async fn test_upload_emits_one_terminal_document() {
     assert_eq!(metrics["total_bytes"], 96 * 1024);
     assert!(metrics["new_bytes"].as_u64().unwrap() > 0);
     assert!(metrics["xorb_bytes_uploaded"].as_u64().unwrap() > 0);
+    assert!(metrics["grant_xorb_upload_count"].as_u64().unwrap() > 0);
+    assert_eq!(metrics["post_xorb_upload_count"], 0);
     assert!(metrics["endpoint_host"].as_str().unwrap().starts_with("127.0.0.1"));
+}
+
+/// With the grant API off, every xorb falls back to `POST /v1/xorbs` and is counted there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial(env)]
+async fn test_upload_counts_xorbs_uploaded_through_post_fallback() {
+    let env = TestEnvironment::new().await;
+    env.set_xorb_upload_grants_enabled(false).await;
+
+    let session = FileUploadSession::new(env.config.clone()).await.unwrap();
+    upload_bytes(&session, "a.bin", &vec![0xAB; 64 * 1024]).await;
+    session.finalize().await.unwrap();
+
+    let docs = env.telemetry_docs();
+    assert_eq!(docs.len(), 1, "expected exactly one terminal document, got {docs:#?}");
+    let metrics = &docs[0]["metrics"];
+    assert_eq!(metrics["grant_xorb_upload_count"], 0);
+    assert!(metrics["post_xorb_upload_count"].as_u64().unwrap() > 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
