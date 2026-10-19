@@ -155,7 +155,9 @@ fn finalize_failure_is_reported_and_recoverable_per_worktree() -> Result<()> {
 }
 
 /// An existing hook is left in place, and a real `git push` reaches git-hf once that hook calls it
-/// with Git's arguments and stdin; uninstalling keeps the hook.
+/// with Git's arguments and stdin: pushes without staged data succeed against any remote, and a push
+/// that references staged data is blocked when the destination is not a Hub repository. Uninstalling
+/// keeps the hook.
 #[cfg(unix)]
 #[test]
 #[serial(env_var_write_read)]
@@ -184,15 +186,33 @@ fn git_push_runs_git_hf_from_an_existing_hook() -> Result<()> {
     let out = String::from_utf8(out)?;
     assert!(!out.contains("left unchanged"), "{out}");
     assert_eq!(fs::read_to_string(hooks.join("pre-push"))?, hook);
+    fs::write(repo.path().join(".gitattributes"), "* filter=hf -text\n.gitattributes filter=\n")?;
 
     let remote = tempfile::tempdir()?;
     run_git_captured(remote.path(), "init", ["--bare", "-q"])?;
+    let remote_path = remote.path().to_str().unwrap();
+
     fs::write(repo.path().join("small"), b"hello\n")?;
     run_git_captured(repo.path(), "add", ["."])?;
     run_git_captured(repo.path(), "commit", ["-m", "small"])?;
-    run_git_captured(repo.path(), "push", [remote.path().to_str().unwrap(), "main"])?;
+    run_git_captured(repo.path(), "push", [remote_path, "main"])?;
     let input = fs::read_to_string(repo.path().join(".git/hook-input"))?;
     assert!(input.starts_with("refs/heads/main "), "{input}");
+
+    let mut data = vec![b'a'; 150000];
+    data[0] = 0;
+    fs::write(repo.path().join("large"), &data)?;
+    run_git_captured(repo.path(), "add", ["large"])?;
+    run_git_captured(repo.path(), "commit", ["-m", "large"])?;
+    let error = run_git_captured(repo.path(), "push", [remote_path, "main"])
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("can only be uploaded to a Hugging Face Hub repository"), "{error}");
+    let (remote_main, _) =
+        run_git_captured_with_input_and_output(remote.path(), "rev-parse", ["main"])?.wait_with_output()?;
+    let (local_parent, _) =
+        run_git_captured_with_input_and_output(repo.path(), "rev-parse", ["HEAD~1"])?.wait_with_output()?;
+    assert_eq!(remote_main, local_parent);
 
     run_git_captured(repo.path(), "hf", ["uninstall", "--local"])?;
     assert_eq!(fs::read_to_string(hooks.join("pre-push"))?, hook);
