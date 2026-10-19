@@ -17,6 +17,9 @@ pub enum GitHfError {
     #[error("Runtime error: {0}")]
     Runtime(#[from] xet_runtime::RuntimeError),
 
+    #[error("Invalid Xet data: {0}")]
+    Format(#[from] xet_core_structures::CoreError),
+
     #[error("Local staging error: {0}")]
     Staging(String),
 
