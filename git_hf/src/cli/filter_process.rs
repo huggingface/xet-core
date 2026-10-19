@@ -151,7 +151,7 @@ mod tests {
             .map(|entry| Ok(entry?.file_name()))
             .collect::<std::io::Result<Vec<_>>>()?;
         entries.sort();
-        assert_eq!(entries, ["shards", "xorbs"]);
+        assert_eq!(entries, [".lock", "shards", "xorbs"]);
         assert_eq!(std::fs::read_dir(root.join("shards"))?.count(), 0);
         assert_eq!(std::fs::read_dir(root.join("xorbs"))?.count(), 0);
         Ok(())
