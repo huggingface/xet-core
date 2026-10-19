@@ -32,6 +32,32 @@ or `--all` to attempt removal from system, global, and current repository config
 Neither command modifies attributes, hooks, `core.hooksPath`, or diff/merge
 configuration. Hook installation belongs with the pre-push implementation.
 
+## Process filter and local staging
+
+`git-hf filter-process` is the required filter that installation registers.
+
+- **Smudge** (checkout) leaves content unchanged, so Xet-stored files are checked out
+  as pointer files.
+- **Clean** (`git add`, `git commit -a`, and similar) decides per file:
+  - valid Xet pointers and small files are stored in Git unchanged;
+  - files larger than 10 MiB, or binary files larger than 100,000 bytes, are stored as
+    Xet pointers. This is the same rule the Hub uses, so a file is stored the same way
+    however it is uploaded;
+  - files larger than 500 GB, and malformed or Git LFS pointers, make the command fail.
+- The content of files stored as Xet pointers is deduplicated and saved under
+  `.git/xet/staging/`, which linked worktrees share. Nothing is uploaded until push.
+- Deduplication against data already on the Hub is optional and never prompts. It uses
+  the first credential found: a token in the remote URL, `HF_TOKEN` (or
+  `HUGGING_FACE_HUB_TOKEN`), the token saved by `hf auth login`, `.netrc`, your SSH key
+  for SSH remotes, or a credential already stored in Git's credential helper. Public
+  repositories need no credential. If the Hub cannot be reached quickly, git-hf
+  deduplicates against local data only.
+
+If git-hf cannot save the staged data when a command finishes, the command still
+succeeds, because Git has already updated the index. git-hf then prints the affected
+files; run `git add --renormalize -- <paths>` in that worktree to stage them again.
+Staging is not cleaned up automatically.
+
 ## Command contracts
 
 Run `git-hf --help`, or put the binary on PATH and use `git hf --help`.
@@ -46,7 +72,7 @@ Run `git-hf --help`, or put the binary on PATH and use `git hf --help`.
 | `fetch [remote] [revision]` | Cache reconstruction metadata and xorb ranges for a local revision (default HEAD); do not fetch Git refs or reconstruct files. |
 | `checkout [--force] [paths...]` | Reconstruct selected index entries from local data only. |
 | `pull [remote] [--force]` | Fetch content for the current checkout, then reconstruct; do not run `git pull`. |
-| `filter-process [--smudge-passthrough]` | Internal required filter; supports `--smudge-passthrough` for identity smudge. |
+| `filter-process [--smudge-passthrough]` | Internal required filter; smudge returns stored bytes unchanged. `--smudge-passthrough` is accepted and ignored. |
 | `pre-push <remote> <location>` | Internal hook receiving Git's ref updates on stdin. |
 
 Internal commands are hidden from top-level help but have their own `--help`.
@@ -90,11 +116,10 @@ grow, or report no size) before calling the byte parser. It returns `CoreError::
 `CoreError::XetPointer` for pointer validation errors, or `Ok(None)` for ordinary data.
 
 Recognition scans at most 4096 bytes for a native version URL or `oid xet:` line
-(or an LFS version URL), so probing stays bounded even for large file input. A
-future streaming filter must supply the complete small blob or at least 4097 bytes
-of a larger input, so the parser can recognize oversized input as ordinary data.
-The size field represents logical file size; selection/upload size limits are
-separate policy, to be implemented with clean.
+(or an LFS version URL), so probing stays bounded even for large file input. The
+streaming filter supplies the complete small blob or at least 4097 bytes of a larger
+input, so the parser can recognize oversized input as ordinary data. The size field
+represents logical file size; file selection uses the actual input size.
 
 ## Development
 
