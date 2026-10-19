@@ -27,7 +27,7 @@ use crate::deduplication::DeduplicationMetrics;
 use crate::progress_tracking::GroupProgressReport;
 
 /// Bumped when keys are added. Query-side branching hangs off this; it is not a wire version.
-pub const TELEMETRY_SCHEMA_VERSION: u64 = 1;
+pub const TELEMETRY_SCHEMA_VERSION: u64 = 2;
 
 /// Divides, guaranteeing a finite `f64`.
 ///
@@ -139,6 +139,22 @@ impl From<&TransferTelemetry> for TransferIdentity {
     }
 }
 
+/// How many xorbs went through each upload path, snapshotted from [`TransferTelemetry`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct XorbUploadPaths {
+    pub grant: u64,
+    pub post: u64,
+}
+
+impl From<&TransferTelemetry> for XorbUploadPaths {
+    fn from(telemetry: &TransferTelemetry) -> Self {
+        Self {
+            grant: telemetry.grant_xorb_uploads(),
+            post: telemetry.post_xorb_uploads(),
+        }
+    }
+}
+
 impl CommonMetrics {
     pub fn new(identity: TransferIdentity, inputs: CommonInputs<'_>) -> Self {
         let progress = inputs.progress;
@@ -194,6 +210,11 @@ pub struct UploadMetrics {
     pub xorb_bytes_uploaded: u64,
     pub shard_bytes_uploaded: u64,
 
+    /// Xorbs stored through an upload grant (grant, upload, commit).
+    pub grant_xorb_upload_count: u64,
+    /// Xorbs uploaded through `POST /v1/xorbs`, including fallbacks from upload grants.
+    pub post_xorb_upload_count: u64,
+
     pub shards_total: u64,
     pub shards_completed: u64,
     pub shard_validation_entries: u64,
@@ -214,6 +235,7 @@ impl UploadMetrics {
         common: CommonMetrics,
         dedup: &DeduplicationMetrics,
         progress: &GroupProgressReport,
+        xorb_upload_paths: XorbUploadPaths,
         ingest_ms: u64,
         finalize_ms: u64,
     ) -> Self {
@@ -234,6 +256,9 @@ impl UploadMetrics {
 
             xorb_bytes_uploaded: dedup.xorb_bytes_uploaded,
             shard_bytes_uploaded: dedup.shard_bytes_uploaded,
+
+            grant_xorb_upload_count: xorb_upload_paths.grant,
+            post_xorb_upload_count: xorb_upload_paths.post,
 
             shards_total: shard.map(|s| s.total_shards as u64).unwrap_or(0),
             shards_completed: shard.map(|s| s.total_shards_completed as u64).unwrap_or(0),
@@ -295,6 +320,7 @@ mod tests {
         "finalize_ms",
         "global_dedup_bytes",
         "global_dedup_chunks",
+        "grant_xorb_upload_count",
         "ingest_ms",
         "logical_throughput_bps",
         "n_files",
@@ -303,6 +329,7 @@ mod tests {
         "os",
         "outcome",
         "peak_concurrency",
+        "post_xorb_upload_count",
         "schema_version",
         "seq",
         "shard_bytes_uploaded",
@@ -376,6 +403,7 @@ mod tests {
         ("finalize_ms", Kind::U64),
         ("global_dedup_bytes", Kind::U64),
         ("global_dedup_chunks", Kind::U64),
+        ("grant_xorb_upload_count", Kind::U64),
         ("ingest_ms", Kind::U64),
         ("logical_throughput_bps", Kind::F64),
         ("n_files", Kind::U64),
@@ -384,6 +412,7 @@ mod tests {
         ("os", Kind::Str),
         ("outcome", Kind::Str),
         ("peak_concurrency", Kind::U64),
+        ("post_xorb_upload_count", Kind::U64),
         ("schema_version", Kind::U64),
         ("seq", Kind::U64),
         ("shard_bytes_uploaded", Kind::U64),
@@ -490,8 +519,13 @@ mod tests {
         }
     }
 
+    fn xorb_upload_paths() -> XorbUploadPaths {
+        XorbUploadPaths { grant: 6, post: 2 }
+    }
+
     fn upload_json() -> Value {
-        serde_json::to_value(UploadMetrics::new(common(), &dedup(), &progress(), 3_500, 500)).unwrap()
+        serde_json::to_value(UploadMetrics::new(common(), &dedup(), &progress(), xorb_upload_paths(), 3_500, 500))
+            .unwrap()
     }
 
     fn download_json() -> Value {
@@ -570,8 +604,15 @@ mod tests {
             },
             inputs(&empty),
         );
-        let doc =
-            serde_json::to_value(UploadMetrics::new(common, &DeduplicationMetrics::default(), &empty, 0, 0)).unwrap();
+        let doc = serde_json::to_value(UploadMetrics::new(
+            common,
+            &DeduplicationMetrics::default(),
+            &empty,
+            XorbUploadPaths::default(),
+            0,
+            0,
+        ))
+        .unwrap();
 
         for (key, value) in doc.as_object().unwrap() {
             assert!(!value.is_null(), "{key} serialized as null");
@@ -609,13 +650,22 @@ mod tests {
         assert_eq!(doc["throughput_bps"], 100.0);
         assert_eq!(doc["shards_total"], 2);
         assert_eq!(doc["shard_validation_entries"], 9);
+        assert_eq!(doc["grant_xorb_upload_count"], 6);
+        assert_eq!(doc["post_xorb_upload_count"], 2);
     }
 
     /// Absent shard progress reads as zero rather than dropping the keys.
     #[test]
     fn test_missing_shard_progress_reads_as_zero() {
-        let doc = serde_json::to_value(UploadMetrics::new(common(), &dedup(), &GroupProgressReport::default(), 0, 0))
-            .unwrap();
+        let doc = serde_json::to_value(UploadMetrics::new(
+            common(),
+            &dedup(),
+            &GroupProgressReport::default(),
+            xorb_upload_paths(),
+            0,
+            0,
+        ))
+        .unwrap();
         assert_eq!(doc["shards_total"], 0);
         assert_eq!(doc["shards_completed"], 0);
         assert_eq!(doc["shard_validation_entries"], 0);
