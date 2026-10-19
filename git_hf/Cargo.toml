@@ -10,9 +10,12 @@ path = "src/bin/main.rs"
 
 [dependencies]
 clap = { workspace = true }
+dirs = { workspace = true }
 git_extension_common = { path = "../git_extension_common" }
 git-url-parse = { workspace = true }
 git2 = { workspace = true }
+rust-netrc = { workspace = true }
+shellexpand = { workspace = true, features = ["path"] }
 thiserror = { workspace = true }
 xet-client = { path = "../xet_client" }
 xet-core-structures = { path = "../xet_core_structures" }
@@ -26,3 +29,7 @@ tempfile = { workspace = true }
 
 [features]
 git2-vendored-openssl = ["git_extension_common/git2-vendored-openssl"]
+
+# tell cargo-machete a renamed crate
+[package.metadata.cargo-machete.renamed]
+rust-netrc = "netrc"
