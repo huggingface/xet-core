@@ -29,11 +29,11 @@ or `--all` to attempt removal from system, global, and current repository config
 `--local` uses the repository Git selects for the current directory, as
 `git config --local` does. Removal is best effort: Git configuration command errors are ignored, including missing sections.
 
-`git hf install --local` also installs the repository's `pre-push` hook, which will
-upload staged data when you push; `git hf uninstall --local` removes it. Because hooks
-belong to a repository, git-hf also installs the hook the first time it stores a file as
-a Xet pointer, so a global installation needs no extra step. An existing `pre-push` hook
-is kept and still runs first. Neither command modifies attributes or diff/merge
+`git hf install --local` also installs the repository's `pre-push` hook, which uploads
+staged data when you push; `git hf uninstall --local` removes it. Because hooks belong to
+a repository, git-hf also installs the hook the first time it stores a file as a Xet
+pointer, so a global installation needs no extra step. An existing `pre-push` hook is
+kept and still runs first. Neither command modifies attributes or diff/merge
 configuration.
 
 ## Process filter and local staging
@@ -62,6 +62,29 @@ succeeds, because Git has already updated the index. git-hf then prints the affe
 files; run `git add --renormalize -- <paths>` in that worktree to stage them again.
 Staging is not cleaned up automatically.
 
+## Pushing
+
+`git push` works as usual. Before Git sends commits, the `pre-push` hook uploads the
+staged data for Xet pointers in the commits being pushed, including earlier commits of
+a new branch. A push that references no staged data never contacts the Hub, so pushing
+to a mirror or another non-Hub remote is unaffected.
+
+After a successful upload, the uploaded data is removed from the repository's local
+staging area. Later `git add` runs that can reach the Hub still deduplicate against it
+through the shared Xet cache. Staged files that were not part of the push stay staged. Because the removed data
+now exists only on the Hub that received the push, push those commits to that Hub
+repository first if you also push them to another one.
+
+Uploading needs write access to the Hub repository. git-hf uses the same credentials as
+remote deduplication, and may prompt through Git's credential helper. If authentication
+fails, the push stops with a message naming the repository and how to provide
+credentials.
+
+The push also stops, before anything is uploaded, if earlier staged data is missing:
+either git-hf previously reported that it could not save files, or staged files were
+deleted. Re-stage the reported files with `git add --renormalize -- <paths>` and push
+again. If the upload fails, staged data is kept and the next push uploads it again.
+
 ## Command contracts
 
 Run `git-hf --help`, or put the binary on PATH and use `git hf --help`.
@@ -77,7 +100,7 @@ Run `git-hf --help`, or put the binary on PATH and use `git hf --help`.
 | `checkout [--force] [paths...]` | Reconstruct selected index entries from local data only. |
 | `pull [remote] [--force]` | Fetch content for the current checkout, then reconstruct; do not run `git pull`. |
 | `filter-process [--smudge-passthrough]` | Internal required filter; smudge returns stored bytes unchanged. `--smudge-passthrough` is accepted and ignored. |
-| `pre-push <remote> <location>` | Internal hook receiving Git's ref updates on stdin. |
+| `pre-push <remote> <location>` | Internal hook receiving Git's ref updates on stdin; uploads the staged data they reference. |
 
 Internal commands are hidden from top-level help but have their own `--help`.
 Use `--` before paths beginning with `-`. Paths and clone locations retain native
