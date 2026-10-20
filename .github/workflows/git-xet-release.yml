@@ -156,7 +156,16 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag }}
         run: |
+          # The tag becomes an argument to `gh` below, which runs with GH_TOKEN. Reject
+          # anything outside the character set every release tag has used, so it cannot add
+          # flags of its own. Deliberately does not echo the tag: untrusted text in a log
+          # line can forge ::workflow commands::.
+          if [[ ! "$TAG" =~ ^[A-Za-z0-9._+-]+$ ]]; then
+            echo "::error::release tag contains characters outside [A-Za-z0-9._+-]"
+            exit 1
+          fi
           ls -l dist
           for dir in dist/*; do (cd "$dir" && zip -r "../$(basename "$dir").zip" .); done
-          gh release create git-xet-${{ github.event.inputs.tag}} dist/*.zip --generate-notes --prerelease --target ${{github.sha}}
+          gh release create "git-xet-${TAG}" dist/*.zip --generate-notes --prerelease --target "$GITHUB_SHA"
