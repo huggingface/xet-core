@@ -15,8 +15,8 @@ name = "xet_client"
 path = "src/lib.rs"
 
 [dependencies]
-xet-runtime = { version = "1.6.0", path = "../xet_runtime" }
-xet-core-structures = { version = "1.6.0", path = "../xet_core_structures" }
+xet-runtime = { version = "1.7.0", path = "../xet_runtime" }
+xet-core-structures = { version = "1.7.0", path = "../xet_core_structures" }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -33,6 +33,7 @@ reqwest-middleware = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_repr = { workspace = true }
+serde_with = { workspace = true }
 statrs = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }

@@ -35,6 +35,14 @@ macro_rules! impl_xet_config_group_dispatch {
                 $(self.$group.apply_env_overrides();)*
                 #[cfg(not(target_family = "wasm"))]
                 self.system_monitor.apply_env_overrides();
+
+                // huggingface_hub's telemetry opt-outs have inverted polarity, so they can't be
+                // ENVIRONMENT_NAME_ALIASES entries. Applied last so an opt-out beats an explicit
+                // HF_XET_TELEMETRY_ENABLED=1.
+                if $crate::utils::configuration_utils::telemetry_opted_out() {
+                    self.telemetry.enabled = false;
+                }
+
                 self
             }
 

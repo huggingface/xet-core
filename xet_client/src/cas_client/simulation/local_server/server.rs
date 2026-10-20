@@ -50,6 +50,8 @@ use tokio::net::TcpListener;
 #[cfg(test)]
 use tokio::sync::oneshot;
 use tower_http::cors::CorsLayer;
+#[cfg(test)]
+use xet_core_structures::merklehash::MerkleHash;
 use xet_runtime::core::XetContext;
 
 #[cfg(test)]
@@ -508,7 +510,7 @@ impl Client for LocalTestServer {
         shard_data: bytes::Bytes,
         upload_permit: crate::cas_client::adaptive_concurrency::ConnectionPermit,
         progress_callback: Option<crate::cas_client::interface::ShardUploadProgressCallback>,
-    ) -> Result<()> {
+    ) -> Result<Option<MerkleHash>> {
         self.remote_client
             .upload_shard(shard_data, upload_permit, progress_callback)
             .await

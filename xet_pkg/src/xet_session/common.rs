@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use xet_client::cas_client::auth::{DirectRefreshRouteTokenRefresher, TokenRefresher};
+use xet_client::cas_client::auth::{AuthConfig, DirectRefreshRouteTokenRefresher, TokenRefresher};
 use xet_client::common::http_client::build_http_client;
-use xet_data::processing::configurations::TranslatorConfig;
+use xet_data::processing::configurations::{SessionContext, TranslatorConfig};
 
 use super::XetSession;
 use super::auth_group_builder::AuthOptions;
@@ -61,19 +61,17 @@ pub(super) async fn create_translator_config(
 
     let endpoint = endpoint.unwrap_or_else(|| session.inner.ctx.config.data.default_cas_endpoint.clone());
 
-    let mut config = xet_data::processing::data_client::default_config(
-        &session.inner.ctx,
+    let (token, token_expiration) = token_info.unzip();
+    let session_context = SessionContext {
         endpoint,
-        token_info,
-        token_refresher,
-        custom_headers.map(Arc::new),
-    )?;
+        auth: AuthConfig::maybe_new(token, token_expiration, token_refresher),
+        custom_headers: custom_headers.map(Arc::new),
+        repo_paths: vec!["".into()],
+        session_id: Some(session_id),
+        cache_root: session.inner.cache_dir.clone(),
+    };
 
-    if !session_id.is_empty() {
-        config.session.session_id = Some(session_id);
-    }
-
-    Ok(config)
+    Ok(TranslatorConfig::new(&session.inner.ctx, session_context)?)
 }
 
 #[cfg(test)]
@@ -117,6 +115,25 @@ mod tests {
         let config = create_translator_config(&session, auth_options).await.unwrap();
 
         assert_eq!(config.session.endpoint, "https://cas.example.com");
+    }
+
+    /// The session's cache directory is used as the root for the shard cache and staging data.
+    #[tokio::test]
+    async fn test_session_cache_dir_is_used() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let session = XetSessionBuilder::new().with_cache_dir(temp_dir.path()).build().unwrap();
+
+        let auth_options = AuthOptions {
+            endpoint: Some("https://cas.example.com".to_string()),
+            custom_headers: None,
+            token_info: None,
+            token_refresh: None,
+        };
+
+        let config = create_translator_config(&session, auth_options).await.unwrap();
+
+        assert!(config.shard_cache_directory.starts_with(temp_dir.path()));
+        assert!(config.shard_session_directory.starts_with(temp_dir.path()));
     }
 
     /// Pattern B: when `endpoint` is not set but `token_refresh` is set, `create_translator_config`

@@ -51,12 +51,12 @@ impl AuthGroupBuilder<XetDownloadStreamGroup> {
             session, auth_options, ..
         } = self;
         let session_for_reg = session.clone();
-        let parent_runtime = session.inner.task_runtime.clone();
-        let child_parent = parent_runtime.clone();
-        let group = parent_runtime
+        // Construction failures belong to this operation, not the reusable session.
+        let child_runtime = session.inner.task_runtime.child()?;
+        let build_runtime = child_runtime.clone();
+        let group = build_runtime
             .bridge_async("new_download_stream_group", async move {
-                let group_runtime = child_parent.child()?;
-                XetDownloadStreamGroup::new(session, group_runtime, auth_options).await
+                XetDownloadStreamGroup::new(session, child_runtime, auth_options).await
             })
             .await?;
         info!("New download stream group, session_id={}, group_id={}", group.session().id(), group.id());
@@ -81,11 +81,11 @@ impl AuthGroupBuilder<XetDownloadStreamGroup> {
             session, auth_options, ..
         } = self;
         let session_for_reg = session.clone();
-        let parent_runtime = session.inner.task_runtime.clone();
-        let child_parent = parent_runtime.clone();
-        let group = parent_runtime.bridge_sync("new_download_stream_group_blocking", async move {
-            let group_runtime = child_parent.child()?;
-            XetDownloadStreamGroup::new(session, group_runtime, auth_options).await
+        // Construction failures belong to this operation, not the reusable session.
+        let child_runtime = session.inner.task_runtime.child()?;
+        let build_runtime = child_runtime.clone();
+        let group = build_runtime.bridge_sync("new_download_stream_group_blocking", async move {
+            XetDownloadStreamGroup::new(session, child_runtime, auth_options).await
         })?;
         info!("New download stream group, session_id={}, group_id={}", group.session().id(), group.id());
         session_for_reg.register_download_stream_group(&group)?;

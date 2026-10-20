@@ -37,6 +37,12 @@ pinned by `test_envelope_has_exactly_the_five_contract_keys`.
 | `final_flush_timeout` | `HF_XET_TELEMETRY_FINAL_FLUSH_TIMEOUT` | `2s` |
 | `max_in_flight` | `HF_XET_TELEMETRY_MAX_IN_FLIGHT` | `32` |
 
+`enabled` is also forced to `false` by `XetConfig::with_env_overrides` (so by `XetConfig::new()`)
+when any of huggingface_hub's opt-out variables is truthy: `HF_HUB_DISABLE_TELEMETRY`,
+`DISABLE_TELEMETRY`, `DO_NOT_TRACK`, `HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE`. This is a stopgap so
+hf-xet can ship before `huggingface_hub` sets `telemetry.enabled` on the `XetConfig` it passes to
+`XetSession`; the check is removed once that lands.
+
 `max_in_flight` is a **process-wide** ceiling: one counter is shared by every sink, so the total
 number of in-flight telemetry POSTs is bounded no matter how many transfers run at once. A per-sink
 counter would have bounded each transfer separately and multiplied by the transfer count, which puts

@@ -21,6 +21,9 @@ pub struct SessionContext {
     pub custom_headers: Option<Arc<HeaderMap>>,
     pub repo_paths: Vec<String>,
     pub session_id: Option<String>,
+    /// Root directory for the shard cache and staging data, used as-is. When `None`, `xet_cache_root()` is used.
+    /// Ignored for local (`local://`) endpoints.
+    pub cache_root: Option<PathBuf>,
 }
 
 impl SessionContext {
@@ -50,6 +53,7 @@ impl SessionContext {
             custom_headers: None,
             repo_paths: vec!["".into()],
             session_id: None,
+            cache_root: None,
         }
     }
 
@@ -61,6 +65,7 @@ impl SessionContext {
             custom_headers: None,
             repo_paths: vec!["".into()],
             session_id: None,
+            cache_root: None,
         }
     }
 }
@@ -102,6 +107,7 @@ impl TranslatorConfig {
         #[cfg(not(target_family = "wasm"))]
         let (shard_cache_directory, shard_session_directory) = {
             let config = ctx.config.as_ref();
+            let cache_root = session.cache_root.clone().unwrap_or_else(xet_cache_root);
 
             if let Some(local_path) = session.local_path(ctx) {
                 let base_path = local_path.join("xet");
@@ -109,12 +115,12 @@ impl TranslatorConfig {
 
                 (base_path.join(&config.shard.cache_subdir), base_path.join(&config.session.dir_name))
             } else if session.is_memory() {
-                let cache_path = xet_cache_root().join("memory");
+                let cache_path = cache_root.join("memory");
                 std::fs::create_dir_all(&cache_path)?;
 
                 (cache_path.join(&config.shard.cache_subdir), cache_path.join(&config.session.dir_name))
             } else {
-                let cache_path = compute_cache_path(&session.endpoint);
+                let cache_path = compute_cache_path(&cache_root, &session.endpoint);
                 std::fs::create_dir_all(&cache_path)?;
 
                 let staging_directory = cache_path.join(&config.data.staging_subdir);
@@ -172,6 +178,7 @@ impl TranslatorConfig {
             custom_headers: None,
             repo_paths: vec!["".into()],
             session_id: None,
+            cache_root: None,
         };
         let config = ctx.config.as_ref();
         let base_path = Self::create_base_xet_dir(base_dir)?;
@@ -193,9 +200,7 @@ impl TranslatorConfig {
 
 /// Computes a cache-safe path from an endpoint URL.
 #[cfg(not(target_family = "wasm"))]
-fn compute_cache_path(endpoint: &str) -> PathBuf {
-    let cache_root = xet_cache_root();
-
+fn compute_cache_path(cache_root: &Path, endpoint: &str) -> PathBuf {
     let endpoint_prefix = endpoint
         .chars()
         .take(16)
@@ -235,10 +240,36 @@ mod tests {
             custom_headers: None,
             repo_paths: Vec::new(),
             session_id: None,
+            cache_root: None,
         };
         assert!(!remote_session.is_local(&ctx));
         assert!(!remote_session.is_memory());
         assert!(remote_session.local_path(&ctx).is_none());
+    }
+
+    #[test]
+    fn test_session_cache_root_is_used() {
+        let ctx = XetContext::default().unwrap();
+        let temp_dir = tempdir().unwrap();
+
+        let session = SessionContext {
+            endpoint: "http://localhost:8080".into(),
+            auth: None,
+            custom_headers: None,
+            repo_paths: Vec::new(),
+            session_id: None,
+            cache_root: Some(temp_dir.path().to_path_buf()),
+        };
+        let remote_config = TranslatorConfig::new(&ctx, session).unwrap();
+        assert!(remote_config.shard_cache_directory.starts_with(temp_dir.path()));
+        assert!(remote_config.shard_session_directory.starts_with(temp_dir.path()));
+
+        let memory_session = SessionContext {
+            cache_root: Some(temp_dir.path().to_path_buf()),
+            ..SessionContext::for_memory()
+        };
+        let memory_config = TranslatorConfig::new(&ctx, memory_session).unwrap();
+        assert!(memory_config.shard_cache_directory.starts_with(temp_dir.path().join("memory")));
     }
 
     #[test]

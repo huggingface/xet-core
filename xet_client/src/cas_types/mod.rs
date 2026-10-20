@@ -23,6 +23,34 @@ pub struct UploadXorbResponse {
     pub was_inserted: bool,
 }
 
+/// Checksum of serialized xorb data.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(tag = "algo", content = "value", rename_all = "lowercase")]
+pub enum Checksum {
+    /// Serialized as a decimal string, since JSON numbers above 2^53 lose precision in many parsers.
+    Crc64Nvme(#[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")] u64),
+}
+
+/// Request body for a xorb upload grant.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct XorbUploadGrantRequest {
+    /// Length of the serialized xorb in bytes.
+    pub length: u64,
+    pub checksum: Checksum,
+}
+
+/// A grant to upload a serialized xorb directly to `url`.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct XorbUploadGrant {
+    /// Grant id, used to commit the upload.
+    pub id: String,
+    /// HTTP method for the upload.
+    pub method: String,
+    pub url: String,
+    /// Headers the upload must send exactly as given.
+    pub headers: HashMap<String, String>,
+}
+
 /// These types are defined to help differentiate the Range<,> type aliases,
 /// so that they don't silently cast to each other without range adjustments.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default, Hash, Copy)]
@@ -304,6 +332,11 @@ pub enum UploadShardResponseType {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct UploadShardResponse {
     pub result: UploadShardResponseType,
+    /// Hash the server stored the shard under. The server re-serializes what it is sent and
+    /// keys the object on the result, so this is authoritative where the uploader's own
+    /// computation is only a prediction. `None` when the server predates this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shard_hash: Option<HexMerkleHash>,
 }
 
 /// Sub-stage of the durable-write (commit) phase, so a stalled `committing` stream
@@ -420,6 +453,20 @@ pub struct FileChunkHashesResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_xorb_upload_grant_request_checksum_is_decimal_string() {
+        let request = XorbUploadGrantRequest {
+            length: 1234,
+            checksum: Checksum::Crc64Nvme(u64::MAX),
+        };
+        let json = r#"{"length":1234,"checksum":{"algo":"crc64nvme","value":"18446744073709551615"}}"#;
+
+        assert_eq!(serde_json::to_string(&request).unwrap(), json);
+        let parsed: XorbUploadGrantRequest = serde_json::from_str(json).unwrap();
+        assert!(matches!(parsed.checksum, Checksum::Crc64Nvme(u64::MAX)));
+        assert!(serde_json::from_str::<Checksum>(r#"{"algo":"crc64nvme","value":7}"#).is_err());
+    }
 
     #[test]
     fn test_file_range_segment() {
@@ -612,6 +659,53 @@ mod tests {
         // Extra fields on an unknown type are fine; the catch-all only keys off `type`.
         let event: ShardUploadEvent = serde_json::from_str(r#"{"type":"future_stage","detail":{"n":1}}"#).unwrap();
         assert_eq!(event, ShardUploadEvent::Unknown);
+    }
+
+    /// A server predating `shard_hash` omits it, and that must stay readable rather than
+    /// failing the upload.
+    #[test]
+    fn test_upload_shard_response_without_hash_deserializes() {
+        let response: UploadShardResponse = serde_json::from_str(r#"{"result":1}"#).unwrap();
+        assert_eq!(response.result, UploadShardResponseType::SyncPerformed);
+        assert!(response.shard_hash.is_none());
+    }
+
+    #[test]
+    fn test_upload_shard_response_hash_round_trips() {
+        let hash = MerkleHash::from_hex(&"ab".repeat(32)).unwrap();
+        let response = UploadShardResponse {
+            result: UploadShardResponseType::SyncPerformed,
+            shard_hash: Some(hash.into()),
+        };
+
+        let decoded: UploadShardResponse = serde_json::from_str(&serde_json::to_string(&response).unwrap()).unwrap();
+        assert_eq!(decoded.shard_hash.map(MerkleHash::from), Some(hash));
+    }
+
+    /// A client compiled before `shard_hash` existed must keep parsing responses that carry
+    /// it. Serde ignores unknown fields unless `deny_unknown_fields` is set, and this pins
+    /// that: adding the field is not a wire break.
+    #[test]
+    fn test_upload_shard_response_is_readable_without_the_new_field() {
+        #[derive(Deserialize)]
+        struct PreviousShape {
+            #[allow(dead_code)]
+            result: UploadShardResponseType,
+        }
+
+        let with_hash = format!(r#"{{"result":1,"shard_hash":"{}"}}"#, "ab".repeat(32));
+        serde_json::from_str::<PreviousShape>(&with_hash).expect("an older client must still parse this");
+    }
+
+    /// Omitted rather than serialized as null, so an older server and this one produce the
+    /// same bytes when there is no hash to report.
+    #[test]
+    fn test_upload_shard_response_omits_absent_hash() {
+        let response = UploadShardResponse {
+            result: UploadShardResponseType::Exists,
+            shard_hash: None,
+        };
+        assert_eq!(serde_json::to_string(&response).unwrap(), r#"{"result":0}"#);
     }
 
     #[test]
