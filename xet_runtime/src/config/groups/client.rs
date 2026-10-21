@@ -62,6 +62,25 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_CLIENT_READ_TIMEOUT` to set this value.
     ref read_timeout: Duration = Duration::from_secs(300);
 
+    /// Minimum average speed of each xorb range download, in bytes per second, over each
+    /// `download_min_speed_window`. A request that falls below it is aborted and retried once on a
+    /// new connection, if a retry is left; the retry is not checked, so a link that is slow for every
+    /// request still completes. A connection that keeps receiving a trickle of data never hits `read_timeout`, and
+    /// since a file is written in order, one such request can hold back the whole download.
+    /// Set to 0 to disable.
+    ///
+    /// The default value is 4kb (4000 bytes per second).
+    ///
+    /// Use the environment variable `HF_XET_CLIENT_DOWNLOAD_MIN_BYTES_PER_SEC` to set this value.
+    ref download_min_bytes_per_sec: ByteSize = ByteSize::from("4kb");
+
+    /// Length of the window over which `download_min_bytes_per_sec` is checked.
+    ///
+    /// The default value is 60 seconds.
+    ///
+    /// Use the environment variable `HF_XET_CLIENT_DOWNLOAD_MIN_SPEED_WINDOW` to set this value.
+    ref download_min_speed_window: Duration = Duration::from_secs(60);
+
     /// Send a report of a successful partial upload every 512kb.
     ///
     /// The default value is 524288.
