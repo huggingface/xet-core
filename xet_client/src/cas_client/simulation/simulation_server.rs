@@ -20,7 +20,7 @@ use xet_runtime::core::XetContext;
 use super::super::RemoteClient;
 use super::super::interface::Client;
 use super::super::progress_tracked_streams::ProgressCallback;
-use super::local_server::{LocalServer, ServerLatencyProfile};
+use super::local_server::{LocalServer, ServerLatencyProfile, TrickleFetchTerms};
 use super::network_simulation::{NetworkProfile, NetworkSimulationProxy};
 #[cfg(unix)]
 use super::socket_proxy::UnixSocketProxy;
@@ -258,6 +258,7 @@ impl LocalTestServerBuilder {
         let server = LocalServer::from_client(client.clone(), deletion_client.clone(), host, port);
         // Grabbed before the server moves into its serving task.
         let telemetry_docs = server.telemetry_docs_handle();
+        let trickle_fetch_terms = server.trickle_fetch_terms_handle();
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         tokio::spawn(async move {
             let _ = server.run_until_stopped(shutdown_rx).await;
@@ -321,6 +322,7 @@ impl LocalTestServerBuilder {
             _ephemeral_socket_tempdir: ephemeral_tempdir,
             network_simulation_proxy: proxy_guard.clone(),
             telemetry_docs: telemetry_docs.clone(),
+            trickle_fetch_terms: trickle_fetch_terms.clone(),
         };
 
         #[cfg(not(unix))]
@@ -332,6 +334,7 @@ impl LocalTestServerBuilder {
             deletion_client,
             network_simulation_proxy: proxy_guard,
             telemetry_docs: telemetry_docs.clone(),
+            trickle_fetch_terms: trickle_fetch_terms.clone(),
         };
 
         if let Some(profile) = self.server_latency_profile {
@@ -386,6 +389,7 @@ pub struct LocalTestServer {
     deletion_client: Option<Arc<dyn DeletionControlableClient>>,
     network_simulation_proxy: Option<Arc<NetworkSimulationProxy>>,
     telemetry_docs: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    trickle_fetch_terms: Arc<std::sync::Mutex<TrickleFetchTerms>>,
 
     #[cfg(unix)]
     socket_proxy: Option<UnixSocketProxy>,
@@ -454,6 +458,22 @@ impl LocalTestServer {
     /// type of each value are what a consumer actually receives.
     pub fn telemetry_docs(&self) -> Vec<serde_json::Value> {
         self.telemetry_docs.lock().expect("telemetry_docs lock poisoned").clone()
+    }
+
+    /// Makes the next `n` single-range responses for `xorb_hash`, or for any xorb if `None`, send half
+    /// of their data and then trickle the rest at 100 bytes per second, like a starved connection that
+    /// never hits a read timeout.
+    pub fn trickle_next_fetch_terms(&self, n: usize, xorb_hash: Option<MerkleHash>) {
+        *self.trickle_fetch_terms.lock().unwrap_or_else(|e| e.into_inner()) = TrickleFetchTerms {
+            remaining: n,
+            xorb_hash,
+        };
+    }
+
+    /// Number of trickled xorb range responses requested by [`Self::trickle_next_fetch_terms`] not
+    /// yet served.
+    pub fn pending_trickled_fetch_terms(&self) -> usize {
+        self.trickle_fetch_terms.lock().unwrap_or_else(|e| e.into_inner()).remaining
     }
 
     pub fn client(&self) -> &Arc<dyn DirectAccessClient> {

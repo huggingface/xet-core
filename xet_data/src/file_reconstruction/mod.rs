@@ -1,6 +1,8 @@
 mod data_writer;
 mod error;
 mod file_reconstructor;
+#[cfg(not(target_family = "wasm"))]
+mod head_of_line_hedger;
 mod reconstruction_terms;
 mod run_state;
 
