@@ -18,6 +18,7 @@ use tracing::{error, info, warn};
 use xet_core_structures::merklehash::{HashedWrite, MerkleHash, compute_data_hash};
 use xet_core_structures::metadata_shard::file_structs::{FileDataSequenceHeader, MDBFileInfo, MDBFileInfoView};
 use xet_core_structures::metadata_shard::shard_file::current_timestamp;
+use xet_core_structures::metadata_shard::shard_file_manager::ChunkIndexSizeEnforcement;
 use xet_core_structures::metadata_shard::shard_format::MDB_FILE_INFO_ENTRY_SIZE;
 #[cfg(test)]
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
@@ -563,7 +564,9 @@ impl LocalClient {
             let shard_path = in_memory.write_to_directory(&self.shard_dir, None)?;
             let shard = MDBShardFile::load_from_file(&shard_path, self.shard_manager.shard_file_cache())?;
             let shard_hash = shard.shard_hash;
-            self.shard_manager.register_shards(&[shard]).await?;
+            self.shard_manager
+                .register_shards(&[shard], ChunkIndexSizeEnforcement::StopAtCap)
+                .await?;
 
             // Update FILE_TO_SHARD_TABLE with byte-accurate offsets.
             let shard_bytes = std::fs::read(&shard_path)?;
@@ -1706,7 +1709,9 @@ impl Client for LocalClient {
 
         let shard = MDBShardFile::load_from_file(&shard_path, self.shard_manager.shard_file_cache())?;
 
-        self.shard_manager.register_shards(&[shard]).await?;
+        self.shard_manager
+            .register_shards(&[shard], ChunkIndexSizeEnforcement::StopAtCap)
+            .await?;
 
         // Get global dedup chunks from the minimal shard
         let chunk_hashes = minimal_shard.global_dedup_eligible_chunks();
