@@ -60,8 +60,9 @@ impl KeyedShardCollection {
 /// A shard with entries in the chunk index.  Ordered oldest first, so the first one is evicted first.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct IndexedShard {
-    // The footer's shard_creation_timestamp, in seconds since the epoch.  Shards written locally from an
-    // in-memory shard leave it at 0; ties fall back to the collection and shard indices.
+    // The footer's shard_creation_timestamp, in seconds since the epoch.  As the first field, it decides the
+    // eviction order through the derived Ord.  Shards written locally from an in-memory shard leave it at 0;
+    // ties fall back to the collection and shard indices.
     creation_timestamp: u64,
     shard_collection_index: usize,
     shard_index_in_collection: usize,
@@ -81,7 +82,6 @@ pub enum ChunkIndexSizeEnforcement {
 
 /// We have a couple levels of arc redirection here to handle the different queries needed.
 /// This holds the registered shards, their chunk index, and the state for keeping that index under its cap.
-#[derive(Default)]
 struct ShardBookkeeper {
     // One collection per HMAC key; chunk lookups query them in order.  Index 0 is the unkeyed collection,
     // so local shards are always tried first.
@@ -112,8 +112,10 @@ impl ShardBookkeeper {
         Self {
             shard_collections: vec![KeyedShardCollection::new(HMACKey::default())],
             collection_by_key: MerkleHashMap::from([(HMACKey::default(), 0)]),
+            shard_lookup_by_shard_hash: MerkleHashMap::new(),
+            total_indexed_chunks: 0,
+            indexed_shards: BTreeSet::new(),
             num_indexable_slots: u16::MAX as usize + 1,
-            ..Default::default()
         }
     }
 
@@ -144,9 +146,8 @@ impl ShardBookkeeper {
         shard_list.push(oldest.clone());
         shard_list[ring_slot] = shard;
 
-        if let Some(location) = self.shard_lookup_by_shard_hash.get_mut(&oldest.shard_hash) {
-            *location = (shard_col_index, num_shards);
-        }
+        self.shard_lookup_by_shard_hash
+            .insert(oldest.shard_hash, (shard_col_index, num_shards));
 
         ring_slot
     }
@@ -410,6 +411,18 @@ impl ShardFileManager {
                 .update(move |mut sbkp_lg| async move {
                     debug!("register_shards: Registering shard {:?} at {:?}.", s.shard_hash, s.path);
 
+                    // A shard whose hashes can't be read is left unregistered, so a later rescan tries it again.
+                    let Ok(insert_hashes_task_result) = s_truncated_hashes_jh.await else {
+                        warn!("Join error on task reading hashes from {:?}; skipping registration.", &s.path);
+                        return Ok(sbkp_lg);
+                    };
+
+                    let Ok(insert_hashes) = insert_hashes_task_result.map_err(|e| {
+                        warn!("Error reading hashes from {:?}: {e:?}. Skipping registration.", &s.path);
+                    }) else {
+                        return Ok(sbkp_lg);
+                    };
+
                     let shard_hmac_key = s.shard.metadata.chunk_hash_hmac_key;
                     let creation_timestamp = s.shard.metadata.shard_creation_timestamp;
                     let shard_hash = s.shard_hash;
@@ -424,17 +437,6 @@ impl ShardFileManager {
                     }
 
                     let shard_index = sbkp_lg.add_shard_to_collection(shard_col_index, s.clone());
-
-                    let Ok(insert_hashes_task_result) = s_truncated_hashes_jh.await else {
-                        warn!("Join error on task reading hashes from {:?}; skipping dedup lookup insert.", &s.path);
-                        return Ok(sbkp_lg);
-                    };
-
-                    let Ok(insert_hashes) = insert_hashes_task_result.map_err(|e| {
-                        warn!("Error reading hashes from {:?}: {e:?}. Skipping dedup lookup insert.", &s.path);
-                    }) else {
-                        return Ok(sbkp_lg);
-                    };
 
                     sbkp_lg
                         .shard_lookup_by_shard_hash

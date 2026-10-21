@@ -1,7 +1,7 @@
 This update makes `ShardFileManager` evict the oldest shards from its in-memory chunk index once the index is full, instead of silently skipping every shard registered after that point. Callers that register shards now choose what happens at the cap.
 
 What changed
-- New public enum `xet_core_structures::metadata_shard::shard_file_manager::ChunkIndexSizeEnforcement`:
+- New public enum `ChunkIndexSizeEnforcement`, defined in `xet_core_structures::metadata_shard::shard_file_manager` and re-exported from `xet_core_structures::metadata_shard` next to `ShardFileManager`:
   - `StopAtCap`: a shard that doesn't fit is registered, but its chunks aren't indexed for dedup.
   - `Eviction`: the oldest indexed shards, ordered by the footer's `shard_creation_timestamp`, are evicted from the chunk index to make room.
 - These `ShardFileManager` methods take a new last argument, `index_size_enforcement: ChunkIndexSizeEnforcement`:

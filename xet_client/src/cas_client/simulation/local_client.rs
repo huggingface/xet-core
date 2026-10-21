@@ -18,7 +18,6 @@ use tracing::{error, info, warn};
 use xet_core_structures::merklehash::{HashedWrite, MerkleHash, compute_data_hash};
 use xet_core_structures::metadata_shard::file_structs::{FileDataSequenceHeader, MDBFileInfo, MDBFileInfoView};
 use xet_core_structures::metadata_shard::shard_file::current_timestamp;
-use xet_core_structures::metadata_shard::shard_file_manager::ChunkIndexSizeEnforcement;
 use xet_core_structures::metadata_shard::shard_format::MDB_FILE_INFO_ENTRY_SIZE;
 #[cfg(test)]
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
@@ -26,7 +25,9 @@ use xet_core_structures::metadata_shard::streaming_shard::MDBMinimalShard;
 use xet_core_structures::metadata_shard::utils::{parse_shard_filename, shard_file_name};
 #[cfg(test)]
 use xet_core_structures::metadata_shard::xorb_structs::MDBXorbInfo;
-use xet_core_structures::metadata_shard::{MDBShardFile, MDBShardFileHeader, ShardFileManager};
+use xet_core_structures::metadata_shard::{
+    ChunkIndexSizeEnforcement, MDBShardFile, MDBShardFileHeader, ShardFileManager,
+};
 use xet_core_structures::serialization_utils::read_u32;
 use xet_core_structures::xorb_object::{SerializedXorbObject, XorbObject};
 use xet_runtime::core::XetContext;
