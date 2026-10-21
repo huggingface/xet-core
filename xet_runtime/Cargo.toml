@@ -24,6 +24,7 @@ dirs = { workspace = true }
 humantime = { workspace = true }
 git-version = { workspace = true }
 konst = "0.4"
+pastey = "0.2"
 libc = { workspace = true }
 more-asserts = { workspace = true }
 oneshot = { workspace = true }

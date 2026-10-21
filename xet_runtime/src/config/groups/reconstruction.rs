@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::utils::ByteSize;
 
-crate::config_group!({
+crate::config::macros::xet_config_group!(reconstruction, {
 
     /// The minimum size of a single fetch request during reconstruction.
     /// Individual fetches will request reconstruction terms representing at least this amount of data.

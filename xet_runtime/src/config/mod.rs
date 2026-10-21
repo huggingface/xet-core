@@ -12,7 +12,7 @@ pub mod groups;
 #[cfg(feature = "python")]
 pub mod python;
 
-pub use xet_config::XetConfig;
+pub use xet_config::{XetConfig, XetConfigBuilder};
 
 pub use crate::utils::configuration_utils::ParsableConfigValue;
 

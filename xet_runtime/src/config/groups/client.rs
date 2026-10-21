@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::utils::ByteSize;
 
-crate::config_group!({
+crate::config::macros::xet_config_group!(client, {
 
     /// Retry at most this many times before permanently failing.
     ///
