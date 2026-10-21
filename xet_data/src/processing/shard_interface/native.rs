@@ -16,6 +16,7 @@ use xet_core_structures::metadata_shard::file_structs::{FileDataSequenceEntry, M
 use xet_core_structures::metadata_shard::session_directory::{
     ShardMergeResult, consolidate_shards_in_directory, merge_shards_background,
 };
+use xet_core_structures::metadata_shard::shard_file_manager::ChunkIndexSizeEnforcement;
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::metadata_shard::xorb_structs::MDBXorbInfo;
 use xet_core_structures::metadata_shard::{
@@ -116,8 +117,10 @@ impl SessionShardInterface {
                 let resumed_session_shard_manager =
                     ShardFileManager::new_in_session_directory(ctx, &session_dir, false).await?;
 
+                // This is the initial registration, so once the index is full, stop rather than evict the shards we
+                // just indexed.
                 resumed_session_shard_manager
-                    .register_shards(&shard_merge_result.merged_shards)
+                    .register_shards(&shard_merge_result.merged_shards, ChunkIndexSizeEnforcement::StopAtCap)
                     .await?;
 
                 Some(resumed_session_shard_manager)
@@ -157,7 +160,9 @@ impl SessionShardInterface {
 
         // The above process found something and downloaded it; it should now be in the cache directory and valid
         // for deduplication.  Register it and restart the dedup process at the start of this chunk.
-        self.cache_shard_manager.import_shard_from_bytes(&new_shard).await?;
+        self.cache_shard_manager
+            .import_shard_from_bytes(&new_shard, ChunkIndexSizeEnforcement::Eviction)
+            .await?;
 
         Ok(true)
     }
@@ -317,7 +322,9 @@ impl SessionShardInterface {
                     )?;
 
                     // Register that new shard in the cache shard manager
-                    cache_shard_manager.register_shards(&[new_shard_path]).await?;
+                    cache_shard_manager
+                        .register_shards(&[new_shard_path], ChunkIndexSizeEnforcement::Eviction)
+                        .await?;
 
                     Ok(())
                 }
