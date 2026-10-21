@@ -16,12 +16,11 @@ use xet_core_structures::metadata_shard::file_structs::{FileDataSequenceEntry, M
 use xet_core_structures::metadata_shard::session_directory::{
     ShardMergeResult, consolidate_shards_in_directory, merge_shards_background,
 };
-use xet_core_structures::metadata_shard::shard_file_manager::ChunkIndexSizeEnforcement;
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::metadata_shard::xorb_structs::MDBXorbInfo;
 use xet_core_structures::metadata_shard::{
-    MDB_SHARD_LOCAL_CACHE_EXPIRATION, MDB_SHARD_TARGET_SIZE, MDBShardFile, MDBShardFileHeader, ShardFileManager,
-    get_shard_file_cache,
+    ChunkIndexSizeEnforcement, MDB_SHARD_LOCAL_CACHE_EXPIRATION, MDB_SHARD_TARGET_SIZE, MDBShardFile,
+    MDBShardFileHeader, ShardFileManager, get_shard_file_cache,
 };
 use xet_runtime::core::XetContext;
 use xet_runtime::error_printer::ErrorPrinter;
