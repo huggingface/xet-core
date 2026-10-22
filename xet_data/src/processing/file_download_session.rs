@@ -143,12 +143,12 @@ impl FileDownloadSession {
         source_range: Option<Range<u64>>,
     ) -> Result<(UniqueId, DownloadStream)> {
         self.check_not_finalized()?;
-        let id = UniqueId::new();
-        let progress_updater = self.progress.new_item(id, "stream");
         let range = match source_range {
             Some(r) => range_bounds_to_file_range(&r)?,
             None => None,
         };
+        let id = UniqueId::new();
+        let progress_updater = self.progress.new_item(id, "stream");
         let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater))?;
         let stream = reconstructor.reconstruct_to_stream();
         self.register_stream_abort_callback(id, stream.abort_callback());
@@ -174,12 +174,12 @@ impl FileDownloadSession {
         source_range: Option<Range<u64>>,
     ) -> Result<(UniqueId, UnorderedDownloadStream)> {
         self.check_not_finalized()?;
-        let id = UniqueId::new();
-        let progress_updater = self.progress.new_item(id, "unordered_stream");
         let range = match source_range {
             Some(r) => range_bounds_to_file_range(&r)?,
             None => None,
         };
+        let id = UniqueId::new();
+        let progress_updater = self.progress.new_item(id, "unordered_stream");
         let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater))?;
         let stream = reconstructor.reconstruct_to_unordered_stream();
         self.register_stream_abort_callback(id, stream.abort_callback());
@@ -1307,6 +1307,7 @@ mod tests {
 
                 let result = session.download_unordered_stream(&xfi, Some(10..5)).await;
                 assert!(matches!(result, Err(DataError::InvalidOperation(_))));
+                assert_eq!(session.n_items(), 0);
             })
             .unwrap();
     }
