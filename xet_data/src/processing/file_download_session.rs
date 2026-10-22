@@ -145,7 +145,10 @@ impl FileDownloadSession {
         self.check_not_finalized()?;
         let id = UniqueId::new();
         let progress_updater = self.progress.new_item(id, "stream");
-        let range = source_range.map(|r| FileRange::new(r.start, r.end));
+        let range = match source_range {
+            Some(r) => range_bounds_to_file_range(&r)?,
+            None => None,
+        };
         let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater))?;
         let stream = reconstructor.reconstruct_to_stream();
         self.register_stream_abort_callback(id, stream.abort_callback());
@@ -173,7 +176,10 @@ impl FileDownloadSession {
         self.check_not_finalized()?;
         let id = UniqueId::new();
         let progress_updater = self.progress.new_item(id, "unordered_stream");
-        let range = source_range.map(|r| FileRange::new(r.start, r.end));
+        let range = match source_range {
+            Some(r) => range_bounds_to_file_range(&r)?,
+            None => None,
+        };
         let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater))?;
         let stream = reconstructor.reconstruct_to_unordered_stream();
         self.register_stream_abort_callback(id, stream.abort_callback());
@@ -1277,6 +1283,30 @@ mod tests {
                 let result = session.download_to_writer(&xfi, 10..5, file).await;
 
                 assert!(result.is_err());
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_download_stream_inverted_range_errors() {
+        let runtime = get_runtime();
+        runtime
+            .clone()
+            .external_run_async_task(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = b"0123456789abcdef";
+
+                let xfi = upload_data(&cas_path, original_data).await;
+
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
+                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+
+                let result = session.download_stream(&xfi, Some(10..5)).await;
+                assert!(matches!(result, Err(DataError::InvalidOperation(_))));
+
+                let result = session.download_unordered_stream(&xfi, Some(10..5)).await;
+                assert!(matches!(result, Err(DataError::InvalidOperation(_))));
             })
             .unwrap();
     }
