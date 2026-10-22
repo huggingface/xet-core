@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use xet_client::hub_client::BearerCredentialHelper;
 
-use crate::errors::{GitXetError, Result};
+use crate::errors::{GitExtensionError, Result};
 use crate::utils::process_wrapping::run_git_captured_with_input_and_output;
 
 // This implements the mechanism to get credential stored in configured git credential helpers, including
@@ -76,7 +76,7 @@ impl GitCredentialHelper {
             }
         }
 
-        Err(GitXetError::config_error(format!("failed to find authentication for {host_url}")))
+        Err(GitExtensionError::config_error(format!("failed to find authentication for {host_url}")))
     }
 }
 

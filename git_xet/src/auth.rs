@@ -1,21 +1,12 @@
 use std::str::FromStr;
 use std::sync::Arc;
 
+use git_extension_common::{GitCredentialHelper, GitRepo, GitUrl, SSHCredentialHelper, Scheme};
 use netrc::Netrc;
 use xet_client::hub_client::{BearerCredentialHelper, CredentialHelper, NoopCredentialHelper, Operation};
 
 use crate::constants::HF_TOKEN_ENV;
 use crate::errors::{GitXetError, Result};
-use crate::git_repo::GitRepo;
-use crate::git_url::{GitUrl, Scheme};
-
-mod git;
-mod ssh;
-
-use git::GitCredentialHelper;
-use ssh::SSHCredentialHelper;
-#[cfg(any(test, feature = "git-xet-for-integration-test"))]
-pub use ssh::{GitLFSAuthentationResponseHeader, GitLFSAuthenticateResponse};
 
 // This mod derives credentials for the Xet CAS token API on HF Hub from the local repository's credentials.
 // Unlike the authorization model in huggingface_hub which adheres to using a HF token, Git and Git LFS have
@@ -137,12 +128,11 @@ pub fn get_credential(repo: &GitRepo, remote_url: &GitUrl, operation: Operation)
 #[cfg(test)]
 mod test_access_mode {
     use anyhow::Result;
+    use git_extension_common::test_utils::TestRepo;
+    use git_extension_common::{GitRepo, GitUrl};
     use serial_test::serial;
 
     use super::AccessMode;
-    use crate::git_repo::GitRepo;
-    use crate::git_url::GitUrl;
-    use crate::test_utils::TestRepo;
 
     #[test]
     #[serial(env_var_write_read)]
@@ -173,6 +163,9 @@ mod test_cred_helpers {
     use std::io::Write;
 
     use anyhow::Result;
+    use git_extension_common::GitRepo;
+    use git_extension_common::process_wrapping::run_git_captured_with_input_and_output;
+    use git_extension_common::test_utils::TestRepo;
     use serial_test::serial;
     use tempfile::NamedTempFile;
     use xet_client::hub_client::Operation;
@@ -180,9 +173,6 @@ mod test_cred_helpers {
 
     use super::get_credential;
     use crate::constants::HF_TOKEN_ENV;
-    use crate::git_repo::GitRepo;
-    use crate::test_utils::TestRepo;
-    use crate::utils::process_wrapping::run_git_captured_with_input_and_output;
 
     #[test]
     #[serial(env_var_write_read)]
