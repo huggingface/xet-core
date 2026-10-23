@@ -518,6 +518,7 @@ impl RemoteClient {
             .with_connection_permit(upload_permit, Some(n_upload_bytes))
             .with_412_as_success()
             .with_retry_on_409()
+            .with_expected_400()
             .with_expected_403()
             .run(move || {
                 let request = client
