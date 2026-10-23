@@ -11,7 +11,7 @@ use tracing::{error, info};
 use xet_runtime::core::XetContext;
 
 use super::adaptive_concurrency::ConnectionPermit;
-use crate::common::http_client::request_id_from_response;
+use crate::common::http_client::{request_id_from_response, strip_url_query};
 use crate::error::{ClientError, Result};
 
 #[derive(Debug)]
@@ -505,14 +505,6 @@ impl RetryWrapper {
 /// first delay and the per-step multiplier (e.g. 3000 -> 3s, 9000s, ...). Instead, the
 /// per-step multiplier is derived from `base_delay` in whole seconds and `factor` scales
 /// the first delay back to `base_delay`.
-/// Removes the query from the error's URL so presigned URL signatures are not logged.
-fn strip_url_query(mut err: ReqwestError) -> ReqwestError {
-    if let Some(url) = err.url_mut() {
-        url.set_query(None);
-    }
-    err
-}
-
 fn exponential_retry_delays(
     base_delay: Duration,
     max_attempts: usize,
