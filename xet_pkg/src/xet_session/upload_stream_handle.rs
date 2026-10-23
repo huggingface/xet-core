@@ -78,8 +78,10 @@ impl XetStreamUploadInner {
 ///
 /// Returned by [`XetUploadCommit::upload_stream`].  Feed data with
 /// [`write`](Self::write), then call [`finish`](Self::finish) to finalise
-/// ingestion.  **`finish` must be called before [`XetUploadCommit::commit`]**;
-/// committing with an unfinished stream handle is an error.
+/// ingestion.  **Before [`XetUploadCommit::commit`], call `finish`, or
+/// [`abort`](Self::abort) to leave the stream out of the commit.**  Committing
+/// while a stream is neither finished nor aborted is an error; dropping the
+/// handle does not abort the stream.
 ///
 /// This type is cheaply clonable; all clones share the same underlying state.
 #[derive(Clone)]
@@ -132,7 +134,8 @@ impl XetStreamUpload {
 
     /// Finalise the streaming upload and return per-file [`XetFileMetadata`].
     ///
-    /// Must be called before [`XetUploadCommit::commit`].  A second call returns
+    /// Must be called before [`XetUploadCommit::commit`], unless the stream is
+    /// [aborted](Self::abort).  A second call returns
     /// [`XetError::AlreadyCompleted`] after a successful finish; use
     /// [`try_finish`](Self::try_finish) to read cached metadata without
     /// finalizing again.
@@ -170,6 +173,16 @@ impl XetStreamUpload {
         self.inner.try_finish()
     }
 
+    /// Release what an aborted stream still holds so the commit can go ahead without it: drop its
+    /// data pipeline and stop tracking its file in the upload session's progress.
+    ///
+    /// [`abort`](Self::abort) drops the pipeline only if no write holds it. A write that `abort()`
+    /// cancelled releases it shortly after, so this waits for the lock.
+    pub(super) async fn discard_aborted(&self) {
+        drop(self.inner.cleaner.lock().await.take());
+        self.inner.upload_session.abandon_file(self.task_id());
+    }
+
     /// Per-file progress snapshot, or `None` if not yet available.
     pub fn progress(&self) -> Option<ItemProgressReport> {
         self.inner.progress()
@@ -184,6 +197,12 @@ impl XetStreamUpload {
     /// Drops the internal data pipeline.  Subsequent [`write`](Self::write) or
     /// [`finish`](Self::finish) calls may return [`XetError::UserCancelled`] or
     /// related errors.
+    ///
+    /// The aborted stream is left out of [`XetUploadCommit::commit`]; the other
+    /// files of the commit are not affected.  To retry a file whose source
+    /// failed, abort its stream and upload the file again with a new stream on
+    /// the same commit.  Call `abort` on every stream you give up, for example
+    /// from a drop guard: dropping the handle alone makes `commit` fail.
     pub fn abort(&self) {
         info!(task_id = %self.task_id(), "Stream abort");
         self.inner.abort()
