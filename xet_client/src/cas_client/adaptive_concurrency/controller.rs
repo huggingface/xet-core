@@ -374,9 +374,14 @@ impl AdaptiveConcurrencyController {
     }
 
     pub async fn acquire_connection_permit(self: &Arc<Self>) -> Result<ConnectionPermit> {
-        let _permit = self.concurrency_semaphore.acquire().await?;
+        let _permit = Arc::new(self.concurrency_semaphore.acquire().await?);
+        let info = self.new_permit_info().await;
 
-        let info = Arc::new(ConnectionPermitInfo {
+        Ok(ConnectionPermit { _permit, info })
+    }
+
+    async fn new_permit_info(self: &Arc<Self>) -> Arc<ConnectionPermitInfo> {
+        Arc::new(ConnectionPermitInfo {
             controller: Arc::clone(self),
             transfer_start_time: Mutex::new(Instant::now()),
             starting_concurrency: self.concurrency_semaphore.active_permits() as usize,
@@ -384,9 +389,7 @@ impl AdaptiveConcurrencyController {
             report_portion: AtomicU32::new(0),
             last_partial_report_ms: AtomicU64::new(0),
             max_bytes_reported: AtomicU64::new(0),
-        });
-
-        Ok(ConnectionPermit { _permit, info })
+        })
     }
 
     /// The current concurrency; there may be more permits out there due to the lazy resolution of decrements, but those
@@ -634,11 +637,21 @@ pub struct ConnectionPermitInfo {
 /// Note that dropping it without reporting completion effectively aborts it without reporting
 /// any statistics.
 pub struct ConnectionPermit {
-    _permit: AdjustableSemaphorePermit,
+    _permit: Arc<AdjustableSemaphorePermit>,
     info: Arc<ConnectionPermitInfo>,
 }
 
 impl ConnectionPermit {
+    /// Returns a permit for another transfer that holds this permit's concurrency slot, so a multi-request
+    /// operation can report each transfer separately while occupying one slot. The slot is released once
+    /// this permit and all permits derived from it are dropped.
+    pub(crate) async fn new_transfer(&self) -> ConnectionPermit {
+        ConnectionPermit {
+            _permit: Arc::clone(&self._permit),
+            info: self.info.controller.new_permit_info().await,
+        }
+    }
+
     /// Call this right before starting a transfer; records start time.
     pub(crate) async fn transfer_starting(&self) {
         *self.info.transfer_start_time.lock().await = Instant::now();
