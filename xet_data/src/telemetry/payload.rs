@@ -145,6 +145,7 @@ pub struct XorbUploadPaths {
     pub grant: XorbUploadPathTotals,
     pub direct: XorbUploadPathTotals,
     pub grant_fallbacks: u64,
+    pub grant_unreachable: u64,
 }
 
 impl From<&TransferTelemetry> for XorbUploadPaths {
@@ -153,6 +154,7 @@ impl From<&TransferTelemetry> for XorbUploadPaths {
             grant: telemetry.grant_xorb_uploads(),
             direct: telemetry.direct_xorb_uploads(),
             grant_fallbacks: telemetry.grant_fallbacks(),
+            grant_unreachable: telemetry.grant_unreachable(),
         }
     }
 }
@@ -228,6 +230,9 @@ pub struct UploadMetrics {
     /// Xorbs for which an upload grant was issued but that were still uploaded through `POST /v1/xorbs`. A
     /// subset of `direct_xorb_upload_count`; xorbs uploaded directly because grants are not offered are excluded.
     pub grant_fallback_count: u64,
+    /// Grant fallbacks after a failed upload to the grant URL, such as a connection, DNS, or timeout error. A subset
+    /// of `grant_fallback_count`.
+    pub grant_unreachable_count: u64,
 
     pub shards_total: u64,
     pub shards_completed: u64,
@@ -278,6 +283,7 @@ impl UploadMetrics {
             direct_xorb_upload_bytes: xorb_upload_paths.direct.bytes,
             direct_xorb_upload_ms: xorb_upload_paths.direct.duration_ms,
             grant_fallback_count: xorb_upload_paths.grant_fallbacks,
+            grant_unreachable_count: xorb_upload_paths.grant_unreachable,
 
             shards_total: shard.map(|s| s.total_shards as u64).unwrap_or(0),
             shards_completed: shard.map(|s| s.total_shards_completed as u64).unwrap_or(0),
@@ -343,6 +349,7 @@ mod tests {
         "global_dedup_bytes",
         "global_dedup_chunks",
         "grant_fallback_count",
+        "grant_unreachable_count",
         "grant_xorb_upload_bytes",
         "grant_xorb_upload_count",
         "grant_xorb_upload_ms",
@@ -431,6 +438,7 @@ mod tests {
         ("global_dedup_bytes", Kind::U64),
         ("global_dedup_chunks", Kind::U64),
         ("grant_fallback_count", Kind::U64),
+        ("grant_unreachable_count", Kind::U64),
         ("grant_xorb_upload_bytes", Kind::U64),
         ("grant_xorb_upload_count", Kind::U64),
         ("grant_xorb_upload_ms", Kind::U64),
@@ -561,6 +569,7 @@ mod tests {
                 duration_ms: 300,
             },
             grant_fallbacks: 1,
+            grant_unreachable: 1,
         }
     }
 
@@ -698,6 +707,7 @@ mod tests {
         assert_eq!(doc["direct_xorb_upload_bytes"], 60);
         assert_eq!(doc["direct_xorb_upload_ms"], 300);
         assert_eq!(doc["grant_fallback_count"], 1);
+        assert_eq!(doc["grant_unreachable_count"], 1);
     }
 
     /// Absent shard progress reads as zero rather than dropping the keys.
