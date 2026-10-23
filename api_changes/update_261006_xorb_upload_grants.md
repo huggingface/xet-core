@@ -17,8 +17,9 @@
 3. `POST /v1/xorb-commits/{prefix}/{hash}/grant/{grant_id}`. 404 means no data was uploaded for
    the grant; the client requests a new grant and uploads again, up to
    `HF_XET_CLIENT_MAX_XORB_GRANT_ATTEMPTS` grants (default 3).
-   A 403 from the grant URL (e.g. an expired grant), or a 409 that persists after retries, also
-   starts a new grant, within the same limit.
+   A 400 from the grant URL (e.g. S3's `RequestTimeout` for a stalled upload), a 403 (e.g. an
+   expired grant), or a 409 that persists after retries also starts a new grant, within the same
+   limit.
 
 A 404 from any grant request for a xorb, or the last grant that still does not store it, makes the
 client upload that xorb through `/v1/xorbs`; every xorb requests a grant first. Any other error
