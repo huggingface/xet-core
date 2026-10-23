@@ -259,8 +259,9 @@ pub(crate) fn xorb_checksum(data: &[u8]) -> Checksum {
 enum GrantUploadOutcome {
     /// The xorb is stored; `inserted` is false if it already existed.
     Stored { inserted: bool, n_bytes_uploaded: u64 },
-    /// Upload grants did not store this xorb; upload it through the xorb upload API instead.
-    Unavailable { n_bytes_uploaded: u64 },
+    /// Upload grants did not store this xorb; upload it through the xorb upload API instead. `granted` is true if
+    /// at least one grant was issued before giving up, false if grants were not offered.
+    Unavailable { n_bytes_uploaded: u64, granted: bool },
 }
 
 /// The API a xorb was uploaded through, for telemetry.
@@ -386,7 +387,12 @@ impl RemoteClient {
                         n_bytes_uploaded,
                     });
                 },
-                XorbUploadGrantResult::Unavailable => return Ok(GrantUploadOutcome::Unavailable { n_bytes_uploaded }),
+                XorbUploadGrantResult::Unavailable => {
+                    return Ok(GrantUploadOutcome::Unavailable {
+                        n_bytes_uploaded,
+                        granted: attempt > 1,
+                    });
+                },
             };
 
             let upload_result = self
@@ -407,13 +413,19 @@ impl RemoteClient {
                 {
                     info!(hash=%key.hash, grant_id=grant.id, attempt, status=?err.status(), "Grant URL rejected the upload");
                     if attempt >= max_attempts {
-                        return Ok(GrantUploadOutcome::Unavailable { n_bytes_uploaded });
+                        return Ok(GrantUploadOutcome::Unavailable {
+                            n_bytes_uploaded,
+                            granted: true,
+                        });
                     }
                     continue;
                 },
                 Err(err) => {
                     warn!(hash=%key.hash, grant_id=grant.id, error=%err, "Upload grant URL unreachable, falling back to legacy xorb upload path (may be slower)");
-                    return Ok(GrantUploadOutcome::Unavailable { n_bytes_uploaded });
+                    return Ok(GrantUploadOutcome::Unavailable {
+                        n_bytes_uploaded,
+                        granted: true,
+                    });
                 },
             }
 
@@ -427,7 +439,10 @@ impl RemoteClient {
                 XorbCommitResult::GrantNotFound => {
                     info!(hash=%key.hash, grant_id=grant.id, attempt, "Commit found no uploaded data for grant");
                     if attempt >= max_attempts {
-                        return Ok(GrantUploadOutcome::Unavailable { n_bytes_uploaded });
+                        return Ok(GrantUploadOutcome::Unavailable {
+                            n_bytes_uploaded,
+                            granted: true,
+                        });
                     }
                 },
             }
@@ -1301,8 +1316,17 @@ impl Client for RemoteClient {
                     }
                     (inserted, n_bytes_uploaded)
                 },
-                GrantUploadOutcome::Unavailable { n_bytes_uploaded } => {
+                GrantUploadOutcome::Unavailable {
+                    n_bytes_uploaded,
+                    granted,
+                } => {
                     debug!(hash=%key.hash, "Upload grants did not store xorb; uploading through the xorb upload API");
+                    #[cfg(not(target_family = "wasm"))]
+                    if granted && let Some(telemetry) = &self.telemetry {
+                        telemetry.record_grant_fallback();
+                    }
+                    #[cfg(target_family = "wasm")]
+                    let _ = granted;
                     // Time only the POST, so failed grant attempts do not count against the direct path.
                     let started_at = Instant::now();
                     let inserted = self.post_xorb(&key, serialized_data, progress_callback, upload_permit).await?;
@@ -1834,6 +1858,14 @@ mod tests {
             client.upload_xorb(PREFIX_DEFAULT, xorb, progress_callback, permit).await
         }
 
+        fn grant_fallbacks(client: &RemoteClient) -> u64 {
+            client
+                .telemetry
+                .as_ref()
+                .expect("telemetry is enabled by default")
+                .grant_fallbacks()
+        }
+
         fn xorb_inserted() -> ResponseTemplate {
             ResponseTemplate::new(200).set_body_json(json!({"was_inserted": true}))
         }
@@ -1852,6 +1884,7 @@ mod tests {
             let n_bytes = upload_test_xorb(&client, Some(callback)).await.unwrap();
 
             assert_eq!(progress.load(Ordering::Relaxed), n_bytes);
+            assert_eq!(grant_fallbacks(&client), 0);
         }
 
         #[tokio::test]
@@ -1878,6 +1911,7 @@ mod tests {
             upload_test_xorb(&client, None).await.unwrap();
             // The second xorb requests a grant again.
             upload_test_xorb(&client, None).await.unwrap();
+            assert_eq!(grant_fallbacks(&client), 0);
         }
 
         #[tokio::test]
@@ -1902,6 +1936,7 @@ mod tests {
 
             // The fallback upload does not report progress a second time, but its bytes count as uploaded.
             assert_eq!(n_bytes, 2 * progress.load(Ordering::Relaxed));
+            assert_eq!(grant_fallbacks(&client), 1);
         }
 
         #[tokio::test]
@@ -1954,6 +1989,7 @@ mod tests {
 
             // The re-upload does not report progress a second time, but its bytes count as uploaded.
             assert_eq!(n_bytes, 2 * progress.load(Ordering::Relaxed));
+            assert_eq!(grant_fallbacks(&client), 0);
         }
 
         #[tokio::test]
@@ -1969,6 +2005,7 @@ mod tests {
 
             let client = test_client(&server.uri());
             upload_test_xorb(&client, None).await.unwrap();
+            assert_eq!(grant_fallbacks(&client), 1);
         }
 
         #[tokio::test]
@@ -1983,6 +2020,7 @@ mod tests {
             config.client.max_xorb_grant_attempts = 1;
             let client = test_client_with_config(&server.uri(), config);
             upload_test_xorb(&client, None).await.unwrap();
+            assert_eq!(grant_fallbacks(&client), 1);
         }
 
         #[tokio::test]
@@ -2030,6 +2068,7 @@ mod tests {
 
             // Rejected uploads do not count as uploaded, and the fallback upload does not report progress again.
             assert_eq!(n_bytes, progress.load(Ordering::Relaxed));
+            assert_eq!(grant_fallbacks(&client), 1);
         }
 
         #[tokio::test]
@@ -2157,6 +2196,7 @@ mod tests {
             config.client.legacy_direct_xorb_upload = true;
             let client = test_client_with_config(&server.uri(), config);
             upload_test_xorb(&client, None).await.unwrap();
+            assert_eq!(grant_fallbacks(&client), 0);
         }
     }
 }

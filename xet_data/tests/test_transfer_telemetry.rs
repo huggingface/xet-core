@@ -38,6 +38,9 @@ const UPLOAD_KEYS: &[&str] = &[
     "dedup_ratio",
     "defrag_prevented_dedup_bytes",
     "defrag_prevented_dedup_chunks",
+    "direct_xorb_upload_bytes",
+    "direct_xorb_upload_count",
+    "direct_xorb_upload_ms",
     "direction",
     "duration_ms",
     "endpoint_host",
@@ -46,6 +49,7 @@ const UPLOAD_KEYS: &[&str] = &[
     "finalize_ms",
     "global_dedup_bytes",
     "global_dedup_chunks",
+    "grant_fallback_count",
     "grant_xorb_upload_bytes",
     "grant_xorb_upload_count",
     "grant_xorb_upload_ms",
@@ -57,9 +61,6 @@ const UPLOAD_KEYS: &[&str] = &[
     "os",
     "outcome",
     "peak_concurrency",
-    "direct_xorb_upload_bytes",
-    "direct_xorb_upload_count",
-    "direct_xorb_upload_ms",
     "schema_version",
     "seq",
     "shard_bytes_uploaded",
@@ -162,6 +163,7 @@ async fn test_upload_emits_one_terminal_document() {
     assert_eq!(metrics["direct_xorb_upload_count"], 0);
     assert_eq!(metrics["direct_xorb_upload_bytes"], 0);
     assert_eq!(metrics["direct_xorb_upload_ms"], 0);
+    assert_eq!(metrics["grant_fallback_count"], 0);
     assert!(metrics["endpoint_host"].as_str().unwrap().starts_with("127.0.0.1"));
 }
 
@@ -184,6 +186,7 @@ async fn test_upload_counts_xorbs_uploaded_through_direct_fallback() {
     assert_eq!(metrics["grant_xorb_upload_ms"], 0);
     assert!(metrics["direct_xorb_upload_count"].as_u64().unwrap() > 0);
     assert!(metrics["direct_xorb_upload_bytes"].as_u64().unwrap() > 0);
+    assert_eq!(metrics["grant_fallback_count"], 0, "grants were not offered, so no grant was issued");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

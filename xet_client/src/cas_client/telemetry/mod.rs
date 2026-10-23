@@ -123,6 +123,8 @@ pub struct TransferTelemetry {
     grant_xorb_uploads: XorbUploadPathStats,
     /// Xorbs uploaded through `POST /v1/xorbs`, including fallbacks from upload grants.
     direct_xorb_uploads: XorbUploadPathStats,
+    /// Xorbs uploaded through `POST /v1/xorbs` after at least one upload grant was issued for them.
+    grant_fallbacks: AtomicU64,
     /// Set by whichever of `finalize` or `Drop` gets there first, so exactly one terminal
     /// document is emitted per transfer.
     terminal_sent: AtomicBool,
@@ -179,6 +181,7 @@ impl TransferTelemetry {
             peak_concurrency: AtomicU64::new(0),
             grant_xorb_uploads: XorbUploadPathStats::default(),
             direct_xorb_uploads: XorbUploadPathStats::default(),
+            grant_fallbacks: AtomicU64::new(0),
             terminal_sent: AtomicBool::new(false),
             sink: TelemetrySink::new(ctx, url, http),
             final_flush_timeout: ctx.config.telemetry.final_flush_timeout,
@@ -286,6 +289,15 @@ impl TransferTelemetry {
 
     pub fn direct_xorb_uploads(&self) -> XorbUploadPathTotals {
         self.direct_xorb_uploads.totals()
+    }
+
+    pub fn grant_fallbacks(&self) -> u64 {
+        self.grant_fallbacks.load(Ordering::Relaxed)
+    }
+
+    /// Records a xorb that was uploaded through `POST /v1/xorbs` although an upload grant was issued for it.
+    pub fn record_grant_fallback(&self) {
+        self.grant_fallbacks.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Records a xorb of `bytes` serialized bytes stored through an upload grant in `elapsed`.
@@ -471,6 +483,16 @@ mod tests {
                 duration_ms: 7
             }
         );
+    }
+
+    #[test]
+    fn test_grant_fallbacks_are_counted() {
+        let ctx = ctx_with(true);
+        let t = build(&ctx, "https://cas.example.com", false).unwrap();
+        assert_eq!(t.grant_fallbacks(), 0);
+        t.record_grant_fallback();
+        t.record_grant_fallback();
+        assert_eq!(t.grant_fallbacks(), 2);
     }
 
     #[test]
