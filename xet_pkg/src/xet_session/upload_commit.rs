@@ -274,7 +274,17 @@ impl XetUploadCommitInner {
                 Some(meta) => {
                     files.insert(stream.task_id(), meta);
                 },
-                None => return Err(XetError::other("stream upload not finished before commit")),
+                // Given up with `abort()`: the stream is left out of the commit.
+                None if matches!(stream.status(), Ok(XetTaskState::UserCancelled)) => {
+                    stream.discard_aborted().await;
+                },
+                None => {
+                    return Err(XetError::other(format!(
+                        "stream upload {} was neither finished nor aborted before commit; \
+                         call finish() to include it or abort() to leave it out",
+                        stream.task_id()
+                    )));
+                },
             }
         }
 
@@ -414,7 +424,10 @@ impl XetUploadCommit {
     /// Returns an [`XetStreamUpload`] for writing data in chunks.  Call
     /// [`write`](XetStreamUpload::write) to feed bytes, then
     /// [`finish`](XetStreamUpload::finish) to finalise ingestion.
-    /// **`finish` must be called before [`commit`](Self::commit).**
+    /// **Before [`commit`](Self::commit), finish every stream or give it up with
+    /// [`abort`](XetStreamUpload::abort).** An aborted stream is left out of the commit, so a file whose
+    /// source failed can be retried with a new stream in the same commit. A stream that is neither finished
+    /// nor aborted, including one whose handle was dropped, makes `commit` fail.
     ///
     /// # Parameters
     ///
@@ -486,6 +499,9 @@ impl XetUploadCommit {
     /// Returns a [`XetCommitReport`] with aggregate dedup metrics, progress,
     /// and per-file [`XetFileMetadata`].  Subsequent calls return
     /// [`XetError::AlreadyCompleted`].
+    ///
+    /// Streams given up with [`XetStreamUpload::abort`] are left out of the commit and its report.
+    /// Fails if any other stream has not been [finished](XetStreamUpload::finish).
     pub async fn commit(&self) -> Result<XetCommitReport, XetError> {
         info!(commit_id = %self.id(), "Commit starting");
         let inner = Arc::clone(&self.inner);
@@ -1191,6 +1207,139 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // ── Aborted streams ──────────────────────────────────────────────────────
+
+    async fn local_session_and_commit(endpoint: &str) -> (XetSession, XetUploadCommit) {
+        let session = XetSessionBuilder::new().build().unwrap();
+        let commit = session
+            .new_upload_commit()
+            .unwrap()
+            .with_endpoint(endpoint)
+            .build()
+            .await
+            .unwrap();
+        (session, commit)
+    }
+
+    async fn download(session: &XetSession, endpoint: &str, meta: XetFileMetadata, dest: PathBuf) -> Vec<u8> {
+        let group = session
+            .new_file_download_group()
+            .unwrap()
+            .with_endpoint(endpoint)
+            .build()
+            .await
+            .unwrap();
+        group.download_file_to_path(meta.xet_info, dest.clone()).await.unwrap();
+        group.finish().await.unwrap();
+        std::fs::read(dest).unwrap()
+    }
+
+    // The retry pattern from issue #992: a stream whose source failed is aborted and the file is uploaded
+    // again with a new stream. The commit holds only the retry, and its progress adds up.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_commit_leaves_out_aborted_stream_and_keeps_retry() {
+        let temp = tempdir().unwrap();
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
+        let (session, commit) = local_session_and_commit(&endpoint).await;
+        let data = b"hello from a retried stream upload";
+
+        let attempt1 = commit
+            .upload_stream(Some("file.bin".into()), Sha256Policy::Compute)
+            .await
+            .unwrap();
+        attempt1.write(&data[..10]).await.unwrap();
+        attempt1.abort();
+
+        let attempt2 = commit
+            .upload_stream(Some("file.bin".into()), Sha256Policy::Compute)
+            .await
+            .unwrap();
+        attempt2.write(&data[..]).await.unwrap();
+        let meta = attempt2.finish().await.unwrap();
+
+        let report = commit.commit().await.unwrap();
+        assert_eq!(report.uploads.keys().collect::<Vec<_>>(), [&attempt2.task_id()]);
+        assert_eq!(report.progress.total_bytes, data.len() as u64);
+        assert_eq!(report.progress.total_bytes_completed, data.len() as u64);
+        assert_eq!(download(&session, &endpoint, meta, temp.path().join("file.out")).await, data);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_commit_leaves_out_stream_aborted_before_any_write() {
+        let temp = tempdir().unwrap();
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
+        let (_session, commit) = local_session_and_commit(&endpoint).await;
+
+        let aborted = commit
+            .upload_stream(Some("aborted.bin".into()), Sha256Policy::Compute)
+            .await
+            .unwrap();
+        aborted.abort();
+        let kept = commit
+            .upload_stream(Some("kept.bin".into()), Sha256Policy::Compute)
+            .await
+            .unwrap();
+        kept.write(&b"kept data"[..]).await.unwrap();
+        kept.finish().await.unwrap();
+
+        let report = commit.commit().await.unwrap();
+        assert_eq!(report.uploads.keys().collect::<Vec<_>>(), [&kept.task_id()]);
+    }
+
+    // `abort()` can land while a write holds the stream's pipeline, so it cannot drop the pipeline itself.
+    // `commit()` must still release it and leave the stream out.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_commit_releases_stream_aborted_during_write() {
+        let temp = tempdir().unwrap();
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
+        let (_session, commit) = local_session_and_commit(&endpoint).await;
+
+        let aborted = commit
+            .upload_stream(Some("busy.bin".into()), Sha256Policy::Compute)
+            .await
+            .unwrap();
+        aborted.write(&b"partial data"[..]).await.unwrap();
+        {
+            // Stand-in for an in-flight write: hold the pipeline lock while aborting.
+            let _in_flight_write = aborted.inner.cleaner.lock().await;
+            aborted.abort();
+        }
+        assert!(aborted.inner.cleaner.lock().await.is_some());
+
+        let kept = commit
+            .upload_stream(Some("kept.bin".into()), Sha256Policy::Compute)
+            .await
+            .unwrap();
+        kept.write(&b"kept data"[..]).await.unwrap();
+        kept.finish().await.unwrap();
+
+        let report = commit.commit().await.unwrap();
+        assert_eq!(report.uploads.keys().collect::<Vec<_>>(), [&kept.task_id()]);
+        assert_eq!(report.progress.total_bytes, report.progress.total_bytes_completed);
+        assert!(aborted.inner.cleaner.lock().await.is_none());
+    }
+
+    // Dropping a handle is not an abort: a forgotten `finish()` must not turn into a commit that silently
+    // succeeds without the file. The error names the stream so the caller can find it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_commit_errors_when_stream_dropped_unfinished() {
+        let temp = tempdir().unwrap();
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
+        let (_session, commit) = local_session_and_commit(&endpoint).await;
+
+        let dropped = commit
+            .upload_stream(Some("dropped.bin".into()), Sha256Policy::Compute)
+            .await
+            .unwrap();
+        dropped.write(&b"partial data"[..]).await.unwrap();
+        let task_id = dropped.task_id();
+        drop(dropped);
+
+        let err = commit.commit().await.unwrap_err();
+        assert!(matches!(err, XetError::Internal(_)));
+        assert!(err.to_string().contains(&task_id.to_string()), "error does not name the stream: {err}");
+    }
+
     // ── Multiple files ───────────────────────────────────────────────────────
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1417,6 +1566,27 @@ mod tests {
         assert_eq!(results.uploads.len(), 1);
         assert_eq!(meta.xet_info.file_size, Some(data.len() as u64));
         assert!(!meta.xet_info.hash.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_blocking_commit_leaves_out_aborted_stream() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let session = XetSessionBuilder::new().build()?;
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
+        let data = b"streamed upload bytes";
+        let commit = session.new_upload_commit()?.with_endpoint(&endpoint).build_blocking()?;
+        let aborted = commit.upload_stream_blocking(Some("stream.bin".into()), Sha256Policy::Compute)?;
+        aborted.write_blocking(&data[..5])?;
+        aborted.abort();
+        let retry = commit.upload_stream_blocking(Some("stream.bin".into()), Sha256Policy::Compute)?;
+        retry.write_blocking(data.to_vec())?;
+        retry.finish_blocking()?;
+
+        let results = commit.commit_blocking()?;
+        assert_eq!(results.uploads.keys().collect::<Vec<_>>(), [&retry.task_id()]);
+        assert_eq!(results.progress.total_bytes, data.len() as u64);
+        assert_eq!(results.progress.total_bytes_completed, data.len() as u64);
         Ok(())
     }
 

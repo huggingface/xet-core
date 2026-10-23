@@ -242,6 +242,30 @@ class TestUploadStream:
         assert raised  # exception must propagate
         assert stream.try_finish() is None  # abort() ran, not finish()
 
+    def test_stream_aborted_by_context_manager_is_left_out_of_commit(self, endpoint, tmp_path):
+        # The source fails mid-stream, so the context manager aborts the stream; the file is then
+        # retried with a new stream, and the commit holds only the retry.
+        data = b"retried stream content"
+        commit = hf_xet.XetSession().new_upload_commit(endpoint=endpoint)
+        try:
+            with commit.start_upload_stream(name="retry.bin") as attempt:
+                attempt.write(data[:8])
+                raise ConnectionError("source failed")
+        except ConnectionError:
+            pass
+        with commit.start_upload_stream(name="retry.bin") as retry:
+            retry.write(data)
+
+        report = commit.wait_to_finish()
+        assert list(report.uploads.keys()) == [retry.task_id()]
+        assert report.progress.total_bytes == len(data)
+        assert report.progress.total_bytes_completed == len(data)
+
+        dest = tmp_path / "retry.out"
+        with hf_xet.XetSession().new_file_download_group(endpoint=endpoint) as group:
+            group.start_download_file(retry.try_finish().xet_info, str(dest))
+        assert dest.read_bytes() == data
+
     def test_context_manager_idempotent_when_finish_called_inside(self, endpoint):
         # Calling finish() explicitly inside the with-block must not cause a double-finish error.
         commit = hf_xet.XetSession().new_upload_commit(endpoint=endpoint)

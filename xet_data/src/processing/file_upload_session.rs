@@ -15,6 +15,7 @@ use bytes::Bytes;
 use more_asserts::*;
 use tokio::sync::Mutex;
 use tokio::task::{JoinHandle, JoinSet};
+use tokio_util::task::TaskTracker;
 #[cfg(target_family = "wasm")]
 use tokio_with_wasm::alias as tokio;
 #[cfg(not(target_family = "wasm"))]
@@ -59,6 +60,11 @@ pub struct FileUploadSession {
 
     /// Internal worker
     xorb_upload_tasks: Mutex<JoinSet<Result<()>>>,
+
+    /// Background dedup work spawned by this session's cleaners. A cleaner dropped mid-write leaves its
+    /// last block's work running detached, and that work can still cut and register xorbs; finalize waits
+    /// for it.
+    pub(crate) dedup_tasks: TaskTracker,
 
     /// Set to true after finalize() has been called.
     finalized: AtomicBool,
@@ -111,6 +117,7 @@ impl FileUploadSession {
             current_session_data: Mutex::new(DataAggregator::default()),
             deduplication_metrics: Mutex::new(DeduplicationMetrics::default()),
             xorb_upload_tasks: Mutex::new(JoinSet::new()),
+            dedup_tasks: TaskTracker::new(),
             finalized: AtomicBool::new(false),
             #[cfg(not(target_family = "wasm"))]
             started_at: std::time::Instant::now(),
@@ -257,6 +264,16 @@ impl FileUploadSession {
             .completion_tracker
             .register_new_file(id, tracking_name.clone().unwrap_or_default(), size);
         SingleFileCleaner::new(tracking_name, file_id, sha256, self.clone())
+    }
+
+    /// Give up on the file started as `id` by [`start_clean`](Self::start_clean), after dropping its
+    /// cleaner without finishing it.
+    ///
+    /// Progress then counts the file as complete at the bytes already processed, so the session's
+    /// progress can still reach 100% without it. Xorbs already cut from its data are still uploaded,
+    /// as other files may reference them.
+    pub fn abandon_file(&self, id: UniqueId) {
+        self.completion_tracker.abandon_file(id);
     }
 
     /// Spawns a task that reads `file_path` and uploads it.
@@ -635,6 +652,11 @@ impl FileUploadSession {
         self: Arc<Self>,
         return_files: bool,
     ) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>, GroupProgressReport)> {
+        // Let dedup work left behind by abandoned cleaners register its xorbs first, so they are part of the
+        // uploads joined below rather than racing the shard upload.
+        self.dedup_tasks.close();
+        self.dedup_tasks.wait().await;
+
         // Register the remaining xorbs for upload.
         let data_agg = take(&mut *self.current_session_data.lock().await);
         self.process_aggregated_data_as_xorb(data_agg).await?;

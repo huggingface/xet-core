@@ -57,6 +57,8 @@ struct FileDependency {
     is_final_size_known: bool,
     completed_bytes: u64,
     remaining_xorbs_parts: MerkleHashMap<XorbPartCompletionStats>,
+    /// Set once the file is given up before it finished; see `CompletionTracker::abandon_file`.
+    is_abandoned: bool,
 }
 
 /// Tracks all files and all xorbs, allowing you to register file
@@ -104,6 +106,7 @@ impl CompletionTrackerImpl {
             is_final_size_known,
             completed_bytes: 0,
             remaining_xorbs_parts: MerkleHashMap::new(),
+            is_abandoned: false,
         };
 
         self.files.push(file_dependency);
@@ -134,6 +137,12 @@ impl CompletionTrackerImpl {
         for dep in dependencies {
             let file_entry = &mut self.files[dep.file_id as usize];
 
+            // An abandoned file's leftover background work can still report dependencies; they no
+            // longer count toward progress.
+            if file_entry.is_abandoned {
+                continue;
+            }
+
             if dep.is_external {
                 file_entry.completed_bytes += dep.n_bytes;
                 debug_assert_le!(file_entry.completed_bytes, file_entry.total_bytes);
@@ -160,6 +169,31 @@ impl CompletionTrackerImpl {
 
         self.total_bytes_completed += file_bytes_processed;
         debug_assert_le!(self.total_bytes_completed, self.total_bytes);
+    }
+
+    fn abandon_file(&mut self, tracking_id: UniqueId) {
+        let Some(file_id) = self.files.iter().position(|f| f.tracking_id == tracking_id) else {
+            return;
+        };
+        let file_entry = &mut self.files[file_id];
+        if file_entry.is_abandoned {
+            return;
+        }
+        file_entry.is_abandoned = true;
+        // Also makes `increment_file_size` ignore the file from now on.
+        file_entry.is_final_size_known = true;
+
+        // Detach the file from the xorbs it still waits on. Those xorbs are still uploaded (other files may
+        // reference them), so the transfer totals do not change.
+        for xorb_hash in take(&mut file_entry.remaining_xorbs_parts).keys() {
+            if let Some(xorb_entry) = self.xorbs.get_mut(xorb_hash) {
+                xorb_entry.file_indices.remove(&file_id);
+            }
+        }
+
+        self.total_bytes -= file_entry.total_bytes - file_entry.completed_bytes;
+        file_entry.total_bytes = file_entry.completed_bytes;
+        file_entry.updater.abandon();
     }
 
     fn register_new_xorb(&mut self, group: &Arc<UploadGroupProgress>, xorb_hash: MerkleHash, xorb_size: u64) -> bool {
@@ -373,6 +407,16 @@ impl CompletionTracker {
     pub fn increment_file_size(&self, file_id: CompletionTrackerFileId, size_increment: u64) {
         let mut update_lock = self.inner.lock().unwrap();
         update_lock.increment_file_size(file_id, size_increment);
+    }
+
+    /// Give up on the file registered as `tracking_id`, whose upload will not finish.
+    ///
+    /// The file counts as complete at the bytes already processed: its total shrinks to that, and any
+    /// dependency or size update reported for it afterwards is ignored, so the group can still reach 100%.
+    /// A no-op for an unknown id or a file already abandoned.
+    pub fn abandon_file(&self, tracking_id: UniqueId) {
+        let mut update_lock = self.inner.lock().unwrap();
+        update_lock.abandon_file(tracking_id);
     }
 
     pub fn register_new_xorb(&self, xorb_hash: MerkleHash, xorb_size: u64) -> bool {
@@ -901,5 +945,251 @@ mod tests {
 
         tracker.assert_complete();
         tracker.progress().assert_complete();
+    }
+
+    #[test]
+    fn test_abandon_file_with_pending_xorb() {
+        let group = UploadGroupProgress::new();
+        let tracker = CompletionTracker::new(group);
+
+        // File A streams 100 bytes of unknown final size; 40 of them wait on xorb `x`.
+        let id_a = UniqueId::new();
+        let file_a = tracker.register_new_file(id_a, "fileA", None);
+        tracker.increment_file_size(file_a, 100);
+        let file_b = tracker.register_new_file(UniqueId::new(), "fileB", Some(50));
+
+        let x = MerkleHash::random_from_seed(1);
+        tracker.register_new_xorb(x, 40);
+        tracker.register_dependencies(&[FileXorbDependency {
+            file_id: file_a,
+            xorb_hash: x,
+            n_bytes: 40,
+            is_external: false,
+        }]);
+        tracker.register_xorb_upload_progress(x, 20);
+        assert_eq!(tracker.status(), (20, 150));
+
+        // Abandoned, file A counts as complete at the 20 bytes already done. A second call is a no-op.
+        tracker.abandon_file(id_a);
+        tracker.abandon_file(id_a);
+        assert_eq!(tracker.status(), (20, 70));
+
+        // Leftover background work for file A no longer counts: neither size growth nor new dependencies.
+        let y = MerkleHash::random_from_seed(2);
+        tracker.register_new_xorb(y, 30);
+        tracker.increment_file_size(file_a, 10);
+        tracker.register_dependencies(&[
+            FileXorbDependency {
+                file_id: file_a,
+                xorb_hash: MerkleHash::random_from_seed(3),
+                n_bytes: 30,
+                is_external: true,
+            },
+            FileXorbDependency {
+                file_id: file_a,
+                xorb_hash: y,
+                n_bytes: 30,
+                is_external: false,
+            },
+        ]);
+        assert_eq!(tracker.status(), (20, 70));
+
+        // The xorbs still upload, so the transfer totals are unchanged.
+        tracker.register_xorb_upload_completion(x);
+        tracker.register_xorb_upload_completion(y);
+        assert_eq!(tracker.status(), (20, 70));
+
+        tracker.register_dependencies(&[FileXorbDependency {
+            file_id: file_b,
+            xorb_hash: MerkleHash::random_from_seed(4),
+            n_bytes: 50,
+            is_external: true,
+        }]);
+        assert_eq!(tracker.status(), (70, 70));
+        assert!(tracker.is_complete());
+
+        let report = tracker.progress().file_data.report();
+        assert_eq!((report.total_bytes_completed, report.total_bytes), (70, 70));
+        assert_eq!((report.total_transfer_bytes_completed, report.total_transfer_bytes), (70, 70));
+        let item_a = tracker.progress().item_report(id_a).unwrap();
+        assert_eq!((item_a.bytes_completed, item_a.total_bytes), (20, 20));
+
+        tracker.assert_complete();
+        tracker.progress().assert_complete();
+    }
+
+    #[test]
+    fn test_abandon_finished_file_changes_nothing() {
+        let group = UploadGroupProgress::new();
+        let tracker = CompletionTracker::new(group);
+
+        let id = UniqueId::new();
+        let file_id = tracker.register_new_file(id, "fileA", Some(100));
+        tracker.register_dependencies(&[FileXorbDependency {
+            file_id,
+            xorb_hash: MerkleHash::random_from_seed(1),
+            n_bytes: 100,
+            is_external: true,
+        }]);
+
+        tracker.abandon_file(id);
+
+        assert_eq!(tracker.status(), (100, 100));
+        tracker.assert_complete();
+        tracker.progress().assert_complete();
+    }
+
+    /// Drives the tracker through seeded random interleavings of every operation, abandoning files at
+    /// arbitrary points. After each step the tracker's totals, the group counters, and the per-item reports
+    /// must agree, active files must keep their size, and abandoned files must stay frozen at the bytes
+    /// completed when they were abandoned. At the end, finishing every remaining file must complete everything.
+    #[test]
+    fn test_random_interleavings_with_abandon_keep_totals_consistent() {
+        use rand::rngs::StdRng;
+        use rand::{RngExt, SeedableRng};
+
+        struct ModelFile {
+            id: UniqueId,
+            file_id: CompletionTrackerFileId,
+            total: u64,
+            /// Bytes covered by a dependency so far; never more than `total` while active.
+            assigned: u64,
+            size_known: bool,
+            /// `Some(bytes completed at abandonment)` once abandoned.
+            abandoned_at: Option<u64>,
+        }
+        struct ModelXorb {
+            hash: MerkleHash,
+            size: u64,
+            progressed: u64,
+            completed: bool,
+        }
+
+        fn check(tracker: &CompletionTracker, files: &[ModelFile]) {
+            let (done, total) = tracker.status();
+            let group = tracker.progress().file_data.report();
+            assert_eq!((group.total_bytes_completed, group.total_bytes), (done, total));
+            assert!(group.total_transfer_bytes_completed <= group.total_transfer_bytes);
+
+            let items = tracker.progress().item_reports();
+            assert_eq!(items.values().map(|r| r.bytes_completed).sum::<u64>(), done);
+            assert_eq!(items.values().map(|r| r.total_bytes).sum::<u64>(), total);
+            for f in files {
+                let item = &items[&f.id];
+                assert!(item.bytes_completed <= item.total_bytes);
+                match f.abandoned_at {
+                    Some(at) => assert_eq!((item.bytes_completed, item.total_bytes), (at, at)),
+                    None => assert_eq!(item.total_bytes, f.total),
+                }
+            }
+        }
+
+        for seed in 0..200 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let tracker = CompletionTracker::new(UploadGroupProgress::new());
+            let mut files: Vec<ModelFile> = Vec::new();
+            let mut xorbs: Vec<ModelXorb> = Vec::new();
+
+            for _ in 0..120 {
+                match rng.random_range(0..7) {
+                    0 => {
+                        let id = UniqueId::new();
+                        let size_known = rng.random_bool(0.5);
+                        let total = if size_known { rng.random_range(0..1000) } else { 0 };
+                        let file_id = tracker.register_new_file(id, "file", size_known.then_some(total));
+                        files.push(ModelFile {
+                            id,
+                            file_id,
+                            total,
+                            assigned: 0,
+                            size_known,
+                            abandoned_at: None,
+                        });
+                    },
+                    1 if !files.is_empty() => {
+                        let i = rng.random_range(0..files.len());
+                        let f = &mut files[i];
+                        let increment = rng.random_range(1..200);
+                        tracker.increment_file_size(f.file_id, increment);
+                        if !f.size_known && f.abandoned_at.is_none() {
+                            f.total += increment;
+                        }
+                    },
+                    2 => {
+                        let hash = MerkleHash::random_from_seed(rng.random());
+                        let size = rng.random_range(1..500);
+                        assert!(tracker.register_new_xorb(hash, size));
+                        xorbs.push(ModelXorb {
+                            hash,
+                            size,
+                            progressed: 0,
+                            completed: false,
+                        });
+                    },
+                    3 if !files.is_empty() => {
+                        let i = rng.random_range(0..files.len());
+                        let f = &mut files[i];
+                        // An abandoned file may still receive any dependency; it must be ignored.
+                        let n_bytes = match f.abandoned_at {
+                            Some(_) => rng.random_range(1..1000),
+                            None if f.assigned < f.total => rng.random_range(1..=f.total - f.assigned),
+                            None => continue,
+                        };
+                        let internal = (!xorbs.is_empty() && rng.random_bool(0.7))
+                            .then(|| xorbs[rng.random_range(0..xorbs.len())].hash);
+                        tracker.register_dependencies(&[FileXorbDependency {
+                            file_id: f.file_id,
+                            xorb_hash: internal.unwrap_or_else(|| MerkleHash::random_from_seed(rng.random())),
+                            n_bytes,
+                            is_external: internal.is_none(),
+                        }]);
+                        if f.abandoned_at.is_none() {
+                            f.assigned += n_bytes;
+                        }
+                    },
+                    4 if xorbs.iter().any(|x| !x.completed && x.progressed < x.size) => {
+                        let pending: Vec<_> =
+                            xorbs.iter_mut().filter(|x| !x.completed && x.progressed < x.size).collect();
+                        let n = pending.len();
+                        let x = pending.into_iter().nth(rng.random_range(0..n)).unwrap();
+                        let delta = rng.random_range(1..=x.size - x.progressed);
+                        tracker.register_xorb_upload_progress(x.hash, delta);
+                        x.progressed += delta;
+                    },
+                    5 if !xorbs.is_empty() => {
+                        let i = rng.random_range(0..xorbs.len());
+                        let x = &mut xorbs[i];
+                        tracker.register_xorb_upload_completion(x.hash);
+                        x.completed = true;
+                    },
+                    6 if !files.is_empty() => {
+                        let i = rng.random_range(0..files.len());
+                        let f = &mut files[i];
+                        let before = tracker.progress().item_report(f.id).unwrap().bytes_completed;
+                        tracker.abandon_file(f.id);
+                        f.abandoned_at.get_or_insert(before);
+                    },
+                    _ => continue,
+                }
+                check(&tracker, &files);
+            }
+
+            // Finish: every xorb uploads, and every active file gets the rest of its bytes from dedup.
+            for x in &xorbs {
+                tracker.register_xorb_upload_completion(x.hash);
+            }
+            for f in files.iter().filter(|f| f.abandoned_at.is_none() && f.assigned < f.total) {
+                tracker.register_dependencies(&[FileXorbDependency {
+                    file_id: f.file_id,
+                    xorb_hash: MerkleHash::random_from_seed(rng.random()),
+                    n_bytes: f.total - f.assigned,
+                    is_external: true,
+                }]);
+            }
+            check(&tracker, &files);
+            assert!(tracker.is_complete(), "seed {seed}: tracker not complete");
+            tracker.assert_complete();
+            tracker.progress().assert_complete();
+        }
     }
 }
