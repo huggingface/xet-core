@@ -259,6 +259,16 @@ impl FileUploadSession {
         SingleFileCleaner::new(tracking_name, file_id, sha256, self.clone())
     }
 
+    /// Give up on the file started as `id` by [`start_clean`](Self::start_clean), after dropping its
+    /// cleaner without finishing it.
+    ///
+    /// Progress then counts the file as complete at the bytes already processed, so the session's
+    /// progress can still reach 100% without it. Xorbs already cut from its data are still uploaded,
+    /// as other files may reference them.
+    pub fn abandon_file(&self, id: UniqueId) {
+        self.completion_tracker.abandon_file(id);
+    }
+
     /// Spawns a task that reads `file_path` and uploads it.
     ///
     /// Returns the tracking ID and a join handle for the spawned task.
