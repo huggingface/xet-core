@@ -1235,7 +1235,7 @@ mod tests {
     /// re-uploads, commits of unknown or not-yet-uploaded grants, existing xorbs, checksum
     /// mismatches, and grants being disabled.
     async fn check_xorb_upload_grant_flow(server: &LocalTestServer) {
-        use xet_core_structures::xorb_object::CompressionScheme;
+        use xet_core_structures::xorb_object::SerializedXorbObject;
         use xet_core_structures::xorb_object::xorb_format_test_utils::{
             ChunkSize, build_and_verify_xorb_object, build_raw_xorb,
         };
@@ -1249,7 +1249,8 @@ mod tests {
 
         let new_xorb = || {
             let xorb =
-                build_and_verify_xorb_object(build_raw_xorb(3, ChunkSize::Random(512, 10248)), CompressionScheme::LZ4);
+                SerializedXorbObject::from_xorb(build_raw_xorb(3, ChunkSize::Random(512, 10248)), false, "lz4", 0)
+                    .unwrap();
             (xorb.hash, bytes::Bytes::from(xorb.serialized_data))
         };
         let request_grant = |hash, data: bytes::Bytes| {
@@ -1312,6 +1313,26 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.status(), Some(reqwest::StatusCode::BAD_REQUEST));
+
+        // Commit rejects staged data with a footer, or whose hash differs from the committed one.
+        let with_footer = build_and_verify_xorb_object(
+            build_raw_xorb(3, ChunkSize::Random(512, 10248)),
+            xet_core_structures::xorb_object::CompressionScheme::LZ4,
+        );
+        let (other_hash, _) = new_xorb();
+        let (_, plain_data) = new_xorb();
+        for (commit_hash, staged) in [
+            (with_footer.hash, bytes::Bytes::from(with_footer.serialized_data)),
+            (other_hash, plain_data),
+        ] {
+            let XorbUploadGrantResult::Granted(grant) = request_grant(commit_hash, staged.clone()).await else {
+                panic!("expected a grant");
+            };
+            upload(grant.clone(), staged).await.unwrap();
+            let err = client.commit_xorb_upload(prefix, &commit_hash, &grant.id).await.unwrap_err();
+            assert_eq!(err.status(), Some(reqwest::StatusCode::BAD_REQUEST));
+            assert!(!server.client().xorb_exists(&commit_hash).await.unwrap());
+        }
 
         // With grants disabled, the grant API is unavailable.
         assert_eq!(post_set_config(server, "xorb_upload_grants", "off").await, reqwest::StatusCode::OK);

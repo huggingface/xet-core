@@ -678,10 +678,25 @@ pub async fn put_xorb_upload(
     StatusCode::OK.into_response()
 }
 
+/// Checks that staged data is exactly a chunk sequence (no footer or trailing bytes) hashing to `hash`.
+fn validate_staged_xorb(hash: MerkleHash, data: &[u8]) -> Result<(), String> {
+    let (xorb_obj, computed_hash) =
+        xet_core_structures::xorb_object::reconstruct_xorb_with_footer(&mut Vec::new(), data)
+            .map_err(|e| format!("Invalid XORB data: {e}"))?;
+    if xorb_obj.get_contents_length().map_err(|e| e.to_string())? as usize != data.len() {
+        return Err("XORB data must be a chunk sequence without a footer or trailing bytes".to_string());
+    }
+    if computed_hash != hash {
+        return Err(format!("XORB hash mismatch: expected {}, got {}", hash.hex(), computed_hash.hex()));
+    }
+    Ok(())
+}
+
 /// POST /v1/xorb-commits/{prefix}/{hash}/grant/{grant_id}
 ///
 /// Stores the XORB uploaded through the grant. Returns 200 if the XORB is stored or already existed,
-/// or 404 if no data was uploaded for this grant and XORB.
+/// 404 if no data was uploaded for this grant and XORB, or 400 if the data is not exactly a chunk sequence
+/// hashing to the XORB hash.
 pub async fn post_xorb_commit(
     State(state): State<ServerState>,
     Path((prefix, hash, grant_id)): Path<(String, HexMerkleHash, String)>,
@@ -712,6 +727,10 @@ pub async fn post_xorb_commit(
     let Some(data) = data else {
         return (StatusCode::NOT_FOUND, "No uploaded data for this grant").into_response();
     };
+
+    if let Err(message) = validate_staged_xorb(hash, &data) {
+        return (StatusCode::BAD_REQUEST, message).into_response();
+    }
 
     match store_uploaded_xorb(&state, &prefix, hash, &data).await {
         Ok(()) => {
