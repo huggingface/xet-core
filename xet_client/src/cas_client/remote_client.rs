@@ -269,7 +269,7 @@ enum XorbUploadPath {
     /// Upload grant, upload to the grant URL, and commit.
     Grant,
     /// `POST /v1/xorbs`.
-    Post,
+    Direct,
 }
 
 impl RemoteClient {
@@ -280,7 +280,7 @@ impl RemoteClient {
             let elapsed = started_at.elapsed();
             match path {
                 XorbUploadPath::Grant => telemetry.record_grant_xorb_upload(n_bytes, elapsed),
-                XorbUploadPath::Post => telemetry.record_post_xorb_upload(n_bytes, elapsed),
+                XorbUploadPath::Direct => telemetry.record_direct_xorb_upload(n_bytes, elapsed),
             }
         }
         #[cfg(target_family = "wasm")]
@@ -1282,7 +1282,7 @@ impl Client for RemoteClient {
         } else if self.ctx.config.client.legacy_direct_xorb_upload {
             let started_at = Instant::now();
             let inserted = self.post_xorb(&key, serialized_data, progress_callback, upload_permit).await?;
-            self.record_xorb_upload(XorbUploadPath::Post, n_upload_bytes, started_at);
+            self.record_xorb_upload(XorbUploadPath::Direct, n_upload_bytes, started_at);
             (inserted, n_upload_bytes)
         } else {
             let progress_callback = progress_callback.map(report_each_byte_once);
@@ -1303,10 +1303,10 @@ impl Client for RemoteClient {
                 },
                 GrantUploadOutcome::Unavailable { n_bytes_uploaded } => {
                     debug!(hash=%key.hash, "Upload grants did not store xorb; uploading through the xorb upload API");
-                    // Time only the POST, so failed grant attempts do not count against the POST path.
+                    // Time only the POST, so failed grant attempts do not count against the direct path.
                     let started_at = Instant::now();
                     let inserted = self.post_xorb(&key, serialized_data, progress_callback, upload_permit).await?;
-                    self.record_xorb_upload(XorbUploadPath::Post, n_upload_bytes, started_at);
+                    self.record_xorb_upload(XorbUploadPath::Direct, n_upload_bytes, started_at);
                     (inserted, n_bytes_uploaded + n_upload_bytes)
                 },
             }

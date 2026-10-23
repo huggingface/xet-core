@@ -122,7 +122,7 @@ pub struct TransferTelemetry {
     /// Xorbs stored through an upload grant (grant, upload, commit).
     grant_xorb_uploads: XorbUploadPathStats,
     /// Xorbs uploaded through `POST /v1/xorbs`, including fallbacks from upload grants.
-    post_xorb_uploads: XorbUploadPathStats,
+    direct_xorb_uploads: XorbUploadPathStats,
     /// Set by whichever of `finalize` or `Drop` gets there first, so exactly one terminal
     /// document is emitted per transfer.
     terminal_sent: AtomicBool,
@@ -178,7 +178,7 @@ impl TransferTelemetry {
             started_at: Instant::now(),
             peak_concurrency: AtomicU64::new(0),
             grant_xorb_uploads: XorbUploadPathStats::default(),
-            post_xorb_uploads: XorbUploadPathStats::default(),
+            direct_xorb_uploads: XorbUploadPathStats::default(),
             terminal_sent: AtomicBool::new(false),
             sink: TelemetrySink::new(ctx, url, http),
             final_flush_timeout: ctx.config.telemetry.final_flush_timeout,
@@ -284,8 +284,8 @@ impl TransferTelemetry {
         self.grant_xorb_uploads.totals()
     }
 
-    pub fn post_xorb_uploads(&self) -> XorbUploadPathTotals {
-        self.post_xorb_uploads.totals()
+    pub fn direct_xorb_uploads(&self) -> XorbUploadPathTotals {
+        self.direct_xorb_uploads.totals()
     }
 
     /// Records a xorb of `bytes` serialized bytes stored through an upload grant in `elapsed`.
@@ -294,8 +294,8 @@ impl TransferTelemetry {
     }
 
     /// Records a xorb of `bytes` serialized bytes uploaded through `POST /v1/xorbs` in `elapsed`.
-    pub fn record_post_xorb_upload(&self, bytes: u64, elapsed: Duration) {
-        self.post_xorb_uploads.record(bytes, elapsed);
+    pub fn record_direct_xorb_upload(&self, bytes: u64, elapsed: Duration) {
+        self.direct_xorb_uploads.record(bytes, elapsed);
     }
 
     /// Whether a terminal document has already been emitted.
@@ -454,7 +454,7 @@ mod tests {
         let t = build(&ctx, "https://cas.example.com", false).unwrap();
         t.record_grant_xorb_upload(100, Duration::from_micros(1_500));
         t.record_grant_xorb_upload(200, Duration::from_micros(2_000));
-        t.record_post_xorb_upload(50, Duration::from_millis(7));
+        t.record_direct_xorb_upload(50, Duration::from_millis(7));
         assert_eq!(
             t.grant_xorb_uploads(),
             XorbUploadPathTotals {
@@ -464,7 +464,7 @@ mod tests {
             }
         );
         assert_eq!(
-            t.post_xorb_uploads(),
+            t.direct_xorb_uploads(),
             XorbUploadPathTotals {
                 count: 1,
                 bytes: 50,
