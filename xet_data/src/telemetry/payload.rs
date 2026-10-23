@@ -144,6 +144,7 @@ impl From<&TransferTelemetry> for TransferIdentity {
 pub struct XorbUploadPaths {
     pub grant: XorbUploadPathTotals,
     pub direct: XorbUploadPathTotals,
+    pub grant_fallbacks: u64,
 }
 
 impl From<&TransferTelemetry> for XorbUploadPaths {
@@ -151,6 +152,7 @@ impl From<&TransferTelemetry> for XorbUploadPaths {
         Self {
             grant: telemetry.grant_xorb_uploads(),
             direct: telemetry.direct_xorb_uploads(),
+            grant_fallbacks: telemetry.grant_fallbacks(),
         }
     }
 }
@@ -223,6 +225,9 @@ pub struct UploadMetrics {
     pub direct_xorb_upload_bytes: u64,
     /// Summed per-xorb `POST /v1/xorbs` time, excluding any grant attempts before a fallback.
     pub direct_xorb_upload_ms: u64,
+    /// Xorbs for which an upload grant was issued but that were still uploaded through `POST /v1/xorbs`. A
+    /// subset of `direct_xorb_upload_count`; xorbs uploaded directly because grants are not offered are excluded.
+    pub grant_fallback_count: u64,
 
     pub shards_total: u64,
     pub shards_completed: u64,
@@ -272,6 +277,7 @@ impl UploadMetrics {
             direct_xorb_upload_count: xorb_upload_paths.direct.count,
             direct_xorb_upload_bytes: xorb_upload_paths.direct.bytes,
             direct_xorb_upload_ms: xorb_upload_paths.direct.duration_ms,
+            grant_fallback_count: xorb_upload_paths.grant_fallbacks,
 
             shards_total: shard.map(|s| s.total_shards as u64).unwrap_or(0),
             shards_completed: shard.map(|s| s.total_shards_completed as u64).unwrap_or(0),
@@ -325,6 +331,9 @@ mod tests {
         "dedup_ratio",
         "defrag_prevented_dedup_bytes",
         "defrag_prevented_dedup_chunks",
+        "direct_xorb_upload_bytes",
+        "direct_xorb_upload_count",
+        "direct_xorb_upload_ms",
         "direction",
         "duration_ms",
         "endpoint_host",
@@ -333,6 +342,7 @@ mod tests {
         "finalize_ms",
         "global_dedup_bytes",
         "global_dedup_chunks",
+        "grant_fallback_count",
         "grant_xorb_upload_bytes",
         "grant_xorb_upload_count",
         "grant_xorb_upload_ms",
@@ -344,9 +354,6 @@ mod tests {
         "os",
         "outcome",
         "peak_concurrency",
-        "direct_xorb_upload_bytes",
-        "direct_xorb_upload_count",
-        "direct_xorb_upload_ms",
         "schema_version",
         "seq",
         "shard_bytes_uploaded",
@@ -411,6 +418,9 @@ mod tests {
         ("dedup_ratio", Kind::F64),
         ("defrag_prevented_dedup_bytes", Kind::U64),
         ("defrag_prevented_dedup_chunks", Kind::U64),
+        ("direct_xorb_upload_bytes", Kind::U64),
+        ("direct_xorb_upload_count", Kind::U64),
+        ("direct_xorb_upload_ms", Kind::U64),
         ("direction", Kind::Str),
         ("duration_ms", Kind::U64),
         ("endpoint_host", Kind::Str),
@@ -420,6 +430,7 @@ mod tests {
         ("finalize_ms", Kind::U64),
         ("global_dedup_bytes", Kind::U64),
         ("global_dedup_chunks", Kind::U64),
+        ("grant_fallback_count", Kind::U64),
         ("grant_xorb_upload_bytes", Kind::U64),
         ("grant_xorb_upload_count", Kind::U64),
         ("grant_xorb_upload_ms", Kind::U64),
@@ -431,9 +442,6 @@ mod tests {
         ("os", Kind::Str),
         ("outcome", Kind::Str),
         ("peak_concurrency", Kind::U64),
-        ("direct_xorb_upload_bytes", Kind::U64),
-        ("direct_xorb_upload_count", Kind::U64),
-        ("direct_xorb_upload_ms", Kind::U64),
         ("schema_version", Kind::U64),
         ("seq", Kind::U64),
         ("shard_bytes_uploaded", Kind::U64),
@@ -552,6 +560,7 @@ mod tests {
                 bytes: 60,
                 duration_ms: 300,
             },
+            grant_fallbacks: 1,
         }
     }
 
@@ -688,6 +697,7 @@ mod tests {
         assert_eq!(doc["direct_xorb_upload_count"], 2);
         assert_eq!(doc["direct_xorb_upload_bytes"], 60);
         assert_eq!(doc["direct_xorb_upload_ms"], 300);
+        assert_eq!(doc["grant_fallback_count"], 1);
     }
 
     /// Absent shard progress reads as zero rather than dropping the keys.
