@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use anyhow::anyhow;
 use bytes::Bytes;
@@ -19,6 +19,7 @@ use super::adaptive_concurrency::{
 };
 use super::auth::AuthConfig;
 use super::interface::{ShardUploadProgressCallback, URLProvider};
+use super::low_speed_limit::with_low_speed_limit;
 use super::progress_tracked_streams::{
     DownloadProgressStream, ProgressCallback, StreamProgressReporter, UploadProgressStream,
 };
@@ -588,6 +589,14 @@ impl Client for RemoteClient {
         let api_tag = "s3::get_range";
         let http_client = self.http_client.clone();
         let url_info = Arc::new(url_info);
+        let min_bytes_per_sec = self.ctx.config.client.download_min_bytes_per_sec.as_u64();
+        let min_speed_window = self.ctx.config.client.download_min_speed_window;
+        let retry_max_attempts = self.ctx.config.client.retry_max_attempts;
+        // Shared by the attempts of this request, so that the speed check aborts at most one of them, and
+        // only while RetryWrapper has another attempt left.
+        let low_speed_aborted = Arc::new(AtomicBool::new(false));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let request_attempts = attempts.clone();
 
         let (_, url_ranges) = url_info.retrieve_url().await?;
         let total_download_bytes: u64 = url_ranges.iter().map(|r| r.length()).sum();
@@ -605,6 +614,7 @@ impl Client for RemoteClient {
                 move || {
                     let http_client = http_client.clone();
                     let url_info = url_info.clone();
+                    request_attempts.fetch_add(1, Ordering::Relaxed);
 
                     async move {
                         let (url_string, url_ranges) = url_info
@@ -645,6 +655,9 @@ impl Client for RemoteClient {
                 },
                 move |resp: Response| {
                     let transfer_reporter = transfer_reporter.clone();
+                    let low_speed_aborted = low_speed_aborted.clone();
+                    let has_retry_left = attempts.load(Ordering::Relaxed) <= retry_max_attempts;
+                    let min_bytes_per_sec = if has_retry_left { min_bytes_per_sec } else { 0 };
                     async move {
                         let content_type = resp
                             .headers()
@@ -656,10 +669,19 @@ impl Client for RemoteClient {
                         let is_multipart = content_type.contains("multipart/byteranges");
 
                         if is_multipart {
-                            let body = resp
-                                .bytes()
-                                .await
-                                .map_err(|e| RetryableReqwestError::RetryableError(ClientError::from(e)))?;
+                            let body = with_low_speed_limit(
+                                resp.bytes_stream().map_err(std::io::Error::other),
+                                min_bytes_per_sec,
+                                min_speed_window,
+                                low_speed_aborted.clone(),
+                            )
+                            .try_fold(Vec::new(), |mut body, bytes| async move {
+                                body.extend_from_slice(&bytes);
+                                Ok(body)
+                            })
+                            .await
+                            .map(Bytes::from)
+                            .map_err(|e| RetryableReqwestError::RetryableError(ClientError::from(e)))?;
 
                             let multipart_parts = crate::cas_client::multipart::parse_multipart_byteranges(&content_type, body)
                                 .map_err(RetryableReqwestError::FatalError)?;
@@ -697,10 +719,13 @@ impl Client for RemoteClient {
                             }
                             Ok((Bytes::from(all_decompressed), all_chunk_indices))
                         } else {
-                            let incoming_stream = DownloadProgressStream::wrap_stream(
+                            let body_stream = with_low_speed_limit(
                                 resp.bytes_stream().map_err(std::io::Error::other),
-                                transfer_reporter,
+                                min_bytes_per_sec,
+                                min_speed_window,
+                                low_speed_aborted.clone(),
                             );
+                            let incoming_stream = DownloadProgressStream::wrap_stream(body_stream, transfer_reporter);
 
                             let capacity = uncompressed_size_if_known.unwrap_or(0);
                             let mut buffer = Vec::with_capacity(capacity);

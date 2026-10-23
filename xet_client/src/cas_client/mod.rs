@@ -17,6 +17,7 @@ pub mod auth;
 pub mod chunk_window_builder;
 pub mod exports;
 mod interface;
+mod low_speed_limit;
 pub mod multipart;
 pub mod progress_tracked_streams;
 pub mod remote_client;

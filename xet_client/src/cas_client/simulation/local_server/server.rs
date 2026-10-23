@@ -35,7 +35,7 @@ use std::net::SocketAddr;
 #[cfg(test)]
 use std::net::TcpListener as StdTcpListener;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU8;
+use std::sync::atomic::{AtomicU8, AtomicUsize};
 use std::sync::{Arc, Mutex};
 #[cfg(test)]
 use std::time::Duration;
@@ -108,6 +108,8 @@ pub struct LocalServer {
     telemetry_docs: Arc<Mutex<Vec<serde_json::Value>>>,
     /// `/v2/shards` in-stream Error frame mode (see [`handlers::ShardUploadErrorFrame`]).
     shard_upload_error_frame: Arc<AtomicU8>,
+    /// See [`handlers::ServerState::trickle_fetch_terms`].
+    trickle_fetch_terms: Arc<AtomicUsize>,
 }
 
 impl LocalServer {
@@ -134,6 +136,7 @@ impl LocalServer {
             latency_simulation,
             telemetry_docs: Arc::default(),
             shard_upload_error_frame: Arc::new(AtomicU8::new(handlers::ShardUploadErrorFrame::Off as u8)),
+            trickle_fetch_terms: Arc::default(),
         })
     }
 
@@ -161,6 +164,7 @@ impl LocalServer {
             latency_simulation,
             telemetry_docs: Arc::default(),
             shard_upload_error_frame: Arc::new(AtomicU8::new(handlers::ShardUploadErrorFrame::Off as u8)),
+            trickle_fetch_terms: Arc::default(),
         }
     }
 
@@ -181,6 +185,12 @@ impl LocalServer {
     /// server has been moved into its serving task.
     pub(crate) fn telemetry_docs_handle(&self) -> Arc<Mutex<Vec<serde_json::Value>>> {
         self.telemetry_docs.clone()
+    }
+
+    /// Shared counter of upcoming trickled `fetch_term` responses, so a caller can set it after
+    /// the server has been moved into its serving task.
+    pub(crate) fn trickle_fetch_terms_handle(&self) -> Arc<AtomicUsize> {
+        self.trickle_fetch_terms.clone()
     }
 
     /// Returns the server's bind address as "host:port".
@@ -230,6 +240,7 @@ impl LocalServer {
                 deletion_client: self.deletion_client.clone(),
                 telemetry_docs: self.telemetry_docs.clone(),
                 shard_upload_error_frame: self.shard_upload_error_frame.clone(),
+                trickle_fetch_terms: self.trickle_fetch_terms.clone(),
             })
     }
 
