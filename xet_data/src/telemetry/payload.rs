@@ -143,14 +143,14 @@ impl From<&TransferTelemetry> for TransferIdentity {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct XorbUploadPaths {
     pub grant: XorbUploadPathTotals,
-    pub post: XorbUploadPathTotals,
+    pub direct: XorbUploadPathTotals,
 }
 
 impl From<&TransferTelemetry> for XorbUploadPaths {
     fn from(telemetry: &TransferTelemetry) -> Self {
         Self {
             grant: telemetry.grant_xorb_uploads(),
-            post: telemetry.post_xorb_uploads(),
+            direct: telemetry.direct_xorb_uploads(),
         }
     }
 }
@@ -218,11 +218,11 @@ pub struct UploadMetrics {
     /// when uploads overlap.
     pub grant_xorb_upload_ms: u64,
     /// Xorbs uploaded through `POST /v1/xorbs`, including fallbacks from upload grants.
-    pub post_xorb_upload_count: u64,
+    pub direct_xorb_upload_count: u64,
     /// Serialized bytes of the xorbs above.
-    pub post_xorb_upload_bytes: u64,
+    pub direct_xorb_upload_bytes: u64,
     /// Summed per-xorb `POST /v1/xorbs` time, excluding any grant attempts before a fallback.
-    pub post_xorb_upload_ms: u64,
+    pub direct_xorb_upload_ms: u64,
 
     pub shards_total: u64,
     pub shards_completed: u64,
@@ -269,9 +269,9 @@ impl UploadMetrics {
             grant_xorb_upload_count: xorb_upload_paths.grant.count,
             grant_xorb_upload_bytes: xorb_upload_paths.grant.bytes,
             grant_xorb_upload_ms: xorb_upload_paths.grant.duration_ms,
-            post_xorb_upload_count: xorb_upload_paths.post.count,
-            post_xorb_upload_bytes: xorb_upload_paths.post.bytes,
-            post_xorb_upload_ms: xorb_upload_paths.post.duration_ms,
+            direct_xorb_upload_count: xorb_upload_paths.direct.count,
+            direct_xorb_upload_bytes: xorb_upload_paths.direct.bytes,
+            direct_xorb_upload_ms: xorb_upload_paths.direct.duration_ms,
 
             shards_total: shard.map(|s| s.total_shards as u64).unwrap_or(0),
             shards_completed: shard.map(|s| s.total_shards_completed as u64).unwrap_or(0),
@@ -344,9 +344,9 @@ mod tests {
         "os",
         "outcome",
         "peak_concurrency",
-        "post_xorb_upload_bytes",
-        "post_xorb_upload_count",
-        "post_xorb_upload_ms",
+        "direct_xorb_upload_bytes",
+        "direct_xorb_upload_count",
+        "direct_xorb_upload_ms",
         "schema_version",
         "seq",
         "shard_bytes_uploaded",
@@ -431,9 +431,9 @@ mod tests {
         ("os", Kind::Str),
         ("outcome", Kind::Str),
         ("peak_concurrency", Kind::U64),
-        ("post_xorb_upload_bytes", Kind::U64),
-        ("post_xorb_upload_count", Kind::U64),
-        ("post_xorb_upload_ms", Kind::U64),
+        ("direct_xorb_upload_bytes", Kind::U64),
+        ("direct_xorb_upload_count", Kind::U64),
+        ("direct_xorb_upload_ms", Kind::U64),
         ("schema_version", Kind::U64),
         ("seq", Kind::U64),
         ("shard_bytes_uploaded", Kind::U64),
@@ -547,7 +547,7 @@ mod tests {
                 bytes: 240,
                 duration_ms: 1_200,
             },
-            post: XorbUploadPathTotals {
+            direct: XorbUploadPathTotals {
                 count: 2,
                 bytes: 60,
                 duration_ms: 300,
@@ -685,9 +685,9 @@ mod tests {
         assert_eq!(doc["grant_xorb_upload_count"], 6);
         assert_eq!(doc["grant_xorb_upload_bytes"], 240);
         assert_eq!(doc["grant_xorb_upload_ms"], 1_200);
-        assert_eq!(doc["post_xorb_upload_count"], 2);
-        assert_eq!(doc["post_xorb_upload_bytes"], 60);
-        assert_eq!(doc["post_xorb_upload_ms"], 300);
+        assert_eq!(doc["direct_xorb_upload_count"], 2);
+        assert_eq!(doc["direct_xorb_upload_bytes"], 60);
+        assert_eq!(doc["direct_xorb_upload_ms"], 300);
     }
 
     /// Absent shard progress reads as zero rather than dropping the keys.
