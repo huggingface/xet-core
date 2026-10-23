@@ -32,6 +32,7 @@ pub struct RetryWrapper {
     no_retry_on_429: bool,
     retry_on_403: bool,
     retry_on_409: bool,
+    expected_400: bool,
     expected_403: bool,
     expected_416: bool,
     expected_404: bool,
@@ -53,6 +54,7 @@ impl RetryWrapper {
             no_retry_on_429: false,
             retry_on_403: false,
             retry_on_409: false,
+            expected_400: false,
             expected_403: false,
             expected_416: false,
             expected_404: false,
@@ -92,6 +94,14 @@ impl RetryWrapper {
     /// still completing.
     pub fn with_retry_on_409(mut self) -> Self {
         self.retry_on_409 = true;
+        self
+    }
+
+    /// Mark 400 responses as expected (e.g. a storage provider's request timeout on an upload grant, which the caller
+    /// replaces). A 400 is returned as a fatal error, logged as info, and not reported to the connection permit as a
+    /// failed transfer.
+    pub fn with_expected_400(mut self) -> Self {
+        self.expected_400 = true;
         self
     }
 
@@ -147,6 +157,7 @@ impl std::fmt::Debug for RetryWrapper {
             .field("no_retry_on_429", &self.no_retry_on_429)
             .field("retry_on_403", &self.retry_on_403)
             .field("retry_on_409", &self.retry_on_409)
+            .field("expected_400", &self.expected_400)
             .field("expected_403", &self.expected_403)
             .field("expected_416", &self.expected_416)
             .field("expected_404", &self.expected_404)
@@ -247,6 +258,9 @@ impl RetryWrapper {
                 } else if e.status() == Some(StatusCode::CONFLICT) && self.retry_on_409 {
                     let cas_err = process_error("Retry on 409 (Conflict) enabled", e, true);
                     Err(RetryableReqwestError::RetryableError(cas_err))
+                } else if e.status() == Some(StatusCode::BAD_REQUEST) && self.expected_400 {
+                    let cas_err = process_error("Bad Request", e, true);
+                    Err(RetryableReqwestError::FatalError(cas_err))
                 } else if e.status() == Some(StatusCode::FORBIDDEN) && self.expected_403 {
                     let cas_err = process_error("Forbidden", e, true);
                     Err(RetryableReqwestError::FatalError(cas_err))
@@ -380,9 +394,10 @@ impl RetryWrapper {
                                 }
                             },
                             Err(RetryableReqwestError::FatalError(e))
-                                if self_.expected_403 && e.status() == Some(StatusCode::FORBIDDEN) =>
+                                if (self_.expected_400 && e.status() == Some(StatusCode::BAD_REQUEST))
+                                    || (self_.expected_403 && e.status() == Some(StatusCode::FORBIDDEN)) =>
                             {
-                                // Dropping the permit without reporting keeps the expected 403 out of the
+                                // Dropping the permit without reporting keeps the expected 400 or 403 out of the
                                 // concurrency statistics.
                                 permit_info.permit.take();
                             },
@@ -1079,6 +1094,33 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_400_expected_keeps_concurrency() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("PUT"))
+            .and(path("/bad_request"))
+            .respond_with(ResponseTemplate::new(400))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let controller = AdaptiveConcurrencyController::new_testing(4, (1, 4));
+        // Wait out the testing controller's minimum delay between concurrency decreases.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let permit = controller.acquire_connection_permit().await.unwrap();
+
+        let client = make_client();
+        let result = connection_wrapper("test_400_expected_keeps_concurrency")
+            .with_expected_400()
+            .with_connection_permit(permit, Some(1))
+            .run(move || client.clone().put(format!("{}/bad_request", server.uri())).send())
+            .await;
+
+        assert_eq!(result.unwrap_err().status(), Some(StatusCode::BAD_REQUEST));
+        assert_eq!(controller.total_permits(), 4);
     }
 
     #[tokio::test]
