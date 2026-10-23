@@ -1,5 +1,3 @@
-use std::fs::File;
-use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,8 +17,7 @@ use xet_core_structures::metadata_shard::session_directory::{
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::metadata_shard::xorb_structs::MDBXorbInfo;
 use xet_core_structures::metadata_shard::{
-    MDB_SHARD_LOCAL_CACHE_EXPIRATION, MDB_SHARD_TARGET_SIZE, MDBShardFile, MDBShardFileHeader, ShardFileManager,
-    get_shard_file_cache,
+    MDB_SHARD_LOCAL_CACHE_EXPIRATION, MDB_SHARD_TARGET_SIZE, ShardFileManager, get_shard_file_cache,
 };
 use xet_runtime::core::XetContext;
 use xet_runtime::error_printer::ErrorPrinter;
@@ -278,7 +275,7 @@ impl SessionShardInterface {
                 async move {
                     debug!("Uploading shard {:?} from staging area to CAS.", &si.shard_hash);
 
-                    let data: Bytes = read_shard_to_bytes_remove_footer(&si)?;
+                    let data: Bytes = si.read_shard_to_bytes_remove_footer()?;
 
                     shard_bytes_uploaded.fetch_add(data.len() as u64, Ordering::Relaxed);
 
@@ -338,54 +335,5 @@ impl SessionShardInterface {
         }
 
         Ok(shard_bytes_uploaded.load(Ordering::Relaxed))
-    }
-}
-
-fn read_shard_to_bytes_remove_footer(si: &Arc<MDBShardFile>) -> Result<Bytes> {
-    let split_off_index = si.shard.metadata.file_lookup_offset as usize;
-    // Read only the portion of the shard file up to the file_lookup_offset,
-    // which excludes the footer and lookup sections.
-    let mut file = File::open(&si.path)?;
-    let mut buf = vec![0u8; split_off_index];
-    file.read_exact(&mut buf)?;
-    // re-write the header to set footer_size to 0.
-    let mut header = si.shard.header.clone();
-    header.footer_size = 0;
-    header.serialize(&mut (&mut buf[..size_of::<MDBShardFileHeader>()]))?;
-    #[cfg(debug_assertions)]
-    {
-        let new_header =
-            MDBShardFileHeader::deserialize(&mut std::io::Cursor::new(&buf[..size_of::<MDBShardFileHeader>()]))?;
-        debug_assert_eq!(new_header.footer_size, 0);
-    }
-    Ok(Bytes::from(buf))
-}
-
-#[cfg(test)]
-mod tests {
-    use std::io::Cursor;
-
-    use super::*;
-
-    #[test]
-    fn test_read_shard_to_bytes_remove_footer() -> Result<()> {
-        let tmp_dir = TempDir::with_prefix("test_read_shard_to_bytes_remove_footer")?;
-        let tmp_dir_path = tmp_dir.path();
-
-        let mdb_in_mem = MDBInMemoryShard::default();
-        let temp_shard_file_path = mdb_in_mem.write_to_directory(tmp_dir_path, None)?;
-
-        let sfc = xet_core_structures::metadata_shard::new_shard_file_cache();
-        let shard_file = MDBShardFile::load_from_file(&temp_shard_file_path, &sfc)?;
-        assert_eq!(
-            shard_file.shard.header.footer_size,
-            size_of::<xet_core_structures::metadata_shard::MDBShardFileFooter>() as u64
-        );
-
-        let no_footer_shard_buf = read_shard_to_bytes_remove_footer(&shard_file)?;
-        let buf_shard_header =
-            MDBShardFileHeader::deserialize(&mut Cursor::new(&no_footer_shard_buf[..size_of::<MDBShardFileHeader>()]))?;
-        assert_eq!(buf_shard_header.footer_size, 0);
-        Ok(())
     }
 }
