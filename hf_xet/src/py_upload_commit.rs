@@ -271,7 +271,9 @@ impl PyXetUploadCommit {
     ///
     /// Returns a :class:`XetStreamUpload` handle.  Feed data incrementally
     /// with :meth:`XetStreamUpload.write`, then call :meth:`XetStreamUpload.finish`
-    /// **before** calling :meth:`XetUploadCommit.wait_to_finish`.
+    /// **before** calling :meth:`XetUploadCommit.wait_to_finish`, or
+    /// :meth:`XetStreamUpload.abort` to leave the stream out of the commit (for
+    /// example to retry the file with a new stream after its source failed).
     ///
     /// ``name`` is an optional display name used for progress reporting.
     /// ``sha256`` accepts the same values as :meth:`start_upload_file`.

@@ -85,7 +85,7 @@ impl PyXetStreamUpload {
 
     /// Finalise the stream and return per-file upload metadata.
     ///
-    /// Must be called before :meth:`XetUploadCommit.wait_to_finish`.
+    /// Must be called before :meth:`XetUploadCommit.wait_to_finish`, unless the stream is aborted.
     /// Releases the GIL while waiting.
     pub fn finish(&self, py: Python<'_>) -> PyResult<XetFileMetadata> {
         let inner = self.inner.clone();
@@ -113,6 +113,10 @@ impl PyXetStreamUpload {
     }
 
     /// Cancel the streaming upload.
+    ///
+    /// The stream is left out of the commit, so the file can be retried with a new stream.  A stream
+    /// that is neither finished nor aborted makes :meth:`XetUploadCommit.wait_to_finish` fail, even
+    /// after the handle is garbage collected.
     pub fn abort(&self) {
         self.inner.abort();
     }
