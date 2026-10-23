@@ -259,9 +259,23 @@ pub(crate) fn xorb_checksum(data: &[u8]) -> Checksum {
 enum GrantUploadOutcome {
     /// The xorb is stored; `inserted` is false if it already existed.
     Stored { inserted: bool, n_bytes_uploaded: u64 },
-    /// Upload grants did not store this xorb; upload it through the xorb upload API instead. `granted` is true if
-    /// at least one grant was issued before giving up, false if grants were not offered.
-    Unavailable { n_bytes_uploaded: u64, granted: bool },
+    /// Upload grants did not store this xorb; upload it through the xorb upload API instead.
+    Unavailable {
+        n_bytes_uploaded: u64,
+        reason: GrantFallbackReason,
+    },
+}
+
+/// Why upload grants did not store a xorb, for telemetry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GrantFallbackReason {
+    /// The server does not offer upload grants for this xorb; no grant was issued.
+    NotOffered,
+    /// Grants were issued, but the grant URL rejected the upload, the commit found no upload, or a later grant
+    /// request was refused, until no grant attempts were left.
+    Rejected,
+    /// Uploading to the grant URL failed with an error that a new grant does not fix, such as a connection error.
+    UploadFailed,
 }
 
 /// The API a xorb was uploaded through, for telemetry.
@@ -390,7 +404,11 @@ impl RemoteClient {
                 XorbUploadGrantResult::Unavailable => {
                     return Ok(GrantUploadOutcome::Unavailable {
                         n_bytes_uploaded,
-                        granted: attempt > 1,
+                        reason: if attempt > 1 {
+                            GrantFallbackReason::Rejected
+                        } else {
+                            GrantFallbackReason::NotOffered
+                        },
                     });
                 },
             };
@@ -415,7 +433,7 @@ impl RemoteClient {
                     if attempt >= max_attempts {
                         return Ok(GrantUploadOutcome::Unavailable {
                             n_bytes_uploaded,
-                            granted: true,
+                            reason: GrantFallbackReason::Rejected,
                         });
                     }
                     continue;
@@ -424,7 +442,7 @@ impl RemoteClient {
                     warn!(hash=%key.hash, grant_id=grant.id, error=%err, "Upload grant URL unreachable, falling back to legacy xorb upload path (may be slower)");
                     return Ok(GrantUploadOutcome::Unavailable {
                         n_bytes_uploaded,
-                        granted: true,
+                        reason: GrantFallbackReason::UploadFailed,
                     });
                 },
             }
@@ -441,7 +459,7 @@ impl RemoteClient {
                     if attempt >= max_attempts {
                         return Ok(GrantUploadOutcome::Unavailable {
                             n_bytes_uploaded,
-                            granted: true,
+                            reason: GrantFallbackReason::Rejected,
                         });
                     }
                 },
@@ -1318,15 +1336,17 @@ impl Client for RemoteClient {
                 },
                 GrantUploadOutcome::Unavailable {
                     n_bytes_uploaded,
-                    granted,
+                    reason,
                 } => {
-                    debug!(hash=%key.hash, "Upload grants did not store xorb; uploading through the xorb upload API");
+                    debug!(hash=%key.hash, ?reason, "Upload grants did not store xorb; uploading through the xorb upload API");
                     #[cfg(not(target_family = "wasm"))]
-                    if granted && let Some(telemetry) = &self.telemetry {
-                        telemetry.record_grant_fallback();
+                    if reason != GrantFallbackReason::NotOffered
+                        && let Some(telemetry) = &self.telemetry
+                    {
+                        telemetry.record_grant_fallback(reason == GrantFallbackReason::UploadFailed);
                     }
                     #[cfg(target_family = "wasm")]
-                    let _ = granted;
+                    let _ = reason;
                     // Time only the POST, so failed grant attempts do not count against the direct path.
                     let started_at = Instant::now();
                     let inserted = self.post_xorb(&key, serialized_data, progress_callback, upload_permit).await?;
@@ -1866,6 +1886,14 @@ mod tests {
                 .grant_fallbacks()
         }
 
+        fn grant_unreachable(client: &RemoteClient) -> u64 {
+            client
+                .telemetry
+                .as_ref()
+                .expect("telemetry is enabled by default")
+                .grant_unreachable()
+        }
+
         fn xorb_inserted() -> ResponseTemplate {
             ResponseTemplate::new(200).set_body_json(json!({"was_inserted": true}))
         }
@@ -2006,6 +2034,7 @@ mod tests {
             let client = test_client(&server.uri());
             upload_test_xorb(&client, None).await.unwrap();
             assert_eq!(grant_fallbacks(&client), 1);
+            assert_eq!(grant_unreachable(&client), 0);
         }
 
         #[tokio::test]
@@ -2136,6 +2165,8 @@ mod tests {
             let n_bytes = upload_test_xorb(&client, Some(callback)).await.unwrap();
 
             assert_eq!(n_bytes, progress.load(Ordering::Relaxed));
+            assert_eq!(grant_fallbacks(&client), 1);
+            assert_eq!(grant_unreachable(&client), 1);
         }
 
         #[tokio::test]
@@ -2155,6 +2186,8 @@ mod tests {
             let n_bytes = upload_test_xorb(&client, Some(callback)).await.unwrap();
 
             assert_eq!(n_bytes, progress.load(Ordering::Relaxed));
+            assert_eq!(grant_fallbacks(&client), 1);
+            assert_eq!(grant_unreachable(&client), 1);
         }
 
         #[test]

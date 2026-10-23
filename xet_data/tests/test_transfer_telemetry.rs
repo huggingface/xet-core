@@ -50,6 +50,7 @@ const UPLOAD_KEYS: &[&str] = &[
     "global_dedup_bytes",
     "global_dedup_chunks",
     "grant_fallback_count",
+    "grant_unreachable_count",
     "grant_xorb_upload_bytes",
     "grant_xorb_upload_count",
     "grant_xorb_upload_ms",
@@ -164,6 +165,7 @@ async fn test_upload_emits_one_terminal_document() {
     assert_eq!(metrics["direct_xorb_upload_bytes"], 0);
     assert_eq!(metrics["direct_xorb_upload_ms"], 0);
     assert_eq!(metrics["grant_fallback_count"], 0);
+    assert_eq!(metrics["grant_unreachable_count"], 0);
     assert!(metrics["endpoint_host"].as_str().unwrap().starts_with("127.0.0.1"));
 }
 
