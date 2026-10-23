@@ -32,8 +32,6 @@
 //! ```
 
 use std::net::SocketAddr;
-#[cfg(test)]
-use std::net::TcpListener as StdTcpListener;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU8;
 use std::sync::{Arc, Mutex};
@@ -270,7 +268,19 @@ impl LocalServer {
             .await
             .map_err(|e| ClientError::Other(format!("Failed to bind to {addr}: {e}")))?;
 
-        tracing::info!("Local CAS server listening on {}", addr);
+        self.serve_until_stopped(listener, shutdown_rx).await
+    }
+
+    /// Serves on an already bound listener until a shutdown signal is received on the provided channel.
+    ///
+    /// Tests bind port 0 first and pass the listener here, so the port cannot be taken by another
+    /// server between choosing it and listening on it.
+    pub async fn serve_until_stopped(
+        &self,
+        listener: TcpListener,
+        shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+    ) -> Result<()> {
+        tracing::info!("Local CAS server listening on {}", self.addr());
 
         let router = self.create_router();
 
@@ -357,7 +367,8 @@ impl LocalTestServer {
         deletion_client: Option<Arc<dyn DeletionControlableClient>>,
         _socket_path: Option<PathBuf>,
     ) -> Self {
-        let port = Self::find_available_port();
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("Failed to bind test server");
+        let port = listener.local_addr().expect("Failed to read test server address").port();
         let host = "127.0.0.1".to_string();
         let tcp_endpoint = format!("http://{}:{}", host, port);
 
@@ -365,7 +376,9 @@ impl LocalTestServer {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
         tokio::spawn(async move {
-            let _ = server.run_until_stopped(shutdown_rx).await;
+            if let Err(e) = server.serve_until_stopped(listener, shutdown_rx).await {
+                tracing::error!(error = %e, "test server failed");
+            }
         });
 
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -440,10 +453,6 @@ impl LocalTestServer {
     #[allow(unused)]
     pub fn deletion_client(&self) -> Option<&Arc<dyn DeletionControlableClient>> {
         self.deletion_client.as_ref()
-    }
-
-    fn find_available_port() -> u16 {
-        StdTcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
     }
 }
 
@@ -671,6 +680,31 @@ mod tests {
     use crate::cas_types::{FileRange, QueryReconstructionResponseV2};
 
     const CHUNK_SIZE: usize = 123;
+
+    // Servers started together must each serve their own backend. Choosing a port and binding it
+    // later let a parallel test take it, so one test's client reached another test's server.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_servers_are_isolated() {
+        let mut starts = tokio::task::JoinSet::new();
+        for _ in 0..16 {
+            starts.spawn(LocalTestServer::start(true));
+        }
+        let servers = starts.join_all().await;
+        let endpoints: HashSet<_> = servers.iter().map(|server| server.endpoint().to_owned()).collect();
+        assert_eq!(endpoints.len(), servers.len());
+
+        for (i, server) in servers.iter().enumerate() {
+            let file = server
+                .remote_client()
+                .upload_random_file(&[(i as u64 + 1, (0, 5))], CHUNK_SIZE)
+                .await
+                .unwrap();
+            for (j, other) in servers.iter().enumerate() {
+                let found = other.client().get_file_reconstruction_info(&file.file_hash).await.unwrap();
+                assert_eq!(found.is_some(), i == j);
+            }
+        }
+    }
 
     /// Verifies basic server operations: upload, reconstruction (full/range/batch/multi-xorb),
     /// file info, dedup queries, and fetch_term endpoint.
