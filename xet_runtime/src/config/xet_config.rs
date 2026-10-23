@@ -199,6 +199,38 @@ impl XetConfig {
         self.update_field(path, value)?;
         Ok(self)
     }
+
+    /// Start building a config from [`XetConfig::default`]; environment variables are ignored.
+    ///
+    /// Every field has a `<group>_<field>` setter, e.g. `telemetry_enabled` sets `telemetry.enabled`.
+    pub fn builder() -> XetConfigBuilder {
+        XetConfigBuilder {
+            config: Self::default(),
+        }
+    }
+
+    /// Start building a config from [`XetConfig::new`], so the high performance preset and
+    /// environment variable overrides are applied first and setters override them.
+    ///
+    /// Setters always win, including `telemetry_enabled(true)` over huggingface_hub's telemetry
+    /// opt-out variables.
+    pub fn builder_from_env() -> XetConfigBuilder {
+        XetConfigBuilder { config: Self::new() }
+    }
+}
+
+/// Builder for [`XetConfig`], created by [`XetConfig::builder`] or [`XetConfig::builder_from_env`].
+///
+/// The `<group>_<field>` setters are generated from each config group's definition.
+#[derive(Debug, Clone)]
+pub struct XetConfigBuilder {
+    pub(crate) config: XetConfig,
+}
+
+impl XetConfigBuilder {
+    pub fn build(self) -> XetConfig {
+        self.config
+    }
 }
 
 #[cfg(test)]
@@ -388,6 +420,82 @@ mod tests {
             assert!(keys.contains(&"system_monitor.enabled".to_owned()));
         }
         assert_eq!(keys.len(), expected_count);
+    }
+
+    #[test]
+    fn test_builder_defaults_match_default() {
+        let built = XetConfig::builder().build();
+        let default = XetConfig::default();
+        for key in default.all_keys() {
+            assert_eq!(built.get(&key).unwrap(), default.get(&key).unwrap(), "{key}");
+        }
+    }
+
+    #[test]
+    fn test_builder_setters() {
+        let config = XetConfig::builder()
+            .telemetry_enabled(false)
+            .chunk_cache_size_bytes(0)
+            .data_max_concurrent_file_ingestion(16)
+            .data_progress_update_interval(std::time::Duration::from_millis(500))
+            .log_dest("path/to/log")
+            .log_prefix(String::from("custom"))
+            .data_default_cas_endpoint(format!("http://{}:{}", "example.com", 9090))
+            .client_shard_api_version(2)
+            .xorb_simulation_max_bytes(ByteSize::from("1mb"))
+            .reconstruction_download_buffer_size(ByteSize::from("2gb"))
+            .build();
+
+        assert!(!config.telemetry.enabled);
+        assert_eq!(config.chunk_cache.size_bytes, 0);
+        assert_eq!(config.data.max_concurrent_file_ingestion, 16);
+        assert_eq!(config.data.progress_update_interval, std::time::Duration::from_millis(500));
+        assert_eq!(config.log.dest.as_deref(), Some("path/to/log"));
+        assert_eq!(config.log.prefix, "custom");
+        assert_eq!(config.data.default_cas_endpoint, "http://example.com:9090");
+        assert_eq!(config.client.shard_api_version, Some(2));
+        assert_eq!(config.xorb.simulation_max_bytes.map(|b| b.as_u64()), Some(1_000_000));
+        assert_eq!(config.reconstruction.download_buffer_size.as_u64(), 2_000_000_000);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn test_builder_path_setter() {
+        let config = XetConfig::builder()
+            .system_monitor_log_path(std::path::PathBuf::from("/tmp/monitor.log"))
+            .build();
+        assert_eq!(config.get("system_monitor.log_path").unwrap(), "/tmp/monitor.log");
+
+        let config = XetConfig::builder().system_monitor_log_path("/tmp/monitor_{PID}.log").build();
+        assert_eq!(config.get("system_monitor.log_path").unwrap(), "/tmp/monitor_{PID}.log");
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    #[serial_test::serial(env)]
+    fn test_builder_from_env_setters_override_env() {
+        use crate::utils::EnvVarGuard;
+
+        let _ingestion = EnvVarGuard::set("HF_XET_DATA_MAX_CONCURRENT_FILE_INGESTION", "7");
+        let _retries = EnvVarGuard::set("HF_XET_CLIENT_RETRY_MAX_ATTEMPTS", "9");
+
+        let config = XetConfig::builder_from_env().data_max_concurrent_file_ingestion(16).build();
+        assert_eq!(config.data.max_concurrent_file_ingestion, 16);
+        assert_eq!(config.client.retry_max_attempts, 9);
+
+        let config = XetConfig::builder().build();
+        assert_ne!(config.client.retry_max_attempts, 9);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    #[serial_test::serial(env)]
+    fn test_builder_from_env_telemetry_setter_beats_opt_out() {
+        use crate::utils::EnvVarGuard;
+
+        let _opt_out = EnvVarGuard::set("DO_NOT_TRACK", "1");
+        assert!(!XetConfig::builder_from_env().build().telemetry.enabled);
+        assert!(XetConfig::builder_from_env().telemetry_enabled(true).build().telemetry.enabled);
     }
 
     #[cfg(not(target_family = "wasm"))]
