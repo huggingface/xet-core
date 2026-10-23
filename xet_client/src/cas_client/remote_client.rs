@@ -9,7 +9,7 @@ use http::header::{CONTENT_LENGTH, CONTENT_TYPE, HeaderMap, HeaderName, RANGE};
 use http::{HeaderValue, Method};
 use reqwest::{Body, Response, StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
-use tracing::{debug, event, info, instrument};
+use tracing::{debug, event, info, instrument, warn};
 use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::metadata_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use xet_core_structures::xorb_object::SerializedXorbObject;
@@ -233,6 +233,19 @@ pub(crate) enum XorbCommitResult {
     GrantNotFound,
 }
 
+/// Wraps `callback` so that several uploads of the same data report each byte once: an upload reports progress only
+/// past the furthest point any earlier upload reached. A grant upload that fails partway therefore leaves the rest
+/// of the progress to the next upload, and a retry of bytes already reported adds nothing.
+fn report_each_byte_once(callback: ProgressCallback) -> ProgressCallback {
+    let reported = Arc::new(AtomicU64::new(0));
+    Arc::new(move |_delta, completed, total| {
+        let previous = reported.fetch_max(completed, Ordering::Relaxed);
+        if completed > previous {
+            callback(completed - previous, completed, total);
+        }
+    })
+}
+
 /// Checksum of serialized xorb data, sent when requesting an upload grant.
 pub(crate) fn xorb_checksum(data: &[u8]) -> Checksum {
     Checksum::Crc64Nvme(crc_fast::checksum(CrcAlgorithm::Crc64Nvme, data))
@@ -317,16 +330,17 @@ impl RemoteClient {
     ///
     /// A commit that finds no uploaded data for its grant, or a grant URL that rejects the upload with 400 (e.g. S3's
     /// `RequestTimeout` for a stalled body), 403 (e.g. an expired grant), or 409 after retries, starts over with a new
-    /// grant, up to
-    /// `max_xorb_grant_attempts` grants; after the last one the xorb is uploaded through the xorb upload API
-    /// instead. Every upload holds `upload_permit`'s concurrency slot, which the caller keeps until the xorb is
-    /// committed. The first upload takes `progress_callback`, so a later fallback upload reports progress only if
-    /// no grant upload ran.
+    /// grant, up to `max_xorb_grant_attempts` grants; after the last one the xorb is uploaded through the xorb upload
+    /// API instead. Any other failure to upload to the grant URL, such as a connection error, falls back to the xorb
+    /// upload API right away, so clients that cannot reach the grant URL still upload. Errors from the grant and
+    /// commit requests fail the upload. Every upload holds `upload_permit`'s concurrency slot, which the caller keeps
+    /// until the xorb is committed. `progress_callback` must report each byte once across uploads (see
+    /// `report_each_byte_once`).
     async fn upload_xorb_through_grants(
         &self,
         key: &Key,
         serialized_data: Bytes,
-        progress_callback: &mut Option<ProgressCallback>,
+        progress_callback: &Option<ProgressCallback>,
         upload_permit: &ConnectionPermit,
     ) -> Result<GrantUploadOutcome> {
         let length = serialized_data.len() as u64;
@@ -348,13 +362,11 @@ impl RemoteClient {
                 XorbUploadGrantResult::Unavailable => return Ok(GrantUploadOutcome::Unavailable { n_bytes_uploaded }),
             };
 
-            // Only the first upload reports progress, so an upload after a re-grant does not report the same bytes
-            // again.
             let upload_result = self
                 .upload_xorb_to_grant(
                     &grant,
                     serialized_data.clone(),
-                    progress_callback.take(),
+                    progress_callback.clone(),
                     upload_permit.new_transfer().await,
                 )
                 .await;
@@ -372,7 +384,10 @@ impl RemoteClient {
                     }
                     continue;
                 },
-                Err(err) => return Err(err),
+                Err(err) => {
+                    warn!(hash=%key.hash, grant_id=grant.id, error=%err, "Upload grant URL unreachable, falling back to legacy xorb upload path (may be slower)");
+                    return Ok(GrantUploadOutcome::Unavailable { n_bytes_uploaded });
+                },
             }
 
             match self.commit_xorb_upload(&key.prefix, &key.hash, &grant.id).await? {
@@ -1213,7 +1228,7 @@ impl Client for RemoteClient {
         &self,
         prefix: &str,
         mut serialized_xorb_object: SerializedXorbObject,
-        mut progress_callback: Option<ProgressCallback>,
+        progress_callback: Option<ProgressCallback>,
         upload_permit: ConnectionPermit,
     ) -> Result<u64> {
         let key = Key {
@@ -1240,8 +1255,9 @@ impl Client for RemoteClient {
         } else if self.ctx.config.client.legacy_direct_xorb_upload {
             (self.post_xorb(&key, serialized_data, progress_callback, upload_permit).await?, n_upload_bytes)
         } else {
+            let progress_callback = progress_callback.map(report_each_byte_once);
             match self
-                .upload_xorb_through_grants(&key, serialized_data.clone(), &mut progress_callback, &upload_permit)
+                .upload_xorb_through_grants(&key, serialized_data.clone(), &progress_callback, &upload_permit)
                 .await?
             {
                 GrantUploadOutcome::Stored {
@@ -2028,18 +2044,52 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_upload_xorb_upload_error_fails_without_fallback() {
+        async fn test_upload_xorb_falls_back_when_upload_fails() {
             let server = MockServer::start().await;
             let grant = test_grant(&server);
             mount(&server, "POST", ANY_GRANT_PATH, ResponseTemplate::new(201).set_body_json(&grant), 1).await;
             mount(&server, "PUT", "^/upload/xorb-object$", ResponseTemplate::new(401), 1).await;
             mount(&server, "POST", ANY_COMMIT_PATH, ResponseTemplate::new(200), 0).await;
-            mount(&server, "POST", ANY_XORB_PATH, xorb_inserted(), 0).await;
+            mount(&server, "POST", ANY_XORB_PATH, xorb_inserted(), 1).await;
 
+            let (progress, callback) = progress_recorder();
             let client = test_client(&server.uri());
-            let err = upload_test_xorb(&client, None).await.unwrap_err();
+            let n_bytes = upload_test_xorb(&client, Some(callback)).await.unwrap();
 
-            assert_eq!(err.status(), Some(StatusCode::UNAUTHORIZED));
+            assert_eq!(n_bytes, progress.load(Ordering::Relaxed));
+        }
+
+        #[tokio::test]
+        async fn test_upload_xorb_falls_back_when_grant_url_unreachable() {
+            let server = MockServer::start().await;
+            let grant = XorbUploadGrant {
+                // Nothing listens on port 1, so the upload fails to connect.
+                url: "http://127.0.0.1:1/upload/xorb-object".to_string(),
+                ..test_grant(&server)
+            };
+            mount(&server, "POST", ANY_GRANT_PATH, ResponseTemplate::new(201).set_body_json(&grant), 1).await;
+            mount(&server, "POST", ANY_COMMIT_PATH, ResponseTemplate::new(200), 0).await;
+            mount(&server, "POST", ANY_XORB_PATH, xorb_inserted(), 1).await;
+
+            let (progress, callback) = progress_recorder();
+            let client = test_client(&server.uri());
+            let n_bytes = upload_test_xorb(&client, Some(callback)).await.unwrap();
+
+            assert_eq!(n_bytes, progress.load(Ordering::Relaxed));
+        }
+
+        #[test]
+        fn test_report_each_byte_once_reports_past_furthest_upload() {
+            let (progress, callback) = progress_recorder();
+            let callback = report_each_byte_once(callback);
+
+            // A first upload fails after 40 bytes, and the next upload of the same 100 bytes completes.
+            callback(40, 40, 100);
+            callback(30, 30, 100);
+            callback(30, 60, 100);
+            callback(40, 100, 100);
+
+            assert_eq!(progress.load(Ordering::Relaxed), 100);
         }
 
         #[tokio::test]
