@@ -1150,6 +1150,16 @@ impl Client for MemoryClient {
         Ok((Bytes::from(all_decompressed), all_chunk_indices))
     }
 
+    async fn get_chunk_layout(
+        &self,
+        file_id: &xet_core_structures::merklehash::MerkleHash,
+        bytes_range: crate::cas_types::FileRange,
+        serialized: bool,
+    ) -> Result<Option<crate::cas_types::ChunkLayoutResponse>> {
+        self.apply_api_delay().await;
+        super::direct_access_client::chunk_layout_from_footers(self, file_id, bytes_range, serialized).await
+    }
+
     async fn get_file_chunk_hashes(
         &self,
         file_id: &MerkleHash,
@@ -1490,6 +1500,39 @@ mod tests {
 
     fn new_deletion_client() -> Arc<MemoryClient> {
         MemoryClient::new(test_ctx())
+    }
+
+    #[tokio::test]
+    async fn test_chunk_layout_matches_the_reconstruction() {
+        let client = MemoryClient::new(test_ctx());
+        let file = client
+            .upload_random_file(&[(1, (0, 5)), (2, (0, 4)), (1, (2, 6))], 2048)
+            .await
+            .unwrap();
+        let size = file.data.len() as u64;
+        for range in [
+            FileRange::new(0, size),
+            FileRange::new(1, size - 1),
+            FileRange::new(3000, 9000),
+        ] {
+            let plan = client.get_reconstruction(&file.file_hash, Some(range)).await.unwrap().unwrap();
+            let layout = client.get_chunk_layout(&file.file_hash, range, true).await.unwrap().unwrap();
+            assert_eq!(layout.offset_into_first_range, plan.offset_into_first_range);
+            assert_eq!(layout.terms.len(), plan.terms.len());
+            for (term, term_layout) in plan.terms.iter().zip(&layout.terms) {
+                assert_eq!((term_layout.hash, term_layout.range), (term.hash, term.range));
+                assert_eq!(term_layout.uncompressed.iter().sum::<u32>(), term.unpacked_length);
+                let footer = client.xorb_footer(&term.hash.into()).await.unwrap();
+                let (start, end) = footer.get_byte_offset(term.range.start, term.range.end).unwrap();
+                assert_eq!(term_layout.serialized.as_ref().unwrap().iter().sum::<u32>(), end - start);
+            }
+            let lengths_only = client.get_chunk_layout(&file.file_hash, range, false).await.unwrap().unwrap();
+            assert!(lengths_only.terms.iter().all(|term| term.serialized.is_none()));
+        }
+        let past_end = client
+            .get_chunk_layout(&file.file_hash, FileRange::new(size, size + 10), true)
+            .await;
+        assert!(past_end.unwrap().is_none());
     }
 
     #[tokio::test]

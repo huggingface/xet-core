@@ -450,6 +450,27 @@ pub struct FileChunkHashesResponse {
     pub gap_verification: Vec<HexMerkleHash>,
 }
 
+/// The chunks of one reconstruction term, returned by `GET /v2/chunk-layout/{file_id}`.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct TermChunkLayout {
+    pub hash: HexMerkleHash,
+    pub range: ChunkRange,
+    /// Decoded size of each chunk; they add up to the term's `unpacked_length`.
+    pub uncompressed: Vec<u32>,
+    /// Size of each chunk in the xorb, header included; they add up to the byte span that
+    /// `/v2/reconstructions` signs for the chunk range. Absent when not requested.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serialized: Option<Vec<u32>>,
+}
+
+/// Chunk sizes for the terms that `/v2/reconstructions` returns for the same range, in the
+/// same order. CAS answers for ranges of at most 1 GiB.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct ChunkLayoutResponse {
+    pub offset_into_first_range: u64,
+    pub terms: Vec<TermChunkLayout>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

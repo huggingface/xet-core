@@ -35,8 +35,8 @@ use super::telemetry::TransferTelemetry;
 use super::{Client, INFORMATION_LOG_LEVEL};
 use crate::cas_client::ShardUploadProgressType;
 use crate::cas_types::{
-    BatchQueryReconstructionResponse, Checksum, FileChunkHashesResponse, FileRange, HttpRange, Key,
-    QueryReconstructionResponse, QueryReconstructionResponseV2, ShardUploadEvent, UploadShardResponse,
+    BatchQueryReconstructionResponse, Checksum, ChunkLayoutResponse, FileChunkHashesResponse, FileRange, HttpRange,
+    Key, QueryReconstructionResponse, QueryReconstructionResponseV2, ShardUploadEvent, UploadShardResponse,
     UploadShardResponseType, UploadXorbResponse, X_RANGE_DIRTY_HEADER, XorbUploadGrant, XorbUploadGrantRequest,
 };
 use crate::common::http_client::{self, Api};
@@ -1433,6 +1433,41 @@ impl Client for RemoteClient {
 
         Ok(response)
     }
+
+    #[instrument(skip_all, name = "RemoteClient::get_chunk_layout", fields(file.hash = file_id.hex()))]
+    async fn get_chunk_layout(
+        &self,
+        file_id: &MerkleHash,
+        bytes_range: FileRange,
+        serialized: bool,
+    ) -> Result<Option<ChunkLayoutResponse>> {
+        let mut url = Url::parse(&format!("{}/v2/chunk-layout/{}", self.endpoint, file_id.hex()))?;
+        if !serialized {
+            url.query_pairs_mut().append_pair("serialized", "false");
+        }
+        let api_tag = "cas::get_chunk_layout";
+        let client = self.authenticated_http_client.clone();
+
+        // A CAS without the endpoint answers 404: not worth retrying.
+        let result = RetryWrapper::new(self.ctx.clone(), api_tag)
+            .with_expected_416()
+            .with_expected_404()
+            .run_and_extract_json(move || {
+                client
+                    .get(url.clone())
+                    .header(RANGE, HttpRange::from(bytes_range).range_header())
+                    .with_extension(Api(api_tag))
+                    .send()
+            })
+            .await;
+        match result {
+            Ok(response) => Ok(Some(response)),
+            Err(ClientError::ReqwestError(ref err, _)) if err.status() == Some(StatusCode::RANGE_NOT_SATISFIABLE) => {
+                Ok(None)
+            },
+            Err(err) => Err(err),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1445,6 +1480,62 @@ mod tests {
     };
 
     use super::*;
+
+    #[tokio::test]
+    async fn test_get_chunk_layout_request() {
+        use wiremock::matchers::{header, method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let file_id = MerkleHash::default();
+        let body = serde_json::json!({
+            "offset_into_first_range": 3,
+            "terms": [{"hash": file_id.hex(), "range": {"start": 0, "end": 2}, "uncompressed": [5, 7]}],
+        });
+        Mock::given(method("GET"))
+            .and(path(format!("/v2/chunk-layout/{}", file_id.hex())))
+            .and(header("Range", "bytes=10-19"))
+            .and(query_param("serialized", "false"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(header("Range", "bytes=100-109"))
+            .respond_with(ResponseTemplate::new(416))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(header("Range", "bytes=200-209"))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = RemoteClient::new(XetContext::default().unwrap(), &server.uri(), &None, "", false, None);
+        let layout = client
+            .get_chunk_layout(&file_id, FileRange::new(10, 20), false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(layout.offset_into_first_range, 3);
+        assert_eq!(layout.terms[0].uncompressed, vec![5, 7]);
+        assert!(layout.terms[0].serialized.is_none());
+
+        assert!(
+            client
+                .get_chunk_layout(&file_id, FileRange::new(100, 110), true)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let not_served = client.get_chunk_layout(&file_id, FileRange::new(200, 210), true).await;
+        assert!(
+            matches!(&not_served, Err(ClientError::ReqwestError(err, _)) if err.status() == Some(StatusCode::NOT_FOUND)),
+            "{not_served:?}"
+        );
+    }
 
     #[test]
     fn test_clients_share_controllers_per_ctx_and_endpoint() {
