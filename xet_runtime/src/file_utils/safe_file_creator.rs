@@ -19,6 +19,13 @@ pub struct SafeFileCreator {
 }
 
 impl SafeFileCreator {
+    /// Marks the creator as failed unless the error is a transient `Interrupted`,
+    /// which helpers like `write_all` retry until it succeeds.
+    fn record_error(&mut self, error: &io::Error) {
+        if error.kind() != io::ErrorKind::Interrupted {
+            self.write_failed = true;
+        }
+    }
     /// Safely creates a new file at a specific location.  Ensures the file is not created with elevated privileges,
     /// and a temporary file is created then renamed on close.
     pub fn new<P: AsRef<Path>>(dest_path: P) -> io::Result<Self> {
@@ -156,16 +163,16 @@ impl SafeFileCreator {
 impl Write for SafeFileCreator {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let result = self.writer()?.write(buf);
-        if result.is_err() {
-            self.write_failed = true;
+        if let Err(e) = &result {
+            self.record_error(e);
         }
         result
     }
 
     fn flush(&mut self) -> io::Result<()> {
         let result = self.writer()?.flush();
-        if result.is_err() {
-            self.write_failed = true;
+        if let Err(e) = &result {
+            self.record_error(e);
         }
         result
     }
@@ -174,8 +181,8 @@ impl Write for SafeFileCreator {
 impl Seek for SafeFileCreator {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         let result = self.writer()?.seek(pos);
-        if result.is_err() {
-            self.write_failed = true;
+        if let Err(e) = &result {
+            self.record_error(e);
         }
         result
     }
