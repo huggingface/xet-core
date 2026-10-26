@@ -51,10 +51,9 @@ enum HedgeDecision {
 
 /// Decides whether to hedge the block of the first unfinished term in `terms`, which are in write order.
 ///
-/// It is hedged when the terms finished after it hold more bytes than it does, so the write is held back by it
-/// rather than by the network, and its block has taken [`HEDGE_SLOWDOWN_FACTOR`] times longer than the blocks
-/// downloaded after it would take for its size, and at least [`MIN_HEDGE_DELAY`]. Only blocks downloaded while
-/// it was in progress count, so a link that is slow for every request does not trigger it.
+/// It is hedged when its block has taken [`HEDGE_SLOWDOWN_FACTOR`] times longer than the blocks downloaded after
+/// it would take for its size, and at least [`MIN_HEDGE_DELAY`]. Only blocks downloaded while it was in progress
+/// count, so a link that is slow for every request does not trigger it.
 fn decide(terms: &VecDeque<TrackedTerm>, now: Instant) -> HedgeDecision {
     let Some(head_index) = terms.iter().position(|t| t.finished.is_none()) else {
         return HedgeDecision::Wait;
@@ -65,7 +64,6 @@ fn decide(terms: &VecDeque<TrackedTerm>, now: Instant) -> HedgeDecision {
     }
 
     let finished_after: Vec<_> = terms.iter().skip(head_index + 1).filter(|t| t.finished.is_some()).collect();
-    let ready_bytes: u64 = finished_after.iter().map(|t| t.size).sum();
 
     // Time each block once, from its first term's start, leaving out the head's block and cached data.
     let (mut timed_bytes, mut timed_secs) = (0, 0.);
@@ -84,7 +82,7 @@ fn decide(terms: &VecDeque<TrackedTerm>, now: Instant) -> HedgeDecision {
             timed_secs += finished.duration_since(term.started).as_secs_f64();
         }
     }
-    if ready_bytes <= head.size || timed_bytes == 0 {
+    if timed_bytes == 0 {
         return HedgeDecision::Wait;
     }
 
@@ -261,7 +259,8 @@ mod tests {
     }
 
     #[test]
-    fn test_head_is_not_hedged_without_more_ready_behind() {
+    fn test_head_larger_than_ready_behind_is_hedged() {
+        // 100 bytes behind the head took 1s, so the 1000 byte head is hedged at 30s.
         let t0 = Instant::now();
         let terms: VecDeque<_> = [
             term(block(1000), 1000, t0, None),
@@ -269,7 +268,7 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        assert_eq!(decide(&terms, t0 + Duration::from_secs(1000)), HedgeDecision::Wait);
+        assert_eq!(decide(&terms, t0 + Duration::from_secs(1)), HedgeDecision::RecheckAt(t0 + Duration::from_secs(30)));
     }
 
     #[test]

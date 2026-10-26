@@ -57,3 +57,20 @@ async fn test_uniformly_slow_link_is_not_hedged() {
     assert_eq!(usize::MAX - server.pending_trickled_fetch_terms(), 3);
     assert_eq!(data, file.data.as_ref());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_trickling_range_with_smaller_term_behind_is_hedged() {
+    // The only term behind the head is smaller than it.
+    let server = LocalTestServerBuilder::new().start().await;
+    let file = server
+        .remote_client()
+        .upload_random_file(&[(1, (0, 4)), (2, (0, 3))], 4096)
+        .await
+        .unwrap();
+
+    server.trickle_next_fetch_terms(1, Some(file.terms[0].xorb_hash));
+    let data = download(&server, file.file_hash).await.unwrap();
+
+    assert_eq!(server.pending_trickled_fetch_terms(), 0);
+    assert_eq!(data, file.data.as_ref());
+}
