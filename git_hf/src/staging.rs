@@ -2,13 +2,17 @@
 //!
 //! Sessions and linked worktrees share content-addressed objects. SafeFileCreator publishes each
 //! object atomically; concurrent writes of the same hash are interchangeable. Its temporary files
-//! do not end in `.mdb`, so discovery never loads incomplete shards. No cross-process lock is needed.
-//! A future push classifies xorb dependencies from the staged shards, not from file presence. A
-//! session's shard lists only the xorbs that session wrote, so the union of all staged xorb tables
-//! is the set of local dependencies; each must exist under `xorbs/`, and a missing one is a local
+//! do not end in `.mdb`, so discovery never loads incomplete shards, and writers need no lock.
+//! Push classifies xorb dependencies from the staged shards, not from file presence. A session's
+//! shard lists only the xorbs that session wrote, so the union of all staged xorb tables is the set
+//! of local xorbs not yet uploaded; each must exist under `xorbs/`, and a missing one is a local
 //! error. File records may also reference xorbs absent from every table; those came from remote
-//! dedup data and are left to the server. Staging must not be deleted while a clean or push uses it.
+//! dedup data or were already uploaded, and are left to the server.
+//!
+//! Only push removes staged objects, under the exclusive [`lock_exclusive`]. Clean sessions hold
+//! [`lock_shared`] for their lifetime, because their dedup reads staged shards at any point.
 use std::collections::HashSet;
+use std::fs::File;
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -31,6 +35,35 @@ use xet_core_structures::xorb_object::SerializedXorbObject;
 use xet_data::processing::DeduplicationSource;
 use xet_runtime::core::XetContext;
 use xet_runtime::file_utils::SafeFileCreator;
+
+/// Never removed: deleting a lock file others may hold open would split later lockers.
+const LOCK_FILE: &str = ".lock";
+
+fn open_lock(staging: &Path) -> std::io::Result<File> {
+    std::fs::create_dir_all(staging)?;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(staging.join(LOCK_FILE))
+}
+
+/// Keeps staged objects from being removed until the returned file is closed.
+pub(crate) fn lock_shared(staging: &Path) -> std::io::Result<File> {
+    let file = open_lock(staging)?;
+    file.lock_shared()?;
+    Ok(file)
+}
+
+/// Waits for running clean sessions, then excludes new ones until the returned file is closed.
+pub(crate) fn lock_exclusive(staging: &Path) -> std::io::Result<File> {
+    let file = open_lock(staging)?;
+    if file.try_lock().is_err() {
+        eprintln!("git-hf: waiting for a running `git add` to finish");
+        file.lock()?;
+    }
+    Ok(file)
+}
 
 /// Read-only index of published repository shards; never subject to remote cache eviction.
 pub(crate) struct StagedDedupSource {

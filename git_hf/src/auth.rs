@@ -10,7 +10,6 @@
 //! [`Interaction::Never`] never prompts: credential helpers return only stored credentials, SSH runs
 //! in batch mode, and if nothing is found the request is anonymous, which is enough to read public
 //! repositories. [`Interaction::Allowed`] may prompt in step 5 and fails if no credential results.
-#![cfg_attr(not(test), expect(dead_code, reason = "used by the clean filter and pre-push"))]
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -62,6 +61,7 @@ impl ResolvedCredential {
         self.helper.clone()
     }
 
+    #[cfg_attr(not(test), expect(dead_code, reason = "only tests read the source so far"))]
     pub fn source(&self) -> &CredentialSource {
         &self.source
     }
