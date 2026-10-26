@@ -13,6 +13,9 @@ pub struct SafeFileCreator {
     temp_path: PathBuf,
     original_metadata: Option<Metadata>,
     writer: Option<BufWriter<File>>,
+    /// Set when a write, flush or seek fails. A dropped creator must not publish
+    /// the temporary file in that state, since its contents may be incomplete.
+    write_failed: bool,
 }
 
 impl SafeFileCreator {
@@ -40,6 +43,7 @@ impl SafeFileCreator {
             temp_path,
             original_metadata: None,
             writer: Some(writer),
+            write_failed: false,
         })
     }
 
@@ -60,6 +64,7 @@ impl SafeFileCreator {
             temp_path,
             original_metadata: None,
             writer: Some(writer),
+            write_failed: false,
         })
     }
 
@@ -110,7 +115,11 @@ impl SafeFileCreator {
             return Ok(());
         };
 
-        writer.flush()?;
+        if let Err(e) = writer.flush() {
+            // Give the writer back so the caller can retry or drop this creator safely.
+            self.writer = Some(writer);
+            return Err(e);
+        }
         drop(writer);
 
         // Replace the original file with the new file
@@ -146,22 +155,43 @@ impl SafeFileCreator {
 
 impl Write for SafeFileCreator {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.writer()?.write(buf)
+        let result = self.writer()?.write(buf);
+        if result.is_err() {
+            self.write_failed = true;
+        }
+        result
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.writer()?.flush()
+        let result = self.writer()?.flush();
+        if result.is_err() {
+            self.write_failed = true;
+        }
+        result
     }
 }
 
 impl Seek for SafeFileCreator {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        self.writer()?.seek(pos)
+        let result = self.writer()?.seek(pos);
+        if result.is_err() {
+            self.write_failed = true;
+        }
+        result
     }
 }
 
 impl Drop for SafeFileCreator {
     fn drop(&mut self) {
+        if self.write_failed {
+            // A previous write, flush or seek error may have left the temporary
+            // file incomplete, so publishing it would silently corrupt the
+            // destination. Discard it and keep the original file untouched.
+            if let Err(e) = self.abort() {
+                eprintln!("Error: Failed to clean up writer for {:?}: {}", self.dest_path, e);
+            }
+            return;
+        }
         if let Err(e) = self.close() {
             eprintln!("Error: Failed to close writer for {:?}: {}", self.dest_path, e);
         }
@@ -287,6 +317,55 @@ mod tests {
         let mut contents = String::new();
         File::open(&dest_path).unwrap().read_to_string(&mut contents).unwrap();
         assert_eq!(contents.trim(), "Hello, world!");
+    }
+
+    #[test]
+    fn test_safe_file_creator_drop_after_write_error() {
+        let dir = tempdir().unwrap();
+        let dest_path = dir.path().join("error_drop_file.txt");
+
+        // Create an existing valid file that must survive a failed write attempt.
+        {
+            let mut file = File::create(&dest_path).unwrap();
+            file.write_all(b"Old content").unwrap();
+        }
+
+        {
+            let mut safe_file_creator = SafeFileCreator::replace_existing(&dest_path).unwrap();
+            writeln!(safe_file_creator, "New content").unwrap();
+            // An invalid seek position reliably fails the operation on every platform.
+            assert!(safe_file_creator.seek(SeekFrom::Current(i64::MIN)).is_err());
+            // safe_file_creator is dropped here and must not publish the temp file
+        }
+
+        // The destination must keep its old contents.
+        let mut contents = String::new();
+        File::open(&dest_path).unwrap().read_to_string(&mut contents).unwrap();
+        assert_eq!(contents, "Old content");
+
+        // The temporary file must be gone.
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp files left behind: {leftovers:?}");
+    }
+
+    #[test]
+    fn test_safe_file_creator_close_after_write_error() {
+        let dir = tempdir().unwrap();
+        let dest_path = dir.path().join("error_close_file.txt");
+
+        let mut safe_file_creator = SafeFileCreator::new(&dest_path).unwrap();
+        writeln!(safe_file_creator, "New content").unwrap();
+        assert!(safe_file_creator.seek(SeekFrom::Current(i64::MIN)).is_err());
+        // An explicit close() is a deliberate decision to publish, so it still succeeds.
+        safe_file_creator.close().unwrap();
+
+        let mut contents = String::new();
+        File::open(&dest_path).unwrap().read_to_string(&mut contents).unwrap();
+        assert_eq!(contents.trim(), "New content");
     }
 
     #[test]
