@@ -9,8 +9,9 @@ use thiserror::Error;
 
 use crate::merklehash::MerkleHash;
 
-/// Maximum serialized pointer size, including extension lines and the final LF.
-pub const MAX_POINTER_SIZE: usize = 4096;
+/// Maximum serialized pointer size, including extension lines and the final LF. A canonical pointer
+/// is 113 bytes plus the size's decimal digits (at most 133), leaving room for a few extension lines.
+pub const MAX_POINTER_SIZE: usize = 200;
 const POINTER_VERSION: &str = "https://hf.co/spec/xet/v1";
 
 /// A Xet pointer. Serialization uses canonical field order and omits unknown extensions.
