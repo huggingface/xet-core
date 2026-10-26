@@ -10,8 +10,8 @@ use super::progress_tracked_streams::ProgressCallback;
 #[cfg(not(target_family = "wasm"))]
 use super::telemetry::TransferTelemetry;
 use crate::cas_types::{
-    BatchQueryReconstructionResponse, FileChunkHashesResponse, FileRange, HttpRange, QueryReconstructionResponseV2,
-    ShardUploadEvent,
+    BatchQueryReconstructionResponse, ChunkLayoutResponse, FileChunkHashesResponse, FileRange, HttpRange,
+    QueryReconstructionResponseV2, ShardUploadEvent,
 };
 use crate::error::Result;
 
@@ -113,6 +113,18 @@ pub trait Client: Send + Sync {
         file_id: &MerkleHash,
         dirty_ranges: Vec<FileRange>,
     ) -> Result<FileChunkHashesResponse>;
+
+    /// The size of each chunk of each term that `get_reconstruction` returns for `bytes_range`,
+    /// so that a client holding that plan can derive the exact plan of any sub-range.
+    ///
+    /// `serialized` asks for the size of each chunk in the xorb as well as its decoded size.
+    /// Returns `None` when the range starts past the end of the file, like `get_reconstruction`.
+    async fn get_chunk_layout(
+        &self,
+        file_id: &MerkleHash,
+        bytes_range: FileRange,
+        serialized: bool,
+    ) -> Result<Option<ChunkLayoutResponse>>;
 
     /// This transfer's performance telemetry aggregator, if it has one.
     ///
