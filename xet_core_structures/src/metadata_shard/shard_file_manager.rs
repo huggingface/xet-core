@@ -123,7 +123,17 @@ impl ShardBookkeeper {
     /// slots form a ring holding the newest shards.  Once they are full, the new shard takes the ring slot of the
     /// shard added `num_indexable_slots` shards before it, which is evicted from the chunk index and moved to the
     /// end of the list, so the list only grows and every shard that can be indexed has a slot that fits in a u16.
-    fn add_shard_to_collection(&mut self, shard_col_index: usize, shard: Arc<MDBShardFile>) -> usize {
+    ///
+    /// The new shard doesn't take the slot if that would evict an indexed shard that `index_size_enforcement`
+    /// keeps: any indexed shard under `StopAtCap`, or one created after the new shard under `Eviction`.  Batches
+    /// are registered newest first, so this keeps the batch's newest shards.  The new shard then goes to the end
+    /// of the list, past the ring, and the returned slot is `num_indexable_slots` or more: it can't be indexed.
+    fn add_shard_to_collection(
+        &mut self,
+        shard_col_index: usize,
+        shard: Arc<MDBShardFile>,
+        index_size_enforcement: ChunkIndexSizeEnforcement,
+    ) -> usize {
         let num_shards = self.shard_collections[shard_col_index].shard_list.len();
         if num_shards < self.num_indexable_slots {
             self.shard_collections[shard_col_index].shard_list.push(shard);
@@ -138,7 +148,21 @@ impl ShardBookkeeper {
             shard_collection_index: shard_col_index,
             shard_index_in_collection: ring_slot,
         };
-        if self.indexed_shards.remove(&oldest_indexed) {
+        let oldest_is_indexed = self.indexed_shards.contains(&oldest_indexed);
+        let may_evict_oldest = match index_size_enforcement {
+            ChunkIndexSizeEnforcement::StopAtCap => false,
+            ChunkIndexSizeEnforcement::Eviction => {
+                oldest_indexed.creation_timestamp <= shard.shard.metadata.shard_creation_timestamp
+            },
+        };
+
+        if oldest_is_indexed && !may_evict_oldest {
+            self.shard_collections[shard_col_index].shard_list.push(shard);
+            return num_shards;
+        }
+
+        if oldest_is_indexed {
+            self.indexed_shards.remove(&oldest_indexed);
             self.remove_indexed_chunks(oldest_indexed);
         }
 
@@ -436,11 +460,17 @@ impl ShardFileManager {
                         sbkp_lg.shard_collections.push(KeyedShardCollection::new(shard_hmac_key));
                     }
 
-                    let shard_index = sbkp_lg.add_shard_to_collection(shard_col_index, s.clone());
+                    let shard_index =
+                        sbkp_lg.add_shard_to_collection(shard_col_index, s.clone(), index_size_enforcement);
 
                     sbkp_lg
                         .shard_lookup_by_shard_hash
                         .insert(shard_hash, (shard_col_index, shard_index));
+
+                    // A shard past the ring has no slot the chunk index can store.
+                    if shard_index >= sbkp_lg.num_indexable_slots {
+                        return Ok(sbkp_lg);
+                    }
 
                     // If chunk index is full and we don't want eviction
                     if sbkp_lg.total_indexed_chunks + insert_hashes.len() > chunk_index_table_max_size
@@ -1860,6 +1890,62 @@ mod tests {
         sfm.refresh_shard_dir(false, 0, ChunkIndexSizeEnforcement::Eviction).await?;
         assert_eq!(sfm.shard_bookkeeper.read().await?.shard_collections[1].shard_list.len(), 4);
         assert_bookkeeping_consistent(&sfm).await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_collection_ring_keeps_newest_shards_in_batch() -> Result<()> {
+        let ctx = test_context();
+        let sfc = get_shard_file_cache(&ctx.common);
+        let tmp_dir = TempDir::with_prefix("shard_test_ring_batch")?;
+        let (ref_shards, paths) = create_shards_for_eviction(&ctx, tmp_dir.path(), 3).await?;
+        let (a, b, c) = (0, 1, 2);
+
+        // Give the unkeyed shards creation timestamps and modification times A < B < C, so one batch registers
+        // them newest first and A arrives when the ring is full.
+        let cache_dir = tmp_dir.path().join("cache");
+        std::fs::create_dir_all(&cache_dir)?;
+        let t0 = SystemTime::now() - Duration::from_secs(1000);
+        for (i, p) in paths.iter().enumerate() {
+            let created = t0 + Duration::from_secs(100 * i as u64);
+            let exported = MDBShardFile::load_from_file(p, &sfc)?.export_with_specific_expiration(
+                &cache_dir,
+                t0 + Duration::from_secs(2000),
+                created,
+                &sfc,
+            )?;
+            std::fs::File::options()
+                .write(true)
+                .open(&exported.path)?
+                .set_modified(created)?;
+        }
+
+        // The chunk index has room for every shard, so only the ring can evict.  A must not take the slot of C,
+        // the newest, under either policy.
+        for index_size_enforcement in [
+            ChunkIndexSizeEnforcement::StopAtCap,
+            ChunkIndexSizeEnforcement::Eviction,
+        ] {
+            // A fresh context, whose shard file cache reads the modification times set above.
+            let load_ctx = test_context();
+            let sfm = ShardFileManager::new_in_session_directory(&load_ctx, &cache_dir, false).await?;
+            sfm.shard_bookkeeper
+                .update(|mut bookkeeper| async move {
+                    bookkeeper.num_indexable_slots = 2;
+                    Ok(bookkeeper)
+                })
+                .await?;
+
+            sfm.refresh_shard_dir(false, 0, index_size_enforcement).await?;
+            assert_eq!(num_dedupable_chunks(&sfm, &ref_shards[a]).await?, 0);
+            assert_eq!(num_dedupable_chunks(&sfm, &ref_shards[b]).await?, 20);
+            assert_eq!(num_dedupable_chunks(&sfm, &ref_shards[c]).await?, 20);
+            assert_bookkeeping_consistent(&sfm).await?;
+
+            // A is still registered, past the ring.
+            assert_eq!(sfm.shard_bookkeeper.read().await?.shard_collections[0].shard_list.len(), 3);
+        }
 
         Ok(())
     }
