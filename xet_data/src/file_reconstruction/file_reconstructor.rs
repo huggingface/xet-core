@@ -236,7 +236,7 @@ impl FileReconstructor {
     /// Runs the file reconstruction with error handling and cancellation support.
     /// Returns the number of bytes written.
     ///
-    /// When `is_streaming` is true, the first term blocks use `stream_initial_fetch_size`,
+    /// When `is_streaming` is true, the first term block uses `stream_initial_fetch_size`,
     /// and the progress completion assertions at the end of reconstruction are skipped
     /// because the stream consumer reports bytes asynchronously after this method returns.
     pub(crate) async fn run(

@@ -82,16 +82,15 @@ impl ReconstructionTermManager {
         // an estimate of the completion time based on the first one.  This helps us to get
         // a better estimate of the completion time.
         //
-        // A stream returns no data until its first term is downloaded, and that term can span the
-        // whole first block, so a stream starts with smaller blocks to return its first bytes sooner.
+        // Only the first block of a stream is smaller, see `stream_initial_fetch_size`.
         let min_fetch_size = s.config.min_reconstruction_fetch_size.as_u64();
-        let initial_fetch_size = if is_streaming {
+        let first_fetch_size = if is_streaming {
             s.config.stream_initial_fetch_size.as_u64().min(min_fetch_size)
         } else {
             min_fetch_size
         };
-        s.prefetch_block(initial_fetch_size).await?;
-        s.prefetch_block(2 * initial_fetch_size).await?;
+        s.prefetch_block(first_fetch_size).await?;
+        s.prefetch_block(2 * min_fetch_size).await?;
 
         debug!(
             %file_hash,
@@ -246,7 +245,7 @@ impl ReconstructionTermManager {
     }
 
     async fn prefetch_block(&mut self, block_size: u64) -> Result<()> {
-        // No lower bound here: the initial blocks of a stream are smaller than `min_reconstruction_fetch_size`.
+        // `block_size` can be below `min_reconstruction_fetch_size` for the first block of a stream.
         let block_size = block_size.min(self.config.max_reconstruction_fetch_size.as_u64());
 
         // First, check the block range to see if we're over the requested range.
