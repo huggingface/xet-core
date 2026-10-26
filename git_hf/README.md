@@ -98,7 +98,7 @@ Run `git-hf --help`, or put the binary on PATH and use `git hf --help`.
 | `uninstall [--local \| --global \| --system \| --all]` | Remove the hf filter section; default scope is global. `--local` also removes the pre-push hook. |
 | `clone <git-clone-args...>` | Accept Git clone options, repository, and destination as an opaque argument list. |
 | `fetch [remote] [revision]` | Download the Xet files of a local revision (default HEAD) into the repository's cache, skipping files already cached; do not fetch Git refs or change the worktree. |
-| `checkout [--force] [paths...]` | Copy selected index entries' files from the cache into the worktree, without network access. |
+| `checkout [--force] [paths...]` | Reconstruct the files of indexed Xet pointers from local Xet data, without network access; `--force` also replaces modified files. |
 | `pull [remote] [--force]` | Fetch content for the current checkout, then reconstruct; do not run `git pull`. |
 | `filter-process [--smudge-passthrough]` | Internal required filter; smudge returns stored bytes unchanged. `--smudge-passthrough` is accepted and ignored. |
 | `pre-push <remote> <location>` | Internal hook receiving Git's ref updates on stdin; uploads the staged data they reference. |

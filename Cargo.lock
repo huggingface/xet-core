@@ -1795,6 +1795,7 @@ dependencies = [
  "git-url-parse",
  "git2",
  "git_extension_common",
+ "reflink-copy",
  "rust-netrc",
  "serial_test",
  "shellexpand",
@@ -3726,6 +3727,18 @@ dependencies = [
  "getrandom 0.2.17",
  "libredox",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "reflink-copy"
+version = "0.1.30"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d9dd7ab4af0363d5ccfd2838d782a28196cf32a5cc2e4fe3c5dc83f2be588b8b"
+dependencies = [
+ "cfg-if 1.0.4",
+ "libc",
+ "rustix",
+ "windows",
 ]
 
 [[package]]

@@ -42,6 +42,9 @@ pub enum GitHfError {
     #[error("Invalid Git URL: {0}")]
     InvalidGitUrl(#[from] git_url_parse::GitUrlParseError),
 
+    #[error("Xet data is not cached: {0}")]
+    NotCached(String),
+
     #[error("Operation not supported: {0}")]
     NotSupported(String),
 
