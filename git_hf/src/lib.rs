@@ -7,6 +7,8 @@ mod cleaner;
 mod cli;
 mod constants;
 mod error;
+mod fetch;
+mod file_cache;
 mod filter_protocol;
 mod hook;
 mod push;
