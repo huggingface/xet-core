@@ -1,35 +1,17 @@
 //! Connects to a repository's CAS endpoint through the Hub's Xet token API.
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use git_extension_common::GitUrl;
 use xet_client::ClientError;
-use xet_client::cas_client::auth::{AuthConfig, AuthError, TokenInfo, TokenRefresher};
+use xet_client::cas_client::auth::AuthConfig;
 use xet_client::cas_client::{Client, RemoteClient};
-use xet_client::hub_client::{CredentialHelper, HubClient, Operation};
+use xet_client::hub_client::{CredentialHelper, HubClient, HubClientTokenRefresher, Operation};
 use xet_runtime::core::XetContext;
 
 pub(crate) struct CasConnection {
     pub(crate) client: Arc<dyn Client>,
     pub(crate) endpoint: String,
     pub(crate) auth: Option<AuthConfig>,
-}
-
-struct HubTokens {
-    hub: Arc<HubClient>,
-    operation: Operation,
-}
-
-#[async_trait]
-impl TokenRefresher for HubTokens {
-    async fn refresh(&self) -> std::result::Result<TokenInfo, AuthError> {
-        let info = self
-            .hub
-            .get_cas_jwt(self.operation)
-            .await
-            .map_err(AuthError::token_refresh_failure)?;
-        Ok((info.access_token, info.exp))
-    }
 }
 
 /// Requests a CAS token for `operation` on `reference` (a branch name or full ref; the Hub defaults
@@ -56,7 +38,7 @@ pub(crate) async fn connect(
     let auth = Some(AuthConfig {
         token: info.access_token,
         token_expiration: info.exp,
-        token_refresher: Arc::new(HubTokens { hub, operation }),
+        token_refresher: Arc::new(HubClientTokenRefresher { operation, client: hub }),
     });
     let client = RemoteClient::new(ctx.clone(), &info.cas_url, &auth, session_id, false, None);
     Ok(CasConnection {
