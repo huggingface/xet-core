@@ -33,7 +33,8 @@ or `--all` to attempt removal from system, global, and current repository config
 upload staged data when you push; `git hf uninstall --local` removes it. Because hooks
 belong to a repository, git-hf also installs the hook the first time it stores a file as
 a Xet pointer, so a global installation needs no extra step. An existing `pre-push` hook
-is kept and still runs first. Neither command modifies attributes or diff/merge
+is kept and still runs first. On Windows, only an existing shell-script hook can be kept this
+way; with any other hook, git-hf reports an error and does not install its own. Neither command modifies attributes or diff/merge
 configuration.
 
 ## Process filter and local staging

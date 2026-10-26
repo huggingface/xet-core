@@ -5,6 +5,10 @@
 //! git-hf hook runs it first with the same arguments and stdin, and uploads only if it succeeds.
 //! Uninstalling restores it.
 //!
+//! On Windows, a chained hook runs under `sh`, while Git for Windows runs `.exe` hooks directly and
+//! selects a shebang's interpreter from `PATH`. Until that is matched, installation there refuses to
+//! chain anything but a shell hook, leaving the existing hook in place.
+//!
 //! Concurrent `git add` processes may install at once. Installation and removal therefore hold an
 //! OS file lock on [`LOCK_FILE`] in the hooks directory and recheck ownership under it; otherwise one
 //! process could rename another's freshly written git-hf hook over the preserved original.
@@ -79,23 +83,66 @@ pub(crate) fn ensure_installed(wd: &Path) -> Result<InstallOutcome> {
         return Ok(InstallOutcome::AlreadyInstalled);
     }
     let _lock = lock(&dir)?;
-    let outcome = match is_owned(&hook)? {
-        Some(true) => return Ok(InstallOutcome::AlreadyInstalled),
-        Some(false) => {
-            if chained.exists() {
-                return Err(GitHfError::Hook(format!(
-                    "both {} and {} exist; merge or remove one before installing",
-                    hook.display(),
-                    chained.display()
-                )));
-            }
-            fs::rename(&hook, &chained)?;
-            InstallOutcome::Chained(chained)
-        },
-        None => InstallOutcome::Installed,
+    let owned = is_owned(&hook)?;
+    if owned == Some(true) {
+        return Ok(InstallOutcome::AlreadyInstalled);
+    }
+    if cfg!(windows) {
+        check_chainable_on_windows(&dir, &hook)?;
+    }
+    let outcome = if owned == Some(false) {
+        if chained.exists() {
+            return Err(GitHfError::Hook(format!(
+                "both {} and {} exist; merge or remove one before installing",
+                hook.display(),
+                chained.display()
+            )));
+        }
+        fs::rename(&hook, &chained)?;
+        InstallOutcome::Chained(chained)
+    } else {
+        InstallOutcome::Installed
     };
     write_executable(&dir, &hook)?;
     Ok(outcome)
+}
+
+// Refuses hooks that `run_chained` would not run the way Git for Windows does.
+fn check_chainable_on_windows(dir: &Path, hook: &Path) -> Result<()> {
+    let unsupported = |path: &Path| {
+        GitHfError::Hook(format!(
+            "{} is not a shell script; chaining it is not supported on Windows yet, so the git-hf hook was not \
+             installed",
+            path.display()
+        ))
+    };
+    // Git falls back to `pre-push.exe` only while `pre-push` is absent; writing ours would disable it.
+    let exe = dir.join(format!("{HOOK}.exe"));
+    if exe.exists() {
+        return Err(unsupported(&exe));
+    }
+    match fs::read(hook) {
+        Ok(content) if !is_shell_script(&content) => Err(unsupported(hook)),
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.into()),
+        _ => Ok(()),
+    }
+}
+
+/// Whether `sh` runs this hook as Git would: it has no shebang, or a `sh` or `bash` interpreter,
+/// directly or through `env`. Like Git for Windows, the interpreter is the text after the last path
+/// separator, up to the first space.
+fn is_shell_script(content: &[u8]) -> bool {
+    let Some(rest) = content.strip_prefix(b"#!") else {
+        return true;
+    };
+    let line = String::from_utf8_lossy(rest.split(|&b| b == b'\n').next().unwrap_or_default());
+    let line = line.trim();
+    let mut words = line.rsplit(['/', '\\']).next().unwrap_or(line).split_whitespace();
+    let mut interpreter = words.next();
+    if interpreter == Some("env") {
+        interpreter = words.next();
+    }
+    matches!(interpreter.map(|name| name.strip_suffix(".exe").unwrap_or(name)), Some("sh" | "bash"))
 }
 
 // Publishes the hook atomically, already executable.
@@ -217,6 +264,53 @@ mod tests {
             assert_eq!(fs::read_to_string(dir.join(CHAINED_HOOK))?, foreign);
             assert_eq!(fs::read_to_string(dir.join(HOOK))?, HOOK_SCRIPT);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn shell_scripts_are_recognized() {
+        for script in [
+            "echo no shebang\n",
+            "#!/bin/sh\n",
+            "#!/bin/bash -e\r\n",
+            "#!/usr/bin/env bash\n",
+            "#! /bin/sh\n",
+            "#!C:\\Program Files\\Git\\bin\\sh.exe\n",
+            "",
+        ] {
+            assert!(is_shell_script(script.as_bytes()), "{script:?}");
+        }
+        for script in [
+            "#!/usr/bin/env python3\n",
+            "#!/usr/bin/perl\n",
+            "#!\n",
+            "#!/usr/bin/env\n",
+        ] {
+            assert!(!is_shell_script(script.as_bytes()), "{script:?}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[serial(env_var_write_read)]
+    fn windows_refuses_to_chain_non_shell_hooks() -> anyhow::Result<()> {
+        let repo = TestRepo::new("main")?;
+        let dir = hooks_dir(repo.path())?;
+        fs::create_dir_all(&dir)?;
+        let python = "#!/usr/bin/env python\nprint('hook')\n";
+        fs::write(dir.join(HOOK), python)?;
+        assert!(matches!(ensure_installed(repo.path()), Err(GitHfError::Hook(_))));
+        assert_eq!(fs::read_to_string(dir.join(HOOK))?, python);
+        assert!(!dir.join(CHAINED_HOOK).exists());
+
+        fs::remove_file(dir.join(HOOK))?;
+        fs::write(dir.join("pre-push.exe"), b"MZ")?;
+        assert!(matches!(ensure_installed(repo.path()), Err(GitHfError::Hook(_))));
+        assert!(!dir.join(HOOK).exists());
+
+        fs::remove_file(dir.join("pre-push.exe"))?;
+        fs::write(dir.join(HOOK), "#!/bin/sh\nexit 0\n")?;
+        assert_eq!(ensure_installed(repo.path())?, InstallOutcome::Chained(dir.join(CHAINED_HOOK)));
         Ok(())
     }
 
