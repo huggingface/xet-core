@@ -12,7 +12,7 @@ What changed
 - Shards the manager cuts itself (`add_xorb_block`, `add_file_reconstruction_info`, `flush`) are registered with `Eviction`.
 - `new_in_session_directory` and `new_in_cache_directory` scan a newly created manager's directory with `StopAtCap`. Reusing a cached manager rescans its directory once with `Eviction`; previously it scanned twice.
 - Evicted shards stay registered, so a rescan doesn't register or index them again.
-- Each collection's `shard_list` still only grows, but its first 65,536 slots now form a ring: once a single HMAC key has more shards than that, a new shard takes the slot of the oldest one, which is evicted from the chunk index and moved to the end of the list.
+- A collection now holds at most 65,536 shards, the most the chunk index can address. Once an HMAC key's collection is full, its next shard opens another collection with the same key, and lookups query both.
 
 Why this matters
 - Once the index filled, global dedup kept downloading shards it couldn't use and re-uploaded data the server already had. A 1,000-file `hf buckets sync` batch stopped deduplicating after its first 300 to 400 files.

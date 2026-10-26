@@ -83,11 +83,12 @@ pub enum ChunkIndexSizeEnforcement {
 /// We have a couple levels of arc redirection here to handle the different queries needed.
 /// This holds the registered shards, their chunk index, and the state for keeping that index under its cap.
 struct ShardBookkeeper {
-    // One collection per HMAC key; chunk lookups query them in order.  Index 0 is the unkeyed collection,
-    // so local shards are always tried first.
+    // The collections of shards that share an HMAC key; chunk lookups query them in order.  Index 0 is the
+    // unkeyed collection, so local shards are tried first.  A key gets another collection each time its current
+    // one holds max_shards_per_collection shards.
     shard_collections: Vec<KeyedShardCollection>,
 
-    // Maps an HMAC key to its collection's index in shard_collections.
+    // Maps an HMAC key to the index in shard_collections of its newest collection, which new shards go into.
     collection_by_key: MerkleHashMap<usize>,
 
     // Maps the hash of every registered shard to its (collection index, index in that
@@ -100,9 +101,9 @@ struct ShardBookkeeper {
     // Shards with entries in their collection's chunk_lookup, oldest first.  Evicted shards stay registered.
     indexed_shards: BTreeSet<IndexedShard>,
 
-    // The number of leading slots in each collection's shard_list that can hold indexed shards.  The chunk index
-    // stores a shard's slot as a u16, so this is u16::MAX + 1; it's a field only so tests can shrink it.
-    num_indexable_slots: usize,
+    // The most shards a collection holds.  The chunk index stores a shard's index in its collection as a u16, so
+    // this is u16::MAX + 1; it's a field only so tests can shrink it.
+    max_shards_per_collection: usize,
 }
 
 impl ShardBookkeeper {
@@ -115,65 +116,34 @@ impl ShardBookkeeper {
             shard_lookup_by_shard_hash: MerkleHashMap::new(),
             total_indexed_chunks: 0,
             indexed_shards: BTreeSet::new(),
-            num_indexable_slots: u16::MAX as usize + 1,
+            max_shards_per_collection: u16::MAX as usize + 1,
         }
     }
 
-    /// Adds `shard` to the collection's shard_list and returns its slot there.  The first `num_indexable_slots`
-    /// slots form a ring holding the newest shards.  Once they are full, the new shard takes the ring slot of the
-    /// shard added `num_indexable_slots` shards before it, which is evicted from the chunk index and moved to the
-    /// end of the list, so the list only grows and every shard that can be indexed has a slot that fits in a u16.
-    ///
-    /// The new shard doesn't take the slot if that would evict an indexed shard that `index_size_enforcement`
-    /// keeps: any indexed shard under `StopAtCap`, or one created after the new shard under `Eviction`.  Batches
-    /// are registered newest first, so this keeps the batch's newest shards.  The new shard then goes to the end
-    /// of the list, past the ring, and the returned slot is `num_indexable_slots` or more: it can't be indexed.
-    fn add_shard_to_collection(
-        &mut self,
-        shard_col_index: usize,
-        shard: Arc<MDBShardFile>,
-        index_size_enforcement: ChunkIndexSizeEnforcement,
-    ) -> usize {
-        let num_shards = self.shard_collections[shard_col_index].shard_list.len();
-        if num_shards < self.num_indexable_slots {
-            self.shard_collections[shard_col_index].shard_list.push(shard);
-            return num_shards;
-        }
+    /// Adds `shard` to the newest collection for its HMAC key, opening a new one if there is none or it is full,
+    /// and returns (collection index, index in that collection's shard_list).
+    fn add_shard_to_collection(&mut self, shard: Arc<MDBShardFile>) -> (usize, usize) {
+        let hmac_key = shard.shard.metadata.chunk_hash_hmac_key;
 
-        let ring_slot = num_shards % self.num_indexable_slots;
-        let oldest = self.shard_collections[shard_col_index].shard_list[ring_slot].clone();
+        let open_col_index = self
+            .collection_by_key
+            .get(&hmac_key)
+            .copied()
+            .filter(|&i| self.shard_collections[i].shard_list.len() < self.max_shards_per_collection);
 
-        let oldest_indexed = IndexedShard {
-            creation_timestamp: oldest.shard.metadata.shard_creation_timestamp,
-            shard_collection_index: shard_col_index,
-            shard_index_in_collection: ring_slot,
-        };
-        let oldest_is_indexed = self.indexed_shards.contains(&oldest_indexed);
-        let may_evict_oldest = match index_size_enforcement {
-            ChunkIndexSizeEnforcement::StopAtCap => false,
-            ChunkIndexSizeEnforcement::Eviction => {
-                oldest_indexed.creation_timestamp <= shard.shard.metadata.shard_creation_timestamp
+        let shard_col_index = match open_col_index {
+            Some(i) => i,
+            None => {
+                self.shard_collections.push(KeyedShardCollection::new(hmac_key));
+                let new_col_index = self.shard_collections.len() - 1;
+                self.collection_by_key.insert(hmac_key, new_col_index);
+                new_col_index
             },
         };
 
-        if oldest_is_indexed && !may_evict_oldest {
-            self.shard_collections[shard_col_index].shard_list.push(shard);
-            return num_shards;
-        }
-
-        if oldest_is_indexed {
-            self.indexed_shards.remove(&oldest_indexed);
-            self.remove_indexed_chunks(oldest_indexed);
-        }
-
         let shard_list = &mut self.shard_collections[shard_col_index].shard_list;
-        shard_list.push(oldest.clone());
-        shard_list[ring_slot] = shard;
-
-        self.shard_lookup_by_shard_hash
-            .insert(oldest.shard_hash, (shard_col_index, num_shards));
-
-        ring_slot
+        shard_list.push(shard);
+        (shard_col_index, shard_list.len() - 1)
     }
 
     /// Removes the index entries of the oldest indexed shards until `num_new_chunks` more entries fit under
@@ -447,30 +417,14 @@ impl ShardFileManager {
                         return Ok(sbkp_lg);
                     };
 
-                    let shard_hmac_key = s.shard.metadata.chunk_hash_hmac_key;
                     let creation_timestamp = s.shard.metadata.shard_creation_timestamp;
                     let shard_hash = s.shard_hash;
 
-                    let n_current_collections = sbkp_lg.shard_collections.len();
-                    let shard_col_index: usize =
-                        *sbkp_lg.collection_by_key.entry(shard_hmac_key).or_insert(n_current_collections);
-
-                    // Do we need a new collection?
-                    if shard_col_index == n_current_collections {
-                        sbkp_lg.shard_collections.push(KeyedShardCollection::new(shard_hmac_key));
-                    }
-
-                    let shard_index =
-                        sbkp_lg.add_shard_to_collection(shard_col_index, s.clone(), index_size_enforcement);
+                    let (shard_col_index, shard_index) = sbkp_lg.add_shard_to_collection(s.clone());
 
                     sbkp_lg
                         .shard_lookup_by_shard_hash
                         .insert(shard_hash, (shard_col_index, shard_index));
-
-                    // A shard past the ring has no slot the chunk index can store.
-                    if shard_index >= sbkp_lg.num_indexable_slots {
-                        return Ok(sbkp_lg);
-                    }
 
                     // If chunk index is full and we don't want eviction
                     if sbkp_lg.total_indexed_chunks + insert_hashes.len() > chunk_index_table_max_size
@@ -1672,8 +1626,11 @@ mod tests {
         let num_indexed_shards: usize = bookkeeper.shard_collections.iter().map(|c| c.num_indexed_shards).sum();
         assert_eq!(bookkeeper.indexed_shards.len(), num_indexed_shards);
 
+        for collection in bookkeeper.shard_collections.iter() {
+            assert!(collection.shard_list.len() <= bookkeeper.max_shards_per_collection);
+        }
+
         for indexed in bookkeeper.indexed_shards.iter() {
-            assert!(indexed.shard_index_in_collection < bookkeeper.num_indexable_slots);
             let shard = &bookkeeper.shard_collections[indexed.shard_collection_index].shard_list
                 [indexed.shard_index_in_collection];
             assert_eq!(indexed.creation_timestamp, shard.shard.metadata.shard_creation_timestamp);
@@ -1839,113 +1796,128 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn test_collection_ring_reuses_oldest_slot() -> Result<()> {
-        // The chunk index has room for every shard here, so only the ring evicts.
-        let ctx = test_context();
-        let sfc = get_shard_file_cache(&ctx.common);
-        let tmp_dir = TempDir::with_prefix("shard_test_ring")?;
-        let (ref_shards, paths) = create_shards_for_eviction(&ctx, tmp_dir.path(), 4).await?;
-        let (a, b, c, d) = (0, 1, 2, 3);
-
-        // All four share one key, so they land in one collection.
-        let keyed_dir = tmp_dir.path().join("keyed");
-        let keyed_shard_bytes = paths
-            .iter()
-            .map(|p| protect_shard(p, rng_hash(1), &keyed_dir, &sfc))
-            .collect::<Result<Vec<_>>>()?;
-
-        let cache_dir = TempDir::with_prefix("shard_test_ring_cache")?;
-        let sfm = ShardFileManager::new_in_session_directory(&ctx, cache_dir.path(), false).await?;
+    // Limits each collection of the manager to `max_shards_per_collection` shards.
+    async fn set_max_shards_per_collection(sfm: &ShardFileManager, max_shards_per_collection: usize) -> Result<()> {
         sfm.shard_bookkeeper
-            .update(|mut bookkeeper| async move {
-                bookkeeper.num_indexable_slots = 2;
+            .update(move |mut bookkeeper| async move {
+                bookkeeper.max_shards_per_collection = max_shards_per_collection;
                 Ok(bookkeeper)
             })
             .await?;
+        Ok(())
+    }
 
-        for i in [a, b] {
-            sfm.import_shard_from_bytes(&keyed_shard_bytes[i], ChunkIndexSizeEnforcement::Eviction)
-                .await?;
+    #[tokio::test]
+    async fn test_full_collection_opens_another_with_same_key() -> Result<()> {
+        let ctx = test_context();
+        let sfc = get_shard_file_cache(&ctx.common);
+        let tmp_dir = TempDir::with_prefix("shard_test_split")?;
+        let (ref_shards, paths) = create_shards_for_eviction(&ctx, tmp_dir.path(), 4).await?;
+
+        // All four share one key.
+        let key = rng_hash(1);
+        let keyed_dir = tmp_dir.path().join("keyed");
+        let keyed_shard_bytes = paths
+            .iter()
+            .map(|p| protect_shard(p, key, &keyed_dir, &sfc))
+            .collect::<Result<Vec<_>>>()?;
+
+        let cache_dir = TempDir::with_prefix("shard_test_split_cache")?;
+        let sfm = ShardFileManager::new_in_session_directory(&ctx, cache_dir.path(), false).await?;
+        set_max_shards_per_collection(&sfm, 2).await?;
+
+        for bytes in &keyed_shard_bytes {
+            sfm.import_shard_from_bytes(bytes, ChunkIndexSizeEnforcement::Eviction).await?;
         }
-        assert_eq!(num_dedupable_chunks(&sfm, &ref_shards[a]).await?, 20);
-        assert_eq!(num_dedupable_chunks(&sfm, &ref_shards[b]).await?, 20);
+
+        // The chunk index has room for every shard, so all of them are indexed, split over two collections
+        // with the same key after the unkeyed one.
+        for ref_shard in &ref_shards {
+            assert_eq!(num_dedupable_chunks(&sfm, ref_shard).await?, 20);
+        }
+        {
+            let bookkeeper = sfm.shard_bookkeeper.read().await?;
+            assert_eq!(bookkeeper.shard_collections.len(), 3);
+            for collection in &bookkeeper.shard_collections[1..] {
+                assert_eq!(collection.hmac_key, key);
+                assert_eq!(collection.shard_list.len(), 2);
+            }
+            assert_eq!(bookkeeper.collection_by_key[&key], 2);
+        }
         assert_bookkeeping_consistent(&sfm).await?;
 
-        // The ring is full: C takes A's slot and D takes B's; A and B are evicted and moved to the end.
-        for i in [c, d] {
-            sfm.import_shard_from_bytes(&keyed_shard_bytes[i], ChunkIndexSizeEnforcement::Eviction)
-                .await?;
-        }
-        assert_eq!(num_dedupable_chunks(&sfm, &ref_shards[a]).await?, 0);
-        assert_eq!(num_dedupable_chunks(&sfm, &ref_shards[b]).await?, 0);
-        assert_eq!(num_dedupable_chunks(&sfm, &ref_shards[c]).await?, 20);
-        assert_eq!(num_dedupable_chunks(&sfm, &ref_shards[d]).await?, 20);
-        assert_bookkeeping_consistent(&sfm).await?;
-
-        // The list only grew.
-        assert_eq!(sfm.shard_bookkeeper.read().await?.shard_collections[1].shard_list.len(), 4);
-
-        // Rescanning the directory doesn't register the moved shards again.
+        // Rescanning the directory doesn't register them again.
         sfm.refresh_shard_dir(false, 0, ChunkIndexSizeEnforcement::Eviction).await?;
-        assert_eq!(sfm.shard_bookkeeper.read().await?.shard_collections[1].shard_list.len(), 4);
+        assert_eq!(sfm.registered_shard_list().await?.len(), 4);
+        assert_bookkeeping_consistent(&sfm).await?;
+
+        Ok(())
+    }
+
+    // Registers the shards at `paths` one at a time under Eviction, after exporting them into the manager's
+    // directory with the given creation timestamps, in seconds after `t0`.
+    async fn register_with_creation_times(
+        sfm: &ShardFileManager,
+        sfc: &ShardFileCache,
+        paths: &[PathBuf],
+        created_after_t0_secs: &[u64],
+    ) -> Result<()> {
+        let t0 = SystemTime::now() - Duration::from_secs(1000);
+        for (p, &secs) in paths.iter().zip(created_after_t0_secs) {
+            let exported = MDBShardFile::load_from_file(p, sfc)?.export_with_specific_expiration(
+                sfm.shard_directory(),
+                t0 + Duration::from_secs(2000),
+                t0 + Duration::from_secs(secs),
+                sfc,
+            )?;
+            sfm.register_shards(&[exported], ChunkIndexSizeEnforcement::Eviction).await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_split_collections_dont_evict_while_chunk_index_has_room() -> Result<()> {
+        let ctx = test_context();
+        let sfc = get_shard_file_cache(&ctx.common);
+        let tmp_dir = TempDir::with_prefix("shard_test_split_room")?;
+        let (ref_shards, paths) = create_shards_for_eviction(&ctx, tmp_dir.path(), 4).await?;
+
+        let shard_dir = tmp_dir.path().join("shards");
+        let sfm = ShardFileManager::new_in_session_directory(&ctx, &shard_dir, false).await?;
+        set_max_shards_per_collection(&sfm, 2).await?;
+
+        // A shard older than everything registered before it, then a newer one, once the first collection is
+        // full.  With room in the chunk index, nothing is evicted.
+        register_with_creation_times(&sfm, &sfc, &paths, &[100, 200, 50, 300]).await?;
+        for ref_shard in &ref_shards {
+            assert_eq!(num_dedupable_chunks(&sfm, ref_shard).await?, 20);
+        }
         assert_bookkeeping_consistent(&sfm).await?;
 
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_collection_ring_keeps_newest_shards_in_batch() -> Result<()> {
-        let ctx = test_context();
+    async fn test_chunk_index_evicts_oldest_across_split_collections() -> Result<()> {
+        let ctx = context_with_40_entry_chunk_index();
         let sfc = get_shard_file_cache(&ctx.common);
-        let tmp_dir = TempDir::with_prefix("shard_test_ring_batch")?;
-        let (ref_shards, paths) = create_shards_for_eviction(&ctx, tmp_dir.path(), 3).await?;
-        let (a, b, c) = (0, 1, 2);
+        let tmp_dir = TempDir::with_prefix("shard_test_split_cap")?;
+        let (ref_shards, paths) = create_shards_for_eviction(&ctx, tmp_dir.path(), 4).await?;
+        let (x0, x1, y, z) = (0, 1, 2, 3);
 
-        // Give the unkeyed shards creation timestamps and modification times A < B < C, so one batch registers
-        // them newest first and A arrives when the ring is full.
-        let cache_dir = tmp_dir.path().join("cache");
-        std::fs::create_dir_all(&cache_dir)?;
-        let t0 = SystemTime::now() - Duration::from_secs(1000);
-        for (i, p) in paths.iter().enumerate() {
-            let created = t0 + Duration::from_secs(100 * i as u64);
-            let exported = MDBShardFile::load_from_file(p, &sfc)?.export_with_specific_expiration(
-                &cache_dir,
-                t0 + Duration::from_secs(2000),
-                created,
-                &sfc,
-            )?;
-            std::fs::File::options()
-                .write(true)
-                .open(&exported.path)?
-                .set_modified(created)?;
-        }
+        let shard_dir = tmp_dir.path().join("shards");
+        let sfm = ShardFileManager::new_in_session_directory(&ctx, &shard_dir, false).await?;
+        set_max_shards_per_collection(&sfm, 2).await?;
 
-        // The chunk index has room for every shard, so only the ring can evict.  A must not take the slot of C,
-        // the newest, under either policy.
-        for index_size_enforcement in [
-            ChunkIndexSizeEnforcement::StopAtCap,
-            ChunkIndexSizeEnforcement::Eviction,
-        ] {
-            // A fresh context, whose shard file cache reads the modification times set above.
-            let load_ctx = test_context();
-            let sfm = ShardFileManager::new_in_session_directory(&load_ctx, &cache_dir, false).await?;
-            sfm.shard_bookkeeper
-                .update(|mut bookkeeper| async move {
-                    bookkeeper.num_indexable_slots = 2;
-                    Ok(bookkeeper)
-                })
-                .await?;
-
-            sfm.refresh_shard_dir(false, 0, index_size_enforcement).await?;
-            assert_eq!(num_dedupable_chunks(&sfm, &ref_shards[a]).await?, 0);
-            assert_eq!(num_dedupable_chunks(&sfm, &ref_shards[b]).await?, 20);
-            assert_eq!(num_dedupable_chunks(&sfm, &ref_shards[c]).await?, 20);
-            assert_bookkeeping_consistent(&sfm).await?;
-
-            // A is still registered, past the ring.
-            assert_eq!(sfm.shard_bookkeeper.read().await?.shard_collections[0].shard_list.len(), 3);
-        }
+        // X0 and X1 fill the first collection and the index.  Y, the oldest, evicts X0 and is then evicted by Z,
+        // which leaves the two newest indexed although they sit in different collections.
+        register_with_creation_times(&sfm, &sfc, &paths, &[100, 200, 50, 300]).await?;
+        assert_eq!(num_dedupable_chunks(&sfm, &ref_shards[x0]).await?, 0);
+        assert_eq!(num_dedupable_chunks(&sfm, &ref_shards[x1]).await?, 20);
+        assert_eq!(num_dedupable_chunks(&sfm, &ref_shards[y]).await?, 0);
+        assert_eq!(num_dedupable_chunks(&sfm, &ref_shards[z]).await?, 20);
+        assert_eq!(sfm.shard_bookkeeper.read().await?.shard_collections.len(), 2);
+        assert_bookkeeping_consistent(&sfm).await?;
 
         Ok(())
     }
