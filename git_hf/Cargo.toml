@@ -16,6 +16,7 @@ dirs = { workspace = true }
 git_extension_common = { path = "../git_extension_common" }
 git-url-parse = { workspace = true }
 git2 = { workspace = true }
+reflink-copy = { workspace = true }
 rust-netrc = { workspace = true }
 shellexpand = { workspace = true, features = ["path"] }
 tempfile = { workspace = true }
