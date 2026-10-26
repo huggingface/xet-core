@@ -6,6 +6,7 @@ use clap::{Args, Parser, Subcommand};
 use crate::Result;
 use crate::constants::GIT_HF_PROGRAM;
 
+mod fetch;
 mod filter_process;
 mod install;
 mod pre_push;
@@ -32,7 +33,7 @@ enum Command {
     Uninstall(UninstallArgs),
     /// Clone a V2 repository and materialize its Xet files.
     Clone(CloneArgs),
-    /// Cache Xet metadata and xorb ranges for a local Git ref, without checkout.
+    /// Download the Xet files of a local Git revision into the repository's cache, without checkout.
     Fetch(FetchArgs),
     /// Reconstruct indexed Xet files from the local cache, without network access.
     Checkout(CheckoutArgs),
@@ -93,7 +94,7 @@ struct CloneArgs {
 struct FetchArgs {
     /// Git remote to use; defaults to the repository's selected remote.
     remote: Option<String>,
-    /// Local Git ref or revision whose Xet content should be cached; no Git refs are fetched.
+    /// Local Git revision whose Xet files are cached; no Git refs are fetched.
     #[arg(default_value = "HEAD")]
     revision: String,
 }
@@ -157,7 +158,7 @@ impl GitHfApp {
             Command::Install(args) => install_command(args),
             Command::Uninstall(args) => uninstall_command(args),
             Command::Clone(_) => todo!(),
-            Command::Fetch(_) => todo!(),
+            Command::Fetch(args) => fetch::run(args.remote.as_deref(), &args.revision),
             Command::Checkout(_) => todo!(),
             Command::Pull(_) => todo!(),
             Command::FilterProcess(_) => filter_process::run(),
