@@ -23,7 +23,7 @@ pub(crate) fn pointers_at(wd: &Path, revision: &str) -> Result<Vec<XetPointer>> 
     let mut pointers = BTreeMap::new();
     let mut invalid = Vec::new();
     let mut error = None;
-    tree.walk(git2::TreeWalkMode::PreOrder, |root, entry| {
+    let walked = tree.walk(git2::TreeWalkMode::PreOrder, |root, entry| {
         // Symlinks and submodules are never pointers.
         if entry.kind() != Some(git2::ObjectType::Blob) || entry.filemode() == 0o120000 {
             return git2::TreeWalkResult::Ok;
@@ -46,10 +46,12 @@ pub(crate) fn pointers_at(wd: &Path, revision: &str) -> Result<Vec<XetPointer>> 
             },
         }
         git2::TreeWalkResult::Ok
-    })?;
+    });
+    // An aborted walk reports only that the callback stopped it; the stored error says why.
     if let Some(error) = error {
         return Err(error.into());
     }
+    walked?;
     if !invalid.is_empty() {
         return Err(GitHfError::NotSupported(format!(
             "{revision} contains pointers git-hf cannot fetch:\n{}",
@@ -204,6 +206,20 @@ mod tests {
         assert!(matches!(&error, GitHfError::NotSupported(message) if message.contains("dir/bad")), "{error}");
         // The earlier revision is still fetchable.
         assert_eq!(pointers_at(repo.path(), "HEAD~1")?, expected);
+        Ok(())
+    }
+
+    // An object that cannot be read fails with Git's own error, not a generic aborted walk.
+    #[test]
+    #[serial(env_var_write_read)]
+    fn reports_unreadable_objects() -> anyhow::Result<()> {
+        let repo = TestRepo::new("main")?;
+        let pointer = XetPointer::new(MerkleHash::from([1; 4]), 10);
+        commit(&repo, &[("a", pointer.to_string())])?;
+        let blob = git2::Repository::open(repo.path())?.revparse_single("HEAD:a")?.id().to_string();
+        fs::remove_file(repo.path().join(".git/objects").join(&blob[..2]).join(&blob[2..]))?;
+        let error = pointers_at(repo.path(), "HEAD").unwrap_err();
+        assert!(matches!(&error, GitHfError::GitError(e) if e.code() == git2::ErrorCode::NotFound), "{error}");
         Ok(())
     }
 
