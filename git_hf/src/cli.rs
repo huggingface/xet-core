@@ -6,6 +6,7 @@ use clap::{Args, Parser, Subcommand};
 use crate::Result;
 use crate::constants::GIT_HF_PROGRAM;
 
+mod checkout;
 mod fetch;
 mod filter_process;
 mod install;
@@ -35,7 +36,7 @@ enum Command {
     Clone(CloneArgs),
     /// Download the Xet files of a local Git revision into the repository's cache, without checkout.
     Fetch(FetchArgs),
-    /// Reconstruct indexed Xet files from the local cache, without network access.
+    /// Reconstruct the files of indexed Xet pointers from local Xet data, without network access.
     Checkout(CheckoutArgs),
     /// Fetch Xet content for the current checkout and materialize it; does not run git pull.
     Pull(PullArgs),
@@ -101,10 +102,10 @@ struct FetchArgs {
 
 #[derive(Debug, Args)]
 struct CheckoutArgs {
-    /// Permit replacement of modified tracked regular files.
+    /// Also replace files that no longer hold their pointer, discarding their changes.
     #[arg(long)]
     force: bool,
-    /// Limit materialization to these tracked paths; defaults to all eligible index entries.
+    /// Limit checkout to these tracked files or directories; defaults to all eligible index entries.
     paths: Vec<PathBuf>,
 }
 
@@ -159,7 +160,7 @@ impl GitHfApp {
             Command::Uninstall(args) => uninstall_command(args),
             Command::Clone(_) => todo!(),
             Command::Fetch(args) => fetch::run(args.remote.as_deref(), &args.revision),
-            Command::Checkout(_) => todo!(),
+            Command::Checkout(args) => checkout::run(&args.paths, args.force),
             Command::Pull(_) => todo!(),
             Command::FilterProcess(_) => filter_process::run(),
             Command::PrePush(args) => pre_push::run(&args.remote, &args.location),
