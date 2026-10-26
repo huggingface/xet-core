@@ -22,6 +22,7 @@ use xet_runtime::core::XetContext;
 use xet_runtime::file_utils::SafeFileCreator;
 
 use crate::auth::resolve_credential;
+use crate::hook::{InstallOutcome, ensure_installed};
 use crate::staging::{StagedDedupSource, StagingClient};
 use crate::{GitHfError, Result};
 
@@ -159,6 +160,17 @@ impl CleanSession {
         let worktree = repo
             .worktree_dir()?
             .ok_or_else(|| GitHfError::NotSupported("Cleaning requires a worktree".into()))?;
+        // Staged data reaches the Hub only through the pre-push hook. A failure here must not block
+        // `git add`: without the hook, the server rejects pushes of unbacked pointers.
+        match ensure_installed(&worktree) {
+            Ok(InstallOutcome::Chained(path)) => {
+                eprintln!("git-hf: installed the pre-push hook; the existing hook now runs from {}", path.display())
+            },
+            Ok(_) => {},
+            Err(error) => {
+                eprintln!("git-hf: could not install the pre-push hook; staged files will not upload: {error}")
+            },
+        }
         let base = repo.common_dir()?.join("xet").join("staging");
         std::fs::create_dir_all(&base)?;
         let scratch = tempfile::Builder::new().prefix("session-").tempdir_in(&base)?;

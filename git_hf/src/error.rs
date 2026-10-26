@@ -14,6 +14,8 @@ pub enum GitHfError {
     Data(#[from] xet_data::DataError),
     #[error("Runtime error: {0}")]
     Runtime(#[from] xet_runtime::RuntimeError),
+    #[error("Pre-push hook error: {0}")]
+    Hook(String),
 
     #[error("Command failed: {reason}, {source:?}")]
     CommandFailed {
