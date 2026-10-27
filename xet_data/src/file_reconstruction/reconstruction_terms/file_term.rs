@@ -6,7 +6,7 @@ use bytes::Bytes;
 use tokio::sync::OnceCell;
 #[cfg(target_family = "wasm")]
 use tokio_with_wasm::alias as tokio;
-use xet_client::cas_client::Client;
+use xet_client::cas_client::{Client, ReconstructionResponse};
 use xet_client::cas_types::{ChunkRange, FileRange, HttpRange};
 use xet_client::chunk_cache::ChunkCache;
 use xet_core_structures::merklehash::MerkleHash;
@@ -110,17 +110,31 @@ struct FileTermEntry {
 /// Returns the actual retrieved range and the number of bytes required for the
 /// download (with dedup and compression enabled)
 /// along with the Vec<FileTerm>.
+///
+/// When `expected_file_size` is given and the server reports a different total file size,
+/// fails with [`FileReconstructionError::FileSizeMismatch`].
 pub async fn retrieve_file_term_block(
     ctx: &XetContext,
     client: Arc<dyn Client>,
     file_hash: MerkleHash,
     query_file_byte_range: FileRange,
+    expected_file_size: Option<u64>,
 ) -> Result<Option<(FileRange, u64, Vec<FileTerm>)>> {
     // get_reconstruction always returns V2 format (the client converts V1 internally).
-    let Some(raw_reconstruction) = client.get_reconstruction(&file_hash, Some(query_file_byte_range)).await? else {
+    let Some(ReconstructionResponse {
+        reconstruction: raw_reconstruction,
+        file_size,
+    }) = client.get_reconstruction(&file_hash, Some(query_file_byte_range)).await?
+    else {
         // None means we've requested a byte range beyond the end of the file.
         return Ok(None);
     };
+
+    if let (Some(expected), Some(actual)) = (expected_file_size, file_size)
+        && expected != actual
+    {
+        return Err(FileReconstructionError::FileSizeMismatch { expected, actual });
+    }
 
     // Each acquisition gets a unique ID used for single-flight URL refresh dedup.
     let acquisition_id = UniqueId::new();
@@ -415,7 +429,7 @@ mod tests {
         let dyn_client: Arc<dyn Client> = client.clone();
 
         let (returned_range, _, file_terms) =
-            retrieve_file_term_block(ctx, dyn_client.clone(), file_contents.file_hash, requested_range)
+            retrieve_file_term_block(ctx, dyn_client.clone(), file_contents.file_hash, requested_range, None)
                 .await
                 .expect("retrieve_file_term_block should succeed")
                 .expect("file_terms should not be None for valid range");
@@ -527,10 +541,11 @@ mod tests {
         let (runtime, client, file_contents) = setup_test_file(&[(1, (0, 2)), (1, (2, 4)), (1, (4, 6))]).await;
         let file_range = FileRange::new(0, file_contents.data.len() as u64);
         let dyn_client: Arc<dyn Client> = client.clone();
-        let (_, _, file_terms) = retrieve_file_term_block(&runtime, dyn_client, file_contents.file_hash, file_range)
-            .await
-            .unwrap()
-            .unwrap();
+        let (_, _, file_terms) =
+            retrieve_file_term_block(&runtime, dyn_client, file_contents.file_hash, file_range, None)
+                .await
+                .unwrap()
+                .unwrap();
         verify_xorb_block_references(&file_terms);
         assert_eq!(file_terms.len(), 3);
         let block = &file_terms[0].xorb_block;
@@ -542,7 +557,7 @@ mod tests {
         let file_range2 = FileRange::new(0, file_contents2.data.len() as u64);
         let dyn_client2: Arc<dyn Client> = client2.clone();
         let (_, _, file_terms2) =
-            retrieve_file_term_block(&runtime2, dyn_client2, file_contents2.file_hash, file_range2)
+            retrieve_file_term_block(&runtime2, dyn_client2, file_contents2.file_hash, file_range2, None)
                 .await
                 .unwrap()
                 .unwrap();
@@ -606,7 +621,7 @@ mod tests {
         let beyond_range = FileRange::new(file_len + 1000, file_len + 2000);
 
         let dyn_client: Arc<dyn Client> = client.clone();
-        let result = retrieve_file_term_block(&runtime, dyn_client, file_contents.file_hash, beyond_range).await;
+        let result = retrieve_file_term_block(&runtime, dyn_client, file_contents.file_hash, beyond_range, None).await;
 
         match result {
             Ok(None) => {},
@@ -660,10 +675,11 @@ mod tests {
         let file_range = FileRange::new(0, file_contents.data.len() as u64);
         let dyn_client: Arc<dyn Client> = client.clone();
 
-        let (_, _, file_terms) = retrieve_file_term_block(&runtime, dyn_client, file_contents.file_hash, file_range)
-            .await
-            .unwrap()
-            .unwrap();
+        let (_, _, file_terms) =
+            retrieve_file_term_block(&runtime, dyn_client, file_contents.file_hash, file_range, None)
+                .await
+                .unwrap()
+                .unwrap();
 
         // Get the first file term's xorb block to test URL retrieval
         let file_term = &file_terms[0];

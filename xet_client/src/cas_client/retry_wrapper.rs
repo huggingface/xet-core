@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
+use http::HeaderMap;
 use reqwest::{Error as ReqwestError, Response, StatusCode};
 use tokio::sync::Mutex;
 use tokio_retry::RetryIf;
@@ -393,13 +394,27 @@ impl RetryWrapper {
         ReqFn: Fn() -> ReqFut + Send + Sync + 'static,
         ReqFut: std::future::Future<Output = std::result::Result<Response, reqwest_middleware::Error>> + 'static,
     {
+        self.run_and_extract_json_with_headers(make_request).await.map(|(_, json)| json)
+    }
+
+    /// Like [`run_and_extract_json`](Self::run_and_extract_json), but also returns the response headers.
+    pub async fn run_and_extract_json_with_headers<JsonDest, ReqFn, ReqFut>(
+        self,
+        make_request: ReqFn,
+    ) -> Result<(HeaderMap, JsonDest)>
+    where
+        JsonDest: for<'de> serde::Deserialize<'de>,
+        ReqFn: Fn() -> ReqFut + Send + Sync + 'static,
+        ReqFut: std::future::Future<Output = std::result::Result<Response, reqwest_middleware::Error>> + 'static,
+    {
         self.run_and_process(make_request, |resp: Response| {
             async move {
+                let headers = resp.headers().clone();
                 // Extract the json from the final result.
                 let r: std::result::Result<JsonDest, reqwest::Error> = resp.json().await;
 
                 match r {
-                    Ok(v) => Ok(v),
+                    Ok(v) => Ok((headers, v)),
                     Err(e) => {
                         #[cfg(not(target_arch = "wasm32"))]
                         let is_connect = e.is_connect();

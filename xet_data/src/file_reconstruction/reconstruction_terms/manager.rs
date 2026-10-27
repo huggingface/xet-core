@@ -34,6 +34,8 @@ pub struct ReconstructionTermManager {
     client: Arc<dyn Client>,
     file_hash: MerkleHash,
     requested_byte_range: FileRange,
+    /// Caller-declared total file size, checked against the size the server reports on each block.
+    expected_file_size: Option<u64>,
     last_block_info: Option<(Instant, FileRange)>,
     known_final_byte_position: Arc<AtomicU64>,
     prefetched_byte_position: u64,
@@ -52,6 +54,7 @@ impl ReconstructionTermManager {
         client: Arc<dyn Client>,
         file_hash: MerkleHash,
         file_byte_range: FileRange,
+        expected_file_size: Option<u64>,
         progress_updater: Option<Arc<ItemProgressUpdater>>,
     ) -> Result<Self> {
         let completion_rate_estimator =
@@ -65,6 +68,7 @@ impl ReconstructionTermManager {
             client,
             file_hash,
             requested_byte_range,
+            expected_file_size,
             last_block_info: None,
             prefetched_byte_position: requested_byte_range.start,
             current_active_byte_position: requested_byte_range.start,
@@ -290,10 +294,12 @@ impl ReconstructionTermManager {
         let known_final_byte_position = self.known_final_byte_position.clone();
         let client = self.client.clone();
         let file_hash = self.file_hash;
+        let expected_file_size = self.expected_file_size;
         let runtime = self.ctx.clone();
 
         let jh = tokio::task::spawn(async move {
-            let result = retrieve_file_term_block(&runtime, client, file_hash, prefetch_block_range).await;
+            let result =
+                retrieve_file_term_block(&runtime, client, file_hash, prefetch_block_range, expected_file_size).await;
 
             // See if we're done with the file.
             if let Ok(Some((ref returned_range, transfer_bytes, ref file_terms))) = result {

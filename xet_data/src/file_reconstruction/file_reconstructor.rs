@@ -301,6 +301,7 @@ impl FileReconstructor {
             client.clone(),
             file_hash,
             requested_range,
+            file_size,
             run_state.progress_updater().cloned(),
         )
         .await?;
@@ -1731,6 +1732,42 @@ mod tests {
     #[cfg(feature = "simulation")]
     mod server_tests {
         use super::*;
+
+        /// A declared size that disagrees with the size the server reports fails before any data is written,
+        /// whether the declared size is too small (which would otherwise silently truncate) or too large.
+        #[tokio::test]
+        async fn test_declared_file_size_mismatch_fails_reconstruction() {
+            let server = xet_client::cas_client::LocalTestServerBuilder::new().start().await;
+            let file = server
+                .client()
+                .upload_random_file(&[(1, (0, 3))], TEST_CHUNK_SIZE)
+                .await
+                .unwrap();
+            let file_size = file.data.len() as u64;
+
+            for v2_disabled_status in [0, 404] {
+                server.disable_v2_endpoints(v2_disabled_status);
+                for declared in [file_size - 1, file_size + 1] {
+                    let buffer = Arc::new(std::sync::Mutex::new(Cursor::new(Vec::new())));
+                    let err = FileReconstructor::new(
+                        &XetContext::default().unwrap(),
+                        &server.remote_client(),
+                        file.file_hash,
+                    )
+                    .with_config(&test_config())
+                    .with_file_size(declared)
+                    .reconstruct_to_writer(StaticCursorWriter(buffer.clone()))
+                    .await
+                    .unwrap_err();
+                    assert!(
+                        matches!(err, FileReconstructionError::FileSizeMismatch { expected, actual }
+                            if expected == declared && actual == file_size),
+                        "declared={declared} v2_disabled_status={v2_disabled_status}: {err:?}"
+                    );
+                    assert!(buffer.lock().unwrap().get_ref().is_empty());
+                }
+            }
+        }
 
         #[tokio::test]
         async fn test_known_file_size_bounds_reconstruction_requests() {

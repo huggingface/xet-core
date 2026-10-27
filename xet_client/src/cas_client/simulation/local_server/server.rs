@@ -55,7 +55,7 @@ use xet_runtime::core::XetContext;
 #[cfg(test)]
 use super::super::super::RemoteClient;
 #[cfg(test)]
-use super::super::super::interface::Client;
+use super::super::super::interface::{Client, ReconstructionResponse};
 #[cfg(test)]
 #[cfg(unix)]
 use super::super::socket_proxy::UnixSocketProxy;
@@ -483,7 +483,7 @@ impl Client for LocalTestServer {
         &self,
         file_id: &xet_core_structures::merklehash::MerkleHash,
         bytes_range: Option<crate::cas_types::FileRange>,
-    ) -> Result<Option<crate::cas_types::QueryReconstructionResponseV2>> {
+    ) -> Result<Option<ReconstructionResponse>> {
         self.remote_client.get_reconstruction(file_id, bytes_range).await
     }
 
@@ -1182,6 +1182,30 @@ mod tests {
         server.set_max_ranges_per_fetch(usize::MAX);
     }
 
+    /// Verifies both reconstruction endpoints advertise the total file size, including on a range request,
+    /// and that the V1 fallback preserves it.
+    async fn check_reconstruction_file_size_header(server: &LocalTestServer) {
+        let file = server.client().upload_random_file(&[(1, (0, 5))], CHUNK_SIZE).await.unwrap();
+        let file_size = Some(file.data.len() as u64);
+        let range = Some(FileRange::new(0, 1));
+
+        let v2 = server
+            .remote_client()
+            .get_reconstruction(&file.file_hash, range)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(v2.file_size, file_size);
+
+        let v1 = server
+            .remote_client()
+            .get_reconstruction_with_version_override(&file.file_hash, range, Some(1))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(v1.file_size, file_size);
+    }
+
     /// Verifies that disabling V2 with various status codes causes the V2 endpoint
     /// to return that code, and that get_reconstruction falls back to V1.
     async fn check_v2_disabled_fallback(server: &LocalTestServer) {
@@ -1216,7 +1240,8 @@ mod tests {
             .get_reconstruction_with_version_override(&file.file_hash, None, Some(1))
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .reconstruction;
         assert_eq!(forced_v1.terms.len(), 2);
 
         let result = server
@@ -1224,7 +1249,8 @@ mod tests {
             .get_reconstruction(&file.file_hash, None)
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .reconstruction;
         assert_eq!(result.terms.len(), 2);
 
         // Re-enable V2, then test 404 fallback.
@@ -1251,7 +1277,8 @@ mod tests {
             .get_reconstruction_with_version_override(&file.file_hash, None, Some(1))
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .reconstruction;
         assert_eq!(forced_v1.terms.len(), 2);
 
         let result = server
@@ -1259,7 +1286,8 @@ mod tests {
             .get_reconstruction(&file.file_hash, None)
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .reconstruction;
         assert_eq!(result.terms.len(), 2);
     }
 
@@ -1276,6 +1304,7 @@ mod tests {
         check_v2_url_transformation(server).await;
         check_v2_range_reconstruction(server).await;
         check_v2_max_ranges(server).await;
+        check_reconstruction_file_size_header(server).await;
         check_v2_disabled_fallback(server).await;
     }
 

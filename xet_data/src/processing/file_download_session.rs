@@ -1226,9 +1226,7 @@ mod tests {
             .unwrap();
     }
 
-    #[cfg(not(debug_assertions))]
     #[test]
-    #[ignore = "known-size capping truncates when the caller understates the size"]
     fn test_download_file_declared_size_smaller_than_actual_errors() {
         let runtime = get_runtime();
         runtime
