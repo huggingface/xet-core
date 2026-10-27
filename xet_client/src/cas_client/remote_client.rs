@@ -237,7 +237,7 @@ pub(crate) enum XorbCommitResult {
 /// past the furthest point any earlier upload reached. A grant upload that fails partway therefore leaves the rest
 /// of the progress to the next upload, and a retry of bytes already reported adds nothing.
 fn report_each_byte_once(callback: ProgressCallback) -> ProgressCallback {
-    let reported = Arc::new(AtomicU64::new(0));
+    let reported = AtomicU64::new(0);
     Arc::new(move |_delta, completed, total| {
         let previous = reported.fetch_max(completed, Ordering::Relaxed);
         if completed > previous {
