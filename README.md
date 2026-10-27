@@ -98,7 +98,7 @@ Quick debugging environment variables:
 ```bash
 RUST_BACKTRACE=full          # full Rust backtraces on panic
 RUST_LOG=info                # enable hf-xet logging
-HF_XET_LOG_FILE=/tmp/xet.log # write logs to a file (defaults to stdout)
+HF_XET_LOG_DEST=/tmp/xet.log # log file, or a directory with a trailing / (defaults to ~/.cache/huggingface/xet/logs/)
 ```
 
 ### Telemetry
