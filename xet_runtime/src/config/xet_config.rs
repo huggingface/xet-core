@@ -228,7 +228,10 @@ pub struct XetConfigBuilder {
 }
 
 impl XetConfigBuilder {
-    pub fn build(self) -> XetConfig {
+    /// Finish building, normalizing the reconstruction settings like [`XetConfig::new`] does: a
+    /// `download_buffer_limit` below `download_buffer_size` is raised to match, with a warning.
+    pub fn build(mut self) -> XetConfig {
+        self.config.reconstruction.normalize();
         self.config
     }
 }
@@ -438,11 +441,11 @@ mod tests {
             .chunk_cache_size_bytes(0)
             .data_max_concurrent_file_ingestion(16)
             .data_progress_update_interval(std::time::Duration::from_millis(500))
-            .log_dest("path/to/log")
+            .log_dest(Some("path/to/log".to_owned()))
             .log_prefix(String::from("custom"))
             .data_default_cas_endpoint(format!("http://{}:{}", "example.com", 9090))
-            .client_shard_api_version(2)
-            .xorb_simulation_max_bytes(ByteSize::from("1mb"))
+            .client_shard_api_version(Some(2))
+            .xorb_simulation_max_bytes(Some(ByteSize::from("1mb")))
             .reconstruction_download_buffer_size(ByteSize::from("2gb"))
             .build();
 
@@ -458,15 +461,40 @@ mod tests {
         assert_eq!(config.reconstruction.download_buffer_size.as_u64(), 2_000_000_000);
     }
 
+    #[test]
+    fn test_builder_normalizes_reconstruction() {
+        let config = XetConfig::builder()
+            .reconstruction_download_buffer_size(ByteSize::from("2gb"))
+            .reconstruction_download_buffer_limit(ByteSize::from("1gb"))
+            .build();
+        assert_eq!(config.reconstruction.download_buffer_limit.as_u64(), 2_000_000_000);
+    }
+
+    #[test]
+    fn test_builder_clears_option() {
+        let config = XetConfig::builder()
+            .client_shard_api_version(Some(2))
+            .client_shard_api_version(None)
+            .log_dest(Some("path/to/log".to_owned()))
+            .log_dest(None)
+            .build();
+        assert_eq!(config.client.shard_api_version, None);
+        assert_eq!(config.log.dest, None);
+    }
+
     #[cfg(not(target_family = "wasm"))]
     #[test]
     fn test_builder_path_setter() {
+        use crate::utils::TemplatedPathBuf;
+
         let config = XetConfig::builder()
-            .system_monitor_log_path(std::path::PathBuf::from("/tmp/monitor.log"))
+            .system_monitor_log_path(Some(TemplatedPathBuf::new(std::path::PathBuf::from("/tmp/monitor.log"))))
             .build();
         assert_eq!(config.get("system_monitor.log_path").unwrap(), "/tmp/monitor.log");
 
-        let config = XetConfig::builder().system_monitor_log_path("/tmp/monitor_{PID}.log").build();
+        let config = XetConfig::builder()
+            .system_monitor_log_path(Some(TemplatedPathBuf::new("/tmp/monitor_{PID}.log")))
+            .build();
         assert_eq!(config.get("system_monitor.log_path").unwrap(), "/tmp/monitor_{PID}.log");
     }
 

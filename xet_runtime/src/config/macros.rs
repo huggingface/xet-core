@@ -223,80 +223,33 @@ macro_rules! config_group {
 /// [`XetConfigBuilder`](crate::config::XetConfigBuilder) for every field, documented with the
 /// field's own doc comment. `$group` must match the group's field name on `XetConfig`.
 ///
-/// Field types must be written as `Ident` or `Ident<Ident>` so [`builder_setter!`] can pick the
-/// setter's argument type from the type's tokens.
+/// Each setter takes exactly the field type, so literals infer it. `Option` fields take the full
+/// `Option`, so passing `None` clears the value.
 macro_rules! xet_config_group {
     ($group:ident, {
         $(
             $(#[$meta:meta])*
-            ref $name:ident : $tname:ident $(< $inner:ident >)? = $value:expr;
+            ref $name:ident : $type:ty = $value:expr;
         )+
     }) => {
         $crate::config_group!({
             $(
                 $(#[$meta])*
-                ref $name : $tname $(< $inner >)? = $value;
+                ref $name : $type = $value;
             )+
         });
 
         pastey::paste! {
             impl $crate::config::XetConfigBuilder {
                 $(
-                    $crate::config::macros::builder_setter!(
-                        $(#[$meta])* [<$group _ $name>], $group, $name, $tname $(< $inner >)?
-                    );
+                    $(#[$meta])*
+                    pub fn [<$group _ $name>](mut self, value: $type) -> Self {
+                        self.config.$group.$name = value;
+                        self
+                    }
                 )+
             }
         }
     };
 }
 pub(crate) use xet_config_group;
-
-/// Generates one [`XetConfigBuilder`](crate::config::XetConfigBuilder) setter, choosing the argument
-/// type from the field type's tokens:
-///
-/// - `String` and `Option<String>` take `impl Into<String>`.
-/// - `Option<TemplatedPathBuf>` takes `impl Into<PathBuf>`.
-/// - Other `Option<T>` fields take `T`.
-/// - Everything else, including numbers, takes exactly the field type, so literals infer it.
-///
-/// `Option` setters always set `Some`. Arms are matched in order, so the specific arms must stay
-/// before the catch-all ones.
-macro_rules! builder_setter {
-    ($(#[$meta:meta])* $fn:ident, $group:ident, $name:ident, String) => {
-        $(#[$meta])*
-        pub fn $fn(mut self, value: impl Into<String>) -> Self {
-            self.config.$group.$name = value.into();
-            self
-        }
-    };
-    ($(#[$meta:meta])* $fn:ident, $group:ident, $name:ident, Option<String>) => {
-        $(#[$meta])*
-        pub fn $fn(mut self, value: impl Into<String>) -> Self {
-            self.config.$group.$name = Some(value.into());
-            self
-        }
-    };
-    ($(#[$meta:meta])* $fn:ident, $group:ident, $name:ident, Option<TemplatedPathBuf>) => {
-        $(#[$meta])*
-        pub fn $fn(mut self, value: impl Into<std::path::PathBuf>) -> Self {
-            self.config.$group.$name = Some($crate::utils::TemplatedPathBuf::new(value));
-            self
-        }
-    };
-    ($(#[$meta:meta])* $fn:ident, $group:ident, $name:ident, Option<$inner:ident>) => {
-        $(#[$meta])*
-        pub fn $fn(mut self, value: $inner) -> Self {
-            self.config.$group.$name = Some(value);
-            self
-        }
-    };
-    ($(#[$meta:meta])* $fn:ident, $group:ident, $name:ident, $type:ident) => {
-        $(#[$meta])*
-        pub fn $fn(mut self, value: $type) -> Self {
-            self.config.$group.$name = value;
-            self
-        }
-    };
-}
-pub(crate) use builder_setter;
