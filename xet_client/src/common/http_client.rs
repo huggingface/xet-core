@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use http::{Extensions, HeaderMap, StatusCode};
 use reqwest::header::{AUTHORIZATION, COOKIE, HeaderValue, SET_COOKIE};
-use reqwest::{Error as ReqwestError, Request, Response, Url};
+use reqwest::{Error as ReqwestError, Request, Response};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
 use tokio::sync::Mutex;
 use tracing::{Instrument, info, info_span, warn};
@@ -41,7 +41,8 @@ impl Middleware for HttpsToHttpMiddleware {
 }
 
 /// Returns the URL without its query so presigned URL signatures are not logged.
-fn url_without_query(url: &Url) -> Url {
+#[cfg(unix)]
+fn url_without_query(url: &reqwest::Url) -> reqwest::Url {
     let mut url = url.clone();
     url.set_query(None);
     url
@@ -425,9 +426,10 @@ pub fn request_id_from_response(res: &Response) -> &str {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn test_url_without_query_drops_query() {
-        let url = Url::parse("https://example.com/xorb?X-Amz-Credential=abc&X-Amz-Signature=secret").unwrap();
+        let url = reqwest::Url::parse("https://example.com/xorb?X-Amz-Credential=abc&X-Amz-Signature=secret").unwrap();
         let stripped = url_without_query(&url);
         assert_eq!(stripped.as_str(), "https://example.com/xorb");
         assert!(url.query().is_some());
