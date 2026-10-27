@@ -450,8 +450,10 @@ const SCENARIOS = {
   },
 
   // Sha256Policy coverage on uploadBytes: 'compute' produces the real content
-  // SHA-256, { provided } is echoed verbatim, 'skip' leaves the field unset —
-  // and the xet content hash is identical for all three. Invalid policy
+  // SHA-256, { provided } is echoed verbatim, and the xet content hash is
+  // identical for both ('skip' is not exercised: for v1 repos, which the
+  // smoke-test repo is, CAS rejects shards whose file entries carry no
+  // SHA-256). Invalid policy
   // values must reject in parse_sha256_policy (its only test coverage — the
   // wrapper crate is wasm-only, so it has no native unit tests).
   'sha256-policy': {
@@ -467,19 +469,16 @@ const SCENARIOS = {
       if (result.providedSha !== result.localSha) {
         throw new Error(`{ provided } sha256=${result.providedSha} != provided value ${result.localSha}`);
       }
-      if (result.skipSha != null) {
-        throw new Error(`'skip' sha256=${result.skipSha} — expected unset`);
-      }
-      const [h0, h1, h2] = result.hashes ?? [];
-      if (!h0 || h0 !== h1 || h0 !== h2) {
+      const [h0, h1] = result.hashes ?? [];
+      if (!h0 || h0 !== h1) {
         throw new Error(`xet hashes differ across policies (must not affect content hash): ${JSON.stringify(result.hashes)}`);
       }
       const uploads = result.commitReport?.uploads;
-      if (!uploads || Object.keys(uploads).length !== 3) {
-        throw new Error(`commitReport.uploads has ${Object.keys(uploads ?? {}).length} entries, expected 3: ${JSON.stringify(uploads)}`);
+      if (!uploads || Object.keys(uploads).length !== 2) {
+        throw new Error(`commitReport.uploads has ${Object.keys(uploads ?? {}).length} entries, expected 2: ${JSON.stringify(uploads)}`);
       }
       assertDedupBytesUploaded(result.commitReport);
-      return `compute/provided/skip verified, 3 invalid policies rejected`;
+      return `compute/provided verified, 3 invalid policies rejected`;
     },
   },
 
