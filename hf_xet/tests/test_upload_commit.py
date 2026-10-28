@@ -266,6 +266,20 @@ class TestUploadStream:
             group.start_download_file(retry.try_finish().xet_info, str(dest))
         assert dest.read_bytes() == data
 
+    def test_exception_after_explicit_finish_keeps_stream(self, endpoint):
+        commit = hf_xet.XetSession().new_upload_commit(endpoint=endpoint)
+        try:
+            with commit.start_upload_stream(name="finished.bin") as stream:
+                stream.write(b"finished data")
+                stream.finish()
+                raise ValueError("caller failed after finishing")
+        except ValueError:
+            pass
+
+        assert stream.status() == hf_xet.XetTaskState.Completed
+        report = commit.wait_to_finish()
+        assert list(report.uploads.keys()) == [stream.task_id()]
+
     def test_context_manager_idempotent_when_finish_called_inside(self, endpoint):
         # Calling finish() explicitly inside the with-block must not cause a double-finish error.
         commit = hf_xet.XetSession().new_upload_commit(endpoint=endpoint)

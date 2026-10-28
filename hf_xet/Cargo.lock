@@ -4018,6 +4018,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "chrono",
+ "futures-util",
  "gearhash",
  "http",
  "itertools 0.14.0",

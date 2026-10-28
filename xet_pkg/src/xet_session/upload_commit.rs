@@ -500,8 +500,10 @@ impl XetUploadCommit {
     /// and per-file [`XetFileMetadata`].  Subsequent calls return
     /// [`XetError::AlreadyCompleted`].
     ///
-    /// Streams given up with [`XetStreamUpload::abort`] are left out of the commit and its report.
-    /// Fails if any other stream has not been [finished](XetStreamUpload::finish).
+    /// Unfinished streams given up with [`XetStreamUpload::abort`] are left out of the commit and its
+    /// report. Aborting after a successful `finish` does not remove a file. Fails if any other stream
+    /// has not been [finished](XetStreamUpload::finish), or if shared dedup/xorb work failed, even when
+    /// the stream that observed the failure was subsequently aborted.
     pub async fn commit(&self) -> Result<XetCommitReport, XetError> {
         info!(commit_id = %self.id(), "Commit starting");
         let inner = Arc::clone(&self.inner);
@@ -1284,6 +1286,110 @@ mod tests {
 
         let report = commit.commit().await.unwrap();
         assert_eq!(report.uploads.keys().collect::<Vec<_>>(), [&kept.task_id()]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_abort_after_finish_keeps_completed_stream() {
+        let temp = tempdir().unwrap();
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
+        let (session, commit) = local_session_and_commit(&endpoint).await;
+        let stream = commit
+            .upload_stream(Some("finished.bin".into()), Sha256Policy::Compute)
+            .await
+            .unwrap();
+        stream.write(&b"finished data"[..]).await.unwrap();
+        let metadata = stream.finish().await.unwrap();
+        stream.abort();
+        assert_eq!(stream.status().unwrap(), XetTaskState::Completed);
+        let report = commit.commit().await.unwrap();
+        assert_eq!(report.uploads.keys().collect::<Vec<_>>(), [&stream.task_id()]);
+        assert_eq!(download(&session, &endpoint, metadata, temp.path().join("out")).await, b"finished data");
+    }
+
+    #[test]
+    fn test_abort_while_write_waits_for_chunking() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let temp = tempdir().unwrap();
+            let endpoint = format!("local://{}", temp.path().join("cas").display());
+            let session = XetSessionBuilder::new()
+                .with_tokio_handle(runtime.handle().clone())
+                .build()
+                .unwrap();
+            let commit = session
+                .new_upload_commit()
+                .unwrap()
+                .with_endpoint(&endpoint)
+                .build()
+                .await
+                .unwrap();
+            let stream = commit.upload_stream(None, Sha256Policy::Skip).await.unwrap();
+            let (release, wait) = std::sync::mpsc::channel();
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let blocked = runtime.spawn_blocking(move || {
+                started.send(()).unwrap();
+                let _ = wait.recv();
+            });
+            ready.await.unwrap();
+
+            let mut write = Box::pin(stream.write(vec![1; 64 << 10]));
+            assert!(futures::poll!(write.as_mut()).is_pending());
+            assert_eq!(stream.progress().unwrap().total_bytes, 64 << 10);
+            assert!(stream.inner.cleaner.try_lock().is_err());
+            stream.abort();
+            assert!(matches!(write.await, Err(XetError::UserCancelled(_))));
+            release.send(()).unwrap();
+            blocked.await.unwrap();
+            assert!(commit.commit().await.unwrap().uploads.is_empty());
+        });
+    }
+
+    #[test]
+    fn test_abort_while_finish_waits_for_dedup() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let temp = tempdir().unwrap();
+            let endpoint = format!("local://{}", temp.path().join("cas").display());
+            let session = XetSessionBuilder::new()
+                .with_tokio_handle(runtime.handle().clone())
+                .build()
+                .unwrap();
+            let commit = session
+                .new_upload_commit()
+                .unwrap()
+                .with_endpoint(&endpoint)
+                .build()
+                .await
+                .unwrap();
+            let stream = commit.upload_stream(None, Sha256Policy::Skip).await.unwrap();
+            stream.write(&b"pending finish"[..]).await.unwrap();
+
+            // Pause the worker so finish's spawned dedup task cannot complete on its first poll.
+            let (release, wait) = std::sync::mpsc::channel();
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let blocked = runtime.spawn(async move {
+                started.send(()).unwrap();
+                let _ = wait.recv();
+            });
+            ready.await.unwrap();
+            let mut finish = Box::pin(stream.finish());
+            assert!(futures::poll!(finish.as_mut()).is_pending());
+            assert!(stream.inner.cleaner.try_lock().is_err());
+            stream.abort();
+            assert!(matches!(finish.await, Err(XetError::UserCancelled(_))));
+            release.send(()).unwrap();
+            blocked.await.unwrap();
+            assert!(commit.commit().await.unwrap().uploads.is_empty());
+        });
     }
 
     // `abort()` can land while a write holds the stream's pipeline, so it cannot drop the pipeline itself.

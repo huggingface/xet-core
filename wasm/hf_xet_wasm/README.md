@@ -75,7 +75,8 @@ class XetUploadCommit {
   // Begin an incremental streaming upload. Call `write(chunk)` repeatedly,
   // then `finish()` to finalize ingestion. Before `commit()`, call `finish`,
   // or the stream's `abort()` to leave it out of the commit (for example to
-  // retry the file with a new stream).
+  // retry the file with a new stream). A successful finish is irrevocable:
+  // aborting afterwards is a no-op. Shared dedup/xorb failures still fail commit.
   uploadStream(
     trackingName?: string,
     sha256Policy?: Sha256Policy,

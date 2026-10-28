@@ -25,6 +25,7 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true, optional = true }
+futures-util = { workspace = true }
 gearhash = { workspace = true }
 http = { workspace = true }
 itertools = { workspace = true }

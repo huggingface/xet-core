@@ -13,6 +13,7 @@ use xet_core_structures::merklehash::MerkleHash;
 use xet_runtime::utils::UniqueId;
 
 use super::progress_types::{ItemProgressUpdater, UploadGroupProgress};
+use crate::error::{DataError, Result};
 
 pub struct FileXorbDependency {
     pub file_id: u64,
@@ -357,31 +358,30 @@ impl CompletionTrackerImpl {
         done == total
     }
 
-    fn assert_complete(&self) {
+    fn validate_complete(&self) -> Result<()> {
         for (idx, file) in self.files.iter().enumerate() {
-            assert_eq!(
-                file.completed_bytes, file.total_bytes,
-                "File #{} ({}, {}) is not fully completed: {}/{} bytes",
-                idx, file.name, file.tracking_id, file.completed_bytes, file.total_bytes
-            );
-            assert!(
-                file.remaining_xorbs_parts.is_empty(),
-                "File #{} ({}) still has uncompleted xorb parts: {:?}",
-                idx,
-                file.name,
-                file.remaining_xorbs_parts
-            );
+            if file.completed_bytes != file.total_bytes || !file.remaining_xorbs_parts.is_empty() {
+                return Err(DataError::InternalError(format!(
+                    "File #{idx} ({}, {}) is not fully completed: {}/{} bytes, {} pending xorb parts",
+                    file.name,
+                    file.tracking_id,
+                    file.completed_bytes,
+                    file.total_bytes,
+                    file.remaining_xorbs_parts.len()
+                )));
+            }
         }
 
         for (hash, xorb_dep) in self.xorbs.iter() {
-            assert!(xorb_dep.is_completed, "Xorb {hash:?} is not marked completed.");
-            assert!(
-                xorb_dep.file_indices.is_empty(),
-                "Xorb {:?} still has file references: {:?}",
-                hash,
-                xorb_dep.file_indices
-            );
+            if !xorb_dep.is_completed || !xorb_dep.file_indices.is_empty() {
+                return Err(DataError::InternalError(format!("Xorb {hash:?} is not fully uploaded")));
+            }
         }
+        Ok(())
+    }
+
+    fn assert_complete(&self) {
+        self.validate_complete().unwrap();
     }
 }
 
@@ -460,6 +460,10 @@ impl CompletionTracker {
     pub fn assert_complete(&self) {
         self.inner.lock().unwrap().assert_complete();
         self.group_progress.assert_complete();
+    }
+
+    pub(crate) fn validate_complete(&self) -> Result<()> {
+        self.inner.lock().unwrap().validate_complete()
     }
 
     pub fn register_shard_transfer(&self, shard_size: u64) -> UniqueId {

@@ -2,16 +2,19 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 #[cfg(not(target_family = "wasm"))]
 use std::fs::File;
+use std::future::Future;
 #[cfg(not(target_family = "wasm"))]
 use std::io::Read;
 use std::mem::{swap, take};
+use std::panic::AssertUnwindSafe;
 #[cfg(not(target_family = "wasm"))]
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 
 #[cfg(not(target_family = "wasm"))]
 use bytes::Bytes;
+use futures_util::FutureExt;
 use more_asserts::*;
 use tokio::sync::Mutex;
 use tokio::task::{JoinHandle, JoinSet};
@@ -66,6 +69,10 @@ pub struct FileUploadSession {
     /// for it.
     pub(crate) dedup_tasks: TaskTracker,
 
+    /// Shared work may fail after its cleaner is dropped, or its join result may be consumed by a
+    /// cleaner that is later abandoned. Keep the first cause independently of either handle.
+    background_error: StdMutex<Option<Arc<DataError>>>,
+
     /// Set to true after finalize() has been called.
     finalized: AtomicBool,
 
@@ -118,6 +125,7 @@ impl FileUploadSession {
             deduplication_metrics: Mutex::new(DeduplicationMetrics::default()),
             xorb_upload_tasks: Mutex::new(JoinSet::new()),
             dedup_tasks: TaskTracker::new(),
+            background_error: StdMutex::new(None),
             finalized: AtomicBool::new(false),
             #[cfg(not(target_family = "wasm"))]
             started_at: std::time::Instant::now(),
@@ -276,6 +284,35 @@ impl FileUploadSession {
         self.completion_tracker.abandon_file(id);
     }
 
+    fn preserve_background_error(&self, error: DataError) -> DataError {
+        let error = match error {
+            DataError::SharedUploadError(error) => error,
+            error => Arc::new(error),
+        };
+        self.background_error.lock().unwrap().get_or_insert_with(|| error.clone());
+        DataError::SharedUploadError(error)
+    }
+
+    fn background_error(&self) -> Option<DataError> {
+        self.background_error.lock().unwrap().clone().map(DataError::SharedUploadError)
+    }
+
+    pub(crate) async fn run_dedup_task<T>(&self, task: impl Future<Output = Result<T>>) -> Result<T> {
+        let result = AssertUnwindSafe(task).catch_unwind().await.unwrap_or_else(|payload| {
+            let message = if let Some(message) = payload.downcast_ref::<&str>() {
+                (*message).to_owned()
+            } else if let Some(message) = payload.downcast_ref::<String>() {
+                message.clone()
+            } else {
+                "unknown panic payload".to_owned()
+            };
+            Err(DataError::RuntimeError(xet_runtime::RuntimeError::TaskPanic(format!(
+                "upload dedup task: {message}"
+            ))))
+        });
+        result.map_err(|error| self.preserve_background_error(error))
+    }
+
     /// Spawns a task that reads `file_path` and uploads it.
     ///
     /// Returns the tracking ID and a join handle for the spawned task.
@@ -358,6 +395,16 @@ impl FileUploadSession {
     /// if it was already in the queue and didn't need to be uploaded again.
     #[instrument(skip_all, name="FileUploadSession::register_new_xorb_for_upload", fields(xorb_len = xorb.num_bytes()))]
     pub(crate) async fn register_new_xorb(
+        self: &Arc<Self>,
+        xorb: RawXorbData,
+        file_dependencies: &[FileXorbDependency],
+    ) -> Result<bool> {
+        self.register_new_xorb_impl(xorb, file_dependencies)
+            .await
+            .map_err(|error| self.preserve_background_error(error))
+    }
+
+    async fn register_new_xorb_impl(
         self: &Arc<Self>,
         xorb: RawXorbData,
         file_dependencies: &[FileXorbDependency],
@@ -544,7 +591,10 @@ impl FileUploadSession {
 
     /// Process the aggregated data, uploading the data as a xorb and registering the files
     async fn process_aggregated_data_as_xorb(self: &Arc<Self>, data_agg: DataAggregator) -> Result<()> {
-        self.process_aggregated_data_as_xorb_impl(data_agg, true).await.map(|_| ())
+        self.process_aggregated_data_as_xorb_impl(data_agg, true)
+            .await
+            .map(|_| ())
+            .map_err(|error| self.preserve_background_error(error))
     }
 
     /// Upload the xorb data but do NOT register file reconstruction info in the shard.
@@ -553,7 +603,9 @@ impl FileUploadSession {
         self: &Arc<Self>,
         data_agg: DataAggregator,
     ) -> Result<Vec<MDBFileInfo>> {
-        self.process_aggregated_data_as_xorb_impl(data_agg, false).await
+        self.process_aggregated_data_as_xorb_impl(data_agg, false)
+            .await
+            .map_err(|error| self.preserve_background_error(error))
     }
 
     async fn process_aggregated_data_as_xorb_impl(
@@ -658,8 +710,12 @@ impl FileUploadSession {
         self.dedup_tasks.wait().await;
 
         // Register the remaining xorbs for upload.
-        let data_agg = take(&mut *self.current_session_data.lock().await);
-        self.process_aggregated_data_as_xorb(data_agg).await?;
+        if self.background_error().is_none() {
+            let data_agg = take(&mut *self.current_session_data.lock().await);
+            if let Err(error) = self.process_aggregated_data_as_xorb(data_agg).await {
+                let _ = self.preserve_background_error(error);
+            }
+        }
 
         // Finalize the xorb uploads. Must join before snapshotting
         // `deduplication_metrics`: each xorb-upload task records its
@@ -672,8 +728,16 @@ impl FileUploadSession {
         let mut upload_tasks = take(&mut *self.xorb_upload_tasks.lock().await);
 
         while let Some(result) = upload_tasks.join_next().await {
-            result??;
+            if let Err(error) = result.map_err(DataError::from).and_then(|result| result) {
+                let _ = self.preserve_background_error(error);
+            }
         }
+
+        if let Some(error) = self.background_error() {
+            return Err(error);
+        }
+        // This is a release-mode guard, before publishing reconstruction metadata.
+        self.completion_tracker.validate_complete()?;
 
         let all_file_info = if return_files {
             self.shard_interface.session_file_info_list().await?
@@ -912,6 +976,98 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[tokio::test]
+    async fn test_finalize_retains_detached_dedup_failure() {
+        let temp = tempdir().unwrap();
+        let ctx = XetContext::default().unwrap();
+        let config = Arc::new(TranslatorConfig::local_config(&ctx, temp.path()).unwrap());
+        let session = FileUploadSession::new(config).await.unwrap();
+        let task_session = session.clone();
+        let task = tokio::spawn(session.dedup_tasks.track_future(async move {
+            task_session
+                .run_dedup_task(async { Err::<(), _>(DataError::IOError(std::io::Error::other("dedup failed"))) })
+                .await
+        }));
+        drop(task);
+
+        let error = session.finalize().await.unwrap_err();
+        assert_eq!(crate::telemetry::error_class(&error), "io");
+        assert_eq!(error.to_string(), "I/O error: dedup failed");
+        assert!(
+            std::fs::read_dir(temp.path().join("xet/xorbs/shards"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_finalize_retains_detached_dedup_panic() {
+        let temp = tempdir().unwrap();
+        let ctx = XetContext::default().unwrap();
+        let config = Arc::new(TranslatorConfig::local_config(&ctx, temp.path()).unwrap());
+        let session = FileUploadSession::new(config).await.unwrap();
+        let task_session = session.clone();
+        let task =
+            tokio::spawn(session.dedup_tasks.track_future(async move {
+                task_session.run_dedup_task::<()>(async { panic!("dedup panicked") }).await
+            }));
+        drop(task);
+
+        let error = session.finalize().await.unwrap_err();
+        assert_eq!(crate::telemetry::error_class(&error), "internal");
+        assert!(error.to_string().contains("dedup panicked"));
+    }
+
+    #[tokio::test]
+    async fn test_finalize_rejects_incomplete_xorb_before_publishing_shards() {
+        let temp = tempdir().unwrap();
+        let ctx = XetContext::default().unwrap();
+        let config = Arc::new(TranslatorConfig::local_config(&ctx, temp.path()).unwrap());
+        let session = FileUploadSession::new(config).await.unwrap();
+        let (_, mut cleaner) = session.start_clean(None, None, Sha256Policy::Skip).unwrap();
+        cleaner.add_data(b"kept file").await.unwrap();
+        cleaner.finish().await.unwrap();
+        // No active file depends on this xorb, so equal file byte totals alone cannot detect it.
+        session
+            .completion_tracker
+            .register_new_xorb(xet_core_structures::merklehash::MerkleHash::random_from_seed(17), 100);
+
+        let error = session.finalize().await.unwrap_err();
+        assert!(matches!(error, DataError::InternalError(_)));
+        assert!(error.to_string().contains("not fully uploaded"));
+        assert!(
+            std::fs::read_dir(temp.path().join("xet/xorbs/shards"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_finalize_drains_uploads_after_shared_failure() {
+        let temp = tempdir().unwrap();
+        let ctx = XetContext::default().unwrap();
+        let config = Arc::new(TranslatorConfig::local_config(&ctx, temp.path()).unwrap());
+        let session = FileUploadSession::new(config).await.unwrap();
+        let _ = session.preserve_background_error(DataError::IOError(std::io::Error::other("first failure")));
+        let (release, wait) = tokio::sync::oneshot::channel();
+        let completed = Arc::new(AtomicBool::new(false));
+        let task_completed = completed.clone();
+        session.xorb_upload_tasks.lock().await.spawn(async move {
+            wait.await.unwrap();
+            task_completed.store(true, Ordering::Release);
+            Err(DataError::InternalError("second failure".into()))
+        });
+
+        let mut finalize = Box::pin(session.finalize());
+        assert!(futures_util::poll!(finalize.as_mut()).is_pending());
+        release.send(()).unwrap();
+        let error = finalize.await.unwrap_err();
+        assert!(completed.load(Ordering::Acquire));
+        assert_eq!(error.to_string(), "I/O error: first failure");
+    }
 
     #[test]
     fn test_clean_smudge_round_trip() {

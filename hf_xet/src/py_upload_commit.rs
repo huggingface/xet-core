@@ -273,7 +273,8 @@ impl PyXetUploadCommit {
     /// with :meth:`XetStreamUpload.write`, then call :meth:`XetStreamUpload.finish`
     /// **before** calling :meth:`XetUploadCommit.wait_to_finish`, or
     /// :meth:`XetStreamUpload.abort` to leave the stream out of the commit (for
-    /// example to retry the file with a new stream after its source failed).
+    /// example to retry the file with a new stream after its source failed). Aborting after a successful
+    /// :meth:`XetStreamUpload.finish` is a no-op; shared storage failures still fail the whole commit.
     ///
     /// ``name`` is an optional display name used for progress reporting.
     /// ``sha256`` accepts the same values as :meth:`start_upload_file`.

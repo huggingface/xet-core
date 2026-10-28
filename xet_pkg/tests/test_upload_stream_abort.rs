@@ -18,6 +18,7 @@ mod tests {
 
     use rand::prelude::*;
     use tempfile::tempdir;
+    use xet::XetError;
     use xet::xet_session::{Sha256Policy, XetFileMetadata, XetSessionBuilder, XetStreamUpload, XetUploadCommit};
 
     fn random_bytes(rng: &mut StdRng, len: usize) -> Vec<u8> {
@@ -34,6 +35,70 @@ mod tests {
             stream.write(data[pos..end].to_vec()).await.unwrap();
             pos = end;
         }
+    }
+
+    /// A stream may consume a failed shared upload task before the caller aborts it. The failure
+    /// must still fail the commit, even if a retry deduplicates against the failed xorb's metadata.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_aborted_stream_cannot_hide_shared_upload_failure() {
+        let temp = tempdir().unwrap();
+        let cas = temp.path().join("cas");
+        let endpoint = format!("local://{}", cas.display());
+        let session = XetSessionBuilder::new().build().unwrap();
+        let commit = session
+            .new_upload_commit()
+            .unwrap()
+            .with_endpoint(&endpoint)
+            .build()
+            .await
+            .unwrap();
+        let xorb_dir = cas.join("xet/xorbs/xorbs");
+        let saved_dir = cas.join("xet/xorbs/saved-xorbs");
+        // Force terminal upload errors without changing shard storage or needing a remote server.
+        std::fs::rename(&xorb_dir, &saved_dir).unwrap();
+        std::fs::write(&xorb_dir, b"upload failure").unwrap();
+
+        let data = random_bytes(&mut StdRng::seed_from_u64(100), 256 << 10);
+        let attempt = commit
+            .upload_stream(Some("failed.bin".into()), Sha256Policy::Skip)
+            .await
+            .unwrap();
+        attempt.write(data.clone()).await.unwrap();
+        let original_error = attempt.write(data.clone()).await.unwrap_err();
+        assert!(matches!(original_error, XetError::Io(_)));
+        attempt.abort();
+        std::fs::remove_file(&xorb_dir).unwrap();
+        std::fs::rename(&saved_dir, &xorb_dir).unwrap();
+
+        // Several uploads may have failed before the storage recovered. Drain those failures through
+        // aborted retries until ingestion succeeds, as callers could do before this fix.
+        let mut finished = None;
+        for _ in 0..32 {
+            let retry = commit
+                .upload_stream(Some("retry.bin".into()), Sha256Policy::Skip)
+                .await
+                .unwrap();
+            let result = match retry.write(data.clone()).await {
+                Ok(()) => retry.finish().await,
+                Err(error) => Err(error),
+            };
+            match result {
+                Ok(metadata) => {
+                    finished = Some(metadata);
+                    break;
+                },
+                Err(error) => {
+                    assert!(matches!(error, XetError::Io(_)));
+                    retry.abort();
+                },
+            }
+        }
+        assert!(finished.is_some(), "retry ingestion did not finish");
+
+        let error = commit.commit().await.unwrap_err();
+        assert!(matches!(error, XetError::Io(_)));
+        assert_eq!(error.to_string(), original_error.to_string());
+        assert!(std::fs::read_dir(cas.join("xet/xorbs/shards")).unwrap().next().is_none());
     }
 
     /// Streams `data` as `name` the way a caller retrying a failing source would: `n_aborted` attempts are

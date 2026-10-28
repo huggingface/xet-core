@@ -5924,6 +5924,7 @@ dependencies = [
  "criterion",
  "ctor",
  "dirs",
+ "futures-util",
  "gearhash",
  "http",
  "itertools 0.14.0",
