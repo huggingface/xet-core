@@ -274,9 +274,12 @@ impl XetUploadCommitInner {
                 Some(meta) => {
                     files.insert(stream.task_id(), meta);
                 },
-                // Given up with `abort()`: the stream is left out of the commit.
+                // Given up with `abort()`: the stream is left out of the commit, unless a finish
+                // already in flight completed first.
                 None if matches!(stream.status(), Ok(XetTaskState::UserCancelled)) => {
-                    stream.discard_aborted().await;
+                    if let Some(meta) = stream.settle_aborted().await {
+                        files.insert(stream.task_id(), meta);
+                    }
                 },
                 None => {
                     return Err(XetError::other(format!(
@@ -1389,6 +1392,56 @@ mod tests {
             release.send(()).unwrap();
             blocked.await.unwrap();
             assert!(commit.commit().await.unwrap().uploads.is_empty());
+        });
+    }
+
+    // Once `abort()` cancels the token, an in-flight finish races it. Drive the branch where ingestion wins
+    // after `commit()` is already waiting for the stream's lock: that finish succeeded, so the file stays.
+    #[test]
+    fn test_commit_keeps_stream_whose_finish_wins_abort_race() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let temp = tempdir().unwrap();
+            let endpoint = format!("local://{}", temp.path().join("cas").display());
+            let session = XetSessionBuilder::new()
+                .with_tokio_handle(runtime.handle().clone())
+                .build()
+                .unwrap();
+            let commit = session
+                .new_upload_commit()
+                .unwrap()
+                .with_endpoint(&endpoint)
+                .build()
+                .await
+                .unwrap();
+            let stream = commit.upload_stream(None, Sha256Policy::Skip).await.unwrap();
+            stream.write(&b"finish wins"[..]).await.unwrap();
+
+            // Pause the worker so finish's spawned dedup task cannot complete on its first poll.
+            let (release, wait) = std::sync::mpsc::channel();
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let blocked = runtime.spawn(async move {
+                started.send(()).unwrap();
+                let _ = wait.recv();
+            });
+            ready.await.unwrap();
+            // The inner finish has no cancellation branch, so ingestion always wins here.
+            let mut finish = Box::pin(stream.inner.finish());
+            assert!(futures::poll!(finish.as_mut()).is_pending());
+            stream.abort();
+            let mut committed = Box::pin(commit.commit());
+            assert!(futures::poll!(committed.as_mut()).is_pending());
+
+            release.send(()).unwrap();
+            blocked.await.unwrap();
+            let metadata = finish.await.unwrap();
+            let report = committed.await.unwrap();
+            assert_eq!(report.uploads.keys().collect::<Vec<_>>(), [&stream.task_id()]);
+            assert_eq!(download(&session, &endpoint, metadata, temp.path().join("out")).await, b"finish wins");
         });
     }
 
