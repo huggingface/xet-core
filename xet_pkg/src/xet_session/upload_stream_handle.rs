@@ -1,7 +1,7 @@
 //! XetStreamUpload — handle for incremental streaming uploads
 
 use std::fmt;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use bytes::Bytes;
 #[cfg(target_family = "wasm")]
@@ -23,7 +23,9 @@ type CleanerState = Option<(SingleFileCleaner, Option<String>)>;
 
 pub(super) struct XetStreamUploadInner {
     pub(super) task_id: UniqueId,
-    pub(super) result: Arc<OnceLock<XetFileMetadata>>,
+    /// Set by a finish that completed ingestion. `abort()` cancels under this lock and `finish` stores under
+    /// it, so a stream ends finished or aborted, never both.
+    pub(super) result: Mutex<Option<XetFileMetadata>>,
     pub(super) cleaner: Arc<tokio::sync::Mutex<CleanerState>>,
     pub(super) upload_session: Arc<FileUploadSession>,
     pub(super) task_runtime: Arc<TaskRuntime>,
@@ -43,8 +45,8 @@ impl XetStreamUploadInner {
         let Some((cleaner, tracking_name)) = guard.take() else {
             return Err(XetError::other("stream already finished"));
         };
-        // Keep the lock until ingestion stops and its result is stored, including when cancellation drops
-        // this future. commit's settle_aborted decides from `result` once it gets the lock.
+        // Keep the lock until ingestion stops, including when cancellation drops this future.
+        // commit's discard_aborted must not race a finish still registering session data.
         let (xet_info, dedup_metrics) = cleaner.finish().await?;
         let meta = XetFileMetadata {
             task_id: self.task_id,
@@ -52,13 +54,19 @@ impl XetStreamUploadInner {
             dedup_metrics,
             tracking_name,
         };
-        let _ = self.result.set(meta.clone());
+        // An `abort()` that ran during ingestion wins: store nothing, so the commit leaves the stream out.
+        let mut result = self.result.lock()?;
+        if self.task_runtime.cancellation_token().is_cancelled() {
+            return Err(XetError::UserCancelled("upload_stream_finish cancelled by user".to_string()));
+        }
+        *result = Some(meta.clone());
+        drop(result);
         drop(guard);
         Ok(meta)
     }
 
     fn try_finish(self: &Arc<Self>) -> Option<XetFileMetadata> {
-        self.result.get().cloned()
+        self.result.lock().ok()?.clone()
     }
 
     fn progress(&self) -> Option<ItemProgressReport> {
@@ -66,10 +74,12 @@ impl XetStreamUploadInner {
     }
 
     fn abort(&self) {
-        if self.result.get().is_some() {
+        let result = self.result.lock().unwrap_or_else(PoisonError::into_inner);
+        if result.is_some() {
             return;
         }
         let _ = self.task_runtime.cancel_subtree();
+        drop(result);
         if let Ok(mut cleaner_guard) = self.cleaner.try_lock() {
             *cleaner_guard = None;
         }
@@ -172,22 +182,15 @@ impl XetStreamUpload {
         self.inner.try_finish()
     }
 
-    /// Settle a stream that [`abort`](Self::abort) marked cancelled before the commit goes ahead.
+    /// Release what an aborted stream still holds so the commit can go ahead without it: drop its
+    /// data pipeline and stop tracking its file in the upload session's progress.
     ///
-    /// A `finish` already in flight races the abort. If its ingestion completed, the stream returns its
-    /// metadata and stays in the commit. Otherwise this drops the data pipeline, stops tracking the file
-    /// in the upload session's progress, and returns `None`.
-    ///
-    /// `abort()` drops the pipeline only if no write or finish holds it. Both hold it until they stop, and a
-    /// finish stores its result first, so this waits for the lock and then decides.
-    pub(super) async fn settle_aborted(&self) -> Option<XetFileMetadata> {
-        let mut cleaner = self.inner.cleaner.lock().await;
-        if let Some(meta) = self.inner.result.get() {
-            return Some(meta.clone());
-        }
-        drop(cleaner.take());
+    /// [`abort`](Self::abort) drops the pipeline only if no write or finish holds it. Both hold it until
+    /// they stop, so this waits for the lock. A finish that `abort()` beat stores no result, so the stream
+    /// stays out.
+    pub(super) async fn discard_aborted(&self) {
+        drop(self.inner.cleaner.lock().await.take());
         self.inner.upload_session.abandon_file(self.task_id());
-        None
     }
 
     /// Per-file progress snapshot, or `None` if not yet available.
@@ -201,7 +204,7 @@ impl XetStreamUpload {
 
     /// Cancel an unfinished streaming upload. A successful [`finish`](Self::finish) is irrevocable;
     /// calling `abort` afterwards is a no-op and the file remains in the commit. A `finish` still in
-    /// flight may complete anyway; it then returns the metadata and the file stays in the commit.
+    /// flight returns [`XetError::UserCancelled`] instead, and the file is left out.
     ///
     /// Drops the internal data pipeline.  Subsequent [`write`](Self::write) or
     /// [`finish`](Self::finish) calls may return [`XetError::UserCancelled`] or

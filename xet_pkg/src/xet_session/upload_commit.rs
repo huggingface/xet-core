@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 #[cfg(target_family = "wasm")]
 use tokio_with_wasm::alias as tokio;
@@ -178,7 +178,7 @@ impl XetUploadCommitInner {
         let handle = XetStreamUpload {
             inner: Arc::new(XetStreamUploadInner {
                 task_id,
-                result: Arc::new(OnceLock::new()),
+                result: Mutex::new(None),
                 cleaner: Arc::new(tokio::sync::Mutex::new(Some((cleaner, tracking_name)))),
                 upload_session: self.upload_session.clone(),
                 task_runtime: task_runtime.clone(),
@@ -274,12 +274,9 @@ impl XetUploadCommitInner {
                 Some(meta) => {
                     files.insert(stream.task_id(), meta);
                 },
-                // Given up with `abort()`: the stream is left out of the commit, unless a finish
-                // already in flight completed first.
+                // Given up with `abort()`: the stream is left out of the commit.
                 None if matches!(stream.status(), Ok(XetTaskState::UserCancelled)) => {
-                    if let Some(meta) = stream.settle_aborted().await {
-                        files.insert(stream.task_id(), meta);
-                    }
+                    stream.discard_aborted().await;
                 },
                 None => {
                     return Err(XetError::other(format!(
@@ -1395,10 +1392,12 @@ mod tests {
         });
     }
 
-    // Once `abort()` cancels the token, an in-flight finish races it. Drive the branch where ingestion wins
-    // after `commit()` is already waiting for the stream's lock: that finish succeeded, so the file stays.
+    // `abort()` and an in-flight finish settle the stream once. An abort that lands while ingestion is still
+    // running wins even when that ingestion then completes: the finish stores nothing and reports the cancel,
+    // and the commit leaves the stream out. The inner finish has no cancellation branch, so this exercises
+    // the settle itself rather than the token race.
     #[test]
-    fn test_commit_keeps_stream_whose_finish_wins_abort_race() {
+    fn test_abort_wins_over_finish_still_ingesting() {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()
@@ -1419,7 +1418,7 @@ mod tests {
                 .await
                 .unwrap();
             let stream = commit.upload_stream(None, Sha256Policy::Skip).await.unwrap();
-            stream.write(&b"finish wins"[..]).await.unwrap();
+            stream.write(&b"abort wins"[..]).await.unwrap();
 
             // Pause the worker so finish's spawned dedup task cannot complete on its first poll.
             let (release, wait) = std::sync::mpsc::channel();
@@ -1429,7 +1428,6 @@ mod tests {
                 let _ = wait.recv();
             });
             ready.await.unwrap();
-            // The inner finish has no cancellation branch, so ingestion always wins here.
             let mut finish = Box::pin(stream.inner.finish());
             assert!(futures::poll!(finish.as_mut()).is_pending());
             stream.abort();
@@ -1438,10 +1436,10 @@ mod tests {
 
             release.send(()).unwrap();
             blocked.await.unwrap();
-            let metadata = finish.await.unwrap();
-            let report = committed.await.unwrap();
-            assert_eq!(report.uploads.keys().collect::<Vec<_>>(), [&stream.task_id()]);
-            assert_eq!(download(&session, &endpoint, metadata, temp.path().join("out")).await, b"finish wins");
+            assert!(matches!(finish.await, Err(XetError::UserCancelled(_))));
+            assert!(stream.try_finish().is_none());
+            assert_eq!(stream.status().unwrap(), XetTaskState::UserCancelled);
+            assert!(committed.await.unwrap().uploads.is_empty());
         });
     }
 
