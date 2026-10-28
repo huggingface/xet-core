@@ -47,6 +47,13 @@ pub(crate) enum ShardUploadErrorFrame {
     Retryable = 2,
 }
 
+/// Upcoming `fetch_term` responses to trickle: how many, and of which xorb, or of any when `xorb_hash` is `None`.
+#[derive(Default)]
+pub(crate) struct TrickleFetchTerms {
+    pub(crate) remaining: usize,
+    pub(crate) xorb_hash: Option<MerkleHash>,
+}
+
 /// Server state passed to all handlers.
 #[derive(Clone)]
 pub(crate) struct ServerState {
@@ -61,6 +68,9 @@ pub(crate) struct ServerState {
     /// While set, `/v2/shards` emits an in-stream `Error` frame instead of committing.
     /// Encodes [`ShardUploadErrorFrame`] as `u8`.
     pub(crate) shard_upload_error_frame: Arc<AtomicU8>,
+    /// Upcoming single-range `fetch_term` responses that send half of their data and then
+    /// trickle the rest at 100 bytes per second.
+    pub(crate) trickle_fetch_terms: Arc<Mutex<TrickleFetchTerms>>,
 }
 
 /// Represents the different forms a Range header can take.
@@ -434,7 +444,7 @@ pub async fn fetch_term(State(state): State<ServerState>, uri: Uri, headers: Hea
         // the multirange thresholds (V2 URLs with individual requests).
         if let Ok(Some(FileRangeVariant::Normal(range))) = parse_range_header(headers.get(RANGE)) {
             return match state.client.get_xorb_raw_bytes(&decoded.hash, Some(range)).await {
-                Ok(data) => (StatusCode::PARTIAL_CONTENT, data).into_response(),
+                Ok(data) => fetch_term_response(&state, &decoded.hash, StatusCode::PARTIAL_CONTENT, data),
                 Err(e) => error_to_response(e),
             };
         }
@@ -442,7 +452,7 @@ pub async fn fetch_term(State(state): State<ServerState>, uri: Uri, headers: Hea
         if decoded.byte_ranges.len() == 1 {
             let range = &decoded.byte_ranges[0];
             return match state.client.get_xorb_raw_bytes(&decoded.hash, Some(*range)).await {
-                Ok(data) => (StatusCode::PARTIAL_CONTENT, data).into_response(),
+                Ok(data) => fetch_term_response(&state, &decoded.hash, StatusCode::PARTIAL_CONTENT, data),
                 Err(e) => error_to_response(e),
             };
         }
@@ -501,9 +511,38 @@ pub async fn fetch_term(State(state): State<ServerState>, uri: Uri, headers: Hea
 
     // Fetch raw (serialized/compressed) bytes from the XORB
     match state.client.get_xorb_raw_bytes(&decoded.hash, byte_range).await {
-        Ok(data) => (StatusCode::OK, data).into_response(),
+        Ok(data) => fetch_term_response(&state, &decoded.hash, StatusCode::OK, data),
         Err(e) => error_to_response(e),
     }
+}
+
+/// Returns the `fetch_term` response for `data`, trickled if requested through
+/// [`ServerState::trickle_fetch_terms`].
+fn fetch_term_response(state: &ServerState, xorb_hash: &MerkleHash, status: StatusCode, data: Bytes) -> Response {
+    let trickle = {
+        let mut trickle = state.trickle_fetch_terms.lock().unwrap_or_else(|e| e.into_inner());
+        let matches = trickle.remaining > 0 && trickle.xorb_hash.is_none_or(|h| h == *xorb_hash);
+        if matches {
+            trickle.remaining -= 1;
+        }
+        matches
+    };
+    if !trickle || data.len() < 2 {
+        return (status, data).into_response();
+    }
+
+    let head = data.slice(..data.len() / 2);
+    let tail = data.slice(data.len() / 2..);
+    let tail = futures_util::stream::unfold(tail, |mut rest| async move {
+        if rest.is_empty() {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let byte = rest.split_to(1);
+        Some((Ok::<_, std::io::Error>(byte), rest))
+    });
+    let body = futures_util::stream::once(async move { Ok(head) }).chain(tail);
+    (status, Body::from_stream(body)).into_response()
 }
 
 /// GET /v1/chunks/{prefix}/{hash}

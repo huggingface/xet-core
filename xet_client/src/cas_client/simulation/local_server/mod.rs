@@ -20,6 +20,7 @@ mod simulation_control_client;
 pub(crate) mod simulation_handlers;
 mod simulation_types;
 
+pub(crate) use handlers::TrickleFetchTerms;
 pub use latency_simulation::ServerLatencyProfile;
 pub use server::{LocalServer, LocalServerConfig};
 pub use simulation_control_client::SimulationControlClient;

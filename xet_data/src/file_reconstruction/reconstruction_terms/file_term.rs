@@ -192,6 +192,8 @@ pub async fn retrieve_file_term_block(
                                 references: vec![],
                                 uncompressed_size_if_known: None,
                                 data: OnceCell::new(),
+                                hedge: Default::default(),
+                                served_from_cache: Default::default(),
                             });
 
                             xorb_block_retrieval_urls.push((fetch_entry.url.clone(), http_ranges));
@@ -217,6 +219,8 @@ pub async fn retrieve_file_term_block(
                                         references: vec![],
                                         uncompressed_size_if_known: None,
                                         data: OnceCell::new(),
+                                        hedge: Default::default(),
+                                        served_from_cache: Default::default(),
                                     });
 
                                     xorb_block_retrieval_urls.push((fetch_entry.url.clone(), vec![range.bytes]));

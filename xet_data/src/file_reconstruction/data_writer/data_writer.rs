@@ -37,4 +37,9 @@ pub trait DataWriter: Send + 'static {
     /// number of bytes written. Dropping the writer without calling `finish` cancels
     /// the reconstruction via the shared run state.
     async fn finish(mut self: Box<Self>) -> Result<u64>;
+
+    /// Whether data is written in byte order, so that one unfinished term holds back the ones after it.
+    fn writes_in_order(&self) -> bool {
+        true
+    }
 }

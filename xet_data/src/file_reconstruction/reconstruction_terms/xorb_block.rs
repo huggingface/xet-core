@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use bytes::Bytes;
-use tokio::sync::{Mutex, OnceCell};
+use tokio::sync::{Mutex, Notify, OnceCell};
 use xet_client::cas_client::{Client, ProgressCallback};
 use xet_client::cas_types::ChunkRange;
 #[cfg(not(target_family = "wasm"))]
@@ -62,6 +63,11 @@ pub struct XorbBlock {
     /// from the references. Passed to clients as a debug assertion hint.
     pub uncompressed_size_if_known: Option<usize>,
     pub data: OnceCell<Arc<XorbBlockData>>,
+    /// Notified to start a second, racing download of this block. See [`Self::request_hedge`].
+    pub(crate) hedge: Notify,
+    /// Set when the data came from the chunk cache rather than the network.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    pub(crate) served_from_cache: AtomicBool,
 }
 
 impl PartialEq for XorbBlock {
@@ -88,6 +94,13 @@ fn build_chunk_offsets(chunk_ranges: &[ChunkRange], byte_offsets: &[u32]) -> Vec
 }
 
 impl XorbBlock {
+    /// Starts a second download of this block that races the one in progress, if any. Has no effect
+    /// once the data is cached.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    pub(crate) fn request_hedge(&self) {
+        self.hedge.notify_one();
+    }
+
     /// Retrieve the xorb block data from the client, caching it for subsequent calls.
     ///
     /// Uses single-flight: the first caller acquires a CAS download permit and downloads
@@ -130,33 +143,66 @@ impl XorbBlock {
                         }
                         let chunk_offsets = build_chunk_offsets(&chunk_ranges, &cache_range.offsets);
                         let data = Bytes::from(cache_range.data);
+                        self.served_from_cache.store(true, Ordering::Relaxed);
                         return Ok(Arc::new(XorbBlockData { chunk_offsets, data }));
                     }
                 }
 
                 // Cache miss or no cache configured - download from CAS.
-                let permit = client.acquire_download_permit().await?;
-
-                let url_provider = XorbURLProvider {
-                    ctx: ctx.clone(),
-                    client: client.clone(),
-                    url_info,
-                    xorb_block_index,
-                    last_acquisition_id: Mutex::new(UniqueId::null()),
-                };
-
                 // Progress callback reports only transfer (network) bytes during get_file_term_data.
-                // Decompressed bytes are reported by the data writer when written to disk.
+                // Decompressed bytes are reported by the data writer when written to disk. With a hedge,
+                // both downloads report into it, so only progress past the furthest one is counted.
+                let furthest_bytes = Arc::new(AtomicU64::new(0));
                 let progress_callback: Option<ProgressCallback> = progress_updater.as_ref().map(|updater| {
                     let updater = updater.clone();
-                    Arc::new(move |delta: u64, _completed: u64, _total: u64| {
-                        updater.report_transfer_bytes_completed(delta);
+                    Arc::new(move |_delta: u64, completed: u64, _total: u64| {
+                        let previous = furthest_bytes.fetch_max(completed, Ordering::Relaxed);
+                        if completed > previous {
+                            updater.report_transfer_bytes_completed(completed - previous);
+                        }
                     }) as ProgressCallback
                 });
 
-                let (data, chunk_byte_offsets) = client
-                    .get_file_term_data(Box::new(url_provider), permit, progress_callback, uncompressed_size_if_known)
-                    .await?;
+                let download = || async {
+                    let permit = client.acquire_download_permit().await?;
+                    let url_provider = XorbURLProvider {
+                        ctx: ctx.clone(),
+                        client: client.clone(),
+                        url_info: url_info.clone(),
+                        xorb_block_index,
+                        last_acquisition_id: Mutex::new(UniqueId::null()),
+                    };
+                    client
+                        .get_file_term_data(
+                            Box::new(url_provider),
+                            permit,
+                            progress_callback.clone(),
+                            uncompressed_size_if_known,
+                        )
+                        .await
+                };
+
+                // The first download decides the result. A hedge, once requested, races it and wins only by
+                // finishing first; if the hedge fails, the first download carries on.
+                let primary = download();
+                let hedge = async {
+                    self.hedge.notified().await;
+                    download().await
+                };
+                tokio::pin!(primary, hedge);
+                let mut hedge_failed = false;
+                let (data, chunk_byte_offsets) = loop {
+                    tokio::select! {
+                        result = &mut primary => break result?,
+                        result = &mut hedge, if !hedge_failed => match result {
+                            Ok(result) => break result,
+                            Err(e) => {
+                                tracing::debug!(xorb_hash = %self.xorb_hash, error = %e, "Hedged download failed");
+                                hedge_failed = true;
+                            },
+                        },
+                    }
+                };
 
                 // Store in chunk cache (best-effort, non-blocking).
                 #[cfg(not(target_family = "wasm"))]

@@ -21,6 +21,8 @@ use xet_runtime::utils::adjustable_semaphore::AdjustableSemaphore;
 
 use super::data_writer::{DataWriter, DownloadStream, SequentialWriter, UnorderedDownloadStream};
 use super::error::{FileReconstructionError, Result};
+#[cfg(not(target_family = "wasm"))]
+use super::head_of_line_hedger::HeadOfLineHedger;
 use super::reconstruction_terms::ReconstructionTermManager;
 use super::run_state::{RunError, RunState};
 use crate::progress_tracking::ItemProgressUpdater;
@@ -326,6 +328,9 @@ impl FileReconstructor {
         // The range start offset - we need to adjust byte ranges to be relative to this.
         let range_start_offset = requested_range.start;
 
+        #[cfg(not(target_family = "wasm"))]
+        let mut hedger = data_writer.writes_in_order().then(HeadOfLineHedger::new);
+
         // Outer loop: retrieve blocks of file terms.
         // Use select! so a background error (which cancels the token) wakes this
         // up immediately rather than waiting for the network round-trip to finish.
@@ -393,6 +398,11 @@ impl FileReconstructor {
                         chunk_cache.clone(),
                     )
                     .await?;
+                #[cfg(not(target_family = "wasm"))]
+                let data_future = match hedger.as_mut() {
+                    Some(hedger) => hedger.track(term_size, file_term.xorb_block.clone(), data_future),
+                    None => data_future,
+                };
 
                 #[cfg(debug_assertions)]
                 {
