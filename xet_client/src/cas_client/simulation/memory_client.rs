@@ -15,6 +15,7 @@ use xet_core_structures::merklehash::MerkleHash;
 #[cfg(not(target_family = "wasm"))]
 use xet_core_structures::merklehash::compute_data_hash;
 use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
+use xet_core_structures::metadata_shard::shard_file::current_timestamp;
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::metadata_shard::streaming_shard::MDBMinimalShard;
 use xet_core_structures::metadata_shard::xorb_structs::MDBXorbInfo;
@@ -102,6 +103,10 @@ pub struct MemoryClient {
     /// Shard hash currently tagged for lifecycle deletion. Shard data is
     /// retained in `shard` so a re-upload can clear the tag.
     gc_tagged_shard: RwLock<Option<MerkleHash>>,
+    /// S3-style tag set for the single stored shard, alongside the hash it belongs to so a
+    /// re-upload of different content cannot inherit the previous shard's tags.
+    #[cfg(not(target_family = "wasm"))]
+    shard_tag_set: RwLock<Option<(MerkleHash, ObjectTagSet)>>,
 }
 
 impl MemoryClient {
@@ -124,6 +129,8 @@ impl MemoryClient {
             v2_disabled_status: AtomicU16::new(0),
             lifecycle_tag_deletion: AtomicBool::new(false),
             gc_tagged_shard: RwLock::new(None),
+            #[cfg(not(target_family = "wasm"))]
+            shard_tag_set: RwLock::new(None),
         })
     }
 
@@ -151,6 +158,20 @@ impl MemoryClient {
         let state = self.xorb_state.read().await;
         if !state.xorbs.contains_key(hash) || state.tagged.contains(hash) {
             return Err(ClientError::Other(format!("XORB not found: {}", hash.hex())));
+        }
+        Ok(())
+    }
+
+    /// Errors unless the shard is the one currently stored and not condemned, matching how
+    /// `LocalClient` errors on a shard whose canonical file has been renamed away.
+    #[cfg(not(target_family = "wasm"))]
+    async fn require_readable_shard(&self, hash: &MerkleHash) -> Result<()> {
+        let shard = self.shard.read().await;
+        let Some((current_hash, _)) = Self::current_shard_hash_and_bytes(&shard)? else {
+            return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
+        };
+        if &current_hash != hash || self.shard_is_tagged(hash).await {
+            return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
         }
         Ok(())
     }
@@ -858,7 +879,8 @@ impl Client for MemoryClient {
         let minimal_shard = MDBMinimalShard::from_reader(&mut reader, true, true)?;
 
         let mut out = Vec::new();
-        minimal_shard.serialize_xorb_subset_with_expiry(&mut out, Some(expiry), |_| true)?;
+        // Cached by the client, where the creation time orders cache eviction, so stamp it.
+        minimal_shard.serialize_xorb_subset_with_expiry(&mut out, Some(expiry), Some(current_timestamp()), |_| true)?;
         Ok(Some(out.into()))
     }
 
@@ -872,7 +894,7 @@ impl Client for MemoryClient {
         shard_data: Bytes,
         _permit: super::super::adaptive_concurrency::ConnectionPermit,
         progress_callback: Option<ShardUploadProgressCallback>,
-    ) -> Result<()> {
+    ) -> Result<Option<MerkleHash>> {
         self.apply_api_delay().await;
         // Parse the shard using the streaming parser (handles shards without footer)
         let mut reader = Cursor::new(&shard_data);
@@ -898,10 +920,18 @@ impl Client for MemoryClient {
         // Update global dedup lookup using the minimal shard's method
         let chunk_hashes = minimal_shard.global_dedup_eligible_chunks();
 
+        // Clients upload shards without a footer, but a dedup response must carry one for the client
+        // to import it. Keep the re-serialized form, as `LocalClient` stores it.
+        let with_verification =
+            (0..minimal_shard.num_files()).all(|i| minimal_shard.file(i).is_some_and(|f| f.contains_verification()));
+        let mut stored = Vec::with_capacity(minimal_shard.serialized_size(with_verification));
+        minimal_shard.serialize(&mut stored, with_verification, None)?;
+        let stored = Bytes::from(stored);
+
         {
             let mut dedup_lg = self.global_dedup.write().await;
             for chunk in chunk_hashes {
-                dedup_lg.insert(chunk, shard_data.clone());
+                dedup_lg.insert(chunk, stored.clone());
             }
         }
 
@@ -910,6 +940,17 @@ impl Client for MemoryClient {
         // overwriting a tagged object.
         *self.gc_tagged_shard.write().await = None;
 
+        // CAS stamps `last-upload` on every shard write. Shards are content-addressed, so for
+        // a re-upload of identical content this stamp is the only thing that changes. The hash
+        // is read back after the merge, since uploads accumulate into one stored shard here.
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let shard_lg = self.shard.read().await;
+            if let Some((current_hash, _)) = Self::current_shard_hash_and_bytes(&shard_lg)? {
+                *self.shard_tag_set.write().await = Some((current_hash, last_upload_tag_set_now()));
+            }
+        }
+
         // No NDJSON stream in the memory sim; synthesize transfer + terminal Result so
         // SessionShardInterface progress counters complete like production V1.
         if let Some(cb) = &progress_callback {
@@ -917,7 +958,9 @@ impl Client for MemoryClient {
             cb(ShardUploadProgressType::Response(&ShardUploadEvent::Result));
         }
 
-        Ok(())
+        // Uploads accumulate into one merged shard here rather than a per-upload object, so
+        // there is no hash this particular shard was stored under.
+        Ok(None)
     }
 
     async fn upload_xorb(
@@ -1184,6 +1227,10 @@ impl super::DeletionControlableClient for MemoryClient {
         if &current_hash != hash {
             return Err(ClientError::Other(format!("Shard not found: {}", hash.hex())));
         }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            *self.shard_tag_set.write().await = None;
+        }
         if self.lifecycle_tag_deletion_enabled() {
             *self.gc_tagged_shard.write().await = Some(current_hash);
         } else {
@@ -1299,6 +1346,24 @@ impl super::DeletionControlableClient for MemoryClient {
         Ok(())
     }
 
+    async fn get_shard_tag_set(&self, hash: &MerkleHash) -> Result<ObjectTagSet> {
+        self.require_readable_shard(hash).await?;
+        Ok(self
+            .shard_tag_set
+            .read()
+            .await
+            .as_ref()
+            .filter(|(h, _)| h == hash)
+            .map(|(_, tags)| tags.clone())
+            .unwrap_or_default())
+    }
+
+    async fn set_shard_tag_set(&self, hash: &MerkleHash, tags: ObjectTagSet) -> Result<()> {
+        self.require_readable_shard(hash).await?;
+        *self.shard_tag_set.write().await = Some((*hash, tags));
+        Ok(())
+    }
+
     async fn list_shards_with_etags(&self) -> Result<Vec<(MerkleHash, ObjectETag)>> {
         let shard = self.shard.read().await;
         let Some((shard_hash, shard_bytes)) = Self::current_shard_hash_and_bytes(&shard)? else {
@@ -1325,6 +1390,10 @@ impl super::DeletionControlableClient for MemoryClient {
         };
         if &current_etag != etag {
             return Ok(false);
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            *self.shard_tag_set.write().await = None;
         }
         if self.lifecycle_tag_deletion_enabled() {
             *self.gc_tagged_shard.write().await = Some(current_hash);

@@ -3,13 +3,13 @@ description: Sign Windows files with Microsoft Trusted Signing Service
 runs:
   using: "composite"
   steps:
-    - uses: azure/trusted-signing-action@1d365fec12862c4aa68fcac418143d73f0cea293 # v0
+    - uses: azure/trusted-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
       with:
         azure-tenant-id: ${{ inputs.azure_tenant_id }}
         azure-client-id: ${{ inputs.azure_client_id }}
         azure-client-secret: ${{ inputs.azure_client_secret }}
         endpoint: https://eus.codesigning.azure.net/
-        trusted-signing-account-name: tsa-huggingface-apps
+        signing-account-name: tsa-huggingface-apps
         certificate-profile-name: git-xet-windows
         files: ${{ inputs.file }}
         file-digest: SHA256
@@ -25,6 +25,9 @@ runs:
         exclude-azure-powershell-credential: true
         exclude-azure-developer-cli-credential: true
         exclude-interactive-browser-credential: true
+        # The x64 and arm64 runners keep the workspace on different drives, and actions/cache stores paths
+        # relative to the workspace, so a module cached by one runner restores to the wrong drive on the other.
+        cache-dependencies: false
 inputs:
   file:
     required: true

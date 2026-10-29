@@ -81,12 +81,16 @@ pub trait Client: Send + Sync {
     async fn acquire_upload_permit(&self) -> Result<ConnectionPermit>;
 
     /// Upload a new shard. The optional callback receives v2 NDJSON progress events.
+    ///
+    /// Returns the hash the server stored the shard under, which is authoritative: the server
+    /// re-serializes the upload and keys the object on the result. `None` when the server does
+    /// not report one, so callers that need it must say what that means for them.
     async fn upload_shard(
         &self,
         shard_data: bytes::Bytes,
         upload_permit: ConnectionPermit,
         progress_callback: Option<ShardUploadProgressCallback>,
-    ) -> Result<()>;
+    ) -> Result<Option<MerkleHash>>;
 
     /// Upload a new xorb. Optional progress callback receives (delta, completed, total) in transfer bytes.
     async fn upload_xorb(

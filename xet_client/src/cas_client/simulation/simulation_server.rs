@@ -4,7 +4,6 @@
 //! test servers that wrap `LocalServer` and provide easy access to both
 //! `RemoteSimulationClient` (for HTTP interactions) and `DirectAccessClient` (for direct state access).
 
-use std::net::TcpListener as StdTcpListener;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,7 +12,9 @@ use async_trait::async_trait;
 use http::header::{self, HeaderMap, HeaderValue};
 #[cfg(unix)]
 use tempfile::TempDir;
+use tokio::net::TcpListener;
 use tokio::sync::oneshot;
+use xet_core_structures::merklehash::MerkleHash;
 use xet_runtime::core::XetContext;
 
 use super::super::RemoteClient;
@@ -24,7 +25,7 @@ use super::network_simulation::{NetworkProfile, NetworkSimulationProxy};
 #[cfg(unix)]
 use super::socket_proxy::UnixSocketProxy;
 use super::{DeletionControlableClient, DirectAccessClient, LocalClient, MemoryClient, RemoteSimulationClient};
-use crate::error::Result;
+use crate::error::{ClientError, Result};
 
 /// Builder for creating a `LocalTestServer` with various configuration options.
 ///
@@ -229,7 +230,8 @@ impl LocalTestServerBuilder {
                 (lc, Some(dc))
             };
 
-        let port = LocalTestServer::find_available_port();
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("Failed to bind test server");
+        let port = listener.local_addr().expect("Failed to read test server address").port();
         let host = "127.0.0.1".to_string();
         let tcp_endpoint = format!("http://{}:{}", host, port);
         let server_host_port = format!("{}:{}", host, port);
@@ -260,7 +262,9 @@ impl LocalTestServerBuilder {
         let v1_reconstruction_ranges = server.v1_reconstruction_ranges_handle();
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         tokio::spawn(async move {
-            let _ = server.run_until_stopped(shutdown_rx).await;
+            if let Err(e) = server.serve_until_stopped(listener, shutdown_rx).await {
+                tracing::error!(error = %e, "test server failed");
+            }
         });
         tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -488,6 +492,19 @@ impl LocalTestServer {
         self.remote_simulation_client().simulation_set_latency_profile(profile).await
     }
 
+    /// Enables or disables the XORB upload grant API; while disabled it answers 404.
+    pub async fn set_xorb_upload_grants_enabled(&self, enabled: bool) -> Result<()> {
+        let value = if enabled { "on" } else { "off" };
+        let url = format!("{}/simulation/set_config?config=xorb_upload_grants&value={value}", self.http_endpoint);
+        reqwest::Client::new()
+            .post(url)
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status)
+            .map_err(ClientError::from)?;
+        Ok(())
+    }
+
     /// Verifies referential integrity by calling through to the underlying `DeletionControlableClient`.
     pub async fn verify_integrity(&self) -> Result<()> {
         match &self.deletion_client {
@@ -502,10 +519,6 @@ impl LocalTestServer {
             Some(dc) => dc.verify_all_reachable().await,
             None => Ok(()),
         }
-    }
-
-    fn find_available_port() -> u16 {
-        StdTcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
     }
 }
 
@@ -573,7 +586,7 @@ impl Client for LocalTestServer {
         shard_data: bytes::Bytes,
         upload_permit: super::super::adaptive_concurrency::ConnectionPermit,
         progress_callback: Option<super::super::interface::ShardUploadProgressCallback>,
-    ) -> Result<()> {
+    ) -> Result<Option<MerkleHash>> {
         self.remote_simulation_client
             .upload_shard(shard_data, upload_permit, progress_callback)
             .await
@@ -1242,6 +1255,117 @@ mod tests {
         check_v2_shard_upload(server).await;
         check_v2_shard_upload_disabled_fallback(server).await;
         check_v2_shard_upload_error_frame(server).await;
+        check_xorb_upload_grant_flow(server).await;
+    }
+
+    /// Verifies the grant → upload to grant URL → commit flow through `RemoteClient`, including
+    /// re-uploads, commits of unknown or not-yet-uploaded grants, existing xorbs, checksum
+    /// mismatches, and grants being disabled.
+    async fn check_xorb_upload_grant_flow(server: &LocalTestServer) {
+        use xet_core_structures::xorb_object::SerializedXorbObject;
+        use xet_core_structures::xorb_object::xorb_format_test_utils::{
+            ChunkSize, build_and_verify_xorb_object, build_raw_xorb,
+        };
+
+        use crate::cas_client::remote_client::{XorbCommitResult, XorbUploadGrantResult, xorb_checksum};
+        use crate::cas_types::Checksum;
+
+        let ctx = XetContext::default().unwrap();
+        let client = RemoteClient::new(ctx, server.http_endpoint(), &None, "test-session-xorb-grants", false, None);
+        let prefix = "default";
+
+        let new_xorb = || {
+            let xorb =
+                SerializedXorbObject::from_xorb(build_raw_xorb(3, ChunkSize::Random(512, 10248)), false, "lz4", 0)
+                    .unwrap();
+            (xorb.hash, bytes::Bytes::from(xorb.serialized_data))
+        };
+        let request_grant = |hash, data: bytes::Bytes| {
+            let client = client.clone();
+            async move {
+                client
+                    .request_xorb_upload_grant(prefix, &hash, data.len() as u64, xorb_checksum(&data))
+                    .await
+                    .unwrap()
+            }
+        };
+        let upload = |grant, data| {
+            let client = client.clone();
+            async move {
+                let permit = client.acquire_upload_permit().await.unwrap();
+                client.upload_xorb_to_grant(&grant, data, None, permit).await
+            }
+        };
+
+        let (hash, data) = new_xorb();
+
+        let result = client.commit_xorb_upload(prefix, &hash, "unknown-grant").await.unwrap();
+        assert!(matches!(result, XorbCommitResult::GrantNotFound), "got {result:?}");
+
+        let XorbUploadGrantResult::Granted(grant) = request_grant(hash, data.clone()).await else {
+            panic!("expected a grant");
+        };
+
+        // A grant whose data was never uploaded cannot be committed.
+        let result = client.commit_xorb_upload(prefix, &hash, &grant.id).await.unwrap();
+        assert!(matches!(result, XorbCommitResult::GrantNotFound), "got {result:?}");
+
+        // A repeated upload to the same grant URL is answered with 412, which counts as success.
+        upload(grant.clone(), data.clone()).await.unwrap();
+        upload(grant.clone(), data.clone()).await.unwrap();
+        assert!(!server.client().xorb_exists(&hash).await.unwrap());
+
+        let result = client.commit_xorb_upload(prefix, &hash, &grant.id).await.unwrap();
+        assert!(matches!(result, XorbCommitResult::Committed), "got {result:?}");
+        assert!(server.client().xorb_exists(&hash).await.unwrap());
+
+        // Committing again, or requesting a grant for the stored xorb, sees that it already exists.
+        let result = client.commit_xorb_upload(prefix, &hash, &grant.id).await.unwrap();
+        assert!(matches!(result, XorbCommitResult::Committed), "got {result:?}");
+        let result = request_grant(hash, data.clone()).await;
+        assert!(matches!(result, XorbUploadGrantResult::AlreadyExists), "got {result:?}");
+
+        // Data that does not match the grant's checksum is rejected.
+        let (hash, data) = new_xorb();
+        let permit = client.acquire_upload_permit().await.unwrap();
+        let XorbUploadGrantResult::Granted(grant) = client
+            .request_xorb_upload_grant(prefix, &hash, data.len() as u64, Checksum::Crc64Nvme(0))
+            .await
+            .unwrap()
+        else {
+            panic!("expected a grant");
+        };
+        let err = client
+            .upload_xorb_to_grant(&grant, data.clone(), None, permit)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status(), Some(reqwest::StatusCode::BAD_REQUEST));
+
+        // Commit rejects staged data with a footer, or whose hash differs from the committed one.
+        let with_footer = build_and_verify_xorb_object(
+            build_raw_xorb(3, ChunkSize::Random(512, 10248)),
+            xet_core_structures::xorb_object::CompressionScheme::LZ4,
+        );
+        let (other_hash, _) = new_xorb();
+        let (_, plain_data) = new_xorb();
+        for (commit_hash, staged) in [
+            (with_footer.hash, bytes::Bytes::from(with_footer.serialized_data)),
+            (other_hash, plain_data),
+        ] {
+            let XorbUploadGrantResult::Granted(grant) = request_grant(commit_hash, staged.clone()).await else {
+                panic!("expected a grant");
+            };
+            upload(grant.clone(), staged).await.unwrap();
+            let err = client.commit_xorb_upload(prefix, &commit_hash, &grant.id).await.unwrap_err();
+            assert_eq!(err.status(), Some(reqwest::StatusCode::BAD_REQUEST));
+            assert!(!server.client().xorb_exists(&commit_hash).await.unwrap());
+        }
+
+        // With grants disabled, the grant API is unavailable.
+        assert_eq!(post_set_config(server, "xorb_upload_grants", "off").await, reqwest::StatusCode::OK);
+        let result = request_grant(hash, data).await;
+        assert!(matches!(result, XorbUploadGrantResult::Unavailable), "got {result:?}");
+        assert_eq!(post_set_config(server, "xorb_upload_grants", "on").await, reqwest::StatusCode::OK);
     }
 
     /// Builds fixed raw shard bytes suitable for `/v1/shards` and `/v2/shards` upload tests.

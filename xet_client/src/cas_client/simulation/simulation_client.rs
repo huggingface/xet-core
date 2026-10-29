@@ -12,6 +12,7 @@ use http::header::CONTENT_LENGTH;
 use rand::RngExt;
 use reqwest::{Body, Url};
 use serde_json;
+use xet_core_structures::merklehash::MerkleHash;
 
 use super::super::adaptive_concurrency::ConnectionPermit;
 use super::super::interface::Client;
@@ -224,7 +225,7 @@ impl Client for RemoteSimulationClient {
         shard_data: Bytes,
         upload_permit: ConnectionPermit,
         progress_callback: Option<crate::cas_client::interface::ShardUploadProgressCallback>,
-    ) -> Result<()> {
+    ) -> Result<Option<MerkleHash>> {
         self.inner.upload_shard(shard_data, upload_permit, progress_callback).await
     }
 

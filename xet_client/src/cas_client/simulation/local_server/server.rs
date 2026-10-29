@@ -32,8 +32,6 @@
 //! ```
 
 use std::net::SocketAddr;
-#[cfg(test)]
-use std::net::TcpListener as StdTcpListener;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU8;
 use std::sync::{Arc, Mutex};
@@ -43,13 +41,15 @@ use std::time::Duration;
 #[cfg(test)]
 use async_trait::async_trait;
 use axum::Router;
-use axum::routing::{get, head, post};
+use axum::routing::{get, head, post, put};
 #[cfg(test)]
 use reqwest::header::{self, HeaderMap, HeaderValue};
 use tokio::net::TcpListener;
 #[cfg(test)]
 use tokio::sync::oneshot;
 use tower_http::cors::CorsLayer;
+#[cfg(test)]
+use xet_core_structures::merklehash::MerkleHash;
 use xet_runtime::core::XetContext;
 
 #[cfg(test)]
@@ -107,6 +107,8 @@ pub struct LocalServer {
     v1_reconstruction_ranges: Arc<Mutex<Vec<Option<String>>>>,
     /// `/v2/shards` in-stream Error frame mode (see [`handlers::ShardUploadErrorFrame`]).
     shard_upload_error_frame: Arc<AtomicU8>,
+    /// Upload grants issued by `POST /v1/xorb-grants`.
+    xorb_upload_grants: Arc<handlers::XorbUploadGrants>,
 }
 
 impl LocalServer {
@@ -134,6 +136,7 @@ impl LocalServer {
             telemetry_docs: Arc::default(),
             v1_reconstruction_ranges: Arc::default(),
             shard_upload_error_frame: Arc::new(AtomicU8::new(handlers::ShardUploadErrorFrame::Off as u8)),
+            xorb_upload_grants: Arc::default(),
         })
     }
 
@@ -162,6 +165,7 @@ impl LocalServer {
             telemetry_docs: Arc::default(),
             v1_reconstruction_ranges: Arc::default(),
             shard_upload_error_frame: Arc::new(AtomicU8::new(handlers::ShardUploadErrorFrame::Off as u8)),
+            xorb_upload_grants: Arc::default(),
         }
     }
 
@@ -209,6 +213,8 @@ impl LocalServer {
                     .route("/reconstructions/{file_id}", get(handlers::get_reconstruction))
                     .route("/chunks/{prefix}/{hash}", get(handlers::get_dedup_info_by_chunk))
                     .route("/xorbs/{prefix}/{hash}", head(handlers::head_xorb).post(handlers::post_xorb))
+                    .route("/xorb-grants/{prefix}/{hash}", post(handlers::post_xorb_grant))
+                    .route("/xorb-commits/{prefix}/{hash}/grant/{grant_id}", post(handlers::post_xorb_commit))
                     .route("/shards", post(handlers::post_shard))
                     .route("/files/{file_id}", head(handlers::head_file))
                     .route("/get_xorb/{prefix}/{hash}/", get(handlers::get_file_term_data))
@@ -226,7 +232,8 @@ impl LocalServer {
                 super::simulation_handlers::simulation_routes()
                     .route("/ping", get(handlers::ping))
                     .route("/set_config", post(handlers::set_config))
-                    .route("/dummy_upload", post(handlers::dummy_upload)),
+                    .route("/dummy_upload", post(handlers::dummy_upload))
+                    .route("/xorb-uploads/{grant_id}", put(handlers::put_xorb_upload)),
             )
             .layer(CorsLayer::very_permissive())
             .with_state(handlers::ServerState {
@@ -236,6 +243,7 @@ impl LocalServer {
                 telemetry_docs: self.telemetry_docs.clone(),
                 v1_reconstruction_ranges: self.v1_reconstruction_ranges.clone(),
                 shard_upload_error_frame: self.shard_upload_error_frame.clone(),
+                xorb_upload_grants: self.xorb_upload_grants.clone(),
             })
     }
 
@@ -276,7 +284,19 @@ impl LocalServer {
             .await
             .map_err(|e| ClientError::Other(format!("Failed to bind to {addr}: {e}")))?;
 
-        tracing::info!("Local CAS server listening on {}", addr);
+        self.serve_until_stopped(listener, shutdown_rx).await
+    }
+
+    /// Serves on an already bound listener until a shutdown signal is received on the provided channel.
+    ///
+    /// Tests bind port 0 first and pass the listener here, so the port cannot be taken by another
+    /// server between choosing it and listening on it.
+    pub async fn serve_until_stopped(
+        &self,
+        listener: TcpListener,
+        shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+    ) -> Result<()> {
+        tracing::info!("Local CAS server listening on {}", self.addr());
 
         let router = self.create_router();
 
@@ -363,7 +383,8 @@ impl LocalTestServer {
         deletion_client: Option<Arc<dyn DeletionControlableClient>>,
         _socket_path: Option<PathBuf>,
     ) -> Self {
-        let port = Self::find_available_port();
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("Failed to bind test server");
+        let port = listener.local_addr().expect("Failed to read test server address").port();
         let host = "127.0.0.1".to_string();
         let tcp_endpoint = format!("http://{}:{}", host, port);
 
@@ -371,7 +392,9 @@ impl LocalTestServer {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
         tokio::spawn(async move {
-            let _ = server.run_until_stopped(shutdown_rx).await;
+            if let Err(e) = server.serve_until_stopped(listener, shutdown_rx).await {
+                tracing::error!(error = %e, "test server failed");
+            }
         });
 
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -447,10 +470,6 @@ impl LocalTestServer {
     pub fn deletion_client(&self) -> Option<&Arc<dyn DeletionControlableClient>> {
         self.deletion_client.as_ref()
     }
-
-    fn find_available_port() -> u16 {
-        StdTcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
-    }
 }
 
 #[cfg(test)]
@@ -516,7 +535,7 @@ impl Client for LocalTestServer {
         shard_data: bytes::Bytes,
         upload_permit: crate::cas_client::adaptive_concurrency::ConnectionPermit,
         progress_callback: Option<crate::cas_client::interface::ShardUploadProgressCallback>,
-    ) -> Result<()> {
+    ) -> Result<Option<MerkleHash>> {
         self.remote_client
             .upload_shard(shard_data, upload_permit, progress_callback)
             .await
@@ -677,6 +696,31 @@ mod tests {
     use crate::cas_types::{FileRange, QueryReconstructionResponseV2};
 
     const CHUNK_SIZE: usize = 123;
+
+    // Servers started together must each serve their own backend. Choosing a port and binding it
+    // later let a parallel test take it, so one test's client reached another test's server.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_servers_are_isolated() {
+        let mut starts = tokio::task::JoinSet::new();
+        for _ in 0..16 {
+            starts.spawn(LocalTestServer::start(true));
+        }
+        let servers = starts.join_all().await;
+        let endpoints: HashSet<_> = servers.iter().map(|server| server.endpoint().to_owned()).collect();
+        assert_eq!(endpoints.len(), servers.len());
+
+        for (i, server) in servers.iter().enumerate() {
+            let file = server
+                .remote_client()
+                .upload_random_file(&[(i as u64 + 1, (0, 5))], CHUNK_SIZE)
+                .await
+                .unwrap();
+            for (j, other) in servers.iter().enumerate() {
+                let found = other.client().get_file_reconstruction_info(&file.file_hash).await.unwrap();
+                assert_eq!(found.is_some(), i == j);
+            }
+        }
+    }
 
     /// Verifies basic server operations: upload, reconstruction (full/range/batch/multi-xorb),
     /// file info, dedup queries, and fetch_term endpoint.

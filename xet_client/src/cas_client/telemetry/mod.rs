@@ -72,6 +72,43 @@ impl Direction {
 /// than the event name so heartbeats have one shape regardless of direction.
 pub const HEARTBEAT_EVENT: &str = "xet_transfer_heartbeat";
 
+/// Running totals for xorbs uploaded through one upload path.
+#[derive(Default)]
+struct XorbUploadPathStats {
+    count: AtomicU64,
+    bytes: AtomicU64,
+    /// Summed per-xorb upload time; microseconds so short uploads do not round down to zero.
+    duration_us: AtomicU64,
+}
+
+impl XorbUploadPathStats {
+    fn record(&self, bytes: u64, elapsed: Duration) {
+        self.count.fetch_add(1, Ordering::Relaxed);
+        self.bytes.fetch_add(bytes, Ordering::Relaxed);
+        let elapsed_us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+        self.duration_us.fetch_add(elapsed_us, Ordering::Relaxed);
+    }
+
+    fn totals(&self) -> XorbUploadPathTotals {
+        XorbUploadPathTotals {
+            count: self.count.load(Ordering::Relaxed),
+            bytes: self.bytes.load(Ordering::Relaxed),
+            duration_ms: self.duration_us.load(Ordering::Relaxed) / 1000,
+        }
+    }
+}
+
+/// Snapshot of the xorbs uploaded through one upload path.
+///
+/// `duration_ms` sums each xorb's own upload time, so it exceeds wall-clock time when uploads run
+/// concurrently; `bytes / duration_ms` is the average per-xorb upload rate.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct XorbUploadPathTotals {
+    pub count: u64,
+    pub bytes: u64,
+    pub duration_ms: u64,
+}
+
 /// Per-transfer telemetry state and delivery.
 pub struct TransferTelemetry {
     session_id: String,
@@ -82,6 +119,14 @@ pub struct TransferTelemetry {
     started_at: Instant,
     /// Highest concurrency observed, via `fetch_max` from the permit acquisition path.
     peak_concurrency: AtomicU64,
+    /// Xorbs stored through an upload grant (grant, upload, commit).
+    grant_xorb_uploads: XorbUploadPathStats,
+    /// Xorbs uploaded through `POST /v1/xorbs`, including fallbacks from upload grants.
+    direct_xorb_uploads: XorbUploadPathStats,
+    /// Xorbs uploaded through `POST /v1/xorbs` after at least one upload grant was issued for them.
+    grant_fallbacks: AtomicU64,
+    /// Grant fallbacks caused by a failed upload to the grant URL, e.g. a client that cannot reach it.
+    grant_unreachable: AtomicU64,
     /// Set by whichever of `finalize` or `Drop` gets there first, so exactly one terminal
     /// document is emitted per transfer.
     terminal_sent: AtomicBool,
@@ -136,6 +181,10 @@ impl TransferTelemetry {
             transfer_id: Uuid::now_v7().to_string(),
             started_at: Instant::now(),
             peak_concurrency: AtomicU64::new(0),
+            grant_xorb_uploads: XorbUploadPathStats::default(),
+            direct_xorb_uploads: XorbUploadPathStats::default(),
+            grant_fallbacks: AtomicU64::new(0),
+            grant_unreachable: AtomicU64::new(0),
             terminal_sent: AtomicBool::new(false),
             sink: TelemetrySink::new(ctx, url, http),
             final_flush_timeout: ctx.config.telemetry.final_flush_timeout,
@@ -235,6 +284,41 @@ impl TransferTelemetry {
     /// Records an observed concurrency level, keeping the maximum.
     pub fn record_concurrency(&self, concurrency: usize) {
         self.peak_concurrency.fetch_max(concurrency as u64, Ordering::Relaxed);
+    }
+
+    pub fn grant_xorb_uploads(&self) -> XorbUploadPathTotals {
+        self.grant_xorb_uploads.totals()
+    }
+
+    pub fn direct_xorb_uploads(&self) -> XorbUploadPathTotals {
+        self.direct_xorb_uploads.totals()
+    }
+
+    pub fn grant_fallbacks(&self) -> u64 {
+        self.grant_fallbacks.load(Ordering::Relaxed)
+    }
+
+    pub fn grant_unreachable(&self) -> u64 {
+        self.grant_unreachable.load(Ordering::Relaxed)
+    }
+
+    /// Records a xorb that was uploaded through `POST /v1/xorbs` although an upload grant was issued for it;
+    /// `unreachable` if the fallback followed a failed upload to the grant URL.
+    pub fn record_grant_fallback(&self, unreachable: bool) {
+        self.grant_fallbacks.fetch_add(1, Ordering::Relaxed);
+        if unreachable {
+            self.grant_unreachable.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Records a xorb of `bytes` serialized bytes stored through an upload grant in `elapsed`.
+    pub fn record_grant_xorb_upload(&self, bytes: u64, elapsed: Duration) {
+        self.grant_xorb_uploads.record(bytes, elapsed);
+    }
+
+    /// Records a xorb of `bytes` serialized bytes uploaded through `POST /v1/xorbs` in `elapsed`.
+    pub fn record_direct_xorb_upload(&self, bytes: u64, elapsed: Duration) {
+        self.direct_xorb_uploads.record(bytes, elapsed);
     }
 
     /// Whether a terminal document has already been emitted.
@@ -385,6 +469,42 @@ mod tests {
         t.record_concurrency(9);
         t.record_concurrency(2);
         assert_eq!(t.peak_concurrency(), 9);
+    }
+
+    #[test]
+    fn test_xorb_upload_paths_are_counted_separately() {
+        let ctx = ctx_with(true);
+        let t = build(&ctx, "https://cas.example.com", false).unwrap();
+        t.record_grant_xorb_upload(100, Duration::from_micros(1_500));
+        t.record_grant_xorb_upload(200, Duration::from_micros(2_000));
+        t.record_direct_xorb_upload(50, Duration::from_millis(7));
+        assert_eq!(
+            t.grant_xorb_uploads(),
+            XorbUploadPathTotals {
+                count: 2,
+                bytes: 300,
+                duration_ms: 3
+            }
+        );
+        assert_eq!(
+            t.direct_xorb_uploads(),
+            XorbUploadPathTotals {
+                count: 1,
+                bytes: 50,
+                duration_ms: 7
+            }
+        );
+    }
+
+    #[test]
+    fn test_grant_fallbacks_are_counted() {
+        let ctx = ctx_with(true);
+        let t = build(&ctx, "https://cas.example.com", false).unwrap();
+        assert_eq!(t.grant_fallbacks(), 0);
+        t.record_grant_fallback(false);
+        t.record_grant_fallback(true);
+        assert_eq!(t.grant_fallbacks(), 2);
+        assert_eq!(t.grant_unreachable(), 1);
     }
 
     #[test]

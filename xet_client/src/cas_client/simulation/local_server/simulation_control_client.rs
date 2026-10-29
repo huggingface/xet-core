@@ -230,7 +230,7 @@ impl Client for SimulationControlClient {
         shard_data: Bytes,
         upload_permit: crate::cas_client::adaptive_concurrency::ConnectionPermit,
         progress_callback: Option<crate::cas_client::interface::ShardUploadProgressCallback>,
-    ) -> Result<()> {
+    ) -> Result<Option<MerkleHash>> {
         self.remote_client
             .upload_shard(shard_data, upload_permit, progress_callback)
             .await
@@ -600,6 +600,32 @@ impl DeletionControlableClient for SimulationControlClient {
         let resp = self
             .http_client
             .put(self.sim_url(&format!("/xorbs/{hex}/tag_set")))
+            .json(&TagSetBody { tags })
+            .send()
+            .await
+            .map_err(|e| ClientError::Other(e.to_string()))?;
+        Self::check_status(resp).await?;
+        Ok(())
+    }
+
+    async fn get_shard_tag_set(&self, hash: &MerkleHash) -> Result<ObjectTagSet> {
+        let hex = HexMerkleHash::from(*hash);
+        let resp = self
+            .http_client
+            .get(self.sim_url(&format!("/shards/{hex}/tag_set")))
+            .send()
+            .await
+            .map_err(|e| ClientError::Other(e.to_string()))?;
+        let resp = Self::check_status(resp).await?;
+        let body: TagSetBody = resp.json().await.map_err(|e| ClientError::Other(e.to_string()))?;
+        Ok(body.tags)
+    }
+
+    async fn set_shard_tag_set(&self, hash: &MerkleHash, tags: ObjectTagSet) -> Result<()> {
+        let hex = HexMerkleHash::from(*hash);
+        let resp = self
+            .http_client
+            .put(self.sim_url(&format!("/shards/{hex}/tag_set")))
             .json(&TagSetBody { tags })
             .send()
             .await

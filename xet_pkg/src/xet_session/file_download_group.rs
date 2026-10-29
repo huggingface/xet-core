@@ -24,12 +24,12 @@ impl AuthGroupBuilder<XetFileDownloadGroup> {
         let AuthGroupBuilder {
             session, auth_options, ..
         } = self;
-        let parent_runtime = session.inner.task_runtime.clone();
-        let child_parent = parent_runtime.clone();
-        let group = parent_runtime
+        // Construction failures belong to this operation, not the reusable session.
+        let child_runtime = session.inner.task_runtime.child()?;
+        let build_runtime = child_runtime.clone();
+        let group = build_runtime
             .bridge_async("new_file_download_group", async move {
-                let group_runtime = child_parent.child()?;
-                XetFileDownloadGroup::new(session, group_runtime, auth_options).await
+                XetFileDownloadGroup::new(session, child_runtime, auth_options).await
             })
             .await?;
         info!("New file download group, session_id={}, group_id={}", group.session().id(), group.id());
@@ -52,11 +52,11 @@ impl AuthGroupBuilder<XetFileDownloadGroup> {
         let AuthGroupBuilder {
             session, auth_options, ..
         } = self;
-        let parent_runtime = session.inner.task_runtime.clone();
-        let child_parent = parent_runtime.clone();
-        let group = parent_runtime.bridge_sync("new_file_download_group_blocking", async move {
-            let group_runtime = child_parent.child()?;
-            XetFileDownloadGroup::new(session, group_runtime, auth_options).await
+        // Construction failures belong to this operation, not the reusable session.
+        let child_runtime = session.inner.task_runtime.child()?;
+        let build_runtime = child_runtime.clone();
+        let group = build_runtime.bridge_sync("new_file_download_group_blocking", async move {
+            XetFileDownloadGroup::new(session, child_runtime, auth_options).await
         })?;
         info!("New file download group, session_id={}, group_id={}", group.session().id(), group.id());
         Ok(group)

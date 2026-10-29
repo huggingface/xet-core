@@ -20,7 +20,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "1.6.0"
+version = "1.7.1"
 edition = "2024"
 license = "Apache-2.0"
 homepage = "https://github.com/huggingface/xet-core"
@@ -55,6 +55,7 @@ clap = { version = "4", features = ["derive"] }
 colored = "3"
 console-subscriber = "0.5"
 countio = { version = "0.3", features = ["futures"] }
+crc-fast = { version = "1.10", default-features = false, features = ["std"] }
 crc32fast = "1.5"
 csv = "1"
 ctor = "1"
@@ -97,6 +98,7 @@ safe-transmute = "0.11"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_repr = "0.1"
+serde_with = { version = "3.24", default-features = false }
 sha2 = "0.11"
 shell-words = "1.1"
 statrs = { version = "0.18", default-features = false }

@@ -479,4 +479,12 @@ impl TestEnvironment {
     pub fn telemetry_docs(&self) -> Vec<serde_json::Value> {
         self._server.as_ref().map(|s| s.telemetry_docs()).unwrap_or_default()
     }
+
+    /// Turns the simulation server's xorb upload grant API on or off.
+    #[cfg(feature = "simulation")]
+    pub async fn set_xorb_upload_grants_enabled(&self, enabled: bool) {
+        if let Some(server) = &self._server {
+            server.set_xorb_upload_grants_enabled(enabled).await.unwrap();
+        }
+    }
 }

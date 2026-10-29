@@ -13,6 +13,7 @@ Covers:
   - Full-file unordered stream (reassemble from offsets), small and large
   - Bounded range unordered on large files
   - Open-ended range unordered on large files
+  - next() releasing the GIL while it waits for a chunk (ordered and unordered)
   - finish() closing the group, abort() stopping an unstarted stream
   - Context manager: finish on a clean exit, abort on an exception
 Not covered here (require a real CAS server):
@@ -20,6 +21,11 @@ Not covered here (require a real CAS server):
   - The telemetry outcome each path reports, which needs a server to read the
     document back from (see xet_pkg/tests/test_download_telemetry.rs)
 """
+
+import subprocess
+import sys
+import threading
+import time
 
 import pytest
 
@@ -220,6 +226,48 @@ class TestDownloadUnorderedStream:
         assert assembled == _LARGE_DATA[:_RANGE_END]
 
 
+# ── GIL release ──────────────────────────────────────────────────────────────
+
+_SLOW_SERVER = """
+import http.server, time
+class Handler(http.server.BaseHTTPRequestHandler):
+    slept = False
+    def do_GET(self):
+        if not Handler.slept:
+            Handler.slept = True
+            time.sleep(0.5)
+        self.send_error(404)
+    log_message = lambda *args: None
+server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+print(server.server_address[1], flush=True)
+server.serve_forever()
+"""
+
+
+@pytest.fixture
+def slow_endpoint():
+    """Server answering 404s, after 0.5s for the first request. It runs in its own process so it doesn't need our GIL."""
+    proc = subprocess.Popen([sys.executable, "-c", _SLOW_SERVER], stdout=subprocess.PIPE, text=True)
+    yield f"http://127.0.0.1:{proc.stdout.readline().strip()}"
+    proc.kill()
+    proc.wait()
+
+
+@pytest.mark.parametrize("method", ["download_stream", "download_unordered_stream"])
+def test_next_releases_gil_while_waiting(slow_endpoint, method):
+    """A timer thread fires while next() is still waiting for the server."""
+    group = hf_xet.XetSession().new_download_stream_group(
+        endpoint=slow_endpoint, token="token", token_expiry_unix_secs=int(time.time()) + 3600
+    )
+    stream = getattr(group, method)(hf_xet.XetFileInfo("0" * 64, 1000))
+    fired_at = []
+    timer = threading.Timer(0.1, lambda: fired_at.append(time.monotonic()))
+    timer.start()
+    with pytest.raises(Exception):
+        next(stream)
+    returned_at = time.monotonic()
+    timer.join()
+    assert fired_at[0] < returned_at - 0.1
 
 
 # ── Context manager ──────────────────────────────────────────────────────────
