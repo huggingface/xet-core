@@ -35,8 +35,8 @@ jobs:
             target: aarch64
             manylinux: manylinux_2_28
         python-version:
-          - 3.14
-          - 3.14t
+          - "3.14"
+          - "3.14t"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
@@ -132,8 +132,8 @@ jobs:
           - runner: ubuntu-22.04
             target: aarch64
         python-version:
-          - 3.14
-          - 3.14t
+          - "3.14"
+          - "3.14t"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
@@ -223,8 +223,8 @@ jobs:
             target: aarch64
             rust_target: aarch64-pc-windows-msvc
         python-version:
-          - 3.14
-          - 3.14t
+          - "3.14"
+          - "3.14t"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
@@ -283,8 +283,8 @@ jobs:
             target: aarch64
             rust_target: aarch64-apple-darwin
         python-version:
-          - 3.14
-          - 3.14t
+          - "3.14"
+          - "3.14t"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
@@ -412,13 +412,143 @@ jobs:
           skip-existing: true
           print-hash: true
 
+  # Integration test: verify the built wheels work with huggingface_hub
+  # Tests on Python 3.10 (regular and free-threaded) across 3 OSes
+  integration-test:
+    name: Integration test with huggingface_hub
+    runs-on: ${{ matrix.platform.runner }}
+    permissions:
+      contents: read
+    needs: [ linux, musllinux, windows, macos, sdist ]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # linux - glibc (manylinux) x86_64
+          - platform:
+              runner: ubuntu-22.04
+              os: linux
+              target: x86_64
+            python-version: "3.14"
+          - platform:
+              runner: ubuntu-22.04
+              os: linux
+              target: x86_64
+            python-version: "3.14t"
+          # windows x64
+          - platform:
+              runner: windows-latest
+              os: windows
+              target: x64
+            python-version: "3.14"
+          - platform:
+              runner: windows-latest
+              os: windows
+              target: x64
+            python-version: "3.14t"
+          # macos aarch64
+          - platform:
+              runner: macos-14
+              os: macos
+              target: aarch64
+            python-version: "3.14"
+          - platform:
+              runner: macos-14
+              os: macos
+              target: aarch64
+            python-version: "3.14t"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: huggingface/huggingface_hub
+          path: huggingface_hub
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Setup uv (Unix)
+        if: runner.os != 'Windows'
+        working-directory: huggingface_hub
+        run: |
+          pip install --upgrade uv
+          uv venv
+
+      - name: Setup uv (Windows)
+        if: runner.os == 'Windows'
+        working-directory: huggingface_hub
+        run: |
+          pip install --upgrade uv
+          uv venv
+
+      - name: Download built wheels
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          path: downloaded-wheels
+          pattern: wheels-${{ matrix.platform.os }}-${{ matrix.python-version }}-${{ matrix.platform.target }}
+          merge-multiple: true
+
+      - name: Find and install the appropriate wheel (Unix)
+        if: runner.os != 'Windows'
+        working-directory: huggingface_hub
+        run: |
+          source .venv/bin/activate
+          WHEEL=$(ls ../downloaded-wheels/hf_xet-*.whl 2>/dev/null | head -1)
+          if [ -z "$WHEEL" ]; then
+            echo "No wheel found for Python ${{ matrix.python-version }} on ${{ matrix.platform.os }}"
+            ls -la ../downloaded-wheels/
+            exit 1
+          fi
+          
+          echo "Installing wheel: $WHEEL"
+          uv pip install "$WHEEL"
+          # duckdb (a testing extra) has no free-threaded wheels and is not
+          # needed by transfer/xet tests; exclude it via an unsatisfiable marker.
+          echo 'duckdb; python_version >= "3.15"' > overrides.txt
+          uv pip install --override overrides.txt -e ".[testing]"
+
+      - name: Find and install the appropriate wheel (Windows)
+        if: runner.os == 'Windows'
+        working-directory: huggingface_hub
+        shell: pwsh
+        run: |
+          .venv\Scripts\activate
+          $wheel = Get-ChildItem ../downloaded-wheels/hf_xet-*.whl | Select-Object -First 1
+          if (-not $wheel) {
+            Write-Error "No wheel found for Python ${{ matrix.python-version }}"
+            exit 1
+          }
+          Write-Host "Installing wheel: $wheel"
+          uv pip install "$wheel"
+          # duckdb (a testing extra) has no free-threaded wheels and is not
+          # needed by transfer/xet tests; exclude it via an unsatisfiable marker.
+          Set-Content overrides.txt 'duckdb; python_version >= "3.15"'
+          uv pip install --override overrides.txt -e ".[testing]"
+
+      # Same rerun policy as huggingface_hub CI: retry known-flaky staging
+      # failures, but real failures fail the job.
+      - name: Run transfer tests (hf_xet)
+        if: runner.os != 'Windows'
+        working-directory: huggingface_hub
+        run: |
+          source .venv/bin/activate
+          python -m pytest tests -m "transfer" -v --tb=short -x --reruns 3 --reruns-delay 2 --only-rerun "(OSError|FileNotFoundError|Timeout|HTTPError.*409|HTTPError.*502|HTTPError.*504)"
+
+      - name: Run transfer tests (hf_xet) (Windows)
+        if: runner.os == 'Windows'
+        working-directory: huggingface_hub
+        run: |
+          .venv\Scripts\activate
+          python -m pytest tests -m "transfer" -v --tb=short -x --reruns 3 --reruns-delay 2 --only-rerun "(OSError|FileNotFoundError|Timeout|HTTPError.*409|HTTPError.*502|HTTPError.*504)"
+
   github-release:
     name: Create GitHub release
     runs-on: ubuntu-latest
     permissions:
       contents: write
     if: ${{ github.event_name == 'workflow_dispatch' }}
-    needs: [ linux, musllinux, windows, macos, sdist ]
+    needs: [ linux, musllinux, windows, macos, sdist, integration-test ]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
