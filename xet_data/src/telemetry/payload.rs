@@ -20,14 +20,14 @@
 //! identity from the request's JWT.
 
 use serde::Serialize;
-use xet_client::cas_client::{Direction, TransferTelemetry};
+use xet_client::cas_client::{Direction, TransferTelemetry, XorbUploadPathTotals};
 
 use super::outcome::Outcome;
 use crate::deduplication::DeduplicationMetrics;
 use crate::progress_tracking::GroupProgressReport;
 
 /// Bumped when keys are added. Query-side branching hangs off this; it is not a wire version.
-pub const TELEMETRY_SCHEMA_VERSION: u64 = 1;
+pub const TELEMETRY_SCHEMA_VERSION: u64 = 2;
 
 /// Divides, guaranteeing a finite `f64`.
 ///
@@ -139,6 +139,26 @@ impl From<&TransferTelemetry> for TransferIdentity {
     }
 }
 
+/// Xorb uploads per upload path, snapshotted from [`TransferTelemetry`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct XorbUploadPaths {
+    pub grant: XorbUploadPathTotals,
+    pub direct: XorbUploadPathTotals,
+    pub grant_fallbacks: u64,
+    pub grant_unreachable: u64,
+}
+
+impl From<&TransferTelemetry> for XorbUploadPaths {
+    fn from(telemetry: &TransferTelemetry) -> Self {
+        Self {
+            grant: telemetry.grant_xorb_uploads(),
+            direct: telemetry.direct_xorb_uploads(),
+            grant_fallbacks: telemetry.grant_fallbacks(),
+            grant_unreachable: telemetry.grant_unreachable(),
+        }
+    }
+}
+
 impl CommonMetrics {
     pub fn new(identity: TransferIdentity, inputs: CommonInputs<'_>) -> Self {
         let progress = inputs.progress;
@@ -194,6 +214,26 @@ pub struct UploadMetrics {
     pub xorb_bytes_uploaded: u64,
     pub shard_bytes_uploaded: u64,
 
+    /// Xorbs stored through an upload grant (grant, upload, commit).
+    pub grant_xorb_upload_count: u64,
+    /// Serialized bytes of the xorbs above, once per xorb however many grant attempts it took.
+    pub grant_xorb_upload_bytes: u64,
+    /// Summed per-xorb time from the first grant request to the commit; exceeds wall-clock time
+    /// when uploads overlap.
+    pub grant_xorb_upload_ms: u64,
+    /// Xorbs uploaded through `POST /v1/xorbs`, including fallbacks from upload grants.
+    pub direct_xorb_upload_count: u64,
+    /// Serialized bytes of the xorbs above.
+    pub direct_xorb_upload_bytes: u64,
+    /// Summed per-xorb `POST /v1/xorbs` time, excluding any grant attempts before a fallback.
+    pub direct_xorb_upload_ms: u64,
+    /// Xorbs for which an upload grant was issued but that were still uploaded through `POST /v1/xorbs`. A
+    /// subset of `direct_xorb_upload_count`; xorbs uploaded directly because grants are not offered are excluded.
+    pub grant_fallback_count: u64,
+    /// Grant fallbacks after a failed upload to the grant URL, such as a connection, DNS, or timeout error. A subset
+    /// of `grant_fallback_count`.
+    pub grant_unreachable_count: u64,
+
     pub shards_total: u64,
     pub shards_completed: u64,
     pub shard_validation_entries: u64,
@@ -214,6 +254,7 @@ impl UploadMetrics {
         common: CommonMetrics,
         dedup: &DeduplicationMetrics,
         progress: &GroupProgressReport,
+        xorb_upload_paths: XorbUploadPaths,
         ingest_ms: u64,
         finalize_ms: u64,
     ) -> Self {
@@ -234,6 +275,15 @@ impl UploadMetrics {
 
             xorb_bytes_uploaded: dedup.xorb_bytes_uploaded,
             shard_bytes_uploaded: dedup.shard_bytes_uploaded,
+
+            grant_xorb_upload_count: xorb_upload_paths.grant.count,
+            grant_xorb_upload_bytes: xorb_upload_paths.grant.bytes,
+            grant_xorb_upload_ms: xorb_upload_paths.grant.duration_ms,
+            direct_xorb_upload_count: xorb_upload_paths.direct.count,
+            direct_xorb_upload_bytes: xorb_upload_paths.direct.bytes,
+            direct_xorb_upload_ms: xorb_upload_paths.direct.duration_ms,
+            grant_fallback_count: xorb_upload_paths.grant_fallbacks,
+            grant_unreachable_count: xorb_upload_paths.grant_unreachable,
 
             shards_total: shard.map(|s| s.total_shards as u64).unwrap_or(0),
             shards_completed: shard.map(|s| s.total_shards_completed as u64).unwrap_or(0),
@@ -287,6 +337,9 @@ mod tests {
         "dedup_ratio",
         "defrag_prevented_dedup_bytes",
         "defrag_prevented_dedup_chunks",
+        "direct_xorb_upload_bytes",
+        "direct_xorb_upload_count",
+        "direct_xorb_upload_ms",
         "direction",
         "duration_ms",
         "endpoint_host",
@@ -295,6 +348,11 @@ mod tests {
         "finalize_ms",
         "global_dedup_bytes",
         "global_dedup_chunks",
+        "grant_fallback_count",
+        "grant_unreachable_count",
+        "grant_xorb_upload_bytes",
+        "grant_xorb_upload_count",
+        "grant_xorb_upload_ms",
         "ingest_ms",
         "logical_throughput_bps",
         "n_files",
@@ -367,6 +425,9 @@ mod tests {
         ("dedup_ratio", Kind::F64),
         ("defrag_prevented_dedup_bytes", Kind::U64),
         ("defrag_prevented_dedup_chunks", Kind::U64),
+        ("direct_xorb_upload_bytes", Kind::U64),
+        ("direct_xorb_upload_count", Kind::U64),
+        ("direct_xorb_upload_ms", Kind::U64),
         ("direction", Kind::Str),
         ("duration_ms", Kind::U64),
         ("endpoint_host", Kind::Str),
@@ -376,6 +437,11 @@ mod tests {
         ("finalize_ms", Kind::U64),
         ("global_dedup_bytes", Kind::U64),
         ("global_dedup_chunks", Kind::U64),
+        ("grant_fallback_count", Kind::U64),
+        ("grant_unreachable_count", Kind::U64),
+        ("grant_xorb_upload_bytes", Kind::U64),
+        ("grant_xorb_upload_count", Kind::U64),
+        ("grant_xorb_upload_ms", Kind::U64),
         ("ingest_ms", Kind::U64),
         ("logical_throughput_bps", Kind::F64),
         ("n_files", Kind::U64),
@@ -490,8 +556,26 @@ mod tests {
         }
     }
 
+    fn xorb_upload_paths() -> XorbUploadPaths {
+        XorbUploadPaths {
+            grant: XorbUploadPathTotals {
+                count: 6,
+                bytes: 240,
+                duration_ms: 1_200,
+            },
+            direct: XorbUploadPathTotals {
+                count: 2,
+                bytes: 60,
+                duration_ms: 300,
+            },
+            grant_fallbacks: 1,
+            grant_unreachable: 1,
+        }
+    }
+
     fn upload_json() -> Value {
-        serde_json::to_value(UploadMetrics::new(common(), &dedup(), &progress(), 3_500, 500)).unwrap()
+        serde_json::to_value(UploadMetrics::new(common(), &dedup(), &progress(), xorb_upload_paths(), 3_500, 500))
+            .unwrap()
     }
 
     fn download_json() -> Value {
@@ -570,8 +654,15 @@ mod tests {
             },
             inputs(&empty),
         );
-        let doc =
-            serde_json::to_value(UploadMetrics::new(common, &DeduplicationMetrics::default(), &empty, 0, 0)).unwrap();
+        let doc = serde_json::to_value(UploadMetrics::new(
+            common,
+            &DeduplicationMetrics::default(),
+            &empty,
+            XorbUploadPaths::default(),
+            0,
+            0,
+        ))
+        .unwrap();
 
         for (key, value) in doc.as_object().unwrap() {
             assert!(!value.is_null(), "{key} serialized as null");
@@ -609,13 +700,28 @@ mod tests {
         assert_eq!(doc["throughput_bps"], 100.0);
         assert_eq!(doc["shards_total"], 2);
         assert_eq!(doc["shard_validation_entries"], 9);
+        assert_eq!(doc["grant_xorb_upload_count"], 6);
+        assert_eq!(doc["grant_xorb_upload_bytes"], 240);
+        assert_eq!(doc["grant_xorb_upload_ms"], 1_200);
+        assert_eq!(doc["direct_xorb_upload_count"], 2);
+        assert_eq!(doc["direct_xorb_upload_bytes"], 60);
+        assert_eq!(doc["direct_xorb_upload_ms"], 300);
+        assert_eq!(doc["grant_fallback_count"], 1);
+        assert_eq!(doc["grant_unreachable_count"], 1);
     }
 
     /// Absent shard progress reads as zero rather than dropping the keys.
     #[test]
     fn test_missing_shard_progress_reads_as_zero() {
-        let doc = serde_json::to_value(UploadMetrics::new(common(), &dedup(), &GroupProgressReport::default(), 0, 0))
-            .unwrap();
+        let doc = serde_json::to_value(UploadMetrics::new(
+            common(),
+            &dedup(),
+            &GroupProgressReport::default(),
+            xorb_upload_paths(),
+            0,
+            0,
+        ))
+        .unwrap();
         assert_eq!(doc["shards_total"], 0);
         assert_eq!(doc["shards_completed"], 0);
         assert_eq!(doc["shard_validation_entries"], 0);
