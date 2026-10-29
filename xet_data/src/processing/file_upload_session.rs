@@ -278,8 +278,8 @@ impl FileUploadSession {
     /// cleaner without finishing it.
     ///
     /// Progress then counts the file as complete at the bytes already processed, so the session's
-    /// progress can still reach 100% without it. Xorbs already cut from its data are still uploaded,
-    /// as other files may reference them.
+    /// progress can still reach 100% without it. While the session remains healthy, xorbs already cut
+    /// from its data are still uploaded, as other files may reference them.
     pub fn abandon_file(&self, id: UniqueId) {
         self.completion_tracker.abandon_file(id);
     }
@@ -726,18 +726,27 @@ impl FileUploadSession {
         // (single-threaded; tasks rarely complete before the `await` above
         // returns) as `xorb_bytes_uploaded == 0`.
         let mut upload_tasks = take(&mut *self.xorb_upload_tasks.lock().await);
+        let mut uploads_cancelled = self.background_error().is_some();
+        if uploads_cancelled {
+            upload_tasks.abort_all();
+        }
 
         while let Some(result) = upload_tasks.join_next().await {
             if let Err(error) = result.map_err(DataError::from).and_then(|result| result) {
                 let _ = self.preserve_background_error(error);
+                if !uploads_cancelled {
+                    // The commit cannot succeed. Stop siblings' retries, then join their cleanup.
+                    uploads_cancelled = true;
+                    upload_tasks.abort_all();
+                }
             }
         }
 
         if let Some(error) = self.background_error() {
             return Err(error);
         }
-        // This is a release-mode guard, before publishing reconstruction metadata.
-        self.completion_tracker.validate_complete()?;
+        // Gate publication on stored data, not progress counters (which can drift; see #1053).
+        self.completion_tracker.validate_xorb_uploads()?;
 
         let all_file_info = if return_files {
             self.shard_interface.session_file_info_list().await?
@@ -1046,27 +1055,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_finalize_drains_uploads_after_shared_failure() {
-        let temp = tempdir().unwrap();
-        let ctx = XetContext::default().unwrap();
-        let config = Arc::new(TranslatorConfig::local_config(&ctx, temp.path()).unwrap());
-        let session = FileUploadSession::new(config).await.unwrap();
-        let _ = session.preserve_background_error(DataError::IOError(std::io::Error::other("first failure")));
-        let (release, wait) = tokio::sync::oneshot::channel();
-        let completed = Arc::new(AtomicBool::new(false));
-        let task_completed = completed.clone();
-        session.xorb_upload_tasks.lock().await.spawn(async move {
-            wait.await.unwrap();
-            task_completed.store(true, Ordering::Release);
-            Err(DataError::InternalError("second failure".into()))
-        });
+    async fn test_finalize_cancels_and_drains_uploads_after_shared_failure() {
+        for failure_already_recorded in [false, true] {
+            let temp = tempdir().unwrap();
+            let ctx = XetContext::default().unwrap();
+            let config = Arc::new(TranslatorConfig::local_config(&ctx, temp.path()).unwrap());
+            let session = FileUploadSession::new(config).await.unwrap();
+            let (fail, failed) = tokio::sync::oneshot::channel();
+            if failure_already_recorded {
+                let _ = session.preserve_background_error(DataError::IOError(std::io::Error::other("first failure")));
+            } else {
+                session.xorb_upload_tasks.lock().await.spawn(async move {
+                    failed.await.unwrap();
+                    Err(DataError::IOError(std::io::Error::other("first failure")))
+                });
+            }
 
-        let mut finalize = Box::pin(session.finalize());
-        assert!(futures_util::poll!(finalize.as_mut()).is_pending());
-        release.send(()).unwrap();
-        let error = finalize.await.unwrap_err();
-        assert!(completed.load(Ordering::Acquire));
-        assert_eq!(error.to_string(), "I/O error: first failure");
+            let cleaned_up = Arc::new(AtomicBool::new(false));
+            let cleanup_flag = cleaned_up.clone();
+            let cleanup = xet_runtime::utils::ClosureGuard::new(move || cleanup_flag.store(true, Ordering::Release));
+            let (started, ready) = tokio::sync::oneshot::channel();
+            session.xorb_upload_tasks.lock().await.spawn(async move {
+                let _cleanup = cleanup;
+                started.send(()).unwrap();
+                // Stand-in for a sibling upload that would keep retrying indefinitely.
+                std::future::pending::<Result<()>>().await
+            });
+            ready.await.unwrap();
+
+            let mut finalize = Box::pin(session.finalize());
+            if !failure_already_recorded {
+                assert!(futures_util::poll!(finalize.as_mut()).is_pending());
+                fail.send(()).unwrap();
+            }
+            let error = tokio::time::timeout(std::time::Duration::from_secs(5), finalize)
+                .await
+                .expect("finalize waited for the failed commit's sibling upload")
+                .unwrap_err();
+            assert!(cleaned_up.load(Ordering::Acquire), "finalize returned before sibling cleanup");
+            assert_eq!(error.to_string(), "I/O error: first failure");
+        }
     }
 
     #[test]

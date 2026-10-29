@@ -70,8 +70,8 @@ mod tests {
         std::fs::remove_file(&xorb_dir).unwrap();
         std::fs::rename(&saved_dir, &xorb_dir).unwrap();
 
-        // Several uploads may have failed before the storage recovered. Drain those failures through
-        // aborted retries until ingestion succeeds, as callers could do before this fix.
+        // Several uploads may have failed before storage recovered. Keep retrying until ingestion
+        // succeeds, even though the shared session remains failed.
         let mut finished = None;
         for _ in 0..32 {
             let retry = commit

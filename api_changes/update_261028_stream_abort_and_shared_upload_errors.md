@@ -10,7 +10,18 @@ Aborting a source does not clear failures in shared deduplication or xorb storag
 Those failures remain owned by `FileUploadSession` and fail finalization before shard
 publication, even if the stream that observed them was subsequently aborted. Callers
 recovering from an internal storage failure must start a new commit. Finalization drains
-dedup and xorb tasks before returning; it also validates completion in release builds.
+dedup work, then cancels and joins remaining xorb uploads on a shared failure, preserving
+the original cause rather than waiting for siblings' retries. Successful finalization
+checks that every registered xorb finished uploading before publishing shards, in every
+build. Logical-byte totals and dependency bookkeeping remain debug assertions; a progress
+undercount such as #1053 does not become a release-mode upload failure.
+
+Rust cancellation is cooperative. After `abort()`, callers must drop or drive pending
+stream `write()` and `finish()` futures before awaiting `commit()`. Retaining an unpolled
+future can keep the pipeline mutex locked, especially with an external runtime. Finish
+and abort settle under the same result lock: a finish that already stored metadata stays
+in the commit; abort during ingestion prevents a later finish from storing metadata and
+that finish returns `UserCancelled`.
 
 `DataError` gains `SharedUploadError(Arc<DataError>)`, a transparent wrapper retaining the
 original typed cause for both the cleaner and the session. Downstream exhaustive matches

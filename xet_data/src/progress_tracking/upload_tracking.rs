@@ -380,6 +380,15 @@ impl CompletionTrackerImpl {
         Ok(())
     }
 
+    fn validate_xorb_uploads(&self) -> Result<()> {
+        for (hash, xorb_dep) in self.xorbs.iter() {
+            if !xorb_dep.is_completed {
+                return Err(DataError::InternalError(format!("Xorb {hash:?} is not fully uploaded")));
+            }
+        }
+        Ok(())
+    }
+
     fn assert_complete(&self) {
         self.validate_complete().unwrap();
     }
@@ -462,8 +471,9 @@ impl CompletionTracker {
         self.group_progress.assert_complete();
     }
 
-    pub(crate) fn validate_complete(&self) -> Result<()> {
-        self.inner.lock().unwrap().validate_complete()
+    /// Storage readiness is independent of logical-byte progress bookkeeping.
+    pub(crate) fn validate_xorb_uploads(&self) -> Result<()> {
+        self.inner.lock().unwrap().validate_xorb_uploads()
     }
 
     pub fn register_shard_transfer(&self, shard_size: u64) -> UniqueId {
@@ -492,6 +502,25 @@ mod tests {
     use xet_core_structures::merklehash::MerkleHash;
 
     use super::*;
+
+    #[test]
+    fn test_uploaded_xorbs_are_ready_despite_short_logical_progress() {
+        let tracker = CompletionTracker::new(UploadGroupProgress::new());
+        let file = tracker.register_new_file(UniqueId::new(), "repeated", Some(100));
+        let xorb = MerkleHash::random_from_seed(21);
+        tracker.register_new_xorb(xorb, 50);
+        tracker.register_dependencies(&[FileXorbDependency {
+            file_id: file,
+            xorb_hash: xorb,
+            n_bytes: 50,
+            is_external: false,
+        }]);
+        tracker.register_xorb_upload_completion(xorb);
+
+        // #1053 can undercount a file's dependency even though the complete xorb is stored.
+        assert_eq!(tracker.status(), (50, 100));
+        tracker.validate_xorb_uploads().unwrap();
+    }
 
     #[test]
     fn test_status_and_is_complete() {

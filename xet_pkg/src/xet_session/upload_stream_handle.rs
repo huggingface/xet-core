@@ -210,8 +210,13 @@ impl XetStreamUpload {
     /// [`finish`](Self::finish) calls may return [`XetError::UserCancelled`] or
     /// related errors.
     ///
+    /// Cancellation is cooperative: drop or drive any pending `write()` or `finish()` future before
+    /// awaiting [`XetUploadCommit::commit`]. Retaining an unpolled future can keep the pipeline lock
+    /// held and prevent the commit from settling this stream, particularly with an external runtime.
+    ///
     /// The unfinished, aborted stream is left out of [`XetUploadCommit::commit`]. Shared storage work
-    /// still completes, and a dedup or xorb upload failure still fails the whole commit. To retry a file
+    /// is retained while the session is healthy; a dedup or xorb upload failure fails the whole commit
+    /// and cancels remaining xorb uploads. To retry a file
     /// whose source failed, abort its stream and upload the file again with a new stream on
     /// the same commit.  Call `abort` on every stream you give up, for example
     /// from a drop guard: dropping the handle alone makes `commit` fail.

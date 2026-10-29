@@ -504,6 +504,8 @@ impl XetUploadCommit {
     /// report. Aborting after a successful `finish` does not remove a file. Fails if any other stream
     /// has not been [finished](XetStreamUpload::finish), or if shared dedup/xorb work failed, even when
     /// the stream that observed the failure was subsequently aborted.
+    /// After aborting, drop or drive pending stream `write()` and `finish()` futures before awaiting
+    /// this method; an unpolled future can retain the pipeline lock needed to settle its stream.
     pub async fn commit(&self) -> Result<XetCommitReport, XetError> {
         info!(commit_id = %self.id(), "Commit starting");
         let inner = Arc::clone(&self.inner);
@@ -1390,6 +1392,75 @@ mod tests {
             blocked.await.unwrap();
             assert!(commit.commit().await.unwrap().uploads.is_empty());
         });
+    }
+
+    #[test]
+    fn test_drop_unpolled_write_or_finish_after_abort_allows_commit() {
+        for finishing in [false, true] {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .max_blocking_threads(1)
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let temp = tempdir().unwrap();
+                let endpoint = format!("local://{}", temp.path().join("cas").display());
+                let session = XetSessionBuilder::new()
+                    .with_tokio_handle(runtime.handle().clone())
+                    .build()
+                    .unwrap();
+                let commit = session
+                    .new_upload_commit()
+                    .unwrap()
+                    .with_endpoint(&endpoint)
+                    .build()
+                    .await
+                    .unwrap();
+                let stream = commit.upload_stream(None, Sha256Policy::Skip).await.unwrap();
+                if finishing {
+                    stream.write(&b"pending finish"[..]).await.unwrap();
+                }
+
+                let (release, wait) = std::sync::mpsc::channel();
+                let (started, ready) = tokio::sync::oneshot::channel();
+                let blocked = if finishing {
+                    runtime.spawn(async move {
+                        started.send(()).unwrap();
+                        let _ = wait.recv();
+                    })
+                } else {
+                    runtime.spawn_blocking(move || {
+                        started.send(()).unwrap();
+                        let _ = wait.recv();
+                    })
+                };
+                ready.await.unwrap();
+
+                let mut operation = Box::pin(async {
+                    if finishing {
+                        stream.finish().await.map(|_| ())
+                    } else {
+                        stream.write(vec![1; 64 << 10]).await
+                    }
+                });
+                assert!(futures::poll!(operation.as_mut()).is_pending());
+                stream.abort();
+                assert!(stream.inner.cleaner.try_lock().is_err());
+                let mut committed = Box::pin(commit.commit());
+                assert!(futures::poll!(committed.as_mut()).is_pending());
+
+                // Do not poll the operation's cancellation branch: dropping it must release the lock.
+                drop(operation);
+                release.send(()).unwrap();
+                blocked.await.unwrap();
+                let report = tokio::time::timeout(std::time::Duration::from_secs(5), committed)
+                    .await
+                    .expect("commit waited for a dropped stream operation")
+                    .unwrap();
+                assert!(report.uploads.is_empty());
+            });
+        }
     }
 
     // `abort()` and an in-flight finish settle the stream once. An abort that lands while ingestion is still
