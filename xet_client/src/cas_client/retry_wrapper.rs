@@ -11,7 +11,7 @@ use tracing::{error, info};
 use xet_runtime::core::XetContext;
 
 use super::adaptive_concurrency::ConnectionPermit;
-use crate::common::http_client::request_id_from_response;
+use crate::common::http_client::{request_id_from_response, strip_url_query};
 use crate::error::{ClientError, Result};
 
 #[derive(Debug)]
@@ -33,6 +33,7 @@ pub struct RetryWrapper {
     retry_on_403: bool,
     expected_416: bool,
     expected_404: bool,
+    precondition_failed_as_success: bool,
     log_errors_as_info: bool,
     api_tag: &'static str,
     connection_permit: Option<Mutex<ConnectionPermitInfo>>,
@@ -51,6 +52,7 @@ impl RetryWrapper {
             retry_on_403: false,
             expected_416: false,
             expected_404: false,
+            precondition_failed_as_success: false,
             log_errors_as_info: false,
             api_tag,
             connection_permit: None,
@@ -96,6 +98,14 @@ impl RetryWrapper {
         self
     }
 
+    /// Treat 412 (Precondition Failed) responses as success, for conditional uploads where a 412 means an
+    /// earlier attempt already stored the data. The response is passed to the caller and reported to the
+    /// connection permit as a completed transfer.
+    pub fn with_412_as_success(mut self) -> Self {
+        self.precondition_failed_as_success = true;
+        self
+    }
+
     pub fn log_errors_as_info(mut self) -> Self {
         self.log_errors_as_info = true;
         self
@@ -120,6 +130,7 @@ impl std::fmt::Debug for RetryWrapper {
             .field("retry_on_403", &self.retry_on_403)
             .field("expected_416", &self.expected_416)
             .field("expected_404", &self.expected_404)
+            .field("precondition_failed_as_success", &self.precondition_failed_as_success)
             .field("log_errors_as_info", &self.log_errors_as_info)
             .field("api_tag", &self.api_tag)
             .field("has_connection_permit", &self.connection_permit.is_some())
@@ -132,6 +143,10 @@ impl RetryWrapper {
         let api = &self.api_tag;
 
         let process_error = |txt, log_as_info, err: reqwest_middleware::Error| {
+            let err = match err {
+                reqwest_middleware::Error::Reqwest(e) => reqwest_middleware::Error::Reqwest(strip_url_query(e)),
+                e => e,
+            };
             let msg = {
                 if try_idx > 0 {
                     format!("{txt}: {api} api call failed (retry {try_idx}): {err}")
@@ -185,6 +200,7 @@ impl RetryWrapper {
 
         // Log the errors and create a message string with the information in it to expose to users.
         let process_error = |context, err: ReqwestError, log_as_info| {
+            let err = strip_url_query(err);
             if self.log_errors_as_info || log_as_info {
                 info!("{context}: {api:?} api call failed (request id {request_id}{retry_str}): {err}");
             } else {
@@ -192,6 +208,13 @@ impl RetryWrapper {
             }
             ClientError::from(err)
         };
+
+        if resp.status() == StatusCode::PRECONDITION_FAILED && self.precondition_failed_as_success {
+            info!(
+                "Request Success: {api} api call returned 412 (request id {request_id}{retry_str}), treated as success."
+            );
+            return Ok(resp);
+        }
 
         let retriability = default_on_request_success(&resp);
 
@@ -968,6 +991,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_412_as_success_returns_response() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("PUT"))
+            .and(path("/precondition_failed"))
+            .respond_with(ResponseTemplate::new(412))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = make_client();
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_ = counter.clone();
+
+        let result = connection_wrapper("test_412_as_success_returns_response")
+            .with_max_attempts(3)
+            .with_412_as_success()
+            .run(move || {
+                let url = format!("{}/precondition_failed", server.uri());
+                counter_.fetch_add(1, Ordering::Relaxed);
+                client.clone().put(&url).send()
+            })
+            .await;
+
+        assert_eq!(result.unwrap().status(), StatusCode::PRECONDITION_FAILED);
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn test_403_no_retry_by_default() {
         let server = MockServer::start().await;
 
@@ -1058,5 +1110,21 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(&result.unwrap().bytes().await.unwrap()[..], b"Success");
         assert_eq!(counter.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_error_strips_url_query() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let client = make_client();
+        let err = connection_wrapper("test_error_strips_url_query")
+            .with_max_attempts(1)
+            .run(move || client.clone().put(format!("http://{addr}/xorb?X-Amz-Signature=secret")).send())
+            .await
+            .unwrap_err();
+
+        assert!(!format!("{err} {err:?}").contains("secret"));
     }
 }
