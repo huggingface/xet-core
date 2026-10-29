@@ -11,6 +11,8 @@ use http::header::{CONTENT_LENGTH, CONTENT_TYPE, HeaderMap, HeaderName, RANGE};
 use http::{HeaderValue, Method};
 use reqwest::{Body, Response, StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
+#[cfg(not(target_family = "wasm"))]
+use tokio::time::Instant;
 use tracing::{debug, event, info, instrument, warn};
 #[cfg(target_family = "wasm")]
 use web_time::Instant;
@@ -1239,7 +1241,19 @@ impl Client for RemoteClient {
             return Ok(None);
         };
 
-        Ok(Some(response.bytes().await?))
+        // query_dedup_api returns once the response headers arrive; the shard itself is the body, read here.
+        let start = Instant::now();
+        let shard = response.bytes().await?;
+        event!(
+            INFORMATION_LOG_LEVEL,
+            prefix,
+            %chunk_hash,
+            shard_bytes = shard.len(),
+            elapsed_ms = start.elapsed().as_millis() as u64,
+            "Downloaded global dedup shard",
+        );
+
+        Ok(Some(shard))
     }
 
     async fn acquire_upload_permit(&self) -> Result<ConnectionPermit> {
