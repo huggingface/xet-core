@@ -1,7 +1,5 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-#[cfg(not(target_family = "wasm"))]
-use std::time::Instant;
 
 use anyhow::anyhow;
 use bytes::Bytes;
