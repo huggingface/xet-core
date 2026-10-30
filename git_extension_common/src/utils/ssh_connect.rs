@@ -1,6 +1,6 @@
 // A utility to help establish SSH connection to a remote Git server.
 
-use crate::errors::{GitXetError, Result};
+use crate::errors::{GitExtensionError, Result};
 use crate::git_repo::GitRepo;
 
 // The type of SSH program to use for SSH connections, valid values are given
@@ -85,7 +85,7 @@ pub fn get_sshexe_and_args(meta: &SSHMetadata, repo: &GitRepo) -> Result<(String
     let variant = get_ssh_variant(&repo_config, &sshexe);
 
     if matches!(variant, Variant::Simple) {
-        return Err(GitXetError::not_supported(
+        return Err(GitExtensionError::not_supported(
             "unable to construct an ssh command using an ssh program of \"simple\" variant. Please
             use an advanced ssh program and update environment variables \"GIT_SSH_COMMAND\", \"GIT_SSH\",
             \"GIT_SSH_VARIANT\" and git config entries \"core.sshCommand\" and \"ssh.variant\" accordingly.
@@ -165,7 +165,7 @@ fn get_ssh_variant(repo_config: &git2::Config, sshexe: &str) -> Variant {
 // Return the executable name and the args to execute this shell command.
 fn format_for_shell_execution(command: &str, args: &[String]) -> Result<(String, Vec<String>)> {
     let parsed_command = shell_words::split(command)
-        .map_err(|e| GitXetError::config_error(format!("parsing ssh command failed with {e}")))?;
+        .map_err(|e| GitExtensionError::config_error(format!("parsing ssh command failed with {e}")))?;
     let complete_shell_command = shell_words::join(parsed_command.iter().chain(args.iter()));
 
     Ok((DEFAULT_GIT_BASH.into(), vec!["-c".into(), complete_shell_command]))
@@ -416,7 +416,7 @@ mod tests {
             let _env = EnvVarGuard::set("GIT_SSH_VARIANT", "simple");
             let result = get_sshexe_and_args(&meta, &repo);
             assert!(result.is_err());
-            assert!(matches!(result.unwrap_err(), GitXetError::NotSupported(_)));
+            assert!(matches!(result.unwrap_err(), GitExtensionError::NotSupported(_)));
         }
 
         Ok(())

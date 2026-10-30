@@ -1,0 +1,33 @@
+[package]
+name = "git_extension_common"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+xet-client = { path = "../xet_client" }
+xet-runtime = { path = "../xet_runtime" }
+async-trait = { workspace = true }
+git-url-parse = { workspace = true }
+git2 = { workspace = true }
+reqwest = { workspace = true }
+reqwest-middleware = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+shell-words = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
+russh = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+russh = { workspace = true }
+anyhow = { workspace = true }
+serial_test = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }
+
+[features]
+test-utils = ["dep:anyhow", "dep:tempfile", "dep:russh", "dep:tokio"]
+git2-vendored-openssl = ["git2/vendored-openssl"]

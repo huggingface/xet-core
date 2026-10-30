@@ -1,5 +1,4 @@
 // Naming convention
-pub const GIT_EXECUTABLE: &str = "git";
 pub const GIT_LFS_CUSTOM_TRANSFER_AGENT_NAME: &str = "xet";
 pub const GIT_LFS_CUSTOM_TRANSFER_AGENT_PROGRAM: &str = "git-xet";
 
