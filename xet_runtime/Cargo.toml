@@ -23,7 +23,8 @@ ctor = { workspace = true }
 dirs = { workspace = true }
 humantime = { workspace = true }
 git-version = { workspace = true }
-konst = "0.4"
+konst = { workspace = true }
+pastey = { workspace = true }
 libc = { workspace = true }
 more-asserts = { workspace = true }
 oneshot = { workspace = true }

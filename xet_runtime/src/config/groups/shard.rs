@@ -1,6 +1,6 @@
 use crate::utils::ByteSize;
 
-crate::config_group!({
+crate::config::macros::xet_config_group!(shard, {
 
     /// The (soft) maximum size in bytes of the shard cache.  Default is 16 GB.
     ///

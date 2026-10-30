@@ -215,3 +215,41 @@ macro_rules! config_group {
         pub(crate) type ConfigValues = ConfigValueGroup;
     };
 }
+
+/// Crate-internal wrapper around [`config_group!`] for the groups that make up
+/// [`XetConfig`](crate::config::XetConfig).
+///
+/// In addition to the group struct, generates a `<group>_<field>` setter on
+/// [`XetConfigBuilder`](crate::config::XetConfigBuilder) for every field, documented with the
+/// field's own doc comment. `$group` must match the group's field name on `XetConfig`.
+///
+/// Each setter takes exactly the field type, so literals infer it. `Option` fields take the full
+/// `Option`, so passing `None` clears the value.
+macro_rules! xet_config_group {
+    ($group:ident, {
+        $(
+            $(#[$meta:meta])*
+            ref $name:ident : $type:ty = $value:expr;
+        )+
+    }) => {
+        $crate::config_group!({
+            $(
+                $(#[$meta])*
+                ref $name : $type = $value;
+            )+
+        });
+
+        pastey::paste! {
+            impl $crate::config::XetConfigBuilder {
+                $(
+                    $(#[$meta])*
+                    pub fn [<$group _ $name>](mut self, value: $type) -> Self {
+                        self.config.$group.$name = value;
+                        self
+                    }
+                )+
+            }
+        }
+    };
+}
+pub(crate) use xet_config_group;
