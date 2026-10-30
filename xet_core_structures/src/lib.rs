@@ -3,7 +3,8 @@
 //! Provides [`merklehash::MerkleHash`] (256-bit content-addressed hashes),
 //! [`metadata_shard`] (compact shard format mapping file ranges to Xorb
 //! chunks), and [`xorb_object`] (content-addressed storage objects with
-//! byte-grouping compression).
+//! byte-grouping compression), and [`xet_pointer`] (the text pointer file standing in for Xet
+//! content).
 
 #![cfg_attr(feature = "strict", deny(warnings))]
 
@@ -14,6 +15,7 @@ pub mod data_structures;
 pub mod merklehash;
 pub mod metadata_shard;
 pub mod utils;
+pub mod xet_pointer;
 pub mod xorb_object;
 
 // Re-export commonly used items at the crate root for convenience
