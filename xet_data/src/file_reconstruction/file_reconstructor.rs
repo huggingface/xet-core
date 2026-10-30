@@ -247,9 +247,9 @@ impl FileReconstructor {
     /// Runs the file reconstruction with error handling and cancellation support.
     /// Returns the number of bytes written.
     ///
-    /// When `is_streaming` is true, the progress completion assertions at the end
-    /// of reconstruction are skipped because the stream consumer reports bytes
-    /// asynchronously after this method returns.
+    /// When `is_streaming` is true, the first term block uses `stream_initial_fetch_size`,
+    /// and the progress completion assertions at the end of reconstruction are skipped
+    /// because the stream consumer reports bytes asynchronously after this method returns.
     pub(crate) async fn run(
         self,
         data_writer: Box<dyn DataWriter>,
@@ -273,7 +273,7 @@ impl FileReconstructor {
         self,
         mut data_writer: Box<dyn DataWriter>,
         run_state: &RunState,
-        _is_streaming: bool,
+        is_streaming: bool,
     ) -> std::result::Result<u64, RunError> {
         let Self {
             ctx,
@@ -302,6 +302,7 @@ impl FileReconstructor {
             file_hash,
             requested_range,
             run_state.progress_updater().cloned(),
+            is_streaming,
         )
         .await?;
 
@@ -444,7 +445,7 @@ impl FileReconstructor {
         run_state.log_progress("File reconstruction completed successfully");
 
         #[cfg(debug_assertions)]
-        if !_is_streaming && let Some(updater) = run_state.progress_updater() {
+        if !is_streaming && let Some(updater) = run_state.progress_updater() {
             updater.assert_complete();
             if requested_range.end < u64::MAX {
                 assert_eq!(updater.total_bytes_completed(), requested_range.end - requested_range.start);
@@ -734,6 +735,33 @@ mod tests {
         let term_spec: Vec<(u64, (u64, u64))> = (1..=20).map(|i| (i, (0, 1))).collect();
         let (client, file_contents) = setup_test_file(&term_spec).await;
         reconstruct_and_verify_full(&client, &file_contents, test_config()).await;
+    }
+
+    #[tokio::test]
+    async fn test_stream_first_chunk_bounded_by_stream_initial_fetch_size() {
+        // A single term of 64 chunks: the first streamed chunk is the part of it covered by the first block.
+        let (client, file_contents) = setup_test_file(&[(1, (0, 64))]).await;
+
+        let mut config = ReconstructionConfig::default();
+        config.min_reconstruction_fetch_size = xet_runtime::utils::ByteSize::from("1mb");
+        config.stream_initial_fetch_size = xet_runtime::utils::ByteSize::from("500");
+
+        let mut stream = FileReconstructor::new(
+            &XetContext::default().unwrap(),
+            &(client as Arc<dyn Client>),
+            file_contents.file_hash,
+        )
+        .with_config(config)
+        .reconstruct_to_stream();
+
+        let first_chunk = stream.next().await.unwrap().unwrap();
+        assert!(first_chunk.len() <= 500 + TEST_CHUNK_SIZE, "first chunk is {} bytes", first_chunk.len());
+
+        let mut data = first_chunk.to_vec();
+        while let Some(chunk) = stream.next().await.unwrap() {
+            data.extend_from_slice(&chunk);
+        }
+        assert_eq!(data, file_contents.data);
     }
 
     // ==================== Progress tracker tests ====================

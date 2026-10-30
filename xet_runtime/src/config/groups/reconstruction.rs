@@ -20,6 +20,15 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_RECONSTRUCTION_MAX_RECONSTRUCTION_FETCH_SIZE` to set this value.
     ref max_reconstruction_fetch_size: ByteSize = ByteSize::from("8gb");
 
+    /// The size of the first fetch request of a streamed reconstruction, capped at `min_reconstruction_fetch_size`.
+    /// A stream returns no data until its first term is downloaded, so a small first fetch shortens the time to
+    /// first byte.
+    ///
+    /// The default value is 2MB.
+    ///
+    /// Use the environment variable `HF_XET_RECONSTRUCTION_STREAM_INITIAL_FETCH_SIZE` to set this value.
+    ref stream_initial_fetch_size: ByteSize = ByteSize::from("2mb");
+
     /// The amount of download buffer always available for file reconstruction.
     /// The full buffer size will be this plus the number of simultaneous active
     /// file downloads times the per file size up to the global limit of
