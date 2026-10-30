@@ -25,6 +25,7 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true, optional = true }
+futures-util = { workspace = true }
 gearhash = { workspace = true }
 http = { workspace = true }
 itertools = { workspace = true }
@@ -34,7 +35,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
-tokio-util = { workspace = true }
+tokio-util = { workspace = true, features = ["rt"] }
 tracing = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true, features = ["v7"] }

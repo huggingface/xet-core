@@ -121,13 +121,21 @@ impl SingleFileCleaner {
         let mut deduper = std::mem::replace(&mut self.dedup_manager_fut, Box::pin(future::pending())).await?;
 
         let num_chunks = chunks.len();
+        let session = self.session.clone();
 
+        // Tracked by the session: if this cleaner is dropped before the task ends, finalize still waits for it.
         let dedup_background = tokio::spawn(
-            async move {
-                deduper.process_chunks(&chunks).await?;
-                Ok(deduper)
-            }
-            .instrument(debug_span!("deduper::process_chunks_task", num_chunks).or_current()),
+            self.session.dedup_tasks.track_future(
+                async move {
+                    session
+                        .run_dedup_task(async move {
+                            deduper.process_chunks(&chunks).await?;
+                            Ok(deduper)
+                        })
+                        .await
+                }
+                .instrument(debug_span!("deduper::process_chunks_task", num_chunks).or_current()),
+            ),
         );
 
         self.dedup_manager_fut = Box::pin(async move { dedup_background.await? });
