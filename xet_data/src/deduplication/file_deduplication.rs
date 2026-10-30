@@ -249,11 +249,11 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
 
             // Do we need to cut a new xorb first?
             if self.new_data_size + n_bytes > xorb_cut_bytes || self.new_data.len() + 1 > xorb_cut_chunks {
-                let new_xorb = self.cut_new_xorb();
+                let (new_xorb, file_bytes_in_xorb) = self.cut_new_xorb();
                 xorb_dependencies.push(FileXorbDependency {
                     file_id: self.file_id,
                     xorb_hash: new_xorb.hash(),
-                    n_bytes: new_xorb.num_bytes() as u64,
+                    n_bytes: file_bytes_in_xorb,
                     is_external: false,
                 });
                 self.data_mng.register_new_xorb(new_xorb).await?;
@@ -336,12 +336,17 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
         }
     }
 
-    /// Cut a new xorb from the existing data.  
-    fn cut_new_xorb(&mut self) -> RawXorbData {
+    /// Cut a new xorb from the existing data.
+    ///
+    /// Returns the xorb and the number of this file's bytes that reference it, which is what progress
+    /// tracking must complete for the file. This exceeds the xorb's size when the file repeats data
+    /// that was deduplicated against the xorb before it was cut.
+    fn cut_new_xorb(&mut self) -> (RawXorbData, u64) {
         // Cut the new xorb.
         let new_xorb = RawXorbData::from_chunks(&self.new_data[..], vec![0]);
 
         let xorb_hash = new_xorb.hash();
+        let mut file_bytes_in_xorb = 0;
 
         // Go through and replace all the indices in the file sequence entries with
         // the new xorb if referenced.
@@ -352,6 +357,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
             debug_assert_le!(fse.chunk_index_end as usize, self.new_data.len());
 
             fse.xorb_hash = xorb_hash;
+            file_bytes_in_xorb += fse.unpacked_segment_bytes as u64;
         }
 
         #[cfg(debug_assertions)]
@@ -368,7 +374,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
         self.new_data_size = 0;
         self.internally_referencing_entries.clear();
 
-        new_xorb
+        (new_xorb, file_bytes_in_xorb)
     }
 
     /// Do a query against the local data; this would return an entry with MerkleHash::marker(), which
