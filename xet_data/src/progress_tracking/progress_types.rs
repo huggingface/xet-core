@@ -48,6 +48,8 @@ impl ItemProgress {
             item_name: self.name.to_string(),
             total_bytes,
             bytes_completed,
+            transfer_bytes,
+            transfer_bytes_completed,
         }
     }
 }
@@ -663,6 +665,10 @@ pub struct ItemProgressReport {
     pub item_name: String,
     pub total_bytes: u64,
     pub bytes_completed: u64,
+    /// Network bytes this item needs, as far as known: grows as a download discovers its terms.
+    pub transfer_bytes: u64,
+    /// Network bytes this item has transferred, including chunk cache hits on downloads.
+    pub transfer_bytes_completed: u64,
 }
 
 #[cfg(test)]
@@ -701,6 +707,10 @@ mod tests {
 
         assert_eq!(group.total_transfer_bytes.load(Ordering::Relaxed), 80);
         assert_eq!(group.total_transfer_bytes_completed.load(Ordering::Relaxed), 30);
+
+        let report = updater.report();
+        assert_eq!(report.transfer_bytes, 80);
+        assert_eq!(report.transfer_bytes_completed, 30);
     }
 
     /// The case that motivates inferring an outcome at all: a download that transferred everything

@@ -349,6 +349,8 @@ mod tests {
             item_name: name.to_string(),
             total_bytes,
             bytes_completed,
+            transfer_bytes: 0,
+            transfer_bytes_completed: 0,
         }
     }
 

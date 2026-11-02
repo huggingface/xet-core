@@ -148,6 +148,8 @@ mod tests {
             item_name: "f".into(),
             total_bytes: 100,
             bytes_completed: 42,
+            transfer_bytes: 0,
+            transfer_bytes_completed: 0,
         };
         assert_eq!(progress_display(Some(report)), "42/100");
     }
