@@ -59,7 +59,9 @@ countio = { version = "0.3", features = ["futures"] }
 crc-fast = { version = "1.10", default-features = false, features = ["std"] }
 crc32fast = "1.5"
 csv = "1"
-ctor = "1"
+# `priority` emits an Apple `__text_startup` hook that can exceed the ARM64
+# branch range in large downstream dynamic libraries.
+ctor = { version = "1", default-features = false, features = ["std", "proc_macro"] }
 dirs = "6.0"
 futures = "0.3"
 humantime = "2.1"
