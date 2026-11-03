@@ -894,7 +894,7 @@ impl Client for MemoryClient {
         shard_data: Bytes,
         _permit: super::super::adaptive_concurrency::ConnectionPermit,
         progress_callback: Option<ShardUploadProgressCallback>,
-    ) -> Result<()> {
+    ) -> Result<Option<MerkleHash>> {
         self.apply_api_delay().await;
         // Parse the shard using the streaming parser (handles shards without footer)
         let mut reader = Cursor::new(&shard_data);
@@ -920,10 +920,18 @@ impl Client for MemoryClient {
         // Update global dedup lookup using the minimal shard's method
         let chunk_hashes = minimal_shard.global_dedup_eligible_chunks();
 
+        // Clients upload shards without a footer, but a dedup response must carry one for the client
+        // to import it. Keep the re-serialized form, as `LocalClient` stores it.
+        let with_verification =
+            (0..minimal_shard.num_files()).all(|i| minimal_shard.file(i).is_some_and(|f| f.contains_verification()));
+        let mut stored = Vec::with_capacity(minimal_shard.serialized_size(with_verification));
+        minimal_shard.serialize(&mut stored, with_verification, None)?;
+        let stored = Bytes::from(stored);
+
         {
             let mut dedup_lg = self.global_dedup.write().await;
             for chunk in chunk_hashes {
-                dedup_lg.insert(chunk, shard_data.clone());
+                dedup_lg.insert(chunk, stored.clone());
             }
         }
 
@@ -950,7 +958,9 @@ impl Client for MemoryClient {
             cb(ShardUploadProgressType::Response(&ShardUploadEvent::Result));
         }
 
-        Ok(())
+        // Uploads accumulate into one merged shard here rather than a per-upload object, so
+        // there is no hash this particular shard was stored under.
+        Ok(None)
     }
 
     async fn upload_xorb(

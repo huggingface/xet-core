@@ -6,16 +6,17 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime};
 
+use bytes::Bytes;
 use heapify::{make_heap_with, pop_heap_with};
 use tracing::{debug, error, info, warn};
 
-use super::MDBShardFileFooter;
 use super::constants::MDB_SHARD_EXPIRATION_BUFFER;
 use super::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use super::shard_file::current_timestamp;
 use super::shard_format::MDBShardInfo;
 use super::utils::{parse_shard_filename, shard_file_name, temp_shard_file_name, truncate_hash};
 use super::xorb_structs::XorbChunkSequenceHeader;
+use super::{MDBShardFileFooter, MDBShardFileHeader};
 use crate::error::{CoreError, Result};
 use crate::merklehash::{HMACKey, HashedWrite, MerkleHash, compute_data_hash};
 
@@ -280,6 +281,27 @@ impl MDBShardFile {
         Ok(())
     }
 
+    /// Reads the shard without its lookup tables and footer, the form in which shards are uploaded.
+    pub fn read_shard_to_bytes_remove_footer(&self) -> Result<Bytes> {
+        let split_off_index = self.shard.metadata.file_lookup_offset as usize;
+        // Read only the portion of the shard file up to the file_lookup_offset,
+        // which excludes the footer and lookup sections.
+        let mut file = File::open(&self.path)?;
+        let mut buf = vec![0u8; split_off_index];
+        file.read_exact(&mut buf)?;
+        // re-write the header to set footer_size to 0.
+        let mut header = self.shard.header.clone();
+        header.footer_size = 0;
+        header.serialize(&mut (&mut buf[..size_of::<MDBShardFileHeader>()]))?;
+        #[cfg(debug_assertions)]
+        {
+            let new_header =
+                MDBShardFileHeader::deserialize(&mut Cursor::new(&buf[..size_of::<MDBShardFileHeader>()]))?;
+            debug_assert_eq!(new_header.footer_size, 0);
+        }
+        Ok(Bytes::from(buf))
+    }
+
     #[inline]
     fn scan_impl(
         path: impl AsRef<Path>,
@@ -530,5 +552,30 @@ impl MDBShardFile {
         truncated_hashes.sort();
 
         assert_eq!(read_truncated_hashes, truncated_hashes);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::metadata_shard::shard_in_memory::MDBInMemoryShard;
+
+    #[test]
+    fn test_read_shard_to_bytes_remove_footer() -> Result<()> {
+        let tmp_dir = tempfile::TempDir::with_prefix("test_read_shard_to_bytes_remove_footer")?;
+        let tmp_dir_path = tmp_dir.path();
+
+        let mdb_in_mem = MDBInMemoryShard::default();
+        let temp_shard_file_path = mdb_in_mem.write_to_directory(tmp_dir_path, None)?;
+
+        let sfc = new_shard_file_cache();
+        let shard_file = MDBShardFile::load_from_file(&temp_shard_file_path, &sfc)?;
+        assert_eq!(shard_file.shard.header.footer_size, size_of::<MDBShardFileFooter>() as u64);
+
+        let no_footer_shard_buf = shard_file.read_shard_to_bytes_remove_footer()?;
+        let buf_shard_header =
+            MDBShardFileHeader::deserialize(&mut Cursor::new(&no_footer_shard_buf[..size_of::<MDBShardFileHeader>()]))?;
+        assert_eq!(buf_shard_header.footer_size, 0);
+        Ok(())
     }
 }

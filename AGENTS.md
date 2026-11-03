@@ -98,6 +98,7 @@ API layers: `hf_xet` Python extension → `hf-xet` Rust crate → `xet-data`, su
 | `xet_core_structures/` | `xet-core-structures` | Hashes, shard/Xorb formats, shared structures |
 | `xet_runtime/` | `xet-runtime` | Runtime, configuration, logging, utilities |
 | `git_xet/` | `git_xet` | Git LFS integration |
+| `git_extension_common/` | `git_extension_common` | Shared Git support: repositories, remote URLs, credentials, SSH, subprocesses |
 | `hf_xet/` | `hf_xet` | PyO3 bindings; separate manifest |
 | `simulation/` | `simulation` | Simulations/benchmarks; separate manifest |
 | `wasm/` | Separate crates | Browser/WASM builds |
@@ -236,6 +237,6 @@ pub type Result<T> = std::result::Result<T, DataError>;
 
 ## Debugging
 
-Use `RUST_BACKTRACE=full`, `RUST_LOG=info` (or `debug` / `trace`), and `HF_XET_LOG_FILE=/tmp/xet.log`.
+Use `RUST_BACKTRACE=full`, `RUST_LOG=info` (or `debug` / `trace`), and `HF_XET_LOG_DEST=/tmp/xet.log`.
 
 See [diagnostic scripts](scripts/diag/README.md) for symbol/trace capture. The [smoke tests](scripts/smoke_tests/README.md) exercise a released or locally built `hf_xet` wheel against the real Hub and need an `HF_TOKEN`; they are a release check, not part of routine verification.

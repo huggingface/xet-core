@@ -25,7 +25,9 @@ use xet_core_structures::metadata_shard::streaming_shard::MDBMinimalShard;
 use xet_core_structures::metadata_shard::utils::{parse_shard_filename, shard_file_name};
 #[cfg(test)]
 use xet_core_structures::metadata_shard::xorb_structs::MDBXorbInfo;
-use xet_core_structures::metadata_shard::{MDBShardFile, MDBShardFileHeader, ShardFileManager};
+use xet_core_structures::metadata_shard::{
+    ChunkIndexSizeEnforcement, MDBShardFile, MDBShardFileHeader, ShardFileManager,
+};
 use xet_core_structures::serialization_utils::read_u32;
 use xet_core_structures::xorb_object::{SerializedXorbObject, XorbObject};
 use xet_runtime::core::XetContext;
@@ -563,7 +565,9 @@ impl LocalClient {
             let shard_path = in_memory.write_to_directory(&self.shard_dir, None)?;
             let shard = MDBShardFile::load_from_file(&shard_path, self.shard_manager.shard_file_cache())?;
             let shard_hash = shard.shard_hash;
-            self.shard_manager.register_shards(&[shard]).await?;
+            self.shard_manager
+                .register_shards(&[shard], ChunkIndexSizeEnforcement::StopAtCap)
+                .await?;
 
             // Update FILE_TO_SHARD_TABLE with byte-accurate offsets.
             let shard_bytes = std::fs::read(&shard_path)?;
@@ -1669,7 +1673,7 @@ impl Client for LocalClient {
         shard_data: Bytes,
         _permit: super::super::adaptive_concurrency::ConnectionPermit,
         progress_callback: Option<ShardUploadProgressCallback>,
-    ) -> Result<()> {
+    ) -> Result<Option<MerkleHash>> {
         self.apply_api_delay().await;
 
         // Parse the shard using the streaming parser (handles shards without footer)
@@ -1706,7 +1710,9 @@ impl Client for LocalClient {
 
         let shard = MDBShardFile::load_from_file(&shard_path, self.shard_manager.shard_file_cache())?;
 
-        self.shard_manager.register_shards(&[shard]).await?;
+        self.shard_manager
+            .register_shards(&[shard], ChunkIndexSizeEnforcement::StopAtCap)
+            .await?;
 
         // Get global dedup chunks from the minimal shard
         let chunk_hashes = minimal_shard.global_dedup_eligible_chunks();
@@ -1760,7 +1766,7 @@ impl Client for LocalClient {
             cb(ShardUploadProgressType::Response(&ShardUploadEvent::Result));
         }
 
-        Ok(())
+        Ok(Some(shard_hash))
     }
 
     async fn upload_xorb(

@@ -8,7 +8,7 @@ crate::config_group!({
     /// sent to the server to limit the number of simultaneous queries.
     ///
     /// The default value is 256, which means that the server will receive a query at most
-    /// for every 256 chunks or 4MB of data.
+    /// for every 256 chunks, about 16 MiB of data at the 64 KiB average chunk size.
     ///
     /// Use the environment variable `HF_XET_DATA_MIN_SPACING_BETWEEN_GLOBAL_DEDUP_QUERIES` to set this value.
     ref min_spacing_between_global_dedup_queries: usize = 256;
