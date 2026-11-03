@@ -16,6 +16,7 @@ git2 = { workspace = true }
 thiserror = { workspace = true }
 xet-client = { path = "../xet_client" }
 xet-core-structures = { path = "../xet_core_structures" }
+xet_pointer_file = { path = "../xet_pointer_file" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

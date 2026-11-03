@@ -1794,6 +1794,7 @@ dependencies = [
  "thiserror 2.0.18",
  "xet-client",
  "xet-core-structures",
+ "xet_pointer_file",
 ]
 
 [[package]]
@@ -6086,6 +6087,14 @@ dependencies = [
  "web-time",
  "whoami",
  "winapi",
+]
+
+[[package]]
+name = "xet_pointer_file"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

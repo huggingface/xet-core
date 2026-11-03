@@ -12,6 +12,7 @@ members = [
     "git_xet",
     "git_hf",
     "git_extension_common",
+    "xet_pointer_file",
 ]
 exclude = [
     "simulation",

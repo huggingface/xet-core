@@ -1,18 +1,27 @@
 //! The Xet pointer file format (`https://hf.co/spec/xet/v1`): a small text file standing in for
 //! content stored in Xet, naming its file hash and logical size.
-use std::fmt::{self, Display};
+
+#![cfg_attr(feature = "strict", deny(warnings))]
+
+use std::fmt::{self, Debug, Display};
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::Path;
 
 use thiserror::Error;
 
-use crate::merklehash::MerkleHash;
-
 /// Maximum serialized pointer size, including extension lines and the final LF. A canonical pointer
 /// is 113 bytes plus the size's decimal digits (at most 133), leaving room for a few extension lines.
 pub const MAX_POINTER_SIZE: usize = 200;
 const POINTER_VERSION: &str = "https://hf.co/spec/xet/v1";
+const HASH_HEX_LEN: usize = 64;
+
+/// A Xet content hash in its pointer form: exactly 64 lowercase hexadecimal digits.
+///
+/// Only this form is accepted, so every value parses with xet-core-structures' `MerkleHash::from_hex`
+/// (which takes 64 hexadecimal digits of either case) and equals that hash's `hex()` output.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HexHash([u8; HASH_HEX_LEN]);
 
 /// A Xet pointer. Serialization uses canonical field order and omits unknown extensions.
 /// Non-exhaustive so fields (such as preserved extensions) can be added; construct with [`Self::new`].
@@ -20,7 +29,7 @@ const POINTER_VERSION: &str = "https://hf.co/spec/xet/v1";
 #[non_exhaustive]
 pub struct XetPointer {
     /// Xet content hash.
-    pub hash: MerkleHash,
+    pub hash: HexHash,
     /// Logical file size in bytes, not the size of the pointer blob.
     pub size: u64,
     /// Pointer format version URL.
@@ -40,7 +49,7 @@ pub enum PointerError {
     DuplicateField(&'static str),
     #[error("unsupported native pointer version: {0}")]
     UnsupportedVersion(String),
-    #[error("native pointer oid must be 'xet:' followed by 64 hexadecimal digits")]
+    #[error("native pointer oid must be 'xet:' followed by 64 lowercase hexadecimal digits")]
     InvalidOid,
     #[error("native pointer size must be an unsigned 64-bit decimal integer with no leading zeroes")]
     InvalidSize,
@@ -48,9 +57,45 @@ pub enum PointerError {
     UnsupportedLfs,
 }
 
+/// Errors from [`XetPointer::parse_file`]: the file could not be read, or it holds an invalid pointer.
+#[derive(Debug, Error)]
+pub enum PointerFileError {
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    #[error(transparent)]
+    Pointer(#[from] PointerError),
+}
+
+impl HexHash {
+    /// Returns `None` unless `hex` is exactly 64 lowercase hexadecimal digits.
+    pub fn from_hex(hex: &str) -> Option<Self> {
+        let bytes: [u8; HASH_HEX_LEN] = hex.as_bytes().try_into().ok()?;
+        bytes
+            .iter()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+            .then_some(Self(bytes))
+    }
+
+    pub fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.0).expect("HexHash holds only ASCII hexadecimal digits")
+    }
+}
+
+impl Display for HexHash {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl Debug for HexHash {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 impl XetPointer {
     /// Creates a canonical pointer without extensions.
-    pub fn new(hash: MerkleHash, size: u64) -> Self {
+    pub fn new(hash: HexHash, size: u64) -> Self {
         Self {
             hash,
             size,
@@ -61,7 +106,7 @@ impl XetPointer {
     /// Opens a file and parses it with the same rules as [`Self::parse`]. A regular file whose
     /// metadata reports more than [`MAX_POINTER_SIZE`] bytes is ordinary data and is not read.
     /// Returns `Ok(None)` for ordinary file data; preserves I/O and pointer validation errors.
-    pub fn parse_file(path: impl AsRef<Path>) -> crate::error::Result<Option<Self>> {
+    pub fn parse_file(path: impl AsRef<Path>) -> Result<Option<Self>, PointerFileError> {
         let file = File::open(path)?;
         // Only a shortcut: correctness comes from the bounded read and `parse`'s own length check.
         // Non-regular files and handles without metadata (e.g. some Windows pipes) take the read path.
@@ -153,10 +198,7 @@ impl XetPointer {
             .strip_prefix("xet:")
             .ok_or(PointerError::InvalidOid)?;
         // Lowercase only, as serialization writes, so a pointer has one byte form and round-trips exactly.
-        if !hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
-            return Err(PointerError::InvalidOid);
-        }
-        let hash = MerkleHash::from_hex(hex).map_err(|_| PointerError::InvalidOid)?;
+        let hash = HexHash::from_hex(hex).ok_or(PointerError::InvalidOid)?;
         let size = size.ok_or(PointerError::MissingField("size"))?;
         if !size.bytes().all(|b| b.is_ascii_digit()) || (size.len() > 1 && size.starts_with('0')) {
             return Err(PointerError::InvalidSize);
@@ -193,7 +235,6 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::error::CoreError;
 
     const HASH: &str = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
 
@@ -203,7 +244,7 @@ mod tests {
     }
 
     fn expected() -> XetPointer {
-        XetPointer::new(MerkleHash::from_hex(HASH).unwrap(), 12345)
+        XetPointer::new(HexHash::from_hex(HASH).unwrap(), 12345)
     }
 
     fn with(from: &str, to: &str) -> String {
@@ -232,7 +273,7 @@ mod tests {
     #[test]
     fn parses_canonical_pointer() {
         let pointer = XetPointer::parse(canonical().as_bytes()).unwrap().unwrap();
-        assert_eq!(pointer.hash.hex(), HASH);
+        assert_eq!(pointer.hash.as_str(), HASH);
         assert_eq!(pointer.size, 12345);
         assert_eq!(pointer.version, POINTER_VERSION);
     }
@@ -458,6 +499,32 @@ mod tests {
         assert_eq!(parse_err(with("12345", "18446744073709551616")), PointerError::InvalidSize);
     }
 
+    // HexHash
+
+    #[test]
+    fn hex_hash_keeps_lowercase_hex() {
+        let hash = HexHash::from_hex(HASH).unwrap();
+        assert_eq!(hash.as_str(), HASH);
+        assert_eq!(hash.to_string(), HASH);
+        assert_eq!(format!("{hash:?}"), HASH);
+    }
+
+    #[test]
+    fn hex_hash_rejects_other_forms() {
+        // 64 bytes but 63 characters.
+        let multibyte = format!("{}é", &HASH[..62]);
+        for hex in [
+            &HASH[..63],
+            &format!("{HASH}0"),
+            &HASH.to_uppercase(),
+            &"g".repeat(64),
+            &multibyte,
+            "",
+        ] {
+            assert_eq!(HexHash::from_hex(hex), None, "{hex}");
+        }
+    }
+
     // Serialization
 
     #[test]
@@ -474,7 +541,7 @@ mod tests {
 
     #[test]
     fn display_round_trips_through_parse() {
-        let pointer = XetPointer::new(MerkleHash::from_hex(HASH).unwrap(), 0);
+        let pointer = XetPointer::new(HexHash::from_hex(HASH).unwrap(), 0);
         assert_eq!(XetPointer::parse(pointer.to_string().as_bytes()).unwrap(), Some(pointer));
     }
 
@@ -511,7 +578,7 @@ mod tests {
                 Ok(parsed) => assert_eq!(XetPointer::parse_file(&path).unwrap(), parsed),
                 Err(error) => assert!(matches!(
                     XetPointer::parse_file(&path),
-                    Err(CoreError::XetPointer(file_error)) if file_error == error
+                    Err(PointerFileError::Pointer(file_error)) if file_error == error
                 )),
             }
         }
@@ -533,7 +600,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         assert!(matches!(
             XetPointer::parse_file(dir.path().join("missing")),
-            Err(CoreError::Io(error)) if error.kind() == io::ErrorKind::NotFound
+            Err(PointerFileError::Io(error)) if error.kind() == io::ErrorKind::NotFound
         ));
     }
 
@@ -542,7 +609,7 @@ mod tests {
     #[test]
     fn parse_file_rejects_directory() {
         let dir = TempDir::new().unwrap();
-        assert!(matches!(XetPointer::parse_file(dir.path()), Err(CoreError::Io(_))));
+        assert!(matches!(XetPointer::parse_file(dir.path()), Err(PointerFileError::Io(_))));
     }
 
     // A directory's reported size is unrelated to content, so a large one must not take the
@@ -558,6 +625,6 @@ mod tests {
             std::fs::write(dir.path().join(format!("entry-with-a-long-name-{i:04}")), b"").unwrap();
         }
         assert!(std::fs::metadata(dir.path()).unwrap().len() > MAX_POINTER_SIZE as u64);
-        assert!(matches!(XetPointer::parse_file(dir.path()), Err(CoreError::Io(_))));
+        assert!(matches!(XetPointer::parse_file(dir.path()), Err(PointerFileError::Io(_))));
     }
 }

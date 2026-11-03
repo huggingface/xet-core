@@ -37,11 +37,12 @@ will be handled when clone execution is implemented.
 
 ## Pointer API
 
-The pointer format is implemented in the `xet_pointer` module of
-`xet-core-structures`; git-hf re-exports `XetPointer`, `PointerError`, and
-`MAX_POINTER_SIZE`.
+The pointer format is implemented in the `xet_pointer_file` crate; git-hf re-exports
+`XetPointer`, `HexHash`, `PointerError`, and `MAX_POINTER_SIZE`.
 
-`XetPointer::new(MerkleHash, size)` creates a pointer with the current version. `to_string()` and `write_to()` serialize it as:
+`HexHash` holds a hash as exactly 64 lowercase hexadecimal digits, the form
+`MerkleHash::hex()` writes; every `HexHash` parses with `MerkleHash::from_hex`.
+`XetPointer::new(HexHash, size)` creates a pointer with the current version. `to_string()` and `write_to()` serialize it as:
 
 ```text
 version https://hf.co/spec/xet/v1
@@ -62,8 +63,8 @@ the stored version, hash, and size in canonical order.
 `XetPointer::parse_file(path)` opens a file and returns `Ok(None)` without reading
 it when its metadata shows a regular file larger than 200 bytes. Otherwise,
 including when metadata is unavailable, it reads at most 201 bytes (the file may
-grow, or report no size) before calling the byte parser. It returns `CoreError::Io` for file errors and
-`CoreError::XetPointer` for pointer validation errors, or `Ok(None)` for ordinary data.
+grow, or report no size) before calling the byte parser. It returns `PointerFileError::Io` for file errors and
+`PointerFileError::Pointer` for pointer validation errors, or `Ok(None)` for ordinary data.
 
 Recognition scans at most 200 bytes for a native version URL or `oid xet:` line
 (or an LFS version URL), so probing stays bounded even for large file input. A
