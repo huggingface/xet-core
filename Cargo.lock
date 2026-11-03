@@ -193,9 +193,9 @@ dependencies = [
 
 [[package]]
 name = "async-executor"
-version = "1.14.0"
+version = "1.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c96bf972d85afc50bf5ab8fe2d54d1586b4e0b46c97c50a0c9e71e2f7bcd812a"
+checksum = "f426a31126c735126297bc5ea7a521263c9faff4f63ca415267ee625651c4f37"
 dependencies = [
  "async-task",
  "concurrent-queue",
@@ -1790,6 +1790,21 @@ dependencies = [
  "tokio",
  "xet-client",
  "xet-runtime",
+]
+
+[[package]]
+name = "git_hf"
+version = "0.1.0-dev"
+dependencies = [
+ "clap",
+ "git-url-parse",
+ "git2",
+ "git_extension_common",
+ "tempfile",
+ "thiserror 2.0.18",
+ "xet-client",
+ "xet-core-structures",
+ "xet_pointer_file",
 ]
 
 [[package]]
@@ -6025,6 +6040,14 @@ dependencies = [
  "web-time",
  "whoami",
  "winapi",
+]
+
+[[package]]
+name = "xet_pointer_file"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

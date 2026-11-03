@@ -37,6 +37,18 @@ impl GitRepo {
         Ok(repo.path().to_path_buf())
     }
 
+    /// Returns the Git directory shared by all linked worktrees of this repository.
+    pub fn common_dir(&self) -> Result<PathBuf> {
+        let repo = self.repo.lock().map_err(GitExtensionError::internal)?;
+        Ok(repo.commondir().to_path_buf())
+    }
+
+    /// Returns this checkout's working directory, or `None` for a bare repository.
+    pub fn worktree_dir(&self) -> Result<Option<PathBuf>> {
+        let repo = self.repo.lock().map_err(GitExtensionError::internal)?;
+        Ok(repo.workdir().map(Path::to_path_buf))
+    }
+
     // Resolves the reference pointed at by HEAD, returns branch name if it is a branch.
     pub fn branch_name(&self) -> Result<Option<String>> {
         let repo = self.repo.lock().map_err(GitExtensionError::internal)?;
