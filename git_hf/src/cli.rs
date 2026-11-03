@@ -139,3 +139,30 @@ impl GitHfApp {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+
+    use super::*;
+
+    fn args(v: &[&str]) -> Vec<OsString> {
+        v.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn cli_definition_is_valid() {
+        GitHfApp::command().debug_assert();
+    }
+
+    #[test]
+    fn clone_keeps_raw_git_args() {
+        for tail in [&["--", "-weird", "dir"][..], &["--depth", "1", "url", "dir"]] {
+            let app = GitHfApp::try_parse_args_from(args(&[&["git-hf", "clone"][..], tail].concat())).unwrap();
+            let Command::Clone(clone) = app.command else {
+                panic!("expected clone")
+            };
+            assert_eq!(clone.git_args, args(tail));
+        }
+    }
+}

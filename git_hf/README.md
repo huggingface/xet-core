@@ -53,7 +53,7 @@ size 12345
 pointer for native content, or a typed `PointerError` for recognized malformed,
 unsupported-version, or LFS pointers. Input longer than `MAX_POINTER_SIZE` (200 bytes) is always
 ordinary data. Otherwise it enforces UTF-8/LF
-syntax with a final newline, unique required fields, exact version, case-insensitive
+syntax with a final newline, unique required fields, exact version, lowercase
 64-digit Xet hash, and a u64 decimal size with no leading zeroes except `0`.
 The `hash`, `size`, and `version` fields are directly accessible. Empty lines and unknown
 extension keys are accepted and discarded. `to_string()` and `write_to()` serialize

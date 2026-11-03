@@ -15,7 +15,9 @@ pub const MAX_POINTER_SIZE: usize = 200;
 const POINTER_VERSION: &str = "https://hf.co/spec/xet/v1";
 
 /// A Xet pointer. Serialization uses canonical field order and omits unknown extensions.
+/// Non-exhaustive so fields (such as preserved extensions) can be added; construct with [`Self::new`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct XetPointer {
     /// Xet content hash.
     pub hash: MerkleHash,
@@ -26,6 +28,7 @@ pub struct XetPointer {
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PointerError {
     #[error("native pointer must be UTF-8 with LF endings and a final newline")]
     InvalidEncoding,
@@ -149,7 +152,10 @@ impl XetPointer {
             .ok_or(PointerError::MissingField("oid"))?
             .strip_prefix("xet:")
             .ok_or(PointerError::InvalidOid)?;
-        // Either hex case is accepted; serialization writes lowercase.
+        // Lowercase only, as serialization writes, so a pointer has one byte form and round-trips exactly.
+        if !hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            return Err(PointerError::InvalidOid);
+        }
         let hash = MerkleHash::from_hex(hex).map_err(|_| PointerError::InvalidOid)?;
         let size = size.ok_or(PointerError::MissingField("size"))?;
         if !size.bytes().all(|b| b.is_ascii_digit()) || (size.len() > 1 && size.starts_with('0')) {
@@ -415,9 +421,10 @@ mod tests {
     }
 
     #[test]
-    fn oid_accepts_uppercase_hex() {
-        let input = with(HASH, &HASH.to_uppercase());
-        assert_eq!(XetPointer::parse(input.as_bytes()).unwrap(), Some(expected()));
+    fn oid_rejects_uppercase_hex() {
+        for hash in [HASH.to_uppercase(), format!("{}A", &HASH[..63])] {
+            assert_eq!(parse_err(with(HASH, &hash)), PointerError::InvalidOid, "{hash}");
+        }
     }
 
     #[test]
