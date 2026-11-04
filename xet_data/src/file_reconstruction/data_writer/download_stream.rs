@@ -6,9 +6,11 @@ use tokio::sync::mpsc::UnboundedReceiver;
 #[cfg(target_family = "wasm")]
 use tokio_with_wasm::alias as tokio;
 use tracing::info;
+use xet_runtime::utils::adjustable_semaphore::AdjustableSemaphorePermit;
 
-use super::super::error::{FileReconstructionError, Result};
+use super::super::error::Result;
 use super::super::file_reconstructor::FileReconstructor;
+use super::super::reconstruction_terms::TermReader;
 use super::super::run_state::RunState;
 use super::sequential_writer::{SequentialRetrievalItem, SequentialWriter};
 
@@ -21,15 +23,19 @@ use super::sequential_writer::{SequentialRetrievalItem, SequentialWriter};
 /// `start()`, `next()`, and `blocking_next()` do **not** require a tokio runtime
 /// context.
 ///
-/// Data is delivered by pulling items directly from the sequential writer's
+/// Data is delivered by pulling terms directly from the sequential writer's
 /// internal queue, bypassing the synchronous writer thread entirely. Each call
 /// to [`blocking_next`](Self::blocking_next) / [`next`](Self::next) returns the
-/// next sequential chunk, or `None` when the download is complete. Any
+/// next sequential bytes that are ready, as soon as they are decompressed: a
+/// term's bytes arrive in several pieces while its xorb block downloads, rather
+/// than all at once after it. Returns `None` when the download is complete. Any
 /// reconstruction error is surfaced on the call that would have returned the
 /// next chunk (or on the final `None` boundary) via the shared run state.
 pub struct DownloadStream {
     /// Channel receiver for sequential retrieval items from the writer queue.
     receiver: UnboundedReceiver<SequentialRetrievalItem>,
+    /// The term being read and its buffer permit, released once the term has been returned in full.
+    current: Option<(TermReader, Option<AdjustableSemaphorePermit>)>,
     /// Whether the stream has finished (no more data).
     finished: bool,
     /// Shared run state with the `FileReconstructor`. When cancelled,
@@ -63,6 +69,7 @@ impl DownloadStream {
 
         Self {
             receiver,
+            current: None,
             finished: false,
             run_state,
             start_signal: Some(start_signal),
@@ -123,26 +130,22 @@ impl DownloadStream {
         }
         self.ensure_started();
 
-        match self.receiver.blocking_recv() {
-            Some(SequentialRetrievalItem::Data { receiver, permit }) => {
-                let data = match receiver.blocking_recv() {
-                    Ok(data) => data,
-                    Err(_) => {
-                        self.run_state.check_error()?;
-                        return Err(FileReconstructionError::InternalWriterError(
-                            "Data sender was dropped before sending data.".to_string(),
-                        ));
-                    },
-                };
-                self.run_state.report_bytes_written(data.len() as u64);
-                drop(permit);
-                Ok(Some(data))
-            },
-            Some(SequentialRetrievalItem::Finish) | None => {
-                self.finished = true;
-                self.run_state.check_error()?;
-                Ok(None)
-            },
+        loop {
+            if self.current.is_none() {
+                match self.receiver.blocking_recv() {
+                    Some(SequentialRetrievalItem::Data { reader, permit }) => self.current = Some((reader, permit)),
+                    Some(SequentialRetrievalItem::Finish) | None => return self.finish(),
+                }
+            }
+
+            let Some((reader, _)) = self.current.as_mut() else {
+                continue;
+            };
+            let piece = reader.read_next_blocking();
+            let data = self.take_piece(piece)?;
+            if data.is_some() || self.finished {
+                return Ok(data);
+            }
         }
     }
 
@@ -155,37 +158,70 @@ impl DownloadStream {
         }
         self.ensure_started();
 
-        let item = if let Ok(item) = self.receiver.try_recv() {
-            Some(item)
-        } else {
-            tokio::select! {
-                biased;
-                recv = self.receiver.recv() => recv,
-                _ = self.run_state.cancelled() => None,
+        loop {
+            if self.current.is_none() {
+                let item = if let Ok(item) = self.receiver.try_recv() {
+                    Some(item)
+                } else {
+                    tokio::select! {
+                        biased;
+                        recv = self.receiver.recv() => recv,
+                        _ = self.run_state.cancelled() => None,
+                    }
+                };
+                match item {
+                    Some(SequentialRetrievalItem::Data { reader, permit }) => self.current = Some((reader, permit)),
+                    Some(SequentialRetrievalItem::Finish) | None => return self.finish(),
+                }
             }
+
+            let Some((reader, _)) = self.current.as_mut() else {
+                continue;
+            };
+            let piece = tokio::select! {
+                biased;
+                piece = reader.read_next() => piece,
+                _ = self.run_state.cancelled() => return self.finish(),
+            };
+            let data = self.take_piece(piece)?;
+            if data.is_some() || self.finished {
+                return Ok(data);
+            }
+        }
+    }
+
+    /// Handles one read of the current term: reports returned bytes, and moves past the term (releasing its
+    /// buffer permit) once it has been returned in full. `None` means the term is done and the next one should
+    /// be read, unless the stream has finished.
+    fn take_piece(&mut self, piece: Result<Option<Bytes>>) -> Result<Option<Bytes>> {
+        let piece = match piece {
+            Ok(piece) => piece,
+            Err(e) => {
+                self.finished = true;
+                self.current = None;
+                self.run_state.check_error()?;
+                // A cancelled reconstruction fails its block downloads; that is the end of the stream, not an error.
+                if self.run_state.is_cancelled() {
+                    return Ok(None);
+                }
+                return Err(e);
+            },
         };
 
-        match item {
-            Some(SequentialRetrievalItem::Data { receiver, permit }) => {
-                let data = match receiver.await {
-                    Ok(data) => data,
-                    Err(_) => {
-                        self.run_state.check_error()?;
-                        return Err(FileReconstructionError::InternalWriterError(
-                            "Data sender was dropped before sending data.".to_string(),
-                        ));
-                    },
-                };
-                self.run_state.report_bytes_written(data.len() as u64);
-                drop(permit);
-                Ok(Some(data))
-            },
-            Some(SequentialRetrievalItem::Finish) | None => {
-                self.finished = true;
-                self.run_state.check_error()?;
-                Ok(None)
-            },
+        if let Some(data) = &piece {
+            self.run_state.report_bytes_written(data.len() as u64);
         }
+        if self.current.as_ref().is_some_and(|(reader, _)| reader.is_finished()) {
+            self.current = None;
+        }
+        Ok(piece)
+    }
+
+    fn finish(&mut self) -> Result<Option<Bytes>> {
+        self.finished = true;
+        self.current = None;
+        self.run_state.check_error()?;
+        Ok(None)
     }
 
     /// Cancels the in-progress (or not-yet-started) download.
@@ -198,6 +234,7 @@ impl DownloadStream {
         self.cancel_reconstruction();
         let _ = self.start_signal.take();
         self.receiver.close();
+        self.current = None;
         self.finished = true;
     }
 }

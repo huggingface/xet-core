@@ -188,6 +188,37 @@ fn deserialize_chunk_with_header_to_writer<R: Read, W: Write>(
     Ok((header.get_compressed_length() as usize + XORB_CHUNK_HEADER_LENGTH, uncompressed_len as u32))
 }
 
+/// Decompresses one chunk's payload into `out`, whose length must equal the header's uncompressed length.
+///
+/// `compressed` is the chunk's data following its header. This lets callers decode straight into a
+/// preallocated buffer instead of allocating per chunk.
+pub fn decompress_chunk_into(header: &XorbChunkHeader, compressed: &[u8], out: &mut [u8]) -> Result<(), CoreError> {
+    if out.len() != header.get_uncompressed_length() as usize
+        || compressed.len() != header.get_compressed_length() as usize
+    {
+        return Err(CoreError::MalformedData(format!(
+            "chunk buffer sizes ({} compressed, {} uncompressed) don't agree with chunk header ({}, {})",
+            compressed.len(),
+            out.len(),
+            header.get_compressed_length(),
+            header.get_uncompressed_length()
+        )));
+    }
+
+    let mut reader = compressed;
+    let mut writer = &mut out[..];
+    let written = header
+        .get_compression_scheme()?
+        .decompress_from_reader(&mut reader, &mut writer)?;
+
+    if written != header.get_uncompressed_length() as u64 {
+        return Err(CoreError::MalformedData(
+            "chunk is corrupted, uncompressed bytes len doesn't agree with chunk header".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 pub fn deserialize_chunks<R: Read>(reader: &mut R) -> Result<(Vec<u8>, Vec<u32>), CoreError> {
     let mut buf = Vec::new();
     let (_, chunk_byte_indices) = deserialize_chunks_to_writer(reader, &mut buf)?;
