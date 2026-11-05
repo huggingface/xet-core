@@ -1,4 +1,4 @@
-crate::config_group!({
+crate::config::macros::xet_config_group!(session, {
 
     /// Subdirectory name for shard session data within the staging directory.
     ///

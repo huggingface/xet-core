@@ -59,7 +59,7 @@ pub trait ParsableConfigValue: std::fmt::Debug + Sized {
 }
 
 /// Most values work with the FromStr implementation, but we want to override the behavior for some types
-/// (e.g. Option<T> and bool) to have custom parsing behavior.
+/// (e.g. `Option<T>` and `bool`) to have custom parsing behavior.
 pub trait FromStrParseable: FromStr + std::fmt::Debug + std::fmt::Display {}
 
 impl<T: FromStrParseable> ParsableConfigValue for T {
@@ -111,7 +111,7 @@ impl ParsableConfigValue for bool {
     }
 }
 
-/// Enable Option<T> to allow the default value to be None if nothing is set and appear as
+/// Enable `Option<T>` to allow the default value to be None if nothing is set and appear as
 /// Some(Value) if the user specifies the value.
 impl<T: ParsableConfigValue> ParsableConfigValue for Option<T> {
     fn parse_user_value(value: &str) -> Option<Self> {

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-crate::config_group!({
+crate::config::macros::xet_config_group!(telemetry, {
     /// Whether the client reports transfer performance telemetry to the CAS server.
     ///
     /// When enabled, each upload or download transfer sends a single summary document to

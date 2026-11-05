@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::utils::TemplatedPathBuf;
 
-crate::config_group!({
+crate::config::macros::xet_config_group!(system_monitor, {
     /// Whether to enable system resource monitoring.
     ///
     /// When enabled, the system monitor will periodically sample and log system statistics
