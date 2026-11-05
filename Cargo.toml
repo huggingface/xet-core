@@ -57,6 +57,7 @@ chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 colored = "3"
 console-subscriber = "0.5"
+const-str = "1.1"
 countio = { version = "0.3", features = ["futures"] }
 crc-fast = { version = "1.10", default-features = false, features = ["std"] }
 crc32fast = "1.5"
@@ -79,6 +80,7 @@ human-bandwidth = "0.1"
 hyper = "1.8"
 hyper-util = "0.1"
 itertools = "0.14"
+konst = "0.4"
 libc = "0.2"
 lz4_flex = "0.13"
 mockall = "0.14"
