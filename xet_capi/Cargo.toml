@@ -12,7 +12,7 @@ name = "xet_capi"
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
-xet = { package = "hf-xet", version = "1.5.2", path = "../xet_pkg" }
+xet = { package = "hf-xet", version = "1.8.0", path = "../xet_pkg" }
 bytes = { workspace = true }
 
 [build-dependencies]
