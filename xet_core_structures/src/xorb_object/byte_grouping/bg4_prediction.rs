@@ -13,8 +13,10 @@
 // SWAR: 2392.19 MB/s (Fallback method on intel)
 // Neon: 3222.63 MB/s (simd method with neon)
 //
-// The default currently is to use Neon on Aarch64 when supported and fall back
-// to SWAR elsewhere.
+// The default currently is to use Neon on Aarch64 when supported, the AVX512 method on
+// x86-64 when the CPU has avx512bitalg (runtime detected), and SWAR elsewhere.
+
+use bytemuck::{Pod, bytes_of};
 
 #[derive(Default)]
 pub struct BG4Predictor {
@@ -51,9 +53,9 @@ impl BG4Predictor {
     }
 
     #[inline(always)]
-    unsafe fn apply_perbyte_popcounts(&mut self, per_byte_popcount: u128, offset: usize, byte_range: (usize, usize)) {
+    unsafe fn apply_perbyte_popcounts(&mut self, per_byte_popcnt: &[u8], offset: usize, byte_range: (usize, usize)) {
         let dest_ptr = self.histograms.as_mut_ptr() as *mut u32;
-        let per_byte_popcnt = per_byte_popcount.to_le_bytes();
+        debug_assert!(per_byte_popcnt.len() >= byte_range.1);
 
         for i in byte_range.0..byte_range.1 {
             let idx = i + offset;
@@ -93,43 +95,64 @@ impl BG4Predictor {
         }
     }
 
-    fn add_data_impl(&mut self, offset: usize, data: &[u8], calc_u128_popcnt: impl Fn(u128) -> u128) {
+    /// Generic per-byte popcount driver over a word type `T` (e.g. u128 for SWAR, `__m512i` for AVX-512).
+    ///
+    /// `calc_popcnt` takes a word read (aligned) from the input and must return a word whose byte at each
+    /// position holds the popcount of the input byte at the same position, in native byte order.  Per-byte
+    /// popcount commutes with byte permutation, so endianness is irrelevant as long as input and output use
+    /// the same byte order.
+    ///
+    /// `T: Pod` is what makes the raw aligned reads and byte views below sound: no padding, every bit pattern
+    /// valid, zeroable.  Words must be a multiple of 16 bytes: the lane-index math needs a multiple of 4, and
+    /// the body scatter loop processes words in 16-byte chunks.
+    fn add_data_impl<T: Pod>(&mut self, offset: usize, data: &[u8], calc_popcnt: impl Fn(T) -> T) {
+        debug_assert_eq!(size_of::<T>() % 16, 0, "lane-index math and scatter chunking require a multiple of 16");
+
         if data.is_empty() {
             return;
         }
         let mut ptr = data.as_ptr();
         let mut remaining = data.len();
 
-        // Just copy it in and run it if we have a small amount.
-        if remaining <= 16 {
+        // Just copy it in and run it if we have a small amount.  (Also load-bearing for the paths below, which
+        // assume remaining > size_of::<T>() for their bounds to hold.)
+        if remaining <= size_of::<T>() {
             unsafe {
-                let mut buffer = [0u8; 16];
-                core::ptr::copy_nonoverlapping(ptr, buffer.as_mut_ptr(), remaining);
-                let per_byte_popcnt = calc_u128_popcnt(u128::from_le_bytes(buffer));
-                self.apply_perbyte_popcounts(per_byte_popcnt, offset, (0, remaining));
+                let mut buffer = T::zeroed();
+                core::ptr::copy_nonoverlapping(ptr, (&mut buffer as *mut T).cast::<u8>(), remaining);
+                let per_byte_popcnt = calc_popcnt(buffer);
+                self.apply_perbyte_popcounts(bytes_of(&per_byte_popcnt), offset, (0, remaining));
             }
             return;
         }
 
         // How many bytes from the start of data do we need move in order to get to an alignment boundary for
-        // aligned reads of u128 values?
-        let n_align_bytes = ptr.align_offset(core::mem::align_of::<u128>());
+        // aligned reads of whole words?
+        let n_align_bytes = ptr.align_offset(core::mem::align_of::<T>());
 
-        // Okay to compute one offset value for each u128 value, as it's just used
+        // Okay to compute one offset value for each word value, as it's just used
         // modulo 4 to put things in the correct histograms.
-        let u128_common_offset = offset + n_align_bytes;
+        let word_common_offset = offset + n_align_bytes;
 
         // Process the first bytes that are possibly unaligned.
         if n_align_bytes != 0 {
-            let head_bytes = size_of::<u128>() - n_align_bytes;
+            let head_bytes = size_of::<T>() - n_align_bytes;
 
-            // Copy the first `head_bytes` into the end of a temp buffer
-            let mut buffer = [0u8; 16];
+            // Copy the first `n_align_bytes` into the end of a temp buffer
             unsafe {
-                core::ptr::copy_nonoverlapping(ptr, buffer.as_mut_ptr().add(head_bytes), n_align_bytes);
+                let mut buffer = T::zeroed();
+                core::ptr::copy_nonoverlapping(
+                    ptr,
+                    (&mut buffer as *mut T).cast::<u8>().add(head_bytes),
+                    n_align_bytes,
+                );
 
-                let per_byte_popcnt = calc_u128_popcnt(u128::from_le_bytes(buffer));
-                self.apply_perbyte_popcounts(per_byte_popcnt, u128_common_offset, (head_bytes, 16));
+                let per_byte_popcnt = calc_popcnt(buffer);
+                self.apply_perbyte_popcounts(
+                    bytes_of(&per_byte_popcnt),
+                    word_common_offset,
+                    (head_bytes, size_of::<T>()),
+                );
 
                 ptr = ptr.add(n_align_bytes);
             }
@@ -138,53 +161,65 @@ impl BG4Predictor {
 
         // Body: aligned reads, several at once.  4 seems to benchmark the fastest.
         const BLOCK_SIZE: usize = 4;
-        while remaining >= BLOCK_SIZE * 16 {
+        while remaining >= BLOCK_SIZE * size_of::<T>() {
             unsafe {
-                // Force the compiler to first perform an aligned read by casting to u128, then handle the endianness
-                // just for consistency.  The latter part should be a no-op on little-endian machines.
-                let raw_input = *(ptr as *const [u128; BLOCK_SIZE]);
-                let mut popcnt_v = [0u128; BLOCK_SIZE];
+                // Force the compiler to perform an aligned read by casting to the word type.
+                let raw_input = *(ptr as *const [T; BLOCK_SIZE]);
+                let mut popcnt_v: [T; BLOCK_SIZE] = [T::zeroed(); BLOCK_SIZE];
 
-                // We can add the counts directly here; as long as 9 * BLOCK_SIZE < 256 so each byte doesn't overflow
-                // into the next byte over.
                 for i in 0..raw_input.len() {
-                    // Ensure we're handling endianness correctly.  Should optimize out endian switching calls on
-                    // little-endian machines.
-                    *popcnt_v.get_unchecked_mut(i) =
-                        calc_u128_popcnt(u128::from_le_bytes(raw_input.get_unchecked(i).to_ne_bytes()));
+                    *popcnt_v.get_unchecked_mut(i) = calc_popcnt(*raw_input.get_unchecked(i));
                 }
 
-                // Now, translate this out to aggregated stuff
+                // Now, translate this out to aggregated stuff.  Copy each word out before viewing it as bytes, so
+                // the histogram scatter reads from a fresh temporary (matches the register allocation behaviour of
+                // the original u128-specialized version).
                 for i in 0..raw_input.len() {
-                    self.apply_perbyte_popcounts(*popcnt_v.get_unchecked(i), u128_common_offset, (0, 16));
+                    let popcnt = *popcnt_v.get_unchecked(i);
+                    let bytes = bytes_of(&popcnt);
+
+                    if size_of::<T>() == 16 {
+                        self.apply_perbyte_popcounts(bytes, word_common_offset, (0, size_of::<T>()));
+                    } else {
+                        // For words wider than 16 bytes, apply the scatter in 16-byte chunks, each
+                        // copied into a u128 local, with constant bounds.  Small constant trip
+                        // counts make the compiler fully unroll the scatter and hoist the per-lane
+                        // histogram row pointers out of the loop, and holding the chunk in a u128
+                        // makes it extract the per-byte popcounts with shifts from registers
+                        // instead of round-tripping through memory (a 64-byte AVX-512 word
+                        // otherwise gets per-byte vector extracts).
+                        for chunk_start in (0..size_of::<T>()).step_by(16) {
+                            let chunk = u128::from_ne_bytes(bytes[chunk_start..chunk_start + 16].try_into().unwrap());
+                            self.apply_perbyte_popcounts(bytes_of(&chunk), word_common_offset + chunk_start, (0, 16));
+                        }
+                    }
                 }
 
-                ptr = ptr.add(BLOCK_SIZE * 16);
-                remaining -= BLOCK_SIZE * 16;
+                ptr = ptr.add(BLOCK_SIZE * size_of::<T>());
+                remaining -= BLOCK_SIZE * size_of::<T>();
             }
         }
 
         // Body: aligned reads
-        while remaining >= 16 {
+        while remaining >= size_of::<T>() {
             unsafe {
-                // Force the compiler to first perform an aligned read by casting to u128, then handle the endianness
-                // just for consistency.  The latter part should be a no-op on little-endian machines.
-                let raw_input = *(ptr as *const u128);
-                let per_byte_popcnt = calc_u128_popcnt(u128::from_le_bytes(raw_input.to_ne_bytes()));
-                self.apply_perbyte_popcounts(per_byte_popcnt, u128_common_offset, (0, 16));
+                // Force the compiler to perform an aligned read by casting to the word type.
+                let raw_input = *(ptr as *const T);
+                let per_byte_popcnt = calc_popcnt(raw_input);
+                self.apply_perbyte_popcounts(bytes_of(&per_byte_popcnt), word_common_offset, (0, size_of::<T>()));
 
-                ptr = ptr.add(16);
-                remaining -= 16;
+                ptr = ptr.add(size_of::<T>());
+                remaining -= size_of::<T>();
             }
         }
 
         // Tail: copy final bytes into a zero-padded buffer
         if remaining > 0 {
             unsafe {
-                let mut buffer = [0u8; 16];
-                core::ptr::copy_nonoverlapping(ptr, buffer.as_mut_ptr(), remaining);
-                let per_byte_popcnt = calc_u128_popcnt(u128::from_le_bytes(buffer));
-                self.apply_perbyte_popcounts(per_byte_popcnt, u128_common_offset, (0, remaining));
+                let mut buffer = T::zeroed();
+                core::ptr::copy_nonoverlapping(ptr, (&mut buffer as *mut T).cast::<u8>(), remaining);
+                let per_byte_popcnt = calc_popcnt(buffer);
+                self.apply_perbyte_popcounts(bytes_of(&per_byte_popcnt), word_common_offset, (0, remaining));
             }
         }
     }
@@ -193,12 +228,40 @@ impl BG4Predictor {
         self.add_data_impl(offset, data, Self::popcnt_u128_swar);
     }
 
+    /// x86-64 method using AVX-512: `vpopcntb` computes the per-byte popcount of a whole 64-byte word
+    /// in a single instruction.  Runtime-detects `avx512bitalg` and falls back to the SWAR method
+    /// when the CPU lacks it.
+    ///
+    /// Note: byte-wise popcount comes from AVX512-BITALG; AVX512-VPOPCNTDQ covers only the 32/64-bit
+    /// lane variants.
+    #[cfg(target_arch = "x86_64")]
+    pub fn add_data_avx512(&mut self, offset: usize, data: &[u8]) {
+        if std::arch::is_x86_feature_detected!("avx512bitalg") {
+            // Safety: the feature was just detected.
+            unsafe { self.add_data_avx512_bitalg(offset, data) };
+        } else {
+            self.add_data_swar(offset, data);
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx512bitalg")]
+    unsafe fn add_data_avx512_bitalg(&mut self, offset: usize, data: &[u8]) {
+        self.add_data_impl(offset, data, |v: core::arch::x86_64::__m512i| core::arch::x86_64::_mm512_popcnt_epi8(v));
+    }
+
     #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
     pub fn add_data(&mut self, offset: usize, data: &[u8]) {
         self.add_data_impl(offset, data, Self::popcnt_u128_aarch64_vctnq);
     }
 
-    #[cfg(not(all(target_arch = "aarch64", target_feature = "neon")))]
+    /// On x86-64, use the AVX-512 method when the CPU supports it (runtime detection), else SWAR.
+    #[cfg(target_arch = "x86_64")]
+    pub fn add_data(&mut self, offset: usize, data: &[u8]) {
+        self.add_data_avx512(offset, data);
+    }
+
+    #[cfg(not(any(target_arch = "x86_64", all(target_arch = "aarch64", target_feature = "neon"))))]
     pub fn add_data(&mut self, offset: usize, data: &[u8]) {
         self.add_data_impl(offset, data, Self::popcnt_u128_swar);
     }
@@ -278,6 +341,18 @@ mod tests {
             "Histogram mismatch at offset {} with data {:?}",
             offset, &data
         );
+
+        // Runs the real vpopcntb path when the CPU supports it and exercises the SWAR fallback otherwise.
+        #[cfg(target_arch = "x86_64")]
+        {
+            let mut avx512 = BG4Predictor::default();
+            avx512.add_data_avx512(offset, data);
+            assert_eq!(
+                reference.histograms, avx512.histograms,
+                "Histogram mismatch at offset {} with data {:?} (avx512 method)",
+                offset, &data
+            );
+        }
     }
 
     #[test]
