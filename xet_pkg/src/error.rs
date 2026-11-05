@@ -1,3 +1,4 @@
+use http::StatusCode;
 use thiserror::Error;
 use xet_client::ClientError;
 use xet_core_structures::CoreError;
@@ -44,9 +45,26 @@ pub enum XetError {
     #[error("Authentication error: {0}")]
     Authentication(String),
 
-    /// Network-level failures: DNS, HTTP 5xx, connection reset, etc.
+    /// Network-level failures: DNS, connection reset, TLS, and any HTTP failure whose status did
+    /// not survive to this point.
     #[error("Network error: {0}")]
     Network(String),
+
+    /// The server shed load: HTTP 429.
+    ///
+    /// Split out from [`Network`](Self::Network) because a 429 is not a network fault - it is the
+    /// server asking for less traffic, and it needs to be distinguishable when reading failure
+    /// rates. Maps to the same Python exception as `Network`.
+    #[error("Rate limited: {0}")]
+    RateLimited(String),
+
+    /// The server failed to serve the request: HTTP 5xx.
+    ///
+    /// Split out from [`Network`](Self::Network) for the same reason as
+    /// [`RateLimited`](Self::RateLimited): a server-side failure and a client-side connection
+    /// problem call for different responses. Maps to the same Python exception as `Network`.
+    #[error("Server error: {0}")]
+    ServerError(String),
 
     /// A network request timed out.
     #[error("Timeout: {0}")]
@@ -84,6 +102,53 @@ pub enum XetError {
 impl XetError {
     pub fn other(msg: impl std::fmt::Display) -> Self {
         Self::Internal(msg.to_string())
+    }
+
+    /// Classifies this error for telemetry as an `(outcome, error_class)` pair.
+    ///
+    /// By the time a group finishes, the originating [`DataError`] has usually been flattened into
+    /// a string variant here, so `xet_data`'s `error_class` cannot be applied directly. This maps
+    /// the surviving categories onto the *same* coarse class vocabulary, so documents produced by
+    /// this path aggregate together with those classified inside `xet_data`.
+    ///
+    /// That aggregation depends on HTTP status surviving the flattening, which is why
+    /// [`RateLimited`](Self::RateLimited) and [`ServerError`](Self::ServerError) exist as distinct
+    /// variants. Collapsing them into [`Network`](Self::Network) - as this type used to - made
+    /// `rate_limited` and `server_error` unreachable for downloads while uploads still reported
+    /// them, so a 429 meant two different things depending on the direction.
+    ///
+    /// One gap remains on purpose: a 404 that arrives as a `reqwest` status still classifies as
+    /// `network` here, whereas `xet_data` maps it to `not_found`. Routing it to
+    /// [`NotFound`](Self::NotFound) would change the Python exception type callers see, which is a
+    /// user-visible change rather than a telemetry fix.
+    ///
+    /// Deliberately coarse, matching `xet_data::telemetry::error_class`: the question is "are
+    /// downloads failing more than they were, and is it the network or the server", and error text
+    /// can contain paths, so none of it is carried.
+    pub fn telemetry_class(&self) -> (xet_data::telemetry::Outcome, &'static str) {
+        use xet_data::telemetry::outcome_for_class;
+
+        let class = match self {
+            // Cancellation is a user action, not a failure. `outcome_for_class` maps these to
+            // `Outcome::Cancelled` so they stay out of failure-rate alerts.
+            XetError::KeyboardInterrupt | XetError::UserCancelled(_) | XetError::Cancelled(_) => "cancelled",
+            XetError::Authentication(_) => "auth",
+            XetError::Network(_) => "network",
+            XetError::RateLimited(_) => "rate_limited",
+            XetError::ServerError(_) => "server_error",
+            XetError::Timeout(_) => "timeout",
+            XetError::NotFound(_) => "not_found",
+            XetError::DataIntegrity(_) => "format",
+            XetError::Io(_) => "io",
+            XetError::Configuration(_) | XetError::InvalidTaskID(_) | XetError::WrongRuntimeMode(_) => "internal",
+            XetError::Internal(_) => "internal",
+            // A task failed and its cause was reduced to a message; the class is genuinely
+            // unknown. Matched exhaustively on purpose - a new variant should not silently
+            // become "other" without someone deciding that is right.
+            XetError::TaskError(_) | XetError::PreviousTaskError(_) | XetError::AlreadyCompleted => "other",
+        };
+
+        (outcome_for_class(class), class)
     }
 
     pub fn wrong_mode(msg: impl std::fmt::Display) -> Self {
@@ -125,8 +190,15 @@ impl XetError {
                 XetError::Authentication(ce.to_string())
             },
             ClientError::ReqwestError(e, _) if e.is_timeout() => XetError::Timeout(ce.to_string()),
-            ClientError::ReqwestError(_, _) | ClientError::ReqwestMiddlewareError(_) => {
-                XetError::Network(ce.to_string())
+            // Status wins over transport, matching `xet_data::telemetry::error_class`. Without
+            // this, every HTTP failure flattened to `Network` and a download could never report
+            // `rate_limited` or `server_error` - the two classes that distinguish "the server is
+            // shedding load" from "the network is broken". `ClientError::status()` covers the
+            // middleware variant too, where the status is otherwise unreachable.
+            ClientError::ReqwestError(_, _) | ClientError::ReqwestMiddlewareError(_) => match ce.status() {
+                Some(StatusCode::TOO_MANY_REQUESTS) => XetError::RateLimited(ce.to_string()),
+                Some(status) if status.is_server_error() => XetError::ServerError(ce.to_string()),
+                _ => XetError::Network(ce.to_string()),
             },
             ClientError::FileNotFound(_) | ClientError::XORBNotFound(_) => XetError::NotFound(ce.to_string()),
             ClientError::ConfigurationError(_)
@@ -302,7 +374,12 @@ impl From<XetError> for pyo3::PyErr {
             XetError::KeyboardInterrupt => PyKeyboardInterrupt::new_err(msg),
             XetError::Authentication(_) => XetAuthenticationError::new_err(msg),
             XetError::NotFound(_) => XetObjectNotFoundError::new_err(msg),
-            XetError::Network(_) => PyConnectionError::new_err(msg),
+            // 429 and 5xx deliberately raise the same Python exception as a plain network failure:
+            // they are split out for telemetry classification, and remapping them would change the
+            // exception type callers already catch.
+            XetError::Network(_) | XetError::RateLimited(_) | XetError::ServerError(_) => {
+                PyConnectionError::new_err(msg)
+            },
             XetError::Timeout(_) => PyTimeoutError::new_err(msg),
             XetError::Io(_) => PyOSError::new_err(msg),
             XetError::Configuration(_) | XetError::InvalidTaskID(_) => PyValueError::new_err(msg),
@@ -360,6 +437,61 @@ mod tests {
     fn client_nested_format_maps_using_format_rules() {
         let err = XetError::from(ClientError::FormatError(CoreError::InvalidRange));
         assert!(matches!(err, XetError::Configuration(_)));
+    }
+
+    /// Builds a `ClientError` carrying a real `reqwest` error with `status`, which is the only way
+    /// the status-based classification can be exercised - `reqwest::Error` cannot be constructed
+    /// directly, so it has to come from a response.
+    fn client_error_with_status(status: u16) -> ClientError {
+        use xet_client::cas_client::exports::reqwest;
+
+        let response = http::Response::builder().status(status).body(String::new()).unwrap();
+        let err = reqwest::Response::from(response)
+            .error_for_status()
+            .expect_err("a 4xx/5xx response must produce an error");
+        ClientError::ReqwestError(err, "cas.example.invalid".to_string())
+    }
+
+    /// A 429 is the server shedding load, not a network fault, and it has to stay distinguishable
+    /// all the way to the telemetry class - see `telemetry_class`.
+    #[test]
+    fn client_429_maps_to_rate_limited() {
+        let err = XetError::from(client_error_with_status(429));
+        assert!(matches!(err, XetError::RateLimited(_)), "got {err:?}");
+        assert_eq!(err.telemetry_class(), (xet_data::telemetry::Outcome::Error, "rate_limited"));
+    }
+
+    #[test]
+    fn client_5xx_maps_to_server_error() {
+        for status in [500, 502, 503] {
+            let err = XetError::from(client_error_with_status(status));
+            assert!(matches!(err, XetError::ServerError(_)), "status {status} gave {err:?}");
+            assert_eq!(err.telemetry_class(), (xet_data::telemetry::Outcome::Error, "server_error"));
+        }
+    }
+
+    /// The deliberate remaining gap, pinned so it is a decision rather than a surprise: a 404
+    /// arriving as a `reqwest` status stays `network`, because routing it to `NotFound` would change
+    /// the Python exception type callers already catch.
+    #[test]
+    fn client_404_status_stays_network() {
+        let err = XetError::from(client_error_with_status(404));
+        assert!(matches!(err, XetError::Network(_)), "got {err:?}");
+        assert_eq!(err.telemetry_class().1, "network");
+    }
+
+    /// The whole point of A4: every class the upload path can report for an HTTP failure is now
+    /// reachable from the download path too, so a 429 does not mean two different things depending
+    /// on direction.
+    #[test]
+    fn http_failure_classes_match_the_upload_side_vocabulary() {
+        use xet_data::telemetry::classify_error;
+
+        for status in [429, 500] {
+            let via_download = XetError::from(client_error_with_status(status)).telemetry_class();
+            let via_upload = classify_error(&DataError::ClientError(client_error_with_status(status)));
+            assert_eq!(via_download, via_upload, "status {status} classifies differently per direction");
+        }
     }
 
     #[test]

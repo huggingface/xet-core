@@ -45,7 +45,7 @@ use crate::progress_tracking::{GroupProgressReport, ItemProgressReport, UploadGr
 /// and xorbs needed to reconstruct those files are properly uploaded and registered.
 pub struct FileUploadSession {
     pub(crate) ctx: XetContext,
-    pub(crate) client: Arc<dyn Client + Send + Sync>,
+    pub(crate) client: Arc<dyn Client>,
     pub(crate) shard_interface: SessionShardInterface,
 
     /// Tracking upload completion between xorbs and files.
@@ -62,6 +62,10 @@ pub struct FileUploadSession {
 
     /// Set to true after finalize() has been called.
     finalized: AtomicBool,
+
+    /// Session start, for the telemetry `duration_ms` and `ingest_ms`.
+    #[cfg(not(target_family = "wasm"))]
+    started_at: std::time::Instant,
 }
 
 // Constructors
@@ -99,7 +103,7 @@ impl FileUploadSession {
             SessionShardInterface::new(&ctx, config.clone(), client.clone(), completion_tracker.clone(), dry_run)
                 .await?;
 
-        Ok(Arc::new(Self {
+        let session = Arc::new(Self {
             ctx,
             shard_interface,
             client,
@@ -108,7 +112,15 @@ impl FileUploadSession {
             deduplication_metrics: Mutex::new(DeduplicationMetrics::default()),
             xorb_upload_tasks: Mutex::new(JoinSet::new()),
             finalized: AtomicBool::new(false),
-        }))
+            #[cfg(not(target_family = "wasm"))]
+            started_at: std::time::Instant::now(),
+        });
+
+        // Only fires if this transfer outlives `heartbeat_after`; short ones never emit one.
+        #[cfg(not(target_family = "wasm"))]
+        crate::telemetry::start_upload_heartbeat(&session.ctx.clone(), &session);
+
+        Ok(session)
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -567,16 +579,62 @@ impl FileUploadSession {
         self.completion_tracker.register_dependencies(xorb_dependencies);
     }
 
-    /// Finalize everything.
+    /// Finalize everything, then report the outcome as telemetry.
+    ///
+    /// The telemetry hook lives here rather than in `xet_pkg` because `XetUploadCommit::commit`
+    /// returns early on a finalize error - hooking at that layer would silently lose exactly the
+    /// failures worth measuring. Reporting is best-effort and cannot fail, so `result` is returned
+    /// untouched either way.
     #[instrument(skip_all, name="FileUploadSession::finalize", fields(session.id))]
     async fn finalize_impl(
         self: Arc<Self>,
         return_files: bool,
+        #[cfg_attr(target_family = "wasm", allow(unused_variables))] reported_failure: Option<(
+            crate::telemetry::Outcome,
+            &'static str,
+        )>,
     ) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>, GroupProgressReport)> {
         if self.finalized.swap(true, Ordering::AcqRel) {
             return Err(DataError::InvalidOperation("FileUploadSession already finalized".to_string()));
         }
 
+        #[cfg(not(target_family = "wasm"))]
+        let ingest_ms = elapsed_ms(self.started_at);
+        #[cfg(not(target_family = "wasm"))]
+        let finalize_started = std::time::Instant::now();
+
+        let result = self.clone().finalize_inner(return_files).await;
+
+        #[cfg(not(target_family = "wasm"))]
+        {
+            // On the error path the dedup metrics were never taken out of the session, so read
+            // them back rather than reporting zeros.
+            let dedup = match &result {
+                Ok((metrics, ..)) => *metrics,
+                Err(_) => *self.deduplication_metrics.lock().await,
+            };
+            crate::telemetry::emit_upload_terminal(
+                &self.client,
+                &result,
+                reported_failure,
+                crate::telemetry::UploadSnapshot {
+                    progress: &self.report(),
+                    dedup: &dedup,
+                    n_files: self.n_items() as u64,
+                    ingest_ms,
+                    finalize_ms: elapsed_ms(finalize_started),
+                },
+            )
+            .await;
+        }
+
+        result
+    }
+
+    async fn finalize_inner(
+        self: Arc<Self>,
+        return_files: bool,
+    ) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>, GroupProgressReport)> {
         // Register the remaining xorbs for upload.
         let data_agg = take(&mut *self.current_session_data.lock().await);
         self.process_aggregated_data_as_xorb(data_agg).await?;
@@ -595,8 +653,6 @@ impl FileUploadSession {
             result??;
         }
 
-        let mut metrics = take(&mut *self.deduplication_metrics.lock().await);
-
         let all_file_info = if return_files {
             self.shard_interface.session_file_info_list().await?
         } else {
@@ -605,7 +661,13 @@ impl FileUploadSession {
 
         // Upload and register the current shards in the session, moving them
         // to the cache.
-        metrics.shard_bytes_uploaded = self.shard_interface.upload_and_register_session_shards().await?;
+        let shard_bytes_uploaded = self.shard_interface.upload_and_register_session_shards().await?;
+
+        // Taken only once both fallible calls above have succeeded, so that a failure in either
+        // leaves the metrics in the session for the error path to report. Nothing writes to them
+        // after the join above, so taking here captures the same values as taking earlier would.
+        let mut metrics = take(&mut *self.deduplication_metrics.lock().await);
+        metrics.shard_bytes_uploaded = shard_bytes_uploaded;
         metrics.total_bytes_uploaded = metrics.shard_bytes_uploaded + metrics.xorb_bytes_uploaded;
 
         #[cfg(debug_assertions)]
@@ -653,8 +715,18 @@ impl FileUploadSession {
         Ok(())
     }
 
-    pub fn client(&self) -> Arc<dyn Client + Send + Sync> {
+    pub fn client(&self) -> Arc<dyn Client> {
         Arc::clone(&self.client)
+    }
+
+    /// A copy of the running dedup metrics, or `None` if a task currently holds the lock.
+    ///
+    /// Non-blocking on purpose: the callers are the telemetry heartbeat and `Drop`, neither of
+    /// which may stall a runtime worker. Contention means a xorb upload is mid-write, in which
+    /// case the snapshot would be incomplete anyway - skipping one heartbeat is the right answer.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn dedup_snapshot(&self) -> Option<DeduplicationMetrics> {
+        self.deduplication_metrics.try_lock().ok().map(|m| *m)
     }
 
     pub fn progress(&self) -> &Arc<UploadGroupProgress> {
@@ -673,18 +745,78 @@ impl FileUploadSession {
         self.completion_tracker.progress().item_reports()
     }
 
+    pub fn n_items(&self) -> usize {
+        self.completion_tracker.progress().n_items()
+    }
+
     pub async fn finalize(self: Arc<Self>) -> Result<DeduplicationMetrics> {
-        Ok(self.finalize_impl(false).await?.0)
+        Ok(self.finalize_impl(false, None).await?.0)
     }
 
     pub async fn finalize_with_report(self: Arc<Self>) -> Result<(DeduplicationMetrics, GroupProgressReport)> {
-        let (metrics, _file_info, report) = self.finalize_impl(false).await?;
+        let (metrics, _file_info, report) = self.finalize_impl(false, None).await?;
+        Ok((metrics, report))
+    }
+
+    /// Finalizes and reports the transfer as already failed, for a caller holding a failure the
+    /// session cannot see.
+    ///
+    /// `XetUploadCommit` finalizes each file's ingestion before it finalizes the session and
+    /// returns that error afterwards, so the session can finalize cleanly for a commit that fails.
+    /// Mirrors [`FileDownloadSession::finalize_with`](super::FileDownloadSession::finalize_with).
+    /// A failure in this finalize still takes precedence, matching which error the caller returns.
+    pub async fn finalize_with(
+        self: Arc<Self>,
+        outcome: crate::telemetry::Outcome,
+        error_class: &'static str,
+    ) -> Result<(DeduplicationMetrics, GroupProgressReport)> {
+        let (metrics, _file_info, report) = self.finalize_impl(false, Some((outcome, error_class))).await?;
         Ok((metrics, report))
     }
 
     pub async fn finalize_with_file_info(self: Arc<Self>) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>)> {
-        let (metrics, file_info, _report) = self.finalize_impl(true).await?;
+        let (metrics, file_info, _report) = self.finalize_impl(true, None).await?;
         Ok((metrics, file_info))
+    }
+}
+
+/// Milliseconds since `start`, saturating rather than wrapping.
+#[cfg(not(target_family = "wasm"))]
+fn elapsed_ms(start: std::time::Instant) -> u64 {
+    u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+/// Reports a session that was abandoned without finalizing - an `abort()`, a cancelled task tree,
+/// or a panic.
+///
+/// Detached rather than awaited, because `Drop` is synchronous; delivery is correspondingly less
+/// likely, but the alternative is no visibility at all into aborted uploads.
+#[cfg(not(target_family = "wasm"))]
+impl Drop for FileUploadSession {
+    fn drop(&mut self) {
+        if self.finalized.load(Ordering::Acquire) {
+            return;
+        }
+        // Deliberately *not* gated on `tokio::runtime::Handle::try_current()`. The send is spawned
+        // on the `XetRuntime`'s own stored handle, not the ambient one, so it does not need to run
+        // inside a runtime context - and requiring one silently disabled this path entirely for
+        // embedders that release the last `Arc` from a foreign thread.
+        //
+        // `try_lock` rather than `blocking_lock`: Drop can run on a runtime worker thread, where
+        // blocking would stall it. A contended lock here means a task is still writing metrics,
+        // in which case the report would be incomplete anyway.
+        let dedup = self.deduplication_metrics.try_lock().map(|m| *m).unwrap_or_default();
+
+        crate::telemetry::emit_upload_abandoned(
+            &self.client,
+            crate::telemetry::UploadSnapshot {
+                progress: &self.report(),
+                dedup: &dedup,
+                n_files: self.n_items() as u64,
+                ingest_ms: elapsed_ms(self.started_at),
+                finalize_ms: 0,
+            },
+        );
     }
 }
 

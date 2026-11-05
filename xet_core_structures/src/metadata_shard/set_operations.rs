@@ -171,13 +171,13 @@ fn set_operation<R: Read + Seek, W: Write>(
 
                         file_lookup_data.push((truncate_hash(&fh.file_hash), current_index));
 
-                        current_index += 1 + fh.num_info_entry_following();
+                        current_index += 1 + fh.num_info_entry_following()?;
                         file_data_header[i] = load_next(r[i], s[i])?;
                     },
                     NextAction::SkipOver => {
                         let fh = file_data_header[i].as_ref().unwrap();
                         r[i].seek(SeekFrom::Current(
-                            (fh.num_info_entry_following() as i64) * (MDB_FILE_INFO_ENTRY_SIZE as i64),
+                            (fh.num_info_entry_following()? as i64) * (MDB_FILE_INFO_ENTRY_SIZE as i64),
                         ))?;
                         file_data_header[i] = load_next(r[i], s[i])?;
                     },
@@ -244,7 +244,7 @@ fn set_operation<R: Read + Seek, W: Write>(
                         }
 
                         file_lookup_data.push((truncate_hash(&fh0.file_hash), current_index));
-                        current_index += 1 + header.num_info_entry_following();
+                        current_index += 1 + header.num_info_entry_following()?;
 
                         // load the next items
                         file_data_header[0] = load_next(r[0], s[0])?;

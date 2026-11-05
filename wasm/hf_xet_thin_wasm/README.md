@@ -10,3 +10,6 @@ Exports:
 - Chunker struct/class
   - Generate chunk boundaries
   - Compute chunk hashes
+
+See [Chunker performance](CHUNKER_BENCHMARK.md) for native-versus-browser-Wasm
+benchmark results, methodology, and the effect of enabling BLAKE3 Wasm SIMD.

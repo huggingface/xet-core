@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use xet_client::error::ClientError;
 use xet_client::hub_client::{CredentialHelper, Operation};
 
-use crate::errors::{GitXetError, Result};
+use crate::errors::{GitExtensionError, Result};
 use crate::git_repo::GitRepo;
 use crate::git_url::GitUrl;
 use crate::utils::process_wrapping::run_program_captured_with_input_and_output;
@@ -66,7 +66,8 @@ impl SSHCredentialHelper {
         let (output, _err) =
             run_program_captured_with_input_and_output(program, self.repo.git_path()?, args)?.wait_with_output()?;
 
-        let response: GitLFSAuthenticateResponse = serde_json::from_slice(&output).map_err(GitXetError::internal)?;
+        let response: GitLFSAuthenticateResponse =
+            serde_json::from_slice(&output).map_err(GitExtensionError::internal)?;
 
         Ok(response)
     }

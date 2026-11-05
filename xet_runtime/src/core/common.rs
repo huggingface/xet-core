@@ -40,6 +40,17 @@ impl XetCommon {
             reconstruction_download_buffer: {
                 let base = config.reconstruction.download_buffer_size.as_u64();
                 let limit = config.reconstruction.download_buffer_limit.as_u64();
+                // The semaphore requires floor <= ceiling. XetContext::new normalizes the
+                // config, but this constructor is public and must not panic when handed an
+                // incoherent config directly.
+                let limit = if limit < base {
+                    tracing::warn!(
+                        "download_buffer_limit ({limit}) is below download_buffer_size ({base}); using {base}"
+                    );
+                    base
+                } else {
+                    limit
+                };
                 AdjustableSemaphore::new(base, (base, limit))
             },
             active_downloads: Arc::new(AtomicU64::new(0)),

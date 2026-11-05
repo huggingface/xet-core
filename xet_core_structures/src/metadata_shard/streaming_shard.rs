@@ -10,42 +10,71 @@ use itertools::Itertools;
 use more_asserts::debug_assert_lt;
 
 use super::file_structs::{FileDataSequenceHeader, MDBFileInfoView};
-use super::shard_file::{MDB_FILE_INFO_ENTRY_SIZE, current_timestamp};
+use super::shard_file::MDB_FILE_INFO_ENTRY_SIZE;
 use super::xorb_structs::{MDBXorbInfoView, XorbChunkSequenceEntry, XorbChunkSequenceHeader};
 use super::{MDBShardFileFooter, MDBShardFileHeader};
 use crate::MerkleHashMap;
 use crate::error::{CoreError, Result};
 use crate::merklehash::MerkleHash;
 
+/// Deduct `bytes` from the remaining size budget.
+fn account_bytes(size_limit: &mut u64, bytes: u64) -> Result<()> {
+    if bytes > *size_limit {
+        return Err(CoreError::invalid_shard(format!(
+            "shard section exceeds size limit: need {bytes} bytes, {size_limit} remaining"
+        )));
+    }
+    *size_limit -= bytes;
+    Ok(())
+}
+
+/// Validate claimed section payload length before allocating against the remaining budget.
+fn checked_section_bytes(num_payload_entries: u64, entry_size: u64, size_limit: u64) -> Result<usize> {
+    let n_bytes = num_payload_entries
+        .checked_mul(entry_size)
+        .ok_or_else(|| CoreError::invalid_shard("shard section size overflow"))?;
+    if n_bytes > size_limit {
+        return Err(CoreError::invalid_shard(format!("shard section size {n_bytes} exceeds limit {size_limit}")));
+    }
+    usize::try_from(n_bytes)
+        .map_err(|_| CoreError::invalid_shard(format!("shard section size {n_bytes} exceeds addressable memory")))
+}
+
 /// Runs through a shard file info section, calling the specified callback function for each entry.
 ///
 /// Assumes that the reader is at the start of the file info section, and on return, the
 /// reader will be at the end of the file info section.
-pub fn process_shard_file_info_section<R: Read, FileFunc>(reader: &mut R, mut file_callback: FileFunc) -> Result<()>
+///
+/// When `size_limit` is `Some`, each byte read from `reader` is deducted from the remaining
+/// budget before any allocation for that record. `None` is treated as [`u64::MAX`].
+/// Returns the updated remaining budget (`None` if the input limit was `None`).
+pub fn process_shard_file_info_section<R: Read, FileFunc>(
+    reader: &mut R,
+    mut file_callback: FileFunc,
+    size_limit: Option<u64>,
+) -> Result<Option<u64>>
 where
     FileFunc: FnMut(MDBFileInfoView) -> Result<()>,
 {
+    let unlimited = size_limit.is_none();
+    let mut size_limit = size_limit.unwrap_or(u64::MAX);
+    let header_size = size_of::<FileDataSequenceHeader>() as u64;
+
     // Iterate through the file metadata section, calling the file callback function for each one.
     loop {
         let header = FileDataSequenceHeader::deserialize(reader)?;
+        account_bytes(&mut size_limit, header_size)?;
 
         if header.is_bookend() {
             break;
         }
 
-        let n = header.num_entries as usize;
-
-        let mut n_entries = n;
-
-        if header.contains_verification() {
-            n_entries += n;
-        }
-
-        if header.contains_metadata_ext() {
-            n_entries += 1;
-        }
-
-        let n_bytes = n_entries * MDB_FILE_INFO_ENTRY_SIZE;
+        let n_bytes = checked_section_bytes(
+            header.num_info_entry_following()? as u64,
+            MDB_FILE_INFO_ENTRY_SIZE as u64,
+            size_limit,
+        )?;
+        account_bytes(&mut size_limit, n_bytes as u64)?;
 
         let mut file_data = Vec::with_capacity(size_of::<FileDataSequenceHeader>() + n_bytes);
 
@@ -55,7 +84,7 @@ where
         file_callback(MDBFileInfoView::from_data_and_header(header, Bytes::from(file_data))?)?;
     }
 
-    Ok(())
+    Ok(if unlimited { None } else { Some(size_limit) })
 }
 
 /// Runs through a shard xorb info section and processes each entry, calling the
@@ -63,18 +92,33 @@ where
 ///
 /// Assumes that the reader is at the start of the xorb info section, and on return, the
 /// reader will be at the end of the xorb info section.
-pub fn process_shard_xorb_info_section<R: Read, XorbFunc>(reader: &mut R, mut xorb_callback: XorbFunc) -> Result<()>
+///
+/// When `size_limit` is `Some`, each byte read from `reader` is deducted from the remaining
+/// budget before any allocation for that record. `None` is treated as [`u64::MAX`].
+/// Returns the updated remaining budget (`None` if the input limit was `None`).
+pub fn process_shard_xorb_info_section<R: Read, XorbFunc>(
+    reader: &mut R,
+    mut xorb_callback: XorbFunc,
+    size_limit: Option<u64>,
+) -> Result<Option<u64>>
 where
     XorbFunc: FnMut(MDBXorbInfoView) -> Result<()>,
 {
+    let unlimited = size_limit.is_none();
+    let mut size_limit = size_limit.unwrap_or(u64::MAX);
+    let header_size = size_of::<XorbChunkSequenceHeader>() as u64;
+
     loop {
         let header = XorbChunkSequenceHeader::deserialize(reader)?;
+        account_bytes(&mut size_limit, header_size)?;
 
         if header.is_bookend() {
             break;
         }
 
-        let n_bytes = (header.num_entries as usize) * size_of::<XorbChunkSequenceEntry>();
+        let n_bytes =
+            checked_section_bytes(header.num_entries as u64, size_of::<XorbChunkSequenceEntry>() as u64, size_limit)?;
+        account_bytes(&mut size_limit, n_bytes as u64)?;
 
         let mut xorb_data = Vec::with_capacity(size_of::<XorbChunkSequenceHeader>() + n_bytes);
 
@@ -83,7 +127,7 @@ where
 
         xorb_callback(MDBXorbInfoView::from_data_and_header(header, Bytes::from(xorb_data))?)?;
     }
-    Ok(())
+    Ok(if unlimited { None } else { Some(size_limit) })
 }
 
 // Async versions of the above
@@ -91,34 +135,34 @@ where
 pub async fn process_shard_file_info_section_async<R: AsyncRead + Unpin, FileFunc>(
     reader: &mut R,
     mut file_callback: FileFunc,
-) -> Result<()>
+    size_limit: Option<u64>,
+) -> Result<Option<u64>>
 where
     FileFunc: FnMut(MDBFileInfoView) -> Result<()>,
 {
+    let unlimited = size_limit.is_none();
+    let mut size_limit = size_limit.unwrap_or(u64::MAX);
+    let header_size = size_of::<FileDataSequenceHeader>();
+
     loop {
         // Read header
         let mut header_buf = [0u8; size_of::<FileDataSequenceHeader>()];
 
         reader.read_exact(&mut header_buf).await?;
+        account_bytes(&mut size_limit, header_size as u64)?;
 
         let header = FileDataSequenceHeader::deserialize(&mut Cursor::new(&header_buf[..]))?;
         if header.is_bookend() {
             break;
         }
 
-        let n = header.num_entries as usize;
-        let mut n_entries = n;
-
-        if header.contains_verification() {
-            n_entries += n;
-        }
-
-        if header.contains_metadata_ext() {
-            n_entries += 1;
-        }
-
-        let n_bytes = n_entries * MDB_FILE_INFO_ENTRY_SIZE;
-        let total_len = size_of::<FileDataSequenceHeader>() + n_bytes;
+        let n_bytes = checked_section_bytes(
+            header.num_info_entry_following()? as u64,
+            MDB_FILE_INFO_ENTRY_SIZE as u64,
+            size_limit,
+        )?;
+        account_bytes(&mut size_limit, n_bytes as u64)?;
+        let total_len = header_size + n_bytes;
 
         // Prepare buffer for entire record: header + data
         let mut file_data = Vec::with_capacity(total_len);
@@ -126,49 +170,55 @@ where
         file_data.resize(total_len, 0); // enlarge to full size
 
         // Read the remainder of the data
-        reader.read_exact(&mut file_data[size_of::<FileDataSequenceHeader>()..]).await?;
+        reader.read_exact(&mut file_data[header_size..]).await?;
 
         // Call the callback with the assembled view
         file_callback(MDBFileInfoView::from_data_and_header(header, Bytes::from(file_data))?)?;
     }
 
-    Ok(())
+    Ok(if unlimited { None } else { Some(size_limit) })
 }
 
 pub async fn process_shard_xorb_info_section_async<R: AsyncRead + Unpin, XorbFunc>(
     reader: &mut R,
     mut xorb_callback: XorbFunc,
-) -> Result<()>
+    size_limit: Option<u64>,
+) -> Result<Option<u64>>
 where
     XorbFunc: FnMut(MDBXorbInfoView) -> Result<()>,
 {
+    let unlimited = size_limit.is_none();
+    let mut size_limit = size_limit.unwrap_or(u64::MAX);
+    let header_size = size_of::<XorbChunkSequenceHeader>();
+
     loop {
         // Read header
         let mut header_buf = [0u8; size_of::<XorbChunkSequenceHeader>()];
         reader.read_exact(&mut header_buf).await?;
+        account_bytes(&mut size_limit, header_size as u64)?;
 
         let header = XorbChunkSequenceHeader::deserialize(&mut Cursor::new(&header_buf[..]))?;
         if header.is_bookend() {
             break;
         }
 
-        let n_bytes = (header.num_entries as usize) * size_of::<XorbChunkSequenceEntry>();
-        let total_len = size_of::<XorbChunkSequenceHeader>() + n_bytes;
+        let n_bytes =
+            checked_section_bytes(header.num_entries as u64, size_of::<XorbChunkSequenceEntry>() as u64, size_limit)?;
+        account_bytes(&mut size_limit, n_bytes as u64)?;
+        let total_len = header_size + n_bytes;
 
         let mut xorb_data = Vec::with_capacity(total_len);
         xorb_data.extend_from_slice(&header_buf); // Insert the header we read
         xorb_data.resize(total_len, 0);
 
         // Read the remainder of the XORB chunk data
-        reader
-            .read_exact(&mut xorb_data[size_of::<XorbChunkSequenceHeader>()..])
-            .await?;
+        reader.read_exact(&mut xorb_data[header_size..]).await?;
 
         // Invoke callback
         xorb_callback(MDBXorbInfoView::from_data_and_header(header, Bytes::from(xorb_data))?)?;
     }
 
-    Ok(())
+    Ok(if unlimited { None } else { Some(size_limit) })
 }
 
 // A minimal shard loaded in memory that could be useful by themselves.  In addition, this provides a testing surface
@@ -186,20 +236,28 @@ impl MDBMinimalShard {
 
         let mut file_info_views = Vec::<MDBFileInfoView>::new();
         let mut seen_file_hashes = HashSet::new();
-        process_shard_file_info_section(reader, |fiv: MDBFileInfoView| {
-            // register the offset here to the file entries
-            if include_files && seen_file_hashes.insert(fiv.file_hash()) {
-                file_info_views.push(fiv);
-            }
-            Ok(())
-        })?;
+        process_shard_file_info_section(
+            reader,
+            |fiv: MDBFileInfoView| {
+                // register the offset here to the file entries
+                if include_files && seen_file_hashes.insert(fiv.file_hash()) {
+                    file_info_views.push(fiv);
+                }
+                Ok(())
+            },
+            None,
+        )?;
 
         let mut xorb_info_views = Vec::<MDBXorbInfoView>::new();
         if include_xorb {
-            process_shard_xorb_info_section(reader, |civ: MDBXorbInfoView| {
-                xorb_info_views.push(civ);
-                Ok(())
-            })?;
+            process_shard_xorb_info_section(
+                reader,
+                |civ: MDBXorbInfoView| {
+                    xorb_info_views.push(civ);
+                    Ok(())
+                },
+                None,
+            )?;
         }
 
         Ok(Self {
@@ -212,8 +270,17 @@ impl MDBMinimalShard {
         reader: &mut R,
         include_files: bool,
         include_xorb: bool,
+        size_limit: Option<u64>,
     ) -> Result<Self> {
-        Self::from_reader_async_with_custom_callbacks(reader, include_files, include_xorb, |_| Ok(()), |_| Ok(())).await
+        Self::from_reader_async_with_custom_callbacks(
+            reader,
+            include_files,
+            include_xorb,
+            |_| Ok(()),
+            |_| Ok(()),
+            size_limit,
+        )
+        .await
     }
 
     pub async fn from_reader_async_with_custom_callbacks<R: AsyncRead + Unpin, FileFunc, XorbFunc>(
@@ -222,6 +289,7 @@ impl MDBMinimalShard {
         include_xorb: bool,
         mut file_callback: FileFunc,
         mut xorb_callback: XorbFunc,
+        mut size_limit: Option<u64>,
     ) -> Result<Self>
     where
         FileFunc: FnMut(&MDBFileInfoView) -> Result<()>,
@@ -234,16 +302,20 @@ impl MDBMinimalShard {
 
         let mut file_info_views = Vec::<MDBFileInfoView>::new();
         let mut seen_file_hashes = HashSet::new();
-        process_shard_file_info_section_async(reader, |fiv: MDBFileInfoView| {
-            // register the offset here to the file entries
-            if include_files {
-                file_callback(&fiv)?;
-                if seen_file_hashes.insert(fiv.file_hash()) {
-                    file_info_views.push(fiv);
+        size_limit = process_shard_file_info_section_async(
+            reader,
+            |fiv: MDBFileInfoView| {
+                // register the offset here to the file entries
+                if include_files {
+                    file_callback(&fiv)?;
+                    if seen_file_hashes.insert(fiv.file_hash()) {
+                        file_info_views.push(fiv);
+                    }
                 }
-            }
-            Ok(())
-        })
+                Ok(())
+            },
+            size_limit,
+        )
         .await?;
         // if only some files have verification, then we consider this shard invalid
         // either all files have verification or no files have verification
@@ -254,11 +326,15 @@ impl MDBMinimalShard {
         // XORB stuff
         let mut xorb_info_views = Vec::<MDBXorbInfoView>::new();
         if include_xorb {
-            process_shard_xorb_info_section_async(reader, |civ: MDBXorbInfoView| {
-                xorb_callback(&civ)?;
-                xorb_info_views.push(civ);
-                Ok(())
-            })
+            process_shard_xorb_info_section_async(
+                reader,
+                |civ: MDBXorbInfoView| {
+                    xorb_callback(&civ)?;
+                    xorb_info_views.push(civ);
+                    Ok(())
+                },
+                size_limit,
+            )
             .await?;
         }
 
@@ -343,6 +419,7 @@ impl MDBMinimalShard {
         with_file_section: bool,
         with_verification: bool,
         expiry: Option<SystemTime>,
+        creation_timestamp: Option<u64>,
         xorb_filter_fn: impl Fn(&MDBXorbInfoView) -> bool,
     ) -> Result<usize> {
         let mut bytes = 0;
@@ -413,7 +490,7 @@ impl MDBMinimalShard {
             xorb_lookup_num_entry: 0,
             chunk_lookup_offset: footer_start,
             chunk_lookup_num_entry: 0,
-            shard_creation_timestamp: current_timestamp(),
+            shard_creation_timestamp: creation_timestamp.unwrap_or(0),
             shard_key_expiry: expiry
                 .map_or(0, |t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()),
             stored_bytes_on_disk,
@@ -429,29 +506,46 @@ impl MDBMinimalShard {
 
     /// Serialize out a shard without any of the file information and a subset of xorb data that is given
     /// by the xorb_filter_fn.  Global deduplication chunk information is preserved.
+    ///
+    /// See [`Self::serialize`] for what `creation_timestamp` records.
     pub fn serialize_xorb_subset_only<W: Write>(
         &self,
         writer: &mut W,
+        creation_timestamp: Option<u64>,
         xorb_filter_fn: impl Fn(&MDBXorbInfoView) -> bool,
     ) -> Result<usize> {
-        self.serialize_impl(writer, false, false, None, xorb_filter_fn)
+        self.serialize_impl(writer, false, false, None, creation_timestamp, xorb_filter_fn)
     }
 
     /// Serialize out a shard without file information, with the given expiration time set in the footer.
     /// Pass `None` for no expiration.
+    ///
+    /// See [`Self::serialize`] for what `creation_timestamp` records.
     pub fn serialize_xorb_subset_with_expiry<W: Write>(
         &self,
         writer: &mut W,
         expiry: Option<SystemTime>,
+        creation_timestamp: Option<u64>,
         xorb_filter_fn: impl Fn(&MDBXorbInfoView) -> bool,
     ) -> Result<usize> {
-        self.serialize_impl(writer, false, false, expiry, xorb_filter_fn)
+        self.serialize_impl(writer, false, false, expiry, creation_timestamp, xorb_filter_fn)
     }
 
     /// Serialize out the given shard, sanitizing and updating the global dedup chunk flags and optionally
     /// dropping the file verification section.
-    pub fn serialize<W: Write>(&self, writer: &mut W, with_verification: bool) -> Result<usize> {
-        self.serialize_impl(writer, true, with_verification, None, |_| true)
+    ///
+    /// `creation_timestamp` is written to the footer verbatim; `None` records nothing, which makes
+    /// the output depend only on the shard's content. Pass [`current_timestamp`] to record when the
+    /// shard was written — appropriate for a local shard cache, which evicts oldest-first. Anything
+    /// stored under the hash of these bytes wants `None`, or the same shard lands under a different
+    /// key on every write.
+    pub fn serialize<W: Write>(
+        &self,
+        writer: &mut W,
+        with_verification: bool,
+        creation_timestamp: Option<u64>,
+    ) -> Result<usize> {
+        self.serialize_impl(writer, true, with_verification, None, creation_timestamp, |_| true)
     }
 
     /// Returns a list of all the global dedup eligible chunks, as given either by the hash value, file starts, or
@@ -506,6 +600,7 @@ impl MDBMinimalShard {
 mod tests {
     use std::collections::{HashMap, HashSet};
     use std::io::Cursor;
+    use std::mem::size_of;
     use std::time::{Duration, SystemTime};
 
     use rand::rngs::SmallRng;
@@ -515,11 +610,15 @@ mod tests {
     use super::super::shard_file::test_routines::{
         convert_to_file, gen_random_file_info, gen_random_shard, gen_random_shard_with_xorb_references,
     };
+    use super::super::shard_file::{MDB_FILE_INFO_ENTRY_SIZE, current_timestamp};
     use super::super::shard_in_memory::MDBInMemoryShard;
-    use super::super::xorb_structs::{MDBXorbInfo, XorbChunkSequenceHeader};
+    use super::super::xorb_structs::{MDBXorbInfo, XorbChunkSequenceEntry, XorbChunkSequenceHeader};
     use super::super::{MDBShardFileHeader, MDBShardInfo};
-    use super::MDBMinimalShard;
-    use crate::error::Result;
+    use super::{
+        MDBMinimalShard, process_shard_file_info_section, process_shard_file_info_section_async,
+        process_shard_xorb_info_section, process_shard_xorb_info_section_async,
+    };
+    use crate::error::{CoreError, Result};
     use crate::merklehash::MerkleHash;
 
     fn file_info_stream(file_infos: &[MDBFileInfo]) -> Vec<u8> {
@@ -546,7 +645,7 @@ mod tests {
 
             // Now verify that the serialized version is the same too.
             let mut reloaded_shard = Vec::new();
-            let serialize_result = min_shard.serialize(&mut reloaded_shard, verification);
+            let serialize_result = min_shard.serialize(&mut reloaded_shard, verification, None);
             if !min_shard.has_file_verification() && verification && min_shard.num_files() > 0 {
                 assert!(serialize_result.is_err());
                 continue;
@@ -594,7 +693,9 @@ mod tests {
 
         {
             let min_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&buffer), true, true).unwrap();
-            let min_shard_async = MDBMinimalShard::from_reader_async(&mut &buffer[..], true, true).await.unwrap();
+            let min_shard_async = MDBMinimalShard::from_reader_async(&mut &buffer[..], true, true, None)
+                .await
+                .unwrap();
 
             assert_eq!(min_shard, min_shard_async);
 
@@ -621,7 +722,9 @@ mod tests {
         {
             // Test we're good on the ones without xorb entries.
             let min_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&buffer), true, false).unwrap();
-            let min_shard_async = MDBMinimalShard::from_reader_async(&mut &buffer[..], true, false).await.unwrap();
+            let min_shard_async = MDBMinimalShard::from_reader_async(&mut &buffer[..], true, false, None)
+                .await
+                .unwrap();
 
             assert_eq!(min_shard, min_shard_async);
 
@@ -635,7 +738,9 @@ mod tests {
         // Test we're good on the ones without file entries.
         {
             let min_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&buffer), false, true).unwrap();
-            let min_shard_async = MDBMinimalShard::from_reader_async(&mut &buffer[..], false, true).await.unwrap();
+            let min_shard_async = MDBMinimalShard::from_reader_async(&mut &buffer[..], false, true, None)
+                .await
+                .unwrap();
 
             assert_eq!(min_shard, min_shard_async);
 
@@ -663,6 +768,7 @@ mod tests {
                     xorb_info_views.push(c.clone());
                     Ok(())
                 },
+                None,
             )
             .await
             .unwrap();
@@ -703,6 +809,7 @@ mod tests {
                 Ok(())
             },
             |_| Ok(()),
+            None,
         )
         .await
         .unwrap();
@@ -711,7 +818,7 @@ mod tests {
         assert_eq!(callback_file_infos, vec![first.clone(), duplicate]);
 
         let mut reserialized = Vec::new();
-        min_shard.serialize(&mut reserialized, false).unwrap();
+        min_shard.serialize(&mut reserialized, false, None).unwrap();
         let shard_info = MDBShardInfo::load_from_reader(&mut Cursor::new(&reserialized)).unwrap();
         let file_infos = shard_info.read_all_file_info_sections(&mut Cursor::new(&reserialized)).unwrap();
         assert_eq!(file_infos, vec![first]);
@@ -754,7 +861,7 @@ mod tests {
         // Produce a new minimal shard without the file info.
         let mut xorb_only_shard_buffer = Vec::<u8>::new();
         min_shard
-            .serialize_xorb_subset_only(&mut xorb_only_shard_buffer, |_| true)
+            .serialize_xorb_subset_only(&mut xorb_only_shard_buffer, None, |_| true)
             .unwrap();
 
         let xorb_only_shard =
@@ -806,7 +913,7 @@ mod tests {
 
             let mut xo_subset_shard_buffer = Vec::<u8>::new();
             min_shard
-                .serialize_xorb_subset_only(&mut xo_subset_shard_buffer, |xorb| xorb_filter_fn(xorb.xorb_hash()))
+                .serialize_xorb_subset_only(&mut xo_subset_shard_buffer, None, |xorb| xorb_filter_fn(xorb.xorb_hash()))
                 .unwrap();
 
             let xo_subset_shard =
@@ -860,20 +967,166 @@ mod tests {
 
         let mut no_expiry_buffer = Vec::new();
         min_shard
-            .serialize_xorb_subset_with_expiry(&mut no_expiry_buffer, None, |_| true)
+            .serialize_xorb_subset_with_expiry(&mut no_expiry_buffer, None, None, |_| true)
             .unwrap();
         let no_expiry_info = MDBShardInfo::load_from_reader(&mut Cursor::new(&no_expiry_buffer)).unwrap();
         assert_eq!(no_expiry_info.metadata.shard_key_expiry, 0);
 
-        let expiry_secs = super::current_timestamp().saturating_add(12345);
+        let expiry_secs = current_timestamp().saturating_add(12345);
         let expiry = SystemTime::UNIX_EPOCH + Duration::from_secs(expiry_secs);
         let mut expiry_buffer = Vec::new();
         min_shard
-            .serialize_xorb_subset_with_expiry(&mut expiry_buffer, Some(expiry), |_| true)
+            .serialize_xorb_subset_with_expiry(&mut expiry_buffer, Some(expiry), None, |_| true)
             .unwrap();
 
         let expiry_info = MDBShardInfo::load_from_reader(&mut Cursor::new(&expiry_buffer)).unwrap();
         assert_eq!(expiry_info.metadata.shard_key_expiry, expiry_secs);
-        assert!(expiry_info.metadata.shard_key_expiry > super::current_timestamp());
+        assert!(expiry_info.metadata.shard_key_expiry > current_timestamp());
+    }
+
+    /// CAS stores the bytes `serialize` produces under their own hash, so the same shard
+    /// content has to serialize identically no matter when it is uploaded. A clock reading
+    /// in the footer would give each upload a distinct S3 object.
+    #[test]
+    fn serialize_is_byte_identical_across_time() {
+        let shard = gen_random_shard_with_xorb_references(2, &[4, 3], &[2, 5], true, true).unwrap();
+        let buffer = convert_to_file(&shard).unwrap();
+        let min_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&buffer), true, true).unwrap();
+
+        let serialize_now = || {
+            let mut out = Vec::new();
+            min_shard.serialize(&mut out, false, None).unwrap();
+            out
+        };
+
+        let first = serialize_now();
+        // Cross a whole-second boundary, the granularity `current_timestamp` records.
+        std::thread::sleep(Duration::from_millis(1100));
+        let second = serialize_now();
+
+        assert_eq!(first, second, "shard serialization must not depend on the wall clock");
+
+        let info = MDBShardInfo::load_from_reader(&mut Cursor::new(&first)).unwrap();
+        assert_eq!(info.metadata.shard_creation_timestamp, 0);
+    }
+
+    /// Small artificial budget for allocation-cap unit tests (not tied to production defaults).
+    const TEST_SECTION_SIZE_LIMIT: u64 = 4096;
+
+    #[tokio::test]
+    async fn test_rejects_oversized_file_info_section() {
+        let size_limit = Some(TEST_SECTION_SIZE_LIMIT);
+        let oversized_entries = (TEST_SECTION_SIZE_LIMIT as usize / MDB_FILE_INFO_ENTRY_SIZE) + 1;
+
+        let mut file_buf = Vec::new();
+        FileDataSequenceHeader::new(MerkleHash::default(), oversized_entries as u32, false, false)
+            .serialize(&mut file_buf)
+            .unwrap();
+
+        let err = process_shard_file_info_section(&mut Cursor::new(&file_buf), |_| Ok(()), size_limit).unwrap_err();
+        assert!(matches!(err, CoreError::InvalidShard(_)), "{err:?}");
+
+        let err = process_shard_file_info_section_async(&mut &file_buf[..], |_| Ok(()), size_limit)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CoreError::InvalidShard(_)), "{err:?}");
+
+        // With verification enabled, each file segment also has a verification entry, so
+        // `num_entries` that would barely fit alone still exceeds the size limit.
+        let mid = (TEST_SECTION_SIZE_LIMIT as usize / MDB_FILE_INFO_ENTRY_SIZE / 2) + 1;
+        let mut file_ver_buf = Vec::new();
+        FileDataSequenceHeader::new(MerkleHash::default(), mid as u32, true, false)
+            .serialize(&mut file_ver_buf)
+            .unwrap();
+        let err = process_shard_file_info_section(&mut Cursor::new(&file_ver_buf), |_| Ok(()), size_limit).unwrap_err();
+        assert!(matches!(err, CoreError::InvalidShard(_)), "{err:?}");
+
+        // `num_entries == u32::MAX` with verification makes `num_info_entry_following` overflow.
+        let mut extreme = Vec::new();
+        FileDataSequenceHeader::new(MerkleHash::default(), u32::MAX, true, false)
+            .serialize(&mut extreme)
+            .unwrap();
+        let err = process_shard_file_info_section(&mut Cursor::new(&extreme), |_| Ok(()), size_limit).unwrap_err();
+        assert!(matches!(err, CoreError::InvalidShard(_)), "{err:?}");
+
+        // Budget left after reading the header is too small for the claimed payload.
+        let header_size = size_of::<FileDataSequenceHeader>() as u64;
+        let mut tight = Vec::new();
+        FileDataSequenceHeader::new(MerkleHash::default(), 2, false, false)
+            .serialize(&mut tight)
+            .unwrap();
+        let err =
+            process_shard_file_info_section(&mut Cursor::new(&tight), |_| Ok(()), Some(header_size + 1)).unwrap_err();
+        assert!(matches!(err, CoreError::InvalidShard(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn test_rejects_oversized_xorb_info_section() {
+        let size_limit = Some(TEST_SECTION_SIZE_LIMIT);
+        let oversized_entries = (TEST_SECTION_SIZE_LIMIT as usize / size_of::<XorbChunkSequenceEntry>()) + 1;
+
+        let mut xorb_buf = Vec::new();
+        XorbChunkSequenceHeader::new(MerkleHash::default(), oversized_entries as u32, 0)
+            .serialize(&mut xorb_buf)
+            .unwrap();
+
+        let err = process_shard_xorb_info_section(&mut Cursor::new(&xorb_buf), |_| Ok(()), size_limit).unwrap_err();
+        assert!(matches!(err, CoreError::InvalidShard(_)), "{err:?}");
+
+        let err = process_shard_xorb_info_section_async(&mut &xorb_buf[..], |_| Ok(()), size_limit)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CoreError::InvalidShard(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn test_size_limit_remaining_is_deducted() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(7);
+        let file_info = gen_random_file_info(&mut rng, &2, true, true);
+
+        let mut file_buf = Vec::new();
+        file_info.serialize(&mut file_buf).unwrap();
+        FileDataSequenceHeader::bookend().serialize(&mut file_buf).unwrap();
+
+        let file_bytes = file_buf.len() as u64;
+        let initial = TEST_SECTION_SIZE_LIMIT;
+        let expected_file_remaining = Some(initial - file_bytes);
+
+        assert_eq!(
+            process_shard_file_info_section(&mut Cursor::new(&file_buf), |_| Ok(()), Some(initial)).unwrap(),
+            expected_file_remaining
+        );
+        assert_eq!(
+            process_shard_file_info_section_async(&mut &file_buf[..], |_| Ok(()), Some(initial))
+                .await
+                .unwrap(),
+            expected_file_remaining
+        );
+
+        let xorb_info = MDBXorbInfo {
+            metadata: XorbChunkSequenceHeader::new(MerkleHash::default(), 2, 200),
+            chunks: vec![
+                XorbChunkSequenceEntry::new(MerkleHash::default(), 100, 0),
+                XorbChunkSequenceEntry::new(MerkleHash::default(), 100, 100),
+            ],
+        };
+
+        let mut xorb_buf = Vec::new();
+        xorb_info.serialize(&mut xorb_buf).unwrap();
+        XorbChunkSequenceHeader::bookend().serialize(&mut xorb_buf).unwrap();
+
+        let xorb_bytes = xorb_buf.len() as u64;
+        let expected_xorb_remaining = Some(initial - xorb_bytes);
+
+        assert_eq!(
+            process_shard_xorb_info_section(&mut Cursor::new(&xorb_buf), |_| Ok(()), Some(initial)).unwrap(),
+            expected_xorb_remaining
+        );
+        assert_eq!(
+            process_shard_xorb_info_section_async(&mut &xorb_buf[..], |_| Ok(()), Some(initial))
+                .await
+                .unwrap(),
+            expected_xorb_remaining
+        );
     }
 }

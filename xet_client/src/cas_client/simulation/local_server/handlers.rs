@@ -13,7 +13,9 @@
 //!
 //! Errors are mapped to appropriate HTTP status codes via `error_to_response`.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::Json;
@@ -24,17 +26,29 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bytes::Bytes;
 use futures_util::StreamExt;
-use http::header::{HOST, RANGE};
+use http::header::{HOST, IF_NONE_MATCH, RANGE};
 use http::{HeaderMap, HeaderValue, StatusCode, Uri};
 use xet_core_structures::merklehash::MerkleHash;
 
 use super::super::super::{DeletionControlableClient, DirectAccessClient};
 use super::latency_simulation::{LatencySimulation, ServerLatencyProfile};
+use crate::cas_client::remote_client::xorb_checksum;
 use crate::cas_types::{
-    FileRange, HexKey, HexMerkleHash, QueryReconstructionResponseV2, UploadShardResponse, UploadShardResponseType,
-    UploadXorbResponse, XorbRangeDescriptor, XorbReconstructionFetchInfo,
+    Checksum, CommitStage, FileRange, HexKey, HexMerkleHash, QueryReconstructionResponseV2, ShardUploadEvent,
+    UploadShardResponse, UploadShardResponseType, UploadXorbResponse, XorbRangeDescriptor, XorbReconstructionFetchInfo,
+    XorbUploadGrant, XorbUploadGrantRequest,
 };
 use crate::error::ClientError;
+
+/// `/v2/shards` in-stream `Error` frame mode (`set_config` + handler encoding).
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ShardUploadErrorFrame {
+    #[default]
+    Off = 0,
+    Fatal = 1,
+    Retryable = 2,
+}
 
 /// Server state passed to all handlers.
 #[derive(Clone)]
@@ -42,6 +56,32 @@ pub(crate) struct ServerState {
     pub(crate) client: Arc<dyn DirectAccessClient>,
     pub(super) latency_simulation: Arc<LatencySimulation>,
     pub(crate) deletion_client: Option<Arc<dyn DeletionControlableClient>>,
+    /// Telemetry documents received on `POST /v1/telemetry`, in arrival order.
+    ///
+    /// Kept verbatim as `Value` so tests can assert on the exact wire shape, which is what a
+    /// consumer actually receives.
+    pub(crate) telemetry_docs: Arc<Mutex<Vec<serde_json::Value>>>,
+    pub(crate) v1_reconstruction_ranges: Arc<Mutex<Vec<Option<String>>>>,
+    /// While set, `/v2/shards` emits an in-stream `Error` frame instead of committing.
+    /// Encodes [`ShardUploadErrorFrame`] as `u8`.
+    pub(crate) shard_upload_error_frame: Arc<AtomicU8>,
+    pub(crate) xorb_upload_grants: Arc<XorbUploadGrants>,
+}
+
+/// Upload grants issued by `POST /v1/xorb-grants`, keyed by grant id.
+#[derive(Default)]
+pub(crate) struct XorbUploadGrants {
+    /// While set, the grant API answers 404, as a server that does not offer upload grants does.
+    disabled: AtomicBool,
+    grants: Mutex<HashMap<String, PendingXorbUpload>>,
+}
+
+struct PendingXorbUpload {
+    hash: MerkleHash,
+    length: u64,
+    checksum: Checksum,
+    /// The data uploaded to the grant URL, once uploaded.
+    data: Option<Bytes>,
 }
 
 /// Represents the different forms a Range header can take.
@@ -247,6 +287,12 @@ pub async fn get_reconstruction(
         Ok(None) => None,
         Err((status, msg)) => return (status, msg).into_response(),
     };
+
+    state
+        .v1_reconstruction_ranges
+        .lock()
+        .expect("v1_reconstruction_ranges lock poisoned")
+        .push(headers.get(RANGE).map(|value| value.to_str().unwrap().to_owned()));
 
     match state.client.get_reconstruction_v1(&file_id, range).await {
         Ok(Some(mut response)) => {
@@ -539,21 +585,165 @@ pub async fn post_xorb(State(state): State<ServerState>, Path(key): Path<HexKey>
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
     };
 
+    match store_uploaded_xorb(&state, &key.prefix, key.hash, &data).await {
+        Ok(()) => Json(UploadXorbResponse { was_inserted: true }).into_response(),
+        Err(e) => error_to_response(e),
+    }
+}
+
+/// Stores serialized xorb data as uploaded by a client.
+///
+/// Clients upload xorbs without a footer, so the backing client rebuilds it; `num_chunks` is only used for logging.
+async fn store_uploaded_xorb(
+    state: &ServerState,
+    prefix: &str,
+    hash: MerkleHash,
+    data: &[u8],
+) -> crate::error::Result<()> {
     let xorb_obj = xet_core_structures::xorb_object::SerializedXorbObject {
-        hash: key.hash,
+        hash,
         serialized_data: data.to_vec(),
         raw_num_bytes: data.len() as u64,
         num_chunks: 0,
         footer_start: None,
     };
+    let permit = state.client.acquire_upload_permit().await?;
+    state.client.upload_xorb(prefix, xorb_obj, None, permit).await?;
+    Ok(())
+}
 
-    let permit = match state.client.acquire_upload_permit().await {
-        Ok(p) => p,
+/// POST /v1/xorb-grants/{prefix}/{hash}
+///
+/// Issues a grant to upload a XORB to a grant URL served by this server.
+/// Returns 201 with the grant, 200 with an empty body if the XORB already exists, or 404 while grants are disabled.
+pub async fn post_xorb_grant(
+    State(state): State<ServerState>,
+    Path(key): Path<HexKey>,
+    headers: HeaderMap,
+    Json(request): Json<XorbUploadGrantRequest>,
+) -> Response {
+    let connection_guard = state.latency_simulation.register_connection().await;
+    if let Some(simulated_error) = connection_guard.simulate_error() {
+        return simulated_error;
+    }
+
+    if state.xorb_upload_grants.disabled.load(Ordering::Relaxed) {
+        return (StatusCode::NOT_FOUND, "XORB upload grants disabled").into_response();
+    }
+
+    match state.client.xorb_exists(&key.hash).await {
+        Ok(true) => return StatusCode::OK.into_response(),
+        Ok(false) => {},
         Err(e) => return error_to_response(e),
+    }
+
+    let id = uuid::Uuid::now_v7().to_string();
+    let grant = XorbUploadGrant {
+        id: id.clone(),
+        method: "PUT".to_string(),
+        url: format!("{}/simulation/xorb-uploads/{id}", get_base_url(&headers)),
+        headers: HashMap::from([(IF_NONE_MATCH.to_string(), "*".to_string())]),
+    };
+    let pending = PendingXorbUpload {
+        hash: key.hash,
+        length: request.length,
+        checksum: request.checksum,
+        data: None,
+    };
+    state.xorb_upload_grants.grants.lock().unwrap().insert(id, pending);
+
+    (StatusCode::CREATED, Json(grant)).into_response()
+}
+
+/// PUT /simulation/xorb-uploads/{grant_id}
+///
+/// The grant URL issued by `post_xorb_grant`. Rejects data whose length or checksum does not match
+/// the grant, and answers 412 to a repeated upload sent with `If-None-Match: *`.
+pub async fn put_xorb_upload(
+    State(state): State<ServerState>,
+    Path(grant_id): Path<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let data = match collect_body(body).await {
+        Ok(d) => d,
+        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
     };
 
-    match state.client.upload_xorb(&key.prefix, xorb_obj, None, permit).await {
-        Ok(_) => Json(UploadXorbResponse { was_inserted: true }).into_response(),
+    let mut grants = state.xorb_upload_grants.grants.lock().unwrap();
+    let Some(pending) = grants.get_mut(&grant_id) else {
+        return (StatusCode::NOT_FOUND, "Unknown upload grant").into_response();
+    };
+    if pending.data.is_some() && headers.get(IF_NONE_MATCH).is_some_and(|v| v == "*") {
+        return StatusCode::PRECONDITION_FAILED.into_response();
+    }
+    if data.len() as u64 != pending.length || xorb_checksum(&data) != pending.checksum {
+        return (StatusCode::BAD_REQUEST, "Data does not match the upload grant").into_response();
+    }
+    pending.data = Some(data);
+
+    StatusCode::OK.into_response()
+}
+
+/// Checks that staged data is exactly a chunk sequence (no footer or trailing bytes) hashing to `hash`.
+fn validate_staged_xorb(hash: MerkleHash, data: &[u8]) -> Result<(), String> {
+    let (xorb_obj, computed_hash) =
+        xet_core_structures::xorb_object::reconstruct_xorb_with_footer(&mut Vec::new(), data)
+            .map_err(|e| format!("Invalid XORB data: {e}"))?;
+    if xorb_obj.get_contents_length().map_err(|e| e.to_string())? as usize != data.len() {
+        return Err("XORB data must be a chunk sequence without a footer or trailing bytes".to_string());
+    }
+    if computed_hash != hash {
+        return Err(format!("XORB hash mismatch: expected {}, got {}", hash.hex(), computed_hash.hex()));
+    }
+    Ok(())
+}
+
+/// POST /v1/xorb-commits/{prefix}/{hash}/grant/{grant_id}
+///
+/// Stores the XORB uploaded through the grant. Returns 200 if the XORB is stored or already existed,
+/// 404 if no data was uploaded for this grant and XORB, or 400 if the data is not exactly a chunk sequence
+/// hashing to the XORB hash.
+pub async fn post_xorb_commit(
+    State(state): State<ServerState>,
+    Path((prefix, hash, grant_id)): Path<(String, HexMerkleHash, String)>,
+) -> Response {
+    let connection_guard = state.latency_simulation.register_connection().await;
+    if let Some(simulated_error) = connection_guard.simulate_error() {
+        return simulated_error;
+    }
+    let hash: MerkleHash = hash.into();
+
+    match state.client.xorb_exists(&hash).await {
+        Ok(true) => {
+            state.xorb_upload_grants.grants.lock().unwrap().remove(&grant_id);
+            return StatusCode::OK.into_response();
+        },
+        Ok(false) => {},
+        Err(e) => return error_to_response(e),
+    }
+
+    let data = state
+        .xorb_upload_grants
+        .grants
+        .lock()
+        .unwrap()
+        .get(&grant_id)
+        .filter(|pending| pending.hash == hash)
+        .and_then(|pending| pending.data.clone());
+    let Some(data) = data else {
+        return (StatusCode::NOT_FOUND, "No uploaded data for this grant").into_response();
+    };
+
+    if let Err(message) = validate_staged_xorb(hash, &data) {
+        return (StatusCode::BAD_REQUEST, message).into_response();
+    }
+
+    match store_uploaded_xorb(&state, &prefix, hash, &data).await {
+        Ok(()) => {
+            state.xorb_upload_grants.grants.lock().unwrap().remove(&grant_id);
+            StatusCode::OK.into_response()
+        },
         Err(e) => error_to_response(e),
     }
 }
@@ -579,12 +769,104 @@ pub async fn post_shard(State(state): State<ServerState>, body: Body) -> Respons
     };
 
     match state.client.upload_shard(data, permit, None).await {
-        Ok(()) => Json(UploadShardResponse {
+        Ok(shard_hash) => Json(UploadShardResponse {
             result: UploadShardResponseType::SyncPerformed,
+            shard_hash: shard_hash.map(Into::into),
         })
         .into_response(),
         Err(e) => error_to_response(e),
     }
+}
+
+/// POST /v2/shards
+///
+/// Upload a shard with an NDJSON progress stream (same event types production CAS emits).
+/// Respects [`DirectAccessClient::v2_disabled_status_code`] so clients can exercise V2→V1 fallback.
+///
+/// On success the response is `200` with `application/x-ndjson` frames ending in `result`.
+/// Once the stream has started, failures are signaled by an in-stream `Error` frame (not a
+/// non-200 status), matching production: clients MUST treat that frame as the error signal.
+/// Use `/simulation/set_config?config=shard_upload_error_frame&value=retryable|fatal` to force
+/// that path (cleared with `off`).
+pub async fn post_shard_v2(State(state): State<ServerState>, body: Body) -> Response {
+    let connection_guard = state.latency_simulation.register_connection().await;
+    if let Some(simulated_error) = connection_guard.simulate_error() {
+        return simulated_error;
+    }
+
+    // Allow testing V1 fallback by simulating V2 endpoint unavailability.
+    let disabled_status = state.client.v2_disabled_status_code();
+    if disabled_status != 0 {
+        let code = StatusCode::from_u16(disabled_status).unwrap_or(StatusCode::NOT_FOUND);
+        return (code, "V2 shard upload endpoint disabled").into_response();
+    }
+
+    let data = match collect_body(body).await {
+        Ok(d) => d,
+        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+    };
+
+    // In-stream Error frame (production contract: 200 + terminal error frame).
+    // Checked before upload so the shard is not committed while the client sees failure.
+    match state.shard_upload_error_frame.load(Ordering::Relaxed) {
+        v if v == ShardUploadErrorFrame::Fatal as u8 => return ndjson_shard_upload_error_response(false),
+        v if v == ShardUploadErrorFrame::Retryable as u8 => return ndjson_shard_upload_error_response(true),
+        _ => {},
+    }
+
+    let permit = match state.client.acquire_upload_permit().await {
+        Ok(p) => p,
+        Err(e) => return error_to_response(e),
+    };
+
+    match state.client.upload_shard(data, permit, None).await {
+        Ok(_) => ndjson_shard_upload_success_response(),
+        Err(e) => error_to_response(e),
+    }
+}
+
+/// Builds a minimal production-shaped NDJSON success stream for `/v2/shards`.
+fn ndjson_shard_upload_success_response() -> Response {
+    ndjson_shard_upload_response(&[
+        ShardUploadEvent::Validating { verified: 0, total: 1 },
+        ShardUploadEvent::Validating { verified: 1, total: 1 },
+        ShardUploadEvent::Committing {
+            stage: CommitStage::Uploading,
+        },
+        ShardUploadEvent::Committing {
+            stage: CommitStage::Syncing,
+        },
+        ShardUploadEvent::Result,
+    ])
+}
+
+/// Builds a 200 NDJSON stream that ends in a terminal `Error` frame (production failure contract).
+fn ndjson_shard_upload_error_response(retryable: bool) -> Response {
+    let message = if retryable {
+        "simulated retryable shard upload failure"
+    } else {
+        "simulated fatal shard upload failure"
+    };
+    ndjson_shard_upload_response(&[
+        ShardUploadEvent::Validating { verified: 0, total: 1 },
+        ShardUploadEvent::Error {
+            message: message.to_string(),
+            retryable,
+        },
+    ])
+}
+
+fn ndjson_shard_upload_response(events: &[ShardUploadEvent]) -> Response {
+    let mut body = Vec::new();
+    for event in events {
+        // Simulation frames are always valid `ShardUploadEvent` values.
+        serde_json::to_writer(&mut body, event).expect("ShardUploadEvent serializes");
+        body.push(b'\n');
+    }
+
+    let mut headers = HeaderMap::new();
+    headers.insert(http::header::CONTENT_TYPE, HeaderValue::from_static("application/x-ndjson"));
+    (StatusCode::OK, headers, body).into_response()
 }
 
 /// HEAD /v1/files/{file_id}
@@ -783,12 +1065,48 @@ pub async fn set_config(State(state): State<ServerState>, uri: Uri, body: Body) 
             },
             Err(e) => (StatusCode::BAD_REQUEST, format!("Invalid usize value: {e}")).into_response(),
         },
-        "disable_v2_reconstruction" => match value.parse::<u16>() {
+        "disable_v2_endpoints" => match value.parse::<u16>() {
             Ok(code) => {
-                state.client.disable_v2_reconstruction(code);
-                (StatusCode::OK, "V2 reconstruction config set").into_response()
+                state.client.disable_v2_endpoints(code);
+                (StatusCode::OK, "V2 endpoints (reconstruction + shard upload) config set").into_response()
             },
             Err(e) => (StatusCode::BAD_REQUEST, format!("Invalid status code: {e}")).into_response(),
+        },
+        "shard_upload_error_frame" => match value.trim().to_lowercase().as_str() {
+            "off" | "none" | "0" | "" => {
+                state
+                    .shard_upload_error_frame
+                    .store(ShardUploadErrorFrame::Off as u8, Ordering::Relaxed);
+                (StatusCode::OK, "Shard upload error frame cleared").into_response()
+            },
+            "fatal" => {
+                state
+                    .shard_upload_error_frame
+                    .store(ShardUploadErrorFrame::Fatal as u8, Ordering::Relaxed);
+                (StatusCode::OK, "/v2/shards will emit a fatal Error frame").into_response()
+            },
+            "retryable" => {
+                state
+                    .shard_upload_error_frame
+                    .store(ShardUploadErrorFrame::Retryable as u8, Ordering::Relaxed);
+                (StatusCode::OK, "/v2/shards will emit a retryable Error frame").into_response()
+            },
+            _ => (
+                StatusCode::BAD_REQUEST,
+                "Invalid shard_upload_error_frame value; expected retryable|fatal|off".to_string(),
+            )
+                .into_response(),
+        },
+        "xorb_upload_grants" => match value.trim().to_lowercase().as_str() {
+            "on" => {
+                state.xorb_upload_grants.disabled.store(false, Ordering::Relaxed);
+                (StatusCode::OK, "XORB upload grants enabled").into_response()
+            },
+            "off" => {
+                state.xorb_upload_grants.disabled.store(true, Ordering::Relaxed);
+                (StatusCode::OK, "XORB upload grants disabled").into_response()
+            },
+            _ => (StatusCode::BAD_REQUEST, "Invalid xorb_upload_grants value; expected on|off").into_response(),
         },
         "api_delay" => match parse_random_delay_value(value) {
             Ok((min_ms, max_ms)) => {
@@ -814,7 +1132,7 @@ pub async fn set_config(State(state): State<ServerState>, uri: Uri, body: Body) 
             format!(
                 "Unknown config: {config_name}. Supported: congestion, random_delay, \
                  global_dedup_shard_expiration, max_ranges_per_fetch, \
-                 disable_v2_reconstruction, api_delay, url_expiration"
+                 disable_v2_endpoints, shard_upload_error_frame, api_delay, url_expiration"
             ),
         )
             .into_response(),
@@ -873,6 +1191,30 @@ fn parse_congestion_config(value: &str) -> Result<(u64, u64, u64, f64), String> 
 /// Returns 200 OK with a simple success body. Used by the simulation to confirm the server is ready.
 pub async fn ping() -> Response {
     (StatusCode::OK, "ok").into_response()
+}
+
+/// POST /v1/telemetry
+///
+/// Stands in for the real cas_server endpoint, recording each document so tests can assert on
+/// what actually went over the wire. Mirrors the server's status contract closely enough for the
+/// client's purposes: 200 on a well-formed body, 400 otherwise.
+///
+/// Deliberately permissive about the *contents* of the body - the client is what is under test,
+/// so a mismatch should show up as a failed assertion on the recorded document rather than as an
+/// opaque 400.
+pub async fn post_telemetry(State(state): State<ServerState>, body: Bytes) -> Response {
+    let Ok(document) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        return (StatusCode::BAD_REQUEST, "telemetry body is not valid JSON").into_response();
+    };
+    if !document.is_object() {
+        return (StatusCode::BAD_REQUEST, "telemetry body is not a JSON object").into_response();
+    }
+
+    let Ok(mut docs) = state.telemetry_docs.lock() else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "telemetry_docs lock poisoned").into_response();
+    };
+    docs.push(document);
+    StatusCode::OK.into_response()
 }
 
 /// POST /simulation/dummy_upload

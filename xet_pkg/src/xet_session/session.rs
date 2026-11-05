@@ -1,6 +1,7 @@
 //! XetSession - manages runtime and configuration
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
 
 use tracing::info;
@@ -25,6 +26,9 @@ use super::upload_commit::XetUploadCommitBuilder;
 #[doc(hidden)]
 pub struct XetSessionInner {
     pub(super) ctx: XetContext,
+
+    // Root directory for the shard cache and staging data; `None` uses the environment-derived default.
+    pub(super) cache_dir: Option<PathBuf>,
 
     // Root of the cancellation tree. Child commits/groups create child TaskRuntimes via
     // task_runtime.child(), which links their cancellation tokens to this root. Calling
@@ -106,9 +110,11 @@ pub struct XetSessionInner {
 ///
 /// For most use cases, [`new`](Self::new) with the default [`XetConfig`] is
 /// sufficient.  Use [`new_with_config`](Self::new_with_config) when you need to
-/// override runtime settings such as cache directories or concurrency limits.
+/// override runtime settings such as concurrency limits, and
+/// [`with_cache_dir`](Self::with_cache_dir) to set the cache directory.
 pub struct XetSessionBuilder {
     config: XetConfig,
+    cache_dir: Option<PathBuf>,
     tokio_handle: Option<tokio::runtime::Handle>,
 }
 
@@ -123,6 +129,7 @@ impl XetSessionBuilder {
     pub fn new() -> Self {
         Self {
             config: XetConfig::new(),
+            cache_dir: None,
             tokio_handle: None,
         }
     }
@@ -131,8 +138,23 @@ impl XetSessionBuilder {
     pub fn new_with_config(config: XetConfig) -> Self {
         Self {
             config,
+            cache_dir: None,
             tokio_handle: None,
         }
+    }
+
+    /// Set the root directory for this session's shard cache and staging data.
+    ///
+    /// The path is used as-is: no `xet` subdirectory is appended and no template variables are expanded. When not
+    /// set, the root is derived from `HF_XET_CACHE`, `HF_HOME`, or `XDG_CACHE_HOME`, falling back to
+    /// `~/.cache/huggingface/xet`.
+    ///
+    /// This only applies to uploads and downloads created from this session. The log directory set up by
+    /// [`init_logging`](crate::init_logging) and the legacy APIs still use the environment-derived root.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn with_cache_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.cache_dir = Some(dir.into());
+        self
     }
 
     /// Attach to an existing tokio runtime handle.
@@ -188,7 +210,7 @@ impl XetSessionBuilder {
         #[cfg(target_family = "wasm")]
         let ctx = XetContext::with_config(self.config)?;
 
-        let session = XetSession::new(ctx);
+        let session = XetSession::new(ctx, self.cache_dir);
         info!("Session created, session_id={}", session.inner.id);
         #[cfg(feature = "fd-track")]
         report_fd_count("XetSessionBuilder::build complete");
@@ -227,11 +249,12 @@ pub struct XetSession {
 
 impl XetSession {
     /// Low-level constructor used by [`XetSessionBuilder::build`].
-    fn new(ctx: XetContext) -> Self {
+    fn new(ctx: XetContext, cache_dir: Option<PathBuf>) -> Self {
         let task_runtime = TaskRuntime::new_root(ctx.runtime.clone());
         Self {
             inner: Arc::new(XetSessionInner {
                 ctx,
+                cache_dir,
                 task_runtime,
                 active_download_stream_groups: Mutex::new(HashMap::new()),
                 id: Uuid::now_v7(),
@@ -390,11 +413,136 @@ impl XetSession {
 
 #[cfg(test)]
 mod tests {
+    use anyhow::Result;
     use tempfile::tempdir;
     use xet_data::processing::{Sha256Policy, XetFileInfo};
     use xet_runtime::core::{RuntimeMode, XetContext};
 
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread")]
+    // An error from any async builder leaves the session reusable.
+    async fn test_builder_errors_leave_session_usable() -> Result<()> {
+        let server = forbidden_token_server().await;
+        let temp = tempdir()?;
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
+        let session = XetSessionBuilder::new().build()?;
+        let refresh_url = format!("{}/token", server.uri());
+        let existing = session.new_upload_commit()?.with_endpoint(&endpoint).build().await?;
+        for builder_kind in 0..3 {
+            let err = match builder_kind {
+                0 => session
+                    .new_upload_commit()?
+                    .with_token_refresh_url(&refresh_url, http::HeaderMap::new())
+                    .build()
+                    .await
+                    .err()
+                    .expect("construction should fail with 403"),
+                1 => session
+                    .new_file_download_group()?
+                    .with_token_refresh_url(&refresh_url, http::HeaderMap::new())
+                    .build()
+                    .await
+                    .err()
+                    .expect("construction should fail with 403"),
+                _ => session
+                    .new_download_stream_group()?
+                    .with_token_refresh_url(&refresh_url, http::HeaderMap::new())
+                    .build()
+                    .await
+                    .err()
+                    .expect("construction should fail with 403"),
+            };
+            assert!(matches!(&err, SessionError::Network(message) if message.contains("403 Forbidden")), "{err:?}");
+            assert_eq!(session.status()?, XetTaskState::Running);
+            session.new_upload_commit()?.with_endpoint(&endpoint).build().await?;
+            session.new_file_download_group()?.with_endpoint(&endpoint).build().await?;
+            session.new_download_stream_group()?.with_endpoint(&endpoint).build().await?;
+        }
+        assert_eq!(existing.status()?, XetTaskState::Running);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    // Builders obtained before session abort must still reject construction through their child runtime.
+    async fn test_builders_created_before_abort_reject_build() {
+        let session = XetSessionBuilder::new().build().unwrap();
+        let upload = session.new_upload_commit().unwrap();
+        let files = session.new_file_download_group().unwrap();
+        let streams = session.new_download_stream_group().unwrap();
+        session.abort().unwrap();
+        assert!(matches!(upload.build().await.err().unwrap(), SessionError::UserCancelled(_)));
+        assert!(matches!(files.build().await.err().unwrap(), SessionError::UserCancelled(_)));
+        assert!(matches!(streams.build().await.err().unwrap(), SessionError::UserCancelled(_)));
+    }
+
+    #[test]
+    // An error from any blocking builder leaves the session reusable.
+    fn test_builder_errors_leave_session_usable_blocking() -> Result<()> {
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+        let server = rt.block_on(forbidden_token_server());
+        let temp = tempdir()?;
+        let endpoint = format!("local://{}", temp.path().join("cas").display());
+        let session = XetSessionBuilder::new().build()?;
+        let refresh_url = format!("{}/token", server.uri());
+        let existing = session.new_upload_commit()?.with_endpoint(&endpoint).build_blocking()?;
+        for builder_kind in 0..3 {
+            let err = match builder_kind {
+                0 => session
+                    .new_upload_commit()?
+                    .with_token_refresh_url(&refresh_url, http::HeaderMap::new())
+                    .build_blocking()
+                    .err()
+                    .expect("construction should fail with 403"),
+                1 => session
+                    .new_file_download_group()?
+                    .with_token_refresh_url(&refresh_url, http::HeaderMap::new())
+                    .build_blocking()
+                    .err()
+                    .expect("construction should fail with 403"),
+                _ => session
+                    .new_download_stream_group()?
+                    .with_token_refresh_url(&refresh_url, http::HeaderMap::new())
+                    .build_blocking()
+                    .err()
+                    .expect("construction should fail with 403"),
+            };
+            assert!(matches!(&err, SessionError::Network(message) if message.contains("403 Forbidden")), "{err:?}");
+            assert_eq!(session.status()?, XetTaskState::Running);
+            session.new_upload_commit()?.with_endpoint(&endpoint).build_blocking()?;
+            session.new_file_download_group()?.with_endpoint(&endpoint).build_blocking()?;
+            session.new_download_stream_group()?.with_endpoint(&endpoint).build_blocking()?;
+        }
+        assert_eq!(existing.status()?, XetTaskState::Running);
+        Ok(())
+    }
+
+    #[test]
+    // Blocking builders obtained before session abort must also reject construction through their child runtime.
+    fn test_builders_created_before_abort_reject_build_blocking() {
+        let session = XetSessionBuilder::new().build().unwrap();
+        let upload = session.new_upload_commit().unwrap();
+        let files = session.new_file_download_group().unwrap();
+        let streams = session.new_download_stream_group().unwrap();
+        session.abort().unwrap();
+        assert!(matches!(upload.build_blocking().err().unwrap(), SessionError::UserCancelled(_)));
+        assert!(matches!(files.build_blocking().err().unwrap(), SessionError::UserCancelled(_)));
+        assert!(matches!(streams.build_blocking().err().unwrap(), SessionError::UserCancelled(_)));
+    }
+
+    async fn forbidden_token_server() -> wiremock::MockServer {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(403))
+            .expect(3)
+            .mount(&server)
+            .await;
+        server
+    }
 
     // ── Identity ─────────────────────────────────────────────────────────────
 

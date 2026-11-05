@@ -52,14 +52,20 @@ impl FileDownloadSession {
             ctx.config.data.progress_update_speed_min_observations,
         ));
 
-        Ok(Arc::new(Self {
+        let session = Arc::new(Self {
             ctx,
             client,
             chunk_cache,
             progress,
             active_stream_abort_callbacks: Mutex::new(HashMap::new()),
             finalized: AtomicBool::new(false),
-        }))
+        });
+
+        // Only fires if this transfer outlives `heartbeat_after`; short ones never emit one.
+        #[cfg(not(target_family = "wasm"))]
+        crate::telemetry::start_download_heartbeat(&session.ctx.clone(), &session);
+
+        Ok(session)
     }
 
     /// Construct a download session from an existing CAS client.
@@ -83,6 +89,10 @@ impl FileDownloadSession {
         })
     }
 
+    pub fn client(&self) -> Arc<dyn Client> {
+        Arc::clone(&self.client)
+    }
+
     pub fn report(&self) -> crate::progress_tracking::GroupProgressReport {
         self.progress.report()
     }
@@ -93,6 +103,10 @@ impl FileDownloadSession {
 
     pub fn item_reports(&self) -> HashMap<UniqueId, crate::progress_tracking::ItemProgressReport> {
         self.progress.item_reports()
+    }
+
+    pub fn n_items(&self) -> usize {
+        self.progress.n_items()
     }
 
     fn register_stream_abort_callback(&self, id: UniqueId, callback: Box<dyn Fn() + Send + Sync>) {
@@ -129,9 +143,12 @@ impl FileDownloadSession {
         source_range: Option<Range<u64>>,
     ) -> Result<(UniqueId, DownloadStream)> {
         self.check_not_finalized()?;
+        let range = match source_range {
+            Some(r) => range_bounds_to_file_range(&r, file_info.file_size())?,
+            None => None,
+        };
         let id = UniqueId::new();
         let progress_updater = self.progress.new_item(id, "stream");
-        let range = source_range.map(|r| FileRange::new(r.start, r.end));
         let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater))?;
         let stream = reconstructor.reconstruct_to_stream();
         self.register_stream_abort_callback(id, stream.abort_callback());
@@ -157,9 +174,12 @@ impl FileDownloadSession {
         source_range: Option<Range<u64>>,
     ) -> Result<(UniqueId, UnorderedDownloadStream)> {
         self.check_not_finalized()?;
+        let range = match source_range {
+            Some(r) => range_bounds_to_file_range(&r, file_info.file_size())?,
+            None => None,
+        };
         let id = UniqueId::new();
         let progress_updater = self.progress.new_item(id, "unordered_stream");
-        let range = source_range.map(|r| FileRange::new(r.start, r.end));
         let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater))?;
         let stream = reconstructor.reconstruct_to_unordered_stream();
         self.register_stream_abort_callback(id, stream.abort_callback());
@@ -178,7 +198,7 @@ impl FileDownloadSession {
         range: impl RangeBounds<u64>,
     ) -> Result<(UniqueId, DownloadStream)> {
         self.check_not_finalized()?;
-        let file_range = range_bounds_to_file_range(&range)?;
+        let file_range = range_bounds_to_file_range(&range, file_info.file_size())?;
         let id = UniqueId::new();
         let progress_updater = self.progress.new_item(id, "stream");
         let reconstructor = self.setup_reconstructor(file_info, file_range, Some(progress_updater))?;
@@ -186,6 +206,7 @@ impl FileDownloadSession {
         self.register_stream_abort_callback(id, stream.abort_callback());
         Ok((id, stream))
     }
+
     fn check_not_finalized(&self) -> Result<()> {
         if self.finalized.load(Ordering::Acquire) {
             return Err(DataError::InvalidOperation("FileDownloadSession already finalized".to_string()));
@@ -193,14 +214,62 @@ impl FileDownloadSession {
         Ok(())
     }
 
-    /// Finalizes the session; in debug builds, asserts all items are complete.
+    /// Finalizes a session whose downloads all completed successfully.
+    ///
+    /// In debug builds this asserts that every item is complete; a session that ended badly must
+    /// go through [`finalize_failed`](Self::finalize_failed) instead, which makes no such claim.
     pub async fn finalize(&self) -> Result<()> {
         if self.finalized.swap(true, Ordering::AcqRel) {
             return Err(DataError::InvalidOperation("FileDownloadSession already finalized".to_string()));
         }
+
         #[cfg(debug_assertions)]
         self.progress.assert_complete();
+
+        #[cfg(not(target_family = "wasm"))]
+        self.emit_terminal(crate::telemetry::Outcome::Ok, crate::telemetry::ERROR_CLASS_NONE)
+            .await;
+
         Ok(())
+    }
+
+    /// Finalizes the session, reporting `outcome` and `error_class` on the telemetry document.
+    ///
+    /// Separate from [`finalize`](Self::finalize) because it makes no completeness claim, so it
+    /// suits both a session that ended badly (whose items legitimately are incomplete) and one
+    /// whose notion of "complete" belongs to the caller - notably a stream group, where nothing
+    /// requires every stream to be consumed.
+    ///
+    /// Callers in `xet_pkg` derive the pair with
+    /// [`classify_error`](crate::telemetry::classify_error) or
+    /// [`outcome_for_class`](crate::telemetry::outcome_for_class).
+    ///
+    /// Returns `Err` only if the session was already finalized.
+    pub async fn finalize_with(&self, outcome: crate::telemetry::Outcome, error_class: &'static str) -> Result<()> {
+        if self.finalized.swap(true, Ordering::AcqRel) {
+            return Err(DataError::InvalidOperation("FileDownloadSession already finalized".to_string()));
+        }
+
+        #[cfg(not(target_family = "wasm"))]
+        self.emit_terminal(outcome, error_class).await;
+
+        #[cfg(target_family = "wasm")]
+        let _ = (outcome, error_class);
+
+        Ok(())
+    }
+
+    /// Sends the terminal document for this session. Best-effort and infallible.
+    #[cfg(not(target_family = "wasm"))]
+    async fn emit_terminal(&self, outcome: crate::telemetry::Outcome, error_class: &'static str) {
+        crate::telemetry::emit_download_terminal(
+            &self.client,
+            outcome,
+            error_class,
+            &self.report(),
+            self.n_items() as u64,
+        )
+        .await;
     }
 
     fn setup_reconstructor(
@@ -213,34 +282,26 @@ impl FileDownloadSession {
 
         let mut reconstructor = FileReconstructor::new(&self.ctx, &self.client, file_id);
 
-        match range {
-            Some(range) if range.end < u64::MAX => {
-                // Fully bounded range: we know the exact download size upfront.
-                let size = range.end - range.start;
-                if let Some(ref updater) = progress_updater {
-                    updater.update_item_size(size, true);
-                }
-                reconstructor = reconstructor.with_byte_range(range);
-            },
-            Some(range) => {
-                // Open-ended range (end == u64::MAX): pass the range to set the
-                // start position, but let ReconstructionTermManager discover
-                // the actual end and finalize progress incrementally.
-                reconstructor = reconstructor.with_byte_range(range);
-            },
-            None if file_info.file_size().is_some() => {
-                // Full file with caller-provided size. Set progress upfront so
-                // UI consumers get percentage-based progress. SizeMismatch is
-                // validated after reconstruction in download_file_with_id.
-                if let Some(ref updater) = progress_updater {
-                    updater.update_item_size(file_info.file_size().unwrap(), true);
-                }
-            },
-            None => {
-                // Full file with unknown size: the reconstructor uses
-                // FileRange::full() internally and ReconstructionTermManager
-                // discovers the size incrementally.
-            },
+        // Without a range, the reconstructor uses FileRange::full(). An open-ended range has end == u64::MAX.
+        if let Some(range) = range {
+            reconstructor = reconstructor.with_byte_range(range);
+        }
+
+        if let Some(file_size) = file_info.file_size() {
+            reconstructor = reconstructor.with_file_size(file_size);
+        }
+
+        // The download ends at the earlier of a bounded range end and the known file size. When either is
+        // known, set progress upfront so UI consumers get percentage-based progress; otherwise
+        // ReconstructionTermManager discovers the end and finalizes progress incrementally.
+        let range_end = range.map(|r| r.end).filter(|&end| end < u64::MAX);
+        let download_end = match (range_end, file_info.file_size()) {
+            (Some(range_end), Some(file_size)) => Some(range_end.min(file_size)),
+            (range_end, file_size) => range_end.or(file_size),
+        };
+        if let (Some(download_end), Some(updater)) = (download_end, &progress_updater) {
+            let start = range.map_or(0, |r| r.start);
+            updater.update_item_size(download_end - start, true);
         }
 
         if let Some(updater) = progress_updater {
@@ -329,7 +390,7 @@ impl FileDownloadSession {
         writer: W,
     ) -> Result<(UniqueId, u64)> {
         self.check_not_finalized()?;
-        let range = range_bounds_to_file_range(&source_range)?;
+        let range = range_bounds_to_file_range(&source_range, file_info.file_size())?;
         if let Some(ref r) = range {
             let span = tracing::Span::current();
             span.record("range_start", r.start);
@@ -365,8 +426,9 @@ impl FileDownloadSession {
 /// and `Some(FileRange)` otherwise. Open-ended ranges use `u64::MAX` as
 /// the end sentinel (matching `FileRange::full()`).
 ///
-/// Returns an error for inverted ranges where `start > end`.
-fn range_bounds_to_file_range(range: &impl RangeBounds<u64>) -> Result<Option<FileRange>> {
+/// Returns an error for inverted ranges where `start > end`, and for ranges starting at or beyond a
+/// known `file_size`.
+fn range_bounds_to_file_range(range: &impl RangeBounds<u64>, file_size: Option<u64>) -> Result<Option<FileRange>> {
     let start = match range.start_bound() {
         Bound::Included(&s) => s,
         Bound::Excluded(&s) => s.saturating_add(1),
@@ -378,12 +440,45 @@ fn range_bounds_to_file_range(range: &impl RangeBounds<u64>) -> Result<Option<Fi
         Bound::Unbounded => u64::MAX,
     };
     if start > end {
-        return Err(DataError::InvalidOperation(format!("Invalid range: start ({start}) > end ({end})")));
+        return Err(DataError::ParameterError(format!("Invalid range: start ({start}) > end ({end})")));
+    }
+    if let Some(file_size) = file_size
+        && start > 0
+        && start >= file_size
+    {
+        return Err(DataError::ParameterError(format!(
+            "range start ({start}) is at or beyond the file size ({file_size})"
+        )));
     }
     if start == 0 && end == u64::MAX {
         Ok(None)
     } else {
         Ok(Some(FileRange::new(start, end)))
+    }
+}
+
+/// Reports a download session that was dropped without finalizing.
+///
+/// This is the *only* telemetry coverage for `XetDownloadStreamGroup`, which holds an
+/// `Arc<FileDownloadSession>` and has no explicit `finish()` - it is freed when the last user clone
+/// drops. Detached rather than awaited, because `Drop` is synchronous.
+#[cfg(not(target_family = "wasm"))]
+impl Drop for FileDownloadSession {
+    fn drop(&mut self) {
+        if self.finalized.load(Ordering::Acquire) {
+            return;
+        }
+        // Deliberately *not* gated on `tokio::runtime::Handle::try_current()`. The send is spawned
+        // on the `XetRuntime`'s own stored handle, not the ambient one, so it does not need to run
+        // inside a runtime context - and requiring one silently disabled this path entirely for
+        // embedders that release the last `Arc` from a foreign thread, which is exactly what the
+        // Python bindings do.
+        crate::telemetry::emit_download_abandoned(
+            &self.client,
+            &self.report(),
+            self.n_items() as u64,
+            self.progress.all_items_complete(),
+        );
     }
 }
 
@@ -1130,19 +1225,32 @@ mod tests {
     fn test_range_bounds_conversion() {
         use super::range_bounds_to_file_range;
 
-        assert_eq!(range_bounds_to_file_range(&(..)).unwrap(), None);
-        assert_eq!(range_bounds_to_file_range(&(0..100)).unwrap(), Some(FileRange::new(0, 100)));
-        assert_eq!(range_bounds_to_file_range(&(5..)).unwrap(), Some(FileRange::new(5, u64::MAX)));
-        assert_eq!(range_bounds_to_file_range(&(..50)).unwrap(), Some(FileRange::new(0, 50)));
-        assert_eq!(range_bounds_to_file_range(&(10..=19)).unwrap(), Some(FileRange::new(10, 20)));
+        assert_eq!(range_bounds_to_file_range(&(..), None).unwrap(), None);
+        assert_eq!(range_bounds_to_file_range(&(0..100), None).unwrap(), Some(FileRange::new(0, 100)));
+        assert_eq!(range_bounds_to_file_range(&(5..), None).unwrap(), Some(FileRange::new(5, u64::MAX)));
+        assert_eq!(range_bounds_to_file_range(&(..50), None).unwrap(), Some(FileRange::new(0, 50)));
+        assert_eq!(range_bounds_to_file_range(&(10..=19), None).unwrap(), Some(FileRange::new(10, 20)));
     }
 
     #[test]
     fn test_range_bounds_inverted_range_errors() {
         use super::range_bounds_to_file_range;
 
-        let result = range_bounds_to_file_range(&(10..5));
+        let result = range_bounds_to_file_range(&(10..5), None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_range_bounds_known_file_size() {
+        use super::range_bounds_to_file_range;
+
+        assert_eq!(range_bounds_to_file_range(&(0..100), Some(16)).unwrap(), Some(FileRange::new(0, 100)));
+        assert_eq!(range_bounds_to_file_range(&(15..), Some(16)).unwrap(), Some(FileRange::new(15, u64::MAX)));
+        assert!(matches!(range_bounds_to_file_range(&(16..), Some(16)), Err(DataError::ParameterError(_))));
+        assert!(matches!(range_bounds_to_file_range(&(20..30), Some(16)), Err(DataError::ParameterError(_))));
+        // An empty file still accepts ranges starting at 0.
+        assert_eq!(range_bounds_to_file_range(&(0..0), Some(0)).unwrap(), Some(FileRange::new(0, 0)));
+        assert_eq!(range_bounds_to_file_range(&(..10), Some(0)).unwrap(), Some(FileRange::new(0, 10)));
     }
 
     #[test]
@@ -1194,7 +1302,59 @@ mod tests {
             .unwrap();
     }
 
-    #[cfg(not(debug_assertions))]
+    #[test]
+    fn test_download_stream_inverted_range_errors() {
+        let runtime = get_runtime();
+        runtime
+            .clone()
+            .external_run_async_task(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = b"0123456789abcdef";
+
+                let xfi = upload_data(&cas_path, original_data).await;
+
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
+                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+
+                let result = session.download_stream(&xfi, Some(10..5)).await;
+                assert!(matches!(result, Err(DataError::ParameterError(_))));
+
+                let result = session.download_unordered_stream(&xfi, Some(10..5)).await;
+                assert!(matches!(result, Err(DataError::ParameterError(_))));
+                assert_eq!(session.n_items(), 0);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_download_stream_range_start_beyond_file_size_errors() {
+        let runtime = get_runtime();
+        runtime
+            .clone()
+            .external_run_async_task(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = b"0123456789abcdef";
+
+                let xfi = upload_data(&cas_path, original_data).await;
+
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
+                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+
+                let result = session.download_stream(&xfi, Some(16..20)).await;
+                assert!(matches!(result, Err(DataError::ParameterError(_))));
+
+                let result = session.download_unordered_stream(&xfi, Some(16..20)).await;
+                assert!(matches!(result, Err(DataError::ParameterError(_))));
+
+                let result = session.download_stream_range(&xfi, 16..).await;
+                assert!(matches!(result, Err(DataError::ParameterError(_))));
+                assert_eq!(session.n_items(), 0);
+            })
+            .unwrap();
+    }
+
     #[test]
     fn test_download_to_writer_range_start_beyond_file_size_errors() {
         let runtime = get_runtime();
@@ -1214,7 +1374,8 @@ mod tests {
                 let file = std::fs::File::create(&out_path).unwrap();
                 let result = session.download_to_writer(&xfi, 100000.., file).await;
 
-                assert!(result.is_err());
+                assert!(matches!(result, Err(DataError::ParameterError(_))));
+                assert_eq!(session.n_items(), 0);
             })
             .unwrap();
     }

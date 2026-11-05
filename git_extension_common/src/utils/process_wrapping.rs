@@ -3,7 +3,7 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 
 use crate::constants::GIT_EXECUTABLE;
-use crate::errors::{GitXetError, Result};
+use crate::errors::{GitExtensionError, Result};
 
 // This mod implements utilities to invoke commands through child processes from any program, and
 // exposes special helpers to invoke git commands.
@@ -13,7 +13,7 @@ use crate::errors::{GitXetError, Result};
 ///
 /// Return `Ok(())` if the Git command finishes correctly and the child's stdout and stderr are ignored;
 /// Return the underlying I/O error if the child process spawning or waiting fails; otherwise, the captured
-/// stdout and stderr of the child are wrapped in an `Err(GitXetError::CommandFailed(_))` and returned.
+/// stdout and stderr of the child are wrapped in an `Err(GitExtensionError::CommandFailed(_))` and returned.
 pub fn run_git_captured<P, S1, I, S2>(working_dir: P, git_command: S1, args: I) -> Result<()>
 where
     P: AsRef<Path>,
@@ -32,8 +32,7 @@ where
 ///
 /// Return `Ok(())` if the command finishes correctly and the child's stdout and stderr are ignored;
 /// Return the underlying I/O error if the child process spawning or waiting fails; otherwise, the captured
-/// stdout and stderr of the child are wrapped in an `Err(GitXetError::CommandFailed(_))` and returned.
-#[allow(unused)]
+/// stdout and stderr of the child are wrapped in an `Err(GitExtensionError::CommandFailed(_))` and returned.
 pub fn run_program_captured<S1, P, I, S2>(program: S1, working_dir: P, args: I) -> Result<()>
 where
     S1: AsRef<OsStr>,
@@ -129,11 +128,11 @@ impl CapturedCommand {
                 // From past experience, if the "git" program is not found the underlying error
                 // only says "Not Found" and is not very helpful to identify the cause. We thus
                 // capture this error and make the message more explicit.
-                std::io::ErrorKind::NotFound => GitXetError::cmd_failed(
+                std::io::ErrorKind::NotFound => GitExtensionError::cmd_failed(
                     format!(r#"program "{}" not found"#, command.get_program().display()),
                     Some(e),
                 ),
-                _ => GitXetError::cmd_failed("internal", Some(e)),
+                _ => GitExtensionError::cmd_failed("internal", Some(e)),
             })?,
         })
     }
@@ -152,11 +151,11 @@ impl CapturedCommand {
         self.child_process
             .stdin
             .take()
-            .ok_or_else(|| GitXetError::internal("stdin of child process is not captured"))
+            .ok_or_else(|| GitExtensionError::internal("stdin of child process is not captured"))
     }
 
     /// Synchronously wait for the child to exit completely, returning `Ok(())` if the child exits with status code 0;
-    /// otherwise, return the captured output wrapped in an `Err(GitXetError::CommandFailed(_))`.
+    /// otherwise, return the captured output wrapped in an `Err(GitExtensionError::CommandFailed(_))`.
     pub fn wait(self) -> Result<()> {
         // ignores output
         let _ = self.wait_with_output()?;
@@ -166,7 +165,7 @@ impl CapturedCommand {
 
     /// Synchronously wait for the child to exit and collect all remaining output on the stdout/stderr handles,
     /// returning a tuple of captured output if the child exits with status code 0; otherwise, return the captured
-    /// output wrapped in an `Err(GitXetError::CommandFailed(_))`.
+    /// output wrapped in an `Err(GitExtensionError::CommandFailed(_))`.
     pub fn wait_with_output(self) -> Result<(Vec<u8>, Vec<u8>)> {
         let ret = self.child_process.wait_with_output()?;
 
@@ -175,7 +174,7 @@ impl CapturedCommand {
             _ => {
                 let stdout = std::str::from_utf8(&ret.stdout).unwrap_or("<Binary Data>").trim();
                 let stderr = std::str::from_utf8(&ret.stderr).unwrap_or("<Binary Data>").trim();
-                Err(GitXetError::cmd_failed(
+                Err(GitExtensionError::cmd_failed(
                     format!("err_code = {:?}, stdout = \"{}\", stderr = \"{}\"", ret.status.code(), stdout, stderr),
                     None,
                 ))

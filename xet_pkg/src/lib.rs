@@ -76,7 +76,7 @@ pub mod xet_session;
 
 /// Initialize the global tracing subscriber using xet_runtime defaults.
 ///
-/// Reads `HF_XET_LOG_FILE` / `RUST_LOG` environment variables.  Repeated calls
+/// Reads `HF_XET_LOG_DEST` / `RUST_LOG` environment variables.  Repeated calls
 /// are no-ops — the global subscriber is installed only once.
 #[cfg(not(target_family = "wasm"))]
 pub fn init_logging(version_info: String) {

@@ -1,4 +1,3 @@
-#![cfg(test)]
 use std::path::Path;
 use std::rc::Rc;
 

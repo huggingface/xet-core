@@ -48,7 +48,7 @@ impl MDBInMemoryShard {
     }
 
     pub fn add_file_reconstruction_info(&mut self, file_info: MDBFileInfo) -> Result<()> {
-        self.current_shard_file_size += file_info.num_bytes();
+        self.current_shard_file_size += file_info.num_bytes()?;
         self.current_shard_file_size += (size_of::<u64>() + size_of::<u32>()) as u64;
 
         self.file_content.insert(file_info.metadata.file_hash, file_info);
@@ -84,11 +84,11 @@ impl MDBInMemoryShard {
             chunk_hash_lookup,
         };
 
-        s.recalculate_shard_size();
+        s.recalculate_shard_size()?;
         Ok(s)
     }
 
-    pub fn recalculate_shard_size(&mut self) {
+    pub fn recalculate_shard_size(&mut self) -> Result<()> {
         // Calculate the size
         let mut num_bytes = 0u64;
         for xorb_block_contents in self.xorb_content.values() {
@@ -99,13 +99,14 @@ impl MDBInMemoryShard {
         }
 
         for file_info in self.file_content.values() {
-            num_bytes += file_info.num_bytes();
+            num_bytes += file_info.num_bytes()?;
             num_bytes += (size_of::<u64>() + size_of::<u32>()) as u64;
         }
 
         num_bytes += ((size_of::<u64>() + 2 * size_of::<u32>()) * self.chunk_hash_lookup.len()) as u64;
 
         self.current_shard_file_size = num_bytes;
+        Ok(())
     }
 
     pub fn difference(&self, other: &Self) -> Result<Self> {
@@ -130,7 +131,7 @@ impl MDBInMemoryShard {
                 .collect(),
             current_shard_file_size: 0,
         };
-        s.recalculate_shard_size();
+        s.recalculate_shard_size()?;
         Ok(s)
     }
 
@@ -285,9 +286,13 @@ impl MDBInMemoryShard {
 
         let mut shard = Self::default();
 
-        process_shard_file_info_section(reader, |view| shard.add_file_reconstruction_info(MDBFileInfo::from(&view)))?;
+        process_shard_file_info_section(
+            reader,
+            |view| shard.add_file_reconstruction_info(MDBFileInfo::from(&view)),
+            None,
+        )?;
 
-        process_shard_xorb_info_section(reader, |view| shard.add_xorb_block(MDBXorbInfo::from(&view)))?;
+        process_shard_xorb_info_section(reader, |view| shard.add_xorb_block(MDBXorbInfo::from(&view)), None)?;
 
         Ok(shard)
     }

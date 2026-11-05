@@ -11,6 +11,9 @@ members = [
 
     # Top-level crates (not published as packages)
     "git_xet",
+    "git_hf",
+    "git_extension_common",
+    "xet_pointer_file",
 ]
 exclude = [
     "simulation",
@@ -21,7 +24,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "1.5.4"
+version = "1.8.0"
 edition = "2024"
 license = "Apache-2.0"
 homepage = "https://github.com/huggingface/xet-core"
@@ -56,6 +59,7 @@ clap = { version = "4", features = ["derive"] }
 colored = "3"
 console-subscriber = "0.5"
 countio = { version = "0.3", features = ["futures"] }
+crc-fast = { version = "1.10", default-features = false, features = ["std"] }
 crc32fast = "1.5"
 csv = "1"
 ctor = "1"
@@ -98,13 +102,14 @@ safe-transmute = "0.11"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_repr = "0.1"
+serde_with = { version = "3.24", default-features = false }
 sha2 = "0.11"
 shell-words = "1.1"
 statrs = { version = "0.18", default-features = false }
 shellexpand = "3.1"
 smol = "2"
 static_assertions = "1.1"
-sysinfo = "0.38"
+sysinfo = "0.39"
 tempfile = "3.25"
 thiserror = "2.0"
 tokio = { version = "1.49" }
